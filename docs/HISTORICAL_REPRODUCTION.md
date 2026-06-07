@@ -136,15 +136,15 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 当前前端展示以最新 DB 公共层回测 run_id=`13` 为准，整体样本数 45、正确数 31、准确率 `68.9%`。
 
-### 周度 5Y direct-production no-persist 复核
+### 周度 5Y direct-production 落库复核
 
-2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，并只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。当前没有写入 `t_backtest_*`，因此前端矩阵还不会展示该方案。
+2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，先只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`，再在明确授权后受控执行落库。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。落库只写 `weekly_5y_direct_production` 对应的 `t_backtest_*` 回测记录，不写实盘预测表、不写 actuals、不改源数据表。
 
-| 方案 | 数据源 | 落库状态 | 日期范围 | 样本 | 准确率 |
-|------|--------|----------|----------|------|--------|
-| `weekly_5y_direct_production` | `framework_db_aligned` | `no-persist` | `2016-02-20` 到 `2026-05-23` | 501 | `58.3% (292/501)` |
+| 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 |
+|------|--------|--------|----------|------|--------|
+| `weekly_5y_direct_production` | `framework_db_aligned` | 28 | `2016-02-20` 到 `2026-05-23` | 501 | `58.3% (292/501)` |
 
-实盘窗口复核: `2025-07-05` 到 `2026-04-25` 共 42 个样本，正确 26 个，准确率 `61.9%`。no-persist 前后 `t_backtest_runs=8`、`t_backtest_predictions=7022`、`t_backtest_monthly_metrics=379`、`t_backtest_reproduction_checks=1` 均保持不变。
+实盘窗口复核: `2025-07-05` 到 `2026-04-25` 共 42 个样本，正确 26 个，准确率 `61.9%`。落库前后受保护表保持不变: `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。回测目标表变化符合预期: `t_backtest_runs` 8 -> 9，`t_backtest_predictions` 7022 -> 7523，`t_backtest_monthly_metrics` 379 -> 503，`t_backtest_reproduction_checks=1` 不变。backend factor-lab 数据函数、HTTP API 和浏览器 UI 已可返回 `weekly_5y_direct_production:5Y:framework_db_aligned`；浏览器默认区间显示 `58.6% (41/70)`，全量 run 摘要为 `58.3% (292/501)`。
 
 当前周度 10Y 月度样本分布:
 
@@ -181,9 +181,9 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 | 表 | 当前记录数 |
 |----|------------|
-| `t_backtest_runs` | 8 |
-| `t_backtest_predictions` | 7022 |
-| `t_backtest_monthly_metrics` | 379 |
+| `t_backtest_runs` | 9 |
+| `t_backtest_predictions` | 7523 |
+| `t_backtest_monthly_metrics` | 503 |
 | `t_backtest_reproduction_checks` | 1 |
 
 注: 新机器当前只保留最新一次数据一致性检查记录。该检查状态为 `failed`，原因是少数因子列的缺失/精度差异；Y 生成所依赖的收益率列最大误差均为 0。

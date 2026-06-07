@@ -2,7 +2,7 @@
 
 **日期**: 2026-06-05
 **预计阶段**: 8个Phase
-**当前状态**: 新模拟生产机器已完成服务环境、正式平台表、actuals、历史回测、周度 10Y 回测、API 和 launchd 常驻验证。`t1_daily` / `t5_daily` 均为 active，2026-06-05 09:25 已写入正式预测；`weekly_10y_d_overlay` 已按实盘 week_id 规则进入 `framework_db_aligned` 回测矩阵和前端周度格子，并已在 2026-06-06 切换为 active、注册周六 11:30 自动调度。2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，当前保持 paused，已通过标准 dry-run 和 no-persist DB 回测，尚未写入 registry/backtest 表或前端矩阵。
+**当前状态**: 新模拟生产机器已完成服务环境、正式平台表、actuals、历史回测、周度 10Y 回测、API 和 launchd 常驻验证。`t1_daily` / `t5_daily` 均为 active，2026-06-05 09:25 已写入正式预测；`weekly_10y_d_overlay` 已按实盘 week_id 规则进入 `framework_db_aligned` 回测矩阵和前端周度格子，并已在 2026-06-06 切换为 active、注册周六 11:30 自动调度。2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，当前保持 paused，已通过标准 dry-run、受控 DB 回测落库、backend factor-lab 数据函数、HTTP API 和浏览器 UI 验证；未同步 registry，未写实盘预测表。
 
 ---
 
@@ -86,7 +86,7 @@
 - [x] 前端保持原方案结果展示，不新增历史验证结果页，并接入最新 `framework_db_aligned` 回测结果
 - [x] 新增 `scripts/verify_backtest_reproduction.py` 验证脚本并通过
 - [x] 新增 `weekly_10y_d_overlay` 回测 runner，最新前端展示 run_id=13，并在前端周度格子展示
-- [x] 新增 `weekly_5y_direct_production` adapter 与 no-persist 回测 runner；当前 paused，dry-run 返回 1 条 5Y 周度预测，no-persist DB 回测样本 501 条、准确率 58.3%，未写入 `t_backtest_*`
+- [x] 新增 `weekly_5y_direct_production` adapter 与回测 runner；当前 paused，dry-run 返回 1 条 5Y 周度预测，DB 回测已受控写入 run_id=`28`，样本 501 条、准确率 58.3%
 
 ## 当前剩余观察项（2026-06-06）
 
@@ -147,6 +147,9 @@
 - [x] 标准 dry-run `weekly_5y_direct_production --predict-date 2026-06-06` 成功，返回 `target_tenor=5Y`、`target_date=2026-06-12`、`predicted_direction=-1`、`confidence=0.48333333333333334`。
 - [x] dry-run 前后 `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794` 保持不变。
 - [x] no-persist DB 回测成功: 501 个有效样本，292 个正确，整体准确率 58.3%；实盘窗口 42 个样本，26 个正确，准确率 61.9%。
-- [x] no-persist 回测前后 `t_backtest_runs=8`、`t_backtest_predictions=7022`、`t_backtest_monthly_metrics=379`、`t_backtest_reproduction_checks=1` 保持不变。
-- [ ] 受控落库前，确认是否要将该 5Y 周度方案展示到前端矩阵。
-- [ ] 如需展示，先执行回测落库，再只读验证 `/api/backtests/factor-lab` 的 `5Y国债活跃 · 周度` 格子。
+- [x] 受控回测落库成功: run_id=`28`，`t_backtest_runs` 8 -> 9，`t_backtest_predictions` 7022 -> 7523，`t_backtest_monthly_metrics` 379 -> 503。
+- [x] 受保护表未变: `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
+- [x] backend factor-lab 数据函数可返回 `weekly_5y_direct_production:5Y:framework_db_aligned`，summary 为 `58.3% (292/501)`。
+- [x] HTTP API 可访问: `GET /api/health` 返回 ok，`GET /api/backtests/factor-lab` 返回 5Y 周度 run_id=`28`。
+- [x] 浏览器 UI 已验证: `5Y国债活跃 · 周度` 默认区间显示 `58.6% (41/70)`，候选方案排行显示 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。
+- [ ] live 启用仍待后续 SOP: readiness、受控 live 写库、切换 active、观察 scheduler。

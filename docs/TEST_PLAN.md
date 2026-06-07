@@ -12,6 +12,8 @@
 
 > 新机器复核（2026-06-07）: 当前正式平台表、target registry、backtest 表均已创建；`t_scheme_actuals=13900`，覆盖到 `2026-06-03`；`t_scheme_weekly_actuals=794`，已接入 10Y 周度 actuals。`t_scheme_predictions=7`、`t_scheme_run_log=4`，其中 1 条 prediction 和 2 条 run_log 来自 2026-06-06 周度受控 live 写库验收及单方案 scheduler 手动补跑。`weekly_10y_d_overlay` 已切换到 `wind_export(1)` 口径公共周频输入层，`framework_db_aligned` 最新回测 run_id 为 13，样本 45，正确 31，准确率 `68.9%`，用于 `10Y国债活跃 · 周度` 格子；2026-06-06 15:05 scheduler 已注册该方案周六 11:30 自动调度。
 
+> 周度 5Y 更新（2026-06-08）: `weekly_5y_direct_production` 已按 SOP 接入并保持 `paused`。标准 dry-run 成功，受控回测落库 run_id=`28`，样本 501，正确 292，准确率 `58.3%`；落库只改变 `t_backtest_*`，`t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 保持不变。backend factor-lab 数据函数、HTTP API 和浏览器 UI 已返回 `5Y国债活跃 · 周度` 矩阵项；默认区间 `2025-01` 至 `2026-05` 显示 `58.6% (41/70)`。
+
 ---
 
 ## Phase 0: 环境验证
@@ -285,11 +287,14 @@
 
 ### 回测边界
 
-- [x] 新增 `backtests.weekly_5y_direct_production_reproduction`，可用 `--no-persist` 只读复现。
+- [x] 新增 `backtests.weekly_5y_direct_production_reproduction`，可用 `--no-persist` 只读复现，也可在明确授权后写入该 `scheme_id` 对应的 `t_backtest_*` 回测记录。
 - [x] 回测行转换按周五 `feature_date`、周六 `predict_date`、下一周最后交易日 `target_date` 转换，并按 `feature_date` 归月。
 - [x] no-persist DB 回测成功: 501 个有效样本，292 个正确，整体准确率 58.3%；实盘窗口 42 个样本，26 个正确，准确率 61.9%。
-- [x] no-persist 回测前后 backtest 表行数保持不变: `t_backtest_runs=8`、`t_backtest_predictions=7022`、`t_backtest_monthly_metrics=379`、`t_backtest_reproduction_checks=1`。
-- [ ] 尚未执行回测落库，因此前端 `5Y国债活跃 · 周度` 矩阵不会显示该方案。
+- [x] 受控回测落库成功: run_id=`28`，`t_backtest_runs=9`、`t_backtest_predictions=7523`、`t_backtest_monthly_metrics=503`、`t_backtest_reproduction_checks=1`。
+- [x] 落库前后受保护表保持不变: `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
+- [x] backend factor-lab 数据函数返回 `5Y国债活跃 · 周度` 矩阵项: run_id=`28`，样本 501，正确 292，准确率 58.3%。
+- [x] HTTP API 可访问: `GET /api/health` 返回 ok，`GET /api/backtests/factor-lab` 返回 5Y 周度 run_id=`28`。
+- [x] 浏览器 UI 已验证: `5Y国债活跃 · 周度` 默认区间显示 `58.6% (41/70)`，候选方案排行显示 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。
 
 ---
 
