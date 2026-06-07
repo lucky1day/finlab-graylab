@@ -45,6 +45,7 @@ name: "T1-LGBM利差增强-v2"
 - 方案目录必须等于 `scheme_id`，统一小写 snake_case，例如 `schemes/weekly_10y_d_overlay/`。
 - `backtests/` 下的回测 runner 必须带范围，不使用 `reproduction.py` 这类泛名；日频批次用 `daily_0529_reproduction.py`，单方案周频用 `{scheme_id}_reproduction.py`，例如 `weekly_10y_d_overlay_reproduction.py`。
 - `scripts/` 下的命令必须使用“动作 + 对象 + 目的”命名，例如 `verify_backtest_reproduction.py`、`generate_daily_data_diff_report.py`、`compare_weekly_wind_export.py`。
+- 调度器中涉及频率差异的刷新模块必须显式带频率，例如 `daily_actuals_updater.py` 和 `weekly_actuals_updater.py`；不要使用 `actuals_updater.py` 这类容易和周度逻辑混淆的泛名。
 - 固定 schema 或 benchmark 文件可带版本日期，但日期前必须有分隔符，例如 `weekly_output_0529_columns.json`，不要使用 `weekly_output0529_columns.json`。
 - 前端静态资源允许使用 kebab-case，例如 `aifin-shell.js`、`aifin-lab-logo.svg`。
 - launchd plist 使用 macOS 约定的 reverse-DNS 命名，例如 `com.bond-factor-lab.backend.plist`。

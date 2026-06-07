@@ -7,7 +7,7 @@ from typing import Iterable
 
 from sqlalchemy.engine import Engine
 
-from scheduler.actuals_updater import TENOR_TO_INDICATOR, read_yield_rows
+from scheduler.daily_actuals_updater import TENOR_TO_INDICATOR, read_yield_rows
 from scheduler.repository import create_engine_from_env, upsert_weekly_actuals
 from shared.models import WeeklyActualRecord
 

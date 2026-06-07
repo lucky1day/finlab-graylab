@@ -15,7 +15,7 @@
 - 允许写入: 仅由自动调度或专用 live writer 写入 `scheme_id='weekly_10y_d_overlay'` 的 `t_scheme_predictions` 和 `t_scheme_run_log`。
 - 允许 registry 变化: scheduler 重启会同步 `t_scheme_registry`；代码需保证未变化的方案不刷新 `updated_at`，本次只允许 `weekly_10y_d_overlay` 因 `paused -> active` 产生 registry 变化。
 - 禁止写入: `api_wind_daily`、`api_wind_weekly`、`api_wind_derivative_daily`、`api_wind_derivative_weekly`、`t_trade_calendar`、其他方案的 prediction/run_log/actuals。
-- 禁止命令: `scripts/apply_migrations.py`、`scheduler.executor` broad run、`scheduler.actuals_updater`、`scheduler.main --run-once`、`POST /api/schemes/{scheme_id}/trigger`。
+- 禁止命令: `scripts/apply_migrations.py`、`scheduler.executor` broad run、`scheduler.daily_actuals_updater`、`scheduler.main --run-once`、`POST /api/schemes/{scheme_id}/trigger`。
 - 允许只读命令: readiness、dry-run、`SELECT` 计数、API health/metrics 查询、launchd 状态和日志查看。
 
 ## File Map

@@ -32,7 +32,7 @@ conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id t5_daily
 需要明确刷新正式表时再执行写库命令:
 
 ```bash
-PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m scheduler.actuals_updater --end-date 2026-06-03
+PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m scheduler.daily_actuals_updater --end-date 2026-06-03
 PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m scheduler.executor 2026-06-03
 ```
 
