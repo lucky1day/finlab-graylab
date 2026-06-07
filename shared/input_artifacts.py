@@ -7,11 +7,11 @@ from typing import Any
 
 import pandas as pd
 
-from schemes.weekly_10y_d_overlay.core import weekly_data_service
 from shared import data_service as daily_data_service
+from shared.artifact_paths import RUNTIME_INPUT_ROOT, safe_path_part
+from schemes.weekly_10y_d_overlay.core import weekly_data_service
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "backtest_artifacts" / "input_artifacts"
+DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 DAILY_INPUT_TARGET_COLUMNS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 
 
@@ -36,7 +36,7 @@ def input_artifact_path(
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> Path:
     """生成统一的输入文件路径。"""
-    safe_scheme_id = _safe_path_part(scheme_id)
+    safe_scheme_id = safe_path_part(scheme_id)
     safe_predict_date = str(predict_date).replace("/", "-").replace(":", "-")
     prefix = "weekly_output" if frequency == "weekly" else "daily_output"
     return Path(output_root) / safe_scheme_id / f"{prefix}_{safe_predict_date}.csv"
@@ -132,11 +132,6 @@ def build_weekly_input_artifact(
             "include_daily_weekly_close_fallback": include_daily_weekly_close_fallback,
         },
     )
-
-
-def _safe_path_part(value: str) -> str:
-    return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(value))
-
 
 def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(path)

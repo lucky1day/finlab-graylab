@@ -10,14 +10,15 @@ import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
-ARTIFACT_ROOT = PROJECT_ROOT / "backtest_artifacts" / "model_muti_0529"
-UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
-
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from shared.artifact_paths import benchmark_data_check_root
 from shared.data_service import build_daily_output_from_db as build_shared_daily_output_from_db
 from shared.data_service import create_sqlalchemy_engine
+
+CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
+ARTIFACT_ROOT = benchmark_data_check_root("model_muti_0529")
+UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 
 
 def _read_daily(path: Path) -> pd.DataFrame:

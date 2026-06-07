@@ -180,6 +180,11 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         self.assertEqual(result["schemes"][0]["scheme_id"], "weekly_10y_d_overlay")
         self.assertEqual(result["schemes"][0]["frequency"], "weekly")
         self.assertEqual(result["schemes"][0]["summary"]["accuracy"], 100.0)
+        self.assertEqual(result["benchmark_label"], "0529历史基准")
+        self.assertEqual(result["data_source_label"], "当前DB对齐回测")
+        self.assertEqual(result["schemes"][0]["scheme_name"], "周度10Y")
+        self.assertEqual(result["schemes"][0]["data_source_label"], "当前DB对齐回测")
+        self.assertEqual(result["schemes"][0]["name"], "周度10Y｜10Y国债活跃｜当前DB对齐回测")
 
 
 if __name__ == "__main__":

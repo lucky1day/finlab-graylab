@@ -606,6 +606,10 @@
     };
   }
 
+  function getSchemeDisplayName(scheme) {
+    return String((scheme && (scheme.display_name || scheme.name || scheme.scheme_name)) || "--");
+  }
+
   function dailyRowsByMonth(rows) {
     var grouped = {};
     (rows || []).forEach(function (row) {
@@ -722,7 +726,10 @@
       tasks[taskKey].push({
         id: scheme.id,
         taskKey: taskKey,
-        name: scheme.name,
+        name: getSchemeDisplayName(scheme),
+        schemeName: scheme.scheme_name || scheme.name || scheme.scheme_id || "",
+        benchmarkLabel: scheme.benchmark_label || scheme.benchmark_id || "",
+        dataSourceLabel: scheme.data_source_label || scheme.data_source || "",
         status: normalizeBackendSchemeStatus(scheme.status),
         latestRun: latestRun,
         monthlyRows: monthlyRows,
@@ -1082,7 +1089,7 @@
     if (summaryValues.length < 3) return;
     summaryValues[0].textContent = task.label;
     summaryValues[1].textContent = getSchemesForTask(factorLabState.selectedTaskKey).length;
-    summaryValues[2].textContent = scheme ? scheme.name.split(" ")[0] : "--";
+    summaryValues[2].textContent = scheme ? getSchemeDisplayName(scheme) : "--";
   }
 
   function updateFactorTrendToggles() {

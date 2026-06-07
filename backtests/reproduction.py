@@ -19,13 +19,14 @@ from backtests.repository import (
     upsert_backtest_run,
 )
 from shared.data_service import build_daily_output_from_db, create_sqlalchemy_engine
+from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root
 from shared.input_artifacts import build_daily_input_artifact
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ID = "model_muti_0529"
 CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
-ARTIFACT_ROOT = PROJECT_ROOT / "backtest_artifacts" / BENCHMARK_ID
+DATA_CHECK_ROOT = benchmark_data_check_root(BENCHMARK_ID)
 TARGET_COLUMNS = ("TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
 UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 T5_BACKTEST_START = "2025-01-01"
@@ -79,6 +80,7 @@ def build_db_aligned_daily(
     csv_df: pd.DataFrame | None = None,
     engine: Engine | None = None,
     upstream_mode: bool = True,
+    artifact_scheme_id: str = "daily_common",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """生成完整 DB 版 daily_output 和按 canonical CSV 对齐后的版本。
 
@@ -91,12 +93,12 @@ def build_db_aligned_daily(
     end_date = original["date"].max().strftime("%Y-%m-%d")
     if upstream_mode:
         input_artifact = build_daily_input_artifact(
-            scheme_id=f"{BENCHMARK_ID}_daily",
+            scheme_id=artifact_scheme_id,
             predict_date=end_date,
             start_date=start_date,
             end_date=end_date,
             engine=engine,
-            output_root=ARTIFACT_ROOT / "input_artifacts",
+            output_root=benchmark_input_root(BENCHMARK_ID),
         )
         db_df = input_artifact.dataframe
     else:
@@ -131,7 +133,12 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
     engine = engine or create_sqlalchemy_engine()
     try:
         csv_df = read_daily_csv()
-        upstream_full, upstream_aligned = build_db_aligned_daily(csv_df, engine=engine, upstream_mode=True)
+        upstream_full, upstream_aligned = build_db_aligned_daily(
+            csv_df,
+            engine=engine,
+            upstream_mode=True,
+            artifact_scheme_id="daily_common",
+        )
         framework_full, framework_aligned = build_framework_db_aligned_daily(csv_df, engine=engine)
         report = compare_daily_frames(csv_df, upstream_full, upstream_aligned)
         effective_csv, effective_aligned = exclude_daily_rows_for_evaluation_week(csv_df, upstream_aligned)
@@ -168,11 +175,11 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
         }
         if persist:
             insert_reproduction_check(engine, row)
-        artifact = ARTIFACT_ROOT / "upstream_db_generated_daily_output.csv"
+        artifact = DATA_CHECK_ROOT / "upstream_db_generated_daily_output.csv"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         upstream_aligned.to_csv(artifact, index=False)
         report["db_aligned_path"] = str(artifact)
-        framework_artifact = ARTIFACT_ROOT / "framework_db_generated_daily_output.csv"
+        framework_artifact = DATA_CHECK_ROOT / "framework_db_generated_daily_output.csv"
         framework_aligned.to_csv(framework_artifact, index=False)
         report["framework_db_aligned_path"] = str(framework_artifact)
         return report
@@ -354,7 +361,12 @@ def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame |
     """生成 t5 canonical-csv、framework-csv 和 framework-db 三组输出。"""
     csv_df = read_daily_csv()
     if db_aligned is None:
-        _, db_aligned = build_db_aligned_daily(csv_df, engine=engine, upstream_mode=True)
+        _, db_aligned = build_db_aligned_daily(
+            csv_df,
+            engine=engine,
+            upstream_mode=True,
+            artifact_scheme_id="t5_daily",
+        )
 
     baseline_rows, baseline_path = run_t5_canonical_csv_baseline(n_jobs=n_jobs)
     baseline = make_run_output("t5_daily", "baseline_original_csv", T5_BACKTEST_START, T5_BACKTEST_END, baseline_rows, report_path=baseline_path)
@@ -518,7 +530,12 @@ def run_t1_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame |
     """生成 t1 canonical-csv、framework-csv 和 framework-db 三组输出。"""
     csv_df = read_daily_csv()
     if db_aligned is None:
-        _, db_aligned = build_db_aligned_daily(csv_df, engine=engine, upstream_mode=True)
+        _, db_aligned = build_db_aligned_daily(
+            csv_df,
+            engine=engine,
+            upstream_mode=True,
+            artifact_scheme_id="t1_daily",
+        )
 
     baseline_rows, baseline_path = run_t1_canonical_csv_baseline(csv_df)
     baseline = make_run_output("t1_daily", "baseline_original_csv", T1_BACKTEST_START, T1_BACKTEST_END, baseline_rows, report_path=baseline_path)
@@ -828,12 +845,11 @@ def run_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: i
     engine = create_sqlalchemy_engine()
     try:
         data_check = run_data_alignment_check(engine=engine, persist=persist)
-        _, db_aligned = build_db_aligned_daily(read_daily_csv(), engine=engine, upstream_mode=True)
         outputs: list[RunOutput] = []
         if include_t5:
-            outputs.extend(run_t5_reproduction(engine=engine, db_aligned=db_aligned, n_jobs=n_jobs))
+            outputs.extend(run_t5_reproduction(engine=engine, n_jobs=n_jobs))
         if include_t1:
-            outputs.extend(run_t1_reproduction(engine=engine, db_aligned=db_aligned))
+            outputs.extend(run_t1_reproduction(engine=engine))
         run_ids = []
         if persist:
             for output in outputs:

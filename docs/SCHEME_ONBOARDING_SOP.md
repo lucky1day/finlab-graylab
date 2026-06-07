@@ -185,7 +185,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 创建 `config.yaml` 和 `predict.py`。如果算法来自上游原始代码，把原始核心逻辑放入 `core/`，adapter 只负责输入输出。
 
-输入文件特殊要求: 预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`。运行期 CSV 统一写入 `backtest_artifacts/input_artifacts/{scheme_id}/`；原始 `data_service.py` 只读不改。
+输入文件特殊要求: 预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`。运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；原始 `data_service.py` 只读不改。
 
 ### Step 3: 本地 dry-run，不写库
 
@@ -249,7 +249,9 @@ curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2?tenor=10Y"
 
 ### Step 6: 历史回测接入
 
-如果新方案需要参与当前前端方案矩阵的历史排行，必须产出并写入独立 backtest 表。当前前端优先展示 `/api/backtests/factor-lab` 的最新 `framework_db_aligned` 回测结果；只写 `t_scheme_predictions` 的实盘结果，不会自动混入已有历史排行。
+如果新方案需要参与当前前端方案矩阵的历史排行，必须产出并写入独立 backtest 表。当前前端优先展示 `/api/backtests/factor-lab` 的最新 `framework_db_aligned` 回测结果，并统一显示为“当前DB对齐回测”；只写 `t_scheme_predictions` 的实盘结果，不会自动混入已有历史排行。
+
+命名约束: `scheme_id` 只能表示真实方案；`benchmark_id` 只能表示历史基准批次；`data_source` 只能表示数据口径。文件系统中运行期输入用 `backtest_artifacts/runtime_inputs/{scheme_id}/`，历史回测 artifact 用 `backtest_artifacts/backtests/{benchmark_id}/`，不得再新增 `model_muti_0529_daily` 这类混合命名。
 
 历史回测至少记录三件事:
 

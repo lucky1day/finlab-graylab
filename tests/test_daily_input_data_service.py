@@ -108,7 +108,7 @@ class ReproductionDailyDataServiceTests(unittest.TestCase):
         self.assertEqual(kwargs["start_date"], "2026-01-02")
         self.assertEqual(kwargs["end_date"], "2026-01-02")
         self.assertIs(kwargs["engine"], engine)
-        self.assertEqual(kwargs["scheme_id"], "model_muti_0529_daily")
+        self.assertEqual(kwargs["scheme_id"], "daily_common")
 
 
 if __name__ == "__main__":

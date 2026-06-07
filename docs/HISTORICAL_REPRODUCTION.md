@@ -50,13 +50,21 @@
 
 已新增离线验证报告，不接入前端、不影响实盘监控页:
 
-- HTML 报告: `backtest_artifacts/model_muti_0529/historical_data_diff_report.html`
-- 缺失差异按因子汇总: `backtest_artifacts/model_muti_0529/missing_diff_by_factor.csv`
-- 缺失差异按月份汇总: `backtest_artifacts/model_muti_0529/missing_diff_by_month.csv`
-- 数值差异按因子汇总: `backtest_artifacts/model_muti_0529/numeric_diff_by_factor.csv`
-- 日频 data service 审计摘要: `backtest_artifacts/model_muti_0529/daily_data_service_audit_summary.json`
-- 日频 data service DB 生成输出: `backtest_artifacts/model_muti_0529/shared_daily_data_service_generated_daily_output.csv`
-- 日频 data service DB 对齐输出: `backtest_artifacts/model_muti_0529/shared_daily_data_service_generated_daily_output_aligned.csv`
+- HTML 报告: `backtest_artifacts/backtests/model_muti_0529/data_checks/historical_data_diff_report.html`
+- 缺失差异按因子汇总: `backtest_artifacts/backtests/model_muti_0529/data_checks/missing_diff_by_factor.csv`
+- 缺失差异按月份汇总: `backtest_artifacts/backtests/model_muti_0529/data_checks/missing_diff_by_month.csv`
+- 数值差异按因子汇总: `backtest_artifacts/backtests/model_muti_0529/data_checks/numeric_diff_by_factor.csv`
+- 日频 data service 审计摘要: `backtest_artifacts/backtests/model_muti_0529/data_checks/daily_data_service_audit_summary.json`
+- 日频 data service DB 生成输出: `backtest_artifacts/backtests/model_muti_0529/data_checks/shared_daily_data_service_generated_daily_output.csv`
+- 日频 data service DB 对齐输出: `backtest_artifacts/backtests/model_muti_0529/data_checks/shared_daily_data_service_generated_daily_output_aligned.csv`
+
+## 命名规范
+
+- `scheme_id` 永远表示具体方案，例如 `t1_daily`、`t5_daily`、`weekly_10y_d_overlay`。
+- `benchmark_id` 表示历史基准批次，例如 `model_muti_0529`，只用于 `benchmarks/` 和 backtest 表。
+- `data_source` 是数据库兼容枚举，当前保留 `baseline_original_csv`、`framework_original_csv`、`framework_db_aligned`；API 会映射为中文展示名。
+- 运行期输入文件统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`。
+- 历史回测和数据差异报告统一写入 `backtest_artifacts/backtests/{benchmark_id}/`，不再使用 `model_muti_0529_daily` 这类伪方案名。
 
 生成命令:
 

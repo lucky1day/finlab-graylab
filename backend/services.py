@@ -20,6 +20,14 @@ DEFAULT_TARGET_LABELS = {
     "10Y": "10Y国债活跃",
 }
 DEFAULT_TARGET_ORDER = ["3Y", "5Y", "7Y", "10Y"]
+BACKTEST_BENCHMARK_LABELS = {
+    "model_muti_0529": "0529历史基准",
+}
+BACKTEST_DATA_SOURCE_LABELS = {
+    "baseline_original_csv": "原始代码基准CSV回测",
+    "framework_original_csv": "框架算法基准CSV回测",
+    "framework_db_aligned": "当前DB对齐回测",
+}
 
 
 def _iso(value: Any) -> str | None:
@@ -141,6 +149,28 @@ def _target_label(target_tenor: str, labels: dict[str, str] | None = None) -> st
     """返回前端展示用的 Y 标的名称。"""
     labels = labels or DEFAULT_TARGET_LABELS
     return labels.get(str(target_tenor), str(target_tenor))
+
+
+def _backtest_benchmark_label(benchmark_id: str) -> str:
+    return BACKTEST_BENCHMARK_LABELS.get(str(benchmark_id), str(benchmark_id))
+
+
+def _backtest_data_source_label(data_source: str) -> str:
+    return BACKTEST_DATA_SOURCE_LABELS.get(str(data_source), str(data_source))
+
+
+def _backtest_scheme_name(meta: dict[str, Any], scheme_id: str) -> str:
+    return str(meta.get("name") or scheme_id)
+
+
+def _backtest_display_name(
+    *,
+    meta: dict[str, Any],
+    scheme_id: str,
+    target_label: str,
+    data_source: str,
+) -> str:
+    return f"{_backtest_scheme_name(meta, scheme_id)}｜{target_label}｜{_backtest_data_source_label(data_source)}"
 
 
 def list_targets(engine: Engine) -> list[dict[str, Any]]:
@@ -550,18 +580,31 @@ def backtest_factor_lab_results(
             target_label = _target_label(tenor, target_labels)
             horizon = _infer_horizon(metrics.get(tenor), daily_rows.get(tenor), meta)
             frequency = meta.get("frequency") or ("weekly" if horizon == 6 else "daily")
+            scheme_name = _backtest_scheme_name(meta, run["scheme_id"])
+            benchmark_label = _backtest_benchmark_label(run["benchmark_id"])
+            data_source_label = _backtest_data_source_label(run["data_source"])
+            display_name = _backtest_display_name(
+                meta=meta,
+                scheme_id=run["scheme_id"],
+                target_label=target_label,
+                data_source=run["data_source"],
+            )
             schemes.append(
                 {
                     "id": f'{run["scheme_id"]}:{tenor}:{data_source}',
                     "run_id": run["id"],
                     "benchmark_id": run["benchmark_id"],
+                    "benchmark_label": benchmark_label,
                     "scheme_id": run["scheme_id"],
+                    "scheme_name": scheme_name,
                     "data_source": run["data_source"],
+                    "data_source_label": data_source_label,
                     "tenor": tenor,
                     "target_label": target_label,
                     "horizon": horizon,
                     "frequency": frequency,
-                    "name": f'{meta.get("name") or run["scheme_id"]} · {target_label}回测',
+                    "display_name": display_name,
+                    "name": display_name,
                     "status": "complete",
                     "start_date": run["start_date"],
                     "end_date": run["end_date"],
@@ -578,7 +621,9 @@ def backtest_factor_lab_results(
 
     return {
         "benchmark_id": benchmark_id,
+        "benchmark_label": _backtest_benchmark_label(benchmark_id),
         "data_source": data_source,
+        "data_source_label": _backtest_data_source_label(data_source),
         "target_labels": target_labels,
         "schemes": schemes,
     }

@@ -6,7 +6,7 @@
 
 **Architecture:** Add `shared/input_artifacts.py` as the single public entry point for daily and weekly input file generation. Daily inputs delegate to `shared.data_service`; weekly inputs delegate to the existing weekly data service, save a CSV, and read it back. Adapters receive DataFrames only from the returned `InputArtifact`.
 
-**Tech Stack:** Python 3.13 in `forecast_env`, pandas, SQLAlchemy engine passed through existing helpers, CSV artifacts under `backtest_artifacts/input_artifacts/`.
+**Tech Stack:** Python 3.13 in `forecast_env`, pandas, SQLAlchemy engine passed through existing helpers, CSV artifacts under `backtest_artifacts/runtime_inputs/`.
 
 ---
 
@@ -57,4 +57,4 @@
 - [ ] Run `python -m unittest tests.test_input_artifacts tests.test_daily_input_data_service`.
 - [ ] Run `python -m py_compile` for changed Python files.
 - [ ] Run t1/t5/weekly read-only dry-run functions for known dates.
-- [ ] Confirm generated files exist under `backtest_artifacts/input_artifacts/{scheme_id}/`.
+- [ ] Confirm generated files exist under `backtest_artifacts/runtime_inputs/{scheme_id}/`.

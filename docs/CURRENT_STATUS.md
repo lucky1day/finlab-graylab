@@ -26,7 +26,8 @@
   - 后端/API/调度器: conda `bond_factor_lab_service`
 - `t1_daily` 已完成 adapter，当前 active，预测目标为 `5Y/10Y`。
 - `t5_daily` 已完成 adapter，当前 active，预测目标为 `3Y/5Y/7Y/10Y`。
-- 公共输入文件层已落地: `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频通过 `shared.data_service` 生成 `daily_output_*.csv`，周频通过 `weekly_data_service` 内的 `wind_export(1)` 口径生成 `weekly_output_*.csv`，运行期文件统一位于 `backtest_artifacts/input_artifacts/{scheme_id}/`。每条 live `PredictionRecord.extra` 会记录 `input_artifact_path` 和 `input_artifact_source`。
+- 公共输入文件层已落地: `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频通过 `shared.data_service` 生成 `daily_output_*.csv`，周频通过 `weekly_data_service` 内的 `wind_export(1)` 口径生成 `weekly_output_*.csv`，运行期文件统一位于 `backtest_artifacts/runtime_inputs/{scheme_id}/`。每条 live `PredictionRecord.extra` 会记录 `input_artifact_path` 和 `input_artifact_source`。
+- artifact 命名已统一: `backtests/` 只放回测代码，`benchmarks/{benchmark_id}/` 只放 canonical 基准输入，运行期输入在 `backtest_artifacts/runtime_inputs/{scheme_id}/`，历史回测和数据差异报告在 `backtest_artifacts/backtests/{benchmark_id}/`。DB 中 `benchmark_id` / `data_source` 保留兼容枚举，API 额外提供中文展示名。
 - `weekly_10y_d_overlay` 已完成 adapter、DB 周频输入生成、历史回测落库、前端周度格子展示和 2026-06-06 受控 live 写库验收；当前已切换为 `active`，目标为 `10Y`。
 - `weekly_10y_d_overlay` 的 live 调度 cron 为周六 `11:30`（`30 11 * * 6`），对齐旧实盘 weekly cron 的首轮预测时间；旧脚本 16:00 / 22:00 为检查和必要补跑节点。2026-06-06 15:05 重启 scheduler 后已确认该 job 注册成功。
 - 周度 scheduler job 已显式使用 `force=True` 绕过通用“非交易日跳过”保护；日度方案仍保留交易日判断。
@@ -118,7 +119,7 @@ Weekly 10Y 当前最新回测 run_id=`13`: 45 个样本，正确 31 个，整体
 
 同窗口 CSV 对齐复核: `/Users/macstudio0/Desktop/weekly_output.csv` 覆盖 `week_id=201001` 到 `202604`；当前公共层产出的 `weekly_output_2026-06-06.csv` 覆盖 `201001` 到 `202621`。两者的行数、列数、列顺序和周范围结构可对齐，但共同周/共同列仍非逐单元格完全一致，详见 `reports/weekly_input_artifact_wind_export1_vs_desktop_diff.csv`。当前前端展示以最新 DB 公共层回测 run_id=`13` 为准。
 
-周频输入导出状态（2026-06-07）: 已按 `/Users/macstudio0/Desktop/wind_export(1).py` 口径切换周度 live/backtest 的公共输入链路。该版本在网页导出周频宽表时新增 `status=1`、`pre_forecast_flag=1` 因子过滤，并允许周末更新参与同周折叠。公共层从当前 DB 只读生成的 `backtest_artifacts/input_artifacts/weekly_10y_d_overlay/weekly_output_2026-06-06.csv` 与 `/Users/macstudio0/Desktop/weekly_output.csv` 在行数、列数、列顺序和周范围结构上已对齐（`840 x 575`，`201001` 到 `202621`），关键最新周收益率列 `TB0YWI3C/TB1YWI3C/TB5YWI3C/TB0YWI10/WC000005` 对齐，最新周模型输出也一致（`pred_label=-1`、`prob_up=0.28`）。剩余问题是仍未逐格完全一致: `diff_cell_count=71852`，其中绝大多数为 `1e-7` 量级小数精度差异；实质数值差异（`abs_diff > 1e-4`）为 12 个单元格，另有 101 个单次缺失差异。明细见:
+周频输入导出状态（2026-06-07）: 已按 `/Users/macstudio0/Desktop/wind_export(1).py` 口径切换周度 live/backtest 的公共输入链路。该版本在网页导出周频宽表时新增 `status=1`、`pre_forecast_flag=1` 因子过滤，并允许周末更新参与同周折叠。公共层从当前 DB 只读生成的 `backtest_artifacts/runtime_inputs/weekly_10y_d_overlay/weekly_output_2026-06-06.csv` 与 `/Users/macstudio0/Desktop/weekly_output.csv` 在行数、列数、列顺序和周范围结构上已对齐（`840 x 575`，`201001` 到 `202621`），关键最新周收益率列 `TB0YWI3C/TB1YWI3C/TB5YWI3C/TB0YWI10/WC000005` 对齐，最新周模型输出也一致（`pred_label=-1`、`prob_up=0.28`）。剩余问题是仍未逐格完全一致: `diff_cell_count=71852`，其中绝大多数为 `1e-7` 量级小数精度差异；实质数值差异（`abs_diff > 1e-4`）为 12 个单元格，另有 101 个单次缺失差异。明细见:
 
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_summary.json`
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_diff.csv`

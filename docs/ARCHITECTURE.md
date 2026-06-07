@@ -285,6 +285,14 @@ entry_point: predict.run         # 入口函数
 
 `scheme_id` 不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `horizon + target_tenor` 决定，方案实例由 `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `3Y -> 3Y国债活跃` 等。
 
+历史回测命名边界:
+
+- `scheme_id`: 真实方案实例，只能使用 `t1_daily`、`t5_daily`、`weekly_10y_d_overlay` 这类方案目录名。
+- `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；canonical 输入位于 `benchmarks/{benchmark_id}/`。
+- `data_source`: 数据口径枚举，例如 `framework_db_aligned`；API 负责映射成中文展示名，例如“当前DB对齐回测”。
+- 运行期输入 artifact: `backtest_artifacts/runtime_inputs/{scheme_id}/`。
+- 历史回测 artifact: `backtest_artifacts/backtests/{benchmark_id}/`。
+
 ### 4.2 predict.py接口
 
 ```python
@@ -431,7 +439,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。周度列已接入 `weekly_10y_d_overlay` 的历史回测展示，前端按 `frequency=weekly` 或 `horizon=6` 映射到“周度”任务格。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵，并使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。周度列已接入 `weekly_10y_d_overlay` 的历史回测展示，前端按 `frequency=weekly` 或 `horizon=6` 映射到“周度”任务格。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层接入片段见 [IFRAME_INTEGRATION.md](IFRAME_INTEGRATION.md)。本机尚未找到可直接修改的 `panda_quantflow` 仓库路径。
 
 由FastAPI后端直接serve这个目录作为静态文件。

@@ -17,8 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from shared.artifact_paths import benchmark_data_check_root
+
 BENCHMARK_ID = "model_muti_0529"
-ARTIFACT_ROOT = PROJECT_ROOT / "backtest_artifacts" / BENCHMARK_ID
+
+ARTIFACT_ROOT = benchmark_data_check_root(BENCHMARK_ID)
 CANONICAL_CSV = PROJECT_ROOT / "benchmarks" / BENCHMARK_ID / "daily_output.csv"
 GENERATED_CSV = ARTIFACT_ROOT / "upstream_db_generated_daily_output.csv"
 REPORT_HTML = ARTIFACT_ROOT / "historical_data_diff_report.html"
