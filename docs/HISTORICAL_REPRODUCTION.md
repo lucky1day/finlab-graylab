@@ -136,6 +136,16 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 当前前端展示以最新 DB 公共层回测 run_id=`13` 为准，整体样本数 45、正确数 31、准确率 `68.9%`。
 
+### 周度 5Y direct-production no-persist 复核
+
+2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，并只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。当前没有写入 `t_backtest_*`，因此前端矩阵还不会展示该方案。
+
+| 方案 | 数据源 | 落库状态 | 日期范围 | 样本 | 准确率 |
+|------|--------|----------|----------|------|--------|
+| `weekly_5y_direct_production` | `framework_db_aligned` | `no-persist` | `2016-02-20` 到 `2026-05-23` | 501 | `58.3% (292/501)` |
+
+实盘窗口复核: `2025-07-05` 到 `2026-04-25` 共 42 个样本，正确 26 个，准确率 `61.9%`。no-persist 前后 `t_backtest_runs=8`、`t_backtest_predictions=7022`、`t_backtest_monthly_metrics=379`、`t_backtest_reproduction_checks=1` 均保持不变。
+
 当前周度 10Y 月度样本分布:
 
 | 月份 | 样本 | 正确 | 准确率 |

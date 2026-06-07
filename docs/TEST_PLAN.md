@@ -263,6 +263,36 @@
 
 ---
 
+## Phase 3.6: weekly 5Y direct-production 方案验证
+
+### 方案接入
+
+- [x] `schemes/weekly_5y_direct_production/config.yaml` 已创建，`frequency=weekly`、`horizon=6`、`tenors=["5Y"]`、`status=paused`。
+- [x] 周度方案 cron 使用 `30 11 * * 6`，对齐旧实盘 weekly `multi` 首轮预测时间。
+- [x] 原始 `/Users/macstudio0/Desktop/weekly_5y_direct_production_0529.py` 已复制到 `core/legacy_weekly_5y_direct_production_0529.py`，但运行路径不直接 import 该文件，避免 import 时寻找本地 CSV 的副作用。
+- [x] `core/predictors.py` 已按原始方案复现三规则等权投票: `7Y-10Y` 2 周动量、`5Y-10Y` 4 周反转、`1Y` 4 周动量，平票按 `-1`。
+- [x] `predict.py` 暴露标准 `run(predict_date: str) -> list[PredictionRecord]`，并强制通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成周频输入 CSV 后读回。
+
+### dry-run 与算法边界
+
+- [x] 合成周频 DataFrame 单测确认 `predict_w5y()` 可在 `target_week_id` 上返回确定 5Y 投票结果。
+- [x] adapter 单测确认不会绕过公共周频输入 artifact，且 `extra` 包含 `feature_week_id/target_week_id/input_artifact_source`。
+- [x] 标准 dry-run 成功:
+  - [x] 命令: `python -m scheduler.scheme_runner --scheme-id weekly_5y_direct_production --predict-date 2026-06-06`
+  - [x] 返回: `target_tenor=5Y`、`horizon=6`、`target_date=2026-06-12`、`predicted_direction=-1`、`confidence=0.48333333333333334`
+  - [x] 输入 artifact: `backtest_artifacts/runtime_inputs/weekly_5y_direct_production/weekly_output_2026-06-06.csv`
+- [x] dry-run 前后正式表行数保持不变: `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
+
+### 回测边界
+
+- [x] 新增 `backtests.weekly_5y_direct_production_reproduction`，可用 `--no-persist` 只读复现。
+- [x] 回测行转换按周五 `feature_date`、周六 `predict_date`、下一周最后交易日 `target_date` 转换，并按 `feature_date` 归月。
+- [x] no-persist DB 回测成功: 501 个有效样本，292 个正确，整体准确率 58.3%；实盘窗口 42 个样本，26 个正确，准确率 61.9%。
+- [x] no-persist 回测前后 backtest 表行数保持不变: `t_backtest_runs=8`、`t_backtest_predictions=7022`、`t_backtest_monthly_metrics=379`、`t_backtest_reproduction_checks=1`。
+- [ ] 尚未执行回测落库，因此前端 `5Y国债活跃 · 周度` 矩阵不会显示该方案。
+
+---
+
 ## Phase 4: 数据库写入验证
 
 ### UPSERT语义

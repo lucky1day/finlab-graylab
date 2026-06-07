@@ -2,7 +2,7 @@
 
 **日期**: 2026-06-05
 **预计阶段**: 8个Phase
-**当前状态**: 新模拟生产机器已完成服务环境、正式平台表、actuals、历史回测、周度 10Y 回测、API 和 launchd 常驻验证。`t1_daily` / `t5_daily` 均为 active，2026-06-05 09:25 已写入正式预测；`weekly_10y_d_overlay` 已按实盘 week_id 规则进入 `framework_db_aligned` 回测矩阵和前端周度格子，并已在 2026-06-06 切换为 active、注册周六 11:30 自动调度。
+**当前状态**: 新模拟生产机器已完成服务环境、正式平台表、actuals、历史回测、周度 10Y 回测、API 和 launchd 常驻验证。`t1_daily` / `t5_daily` 均为 active，2026-06-05 09:25 已写入正式预测；`weekly_10y_d_overlay` 已按实盘 week_id 规则进入 `framework_db_aligned` 回测矩阵和前端周度格子，并已在 2026-06-06 切换为 active、注册周六 11:30 自动调度。2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，当前保持 paused，已通过标准 dry-run 和 no-persist DB 回测，尚未写入 registry/backtest 表或前端矩阵。
 
 ---
 
@@ -86,6 +86,7 @@
 - [x] 前端保持原方案结果展示，不新增历史验证结果页，并接入最新 `framework_db_aligned` 回测结果
 - [x] 新增 `scripts/verify_backtest_reproduction.py` 验证脚本并通过
 - [x] 新增 `weekly_10y_d_overlay` 回测 runner，最新前端展示 run_id=13，并在前端周度格子展示
+- [x] 新增 `weekly_5y_direct_production` adapter 与 no-persist 回测 runner；当前 paused，dry-run 返回 1 条 5Y 周度预测，no-persist DB 回测样本 501 条、准确率 58.3%，未写入 `t_backtest_*`
 
 ## 当前剩余观察项（2026-06-06）
 
@@ -134,3 +135,18 @@
 - [ ] 观察下一次周六 11:30 自动调度。
 - [ ] 等待 `2026-06-12` target actual 后，确认 `2026-06-06` live 样本进入准确率统计。
 - [ ] 周频输入导出待办: `/Users/macstudio0/Desktop/wind_export(1).py` 当前只读导出与桌面 `weekly_output.csv` 结构已对齐、关键收益率列一致、最新预测输出一致；剩余逐值差异暂不作为当前 live 启用阻塞项。
+
+## Phase 10: 周度 5Y direct-production 接入
+
+当前状态（2026-06-08）:
+
+- [x] 已创建 `schemes/weekly_5y_direct_production/`，`config.yaml` 为 `frequency=weekly`、`horizon=6`、`tenors=["5Y"]`、`cron="30 11 * * 6"`、`status=paused`。
+- [x] 原始 `/Users/macstudio0/Desktop/weekly_5y_direct_production_0529.py` 已归档到 `core/legacy_weekly_5y_direct_production_0529.py`；运行路径使用无文件副作用的 DataFrame predictor。
+- [x] `predict.py` 暴露标准 `run(predict_date: str) -> list[PredictionRecord]`，并通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成周频输入 CSV 后读回。
+- [x] 已抽出 `shared.weekly_calendar` 作为周频 week_id 日期工具，避免新周度方案依赖 10Y scheme 内部模块。
+- [x] 标准 dry-run `weekly_5y_direct_production --predict-date 2026-06-06` 成功，返回 `target_tenor=5Y`、`target_date=2026-06-12`、`predicted_direction=-1`、`confidence=0.48333333333333334`。
+- [x] dry-run 前后 `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794` 保持不变。
+- [x] no-persist DB 回测成功: 501 个有效样本，292 个正确，整体准确率 58.3%；实盘窗口 42 个样本，26 个正确，准确率 61.9%。
+- [x] no-persist 回测前后 `t_backtest_runs=8`、`t_backtest_predictions=7022`、`t_backtest_monthly_metrics=379`、`t_backtest_reproduction_checks=1` 保持不变。
+- [ ] 受控落库前，确认是否要将该 5Y 周度方案展示到前端矩阵。
+- [ ] 如需展示，先执行回测落库，再只读验证 `/api/backtests/factor-lab` 的 `5Y国债活跃 · 周度` 格子。
