@@ -84,7 +84,7 @@
 - [x] 完成 t1 原始 baseline / framework-csv / framework-db 复现，原始 1011 行，有效 999 行，framework 两组 mismatch 均为 0
 - [x] 新增 backtest API
 - [x] 前端保持原方案结果展示，不新增历史验证结果页，并接入最新 `framework_db_aligned` 回测结果
-- [x] 新增 `scripts/verify_reproduction.py` 验证脚本并通过
+- [x] 新增 `scripts/verify_backtest_reproduction.py` 验证脚本并通过
 - [x] 新增 `weekly_10y_d_overlay` 回测 runner，最新前端展示 run_id=13，并在前端周度格子展示
 
 ## 当前剩余观察项（2026-06-06）

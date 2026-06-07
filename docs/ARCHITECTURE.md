@@ -112,7 +112,7 @@ Scheduler触发actuals更新任务
 ### 2.4 历史复现流程
 
 ```
-手动执行 backtests.reproduction
+手动执行 backtests.daily_0529_reproduction
   → 读取 benchmarks/model_muti_0529/daily_output.csv
   → 通过 shared.input_artifacts 生成 DB 版 daily_output CSV 并读回
   → 日频内部调用 shared.data_service 生成 daily_output CSV

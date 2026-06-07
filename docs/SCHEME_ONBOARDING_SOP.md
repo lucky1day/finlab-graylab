@@ -43,6 +43,8 @@ name: "T1-LGBM利差增强-v2"
 
 - Python 模块、测试、脚本统一使用小写 `snake_case.py`，例如 `latest_prediction.py`、`check_weekly_10y_readiness.py`。
 - 方案目录必须等于 `scheme_id`，统一小写 snake_case，例如 `schemes/weekly_10y_d_overlay/`。
+- `backtests/` 下的回测 runner 必须带范围，不使用 `reproduction.py` 这类泛名；日频批次用 `daily_0529_reproduction.py`，单方案周频用 `{scheme_id}_reproduction.py`，例如 `weekly_10y_d_overlay_reproduction.py`。
+- `scripts/` 下的命令必须使用“动作 + 对象 + 目的”命名，例如 `verify_backtest_reproduction.py`、`generate_daily_data_diff_report.py`、`compare_weekly_wind_export.py`。
 - 固定 schema 或 benchmark 文件可带版本日期，但日期前必须有分隔符，例如 `weekly_output_0529_columns.json`，不要使用 `weekly_output0529_columns.json`。
 - 前端静态资源允许使用 kebab-case，例如 `aifin-shell.js`、`aifin-lab-logo.svg`。
 - launchd plist 使用 macOS 约定的 reverse-DNS 命名，例如 `com.bond-factor-lab.backend.plist`。
@@ -272,7 +274,7 @@ curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2?tenor=10Y"
 如果方案来源于上游脚本，原则上按历史复现链路处理:
 
 ```bash
-conda run -n forecast_env python scripts/verify_reproduction.py
+conda run -n forecast_env python scripts/verify_backtest_reproduction.py
 ```
 
 新增方案如果还没有通用 backtest runner，需要先补 runner，再写入:
@@ -286,8 +288,8 @@ conda run -n forecast_env python scripts/verify_reproduction.py
 周度方案示例:
 
 ```bash
-PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_reproduction --no-persist
-PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_reproduction
+PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_d_overlay_reproduction --no-persist
+PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_d_overlay_reproduction
 ```
 
 验收点:

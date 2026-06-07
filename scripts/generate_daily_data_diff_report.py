@@ -42,7 +42,7 @@ class Metadata:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate an independent historical data-diff validation report.")
+    parser = argparse.ArgumentParser(description="Generate an independent daily 0529 historical data-diff validation report.")
     parser.add_argument("--output", default=str(REPORT_HTML), help="HTML report output path.")
     args = parser.parse_args()
 

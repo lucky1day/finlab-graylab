@@ -38,7 +38,7 @@
 ### Task 3: Backtest and Documentation
 
 **Files:**
-- Modify: `backtests/reproduction.py`
+- Modify: `backtests/daily_0529_reproduction.py`
 - Modify: `README.md`
 - Modify: `docs/CURRENT_STATUS.md`
 - Modify: `docs/HISTORICAL_REPRODUCTION.md`

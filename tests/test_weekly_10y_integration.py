@@ -275,7 +275,7 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertIn("TB0YWI3C", schema)
 
     def test_weekly_backtest_row_dates_follow_saturday_prediction_rule(self) -> None:
-        module = importlib.import_module("backtests.weekly_10y_reproduction")
+        module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")
         predictions = pd.DataFrame(
             [
                 {
@@ -302,7 +302,7 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["target_week_id"], 202623)
 
     def test_weekly_backtest_rows_use_source_month_date_for_2025_week_mapping(self) -> None:
-        module = importlib.import_module("backtests.weekly_10y_reproduction")
+        module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")
         predictions = pd.DataFrame(
             [
                 {
@@ -330,7 +330,7 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["target_week_id"], 202528)
 
     def test_weekly_monthly_metrics_bucket_by_feature_month(self) -> None:
-        module = importlib.import_module("backtests.weekly_10y_reproduction")
+        module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")
         base = {
             "benchmark_id": "model_muti_0529",
             "scheme_id": "weekly_10y_d_overlay",
@@ -367,7 +367,7 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertNotIn("2025-11", metrics)
 
     def test_weekly_monthly_metrics_keep_legacy_cross_year_week(self) -> None:
-        module = importlib.import_module("backtests.weekly_10y_reproduction")
+        module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")
         common = {
             "actual_label": -1,
             "d_pred_label": -1,
@@ -403,7 +403,7 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics["2026-01"]["sample_count"], 6)
 
     def test_weekly_backtest_rows_keep_canonical_week_id_for_duplicate_cross_year_dates(self) -> None:
-        module = importlib.import_module("backtests.weekly_10y_reproduction")
+        module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")
         common = {
             "actual_label": -1,
             "d_pred_label": -1,

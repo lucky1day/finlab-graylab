@@ -840,7 +840,7 @@ def persist_run_output(engine: Engine, output: RunOutput) -> int:
     return run_id
 
 
-def run_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: int = 4, persist: bool = True) -> dict[str, Any]:
+def run_daily_0529_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: int = 4, persist: bool = True) -> dict[str, Any]:
     started = time.time()
     engine = create_sqlalchemy_engine()
     try:
@@ -945,13 +945,13 @@ def _float_or_none(value: Any) -> float | None:
 
 
 def main(argv: list[str] | None = None) -> dict[str, Any]:
-    parser = argparse.ArgumentParser(description="Run historical benchmark reproduction checks.")
+    parser = argparse.ArgumentParser(description="Run daily 0529 historical benchmark reproduction checks.")
     parser.add_argument("--skip-t1", action="store_true")
     parser.add_argument("--skip-t5", action="store_true")
     parser.add_argument("--n-jobs", type=int, default=4)
     parser.add_argument("--no-persist", action="store_true")
     args = parser.parse_args(argv)
-    result = run_reproduction(
+    result = run_daily_0529_reproduction(
         include_t1=not args.skip_t1,
         include_t5=not args.skip_t5,
         n_jobs=args.n_jobs,

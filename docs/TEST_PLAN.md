@@ -234,7 +234,7 @@
 ### dry-run 与算法边界
 
 - [x] 依赖验证: `scipy`、`sklearn`、`lightgbm`、`pandas` 可在 `forecast_env` 中 import。
-- [x] `python -m backtests.weekly_10y_reproduction --no-persist` 成功，只读产出 45 条历史样本。
+- [x] `python -m backtests.weekly_10y_d_overlay_reproduction --no-persist` 成功，只读产出 45 条历史样本。
 - [x] 标准入口 `python -m scheduler.scheme_runner --scheme-id weekly_10y_d_overlay --predict-date 2026-05-23` 返回 1 条 `PredictionRecord`。
 - [x] 当前 DB 周频长表中，`api_wind_derivative_weekly` 的关键指标代码 `TB0YWI3C/TB1YWI3C/TB5YWI3C` 最新完整到源表 `week_id=202621`。
 - [x] `2026-06-06` 的 readiness 返回 `ready=true`，源表 `feature_week_id=202621`，`target_week_id=202622`。
@@ -245,7 +245,7 @@
 
 ### 回测与前端
 
-- [x] `python -m backtests.weekly_10y_reproduction` 写入 `t_backtest_*`，当前前端展示 run_id=13。
+- [x] `python -m backtests.weekly_10y_d_overlay_reproduction` 写入 `t_backtest_*`，当前前端展示 run_id=13。
 - [x] 写入范围限定为 `scheme_id='weekly_10y_d_overlay'`:
   - [x] `t_backtest_runs`: 1 条
   - [x] `t_backtest_predictions`: 45 条

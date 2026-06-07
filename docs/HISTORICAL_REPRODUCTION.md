@@ -69,7 +69,7 @@
 生成命令:
 
 ```bash
-conda run -n forecast_env python scripts/generate_data_diff_report.py
+conda run -n forecast_env python scripts/generate_daily_data_diff_report.py
 conda run -n forecast_env python scripts/audit_daily_data_service.py
 ```
 
@@ -115,7 +115,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 - 方案目录: `schemes/weekly_10y_d_overlay/`
 - DB 周频输入生成: `schemes/weekly_10y_d_overlay/core/weekly_data_service.py`
-- 回测入口: `backtests/weekly_10y_reproduction.py`
+- 回测入口: `backtests/weekly_10y_d_overlay_reproduction.py`
 
 预测语义: 本周六预测下一周最后一个交易日 10Y 收益率相对本周最后一个交易日是上行还是下行。live 预测按 `feature_date` 从源表反查实际 `week_id`；历史回测为复现上游 0529 周频算法，日期转换优先使用算法输出的 `month_date/week_date` 作为 legacy 特征周日期，再把次日作为 `predict_date`，并按特征日期排序后的下一条算法输出作为 `target_date`。跨年处保留上游算法真实输出的 `week_id=202553`，因此 2026-01 当前有 6 个历史样本；`future_return/label` 按重排后的 target 重新计算，避免 `target_date` 早于 `feature_date`。
 
@@ -195,8 +195,8 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 ## 验证命令
 
 ```bash
-conda run -n forecast_env python -m backtests.reproduction --n-jobs 4
-conda run -n forecast_env python scripts/verify_reproduction.py
+conda run -n forecast_env python -m backtests.daily_0529_reproduction --n-jobs 4
+conda run -n forecast_env python scripts/verify_backtest_reproduction.py
 ```
 
 最终验证脚本输出:

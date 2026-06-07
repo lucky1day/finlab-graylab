@@ -60,7 +60,7 @@ conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id t1_daily
 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id t5_daily --predict-date 2026-06-03
 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id weekly_10y_d_overlay --predict-date 2026-05-23
 conda run -n forecast_env python scripts/audit_daily_data_service.py
-conda run -n forecast_env python scripts/verify_reproduction.py
+conda run -n forecast_env python scripts/verify_backtest_reproduction.py
 ```
 
 如 launchd 未运行，可临时启动后端:
@@ -69,4 +69,4 @@ conda run -n forecast_env python scripts/verify_reproduction.py
 PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service uvicorn backend.main:app --host 127.0.0.1 --port 8100
 ```
 
-写库类命令（例如 `scheduler.executor`、`scheduler.actuals_updater`、`scheduler.weekly_actuals_updater`、历史回测 runner）只在明确需要刷新正式表时执行；执行前后应记录受保护表和目标表行数。`scheduler.weekly_actuals_updater` 只写独立 `t_scheme_weekly_actuals`；`backtests.weekly_10y_reproduction` 只写 `weekly_10y_d_overlay` 对应的 `t_backtest_*` 回测记录，不写实盘预测表。`/api/backtests/factor-lab` 已改为只读获取 scheme metadata；`/api/schemes` 仍会同步 scheme registry，不适合作为严格只读数据库保护探针。
+写库类命令（例如 `scheduler.executor`、`scheduler.actuals_updater`、`scheduler.weekly_actuals_updater`、历史回测 runner）只在明确需要刷新正式表时执行；执行前后应记录受保护表和目标表行数。`scheduler.weekly_actuals_updater` 只写独立 `t_scheme_weekly_actuals`；`backtests.weekly_10y_d_overlay_reproduction` 只写 `weekly_10y_d_overlay` 对应的 `t_backtest_*` 回测记录，不写实盘预测表。`/api/backtests/factor-lab` 已改为只读获取 scheme metadata；`/api/schemes` 仍会同步 scheme registry，不适合作为严格只读数据库保护探针。

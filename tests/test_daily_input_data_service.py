@@ -83,7 +83,7 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
 
 class ReproductionDailyDataServiceTests(unittest.TestCase):
     def test_db_aligned_daily_uses_common_input_artifact_when_upstream_mode(self) -> None:
-        from backtests import reproduction
+        from backtests import daily_0529_reproduction as daily_reproduction
 
         canonical = pd.DataFrame(
             {
@@ -100,8 +100,8 @@ class ReproductionDailyDataServiceTests(unittest.TestCase):
         engine = object()
 
         artifact = SimpleNamespace(dataframe=generated, path=Path("/tmp/reproduction_daily_output.csv"), source="test")
-        with patch.object(reproduction, "build_daily_input_artifact", return_value=artifact) as build:
-            _, aligned = reproduction.build_db_aligned_daily(csv_df=canonical, engine=engine, upstream_mode=True)
+        with patch.object(daily_reproduction, "build_daily_input_artifact", return_value=artifact) as build:
+            _, aligned = daily_reproduction.build_db_aligned_daily(csv_df=canonical, engine=engine, upstream_mode=True)
 
         self.assertEqual(aligned["TB0YWI0C"].tolist(), [2.2345])
         kwargs = build.call_args.kwargs

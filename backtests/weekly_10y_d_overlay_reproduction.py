@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from backtests.repository import clean_json
-from backtests.reproduction import BENCHMARK_ID, RunOutput, make_run_output, persist_run_output
+from backtests.daily_0529_reproduction import BENCHMARK_ID, RunOutput, make_run_output, persist_run_output
 from shared.data_service import create_sqlalchemy_engine
 from schemes.weekly_10y_d_overlay.core.predictors import date_to_week_id, next_week_id, predict_w10y, week_id_to_friday
 from schemes.weekly_10y_d_overlay.core.weekly_data_service import build_weekly_output_from_db
@@ -137,7 +137,7 @@ def _is_canonical_weekly_row(row: dict[str, Any]) -> bool:
     return feature_week_id == date_to_week_id(str(row["predict_date"]))
 
 
-def run_weekly_10y_reproduction(engine=None, persist: bool = True) -> dict[str, Any]:
+def run_weekly_10y_d_overlay_reproduction(engine=None, persist: bool = True) -> dict[str, Any]:
     """用 DB 周频源表复现 weekly_10y_d_overlay，并可写入回测表。"""
     started = time.time()
     own_engine = engine is None
@@ -212,7 +212,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run weekly 10Y D-overlay DB-aligned reproduction.")
     parser.add_argument("--no-persist", action="store_true", help="只运行算法，不写入 t_backtest_*")
     args = parser.parse_args()
-    payload = run_weekly_10y_reproduction(persist=not args.no_persist)
+    payload = run_weekly_10y_d_overlay_reproduction(persist=not args.no_persist)
     print(json.dumps(payload, ensure_ascii=False, default=str, indent=2))
 
 
