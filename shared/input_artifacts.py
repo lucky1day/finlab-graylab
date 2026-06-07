@@ -7,11 +7,12 @@ from typing import Any
 
 import pandas as pd
 
-from schemes.weekly_10y_d_overlay.core.weekly_data_service import build_weekly_output_from_db
-from shared.original_daily_data_service import build_original_daily_output_from_db
+from schemes.weekly_10y_d_overlay.core import weekly_data_service
+from shared import data_service as daily_data_service
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "backtest_artifacts" / "input_artifacts"
+DAILY_INPUT_TARGET_COLUMNS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 
 
 @dataclass(frozen=True)
@@ -50,25 +51,28 @@ def build_daily_input_artifact(
     engine=None,
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> InputArtifact:
-    """通过原始 data_service 生成日频输入 CSV，再读回给算法。"""
+    """通过日频 data_service 生成输入 CSV，再读回给算法。"""
     path = input_artifact_path(
         scheme_id=scheme_id,
         frequency="daily",
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = build_original_daily_output_from_db(
+    df = daily_data_service.build_daily_output_from_db(
         start_date=start_date,
         end_date=end_date,
         engine=engine,
-        output_path=path,
+        target_columns=DAILY_INPUT_TARGET_COLUMNS,
     )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    daily_data_service.save_daily_output(df, path)
+    read_back = _read_daily_output_csv(path)
     return InputArtifact(
         scheme_id=scheme_id,
         frequency="daily",
         path=path,
-        dataframe=df,
-        source="original_daily_data_service",
+        dataframe=read_back,
+        source="shared_daily_data_service",
         generated_at=_utc_now(),
         metadata={
             "start_date": start_date,
@@ -97,7 +101,7 @@ def build_weekly_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = build_weekly_output_from_db(
+    df = weekly_data_service.build_weekly_output_from_db(
         schema_columns=schema_columns,
         start_week=start_week,
         end_week=end_week,
@@ -132,6 +136,19 @@ def build_weekly_input_artifact(
 
 def _safe_path_part(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in str(value))
+
+
+def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = [str(col).strip().lstrip("\ufeff") for col in df.columns]
+    if "date" not in df.columns:
+        raise ValueError(f"daily input artifact missing date column: {path}")
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
+    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    for col in df.columns:
+        if col != "date":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
 def _utc_now() -> str:

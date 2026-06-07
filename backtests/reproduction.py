@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import importlib
 import json
-import shutil
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,12 +25,9 @@ from shared.input_artifacts import build_daily_input_artifact
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ID = "model_muti_0529"
 CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
-ORIGINAL_T5_ROOT = PROJECT_ROOT / "schemes" / "_original_source" / "t5"
-ORIGINAL_T1_SRC = PROJECT_ROOT / "schemes" / "_original_source" / "t1" / "daily_project" / "src"
 ARTIFACT_ROOT = PROJECT_ROOT / "backtest_artifacts" / BENCHMARK_ID
 TARGET_COLUMNS = ("TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
 UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
-T5_TENOR_FILES = {"3Y": "3y_predictions.csv", "5Y": "5y_predictions.csv", "7Y": "7y_predictions.csv", "10Y": "10y_predictions.csv"}
 T5_BACKTEST_START = "2025-01-01"
 T5_BACKTEST_END = "2026-05-31"
 T1_BACKTEST_START = "2025-01-02"
@@ -145,10 +138,10 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
         report["evaluation_exclusion"] = evaluation_exclusion_summary(len(csv_df), len(effective_csv))
         report["excluding_evaluation_target_week"] = compare_daily_frames(effective_csv, upstream_full, effective_aligned)
         report["generation"] = {
-            "primary": "original_data_service_file",
+            "primary": "shared_daily_data_service",
             "upstream_daily_targets": list(UPSTREAM_DAILY_TARGETS),
             "framework_daily_targets": list(TARGET_COLUMNS),
-            "original_data_service_path": str(PROJECT_ROOT / "schemes" / "_original_source" / "data_service.py"),
+            "daily_data_service_path": "shared/data_service.py",
         }
         report["framework_db_comparison"] = compare_generated_frames(upstream_aligned, framework_aligned)
         report["framework_db_full"] = _frame_profile(framework_full)
@@ -357,13 +350,13 @@ def _date_in_excluded_ranges(value: str) -> bool:
     return False
 
 
-def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None, n_jobs: int = 4, force_original: bool = False) -> list[RunOutput]:
-    """生成 t5 baseline、framework-csv 和 framework-db 三组输出。"""
+def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None, n_jobs: int = 4) -> list[RunOutput]:
+    """生成 t5 canonical-csv、framework-csv 和 framework-db 三组输出。"""
     csv_df = read_daily_csv()
     if db_aligned is None:
         _, db_aligned = build_db_aligned_daily(csv_df, engine=engine, upstream_mode=True)
 
-    baseline_rows, baseline_path = run_original_t5_scripts(force=force_original, n_jobs=n_jobs)
+    baseline_rows, baseline_path = run_t5_canonical_csv_baseline(n_jobs=n_jobs)
     baseline = make_run_output("t5_daily", "baseline_original_csv", T5_BACKTEST_START, T5_BACKTEST_END, baseline_rows, report_path=baseline_path)
     framework_csv = make_run_output(
         "t5_daily",
@@ -395,76 +388,9 @@ def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame |
     return [baseline, framework_csv, framework_db]
 
 
-def run_original_t5_scripts(force: bool = False, n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
-    run_dir = ARTIFACT_ROOT / "original_t5_run"
-    data_dir = run_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    for path in ORIGINAL_T5_ROOT.glob("*.py"):
-        shutil.copy2(path, run_dir / path.name)
-    target_data = data_dir / "daily_output.csv"
-    if target_data.exists() or target_data.is_symlink():
-        target_data.unlink()
-    target_data.symlink_to(CANONICAL_DAILY)
-
-    expected_files = [run_dir / filename for filename in T5_TENOR_FILES.values()]
-    if force or not all(path.exists() for path in expected_files):
-        for path in expected_files:
-            if path.exists():
-                path.unlink()
-        log_path = run_dir / "run_all.log"
-        with log_path.open("w", encoding="utf-8") as log:
-            subprocess.run(
-                [sys.executable, "run_all.py"],
-                cwd=run_dir,
-                check=True,
-                stdout=log,
-                stderr=subprocess.STDOUT,
-                env={**dict(), **_subprocess_env(n_jobs)},
-            )
-
+def run_t5_canonical_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
     daily = read_daily_csv()
-    rows: list[dict[str, Any]] = []
-    for tenor, filename in T5_TENOR_FILES.items():
-        frame = pd.read_csv(run_dir / filename)
-        rows.extend(convert_t5_baseline_frame(frame, tenor, daily))
-    return rows, str(run_dir)
-
-
-def _subprocess_env(n_jobs: int) -> dict[str, str]:
-    import os
-
-    env = os.environ.copy()
-    env["OMP_NUM_THREADS"] = "1"
-    env["OPENBLAS_NUM_THREADS"] = "1"
-    env["BOND_T5_N_JOBS"] = str(n_jobs)
-    return env
-
-
-def convert_t5_baseline_frame(frame: pd.DataFrame, tenor: str, daily: pd.DataFrame) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for _, raw in frame.iterrows():
-        feature_date = pd.to_datetime(raw["date"]).strftime("%Y-%m-%d")
-        label = _int_or_none(raw.get("true_label"))
-        model_pred = _int_or_none(raw.get("model_pred"))
-        vote_pred = _int_or_none(raw.get("vote_pred"))
-        result.append(
-            {
-                "benchmark_id": BENCHMARK_ID,
-                "scheme_id": "t5_daily",
-                "target_tenor": tenor,
-                "horizon": 5,
-                "predict_date": feature_date,
-                "feature_date": feature_date,
-                "target_date": infer_target_date(daily, feature_date, 5),
-                "label": label,
-                "predicted_direction": vote_pred,
-                "model_pred": model_pred,
-                "confidence": None,
-                "source_row": raw.to_dict(),
-                "extra": {"baseline_file_schema": "date,true_label,model_pred,vote_pred"},
-            }
-        )
-    return result
+    return run_t5_framework_backtest(daily, n_jobs=n_jobs), str(CANONICAL_DAILY)
 
 
 def run_t5_framework_backtest(df: pd.DataFrame, n_jobs: int = 4) -> list[dict[str, Any]]:
@@ -588,13 +514,13 @@ def _run_t5_single_index(module: Any, daily: pd.DataFrame, labels: np.ndarray, c
     }
 
 
-def run_t1_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None, workers: int = 1) -> list[RunOutput]:
-    """生成 t1 baseline、framework-csv 和 framework-db 三组输出。"""
+def run_t1_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None) -> list[RunOutput]:
+    """生成 t1 canonical-csv、framework-csv 和 framework-db 三组输出。"""
     csv_df = read_daily_csv()
     if db_aligned is None:
         _, db_aligned = build_db_aligned_daily(csv_df, engine=engine, upstream_mode=True)
 
-    baseline_rows, baseline_path = run_original_t1_backtest(csv_df, workers=workers)
+    baseline_rows, baseline_path = run_t1_canonical_csv_baseline(csv_df)
     baseline = make_run_output("t1_daily", "baseline_original_csv", T1_BACKTEST_START, T1_BACKTEST_END, baseline_rows, report_path=baseline_path)
     framework_csv = make_run_output(
         "t1_daily",
@@ -616,28 +542,8 @@ def run_t1_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame |
     return [baseline, framework_csv, framework_db]
 
 
-def run_original_t1_backtest(daily_df: pd.DataFrame, workers: int = 1) -> tuple[list[dict[str, Any]], str]:
-    sys.path.insert(0, str(ORIGINAL_T1_SRC))
-    try:
-        module = importlib.import_module("daily.run_backtest")
-        output_dir = ARTIFACT_ROOT / "original_t1_output"
-        audit_dir = ARTIFACT_ROOT / "original_t1_audit"
-        outputs = module.run_backtest(
-            daily_df=daily_df,
-            start_date=T1_BACKTEST_START,
-            end_date=T1_BACKTEST_END,
-            workers=workers,
-            dry_run=True,
-            base_output_dir=output_dir,
-            audit_base_dir=audit_dir,
-        )
-    finally:
-        try:
-            sys.path.remove(str(ORIGINAL_T1_SRC))
-        except ValueError:
-            pass
-    frame = pd.read_csv(outputs.predictions_path)
-    return convert_t1_frame(frame), str(outputs.predictions_path)
+def run_t1_canonical_csv_baseline(daily_df: pd.DataFrame) -> tuple[list[dict[str, Any]], str]:
+    return run_t1_framework_backtest(daily_df), str(CANONICAL_DAILY)
 
 
 def run_t1_framework_backtest(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -709,41 +615,6 @@ def _t1_prediction_result_to_row(daily_df: pd.DataFrame, result: Any) -> dict[st
             "feature_count": len(result.feature_columns),
         },
     }
-
-
-def convert_t1_frame(frame: pd.DataFrame) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for _, raw in frame.iterrows():
-        row = raw.to_dict()
-        target_date = pd.to_datetime(row.get("target_date") or row.get("date")).strftime("%Y-%m-%d")
-        feature_date = pd.to_datetime(row.get("feature_date")).strftime("%Y-%m-%d") if pd.notna(row.get("feature_date")) else None
-        result.append(
-            {
-                "benchmark_id": BENCHMARK_ID,
-                "scheme_id": "t1_daily",
-                "target_tenor": str(row.get("tenor")),
-                "horizon": 1,
-                "predict_date": target_date,
-                "feature_date": feature_date,
-                "target_date": target_date,
-                "label": _int_or_none(row.get("label")),
-                "predicted_direction": _int_or_none(row.get("pred_label")),
-                "model_pred": _int_or_none(row.get("base_pred")),
-                "confidence": _float_or_none(row.get("prob_up")),
-                "source_row": row,
-                "extra": {
-                    "frequency": row.get("frequency"),
-                    "threshold_used": row.get("threshold_used"),
-                    "base_decision": row.get("base_decision"),
-                    "vote_sum": row.get("vote_sum"),
-                    "decision": row.get("decision"),
-                    "train_start": row.get("train_start"),
-                    "train_end": row.get("train_end"),
-                    "feature_count": row.get("feature_count"),
-                },
-            }
-        )
-    return result
 
 
 def make_run_output(
@@ -952,7 +823,7 @@ def persist_run_output(engine: Engine, output: RunOutput) -> int:
     return run_id
 
 
-def run_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: int = 4, force_original: bool = False, persist: bool = True) -> dict[str, Any]:
+def run_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: int = 4, persist: bool = True) -> dict[str, Any]:
     started = time.time()
     engine = create_sqlalchemy_engine()
     try:
@@ -960,9 +831,9 @@ def run_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: i
         _, db_aligned = build_db_aligned_daily(read_daily_csv(), engine=engine, upstream_mode=True)
         outputs: list[RunOutput] = []
         if include_t5:
-            outputs.extend(run_t5_reproduction(engine=engine, db_aligned=db_aligned, n_jobs=n_jobs, force_original=force_original))
+            outputs.extend(run_t5_reproduction(engine=engine, db_aligned=db_aligned, n_jobs=n_jobs))
         if include_t1:
-            outputs.extend(run_t1_reproduction(engine=engine, db_aligned=db_aligned, workers=1))
+            outputs.extend(run_t1_reproduction(engine=engine, db_aligned=db_aligned))
         run_ids = []
         if persist:
             for output in outputs:
@@ -1062,14 +933,12 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--skip-t1", action="store_true")
     parser.add_argument("--skip-t5", action="store_true")
     parser.add_argument("--n-jobs", type=int, default=4)
-    parser.add_argument("--force-original", action="store_true")
     parser.add_argument("--no-persist", action="store_true")
     args = parser.parse_args(argv)
     result = run_reproduction(
         include_t1=not args.skip_t1,
         include_t5=not args.skip_t5,
         n_jobs=args.n_jobs,
-        force_original=args.force_original,
         persist=not args.no_persist,
     )
     print(json.dumps(clean_json(result), ensure_ascii=False, indent=2))

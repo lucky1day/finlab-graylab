@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -11,25 +10,14 @@ import numpy as np
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ORIGINAL_DATA_SERVICE = PROJECT_ROOT / "schemes" / "_original_source" / "data_service.py"
 CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
 ARTIFACT_ROOT = PROJECT_ROOT / "backtest_artifacts" / "model_muti_0529"
+UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from shared.data_service import build_daily_output_from_db as build_shared_daily_output_from_db
 from shared.data_service import create_sqlalchemy_engine
-
-
-def _load_original_data_service():
-    """动态加载原始 data_service.py，保持原文件只读不改。"""
-    spec = importlib.util.spec_from_file_location("bfl_original_daily_data_service", ORIGINAL_DATA_SERVICE)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load original data_service: {ORIGINAL_DATA_SERVICE}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
 def _read_daily(path: Path) -> pd.DataFrame:
@@ -137,7 +125,7 @@ def _compare(left: pd.DataFrame, right: pd.DataFrame, left_name: str, right_name
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="只读审计原始日频 data_service 生成链路")
+    parser = argparse.ArgumentParser(description="只读审计框架日频 data_service 生成链路")
     parser.add_argument("--start-date")
     parser.add_argument("--end-date")
     parser.add_argument("--output-dir", type=Path, default=ARTIFACT_ROOT)
@@ -149,17 +137,13 @@ def main() -> None:
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    original_service = _load_original_data_service()
     engine = create_sqlalchemy_engine()
     try:
-        original_full = _normalize_daily(
-            original_service.build_daily_output_from_db(start_date=start_date, end_date=end_date, engine=engine)
-        )
-        shared_upstream_full = _normalize_daily(
+        shared_input_full = _normalize_daily(
             build_shared_daily_output_from_db(
                 start_date=start_date,
                 end_date=end_date,
-                target_columns=tuple(original_service.DAILY_TARGETS),
+                target_columns=UPSTREAM_DAILY_TARGETS,
                 engine=engine,
             )
         )
@@ -169,47 +153,37 @@ def main() -> None:
     finally:
         engine.dispose()
 
-    original_aligned = _align_like(canonical, original_full)
-    shared_upstream_aligned = _align_like(canonical, shared_upstream_full)
+    shared_input_aligned = _align_like(canonical, shared_input_full)
     shared_default_aligned = _align_like(canonical, shared_default_full)
 
-    original_path = output_dir / "original_data_service_generated_daily_output.csv"
-    original_aligned_path = output_dir / "original_data_service_generated_daily_output_aligned.csv"
-    shared_upstream_path = output_dir / "shared_upstream_generated_daily_output_aligned.csv"
+    shared_input_path = output_dir / "shared_daily_data_service_generated_daily_output.csv"
+    shared_input_aligned_path = output_dir / "shared_daily_data_service_generated_daily_output_aligned.csv"
     shared_default_path = output_dir / "shared_default_generated_daily_output_aligned.csv"
-    summary_path = output_dir / "original_daily_data_service_audit_summary.json"
+    summary_path = output_dir / "daily_data_service_audit_summary.json"
 
-    original_full.to_csv(original_path, index=False)
-    original_aligned.to_csv(original_aligned_path, index=False)
-    shared_upstream_aligned.to_csv(shared_upstream_path, index=False)
+    shared_input_full.to_csv(shared_input_path, index=False)
+    shared_input_aligned.to_csv(shared_input_aligned_path, index=False)
     shared_default_aligned.to_csv(shared_default_path, index=False)
 
     summary = {
         "source": {
-            "original_data_service": str(ORIGINAL_DATA_SERVICE),
+            "daily_data_service": "shared/data_service.py",
             "canonical_daily": str(CANONICAL_DAILY),
             "start_date": start_date,
             "end_date": end_date,
-            "original_daily_targets": list(original_service.DAILY_TARGETS),
+            "upstream_daily_targets": list(UPSTREAM_DAILY_TARGETS),
         },
         "outputs": {
-            "original_full": str(original_path),
-            "original_aligned": str(original_aligned_path),
-            "shared_upstream_aligned": str(shared_upstream_path),
+            "shared_input_full": str(shared_input_path),
+            "shared_input_aligned": str(shared_input_aligned_path),
             "shared_default_aligned": str(shared_default_path),
         },
         "comparisons": {
-            "canonical_vs_original_aligned": _compare(canonical, original_aligned, "canonical", "original_db"),
-            "original_aligned_vs_shared_upstream": _compare(
-                original_aligned,
-                shared_upstream_aligned,
-                "original_db",
-                "shared_upstream",
-            ),
-            "original_aligned_vs_shared_default": _compare(
-                original_aligned,
+            "canonical_vs_shared_input_aligned": _compare(canonical, shared_input_aligned, "canonical", "shared_input"),
+            "shared_input_aligned_vs_shared_default": _compare(
+                shared_input_aligned,
                 shared_default_aligned,
-                "original_db",
+                "shared_input",
                 "shared_default",
             ),
         },

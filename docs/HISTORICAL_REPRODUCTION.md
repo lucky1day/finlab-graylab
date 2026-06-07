@@ -2,16 +2,15 @@
 
 **日期**: 2026-06-07  
 **benchmark**: `model_muti_0529`  
-**结论**: t1 / t5 原始脚本 baseline、framework-csv、framework-db 三组历史回测，以及 weekly 10Y D-overlay 的 DB 对齐回测，已在当前测试 Mac 复现并写入独立 backtest 表；不写入实盘预测表。
+**结论**: t1 / t5 canonical-csv baseline、framework-csv、framework-db 三组历史回测，以及 weekly 10Y D-overlay 的 DB 对齐回测，已在当前测试 Mac 复现并写入独立 backtest 表；不写入实盘预测表。
 
 **当前验证口径**: 暂不纳入 `target_date` 落在 `2026-05-25` 至 `2026-05-29` 的 5 月最后目标周样本。算法仍先完整生成原始结果，再只在验证、统计和落库环节过滤这些样本。
 
 ## 基准材料
 
 - canonical 输入: `benchmarks/model_muti_0529/daily_output.csv`
-- canonical CSV 实际指向: `schemes/_original_source/t5/data/daily_output.csv`
-- 原始 `model-mutitest-0529/t1/daily_output.csv` 与 `model-mutitest-0529/t5/data/daily_output.csv` 已字节级一致。
-- 当前测试 Mac 上解压的 `model-mutitest-0529/` 含本地 DB 密码配置，已被 `.gitignore` 忽略，不进入业务运行路径。
+- canonical CSV 是真实 Git 文件，不再指向 `_original_source` symlink。
+- 旧本机原始解压包和 `_original_source` 已移出运行路径；历史可通过 Git baseline/tag 追溯。
 
 ## 数据一致性
 
@@ -19,15 +18,15 @@
 
 1. 从当前测试 Mac 的 `bond_db` 读取原始长表。
 2. 通过公共输入文件层 `shared.input_artifacts` 生成输入 CSV。
-3. 日频公共层内部动态加载原始 `schemes/_original_source/data_service.py`，原文件只读不改。
+3. 日频公共层内部调用 `shared.data_service`，周频公共层内部调用 `weekly_data_service`。
 4. 算法只读取这张生成后的 CSV。
 
 框架入口:
 
 - live adapter: `schemes/t1_daily/predict.py`、`schemes/t5_daily/predict.py`、`schemes/weekly_10y_d_overlay/predict.py`
 - 公共输入文件层: `shared/input_artifacts.py`
-- 原始日频文件桥接: `shared/original_daily_data_service.py`
-- 只读审计脚本: `scripts/audit_original_daily_data_service.py`
+- 日频 data service: `shared/data_service.py`
+- 只读审计脚本: `scripts/audit_daily_data_service.py`
 
 上游 `data_service.py` 的交易日锚定列为 `TB1YWI0C/TB5YWI0C/TB0YWI0C`；当前框架默认锚定列为 `TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C/TB0YWI0C`。在本次日期范围内，两种生成口径的对齐版完全一致: 行数、列顺序、缺失值和数值误差均一致，`overall_max_abs_diff = 0`。
 
@@ -43,9 +42,9 @@
 | 因子数值列 | 未过默认 `1e-8` 阈值，已记录差异样本和缺失差异 |
 | 暂排除目标周后 | 排除 `2026-05-25` 至 `2026-05-29` 的 4 个 daily_output 日期后，最大数值误差从 `140.0` 降至约 `5e-7` |
 
-2026-06-07 重新审计: 用原始 `schemes/_original_source/data_service.py` 生成的 DB daily_output，与 `shared.data_service` 的上游兼容版逐列对齐后完全一致，`overall_max_abs_diff=0.0`、`missing_diff_count=0`。因此此前差异不是 `shared.data_service` 计算逻辑导致。
+2026-06-07 重新审计: 原始 data_service 生成版与 `shared.data_service` 的上游兼容版逐列对齐后完全一致，`overall_max_abs_diff=0.0`、`missing_diff_count=0`。当前运行路径已切到 `shared.data_service`，因此此前差异不是生成链路迁移导致。
 
-说明: 数据对齐检查状态为 `failed`，原因不是 Y 生成所依赖的收益率列，也不是当前框架生成口径偏离上游生成口径，而是“当前 DB 重新生成的上游 CSV”和“上游历史保存的原始 CSV”之间存在因子列的缺失差异与小数精度差异。首个超阈值样本为 `SWR00001` 在 `2023-03-20`，历史 CSV `42.252313`，当前 DB 重新生成 `42.25231257158`。全量最大差异为 `S5470301` 在 `2026-05-28`: 历史 CSV `6140.0`，当前 DB 经原始 data_service 生成 `6280.0`；15 个缺失差异集中在 `2026-05-26`，历史 CSV 为 `0.0` 而当前 DB 生成为空。
+说明: 数据对齐检查状态为 `failed`，原因不是 Y 生成所依赖的收益率列，也不是当前框架生成口径偏离上游生成口径，而是“当前 DB 重新生成的上游兼容 CSV”和“历史保存的 canonical CSV”之间存在因子列的缺失差异与小数精度差异。首个超阈值样本为 `SWR00001` 在 `2023-03-20`，历史 CSV `42.252313`，当前 DB 重新生成 `42.25231257158`。全量最大差异为 `S5470301` 在 `2026-05-28`: 历史 CSV `6140.0`，当前 DB 经 `shared.data_service` 生成 `6280.0`；15 个缺失差异集中在 `2026-05-26`，历史 CSV 为 `0.0` 而当前 DB 生成为空。
 
 ## 独立数据差异报告
 
@@ -55,15 +54,15 @@
 - 缺失差异按因子汇总: `backtest_artifacts/model_muti_0529/missing_diff_by_factor.csv`
 - 缺失差异按月份汇总: `backtest_artifacts/model_muti_0529/missing_diff_by_month.csv`
 - 数值差异按因子汇总: `backtest_artifacts/model_muti_0529/numeric_diff_by_factor.csv`
-- 原始 data_service 审计摘要: `backtest_artifacts/model_muti_0529/original_daily_data_service_audit_summary.json`
-- 原始 data_service DB 生成输出: `backtest_artifacts/model_muti_0529/original_data_service_generated_daily_output.csv`
-- 原始 data_service DB 对齐输出: `backtest_artifacts/model_muti_0529/original_data_service_generated_daily_output_aligned.csv`
+- 日频 data service 审计摘要: `backtest_artifacts/model_muti_0529/daily_data_service_audit_summary.json`
+- 日频 data service DB 生成输出: `backtest_artifacts/model_muti_0529/shared_daily_data_service_generated_daily_output.csv`
+- 日频 data service DB 对齐输出: `backtest_artifacts/model_muti_0529/shared_daily_data_service_generated_daily_output_aligned.csv`
 
 生成命令:
 
 ```bash
 conda run -n forecast_env python scripts/generate_data_diff_report.py
-conda run -n forecast_env python scripts/audit_original_daily_data_service.py
+conda run -n forecast_env python scripts/audit_daily_data_service.py
 ```
 
 报告包含以下可视化:
@@ -195,7 +194,7 @@ conda run -n forecast_env python scripts/verify_reproduction.py
 最终验证脚本输出:
 
 ```text
-ok check_original_csvs
+ok check_canonical_csv
 ok check_data_alignment
 ok check_t5_reproduction
 ok check_t1_reproduction

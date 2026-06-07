@@ -18,7 +18,7 @@ API_BASE = "http://127.0.0.1:8100"
 
 def main() -> None:
     checks = [
-        check_original_csvs,
+        check_canonical_csv,
         check_data_alignment,
         check_t5_reproduction,
         check_t1_reproduction,
@@ -30,22 +30,10 @@ def main() -> None:
         print(f"ok {check.__name__}")
 
 
-def check_original_csvs() -> None:
-    candidates = [
-        (
-            PROJECT_ROOT / "model-mutitest-0529" / "t1" / "daily_output.csv",
-            PROJECT_ROOT / "model-mutitest-0529" / "t5" / "data" / "daily_output.csv",
-        ),
-        (
-            PROJECT_ROOT / "schemes" / "_original_source" / "t1" / "daily_output.csv",
-            PROJECT_ROOT / "schemes" / "_original_source" / "t5" / "data" / "daily_output.csv",
-        ),
-    ]
-    for left, right in candidates:
-        if left.exists() and right.exists():
-            assert left.read_bytes() == right.read_bytes(), f"original CSVs differ: {left} vs {right}"
-            return
-    raise AssertionError("no original t1/t5 CSV pair found for byte comparison on this test machine")
+def check_canonical_csv() -> None:
+    canonical = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
+    assert canonical.exists(), f"canonical daily output missing: {canonical}"
+    assert not canonical.is_symlink(), f"canonical daily output must be a real tracked file: {canonical}"
 
 
 def check_data_alignment() -> None:
@@ -75,9 +63,11 @@ def check_data_alignment() -> None:
     report = json.loads(row["report"])
     assert report["date_match"] is True
     assert report["columns"]["column_order_match"] is True
-    assert report["generation"]["primary"] in {"upstream_data_service", "original_data_service_file"}
-    if report["generation"]["primary"] == "original_data_service_file":
-        assert report["generation"]["original_data_service_path"].endswith("schemes/_original_source/data_service.py")
+    assert report["generation"]["primary"] in {
+        "upstream_data_service",
+        "original_data_service_file",
+        "shared_daily_data_service",
+    }
     assert report["generation"]["upstream_daily_targets"] == ["TB1YWI0C", "TB5YWI0C", "TB0YWI0C"]
     assert report["framework_db_comparison"]["date_match"] is True
     assert report["framework_db_comparison"]["column_order_match"] is True
@@ -139,9 +129,10 @@ def check_api_endpoints() -> None:
     factor_lab = _json("/api/backtests/factor-lab")
     assert factor_lab["data_source"] == "framework_db_aligned"
     assert factor_lab["target_labels"]["3Y"] == "3Y国债活跃"
-    assert len(factor_lab["schemes"]) == 6
+    assert len(factor_lab["schemes"]) >= 7
     by_id = {item["id"]: item for item in factor_lab["schemes"]}
     assert "t1_daily:1Y:framework_db_aligned" not in by_id
+    assert by_id["weekly_10y_d_overlay:10Y:framework_db_aligned"]["summary"]["overall"] == 68.9
     assert by_id["t5_daily:3Y:framework_db_aligned"]["summary"]["overall"] == 69.5
     assert by_id["t5_daily:3Y:framework_db_aligned"]["summary"]["up_precision"] == 61.4
     assert by_id["t5_daily:3Y:framework_db_aligned"]["summary"]["down_recall"] == 68.5

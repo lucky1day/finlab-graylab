@@ -115,7 +115,7 @@ Scheduler触发actuals更新任务
 手动执行 backtests.reproduction
   → 读取 benchmarks/model_muti_0529/daily_output.csv
   → 通过 shared.input_artifacts 生成 DB 版 daily_output CSV 并读回
-  → 日频内部动态加载原始 data_service.py，原文件只读不改
+  → 日频内部调用 shared.data_service 生成 daily_output CSV
   → 按 canonical CSV 对齐列和日期
   → 运行原始 t5 run_all.py / 原始 t1 run_backtest(dry_run=True) 生成 baseline
   → 运行框架内 t1_daily / t5_daily 批量回测逻辑

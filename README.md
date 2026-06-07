@@ -6,7 +6,7 @@
 
 ## 项目状态
 
-当前阶段：**新模拟生产机器已完成服务环境、正式平台表、actuals、周度 actuals、历史回测、周度 10Y 回测接入和 launchd 常驻验证**。基础设施、t1/t5/weekly adapter、调度器、FastAPI 后端、前端 API 对接和 launchd 部署均已落地；`t1_daily` / `t5_daily` / `weekly_10y_d_overlay` 均为 `active`。2026-06-05 09:25 常驻 scheduler 已写入 t1/t5 正式预测记录；2026-06-06 已完成周度 10Y 受控 live 写库验收、单方案 scheduler 手动补跑，并注册周六 `11:30`（`30 11 * * 6`）自动调度。2026-06-07 已新增公共输入文件层 `shared.input_artifacts`: t1/t5/weekly live adapter 和历史复现 upstream 分支均先通过公共层生成输入 CSV，再读回给算法；日频内部仍动态加载原始 `schemes/_original_source/data_service.py`，原始 `data_service.py` 保持只读不改；周频内部已切换为 `/Users/macstudio0/Desktop/wind_export(1).py` 口径的公共导出层。10Y 周度实际方向已写入独立 `t_scheme_weekly_actuals` 表 794 条；历史回测结果已写入独立 `t_backtest_*` 表，前端已展示当前 DB 版本的 `10Y国债活跃 · 周度` 回测格子: run_id=`13`，`68.9% (31/45)`。详见 [当前状态](docs/CURRENT_STATUS.md)。算法预测使用 conda `forecast_env`，后端/API/调度器使用独立 conda `bond_factor_lab_service`。
+当前阶段：**新模拟生产机器已完成服务环境、正式平台表、actuals、周度 actuals、历史回测、周度 10Y 回测接入、launchd 常驻验证和 Git baseline 管理**。基础设施、t1/t5/weekly adapter、调度器、FastAPI 后端、前端 API 对接和 launchd 部署均已落地；`t1_daily` / `t5_daily` / `weekly_10y_d_overlay` 均为 `active`。2026-06-05 09:25 常驻 scheduler 已写入 t1/t5 正式预测记录；2026-06-06 已完成周度 10Y 受控 live 写库验收、单方案 scheduler 手动补跑，并注册周六 `11:30`（`30 11 * * 6`）自动调度。2026-06-07 已新增公共输入文件层 `shared.input_artifacts`: t1/t5/weekly live adapter 和历史复现 upstream 分支均先通过公共层调用对应 data service 生成输入 CSV，再读回给算法；日频使用 `shared.data_service` 生成 `daily_output`，周频使用 `weekly_data_service` 的 `wind_export(1)` 口径生成 `weekly_output`。旧 `_original_source` 运行依赖已移除，历史 benchmark CSV 已固化到 `benchmarks/model_muti_0529/`。10Y 周度实际方向已写入独立 `t_scheme_weekly_actuals` 表 794 条；历史回测结果已写入独立 `t_backtest_*` 表，前端已展示当前 DB 版本的 `10Y国债活跃 · 周度` 回测格子: run_id=`13`，`68.9% (31/45)`。详见 [当前状态](docs/CURRENT_STATUS.md)。算法预测使用 conda `forecast_env`，后端/API/调度器使用独立 conda `bond_factor_lab_service`。
 
 ## 文档
 
@@ -47,10 +47,7 @@ bond-factor-lab/
 └── schemes/
     ├── t1_daily/                # T+1方案adapter与原始core副本
     ├── t5_daily/                # T+5方案adapter与原始core副本
-    ├── weekly_10y_d_overlay/    # 周度10Y D-overlay adapter与原始core副本
-    └── _original_source/        # 原始方案代码（从model-mutitest-0529复制）
-        ├── t1/                  # T+1方案原始代码
-        └── t5/                  # T+5方案原始代码
+    └── weekly_10y_d_overlay/    # 周度10Y D-overlay adapter与冻结模型core
 ```
 
 ## 快速开始
@@ -62,7 +59,7 @@ curl -sS http://127.0.0.1:8100/api/health
 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id t1_daily --predict-date 2026-06-03
 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id t5_daily --predict-date 2026-06-03
 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id weekly_10y_d_overlay --predict-date 2026-05-23
-conda run -n forecast_env python scripts/audit_original_daily_data_service.py
+conda run -n forecast_env python scripts/audit_daily_data_service.py
 conda run -n forecast_env python scripts/verify_reproduction.py
 ```
 

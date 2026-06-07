@@ -137,7 +137,7 @@ actuals = SELECT * FROM t_scheme_actuals WHERE ...
 
 ### 方案1: t1_daily (0529原始T1-LGBM滚动基准)
 
-- **来源**: `model-mutitest-0529/t1/`
+- **来源**: 0529 t1 算法，已框架化到 `schemes/t1_daily/`
 - **展示名**: `0529原始T1-LGBM滚动基准`
 - **期限**: 5Y, 10Y
 - **预测跨度**: T+1（预测明天的方向）
@@ -148,7 +148,7 @@ actuals = SELECT * FROM t_scheme_actuals WHERE ...
 
 ### 方案2: t5_daily (0529原始T5-LGBM投票基准)
 
-- **来源**: `model-mutitest-0529/t5/`
+- **来源**: 0529 t5 算法，已框架化到 `schemes/t5_daily/`
 - **展示名**: `0529原始T5-LGBM投票基准`
 - **期限**: 3Y, 5Y, 7Y, 10Y
 - **预测跨度**: T+5（预测5个交易日后的方向）

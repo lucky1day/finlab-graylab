@@ -2,7 +2,7 @@
 
 **更新日期**: 2026-06-07
 
-**结论**: 新模拟生产机器已完成服务环境、正式平台表、目标注册表、历史回测表、actuals 刷新、历史回测复现、launchd 常驻服务验证，以及周度 10Y D-overlay 方案回测接入。2026-06-05 09:25 常驻 scheduler 已成功写入 `t1_daily` / `t5_daily` 当日正式预测记录；2026-06-06 已完成 `weekly_10y_d_overlay` 受控 live 写库验收，并在 15:24 通过单方案 scheduler 手动补跑成功。2026-06-06 15:05 已将周度方案切换为 `active` 并重启 scheduler，日志确认注册 `Scheduled scheme weekly_10y_d_overlay at 30 11 * * 6`；第一次自动 cron 运行待下一次周六 11:30 观察。2026-06-07 已补齐公共输入文件层护栏: t1/t5/weekly live adapter 和历史复现 upstream 分支均通过 `shared.input_artifacts` 先生成输入 CSV，再读回给算法；日频内部仍使用原始 `schemes/_original_source/data_service.py`，原始文件保持只读不改；周频内部已切换为 `/Users/macstudio0/Desktop/wind_export(1).py` 口径的公共导出层。
+**结论**: 新模拟生产机器已完成服务环境、正式平台表、目标注册表、历史回测表、actuals 刷新、历史回测复现、launchd 常驻服务验证，以及周度 10Y D-overlay 方案回测接入。2026-06-05 09:25 常驻 scheduler 已成功写入 `t1_daily` / `t5_daily` 当日正式预测记录；2026-06-06 已完成 `weekly_10y_d_overlay` 受控 live 写库验收，并在 15:24 通过单方案 scheduler 手动补跑成功。2026-06-06 15:05 已将周度方案切换为 `active` 并重启 scheduler，日志确认注册 `Scheduled scheme weekly_10y_d_overlay at 30 11 * * 6`；第一次自动 cron 运行待下一次周六 11:30 观察。2026-06-07 已补齐公共输入文件层护栏并完成 Git baseline/cleanup 分支管理: t1/t5/weekly live adapter 和历史复现 upstream 分支均通过 `shared.input_artifacts` 调用对应 data service 先生成输入 CSV，再读回给算法；日频使用 `shared.data_service`，周频使用 `weekly_data_service` 的 `wind_export(1)` 口径。旧 `_original_source` 运行依赖已移除，历史 benchmark CSV 已固化为 `benchmarks/model_muti_0529/daily_output.csv` 的真实文件。
 
 **最新前端/回测口径核验**: 2026-06-07 已重新核验 `GET /api/backtests/factor-lab`，`10Y国债活跃 · 周度` 使用当前 DB 版本最新成功回测 run_id=`13`，显示 `68.9% (31/45)`。回测输入由公共周频导出层生成，宽表为 `840 x 575`，周范围 `201001` 到 `202621`；重点月样本数为 `2025-07=4`、`2025-10=5`、`2026-01=6`。
 
@@ -26,7 +26,7 @@
   - 后端/API/调度器: conda `bond_factor_lab_service`
 - `t1_daily` 已完成 adapter，当前 active，预测目标为 `5Y/10Y`。
 - `t5_daily` 已完成 adapter，当前 active，预测目标为 `3Y/5Y/7Y/10Y`。
-- 公共输入文件层已落地: `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频通过原始 `schemes/_original_source/data_service.py` 生成 `daily_output_*.csv`，周频通过 `weekly_data_service` 内的 `wind_export(1)` 口径生成 `weekly_output_*.csv`，运行期文件统一位于 `backtest_artifacts/input_artifacts/{scheme_id}/`。每条 live `PredictionRecord.extra` 会记录 `input_artifact_path` 和 `input_artifact_source`。
+- 公共输入文件层已落地: `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频通过 `shared.data_service` 生成 `daily_output_*.csv`，周频通过 `weekly_data_service` 内的 `wind_export(1)` 口径生成 `weekly_output_*.csv`，运行期文件统一位于 `backtest_artifacts/input_artifacts/{scheme_id}/`。每条 live `PredictionRecord.extra` 会记录 `input_artifact_path` 和 `input_artifact_source`。
 - `weekly_10y_d_overlay` 已完成 adapter、DB 周频输入生成、历史回测落库、前端周度格子展示和 2026-06-06 受控 live 写库验收；当前已切换为 `active`，目标为 `10Y`。
 - `weekly_10y_d_overlay` 的 live 调度 cron 为周六 `11:30`（`30 11 * * 6`），对齐旧实盘 weekly cron 的首轮预测时间；旧脚本 16:00 / 22:00 为检查和必要补跑节点。2026-06-06 15:05 重启 scheduler 后已确认该 job 注册成功。
 - 周度 scheduler job 已显式使用 `force=True` 绕过通用“非交易日跳过”保护；日度方案仍保留交易日判断。
@@ -140,7 +140,7 @@ Weekly 10Y 当前最新回测 run_id=`13`: 45 个样本，正确 31 个，整体
 
 最新数据一致性检查 `canonical_csv_vs_upstream_db_generated` 状态为 `failed`。这不是目标收益率列失败: `TB0YWI0C/TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C` 最大误差均为 0；失败原因是历史 CSV 与当前 DB 重新生成 CSV 在少数因子列上存在缺失或精度差异，`overall_max_abs_diff=140.0`，`missing_diff_count=15`。
 
-2026-06-07 复核: `scripts/audit_original_daily_data_service.py` 使用原始 `schemes/_original_source/data_service.py` 生成 DB daily_output，并与 `shared.data_service` 上游兼容版比较，结果完全一致: 日期、列顺序、缺失值和数值误差均一致，`overall_max_abs_diff=0.0`、`missing_diff_count=0`。因此当前 daily_output 差异归因为“历史 CSV vs 当前 DB 数据版本差异”，不是生成链路差异。最大差异为 `2026-05-28 / S5470301`: 历史 CSV `6140.0`，当前 DB 经原始 data_service 生成 `6280.0`；另有 15 个 `2026-05-26` 商品/现货相关因子在历史 CSV 为 `0.0`、当前 DB 为空。
+2026-06-07 复核: `scripts/audit_daily_data_service.py` 使用 `shared.data_service` 生成 DB daily_output，并通过 `shared.input_artifacts` 固化为算法输入 CSV 再读回。此前已确认原始 data_service 生成版与 shared 上游兼容版完全一致，当前运行路径不再依赖 `_original_source`。因此 current DB daily_output 差异归因为“历史 CSV vs 当前 DB 数据版本差异”，不是生成链路差异。最大差异为 `2026-05-28 / S5470301`: 历史 CSV `6140.0`，当前 DB 生成 `6280.0`；另有 15 个 `2026-05-26` 商品/现货相关因子在历史 CSV 为 `0.0`、当前 DB 为空。
 
 ## API 与安全边界
 

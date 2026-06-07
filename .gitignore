@@ -2,13 +2,8 @@
 .env.*
 !.env.example
 
-# Original copied files currently contain local DB credentials.
-# Track env-var migrated versions later, not the raw copied credentials.
-schemes/_original_source/db_config.py
-schemes/_original_source/data_service.py
-schemes/_original_source/t1/daily_project/src/daily/check_db_result.py
-schemes/_original_source/t1/daily_project/src/daily/write_db.py
-schemes/_original_source/t1/daily_output.csv
+# Raw copied source bundles may contain local DB credentials.
+schemes/_original_source/
 
 # Raw upstream bundle provided on the test Mac. Safe/canonical benchmark entry
 # points are kept under benchmarks/ instead of tracking this credential-bearing

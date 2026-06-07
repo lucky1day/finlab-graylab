@@ -14,26 +14,15 @@
 
 ## 1. 当前代码位置
 
-原始代码已复制到:
+原始代码曾复制到 `_original_source` 作为过渡区；当前已完成框架化迁移，运行代码位于:
 ```
-bond-factor-lab/schemes/_original_source/
-├── data_service.py      # 共享数据服务（→ 提升到 shared/）
-├── db_config.py         # 数据库配置（→ 环境变量化后放 shared/）
-├── t1/daily_project/src/daily/
-│   ├── run_daily.py     # 入口
-│   ├── config.py        # tenor配置
-│   ├── lgbm_predictor.py # 核心预测（不动）
-│   ├── feature_engineering.py # 特征工程（不动）
-│   ├── write_db.py      # DB写入（替换为统一写入）
-│   ├── model_store.py   # 模型存储（不动）
-│   └── shap_analysis.py # SHAP分析（不动）
-└── t5/
-    ├── common_utils.py  # 共享工具（不动）
-    ├── predict_3y.py    # 3Y预测（不动核心，改I/O）
-    ├── predict_5y.py    # 5Y预测（同上）
-    ├── predict_7y.py    # 7Y预测（同上）
-    ├── predict_10y.py   # 10Y预测（同上）
-    └── run_all.py       # 批量运行（替换为adapter）
+bond-factor-lab/
+├── shared/data_service.py
+├── shared/input_artifacts.py
+├── schemes/t1_daily/
+├── schemes/t5_daily/
+├── schemes/weekly_10y_d_overlay/
+└── benchmarks/model_muti_0529/daily_output.csv
 ```
 
 ---
@@ -45,7 +34,7 @@ bond-factor-lab/
 ├── shared/
 │   ├── __init__.py
 │   ├── db_config.py          # 环境变量化的DB配置
-│   ├── data_service.py       # 从_original_source提升，改用shared.db_config
+│   ├── data_service.py       # 日频 data service，改用 shared.db_config
 │   └── models.py             # PredictionRecord 数据类
 ├── schemes/
 │   ├── t1_daily/
@@ -68,7 +57,7 @@ bond-factor-lab/
 │           ├── predict_5y.py      # 不动
 │           ├── predict_7y.py      # 不动
 │           └── predict_10y.py     # 不动
-└── schemes/_original_source/  # 原始代码备份（后续可删）
+└── benchmarks/model_muti_0529/ # 历史复现 canonical CSV
 ```
 
 ---
@@ -96,7 +85,7 @@ class DatabaseConfig:
 
 历史设计: `shared/data_service.py` 从原始 data_service 复制并改为环境变量化 DB 配置。
 
-当前修正（2026-06-07）: live adapter 和历史复现 upstream 分支不再直接以 `shared.data_service.build_daily_output_from_db()` 或各方案私有数据服务作为算法输入边界，而是统一通过 `shared.input_artifacts` 生成输入 CSV，再从 CSV 读回给算法。日频公共层内部动态加载原始 `schemes/_original_source/data_service.py`；周频公共层内部调用 `weekly_data_service`。原始文件只读不改；`shared.data_service` 保留为框架内通用数据服务和对照口径。
+当前修正（2026-06-07）: live adapter 和历史复现 upstream 分支不直接拼接 DB 输入，也不自行决定输入文件路径，而是统一通过 `shared.input_artifacts` 调用对应 data service 生成输入 CSV，再从 CSV 读回给算法。日频公共层内部调用 `shared.data_service`；周频公共层内部调用 `weekly_data_service` 的 `wind_export(1)` 口径。旧 `_original_source` 运行依赖已移除。
 
 ### 3.3 shared/models.py（新建）
 
@@ -309,8 +298,8 @@ def predict_latest_for_module(module, df: pd.DataFrame, predict_date: str) -> La
 |----------|------|----------|
 | 新建 | `shared/db_config.py` | 环境变量化DB配置 |
 | 新建 | `shared/input_artifacts.py` | 所有预测方案统一输入文件生成入口 |
-| 新建 | `shared/original_daily_data_service.py` | 日频公共层内部使用的原始 daily_output 文件生成桥接 |
-| 微调 | `shared/data_service.py` | 环境变量化 DB 配置，保留为通用数据服务 |
+| 删除 | `shared/original_daily_data_service.py` | 旧 `_original_source` 动态桥接已移除 |
+| 微调 | `shared/data_service.py` | 环境变量化 DB 配置，作为日频 data service |
 | 新建 | `shared/models.py` | PredictionRecord数据类 |
 | 新建 | `schemes/t1_daily/predict.py` | adapter（~40行） |
 | 新建 | `schemes/t1_daily/config.yaml` | 方案元数据 |

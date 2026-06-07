@@ -71,7 +71,7 @@
 ## Phase 8: 历史回测复现
 
 - [x] 建立 `benchmarks/model_muti_0529` canonical 基准入口
-- [x] 忽略含本地 DB 密码的原始解压目录 `model-mutitest-0529/`
+- [x] 忽略并清理含本地 DB 密码的原始解压目录 `model-mutitest-0529/`；运行路径不再依赖 `_original_source`
 - [x] 新增并执行 backtest 表 migration:
   - [x] `t_backtest_runs`
   - [x] `t_backtest_predictions`

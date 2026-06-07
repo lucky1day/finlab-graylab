@@ -1,6 +1,6 @@
 scheme_id: t5_daily
 name: "0529原始T5-LGBM投票基准"
-description: "model-mutitest-0529/t5 原始 T+5 日频 LightGBM + tenor 独立投票基准方案；adapter 只改输入输出，不改核心算法。"
+description: "0529 T+5 日频 LightGBM + tenor 独立投票基准方案；adapter 只改输入输出，不改核心算法。"
 horizon: 5
 tenors: ["3Y", "5Y", "7Y", "10Y"]
 frequency: daily

@@ -9,7 +9,7 @@
 
 ## 1. 仓库与目录状态
 
-- 当前目录未携带 `.git` 元数据，`git status --short` 返回“not a git repository”。如后续需要版本管理，应先确认是否要重新初始化 Git 或从远端仓库重新拉取。
+- 当前目录已本地初始化 Git；baseline commit 已打 tag `baseline/new-machine-2026-06-07`，规整工作在 `cleanup/scheme-framework-20260607` 分支推进。
 - 当前目录已包含业务运行所需代码和文档:
   - `shared/`: 环境变量化数据库配置、数据服务、统一模型。
   - `migrations/`: 正式平台表、backtest 表和 target registry 迁移脚本。

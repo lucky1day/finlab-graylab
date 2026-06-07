@@ -4,7 +4,7 @@
 
 常见生成入口:
 
-- `scripts/audit_original_daily_data_service.py`
+- `scripts/audit_daily_data_service.py`
 - `scripts/compare_wind_export_weekly.py`
 - `scripts/generate_data_diff_report.py`
 

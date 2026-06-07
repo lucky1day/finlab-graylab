@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import tempfile
 import unittest
 from types import SimpleNamespace
 from pathlib import Path
@@ -9,57 +8,15 @@ from unittest.mock import patch
 import pandas as pd
 
 
-class OriginalDailyDataServiceTests(unittest.TestCase):
-    def test_build_original_daily_output_writes_and_reads_csv_boundary(self) -> None:
-        from shared.original_daily_data_service import build_original_daily_output_from_db
+class DailyInputDataServiceTests(unittest.TestCase):
+    def test_daily_input_target_columns_match_upstream_daily_output_anchor(self) -> None:
+        from shared.input_artifacts import DAILY_INPUT_TARGET_COLUMNS
 
-        class FakeOriginalService:
-            DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
-
-            def __init__(self) -> None:
-                self.calls: list[tuple[str, object]] = []
-
-            def build_daily_output_from_db(self, *, start_date: str, end_date: str, engine: object) -> pd.DataFrame:
-                self.calls.append(("build", (start_date, end_date, engine)))
-                return pd.DataFrame(
-                    {
-                        "date": pd.to_datetime(["2026-01-02"]),
-                        "TB0YWI0C": [2.2345],
-                    }
-                )
-
-            def save_daily_output(self, df: pd.DataFrame, path: str | Path) -> Path:
-                self.calls.append(("save", Path(path)))
-                output_path = Path(path)
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                df.to_csv(output_path, index=False)
-                return output_path
-
-        service = FakeOriginalService()
-        engine = object()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "daily_output.csv"
-            with patch("shared.original_daily_data_service._load_original_data_service", return_value=service):
-                result = build_original_daily_output_from_db(
-                    start_date="2026-01-01",
-                    end_date="2026-01-03",
-                    engine=engine,
-                    output_path=output_path,
-                )
-
-        self.assertEqual(service.calls[0], ("build", ("2026-01-01", "2026-01-03", engine)))
-        self.assertEqual(service.calls[1], ("save", output_path))
-        self.assertEqual(result["date"].dt.strftime("%Y-%m-%d").tolist(), ["2026-01-02"])
-        self.assertEqual(result["TB0YWI0C"].tolist(), [2.2345])
-
-    def test_original_daily_targets_are_upstream_targets(self) -> None:
-        from shared.original_daily_data_service import load_original_daily_targets
-
-        self.assertEqual(load_original_daily_targets(), ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C"))
+        self.assertEqual(DAILY_INPUT_TARGET_COLUMNS, ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C"))
 
 
 class DailyPredictAdapterDataServiceTests(unittest.TestCase):
-    def test_t1_daily_predict_uses_original_daily_output_bridge(self) -> None:
+    def test_t1_daily_predict_uses_common_daily_input_artifact(self) -> None:
         from schemes.t1_daily import predict
 
         daily_df = pd.DataFrame({"date": pd.to_datetime(["2026-06-04"]), "TB0YWI0C": [2.0]})
@@ -93,7 +50,7 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
         self.assertEqual(kwargs["scheme_id"], "t1_daily")
         self.assertEqual(kwargs["predict_date"], "2026-06-05")
 
-    def test_t5_daily_predict_uses_original_daily_output_bridge(self) -> None:
+    def test_t5_daily_predict_uses_common_daily_input_artifact(self) -> None:
         from schemes.t5_daily import predict
 
         daily_df = pd.DataFrame({"date": pd.to_datetime(["2026-06-04"]), "TB0YWI0C": [2.0]})
@@ -125,7 +82,7 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
 
 
 class ReproductionDailyDataServiceTests(unittest.TestCase):
-    def test_db_aligned_daily_uses_original_data_service_when_upstream_mode(self) -> None:
+    def test_db_aligned_daily_uses_common_input_artifact_when_upstream_mode(self) -> None:
         from backtests import reproduction
 
         canonical = pd.DataFrame(
