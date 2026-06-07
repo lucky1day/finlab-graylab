@@ -1,0 +1,41 @@
+.env
+.env.*
+!.env.example
+
+# Original copied files currently contain local DB credentials.
+# Track env-var migrated versions later, not the raw copied credentials.
+schemes/_original_source/db_config.py
+schemes/_original_source/data_service.py
+schemes/_original_source/t1/daily_project/src/daily/check_db_result.py
+schemes/_original_source/t1/daily_project/src/daily/write_db.py
+schemes/_original_source/t1/daily_output.csv
+
+# Raw upstream bundle provided on the test Mac. Safe/canonical benchmark entry
+# points are kept under benchmarks/ instead of tracking this credential-bearing
+# extraction directly.
+model-mutitest-0529/
+model-mutitest-0529.zip
+
+# Generated reproduction outputs; persisted summaries live in MySQL and docs.
+backtest_artifacts/
+
+# Generated comparison reports. Keep only lightweight documentation/manifest files.
+reports/*.csv
+reports/*.json
+!reports/README.md
+
+__pycache__/
+*.py[cod]
+
+.DS_Store
+.codegraph/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+logs/
+*.log
+
+.venv/
+venv/
+env/

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="72" viewBox="0 0 300 72" role="img" aria-labelledby="aifin-lab-logo-title">
+  <title id="aifin-lab-logo-title">AIFin Lab QuantFlow</title>
+  <defs>
+    <linearGradient id="aifin-logo-heat" x1="10" y1="54" x2="96" y2="4" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c91d21"/>
+      <stop offset="0.46" stop-color="#ff6a2e"/>
+      <stop offset="1" stop-color="#f7c95f"/>
+    </linearGradient>
+    <linearGradient id="aifin-logo-red" x1="104" y1="44" x2="150" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b91f1c"/>
+      <stop offset="1" stop-color="#ff6157"/>
+    </linearGradient>
+    <linearGradient id="aifin-logo-line" x1="96" y1="51" x2="151" y2="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff4b3e"/>
+      <stop offset="1" stop-color="#f7c95f"/>
+    </linearGradient>
+    <filter id="aifin-logo-glow" x="-20%" y="-35%" width="145%" height="170%">
+      <feDropShadow dx="0" dy="0" stdDeviation="1.1" flood-color="#ff6a2e" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+  <g filter="url(#aifin-logo-glow)">
+    <g transform="translate(13 11)">
+      <path d="M0 48 24.5 0h15L64 48H49l-5-10.5H20.5L15.5 48H0Zm26-21h12.5L32.3 13.2 26 27Z" fill="url(#aifin-logo-heat)"/>
+      <path d="M70 1h15v47H70z" fill="url(#aifin-logo-heat)"/>
+    </g>
+    <g transform="translate(107 14)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 34c8-9 15-10 22-4 7 5 13 2 18-8 4-8 10-13 18-16" stroke="url(#aifin-logo-line)" stroke-width="2.8"/>
+      <g stroke="url(#aifin-logo-red)" stroke-width="2.4">
+        <path d="M8 16v22"/>
+        <path d="M22 7v29"/>
+        <path d="M36 13v25"/>
+        <path d="M2 29h12"/>
+        <path d="M16 18h12"/>
+        <path d="M30 24h12"/>
+      </g>
+      <circle cx="58" cy="6" r="3" fill="#f7c95f" stroke="none"/>
+    </g>
+  </g>
+  <g font-family="Avenir Next, PingFang SC, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <text x="174" y="31" fill="#171A20" font-size="20" font-weight="800">AIFin Lab</text>
+    <text x="174" y="53" fill="#9A6A13" font-size="15" font-weight="700" letter-spacing=".7">QuantFlow</text>
+    <path d="M174 39h73" stroke="#C8963E" stroke-width="1.5" stroke-linecap="round" opacity=".82"/>
+  </g>
+</svg>

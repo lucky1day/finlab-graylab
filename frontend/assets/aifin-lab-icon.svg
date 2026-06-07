@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72" role="img" aria-labelledby="aifin-lab-icon-title">
+  <title id="aifin-lab-icon-title">AIFin Lab</title>
+  <defs>
+    <linearGradient id="aifin-icon-heat" x1="8" y1="60" x2="62" y2="11" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#c91d21"/>
+      <stop offset="0.48" stop-color="#ff6a2e"/>
+      <stop offset="1" stop-color="#f7c95f"/>
+    </linearGradient>
+    <linearGradient id="aifin-icon-red" x1="39" y1="52" x2="60" y2="20" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b91f1c"/>
+      <stop offset="1" stop-color="#ff6157"/>
+    </linearGradient>
+    <filter id="aifin-icon-glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="#ff6a2e" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+  <g filter="url(#aifin-icon-glow)">
+    <path d="M5 60 28.5 11h13L66 60H52.5l-4.7-10.5H23.4L18.7 60H5Zm23-22h15.2l-7.5-17.2L28 38Z" fill="url(#aifin-icon-heat)"/>
+    <path d="M54 14h10v46H54z" fill="url(#aifin-icon-heat)"/>
+    <g fill="none" stroke="url(#aifin-icon-red)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M42 31v21"/>
+      <path d="M50 23v28"/>
+      <path d="M58 29v23"/>
+      <path d="M38 43h8"/>
+      <path d="M46 34h8"/>
+      <path d="M54 39h8"/>
+    </g>
+    <path d="M37 54c7-7 12-7 17-2 4 4 8 2 12-6" fill="none" stroke="#f7c95f" stroke-width="2.6" stroke-linecap="round"/>
+  </g>
+</svg>

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bond-factor-lab.backend</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/macstudio0/bond-factor-lab</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/macstudio0/miniconda3/bin/conda</string>
+    <string>run</string>
+    <string>--no-capture-output</string>
+    <string>-n</string>
+    <string>bond_factor_lab_service</string>
+    <string>uvicorn</string>
+    <string>backend.main:app</string>
+    <string>--host</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>8100</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONNOUSERSITE</key>
+    <string>1</string>
+    <key>BOND_ALGO_CONDA_ENV</key>
+    <string>forecast_env</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/bond-factor-lab-backend.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/bond-factor-lab-backend.err</string>
+</dict>
+</plist>

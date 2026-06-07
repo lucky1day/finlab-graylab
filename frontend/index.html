@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <link rel="icon" href="assets/aifin-lab-icon.svg">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Bond Factor Lab - 因子实验室实盘测试">
+    <title>因子实验室 - Bond Factor Lab</title>
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #F8F7F2; color: #171A20; }
+      .aifin-shell { min-height: 100vh; background: #F8F7F2; }
+    </style>
+    <link rel="stylesheet" href="aifin-shell.css?v=20260602a">
+  </head>
+  <body>
+    <div id="aifin-shell" class="aifin-shell">
+      <header class="aifin-topbar">
+        <button class="brand-button" type="button" data-route="/">
+          <img src="assets/aifin-lab-logo.svg" alt="Bond Factor Lab">
+        </button>
+        <nav class="main-nav" aria-label="主导航">
+          <button type="button" class="is-active" data-route="/factor-lab">因子实验室</button>
+        </nav>
+        <div class="status-strip" aria-label="系统状态">
+          <span class="status-dot"></span>
+          <span>LOCAL</span>
+        </div>
+      </header>
+
+      <main class="shell-stage" aria-live="polite">
+        <section class="module-view view factor-lab-view is-active" data-view="factor-lab">
+          <div class="factor-lab-page">
+            <div class="factor-lab-hero">
+              <div>
+                <h2>预测准确率矩阵</h2>
+              </div>
+              <div class="factor-lab-summary" aria-label="当前实验摘要">
+                <div><span>任务格子</span><strong>3Y国债活跃 · T+5</strong></div>
+                <div><span>候选方案</span><strong>5</strong></div>
+                <div><span>选中方案</span><strong>F-v22</strong></div>
+              </div>
+            </div>
+
+            <div class="factor-filter-bar" aria-label="因子实验室筛选">
+              <div class="factor-filter-row factor-filter-row-months" aria-label="月份区间">
+                <strong>区间</strong>
+                <label class="factor-month-input">
+                  <span>起始月份</span>
+                  <select id="factorStartMonth">
+                    <option value="2025-01">2025-01</option>
+                    <option value="2025-02">2025-02</option>
+                    <option value="2025-03">2025-03</option>
+                    <option value="2025-04">2025-04</option>
+                    <option value="2025-05">2025-05</option>
+                  </select>
+                </label>
+                <label class="factor-month-input">
+                  <span>结束月份</span>
+                  <select id="factorEndMonth">
+                    <option value="2025-01">2025-01</option>
+                    <option value="2025-02">2025-02</option>
+                    <option value="2025-03">2025-03</option>
+                    <option value="2025-04">2025-04</option>
+                    <option value="2025-05" selected>2025-05</option>
+                  </select>
+                </label>
+              </div>
+              <div class="factor-filter-row factor-filter-row-detail" aria-label="方案排行筛选">
+                <strong>排行</strong>
+                <div class="factor-filter-group" aria-label="排序口径">
+                  <span>排序指标</span>
+                  <button type="button" class="is-active" data-factor-rank-metric="overall">整体准确率</button>
+                  <button type="button" data-factor-rank-metric="upPrecision">上涨准确率</button>
+                  <button type="button" data-factor-rank-metric="downPrecision">下跌准确率</button>
+                </div>
+              </div>
+            </div>
+
+            <section class="factor-task-panel" aria-label="任务格子最优指标">
+              <div class="factor-panel-head">
+                <div>
+                  <h3>任务格子最优指标</h3>
+                </div>
+                <div class="factor-accuracy-meta" aria-label="区间汇总条件">
+                  <span class="factor-range-badge" id="factorOverviewRange">2025-01 至 2025-05</span>
+                  <span class="factor-range-badge" id="factorOverviewMetric">指标：整体准确率</span>
+                </div>
+              </div>
+              <div class="factor-task-wrap">
+                <table class="factor-task-table">
+                  <thead>
+                    <tr>
+                      <th>Y标的</th>
+                      <th>T+1</th>
+                      <th>T+5</th>
+                      <th>周度</th>
+                    </tr>
+                  </thead>
+                  <tbody id="factorTaskMatrixBody"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="factor-ranking-panel" aria-label="当前任务格子方案排行">
+              <div class="factor-panel-head">
+                <div>
+                  <h3 id="factorRankingTitle">3Y国债活跃 · T+5 候选方案排行</h3>
+                  <p id="factorRankingMeta">该任务格子下共有 5 个候选方案。</p>
+                </div>
+              </div>
+              <div class="factor-ranking-wrap">
+                <table class="factor-ranking-table">
+                  <thead>
+                    <tr>
+                      <th>排名</th>
+                      <th>方案</th>
+                      <th>区间准确率</th>
+                      <th>样本数</th>
+                      <th>上涨准确率</th>
+                      <th>下跌准确率</th>
+                      <th>最近运行</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody id="factorSchemeRankingBody"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="factor-matrix-panel" aria-label="月度指标矩阵">
+              <div class="factor-panel-head">
+                <div>
+                  <h3 id="factorDetailTitle">方案详情</h3>
+                  <p id="factorDetailMeta">点击方案排行中的任意方案，查看该方案月度指标、趋势与每日明细。</p>
+                </div>
+                <div class="factor-pagination" id="factorPaginationTop"></div>
+              </div>
+              <div class="factor-table-wrap">
+                <table class="factor-month-table">
+                  <thead>
+                    <tr>
+                      <th>月份</th>
+                      <th>样本数</th>
+                      <th>真实涨/跌/平</th>
+                      <th>预测涨/跌/平</th>
+                      <th>整体准确率</th>
+                      <th>上涨准确率</th>
+                      <th>上涨召回率</th>
+                      <th>下跌准确率</th>
+                      <th>下跌召回率</th>
+                      <th>每日明细</th>
+                    </tr>
+                  </thead>
+                  <tbody id="factorMonthlyTableBody"></tbody>
+                </table>
+              </div>
+              <div class="factor-trend-panel" aria-label="月度指标趋势">
+                <div class="factor-trend-head">
+                  <h4>月度指标趋势</h4>
+                  <div class="factor-trend-toggles" aria-label="趋势指标开关">
+                    <button type="button" class="is-active" data-factor-chart-metric="overall"><span style="--metric-color:#15623f"></span>整体准确率</button>
+                    <button type="button" class="is-active" data-factor-chart-metric="upPrecision"><span style="--metric-color:#2f7ba1"></span>上涨准确率</button>
+                    <button type="button" class="is-active" data-factor-chart-metric="upRecall"><span style="--metric-color:#b98728"></span>上涨召回率</button>
+                    <button type="button" class="is-active" data-factor-chart-metric="downPrecision"><span style="--metric-color:#d62828"></span>下跌准确率</button>
+                    <button type="button" class="is-active" data-factor-chart-metric="downRecall"><span style="--metric-color:#6f5aa8"></span>下跌召回率</button>
+                  </div>
+                </div>
+                <div class="factor-trend-chart" id="factorTrendChart" aria-label="月度指标折线图"></div>
+              </div>
+            </section>
+          </div>
+
+          <div class="factor-calendar-drawer" id="factorCalendarDrawer" aria-hidden="true">
+            <button type="button" class="factor-calendar-backdrop" data-factor-calendar-close aria-label="关闭每日验证表"></button>
+            <aside class="factor-calendar-panel" role="dialog" aria-modal="true" aria-labelledby="factorCalendarTitle">
+              <div class="factor-calendar-head">
+                <div>
+                  <h3 id="factorCalendarTitle">每日验证表</h3>
+                  <p id="factorCalendarMeta"></p>
+                </div>
+                <button type="button" data-factor-calendar-close>关闭</button>
+              </div>
+              <div class="factor-daily-table-wrap">
+                <table class="factor-daily-table">
+                  <thead>
+                    <tr>
+                      <th>交易日</th>
+                      <th>预测方向</th>
+                      <th>实际方向</th>
+                      <th>结果</th>
+                    </tr>
+                  </thead>
+                  <tbody id="factorDailyTableBody"></tbody>
+                </table>
+              </div>
+              <p class="factor-calendar-note">表内可继续滚动查看该月全部交易日。</p>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="aifin-shell.js?v=20260605w1"></script>
+  </body>
+</html>

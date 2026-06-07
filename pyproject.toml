@@ -1,0 +1,22 @@
+[project]
+name = "bond-factor-lab"
+version = "0.1.0"
+description = "Bond factor live prediction lab."
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+service = [
+    "APScheduler==3.11.2",
+    "chinese-calendar==1.11.0",
+    "fastapi==0.136.3",
+    "PyMySQL==1.2.0",
+    "pydantic-settings==2.14.1",
+    "python-dotenv==1.2.2",
+    "PyYAML==6.0.3",
+    "SQLAlchemy==2.0.50",
+    "uvicorn[standard]==0.48.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["shared*", "backend*", "scheduler*", "schemes*", "backtests*"]
