@@ -406,7 +406,7 @@ def run_t5_canonical_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]]
 
 
 def run_t5_framework_backtest(df: pd.DataFrame, n_jobs: int = 4) -> list[dict[str, Any]]:
-    from schemes.t5_daily.latest import TENOR_MODULES, _build_features
+    from schemes.t5_daily.latest_prediction import TENOR_MODULES, _build_features
     from schemes.t5_daily.core.common_utils import build_fallback_signal, choose_threshold, make_labels
 
     daily = df.copy()

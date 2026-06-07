@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 
 from sqlalchemy import text
 
-from schemes.t5_daily.latest import TENOR_MODULES, predict_latest_for_module
+from schemes.t5_daily.latest_prediction import TENOR_MODULES, predict_latest_for_module
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_daily_input_artifact
 from shared.models import PredictionRecord

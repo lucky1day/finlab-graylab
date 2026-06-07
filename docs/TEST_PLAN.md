@@ -165,7 +165,7 @@
 - [x] `predict_7y.py` — 与原始无diff
 - [x] `predict_10y.py` — 与原始无diff
 
-### latest.py adapter函数验证
+### latest_prediction.py adapter函数验证
 
 对每个tenor（3Y/5Y/7Y/10Y）:
 
@@ -185,12 +185,12 @@
   - [x] 7Y: 原始 332 行，有效 328 行，mismatch 0，当前口径全量 `66.5% (218/328)`
   - [x] 10Y: 原始 332 行，有效 328 行，mismatch 0，当前口径全量 `63.4% (208/328)`
 
-### 难点: latest.py的正确提取
+### 难点: latest_prediction.py的正确提取
 
-- [x] 验证`latest.py`中的训练窗口与main()中一致（框架侧复用原始常量）
-- [x] 验证GAP=5的排除逻辑在`latest.py`中正确实现
+- [x] 验证`latest_prediction.py`中的训练窗口与main()中一致（框架侧复用原始常量）
+- [x] 验证GAP=5的排除逻辑在`latest_prediction.py`中正确实现
 - [x] 验证投票阈值和投票信号配方与main()一致
-- [x] 验证`latest.py`不会意外使用未来数据（时间穿越检查）:
+- [x] 验证`latest_prediction.py`不会意外使用未来数据（时间穿越检查）:
   - [x] 训练样本的最大日期 < feature_date - GAP
   - [x] 特征日取 `predict_date` 前最近可用行情日
 
@@ -201,7 +201,7 @@
 - [x] 验证: target_date 通过 `t_trade_calendar` 顺延交易日
 - [x] 记录: `predict_date` 是预测发出日，最近可用行情日写入 `extra.feature_date`
 
-历史实测记录（2026-05-31）: `schemes/t5_daily/core` 与原始核心逻辑保持零改动；新增 `latest.py` 在框架侧复用原始 LightGBM、特征、标签、投票阈值和 `GAP=5` 逻辑。`run("2026-06-01")` 返回 `3Y/5Y/7Y/10Y` 四条记录，`feature_date=2026-05-29`，`target_date=2026-06-05`。
+历史实测记录（2026-05-31）: `schemes/t5_daily/core` 与原始核心逻辑保持零改动；新增 `latest_prediction.py` 在框架侧复用原始 LightGBM、特征、标签、投票阈值和 `GAP=5` 逻辑。`run("2026-06-01")` 返回 `3Y/5Y/7Y/10Y` 四条记录，`feature_date=2026-05-29`，`target_date=2026-06-05`。
 
 ---
 
@@ -212,7 +212,7 @@
 - [x] `schemes/weekly_10y_d_overlay/config.yaml` 已创建，`frequency=weekly`、`horizon=6`、`tenors=["10Y"]`、`status=active`。
 - [x] 周度方案 live cron 已按旧实盘 weekly `multi` 首轮预测时间调整为 `30 11 * * 6`；旧实盘任务 `11:30` 启动，`16:00` / `22:00` 检查和必要补跑。
 - [x] 原始 `/Users/macstudio0/Downloads/weekly_10y_d_overlay_0529.py` 已复制到 `core/legacy_weekly_10y_d_overlay_0529.py`，核心模型逻辑不直接写库。
-- [x] `weekly_output0529_columns.json` 已复制到 scheme core。
+- [x] `weekly_output_0529_columns.json` 已复制到 scheme core。
 - [x] `weekly_data_service.py` 可从 `api_wind_weekly` / `api_wind_derivative_weekly` 只读生成周频宽表。
 - [x] `predict.py` 暴露标准 `run(predict_date: str) -> list[PredictionRecord]`。
 - [x] `scripts/check_weekly_10y_readiness.py` 已新增，只读检查 live 所需关键周频衍生指标覆盖。

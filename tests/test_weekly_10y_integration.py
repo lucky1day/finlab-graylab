@@ -268,7 +268,7 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertIn(marker, js)
 
     def test_weekly_schema_json_is_available(self) -> None:
-        schema_path = PROJECT_ROOT / "schemes" / "weekly_10y_d_overlay" / "core" / "weekly_output0529_columns.json"
+        schema_path = PROJECT_ROOT / "schemes" / "weekly_10y_d_overlay" / "core" / "weekly_output_0529_columns.json"
         self.assertTrue(schema_path.exists(), "weekly schema JSON must be copied into the scheme core")
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         self.assertEqual(schema[0], "week_id")

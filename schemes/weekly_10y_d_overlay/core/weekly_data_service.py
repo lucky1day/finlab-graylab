@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from shared.data_service import create_sqlalchemy_engine
 
 
-SCHEMA_PATH = Path(__file__).with_name("weekly_output0529_columns.json")
+SCHEMA_PATH = Path(__file__).with_name("weekly_output_0529_columns.json")
 WEEKLY_RAW_TABLE = "api_wind_weekly"
 WEEKLY_DERIVATIVE_TABLE = "api_wind_derivative_weekly"
 DAILY_RAW_TABLE = "api_wind_daily"
@@ -28,7 +28,7 @@ WEEKLY_CLOSE_DAILY_CODE_MAP = {
 
 
 def load_weekly_schema(schema_path: str | Path = SCHEMA_PATH) -> list[str]:
-    """读取 weekly_output0529.csv 的列顺序 schema。"""
+    """读取 weekly_output_0529 的列顺序 schema。"""
     path = Path(schema_path)
     if not path.exists():
         raise FileNotFoundError(f"weekly schema file not found: {path}")

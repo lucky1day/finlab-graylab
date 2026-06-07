@@ -39,6 +39,16 @@
 name: "T1-LGBM利差增强-v2"
 ```
 
+文件命名规则:
+
+- Python 模块、测试、脚本统一使用小写 `snake_case.py`，例如 `latest_prediction.py`、`check_weekly_10y_readiness.py`。
+- 方案目录必须等于 `scheme_id`，统一小写 snake_case，例如 `schemes/weekly_10y_d_overlay/`。
+- 固定 schema 或 benchmark 文件可带版本日期，但日期前必须有分隔符，例如 `weekly_output_0529_columns.json`，不要使用 `weekly_output0529_columns.json`。
+- 前端静态资源允许使用 kebab-case，例如 `aifin-shell.js`、`aifin-lab-logo.svg`。
+- launchd plist 使用 macOS 约定的 reverse-DNS 命名，例如 `com.bond-factor-lab.backend.plist`。
+- 文档入口文件保留常见大写约定，例如 `README.md`、`AGENTS.md`；正文引用必须使用真实路径。
+- 不要把角色混在一个文件名里: `scheme_id`、`benchmark_id`、`data_source` 分别表达方案、基准批次、数据口径。
+
 ## 3. 目录模板
 
 每个方案放在 `schemes/{scheme_id}/`:

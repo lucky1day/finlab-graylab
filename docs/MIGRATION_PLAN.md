@@ -212,7 +212,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     3. 输出格式: 返回PredictionRecord（替代原来的to_csv）
     
     注意: 原始predict_*.py是全量回测模式（遍历所有test日期）。
-    adapter通过schemes/t5_daily/latest.py在框架侧复用其特征、
+    adapter通过schemes/t5_daily/latest_prediction.py在框架侧复用其特征、
     标签、训练、阈值和投票逻辑，只取最新可用特征日。
     core目录保持不改动。
     """
@@ -233,7 +233,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     
     records = []
     for tenor, cfg in TENOR_CONFIGS.items():
-        # 调用框架侧latest.py包装的预测逻辑
+        # 调用框架侧latest_prediction.py包装的预测逻辑
         result = predict_latest_for_module(TENOR_MODULES[tenor], daily_df, predict_date)
         
         records.append(PredictionRecord(
@@ -257,9 +257,9 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 ---
 
-## 4. t5 latest.py框架侧提取
+## 4. t5 latest_prediction.py框架侧提取
 
-原始`predict_*.py`的main()是一个完整的滚动回测循环。为了只预测最新一天，当前实现没有修改 core 文件，而是在 `schemes/t5_daily/latest.py` 中复用原始模块暴露的常量和工具函数，抽取单日预测流程:
+原始`predict_*.py`的main()是一个完整的滚动回测循环。为了只预测最新一天，当前实现没有修改 core 文件，而是在 `schemes/t5_daily/latest_prediction.py` 中复用原始模块暴露的常量和工具函数，抽取单日预测流程:
 
 ```python
 def predict_latest_for_module(module, df: pd.DataFrame, predict_date: str) -> LatestPrediction:
@@ -272,7 +272,7 @@ def predict_latest_for_module(module, df: pd.DataFrame, predict_date: str) -> La
     # ... 返回 LatestPrediction(feature_date, vote_pred, model_pred, confidence, ...)
 ```
 
-**关键**: core目录保持零改动；`latest.py` 只承担“把原始回测循环收束成最新一天预测”的 adapter 职责。
+**关键**: core目录保持零改动；`latest_prediction.py` 只承担“把原始回测循环收束成最新一天预测”的 adapter 职责。
 
 ---
 
@@ -304,7 +304,7 @@ def predict_latest_for_module(module, df: pd.DataFrame, predict_date: str) -> La
 | 新建 | `schemes/t1_daily/predict.py` | adapter（~40行） |
 | 新建 | `schemes/t1_daily/config.yaml` | 方案元数据 |
 | 新建 | `schemes/t5_daily/predict.py` | adapter |
-| 新建 | `schemes/t5_daily/latest.py` | 框架侧最新预测提取，不改 core |
+| 新建 | `schemes/t5_daily/latest_prediction.py` | 框架侧最新预测提取，不改 core |
 | 新建 | `schemes/t5_daily/config.yaml` | 方案元数据 |
 
 **总改动量**: 以 adapter / shared / scheduler / backend / frontend 为主
