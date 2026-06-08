@@ -2,9 +2,9 @@
 
 **更新日期**: 2026-06-08
 
-**结论**: 新模拟生产机器已完成服务环境、正式平台表、目标注册表、历史回测表、actuals 刷新、历史回测复现、launchd 常驻服务验证，以及周度 10Y D-overlay 方案回测接入。2026-06-05 09:25 常驻 scheduler 已成功写入 `t1_daily` / `t5_daily` 当日正式预测记录；2026-06-06 已完成 `weekly_10y_d_overlay` 受控 live 写库验收，并在 15:24 通过单方案 scheduler 手动补跑成功。2026-06-06 15:05 已将周度方案切换为 `active` 并重启 scheduler，日志确认注册 `Scheduled scheme weekly_10y_d_overlay at 30 11 * * 6`；第一次自动 cron 运行待下一次周六 11:30 观察。2026-06-07 已补齐公共输入文件层护栏并完成 Git baseline/cleanup 分支管理: t1/t5/weekly live adapter 和历史复现 upstream 分支均通过 `shared.input_artifacts` 调用对应 data service 先生成输入 CSV，再读回给算法；日频使用 `shared.data_service`，周频使用 `weekly_data_service` 的 `wind_export(1)` 口径。2026-06-08 已按新增方案 SOP 接入 `weekly_5y_direct_production`: 原始脚本归档在 scheme core，运行 adapter 通过公共周频输入层生成 CSV 后读回，标准 dry-run 返回 1 条 `5Y` 预测；DB 回测已受控写入 `t_backtest_*` run_id=`28`，backend factor-lab 数据函数已可返回 `5Y国债活跃 · 周度` 矩阵项；方案保持 `paused`，未同步 registry，未写入实盘预测表。旧 `_original_source` 运行依赖已移除，历史 benchmark CSV 已固化为 `benchmarks/model_muti_0529/daily_output.csv` 的真实文件。
+**结论**: 新模拟生产机器已完成服务环境、正式平台表、目标注册表、历史回测表、actuals 刷新、历史回测复现、launchd 常驻服务验证，以及周度 10Y D-overlay 方案回测接入。2026-06-05 09:25 常驻 scheduler 已成功写入 `t1_daily` / `t5_daily` 当日正式预测记录；2026-06-06 已完成 `weekly_10y_d_overlay` 受控 live 写库验收，并在 15:24 通过单方案 scheduler 手动补跑成功。2026-06-06 15:05 已将周度方案切换为 `active` 并重启 scheduler，日志确认注册 `Scheduled scheme weekly_10y_d_overlay at 30 11 * * 6`；第一次自动 cron 运行待下一次周六 11:30 观察。2026-06-07 已补齐公共输入文件层护栏并完成 Git baseline/cleanup 分支管理: t1/t5/weekly live adapter 和历史复现 upstream 分支均通过 `shared.input_artifacts` 调用对应 data service 先生成输入 CSV，再读回给算法；日频使用 `shared.data_service`，周频使用 `weekly_data_service` 的 `wind_export(1)` 口径。2026-06-08 已按新增方案 SOP 接入 `weekly_5y_direct_production` 和 `weekly_7y_cross_d_overlay`: 原始脚本均归档在 scheme core，运行 adapter 通过公共周频输入层生成 CSV 后读回，标准 dry-run 分别返回 1 条 `5Y` / `7Y` 预测；DB 回测已受控写入 `t_backtest_*`，5Y run_id=`28`，7Y run_id=`30`，backend factor-lab 数据函数已可返回 `5Y国债活跃 · 周度` 与 `7Y国债活跃 · 周度` 矩阵项；两个新增周度方案均保持 `paused`，未同步 registry，未写入实盘预测表。旧 `_original_source` 运行依赖已移除，历史 benchmark CSV 已固化为 `benchmarks/model_muti_0529/daily_output.csv` 的真实文件。
 
-**最新前端/回测口径核验**: 2026-06-08 已通过 backend factor-lab 数据函数、HTTP API 和浏览器 UI 核验，`10Y国债活跃 · 周度` 使用当前 DB 版本最新成功回测 run_id=`13`，全量 `68.9% (31/45)`；`5Y国债活跃 · 周度` 使用 run_id=`28`，全量 `58.3% (292/501)`。`GET /api/health` 返回 ok，`GET /api/backtests/factor-lab` 已返回 `weekly_5y_direct_production:5Y:framework_db_aligned`。浏览器“预测准确率矩阵”中 `5Y国债活跃 · 周度` 在默认区间 `2025-01` 至 `2026-05` 显示 `58.6% (41/70)`，候选方案排行显示 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。周度 10Y 回测输入由公共周频导出层生成，宽表为 `840 x 575`，周范围 `201001` 到 `202621`；重点月样本数为 `2025-07=4`、`2025-10=5`、`2026-01=6`。
+**最新前端/回测口径核验**: 2026-06-08 已通过 backend factor-lab 数据函数、HTTP API 和浏览器 UI 核验，`10Y国债活跃 · 周度` 使用当前 DB 版本最新成功回测 run_id=`13`，全量 `68.9% (31/45)`；`5Y国债活跃 · 周度` 使用 run_id=`28`，全量 `58.3% (292/501)`；`7Y国债活跃 · 周度` 使用 run_id=`30`，全量 `66.7% (28/42)`。`GET /api/health` 返回 ok，`GET /api/backtests/factor-lab` 已返回 `weekly_5y_direct_production:5Y:framework_db_aligned`；7Y 因当时本地 8100 服务未运行，已用 backend factor-lab service 函数只读核验返回 `weekly_7y_cross_d_overlay:7Y:framework_db_aligned`。浏览器“预测准确率矩阵”中 `5Y国债活跃 · 周度` 在默认区间 `2025-01` 至 `2026-05` 显示 `58.6% (41/70)`，候选方案排行显示 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。周度 10Y 回测输入由公共周频导出层生成，宽表为 `840 x 575`，周范围 `201001` 到 `202621`；重点月样本数为 `2025-07=4`、`2025-10=5`、`2026-01=6`。
 
 ## 已完成
 
@@ -30,6 +30,7 @@
 - artifact 命名已统一: `backtests/` 只放回测代码，`benchmarks/{benchmark_id}/` 只放 canonical 基准输入，运行期输入在 `backtest_artifacts/runtime_inputs/{scheme_id}/`，历史回测和数据差异报告在 `backtest_artifacts/backtests/{benchmark_id}/`。DB 中 `benchmark_id` / `data_source` 保留兼容枚举，API 额外提供中文展示名。
 - `weekly_10y_d_overlay` 已完成 adapter、DB 周频输入生成、历史回测落库、前端周度格子展示和 2026-06-06 受控 live 写库验收；当前已切换为 `active`，目标为 `10Y`。
 - `weekly_5y_direct_production` 已完成 adapter、DB 周频输入生成、原始脚本归档、历史回测 runner、标准 dry-run 和受控回测落库；当前保持 `paused`，目标为 `5Y`，尚未同步 registry，未写入实盘预测表。
+- `weekly_7y_cross_d_overlay` 已完成 adapter、DB 周频输入生成、原始脚本归档、历史回测 runner、标准 dry-run 和受控回测落库；当前保持 `paused`，目标为 `7Y`，尚未同步 registry，未写入实盘预测表。
 - `weekly_10y_d_overlay` 的 live 调度 cron 为周六 `11:30`（`30 11 * * 6`），对齐旧实盘 weekly cron 的首轮预测时间；旧脚本 16:00 / 22:00 为检查和必要补跑节点。2026-06-06 15:05 重启 scheduler 后已确认该 job 注册成功。
 - 周度 scheduler job 已显式使用 `force=True` 绕过通用“非交易日跳过”保护；日度方案仍保留交易日判断。
 - registry 同步已加安全护栏: 未发生元数据变化的方案不会无意义刷新 `t_scheme_registry.updated_at`；本次 scheduler 重启后 `t1_daily` / `t5_daily` registry 时间保持不变，仅 `weekly_10y_d_overlay` 更新为 `active` / `30 11 * * 6`。
@@ -58,15 +59,15 @@
 | `t_trade_calendar` | 6,209 |
 | `t_pre_market_forecast` | 1,059 |
 | `t_shap` | 8,845 |
-| `t_scheme_predictions` | 7 |
+| `t_scheme_predictions` | 13 |
 | `t_scheme_actuals` | 13,900 |
 | `t_scheme_weekly_actuals` | 794 |
 | `t_scheme_registry` | 3 |
-| `t_scheme_run_log` | 4 |
+| `t_scheme_run_log` | 6 |
 | `t_target_registry` | 4 |
-| `t_backtest_runs` | 9 |
-| `t_backtest_predictions` | 7,523 |
-| `t_backtest_monthly_metrics` | 503 |
+| `t_backtest_runs` | 10 |
+| `t_backtest_predictions` | 7,565 |
+| `t_backtest_monthly_metrics` | 514 |
 | `t_backtest_reproduction_checks` | 1 |
 | `bfl_probe_*` 影子表 | 0 |
 
@@ -92,7 +93,7 @@ actuals 覆盖:
 
 ## 方案与周度入口
 
-当前代码配置可发现四个方案，其中三个 active、一个 paused。数据库 `t_scheme_registry` 仍为 3 条，因为本轮未调用会同步 registry 的接口或写库命令。
+当前代码配置可发现五个方案，其中三个 active、两个 paused。数据库 `t_scheme_registry` 仍为 3 条，因为本轮未调用会同步 registry 的接口或写库命令。
 
 | 方案 | 频率 | Horizon | 目标 | 状态 |
 |------|------|---------|------|------|
@@ -100,8 +101,9 @@ actuals 覆盖:
 | `t5_daily` | `daily` | 5 | `3Y/5Y/7Y/10Y` | `active` |
 | `weekly_10y_d_overlay` | `weekly` | 6 | `10Y` | `active` |
 | `weekly_5y_direct_production` | `weekly` | 6 | `5Y` | `paused` |
+| `weekly_7y_cross_d_overlay` | `weekly` | 6 | `7Y` | `paused` |
 
-周度 10Y/5Y 语义均为: 周六发出预测，判断下一周最后一个交易日收益率相对本周最后一个交易日是上行还是下行。live 预测现在按 `feature_date` 在源表中反查实际 `week_id`，避免公式 week_id 与 DB 周编号偏移；例如 `2026-06-06` 的 `feature_date=2026-06-05`，源表实际 `feature_week_id=202621`，`target_week_id=202622`，`target_date=2026-06-12`。旧实盘 weekly cron 为 `30 11 * * 6 ... run_weekly_pipeline.sh multi`，首轮预测在周六 11:30 启动，16:00 和 22:00 为检查/补跑，因此 BFL 周度 live cron 对齐为 `30 11 * * 6`。周度 actuals 已独立接入 `t_scheme_weekly_actuals`，方向内部为收益率口径，价格视角映射为 `1=空`、`-1=多`、`0=平`。当前周频宽表按 `/Users/macstudio0/Desktop/wind_export(1).py` 口径生成: 只取 `status=1`、`pre_forecast_flag=1` 的周频因子，保留周末更新参与同周折叠，并按 `lag_length` 平移；源表缺关键周频值时 readiness/dry-run 失败，不写回源表、不临时改源数据。`weekly_10y_d_overlay` 的 `2026-06-06` 预测结果为 `predicted_direction=-1`、`confidence=0.28`；受控 writer 和单方案 scheduler 手动补跑均成功，prediction 通过 UPSERT 保持 1 条，run_log 累计 2 条 weekly success。`weekly_5y_direct_production` 的 `2026-06-06` 标准 dry-run 返回 `predicted_direction=-1`、`confidence=0.48333333333333334`，输入文件为 `backtest_artifacts/runtime_inputs/weekly_5y_direct_production/weekly_output_2026-06-06.csv`；dry-run 前后 `t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 行数不变。
+周度 10Y/5Y/7Y 语义均为: 周六发出预测，判断下一周最后一个交易日收益率相对本周最后一个交易日是上行还是下行。live 预测现在按 `feature_date` 在源表中反查实际 `week_id`，避免公式 week_id 与 DB 周编号偏移；例如 `2026-06-06` 的 `feature_date=2026-06-05`，源表实际 `feature_week_id=202621`，`target_week_id=202622`，`target_date=2026-06-12`。旧实盘 weekly cron 为 `30 11 * * 6 ... run_weekly_pipeline.sh multi`，首轮预测在周六 11:30 启动，16:00 和 22:00 为检查/补跑，因此 BFL 周度 live cron 对齐为 `30 11 * * 6`。周度 actuals 已独立接入 `t_scheme_weekly_actuals`，方向内部为收益率口径，价格视角映射为 `1=空`、`-1=多`、`0=平`。当前周频宽表按 `/Users/macstudio0/Desktop/wind_export(1).py` 口径生成: 只取 `status=1`、`pre_forecast_flag=1` 的周频因子，保留周末更新参与同周折叠，并按 `lag_length` 平移；源表缺关键周频值时 readiness/dry-run 失败，不写回源表、不临时改源数据。`weekly_10y_d_overlay` 的 `2026-06-06` 预测结果为 `predicted_direction=-1`、`confidence=0.28`；受控 writer 和单方案 scheduler 手动补跑均成功，prediction 通过 UPSERT 保持 1 条，run_log 累计 2 条 weekly success。`weekly_5y_direct_production` 的 `2026-06-06` 标准 dry-run 返回 `predicted_direction=-1`、`confidence=0.48333333333333334`；`weekly_7y_cross_d_overlay` 的 `2026-06-06` 标准 dry-run 返回 `predicted_direction=1`、`confidence=0.55`，输入文件为 `backtest_artifacts/runtime_inputs/weekly_7y_cross_d_overlay/weekly_output_2026-06-06.csv`；dry-run 前后不写入实盘 prediction/run_log/actuals 表。
 
 ## 历史回测状态
 
@@ -117,8 +119,11 @@ actuals 覆盖:
 | `t5_daily` | `framework_db_aligned` | `success` | `2025-01-01` 到 `2026-05-31` |
 | `weekly_10y_d_overlay` | `framework_db_aligned` | `success` | `2025-07-05` 到 `2026-05-02` |
 | `weekly_5y_direct_production` | `framework_db_aligned` | `success` | `2016-02-20` 到 `2026-05-23` |
+| `weekly_7y_cross_d_overlay` | `framework_db_aligned` | `success` | `2025-07-05` 到 `2026-05-23` |
 
 `weekly_5y_direct_production` 已受控写入回测 run_id=`28`: 样本 501 条，正确 292 条，整体准确率 `58.3%`；实盘窗口样本 42 条，正确 26 条，准确率 `61.9%`。写库前后受保护表保持不变: `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。回测目标表变化符合预期: `t_backtest_runs` 8 -> 9，`t_backtest_predictions` 7022 -> 7523，`t_backtest_monthly_metrics` 379 -> 503，`t_backtest_reproduction_checks=1` 不变。
+
+`weekly_7y_cross_d_overlay` 已受控写入回测 run_id=`30`: 样本 42 条，正确 28 条，整体准确率 `66.7%`；实盘窗口样本 39 条，正确 26 条，准确率 `66.7%`。写库前后受保护表保持不变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。回测目标表变化符合预期: `t_backtest_runs` 9 -> 10，`t_backtest_predictions` 7523 -> 7565，`t_backtest_monthly_metrics` 503 -> 514，`t_backtest_reproduction_checks=1` 不变。
 
 Weekly 10Y 当前最新回测 run_id=`13`: 45 个样本，正确 31 个，整体准确率 `68.9%`；前端会按最新成功 run 显示在 `10Y国债活跃 · 周度` 格子，并在排行中显示 `0529周度10Y-D-overlay基准 · 10Y国债活跃回测`、`68.9%（31/45）`。历史回测转换和月度指标已改为优先使用算法输出的 `month_date/week_date` 作为 legacy 特征周日期，并保留跨年周 `202553`；target 映射按这些特征日期重新排序后取下一条样本，避免跨年处 `target_date` 早于 `feature_date`，并按新 target 重新计算 `future_return/label`。`2025-07` 当前有 4 个样本，`2025-10` 当前有 5 个样本，`2026-01` 当前有 6 个样本。当前月度样本分布为 `2025-07:4/2, 2025-08:5/5, 2025-09:4/3, 2025-10:5/4, 2025-11:4/2, 2025-12:4/2, 2026-01:6/5, 2026-02:4/1, 2026-03:4/3, 2026-04:4/3, 2026-05:1/1`。
 

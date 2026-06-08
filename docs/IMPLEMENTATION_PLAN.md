@@ -154,3 +154,20 @@
 - [x] HTTP API 可访问: `GET /api/health` 返回 ok，`GET /api/backtests/factor-lab` 返回 5Y 周度 run_id=`28`。
 - [x] 浏览器 UI 已验证: `5Y国债活跃 · 周度` 默认区间显示 `58.6% (41/70)`，候选方案排行显示 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。
 - [ ] live 启用仍待后续 SOP: readiness、受控 live 写库、切换 active、观察 scheduler。
+
+## Phase 11: 周度 7Y cross-D-overlay 接入
+
+当前状态（2026-06-08）:
+
+- [x] 已创建 `schemes/weekly_7y_cross_d_overlay/`，`config.yaml` 为 `frequency=weekly`、`horizon=6`、`tenors=["7Y"]`、`cron="30 11 * * 6"`、`status=paused`。
+- [x] 原始 `/Users/macstudio0/Downloads/weekly_7y_cross_d_overlay_0529.py` 已归档到 `core/legacy_weekly_7y_cross_d_overlay_0529.py`；运行路径使用无文件副作用的 DataFrame predictor。
+- [x] `core/predictors.py` 已按原始方案复现 7Y 主规则、低利率反弹 overlay、5Y 辅助 down overlay 和 cross-D final signal。
+- [x] `predict.py` 暴露标准 `run(predict_date: str) -> list[PredictionRecord]`，并通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成周频输入 CSV 后读回。
+- [x] 历史回测 runner 已统一通过 `shared.input_artifacts.build_weekly_input_artifact(predict_date="historical_backtest")` 生成周频输入，不直接绕过公共层调用底层周频 data service。
+- [x] 标准 dry-run `weekly_7y_cross_d_overlay --predict-date 2026-06-06` 成功，返回 `target_tenor=7Y`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`。
+- [x] no-persist DB 回测成功: 42 个有效样本，28 个正确，整体准确率 66.7%；实盘窗口 39 个样本，26 个正确，准确率 66.7%。
+- [x] 受控回测落库成功: run_id=`30`，`t_backtest_runs` 9 -> 10，`t_backtest_predictions` 7523 -> 7565，`t_backtest_monthly_metrics` 503 -> 514。
+- [x] 受保护表未变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
+- [x] backend factor-lab 数据函数可返回 `weekly_7y_cross_d_overlay:7Y:framework_db_aligned`，summary 为 `66.7% (28/42)`。
+- [ ] HTTP/browser 验收待 backend 8100 服务恢复后复核；当前已通过 backend service 函数验证前端数据出口。
+- [ ] live 启用仍待后续 SOP: readiness、受控 live 写库、切换 active、观察 scheduler。

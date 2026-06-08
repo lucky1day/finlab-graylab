@@ -146,6 +146,16 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 实盘窗口复核: `2025-07-05` 到 `2026-04-25` 共 42 个样本，正确 26 个，准确率 `61.9%`。落库前后受保护表保持不变: `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。回测目标表变化符合预期: `t_backtest_runs` 8 -> 9，`t_backtest_predictions` 7022 -> 7523，`t_backtest_monthly_metrics` 379 -> 503，`t_backtest_reproduction_checks=1` 不变。backend factor-lab 数据函数、HTTP API 和浏览器 UI 已可返回 `weekly_5y_direct_production:5Y:framework_db_aligned`；浏览器默认区间显示 `58.6% (41/70)`，全量 run 摘要为 `58.3% (292/501)`。
 
+### 周度 7Y cross-D-overlay 落库复核
+
+2026-06-08 已按 SOP 接入 `weekly_7y_cross_d_overlay`。原始脚本 `/Users/macstudio0/Downloads/weekly_7y_cross_d_overlay_0529.py` 已归档到 scheme core，运行路径不直接 import legacy 文件，而是在 `core/predictors.py` 中按 DataFrame 方式复现 7Y 主规则、低利率反弹 overlay、5Y 辅助 down overlay 和 cross-D final signal。live adapter 与 backtest runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成周频输入 CSV 后读回。标准 dry-run `2026-06-06` 返回 `7Y` 一条预测: `feature_week_id=202621`、`target_week_id=202622`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`。
+
+| 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 |
+|------|--------|--------|----------|------|--------|
+| `weekly_7y_cross_d_overlay` | `framework_db_aligned` | 30 | `2025-07-05` 到 `2026-05-23` | 42 | `66.7% (28/42)` |
+
+实盘窗口复核: `2025-07-05` 到 `2026-04-25` 共 39 个样本，正确 26 个，准确率 `66.7%`。落库前后受保护表保持不变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。回测目标表变化符合预期: `t_backtest_runs` 9 -> 10，`t_backtest_predictions` 7523 -> 7565，`t_backtest_monthly_metrics` 503 -> 514，`t_backtest_reproduction_checks=1` 不变。backend factor-lab 数据函数已可返回 `weekly_7y_cross_d_overlay:7Y:framework_db_aligned`；HTTP/browser 验收待本地 8100 服务恢复后复核。
+
 当前周度 10Y 月度样本分布:
 
 | 月份 | 样本 | 正确 | 准确率 |
@@ -181,9 +191,9 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 | 表 | 当前记录数 |
 |----|------------|
-| `t_backtest_runs` | 9 |
-| `t_backtest_predictions` | 7523 |
-| `t_backtest_monthly_metrics` | 503 |
+| `t_backtest_runs` | 10 |
+| `t_backtest_predictions` | 7565 |
+| `t_backtest_monthly_metrics` | 514 |
 | `t_backtest_reproduction_checks` | 1 |
 
 注: 新机器当前只保留最新一次数据一致性检查记录。该检查状态为 `failed`，原因是少数因子列的缺失/精度差异；Y 生成所依赖的收益率列最大误差均为 0。
@@ -200,7 +210,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 ## 前端口径
 
-前端不新增历史验证结果页。历史复现用于后端验证、脚本验收和文档记录；前端继续按原有方案结果矩阵展示方案，后续新增方案后由方案自身结果进入现有展示链路。2026-06-08 已复核前端周度明细归月: 周度 detail rows 使用 `feature_date` 决定所属月份，显示日仍使用周六 `predict_date`；因此 `feature_date=2025-10-31 / predict_date=2025-11-01` 的样本在明细层也归入 2025-10，与后端月度 metrics 保持一致。此前 2026-06-07 已通过 `GET /api/backtests/factor-lab` 核验，`10Y国债活跃 · 周度` 格子展示当前 DB 版本最新 run_id=`13` 的 `68.9% / 1 个方案`，排行显示 `68.9%（31/45）`。
+前端不新增历史验证结果页。历史复现用于后端验证、脚本验收和文档记录；前端继续按原有方案结果矩阵展示方案，后续新增方案后由方案自身结果进入现有展示链路。2026-06-08 已复核前端周度明细归月: 周度 detail rows 使用 `feature_date` 决定所属月份，显示日仍使用周六 `predict_date`；因此 `feature_date=2025-10-31 / predict_date=2025-11-01` 的样本在明细层也归入 2025-10，与后端月度 metrics 保持一致。此前 2026-06-07 已通过 `GET /api/backtests/factor-lab` 核验，`10Y国债活跃 · 周度` 格子展示当前 DB 版本最新 run_id=`13` 的 `68.9% / 1 个方案`，排行显示 `68.9%（31/45）`。2026-06-08 7Y 接入后，backend factor-lab service 函数已返回 `weekly_7y_cross_d_overlay:7Y:framework_db_aligned`，全量 run 摘要为 `66.7% (28/42)`。
 
 ## 验证命令
 

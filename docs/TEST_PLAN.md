@@ -14,6 +14,8 @@
 
 > 周度 5Y 更新（2026-06-08）: `weekly_5y_direct_production` 已按 SOP 接入并保持 `paused`。标准 dry-run 成功，受控回测落库 run_id=`28`，样本 501，正确 292，准确率 `58.3%`；落库只改变 `t_backtest_*`，`t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 保持不变。backend factor-lab 数据函数、HTTP API 和浏览器 UI 已返回 `5Y国债活跃 · 周度` 矩阵项；默认区间 `2025-01` 至 `2026-05` 显示 `58.6% (41/70)`。
 
+> 周度 7Y 更新（2026-06-08）: `weekly_7y_cross_d_overlay` 已按 SOP 接入并保持 `paused`。标准 dry-run 成功，返回 `target_tenor=7Y`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`；受控回测落库 run_id=`30`，样本 42，正确 28，准确率 `66.7%`；落库只改变 `t_backtest_*`，`t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 保持不变。backend factor-lab service 函数已返回 `7Y国债活跃 · 周度` 矩阵项，HTTP/browser 验收待本地 8100 服务恢复。
+
 ---
 
 ## Phase 0: 环境验证
@@ -298,6 +300,39 @@
 - [x] backend factor-lab 数据函数返回 `5Y国债活跃 · 周度` 矩阵项: run_id=`28`，样本 501，正确 292，准确率 58.3%。
 - [x] HTTP API 可访问: `GET /api/health` 返回 ok，`GET /api/backtests/factor-lab` 返回 5Y 周度 run_id=`28`。
 - [x] 浏览器 UI 已验证: `5Y国债活跃 · 周度` 默认区间显示 `58.6% (41/70)`，候选方案排行显示 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。
+
+---
+
+## Phase 3.7: weekly 7Y cross-D-overlay 方案验证
+
+### 方案接入
+
+- [x] `schemes/weekly_7y_cross_d_overlay/config.yaml` 已创建，`frequency=weekly`、`horizon=6`、`tenors=["7Y"]`、`status=paused`。
+- [x] 周度方案 cron 使用 `30 11 * * 6`，对齐旧实盘 weekly `multi` 首轮预测时间。
+- [x] 原始 `/Users/macstudio0/Downloads/weekly_7y_cross_d_overlay_0529.py` 已复制到 `core/legacy_weekly_7y_cross_d_overlay_0529.py`，但运行路径不直接 import 该文件，避免 import 时寻找本地 CSV 的副作用。
+- [x] `core/predictors.py` 已按原始方案复现 7Y 主规则、低利率反弹 overlay、5Y 辅助 down overlay 和 cross-D final signal。
+- [x] `predict.py` 暴露标准 `run(predict_date: str) -> list[PredictionRecord]`，并强制通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成周频输入 CSV 后读回。
+
+### dry-run 与算法边界
+
+- [x] 合成周频 DataFrame 单测确认 `predict_w7y()` 可在 `target_week_id` 上返回 7Y cross-D overlay 结果。
+- [x] adapter 单测确认不会绕过公共周频输入 artifact，且 `extra` 包含 `feature_week_id/target_week_id/input_artifact_source`。
+- [x] 标准 dry-run 成功:
+  - [x] 命令: `python -m scheduler.scheme_runner --scheme-id weekly_7y_cross_d_overlay --predict-date 2026-06-06`
+  - [x] 返回: `target_tenor=7Y`、`horizon=6`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`
+  - [x] 输入 artifact: `backtest_artifacts/runtime_inputs/weekly_7y_cross_d_overlay/weekly_output_2026-06-06.csv`
+- [x] dry-run 不写正式 prediction/run_log/actuals 表。
+
+### 回测边界
+
+- [x] 新增 `backtests.weekly_7y_cross_d_overlay_reproduction`，可用 `--no-persist` 只读复现，也可在明确授权后写入该 `scheme_id` 对应的 `t_backtest_*` 回测记录。
+- [x] 回测 runner 已回归测试覆盖: 必须通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成 `historical_backtest` 输入 CSV，不可直接绕过公共输入层。
+- [x] 回测行转换按周五 `feature_date`、周六 `predict_date`、下一周最后交易日 `target_date` 转换，并按 `feature_date` 归月。
+- [x] no-persist DB 回测成功: 42 个有效样本，28 个正确，整体准确率 66.7%；实盘窗口 39 个样本，26 个正确，准确率 66.7%。
+- [x] 受控回测落库成功: run_id=`30`，`t_backtest_runs=10`、`t_backtest_predictions=7565`、`t_backtest_monthly_metrics=514`、`t_backtest_reproduction_checks=1`。
+- [x] 落库前后受保护表保持不变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
+- [x] backend factor-lab 数据函数返回 `7Y国债活跃 · 周度` 矩阵项: run_id=`30`，样本 42，正确 28，准确率 66.7%。
+- [ ] HTTP/browser 验收待 backend 8100 服务恢复后复核。
 
 ---
 
