@@ -4,6 +4,8 @@ import importlib
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -267,6 +269,14 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         marker = 'String(horizon) === "NEXT_MONDAY"'
         self.assertIn(marker, js)
 
+    def test_frontend_groups_weekly_detail_rows_by_feature_month(self) -> None:
+        js = (PROJECT_ROOT / "frontend" / "aifin-shell.js").read_text(encoding="utf-8")
+
+        self.assertIn("function detailGroupMonth", js)
+        self.assertIn("row.feature_date || row.predict_date", js)
+        self.assertIn("dailyRowsByMonth(scheme.daily_rows || [], scheme.frequency, scheme.horizon)", js)
+        self.assertIn("dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon)", js)
+
     def test_weekly_schema_json_is_available(self) -> None:
         schema_path = PROJECT_ROOT / "schemes" / "weekly_10y_d_overlay" / "core" / "weekly_output_0529_columns.json"
         self.assertTrue(schema_path.exists(), "weekly schema JSON must be copied into the scheme core")
@@ -365,6 +375,42 @@ class Weekly10YIntegrationTests(unittest.TestCase):
 
         self.assertEqual(metrics["2025-10"]["sample_count"], 2)
         self.assertNotIn("2025-11", metrics)
+
+    def test_weekly_10y_backtest_uses_common_weekly_input_artifact(self) -> None:
+        module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")
+        weekly_df = pd.DataFrame([{"week_id": 202622, "TB0YWI3C": 1.80, "TB1YWI3C": 1.20, "TB5YWI3C": 1.50}])
+        predictions = pd.DataFrame(
+            [
+                {
+                    "week_id": 202622,
+                    "actual_label": -1,
+                    "d_pred_label": -1,
+                    "score_pred_label": -1,
+                    "d_prob_up": 0.28,
+                    "future_return": -0.001,
+                    "d_model2_pred_label": -1,
+                    "d_model_disagree": False,
+                    "d_overlay": False,
+                }
+            ]
+        )
+        artifact = SimpleNamespace(
+            dataframe=weekly_df,
+            path=Path("/tmp/weekly_output_historical_backtest.csv"),
+            source="test_common_weekly_input_artifact",
+        )
+        fake_engine = SimpleNamespace()
+
+        with patch.object(module, "build_weekly_input_artifact", return_value=artifact) as build:
+            with patch.object(module, "predict_w10y", return_value=SimpleNamespace(predictions=predictions)) as predict:
+                payload = module.run_weekly_10y_d_overlay_reproduction(engine=fake_engine, persist=False)
+
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["summary"]["weekly_input_artifact_source"], "test_common_weekly_input_artifact")
+        self.assertEqual(payload["summary"]["weekly_input_artifact_path"], str(artifact.path))
+        self.assertIs(predict.call_args.args[0], weekly_df)
+        self.assertEqual(build.call_args.kwargs["scheme_id"], "weekly_10y_d_overlay")
+        self.assertEqual(build.call_args.kwargs["predict_date"], "historical_backtest")
 
     def test_weekly_monthly_metrics_keep_legacy_cross_year_week(self) -> None:
         module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")

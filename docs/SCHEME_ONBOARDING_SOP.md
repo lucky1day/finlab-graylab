@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-06  
+**更新日期**: 2026-06-08
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 ## 1. 核心原则
@@ -200,6 +200,8 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 输入文件特殊要求: 预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`。运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；原始 `data_service.py` 只读不改。
 
+历史回测 runner 也必须遵守同一条输入链路: runner 先调用 `shared.input_artifacts` 生成 `historical_backtest` 输入文件，再把读回后的 DataFrame 交给算法。只有 `scripts/audit_*`、`scripts/compare_*` 这类数据服务审计脚本可以直接调用底层 `data_service` 或周频导出 service；普通方案、live dry-run 和 backtest runner 不允许绕过公共输入 artifact。
+
 ### Step 3: 本地 dry-run，不写库
 
 先用算法环境直接跑入口:
@@ -297,6 +299,7 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_d_ov
 
 - 回测写入只作用于新 `scheme_id` 对应 run。
 - `/api/backtests/factor-lab` 返回 `frequency=weekly`，前端落到“周度”列。
+- 周度明细行按 `feature_date` 所在月份归组，显示日仍可使用周六 `predict_date`；月度样本数必须与后端 `t_backtest_monthly_metrics` 一致。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
 
 ### Step 7: 前端确认
@@ -373,6 +376,7 @@ LIMIT 10;
 - [ ] `t_scheme_run_log` 有成功记录。
 - [ ] `/api/schemes` 和 `/api/metrics/{scheme_id}` 返回正常。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
+- [ ] 如为周度方案，live adapter 与历史 backtest runner 都通过 `build_weekly_input_artifact()` 生成算法输入。
 - [ ] 文档更新: 当前状态、方案说明、历史回测结论或测试记录。
 - [ ] Git 提交包含代码、配置和文档。
 

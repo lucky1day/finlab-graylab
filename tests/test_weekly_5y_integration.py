@@ -156,6 +156,42 @@ class Weekly5YIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics["2025-10"]["correct_count"], 1)
         self.assertNotIn("2025-11", metrics)
 
+    def test_weekly_5y_backtest_uses_common_weekly_input_artifact(self) -> None:
+        module = importlib.import_module("backtests.weekly_5y_direct_production_reproduction")
+        weekly_df = pd.DataFrame([{"week_id": 202605, "TB1YWI3C": 1.2, "TB5YWI3C": 1.9, "TB7YWI3C": 2.4, "TB0YWI3C": 2.0}])
+        predictions = pd.DataFrame(
+            [
+                {
+                    "week_id": 202605,
+                    "week_date": pd.Timestamp("2026-02-06"),
+                    "actual_label": -1,
+                    "final_pred_label": -1,
+                    "final_prob_up": 0.45,
+                    "future_return": -0.001,
+                    "rule_vote": -3.0,
+                    "source_spec": "rule_a;rule_b;rule_c",
+                    "score_spec": "rule_a:1.0000;rule_b:1.0000;rule_c:1.0000",
+                }
+            ]
+        )
+        artifact = SimpleNamespace(
+            dataframe=weekly_df,
+            path=Path("/tmp/weekly_output_historical_backtest.csv"),
+            source="test_common_weekly_input_artifact",
+        )
+        fake_engine = SimpleNamespace()
+
+        with patch.object(module, "build_weekly_input_artifact", return_value=artifact) as build:
+            with patch.object(module, "build_weekly_5y_predictions", return_value=predictions) as predict:
+                payload = module.run_weekly_5y_direct_production_reproduction(engine=fake_engine, persist=False)
+
+        self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["summary"]["weekly_input_artifact_source"], "test_common_weekly_input_artifact")
+        self.assertEqual(payload["summary"]["weekly_input_artifact_path"], str(artifact.path))
+        self.assertIs(predict.call_args.args[0], weekly_df)
+        self.assertEqual(build.call_args.kwargs["scheme_id"], "weekly_5y_direct_production")
+        self.assertEqual(build.call_args.kwargs["predict_date"], "historical_backtest")
+
 
 if __name__ == "__main__":
     unittest.main()

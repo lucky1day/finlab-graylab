@@ -144,6 +144,7 @@
 - [x] 原始 `/Users/macstudio0/Desktop/weekly_5y_direct_production_0529.py` 已归档到 `core/legacy_weekly_5y_direct_production_0529.py`；运行路径使用无文件副作用的 DataFrame predictor。
 - [x] `predict.py` 暴露标准 `run(predict_date: str) -> list[PredictionRecord]`，并通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成周频输入 CSV 后读回。
 - [x] 已抽出 `shared.weekly_calendar` 作为周频 week_id 日期工具，避免新周度方案依赖 10Y scheme 内部模块。
+- [x] 历史回测 runner 已统一通过 `shared.input_artifacts.build_weekly_input_artifact(predict_date="historical_backtest")` 生成周频输入，不再直接绕过公共层调用底层周频 data service。
 - [x] 标准 dry-run `weekly_5y_direct_production --predict-date 2026-06-06` 成功，返回 `target_tenor=5Y`、`target_date=2026-06-12`、`predicted_direction=-1`、`confidence=0.48333333333333334`。
 - [x] dry-run 前后 `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794` 保持不变。
 - [x] no-persist DB 回测成功: 501 个有效样本，292 个正确，整体准确率 58.3%；实盘窗口 42 个样本，26 个正确，准确率 61.9%。

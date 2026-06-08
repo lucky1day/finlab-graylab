@@ -237,6 +237,7 @@
 
 - [x] 依赖验证: `scipy`、`sklearn`、`lightgbm`、`pandas` 可在 `forecast_env` 中 import。
 - [x] `python -m backtests.weekly_10y_d_overlay_reproduction --no-persist` 成功，只读产出 45 条历史样本。
+- [x] `backtests.weekly_10y_d_overlay_reproduction` 已回归测试覆盖: 历史回测 runner 必须通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成 `historical_backtest` 输入 CSV，不可直接绕过公共输入层读取底层周频 data service。
 - [x] 标准入口 `python -m scheduler.scheme_runner --scheme-id weekly_10y_d_overlay --predict-date 2026-05-23` 返回 1 条 `PredictionRecord`。
 - [x] 当前 DB 周频长表中，`api_wind_derivative_weekly` 的关键指标代码 `TB0YWI3C/TB1YWI3C/TB5YWI3C` 最新完整到源表 `week_id=202621`。
 - [x] `2026-06-06` 的 readiness 返回 `ready=true`，源表 `feature_week_id=202621`，`target_week_id=202622`。
@@ -258,6 +259,7 @@
 - [x] `/api/backtests/factor-lab` 返回 `weekly_10y_d_overlay / 10Y / 2025-10` 为 `samples=5`、`accuracy=80.0%`。
 - [x] `/api/backtests/factor-lab` 返回 `weekly_10y_d_overlay / 10Y / 2026-01` 为 `samples=6`、`accuracy=83.3%`。
 - [x] 前端 `10Y国债活跃 · 周度` 格子读取最新成功 run 后显示 `68.9% / 1 个方案`，排行显示 `0529周度10Y-D-overlay基准 · 10Y国债活跃回测`。
+- [x] 前端静态回归测试覆盖周度明细按 `feature_date` 归月，并确认 backtest/live 两条 API 数据路径都会把 `frequency/horizon` 传入 `dailyRowsByMonth()`。
 
 当前限制: live 周度 actuals 已接入独立表，`2026-06-06` readiness、dry-run、受控 live 写库验收和单方案 scheduler 手动补跑均已通过；`weekly_10y_d_overlay` 已切换为 `active` 并注册 scheduler 自动调度。周度 scheduler job 已设置 `force=True`，避免周六被通用非交易日保护跳过。下一步是观察下一次周六 `11:30` 自动运行是否只写入本方案 prediction/run_log。
 
@@ -288,6 +290,7 @@
 ### 回测边界
 
 - [x] 新增 `backtests.weekly_5y_direct_production_reproduction`，可用 `--no-persist` 只读复现，也可在明确授权后写入该 `scheme_id` 对应的 `t_backtest_*` 回测记录。
+- [x] 回测 runner 已回归测试覆盖: 必须通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成 `historical_backtest` 输入 CSV，不可直接绕过公共输入层。
 - [x] 回测行转换按周五 `feature_date`、周六 `predict_date`、下一周最后交易日 `target_date` 转换，并按 `feature_date` 归月。
 - [x] no-persist DB 回测成功: 501 个有效样本，292 个正确，整体准确率 58.3%；实盘窗口 42 个样本，26 个正确，准确率 61.9%。
 - [x] 受控回测落库成功: run_id=`28`，`t_backtest_runs=9`、`t_backtest_predictions=7523`、`t_backtest_monthly_metrics=503`、`t_backtest_reproduction_checks=1`。

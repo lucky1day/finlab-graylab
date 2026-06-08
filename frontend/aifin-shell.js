@@ -610,16 +610,35 @@
     return String((scheme && (scheme.display_name || scheme.name || scheme.scheme_name)) || "--");
   }
 
-  function dailyRowsByMonth(rows) {
+  function isWeeklyHorizon(frequency, horizon) {
+    return (
+      String(frequency || "").toLowerCase() === "weekly" ||
+      String(horizon) === "NEXT_MONDAY" ||
+      Number(horizon) === 6
+    );
+  }
+
+  function detailGroupMonth(row, frequency, horizon) {
+    var sourceDate = isWeeklyHorizon(frequency, horizon)
+      ? (row.feature_date || row.predict_date || row.target_date || "")
+      : (row.predict_date || row.target_date || "");
+    return String(sourceDate).slice(0, 7);
+  }
+
+  function detailDisplayDay(row) {
+    return String(row.predict_date || row.target_date || row.feature_date || "").slice(5, 10).replace("-", "/");
+  }
+
+  function dailyRowsByMonth(rows, frequency, horizon) {
     var grouped = {};
     (rows || []).forEach(function (row) {
-      var month = String(row.predict_date || row.target_date || "").slice(0, 7);
+      var month = detailGroupMonth(row, frequency, horizon);
       if (!month) return;
       if (!grouped[month]) grouped[month] = [];
       var predictedDirection = normalizeDirection(row.predicted_direction);
       var actualDirection = normalizeDirection(row.actual_direction);
       grouped[month].push({
-        day: String(row.predict_date || row.target_date).slice(5, 10).replace("-", "/"),
+        day: detailDisplayDay(row),
         predicted: directionText(predictedDirection),
         actual: directionText(actualDirection),
         predictedDirection: predictedDirection,
@@ -659,11 +678,7 @@
   }
 
   function columnForHorizon(horizon, frequency) {
-    if (
-      String(frequency || "").toLowerCase() === "weekly" ||
-      String(horizon) === "NEXT_MONDAY" ||
-      Number(horizon) === 6
-    ) {
+    if (isWeeklyHorizon(frequency, horizon)) {
       return factorTaskColumns[2];
     }
     if (Number(horizon) === 1) return factorTaskColumns[0];
@@ -717,7 +732,7 @@
       if (scheme.target_label) factorTargetLabels[scheme.tenor] = String(scheme.target_label);
       var taskKey = getTaskKey(scheme.tenor, column);
       if (!tasks[taskKey]) tasks[taskKey] = [];
-      var groupedDailyRows = dailyRowsByMonth(scheme.daily_rows || []);
+      var groupedDailyRows = dailyRowsByMonth(scheme.daily_rows || [], scheme.frequency, scheme.horizon);
       var monthlyRows = (scheme.monthly_metrics || []).map(rowFromMetric);
       monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
       var latestRun = scheme.latest_run && scheme.latest_run.date
@@ -755,7 +770,7 @@
               fetchJson("/api/metrics/" + encodeURIComponent(scheme.scheme_id) + "?tenor=" + encodeURIComponent(tenor))
                 .then(function (metrics) {
                   if (metrics.target_label) factorTargetLabels[tenor] = String(metrics.target_label);
-                  var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || []);
+                  var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
                   var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
                   monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
                   var taskKey = getTaskKey(tenor, column);

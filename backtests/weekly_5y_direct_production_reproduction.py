@@ -11,13 +11,13 @@ import pandas as pd
 from backtests.repository import clean_json
 from backtests.daily_0529_reproduction import BENCHMARK_ID, RunOutput, make_run_output, persist_run_output
 from shared.data_service import create_sqlalchemy_engine
+from shared.input_artifacts import build_weekly_input_artifact
 from shared.weekly_calendar import next_week_id, week_id_to_friday
 from schemes.weekly_5y_direct_production.core.predictors import (
     TARGET_COL,
     build_rule_vote,
     normalize_weekly_frame,
 )
-from schemes.weekly_10y_d_overlay.core.weekly_data_service import build_weekly_output_from_db
 
 
 SCHEME_ID = "weekly_5y_direct_production"
@@ -116,7 +116,12 @@ def run_weekly_5y_direct_production_reproduction(engine=None, persist: bool = Tr
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     try:
-        weekly_df = build_weekly_output_from_db(engine=engine)
+        artifact = build_weekly_input_artifact(
+            scheme_id=SCHEME_ID,
+            predict_date="historical_backtest",
+            engine=engine,
+        )
+        weekly_df = artifact.dataframe
         predictions = build_weekly_5y_predictions(weekly_df)
         rows = prediction_frame_to_backtest_rows(predictions)
         if not rows:
@@ -131,6 +136,8 @@ def run_weekly_5y_direct_production_reproduction(engine=None, persist: bool = Tr
         output.summary["weekly_input_rows"] = int(len(weekly_df))
         output.summary["weekly_input_week_min"] = int(weekly_df["week_id"].min()) if not weekly_df.empty else None
         output.summary["weekly_input_week_max"] = int(weekly_df["week_id"].max()) if not weekly_df.empty else None
+        output.summary["weekly_input_artifact_path"] = str(artifact.path)
+        output.summary["weekly_input_artifact_source"] = artifact.source
 
         run_id = persist_run_output(engine, output) if persist else None
         elapsed = round(time.time() - started, 3)

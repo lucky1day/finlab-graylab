@@ -125,7 +125,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 2026-06-06 修正记录: 最新前端展示 run 已刷新为 run_id=`13`。`2025-07` 月度样本数为 4，对应预测日 `2025-07-05/12/19/26`；`2025-10` 月度样本数为 5，对应特征周日期 `2025-10-03/10/17/24/31`；`2026-01` 月度样本数为 6，保留上游算法输出的跨年周 `week_id=202553, month_date=2026-01-04`。跨年 target 顺序已按特征日期重排为 `202552 -> 202601 -> 202553 -> 202602`，其中 `202553` 的 target 为 `2026-01-09`，该样本 label 从上行修正为下行。此前 run_id=`15` 因历史回测转换误用 live week_id 公式，把 `week_id=202527` 的算法 `month_date=2025-07-04` 偏移到 `2025-07-11`；同时通用月度统计按 `predict_date` 归月，导致 `2025-10-31` 特征周被错归到 2025-11。
 
-2026-06-07 复核: 周度公共输入层已切换为 `/Users/macstudio0/Desktop/wind_export(1).py` 口径，生成 `840 x 575` 的 `weekly_output_2026-06-06.csv`。该输入与 `/Users/macstudio0/Desktop/weekly_output.csv` 在行数、列数、列顺序和周范围结构上对齐，关键最新周收益率列和最新模型输出一致；但共同周/共同因子输入仍有少量实质数值差异、缺失差异和大量小数精度差异，完整明细已保存在:
+2026-06-08 复核: 周度公共输入层已切换为 `/Users/macstudio0/Desktop/wind_export(1).py` 口径，生成 `840 x 575` 的 `weekly_output_2026-06-06.csv`。该输入与 `/Users/macstudio0/Desktop/weekly_output.csv` 在行数、列数、列顺序和周范围结构上对齐，关键最新周收益率列和最新模型输出一致；但共同周/共同因子输入仍有少量实质数值差异、缺失差异和大量小数精度差异，完整明细已保存在:
 
 - `reports/weekly_output_csv_validation_summary.json`
 - `reports/weekly_output_csv_vs_current_db_material_diff.csv`
@@ -134,11 +134,11 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_summary.json`
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_diff.csv`
 
-当前前端展示以最新 DB 公共层回测 run_id=`13` 为准，整体样本数 45、正确数 31、准确率 `68.9%`。
+当前前端展示以最新 DB 公共层回测 run_id=`13` 为准，整体样本数 45、正确数 31、准确率 `68.9%`。代码复核确认 `backtests.weekly_10y_d_overlay_reproduction` 不再直接调用底层周频 data service，而是通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_10y_d_overlay", predict_date="historical_backtest")` 生成并读回输入 CSV；`--no-persist` 真实库验证仍返回 45 条、`68.9% (31/45)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_10y_d_overlay/weekly_output_historical_backtest.csv`。
 
 ### 周度 5Y direct-production 落库复核
 
-2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，先只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`，再在明确授权后受控执行落库。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。落库只写 `weekly_5y_direct_production` 对应的 `t_backtest_*` 回测记录，不写实盘预测表、不写 actuals、不改源数据表。
+2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，先只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`，再在明确授权后受控执行落库。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。代码复核确认 runner 通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_5y_direct_production", predict_date="historical_backtest")` 生成并读回输入 CSV；`--no-persist` 真实库验证仍返回 501 条、`58.3% (292/501)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_5y_direct_production/weekly_output_historical_backtest.csv`。落库只写 `weekly_5y_direct_production` 对应的 `t_backtest_*` 回测记录，不写实盘预测表、不写 actuals、不改源数据表。
 
 | 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 |
 |------|--------|--------|----------|------|--------|
@@ -200,7 +200,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 ## 前端口径
 
-前端不新增历史验证结果页。历史复现用于后端验证、脚本验收和文档记录；前端继续按原有方案结果矩阵展示方案，后续新增方案后由方案自身结果进入现有展示链路。2026-06-07 已通过 `GET /api/backtests/factor-lab` 核验，`10Y国债活跃 · 周度` 格子展示当前 DB 版本最新 run_id=`13` 的 `68.9% / 1 个方案`，排行显示 `68.9%（31/45）`。
+前端不新增历史验证结果页。历史复现用于后端验证、脚本验收和文档记录；前端继续按原有方案结果矩阵展示方案，后续新增方案后由方案自身结果进入现有展示链路。2026-06-08 已复核前端周度明细归月: 周度 detail rows 使用 `feature_date` 决定所属月份，显示日仍使用周六 `predict_date`；因此 `feature_date=2025-10-31 / predict_date=2025-11-01` 的样本在明细层也归入 2025-10，与后端月度 metrics 保持一致。此前 2026-06-07 已通过 `GET /api/backtests/factor-lab` 核验，`10Y国债活跃 · 周度` 格子展示当前 DB 版本最新 run_id=`13` 的 `68.9% / 1 个方案`，排行显示 `68.9%（31/45）`。
 
 ## 验证命令
 
