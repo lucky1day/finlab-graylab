@@ -105,7 +105,6 @@ def build_db_aligned_daily(
         db_df = build_daily_output_from_db(
             start_date=start_date,
             end_date=end_date,
-            target_columns=None,
             engine=engine,
         )
     db_df = db_df.copy()
@@ -145,7 +144,7 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
         report["evaluation_exclusion"] = evaluation_exclusion_summary(len(csv_df), len(effective_csv))
         report["excluding_evaluation_target_week"] = compare_daily_frames(effective_csv, upstream_full, effective_aligned)
         report["generation"] = {
-            "primary": "shared_daily_data_service",
+            "primary": "shared_data_service_daily",
             "upstream_daily_targets": list(UPSTREAM_DAILY_TARGETS),
             "framework_daily_targets": list(TARGET_COLUMNS),
             "daily_data_service_path": "shared/data_service.py",

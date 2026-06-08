@@ -4,7 +4,7 @@
 
 **Goal:** All prediction adapters generate model input files through one shared layer before algorithms read data.
 
-**Architecture:** Add `shared/input_artifacts.py` as the single public entry point for daily and weekly input file generation. Daily inputs delegate to `shared.data_service`; weekly inputs delegate to the existing weekly data service, save a CSV, and read it back. Adapters receive DataFrames only from the returned `InputArtifact`.
+**Architecture:** Add `shared/input_artifacts.py` as the single public entry point for daily and weekly input file generation. Daily inputs delegate to `shared.data_service`; weekly inputs originally delegated to the existing weekly data service, save a CSV, and read it back. 2026-06-08 update: `shared.data_service` has been replaced by the user-provided unified daily/weekly/monthly exporter, so weekly inputs now also delegate to `shared.data_service`. Adapters receive DataFrames only from the returned `InputArtifact`.
 
 **Tech Stack:** Python 3.13 in `forecast_env`, pandas, SQLAlchemy engine passed through existing helpers, CSV artifacts under `backtest_artifacts/runtime_inputs/`.
 

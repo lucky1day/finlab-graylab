@@ -9,10 +9,10 @@ import pandas as pd
 
 
 class DailyInputDataServiceTests(unittest.TestCase):
-    def test_daily_input_target_columns_match_upstream_daily_output_anchor(self) -> None:
-        from shared.input_artifacts import DAILY_INPUT_TARGET_COLUMNS
+    def test_daily_data_service_target_columns_match_upstream_daily_output_anchor(self) -> None:
+        from shared.data_service import DAILY_TARGETS
 
-        self.assertEqual(DAILY_INPUT_TARGET_COLUMNS, ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C"))
+        self.assertEqual(DAILY_TARGETS, ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C"))
 
 
 class DailyPredictAdapterDataServiceTests(unittest.TestCase):

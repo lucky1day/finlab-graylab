@@ -198,9 +198,11 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 创建 `config.yaml` 和 `predict.py`。如果算法来自上游原始代码，把原始核心逻辑放入 `core/`，adapter 只负责输入输出。
 
-输入文件特殊要求: 预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`。运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；原始 `data_service.py` 只读不改。
+输入文件特殊要求: 预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`。底层数据导出统一由 `shared.data_service` 负责，运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；公共数据层逻辑不得在新增方案时临时改动。
 
-历史回测 runner 也必须遵守同一条输入链路: runner 先调用 `shared.input_artifacts` 生成 `historical_backtest` 输入文件，再把读回后的 DataFrame 交给算法。只有 `scripts/audit_*`、`scripts/compare_*` 这类数据服务审计脚本可以直接调用底层 `data_service` 或周频导出 service；普通方案、live dry-run 和 backtest runner 不允许绕过公共输入 artifact。
+周频 artifact 只接受 `start_week/end_week` 作为周范围过滤。旧的 `end_date` 和 `include_daily_weekly_close_fallback` 参数不属于统一数据层口径，当前会显式报错，不能在新增方案中使用。
+
+历史回测 runner 也必须遵守同一条输入链路: runner 先调用 `shared.input_artifacts` 生成 `historical_backtest` 输入文件，再把读回后的 DataFrame 交给算法。只有 `scripts/audit_*`、`scripts/compare_*` 这类数据服务审计脚本可以直接调用底层 `shared.data_service`；普通方案、live dry-run 和 backtest runner 不允许绕过公共输入 artifact。
 
 ### Step 3: 本地 dry-run，不写库
 

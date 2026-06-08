@@ -85,7 +85,7 @@ class DatabaseConfig:
 
 历史设计: `shared/data_service.py` 从原始 data_service 复制并改为环境变量化 DB 配置。
 
-当前修正（2026-06-07）: live adapter 和历史复现 upstream 分支不直接拼接 DB 输入，也不自行决定输入文件路径，而是统一通过 `shared.input_artifacts` 调用对应 data service 生成输入 CSV，再从 CSV 读回给算法。日频公共层内部调用 `shared.data_service`；周频公共层内部调用 `weekly_data_service` 的 `wind_export(1)` 口径。旧 `_original_source` 运行依赖已移除。
+当前修正（2026-06-08）: live adapter 和历史复现 upstream 分支不直接拼接 DB 输入，也不自行决定输入文件路径，而是统一通过 `shared.input_artifacts` 调用统一 `shared.data_service` 生成输入 CSV，再从 CSV 读回给算法。`shared.data_service` 已替换为用户提供的日/周/月公共导出层；旧 `_original_source` 运行依赖已移除。
 
 ### 3.3 shared/models.py（新建）
 

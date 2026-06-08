@@ -18,7 +18,7 @@
 
 1. 从当前测试 Mac 的 `bond_db` 读取原始长表。
 2. 通过公共输入文件层 `shared.input_artifacts` 生成输入 CSV。
-3. 日频公共层内部调用 `shared.data_service`，周频公共层内部调用 `weekly_data_service`。
+3. 日频、周频、月频公共层内部统一调用 `shared.data_service`；该文件来自用户提供的 `data_service (1).py`，仅做项目 `.env`/`shared.db_config` 连接适配。
 4. 算法只读取这张生成后的 CSV。
 
 框架入口:
@@ -28,7 +28,7 @@
 - 日频 data service: `shared/data_service.py`
 - 只读审计脚本: `scripts/audit_daily_data_service.py`
 
-上游 `data_service.py` 的交易日锚定列为 `TB1YWI0C/TB5YWI0C/TB0YWI0C`；当前框架默认锚定列为 `TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C/TB0YWI0C`。在本次日期范围内，两种生成口径的对齐版完全一致: 行数、列顺序、缺失值和数值误差均一致，`overall_max_abs_diff = 0`。
+统一 `shared.data_service` 的日频交易日锚定列为 `TB1YWI0C/TB5YWI0C/TB0YWI0C`，artifact 层不再额外传入 `target_columns`。2026-06-08 已用该统一数据层重跑日频 `--no-persist` 历史复现，t5/t1 framework-db 与 baseline 的 mismatch 仍为 0。
 
 | 项 | 结果 |
 |----|------|
@@ -114,7 +114,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 周度 10Y 来源于 `/Users/macstudio0/Downloads/weekly_10y_d_overlay_0529.py`，已并入:
 
 - 方案目录: `schemes/weekly_10y_d_overlay/`
-- DB 周频输入生成: `schemes/weekly_10y_d_overlay/core/weekly_data_service.py`
+- DB 周频输入生成: `shared/data_service.py`
 - 回测入口: `backtests/weekly_10y_d_overlay_reproduction.py`
 
 预测语义: 本周六预测下一周最后一个交易日 10Y 收益率相对本周最后一个交易日是上行还是下行。live 预测按 `feature_date` 从源表反查实际 `week_id`；历史回测为复现上游 0529 周频算法，日期转换优先使用算法输出的 `month_date/week_date` 作为 legacy 特征周日期，再把次日作为 `predict_date`，并按特征日期排序后的下一条算法输出作为 `target_date`。跨年处保留上游算法真实输出的 `week_id=202553`，因此 2026-01 当前有 6 个历史样本；`future_return/label` 按重排后的 target 重新计算，避免 `target_date` 早于 `feature_date`。
@@ -125,7 +125,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 2026-06-06 修正记录: 最新前端展示 run 已刷新为 run_id=`13`。`2025-07` 月度样本数为 4，对应预测日 `2025-07-05/12/19/26`；`2025-10` 月度样本数为 5，对应特征周日期 `2025-10-03/10/17/24/31`；`2026-01` 月度样本数为 6，保留上游算法输出的跨年周 `week_id=202553, month_date=2026-01-04`。跨年 target 顺序已按特征日期重排为 `202552 -> 202601 -> 202553 -> 202602`，其中 `202553` 的 target 为 `2026-01-09`，该样本 label 从上行修正为下行。此前 run_id=`15` 因历史回测转换误用 live week_id 公式，把 `week_id=202527` 的算法 `month_date=2025-07-04` 偏移到 `2025-07-11`；同时通用月度统计按 `predict_date` 归月，导致 `2025-10-31` 特征周被错归到 2025-11。
 
-2026-06-08 复核: 周度公共输入层已切换为 `/Users/macstudio0/Desktop/wind_export(1).py` 口径，生成 `840 x 575` 的 `weekly_output_2026-06-06.csv`。该输入与 `/Users/macstudio0/Desktop/weekly_output.csv` 在行数、列数、列顺序和周范围结构上对齐，关键最新周收益率列和最新模型输出一致；但共同周/共同因子输入仍有少量实质数值差异、缺失差异和大量小数精度差异，完整明细已保存在:
+2026-06-08 复核: 周度公共输入层已切换为用户提供的统一 `shared.data_service`，live `weekly_output_2026-06-06.csv` 为 `841 x 575`，覆盖 `200901` 到 `202621`；historical_backtest 输入为 `842 x 575`，覆盖 `200901` 到 `202622`。关键最新周收益率列和最新模型输出保持一致；与桌面 CSV 的共同窗口仍有少量实质数值差异、缺失差异和大量小数精度差异，完整明细已保存在:
 
 - `reports/weekly_output_csv_validation_summary.json`
 - `reports/weekly_output_csv_vs_current_db_material_diff.csv`
@@ -134,11 +134,11 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_summary.json`
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_diff.csv`
 
-当前前端展示以最新 DB 公共层回测 run_id=`13` 为准，整体样本数 45、正确数 31、准确率 `68.9%`。代码复核确认 `backtests.weekly_10y_d_overlay_reproduction` 不再直接调用底层周频 data service，而是通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_10y_d_overlay", predict_date="historical_backtest")` 生成并读回输入 CSV；`--no-persist` 真实库验证仍返回 45 条、`68.9% (31/45)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_10y_d_overlay/weekly_output_historical_backtest.csv`。
+当前前端展示以最新 DB 公共层回测 run_id=`13` 为准，整体样本数 45、正确数 31、准确率 `68.9%`。代码复核确认 `backtests.weekly_10y_d_overlay_reproduction` 通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_10y_d_overlay", predict_date="historical_backtest")` 调用统一 `shared.data_service` 生成并读回输入 CSV；`--no-persist` 真实库验证仍返回 45 条、`68.9% (31/45)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_10y_d_overlay/weekly_output_historical_backtest.csv`，来源为 `shared_data_service_weekly`。
 
 ### 周度 5Y direct-production 落库复核
 
-2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，先只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`，再在明确授权后受控执行落库。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。本轮代码复核发现回测日期曾误用 live first-Monday 周历，已改为 `shared.legacy_weekly_calendar.legacy_week_id_to_friday()`，与原始 0529 脚本一致。代码复核确认 runner 通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_5y_direct_production", predict_date="historical_backtest")` 生成并读回输入 CSV；`--no-persist` 真实库验证返回 503 条、`58.4% (294/503)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_5y_direct_production/weekly_output_historical_backtest.csv`。落库只写 `weekly_5y_direct_production` 对应的 `t_backtest_*` 回测记录，不写实盘预测表、不写 actuals、不改源数据表。
+2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，先只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`，再在明确授权后受控执行落库。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。本轮代码复核发现回测日期曾误用 live first-Monday 周历，已改为 `shared.legacy_weekly_calendar.legacy_week_id_to_friday()`，与原始 0529 脚本一致。代码复核确认 runner 通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_5y_direct_production", predict_date="historical_backtest")` 调用统一 `shared.data_service` 生成并读回输入 CSV；`--no-persist` 真实库验证返回 503 条、`58.4% (294/503)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_5y_direct_production/weekly_output_historical_backtest.csv`，来源为 `shared_data_service_weekly`。落库只写 `weekly_5y_direct_production` 对应的 `t_backtest_*` 回测记录，不写实盘预测表、不写 actuals、不改源数据表。
 
 | 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 |
 |------|--------|--------|----------|------|--------|
@@ -148,7 +148,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 ### 周度 7Y cross-D-overlay 落库复核
 
-2026-06-08 已按 SOP 接入 `weekly_7y_cross_d_overlay`。原始脚本 `/Users/macstudio0/Downloads/weekly_7y_cross_d_overlay_0529.py` 已归档到 scheme core，运行路径不直接 import legacy 文件，而是在 `core/predictors.py` 中按 DataFrame 方式复现 7Y 主规则、低利率反弹 overlay、5Y 辅助 down overlay 和 cross-D final signal。live adapter 与 backtest runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成周频输入 CSV 后读回。本轮代码复核发现 7Y `normalize_weekly_frame()` 曾误用 live 周历，已改为 `shared.legacy_weekly_calendar`，锁定原始脚本的 `202553 -> 2026-01-04`、`202618 -> 2026-05-01` 日期语义。标准 dry-run `2026-06-06` 返回 `7Y` 一条预测: `feature_week_id=202621`、`target_week_id=202622`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`。
+2026-06-08 已按 SOP 接入 `weekly_7y_cross_d_overlay`。原始脚本 `/Users/macstudio0/Downloads/weekly_7y_cross_d_overlay_0529.py` 已归档到 scheme core，运行路径不直接 import legacy 文件，而是在 `core/predictors.py` 中按 DataFrame 方式复现 7Y 主规则、低利率反弹 overlay、5Y 辅助 down overlay 和 cross-D final signal。live adapter 与 backtest runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 调用统一 `shared.data_service` 生成周频输入 CSV 后读回。本轮代码复核发现 7Y `normalize_weekly_frame()` 曾误用 live 周历，已改为 `shared.legacy_weekly_calendar`，锁定原始脚本的 `202553 -> 2026-01-04`、`202618 -> 2026-05-01` 日期语义。标准 dry-run `2026-06-06` 返回 `7Y` 一条预测: `feature_week_id=202621`、`target_week_id=202622`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`、`input_artifact_source=shared_data_service_weekly`。
 
 | 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 |
 |------|--------|--------|----------|------|--------|

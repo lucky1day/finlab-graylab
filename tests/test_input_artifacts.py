@@ -24,14 +24,14 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(path.name, "daily_output_2026-06-05.csv")
         self.assertEqual(path.parent.name, "daily_scheme_bad")
 
-    def test_daily_input_artifact_delegates_to_daily_data_service_file(self) -> None:
+    def test_daily_input_artifact_delegates_to_unified_data_service_file(self) -> None:
         from shared.input_artifacts import build_daily_input_artifact
 
         daily_df = pd.DataFrame({"date": pd.to_datetime(["2026-06-05"]), "TB0YWI0C": [2.1]})
         engine = object()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            with patch("shared.input_artifacts.daily_data_service", create=True) as daily_service:
+            with patch("shared.input_artifacts.data_service", create=True) as daily_service:
                 daily_service.build_daily_output_from_db.return_value = daily_df
                 daily_service.save_daily_output.side_effect = lambda df, path: df.to_csv(path, index=False)
                 artifact = build_daily_input_artifact(
@@ -46,33 +46,32 @@ class InputArtifactTests(unittest.TestCase):
 
         self.assertEqual(artifact.scheme_id, "t1_daily")
         self.assertEqual(artifact.frequency, "daily")
-        self.assertEqual(artifact.source, "shared_daily_data_service")
+        self.assertEqual(artifact.source, "shared_data_service_daily")
         self.assertTrue(str(artifact.path).endswith("t1_daily/daily_output_2026-06-05.csv"))
         self.assertEqual(artifact.dataframe["date"].dt.strftime("%Y-%m-%d").tolist(), ["2026-06-05"])
         self.assertEqual(artifact.dataframe["TB0YWI0C"].tolist(), [2.1])
         kwargs = daily_service.build_daily_output_from_db.call_args.kwargs
         self.assertEqual(kwargs["start_date"], "2019-06-10")
         self.assertEqual(kwargs["end_date"], "2026-06-05")
-        self.assertEqual(kwargs["target_columns"], ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C"))
         self.assertIs(kwargs["engine"], engine)
         self.assertIs(daily_service.save_daily_output.call_args.args[0], daily_df)
         self.assertEqual(daily_service.save_daily_output.call_args.args[1], artifact.path)
         self.assertTrue(artifact_exists)
 
-    def test_weekly_input_artifact_writes_csv_and_reads_back(self) -> None:
+    def test_weekly_input_artifact_delegates_to_unified_data_service_file(self) -> None:
         from shared.input_artifacts import build_weekly_input_artifact
 
         weekly_df = pd.DataFrame({"week_id": [202621], "TB0YWI3C": [1.7]})
         engine = object()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            with patch("shared.input_artifacts.weekly_data_service.build_weekly_output_from_db", return_value=weekly_df) as build:
+            with patch("shared.input_artifacts.data_service", create=True) as data_service:
+                data_service.build_weekly_output_from_db.return_value = weekly_df
+                data_service.save_weekly_output.side_effect = lambda df, path: df.to_csv(path, index=False)
                 artifact = build_weekly_input_artifact(
                     scheme_id="weekly_10y_d_overlay",
                     predict_date="2026-06-06",
                     end_week=202621,
-                    end_date="2026-06-05",
-                    include_daily_weekly_close_fallback=True,
                     engine=engine,
                     output_root=root,
                 )
@@ -80,15 +79,39 @@ class InputArtifactTests(unittest.TestCase):
 
         self.assertEqual(artifact.scheme_id, "weekly_10y_d_overlay")
         self.assertEqual(artifact.frequency, "weekly")
-        self.assertEqual(artifact.source, "wind_export_weekly_data_service")
+        self.assertEqual(artifact.source, "shared_data_service_weekly")
         self.assertTrue(str(artifact.path).endswith("weekly_10y_d_overlay/weekly_output_2026-06-06.csv"))
         self.assertEqual(artifact.dataframe["week_id"].tolist(), [202621])
         self.assertEqual(artifact.dataframe["TB0YWI3C"].tolist(), [1.7])
-        kwargs = build.call_args.kwargs
+        kwargs = data_service.build_weekly_output_from_db.call_args.kwargs
         self.assertEqual(kwargs["end_week"], 202621)
-        self.assertEqual(kwargs["end_date"], "2026-06-05")
-        self.assertTrue(kwargs["include_daily_weekly_close_fallback"])
         self.assertIs(kwargs["engine"], engine)
+        self.assertIs(data_service.save_weekly_output.call_args.args[0], weekly_df)
+        self.assertEqual(data_service.save_weekly_output.call_args.args[1], artifact.path)
+
+    def test_weekly_input_artifact_rejects_legacy_daily_close_fallback_flag(self) -> None:
+        from shared.input_artifacts import build_weekly_input_artifact
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(ValueError, "include_daily_weekly_close_fallback"):
+                build_weekly_input_artifact(
+                    scheme_id="weekly_10y_d_overlay",
+                    predict_date="2026-06-06",
+                    include_daily_weekly_close_fallback=True,
+                    output_root=Path(tmpdir),
+                )
+
+    def test_weekly_input_artifact_rejects_legacy_end_date_filter(self) -> None:
+        from shared.input_artifacts import build_weekly_input_artifact
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.assertRaisesRegex(ValueError, "end_date"):
+                build_weekly_input_artifact(
+                    scheme_id="weekly_10y_d_overlay",
+                    predict_date="2026-06-06",
+                    end_date="2026-06-05",
+                    output_root=Path(tmpdir),
+                )
 
 
 class WeeklyPredictInputArtifactTests(unittest.TestCase):

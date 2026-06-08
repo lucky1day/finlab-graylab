@@ -84,6 +84,6 @@
 
 1. t1的`run_daily_predictions`需要改造为只返回预测结果，不写本地文件
 2. t5的各`predict_*.py`需要从全量回测改为只预测最新一天
-3. 当前 BFL adapter 统一通过 `shared.input_artifacts` 生成输入 CSV，再读回给算法；日频公共层内部调用 `shared.data_service`，周频公共层内部调用 `weekly_data_service`，不直接绕过 CSV 文件边界。
+3. 当前 BFL adapter 统一通过 `shared.input_artifacts` 生成输入 CSV，再读回给算法；日频、周频、月频公共层内部统一调用 `shared.data_service`，不直接绕过 CSV 文件边界。
 4. 数据库密码需迁移到环境变量
 5. 方向映射需统一：1=涨(收益率上行/价格下跌), -1=跌(收益率下行/价格上涨)

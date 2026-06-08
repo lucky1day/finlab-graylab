@@ -101,7 +101,7 @@ actuals 覆盖:
 
 - `t1_daily` 返回 `5Y/10Y` 两条 `PredictionRecord`。
 - `t5_daily` 返回 `3Y/5Y/7Y/10Y` 四条 `PredictionRecord`。
-- `weekly_10y_d_overlay` 当前按 `feature_date` 从源表反查实际 `week_id` 运行；`2026-06-06` readiness 为 `ready=true`，使用源表 `feature_week_id=202621`，dry-run 返回 `10Y` 一条 `PredictionRecord`，`target_date=2026-06-12`，`predicted_direction=-1`。若 weekly close 尚未物化，adapter 会只读 `api_wind_daily` 在内存中生成 `TB0YWI3C/TB1YWI3C/TB5YWI3C`，不写回源表。
+- `weekly_10y_d_overlay` 当前按 `feature_date` 从源表反查实际 `week_id` 运行；`2026-06-06` readiness 为 `ready=true`，使用源表 `feature_week_id=202621`，dry-run 返回 `10Y` 一条 `PredictionRecord`，`target_date=2026-06-12`，`predicted_direction=-1`。统一周频数据层不再做 daily close fallback；若关键 weekly close 尚未物化，readiness/dry-run 应失败并等待上游补齐，不写回源表。
 
 ### 5.2 后端/API/调度器环境
 

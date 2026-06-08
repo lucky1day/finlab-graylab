@@ -141,30 +141,19 @@ def main() -> None:
     engine = create_sqlalchemy_engine()
     try:
         shared_input_full = _normalize_daily(
-            build_shared_daily_output_from_db(
-                start_date=start_date,
-                end_date=end_date,
-                target_columns=UPSTREAM_DAILY_TARGETS,
-                engine=engine,
-            )
-        )
-        shared_default_full = _normalize_daily(
             build_shared_daily_output_from_db(start_date=start_date, end_date=end_date, engine=engine)
         )
     finally:
         engine.dispose()
 
     shared_input_aligned = _align_like(canonical, shared_input_full)
-    shared_default_aligned = _align_like(canonical, shared_default_full)
 
     shared_input_path = output_dir / "shared_daily_data_service_generated_daily_output.csv"
     shared_input_aligned_path = output_dir / "shared_daily_data_service_generated_daily_output_aligned.csv"
-    shared_default_path = output_dir / "shared_default_generated_daily_output_aligned.csv"
     summary_path = output_dir / "daily_data_service_audit_summary.json"
 
     shared_input_full.to_csv(shared_input_path, index=False)
     shared_input_aligned.to_csv(shared_input_aligned_path, index=False)
-    shared_default_aligned.to_csv(shared_default_path, index=False)
 
     summary = {
         "source": {
@@ -177,16 +166,9 @@ def main() -> None:
         "outputs": {
             "shared_input_full": str(shared_input_path),
             "shared_input_aligned": str(shared_input_aligned_path),
-            "shared_default_aligned": str(shared_default_path),
         },
         "comparisons": {
             "canonical_vs_shared_input_aligned": _compare(canonical, shared_input_aligned, "canonical", "shared_input"),
-            "shared_input_aligned_vs_shared_default": _compare(
-                shared_input_aligned,
-                shared_default_aligned,
-                "shared_input",
-                "shared_default",
-            ),
         },
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

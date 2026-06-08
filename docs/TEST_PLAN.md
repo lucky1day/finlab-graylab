@@ -8,7 +8,7 @@
 
 > 状态更新（2026-06-06）: 新机器正式平台表、target registry、backtest 表均已创建；`api_wind_daily` 最新为 `2026-06-05`，`api_wind_derivative_daily` 最新为 `2026-06-04`，Y actuals 覆盖到 `2026-06-03`。`t1_daily` / `t5_daily` 均为 `active`，backend/scheduler 已由 launchd 常驻管理，并已在 2026-06-05 09:25 写入 6 条正式预测。`weekly_10y_d_overlay` 已接入回测、前端周度格子、受控 live 写库和 scheduler 自动调度，当前为 `active`，cron 为 `30 11 * * 6`。
 
-> 历史复现更新（2026-06-07）: 已完成 `model_muti_0529` 历史回测复现。验证链路已显式按公共输入层执行: 先用 `shared.input_artifacts` 调用对应 data service 从 `bond_db` 生成 daily_output/weekly_output CSV，再喂给算法。按当前验证口径，暂排除 `target_date=2026-05-25` 至 `2026-05-29` 的 5 月最后目标周样本；t5 三组原始 1328 行、有效 1312 行，framework 两组 mismatch 为 0；t1 三组原始 1011 行、有效 999 行，framework 两组 mismatch 为 0。`shared.data_service` 上游兼容口径与此前原始 data_service 口径已验证一致；与历史保存的 canonical CSV 相比，日期、行数、列顺序和 Y 生成所依赖的收益率列均通过，因子列存在缺失/精度差异并已落表记录。
+> 历史复现更新（2026-06-08）: 已完成 `model_muti_0529` 历史回测复现。验证链路已显式按公共输入层执行: 先用 `shared.input_artifacts` 调用统一 `shared.data_service` 从 `bond_db` 生成 daily_output/weekly_output CSV，再喂给算法。按当前验证口径，暂排除 `target_date=2026-05-25` 至 `2026-05-29` 的 5 月最后目标周样本；t5 三组原始 1328 行、有效 1312 行，framework 两组 mismatch 为 0；t1 三组原始 1011 行、有效 999 行，framework 两组 mismatch 为 0。`shared.data_service` 已替换为用户提供的统一日/周/月数据层；与历史保存的 canonical CSV 相比，日期、行数、列顺序和 Y 生成所依赖的收益率列均通过，因子列存在缺失/精度差异并已落表记录。
 
 > 新机器复核（2026-06-07）: 当前正式平台表、target registry、backtest 表均已创建；`t_scheme_actuals=13900`，覆盖到 `2026-06-03`；`t_scheme_weekly_actuals=794`，已接入 10Y 周度 actuals。`t_scheme_predictions=7`、`t_scheme_run_log=4`，其中 1 条 prediction 和 2 条 run_log 来自 2026-06-06 周度受控 live 写库验收及单方案 scheduler 手动补跑。`weekly_10y_d_overlay` 已切换到 `wind_export(1)` 口径公共周频输入层，`framework_db_aligned` 最新回测 run_id 为 13，样本 45，正确 31，准确率 `68.9%`，用于 `10Y国债活跃 · 周度` 格子；2026-06-06 15:05 scheduler 已注册该方案周六 11:30 自动调度。
 
@@ -63,12 +63,13 @@
   from shared.data_service import build_daily_output_from_db
   df = build_daily_output_from_db(start_date="2025-01-01", end_date="2025-05-28")
   ```
-- [x] `shared.input_artifacts.build_daily_input_artifact()` 调用 `shared.data_service` 生成 daily_output CSV，再从 CSV 读回 DataFrame；adapter 不直接拼接 DB 输入。
+- [x] `shared.input_artifacts.build_daily_input_artifact()` 调用统一 `shared.data_service` 生成 daily_output CSV，再从 CSV 读回 DataFrame；adapter 不直接拼接 DB 输入。
 - [x] `shared.input_artifacts.build_daily_input_artifact()` 是 t1/t5/历史复现 upstream 的统一日频输入文件入口；返回 `InputArtifact(path, dataframe, source, metadata)`。
-- [x] `shared.input_artifacts.build_weekly_input_artifact()` 是 weekly 10Y 的统一周频输入文件入口；先写 `weekly_output_*.csv`，再读回 DataFrame。
+- [x] `shared.input_artifacts.build_weekly_input_artifact()` 是所有周频方案的统一周频输入文件入口；底层调用统一 `shared.data_service`，先写 `weekly_output_*.csv`，再读回 DataFrame。
+- [x] `build_weekly_input_artifact()` 对旧 `end_date` / `include_daily_weekly_close_fallback` 参数显式报错，避免静默绕过统一数据层口径。
 - [x] 输入文件统一写到 `backtest_artifacts/runtime_inputs/{scheme_id}/`，adapter 不再自己拼 daily/weekly 文件路径。
-- [x] 返回的DataFrame列数为 880 列（当前库元数据口径）
-- [x] 返回的DataFrame包含 Y 生成所依赖的收益率列: `TB1YWI0C`, `TB3YWI0C`, `TB5YWI0C`, `TB7YWI0C`, `TB0YWI0C`
+- [x] 2026-06-08 统一数据层 dry-run 输出: t1 运行期 daily 文件 `1696 x 774`，t5 运行期 daily 文件 `1939 x 774`。
+- [x] 返回的DataFrame包含日频交易日锚定收益率列: `TB1YWI0C`, `TB5YWI0C`, `TB0YWI0C`；算法所需 `TB3YWI0C/TB7YWI0C` 作为普通因子列参与输出。
 - [x] 如果后续新增或修正的预测因子暂缺，记录为人工补数待完成，不作为代码测试失败
 - [x] `date`列为datetime类型且已排序
 - [x] 历史验证窗口最后一行的date等于当时最近交易日 `2026-05-29`
@@ -79,11 +80,7 @@
   - [x] DB 对齐列数和列顺序一致: `877`
   - [x] Y 生成所依赖的收益率列数值一致: 5 个收益率列最大误差均为 0
   - [x] 暂排除 `2026-05-25` 至 `2026-05-29` 目标周日期后，有效口径最大数值误差约为 `5e-7`
-- [x] 日频公共输入层 DB 生成版 vs 当前框架默认 data_service DB 生成版:
-  - [x] 对齐版行列一致: `3843 x 877`
-  - [x] 缺失差异: 0
-  - [x] 最大数值误差: 0
-- [x] 2026-06-07 重新审计: `scripts/audit_daily_data_service.py` 使用 `shared.data_service` 生成 DB daily_output；此前原始生成版与 shared 上游兼容版已确认完全一致，当前运行路径不再依赖 `_original_source`。
+- [x] 2026-06-08 重新审计: `scripts/audit_daily_data_service.py` 使用统一 `shared.data_service` 生成 DB daily_output；artifact 层不再传旧 `target_columns` 参数，当前运行路径不依赖 `_original_source`。
 
 ### 难点: 数据一致性
 
@@ -95,7 +92,6 @@
   db_df = build_daily_output_from_db(
       start_date="2010-07-27",
       end_date="2026-05-28",
-      target_columns=("TB1YWI0C", "TB5YWI0C", "TB0YWI0C"),
   )
   # 对比前3843行（CSV行数）的 Y 生成所依赖的收益率列
   assert (csv_df["TB0YWI0C"].dropna() - db_df["TB0YWI0C"].iloc[:len(csv_df)].dropna()).abs().max() < 1e-8
@@ -105,9 +101,9 @@
 
 历史实测记录（2026-05-31）: `build_daily_output_from_db(start_date="2026-05-20", end_date="2026-05-29")` 在 `forecast_env` 中验证通过，返回 `8 x 880` DataFrame，最后一行日期为 `2026-05-29`，`TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C/TB0YWI0C` 无 NaN。新机器只读核验显示这些收益率代码最新覆盖到 `2026-06-03`。
 
-输入文件层实测记录（2026-06-07）: `t1_daily` / `t5_daily` 已通过 `shared.input_artifacts` 调用 `shared.data_service` 生成运行期 daily CSV，再读回给算法；`weekly_10y_d_overlay` 也通过同一公共层调用 `weekly_data_service` 生成 weekly CSV。只读 dry-run `run("2026-06-05")` 成功: `t1_daily` 返回 `5Y/10Y` 两条，`t5_daily` 返回 `3Y/5Y/7Y/10Y` 四条；周度 `run("2026-06-06")` 返回 `10Y` 一条。运行期文件统一位于 `backtest_artifacts/runtime_inputs/{scheme_id}/`: t1 文件 `1696 x 880`，t5 文件 `1939 x 880`，weekly 文件 `840 x 575`，日频来源标记为 `shared_daily_data_service`，周度来源标记为 `wind_export_weekly_data_service`。
+输入文件层实测记录（2026-06-08）: `t1_daily` / `t5_daily` / `weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay` 均通过 `shared.input_artifacts` 调用统一 `shared.data_service` 生成运行期 CSV，再读回给算法。只读 dry-run 成功: `t1_daily` 返回 `5Y/10Y` 两条，`t5_daily` 返回 `3Y/5Y/7Y/10Y` 四条，三个周度方案分别返回 `10Y/5Y/7Y` 一条。运行期文件统一位于 `backtest_artifacts/runtime_inputs/{scheme_id}/`: t1 文件 `1696 x 774`，t5 文件 `1939 x 774`，weekly live 文件 `841 x 575`，日频来源标记为 `shared_data_service_daily`，周度来源标记为 `shared_data_service_weekly`。
 
-周频输入导出结论（2026-06-07）: `/Users/macstudio0/Desktop/wind_export(1).py` 已作为当前周度公共输入层口径；按该口径从当前 DB 只读生成的 `backtest_artifacts/runtime_inputs/weekly_10y_d_overlay/weekly_output_2026-06-06.csv` 与 `/Users/macstudio0/Desktop/weekly_output.csv` 的行数、列数、列顺序和周范围一致（`840 x 575`，`201001` 到 `202621`），关键最新周收益率列一致，最新 `weekly_10y_d_overlay` 模型输出也一致（`pred_label=-1`、`prob_up=0.28`）。当前仍未逐格完全一致: 实质数值差异（`abs_diff > 1e-4`）为 12 个单元格，缺失差异为 101 个单元格，另有大量 `1e-7` 量级小数精度差异。剩余逐格差异列为后续专项，不作为当前周度 live/backtest 阻塞项。对比报告:
+周频输入导出结论（2026-06-08）: 用户提供的统一 `data_service (1).py` 已作为当前周度公共输入层口径；按该口径从当前 DB 只读生成的 `backtest_artifacts/runtime_inputs/weekly_10y_d_overlay/weekly_output_2026-06-06.csv` 为 `841 x 575`，覆盖 `200901` 到 `202621`，historical_backtest 输入为 `842 x 575`，覆盖 `200901` 到 `202622`。关键最新周收益率列一致，最新 `weekly_10y_d_overlay` 模型输出也一致（`pred_label=-1`、`prob_up=0.28`）。当前仍未与桌面 CSV 逐格完全一致: 实质数值差异（`abs_diff > 1e-4`）为 12 个单元格，缺失差异为 101 个单元格，另有大量 `1e-7` 量级小数精度差异。剩余逐格差异列为后续专项，不作为当前周度 live/backtest 阻塞项。对比报告:
 
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_summary.json`
 - `reports/weekly_input_artifact_wind_export1_vs_desktop_diff.csv`
@@ -217,7 +213,7 @@
 - [x] 周度方案 live cron 已按旧实盘 weekly `multi` 首轮预测时间调整为 `30 11 * * 6`；旧实盘任务 `11:30` 启动，`16:00` / `22:00` 检查和必要补跑。
 - [x] 原始 `/Users/macstudio0/Downloads/weekly_10y_d_overlay_0529.py` 已复制到 `core/legacy_weekly_10y_d_overlay_0529.py`，核心模型逻辑不直接写库。
 - [x] `weekly_output_0529_columns.json` 已复制到 scheme core。
-- [x] `weekly_data_service.py` 可从 `api_wind_weekly` / `api_wind_derivative_weekly` 只读生成周频宽表。
+- [x] 统一 `shared.data_service` 可从 `api_wind_weekly` / `api_wind_derivative_weekly` 只读生成周频宽表；scheme 内部 `weekly_data_service.py` 只保留周度上下文辅助/历史兼容测试，不作为普通算法输入生成入口。
 - [x] `predict.py` 暴露标准 `run(predict_date: str) -> list[PredictionRecord]`。
 - [x] `scripts/check_weekly_10y_readiness.py` 已新增，只读检查 live 所需关键周频衍生指标覆盖。
 - [x] `scripts/write_weekly_10y_live_prediction.py` 已新增，只允许受控写入 `weekly_10y_d_overlay` 自己的 prediction/run_log。

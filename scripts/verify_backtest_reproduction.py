@@ -67,6 +67,7 @@ def check_data_alignment() -> None:
         "upstream_data_service",
         "original_data_service_file",
         "shared_daily_data_service",
+        "shared_data_service_daily",
     }
     assert report["generation"]["upstream_daily_targets"] == ["TB1YWI0C", "TB5YWI0C", "TB0YWI0C"]
     assert report["framework_db_comparison"]["date_match"] is True

@@ -1,19 +1,36 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
 import pandas as pd
 
-from shared.db_config import DatabaseConfig
 
-DAILY_TARGETS = ("TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
+FORECAST_ROOT = Path(__file__).resolve().parent
+DAILY_OUTPUT_PATH = FORECAST_ROOT / "daily_project" / "data" / "daily" / "daily_output.csv"
+WEEKLY_OUTPUT_PATH = FORECAST_ROOT / "weekly_project" / "data" / "weekly" / "weekly_output0606.csv"
+MONTHLY_OUTPUT_PATH = FORECAST_ROOT / "monthly_project" / "data" / "monthly" / "monthly_output.csv"
+
+DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 FREQUENCY_ALIASES = {
     "daily": {"日", "daily", "Daily", "DAILY", "D", "d", "1"},
     "weekly": {"周", "weekly", "Weekly", "WEEKLY", "W", "w", "2"},
     "monthly": {"月", "monthly", "Monthly", "MONTHLY", "M", "m", "3"},
 }
+
+
+@dataclass(frozen=True)
+class DatabaseConfig:
+    user: str
+    password: str
+    host: str
+    port: int = 3306
+    database: str = "bond_db"
+    charset: str = "utf8mb4"
+
 
 def normalize_frequency(frequency: str) -> str:
     value = str(frequency).strip()
@@ -39,12 +56,14 @@ def _truthy_predict_model(value: object, key: str) -> bool:
     if not text:
         return False
     try:
-        import json
-
         parsed = json.loads(text)
     except Exception:
         return False
     return int(parsed.get(key, 0) or 0) == 1
+
+
+def _truthy_column_mask(series: pd.Series) -> pd.Series:
+    return series.astype(str).str.strip().isin({"1", "1.0", "True", "true"})
 
 
 def select_factor_metadata(
@@ -52,14 +71,10 @@ def select_factor_metadata(
     frequency: str = "daily",
     tenor_filter: Optional[set[str]] = None,
     predict_model_only: bool = False,
-    status_only: bool = False,
+    status_only: bool = True,
+    pre_forecast_only: bool = True,
 ) -> pd.DataFrame:
-    """Select factor rows used to build model input.
-
-    The normal daily-output reproduction uses all rows with daily frequency.
-    When exact reproduction needs a restricted factor universe, the optional
-    tenor filter is applied only through api_wind_indicators_all.bond_tenor.
-    """
+    """Select active factors used to build model input/output frames."""
     if "indicators_code" not in metadata.columns:
         raise ValueError("metadata must contain indicators_code")
     if "frequency" not in metadata.columns:
@@ -76,13 +91,15 @@ def select_factor_metadata(
         result = result[result["predict_model"].apply(lambda value: _truthy_predict_model(value, normalized))]
 
     if status_only and "status" in result.columns:
-        result = result[result["status"].astype(str).str.strip().isin({"1", "1.0", "True", "true"})]
+        result = result[_truthy_column_mask(result["status"])]
 
-    if tenor_filter:
-        if "bond_tenor" in result.columns:
-            allowed = {str(item).strip() for item in tenor_filter}
-            tenor_values = result["bond_tenor"].fillna("").astype(str).str.strip()
-            result = result[tenor_values.eq("") | tenor_values.isin(allowed)]
+    if pre_forecast_only and "pre_forecast_flag" in result.columns:
+        result = result[_truthy_column_mask(result["pre_forecast_flag"])]
+
+    if tenor_filter and "bond_tenor" in result.columns:
+        allowed = {str(item).strip() for item in tenor_filter}
+        tenor_values = result["bond_tenor"].fillna("").astype(str).str.strip()
+        result = result[tenor_values.eq("") | tenor_values.isin(allowed)]
 
     return result.reset_index(drop=True)
 
@@ -96,6 +113,18 @@ def _metadata_output_columns_and_lags(metadata: pd.DataFrame) -> tuple[list[str]
     else:
         lags = pd.Series(0, index=selected.index)
     return output_columns, dict(zip(output_columns, lags))
+
+
+def _metadata_source_map(metadata: pd.DataFrame) -> dict[str, str]:
+    if "indicators_source" not in metadata.columns:
+        return {}
+    result: dict[str, str] = {}
+    for _, row in metadata.iterrows():
+        code = str(row.get("indicators_code", "") or "").strip()
+        source = str(row.get("indicators_source", "") or "").strip().lower()
+        if code:
+            result[code] = "derivative" if "derivative" in source or "衍生" in source else "raw"
+    return result
 
 
 def _prepare_long_frame(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
@@ -121,7 +150,6 @@ def build_daily_output_from_frames(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     tenor_filter: Optional[set[str]] = None,
-    target_columns: Optional[Sequence[str]] = None,
 ) -> pd.DataFrame:
     selected = select_factor_metadata(metadata, "daily", tenor_filter=tenor_filter)
     output_columns, lag_map = _metadata_output_columns_and_lags(selected)
@@ -132,8 +160,7 @@ def build_daily_output_from_frames(
     if end_date:
         df = df[df["rdate"] <= pd.to_datetime(end_date)]
 
-    target_codes = tuple(target_columns or DAILY_TARGETS)
-    y_df = df[df["indicators_code"].isin(target_codes)]
+    y_df = df[df["indicators_code"].isin(DAILY_TARGETS)]
     trading = pd.Index(sorted(y_df["rdate"].dropna().unique()), name="date")
     if len(trading) == 0:
         return pd.DataFrame(columns=["date"] + output_columns)
@@ -165,11 +192,40 @@ def build_daily_output_from_frames(
     return result.reset_index()
 
 
+def _load_root_db_config() -> DatabaseConfig:
+    try:
+        from db_config import DB_CONFIG  # type: ignore
+    except Exception:
+        from shared.db_config import DatabaseConfig as EnvDatabaseConfig
+
+        env_config = EnvDatabaseConfig.from_env()
+        return DatabaseConfig(
+            user=env_config.user,
+            password=env_config.password,
+            host=env_config.host,
+            port=env_config.port,
+            database=env_config.database,
+            charset=env_config.charset,
+        )
+    data = dict(DB_CONFIG)
+    missing = [key for key in ("user", "password", "host", "database") if not str(data.get(key, "")).strip()]
+    if missing:
+        raise RuntimeError(f"database config missing required keys: {missing}")
+    return DatabaseConfig(
+        user=str(data.get("user")),
+        password=str(data.get("password")),
+        host=str(data.get("host")),
+        port=int(data.get("port", 3306)),
+        database=str(data.get("database")),
+        charset=str(data.get("charset", "utf8mb4")),
+    )
+
+
 def create_sqlalchemy_engine(db_config: Optional[DatabaseConfig] = None):
     from sqlalchemy import create_engine
     from sqlalchemy.engine import URL
 
-    cfg = db_config or DatabaseConfig.from_env()
+    cfg = db_config or _load_root_db_config()
     url = URL.create(
         drivername="mysql+pymysql",
         username=cfg.user,
@@ -192,15 +248,21 @@ def read_factor_metadata_from_db(engine=None) -> pd.DataFrame:
             engine.dispose()
 
 
-def read_daily_long_from_db(indicator_codes: Iterable[str], table_name: str, engine=None) -> pd.DataFrame:
+def _read_long_from_db(
+    indicator_codes: Iterable[str],
+    table_name: str,
+    columns: Sequence[str],
+    engine=None,
+) -> pd.DataFrame:
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     codes = [str(code).strip() for code in indicator_codes if str(code).strip()]
     if not codes:
-        return pd.DataFrame(columns=["rdate", "indicators_code", "indicators_value"])
+        return pd.DataFrame(columns=list(columns))
     placeholders = ", ".join(["%s"] * len(codes))
+    select_cols = ", ".join(columns)
     sql = (
-        "SELECT rdate, indicators_code, indicators_value "
+        f"SELECT {select_cols} "
         f"FROM {table_name} WHERE indicators_code IN ({placeholders}) "
         "AND indicators_value IS NOT NULL"
     )
@@ -211,11 +273,14 @@ def read_daily_long_from_db(indicator_codes: Iterable[str], table_name: str, eng
             engine.dispose()
 
 
+def read_daily_long_from_db(indicator_codes: Iterable[str], table_name: str, engine=None) -> pd.DataFrame:
+    return _read_long_from_db(indicator_codes, table_name, ["rdate", "indicators_code", "indicators_value"], engine)
+
+
 def build_daily_output_from_db(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     tenor_filter: Optional[set[str]] = None,
-    target_columns: Optional[Sequence[str]] = None,
     engine=None,
 ) -> pd.DataFrame:
     own_engine = engine is None
@@ -226,21 +291,277 @@ def build_daily_output_from_db(
         codes = selected["indicators_code"].astype(str).str.strip().tolist()
         raw = read_daily_long_from_db(codes, "api_wind_daily", engine)
         derivative = read_daily_long_from_db(codes, "api_wind_derivative_daily", engine)
-        return build_daily_output_from_frames(
-            selected,
-            raw,
-            derivative,
-            start_date=start_date,
-            end_date=end_date,
-            target_columns=target_columns,
-        )
+        return build_daily_output_from_frames(selected, raw, derivative, start_date=start_date, end_date=end_date)
     finally:
         if own_engine:
             engine.dispose()
 
 
-def save_daily_output(df: pd.DataFrame, path: str | Path) -> Path:
+def _with_source_order(frames: Sequence[pd.DataFrame]) -> list[pd.DataFrame]:
+    prepared: list[pd.DataFrame] = []
+    for source_priority, frame in enumerate(frames):
+        if frame is None or frame.empty:
+            continue
+        item = frame.copy()
+        item["_source_priority"] = source_priority
+        item["_source_order"] = range(len(item))
+        prepared.append(item)
+    return prepared
+
+
+def _prepare_weekly_long_frame(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    prepared = _with_source_order(frames)
+    if not prepared:
+        return pd.DataFrame(
+            columns=["rdate", "week_id", "indicators_code", "indicators_value", "_source_priority", "_source_order"]
+        )
+    df = pd.concat(prepared, ignore_index=True)
+    required = {"week_id", "indicators_code", "indicators_value", "_source_priority", "_source_order"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"weekly long data missing required columns: {sorted(missing)}")
+    if "rdate" not in df.columns:
+        df["rdate"] = pd.NaT
+    result = df[["rdate", "week_id", "indicators_code", "indicators_value", "_source_priority", "_source_order"]].copy()
+    result["rdate"] = pd.to_datetime(result["rdate"], errors="coerce").dt.normalize()
+    result["week_id"] = result["week_id"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    result = result[result["week_id"].str.fullmatch(r"\d{6}", na=False)].copy()
+    result["week_id"] = result["week_id"].astype(int)
+    result["indicators_code"] = result["indicators_code"].astype(str).str.strip()
+    result["indicators_value"] = pd.to_numeric(result["indicators_value"], errors="coerce")
+    return result.dropna(subset=["week_id", "indicators_code", "indicators_value"])
+
+
+def build_weekly_output_from_frames(
+    schema_columns: Sequence[str],
+    raw_weekly: pd.DataFrame,
+    derivative_weekly: Optional[pd.DataFrame] = None,
+    start_week: Optional[int] = None,
+    end_week: Optional[int] = None,
+    lag_map: Optional[dict[str, int]] = None,
+) -> pd.DataFrame:
+    schema = [str(col).strip() for col in schema_columns]
+    if not schema or schema[0] != "week_id":
+        raise ValueError("weekly schema must start with week_id")
+    value_columns = schema[1:]
+    df = _prepare_weekly_long_frame([raw_weekly, derivative_weekly if derivative_weekly is not None else pd.DataFrame()])
+    if start_week is not None:
+        df = df[df["week_id"] >= int(start_week)]
+    if end_week is not None:
+        df = df[df["week_id"] <= int(end_week)]
+    df = df[df["indicators_code"].isin(value_columns)].copy()
+    if df.empty:
+        return pd.DataFrame(columns=schema)
+    df = df.sort_values(["week_id", "indicators_code", "_source_priority", "rdate", "_source_order"])
+    df = df.drop_duplicates(["week_id", "indicators_code"], keep="last")
+    wide = df.pivot(index="week_id", columns="indicators_code", values="indicators_value")
+    wide = wide.reindex(columns=value_columns)
+    wide = wide.sort_index()
+    wide.index = wide.index.astype(int)
+
+    if lag_map:
+        parts = []
+        for code in value_columns:
+            series = wide[code] if code in wide.columns else pd.Series(dtype=float, index=wide.index)
+            lag = int(lag_map.get(code, 0) or 0)
+            parts.append((series.shift(lag) if lag else series).rename(code))
+        wide = pd.concat(parts, axis=1) if parts else pd.DataFrame(index=wide.index)
+    return wide.reset_index()[schema]
+
+
+def build_weekly_output_from_metadata(
+    metadata: pd.DataFrame,
+    raw_weekly: pd.DataFrame,
+    derivative_weekly: Optional[pd.DataFrame] = None,
+    start_week: Optional[int] = None,
+    end_week: Optional[int] = None,
+) -> pd.DataFrame:
+    selected = select_factor_metadata(metadata, "weekly")
+    output_columns, lag_map = _metadata_output_columns_and_lags(selected)
+    return build_weekly_output_from_frames(
+        ["week_id"] + output_columns,
+        raw_weekly,
+        derivative_weekly,
+        start_week=start_week,
+        end_week=end_week,
+        lag_map=lag_map,
+    )
+
+
+def read_weekly_long_from_db(indicator_codes: Iterable[str], table_name: str, engine=None) -> pd.DataFrame:
+    return _read_long_from_db(
+        indicator_codes,
+        table_name,
+        ["rdate", "week_id", "indicators_code", "indicators_value"],
+        engine,
+    )
+
+
+def build_weekly_output_from_db(
+    schema_columns: Optional[Sequence[str]] = None,
+    start_week: Optional[int] = None,
+    end_week: Optional[int] = None,
+    engine=None,
+) -> pd.DataFrame:
+    own_engine = engine is None
+    engine = engine or create_sqlalchemy_engine()
+    try:
+        if schema_columns is None:
+            metadata = read_factor_metadata_from_db(engine)
+            selected = select_factor_metadata(metadata, "weekly")
+            codes = selected["indicators_code"].astype(str).str.strip().tolist()
+            raw = read_weekly_long_from_db(codes, "api_wind_weekly", engine)
+            derivative = read_weekly_long_from_db(codes, "api_wind_derivative_weekly", engine)
+            return build_weekly_output_from_metadata(
+                selected,
+                raw,
+                derivative,
+                start_week=start_week,
+                end_week=end_week,
+            )
+
+        schema = list(schema_columns)
+        codes = schema[1:]
+        raw = read_weekly_long_from_db(codes, "api_wind_weekly", engine)
+        derivative = read_weekly_long_from_db(codes, "api_wind_derivative_weekly", engine)
+        return build_weekly_output_from_frames(schema, raw, derivative, start_week=start_week, end_week=end_week)
+    finally:
+        if own_engine:
+            engine.dispose()
+
+
+def _business_month_id(rdate: object) -> str:
+    if pd.isna(rdate):
+        return ""
+    date = pd.to_datetime(rdate)
+    if date.day > 15:
+        return (date + pd.offsets.MonthBegin(1)).strftime("%Y%m")
+    return date.strftime("%Y%m")
+
+
+def _prepare_monthly_long_frame(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    prepared = _with_source_order(frames)
+    if not prepared:
+        return pd.DataFrame(
+            columns=["rdate", "month_id", "indicators_code", "indicators_value", "_source_priority", "_source_order"]
+        )
+    df = pd.concat(prepared, ignore_index=True)
+    required = {"rdate", "indicators_code", "indicators_value", "_source_priority", "_source_order"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"monthly long data missing required columns: {sorted(missing)}")
+    if "month_id" not in df.columns:
+        df["month_id"] = ""
+    result = df[["rdate", "month_id", "indicators_code", "indicators_value", "_source_priority", "_source_order"]].copy()
+    result["rdate"] = pd.to_datetime(result["rdate"], errors="coerce").dt.normalize()
+    cleaned_month = result["month_id"].fillna("").astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    missing_month = cleaned_month.str.lower().isin({"", "nan", "nat", "none", "<na>"})
+    result["month_id"] = cleaned_month.where(~missing_month, result["rdate"].map(_business_month_id))
+    result = result[result["month_id"].astype(str).str.fullmatch(r"\d{6}", na=False)].copy()
+    result["month_id"] = result["month_id"].astype(str)
+    result["indicators_code"] = result["indicators_code"].astype(str).str.strip()
+    result["indicators_value"] = pd.to_numeric(result["indicators_value"], errors="coerce")
+    return result.dropna(subset=["rdate", "indicators_code", "indicators_value"])
+
+
+def build_monthly_output_from_frames(
+    metadata: pd.DataFrame,
+    raw_monthly: pd.DataFrame,
+    derivative_monthly: Optional[pd.DataFrame] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> pd.DataFrame:
+    selected = select_factor_metadata(metadata, "monthly")
+    output_columns, lag_map = _metadata_output_columns_and_lags(selected)
+    source_map = _metadata_source_map(selected)
+    df = _prepare_monthly_long_frame([raw_monthly, derivative_monthly if derivative_monthly is not None else pd.DataFrame()])
+    if start_date:
+        df = df[df["rdate"] >= pd.to_datetime(start_date)]
+    if end_date:
+        df = df[df["rdate"] <= pd.to_datetime(end_date)]
+    df = df[df["indicators_code"].isin(output_columns)].copy()
+    if df.empty:
+        return pd.DataFrame(columns=["month_id"] + output_columns)
+
+    df = df.sort_values(["month_id", "indicators_code", "_source_priority", "rdate", "_source_order"])
+    df = df.drop_duplicates(["month_id", "indicators_code"], keep="last")
+    all_months = sorted(df["month_id"].dropna().unique())
+    wide = df.pivot(index="month_id", columns="indicators_code", values="indicators_value")
+    wide = wide.reindex(all_months)
+
+    parts = []
+    for code in output_columns:
+        series = wide[code] if code in wide.columns else pd.Series(dtype=float, index=all_months)
+        lag = 0 if source_map.get(code) == "derivative" else int(lag_map.get(code, 0) or 0)
+        parts.append((series.shift(lag) if lag else series).rename(code))
+    result = pd.concat(parts, axis=1) if parts else pd.DataFrame(index=all_months)
+    result.index.name = "month_id"
+    return result.reset_index()[["month_id"] + output_columns]
+
+
+def read_monthly_long_from_db(
+    indicator_codes: Iterable[str],
+    table_name: str,
+    engine=None,
+    include_month_id: bool = False,
+) -> pd.DataFrame:
+    columns = ["rdate", "indicators_code", "indicators_value"]
+    if include_month_id:
+        columns = ["rdate", "month_id", "indicators_code", "indicators_value"]
+    return _read_long_from_db(indicator_codes, table_name, columns, engine)
+
+
+def build_monthly_output_from_db(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    engine=None,
+) -> pd.DataFrame:
+    own_engine = engine is None
+    engine = engine or create_sqlalchemy_engine()
+    try:
+        metadata = read_factor_metadata_from_db(engine)
+        selected = select_factor_metadata(metadata, "monthly")
+        codes = selected["indicators_code"].astype(str).str.strip().tolist()
+        raw = read_monthly_long_from_db(codes, "api_wind_monthly", engine)
+        derivative = read_monthly_long_from_db(
+            codes,
+            "api_wind_derivative_monthly",
+            engine,
+            include_month_id=True,
+        )
+        return build_monthly_output_from_frames(selected, raw, derivative, start_date=start_date, end_date=end_date)
+    finally:
+        if own_engine:
+            engine.dispose()
+
+
+def export_dataframe(frequency: str, start_date=None, end_date=None, engine=None) -> pd.DataFrame:
+    normalized = normalize_frequency(frequency)
+    if normalized == "daily":
+        return build_daily_output_from_db(start_date=start_date, end_date=end_date, engine=engine)
+    if normalized == "weekly":
+        start_week = int(start_date) if start_date and str(start_date).isdigit() else None
+        end_week = int(end_date) if end_date and str(end_date).isdigit() else None
+        return build_weekly_output_from_db(start_week=start_week, end_week=end_week, engine=engine)
+    if normalized == "monthly":
+        return build_monthly_output_from_db(start_date=start_date, end_date=end_date, engine=engine)
+    raise ValueError(f"unsupported frequency: {frequency}")
+
+
+def _save_output(df: pd.DataFrame, path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
+    df.to_csv(output_path, index=False, encoding="utf-8-sig")
     return output_path
+
+
+def save_daily_output(df: pd.DataFrame, path: str | Path | None = None) -> Path:
+    return _save_output(df, path or DAILY_OUTPUT_PATH)
+
+
+def save_weekly_output(df: pd.DataFrame, path: str | Path | None = None) -> Path:
+    return _save_output(df, path or WEEKLY_OUTPUT_PATH)
+
+
+def save_monthly_output(df: pd.DataFrame, path: str | Path | None = None) -> Path:
+    return _save_output(df, path or MONTHLY_OUTPUT_PATH)

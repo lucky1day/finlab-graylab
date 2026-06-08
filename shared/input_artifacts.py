@@ -7,12 +7,10 @@ from typing import Any
 
 import pandas as pd
 
-from shared import data_service as daily_data_service
+from shared import data_service
 from shared.artifact_paths import RUNTIME_INPUT_ROOT, safe_path_part
-from schemes.weekly_10y_d_overlay.core import weekly_data_service
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
-DAILY_INPUT_TARGET_COLUMNS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 
 
 @dataclass(frozen=True)
@@ -58,21 +56,20 @@ def build_daily_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = daily_data_service.build_daily_output_from_db(
+    df = data_service.build_daily_output_from_db(
         start_date=start_date,
         end_date=end_date,
         engine=engine,
-        target_columns=DAILY_INPUT_TARGET_COLUMNS,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    daily_data_service.save_daily_output(df, path)
+    data_service.save_daily_output(df, path)
     read_back = _read_daily_output_csv(path)
     return InputArtifact(
         scheme_id=scheme_id,
         frequency="daily",
         path=path,
         dataframe=read_back,
-        source="shared_daily_data_service",
+        source="shared_data_service_daily",
         generated_at=_utc_now(),
         metadata={
             "start_date": start_date,
@@ -95,22 +92,24 @@ def build_weekly_input_artifact(
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> InputArtifact:
     """生成周频输入 CSV，再读回给算法。"""
+    if end_date is not None:
+        raise ValueError("end_date is not supported by the unified weekly data service; use end_week instead")
+    if include_daily_weekly_close_fallback:
+        raise ValueError("include_daily_weekly_close_fallback is not supported by the unified weekly data service")
     path = input_artifact_path(
         scheme_id=scheme_id,
         frequency="weekly",
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = weekly_data_service.build_weekly_output_from_db(
+    df = data_service.build_weekly_output_from_db(
         schema_columns=schema_columns,
         start_week=start_week,
         end_week=end_week,
-        end_date=end_date,
-        include_daily_weekly_close_fallback=include_daily_weekly_close_fallback,
         engine=engine,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False)
+    data_service.save_weekly_output(df, path)
     read_back = pd.read_csv(path)
     if "week_id" in read_back.columns:
         read_back["week_id"] = pd.to_numeric(read_back["week_id"], errors="coerce").astype("Int64")
@@ -122,7 +121,7 @@ def build_weekly_input_artifact(
         frequency="weekly",
         path=path,
         dataframe=read_back,
-        source="wind_export_weekly_data_service",
+        source="shared_data_service_weekly",
         generated_at=_utc_now(),
         metadata={
             "start_week": start_week,

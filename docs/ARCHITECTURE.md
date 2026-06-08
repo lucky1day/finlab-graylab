@@ -125,7 +125,7 @@ Scheduler触发actuals更新任务
 
 手动执行 backtests.weekly_*_reproduction
   → 通过 shared.input_artifacts 生成 historical_backtest 周频 weekly_output CSV 并读回
-  → 周频内部调用 weekly_data_service 的 wind_export(1) 口径
+  → 周频内部调用统一 shared.data_service
   → 运行 scheme core 中的周频算法逻辑
   → 按 feature_date 所在月份生成月度指标
   → 写入对应 scheme_id 的 t_backtest_runs / t_backtest_predictions / t_backtest_monthly_metrics
