@@ -70,8 +70,9 @@ class Weekly7YIntegrationTests(unittest.TestCase):
         )
         fake_engine = SimpleNamespace(dispose=lambda: None)
 
+        calendar = SimpleNamespace(week_id_for_date=lambda value: 202608)
         with patch.object(module, "create_sqlalchemy_engine", return_value=fake_engine):
-            with patch.object(module, "read_source_week_id_for_date", return_value=202608):
+            with patch.object(module, "get_calendar", return_value=calendar):
                 with patch.object(module, "build_weekly_input_artifact", return_value=artifact) as build:
                     records = module.run("2026-02-21")
 

@@ -140,8 +140,9 @@ class WeeklyPredictInputArtifactTests(unittest.TestCase):
             source="weekly_test_model",
         )
 
+        calendar = SimpleNamespace(week_id_for_date=lambda value: 202621)
         with patch.object(predict, "create_sqlalchemy_engine", return_value=engine):
-            with patch.object(predict, "read_source_week_id_for_date", return_value=202621):
+            with patch.object(predict, "get_calendar", return_value=calendar):
                 with patch.object(predict, "build_weekly_input_artifact", return_value=artifact) as build:
                     with patch.object(predict, "predict_w10y", return_value=model_result):
                         records = predict.run("2026-06-06")

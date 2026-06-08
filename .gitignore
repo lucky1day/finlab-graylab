@@ -17,6 +17,8 @@ backtest_artifacts/
 # Generated comparison reports. Keep only lightweight documentation/manifest files.
 reports/*.csv
 reports/*.json
+reports/refactor_baseline/
+reports/refactor_current/
 !reports/README.md
 
 __pycache__/

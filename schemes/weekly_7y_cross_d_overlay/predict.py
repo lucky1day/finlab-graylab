@@ -4,11 +4,11 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from shared.calendar_service import get_calendar
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_weekly_input_artifact
 from shared.models import PredictionRecord
 from shared.weekly_calendar import next_week_id, week_id_to_friday
-from schemes.weekly_10y_d_overlay.core.weekly_data_service import read_source_week_id_for_date
 
 from .core.predictors import REQUIRED_WEEKLY_COLUMNS, SOURCE_NAME, TARGET_RULE, predict_w7y
 
@@ -122,7 +122,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     feature_date = (run_date - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
     engine = create_sqlalchemy_engine()
     try:
-        source_feature_week_id = read_source_week_id_for_date(feature_date, engine=engine)
+        source_feature_week_id = get_calendar(engine=engine).week_id_for_date(feature_date)
         if source_feature_week_id is None:
             raise ValueError(f"weekly source data does not contain feature_date {feature_date}")
         context = resolve_weekly_prediction_context(predict_date, source_feature_week_id=source_feature_week_id)

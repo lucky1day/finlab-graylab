@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import text
-
-from schemes.t5_daily.latest_prediction import TENOR_MODULES, predict_latest_for_module
-from shared.data_service import create_sqlalchemy_engine
+from shared.calendar_service import get_calendar
 from shared.input_artifacts import build_daily_input_artifact
 from shared.models import PredictionRecord
+
+from .latest_prediction import TENOR_MODULES, predict_latest_for_module
 
 
 SCHEME_ID = "t5_daily"
@@ -16,24 +15,7 @@ HORIZON = 5
 
 def _target_date_from_feature_date(feature_date: str, horizon: int) -> str:
     """按原始 T+5 标签语义，取特征日后第 horizon 个交易日。"""
-    sql = text(
-        """
-        SELECT rdate
-        FROM t_trade_calendar
-        WHERE trade_flag = '1' AND rdate > :feature_date
-        ORDER BY rdate
-        LIMIT :horizon
-        """
-    )
-    engine = create_sqlalchemy_engine()
-    try:
-        with engine.connect() as conn:
-            rows = conn.execute(sql, {"feature_date": feature_date, "horizon": horizon}).scalars().all()
-    finally:
-        engine.dispose()
-    if len(rows) < horizon:
-        raise ValueError(f"not enough trading days after feature date {feature_date}")
-    return str(rows[-1])
+    return get_calendar().nth_trading_day_after(feature_date, horizon)
 
 
 def run(predict_date: str) -> list[PredictionRecord]:
