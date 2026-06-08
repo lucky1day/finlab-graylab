@@ -11,6 +11,8 @@ from shared import data_service
 from shared.artifact_paths import RUNTIME_INPUT_ROOT, safe_path_part
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
+DAILY_DATA_VERSION = "shared_data_service_daily.v1"
+WEEKLY_DATA_VERSION = "shared_data_service_weekly.v1"
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,12 @@ class InputArtifact:
     dataframe: pd.DataFrame
     source: str
     generated_at: str
+    data_version: str
+    row_count: int
+    column_count: int
+    columns: list[str]
+    date_coverage: dict[str, Any]
+    quality_flags: dict[str, Any]
     metadata: dict[str, Any]
 
 
@@ -64,6 +72,7 @@ def build_daily_input_artifact(
     path.parent.mkdir(parents=True, exist_ok=True)
     data_service.save_daily_output(df, path)
     read_back = _read_daily_output_csv(path)
+    profile = _dataframe_profile(read_back, coverage_field="date", required_columns=("date",))
     return InputArtifact(
         scheme_id=scheme_id,
         frequency="daily",
@@ -71,6 +80,12 @@ def build_daily_input_artifact(
         dataframe=read_back,
         source="shared_data_service_daily",
         generated_at=_utc_now(),
+        data_version=DAILY_DATA_VERSION,
+        row_count=profile["row_count"],
+        column_count=profile["column_count"],
+        columns=profile["columns"],
+        date_coverage=profile["date_coverage"],
+        quality_flags=profile["quality_flags"],
         metadata={
             "start_date": start_date,
             "end_date": end_date,
@@ -86,16 +101,10 @@ def build_weekly_input_artifact(
     schema_columns: list[str] | None = None,
     start_week: int | None = None,
     end_week: int | None = None,
-    end_date: str | None = None,
-    include_daily_weekly_close_fallback: bool = False,
     engine=None,
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> InputArtifact:
     """生成周频输入 CSV，再读回给算法。"""
-    if end_date is not None:
-        raise ValueError("end_date is not supported by the unified weekly data service; use end_week instead")
-    if include_daily_weekly_close_fallback:
-        raise ValueError("include_daily_weekly_close_fallback is not supported by the unified weekly data service")
     path = input_artifact_path(
         scheme_id=scheme_id,
         frequency="weekly",
@@ -116,6 +125,7 @@ def build_weekly_input_artifact(
     for col in read_back.columns:
         if col != "week_id":
             read_back[col] = pd.to_numeric(read_back[col], errors="coerce")
+    profile = _dataframe_profile(read_back, coverage_field="week_id", required_columns=("week_id",))
     return InputArtifact(
         scheme_id=scheme_id,
         frequency="weekly",
@@ -123,14 +133,69 @@ def build_weekly_input_artifact(
         dataframe=read_back,
         source="shared_data_service_weekly",
         generated_at=_utc_now(),
+        data_version=WEEKLY_DATA_VERSION,
+        row_count=profile["row_count"],
+        column_count=profile["column_count"],
+        columns=profile["columns"],
+        date_coverage=profile["date_coverage"],
+        quality_flags=profile["quality_flags"],
         metadata={
             "start_week": start_week,
             "end_week": end_week,
-            "end_date": end_date,
             "predict_date": predict_date,
-            "include_daily_weekly_close_fallback": include_daily_weekly_close_fallback,
         },
     )
+
+
+def _dataframe_profile(
+    df: pd.DataFrame,
+    *,
+    coverage_field: str,
+    required_columns: tuple[str, ...],
+) -> dict[str, Any]:
+    columns = [str(col) for col in df.columns]
+    missing_required = [col for col in required_columns if col not in columns]
+    date_coverage: dict[str, Any] = {"field": coverage_field, "start": None, "end": None}
+    null_coverage_rows = 0
+    duplicate_coverage_values = 0
+
+    if coverage_field in df.columns:
+        values = df[coverage_field]
+        null_coverage_rows = int(values.isna().sum())
+        non_null = values.dropna()
+        duplicate_coverage_values = int(non_null.duplicated().sum())
+        start, end = _coverage_bounds(non_null, coverage_field)
+        date_coverage["start"] = start
+        date_coverage["end"] = end
+
+    return {
+        "row_count": int(len(df)),
+        "column_count": int(len(columns)),
+        "columns": columns,
+        "date_coverage": date_coverage,
+        "quality_flags": {
+            "missing_required_columns": missing_required,
+            "empty_frame": bool(df.empty),
+            "null_coverage_rows": null_coverage_rows,
+            "duplicate_coverage_values": duplicate_coverage_values,
+        },
+    }
+
+
+def _coverage_bounds(values: pd.Series, coverage_field: str) -> tuple[Any, Any]:
+    if values.empty:
+        return None, None
+    if coverage_field == "date":
+        parsed = pd.to_datetime(values, errors="coerce").dropna()
+        if parsed.empty:
+            return None, None
+        return parsed.min().strftime("%Y-%m-%d"), parsed.max().strftime("%Y-%m-%d")
+    if coverage_field == "week_id":
+        numeric = pd.to_numeric(values, errors="coerce").dropna()
+        if numeric.empty:
+            return None, None
+        return int(numeric.min()), int(numeric.max())
+    return values.min(), values.max()
 
 def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(path)

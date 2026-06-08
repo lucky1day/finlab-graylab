@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,6 +48,23 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(artifact.scheme_id, "t1_daily")
         self.assertEqual(artifact.frequency, "daily")
         self.assertEqual(artifact.source, "shared_data_service_daily")
+        self.assertEqual(artifact.data_version, "shared_data_service_daily.v1")
+        self.assertEqual(artifact.row_count, 1)
+        self.assertEqual(artifact.column_count, 2)
+        self.assertEqual(artifact.columns, ["date", "TB0YWI0C"])
+        self.assertEqual(
+            artifact.date_coverage,
+            {"field": "date", "start": "2026-06-05", "end": "2026-06-05"},
+        )
+        self.assertEqual(
+            artifact.quality_flags,
+            {
+                "missing_required_columns": [],
+                "empty_frame": False,
+                "null_coverage_rows": 0,
+                "duplicate_coverage_values": 0,
+            },
+        )
         self.assertTrue(str(artifact.path).endswith("t1_daily/daily_output_2026-06-05.csv"))
         self.assertEqual(artifact.dataframe["date"].dt.strftime("%Y-%m-%d").tolist(), ["2026-06-05"])
         self.assertEqual(artifact.dataframe["TB0YWI0C"].tolist(), [2.1])
@@ -80,6 +98,23 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(artifact.scheme_id, "weekly_10y_d_overlay")
         self.assertEqual(artifact.frequency, "weekly")
         self.assertEqual(artifact.source, "shared_data_service_weekly")
+        self.assertEqual(artifact.data_version, "shared_data_service_weekly.v1")
+        self.assertEqual(artifact.row_count, 1)
+        self.assertEqual(artifact.column_count, 2)
+        self.assertEqual(artifact.columns, ["week_id", "TB0YWI3C"])
+        self.assertEqual(
+            artifact.date_coverage,
+            {"field": "week_id", "start": 202621, "end": 202621},
+        )
+        self.assertEqual(
+            artifact.quality_flags,
+            {
+                "missing_required_columns": [],
+                "empty_frame": False,
+                "null_coverage_rows": 0,
+                "duplicate_coverage_values": 0,
+            },
+        )
         self.assertTrue(str(artifact.path).endswith("weekly_10y_d_overlay/weekly_output_2026-06-06.csv"))
         self.assertEqual(artifact.dataframe["week_id"].tolist(), [202621])
         self.assertEqual(artifact.dataframe["TB0YWI3C"].tolist(), [1.7])
@@ -89,29 +124,12 @@ class InputArtifactTests(unittest.TestCase):
         self.assertIs(data_service.save_weekly_output.call_args.args[0], weekly_df)
         self.assertEqual(data_service.save_weekly_output.call_args.args[1], artifact.path)
 
-    def test_weekly_input_artifact_rejects_legacy_daily_close_fallback_flag(self) -> None:
+    def test_weekly_input_artifact_signature_removes_legacy_flags(self) -> None:
         from shared.input_artifacts import build_weekly_input_artifact
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(ValueError, "include_daily_weekly_close_fallback"):
-                build_weekly_input_artifact(
-                    scheme_id="weekly_10y_d_overlay",
-                    predict_date="2026-06-06",
-                    include_daily_weekly_close_fallback=True,
-                    output_root=Path(tmpdir),
-                )
-
-    def test_weekly_input_artifact_rejects_legacy_end_date_filter(self) -> None:
-        from shared.input_artifacts import build_weekly_input_artifact
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(ValueError, "end_date"):
-                build_weekly_input_artifact(
-                    scheme_id="weekly_10y_d_overlay",
-                    predict_date="2026-06-06",
-                    end_date="2026-06-05",
-                    output_root=Path(tmpdir),
-                )
+        signature = inspect.signature(build_weekly_input_artifact)
+        self.assertNotIn("end_date", signature.parameters)
+        self.assertNotIn("include_daily_weekly_close_fallback", signature.parameters)
 
 
 class WeeklyPredictInputArtifactTests(unittest.TestCase):

@@ -82,6 +82,11 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
 
 
 class ReproductionDailyDataServiceTests(unittest.TestCase):
+    def test_daily_reproduction_does_not_import_raw_daily_builder(self) -> None:
+        from backtests import daily_0529_reproduction as daily_reproduction
+
+        self.assertFalse(hasattr(daily_reproduction, "build_daily_output_from_db"))
+
     def test_db_aligned_daily_uses_common_input_artifact_when_upstream_mode(self) -> None:
         from backtests import daily_0529_reproduction as daily_reproduction
 
@@ -109,6 +114,34 @@ class ReproductionDailyDataServiceTests(unittest.TestCase):
         self.assertEqual(kwargs["end_date"], "2026-01-02")
         self.assertIs(kwargs["engine"], engine)
         self.assertEqual(kwargs["scheme_id"], "daily_common")
+
+    def test_framework_db_aligned_daily_uses_common_input_artifact(self) -> None:
+        from backtests import daily_0529_reproduction as daily_reproduction
+
+        canonical = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-01-02"]),
+                "TB0YWI0C": [2.2345],
+            }
+        )
+        generated = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-01-02"]),
+                "TB0YWI0C": [2.2345],
+            }
+        )
+        engine = object()
+
+        artifact = SimpleNamespace(dataframe=generated, path=Path("/tmp/framework_daily_output.csv"), source="test")
+        with patch.object(daily_reproduction, "build_daily_input_artifact", return_value=artifact) as build:
+            _, aligned = daily_reproduction.build_framework_db_aligned_daily(csv_df=canonical, engine=engine)
+
+        self.assertEqual(aligned["TB0YWI0C"].tolist(), [2.2345])
+        kwargs = build.call_args.kwargs
+        self.assertEqual(kwargs["start_date"], "2026-01-02")
+        self.assertEqual(kwargs["end_date"], "2026-01-02")
+        self.assertIs(kwargs["engine"], engine)
+        self.assertEqual(kwargs["scheme_id"], "daily_framework")
 
 
 if __name__ == "__main__":

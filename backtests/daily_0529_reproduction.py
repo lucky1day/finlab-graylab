@@ -18,8 +18,8 @@ from backtests.repository import (
     replace_backtest_predictions,
     upsert_backtest_run,
 )
-from shared.data_service import build_daily_output_from_db, create_sqlalchemy_engine
 from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root
+from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_daily_input_artifact
 
 
@@ -84,29 +84,21 @@ def build_db_aligned_daily(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """生成完整 DB 版 daily_output 和按 canonical CSV 对齐后的版本。
 
-    upstream_mode=True 时使用上游 data_service.py 的交易日锚定口径:
-    DAILY_TARGETS = TB1YWI0C/TB5YWI0C/TB0YWI0C。历史复现的 DB 输入
-    必须先经过这个“从 DB 生成 CSV”的步骤，再喂给算法。
+    历史复现的 DB 输入统一经过 shared.input_artifacts 生成和读回，
+    再喂给算法。upstream_mode 保留为旧调用兼容参数，不再绕过统一输入层。
     """
     original = csv_df if csv_df is not None else read_daily_csv()
     start_date = original["date"].min().strftime("%Y-%m-%d")
     end_date = original["date"].max().strftime("%Y-%m-%d")
-    if upstream_mode:
-        input_artifact = build_daily_input_artifact(
-            scheme_id=artifact_scheme_id,
-            predict_date=end_date,
-            start_date=start_date,
-            end_date=end_date,
-            engine=engine,
-            output_root=benchmark_input_root(BENCHMARK_ID),
-        )
-        db_df = input_artifact.dataframe
-    else:
-        db_df = build_daily_output_from_db(
-            start_date=start_date,
-            end_date=end_date,
-            engine=engine,
-        )
+    input_artifact = build_daily_input_artifact(
+        scheme_id=artifact_scheme_id,
+        predict_date=end_date,
+        start_date=start_date,
+        end_date=end_date,
+        engine=engine,
+        output_root=benchmark_input_root(BENCHMARK_ID),
+    )
+    db_df = input_artifact.dataframe
     db_df = db_df.copy()
     db_df["date"] = pd.to_datetime(db_df["date"], errors="coerce").dt.normalize()
     db_df = db_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
@@ -123,7 +115,12 @@ def build_db_aligned_daily(
 
 def build_framework_db_aligned_daily(csv_df: pd.DataFrame | None = None, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """生成当前框架 data_service 默认口径的 DB daily_output，用于额外对照。"""
-    return build_db_aligned_daily(csv_df=csv_df, engine=engine, upstream_mode=False)
+    return build_db_aligned_daily(
+        csv_df=csv_df,
+        engine=engine,
+        upstream_mode=False,
+        artifact_scheme_id="daily_framework",
+    )
 
 
 def run_data_alignment_check(engine: Engine | None = None, persist: bool = True) -> dict[str, Any]:
