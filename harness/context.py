@@ -1,0 +1,22 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from scheduler.discovery import SchemeConfig
+
+
+@dataclass(frozen=True)
+class GateContext:
+    scheme_id: str
+    predict_date: str
+    project_root: Path
+    report_dir: Path
+    config: "SchemeConfig | None" = None
+    algo_env: str = "forecast_env"
+    engine_factory: Callable[[], Any] | None = None
+    authorization: Any | None = None
+    persist_backtest: bool = False
+    timeout_sec: int = 600

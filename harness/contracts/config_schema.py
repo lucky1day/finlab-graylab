@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import re
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+SCHEME_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+ALLOWED_TENORS = {"1Y", "3Y", "5Y", "7Y", "10Y"}
+ALLOWED_FREQUENCIES = {"daily", "weekly", "monthly"}
+ALLOWED_STATUS = {"active", "paused"}
+
+
+def validate_config(raw: dict, dirname: str) -> list[str]:
+    """纯字典校验 config.yaml，返回错误列表。"""
+    errors: list[str] = []
+    if not isinstance(raw, dict):
+        return ["config.yaml must contain a mapping"]
+
+    scheme_id = raw.get("scheme_id")
+    if not isinstance(scheme_id, str) or not scheme_id.strip():
+        errors.append("scheme_id must be a non-empty string")
+    else:
+        if not SCHEME_ID_PATTERN.fullmatch(scheme_id):
+            errors.append("scheme_id must match ^[a-z][a-z0-9_]*$")
+        if scheme_id != dirname:
+            errors.append("scheme_id must match directory name")
+
+    for field in ("name", "description"):
+        if not isinstance(raw.get(field), str) or not raw.get(field, "").strip():
+            errors.append(f"{field} must be a non-empty string")
+
+    horizon = raw.get("horizon")
+    if not isinstance(horizon, int) or horizon <= 0:
+        errors.append("horizon must be a positive integer")
+
+    tenors = raw.get("tenors")
+    if not isinstance(tenors, list) or not tenors:
+        errors.append("tenors must be a non-empty list")
+    else:
+        invalid = [item for item in tenors if not isinstance(item, str) or item not in ALLOWED_TENORS]
+        if invalid:
+            errors.append(f"tenors contain unsupported values: {invalid}")
+
+    frequency = raw.get("frequency")
+    if frequency not in ALLOWED_FREQUENCIES:
+        errors.append("frequency must be one of daily, weekly, monthly")
+
+    schedule = raw.get("schedule")
+    if not isinstance(schedule, dict):
+        errors.append("schedule must be a mapping")
+    else:
+        cron = schedule.get("cron")
+        if not isinstance(cron, str) or len(cron.split()) != 5:
+            errors.append("schedule.cron must be a valid 5-field cron string")
+        timezone = schedule.get("timezone", "Asia/Shanghai")
+        if not isinstance(timezone, str) or not _valid_timezone(timezone):
+            errors.append("schedule.timezone must be a valid timezone")
+
+    entry_point = raw.get("entry_point", "predict.run")
+    if entry_point != "predict.run":
+        errors.append("entry_point must be predict.run")
+
+    if raw.get("status") not in ALLOWED_STATUS:
+        errors.append("status must be active or paused")
+
+    input_spec = raw.get("input_spec")
+    if not isinstance(input_spec, dict):
+        errors.append("input_spec must be a mapping")
+    else:
+        data_version = input_spec.get("data_version")
+        if not isinstance(data_version, str) or not data_version.strip():
+            errors.append("input_spec.data_version must be a non-empty string")
+        required = input_spec.get("required_columns")
+        if not isinstance(required, list) or not required or not all(isinstance(item, str) and item for item in required):
+            errors.append("input_spec.required_columns must be a non-empty list of strings")
+        if frequency == "weekly":
+            weekly_variant = input_spec.get("weekly_variant")
+            if not isinstance(weekly_variant, str) or not weekly_variant.strip():
+                errors.append("input_spec.weekly_variant is required for weekly schemes")
+
+    if frequency == "weekly":
+        target_rule = raw.get("target_rule")
+        if not isinstance(target_rule, str) or not target_rule.strip():
+            errors.append("target_rule is required for weekly schemes")
+
+    backtest = raw.get("backtest")
+    if backtest is not None:
+        if not isinstance(backtest, dict):
+            errors.append("backtest must be a mapping when present")
+        elif "runner" in backtest and (not isinstance(backtest["runner"], str) or not backtest["runner"].strip()):
+            errors.append("backtest.runner must be a non-empty string")
+
+    return errors
+
+
+def _valid_timezone(value: str) -> bool:
+    try:
+        ZoneInfo(value)
+    except ZoneInfoNotFoundError:
+        return False
+    return True

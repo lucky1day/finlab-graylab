@@ -19,6 +19,7 @@ reports/*.csv
 reports/*.json
 reports/refactor_baseline/
 reports/refactor_current/
+reports/harness/
 !reports/README.md
 
 __pycache__/

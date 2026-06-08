@@ -9,3 +9,10 @@ schedule:
   timezone: "Asia/Shanghai"
 entry_point: predict.run
 status: paused
+target_rule: next_week_last_trading_day_vs_current_week_last_trading_day
+input_spec:
+  data_version: shared_data_service_weekly.v1
+  weekly_variant: unified
+  required_columns: ["week_id", "TB1YWI3C", "TB3YWI3C", "TB5YWI3C", "TB7YWI3C", "TB0YWI3C"]
+backtest:
+  runner: backtests.weekly_7y_cross_d_overlay_reproduction

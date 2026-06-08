@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from datetime import datetime, timezone
+from typing import Callable
+
+from harness.context import GateContext
+from harness.result import Evidence, GateResult, GateStatus
+
+
+class Gate(ABC):
+    name: str
+    requires_authorization: bool = False
+
+    @abstractmethod
+    def run(self, ctx: GateContext) -> GateResult:
+        """运行 gate 并返回统一结果。"""
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def guarded_result(gate_name: str, runner: Callable[[str], GateResult]) -> GateResult:
+    started_at = utc_now()
+    try:
+        return runner(started_at)
+    except Exception as exc:
+        finished_at = utc_now()
+        return GateResult(
+            gate_name=gate_name,
+            status=GateStatus.FAILED,
+            passed=False,
+            evidence=[Evidence("exception_type", type(exc).__name__)],
+            errors=[str(exc)],
+            started_at=started_at,
+            finished_at=finished_at,
+        )

@@ -5,7 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:
+    import yaml
+except ModuleNotFoundError:  # forecast_env keeps scheduler dry-run lean and may not include PyYAML.
+    yaml = None
 
 
 logger = logging.getLogger(__name__)
@@ -45,7 +48,7 @@ def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
 
 def load_scheme_config(config_path: Path) -> SchemeConfig:
     """读取单个方案 config.yaml。"""
-    raw = _require_mapping(yaml.safe_load(config_path.read_text(encoding="utf-8")), config_path)
+    raw = _require_mapping(_load_yaml(config_path), config_path)
     schedule_raw = _require_mapping(raw.get("schedule", {}), config_path)
     scheme_id = str(raw["scheme_id"]).strip()
     if scheme_id != config_path.parent.name:
@@ -89,3 +92,47 @@ def discover_schemes(schemes_root: Path = SCHEMES_ROOT, strict: bool = False) ->
 def active_schemes(schemes_root: Path = SCHEMES_ROOT) -> list[SchemeConfig]:
     """返回 active 状态方案。"""
     return [cfg for cfg in discover_schemes(schemes_root) if cfg.status == "active"]
+
+
+def _load_yaml(config_path: Path) -> Any:
+    text = config_path.read_text(encoding="utf-8")
+    if yaml is not None:
+        return yaml.safe_load(text)
+    return _parse_project_yaml_subset(text)
+
+
+def _parse_project_yaml_subset(text: str) -> dict[str, Any]:
+    import ast as literal_ast
+
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        line = raw_line.strip()
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        current = stack[-1][1]
+        if value == "":
+            child: dict[str, Any] = {}
+            current[key] = child
+            stack.append((indent, child))
+        else:
+            current[key] = _parse_scalar(value, literal_ast)
+    return root
+
+
+def _parse_scalar(value: str, literal_ast_module) -> Any:
+    try:
+        return literal_ast_module.literal_eval(value)
+    except Exception:
+        pass
+    if value.isdigit():
+        return int(value)
+    return value
