@@ -186,7 +186,7 @@ def make_labels(df: pd.DataFrame, target_col: str) -> tuple[pd.Series, pd.Series
     return future_return, label
 
 
-def direction_text(label: float | int) -> str:
+def direction_label(label: float | int) -> str:
     if pd.isna(label):
         return ""
     value = int(label)
@@ -297,8 +297,8 @@ def build_7y_main(weekly: pd.DataFrame) -> pd.DataFrame:
     out["label_overlay_applied"] = label_overlay_applied
     out["main_pred_label"] = pred
     out["main_prob_up"] = prob
-    out["main_direction"] = pd.Series(pred).map(direction_text).to_numpy()
-    out["actual_direction"] = out["actual_label"].map(direction_text)
+    out["main_direction"] = pd.Series(pred).map(direction_label).to_numpy()
+    out["actual_direction"] = out["actual_label"].map(direction_label)
     return out[out["main_pred_label"].isin([-1.0, 1.0])].copy()
 
 

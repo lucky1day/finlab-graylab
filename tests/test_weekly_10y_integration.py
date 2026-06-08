@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import json
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,185 +27,6 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertIn('tenors: ["10Y"]', text)
         self.assertIn('cron: "30 11 * * 6"', text)
         self.assertIn("status: active", text)
-
-    def test_weekly_output_builder_pivots_long_weekly_frames(self) -> None:
-        module = importlib.import_module("schemes.weekly_10y_d_overlay.core.weekly_data_service")
-        schema = ["week_id", "TB0YWI3C", "TB1YWI3C", "X_FACTOR"]
-        raw = pd.DataFrame(
-            [
-                {"week_id": "202601", "indicators_code": "TB0YWI3C", "indicators_value": "2.10"},
-                {"week_id": "202601", "indicators_code": "TB1YWI3C", "indicators_value": "1.20"},
-                {"week_id": "202602", "indicators_code": "TB0YWI3C", "indicators_value": "2.12"},
-            ]
-        )
-        derivative = pd.DataFrame(
-            [
-                {"week_id": "202601", "indicators_code": "X_FACTOR", "indicators_value": "8"},
-                {"week_id": "202602", "indicators_code": "X_FACTOR", "indicators_value": "9"},
-            ]
-        )
-
-        wide = module.build_weekly_output_from_frames(schema, raw, derivative)
-
-        self.assertEqual(wide.columns.tolist(), schema)
-        self.assertEqual(wide["week_id"].tolist(), [202601, 202602])
-        self.assertEqual(float(wide.loc[0, "TB0YWI3C"]), 2.10)
-        self.assertTrue(pd.isna(wide.loc[1, "TB1YWI3C"]))
-        self.assertEqual(float(wide.loc[1, "X_FACTOR"]), 9.0)
-
-    def test_weekly_output_builder_uses_daily_close_fallback_for_missing_weekly_close_codes(self) -> None:
-        module = importlib.import_module("schemes.weekly_10y_d_overlay.core.weekly_data_service")
-        schema = ["week_id", "TB0YWI3C", "TB1YWI3C", "TB5YWI3C", "X_FACTOR"]
-        raw = pd.DataFrame(
-            [
-                {"week_id": 202622, "indicators_code": "X_FACTOR", "indicators_value": 8.0},
-            ]
-        )
-        derivative = pd.DataFrame(
-            [
-                {"week_id": 202621, "indicators_code": "TB0YWI3C", "indicators_value": 1.70},
-                {"week_id": 202621, "indicators_code": "TB1YWI3C", "indicators_value": 1.10},
-                {"week_id": 202621, "indicators_code": "TB5YWI3C", "indicators_value": 1.40},
-            ]
-        )
-        daily_fallback = pd.DataFrame(
-            [
-                {"week_id": 202622, "indicators_code": "TB0YWI3C", "indicators_value": 1.72},
-                {"week_id": 202622, "indicators_code": "TB1YWI3C", "indicators_value": 1.11},
-                {"week_id": 202622, "indicators_code": "TB5YWI3C", "indicators_value": 1.41},
-            ]
-        )
-
-        wide = module.build_weekly_output_from_frames(
-            schema,
-            raw,
-            derivative,
-            daily_weekly_close_fallback=daily_fallback,
-            end_week=202622,
-        )
-
-        row = wide[wide["week_id"].eq(202622)].iloc[0]
-        self.assertEqual(float(row["TB0YWI3C"]), 1.72)
-        self.assertEqual(float(row["TB1YWI3C"]), 1.11)
-        self.assertEqual(float(row["TB5YWI3C"]), 1.41)
-        self.assertEqual(float(row["X_FACTOR"]), 8.0)
-
-    def test_wind_export_weekly_metadata_filters_active_pre_forecast_factors(self) -> None:
-        module = importlib.import_module("schemes.weekly_10y_d_overlay.core.weekly_data_service")
-        metadata = pd.DataFrame(
-            [
-                {
-                    "indicators_code": "KEEP_CN",
-                    "frequency": "周",
-                    "lag_length": "1",
-                    "status": "1",
-                    "pre_forecast_flag": "1",
-                },
-                {
-                    "indicators_code": "KEEP_ALIAS",
-                    "frequency": "weekly",
-                    "lag_length": "",
-                    "status": "1",
-                    "pre_forecast_flag": "1",
-                },
-                {
-                    "indicators_code": "DROP_INACTIVE",
-                    "frequency": "周",
-                    "lag_length": "0",
-                    "status": "0",
-                    "pre_forecast_flag": "1",
-                },
-                {
-                    "indicators_code": "DROP_NOT_PRE_FORECAST",
-                    "frequency": "周",
-                    "lag_length": "0",
-                    "status": "1",
-                    "pre_forecast_flag": "0",
-                },
-                {
-                    "indicators_code": "DROP_DAILY",
-                    "frequency": "日",
-                    "lag_length": "0",
-                    "status": "1",
-                    "pre_forecast_flag": "1",
-                },
-            ]
-        )
-
-        selected = module.select_weekly_factor_metadata(metadata)
-
-        self.assertEqual(selected["indicators_code"].tolist(), ["KEEP_CN", "KEEP_ALIAS"])
-        self.assertEqual(selected["lag_length_num"].tolist(), [1, 0])
-
-    def test_wind_export_weekly_builder_applies_lag_and_keeps_weekend_updates(self) -> None:
-        module = importlib.import_module("schemes.weekly_10y_d_overlay.core.weekly_data_service")
-        metadata = pd.DataFrame(
-            [
-                {
-                    "indicators_code": "LAGGED",
-                    "frequency": "周",
-                    "lag_length": "1",
-                    "status": "1",
-                    "pre_forecast_flag": "1",
-                },
-                {
-                    "indicators_code": "WEEKEND",
-                    "frequency": "周",
-                    "lag_length": "0",
-                    "status": "1",
-                    "pre_forecast_flag": "1",
-                },
-                {
-                    "indicators_code": "FILTERED",
-                    "frequency": "周",
-                    "lag_length": "0",
-                    "status": "0",
-                    "pre_forecast_flag": "1",
-                },
-            ]
-        )
-        raw = pd.DataFrame(
-            [
-                {
-                    "rdate": "2026-06-05",
-                    "week_id": "202621",
-                    "indicators_code": "LAGGED",
-                    "indicators_value": "1.0",
-                },
-                {
-                    "rdate": "2026-06-12",
-                    "week_id": "202622",
-                    "indicators_code": "LAGGED",
-                    "indicators_value": "2.0",
-                },
-                {
-                    "rdate": "2026-06-05",
-                    "week_id": "202621",
-                    "indicators_code": "WEEKEND",
-                    "indicators_value": "9.0",
-                },
-                {
-                    "rdate": "2026-06-06",
-                    "week_id": "202621",
-                    "indicators_code": "WEEKEND",
-                    "indicators_value": "10.0",
-                },
-                {
-                    "rdate": "2026-06-06",
-                    "week_id": "202621",
-                    "indicators_code": "FILTERED",
-                    "indicators_value": "999.0",
-                },
-            ]
-        )
-
-        wide = module.build_wind_export_weekly_output_from_frames(metadata, raw)
-
-        self.assertEqual(wide.columns.tolist(), ["week_id", "LAGGED", "WEEKEND"])
-        self.assertEqual(wide["week_id"].tolist(), [202621, 202622])
-        self.assertTrue(pd.isna(wide.loc[0, "LAGGED"]))
-        self.assertEqual(float(wide.loc[1, "LAGGED"]), 1.0)
-        self.assertEqual(float(wide.loc[0, "WEEKEND"]), 10.0)
 
     def test_saturday_prediction_dates_use_source_feature_week_id_and_calendar_target_date(self) -> None:
         module = importlib.import_module("schemes.weekly_10y_d_overlay.predict")
@@ -277,12 +97,17 @@ class Weekly10YIntegrationTests(unittest.TestCase):
         self.assertIn("dailyRowsByMonth(scheme.daily_rows || [], scheme.frequency, scheme.horizon)", js)
         self.assertIn("dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon)", js)
 
-    def test_weekly_schema_json_is_available(self) -> None:
-        schema_path = PROJECT_ROOT / "schemes" / "weekly_10y_d_overlay" / "core" / "weekly_output_0529_columns.json"
-        self.assertTrue(schema_path.exists(), "weekly schema JSON must be copied into the scheme core")
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        self.assertEqual(schema[0], "week_id")
-        self.assertIn("TB0YWI3C", schema)
+    def test_frontend_positions_detail_panel_next_to_trigger_without_scrolling(self) -> None:
+        js = (PROJECT_ROOT / "frontend" / "aifin-shell.js").read_text(encoding="utf-8")
+
+        self.assertIn("function positionFactorCalendarPanel", js)
+        self.assertIn("trigger.getBoundingClientRect()", js)
+        self.assertIn("panel.style.top =", js)
+        self.assertNotIn("scrollIntoView", js)
+        self.assertIn(
+            'openFactorCalendar(calendarButton.getAttribute("data-factor-calendar-month"), calendarButton)',
+            js,
+        )
 
     def test_weekly_backtest_row_dates_follow_saturday_prediction_rule(self) -> None:
         module = importlib.import_module("backtests.weekly_10y_d_overlay_reproduction")

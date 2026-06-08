@@ -43,8 +43,13 @@ def save_model_artifacts(result: PredictionResult, base_dir: str | Path) -> Mode
     if result.model is not None:
         # LightGBM's C save_model can fail on non-ASCII Windows paths. Writing
         # the model string through Python keeps local and production paths safe.
-        model_path.write_text(result.model.booster_.model_to_string(), encoding="utf-8")
+        _write_utf8(model_path, result.model.booster_.model_to_string())
     else:
-        model_path.write_text("cold_fallback_no_model\n", encoding="utf-8")
-    metadata_path.write_text(json.dumps(_metadata(result), ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_utf8(model_path, "cold_fallback_no_model\n")
+    _write_utf8(metadata_path, json.dumps(_metadata(result), ensure_ascii=False, indent=2))
     return ModelArtifactPaths(model_path=model_path, metadata_path=metadata_path)
+
+
+def _write_utf8(path: Path, content: str) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(content)
