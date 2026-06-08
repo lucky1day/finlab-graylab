@@ -12,6 +12,7 @@ from backtests.repository import clean_json
 from backtests.daily_0529_reproduction import BENCHMARK_ID, RunOutput, make_run_output, persist_run_output
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_weekly_input_artifact
+from shared.legacy_weekly_calendar import legacy_week_id_to_friday
 from shared.weekly_calendar import next_week_id, week_id_to_friday
 from schemes.weekly_5y_direct_production.core.predictors import (
     TARGET_COL,
@@ -33,7 +34,7 @@ def build_weekly_5y_predictions(weekly_df: pd.DataFrame) -> pd.DataFrame:
     weekly = normalize_weekly_frame(weekly_df)
     vote = build_rule_vote(weekly)
     meta = weekly[["week_id", TARGET_COL]].copy()
-    meta["week_date"] = meta["week_id"].map(week_id_to_friday)
+    meta["week_date"] = meta["week_id"].map(legacy_week_id_to_friday)
     out = vote.merge(meta, on="week_id", how="left").sort_values("week_id").reset_index(drop=True)
 
     close = pd.to_numeric(out[TARGET_COL], errors="coerce")

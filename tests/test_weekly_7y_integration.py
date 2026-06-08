@@ -43,6 +43,24 @@ class Weekly7YIntegrationTests(unittest.TestCase):
         self.assertIn("7y_cross_d_overlay_0529", result.source)
         self.assertIn("seven_year_1y_3y_spread_reversal_3w", result.source_spec)
 
+    def test_weekly_7y_normalize_uses_legacy_week_dates(self) -> None:
+        module = importlib.import_module("schemes.weekly_7y_cross_d_overlay.core.predictors")
+        weekly_df = pd.DataFrame(
+            [
+                {"week_id": 202553, "TB1YWI3C": 1.0, "TB3YWI3C": 1.2, "TB5YWI3C": 1.5, "TB7YWI3C": 1.7, "TB0YWI3C": 1.9},
+                {"week_id": 202618, "TB1YWI3C": 1.1, "TB3YWI3C": 1.3, "TB5YWI3C": 1.6, "TB7YWI3C": 1.8, "TB0YWI3C": 2.0},
+            ]
+        )
+
+        normalized = module.normalize_weekly_frame(weekly_df)
+        dates = {
+            int(row.week_id): pd.Timestamp(row.week_date).strftime("%Y-%m-%d")
+            for row in normalized.itertuples()
+        }
+
+        self.assertEqual(dates[202553], "2026-01-04")
+        self.assertEqual(dates[202618], "2026-05-01")
+
     def test_weekly_7y_adapter_uses_common_weekly_input_artifact(self) -> None:
         module = importlib.import_module("schemes.weekly_7y_cross_d_overlay.predict")
         artifact = SimpleNamespace(

@@ -118,6 +118,28 @@ class Weekly5YIntegrationTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["feature_week_id"], 202605)
         self.assertEqual(rows[0]["extra"]["target_week_id"], 202606)
 
+    def test_weekly_5y_backtest_uses_legacy_week_dates(self) -> None:
+        module = importlib.import_module("backtests.weekly_5y_direct_production_reproduction")
+        weekly_df = pd.DataFrame(
+            [
+                {"week_id": 202553, "TB1YWI3C": 1.0, "TB5YWI3C": 2.0, "TB7YWI3C": 2.0, "TB0YWI3C": 2.0},
+                {"week_id": 202601, "TB1YWI3C": 1.0, "TB5YWI3C": 1.9, "TB7YWI3C": 2.0, "TB0YWI3C": 2.0},
+                {"week_id": 202602, "TB1YWI3C": 1.0, "TB5YWI3C": 1.8, "TB7YWI3C": 2.0, "TB0YWI3C": 2.0},
+                {"week_id": 202603, "TB1YWI3C": 1.0, "TB5YWI3C": 1.7, "TB7YWI3C": 2.0, "TB0YWI3C": 2.0},
+                {"week_id": 202604, "TB1YWI3C": 1.2, "TB5YWI3C": 1.6, "TB7YWI3C": 2.1, "TB0YWI3C": 2.0},
+                {"week_id": 202618, "TB1YWI3C": 1.3, "TB5YWI3C": 1.5, "TB7YWI3C": 2.2, "TB0YWI3C": 2.0},
+            ]
+        )
+
+        predictions = module.build_weekly_5y_predictions(weekly_df)
+        dates = {
+            int(row.week_id): pd.Timestamp(row.week_date).strftime("%Y-%m-%d")
+            for row in predictions.itertuples()
+        }
+
+        self.assertEqual(module.legacy_week_id_to_friday(202553).strftime("%Y-%m-%d"), "2026-01-04")
+        self.assertEqual(dates[202618], "2026-05-01")
+
     def test_weekly_5y_monthly_metrics_bucket_by_feature_month(self) -> None:
         module = importlib.import_module("backtests.weekly_5y_direct_production_reproduction")
         base = {

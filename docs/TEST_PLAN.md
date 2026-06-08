@@ -12,9 +12,9 @@
 
 > 新机器复核（2026-06-07）: 当前正式平台表、target registry、backtest 表均已创建；`t_scheme_actuals=13900`，覆盖到 `2026-06-03`；`t_scheme_weekly_actuals=794`，已接入 10Y 周度 actuals。`t_scheme_predictions=7`、`t_scheme_run_log=4`，其中 1 条 prediction 和 2 条 run_log 来自 2026-06-06 周度受控 live 写库验收及单方案 scheduler 手动补跑。`weekly_10y_d_overlay` 已切换到 `wind_export(1)` 口径公共周频输入层，`framework_db_aligned` 最新回测 run_id 为 13，样本 45，正确 31，准确率 `68.9%`，用于 `10Y国债活跃 · 周度` 格子；2026-06-06 15:05 scheduler 已注册该方案周六 11:30 自动调度。
 
-> 周度 5Y 更新（2026-06-08）: `weekly_5y_direct_production` 已按 SOP 接入并保持 `paused`。标准 dry-run 成功，受控回测落库 run_id=`28`，样本 501，正确 292，准确率 `58.3%`；落库只改变 `t_backtest_*`，`t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 保持不变。backend factor-lab 数据函数、HTTP API 和浏览器 UI 已返回 `5Y国债活跃 · 周度` 矩阵项；默认区间 `2025-01` 至 `2026-05` 显示 `58.6% (41/70)`。
+> 周度 5Y 更新（2026-06-08）: `weekly_5y_direct_production` 已按 SOP 接入并保持 `paused`。标准 dry-run 成功；本轮代码 review 已把历史回测日期修正为 legacy 0529 脚本口径，受控回测落库 run_id=`32`，样本 503，正确 294，准确率 `58.4%`；落库只改变 `t_backtest_*`，`t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 保持不变。backend factor-lab 数据函数已返回 `5Y国债活跃 · 周度` 最新矩阵项；in-app browser 已确认默认区间矩阵显示 `59.7%`。
 
-> 周度 7Y 更新（2026-06-08）: `weekly_7y_cross_d_overlay` 已按 SOP 接入并保持 `paused`。标准 dry-run 成功，返回 `target_tenor=7Y`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`；受控回测落库 run_id=`30`，样本 42，正确 28，准确率 `66.7%`；落库只改变 `t_backtest_*`，`t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 保持不变。backend factor-lab service 函数已返回 `7Y国债活跃 · 周度` 矩阵项，HTTP/browser 验收待本地 8100 服务恢复。
+> 周度 7Y 更新（2026-06-08）: `weekly_7y_cross_d_overlay` 已按 SOP 接入并保持 `paused`。标准 dry-run 成功，返回 `target_tenor=7Y`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`；本轮代码 review 已把 `date/week_date/month_date` 修正为 legacy 0529 脚本口径，受控回测落库 run_id=`34`，样本 43，正确 27，准确率 `62.8%`；落库只改变 `t_backtest_*`，`t_scheme_predictions/t_scheme_run_log/t_scheme_actuals/t_scheme_weekly_actuals` 保持不变。backend factor-lab service 函数已返回 `7Y国债活跃 · 周度` 最新矩阵项；in-app browser 已确认矩阵和详情均显示 7Y 周度方案。
 
 ---
 
@@ -294,12 +294,11 @@
 - [x] 新增 `backtests.weekly_5y_direct_production_reproduction`，可用 `--no-persist` 只读复现，也可在明确授权后写入该 `scheme_id` 对应的 `t_backtest_*` 回测记录。
 - [x] 回测 runner 已回归测试覆盖: 必须通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成 `historical_backtest` 输入 CSV，不可直接绕过公共输入层。
 - [x] 回测行转换按周五 `feature_date`、周六 `predict_date`、下一周最后交易日 `target_date` 转换，并按 `feature_date` 归月。
-- [x] no-persist DB 回测成功: 501 个有效样本，292 个正确，整体准确率 58.3%；实盘窗口 42 个样本，26 个正确，准确率 61.9%。
-- [x] 受控回测落库成功: run_id=`28`，`t_backtest_runs=9`、`t_backtest_predictions=7523`、`t_backtest_monthly_metrics=503`、`t_backtest_reproduction_checks=1`。
-- [x] 落库前后受保护表保持不变: `t_scheme_predictions=7`、`t_scheme_run_log=4`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
-- [x] backend factor-lab 数据函数返回 `5Y国债活跃 · 周度` 矩阵项: run_id=`28`，样本 501，正确 292，准确率 58.3%。
-- [x] HTTP API 可访问: `GET /api/health` 返回 ok，`GET /api/backtests/factor-lab` 返回 5Y 周度 run_id=`28`。
-- [x] 浏览器 UI 已验证: `5Y国债活跃 · 周度` 默认区间显示 `58.6% (41/70)`，候选方案排行显示 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。
+- [x] no-persist DB 回测成功: legacy 日期口径修正后 503 个有效样本，294 个正确，整体准确率 58.4%；实盘窗口 43 个样本，26 个正确，准确率 60.5%。
+- [x] 受控回测落库成功: run_id=`32`，本轮 5Y/7Y 合计写入后 `t_backtest_runs=12`、`t_backtest_predictions=8111`、`t_backtest_monthly_metrics=649`、`t_backtest_reproduction_checks=1`。
+- [x] 落库前后受保护表保持不变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
+- [x] backend factor-lab 数据函数返回 `5Y国债活跃 · 周度` 矩阵项: run_id=`32`，样本 503，正确 294，准确率 58.4%。
+- [x] 本轮最新 run 的 HTTP/browser 验收通过: in-app browser 默认区间矩阵显示 `5Y国债活跃 · 周度=59.7%`。
 
 ---
 
@@ -327,12 +326,12 @@
 
 - [x] 新增 `backtests.weekly_7y_cross_d_overlay_reproduction`，可用 `--no-persist` 只读复现，也可在明确授权后写入该 `scheme_id` 对应的 `t_backtest_*` 回测记录。
 - [x] 回测 runner 已回归测试覆盖: 必须通过 `shared.input_artifacts.build_weekly_input_artifact()` 生成 `historical_backtest` 输入 CSV，不可直接绕过公共输入层。
-- [x] 回测行转换按周五 `feature_date`、周六 `predict_date`、下一周最后交易日 `target_date` 转换，并按 `feature_date` 归月。
-- [x] no-persist DB 回测成功: 42 个有效样本，28 个正确，整体准确率 66.7%；实盘窗口 39 个样本，26 个正确，准确率 66.7%。
-- [x] 受控回测落库成功: run_id=`30`，`t_backtest_runs=10`、`t_backtest_predictions=7565`、`t_backtest_monthly_metrics=514`、`t_backtest_reproduction_checks=1`。
+- [x] 回测行转换按 legacy 周五 `feature_date`、周六 `predict_date`、下一周最后交易日 `target_date` 转换，并按 `feature_date` 归月；单测锁定 `202553 -> 2026-01-04`、`202618 -> 2026-05-01`。
+- [x] no-persist DB 回测成功: legacy 日期口径修正后 43 个有效样本，27 个正确，整体准确率 62.8%；实盘窗口 40 个样本，26 个正确，准确率 65.0%。
+- [x] 受控回测落库成功: run_id=`34`，本轮 5Y/7Y 合计写入后 `t_backtest_runs=12`、`t_backtest_predictions=8111`、`t_backtest_monthly_metrics=649`、`t_backtest_reproduction_checks=1`。
 - [x] 落库前后受保护表保持不变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。
-- [x] backend factor-lab 数据函数返回 `7Y国债活跃 · 周度` 矩阵项: run_id=`30`，样本 42，正确 28，准确率 66.7%。
-- [ ] HTTP/browser 验收待 backend 8100 服务恢复后复核。
+- [x] backend factor-lab 数据函数返回 `7Y国债活跃 · 周度` 矩阵项: run_id=`34`，样本 43，正确 27，准确率 62.8%。
+- [x] HTTP/browser 验收通过: in-app browser 默认区间矩阵显示 `7Y国债活跃 · 周度=62.8%`，点击后详情可打开。
 
 ---
 

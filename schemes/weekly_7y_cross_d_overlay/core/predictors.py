@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from shared.weekly_calendar import week_id_to_friday, week_id_to_monday
+from shared.legacy_weekly_calendar import legacy_week_id_to_friday, legacy_week_id_to_monday
 
 
 TARGET_COL = "TB7YWI3C"
@@ -164,8 +164,8 @@ def normalize_weekly_frame(weekly_df: pd.DataFrame) -> pd.DataFrame:
     for col in REQUIRED_WEEKLY_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.sort_values("week_id").reset_index(drop=True)
-    df["date"] = df["week_id"].map(week_id_to_monday)
-    df["week_date"] = df["week_id"].map(week_id_to_friday)
+    df["date"] = df["week_id"].map(legacy_week_id_to_monday)
+    df["week_date"] = df["week_id"].map(legacy_week_id_to_friday)
     return df
 
 
