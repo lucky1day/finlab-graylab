@@ -17,6 +17,7 @@
   - `python -m harness onboard {scheme_id} --stage all` 可一条命令串联 static→input→unit→dry-run→backtest→api，fail-fast，退出码 0/1/2；live/activate 不在 all 内，必须显式授权。
 - **里程碑达成**：M1 数据层合规、M2 StaticGate 守护、M3 自动段贯通、M4 授权卡点、M5 自动化入库可用。
 - **剩余尾项（不阻塞）**：
+  - **⚠️ 周频 week_id 口径正确性（待审计，优先级高）**：现有 3 个周频方案的预测/回测路径用**计算型周历公式**推导 `week_id ↔ 交易日`（`weekly_10y` 用 `shared.weekly_calendar` 的"每年第一个周一"口径；`weekly_5y/7y` 的 core/runner 用 `shared.legacy_weekly_calendar` 的 ISO 周口径）。该公式可能与 `bond_db.api_wind_daily` 中 week_id 的实际口径不一致，导致特征周/目标周对错行——此错误可能在入库时即引入。**正确做法**：week_id 及其日期映射必须从 `api_wind_daily`（含 `rdate`+`week_id`）读取，不得计算（已写入入库 SOP Step 3a + Static Gate）。**待办**：① 对 3 个周频方案逐个用 `api_wind_daily` 实际口径核对现有 week_id↔日期映射是否一致；② 若不一致，按入库 SOP 改造为 DB 读取口径并重新走入库后测试验证 SOP。注意：此改造会改变预测结果，须独立验证，不能与"行为保持"等价闸混淆。
   - **V3 引擎工厂下沉**（待办，可选小重构）：3 个周频 adapter（`weekly_10y/5y/7y` 的 `predict.py`）仍 `from shared.data_service import create_sqlalchemy_engine` 自建并 `dispose` engine，再传给 `calendar_service` / `input_artifacts`。这属依赖白名单内 `adapter→shared` 边，不违规、不阻塞。目标：让 `calendar_service` / `input_artifacts` 在不传 engine 时自管连接，adapter 不再碰裸引擎；引擎工厂语义下沉到 `shared/db_config.py`。**建议并入"第1步：重新验证 5 方案"时顺手做**——那时本就要跑等价闸，边际成本最低；改动须经 `scripts/compare_refactor_outputs.py` 验证 dry-run/回测数值不变。
   - t1 的 `model_store.py` / `shap_analysis.py` 为预留能力（模型留档 / SHAP 归因），当前未接入预测路径，保留待用。
 

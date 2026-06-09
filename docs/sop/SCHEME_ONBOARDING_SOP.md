@@ -240,6 +240,19 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 历史回测 runner 也必须遵守同一条输入链路: runner 先调用 `shared.input_artifacts` 生成 `historical_backtest` 输入文件，再把读回后的 DataFrame 交给算法。只有 `scripts/audit_*`、`scripts/compare_*` 这类数据服务审计脚本可以直接调用底层 `shared.data_service`；普通方案、live dry-run 和 backtest runner 不允许绕过公共输入 artifact。
 
+#### Step 3a（强制）: 周频 week_id 必须读 DB，禁止用日历公式算
+
+> **背景**：曾出现周频方案用日历公式（"每年第一个周一"或 ISO 周）把 `week_id` 算成日期，与数据库实际口径不一致，导致特征周/目标周对错行、取错收益率、算错方向。该错误在入库时即被引入且不易察觉。
+
+强制规则（适用于所有周频/月频方案的 adapter、core 与 backtest runner）：
+
+1. **week_id 的权威来源唯一**：`bond_db.api_wind_daily`（该表含 `rdate` + `week_id` 两列）。任何 `week_id ↔ 交易日` 的映射都必须**从 DB 读取**，不得用本地日历公式计算。
+   - 日期 → week_id：读 `api_wind_daily.week_id`（经 `shared.calendar_service.week_id_for_date`，其底层查 `api_wind_*`）。
+   - week_id → 交易日 / 周内最后交易日：`SELECT rdate ... FROM api_wind_daily WHERE week_id = :week_id`（取该周实际交易日，最后交易日取 `MAX(rdate)`），不得用 `week_id_to_friday/monday` 这类公式。
+2. **禁止**新增方案在预测/回测路径中 import `shared.weekly_calendar` / `shared.legacy_weekly_calendar` 的 `*_to_friday` / `*_to_monday` / `get_week_id_for_date` 等**计算型**函数来决定特征周/目标周日期。这些仅允许作为展示用近似或历史归档，不得参与数据对齐。
+3. **target_week_id** 同样以 DB 口径推导：本周 week_id 的下一周，应以 `api_wind_daily` 中实际存在的下一个 week_id 为准，而非 `feature+1` 直接递增。
+4. 验收证据：adapter/runner 日志或 `extra` 中能证明 `feature_week_id`、`target_week_id`、`feature_date`、`target_date` 均来自 `api_wind_daily` 读取，而非公式计算。
+
 ### Step 4: Static Gate - 静态边界检查
 
 静态检查必须覆盖:
@@ -250,6 +263,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 - `core/` 不直接 import `scheduler.repository`、`scheduler.executor` 或 SQL 写库函数。
 - `predict.py` 不直接执行 `INSERT/UPDATE/DELETE/ALTER/DROP`。
 - 普通方案和 backtest runner 不绕过 `shared.input_artifacts` 生成输入。
+- **周频/月频方案的预测与回测路径不得 import 计算型周历函数（`shared.weekly_calendar` / `shared.legacy_weekly_calendar` 的 `*_to_friday/*_to_monday/get_week_id_for_date`）来决定 week_id↔日期；week_id 必须读 `api_wind_daily`（见 Step 3a）。**
 - 运行路径不依赖 `/Users/.../Downloads`、`Desktop` 等外部绝对路径。
 
 ### Step 5: Unit Gate - 单元验证
