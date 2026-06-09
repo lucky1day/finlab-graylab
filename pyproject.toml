@@ -19,4 +19,4 @@ service = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["shared*", "backend*", "scheduler*", "schemes*", "backtests*"]
+include = ["shared*", "backend*", "scheduler*", "schemes*", "backtests*", "harness*"]
