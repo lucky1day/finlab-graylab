@@ -38,8 +38,10 @@ from sqlalchemy.engine import Engine
 
 from backtests.repository import (
     clean_json,
+    create_backtest_run,
     replace_backtest_monthly_metrics,
     replace_backtest_predictions,
+    update_backtest_run_summary,
     upsert_backtest_run,
 )
 from shared.artifact_paths import benchmark_input_root
@@ -606,7 +608,7 @@ def compare_prediction_rows(
 
 
 def persist_run_output(engine: Engine, output: RunOutput, *, benchmark_id: str) -> int:
-    run_id = upsert_backtest_run(
+    run_id = create_backtest_run(
         engine,
         benchmark_id=benchmark_id,
         scheme_id=output.scheme_id,
@@ -616,17 +618,17 @@ def persist_run_output(engine: Engine, output: RunOutput, *, benchmark_id: str) 
         status="success",
         summary=output.summary,
         report_path=output.report_path,
+        code_hash=output.summary.get("code_hash"),
+        config_hash=output.summary.get("config_hash"),
+        input_artifact_hash=output.summary.get("input_artifact_hash"),
+        run_mode="persist",
     )
     replace_backtest_predictions(engine, run_id, output.rows)
     replace_backtest_monthly_metrics(engine, run_id, output.monthly_metrics)
     output.summary["run_id"] = run_id
-    upsert_backtest_run(
+    update_backtest_run_summary(
         engine,
-        benchmark_id=benchmark_id,
-        scheme_id=output.scheme_id,
-        data_source=output.data_source,
-        start_date=output.start_date,
-        end_date=output.end_date,
+        run_id=run_id,
         status="success",
         summary=output.summary,
         report_path=output.report_path,

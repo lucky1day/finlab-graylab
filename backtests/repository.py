@@ -49,7 +49,10 @@ def upsert_backtest_run(
     summary: dict[str, Any] | None = None,
     report_path: str | None = None,
 ) -> int:
-    """创建或更新一次历史复现 run，并返回 run_id。"""
+    """创建或更新一次历史复现 run，并返回 run_id。
+
+    Deprecated rollback path: S6 uses create_backtest_run for immutable append.
+    """
     sql = text(
         """
         INSERT INTO t_backtest_runs
@@ -78,6 +81,136 @@ def upsert_backtest_run(
     with engine.begin() as conn:
         conn.execute(sql, params)
         return int(conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one())
+
+
+def create_backtest_run(
+    engine: Engine,
+    *,
+    benchmark_id: str,
+    scheme_id: str,
+    data_source: str,
+    start_date: str,
+    end_date: str,
+    status: str = "running",
+    summary: dict[str, Any] | None = None,
+    report_path: str | None = None,
+    code_hash: str | None = None,
+    config_hash: str | None = None,
+    input_artifact_hash: str | None = None,
+    run_mode: str = "persist",
+) -> int:
+    """追加一次不可变历史复现 run，并返回 backtest_run_id。"""
+    insert_sql = text(
+        """
+        INSERT INTO t_backtest_runs
+            (benchmark_id, scheme_id, data_source, start_date, end_date, status,
+             summary, report_path, code_hash, config_hash, input_artifact_hash, run_mode)
+        VALUES
+            (:benchmark_id, :scheme_id, :data_source, :start_date, :end_date, :status,
+             CAST(:summary AS JSON), :report_path, :code_hash, :config_hash,
+             :input_artifact_hash, :run_mode)
+        """
+    )
+    update_sql = text(
+        """
+        UPDATE t_backtest_runs
+        SET backtest_run_id = :run_id
+        WHERE id = :run_id
+          AND backtest_run_id IS NULL
+        """
+    )
+    params = {
+        "benchmark_id": benchmark_id,
+        "scheme_id": scheme_id,
+        "data_source": data_source,
+        "start_date": start_date,
+        "end_date": end_date,
+        "status": status,
+        "summary": json_dumps(summary or {}),
+        "report_path": report_path,
+        "code_hash": code_hash,
+        "config_hash": config_hash,
+        "input_artifact_hash": input_artifact_hash,
+        "run_mode": run_mode,
+    }
+    with engine.begin() as conn:
+        result = conn.execute(insert_sql, params)
+        run_id = getattr(result, "lastrowid", None)
+        if run_id is None:
+            run_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
+        conn.execute(update_sql, {"run_id": int(run_id)})
+    return int(run_id)
+
+
+def update_backtest_run_summary(
+    engine: Engine,
+    *,
+    run_id: int,
+    status: str,
+    summary: dict[str, Any] | None = None,
+    report_path: str | None = None,
+) -> None:
+    """更新当前不可变 run 的状态和 summary。"""
+    sql = text(
+        """
+        UPDATE t_backtest_runs
+        SET status = :status,
+            summary = CAST(:summary AS JSON),
+            report_path = :report_path,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = :run_id
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            sql,
+            {
+                "run_id": run_id,
+                "status": status,
+                "summary": json_dumps(summary or {}),
+                "report_path": report_path,
+            },
+        )
+
+
+def latest_backtest_run_id(
+    engine: Engine,
+    *,
+    benchmark_id: str,
+    scheme_id: str,
+    data_source: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> int | None:
+    """读取指定 scope 的最新 backtest_run_id。"""
+    filters = [
+        "benchmark_id = :benchmark_id",
+        "scheme_id = :scheme_id",
+        "data_source = :data_source",
+    ]
+    params: dict[str, Any] = {
+        "benchmark_id": benchmark_id,
+        "scheme_id": scheme_id,
+        "data_source": data_source,
+    }
+    if start_date is not None:
+        filters.append("start_date = :start_date")
+        params["start_date"] = start_date
+    if end_date is not None:
+        filters.append("end_date = :end_date")
+        params["end_date"] = end_date
+    sql = text(
+        f"""
+        SELECT backtest_run_id
+        FROM v_latest_backtest_run
+        WHERE {" AND ".join(filters)}
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    with engine.begin() as conn:
+        value = conn.execute(sql, params).scalar_one_or_none()
+    return int(value) if value is not None else None
 
 
 def replace_backtest_predictions(engine: Engine, run_id: int, rows: Iterable[dict[str, Any]]) -> int:

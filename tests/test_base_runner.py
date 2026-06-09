@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -232,6 +233,56 @@ class BaseRunnerTemplateTests(unittest.TestCase):
         self.assertEqual(output.data_source, "framework_db_aligned")
         self.assertEqual(output.summary["row_count"], 1)
         self.assertEqual(output.monthly_metrics[0]["benchmark_id"], "demo_benchmark")
+
+    def test_persist_run_output_uses_append_backtest_run(self) -> None:
+        from backtests import _base_runner
+
+        output = _base_runner.RunOutput(
+            scheme_id="demo_daily",
+            data_source="framework_db_aligned",
+            start_date="2026-01-01",
+            end_date="2026-01-31",
+            rows=[
+                {
+                    "benchmark_id": "demo_benchmark",
+                    "scheme_id": "demo_daily",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "predict_date": "2026-01-02",
+                }
+            ],
+            monthly_metrics=[
+                {
+                    "benchmark_id": "demo_benchmark",
+                    "scheme_id": "demo_daily",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "month": "2026-01",
+                    "sample_count": 1,
+                    "correct_count": 1,
+                }
+            ],
+            summary={"row_count": 1},
+            report_path="/tmp/report.json",
+        )
+
+        engine = object()
+        with patch.object(_base_runner, "create_backtest_run", return_value=201) as create_run:
+            with patch.object(_base_runner, "replace_backtest_predictions", return_value=1) as replace_predictions:
+                with patch.object(_base_runner, "replace_backtest_monthly_metrics", return_value=1) as replace_metrics:
+                    with patch.object(_base_runner, "update_backtest_run_summary") as update_summary:
+                        with patch.object(_base_runner, "upsert_backtest_run") as legacy_upsert:
+                            run_id = _base_runner.persist_run_output(engine, output, benchmark_id="demo_benchmark")
+
+        self.assertEqual(run_id, 201)
+        create_run.assert_called_once()
+        self.assertEqual(create_run.call_args.kwargs["run_mode"], "persist")
+        replace_predictions.assert_called_once_with(engine, 201, output.rows)
+        replace_metrics.assert_called_once_with(engine, 201, output.monthly_metrics)
+        update_summary.assert_called_once()
+        self.assertEqual(update_summary.call_args.kwargs["run_id"], 201)
+        self.assertEqual(output.summary["run_id"], 201)
+        legacy_upsert.assert_not_called()
 
 
 if __name__ == "__main__":
