@@ -51,7 +51,7 @@
 - `t1_daily` 已完成 adapter，当前 active，预测目标为 `5Y/10Y`。
 - `t5_daily` 已完成 adapter，当前 active，预测目标为 `3Y/5Y/7Y/10Y`。
 - 公共输入文件层已落地: `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频、周频、月频底层均统一由 `shared.data_service` 生成输出宽表，artifact 层负责写出 `daily_output_*.csv` / `weekly_output_*.csv` 并读回给算法。运行期文件统一位于 `backtest_artifacts/runtime_inputs/{scheme_id}/`。每条 live `PredictionRecord.extra` 会记录 `input_artifact_path` 和 `input_artifact_source`，当前 source 为 `shared_data_service_daily` 或 `shared_data_service_weekly`。
-- 强约束 harness 已落地: [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 是方案入库总纲，[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 是代码架构主蓝图，[HARNESS_DESIGN.md](HARNESS_DESIGN.md) / [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) / [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) 是现行设计规范，[SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 已改为 gate 流程，[TEST_PLAN.md](TEST_PLAN.md) 已增加 Phase 12 验收矩阵。`harness/` 代码与 `python -m harness` CLI gate 已落地可运行（见本文档顶部 S0–S8 完成说明）。
+- 强约束 harness 已落地: [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 是方案入库总纲，[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 是代码架构主蓝图，[HARNESS_DESIGN.md](HARNESS_DESIGN.md) / [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) / [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) 是现行设计规范，[SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 已改为 gate 流程，[TEST_PLAN.md](TEST_PLAN.md) 已增加 Phase 12 验收矩阵。`harness/` 代码与 `python -m harness` CLI gate 已落地可运行（见本文档顶部 S0–S8 完成说明）。
 - artifact 命名已统一: `backtests/` 只放回测代码，`benchmarks/{benchmark_id}/` 只放 canonical 基准输入，运行期输入在 `backtest_artifacts/runtime_inputs/{scheme_id}/`，历史回测和数据差异报告在 `backtest_artifacts/backtests/{benchmark_id}/`。DB 中 `benchmark_id` / `data_source` 保留兼容枚举，API 额外提供中文展示名。
 - `weekly_10y_d_overlay` 已完成 adapter、DB 周频输入生成、历史回测落库、前端周度格子展示和 2026-06-06 受控 live 写库验收；当前已切换为 `active`，目标为 `10Y`。
 - `weekly_5y_direct_production` 已完成 adapter、DB 周频输入生成、原始脚本归档、历史回测 runner、标准 dry-run 和受控回测落库；当前保持 `paused`，目标为 `5Y`，尚未同步 registry，未写入实盘预测表。
@@ -196,7 +196,7 @@ Weekly 10Y 当前最新回测 run_id=`13`: 45 个样本，正确 31 个，整体
 3. 观察 16:00 actuals 刷新窗口，确认 `t_scheme_actuals` 继续随源数据更新。
 4. 拿到 panda_quantflow 外层仓库路径后完成菜单/路由接入并验证 iframe。
 5. 后续专项解决公共周频导出与 `/Users/macstudio0/Desktop/weekly_output.csv` 的剩余 12 个实质数值差异、101 个缺失差异和小数精度差异；这属于桌面 CSV/当前 DB 逐格对齐问题，不再阻塞公共周频输入层使用。
-6. 如需新增更多周度或月度方案，继续按 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 的 paused -> dry-run -> backtest -> frontend -> active 流程。
+6. 如需新增更多周度或月度方案，继续按 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 的 paused -> dry-run -> backtest -> frontend -> active 流程。
 7. 本轮最新 run 已通过 backend service 函数和 in-app browser 核验: `5Y国债活跃 · 周度` run_id=`32`、全量 `58.4% (294/503)`、默认区间矩阵 `59.7%`；`7Y国债活跃 · 周度` run_id=`34`、全量 `62.8% (27/43)`、默认区间矩阵 `62.8%`。
 8. `weekly_5y_direct_production` 若要进入 live，仍需按 SOP 从 `paused` 继续做 live readiness、受控写库和 scheduler 观察，不直接改为 active。
 

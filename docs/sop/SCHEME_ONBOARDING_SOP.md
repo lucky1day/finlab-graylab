@@ -3,7 +3,7 @@
 **更新日期**: 2026-06-08
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
-> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
+> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
 
 ## 1. 核心原则
 
@@ -186,13 +186,13 @@ def run(predict_date: str) -> list[PredictionRecord]:
 - `horizon` 必须等于 `config.yaml.horizon`。
 - `predicted_direction` 只能是 `1`、`-1` 或 `0`。
 - `target_date` 必须能与指标口径对齐；当前 live metrics 后端按 `horizon=1` 取 `direction_1d`，按 `horizon=5` 取 `direction_5d`，按周度 `horizon=6` 取 `t_scheme_weekly_actuals.direction_weekly`。新增周度方案 active 前仍需确认最新特征周数据完整并完成受控写库验收。
-- `extra` 必含 `input_artifact_path` 和 `input_artifact_source`；日频另含 `feature_date`，周频另含 `feature_week_id/target_week_id/feature_date/target_date/target_rule`。完整字段契约（机器可校验）见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) §3。
+- `extra` 必含 `input_artifact_path` 和 `input_artifact_source`；日频另含 `feature_date`，周频另含 `feature_week_id/target_week_id/feature_date/target_date/target_rule`。完整字段契约（机器可校验）见 [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) §3。
 
 ## 6. Harness 入库流程
 
 后续所有新方案都按以下 gate 顺序推进。旧的手动命令仍可作为每个 gate 的实现方式，但不能跳过 gate。
 
-> 可执行 harness 的统一入口设计（`python -m harness onboard {scheme_id} --stage all`、各 Gate 契约、授权机制）见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md)。下表每个 Gate 落地后对应一条 `python -m harness gate <name>` 命令；本节裸 conda 命令是该 Gate 的底层实现。
+> 可执行 harness 的统一入口设计（`python -m harness onboard {scheme_id} --stage all`、各 Gate 契约、授权机制）见 [HARNESS_DESIGN.md](../HARNESS_DESIGN.md)。下表每个 Gate 落地后对应一条 `python -m harness gate <name>` 命令；本节裸 conda 命令是该 Gate 的底层实现。
 
 | Gate | 目标 | 通过证据 |
 |------|------|----------|

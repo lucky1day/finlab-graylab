@@ -1,7 +1,7 @@
 # 方案契约形式化规范（机器可校验）
 
 **更新日期**: 2026-06-08
-**定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
+**定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*`（见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md) §6）按本文落地。
 
 > SOP 仍是人类执行手册；本文是机器契约。两者一致，本文更细、可判定。任何冲突以本文为准并回写 SOP。

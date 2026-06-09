@@ -1,7 +1,7 @@
 # 架构执行计划（Architecture Execution Plan）
 
 **更新日期**: 2026-06-08
-**定位**: 把 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) §10 的演进路线拆成**可执行、可验收、可回滚**的分阶段计划。
+**定位**: 把 [CODE_ARCHITECTURE.md](../CODE_ARCHITECTURE.md) §10 的演进路线拆成**可执行、可验收、可回滚**的分阶段计划。
 **边界**: 本文是执行计划，**不含实现代码**。每个阶段交给实现时再写代码。
 **与历史的区别**: [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) 是 Phase 1–11 已完成工作的**状态记录**；本文是面向架构重构（数据层去重 + harness）的**前瞻计划**。
 
@@ -106,7 +106,7 @@ S9 文档对齐 + 端到端纸面走查
 
 ## 3. Harness 落地阶段
 
-> 全部为新增 `harness/` 包，不改 L1–L4 业务代码（除被 Gate 调用）。设计依据 [HARNESS_DESIGN.md](HARNESS_DESIGN.md)。
+> 全部为新增 `harness/` 包，不改 L1–L4 业务代码（除被 Gate 调用）。设计依据 [HARNESS_DESIGN.md](../HARNESS_DESIGN.md)。
 
 ### S4 — contracts + result + StaticGate（地基）
 

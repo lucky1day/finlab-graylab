@@ -20,8 +20,14 @@
 
 | 文档 | 内容 |
 |------|------|
-| [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) | **新增方案 SOP**：命名规范、目录/config/predict 模板、Gate 入库流程、回滚、FAQ |
 | [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | **方案契约形式化**：config.yaml schema、predict.py 接口、PredictionRecord/extra 必填、core 约束（机器可校验） |
+
+### 操作 SOP（[sop/](sop/)）
+
+| 文档 | 内容 |
+|------|------|
+| [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | **新增方案入库 SOP**：命名规范、目录/config/predict 模板、Gate 入库流程、回滚、FAQ |
+| [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | **入库后测试验证 SOP**：结果正确性（等价闸）、actuals 口径、API/前端展示、验收门槛（草案，待 review） |
 
 ## ③ 状态与记录（项目当前状态与历史结论）
 

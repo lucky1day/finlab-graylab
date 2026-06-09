@@ -4,7 +4,7 @@
 **定位**: 本文把 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) §3「未来 Harness Gate」从"形态描述"升级为**实现级设计骨架**——目录、契约、Gate 接口、机器判定规则、CLI、授权机制。
 **边界**: 本文是设计蓝图，不含实现代码。`harness/` 的 `.py` 留到实现阶段按本文落地。
 
-> 总纲（边界、DB 安全边界、验收证据）以 `HARNESS_ARCHITECTURE.md` 为权威；执行手册以 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 为权威；方案契约以 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 为权威。本文只负责"harness 怎么实现"。
+> 总纲（边界、DB 安全边界、验收证据）以 `HARNESS_ARCHITECTURE.md` 为权威；执行手册以 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 为权威；方案契约以 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 为权威。本文只负责"harness 怎么实现"。
 
 ---
 

@@ -76,7 +76,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # 副作用段（live 写库 / activate）不在 all 内，必须显式 --authorize <TOKEN>（fail-closed）
 ```
 
-SOP 见 [docs/SCHEME_ONBOARDING_SOP.md](docs/SCHEME_ONBOARDING_SOP.md)；harness 设计见 [docs/HARNESS_DESIGN.md](docs/HARNESS_DESIGN.md)。
+SOP 见 [docs/sop/SCHEME_ONBOARDING_SOP.md](docs/sop/SCHEME_ONBOARDING_SOP.md)；harness 设计见 [docs/HARNESS_DESIGN.md](docs/HARNESS_DESIGN.md)。
 
 ## 数据库表
 
