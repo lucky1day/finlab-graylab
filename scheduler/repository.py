@@ -83,7 +83,10 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
 
 
 def upsert_predictions(engine: Engine, records: Iterable[PredictionRecord]) -> int:
-    """UPSERT 预测记录。"""
+    """UPSERT 预测记录。
+
+    Deprecated rollback path: S3 executor uses run_id-scoped inserts instead.
+    """
     sql = text(
         """
         INSERT INTO t_scheme_predictions
@@ -112,6 +115,151 @@ def upsert_predictions(engine: Engine, records: Iterable[PredictionRecord]) -> i
     with engine.begin() as conn:
         conn.execute(sql, rows)
     return len(rows)
+
+
+def create_scheme_run(
+    engine: Engine,
+    *,
+    scheme_id: str,
+    predict_date: str,
+    scheme_version: str | None = None,
+    run_type: str = "active",
+    status: str = "running",
+    harness_run_id: str | None = None,
+    input_artifact_id: str | None = None,
+    records_expected: int | None = None,
+) -> int:
+    """创建一次不可变预测运行记录，返回 run_id。"""
+    sql = text(
+        """
+        INSERT INTO t_scheme_runs
+            (scheme_id, scheme_version, run_type, predict_date, status,
+             harness_run_id, input_artifact_id, records_expected)
+        VALUES
+            (:scheme_id, :scheme_version, :run_type, :predict_date, :status,
+             :harness_run_id, :input_artifact_id, :records_expected)
+        """
+    )
+    params = {
+        "scheme_id": scheme_id,
+        "scheme_version": scheme_version,
+        "run_type": run_type,
+        "predict_date": predict_date,
+        "status": status,
+        "harness_run_id": harness_run_id,
+        "input_artifact_id": input_artifact_id,
+        "records_expected": records_expected,
+    }
+    with engine.begin() as conn:
+        result = conn.execute(sql, params)
+        run_id = getattr(result, "lastrowid", None)
+        if run_id is None:
+            run_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
+    return int(run_id)
+
+
+def finish_scheme_run(
+    engine: Engine,
+    *,
+    run_id: int,
+    status: str,
+    records_returned: int | None = None,
+    records_written: int | None = None,
+    error_message: str | None = None,
+) -> None:
+    """标记预测运行结束。"""
+    sql = text(
+        """
+        UPDATE t_scheme_runs
+        SET status = :status,
+            finished_at = CURRENT_TIMESTAMP,
+            records_returned = :records_returned,
+            records_written = :records_written,
+            error_message = :error_message
+        WHERE run_id = :run_id
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            sql,
+            {
+                "run_id": run_id,
+                "status": status,
+                "records_returned": records_returned,
+                "records_written": records_written,
+                "error_message": error_message,
+            },
+        )
+
+
+def insert_run_predictions(
+    engine: Engine,
+    run_id: int,
+    records: Iterable[PredictionRecord],
+    *,
+    scheme_version: str | None = None,
+) -> int:
+    """按 run_id 追加预测记录，不覆盖历史。"""
+    sql = text(
+        """
+        INSERT INTO t_scheme_predictions
+            (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, target_date,
+             predicted_direction, confidence, model_version, extra)
+        VALUES
+            (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :target_date,
+             :predicted_direction, :confidence, :model_version, CAST(:extra AS JSON))
+        """
+    )
+    rows = []
+    for record in records:
+        row = asdict(record)
+        row["run_id"] = record.run_id if record.run_id is not None else run_id
+        row["scheme_version"] = record.scheme_version if record.scheme_version is not None else scheme_version
+        row["extra"] = json.dumps(record.extra or {}, ensure_ascii=False)
+        rows.append(row)
+    if not rows:
+        return 0
+    with engine.begin() as conn:
+        conn.execute(sql, rows)
+    return len(rows)
+
+
+def update_serving_pointer(
+    engine: Engine,
+    *,
+    scheme_id: str,
+    target_tenor: str,
+    predict_date: str,
+    run_id: int,
+    status: str = "approved",
+    updated_by: str = "scheduler",
+) -> None:
+    """将展示指针切到指定 run_id。"""
+    sql = text(
+        """
+        INSERT INTO t_scheme_serving_pointer
+            (scheme_id, target_tenor, predict_date, serving_run_id, serving_status, updated_by)
+        VALUES
+            (:scheme_id, :target_tenor, :predict_date, :serving_run_id, :serving_status, :updated_by)
+        ON DUPLICATE KEY UPDATE
+            serving_run_id = VALUES(serving_run_id),
+            serving_status = VALUES(serving_status),
+            updated_by = VALUES(updated_by),
+            updated_at = CURRENT_TIMESTAMP
+        """
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            sql,
+            {
+                "scheme_id": scheme_id,
+                "target_tenor": target_tenor,
+                "predict_date": predict_date,
+                "serving_run_id": run_id,
+                "serving_status": status,
+                "updated_by": updated_by,
+            },
+        )
 
 
 def upsert_input_artifact(engine: Engine, artifact: InputArtifact) -> str:
@@ -235,18 +383,20 @@ def write_run_log(
     status: str,
     duration_sec: float | None = None,
     error_msg: str | None = None,
+    run_id: int | None = None,
 ) -> None:
     """写入方案运行日志。"""
     sql = text(
         """
-        INSERT INTO t_scheme_run_log (scheme_id, run_date, status, duration_sec, error_msg)
-        VALUES (:scheme_id, :run_date, :status, :duration_sec, :error_msg)
+        INSERT INTO t_scheme_run_log (run_id, scheme_id, run_date, status, duration_sec, error_msg)
+        VALUES (:run_id, :scheme_id, :run_date, :status, :duration_sec, :error_msg)
         """
     )
     with engine.begin() as conn:
         conn.execute(
             sql,
             {
+                "run_id": run_id,
                 "scheme_id": scheme_id,
                 "run_date": run_date,
                 "status": status,

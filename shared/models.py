@@ -17,6 +17,8 @@ class PredictionRecord:
     confidence: float | None = None
     model_version: str | None = None
     extra: dict[str, Any] | None = None
+    run_id: int | None = None
+    scheme_version: str | None = None
 
 
 @dataclass(frozen=True)

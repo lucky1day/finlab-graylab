@@ -9,8 +9,12 @@ from pathlib import Path
 
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.repository import (
+    create_scheme_run,
     create_engine_from_env,
+    finish_scheme_run,
+    insert_run_predictions,
     sync_scheme_registry,
+    update_serving_pointer,
     upsert_predictions,
     write_run_log,
 )
@@ -30,6 +34,7 @@ class SchemeRunResult:
     records_written: int = 0
     duration_sec: float | None = None
     error_msg: str | None = None
+    run_id: int | None = None
 
 
 def _record_from_payload(item: dict) -> PredictionRecord:
@@ -43,6 +48,8 @@ def _record_from_payload(item: dict) -> PredictionRecord:
         confidence=float(item["confidence"]) if item.get("confidence") is not None else None,
         model_version=str(item["model_version"]) if item.get("model_version") is not None else None,
         extra=item.get("extra") or None,
+        run_id=int(item["run_id"]) if item.get("run_id") is not None else None,
+        scheme_version=str(item["scheme_version"]) if item.get("scheme_version") is not None else None,
     )
 
 
@@ -98,19 +105,54 @@ def execute_scheme(
         engine.dispose()
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
 
+    scheme_version = getattr(cfg, "scheme_version", None)
+    run_id: int | None = None
     try:
+        run_id = create_scheme_run(
+            engine,
+            scheme_id=cfg.scheme_id,
+            predict_date=predict_date,
+            scheme_version=scheme_version,
+            run_type="active",
+        )
         records = run_scheme_subprocess(cfg.scheme_id, predict_date, algo_env=algo_env, timeout_sec=timeout_sec)
-        written = upsert_predictions(engine, records)
+        written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
+        for record in records:
+            update_serving_pointer(
+                engine,
+                scheme_id=record.scheme_id,
+                target_tenor=record.target_tenor,
+                predict_date=record.predict_date,
+                run_id=run_id,
+                status="approved",
+            )
         duration = time.monotonic() - started
         status = "success" if written == len(records) else "partial"
         error_msg = None if status == "success" else f"written={written}, returned={len(records)}"
-        write_run_log(engine, cfg.scheme_id, predict_date, status, duration, error_msg)
-        return SchemeRunResult(cfg.scheme_id, status, written, duration, error_msg)
+        finish_scheme_run(
+            engine,
+            run_id=run_id,
+            status=status,
+            records_returned=len(records),
+            records_written=written,
+            error_message=error_msg,
+        )
+        write_run_log(engine, cfg.scheme_id, predict_date, status, duration, error_msg, run_id=run_id)
+        return SchemeRunResult(cfg.scheme_id, status, written, duration, error_msg, run_id)
     except Exception as exc:
         duration = time.monotonic() - started
         error_msg = str(exc)
-        write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg)
-        return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, error_msg)
+        if run_id is not None:
+            finish_scheme_run(
+                engine,
+                run_id=run_id,
+                status="failed",
+                records_returned=None,
+                records_written=0,
+                error_message=error_msg,
+            )
+        write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
+        return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, error_msg, run_id)
     finally:
         engine.dispose()
 
