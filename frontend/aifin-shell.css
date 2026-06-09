@@ -1175,123 +1175,6 @@ button {
   font-weight: 700;
 }
 
-.factor-analysis-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 18px;
-}
-
-.factor-analysis-panel {
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
-}
-
-.factor-analysis-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 14px;
-}
-
-.factor-analysis-head h4 {
-  margin: 0;
-  color: var(--text);
-  font-size: 18px;
-  font-weight: 780;
-}
-
-.factor-analysis-head p {
-  margin: 2px 0 0;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.factor-analysis-chart {
-  min-height: 300px;
-  border: 1px solid rgba(31, 41, 35, 0.06);
-  border-radius: 8px;
-  background:
-    linear-gradient(180deg, rgba(248, 248, 244, 0.72), rgba(255, 255, 255, 0.92));
-  overflow: hidden;
-}
-
-.factor-analysis-chart svg {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.factor-calibration-ideal {
-  fill: none;
-  stroke: rgba(185, 135, 40, 0.62);
-  stroke-width: 2;
-  stroke-dasharray: 6 6;
-}
-
-.factor-calibration-point {
-  fill: var(--accent);
-  stroke: #fff;
-  stroke-width: 2;
-}
-
-.factor-calibration-label {
-  fill: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 760;
-}
-
-.factor-rolling-stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.factor-rolling-stats div {
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(248, 248, 244, 0.72);
-}
-
-.factor-rolling-stats span,
-.factor-rolling-stats strong {
-  display: block;
-}
-
-.factor-rolling-stats span {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 760;
-}
-
-.factor-rolling-stats strong {
-  margin-top: 4px;
-  color: var(--text);
-  font-size: 18px;
-  font-weight: 820;
-  line-height: 1.1;
-}
-
-.factor-rolling-chart {
-  min-height: 250px;
-}
-
-.factor-rolling-net-line {
-  fill: none;
-  stroke: var(--gold);
-  stroke-width: 2.4;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  opacity: 0.86;
-}
-
 .factor-accuracy-wrap {
   overflow-x: auto;
   border: 1px solid var(--line);
@@ -1808,9 +1691,7 @@ button {
     padding: 18px;
   }
 
-  .factor-analysis-grid,
-  .factor-lifecycle-cards,
-  .factor-rolling-stats {
+  .factor-lifecycle-cards {
     grid-template-columns: 1fr;
   }
 }

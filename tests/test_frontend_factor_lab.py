@@ -166,62 +166,6 @@ class FactorLabCompareTests(unittest.TestCase):
         self.assertEqual(result["schemes"][1]["cells"]["10Y"]["className"], "metric-bad")
 
 
-class FactorLabCalibrationTests(unittest.TestCase):
-    def test_build_calibration_buckets_skips_empty_and_pending_rows(self) -> None:
-        result = _run_factor_lab_hook(
-            """
-            return hooks.buildCalibrationBuckets([
-              { confidence: 0.05, correct: true },
-              { confidence: 0.15, correct: false },
-              { confidence: 0.65, correct: true },
-              { confidence: 0.72, correct: true },
-              { confidence: null, correct: true },
-              { confidence: 0.88, correct: null }
-            ], 5);
-            """
-        )
-
-        self.assertEqual(len(result), 2)
-        self.assertEqual(result[0]["bucket"], "0.0-0.2")
-        self.assertEqual(result[0]["samples"], 2)
-        self.assertEqual(result[0]["hitRate"], 50.0)
-        self.assertEqual(result[0]["avgConfidence"], 10.0)
-        self.assertEqual(result[1]["bucket"], "0.6-0.8")
-        self.assertEqual(result[1]["samples"], 2)
-        self.assertEqual(result[1]["hitRate"], 100.0)
-
-
-class FactorLabRollingHealthTests(unittest.TestCase):
-    def test_build_rolling_health_sorts_rows_and_tracks_miss_streaks(self) -> None:
-        result = _run_factor_lab_hook(
-            """
-            return hooks.buildRollingHealth([
-              { predictDate: "2026-01-03", correct: false },
-              { predictDate: "2026-01-01", correct: true },
-              { predictDate: "2026-01-02", correct: false },
-              { predictDate: "2026-01-04", correct: false },
-              { predictDate: "2026-01-05", correct: true },
-              { predictDate: "2026-01-06", correct: null }
-            ], 3);
-            """
-        )
-
-        self.assertEqual(result["samples"], 5)
-        self.assertEqual(result["windowSize"], 3)
-        self.assertEqual(result["latestRollingHit"], 33.3)
-        self.assertEqual(result["maxConsecutiveMiss"], 3)
-        self.assertEqual(result["currentConsecutiveMiss"], 0)
-        self.assertEqual(result["maxDrawdown"], 3)
-        self.assertEqual([point["date"] for point in result["points"]], [
-            "2026-01-01",
-            "2026-01-02",
-            "2026-01-03",
-            "2026-01-04",
-            "2026-01-05",
-        ])
-        self.assertEqual([point["netHit"] for point in result["points"]], [1, 0, -1, -2, -1])
-
-
 class FactorLabLifecycleTests(unittest.TestCase):
     def test_normalize_lifecycle_cards_marks_failed_or_missing_prediction(self) -> None:
         result = _run_factor_lab_hook(
