@@ -70,17 +70,17 @@ CLI 标准入口:
 
 ```bash
 python -m harness.cli check \
-  --scheme-id weekly_10y_d_overlay \
+  --scheme-id t1_daily \
   --predict-date 2026-06-06 \
   --mode static
 
 python -m harness.cli check \
-  --scheme-id weekly_10y_d_overlay \
+  --scheme-id t1_daily \
   --predict-date 2026-06-06 \
   --mode all
 ```
 
-`--mode all` 的顺序固定为: static -> input -> unit -> dry-run -> backtest-no-persist -> api-readonly。任何一步失败都停止。
+`--mode all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readonly。任何一步失败都停止（compare 缺 benchmark 时跳过，不阻断）。
 
 ---
 

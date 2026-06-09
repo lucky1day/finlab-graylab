@@ -114,17 +114,17 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-06-08（S2 完成后）：
+状态最近更新 2026-06-09：当前在册方案仅 `t1_daily`、`t5_daily`；周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役、代码未实现，如需重启须按 SOP 重新入库。
 
-| 契约项 | `t1_daily` | `weekly_10y_d_overlay` | `weekly_5y/7y`（paused） |
-|--------|:----------:|:----------------------:|:------------------------:|
-| `config.yaml` 基础字段 | ✅ | ✅ | ✅ |
-| 新增 `input_spec.*` / `target_rule` | 待补(S3) | 待补(S3) | 待补(S3) |
-| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ | ✅ |
-| core 零 DB | ✅ | ✅（S2 删除 `core/weekly_data_service.py`） | ✅（S1 改用 `shared.calendar_service`，已无跨方案 import） |
-| extra 必填键 | ✅ | ✅ | ✅ |
+| 契约项 | `t1_daily` | `t5_daily` |
+|--------|:----------:|:----------:|
+| `config.yaml` 基础字段 | ✅ | ✅ |
+| 新增 `input_spec.*` / `target_rule` | 待补(S3) | 待补(S3) |
+| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ |
+| core 零 DB | ✅ | ✅ |
+| extra 必填键 | ✅ | ✅ |
 
-> 「core 零 DB」三方案已全部转绿（V1/V2 清零）。剩余「`input_spec.*` / `target_rule`」字段在 S3 强化 `InputArtifact` 时随 `config.yaml` 补齐。补齐后 StaticGate 可对全部方案持续守护。
+> 「`input_spec.*` / `target_rule`」字段在 S3 强化 `InputArtifact` 时随 `config.yaml` 补齐。补齐后 StaticGate 可对全部方案持续守护。
 
 ---
 

@@ -98,4 +98,4 @@ curl -sS http://127.0.0.1:8100/api/health
 tail -n 80 /tmp/bond-factor-lab-scheduler.err
 ```
 
-当前新机数据已补齐到本轮测试口径，`t1_daily`、`t5_daily` 和 `weekly_10y_d_overlay` 均为 `active`。2026-06-05 09:25 scheduler 已写入 t1/t5 共 6 条正式预测和 2 条 success run_log；2026-06-06 周度 10Y 已完成受控 live 写库验收和单方案 scheduler 手动补跑，正式预测表中 `weekly_10y_d_overlay` 通过 UPSERT 保持 1 条记录，run_log 累计 2 条 weekly success。10Y 周度 actuals 已写入独立 `t_scheme_weekly_actuals` 表 794 条；2026-06-06 15:05 已重启 scheduler 并确认注册 `Scheduled scheme weekly_10y_d_overlay at 30 11 * * 6`。周度 live cron 为周六 `11:30`，对齐旧实盘 weekly `multi` 任务的首轮预测时间；旧脚本 16:00 / 22:00 为检查和必要补跑节点。周度 scheduler job 已设置 `force=True`，避免周六预测被通用非交易日判断跳过。后续重点是观察下一次周六 11:30 自动预测和周度 target actual 落库。拿到外层仓库路径后再完成 panda_quantflow iframe 接入。
+当前新机数据已补齐到本轮测试口径，`t1_daily`、`t5_daily` 均为 `active`。2026-06-05 09:25 scheduler 已写入 t1/t5 共 6 条正式预测和 2 条 success run_log。早先文档曾描述的周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役/代码未实现：scheduler 不再注册任何周度 cron，`t_scheme_weekly_actuals` 已于 2026-06-09 清空（当前无周度方案写入），相关 prediction/run_log/backtest 记录也已清理。如需周度方案须按 SOP 重新接入。拿到外层仓库路径后再完成 panda_quantflow iframe 接入。

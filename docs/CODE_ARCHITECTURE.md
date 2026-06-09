@@ -116,9 +116,9 @@ tests/         → 任意（验证需要）
 
 | # | 状态 | 违规边 | 位置 | 违反规则 | 处置（归属文档） |
 |---|------|--------|------|----------|------------------|
-| V1 | ✅ 已清零(S1) | `schemes/weekly_5y,7y/predict.py → schemes.weekly_10y_d_overlay.core.weekly_data_service` | 跨方案 import `read_source_week_id_for_date` | §3.2 跨方案禁止 | S1：adapter 改用 `shared.calendar_service.week_id_for_date` |
-| V2 | ✅ 已清零(S2) | `schemes/weekly_10y/core/weekly_data_service.py → shared.data_service`（含 `create_sqlalchemy_engine`） | core 连库 | §3.2 ✗ⁱ core 零 DB | S2：该文件已确认为死代码并删除（连同 `weekly_output_0529_columns.json` 与对应测试） |
-| V3 | ◑ 部分(S1) | `schemes/weekly_*/predict.py → shared.data_service.create_sqlalchemy_engine` | adapter 直接取引擎传给日历查询 | §3.1 过渡期容忍，目标消除 | S1 已让日历查询走 `calendar_service`；adapter 仍自建 engine 传入。完全消除待引擎工厂下沉（建议并入 S3 收尾或单列） |
+| V1 | ✅ 已清零(S1) | 当时的周频 adapter 间跨方案 import `read_source_week_id_for_date`（相关周频方案已退役/代码未实现） | 跨方案 import | §3.2 跨方案禁止 | S1：adapter 改用 `shared.calendar_service.week_id_for_date`（该批周频方案现已退役，仅 `t1_daily` / `t5_daily` 在库） |
+| V2 | ✅ 已清零(S2) | 当时周频 10Y 方案 `core/weekly_data_service.py → shared.data_service`（含 `create_sqlalchemy_engine`）（该周频方案已退役/代码未实现） | core 连库 | §3.2 ✗ⁱ core 零 DB | S2：该文件已确认为死代码并删除（连同 `weekly_output_0529_columns.json` 与对应测试） |
+| V3 | ◑ 部分(S1) | 当时周频 adapter 直接取 `shared.data_service.create_sqlalchemy_engine` 传给日历查询（相关周频方案已退役/代码未实现） | adapter 直接取引擎传给日历查询 | §3.1 过渡期容忍，目标消除 | S1 已让日历查询走 `calendar_service`；该批周频 adapter 已随方案退役一并消失 |
 | V4 | ✅ 已清零(S3) | `backtests/daily_0529_reproduction.py → shared.data_service.build_daily_output_from_db` | 回测绕过 `input_artifacts` 拼日频输入 | §3.3 输入单点 | S3：daily backtest runner 已改走 `build_daily_input_artifact` |
 
 合规的关键边（已正确）：

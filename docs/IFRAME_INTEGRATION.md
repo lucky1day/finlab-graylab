@@ -12,7 +12,7 @@ http://127.0.0.1:8100/
 
 本机 HTTP 响应未设置 `X-Frame-Options` 或阻止 iframe 的 CSP 头，可作为 iframe 内容页加载。
 
-当前已验证 `GET /api/health` 返回 `{"status":"ok"}`，`GET /api/targets` 返回 `3Y/5Y/7Y/10Y` 四个目标。`GET /api/backtests/factor-lab` 已返回 t1/t5 日度回测和 `weekly_10y_d_overlay` 周度 10Y 回测数据；周度 10Y 当前 DB 版最新 run_id=`13`，summary 为 `68.9% (31/45)`。
+当前已验证 `GET /api/health` 返回 `{"status":"ok"}`，`GET /api/targets` 返回 `3Y/5Y/7Y/10Y` 四个目标。`GET /api/backtests/factor-lab` 返回 t1/t5 日度回测数据。周度 10Y 回测（原 `weekly_10y_d_overlay`）已随周度方案退役，当前无周度回测数据返回。
 
 ## 外层页面嵌入片段
 
@@ -45,8 +45,7 @@ http://127.0.0.1:8100/
 
 - iframe 内能看到“预测准确率矩阵”。
 - 默认任务显示 `3Y · T+5`。
-- T+1/T+5/周度任务格子能展示当前可用回测数据；`10Y国债活跃 · 周度` 显示 `weekly_10y_d_overlay` 最新 run 的 `68.9% (31/45)` 结果。
-- 2026-06-07 API 验收确认: `/api/backtests/factor-lab` 中 `10Y国债活跃 · 周度` 最新 run_id=`13`，返回 `68.9% / 1 个方案`；排行数据为 `0529周度10Y-D-overlay基准 · 10Y国债活跃回测` 和 `68.9%（31/45）`。
+- T+1/T+5 任务格子能展示当前可用回测数据；周度任务格子当前无数据（周度方案已退役）。
 - 浏览器 console 无红色错误。
 - 外层 shell 的导航、滚动、路由切换不影响 iframe 内部交互。
 

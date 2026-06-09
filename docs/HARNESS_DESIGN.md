@@ -13,7 +13,7 @@
 把现有"人工敲 conda 命令 + 散落脚本"的 Gate，升级为**可机器执行、fail-fast、可审计**的统一 harness：
 
 ```
-python -m harness onboard weekly_5y_direct_production --predict-date 2026-06-06 --stage all
+python -m harness onboard t1_daily --predict-date 2026-06-06 --stage all
 ```
 
 一条命令按 SOP 顺序串联所有自动段 Gate，任一失败即停，逐步落审计证据到 `reports/harness/`。带副作用的动作（写库、激活）必须显式授权，否则 BLOCKED。
@@ -179,13 +179,13 @@ SQL_WRITE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")   # 字符�
 3. **predict 接口**：AST 解析 `predict.py`——存在模块级常量 `SCHEME_ID == scheme_id`；存在顶层 `def run(predict_date)` 且单位置参（见 `contracts/predict_contract.py`）。
 4. **core 零 DB**：遍历**活跃** `core/*.py`（文件名不含 `legacy`）的 import 与调用名，命中 `DANGEROUS_CORE_IMPORTS` / `WRITE_CALL_NAMES` / `text(` → FAIL。
 5. **legacy 隔离（warning 级，不硬失败）**：`core/legacy_*.py` 允许保留旧实现。活跃模块 import legacy 模块时——若被 import 的 legacy 模块**本身零 DB / 零写库 / 零跨方案**——记为 warning（evidence 标注，不判 FAIL），因为这是受控的算法复用；仅当 legacy 模块含 DB/写库且被活跃模块 import 时才升级为 FAIL。
-   > 已知豁免：`weekly_10y_d_overlay/core/predictors.py` import `legacy_weekly_10y_d_overlay_0529`（经核实零 DB，纯算法+CSV，运行时 monkey-patch 注入 DataFrame）——属受控复用，记 warning 不阻断。强行判红会逼迫重抄算法或删 legacy，违背行为保持，得不偿失。
+   > 历史示例：曾有周度方案 `core/predictors.py` import `legacy_*_0529`（零 DB，纯算法+CSV，运行时 monkey-patch 注入 DataFrame）属受控复用，记 warning 不阻断。相关周度方案现已退役/代码未实现，此豁免仅作规则说明保留。
 6. **predict 不写库**：`predict.py` 命中 `WRITE_CALL_NAMES`、或 `import scheduler.repository/executor` → FAIL。
 7. **强制公共输入入口**：`predict.py` 与 `backtests/{scheme_id}_*.py` 必须 import `shared.input_artifacts`；不得自建 `read_sql` 拼输入 → 否则 FAIL。
 8. **config schema**：委托 `contracts/config_schema.py`（见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) §1）。
 9. **命名规范**（可机器子集）：文件 snake_case；backtest runner 带 scheme_id 前缀。
 
-> 已知：现有 `schemes/weekly_10y_d_overlay/core/weekly_data_service.py` 含 DB 访问——StaticGate 上线后会立刻在规则 4 命中并 FAIL。这正是 [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) 周频去重要解决的目标。在数据层重构完成前，该方案 StaticGate 预期 FAIL 属已知项。
+> 历史背景：早先周度方案曾自带 `core/weekly_data_service.py` DB 访问，是 StaticGate 规则 4 的典型 FAIL 案例，也是 [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) 周频去重的目标。相关周度方案现已退役/代码未实现，此处仅作规则说明保留。
 
 ---
 
@@ -222,20 +222,20 @@ def onboard(ctx: GateContext, stage: str) -> OnboardReport:
 
 ```bash
 # 单 gate
-python -m harness gate static   --scheme-id weekly_5y_direct_production
-python -m harness gate input    --scheme-id weekly_5y_direct_production --predict-date 2026-06-06
-python -m harness gate dry-run  --scheme-id weekly_5y_direct_production --predict-date 2026-06-06
+python -m harness gate static   --scheme-id t1_daily
+python -m harness gate input    --scheme-id t1_daily --predict-date 2026-06-06
+python -m harness gate dry-run  --scheme-id t1_daily --predict-date 2026-06-06
 
 # 串联到某 stage（fail-fast）
-python -m harness onboard weekly_5y_direct_production --predict-date 2026-06-06 --stage all
+python -m harness onboard t1_daily --predict-date 2026-06-06 --stage all
 
 # 授权卡点（写库 / 激活）
-python -m harness gate backtest --scheme-id weekly_5y_direct_production --persist --authorize <TOKEN>
-python -m harness gate live     --scheme-id weekly_5y_direct_production --predict-date 2026-06-06 --authorize <TOKEN>
-python -m harness activate      --scheme-id weekly_5y_direct_production --authorize <TOKEN>
+python -m harness gate backtest --scheme-id t1_daily --persist --authorize <TOKEN>
+python -m harness gate live     --scheme-id t1_daily --predict-date 2026-06-06 --authorize <TOKEN>
+python -m harness activate      --scheme-id t1_daily --authorize <TOKEN>
 
 # 报告
-python -m harness report weekly_5y_direct_production --latest
+python -m harness report t1_daily --latest
 ```
 
 退出码：全 PASS=`0`；任一 FAIL=`1`；BLOCKED（缺授权）=`2`。便于 CI / 自动化判定。
@@ -251,7 +251,7 @@ harness 不重造任何执行逻辑，每个 Gate 委托一个已存在的入口
 | 契约加载 / scheme_id==dir 校验 | `scheduler/discovery.py::load_scheme_config` |
 | dry-run 只读执行 | `scheduler/scheme_runner.py::run_scheme` + `scheduler/executor.py::run_scheme_subprocess`（conda 子进程） |
 | 输入工件 | `shared/input_artifacts.py::build_daily_input_artifact / build_weekly_input_artifact` |
-| 回测 | `backtests/weekly_5y_direct_production_reproduction.py` 等 `--no-persist` |
+| 回测 | `backtests/{scheme_id}_reproduction.py`（如 t1/t5 日度）等 `--no-persist` |
 | Live 写库 | `scheduler/executor.py::execute_scheme`（单方案）→ `repository.upsert_predictions` / `write_run_log` |
 | readiness 前置 | `scripts/check_weekly_10y_readiness.py` 的逻辑收编为 `live_gate` 前置检查 |
 | 表行数审计 | `scripts/run_framework_repro.py` / `audit_daily_data_service.py` 思路 → `probes/table_guard.py` |

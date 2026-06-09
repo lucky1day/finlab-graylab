@@ -23,7 +23,7 @@
 
 框架入口:
 
-- live adapter: `schemes/t1_daily/predict.py`、`schemes/t5_daily/predict.py`、`schemes/weekly_10y_d_overlay/predict.py`
+- live adapter: `schemes/t1_daily/predict.py`、`schemes/t5_daily/predict.py`（早先的周度 adapter 已退役/代码未实现）
 - 公共输入文件层: `shared/input_artifacts.py`
 - 日频 data service: `shared/data_service.py`
 - 只读审计脚本: `scripts/audit_daily_data_service.py`
@@ -60,7 +60,7 @@
 
 ## 命名规范
 
-- `scheme_id` 永远表示具体方案，例如 `t1_daily`、`t5_daily`、`weekly_10y_d_overlay`。
+- `scheme_id` 永远表示具体方案，例如 `t1_daily`、`t5_daily`（早先示例中的周度 `weekly_10y_d_overlay` 已退役/代码未实现）。
 - `benchmark_id` 表示历史基准批次，例如 `model_muti_0529`，只用于 `benchmarks/` 和 backtest 表。
 - `data_source` 是数据库兼容枚举，当前保留 `baseline_original_csv`、`framework_original_csv`、`framework_db_aligned`；API 会映射为中文展示名。
 - 运行期输入文件统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`。
@@ -123,68 +123,9 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 注: `1Y` 保留在历史复现审计结果中，但当前前端结果矩阵和实盘预测目标已移除 `1Y`。
 
-## weekly 10Y 复现结果
+## weekly 周度方案复现（已退役）
 
-周度 10Y 来源于 `/Users/macstudio0/Downloads/weekly_10y_d_overlay_0529.py`，已并入:
-
-- 方案目录: `schemes/weekly_10y_d_overlay/`
-- DB 周频输入生成: `shared/data_service.py`
-- 回测入口: `backtests/weekly_10y_d_overlay_reproduction.py`
-
-预测语义: 本周六预测下一周最后一个交易日 10Y 收益率相对本周最后一个交易日是上行还是下行。live 预测按 `feature_date` 从源表反查实际 `week_id`；历史回测为复现上游 0529 周频算法，日期转换优先使用算法输出的 `month_date/week_date` 作为 legacy 特征周日期，再把次日作为 `predict_date`，并按特征日期排序后的下一条算法输出作为 `target_date`。跨年处保留上游算法真实输出的 `week_id=202553`，因此 2026-01 当前有 6 个历史样本；`future_return/label` 按重排后的 target 重新计算，避免 `target_date` 早于 `feature_date`。
-
-| 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 | 上涨 precision | 下跌 precision |
-|------|--------|--------|----------|------|--------|----------------|----------------|
-| `weekly_10y_d_overlay` | `framework_db_aligned` | 13 | `2025-07-05` 到 `2026-05-02` | 45 | `68.9% (31/45)` | `75.0%` | `66.7%` |
-
-2026-06-06 修正记录: 最新前端展示 run 已刷新为 run_id=`13`。`2025-07` 月度样本数为 4，对应预测日 `2025-07-05/12/19/26`；`2025-10` 月度样本数为 5，对应特征周日期 `2025-10-03/10/17/24/31`；`2026-01` 月度样本数为 6，保留上游算法输出的跨年周 `week_id=202553, month_date=2026-01-04`。跨年 target 顺序已按特征日期重排为 `202552 -> 202601 -> 202553 -> 202602`，其中 `202553` 的 target 为 `2026-01-09`，该样本 label 从上行修正为下行。此前 run_id=`15` 因历史回测转换误用 live week_id 公式，把 `week_id=202527` 的算法 `month_date=2025-07-04` 偏移到 `2025-07-11`；同时通用月度统计按 `predict_date` 归月，导致 `2025-10-31` 特征周被错归到 2025-11。
-
-2026-06-08 复核: 周度公共输入层已切换为用户提供的统一 `shared.data_service`，live `weekly_output_2026-06-06.csv` 为 `841 x 575`，覆盖 `200901` 到 `202621`；historical_backtest 输入为 `842 x 575`，覆盖 `200901` 到 `202622`。关键最新周收益率列和最新模型输出保持一致；与桌面 CSV 的共同窗口仍有少量实质数值差异、缺失差异和大量小数精度差异，完整明细已保存在:
-
-- `reports/weekly_output_csv_validation_summary.json`
-- `reports/weekly_output_csv_vs_current_db_material_diff.csv`
-- `reports/weekly_output_csv_vs_current_db_until_202604_prediction_diff.csv`
-- `reports/weekly_output_csv_prediction_diff_weeks_input_changes.csv`
-- `reports/weekly_input_artifact_wind_export1_vs_desktop_summary.json`
-- `reports/weekly_input_artifact_wind_export1_vs_desktop_diff.csv`
-
-当前前端展示以最新 DB 公共层回测 run_id=`13` 为准，整体样本数 45、正确数 31、准确率 `68.9%`。代码复核确认 `backtests.weekly_10y_d_overlay_reproduction` 通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_10y_d_overlay", predict_date="historical_backtest")` 调用统一 `shared.data_service` 生成并读回输入 CSV；`--no-persist` 真实库验证仍返回 45 条、`68.9% (31/45)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_10y_d_overlay/weekly_output_historical_backtest.csv`，来源为 `shared_data_service_weekly`。
-
-### 周度 5Y direct-production 落库复核
-
-2026-06-08 已按 SOP 接入 `weekly_5y_direct_production`，先只读运行 `python -m backtests.weekly_5y_direct_production_reproduction --no-persist`，再在明确授权后受控执行落库。该 runner 使用当前公共周频输入层从 `bond_db` 生成 `weekly_output`，再按原始 0529 5Y 三规则等权投票生成历史预测。本轮代码复核发现回测日期曾误用 live first-Monday 周历，已改为 `shared.legacy_weekly_calendar.legacy_week_id_to_friday()`，与原始 0529 脚本一致。代码复核确认 runner 通过 `shared.input_artifacts.build_weekly_input_artifact(scheme_id="weekly_5y_direct_production", predict_date="historical_backtest")` 调用统一 `shared.data_service` 生成并读回输入 CSV；`--no-persist` 真实库验证返回 503 条、`58.4% (294/503)`，summary 中记录输入路径 `backtest_artifacts/runtime_inputs/weekly_5y_direct_production/weekly_output_historical_backtest.csv`，来源为 `shared_data_service_weekly`。落库只写 `weekly_5y_direct_production` 对应的 `t_backtest_*` 回测记录，不写实盘预测表、不写 actuals、不改源数据表。
-
-| 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 |
-|------|--------|--------|----------|------|--------|
-| `weekly_5y_direct_production` | `framework_db_aligned` | 32 | `2016-02-20` 到 `2026-05-16` | 503 | `58.4% (294/503)` |
-
-实盘窗口复核: `2025-07-05` 到 `2026-04-25` 共 43 个样本，正确 26 个，准确率 `60.5%`。落库前后受保护表保持不变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。本轮 5Y/7Y 重新落库目标表变化符合预期: `t_backtest_runs` 10 -> 12，`t_backtest_predictions` 7565 -> 8111，`t_backtest_monthly_metrics` 514 -> 649，`t_backtest_reproduction_checks=1` 不变。backend factor-lab 数据函数已可返回 `weekly_5y_direct_production:5Y:framework_db_aligned` 最新 run；in-app browser 已确认默认区间矩阵中 `5Y国债活跃 · 周度` 显示 `59.7%`，候选方案为 `0529周度5Y-direct-production基准 · 5Y国债活跃回测`。
-
-### 周度 7Y cross-D-overlay 落库复核
-
-2026-06-08 已按 SOP 接入 `weekly_7y_cross_d_overlay`。原始脚本 `/Users/macstudio0/Downloads/weekly_7y_cross_d_overlay_0529.py` 已归档到 scheme core，运行路径不直接 import legacy 文件，而是在 `core/predictors.py` 中按 DataFrame 方式复现 7Y 主规则、低利率反弹 overlay、5Y 辅助 down overlay 和 cross-D final signal。live adapter 与 backtest runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 调用统一 `shared.data_service` 生成周频输入 CSV 后读回。本轮代码复核发现 7Y `normalize_weekly_frame()` 曾误用 live 周历，已改为 `shared.legacy_weekly_calendar`，锁定原始脚本的 `202553 -> 2026-01-04`、`202618 -> 2026-05-01` 日期语义。标准 dry-run `2026-06-06` 返回 `7Y` 一条预测: `feature_week_id=202621`、`target_week_id=202622`、`target_date=2026-06-12`、`predicted_direction=1`、`confidence=0.55`、`input_artifact_source=shared_data_service_weekly`。
-
-| 方案 | 数据源 | run_id | 日期范围 | 样本 | 准确率 |
-|------|--------|--------|----------|------|--------|
-| `weekly_7y_cross_d_overlay` | `framework_db_aligned` | 34 | `2025-07-05` 到 `2026-05-16` | 43 | `62.8% (27/43)` |
-
-实盘窗口复核: `2025-07-05` 到 `2026-04-25` 共 40 个样本，正确 26 个，准确率 `65.0%`。落库前后受保护表保持不变: `t_scheme_predictions=13`、`t_scheme_run_log=6`、`t_scheme_actuals=13900`、`t_scheme_weekly_actuals=794`。backend factor-lab 数据函数已可返回 `weekly_7y_cross_d_overlay:7Y:framework_db_aligned` 最新 run，summary 为 `62.8% (27/43)`；in-app browser 已确认矩阵中 `7Y国债活跃 · 周度` 显示 `62.8%`，点击后详情选中 `0529周度7Y-cross-D-overlay基准 · 7Y国债活跃回测`。
-
-当前周度 10Y 月度样本分布:
-
-| 月份 | 样本 | 正确 | 准确率 |
-|------|------|------|--------|
-| `2025-07` | 4 | 2 | `50.0%` |
-| `2025-08` | 5 | 5 | `100.0%` |
-| `2025-09` | 4 | 3 | `75.0%` |
-| `2025-10` | 5 | 4 | `80.0%` |
-| `2025-11` | 4 | 2 | `50.0%` |
-| `2025-12` | 4 | 2 | `50.0%` |
-| `2026-01` | 6 | 5 | `83.3%` |
-| `2026-02` | 4 | 1 | `25.0%` |
-| `2026-03` | 4 | 3 | `75.0%` |
-| `2026-04` | 4 | 3 | `75.0%` |
-| `2026-05` | 1 | 1 | `100.0%` |
+周度方案 `weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay` 均已退役/代码未实现：方案目录、adapter、`backtests/weekly_*_reproduction.py` runner 已不在代码库中，对应的 `t_backtest_*` 与 `t_scheme_*` 记录已于 2026-06-09 清理。本节早先记录的周度 10Y/5Y/7Y 历史回测 run、月度样本分布与前端周度格子数据均已失效，不再适用。如需周度历史复现，须先按 SOP 重新接入对应周度方案。
 
 当前周频源表覆盖:
 
@@ -224,7 +165,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 ## 前端口径
 
-前端不新增历史验证结果页。历史复现用于后端验证、脚本验收和文档记录；前端继续按原有方案结果矩阵展示方案，后续新增方案后由方案自身结果进入现有展示链路。2026-06-08 已复核前端周度明细归月: 周度 detail rows 使用 `feature_date` 决定所属月份，显示日仍使用周六 `predict_date`；因此 `feature_date=2025-10-31 / predict_date=2025-11-01` 的样本在明细层也归入 2025-10，与后端月度 metrics 保持一致。此前 2026-06-07 已通过 `GET /api/backtests/factor-lab` 核验，`10Y国债活跃 · 周度` 格子展示当前 DB 版本最新 run_id=`13` 的 `68.9% / 1 个方案`，排行显示 `68.9%（31/45）`。2026-06-08 legacy 日期口径修正后，backend factor-lab service 函数已返回 `weekly_5y_direct_production` run_id=`32`、`58.4% (294/503)`，以及 `weekly_7y_cross_d_overlay` run_id=`34`、`62.8% (27/43)`；in-app browser 已确认 `http://127.0.0.1:8100/` 页面正常展示“预测准确率矩阵”，并可打开 7Y 周度详情。
+前端不新增历史验证结果页。历史复现用于后端验证、脚本验收和文档记录；前端继续按原有方案结果矩阵展示方案，后续新增方案后由方案自身结果进入现有展示链路。早先记录的前端周度明细归月口径与 `10Y/5Y/7Y 国债活跃 · 周度` 格子展示均对应已退役/代码未实现的周度方案，相关数据已失效；当前 factor-lab 矩阵只展示 `t1_daily` / `t5_daily` 的日度回测结果。如需周度展示，须先按 SOP 重新接入对应周度方案。
 
 ## 验证命令
 

@@ -23,10 +23,10 @@ DB (api_wind_daily/weekly/monthly + derivative, api_wind_indicators_all)
 
 ### 1.2 三个真实架构债
 
-**问题 A — 周频逻辑双份并存**
-`schemes/weekly_10y_d_overlay/core/weekly_data_service.py` 自带一套 DB 读取实现，与 `shared/data_service.py` 大量重复且违反"core 零 DB"约束：
+**问题 A — 周频逻辑双份并存**（历史；相关周度方案现已退役/代码未实现）
+当时的周度 10Y 方案自带一套 `core/weekly_data_service.py` DB 读取实现，与 `shared/data_service.py` 大量重复且违反"core 零 DB"约束：
 
-| 功能 | `shared/data_service.py` | `weekly_10y_d_overlay/core/weekly_data_service.py` |
+| 功能 | `shared/data_service.py` | 当时周度 10Y `core/weekly_data_service.py` |
 |------|--------------------------|---------------------------------------------------|
 | 因子元数据筛选 | `select_factor_metadata` | `select_weekly_factor_metadata` |
 | 元数据读取 | `read_factor_metadata_from_db` | `read_factor_metadata_from_db`（重复） |
@@ -35,14 +35,14 @@ DB (api_wind_daily/weekly/monthly + derivative, api_wind_indicators_all)
 | 日期→week_id | 无 | `read_source_week_id_for_date` |
 | wind_export 口径 | 无 | `build_wind_export_weekly_output_from_frames` + `build_daily_weekly_close_fallback_*` |
 
-**问题 B — 跨方案耦合**（最严重）
-`weekly_5y_direct_production/predict.py` 和 `weekly_7y_cross_d_overlay/predict.py` 都直接：
+**问题 B — 跨方案耦合**（历史；最严重，相关周度方案现已退役/代码未实现）
+当时的周度 5Y / 7Y 方案 `predict.py` 都直接：
 
 ```python
-from schemes.weekly_10y_d_overlay.core.weekly_data_service import read_source_week_id_for_date
+from schemes.<weekly_10y 方案>.core.weekly_data_service import read_source_week_id_for_date
 ```
 
-即两个方案 **import 进了另一个方案的 core**。这违反方案隔离——`weekly_10y` 的任何改动会波及 `weekly_5y/7y`，且 StaticGate 的"core 零 DB / 强制公共输入入口"规则无法干净通过。
+即两个方案 **import 进了另一个方案的 core**。这违反方案隔离——周度 10Y 的任何改动会波及周度 5Y/7Y，且 StaticGate 的"core 零 DB / 强制公共输入入口"规则无法干净通过。该批周度方案已退役，此债务在代码中已不存在，下文目标设计仅作数据层口径与原则参考。
 
 **问题 C — 交易日历查询散落**
 `t5_daily/predict.py` 内联 `text("... FROM t_trade_calendar ...")` 直接查交易日历；周频方案走 core 里的 `read_source_week_id_for_date`。同一类"日历问题"有两套实现、两个位置。
@@ -72,8 +72,8 @@ def build_weekly_output_from_db(
 ) -> pd.DataFrame: ...
 ```
 
-- `weekly_5y/7y` 依赖的旧 schema-driven 口径（`weekly_output_0529_columns.json` + daily fallback）→ `weekly_variant="wind_export_0529"`。
-- 迁移后：`schemes/weekly_10y_d_overlay/core/weekly_data_service.py` **删除**；三个周频方案的 `predict.py` 只 import `shared.*`，不再跨方案 import。
+- 当时周度 5Y/7Y 依赖的旧 schema-driven 口径（`weekly_output_0529_columns.json` + daily fallback）→ `weekly_variant="wind_export_0529"`。
+- 迁移结论：当时周度 10Y 方案的 `core/weekly_data_service.py` **删除**；周频方案的 `predict.py` 只 import `shared.*`，不再跨方案 import。该批周度方案现已退役/代码未实现；若未来重新接入周度方案，须遵循同一原则（单一权威 + 命名变体口径）。
 - `core/` 只保留纯算法（`predictors.py`、`date_utils.py`、legacy 归档），零 DB。
 
 ### 2.2 统一交易日历服务（新模块）

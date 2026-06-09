@@ -75,7 +75,7 @@ Scheduler启动
 当前调度口径:
 
 - 日度 `t1_daily` / `t5_daily`: 工作日 `09:25`。
-- 周度 `weekly_10y_d_overlay`: 周六 `11:30`，对齐旧实盘 weekly cron `11:30 multi` 的首轮预测时间；旧脚本 `16:00` / `22:00` 为检查和补跑节点。
+- 周度方案（`weekly_10y_d_overlay` 等）已退役/代码未实现，当前无周度 cron；如需周度方案须按 SOP 重新接入。
 
 ### 2.2 实际方向更新（每日16:00）
 
@@ -298,7 +298,7 @@ entry_point: predict.run         # 入口函数
 
 历史回测命名边界:
 
-- `scheme_id`: 真实方案实例，只能使用 `t1_daily`、`t5_daily`、`weekly_10y_d_overlay` 这类方案目录名。
+- `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（`t1_daily`、`t5_daily`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）已退役/代码未实现。
 - `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；canonical 输入位于 `benchmarks/{benchmark_id}/`。
 - `data_source`: 数据口径枚举，例如 `framework_db_aligned`；API 负责映射成中文展示名，例如“当前DB对齐回测”。
 - 运行期输入 artifact: `backtest_artifacts/runtime_inputs/{scheme_id}/`。
@@ -450,7 +450,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵，并使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。周度列已接入 `weekly_10y_d_overlay` 的历史回测展示，前端按 `frequency=weekly` 或 `horizon=6` 映射到“周度”任务格。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵，并使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。周度列对应的周度方案已退役/代码未实现，当前无周度回测数据接入；如需周度方案须按 SOP 重新接入后再进入该任务格。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层接入片段见 [IFRAME_INTEGRATION.md](IFRAME_INTEGRATION.md)。本机尚未找到可直接修改的 `panda_quantflow` 仓库路径。
 
 由FastAPI后端直接serve这个目录作为静态文件。
@@ -538,7 +538,7 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 
 ```bash
 python -m harness.cli check \
-  --scheme-id weekly_10y_d_overlay \
+  --scheme-id t1_daily \
   --predict-date 2026-06-06 \
   --mode all
 ```

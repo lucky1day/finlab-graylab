@@ -11,6 +11,8 @@
 | `t1_daily` | `daily` | 1 | `5Y/10Y` | `active` |
 | `t5_daily` | `daily` | 5 | `3Y/5Y/7Y/10Y` | `active` |
 
+当前注册方案只有 `t1_daily` 与 `t5_daily`；周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役 / 代码未实现，如需周度方案须按 [新增方案 SOP](sop/SCHEME_ONBOARDING_SOP.md) 重新接入。
+
 2026-06-09 已删除全部旧周频预测方案代码。删除原因是旧周频方案在预测/回测路径中使用计算型周历公式推导 `week_id <-> 交易日`，而不是读取 `bond_db.api_wind_date.week_id` 的实际口径，可能从入库时起造成特征周/目标周错位。后续周频方案需要按 [新增方案 SOP](sop/SCHEME_ONBOARDING_SOP.md) 重新入库，并强制使用 `api_wind_date.week_id`。
 
 2026-06-09 已清理旧周频写库记录：`t_scheme_weekly_actuals` 整表清空，`t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_backtest_runs`、`t_backtest_predictions`、`t_backtest_monthly_metrics` 中旧周频 `scheme_id` 记录已删除；源表未修改。同日已修复 `scheduler/weekly_actuals_updater.py`，新生成的周频 actuals 只读 `api_wind_date.week_id` 与 `t_trade_calendar.trade_flag`，不再使用计算型周历公式。
