@@ -130,10 +130,9 @@ def check_api_endpoints() -> None:
     factor_lab = _json("/api/backtests/factor-lab")
     assert factor_lab["data_source"] == "framework_db_aligned"
     assert factor_lab["target_labels"]["3Y"] == "3Y国债活跃"
-    assert len(factor_lab["schemes"]) >= 7
+    assert len(factor_lab["schemes"]) >= 6
     by_id = {item["id"]: item for item in factor_lab["schemes"]}
     assert "t1_daily:1Y:framework_db_aligned" not in by_id
-    assert by_id["weekly_10y_d_overlay:10Y:framework_db_aligned"]["summary"]["overall"] == 68.9
     assert by_id["t5_daily:3Y:framework_db_aligned"]["summary"]["overall"] == 69.5
     assert by_id["t5_daily:3Y:framework_db_aligned"]["summary"]["up_precision"] == 61.4
     assert by_id["t5_daily:3Y:framework_db_aligned"]["summary"]["down_recall"] == 68.5

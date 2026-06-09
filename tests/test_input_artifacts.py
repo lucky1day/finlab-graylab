@@ -4,7 +4,6 @@ import inspect
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
@@ -87,7 +86,7 @@ class InputArtifactTests(unittest.TestCase):
                 data_service.build_weekly_output_from_db.return_value = weekly_df
                 data_service.save_weekly_output.side_effect = lambda df, path: df.to_csv(path, index=False)
                 artifact = build_weekly_input_artifact(
-                    scheme_id="weekly_10y_d_overlay",
+                    scheme_id="demo_weekly_scheme",
                     predict_date="2026-06-06",
                     end_week=202621,
                     engine=engine,
@@ -95,7 +94,7 @@ class InputArtifactTests(unittest.TestCase):
                 )
                 self.assertTrue(artifact.path.exists())
 
-        self.assertEqual(artifact.scheme_id, "weekly_10y_d_overlay")
+        self.assertEqual(artifact.scheme_id, "demo_weekly_scheme")
         self.assertEqual(artifact.frequency, "weekly")
         self.assertEqual(artifact.source, "shared_data_service_weekly")
         self.assertEqual(artifact.data_version, "shared_data_service_weekly.v1")
@@ -115,7 +114,7 @@ class InputArtifactTests(unittest.TestCase):
                 "duplicate_coverage_values": 0,
             },
         )
-        self.assertTrue(str(artifact.path).endswith("weekly_10y_d_overlay/weekly_output_2026-06-06.csv"))
+        self.assertTrue(str(artifact.path).endswith("demo_weekly_scheme/weekly_output_2026-06-06.csv"))
         self.assertEqual(artifact.dataframe["week_id"].tolist(), [202621])
         self.assertEqual(artifact.dataframe["TB0YWI3C"].tolist(), [1.7])
         kwargs = data_service.build_weekly_output_from_db.call_args.kwargs
@@ -130,51 +129,6 @@ class InputArtifactTests(unittest.TestCase):
         signature = inspect.signature(build_weekly_input_artifact)
         self.assertNotIn("end_date", signature.parameters)
         self.assertNotIn("include_daily_weekly_close_fallback", signature.parameters)
-
-
-class WeeklyPredictInputArtifactTests(unittest.TestCase):
-    def test_weekly_predict_uses_common_input_artifact_layer(self) -> None:
-        from schemes.weekly_10y_d_overlay import predict
-
-        weekly_df = pd.DataFrame(
-            [
-                {
-                    "week_id": 202621,
-                    "TB0YWI3C": 1.7,
-                    "TB1YWI3C": 1.1,
-                    "TB5YWI3C": 1.4,
-                }
-            ]
-        )
-        artifact = SimpleNamespace(dataframe=weekly_df, path=Path("/tmp/weekly_output.csv"), source="test")
-        engine = SimpleNamespace(dispose=lambda: None)
-        model_result = SimpleNamespace(
-            week_id=202621,
-            frequency="weekly",
-            prediction_column="d_pred_label",
-            probability_column="d_prob_up",
-            pred_label=-1,
-            prob_up=0.28,
-            source="weekly_test_model",
-        )
-
-        calendar = SimpleNamespace(week_id_for_date=lambda value: 202621)
-        with patch.object(predict, "create_sqlalchemy_engine", return_value=engine):
-            with patch.object(predict, "get_calendar", return_value=calendar):
-                with patch.object(predict, "build_weekly_input_artifact", return_value=artifact) as build:
-                    with patch.object(predict, "predict_w10y", return_value=model_result):
-                        records = predict.run("2026-06-06")
-
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].scheme_id, "weekly_10y_d_overlay")
-        self.assertEqual(records[0].predicted_direction, -1)
-        kwargs = build.call_args.kwargs
-        self.assertEqual(kwargs["scheme_id"], "weekly_10y_d_overlay")
-        self.assertEqual(kwargs["predict_date"], "2026-06-06")
-        self.assertEqual(kwargs["end_week"], 202621)
-        self.assertNotIn("end_date", kwargs)
-        self.assertNotIn("include_daily_weekly_close_fallback", kwargs)
-        self.assertIs(kwargs["engine"], engine)
 
 
 if __name__ == "__main__":

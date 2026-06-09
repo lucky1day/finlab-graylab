@@ -19,9 +19,6 @@ class HarnessStaticGateTests(unittest.TestCase):
         schemes = (
             "t1_daily",
             "t5_daily",
-            "weekly_10y_d_overlay",
-            "weekly_5y_direct_production",
-            "weekly_7y_cross_d_overlay",
         )
 
         for scheme_id in schemes:

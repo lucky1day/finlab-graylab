@@ -38,8 +38,8 @@ class RegistrySyncTests(unittest.TestCase):
 
         engine = _CaptureEngine()
         scheme = SimpleNamespace(
-            scheme_id="weekly_10y_d_overlay",
-            name="Weekly 10Y",
+            scheme_id="demo_weekly_scheme",
+            name="Demo Weekly Scheme",
             description="weekly scheme",
             horizon=6,
             tenors=["10Y"],

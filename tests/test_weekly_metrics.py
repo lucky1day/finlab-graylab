@@ -59,7 +59,7 @@ class WeeklyMetricsTests(unittest.TestCase):
                         (scheme_id, target_tenor, horizon, predict_date, target_date,
                          predicted_direction, confidence, model_version, extra)
                     VALUES
-                        ('weekly_10y_d_overlay', '10Y', 6, '2026-05-23', '2026-05-29',
+                        ('demo_weekly_scheme', '10Y', 6, '2026-05-23', '2026-05-29',
                          -1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2026-05-22"}')
                     """
                 )
@@ -85,7 +85,7 @@ class WeeklyMetricsTests(unittest.TestCase):
                 )
             )
 
-        result = scheme_metrics(engine, "weekly_10y_d_overlay", "10Y")
+        result = scheme_metrics(engine, "demo_weekly_scheme", "10Y")
 
         self.assertEqual(result["summary"]["samples"], 1)
         self.assertEqual(result["summary"]["correct"], 1)
@@ -145,9 +145,9 @@ class WeeklyMetricsTests(unittest.TestCase):
                         (scheme_id, target_tenor, horizon, predict_date, target_date,
                          predicted_direction, confidence, model_version, extra)
                     VALUES
-                        ('weekly_10y_d_overlay', '10Y', 6, '2025-10-25', '2025-10-31',
+                        ('demo_weekly_scheme', '10Y', 6, '2025-10-25', '2025-10-31',
                          1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-24"}'),
-                        ('weekly_10y_d_overlay', '10Y', 6, '2025-11-01', '2025-11-07',
+                        ('demo_weekly_scheme', '10Y', 6, '2025-11-01', '2025-11-07',
                          -1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-31"}')
                     """
                 )
@@ -164,7 +164,7 @@ class WeeklyMetricsTests(unittest.TestCase):
                 )
             )
 
-        result = scheme_metrics(engine, "weekly_10y_d_overlay", "10Y")
+        result = scheme_metrics(engine, "demo_weekly_scheme", "10Y")
         metrics = {row["month"]: row for row in result["monthly_metrics"]}
 
         self.assertEqual(metrics["2025-10"]["samples"], 2)

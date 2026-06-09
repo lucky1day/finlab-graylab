@@ -122,7 +122,7 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                         (scheme_id, name, description, horizon, tenors, frequency,
                          schedule_cron, schedule_timezone, status)
                     VALUES
-                        ('weekly_10y_d_overlay', '周度10Y', '只读回测方案', 6, '["10Y"]',
+                        ('demo_weekly_scheme', '周度示例', '只读回测方案', 6, '["10Y"]',
                          'weekly', '30 11 * * 6', 'Asia/Shanghai', 'paused')
                     """
                 )
@@ -134,7 +134,7 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                         (id, benchmark_id, scheme_id, data_source, start_date, end_date,
                          status, summary, report_path, created_at, updated_at)
                     VALUES
-                        (15, 'model_muti_0529', 'weekly_10y_d_overlay',
+                        (15, 'model_muti_0529', 'demo_weekly_scheme',
                          'framework_db_aligned', '2025-07-12', '2026-05-09',
                          'success', '{}', NULL, NULL, '2026-06-05T21:32:13')
                     """
@@ -177,14 +177,14 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         ):
             result = backtest_factor_lab_results(engine)
 
-        self.assertEqual(result["schemes"][0]["scheme_id"], "weekly_10y_d_overlay")
+        self.assertEqual(result["schemes"][0]["scheme_id"], "demo_weekly_scheme")
         self.assertEqual(result["schemes"][0]["frequency"], "weekly")
         self.assertEqual(result["schemes"][0]["summary"]["accuracy"], 100.0)
         self.assertEqual(result["benchmark_label"], "0529历史基准")
         self.assertEqual(result["data_source_label"], "当前DB对齐回测")
-        self.assertEqual(result["schemes"][0]["scheme_name"], "周度10Y")
+        self.assertEqual(result["schemes"][0]["scheme_name"], "周度示例")
         self.assertEqual(result["schemes"][0]["data_source_label"], "当前DB对齐回测")
-        self.assertEqual(result["schemes"][0]["name"], "周度10Y｜10Y国债活跃｜当前DB对齐回测")
+        self.assertEqual(result["schemes"][0]["name"], "周度示例｜10Y国债活跃｜当前DB对齐回测")
 
 
 if __name__ == "__main__":
