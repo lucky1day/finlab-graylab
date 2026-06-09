@@ -36,10 +36,29 @@ class AuthorizationTest(unittest.TestCase):
     def _used_path(self) -> Path:
         return self.root / "reports" / "harness" / ".used_authorization_tokens.json"
 
-    def test_issue_requires_secret(self) -> None:
+    def test_issue_without_secret_yields_plaintext_token(self) -> None:
+        # 软默认：未配置 HARNESS_AUTH_SECRET 时仍可签发 token（明文确认闸），不报错。
         os.environ.pop("HARNESS_AUTH_SECRET", None)
-        with self.assertRaises(AuthorizationSecretError):
-            issue_token("t5_daily", "activate")
+        token = issue_token("t5_daily", "activate", predict_date="2025-01-02")
+        self.assertTrue(token)
+        # 无密钥时校验跳过签名，但一次性 + 作用域绑定仍生效。
+        auth, errors = verify_authorization(
+            token,
+            scheme_id="t5_daily",
+            action="activate",
+            predict_date="2025-01-02",
+            used_store_path=self._used_path(),
+        )
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(auth)
+        # 作用域不符仍应被拒。
+        _, mismatch_errors = verify_authorization(
+            token,
+            scheme_id="t1_daily",
+            action="activate",
+            used_store_path=self._used_path(),
+        )
+        self.assertTrue(any("scheme_id mismatch" in e for e in mismatch_errors), mismatch_errors)
 
     def test_hmac_verify_success(self) -> None:
         token = issue_token("t5_daily", "activate", predict_date="2025-01-02")

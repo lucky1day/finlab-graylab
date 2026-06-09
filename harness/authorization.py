@@ -30,15 +30,14 @@ class Authorization:
 
 
 class AuthorizationSecretError(RuntimeError):
-    """未配置 HARNESS_AUTH_SECRET 时抛出（fail-closed）。"""
+    """保留以兼容既有 import；当前软默认模式下不再主动抛出。"""
 
 
-def _auth_secret() -> bytes:
+def _auth_secret() -> bytes | None:
+    """返回 HMAC 密钥；未配置时返回 None（软默认：token 退化为明文确认闸）。"""
     secret = os.environ.get(AUTH_SECRET_ENV)
     if not secret:
-        raise AuthorizationSecretError(
-            f"{AUTH_SECRET_ENV} is not set; cannot issue or verify signed authorization tokens"
-        )
+        return None
     return secret.encode("utf-8")
 
 
@@ -46,8 +45,12 @@ def _canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def _sign(payload: dict[str, Any]) -> str:
-    digest = hmac.new(_auth_secret(), _canonical_payload_bytes(payload), hashlib.sha256).digest()
+def _sign(payload: dict[str, Any]) -> str | None:
+    """有密钥时返回 HMAC 签名；无密钥返回 None（不签名）。"""
+    secret = _auth_secret()
+    if secret is None:
+        return None
+    digest = hmac.new(secret, _canonical_payload_bytes(payload), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
@@ -61,9 +64,10 @@ def issue_token(
     ttl_seconds: int | None = None,
     issued_by: str = "harness",
 ) -> str:
-    """签发一个 HMAC 签名、可选 TTL 的一次性授权 token。
+    """签发一次性授权 token（写库/激活前的确认闸）。
 
-    若 HARNESS_AUTH_SECRET 未配置，抛出 AuthorizationSecretError（fail-closed）。
+    配置了 HARNESS_AUTH_SECRET 时附带 HMAC 签名；未配置时退化为明文信封，
+    token 仍承担一次性 + 作用域绑定的确认职责（软默认，单用户场景无需配置）。
     """
     issued_at_dt = datetime.now(timezone.utc).replace(microsecond=0)
     expires_at = None
@@ -81,7 +85,9 @@ def issue_token(
         "nonce": secrets.token_urlsafe(16),
     }
     signature = _sign(payload)
-    envelope = {"payload": payload, "sig": signature}
+    envelope: dict[str, Any] = {"payload": payload}
+    if signature is not None:
+        envelope["sig"] = signature
     raw = json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
@@ -143,15 +149,14 @@ def verify_authorization(
 
     errors: list[str] = []
 
-    if signature_checked:
+    # 软默认：仅当配置了 HARNESS_AUTH_SECRET 时才强制校验 HMAC 签名。
+    # 未配置时跳过签名校验，token 退化为一次性 + 作用域绑定的确认闸。
+    if signature_checked and _auth_secret() is not None:
         if not isinstance(envelope, dict) or "payload" not in envelope or "sig" not in envelope:
             errors.append("authorization token is missing HMAC signature")
         else:
-            try:
-                expected_sig = _sign(envelope["payload"])
-            except AuthorizationSecretError as exc:
-                return None, [str(exc)]
-            if not hmac.compare_digest(expected_sig, str(envelope.get("sig", ""))):
+            expected_sig = _sign(envelope["payload"])
+            if expected_sig is None or not hmac.compare_digest(expected_sig, str(envelope.get("sig", ""))):
                 errors.append("authorization token signature is invalid")
 
     if auth.expires_at:

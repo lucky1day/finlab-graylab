@@ -47,14 +47,15 @@ def _cors_origins() -> list[str]:
 
 
 def require_admin_token(x_admin_token: str | None = Header(default=None, alias=ADMIN_TOKEN_HEADER)) -> None:
-    """校验管理员令牌：缺失服务端配置或令牌不匹配时拒绝。
+    """软默认管理员令牌校验。
 
     令牌从环境变量 BOND_ADMIN_TOKEN 读取，与请求头 X-Admin-Token 比对。
-    （后续计划升级为 HMAC，此处先做简单环境变量校验。）
+    - 未配置 BOND_ADMIN_TOKEN：放行（单用户本机场景，trigger/admin 接口默认开放）。
+    - 已配置：必须携带匹配的 X-Admin-Token，否则拒绝。
     """
     expected = os.getenv("BOND_ADMIN_TOKEN")
     if not expected:
-        raise HTTPException(status_code=403, detail="admin token not configured")
+        return
     if not x_admin_token:
         raise HTTPException(status_code=401, detail="missing admin token")
     if not secrets.compare_digest(x_admin_token, expected):
