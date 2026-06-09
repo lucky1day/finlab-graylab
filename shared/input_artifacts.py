@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +28,10 @@ class InputArtifact:
     source: str
     generated_at: str
     data_version: str
+    artifact_id: str
+    content_hash: str
+    schema_hash: str
+    source_watermark: str | None
     row_count: int
     column_count: int
     columns: list[str]
@@ -73,6 +79,8 @@ def build_daily_input_artifact(
     data_service.save_daily_output(df, path)
     read_back = _read_daily_output_csv(path)
     profile = _dataframe_profile(read_back, coverage_field="date", required_columns=("date",))
+    content_hash = _file_sha256(path)
+    schema_hash = _schema_hash(read_back)
     return InputArtifact(
         scheme_id=scheme_id,
         frequency="daily",
@@ -81,6 +89,10 @@ def build_daily_input_artifact(
         source="shared_data_service_daily",
         generated_at=_utc_now(),
         data_version=DAILY_DATA_VERSION,
+        artifact_id=_artifact_id(scheme_id, predict_date, content_hash),
+        content_hash=content_hash,
+        schema_hash=schema_hash,
+        source_watermark=_source_watermark(profile),
         row_count=profile["row_count"],
         column_count=profile["column_count"],
         columns=profile["columns"],
@@ -126,6 +138,8 @@ def build_weekly_input_artifact(
         if col != "week_id":
             read_back[col] = pd.to_numeric(read_back[col], errors="coerce")
     profile = _dataframe_profile(read_back, coverage_field="week_id", required_columns=("week_id",))
+    content_hash = _file_sha256(path)
+    schema_hash = _schema_hash(read_back)
     return InputArtifact(
         scheme_id=scheme_id,
         frequency="weekly",
@@ -134,6 +148,10 @@ def build_weekly_input_artifact(
         source="shared_data_service_weekly",
         generated_at=_utc_now(),
         data_version=WEEKLY_DATA_VERSION,
+        artifact_id=_artifact_id(scheme_id, predict_date, content_hash),
+        content_hash=content_hash,
+        schema_hash=schema_hash,
+        source_watermark=_source_watermark(profile),
         row_count=profile["row_count"],
         column_count=profile["column_count"],
         columns=profile["columns"],
@@ -196,6 +214,38 @@ def _coverage_bounds(values: pd.Series, coverage_field: str) -> tuple[Any, Any]:
             return None, None
         return int(numeric.min()), int(numeric.max())
     return values.min(), values.max()
+
+
+def _file_sha256(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _schema_hash(df: pd.DataFrame) -> str:
+    schema = sorted((str(column), str(df[column].dtype)) for column in df.columns)
+    payload = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _artifact_id(scheme_id: str, predict_date: str, content_hash: str) -> str:
+    payload = json.dumps(
+        {
+            "scheme_id": scheme_id,
+            "predict_date": predict_date,
+            "content_hash": content_hash,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _source_watermark(profile: dict[str, Any]) -> str | None:
+    end = profile["date_coverage"].get("end")
+    if end is None:
+        return None
+    return str(end)
+
 
 def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(path)

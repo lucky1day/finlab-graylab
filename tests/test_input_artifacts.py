@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,11 +44,16 @@ class InputArtifactTests(unittest.TestCase):
                     output_root=root,
                 )
                 artifact_exists = artifact.path.exists()
+                expected_content_hash = hashlib.sha256(artifact.path.read_bytes()).hexdigest()
 
         self.assertEqual(artifact.scheme_id, "t1_daily")
         self.assertEqual(artifact.frequency, "daily")
         self.assertEqual(artifact.source, "shared_data_service_daily")
         self.assertEqual(artifact.data_version, "shared_data_service_daily.v1")
+        self.assertEqual(artifact.content_hash, expected_content_hash)
+        self.assertEqual(artifact.source_watermark, "2026-06-05")
+        self.assertEqual(len(artifact.schema_hash), 64)
+        self.assertEqual(len(artifact.artifact_id), 64)
         self.assertEqual(artifact.row_count, 1)
         self.assertEqual(artifact.column_count, 2)
         self.assertEqual(artifact.columns, ["date", "TB0YWI0C"])
@@ -93,11 +99,16 @@ class InputArtifactTests(unittest.TestCase):
                     output_root=root,
                 )
                 self.assertTrue(artifact.path.exists())
+                expected_content_hash = hashlib.sha256(artifact.path.read_bytes()).hexdigest()
 
         self.assertEqual(artifact.scheme_id, "demo_weekly_scheme")
         self.assertEqual(artifact.frequency, "weekly")
         self.assertEqual(artifact.source, "shared_data_service_weekly")
         self.assertEqual(artifact.data_version, "shared_data_service_weekly.v1")
+        self.assertEqual(artifact.content_hash, expected_content_hash)
+        self.assertEqual(artifact.source_watermark, "202621")
+        self.assertEqual(len(artifact.schema_hash), 64)
+        self.assertEqual(len(artifact.artifact_id), 64)
         self.assertEqual(artifact.row_count, 1)
         self.assertEqual(artifact.column_count, 2)
         self.assertEqual(artifact.columns, ["week_id", "TB0YWI3C"])
@@ -129,6 +140,46 @@ class InputArtifactTests(unittest.TestCase):
         signature = inspect.signature(build_weekly_input_artifact)
         self.assertNotIn("end_date", signature.parameters)
         self.assertNotIn("include_daily_weekly_close_fallback", signature.parameters)
+
+    def test_content_hash_is_stable_for_same_csv_and_changes_when_data_changes(self) -> None:
+        from shared.input_artifacts import build_daily_input_artifact
+
+        first_df = pd.DataFrame({"date": pd.to_datetime(["2026-06-05"]), "TB0YWI0C": [2.1]})
+        changed_df = pd.DataFrame({"date": pd.to_datetime(["2026-06-05"]), "TB0YWI0C": [2.2]})
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch("shared.input_artifacts.data_service", create=True) as daily_service:
+                daily_service.save_daily_output.side_effect = lambda df, path: df.to_csv(path, index=False)
+                daily_service.build_daily_output_from_db.return_value = first_df
+                first = build_daily_input_artifact(
+                    scheme_id="t1_daily",
+                    predict_date="2026-06-05",
+                    start_date="2019-06-10",
+                    end_date="2026-06-05",
+                    output_root=root,
+                )
+                second = build_daily_input_artifact(
+                    scheme_id="t1_daily",
+                    predict_date="2026-06-05",
+                    start_date="2019-06-10",
+                    end_date="2026-06-05",
+                    output_root=root,
+                )
+                daily_service.build_daily_output_from_db.return_value = changed_df
+                changed = build_daily_input_artifact(
+                    scheme_id="t1_daily",
+                    predict_date="2026-06-05",
+                    start_date="2019-06-10",
+                    end_date="2026-06-05",
+                    output_root=root,
+                )
+
+        self.assertEqual(first.content_hash, second.content_hash)
+        self.assertEqual(first.schema_hash, second.schema_hash)
+        self.assertEqual(first.artifact_id, second.artifact_id)
+        self.assertNotEqual(first.content_hash, changed.content_hash)
+        self.assertNotEqual(first.artifact_id, changed.artifact_id)
 
 
 if __name__ == "__main__":

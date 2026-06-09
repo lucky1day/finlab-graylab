@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine, URL
 
 from scheduler.discovery import SchemeConfig
 from shared.db_config import DatabaseConfig
+from shared.input_artifacts import InputArtifact
 from shared.models import ActualRecord, PredictionRecord, WeeklyActualRecord
 
 
@@ -111,6 +112,61 @@ def upsert_predictions(engine: Engine, records: Iterable[PredictionRecord]) -> i
     with engine.begin() as conn:
         conn.execute(sql, rows)
     return len(rows)
+
+
+def upsert_input_artifact(engine: Engine, artifact: InputArtifact) -> str:
+    """UPSERT 输入产物指纹，返回稳定 artifact_id。"""
+    predict_date = artifact.metadata.get("predict_date")
+    if not predict_date:
+        raise ValueError("InputArtifact.metadata must include predict_date")
+
+    coverage = artifact.date_coverage or {}
+    if coverage.get("field") == "date":
+        min_date = coverage.get("start")
+        max_date = coverage.get("end")
+    else:
+        min_date = None
+        max_date = None
+
+    sql = text(
+        """
+        INSERT INTO t_input_artifacts
+            (artifact_id, scheme_id, scheme_version, predict_date, frequency,
+             data_version, artifact_uri, content_hash, schema_hash, source_watermark,
+             row_count, min_date, max_date)
+        VALUES
+            (:artifact_id, :scheme_id, :scheme_version, :predict_date, :frequency,
+             :data_version, :artifact_uri, :content_hash, :schema_hash, :source_watermark,
+             :row_count, :min_date, :max_date)
+        ON DUPLICATE KEY UPDATE
+            scheme_version = VALUES(scheme_version),
+            data_version = VALUES(data_version),
+            artifact_uri = VALUES(artifact_uri),
+            schema_hash = VALUES(schema_hash),
+            source_watermark = VALUES(source_watermark),
+            row_count = VALUES(row_count),
+            min_date = VALUES(min_date),
+            max_date = VALUES(max_date)
+        """
+    )
+    params = {
+        "artifact_id": artifact.artifact_id,
+        "scheme_id": artifact.scheme_id,
+        "scheme_version": artifact.metadata.get("scheme_version"),
+        "predict_date": str(predict_date),
+        "frequency": artifact.frequency,
+        "data_version": artifact.data_version,
+        "artifact_uri": str(artifact.path),
+        "content_hash": artifact.content_hash,
+        "schema_hash": artifact.schema_hash,
+        "source_watermark": artifact.source_watermark,
+        "row_count": artifact.row_count,
+        "min_date": min_date,
+        "max_date": max_date,
+    }
+    with engine.begin() as conn:
+        conn.execute(sql, params)
+    return artifact.artifact_id
 
 
 def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:
