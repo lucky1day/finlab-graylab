@@ -30,6 +30,7 @@ def create_engine_from_env() -> Engine:
 
 def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> None:
     """将配置文件中的方案元数据同步到 t_scheme_registry。"""
+    scheme_list = list(schemes)
     sql = text(
         """
         INSERT INTO t_scheme_registry
@@ -74,12 +75,48 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
             "schedule_timezone": cfg.schedule.timezone,
             "status": cfg.status,
         }
-        for cfg in schemes
+        for cfg in scheme_list
     ]
     if not rows:
         return
     with engine.begin() as conn:
         conn.execute(sql, rows)
+    for cfg in scheme_list:
+        if getattr(cfg, "scheme_version", None):
+            upsert_scheme_version(engine, cfg)
+
+
+def upsert_scheme_version(engine: Engine, cfg: SchemeConfig) -> str:
+    """将发现到的方案版本写入 t_scheme_versions，保持幂等。"""
+    version_statuses = {"draft", "validated", "shadow", "active", "paused", "retired"}
+    status = cfg.status if cfg.status in version_statuses else "draft"
+    sql = text(
+        """
+        INSERT INTO t_scheme_versions
+            (scheme_id, scheme_version, code_hash, config_hash, manifest_hash, git_commit, status, created_by)
+        VALUES
+            (:scheme_id, :scheme_version, :code_hash, :config_hash, :manifest_hash, :git_commit, :status, :created_by)
+        ON DUPLICATE KEY UPDATE
+            code_hash = VALUES(code_hash),
+            config_hash = VALUES(config_hash),
+            manifest_hash = VALUES(manifest_hash),
+            git_commit = VALUES(git_commit),
+            status = VALUES(status)
+        """
+    )
+    params = {
+        "scheme_id": cfg.scheme_id,
+        "scheme_version": cfg.scheme_version,
+        "code_hash": cfg.code_hash,
+        "config_hash": cfg.config_hash,
+        "manifest_hash": cfg.manifest_hash,
+        "git_commit": None,
+        "status": status,
+        "created_by": "scheduler.discovery",
+    }
+    with engine.begin() as conn:
+        conn.execute(sql, params)
+    return cfg.scheme_version
 
 
 def upsert_predictions(engine: Engine, records: Iterable[PredictionRecord]) -> int:

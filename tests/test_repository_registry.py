@@ -9,6 +9,7 @@ class _CaptureConnection:
         self._store = store
 
     def execute(self, sql, rows) -> None:
+        self._store.setdefault("calls", []).append((str(sql), rows))
         self._store["sql"] = str(sql)
         self._store["rows"] = rows
 
@@ -46,11 +47,15 @@ class RegistrySyncTests(unittest.TestCase):
             frequency="weekly",
             schedule=SimpleNamespace(cron="30 11 * * 6", timezone="Asia/Shanghai"),
             status="active",
+            scheme_version="abc123def456",
+            code_hash="c" * 64,
+            config_hash="f" * 64,
+            manifest_hash=None,
         )
 
         sync_scheme_registry(engine, [scheme])
 
-        sql = engine.store["sql"]
+        sql = engine.store["calls"][0][0]
         update_clause = sql.split("ON DUPLICATE KEY UPDATE", 1)[1]
         self.assertIn("updated_at = IF(", update_clause)
         self.assertLess(update_clause.index("updated_at = IF("), update_clause.index("name = VALUES(name)"))
@@ -162,6 +167,33 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertIn("ON DUPLICATE KEY UPDATE", sql)
         self.assertEqual(params["serving_run_id"], 101)
         self.assertEqual(params["serving_status"], "approved")
+
+    def test_upsert_scheme_version_writes_version_hashes(self) -> None:
+        from scheduler.repository import upsert_scheme_version
+
+        engine = _RunEngine()
+        cfg = SimpleNamespace(
+            scheme_id="t1_daily",
+            scheme_version="abc123def456",
+            code_hash="c" * 64,
+            config_hash="f" * 64,
+            manifest_hash=None,
+            status="active",
+        )
+
+        version = upsert_scheme_version(engine, cfg)
+
+        self.assertEqual(version, "abc123def456")
+        sql = engine.store["sql"]
+        params = engine.store["params"]
+        self.assertIn("INSERT INTO t_scheme_versions", sql)
+        self.assertIn("ON DUPLICATE KEY UPDATE", sql)
+        self.assertEqual(params["scheme_id"], "t1_daily")
+        self.assertEqual(params["scheme_version"], "abc123def456")
+        self.assertEqual(params["code_hash"], "c" * 64)
+        self.assertEqual(params["config_hash"], "f" * 64)
+        self.assertIsNone(params["manifest_hash"])
+        self.assertEqual(params["status"], "active")
 
 
 if __name__ == "__main__":

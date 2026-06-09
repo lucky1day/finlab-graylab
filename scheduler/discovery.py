@@ -10,6 +10,8 @@ try:
 except ModuleNotFoundError:  # forecast_env keeps scheduler dry-run lean and may not include PyYAML.
     yaml = None
 
+from shared.versioning import compute_code_hash, compute_config_hash, compute_manifest_hash, compute_scheme_version
+
 
 logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +40,10 @@ class SchemeConfig:
     entry_point: str
     status: str
     path: Path
+    code_hash: str
+    config_hash: str
+    manifest_hash: str | None
+    scheme_version: str
 
 
 def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
@@ -57,6 +63,11 @@ def load_scheme_config(config_path: Path) -> SchemeConfig:
     if not isinstance(tenors, list) or not tenors:
         raise ValueError(f"{config_path}: tenors must be a non-empty list")
 
+    scheme_dir = config_path.parent
+    code_hash = compute_code_hash(scheme_dir)
+    config_hash = compute_config_hash(config_path)
+    manifest_hash = compute_manifest_hash(scheme_dir)
+
     return SchemeConfig(
         scheme_id=scheme_id,
         name=str(raw["name"]),
@@ -70,7 +81,11 @@ def load_scheme_config(config_path: Path) -> SchemeConfig:
         ),
         entry_point=str(raw.get("entry_point", "predict.run")),
         status=str(raw.get("status", "active")),
-        path=config_path.parent,
+        path=scheme_dir,
+        code_hash=code_hash,
+        config_hash=config_hash,
+        manifest_hash=manifest_hash,
+        scheme_version=compute_scheme_version(code_hash),
     )
 
 
