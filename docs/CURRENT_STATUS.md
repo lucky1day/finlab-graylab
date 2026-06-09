@@ -16,7 +16,9 @@
   - `contracts/`（config_schema / predict_contract / import_rules）、`probes/table_guard`（写库行数保护）、`authorization`（fail-closed 授权，token 绑定单 scheme + nonce 防复用）、`orchestrator` + `cli`。
   - `python -m harness onboard {scheme_id} --stage all` 可一条命令串联 static→input→unit→dry-run→backtest→api，fail-fast，退出码 0/1/2；live/activate 不在 all 内，必须显式授权。
 - **里程碑达成**：M1 数据层合规、M2 StaticGate 守护、M3 自动段贯通、M4 授权卡点、M5 自动化入库可用。
-- **剩余尾项（不阻塞）**：V3 引擎工厂下沉（adapter 仍自建 engine，属白名单内 `adapter→shared` 边）；t1 的 `model_store.py` / `shap_analysis.py` 为预留能力（模型留档 / SHAP 归因），当前未接入预测路径，保留待用。
+- **剩余尾项（不阻塞）**：
+  - **V3 引擎工厂下沉**（待办，可选小重构）：3 个周频 adapter（`weekly_10y/5y/7y` 的 `predict.py`）仍 `from shared.data_service import create_sqlalchemy_engine` 自建并 `dispose` engine，再传给 `calendar_service` / `input_artifacts`。这属依赖白名单内 `adapter→shared` 边，不违规、不阻塞。目标：让 `calendar_service` / `input_artifacts` 在不传 engine 时自管连接，adapter 不再碰裸引擎；引擎工厂语义下沉到 `shared/db_config.py`。**建议并入"第1步：重新验证 5 方案"时顺手做**——那时本就要跑等价闸，边际成本最低；改动须经 `scripts/compare_refactor_outputs.py` 验证 dry-run/回测数值不变。
+  - t1 的 `model_store.py` / `shap_analysis.py` 为预留能力（模型留档 / SHAP 归因），当前未接入预测路径，保留待用。
 
 > 执行计划（已完成）归档于 [archive/ARCH_EXECUTION_PLAN.md](archive/ARCH_EXECUTION_PLAN.md)；周度 live 上线计划（已完成）归档于 [archive/WEEKLY_LIVE_ROLLOUT_PLAN.md](archive/WEEKLY_LIVE_ROLLOUT_PLAN.md)。
 
