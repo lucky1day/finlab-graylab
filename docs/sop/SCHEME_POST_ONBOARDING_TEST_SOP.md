@@ -1,178 +1,203 @@
 # 方案入库后测试验证 SOP
 
 **更新日期**: 2026-06-09
-**状态**: 草案 v0.1（待人工 review 后定稿）
-**定位**: 方案**已完成入库**（通过 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 的 Normalize→Static→Input→Unit→Dry-run→Backtest→Live→Activation）之后，对其**结果正确性与前端展示**做的系统性测试验证流程。
+**状态**: 草案 v0.2（按用户 10 步流程重写，待人工 review 定稿）
+**定位**: 面向**任意一个已入库方案**的标准测试验证流程（不限于现有 5 方案）。核心是 **gatekeeping（先验入库合规）→ 双版本复现对比（入库前原始 vs 改造后，同一数据接入层）→ 数据落库与前端校验 → 挂载定时任务 → 出验证结论**。
 
-> 与入库 SOP 的区别：
-> - **入库 SOP** 回答"方案能不能合规地进系统"（结构、契约、不写错库）。
-> - **本 SOP** 回答"方案进系统后，结果对不对、前端显示对不对、和基线一致不一致"。
->
-> 适用对象：① 新入库方案的首次结果验收；② 已有方案的定期/回归复验（如 5 方案重新验证）；③ 数据层/框架改动后的回归。
+> 与 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 的关系：入库 SOP 负责"把方案合规地改造进系统"；本 SOP 负责"验证改造后的方案结果与入库前原始方案一致，并完成落库/展示/挂载"。本 SOP 的多个失败分支会**打回入库 SOP**。
 
 ---
 
-## 0. 前置条件
+## 0. 通用约定
 
-执行本 SOP 前必须满足：
+**适用对象**：任意一个声称"已入库"的 `scheme_id`。
 
-- [ ] 方案已通过 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 全部入库 Gate。
-- [ ] 后端服务在 `127.0.0.1:8100` 运行（`GET /api/health` 通）。
-- [ ] 双 conda 环境就绪：`forecast_env`（算法）、`bond_factor_lab_service`（服务）。
-- [ ] 若做"回归复验"：已有金标准基线 `reports/refactor_baseline/{scheme_id}/`（无则先按 §1 生成）。
+**核心判定标准（全程统一）**：
+- **方向零容差**：两版本对比时，`predicted_direction`（1/-1/0）必须**逐样本完全一致**；`confidence` 等浮点允许 `1e-9` 容差。方向差一个样本即判不一致。
+- **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
+- **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
 
-约定标记：✅=自动可判定（命令+期望值），👁=人工目检，🔒=需授权/写库（默认跳过，仅授权时执行）。
+**状态机出口**：每个方案最终落到三态之一 —— `PASS`（验证通过、已挂载）/ `REJECTED_TO_ONBOARDING`（打回入库 SOP）/ `BLOCKED`（前置不满足，无法验证）。
 
----
-
-## 阶段 T0 — 锁定验证基线
-
-| 步骤 | 命令 / 动作 | 通过标准 |
-|------|-------------|----------|
-| T0.1 ✅ | 对方案跑 dry-run，输出存基线：`conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id {id} --predict-date {date} > reports/refactor_baseline/{id}/dry_run.json` | 退出码 0，JSON list |
-| T0.2 ✅ | 跑 `--no-persist` 回测存基线：`conda run -n forecast_env python -m backtests.{id}_reproduction --no-persist > reports/refactor_baseline/{id}/backtest_no_persist.json` | 退出码 0，含 summary |
-| T0.3 ✅ | 自洽校验：`python scripts/compare_refactor_outputs.py reports/refactor_baseline reports/refactor_baseline` | `diff_count=0` |
-
-> 复验已有方案时，基线即"上次验收通过的输出"。首次验收时，基线即"算法作者认可的预期输出"。
+**失败处理总原则**：任一步失败 → 产出明确的失败原因描述 + 证据 → 按该步定义的"打回去向"流转 → **不进入后续步骤**。
 
 ---
 
-## 阶段 T1 — 结果正确性验证（核心）
+## 流程总览（状态机）
 
-### T1.1 ✅ dry-run 字段契约
-跑 `python -m harness gate dry-run --scheme-id {id} --predict-date {date}`，断言（见 [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) §3）：
-- 返回条数 == 有效 tenors 数
-- 每条 `scheme_id/horizon/target_tenor` 与 config 一致
-- `predicted_direction ∈ {1,-1,0}`
-- `extra` 含 `input_artifact_path/input_artifact_source`；周频另含 `feature_week_id/target_week_id/feature_date/target_date/target_rule`
-- **写库表 delta==0**（probes/table_guard 自动核验）
-
-### T1.2 ✅ 等价闸（与基线逐字段比对）
-```bash
-# 重新生成 current
-conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id {id} --predict-date {date} > reports/refactor_current/{id}/dry_run.json
-conda run -n forecast_env python -m backtests.{id}_reproduction --no-persist > reports/refactor_current/{id}/backtest_no_persist.json
-# 比对
-python scripts/compare_refactor_outputs.py reports/refactor_baseline reports/refactor_current --ignore-path '$.elapsed_sec'
 ```
-**通过标准：`diff_count=0`。** 非 0 即结果漂移，必须定位原因后才能继续。
-
-### T1.3 ✅ 回测 summary 合理性
-从 T0.2 / T1.2 的 backtest summary 核验：
-- 样本数 `sample_count` 与历史口径一致（如 5Y=503、7Y=43、10Y=45）
-- 整体准确率 `accuracy` 在预期区间
-- 月度分布 `monthly_distribution` 无异常空洞
-
-### T1.4 👁 预测语义抽查（人工）
-取最近 1–2 个 `predict_date`，人工核对：
-- `predicted_direction` 的方向语义（1=收益率上行/价格空…）与算法意图一致
-- 周频 `target_date` 是否落在正确的目标周最后交易日
-- `confidence` 数值合理（非恒定、非 NaN）
-
----
-
-## 阶段 T2 — 实际方向（actuals）与准确率口径验证
-
-### T2.1 ✅ actuals 覆盖
-确认对齐该方案所需的 actuals 已就绪：
-- 日频：`t_scheme_actuals` 覆盖到目标日，`direction_1d`/`direction_5d` 非空
-- 周频：`t_scheme_weekly_actuals` 含该 tenor，`direction_weekly`/`target_rule` 与方案一致
-
-### T2.2 ✅ 准确率 JOIN 口径
-确认后端按正确 horizon 取 actuals：horizon=1→`direction_1d`、horizon=5→`direction_5d`、horizon=6→`t_scheme_weekly_actuals.direction_weekly`。未来目标日无 actuals → 暂无准确率属正常，不算失败。
-
----
-
-## 阶段 T3 — API / 前端展示验证
-
-### T3.1 ✅ API 只读探针
-```bash
-curl -s http://127.0.0.1:8100/api/health
-curl -s "http://127.0.0.1:8100/api/backtests/factor-lab"          # 历史排行矩阵
-curl -s "http://127.0.0.1:8100/api/metrics/{id}?tenor={tenor}"    # 实盘指标（若 active）
+              ┌──────────────────────────────────────────────┐
+   START ───▶ │ S1 入库合规门禁 (StaticGate)                   │
+              └───────┬──────────────────────────────┬───────┘
+                 pass │                          fail │
+                      ▼                               ▼
+              ┌───────────────┐               REJECTED_TO_ONBOARDING
+              │ S2 版本回测定义 │                （打回入库 SOP）
+              │    存在性检查   │───── 无定义 ──▶ REJECTED_TO_ONBOARDING
+              └───────┬───────┘
+                 有定义 ▼
+   S3 入库前原始方案复现 ──失败──▶ BLOCKED（基准不可复现，需作者修基准）
+                      ▼ ok
+   S4 改造后方案复现（同一数据接入层）──失败──▶ REJECTED_TO_ONBOARDING
+                      ▼ ok
+   S5 两版本对比（方向零容差）──不一致──▶ REJECTED_TO_ONBOARDING（附差异描述）
+                      ▼ 一致
+   S6 落库（写 t_backtest_*）──失败──▶ 修复后重试 S6
+                      ▼ ok
+   S7 前端刷新 + DB↔前端严格比对 ──不一致──▶ 回到 S6/刷新
+                      ▼ 一致
+   S8 挂载日/周/月定时预测任务
+                      ▼ ok
+   S9 输出验证结论 ──▶ PASS
 ```
-通过标准：HTTP 200；factor-lab 返回含本方案 `scheme_id:tenor:data_source`；周频方案 `frequency=weekly` 或 `horizon=6`。
-> 也可直接跑 `python -m harness gate api --scheme-id {id}`。
 
-### T3.2 👁 前端矩阵目检（人工）
-打开 `http://127.0.0.1:8100/`，核对：
-- 方案出现在正确任务格子（如 `5Y国债活跃 · 周度`）
-- 矩阵准确率数字与 T1.3 回测 summary 一致（如 `58.4%`）
-- 点击方案 → 详情显示名、月度明细正确
-- 同一格子多方案可并存排行；切换排行指标格子最优值同步变化
-- 周频明细按 `feature_date` 所属月份归月
-
-### T3.3 👁 展示名与口径
-确认 `target_label`（来自 `t_target_registry`）显示中文名正确；历史回测显示为"当前DB对齐回测"口径。
+> 打回 `REJECTED_TO_ONBOARDING` 的方案，必须由 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 流程排查根因并改造，改造完成后**从 S1 重新开始**整个验证。
 
 ---
 
-## 阶段 T4 🔒 — 实盘写入复验（仅授权时）
+## S1 — 入库合规门禁（Gatekeeping）
 
-> 默认**跳过**。仅当需要验证 active 方案的实盘写库链路时，经显式授权执行。
-
-| 步骤 | 动作 | 通过标准 |
-|------|------|----------|
-| T4.1 🔒 | 发授权：`python -m harness auth issue --scheme-id {id} ...` 取 token | 得到一次性 token |
-| T4.2 🔒 | 受控写库：`python -m harness gate live --scheme-id {id} --predict-date {date} --authorize <TOKEN>` | 仅该 scheme 的 `t_scheme_predictions`/`t_scheme_run_log` +N，其余受保护表 delta==0 |
-| T4.3 ✅ | 写后核验 SQL：`SELECT ... FROM t_scheme_predictions WHERE scheme_id='{id}'` | 行数/字段符合预期；run_log 有 success |
-| T4.4 ✅ | 审计留痕 | `reports/harness/{id}/{ts}/authorization.json` 存在 |
-
-无 token 时 live gate 返回 BLOCKED 且不写库（fail-closed）——这本身是一条应通过的负向用例。
+| 项 | 定义 |
+|----|------|
+| **入口条件** | 收到一个待验证 `scheme_id`，其目录存在于 `schemes/{scheme_id}/` |
+| **动作** | 运行 `python -m harness gate static --scheme-id {scheme_id}`（StaticGate：目录名==scheme_id、predict.run 签名+SCHEME_ID、core 零 DB/零写库、无跨方案 import、强制 shared.input_artifacts、config schema 合规） |
+| **成功判定** | StaticGate `status == passed` |
+| **成功→去向** | 进入 S2 |
+| **失败判定** | StaticGate `status == failed`（任一规则命中） |
+| **失败→去向** | `REJECTED_TO_ONBOARDING`。输出 StaticGate 的 errors/evidence，**不再进入后续验证**。由入库 SOP 修复结构问题后从 S1 重来 |
 
 ---
 
-## 阶段 T5 — 验收记录
+## S2 — 版本回测定义存在性检查
 
-| 步骤 | 动作 |
-|------|------|
-| T5.1 | 汇总 T1–T3（及 T4 若执行）的证据：等价闸 diff_count、回测 summary、API 命中、前端截图/目检结论 |
-| T5.2 | 更新 [CURRENT_STATUS.md](../CURRENT_STATUS.md)：该方案最新验证日期、run_id、准确率、是否 active |
-| T5.3 | 若为回归复验且发现漂移：记录差异、定位根因、决定回滚或接受 |
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S1 通过 |
+| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **静态基准文件**：入库前固化的基准输出（如 `benchmarks/{benchmark_id}/*.csv` 或预测结果表），含逐样本 `predict_date/target_tenor/predicted_direction` |
+| **成功判定** | ①或②至少存在其一，且能定位到具体文件/模块路径 |
+| **成功→去向** | 进入 S3（记录采用的是脚本复现还是静态基准） |
+| **失败判定** | 两种形态都不存在，或存在但无法定位/不含逐样本方向 |
+| **失败→去向** | `REJECTED_TO_ONBOARDING`。原因："缺少版本回测定义，无法定义正确性基准"。由作者补齐入库前基准后从 S1 重来 |
 
----
-
-## 一键串联（自动段）
-
-入库后测试的自动段可直接用 harness 串联（不含 🔒 live）：
-```bash
-python -m harness onboard {id} --predict-date {date} --stage all
-# static → input → unit → dry-run → backtest → api，fail-fast，退出码 0/1/2
-```
-本 SOP 在其之上补充了 **T0/T1.2 等价闸**（与基线比对，harness 默认不做）、**T1.4/T3.2 人工目检**、**T2 actuals 口径**、**T5 记录**——这些是"结果对不对/显示对不对"的判断，harness 自动段只保证"能合规运行且不写错库"。
+> 说明：不在本步做时间窗口划分——按版本回测定义自身覆盖的历史范围整体复现即可。
 
 ---
 
-## 验收门槛（Definition of Done）
+## S3 — 入库前原始方案复现（基准序列）
 
-一个方案通过本 SOP 的判定：
-
-- ✅ T1.2 等价闸 `diff_count=0`（结果与基线一致）
-- ✅ T1.1 dry-run 字段契约全过、写库表 delta==0
-- ✅ T1.3 回测 summary 样本数/准确率符合预期
-- ✅ T3.1 API 200 且命中本方案
-- 👁 T1.4 + T3.2 人工目检通过（语义、前端展示正确）
-- ✅ T2 actuals 口径正确（或未来目标日无 actuals 的合理空缺）
-- 📝 T5 验收记录已更新
-
-> 🔒 T4 实盘写入复验不是默认门槛，仅授权场景纳入。
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S2 通过，已确定版本回测定义形态 |
+| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`。<br>**形态②（静态）**：直接读入库前静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `predict_date/target_tenor/predicted_direction/confidence`） |
+| **成功判定** | 基准序列成功生成、样本数 > 0、含必需字段 |
+| **成功→去向** | 进入 S4 |
+| **失败判定** | 原始脚本报错跑不出、或静态文件损坏/字段缺失 |
+| **失败→去向** | `BLOCKED`。原因："入库前基准本身不可复现"。这不是改造方案的问题，需方案作者修复基准定义后从 S2 重来 |
 
 ---
 
-## 5 方案复验执行清单（本 SOP 首次落地用）
+## S4 — 改造后方案复现（同一数据接入层）
 
-按本 SOP 逐个验证现有 5 方案，逐格打勾：
-
-| 方案 | T1.2 等价 | T1.3 回测 | T3.1 API | T3.2 前端👁 | T5 记录 |
-|------|:--------:|:--------:|:--------:|:----------:|:------:|
-| t1_daily (active) | ☐ | ☐ | ☐ | ☐ | ☐ |
-| t5_daily (active) | ☐ | ☐ | ☐ | ☐ | ☐ |
-| weekly_10y_d_overlay (active) | ☐ | ☐ | ☐ | ☐ | ☐ |
-| weekly_5y_direct_production (paused) | ☐ | ☐ | ☐ | ☐ | ☐ |
-| weekly_7y_cross_d_overlay (paused) | ☐ | ☐ | ☐ | ☐ | ☐ |
-
-> 预期基线值（来自现有记录，复验时应不变）：10Y `68.9% (31/45)`、5Y `58.4% (294/503)`、7Y `62.8% (27/43)`；t1/t5 framework-db mismatch=0。
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S3 产出 baseline_original |
+| **动作** | 用改造后的方案，**经统一数据接入层**（`shared.input_artifacts → shared.data_service`，与基准复现绑定**同一 data_version / 同一数据范围**）跑历史复现：`conda run -n forecast_env python -m backtests.{scheme_id}_reproduction --no-persist`，输出存 `reports/postonboard/{scheme_id}/repro_framework.json` |
+| **成功判定** | 退出码 0；复现样本数与 baseline 可对齐（同一历史范围）；输入 artifact 的 `data_version`/`source` 与基准复现一致 |
+| **成功→去向** | 进入 S5 |
+| **失败判定** | 复现报错、或数据版本/范围与基准不一致（违反"同一数据接入层"） |
+| **失败→去向** | `REJECTED_TO_ONBOARDING`。原因："改造后复现失败或数据接入不一致"。由入库 SOP 排查 adapter/输入链路后从 S1 重来 |
 
 ---
 
-> **本文为草案 v0.1，待人工 review。** review 关注点建议：① T1.4/T3.2 人工目检项是否够具体；② 是否需要补充"性能/超时"验证；③ 5 方案预期基线值是否需按最新 DB 重新锁定。
+## S5 — 两版本对比（方向零容差）
+
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S3 baseline_original + S4 repro_framework 均就绪 |
+| **动作** | 逐样本对齐（按 `predict_date + target_tenor` 主键）比对两版本，可用 `scripts/compare_refactor_outputs.py`（方向严格、浮点 1e-9）。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
+| **成功判定** | **所有可对齐样本 `predicted_direction` 完全一致**；`confidence` 差异 ≤ 1e-9；无"基准有而复现缺"的样本（或缺失已有合理解释并记录） |
+| **成功→去向** | 进入 S6 |
+| **失败判定** | 存在任一样本方向不一致，或样本集不可对齐 |
+| **失败→去向** | `REJECTED_TO_ONBOARDING`。**必须输出不一致明细**：哪些 `predict_date/target_tenor`、基准方向 vs 复现方向、差异数量。由入库 SOP 据此排查改造引入的偏差，改造后从 S1 重来 |
+
+---
+
+## S6 — 落库（写历史回测结果）
+
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S5 判定一致 |
+| **动作** | 去掉 `--no-persist` 正式落库：`conda run -n bond_factor_lab_service python -m backtests.{scheme_id}_reproduction`，写入 `t_backtest_runs / t_backtest_predictions / t_backtest_monthly_metrics`。落库前后用 `probes/table_guard` 思路核验：仅 `t_backtest_*` 该 run 相关行增加，实盘表 `t_scheme_predictions/run_log/actuals` delta==0 |
+| **成功判定** | 获得 `run_id`；受保护实盘表零变化；落库样本数 == S4 复现样本数 |
+| **成功→去向** | 进入 S7（记录 run_id） |
+| **失败判定** | 落库报错、或误写实盘表、或样本数不符 |
+| **失败→去向** | 修复后**重试 S6**（落库是确定性写操作，非算法问题，不打回入库） |
+
+---
+
+## S7 — 前端刷新 + DB↔前端严格比对
+
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S6 落库成功，得 run_id |
+| **动作** | ① 刷新前端读取最新 run（`/api/backtests/factor-lab`）；② **严格比对** DB 中该 run 的回测结果与前端展示：逐 `tenor × 月份` 的样本数、准确率必须与 `t_backtest_monthly_metrics` 一致；整体准确率与 DB 聚合一致 |
+| **成功判定** | 前端每一个展示数值都能在 DB 找到完全相等的来源；无"前端有 DB 无"或"DB 有前端漏"的格子 |
+| **成功→去向** | 进入 S8 |
+| **失败判定** | 任一前端数值与 DB 不符 |
+| **失败→去向** | 回到 **S7 起点重新刷新**（必要时回 S6 重新落库）。"所有回测结果必须严格验证完毕"方可放行 |
+
+---
+
+## S8 — 挂载定时预测任务
+
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S7 DB↔前端严格一致 |
+| **动作** | 按方案 `frequency` 挂载定时预测任务：① 将 `config.yaml` 的 `status` 改为 `active`；② 确认 `schedule.cron` 与频率匹配（日频工作日 09:25 / 周频周六 11:30 / 月频按定义）；③ 重启 scheduler 使其注册该 job；④ 确认调度日志出现该方案 cron 注册 |
+| **成功判定** | scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；方案进入对应频率的定时预测队列 |
+| **成功→去向** | 进入 S9 |
+| **失败判定** | status 未生效 / cron 未注册 / scheduler 未识别 |
+| **失败→去向** | 修复 config/调度后**重试 S8** |
+| **回滚** | 若挂载后出现异常，按入库 SOP 回滚策略：改回 `paused` + 重启，保留已写数据 |
+
+> 按用户决定：挂载为验证流程的正常收尾动作，**不需要单独授权**。
+
+---
+
+## S9 — 输出验证结论
+
+| 项 | 定义 |
+|----|------|
+| **入口条件** | S8 挂载成功 |
+| **动作** | 汇总产出该方案的**验证结论报告**，含：最终状态（PASS）、入库合规结论（S1）、采用的版本回测定义形态（S2）、复现样本数与准确率（S3/S4）、对比结论（S5 一致）、落库 run_id（S6）、前端比对结论（S7）、挂载 cron（S8）。更新 [CURRENT_STATUS.md](../CURRENT_STATUS.md) |
+| **成功→去向** | 终态 `PASS` |
+
+---
+
+## 终态定义
+
+| 终态 | 含义 | 后续 |
+|------|------|------|
+| **PASS** | 双版本方向完全一致、落库与前端严格对齐、定时任务已挂载 | 方案进入实盘运行；纳入定期回归复验 |
+| **REJECTED_TO_ONBOARDING** | S1/S2/S4/S5 失败 | 打回 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)，排查根因→改造→**从 S1 重来** |
+| **BLOCKED** | S3 失败（入库前基准本身不可复现） | 非改造问题；方案作者修复基准定义→从 S2 重来 |
+
+---
+
+## 失败/成功流转速查
+
+| 步骤 | 成功去向 | 失败去向 | 判定核心 |
+|------|----------|----------|----------|
+| S1 入库合规 | S2 | REJECTED_TO_ONBOARDING | StaticGate passed |
+| S2 版本回测定义 | S3 | REJECTED_TO_ONBOARDING | 脚本或静态基准至少其一 |
+| S3 原始复现 | S4 | BLOCKED | 基准序列可生成 |
+| S4 改造复现 | S5 | REJECTED_TO_ONBOARDING | 同一数据接入层、复现成功 |
+| S5 对比 | S6 | REJECTED_TO_ONBOARDING（附差异） | 方向零容差 |
+| S6 落库 | S7 | 重试 S6 | 仅 t_backtest_* 变化 |
+| S7 前端比对 | S8 | 重试 S7/S6 | DB↔前端严格相等 |
+| S8 挂载 | S9 | 重试 S8 | cron 注册成功 |
+| S9 结论 | PASS | — | — |
+
+---
+
+> **本文为草案 v0.2，待人工 review。** 重写自用户 10 步流程。review 关注点：① S2 版本回测定义的两种形态判定是否够清晰；② S3 失败归为 BLOCKED（而非打回入库）是否符合预期；③ S5 "样本不可对齐"的处理；④ S7 严格比对的粒度（tenor×月 是否足够）；⑤ 是否需要为每步补可执行的检查脚本。
