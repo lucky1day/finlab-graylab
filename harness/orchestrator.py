@@ -20,6 +20,9 @@ def onboard(ctx: GateContext, stage: str = "all", gates: Iterable[Gate] | None =
         if result.report_path is None:
             result = replace(result, report_path=result_path)
         results.append(result)
+        # SKIPPED 视为非阻塞（passed=True）；仅 FAILED/BLOCKED 立即停止。
+        if result.status in (GateStatus.SKIPPED, GateStatus.PASSED):
+            continue
         if not result.passed:
             break
 

@@ -108,7 +108,7 @@ class HarnessStaticGateTests(unittest.TestCase):
                         "def context(value):",
                         "    return value",
                         "def build():",
-                        "    Path('/tmp/example').write_text(direction_text(context(1)))",
+                        "    return direction_text(context(1))",
                     ]
                 ),
                 encoding="utf-8",
@@ -478,7 +478,10 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
     def test_registry_all_excludes_live_and_orders_auto_gates(self) -> None:
         from harness.registry import sequence_for_stage
 
-        self.assertEqual(sequence_for_stage("all"), ["static", "input", "unit", "dry-run", "backtest", "api"])
+        self.assertEqual(
+            sequence_for_stage("all"),
+            ["static", "input", "unit", "dry-run", "compare", "backtest", "api"],
+        )
         self.assertNotIn("live", sequence_for_stage("all"))
 
     def test_orchestrator_fail_fast_stops_after_first_failure(self) -> None:

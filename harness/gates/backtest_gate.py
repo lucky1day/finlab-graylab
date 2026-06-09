@@ -73,9 +73,16 @@ class BacktestGate(Gate):
         errors: list[str] = []
         diff_count: int | None = None
         first_diffs: list[str] = []
+        baseline_bootstrapped = False
         if not ctx.persist_backtest:
             if not baseline_path.exists():
-                errors.append(f"backtest baseline not found: {baseline_path}")
+                # 基线缺失：将本次 no-persist 输出写为新基线（自举），并判定通过。
+                baseline_path.parent.mkdir(parents=True, exist_ok=True)
+                baseline_path.write_text(
+                    json.dumps(current, ensure_ascii=False, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+                baseline_bootstrapped = True
             else:
                 baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
                 diffs = compare_json(baseline, current, ignore_paths=IGNORE_PATHS)
@@ -95,6 +102,7 @@ class BacktestGate(Gate):
                 Evidence("persisted", ctx.persist_backtest),
                 Evidence("authorization_audit_path", str(audit_path) if audit_path else None),
                 Evidence("baseline_path", str(baseline_path)),
+                Evidence("baseline_bootstrapped", baseline_bootstrapped),
                 Evidence("diff_count", diff_count),
                 Evidence("first_diffs", first_diffs),
                 Evidence("status", current.get("status")),

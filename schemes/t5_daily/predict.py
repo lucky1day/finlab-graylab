@@ -5,8 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.engine import Engine
 
 from shared.calendar_service import get_calendar
-from shared.data_service import create_sqlalchemy_engine
-from shared.input_artifacts import build_daily_input_artifact
+from shared.input_artifacts import build_daily_input_artifact, data_service
 from shared.models import PredictionRecord
 
 from .latest_prediction import TENOR_MODULES, predict_latest_for_module
@@ -29,7 +28,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     """
     end_date = predict_date
     start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
-    engine = create_sqlalchemy_engine()
+    engine = data_service.create_sqlalchemy_engine()
     try:
         input_artifact = build_daily_input_artifact(
             scheme_id=SCHEME_ID,

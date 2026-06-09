@@ -3,6 +3,7 @@ from __future__ import annotations
 from harness.gates.api_gate import ApiGate
 from harness.gates.backtest_gate import BacktestGate
 from harness.gates.base import Gate
+from harness.gates.compare_gate import CompareGate
 from harness.gates.dry_run_gate import DryRunGate
 from harness.gates.input_gate import InputGate
 from harness.gates.live_gate import LiveGate
@@ -10,7 +11,7 @@ from harness.gates.static_gate import StaticGate
 from harness.gates.unit_gate import UnitGate
 
 
-AUTO_SEQUENCE = ["static", "input", "unit", "dry-run", "backtest", "api"]
+AUTO_SEQUENCE = ["static", "input", "unit", "dry-run", "compare", "backtest", "api"]
 EXPLICIT_SEQUENCE = ["live", "activate"]
 
 
@@ -29,6 +30,7 @@ def gate_for_name(name: str) -> Gate:
         "input": InputGate,
         "unit": UnitGate,
         "dry-run": DryRunGate,
+        "compare": CompareGate,
         "backtest": BacktestGate,
         "api": ApiGate,
         "live": LiveGate,

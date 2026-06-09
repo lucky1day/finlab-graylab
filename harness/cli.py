@@ -9,15 +9,17 @@ from typing import Any
 
 from harness.authorization import issue_token
 from harness.context import GateContext
+from harness.gates.activate_gate import ActivationGate
 from harness.gates.api_gate import ApiGate
 from harness.gates.backtest_gate import BacktestGate
+from harness.gates.compare_gate import CompareGate
 from harness.gates.dry_run_gate import DryRunGate
 from harness.gates.input_gate import InputGate
 from harness.gates.live_gate import LiveGate
 from harness.gates.static_gate import StaticGate
 from harness.gates.unit_gate import UnitGate
 from harness.orchestrator import onboard as run_onboard
-from harness.result import Evidence, GateResult, GateStatus, OnboardReport
+from harness.result import GateResult, GateStatus, OnboardReport
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +29,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "auth" and args.auth_command == "issue":
-        token = issue_token(args.scheme_id, args.action, args.predict_date, issued_by=args.issued_by)
+        token = issue_token(
+            args.scheme_id,
+            args.action,
+            args.predict_date,
+            scheme_version=args.scheme_version,
+            harness_run_id=args.harness_run_id,
+            ttl_seconds=args.expires_in,
+            issued_by=args.issued_by,
+        )
         print(token)
         return 0
     if args.command == "gate":
@@ -54,10 +64,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
-    for gate_name in ("static", "input", "unit", "dry-run", "backtest", "api", "live"):
+    for gate_name in ("static", "input", "unit", "dry-run", "compare", "backtest", "api", "live"):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
-        item.add_argument("--predict-date", default="static" if gate_name in {"static", "unit", "backtest", "api"} else None)
+        item.add_argument("--predict-date", default="static" if gate_name in {"static", "unit", "compare", "backtest", "api"} else None)
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--report-dir", type=Path, default=None)
         item.add_argument("--algo-env", default="forecast_env")
@@ -97,6 +107,9 @@ def _build_parser() -> argparse.ArgumentParser:
     issue_parser.add_argument("--action", required=True)
     issue_parser.add_argument("--predict-date", default=None)
     issue_parser.add_argument("--issued-by", default="harness")
+    issue_parser.add_argument("--expires-in", type=int, default=None, dest="expires_in")
+    issue_parser.add_argument("--scheme-version", default=None, dest="scheme_version")
+    issue_parser.add_argument("--harness-run-id", default=None, dest="harness_run_id")
     return parser
 
 
@@ -121,6 +134,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         "input": InputGate(),
         "unit": UnitGate(),
         "dry-run": DryRunGate(),
+        "compare": CompareGate(),
         "backtest": BacktestGate(),
         "api": ApiGate(),
         "live": LiveGate(),
@@ -145,24 +159,16 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
 
 
 def _run_activate(args: argparse.Namespace) -> GateResult:
-    started_at = _utc_now()
-    report_dir = args.report_dir or args.project_root.resolve() / "reports" / "harness" / args.scheme_id / _timestamp()
-    report_dir.mkdir(parents=True, exist_ok=True)
-    status = GateStatus.BLOCKED
-    errors = ["activation requires explicit authorization"] if not args.authorize else ["activation is fail-closed until SOP wiring is implemented"]
-    return GateResult(
-        gate_name="activate",
-        status=status,
-        passed=False,
-        evidence=[
-            Evidence("scheme_id", args.scheme_id),
-            Evidence("authorization_required", True),
-            Evidence("report_dir", str(report_dir)),
-        ],
-        errors=errors,
-        started_at=started_at,
-        finished_at=_utc_now(),
+    project_root = args.project_root.resolve()
+    report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    ctx = GateContext(
+        scheme_id=args.scheme_id,
+        predict_date=args.predict_date,
+        project_root=project_root,
+        report_dir=report_dir,
+        authorization=args.authorize,
     )
+    return ActivationGate().run(ctx)
 
 
 def _run_report(args: argparse.Namespace) -> int:
@@ -191,10 +197,6 @@ def _exit_code_for_report(report: OnboardReport) -> int:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def _jsonable(value: Any) -> Any:

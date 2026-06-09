@@ -10,8 +10,19 @@ from typing import Iterable
 DANGEROUS_CORE_IMPORTS = {
     "sqlalchemy",
     "pymysql",
+    "psycopg2",
+    "requests",
+    "urllib",
+    "httpx",
+    "socket",
+    "subprocess",
     "scheduler",
+    "backend",
+    "backtests",
     "shared.input_artifacts",
+    "shared.data_service",
+    "shared.db_config",
+    "shared.repository",
 }
 CORE_DB_CALL_NAMES = {
     "create_engine",
@@ -19,6 +30,16 @@ CORE_DB_CALL_NAMES = {
     "read_sql",
     "text",
 }
+# core 禁止的限定调用（attr 形式：module.attr(...)），避免误伤 json.load / yaml.load 等。
+CORE_FORBIDDEN_QUALIFIED_CALLS = {
+    ("os", "system"),
+    ("pickle", "load"),
+    ("joblib", "load"),
+}
+# core 禁止的文件写入 mode（open(..., mode) 的写模式）
+CORE_WRITE_OPEN_MODES = {"w", "a", "wb", "ab", "w+", "a+", "x", "xb"}
+# core 禁止的写文件方法名（Path.write_text / Path.write_bytes 等）
+CORE_WRITE_METHOD_NAMES = {"write_text", "write_bytes"}
 WRITE_CALL_NAMES = {
     "upsert_predictions",
     "write_run_log",
@@ -30,6 +51,13 @@ WRITE_CALL_NAMES = {
 PREDICT_DANGEROUS_IMPORTS = {
     "scheduler.repository",
     "scheduler.executor",
+}
+# predict.py 允许的 import 白名单（shared.* / 框架层面）。
+# shared.contracts 在本仓库的真实模块名为 shared.models（PredictionRecord 等契约类型所在）。
+PREDICT_ALLOWED_SHARED_IMPORTS = {
+    "shared.input_artifacts",
+    "shared.models",
+    "shared.calendar_service",
 }
 SQL_WRITE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 SQL_WRITE_PATTERN = re.compile(r"\b(" + "|".join(SQL_WRITE_KEYWORDS) + r")\b", re.IGNORECASE)
@@ -110,6 +138,139 @@ def call_name(node: ast.AST) -> str:
     if isinstance(node, ast.Attribute):
         return node.attr
     return ""
+
+
+def _qualified_call(func: ast.AST) -> tuple[str, str] | None:
+    """提取 module.attr 形式的限定调用，返回 (module, attr)。"""
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return (func.value.id, func.attr)
+    return None
+
+
+def qualified_call_violations(
+    path: Path, tree: ast.AST, qualified_calls: Iterable[tuple[str, str]]
+) -> list[RuleViolation]:
+    """检测形如 os.system()/pickle.load()/joblib.load() 的限定危险调用。"""
+    targets = set(qualified_calls)
+    violations: list[RuleViolation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        qualified = _qualified_call(node.func)
+        if qualified in targets:
+            violations.append(
+                RuleViolation(path, node.lineno, f"dangerous call: {qualified[0]}.{qualified[1]}()")
+            )
+    return violations
+
+
+def file_write_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
+    """检测写文件调用：open(..., 'w'/'a'/'wb'...) 与 Path.write_text/write_bytes。"""
+    violations: list[RuleViolation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = call_name(node.func)
+        if name in CORE_WRITE_METHOD_NAMES:
+            violations.append(RuleViolation(path, node.lineno, f"file write call: {name}()"))
+            continue
+        if name == "open":
+            mode = _open_mode(node)
+            if mode is not None and mode in CORE_WRITE_OPEN_MODES:
+                violations.append(RuleViolation(path, node.lineno, f"file write call: open(mode={mode!r})"))
+    return violations
+
+
+def _open_mode(node: ast.Call) -> str | None:
+    """读取 open(...) 的 mode 实参（位置第 2 个或关键字 mode）。"""
+    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+        return node.args[1].value
+    for keyword in node.keywords:
+        if keyword.arg == "mode" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+            return keyword.value.value
+    return None
+
+
+def predict_import_whitelist_violations(
+    path: Path, tree: ast.AST, scheme_id: str
+) -> list[RuleViolation]:
+    """predict.py 仅允许 import：白名单 shared.* / 本方案 schemes.{id}.* / 标准库与第三方库。
+
+    被显式拦截的是 shared.* 中不在白名单的模块（如 shared.data_service）以及框架层
+    (scheduler / backend / backtests) 的越层 import；跨方案 import 由 cross_scheme_imports 另行处理。
+    """
+    violations: list[RuleViolation] = []
+    forbidden_framework_prefixes = ("scheduler", "backend", "backtests")
+    own_scheme_prefix = f"schemes.{scheme_id}"
+    for imported, line in import_names(tree):
+        normalized = imported.lstrip(".")
+        top = normalized.split(".")[0]
+        if normalized.startswith("shared."):
+            if not _matches_allowed_shared(normalized):
+                violations.append(
+                    RuleViolation(path, line, f"predict import not in whitelist: {normalized}")
+                )
+            continue
+        if normalized == "shared":
+            violations.append(RuleViolation(path, line, "predict import not in whitelist: shared"))
+            continue
+        if top in forbidden_framework_prefixes:
+            violations.append(
+                RuleViolation(path, line, f"predict import not in whitelist: {normalized}")
+            )
+            continue
+        if normalized.startswith("schemes."):
+            # 本方案内部模块允许；跨方案由 cross_scheme_imports 捕获。
+            if normalized == own_scheme_prefix or normalized.startswith(f"{own_scheme_prefix}."):
+                continue
+            # 其它 schemes.* 交由跨方案规则报错，这里不重复。
+            continue
+        # 标准库 / 第三方库（如 datetime / pathlib / pandas / sqlalchemy 的类型）不视为越层。
+    return violations
+
+
+def _matches_allowed_shared(normalized: str) -> bool:
+    for allowed in PREDICT_ALLOWED_SHARED_IMPORTS:
+        if normalized == allowed or normalized.startswith(f"{allowed}."):
+            return True
+    return False
+
+
+def legacy_active_import_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
+    """active 模块（predict.py / 非 legacy core）不得 import legacy_* 模块。
+
+    覆盖三种写法：
+      import a.legacy_x
+      from a.legacy_x import y
+      from a.core import legacy_x   （legacy_ 作为被导入名）
+    """
+    violations: list[RuleViolation] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module = alias.name.lstrip(".")
+                if _has_legacy_segment(module):
+                    violations.append(
+                        RuleViolation(path, node.lineno, f"active module imports legacy module: {module}")
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            module = ("." * int(node.level) + (node.module or "")).lstrip(".")
+            if _has_legacy_segment(module):
+                violations.append(
+                    RuleViolation(path, node.lineno, f"active module imports legacy module: {module}")
+                )
+                continue
+            for alias in node.names:
+                if alias.name.startswith("legacy_"):
+                    target = f"{module}.{alias.name}" if module else alias.name
+                    violations.append(
+                        RuleViolation(path, node.lineno, f"active module imports legacy module: {target}")
+                    )
+    return violations
+
+
+def _has_legacy_segment(dotted: str) -> bool:
+    return any(part.startswith("legacy_") for part in dotted.split(".") if part)
 
 
 def sql_write_literals(path: Path, tree: ast.AST) -> list[RuleViolation]:

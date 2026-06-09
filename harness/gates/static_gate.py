@@ -9,13 +9,18 @@ from harness.context import GateContext
 from harness.contracts.config_schema import validate_config
 from harness.contracts.import_rules import (
     CORE_DB_CALL_NAMES,
+    CORE_FORBIDDEN_QUALIFIED_CALLS,
     DANGEROUS_CORE_IMPORTS,
     RuleViolation,
     call_violations,
     cross_scheme_imports,
     dangerous_imports,
+    file_write_violations,
     has_shared_input_artifacts_import,
+    legacy_active_import_violations,
     parse_python,
+    predict_import_whitelist_violations,
+    qualified_call_violations,
     sql_write_literals,
 )
 from harness.contracts.predict_contract import validate_predict_module
@@ -70,6 +75,11 @@ class StaticGate(Gate):
         predict_violations: list[RuleViolation] = []
         if predict_path.exists():
             predict_violations, predict_facts = validate_predict_module(predict_path, ctx.scheme_id, project_root)
+            predict_tree = parse_python(predict_path)
+            predict_violations.extend(
+                predict_import_whitelist_violations(predict_path, predict_tree, ctx.scheme_id)
+            )
+            predict_violations.extend(legacy_active_import_violations(predict_path, predict_tree))
         evidence.extend(Evidence(key, value) for key, value in predict_facts.items())
 
         predict_no_db_errors = [v for v in predict_violations if _is_predict_write_violation(v)]
@@ -81,6 +91,8 @@ class StaticGate(Gate):
         evidence.append(Evidence("dangerous_core_imports", [v.format(project_root) for v in core_violations["imports"]]))
         evidence.append(Evidence("core_db_calls", [v.format(project_root) for v in core_violations["calls"]]))
         evidence.append(Evidence("core_sql_write_literals", [v.format(project_root) for v in core_violations["sql_writes"]]))
+        evidence.append(Evidence("core_file_writes", [v.format(project_root) for v in core_violations["file_writes"]]))
+        evidence.append(Evidence("core_legacy_imports", [v.format(project_root) for v in core_violations["legacy_imports"]]))
         evidence.append(Evidence("core_zero_db", not any(core_violations.values())))
         for items in core_violations.values():
             errors.extend(v.format(project_root) for v in items)
@@ -106,24 +118,38 @@ class StaticGate(Gate):
         )
 
     def _core_violations(self, scheme_dir: Path, project_root: Path) -> dict[str, list[RuleViolation]]:
-        result = {"imports": [], "calls": [], "sql_writes": []}
+        result: dict[str, list[RuleViolation]] = {
+            "imports": [],
+            "calls": [],
+            "sql_writes": [],
+            "file_writes": [],
+            "legacy_imports": [],
+        }
         core_dir = scheme_dir / "core"
         if not core_dir.exists():
             return result
-        for path in sorted(core_dir.glob("*.py")):
-            if path.name.startswith("legacy_") or path.name == "__init__.py":
+        for path in sorted(core_dir.rglob("*.py")):
+            if path.name == "__init__.py":
                 continue
             tree = parse_python(path)
+            is_legacy = path.name.startswith("legacy_")
+            # legacy 仍受“只读归档”约束：禁 DB import/调用、禁写文件、禁跨方案；
+            # 仅放宽“可保留历史算法代码”。这里对 legacy 与 active 施加相同的 DB/写文件检查。
             result["imports"].extend(dangerous_imports(path, tree, DANGEROUS_CORE_IMPORTS))
             result["calls"].extend(call_violations(path, tree, CORE_DB_CALL_NAMES | set()))
+            result["calls"].extend(
+                qualified_call_violations(path, tree, CORE_FORBIDDEN_QUALIFIED_CALLS)
+            )
             result["sql_writes"].extend(sql_write_literals(path, tree))
+            result["file_writes"].extend(file_write_violations(path, tree))
+            if not is_legacy:
+                # active core 不得 import legacy_* 模块。
+                result["legacy_imports"].extend(legacy_active_import_violations(path, tree))
         return result
 
     def _cross_scheme_violations(self, scheme_dir: Path, project_root: Path, scheme_id: str) -> list[RuleViolation]:
         violations: list[RuleViolation] = []
         for path in sorted(scheme_dir.rglob("*.py")):
-            if path.name.startswith("legacy_"):
-                continue
             tree = parse_python(path)
             violations.extend(cross_scheme_imports(path, tree, scheme_id))
         return violations
