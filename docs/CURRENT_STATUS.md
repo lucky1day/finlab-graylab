@@ -13,7 +13,7 @@
 
 2026-06-09 已删除全部旧周频预测方案代码。删除原因是旧周频方案在预测/回测路径中使用计算型周历公式推导 `week_id <-> 交易日`，而不是读取 `bond_db.api_wind_date.week_id` 的实际口径，可能从入库时起造成特征周/目标周错位。后续周频方案需要按 [新增方案 SOP](sop/SCHEME_ONBOARDING_SOP.md) 重新入库，并强制使用 `api_wind_date.week_id`。
 
-旧周频方案在 `t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_scheme_weekly_actuals`、`t_backtest_*` 中的历史记录按决策延后处理。2026-06-09 已修复 `scheduler/weekly_actuals_updater.py`，新生成的周频 actuals 只读 `api_wind_date.week_id` 与 `t_trade_calendar.trade_flag`，不再使用计算型周历公式；DB 中既有 `t_scheme_weekly_actuals` 历史行仍待单独清空或重刷。
+2026-06-09 已清理旧周频写库记录：`t_scheme_weekly_actuals` 整表清空，`t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_backtest_runs`、`t_backtest_predictions`、`t_backtest_monthly_metrics` 中旧周频 `scheme_id` 记录已删除；源表未修改。同日已修复 `scheduler/weekly_actuals_updater.py`，新生成的周频 actuals 只读 `api_wind_date.week_id` 与 `t_trade_calendar.trade_flag`，不再使用计算型周历公式。
 
 ## 架构与 Harness
 
@@ -62,44 +62,44 @@
   - `com.bond-factor-lab.scheduler`
 - 2026-06-09 周频方案删除后已重启 scheduler；`launchctl print` 显示 `com.bond-factor-lab.scheduler` 为 `running`。
 - 前端已从真实 API 读取目标注册表和回测数据；T+1/T+5/周度筛选入口保留。
-- 周频 actuals 代码口径已修复；只读预览生成 811 条 10Y 周度 actuals，按 `feature_date/target_date -> api_wind_date.week_id` 复核无错配。正式 DB 表 `t_scheme_weekly_actuals` 尚未清空或重刷。
+- 周频 actuals 代码口径已修复；只读预览生成 811 条 10Y 周度 actuals，按 `feature_date/target_date -> api_wind_date.week_id` 复核无错配。旧正式 DB 表 `t_scheme_weekly_actuals` 已清空，等待新周频方案重新入库后按新口径重刷。
 
 ## 当前数据库快照
 
-只读核验时间：`2026-06-08`，数据库 `bond_db`，MySQL `8.0.45`。以下为删除周频代码前的数据库快照；本次清理未触碰 DB，因此周频历史行数仍可能存在，后续另行清理。
+核验时间：`2026-06-09`，数据库 `bond_db`，MySQL `8.0.45`。以下为清理旧周频写库记录后的数据库快照；源表保持只读未修改。
 
 | 项 | 当前值 |
 |----|--------|
 | `api_wind_date` | 6,017 行 |
-| `api_wind_daily` | 2,235,209 行，日期 `2010-01-01` 到 `2026-06-05` |
-| `api_wind_derivative_daily` | 937,312 行，日期 `2010-01-01` 到 `2026-06-04` |
-| `api_wind_weekly` | 121,553 行，周 `200901` 到 `202621` |
+| `api_wind_daily` | 2,236,855 行，日期 `2010-01-01` 到 `2026-06-05` |
+| `api_wind_derivative_daily` | 938,076 行，日期 `2010-01-01` 到 `2026-06-04` |
+| `api_wind_weekly` | 121,617 行，周 `200901` 到 `202621` |
 | `api_wind_derivative_weekly` | 277,064 行，周 `200901` 到 `202621` |
 | `api_wind_indicators_all` | 1,637 |
 | `t_trade_calendar` | 6,209 |
 | `t_pre_market_forecast` | 1,059 |
 | `t_shap` | 8,845 |
-| `t_scheme_predictions` | 13 |
-| `t_scheme_actuals` | 13,900 |
-| `t_scheme_weekly_actuals` | 794 |
-| `t_scheme_registry` | 3 |
+| `t_scheme_predictions` | 18 |
+| `t_scheme_actuals` | 13,910 |
+| `t_scheme_weekly_actuals` | 0 |
+| `t_scheme_registry` | 2 |
 | `t_scheme_run_log` | 6 |
 | `t_target_registry` | 4 |
-| `t_backtest_runs` | 12 |
-| `t_backtest_predictions` | 8,111 |
-| `t_backtest_monthly_metrics` | 649 |
-| `t_backtest_reproduction_checks` | 1 |
+| `t_backtest_runs` | 6 |
+| `t_backtest_predictions` | 6,933 |
+| `t_backtest_monthly_metrics` | 357 |
+| `t_backtest_reproduction_checks` | 3 |
 | `bfl_probe_*` 影子表 | 0 |
 
 actuals 覆盖：
 
 | 期限 | 记录数 | 日期范围 |
 |------|--------|----------|
-| `1Y` | 2,518 | `2016-01-18` 到 `2026-06-03` |
-| `3Y` | 2,518 | `2016-01-18` 到 `2026-06-03` |
-| `5Y` | 2,517 | `2016-01-18` 到 `2026-06-03` |
-| `7Y` | 2,518 | `2016-01-18` 到 `2026-06-03` |
-| `10Y` | 3,829 | `2010-07-27` 到 `2026-06-03` |
+| `1Y` | 2,520 | `2016-01-18` 到 `2026-06-05` |
+| `3Y` | 2,520 | `2016-01-18` 到 `2026-06-05` |
+| `5Y` | 2,519 | `2016-01-18` 到 `2026-06-05` |
+| `7Y` | 2,520 | `2016-01-18` 到 `2026-06-05` |
+| `10Y` | 3,831 | `2010-07-27` 到 `2026-06-05` |
 
 ## 历史回测状态
 
@@ -114,18 +114,22 @@ actuals 覆盖：
 | `t5_daily` | `framework_original_csv` | `success` | `2025-01-01` 到 `2026-05-31` |
 | `t5_daily` | `framework_db_aligned` | `success` | `2025-01-01` 到 `2026-05-31` |
 
-DB 中旧周频回测 run 暂时保留，前端或 API 若直接读取 DB 历史记录，可能仍看到待清理的周频历史项；代码仓库中对应 runner 已删除。
+DB 中旧周频回测 run 已清理；代码仓库中对应 runner 已删除。前端/API 当前只应看到保留的日频历史回测项。
 
 ## 正式预测状态
 
-2026-06-05 09:25 launchd scheduler 已成功运行 active 日度方案：
+launchd scheduler 已成功运行 active 日度方案：
 
 | 方案 | 预测日期 | 记录数 | 状态 |
 |------|----------|--------|------|
 | `t1_daily` | `2026-06-05` | 2 | `success` |
 | `t5_daily` | `2026-06-05` | 4 | `success` |
+| `t1_daily` | `2026-06-08` | 2 | `success` |
+| `t5_daily` | `2026-06-08` | 4 | `success` |
+| `t1_daily` | `2026-06-09` | 2 | `success` |
+| `t5_daily` | `2026-06-09` | 4 | `success` |
 
-旧周频 live prediction/run_log 记录未在本次清理中删除。scheduler 重启后，当前代码配置只会注册日频方案。
+旧周频 live prediction/run_log 记录已清理。scheduler 重启后，当前代码配置只会注册日频方案。
 
 ## API 与安全边界
 
@@ -139,7 +143,7 @@ DB 中旧周频回测 run 暂时保留，前端或 API 若直接读取 DB 历史
 ## 剩余观察项
 
 1. 下一次日频 scheduler 运行后，确认日志只注册和执行 `t1_daily` / `t5_daily`。
-2. 旧周频 DB 记录待清理：`t_scheme_weekly_actuals` 可整表清空；`t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_backtest_runs`、`t_backtest_predictions`、`t_backtest_monthly_metrics` 按旧周频 `scheme_id` 删除；`t_backtest_reproduction_checks` 当前为 daily benchmark 检查，不纳入周频清理。
+2. 旧周频 DB 记录已清理；下一次执行 `/api/schemes` 或 registry sync 时，确认 registry 仍只保留 `t1_daily` / `t5_daily`。
 3. 新周频方案进入时，必须按 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 的 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation 流程，并证明 `week_id` 来自 DB。
 4. 拿到 panda_quantflow 外层仓库路径后完成菜单/路由接入并验证 iframe。
 
