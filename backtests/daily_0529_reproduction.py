@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -11,14 +10,40 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.engine import Engine
 
+from backtests._base_runner import (
+    BacktestSpec,
+    RunOutput,
+    _float_or_none as _base_float_or_none,
+    _frame_profile as _base_frame_profile,
+    _int_or_none as _base_int_or_none,
+    _is_weekly_backtest_row as _base_is_weekly_backtest_row,
+    _metric_month as _base_metric_month,
+    _normalize_scalar as _base_normalize_scalar,
+    aggregate_rows as _base_aggregate_rows,
+    apply_evaluation_exclusions as _base_apply_evaluation_exclusions,
+    build_db_aligned_daily as _base_build_db_aligned_daily,
+    build_framework_db_aligned_daily as _base_build_framework_db_aligned_daily,
+    build_monthly_metrics as _base_build_monthly_metrics,
+    build_summary as _base_build_summary,
+    compare_daily_frames as _base_compare_daily_frames,
+    compare_generated_frames,
+    compare_prediction_rows as _base_compare_prediction_rows,
+    direction_dist as _base_direction_dist,
+    evaluation_exclusion_summary as _base_evaluation_exclusion_summary,
+    exclude_daily_rows_for_evaluation_week as _base_exclude_daily_rows_for_evaluation_week,
+    infer_target_date as _base_infer_target_date,
+    make_run_output as _base_make_run_output,
+    metric_row as _base_metric_row,
+    period_summaries as _base_period_summaries,
+    persist_run_output as _base_persist_run_output,
+    read_daily_csv as _base_read_daily_csv,
+    safe_div as _base_safe_div,
+)
 from backtests.repository import (
     clean_json,
     insert_reproduction_check,
-    replace_backtest_monthly_metrics,
-    replace_backtest_predictions,
-    upsert_backtest_run,
 )
-from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root
+from shared.artifact_paths import benchmark_data_check_root
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_daily_input_artifact
 
@@ -50,30 +75,30 @@ EXPECTED_T5_REPORT: dict[str, dict[str, Any]] = {
 }
 
 
-@dataclass
-class RunOutput:
-    scheme_id: str
-    data_source: str
-    start_date: str
-    end_date: str
-    rows: list[dict[str, Any]]
-    monthly_metrics: list[dict[str, Any]]
-    summary: dict[str, Any]
-    report_path: str | None = None
+T1_DAILY_SPEC = BacktestSpec(
+    benchmark_id=BENCHMARK_ID,
+    scheme_id="t1_daily",
+    canonical_csv=CANONICAL_DAILY,
+    target_columns=TARGET_COLUMNS,
+    start_date=T1_BACKTEST_START,
+    end_date=T1_BACKTEST_END,
+    excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES,
+)
+T5_DAILY_SPEC = BacktestSpec(
+    benchmark_id=BENCHMARK_ID,
+    scheme_id="t5_daily",
+    canonical_csv=CANONICAL_DAILY,
+    target_columns=TARGET_COLUMNS,
+    start_date=T5_BACKTEST_START,
+    end_date=T5_BACKTEST_END,
+    expected_report=EXPECTED_T5_REPORT,
+    excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES,
+)
 
 
 def read_daily_csv(path: str | Path = CANONICAL_DAILY) -> pd.DataFrame:
     """读取并标准化 historical daily_output。"""
-    df = pd.read_csv(path)
-    df.columns = [str(col).strip().lstrip("\ufeff") for col in df.columns]
-    if "date" not in df.columns:
-        raise ValueError(f"daily output missing date column: {path}")
-    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-    for col in df.columns:
-        if col != "date":
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
+    return _base_read_daily_csv(path)
 
 
 def build_db_aligned_daily(
@@ -87,39 +112,25 @@ def build_db_aligned_daily(
     历史复现的 DB 输入统一经过 shared.input_artifacts 生成和读回，
     再喂给算法。upstream_mode 保留为旧调用兼容参数，不再绕过统一输入层。
     """
-    original = csv_df if csv_df is not None else read_daily_csv()
-    start_date = original["date"].min().strftime("%Y-%m-%d")
-    end_date = original["date"].max().strftime("%Y-%m-%d")
-    input_artifact = build_daily_input_artifact(
-        scheme_id=artifact_scheme_id,
-        predict_date=end_date,
-        start_date=start_date,
-        end_date=end_date,
+    return _base_build_db_aligned_daily(
+        csv_df=csv_df,
         engine=engine,
-        output_root=benchmark_input_root(BENCHMARK_ID),
+        upstream_mode=upstream_mode,
+        artifact_scheme_id=artifact_scheme_id,
+        benchmark_id=BENCHMARK_ID,
+        canonical_csv=CANONICAL_DAILY,
+        artifact_builder=build_daily_input_artifact,
     )
-    db_df = input_artifact.dataframe
-    db_df = db_df.copy()
-    db_df["date"] = pd.to_datetime(db_df["date"], errors="coerce").dt.normalize()
-    db_df = db_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-
-    aligned = db_df.set_index("date")
-    aligned = aligned.reindex(original["date"])
-    for col in original.columns:
-        if col != "date" and col not in aligned.columns:
-            aligned[col] = np.nan
-    aligned = aligned[[col for col in original.columns if col != "date"]].reset_index()
-    aligned = aligned.rename(columns={"index": "date"})
-    return db_df, aligned
 
 
 def build_framework_db_aligned_daily(csv_df: pd.DataFrame | None = None, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """生成当前框架 data_service 默认口径的 DB daily_output，用于额外对照。"""
-    return build_db_aligned_daily(
+    return _base_build_framework_db_aligned_daily(
         csv_df=csv_df,
         engine=engine,
-        upstream_mode=False,
-        artifact_scheme_id="daily_framework",
+        benchmark_id=BENCHMARK_ID,
+        canonical_csv=CANONICAL_DAILY,
+        artifact_builder=build_daily_input_artifact,
     )
 
 
@@ -185,172 +196,33 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
 
 
 def compare_daily_frames(csv_df: pd.DataFrame, db_full: pd.DataFrame, db_aligned: pd.DataFrame) -> dict[str, Any]:
-    csv_dates = csv_df["date"].dt.strftime("%Y-%m-%d").tolist()
-    db_dates = db_aligned["date"].dt.strftime("%Y-%m-%d").tolist()
-    csv_cols = csv_df.columns.tolist()
-    db_aligned_cols = db_aligned.columns.tolist()
-    csv_set = set(csv_cols)
-    db_full_set = set(db_full.columns.tolist())
-    csv_only = sorted(csv_set - db_full_set)
-    db_only = sorted(db_full_set - csv_set)
-
-    target_diff: dict[str, float | None] = {}
-    max_abs = 0.0
-    missing_diff_count = 0
-    first_diff: dict[str, Any] | None = None
-    above_threshold: list[dict[str, Any]] = []
-    numeric_cols = [col for col in csv_cols if col != "date"]
-
-    for col in numeric_cols:
-        left = pd.to_numeric(csv_df[col], errors="coerce")
-        right = pd.to_numeric(db_aligned[col], errors="coerce") if col in db_aligned.columns else pd.Series(np.nan, index=csv_df.index)
-        left_na = left.isna()
-        right_na = right.isna()
-        missing_mask = left_na.ne(right_na)
-        missing_count = int(missing_mask.sum())
-        missing_diff_count += missing_count
-        both = ~(left_na | right_na)
-        col_max = None
-        if bool(both.any()):
-            diff = (left[both] - right[both]).abs()
-            col_max = float(diff.max()) if len(diff) else 0.0
-            max_abs = max(max_abs, col_max)
-            diff_mask = diff.gt(1e-8)
-            if bool(diff_mask.any()) and len(above_threshold) < 50:
-                idx = int(diff[diff_mask].index[0])
-                above_threshold.append(
-                    {
-                        "column": col,
-                        "date": csv_df.loc[idx, "date"].strftime("%Y-%m-%d"),
-                        "csv": float(left.loc[idx]),
-                        "db": float(right.loc[idx]),
-                        "abs_diff": float(diff.loc[idx]),
-                    }
-                )
-                if first_diff is None:
-                    first_diff = above_threshold[-1]
-        if col in TARGET_COLUMNS:
-            target_diff[col] = col_max
-        if first_diff is None and missing_count:
-            idx = int(missing_mask[missing_mask].index[0])
-            first_diff = {
-                "column": col,
-                "date": csv_df.loc[idx, "date"].strftime("%Y-%m-%d"),
-                "csv_is_null": bool(left_na.loc[idx]),
-                "db_is_null": bool(right_na.loc[idx]),
-            }
-
-    date_match = csv_dates == db_dates
-    column_order_match = csv_cols == db_aligned_cols
-    target_ok = all((value is not None and value <= 1e-10) for value in target_diff.values())
-    numeric_ok = max_abs <= 1e-8 and missing_diff_count == 0
-    status = "success" if date_match and column_order_match and target_ok and numeric_ok else "failed"
-    return {
-        "status": status,
-        "csv": _frame_profile(csv_df),
-        "db_full": _frame_profile(db_full),
-        "db_aligned": _frame_profile(db_aligned),
-        "columns": {
-            "csv_only": csv_only,
-            "db_only": db_only,
-            "column_order_match": column_order_match,
-        },
-        "date_match": date_match,
-        "target_max_abs_diff": target_diff,
-        "numeric_diff": {
-            "overall_max_abs_diff": max_abs,
-            "missing_diff_count": int(missing_diff_count),
-            "above_threshold_sample": above_threshold,
-            "first_diff": first_diff,
-        },
-        "thresholds": {
-            "target_abs_diff": 1e-10,
-            "numeric_abs_diff": 1e-8,
-        },
-    }
-
-
-def compare_generated_frames(left: pd.DataFrame, right: pd.DataFrame) -> dict[str, Any]:
-    """比较上游 DB 生成 CSV 与当前框架 DB 生成 CSV 的对齐版。"""
-    left_dates = left["date"].dt.strftime("%Y-%m-%d").tolist()
-    right_dates = right["date"].dt.strftime("%Y-%m-%d").tolist()
-    first_diff = None
-    max_abs = 0.0
-    missing_diff_count = 0
-    for col in [item for item in left.columns if item != "date" and item in right.columns]:
-        left_series = pd.to_numeric(left[col], errors="coerce")
-        right_series = pd.to_numeric(right[col], errors="coerce")
-        missing = left_series.isna().ne(right_series.isna())
-        missing_diff_count += int(missing.sum())
-        both = ~(left_series.isna() | right_series.isna())
-        if bool(both.any()):
-            diff = (left_series[both] - right_series[both]).abs()
-            col_max = float(diff.max()) if len(diff) else 0.0
-            max_abs = max(max_abs, col_max)
-            bad = diff.gt(1e-12)
-            if first_diff is None and bool(bad.any()):
-                idx = int(diff[bad].index[0])
-                first_diff = {
-                    "column": col,
-                    "date": left.loc[idx, "date"].strftime("%Y-%m-%d"),
-                    "upstream": float(left_series.loc[idx]),
-                    "framework": float(right_series.loc[idx]),
-                    "abs_diff": float(diff.loc[idx]),
-                }
-        if first_diff is None and bool(missing.any()):
-            idx = int(missing[missing].index[0])
-            first_diff = {
-                "column": col,
-                "date": left.loc[idx, "date"].strftime("%Y-%m-%d"),
-                "upstream_is_null": bool(left_series.isna().loc[idx]),
-                "framework_is_null": bool(right_series.isna().loc[idx]),
-            }
-    return {
-        "date_match": left_dates == right_dates,
-        "column_order_match": left.columns.tolist() == right.columns.tolist(),
-        "rows": {"upstream": int(len(left)), "framework": int(len(right))},
-        "columns": {"upstream": int(len(left.columns)), "framework": int(len(right.columns))},
-        "overall_max_abs_diff": max_abs,
-        "missing_diff_count": missing_diff_count,
-        "first_diff": first_diff,
-    }
+    return _base_compare_daily_frames(csv_df, db_full, db_aligned, target_columns=TARGET_COLUMNS)
 
 
 def exclude_daily_rows_for_evaluation_week(csv_df: pd.DataFrame, db_aligned: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     """从数据一致性报告的有效口径中排除暂不验证的目标周日期。"""
-    csv_mask = ~csv_df["date"].dt.strftime("%Y-%m-%d").map(_date_in_excluded_ranges)
-    db_mask = ~db_aligned["date"].dt.strftime("%Y-%m-%d").map(_date_in_excluded_ranges)
-    return csv_df.loc[csv_mask].reset_index(drop=True), db_aligned.loc[db_mask].reset_index(drop=True)
+    return _base_exclude_daily_rows_for_evaluation_week(
+        csv_df,
+        db_aligned,
+        excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES,
+    )
 
 
 def apply_evaluation_exclusions(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """排除暂不纳入历史验证的目标日期样本。"""
-    included: list[dict[str, Any]] = []
-    excluded: list[dict[str, Any]] = []
-    for row in rows:
-        target_date = row.get("target_date") or row.get("predict_date")
-        if target_date and _date_in_excluded_ranges(str(target_date)):
-            excluded.append(row)
-        else:
-            included.append(row)
-    return included, excluded
+    return _base_apply_evaluation_exclusions(rows, excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES)
 
 
 def evaluation_exclusion_summary(raw_count: int, included_count: int) -> dict[str, Any]:
-    return {
-        "date_field": "target_date",
-        "ranges": [dict(item) for item in EVALUATION_EXCLUDED_TARGET_RANGES],
-        "raw_row_count": int(raw_count),
-        "included_row_count": int(included_count),
-        "excluded_row_count": int(raw_count - included_count),
-    }
+    return _base_evaluation_exclusion_summary(
+        raw_count,
+        included_count,
+        excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES,
+    )
 
 
 def _date_in_excluded_ranges(value: str) -> bool:
-    for item in EVALUATION_EXCLUDED_TARGET_RANGES:
-        if item["start"] <= value <= item["end"]:
-            return True
-    return False
+    return any(item["start"] <= value <= item["end"] for item in EVALUATION_EXCLUDED_TARGET_RANGES)
 
 
 def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None, n_jobs: int = 4) -> list[RunOutput]:
@@ -638,113 +510,45 @@ def make_run_output(
     rows: list[dict[str, Any]],
     report_path: str | None = None,
 ) -> RunOutput:
-    filtered_rows, excluded_rows = apply_evaluation_exclusions(rows)
-    monthly = build_monthly_metrics(filtered_rows)
-    summary = build_summary(filtered_rows)
-    summary["row_count"] = len(filtered_rows)
-    summary["raw_row_count"] = len(rows)
-    summary["excluded_row_count"] = len(excluded_rows)
-    summary["evaluation_filter"] = evaluation_exclusion_summary(len(rows), len(filtered_rows))
-    summary["monthly_count"] = len(monthly)
-    return RunOutput(
+    return _base_make_run_output(
         scheme_id=scheme_id,
         data_source=data_source,
         start_date=start_date,
         end_date=end_date,
-        rows=filtered_rows,
-        monthly_metrics=monthly,
-        summary=summary,
+        rows=rows,
+        benchmark_id=BENCHMARK_ID,
+        excluded_target_ranges=EVALUATION_EXCLUDED_TARGET_RANGES,
         report_path=report_path,
     )
 
 
 def build_monthly_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    for row in rows:
-        month = _metric_month(row)
-        grouped.setdefault((row["target_tenor"], month), []).append(row)
-    metrics: list[dict[str, Any]] = []
-    for (tenor, month), items in sorted(grouped.items()):
-        metrics.append(metric_row(items, tenor, month))
-    return metrics
+    return _base_build_monthly_metrics(rows, benchmark_id=BENCHMARK_ID)
 
 
 def _metric_month(row: dict[str, Any]) -> str:
     """返回历史回测月度指标归属月份。"""
-    if _is_weekly_backtest_row(row):
-        return str(row.get("feature_date") or row["predict_date"])[:7]
-    return str(row["predict_date"])[:7]
+    return _base_metric_month(row)
 
 
 def _is_weekly_backtest_row(row: dict[str, Any]) -> bool:
-    extra = row.get("extra") or {}
-    frequency = extra.get("frequency") if isinstance(extra, dict) else None
-    if str(frequency or "").lower() == "weekly":
-        return True
-    try:
-        return int(row.get("horizon") or 0) == 6
-    except (TypeError, ValueError):
-        return False
+    return _base_is_weekly_backtest_row(row)
 
 
 def metric_row(rows: list[dict[str, Any]], tenor: str, month: str) -> dict[str, Any]:
-    valid = [row for row in rows if row.get("label") is not None and row.get("predicted_direction") is not None]
-    total = len(valid)
-    correct = sum(1 for row in valid if int(row["label"]) == int(row["predicted_direction"]))
-    pred_up = sum(1 for row in valid if row["predicted_direction"] == 1)
-    pred_down = sum(1 for row in valid if row["predicted_direction"] == -1)
-    actual_up = sum(1 for row in valid if row["label"] == 1)
-    actual_down = sum(1 for row in valid if row["label"] == -1)
-    return {
-        "benchmark_id": BENCHMARK_ID,
-        "scheme_id": valid[0]["scheme_id"] if valid else rows[0]["scheme_id"],
-        "target_tenor": tenor,
-        "horizon": int(rows[0]["horizon"]),
-        "month": month,
-        "sample_count": total,
-        "correct_count": correct,
-        "accuracy": safe_div(correct, total),
-        "up_precision": safe_div(sum(1 for row in valid if row["predicted_direction"] == 1 and row["label"] == 1), pred_up),
-        "up_recall": safe_div(sum(1 for row in valid if row["predicted_direction"] == 1 and row["label"] == 1), actual_up),
-        "down_precision": safe_div(sum(1 for row in valid if row["predicted_direction"] == -1 and row["label"] == -1), pred_down),
-        "down_recall": safe_div(sum(1 for row in valid if row["predicted_direction"] == -1 and row["label"] == -1), actual_down),
-        "actual_dist": direction_dist(valid, "label"),
-        "predicted_dist": direction_dist(valid, "predicted_direction"),
-    }
+    return _base_metric_row(rows, tenor, month, benchmark_id=BENCHMARK_ID)
 
 
 def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    by_tenor: dict[str, list[dict[str, Any]]] = {}
-    for row in rows:
-        by_tenor.setdefault(row["target_tenor"], []).append(row)
-    return {
-        "by_tenor": {tenor: aggregate_rows(items) for tenor, items in sorted(by_tenor.items())},
-        "periods_by_tenor": {tenor: period_summaries(items) for tenor, items in sorted(by_tenor.items())},
-    }
+    return _base_build_summary(rows)
 
 
 def aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    valid = [row for row in rows if row.get("label") is not None and row.get("predicted_direction") is not None]
-    correct = sum(1 for row in valid if row["label"] == row["predicted_direction"])
-    return {
-        "samples": len(valid),
-        "correct": correct,
-        "accuracy": safe_div(correct, len(valid)),
-        "accuracy_pct": round(safe_div(correct, len(valid)) * 100, 1) if valid else None,
-        "actual_dist": direction_dist(valid, "label"),
-        "predicted_dist": direction_dist(valid, "predicted_direction"),
-        "date_min": min((row["predict_date"] for row in valid), default=None),
-        "date_max": max((row["predict_date"] for row in valid), default=None),
-    }
+    return _base_aggregate_rows(rows)
 
 
 def period_summaries(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "sim": aggregate_rows([row for row in rows if "2025-01-01" <= row["predict_date"] <= "2025-06-30"]),
-        "real": aggregate_rows([row for row in rows if "2025-07-01" <= row["predict_date"] <= "2026-04-30"]),
-        "may": aggregate_rows([row for row in rows if row["predict_date"] >= "2026-05-01"]),
-        "all": aggregate_rows(rows),
-    }
+    return _base_period_summaries(rows)
 
 
 def compare_t5_expected_report(periods_by_tenor: dict[str, Any]) -> dict[str, Any]:
@@ -774,66 +578,17 @@ def compare_prediction_rows(
     float_fields: Iterable[str] = (),
     float_tolerance: float = 1e-9,
 ) -> dict[str, Any]:
-    baseline_map = {(row["target_tenor"], row["predict_date"]): row for row in baseline}
-    candidate_map = {(row["target_tenor"], row["predict_date"]): row for row in candidate}
-    baseline_keys = set(baseline_map)
-    candidate_keys = set(candidate_map)
-    mismatch_rows = []
-    for key in sorted(baseline_keys & candidate_keys):
-        left = baseline_map[key]
-        right = candidate_map[key]
-        diffs = {}
-        for field in fields:
-            if _normalize_scalar(left.get(field)) != _normalize_scalar(right.get(field)):
-                diffs[field] = {"baseline": clean_json(left.get(field)), "candidate": clean_json(right.get(field))}
-        for field in float_fields:
-            left_value = _float_or_none(left.get(field))
-            right_value = _float_or_none(right.get(field))
-            if left_value is None and right_value is None:
-                continue
-            if left_value is None or right_value is None or abs(left_value - right_value) > float_tolerance:
-                diffs[field] = {"baseline": left_value, "candidate": right_value}
-        if diffs:
-            mismatch_rows.append({"target_tenor": key[0], "predict_date": key[1], "diffs": diffs})
-    return {
-        "baseline_rows": len(baseline),
-        "candidate_rows": len(candidate),
-        "matched_rows": len(baseline_keys & candidate_keys),
-        "baseline_only": [{"target_tenor": key[0], "predict_date": key[1]} for key in sorted(baseline_keys - candidate_keys)[:200]],
-        "candidate_only": [{"target_tenor": key[0], "predict_date": key[1]} for key in sorted(candidate_keys - baseline_keys)[:200]],
-        "mismatch_count": len(mismatch_rows) + len(baseline_keys - candidate_keys) + len(candidate_keys - baseline_keys),
-        "mismatch_rows": mismatch_rows[:200],
-        "float_tolerance": float_tolerance,
-    }
+    return _base_compare_prediction_rows(
+        baseline,
+        candidate,
+        fields=fields,
+        float_fields=float_fields,
+        float_tolerance=float_tolerance,
+    )
 
 
 def persist_run_output(engine: Engine, output: RunOutput) -> int:
-    run_id = upsert_backtest_run(
-        engine,
-        benchmark_id=BENCHMARK_ID,
-        scheme_id=output.scheme_id,
-        data_source=output.data_source,
-        start_date=output.start_date,
-        end_date=output.end_date,
-        status="success",
-        summary=output.summary,
-        report_path=output.report_path,
-    )
-    replace_backtest_predictions(engine, run_id, output.rows)
-    replace_backtest_monthly_metrics(engine, run_id, output.monthly_metrics)
-    output.summary["run_id"] = run_id
-    upsert_backtest_run(
-        engine,
-        benchmark_id=BENCHMARK_ID,
-        scheme_id=output.scheme_id,
-        data_source=output.data_source,
-        start_date=output.start_date,
-        end_date=output.end_date,
-        status="success",
-        summary=output.summary,
-        report_path=output.report_path,
-    )
-    return run_id
+    return _base_persist_run_output(engine, output, benchmark_id=BENCHMARK_ID)
 
 
 def run_daily_0529_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: int = 4, persist: bool = True) -> dict[str, Any]:
@@ -870,74 +625,31 @@ def run_daily_0529_reproduction(include_t1: bool = True, include_t5: bool = True
 
 
 def _frame_profile(df: pd.DataFrame) -> dict[str, Any]:
-    return {
-        "rows": int(len(df)),
-        "columns": int(len(df.columns)),
-        "date_min": df["date"].min().strftime("%Y-%m-%d") if len(df) else None,
-        "date_max": df["date"].max().strftime("%Y-%m-%d") if len(df) else None,
-    }
+    return _base_frame_profile(df)
 
 
 def direction_dist(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
-    return {
-        "up": sum(1 for row in rows if row.get(key) == 1),
-        "down": sum(1 for row in rows if row.get(key) == -1),
-        "flat": sum(1 for row in rows if row.get(key) == 0),
-        "missing": sum(1 for row in rows if row.get(key) is None),
-    }
+    return _base_direction_dist(rows, key)
 
 
 def safe_div(num: int, den: int) -> float | None:
-    return None if den == 0 else float(num / den)
+    return _base_safe_div(num, den)
 
 
 def infer_target_date(daily: pd.DataFrame, feature_date: str, horizon: int) -> str | None:
-    dates = pd.to_datetime(daily["date"]).dt.normalize()
-    matches = dates[dates.eq(pd.Timestamp(feature_date))]
-    if matches.empty:
-        return None
-    target_idx = int(matches.index[-1]) + horizon
-    if target_idx >= len(dates):
-        return None
-    return dates.iloc[target_idx].strftime("%Y-%m-%d")
+    return _base_infer_target_date(daily, feature_date, horizon)
 
 
 def _normalize_scalar(value: Any) -> Any:
-    if value is None:
-        return None
-    try:
-        if pd.isna(value):
-            return None
-    except TypeError:
-        pass
-    if isinstance(value, float) and value.is_integer():
-        return int(value)
-    if hasattr(value, "item"):
-        return _normalize_scalar(value.item())
-    return value
+    return _base_normalize_scalar(value)
 
 
 def _int_or_none(value: Any) -> int | None:
-    value = _normalize_scalar(value)
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
+    return _base_int_or_none(value)
 
 
 def _float_or_none(value: Any) -> float | None:
-    value = _normalize_scalar(value)
-    if value is None:
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    if np.isnan(result) or np.isinf(result):
-        return None
-    return result
+    return _base_float_or_none(value)
 
 
 def main(argv: list[str] | None = None) -> dict[str, Any]:

@@ -66,6 +66,19 @@
 - 运行期输入文件统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`。
 - 历史回测和数据差异报告统一写入 `backtest_artifacts/backtests/{benchmark_id}/`，不再使用 `model_muti_0529_daily` 这类伪方案名。
 
+## 通用日频 runner
+
+日频历史回测的共用骨架已抽到 `backtests/_base_runner.py`。新增日频方案若要参与历史排行，不应复制 `daily_0529_reproduction.py`，而是新建 `backtests/{scheme_id}_reproduction.py`，声明一个 `BacktestSpec`，再复用 `BaseDailyBacktestRunner` 或其中的函数式工具生成 `RunOutput`、月度指标、summary、行级比对和 backtest 表落库。
+
+最小接入原则:
+
+- 输入仍必须先经 `shared.input_artifacts.build_daily_input_artifact()` 生成并读回，数据口径要求见 [SCHEME_INGESTION.md §4](SCHEME_INGESTION.md#4-数据口径对齐)。
+- 算法调用只进入 `schemes/{scheme_id}/core/` 或 adapter 暴露的纯预测逻辑，不在 runner 内直连源数据表拼输入。
+- 落库只调用 `backtests.repository`，通常通过 `_base_runner.persist_run_output()` 或 `BaseDailyBacktestRunner.persist_run_output()` 完成。
+- `benchmark_id` 表示历史基准批次，`scheme_id` 表示方案身份，`data_source` 表示输入口径，三者不要混用。
+
+`daily_0529_reproduction.py` 是特殊的 0529 批次复现入口: 一个 runner 同时生成 `t1_daily` 和 `t5_daily` 多组数据源结果。普通新方案优先保持单方案单 runner，只在文件顶部放方案自己的日期范围、目标列、预期报告或排除区间，其他指标、比对和落库逻辑复用 `_base_runner`。
+
 生成命令:
 
 ```bash
