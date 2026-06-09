@@ -587,6 +587,7 @@
         id: scheme.id,
         taskKey: taskKey,
         name: getSchemeDisplayName(scheme),
+        schemeId: scheme.scheme_id || scheme.scheme_name || scheme.name || "",
         schemeName: scheme.scheme_name || scheme.name || scheme.scheme_id || "",
         benchmarkLabel: scheme.benchmark_label || scheme.benchmark_id || "",
         dataSourceLabel: scheme.data_source_label || scheme.data_source || "",
@@ -749,8 +750,8 @@
           });
           var btMonths = btRows.map(function (r) { return r.month; }).sort();
           merged[taskKey].push({
-            id: btScheme.schemeName || btScheme.id,
-            schemeId: btScheme.schemeName || "",
+            id: btScheme.schemeId || btScheme.id,
+            schemeId: btScheme.schemeId || "",
             taskKey: taskKey,
             name: btScheme.name,
             status: btScheme.status,
@@ -1244,7 +1245,13 @@
       svg += '<line class="factor-trend-grid" x1="' + left + '" y1="' + tickY.toFixed(1) + '" x2="' + (width - right) + '" y2="' + tickY.toFixed(1) + '"></line>';
       svg += '<text class="factor-trend-axis" x="' + (left - 12) + '" y="' + (tickY + 4).toFixed(1) + '" text-anchor="end">' + tick + '%</text>';
     });
+    var labelStep = rows.length > 30 ? Math.ceil(rows.length / 15) : (rows.length > 15 ? 2 : 1);
     rows.forEach(function (row, index) {
+      // 横轴标签防溢出：月份过多时跳隔显示
+      if (index % labelStep !== 0 && index !== rows.length - 1) {
+        svg += '<line class="factor-trend-tick" x1="' + x(index).toFixed(1) + '" y1="' + (height - bottom) + '" x2="' + x(index).toFixed(1) + '" y2="' + (height - bottom + 6) + '" stroke="rgba(93,101,111,0.3)"></line>';
+        return;
+      }
       svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="middle">' + escapeHtml(row.month) + '</text>';
     });
     // 实盘分隔虚线（仅"全部"口径，找到第一个 live 月份）
