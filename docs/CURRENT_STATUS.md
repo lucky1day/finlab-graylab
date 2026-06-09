@@ -1,5 +1,27 @@
 # 当前状态
 
+**更新日期**: 2026-06-09
+
+## 架构重构与 Harness 落地（2026-06-09 最新，S0–S8 完成）
+
+强约束 harness 工程已从"文档设计"推进到"代码落地并可运行"。架构演进路线（见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) §10）的执行阶段 S0–S8 已全部完成：
+
+- **数据层重构（S0–S3）**：
+  - 新建 `shared/calendar_service.py`，交易日历/周历查询单点化，消除 `t5_daily` 内联 SQL 与周频跨方案 `read_source_week_id_for_date`（清零违规 V1/V3 日历部分）。
+  - 删除死代码 `schemes/weekly_10y_d_overlay/core/weekly_data_service.py`（清零 V2，core 零 DB）。
+  - 强化 `InputArtifact` 元数据（`data_version/row_count/column_count/columns/date_coverage/quality_flags`），daily 历史回测输入统一走 `shared.input_artifacts`（清零 V4）。
+  - 每步通过等价闸 `scripts/compare_refactor_outputs.py` 验证：5 方案 dry-run + 回测输出 `diff_count=0`，行为零漂移。
+- **harness 落地（S4–S8）**：`harness/` 包已实现并可运行：
+  - StaticGate（AST 静态约束）、InputGate、UnitGate、DryRunGate、BacktestGate、ApiGate、LiveGate 七个 Gate。
+  - `contracts/`（config_schema / predict_contract / import_rules）、`probes/table_guard`（写库行数保护）、`authorization`（fail-closed 授权，token 绑定单 scheme + nonce 防复用）、`orchestrator` + `cli`。
+  - `python -m harness onboard {scheme_id} --stage all` 可一条命令串联 static→input→unit→dry-run→backtest→api，fail-fast，退出码 0/1/2；live/activate 不在 all 内，必须显式授权。
+- **里程碑达成**：M1 数据层合规、M2 StaticGate 守护、M3 自动段贯通、M4 授权卡点、M5 自动化入库可用。
+- **剩余尾项（不阻塞）**：V3 引擎工厂下沉（adapter 仍自建 engine，属白名单内 `adapter→shared` 边）；t1 的 `model_store.py` / `shap_analysis.py` 为预留能力（模型留档 / SHAP 归因），当前未接入预测路径，保留待用。
+
+> 执行计划（已完成）归档于 [archive/ARCH_EXECUTION_PLAN.md](archive/ARCH_EXECUTION_PLAN.md)；周度 live 上线计划（已完成）归档于 [archive/WEEKLY_LIVE_ROLLOUT_PLAN.md](archive/WEEKLY_LIVE_ROLLOUT_PLAN.md)。
+
+---
+
 **更新日期**: 2026-06-08
 
 **结论**: 新模拟生产机器已完成服务环境、正式平台表、目标注册表、历史回测表、actuals 刷新、历史回测复现、launchd 常驻服务验证，以及周度 10Y D-overlay 方案回测接入。2026-06-05 09:25 常驻 scheduler 已成功写入 `t1_daily` / `t5_daily` 当日正式预测记录；2026-06-06 已完成 `weekly_10y_d_overlay` 受控 live 写库验收，并在 15:24 通过单方案 scheduler 手动补跑成功。2026-06-06 15:05 已将周度方案切换为 `active` 并重启 scheduler，日志确认注册 `Scheduled scheme weekly_10y_d_overlay at 30 11 * * 6`；第一次自动 cron 运行待下一次周六 11:30 观察。2026-06-08 已将用户提供的统一 `data_service (1).py` 接入为 `shared.data_service`: 日/周/月算法输入均先通过 `shared.input_artifacts` 调用该统一数据层导出 CSV，再读回给算法；公共层只保留路径、保存、读回和 metadata 编排，不再让周频方案绕到 scheme 内部数据服务生成输入。2026-06-08 已按新增方案 SOP 接入 `weekly_5y_direct_production` 和 `weekly_7y_cross_d_overlay`: 原始脚本均归档在 scheme core，运行 adapter 通过公共周频输入层生成 CSV 后读回，标准 dry-run 分别返回 1 条 `5Y` / `7Y` 预测；本轮代码 review 发现 5Y/7Y 历史回测日期曾误用 live 周历，已新增 `shared.legacy_weekly_calendar` 并改为 0529 原始脚本口径，重新受控写入 `t_backtest_*` 后，5Y 最新 run_id=`32`，7Y 最新 run_id=`34`，backend factor-lab 数据函数已可返回 `5Y国债活跃 · 周度` 与 `7Y国债活跃 · 周度` 矩阵项；两个新增周度方案均保持 `paused`，未同步 registry，未写入实盘预测表。旧 `_original_source` 运行依赖已移除，历史 benchmark CSV 已固化为 `benchmarks/model_muti_0529/daily_output.csv` 的真实文件。强约束 harness 架构设计已固化到文档: 后续新增方案必须按 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation 推进；当前仅完成文档设计，`harness/` 代码和 CLI gate 待后续落地。
@@ -27,7 +49,7 @@
 - `t1_daily` 已完成 adapter，当前 active，预测目标为 `5Y/10Y`。
 - `t5_daily` 已完成 adapter，当前 active，预测目标为 `3Y/5Y/7Y/10Y`。
 - 公共输入文件层已落地: `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频、周频、月频底层均统一由 `shared.data_service` 生成输出宽表，artifact 层负责写出 `daily_output_*.csv` / `weekly_output_*.csv` 并读回给算法。运行期文件统一位于 `backtest_artifacts/runtime_inputs/{scheme_id}/`。每条 live `PredictionRecord.extra` 会记录 `input_artifact_path` 和 `input_artifact_source`，当前 source 为 `shared_data_service_daily` 或 `shared_data_service_weekly`。
-- 强约束 harness 文档已落地: [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 是后续方案入库总纲，[ARCHITECTURE.md](ARCHITECTURE.md) 已记录分层边界，[SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 已改为 gate 流程，[TEST_PLAN.md](TEST_PLAN.md) 已增加 Phase 12 验收矩阵。当前状态是“harness 设计已定，代码待落地”，不能把未来 `python -m harness.cli` 当作已可运行命令。
+- 强约束 harness 已落地: [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 是方案入库总纲，[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 是代码架构主蓝图，[HARNESS_DESIGN.md](HARNESS_DESIGN.md) / [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) / [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) 是现行设计规范，[SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 已改为 gate 流程，[TEST_PLAN.md](TEST_PLAN.md) 已增加 Phase 12 验收矩阵。`harness/` 代码与 `python -m harness` CLI gate 已落地可运行（见本文档顶部 S0–S8 完成说明）。
 - artifact 命名已统一: `backtests/` 只放回测代码，`benchmarks/{benchmark_id}/` 只放 canonical 基准输入，运行期输入在 `backtest_artifacts/runtime_inputs/{scheme_id}/`，历史回测和数据差异报告在 `backtest_artifacts/backtests/{benchmark_id}/`。DB 中 `benchmark_id` / `data_source` 保留兼容枚举，API 额外提供中文展示名。
 - `weekly_10y_d_overlay` 已完成 adapter、DB 周频输入生成、历史回测落库、前端周度格子展示和 2026-06-06 受控 live 写库验收；当前已切换为 `active`，目标为 `10Y`。
 - `weekly_5y_direct_production` 已完成 adapter、DB 周频输入生成、原始脚本归档、历史回测 runner、标准 dry-run 和受控回测落库；当前保持 `paused`，目标为 `5Y`，尚未同步 registry，未写入实盘预测表。

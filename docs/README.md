@@ -23,36 +23,30 @@
 | [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) | **新增方案 SOP**：命名规范、目录/config/predict 模板、Gate 入库流程、回滚、FAQ |
 | [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | **方案契约形式化**：config.yaml schema、predict.py 接口、PredictionRecord/extra 必填、core 约束（机器可校验） |
 
-## ③ 执行计划（架构重构与落地节奏）
+## ③ 状态与记录（项目当前状态与历史结论）
 
 | 文档 | 内容 |
 |------|------|
-| [ARCH_EXECUTION_PLAN.md](ARCH_EXECUTION_PLAN.md) | 架构重构（数据层去重 + harness 落地）分阶段执行计划 S0–S9，含验收闸/回滚/风险 |
-
-## ④ 状态与记录（项目当前状态与历史结论）
-
-| 文档 | 内容 |
-|------|------|
-| [CURRENT_STATUS.md](CURRENT_STATUS.md) | 各方案当前状态、run_id、是否 active |
+| [CURRENT_STATUS.md](CURRENT_STATUS.md) | 各方案当前状态、run_id、是否 active、架构重构与 harness 落地进展（单一状态来源） |
 | [HISTORICAL_REPRODUCTION.md](HISTORICAL_REPRODUCTION.md) | 历史回测复现口径与结论 |
 | [TEST_PLAN.md](TEST_PLAN.md) | 测试计划与 Gate 验收矩阵 |
 | [TEST_MACHINE_BASELINE.md](TEST_MACHINE_BASELINE.md) | 测试机环境基线 |
 
-## ⑤ 运维与部署
+## ④ 运维与部署
 
 | 文档 | 内容 |
 |------|------|
 | [DEPLOYMENT.md](DEPLOYMENT.md) | 部署与运行操作手册（launchd、端口、环境变量） |
 | [PRD.md](PRD.md) | 产品需求基线（定位、目标、非目标） |
 | [IFRAME_INTEGRATION.md](IFRAME_INTEGRATION.md) | panda_quantflow 外层 iframe 接入说明 |
-| [WEEKLY_LIVE_ROLLOUT_PLAN.md](WEEKLY_LIVE_ROLLOUT_PLAN.md) | 周度方案 live 启用 SOP |
 
 ---
 
 ## 归档区（历史产物，保留追溯，非当前有效）
 
-- **[archive/](archive/)** — 已完成阶段的历史记录与一次性产物
-  - `IMPLEMENTATION_PLAN.md`（Phase 1–11 搭建历史）、`MIGRATION_PLAN.md`、`RESEARCH.md`、`CLEANUP_PLAN.md`
+- **[archive/](archive/)** — 已完成阶段的历史记录、执行计划与一次性产物
+  - 执行计划（已完成）：`ARCH_EXECUTION_PLAN.md`（架构重构 S0–S8）、`WEEKLY_LIVE_ROLLOUT_PLAN.md`（周度 live 上线）
+  - 历史记录：`IMPLEMENTATION_PLAN.md`（Phase 1–11 搭建历史）、`MIGRATION_PLAN.md`、`RESEARCH.md`、`CLEANUP_PLAN.md`
 - **[legacy_sources/](legacy_sources/)** — 方案算法的**原始来源脚本**（审计留档，不被代码 import）
   - `legacy_weekly_5y_direct_production_0529.py`、`legacy_weekly_7y_cross_d_overlay_0529.py`
   - 注：`weekly_10y` 的 legacy 仍在 `schemes/weekly_10y_d_overlay/core/`，因 `predictors.py` **运行时复用**它，不可移动。
@@ -63,5 +57,5 @@
 
 - **第一次接触项目** → ① CODE_ARCHITECTURE → ARCHITECTURE → ② SOP
 - **要加一个新预测方案** → ② SCHEME_ONBOARDING_SOP + SCHEME_CONTRACT，用 `python -m harness onboard {scheme_id} --stage all` 驱动
-- **要改数据层/harness** → ① DATA_LAYER_DESIGN / HARNESS_DESIGN + ③ ARCH_EXECUTION_PLAN
-- **要部署/运维** → ⑤ DEPLOYMENT
+- **要改数据层/harness** → ① DATA_LAYER_DESIGN / HARNESS_DESIGN；重构历史见 archive/ARCH_EXECUTION_PLAN
+- **要部署/运维** → ④ DEPLOYMENT

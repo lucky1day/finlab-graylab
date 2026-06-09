@@ -275,7 +275,7 @@ schemes/{scheme_id}/
 
 ## 10. 演进路线
 
-> 本节是方向；可执行、可验收、可回滚的分阶段执行计划见 [ARCH_EXECUTION_PLAN.md](ARCH_EXECUTION_PLAN.md)。
+> 本节是方向；可执行、可验收、可回滚的分阶段执行计划（S0–S8 已完成，归档）见 [archive/ARCH_EXECUTION_PLAN.md](archive/ARCH_EXECUTION_PLAN.md)。最新落地状态见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 ```
 现状（4 处违规，harness 缺位）
