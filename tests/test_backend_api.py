@@ -67,21 +67,11 @@ class MetricsCompareRemovedTests(unittest.TestCase):
         self.assertNotIn("/api/metrics/compare", paths)
 
 
-class SchemesLifecycleReadOnlyTests(unittest.TestCase):
-    def test_api_schemes_lifecycle_does_not_call_registry_sync(self) -> None:
-        """GET /api/schemes/lifecycle 只读健康概览，不触发 registry 写同步。"""
-        engine = object()
-        payload = {"schemes": []}
-        with patch.object(main, "get_engine", return_value=engine), patch.object(
-            main, "sync_registry_from_configs"
-        ) as sync_mock, patch.object(
-            main, "schemes_lifecycle", return_value=payload
-        ) as lifecycle_mock:
-            result = main.api_schemes_lifecycle()
-
-        sync_mock.assert_not_called()
-        lifecycle_mock.assert_called_once_with(engine)
-        self.assertEqual(result, payload)
+class SchemesLifecycleRemovedTests(unittest.TestCase):
+    def test_schemes_lifecycle_route_is_not_registered(self) -> None:
+        """方案生命周期健康概览已下线，后端不再暴露 lifecycle GET 路由。"""
+        paths = {getattr(route, "path", None) for route in main.app.routes}
+        self.assertNotIn("/api/schemes/lifecycle", paths)
 
 
 class TriggerEndpointTests(unittest.TestCase):

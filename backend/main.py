@@ -24,7 +24,6 @@ from backend.services import (
     list_schemes,
     list_targets,
     scheme_metrics,
-    schemes_lifecycle,
     sync_registry_from_configs,
 )
 from scheduler.executor import DEFAULT_ALGO_ENV
@@ -111,11 +110,6 @@ def api_schemes() -> dict:
         },
         "schemes": list_schemes(engine),
     }
-
-
-@app.get("/api/schemes/lifecycle")
-def api_schemes_lifecycle() -> dict:
-    return schemes_lifecycle(get_engine())
 
 
 @app.get("/api/targets")

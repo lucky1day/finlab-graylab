@@ -193,10 +193,6 @@
     failed: "失败",
     success: "成功"
   };
-  var lifecycleAlertLabels = {
-    latest_run_failed: "最近运行失败",
-    missing_predictions: "无已批准预测"
-  };
   var factorTrendMetrics = [
     { id: "overall", label: "整体准确率", color: "#15623f" },
     { id: "upPrecision", label: "上涨准确率", color: "#2f7ba1" },
@@ -259,10 +255,6 @@
   var factorLabRefreshTimer = null;
   var factorLabApiError = "";
   var factorLabDataMode = "mock";
-  var factorLifecycleData = null;
-  var factorLifecycleLoading = false;
-  var factorLifecycleLoaded = false;
-  var factorLifecycleError = "";
 
   function clampPercent(value) {
     return Math.max(0, Math.min(100, Number(value) || 0));
@@ -824,58 +816,6 @@
     return latest;
   }
 
-  function normalizeLifecycleCards(items) {
-    return (items || []).map(function (item) {
-      var status = item.version_status || item.registry_status || "active";
-      var alerts = item.alerts || [];
-      var latestRun = item.latest_run || {};
-      var alertText = alerts.map(function (alert) {
-        return lifecycleAlertLabels[alert] || alert;
-      }).join(" / ");
-      return {
-        schemeId: item.scheme_id,
-        name: item.name || item.scheme_id,
-        schemeVersion: item.scheme_version || "--",
-        versionStatus: status,
-        statusLabel: factorStatusLabels[status] || status,
-        statusClass: "is-" + status,
-        latestRunStatus: latestRun.status || "--",
-        latestRunDate: latestRun.predict_date || latestRun.date || "--",
-        recordsWritten: latestRun.records_written === null || latestRun.records_written === undefined ? "--" : String(latestRun.records_written),
-        recentSuccessRate: item.recent_success_rate,
-        latestPredictionDate: item.latest_prediction_date || "--",
-        hasAlert: alerts.length > 0,
-        alertText: alertText
-      };
-    });
-  }
-
-  function buildLocalLifecycleCards(tasks) {
-    var schemes = {};
-    Object.keys(tasks || {}).forEach(function (taskKey) {
-      (tasks[taskKey] || []).forEach(function (scheme) {
-        if (schemes[scheme.id]) return;
-        schemes[scheme.id] = {
-          scheme_id: scheme.id,
-          name: scheme.name,
-          scheme_version: latestSchemeVersion(scheme) || "",
-          version_status: scheme.status || "active",
-          latest_run: {
-            status: scheme.status || "--",
-            predict_date: scheme.latestRun || "--",
-            records_written: null
-          },
-          recent_success_rate: null,
-          latest_prediction_date: scheme.latestRun || null,
-          alerts: []
-        };
-      });
-    });
-    return normalizeLifecycleCards(Object.keys(schemes).map(function (schemeId) {
-      return schemes[schemeId];
-    }));
-  }
-
   function ensureSelectedScheme() {
     var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (!schemes.length) {
@@ -914,66 +854,6 @@
       return '<tr><td>' + escapeHtml(getTargetDisplayName(target)) + '</td>' + cells + '</tr>';
     }).join("");
     body.innerHTML = html;
-  }
-
-  function loadSchemeLifecycleData() {
-    if (!window.fetch || factorLifecycleLoading || factorLifecycleLoaded) return;
-    factorLifecycleLoading = true;
-    factorLifecycleError = "";
-    fetchJson("/api/schemes/lifecycle")
-      .then(function (payload) {
-        factorLifecycleData = payload;
-        factorLifecycleLoaded = true;
-        factorLifecycleLoading = false;
-        factorLifecycleError = "";
-        renderLifecycleOverview();
-      })
-      .catch(function (error) {
-        factorLifecycleLoading = false;
-        factorLifecycleLoaded = true;
-        factorLifecycleError = error.message || "lifecycle API unavailable";
-        renderLifecycleOverview();
-      });
-  }
-
-  function getLifecycleCardsForRender() {
-    if (factorLifecycleData && factorLifecycleData.schemes) {
-      return normalizeLifecycleCards(factorLifecycleData.schemes);
-    }
-    return buildLocalLifecycleCards(factorTaskSchemes);
-  }
-
-  function renderLifecycleOverview() {
-    var host = document.getElementById("factorLifecycleCards");
-    var meta = document.getElementById("factorLifecycleMeta");
-    if (!host) return;
-    var cards = getLifecycleCardsForRender();
-    if (meta) {
-      if (factorLifecycleLoading) {
-        meta.textContent = "正在读取方案健康概览。";
-      } else if (factorLifecycleError) {
-        meta.textContent = "API暂不可用，当前显示本地备用概览。";
-      } else {
-        meta.textContent = cards.length + " 个在册方案";
-      }
-    }
-    if (!cards.length) {
-      host.innerHTML = '<div class="factor-trend-empty">暂无方案生命周期数据</div>';
-      return;
-    }
-    host.innerHTML = cards.map(function (card) {
-      var alertHtml = card.hasAlert ? '<span class="factor-lifecycle-alert">' + escapeHtml(card.alertText) + '</span>' : "";
-      return '<article class="factor-lifecycle-card' + (card.hasAlert ? " has-alert" : "") + '">' +
-        '<div class="factor-lifecycle-card-head"><strong>' + escapeHtml(card.name) + '</strong><span class="factor-status-pill ' + escapeHtml(card.statusClass) + '">' + escapeHtml(card.statusLabel) + '</span></div>' +
-        '<div class="factor-lifecycle-version">' + escapeHtml(card.schemeVersion) + '</div>' +
-        '<dl>' +
-        '<div><dt>最近运行</dt><dd>' + escapeHtml(card.latestRunStatus) + ' · ' + escapeHtml(card.latestRunDate) + '</dd></div>' +
-        '<div><dt>成功率</dt><dd>' + formatPercent(card.recentSuccessRate) + '</dd></div>' +
-        '<div><dt>已写记录</dt><dd>' + escapeHtml(card.recordsWritten) + '</dd></div>' +
-        '<div><dt>最新预测</dt><dd>' + escapeHtml(card.latestPredictionDate) + '</dd></div>' +
-        '</dl>' + alertHtml +
-        '</article>';
-    }).join("");
   }
 
   function renderSchemeRanking() {
@@ -1217,8 +1097,6 @@
     loadFactorLabData();
     updateFactorFilterUi();
     ensureSelectedScheme();
-    loadSchemeLifecycleData();
-    renderLifecycleOverview();
     renderTaskOverview();
     renderSchemeRanking();
     updateFactorLabSummary();
@@ -1463,7 +1341,6 @@
   window.__factorLabTestHooks = {
     aggregateScheme: aggregateScheme,
     isLowSampleMetric: isLowSampleMetric,
-    normalizeLifecycleCards: normalizeLifecycleCards,
     sortRankingSchemes: sortRankingSchemes
   };
 
