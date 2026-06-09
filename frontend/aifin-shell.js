@@ -1084,17 +1084,9 @@
       var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
       var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
       var barWidth = clampPercent(metric.overall);
-      // 实盘起点 / 无实盘
-      var sourceBadgeHtml = "";
-      if (scheme.liveSinceDate) {
-        var liveLabel = scheme.liveSinceDate.length >= 10 ? scheme.liveSinceDate.slice(0, 10) : scheme.liveSinceDate;
-        sourceBadgeHtml += '<span class="factor-live-since-badge">实盘自 ' + escapeHtml(liveLabel) + '</span>';
-      } else {
-        sourceBadgeHtml += '<span class="factor-live-since-badge is-backtest-only">暂无实盘</span>';
-      }
       return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
         '<td>' + (index + 1) + '</td>' +
-        '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '<br>' + sourceBadgeHtml + '</td>' +
+        '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
         '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metric.samples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
         '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
         '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
