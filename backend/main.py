@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -23,6 +24,7 @@ from backend.services import (
     list_schemes,
     list_targets,
     scheme_metrics,
+    sync_registry_from_configs,
 )
 from scheduler.executor import DEFAULT_ALGO_ENV
 from scheduler.main import run_prediction_job
@@ -30,16 +32,52 @@ from scheduler.main import run_prediction_job
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
+DEFAULT_CORS_ORIGINS = ["http://localhost", "http://127.0.0.1"]
+ADMIN_TOKEN_HEADER = "X-Admin-Token"
 logger = logging.getLogger(__name__)
+
+
+def _cors_origins() -> list[str]:
+    """从环境变量读取 CORS 允许来源；未配置时退回本地白名单。"""
+    raw = os.getenv("BOND_CORS_ORIGINS")
+    if not raw:
+        return list(DEFAULT_CORS_ORIGINS)
+    origins = [item.strip() for item in raw.split(",") if item.strip()]
+    return origins or list(DEFAULT_CORS_ORIGINS)
+
+
+def require_admin_token(x_admin_token: str | None = Header(default=None, alias=ADMIN_TOKEN_HEADER)) -> None:
+    """校验管理员令牌：缺失服务端配置或令牌不匹配时拒绝。
+
+    令牌从环境变量 BOND_ADMIN_TOKEN 读取，与请求头 X-Admin-Token 比对。
+    （后续计划升级为 HMAC，此处先做简单环境变量校验。）
+    """
+    expected = os.getenv("BOND_ADMIN_TOKEN")
+    if not expected:
+        raise HTTPException(status_code=403, detail="admin token not configured")
+    if not x_admin_token:
+        raise HTTPException(status_code=401, detail="missing admin token")
+    if not secrets.compare_digest(x_admin_token, expected):
+        raise HTTPException(status_code=403, detail="invalid admin token")
+
 
 app = FastAPI(title="Bond Factor Lab API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type", ADMIN_TOKEN_HEADER],
 )
+
+
+@app.on_event("startup")
+def _sync_registry_on_startup() -> None:
+    """启动时同步一次 registry（写库），使读路径可纯读。"""
+    try:
+        sync_registry_from_configs(get_engine())
+    except Exception:
+        logger.exception("Registry sync on startup failed")
 
 
 class TriggerRequest(BaseModel):
@@ -196,6 +234,7 @@ def api_backtest_factor_lab(
 
 
 def _run_trigger(scheme_id: str, request: TriggerRequest) -> None:
+    logger.info("Manual trigger started for %s (triggered_by=admin_api)", scheme_id)
     try:
         run_prediction_job(
             scheme_id,
@@ -207,13 +246,20 @@ def _run_trigger(scheme_id: str, request: TriggerRequest) -> None:
         logger.exception("Manual trigger failed for %s", scheme_id)
 
 
-@app.post("/api/schemes/{scheme_id}/trigger", status_code=202)
+@app.post("/api/schemes/{scheme_id}/trigger", status_code=202, dependencies=[Depends(require_admin_token)])
 def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks: BackgroundTasks) -> dict:
     known = {item["scheme_id"] for item in list_schemes(get_engine())}
     if scheme_id not in known:
         raise HTTPException(status_code=404, detail=f"scheme not found: {scheme_id}")
     background_tasks.add_task(_run_trigger, scheme_id, request)
     return {"accepted": True, "scheme_id": scheme_id, "predict_date": request.predict_date, "force": request.force}
+
+
+@app.post("/api/admin/registry/sync", dependencies=[Depends(require_admin_token)])
+def api_admin_registry_sync() -> dict:
+    """受保护的管理端点：显式把 schemes/ 配置同步到 registry（写库）。"""
+    synced = sync_registry_from_configs(get_engine(), force=True)
+    return {"synced": synced}
 
 
 if FRONTEND_ROOT.exists():

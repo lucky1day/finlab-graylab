@@ -233,8 +233,11 @@ def _scheme_config_signature(schemes_root: Path | None = None) -> tuple[tuple[st
 
 
 def list_schemes(engine: Engine) -> list[dict[str, Any]]:
-    """返回注册方案及最近一次运行状态。"""
-    sync_registry_from_configs(engine)
+    """返回注册方案及最近一次运行状态。
+
+    只读路径：不再触发 registry 写库同步，直接读取 registry 表当前内容。
+    registry 同步由应用启动钩子与受保护的 admin 端点负责。
+    """
     target_labels = _target_labels(engine)
     sql = text(
         """

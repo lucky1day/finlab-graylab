@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import unittest
+from unittest.mock import MagicMock, patch
+
+from fastapi import BackgroundTasks, HTTPException
+
+from backend import main
+
+
+def _clear_admin_token() -> None:
+    os.environ.pop("BOND_ADMIN_TOKEN", None)
+
+
+class RequireAdminTokenTests(unittest.TestCase):
+    """直接调用 auth 依赖，覆盖缺失配置 / 缺失头 / 不匹配 / 匹配四种情形。"""
+
+    def test_missing_server_config_is_forbidden(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            _clear_admin_token()
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin_token(x_admin_token="anything")
+            self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_missing_header_is_unauthorized(self) -> None:
+        with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin_token(x_admin_token=None)
+            self.assertEqual(ctx.exception.status_code, 401)
+
+    def test_wrong_token_is_forbidden(self) -> None:
+        with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin_token(x_admin_token="wrong")
+            self.assertEqual(ctx.exception.status_code, 403)
+
+    def test_correct_token_passes(self) -> None:
+        with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):
+            # 不抛异常即视为通过。
+            self.assertIsNone(main.require_admin_token(x_admin_token="s3cret"))
+
+
+class GetSchemesReadOnlyTests(unittest.TestCase):
+    def test_api_schemes_does_not_call_registry_sync(self) -> None:
+        """GET /api/schemes 读路径不得触发 registry 写库同步。"""
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main, "sync_registry_from_configs"
+        ) as sync_mock, patch.object(
+            main, "list_targets", return_value=[]
+        ), patch.object(
+            main, "list_schemes", return_value=[{"scheme_id": "demo_daily"}]
+        ) as list_mock:
+            result = main.api_schemes()
+
+        sync_mock.assert_not_called()
+        list_mock.assert_called_once()
+        self.assertIn("schemes", result)
+        self.assertEqual(result["schemes"], [{"scheme_id": "demo_daily"}])
+
+
+class TriggerEndpointTests(unittest.TestCase):
+    """trigger 端点本体（auth 由 Depends 单独覆盖）：未知方案 404 / 已知方案 202。"""
+
+    def test_trigger_unknown_scheme_is_404(self) -> None:
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main, "list_schemes", return_value=[{"scheme_id": "demo_daily"}]
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                main.api_trigger_scheme(
+                    "missing", main.TriggerRequest(), BackgroundTasks()
+                )
+            self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_trigger_known_scheme_is_accepted(self) -> None:
+        background = BackgroundTasks()
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main, "list_schemes", return_value=[{"scheme_id": "demo_daily"}]
+        ):
+            result = main.api_trigger_scheme(
+                "demo_daily",
+                main.TriggerRequest(predict_date="2026-06-09"),
+                background,
+            )
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["scheme_id"], "demo_daily")
+        # 已排入后台任务（_run_trigger）。
+        self.assertEqual(len(background.tasks), 1)
+
+    def test_run_trigger_invokes_prediction_job(self) -> None:
+        with patch.object(main, "run_prediction_job") as job_mock:
+            main._run_trigger("demo_daily", main.TriggerRequest(force=True))
+        job_mock.assert_called_once()
+        self.assertEqual(job_mock.call_args.kwargs.get("force"), True)
+
+
+class AdminRegistrySyncEndpointTests(unittest.TestCase):
+    def test_admin_sync_runs_sync_with_force(self) -> None:
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main, "sync_registry_from_configs", return_value=True
+        ) as sync_mock:
+            result = main.api_admin_registry_sync()
+        sync_mock.assert_called_once()
+        self.assertTrue(sync_mock.call_args.kwargs.get("force"))
+        self.assertTrue(result["synced"])
+
+
+class StartupSyncTests(unittest.TestCase):
+    def test_startup_runs_registry_sync_once(self) -> None:
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main, "sync_registry_from_configs"
+        ) as sync_mock:
+            main._sync_registry_on_startup()
+        sync_mock.assert_called_once()
+
+    def test_startup_swallows_sync_errors(self) -> None:
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main, "sync_registry_from_configs", side_effect=RuntimeError("db down")
+        ):
+            # 启动同步失败不应抛出（仅记录日志）。
+            main._sync_registry_on_startup()
+
+
+class AuthDependencyWiredTests(unittest.TestCase):
+    """断言受保护端点确实声明了 require_admin_token 依赖。"""
+
+    def _deps_for(self, path: str, method: str) -> list:
+        for route in main.app.routes:
+            if getattr(route, "path", None) == path and method in getattr(route, "methods", set()):
+                return [d.call for d in route.dependant.dependencies]
+        raise AssertionError(f"route not found: {method} {path}")
+
+    def test_trigger_endpoint_requires_admin_token(self) -> None:
+        deps = self._deps_for("/api/schemes/{scheme_id}/trigger", "POST")
+        self.assertIn(main.require_admin_token, deps)
+
+    def test_admin_sync_endpoint_requires_admin_token(self) -> None:
+        deps = self._deps_for("/api/admin/registry/sync", "POST")
+        self.assertIn(main.require_admin_token, deps)
+
+
+class CorsConfigTests(unittest.TestCase):
+    def test_default_cors_origins(self) -> None:
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("BOND_CORS_ORIGINS", None)
+            self.assertEqual(
+                main._cors_origins(), ["http://localhost", "http://127.0.0.1"]
+            )
+
+    def test_cors_origins_from_env(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"BOND_CORS_ORIGINS": "https://a.example , https://b.example"},
+            clear=False,
+        ):
+            self.assertEqual(
+                main._cors_origins(), ["https://a.example", "https://b.example"]
+            )
+
+    def test_blank_env_falls_back_to_default(self) -> None:
+        with patch.dict("os.environ", {"BOND_CORS_ORIGINS": "  "}, clear=False):
+            self.assertEqual(
+                main._cors_origins(), ["http://localhost", "http://127.0.0.1"]
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
