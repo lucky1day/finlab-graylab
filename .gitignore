@@ -14,6 +14,9 @@ model-mutitest-0529.zip
 # Generated reproduction outputs; persisted summaries live in MySQL and docs.
 backtest_artifacts/
 
+# Clean export tarballs produced by scripts/export_clean_repo.sh.
+dist/
+
 # Generated comparison reports. Keep only lightweight documentation/manifest files.
 reports/*.csv
 reports/*.json
