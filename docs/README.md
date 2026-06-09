@@ -27,7 +27,7 @@
 | 文档 | 内容 |
 |------|------|
 | [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | **新增方案入库 SOP**：命名规范、目录/config/predict 模板、Gate 入库流程、回滚、FAQ |
-| [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | **入库后测试验证 SOP**：结果正确性（等价闸）、actuals 口径、API/前端展示、验收门槛（草案，待 review） |
+| [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | **入库后测试验证 SOP**：结果正确性（等价闸）、actuals 口径、API/前端展示、验收门槛（已定稿 v1.0） |
 
 ## ③ 状态与记录（项目当前状态与历史结论）
 
