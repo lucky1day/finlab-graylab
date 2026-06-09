@@ -312,7 +312,6 @@ button {
 .factor-accuracy-panel,
 .factor-lifecycle-panel,
 .factor-task-panel,
-.factor-compare-panel,
 .factor-ranking-panel {
   min-width: 0;
   border: 1px solid var(--line);
@@ -509,7 +508,6 @@ button {
 
 .factor-task-panel,
 .factor-lifecycle-panel,
-.factor-compare-panel,
 .factor-ranking-panel {
   padding: 22px 28px 24px;
 }
@@ -663,7 +661,6 @@ button {
 }
 
 .factor-task-wrap,
-.factor-compare-wrap,
 .factor-ranking-wrap {
   width: 100%;
   max-width: 100%;
@@ -676,7 +673,6 @@ button {
 }
 
 .factor-task-table,
-.factor-compare-table,
 .factor-ranking-table {
   width: 100%;
   border-collapse: collapse;
@@ -687,18 +683,12 @@ button {
   min-width: 780px;
 }
 
-.factor-compare-table {
-  min-width: 920px;
-}
-
 .factor-ranking-table {
   min-width: 1120px;
 }
 
 .factor-task-table th,
 .factor-task-table td,
-.factor-compare-table th,
-.factor-compare-table td,
 .factor-ranking-table th,
 .factor-ranking-table td {
   border-bottom: 1px solid var(--line);
@@ -707,7 +697,6 @@ button {
 }
 
 .factor-task-table th,
-.factor-compare-table th,
 .factor-ranking-table th {
   height: 40px;
   color: var(--text-tertiary);
@@ -721,11 +710,6 @@ button {
 .factor-task-table th:first-child,
 .factor-task-table td:first-child {
   width: 156px;
-}
-
-.factor-compare-table th:first-child,
-.factor-compare-table td:first-child {
-  width: 260px;
 }
 
 .factor-task-table td:first-child {
@@ -860,90 +844,6 @@ button {
   color: var(--negative);
   font-size: 12px;
   font-weight: 760;
-}
-
-.factor-compare-toggles {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.factor-compare-toggles button {
-  min-width: 62px;
-  height: 34px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--text-secondary);
-  background: rgba(255, 255, 255, 0.86);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 760;
-}
-
-.factor-compare-toggles button.is-active {
-  border-color: rgba(21, 92, 62, 0.24);
-  color: var(--accent);
-  background: rgba(21, 92, 62, 0.08);
-}
-
-.factor-compare-table td {
-  height: 64px;
-  padding: 10px 14px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  text-align: center;
-}
-
-.factor-compare-table td:first-child {
-  color: var(--text);
-  text-align: left;
-}
-
-.factor-compare-table td:first-child strong {
-  display: block;
-  margin-bottom: 6px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.factor-compare-cell {
-  background: rgba(93, 101, 111, 0.04);
-}
-
-.factor-compare-cell strong,
-.factor-compare-cell span {
-  display: block;
-}
-
-.factor-compare-cell strong {
-  font-size: 18px;
-  font-weight: 820;
-  line-height: 1.1;
-}
-
-.factor-compare-cell span {
-  margin-top: 6px;
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 760;
-}
-
-.factor-compare-cell.metric-good {
-  color: var(--accent);
-  background: rgba(21, 92, 62, 0.09);
-}
-
-.factor-compare-cell.metric-warn {
-  color: var(--gold);
-  background: rgba(185, 135, 40, 0.10);
-}
-
-.factor-compare-cell.metric-bad {
-  color: var(--negative);
-  background: rgba(220, 38, 38, 0.07);
 }
 
 .factor-ranking-table th,
@@ -1647,7 +1547,6 @@ button {
   .factor-accuracy-panel,
   .factor-lifecycle-panel,
   .factor-task-panel,
-  .factor-compare-panel,
   .factor-ranking-panel {
     padding: 18px;
   }

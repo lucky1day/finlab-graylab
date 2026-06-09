@@ -60,32 +60,11 @@ class GetSchemesReadOnlyTests(unittest.TestCase):
         self.assertEqual(result["schemes"], [{"scheme_id": "demo_daily"}])
 
 
-class MetricsCompareReadOnlyTests(unittest.TestCase):
-    def test_api_metrics_compare_does_not_call_registry_sync(self) -> None:
-        """GET /api/metrics/compare 只聚合已有数据，不触发任何 registry 写同步。"""
-        engine = object()
-        payload = {"metric": "overall", "schemes": [], "tenors": []}
-        with patch.object(main, "get_engine", return_value=engine), patch.object(
-            main, "sync_registry_from_configs"
-        ) as sync_mock, patch.object(
-            main, "metrics_compare", return_value=payload
-        ) as compare_mock:
-            result = main.api_metrics_compare(
-                frequency="daily",
-                start_month="2026-06",
-                end_month="2026-06",
-                metric="overall",
-            )
-
-        sync_mock.assert_not_called()
-        compare_mock.assert_called_once_with(
-            engine,
-            frequency="daily",
-            start_month="2026-06",
-            end_month="2026-06",
-            metric="overall",
-        )
-        self.assertEqual(result, payload)
+class MetricsCompareRemovedTests(unittest.TestCase):
+    def test_metrics_compare_route_is_not_registered(self) -> None:
+        """跨标的横向对比已下线，后端不再暴露 compare GET 路由。"""
+        paths = {getattr(route, "path", None) for route in main.app.routes}
+        self.assertNotIn("/api/metrics/compare", paths)
 
 
 class SchemesLifecycleReadOnlyTests(unittest.TestCase):

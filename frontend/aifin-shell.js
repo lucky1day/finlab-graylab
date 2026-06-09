@@ -159,7 +159,6 @@
     selectedSchemeId: "",
     rankMetric: "overall",
     rankDirection: "desc",
-    compareMetric: "overall",
     startMonth: "2025-01",
     endMonth: "2025-05",
     chartMetrics: {
@@ -204,11 +203,6 @@
     { id: "upRecall", label: "上涨召回率", color: "#b98728" },
     { id: "downPrecision", label: "下跌准确率", color: "#d62828" },
     { id: "downRecall", label: "下跌召回率", color: "#6f5aa8" }
-  ];
-  var factorCompareMetrics = [
-    { id: "overall", label: "整体准确率", source: "overall" },
-    { id: "up", label: "上涨准确率", source: "upPrecision" },
-    { id: "down", label: "下跌准确率", source: "downPrecision" }
   ];
   var factorSchemeNamePool = [
     "F-v22 term-micro × MTL-v07",
@@ -265,11 +259,6 @@
   var factorLabRefreshTimer = null;
   var factorLabApiError = "";
   var factorLabDataMode = "mock";
-  var factorCompareData = null;
-  var factorCompareLoading = false;
-  var factorCompareError = "";
-  var factorCompareRequestKey = "";
-  var factorCompareLoadedKey = "";
   var factorLifecycleData = null;
   var factorLifecycleLoading = false;
   var factorLifecycleLoaded = false;
@@ -299,16 +288,6 @@
       return item.id === metricId;
     })[0];
     return metric ? metric.label : "整体准确率";
-  }
-
-  function getCompareMetric(metricId) {
-    return factorCompareMetrics.filter(function (item) {
-      return item.id === metricId;
-    })[0] || factorCompareMetrics[0];
-  }
-
-  function getCompareMetricSource(metricId) {
-    return getCompareMetric(metricId).source;
   }
 
   function getTaskKey(target, column) {
@@ -845,121 +824,6 @@
     return latest;
   }
 
-  function emptyCompareCell(metricId) {
-    return {
-      value: null,
-      samples: 0,
-      correct: 0,
-      overall: null,
-      up_precision: null,
-      down_precision: null,
-      className: ""
-    };
-  }
-
-  function compareCellFromMetric(metric, metricId) {
-    var source = getCompareMetricSource(metricId);
-    var value = metric[source];
-    return {
-      value: value === undefined ? null : value,
-      samples: Number(metric.samples || 0),
-      correct: Number(metric.correct || 0),
-      overall: metric.overall === undefined ? null : metric.overall,
-      up_precision: metric.upPrecision === undefined ? null : metric.upPrecision,
-      down_precision: metric.downPrecision === undefined ? null : metric.downPrecision,
-      className: getMetricClass(value)
-    };
-  }
-
-  function compareCellFromApi(cell, metricId) {
-    cell = cell || {};
-    var value = cell.value;
-    if (value === undefined) {
-      if (metricId === "up") value = cell.up_precision;
-      else if (metricId === "down") value = cell.down_precision;
-      else value = cell.overall;
-    }
-    return {
-      value: value === undefined ? null : value,
-      samples: Number(cell.samples || 0),
-      correct: Number(cell.correct || 0),
-      overall: cell.overall === undefined ? null : cell.overall,
-      up_precision: cell.up_precision === undefined ? null : cell.up_precision,
-      down_precision: cell.down_precision === undefined ? null : cell.down_precision,
-      className: getMetricClass(value)
-    };
-  }
-
-  function buildLocalCompareMatrix(tasks, frequency, metricId) {
-    var tenors = [];
-    var schemes = {};
-    Object.keys(tasks || {}).forEach(function (taskKey) {
-      var task = getTaskByKey(taskKey);
-      if (frequency && task.frequency !== frequency) return;
-      if (tenors.indexOf(task.target) === -1) tenors.push(task.target);
-      (tasks[taskKey] || []).forEach(function (scheme) {
-        if (!schemes[scheme.id]) {
-          schemes[scheme.id] = {
-            scheme_id: scheme.id,
-            name: scheme.name,
-            status: scheme.status,
-            frequency: task.frequency,
-            cells: {}
-          };
-        }
-        schemes[scheme.id].cells[task.target] = compareCellFromMetric(aggregateScheme(scheme), metricId);
-      });
-    });
-    tenors.sort(function (a, b) {
-      return _compareTenorSortKey(a).localeCompare(_compareTenorSortKey(b));
-    });
-    return {
-      frequency: frequency || "",
-      metric: metricId,
-      tenors: tenors,
-      target_labels: tenors.reduce(function (labels, tenor) {
-        labels[tenor] = getTargetDisplayName(tenor);
-        return labels;
-      }, {}),
-      schemes: Object.keys(schemes).map(function (schemeId) {
-        var scheme = schemes[schemeId];
-        tenors.forEach(function (tenor) {
-          if (!scheme.cells[tenor]) scheme.cells[tenor] = emptyCompareCell(metricId);
-        });
-        return scheme;
-      })
-    };
-  }
-
-  function _compareTenorSortKey(tenor) {
-    var numeric = parseInt(String(tenor).replace("Y", ""), 10);
-    return (Number.isFinite(numeric) ? String(100 + numeric) : "999") + "|" + tenor;
-  }
-
-  function normalizeCompareData(payload, metricId) {
-    payload = payload || {};
-    var tenors = (payload.tenors || []).slice();
-    return {
-      frequency: payload.frequency || "",
-      metric: metricId,
-      tenors: tenors,
-      target_labels: payload.target_labels || {},
-      schemes: (payload.schemes || []).map(function (scheme) {
-        var cells = {};
-        tenors.forEach(function (tenor) {
-          cells[tenor] = compareCellFromApi(scheme.cells && scheme.cells[tenor], metricId);
-        });
-        return {
-          scheme_id: scheme.scheme_id,
-          name: scheme.name || scheme.scheme_id,
-          status: scheme.status || "active",
-          frequency: scheme.frequency || payload.frequency || "",
-          cells: cells
-        };
-      })
-    };
-  }
-
   function normalizeLifecycleCards(items) {
     return (items || []).map(function (item) {
       var status = item.version_status || item.registry_status || "active";
@@ -1050,110 +914,6 @@
       return '<tr><td>' + escapeHtml(getTargetDisplayName(target)) + '</td>' + cells + '</tr>';
     }).join("");
     body.innerHTML = html;
-  }
-
-  function currentCompareFrequency() {
-    return getTaskByKey(factorLabState.selectedTaskKey).frequency;
-  }
-
-  function currentCompareRequestKey() {
-    return [
-      currentCompareFrequency(),
-      factorLabState.startMonth,
-      factorLabState.endMonth,
-      factorLabState.compareMetric
-    ].join("|");
-  }
-
-  function compareApiUrl() {
-    var params = [
-      "frequency=" + encodeURIComponent(currentCompareFrequency()),
-      "start_month=" + encodeURIComponent(factorLabState.startMonth),
-      "end_month=" + encodeURIComponent(factorLabState.endMonth),
-      "metric=" + encodeURIComponent(factorLabState.compareMetric)
-    ];
-    return "/api/metrics/compare?" + params.join("&");
-  }
-
-  function loadMetricsCompareData(options) {
-    if (!window.fetch) return;
-    var force = options && options.force === true;
-    var key = currentCompareRequestKey();
-    if (!force && (factorCompareLoading || factorCompareLoadedKey === key || factorCompareRequestKey === key)) return;
-    factorCompareLoading = true;
-    factorCompareError = "";
-    factorCompareRequestKey = key;
-    fetchJson(compareApiUrl())
-      .then(function (payload) {
-        factorCompareData = payload;
-        factorCompareLoadedKey = key;
-        factorCompareLoading = false;
-        factorCompareError = "";
-        renderCompareHeatmap();
-      })
-      .catch(function (error) {
-        factorCompareLoading = false;
-        factorCompareError = error.message || "compare API unavailable";
-        renderCompareHeatmap();
-      });
-  }
-
-  function getCompareDataForRender() {
-    if (factorCompareData && factorCompareLoadedKey === currentCompareRequestKey()) {
-      return normalizeCompareData(factorCompareData, factorLabState.compareMetric);
-    }
-    return buildLocalCompareMatrix(factorTaskSchemes, currentCompareFrequency(), factorLabState.compareMetric);
-  }
-
-  function updateCompareMetricToggles() {
-    Array.prototype.slice.call(document.querySelectorAll("[data-factor-compare-metric]")).forEach(function (button) {
-      var metricId = button.getAttribute("data-factor-compare-metric");
-      var active = metricId === factorLabState.compareMetric;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-pressed", active ? "true" : "false");
-    });
-  }
-
-  function renderCompareHeatmap() {
-    var host = document.getElementById("factorCompareHeatmap");
-    var meta = document.getElementById("factorCompareMeta");
-    if (!host) return;
-    updateCompareMetricToggles();
-    var data = getCompareDataForRender();
-    var metric = getCompareMetric(factorLabState.compareMetric);
-    if (meta) {
-      if (factorCompareLoading) {
-        meta.textContent = "正在读取横向对比数据。";
-      } else if (factorCompareError) {
-        meta.textContent = "API暂不可用，当前显示本地备用矩阵。";
-      } else {
-        meta.textContent = currentCompareFrequency() + " · " + metric.label + " · " + data.schemes.length + " 个方案";
-      }
-    }
-    if (!data.schemes.length || !data.tenors.length) {
-      host.innerHTML = '<div class="factor-trend-empty">暂无可对比的方案数据</div>';
-      return;
-    }
-    var html = '<table class="factor-compare-table"><thead><tr><th>方案</th>';
-    data.tenors.forEach(function (tenor) {
-      var label = data.target_labels && data.target_labels[tenor] ? data.target_labels[tenor] : getTargetDisplayName(tenor);
-      html += '<th>' + escapeHtml(label) + '</th>';
-    });
-    html += '</tr></thead><tbody>';
-    data.schemes.forEach(function (scheme) {
-      html += '<tr><td><strong>' + escapeHtml(scheme.name || scheme.scheme_id) + '</strong><span class="factor-status-pill is-' + escapeHtml(scheme.status || "active") + '">' + escapeHtml(factorStatusLabels[scheme.status] || scheme.status || "active") + '</span></td>';
-      data.tenors.forEach(function (tenor) {
-        var cell = scheme.cells && scheme.cells[tenor] ? scheme.cells[tenor] : emptyCompareCell(factorLabState.compareMetric);
-        var className = cell.className || getMetricClass(cell.value);
-        html += '<td class="factor-compare-cell ' + className + '">';
-        html += '<strong>' + formatPercent(cell.value) + '</strong>';
-        html += '<span>' + Number(cell.samples || 0) + ' 样本</span>';
-        html += '</td>';
-      });
-      html += '</tr>';
-    });
-    html += '</tbody></table>';
-    host.innerHTML = html;
   }
 
   function loadSchemeLifecycleData() {
@@ -1460,8 +1220,6 @@
     loadSchemeLifecycleData();
     renderLifecycleOverview();
     renderTaskOverview();
-    loadMetricsCompareData();
-    renderCompareHeatmap();
     renderSchemeRanking();
     updateFactorLabSummary();
     renderFactorDetail();
@@ -1629,16 +1387,6 @@
           return;
         }
 
-        var compareMetricButton = event.target.closest("[data-factor-compare-metric]");
-        if (compareMetricButton) {
-          factorLabState.compareMetric = compareMetricButton.getAttribute("data-factor-compare-metric") || "overall";
-          factorCompareData = null;
-          factorCompareLoadedKey = "";
-          factorCompareRequestKey = "";
-          renderFactorLab();
-          return;
-        }
-
         var pageButton = event.target.closest("[data-factor-page]");
         if (pageButton && !pageButton.disabled) {
           var action = pageButton.getAttribute("data-factor-page");
@@ -1714,7 +1462,6 @@
 
   window.__factorLabTestHooks = {
     aggregateScheme: aggregateScheme,
-    buildLocalCompareMatrix: buildLocalCompareMatrix,
     isLowSampleMetric: isLowSampleMetric,
     normalizeLifecycleCards: normalizeLifecycleCards,
     sortRankingSchemes: sortRankingSchemes
