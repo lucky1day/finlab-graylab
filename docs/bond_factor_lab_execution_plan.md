@@ -4,7 +4,7 @@
 > 决策：① 周度方案**彻底退役**；② 本轮 **P0 并行派发 + P1 串行子计划**。
 > 编制基于对仓库的实地核验（见评审报告"review vs reality"对照表）。
 >
-> **状态（2026-06-09）：P0 ✅ 已完成、P1 ✅ 已完成并独立验证（全套 123/123 通过）。** 仅余 P2（前端/分析体验）待排期。P1 详细任务说明见 [bond_factor_lab_p1_tasks.md](bond_factor_lab_p1_tasks.md)，落地里程碑见 [CURRENT_STATUS.md](CURRENT_STATUS.md)「平台改造里程碑」。
+> **状态（2026-06-10）：P0 ✅ 已完成。P1 代码已实现但未应用 MySQL 迁移（单用户决策：P1 S7 后端读路径已回退为直查 t_scheme_predictions，不再依赖新表；迁移脚本保留备查）。** 仅余 P2（前端/分析体验）待排期。P1 详细任务说明见 [archive/bond_factor_lab_p1_tasks.md](archive/bond_factor_lab_p1_tasks.md)，落地里程碑见 [CURRENT_STATUS.md](CURRENT_STATUS.md)「平台改造里程碑」。
 
 ---
 
