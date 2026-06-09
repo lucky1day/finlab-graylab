@@ -358,43 +358,30 @@ def list_predictions(
 ) -> dict[str, Any]:
     """分页返回预测明细。"""
     target_labels = _target_labels(engine)
-    filters = ["sp.serving_status = 'approved'"]
+    filters = []
     params: dict[str, Any] = {"limit": min(max(limit, 1), 1000), "offset": max(offset, 0)}
     if scheme_id:
-        filters.append("p.scheme_id = :scheme_id")
+        filters.append("scheme_id = :scheme_id")
         params["scheme_id"] = scheme_id
     if tenor:
-        filters.append("p.target_tenor = :tenor")
+        filters.append("target_tenor = :tenor")
         params["tenor"] = tenor
     if start_date:
-        filters.append("p.predict_date >= :start_date")
+        filters.append("predict_date >= :start_date")
         params["start_date"] = start_date
     if end_date:
-        filters.append("p.predict_date <= :end_date")
+        filters.append("predict_date <= :end_date")
         params["end_date"] = end_date
-    where_sql = "WHERE " + " AND ".join(filters)
-    serving_from_sql = """
-        FROM t_scheme_serving_pointer sp
-        INNER JOIN t_scheme_predictions p
-          ON p.run_id = sp.serving_run_id
-         AND p.scheme_id = sp.scheme_id
-         AND p.target_tenor = sp.target_tenor
-         AND p.predict_date = sp.predict_date
-        LEFT JOIN t_scheme_runs sr
-          ON sr.run_id = p.run_id
-        LEFT JOIN t_input_artifacts ia
-          ON ia.artifact_id = sr.input_artifact_id
-    """
-    count_sql = text(f"SELECT COUNT(*) {serving_from_sql} {where_sql}")
+    where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
+    count_sql = text(f"SELECT COUNT(*) FROM t_scheme_predictions {where_sql}")
     data_sql = text(
         f"""
-        SELECT p.run_id, p.scheme_version, ia.content_hash AS input_artifact_hash,
-               p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.target_date,
-               p.predicted_direction, p.confidence, p.model_version, p.extra,
-               p.created_at, p.updated_at
-        {serving_from_sql}
+        SELECT id, scheme_id, target_tenor, horizon, predict_date, target_date,
+               predicted_direction, confidence, model_version, extra,
+               created_at, updated_at
+        FROM t_scheme_predictions
         {where_sql}
-        ORDER BY p.predict_date DESC, p.scheme_id, p.target_tenor
+        ORDER BY predict_date DESC, scheme_id, target_tenor
         LIMIT :limit OFFSET :offset
         """
     )
@@ -407,9 +394,6 @@ def list_predictions(
         "offset": params["offset"],
         "items": [
             {
-                "run_id": row["run_id"],
-                "scheme_version": row["scheme_version"],
-                "input_artifact_hash": row["input_artifact_hash"],
                 "scheme_id": row["scheme_id"],
                 "target_tenor": row["target_tenor"],
                 "target_label": _target_label(row["target_tenor"], target_labels),
@@ -503,20 +487,10 @@ def scheme_metrics(
 
     sql = text(
         f"""
-        SELECT p.run_id, p.scheme_version, ia.content_hash AS input_artifact_hash,
-               p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.target_date,
+        SELECT p.id, p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.target_date,
                p.predicted_direction, p.confidence, p.model_version, p.extra,
                a.direction_1d, a.direction_5d, wa.direction_weekly
-        FROM t_scheme_serving_pointer sp
-        INNER JOIN t_scheme_predictions p
-          ON p.run_id = sp.serving_run_id
-         AND p.scheme_id = sp.scheme_id
-         AND p.target_tenor = sp.target_tenor
-         AND p.predict_date = sp.predict_date
-        LEFT JOIN t_scheme_runs sr
-          ON sr.run_id = p.run_id
-        LEFT JOIN t_input_artifacts ia
-          ON ia.artifact_id = sr.input_artifact_id
+        FROM t_scheme_predictions p
         LEFT JOIN t_scheme_actuals a
           ON a.tenor = p.target_tenor
          AND a.trade_date = p.target_date
@@ -524,8 +498,7 @@ def scheme_metrics(
           ON wa.tenor = p.target_tenor
          AND wa.predict_date = p.predict_date
          AND wa.target_date = p.target_date
-        WHERE sp.serving_status = 'approved'
-          AND {" AND ".join(filters)}
+        WHERE {" AND ".join(filters)}
         ORDER BY p.predict_date, p.target_tenor
         """
     )
@@ -543,9 +516,6 @@ def scheme_metrics(
         else:
             actual_direction = row["direction_5d"]
         item = {
-            "run_id": row["run_id"],
-            "scheme_version": row["scheme_version"],
-            "input_artifact_hash": row["input_artifact_hash"],
             "scheme_id": row["scheme_id"],
             "target_tenor": row["target_tenor"],
             "horizon": row["horizon"],
