@@ -996,6 +996,59 @@
     });
   }
 
+  function rowSortDate(row) {
+    return String(row.predictDate || row.predict_date || row.targetDate || row.target_date || row.day || "");
+  }
+
+  function buildRollingHealth(rows, windowSize) {
+    var size = Math.max(1, Number(windowSize) || 20);
+    var validRows = (rows || []).filter(function (row) {
+      return row.correct !== null && row.correct !== undefined;
+    }).slice().sort(function (a, b) {
+      return rowSortDate(a).localeCompare(rowSortDate(b));
+    });
+    var points = [];
+    var netHit = 0;
+    var peak = 0;
+    var maxDrawdown = 0;
+    var currentMiss = 0;
+    var maxMiss = 0;
+    validRows.forEach(function (row, index) {
+      var correct = Boolean(row.correct);
+      if (correct) {
+        currentMiss = 0;
+        netHit += 1;
+      } else {
+        currentMiss += 1;
+        maxMiss = Math.max(maxMiss, currentMiss);
+        netHit -= 1;
+      }
+      peak = Math.max(peak, netHit);
+      var drawdown = peak - netHit;
+      maxDrawdown = Math.max(maxDrawdown, drawdown);
+      var windowRows = validRows.slice(Math.max(0, index - size + 1), index + 1);
+      var correctInWindow = windowRows.reduce(function (sum, item) {
+        return sum + (item.correct ? 1 : 0);
+      }, 0);
+      points.push({
+        date: rowSortDate(row),
+        rollingHit: roundOne(correctInWindow / windowRows.length * 100),
+        netHit: netHit,
+        drawdown: drawdown,
+        correct: correct
+      });
+    });
+    return {
+      windowSize: Math.min(size, Math.max(validRows.length, 1)),
+      samples: validRows.length,
+      latestRollingHit: points.length ? points[points.length - 1].rollingHit : null,
+      maxConsecutiveMiss: maxMiss,
+      currentConsecutiveMiss: currentMiss,
+      maxDrawdown: maxDrawdown,
+      points: points
+    };
+  }
+
   function ensureSelectedScheme() {
     var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (!schemes.length) {
@@ -1393,6 +1446,75 @@
     host.innerHTML = svg;
   }
 
+  function renderRollingHealthPanel() {
+    var statsHost = document.getElementById("factorRollingStats");
+    var chartHost = document.getElementById("factorRollingChart");
+    var meta = document.getElementById("factorRollingMeta");
+    if (!statsHost || !chartHost) return;
+    var health = buildRollingHealth(getVisibleDailyRowsForScheme(getSelectedScheme()), 20);
+    if (meta) {
+      meta.textContent = health.samples ? "窗口 " + health.windowSize + " · " + health.samples + " 个有效样本" : "暂无有效样本";
+    }
+    statsHost.innerHTML = [
+      { label: "滚动命中", value: formatPercent(health.latestRollingHit) },
+      { label: "最大连错", value: String(health.maxConsecutiveMiss) },
+      { label: "当前连错", value: String(health.currentConsecutiveMiss) },
+      { label: "最大回撤", value: String(health.maxDrawdown) }
+    ].map(function (item) {
+      return '<div><span>' + escapeHtml(item.label) + '</span><strong>' + escapeHtml(item.value) + '</strong></div>';
+    }).join("");
+    if (!health.points.length) {
+      chartHost.innerHTML = '<div class="factor-trend-empty">暂无可展示的滚动样本</div>';
+      return;
+    }
+
+    var width = 520;
+    var height = 250;
+    var left = 54;
+    var right = 24;
+    var top = 22;
+    var bottom = 42;
+    var plotWidth = width - left - right;
+    var plotHeight = height - top - bottom;
+    var x = function (index) {
+      return health.points.length === 1 ? left + plotWidth / 2 : left + plotWidth * index / (health.points.length - 1);
+    };
+    var yHit = function (value) {
+      return top + (100 - Number(value || 0)) / 100 * plotHeight;
+    };
+    var netValues = health.points.map(function (point) { return point.netHit; });
+    var minNet = Math.min.apply(Math, netValues.concat([0]));
+    var maxNet = Math.max.apply(Math, netValues.concat([0]));
+    if (minNet === maxNet) {
+      minNet -= 1;
+      maxNet += 1;
+    }
+    var yNet = function (value) {
+      return top + (maxNet - value) / (maxNet - minNet) * plotHeight;
+    };
+
+    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="滚动命中率与净命中曲线">';
+    [0, 50, 100].forEach(function (tick) {
+      var tickY = yHit(tick);
+      svg += '<line class="factor-trend-grid" x1="' + left + '" y1="' + tickY.toFixed(1) + '" x2="' + (width - right) + '" y2="' + tickY.toFixed(1) + '"></line>';
+      svg += '<text class="factor-trend-axis" x="' + (left - 10) + '" y="' + (tickY + 4).toFixed(1) + '" text-anchor="end">' + tick + '%</text>';
+    });
+    var hitPath = health.points.map(function (point, index) {
+      return (index === 0 ? "M" : "L") + x(index).toFixed(1) + " " + yHit(point.rollingHit).toFixed(1);
+    }).join(" ");
+    var netPath = health.points.map(function (point, index) {
+      return (index === 0 ? "M" : "L") + x(index).toFixed(1) + " " + yNet(point.netHit).toFixed(1);
+    }).join(" ");
+    svg += '<path class="factor-trend-line" d="' + hitPath + '" stroke="#155C3E"></path>';
+    svg += '<path class="factor-rolling-net-line" d="' + netPath + '"></path>';
+    health.points.forEach(function (point, index) {
+      svg += '<g><title>' + escapeHtml(point.date + " · 滚动命中 " + formatPercent(point.rollingHit) + " · 净命中 " + point.netHit) + '</title>';
+      svg += '<circle class="factor-trend-point" cx="' + x(index).toFixed(1) + '" cy="' + yHit(point.rollingHit).toFixed(1) + '" r="3.6" fill="#155C3E"></circle></g>';
+    });
+    svg += '</svg>';
+    chartHost.innerHTML = svg;
+  }
+
   function renderFactorDetail() {
     var tbody = document.getElementById("factorMonthlyTableBody");
     var title = document.getElementById("factorDetailTitle");
@@ -1429,6 +1551,7 @@
     renderFactorPagination();
     renderFactorTrendChart();
     renderCalibrationChart();
+    renderRollingHealthPanel();
   }
 
   function renderFactorLab() {
@@ -1693,6 +1816,7 @@
     aggregateScheme: aggregateScheme,
     buildCalibrationBuckets: buildCalibrationBuckets,
     buildLocalCompareMatrix: buildLocalCompareMatrix,
+    buildRollingHealth: buildRollingHealth,
     isLowSampleMetric: isLowSampleMetric,
     sortRankingSchemes: sortRankingSchemes
   };

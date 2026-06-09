@@ -1091,7 +1091,7 @@ button {
 
 .factor-analysis-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
   margin-top: 18px;
 }
@@ -1157,6 +1157,53 @@ button {
   fill: var(--text-tertiary);
   font-size: 11px;
   font-weight: 760;
+}
+
+.factor-rolling-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.factor-rolling-stats div {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(248, 248, 244, 0.72);
+}
+
+.factor-rolling-stats span,
+.factor-rolling-stats strong {
+  display: block;
+}
+
+.factor-rolling-stats span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.factor-rolling-stats strong {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 820;
+  line-height: 1.1;
+}
+
+.factor-rolling-chart {
+  min-height: 250px;
+}
+
+.factor-rolling-net-line {
+  fill: none;
+  stroke: var(--gold);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.86;
 }
 
 .factor-accuracy-wrap {
@@ -1615,6 +1662,7 @@ button {
   .factor-matrix-panel,
   .factor-accuracy-panel,
   .factor-task-panel,
+  .factor-compare-panel,
   .factor-ranking-panel {
     padding: 18px;
   }
@@ -1656,6 +1704,11 @@ button {
     width: auto;
     max-height: calc(100vh - var(--topbar-h) - 140px);
     padding: 18px;
+  }
+
+  .factor-analysis-grid,
+  .factor-rolling-stats {
+    grid-template-columns: 1fr;
   }
 }
 
