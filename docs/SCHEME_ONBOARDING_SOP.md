@@ -3,6 +3,8 @@
 **更新日期**: 2026-06-08
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
+> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
+
 ## 1. 核心原则
 
 新增方案时必须先区分两个概念:
@@ -19,6 +21,20 @@
 - 方案不能直接写 `t_scheme_predictions`；统一由 `scheduler.executor` 写库，保证运行日志和 UPSERT 口径一致。
 - Y 标的展示名由数据库 `t_target_registry` 管理，`target_tenor` 只作为内部稳定 key。
 - 新方案默认先用 `status: paused` 验证；通过 dry-run、手动写库和 API 检查后再改为 `active`。
+- 当前 harness 设计已定，后续新增方案必须通过 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation；没有 gate 证据时不得宣称方案完成或 live ready。
+
+### 1.1 强约束模块边界
+
+| 模块 | 允许职责 | 明确禁止 |
+|------|----------|----------|
+| `shared.data_service` | 唯一底层日/周/月 DB 导出标准 | 普通方案接入时修改其业务逻辑 |
+| `shared.input_artifacts` | 唯一算法输入文件生成入口 | adapter 或 backtest runner 绕过它直接拼输入 |
+| `schemes/{scheme_id}/core/` | 纯算法逻辑、legacy 原始脚本归档 | 写库、调 scheduler、直接生成运行期输入文件 |
+| `schemes/{scheme_id}/predict.py` | 调公共输入层、调用 core、返回 `PredictionRecord` | 写 `t_scheme_predictions` / `t_scheme_run_log` |
+| `scheduler.scheme_runner` | 只读 dry-run，输出 JSON | 写库或同步 registry |
+| `scheduler.executor` / `scheduler.repository` | 正式预测统一写库边界 | 被普通 readiness 检查当作探针 |
+| `backtests/` | 历史复现和 `t_backtest_*` 写入 | 写实盘预测表 |
+| `scripts/` | 审计、对比、受控 admin 命令 | 作为普通方案运行入口绕过 SOP |
 
 ## 2. 命名规范
 
@@ -139,7 +155,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     """
     records: list[PredictionRecord] = []
 
-    # 1. 准备算法输入: 从 bond_db 取数，或生成算法需要的临时 CSV。
+    # 1. 通过 shared.input_artifacts 生成输入 CSV 并读回 DataFrame。
     # 2. 调用 core/ 中的算法逻辑。
     # 3. 把算法输出转换为 PredictionRecord。
 
@@ -155,7 +171,8 @@ def run(predict_date: str) -> list[PredictionRecord]:
             model_version="v2",
             extra={
                 "feature_date": "2026-05-29",
-                "data_source": "bond_db",
+                "input_artifact_path": "backtest_artifacts/runtime_inputs/t1_lgbm_spread_v2/daily_output_2026-06-01.csv",
+                "input_artifact_source": "shared_data_service_daily",
             },
         )
     )
@@ -169,11 +186,28 @@ def run(predict_date: str) -> list[PredictionRecord]:
 - `horizon` 必须等于 `config.yaml.horizon`。
 - `predicted_direction` 只能是 `1`、`-1` 或 `0`。
 - `target_date` 必须能与指标口径对齐；当前 live metrics 后端按 `horizon=1` 取 `direction_1d`，按 `horizon=5` 取 `direction_5d`，按周度 `horizon=6` 取 `t_scheme_weekly_actuals.direction_weekly`。新增周度方案 active 前仍需确认最新特征周数据完整并完成受控写库验收。
-- `extra` 建议保留 `feature_date`、数据来源、核心模型版本、输入行数等排查字段。
+- `extra` 必含 `input_artifact_path` 和 `input_artifact_source`；日频另含 `feature_date`，周频另含 `feature_week_id/target_week_id/feature_date/target_date/target_rule`。完整字段契约（机器可校验）见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) §3。
 
-## 6. 接入步骤
+## 6. Harness 入库流程
 
-### Step 1: 确认方案身份
+后续所有新方案都按以下 gate 顺序推进。旧的手动命令仍可作为每个 gate 的实现方式，但不能跳过 gate。
+
+> 可执行 harness 的统一入口设计（`python -m harness onboard {scheme_id} --stage all`、各 Gate 契约、授权机制）见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md)。下表每个 Gate 落地后对应一条 `python -m harness gate <name>` 命令；本节裸 conda 命令是该 Gate 的底层实现。
+
+| Gate | 目标 | 通过证据 |
+|------|------|----------|
+| Intake | 明确方案身份、频率、horizon、tenors、预测语义、调度时间、原始文件和样本数据 | 接入记录中写清楚 scheme_id、frequency、预测口径和是否需要历史回测 |
+| Normalize | 将原始算法归档并改造成框架 core | `schemes/{scheme_id}/core/` 存在，实盘路径不直接 import 外部绝对路径脚本 |
+| Input Gate | 所有算法输入由公共层生成 | adapter/backtest runner 调用 `shared.input_artifacts`，extra/summary 记录 `input_artifact_source` |
+| Static Gate | 阻断危险结构和绕路调用 | 目录、命名、接口、危险导入、直接写库检查通过 |
+| Unit Gate | 锁定 core 和 adapter 行为 | 单测覆盖 core 输出、adapter 输出、公共输入层调用、`PredictionRecord` 字段 |
+| Dry-run Gate | 只读运行方案 | `scheduler.scheme_runner` 返回 JSON，正式 prediction/run_log 行数不变 |
+| Backtest Gate | 历史回测可复现 | `--no-persist` summary 通过；授权后只写 `t_backtest_*` |
+| Live Gate | 受控写入单方案实盘预测 | 只写该 `scheme_id` 的 prediction/run_log，actuals 和源表不变 |
+| Activation | 启用自动调度 | 全部 gate 通过后才把 `status` 改为 `active` 并重启 scheduler |
+| Documentation | 留下审计证据 | 更新状态、测试、历史回测或上线观察文档 |
+
+### Step 1: Intake - 确认方案身份
 
 先写清楚:
 
@@ -188,7 +222,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 如果只是新增同一个任务格子的候选方案，不要复用旧 `scheme_id`，要新增独立目录。
 
-### Step 2: 新建方案目录
+### Step 2: Normalize - 新建方案目录
 
 ```bash
 mkdir -p schemes/t1_lgbm_spread_v2/core
@@ -196,15 +230,39 @@ touch schemes/t1_lgbm_spread_v2/__init__.py
 touch schemes/t1_lgbm_spread_v2/core/__init__.py
 ```
 
-创建 `config.yaml` 和 `predict.py`。如果算法来自上游原始代码，把原始核心逻辑放入 `core/`，adapter 只负责输入输出。
+创建 `config.yaml` 和 `predict.py`。如果算法来自上游原始代码，把原始核心逻辑归档到 `core/`，实盘路径必须改造成 DataFrame 输入的 core 函数；adapter 只负责输入输出转换。
 
-输入文件特殊要求: 预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`。底层数据导出统一由 `shared.data_service` 负责，运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；公共数据层逻辑不得在新增方案时临时改动。
+### Step 3: Input Gate - 公共输入层
+
+预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`，月频后续补 `build_monthly_input_artifact()`。底层数据导出统一由 `shared.data_service` 负责，运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；公共数据层逻辑不得在新增方案时临时改动。
 
 周频 artifact 只接受 `start_week/end_week` 作为周范围过滤。旧的 `end_date` 和 `include_daily_weekly_close_fallback` 参数不属于统一数据层口径，当前会显式报错，不能在新增方案中使用。
 
 历史回测 runner 也必须遵守同一条输入链路: runner 先调用 `shared.input_artifacts` 生成 `historical_backtest` 输入文件，再把读回后的 DataFrame 交给算法。只有 `scripts/audit_*`、`scripts/compare_*` 这类数据服务审计脚本可以直接调用底层 `shared.data_service`；普通方案、live dry-run 和 backtest runner 不允许绕过公共输入 artifact。
 
-### Step 3: 本地 dry-run，不写库
+### Step 4: Static Gate - 静态边界检查
+
+静态检查必须覆盖:
+
+- `scheme_id` 与目录名一致。
+- `config.yaml` 可被 `scheduler.discovery` 读取。
+- `predict.py` 暴露 `run(predict_date: str) -> list[PredictionRecord]`。
+- `core/` 不直接 import `scheduler.repository`、`scheduler.executor` 或 SQL 写库函数。
+- `predict.py` 不直接执行 `INSERT/UPDATE/DELETE/ALTER/DROP`。
+- 普通方案和 backtest runner 不绕过 `shared.input_artifacts` 生成输入。
+- 运行路径不依赖 `/Users/.../Downloads`、`Desktop` 等外部绝对路径。
+
+### Step 5: Unit Gate - 单元验证
+
+至少覆盖:
+
+- core 函数接收 DataFrame 后能返回算法原生结果。
+- adapter 调用正确的 `build_daily_input_artifact()` 或 `build_weekly_input_artifact()`。
+- `PredictionRecord.scheme_id/horizon/target_tenor/predict_date/target_date/predicted_direction` 与 `config.yaml` 一致。
+- `PredictionRecord.extra` 包含 `input_artifact_path` 和 `input_artifact_source`。
+- 周频方案额外校验 `feature_week_id/target_week_id/feature_date/target_date`。
+
+### Step 6: Dry-run Gate - 本地 dry-run，不写库
 
 先用算法环境直接跑入口:
 
@@ -220,51 +278,9 @@ conda run -n forecast_env python -m scheduler.scheme_runner \
 - stdout 是 JSON list。
 - 返回条数等于本次有效 `tenors` 数量。
 - 每条记录的 `scheme_id/horizon/target_tenor/target_date/predicted_direction` 都符合配置。
+- dry-run 前后 `t_scheme_predictions` 和 `t_scheme_run_log` 行数不变。
 
-### Step 4: 手动写库验证
-
-dry-run 通过后，把 `status` 改为 `active`，再执行一次调度器写库:
-
-```bash
-PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m scheduler.executor \
-  2026-06-01 \
-  --scheme-id t1_lgbm_spread_v2 \
-  --algo-env forecast_env
-```
-
-验收 SQL:
-
-```sql
-SELECT scheme_id, target_tenor, horizon, predict_date, target_date,
-       predicted_direction, confidence, model_version
-FROM t_scheme_predictions
-WHERE scheme_id = 't1_lgbm_spread_v2'
-ORDER BY predict_date DESC, target_tenor;
-
-SELECT scheme_id, run_date, status, duration_sec, error_msg
-FROM t_scheme_run_log
-WHERE scheme_id = 't1_lgbm_spread_v2'
-ORDER BY id DESC
-LIMIT 5;
-```
-
-如果结果不正确，先把 `status` 改回 `paused`，修复后重新 dry-run。
-
-### Step 5: API 验证
-
-```bash
-curl -s http://127.0.0.1:8100/api/schemes
-curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2?tenor=10Y"
-```
-
-验收点:
-
-- `/api/schemes` 能看到新方案的 `name/horizon/tenors/status`。
-- `/api/targets` 能看到新 Y 标的的 `target_code/display_name/status`。
-- `/api/metrics/{scheme_id}` 能返回月度指标、汇总指标和逐日样本。
-- 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
-
-### Step 6: 历史回测接入
+### Step 7: Backtest Gate - 历史回测接入
 
 如果新方案需要参与当前前端方案矩阵的历史排行，必须产出并写入独立 backtest 表。当前前端优先展示 `/api/backtests/factor-lab` 的最新 `framework_db_aligned` 回测结果，并统一显示为“当前DB对齐回测”；只写 `t_scheme_predictions` 的实盘结果，不会自动混入已有历史排行。
 
@@ -304,7 +320,20 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_d_ov
 - 周度明细行按 `feature_date` 所在月份归组，显示日仍可使用周六 `predict_date`；月度样本数必须与后端 `t_backtest_monthly_metrics` 一致。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
 
-### Step 7: 前端确认
+### Step 8: API/前端只读验证
+
+```bash
+curl -s http://127.0.0.1:8100/api/targets
+curl -s http://127.0.0.1:8100/api/backtests/factor-lab
+curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2?tenor=10Y"
+```
+
+验收点:
+
+- `/api/targets` 能看到新 Y 标的的 `target_code/display_name/status`。
+- `/api/backtests/factor-lab` 能返回参与历史排行的新方案；如果只是 live 方案，`/api/metrics/{scheme_id}` 能返回月度指标、汇总指标和逐日样本。
+- 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
+- API 只读验收优先使用不会同步 registry 的接口；保护性核验时不要把 `/api/schemes` 当作纯只读探针。
 
 打开:
 
@@ -327,9 +356,51 @@ http://127.0.0.1:8100/
 4. 若已有历史回测结果，当前矩阵优先读取 backtest API，新方案需要写入 backtest 表才会参与历史排行。
 5. 周度方案是否返回 `frequency=weekly` 或 `horizon=6`；前端据此映射到“周度”列。
 
+### Step 9: Live Gate - 手动写库验证
+
+dry-run 和回测 gate 通过后，才能在明确授权下执行单方案写库。不要用 broad scheduler run-once 或 `--include-paused` 作为 live 验证入口。需要通过调度器写库时，先把该方案 `status` 改为 `active`，再执行一次单方案调度器写库:
+
+```bash
+PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m scheduler.executor \
+  2026-06-01 \
+  --scheme-id t1_lgbm_spread_v2 \
+  --algo-env forecast_env
+```
+
+验收 SQL:
+
+```sql
+SELECT scheme_id, target_tenor, horizon, predict_date, target_date,
+       predicted_direction, confidence, model_version
+FROM t_scheme_predictions
+WHERE scheme_id = 't1_lgbm_spread_v2'
+ORDER BY predict_date DESC, target_tenor;
+
+SELECT scheme_id, run_date, status, duration_sec, error_msg
+FROM t_scheme_run_log
+WHERE scheme_id = 't1_lgbm_spread_v2'
+ORDER BY id DESC
+LIMIT 5;
+```
+
+如果结果不正确，先把 `status` 改回 `paused`，修复后重新 dry-run。
+
+### Step 10: Activation - 启用调度
+
+只有 Intake、Normalize、Input Gate、Static Gate、Unit Gate、Dry-run Gate、Backtest Gate、API/前端只读验证和 Live Gate 全部通过后，才允许进入 activation。周度方案还要确认 `schedule.cron` 与上游 weekly 首轮预测时间对齐。
+
+### Step 11: Documentation - 文档留痕
+
+每次新方案合入前，必须更新:
+
+- `docs/CURRENT_STATUS.md`: 当前状态、run_id、样本数、是否 active。
+- `docs/TEST_PLAN.md`: 已通过的 gate 和剩余观察项。
+- `docs/HISTORICAL_REPRODUCTION.md`: 需要参与历史排行的方案，记录回测口径和结果。
+- `docs/SCHEME_ONBOARDING_SOP.md`: 仅当 SOP 本身变化时更新；普通方案接入不应临时修改规则。
+
 ## 7. 上线和调度
 
-验证完成后:
+Activation Gate 完成后:
 
 1. 保持 `config.yaml.status: active`；周度方案还要确认 `schedule.cron` 与上游 weekly 首轮预测时间对齐。
 2. 重启 scheduler，让 launchd 进程读取最新方案文件:

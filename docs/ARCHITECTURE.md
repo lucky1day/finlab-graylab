@@ -3,6 +3,8 @@
 **版本**: v1.0  
 **日期**: 2026-05-29
 
+> 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
+
 ---
 
 ## 1. 系统架构图
@@ -485,7 +487,7 @@ BOND_DB_NAME=bond_db
 
 ## 8. 新增方案流程
 
-标准流程见 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)。
+标准流程见 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)。强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
 核心约定:
 
@@ -494,3 +496,50 @@ BOND_DB_NAME=bond_db
 3. 新方案先 `status: paused` dry-run，再改为 `active` 手动写库验证。
 4. `predict.py` 只返回 `PredictionRecord`，不直接写 `t_scheme_predictions`。
 5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要同步写入独立 backtest 表。
+
+---
+
+## 9. 强约束 Harness 工程架构
+
+Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的职责是检查、编排和留下证据；它不定义新数据口径，不承载业务算法，也不替代 scheduler 做正式调度。
+
+### 9.1 分层边界
+
+| 层 | 目录/模块 | 职责 | 禁止事项 |
+|----|-----------|------|----------|
+| 统一公共层 | `shared.data_service` | 唯一底层日/周/月 DB 导出标准 | 普通方案接入时不得修改其业务逻辑 |
+| 输入 artifact 层 | `shared.input_artifacts` | 唯一算法输入文件生成入口，负责导出 CSV、读回 DataFrame 和 metadata | adapter/backtest runner 不得绕过它直接拼输入 |
+| 算法层 | `schemes/{scheme_id}/core/` | 纯算法逻辑、legacy 原始脚本归档、DataFrame 输入函数 | 禁止写库、禁止调 scheduler、禁止生成运行期输入文件 |
+| Adapter 层 | `schemes/{scheme_id}/predict.py` | 解析预测上下文、调用公共输入层、调用 core、返回 `PredictionRecord` | 禁止直接写 `t_scheme_predictions` / `t_scheme_run_log` |
+| 预测任务层 | `scheduler.scheme_runner` / `scheduler.executor` | dry-run JSON 输出、正式单方案执行、统一写库 | readiness 检查不得用 broad run-once 代替 |
+| 回测层 | `backtests/{scheme_id}_reproduction.py` | 历史复现、`--no-persist` 验证、受控写 `t_backtest_*` | 禁止把回测结果写入实盘预测表 |
+| 工具脚本层 | `scripts/` | 审计、对比、人工 admin、受控写库 | 禁止新增一次性绕路脚本作为方案运行入口 |
+| 产物层 | `backtest_artifacts/` / `reports/` / `benchmarks/` | 运行期输入、历史回测产物、审计报告、canonical benchmark | 禁止放可复用业务代码 |
+
+### 9.2 Harness Gate 顺序
+
+未来新增方案统一按以下 gate 推进:
+
+1. Intake: 明确方案身份、频率、预测语义、输入文件和回测目标。
+2. Normalize: 将原始算法改造成 `schemes/{scheme_id}/core` 中的 DataFrame 输入逻辑。
+3. Input Gate: 确认 live adapter 和 backtest runner 都通过 `shared.input_artifacts` 生成输入。
+4. Static Gate: 静态扫描目录、命名、接口和危险导入。
+5. Unit Gate: 覆盖 core、adapter、公共输入层调用和 `PredictionRecord` 字段。
+6. Dry-run Gate: 通过 `scheduler.scheme_runner` 返回 JSON，且正式 prediction/run_log 行数不变。
+7. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`。
+8. Live Gate: 授权后只写该 `scheme_id` 的 prediction/run_log。
+9. Activation: 全部通过后才允许从 `paused` 改为 `active`。
+10. Documentation: 更新状态、测试、回测和 harness 报告路径。
+
+### 9.3 未来 CLI 目标
+
+未来 `harness/` 包的 CLI 目标形态:
+
+```bash
+python -m harness.cli check \
+  --scheme-id weekly_10y_d_overlay \
+  --predict-date 2026-06-06 \
+  --mode all
+```
+
+`--mode all` 固定执行 static -> input -> unit -> dry-run -> backtest-no-persist -> api-readonly；任一步失败即停止。写库动作不属于默认 `all`，必须由受控 backtest/live 命令单独执行。

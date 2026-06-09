@@ -663,6 +663,27 @@
 
 ---
 
+## Phase 12: Harness Gate 验收矩阵
+
+强约束 harness 架构已定，详细边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。后续每个新增方案必须按 gate 留下证据，不能只凭单次脚本输出宣称完成。
+
+| Gate | 验收命令/方式 | 通过标准 | 禁止事项 |
+|------|---------------|----------|----------|
+| Static Gate | 静态扫描 `schemes/{scheme_id}`、`backtests/{scheme_id}_reproduction.py`、`config.yaml` | 目录名等于 `scheme_id`；`predict.run()` 签名正确；core 不导入写库模块；无外部绝对输入路径 | 发现危险导入后继续进入 live |
+| Input Gate | 单测 patch `shared.input_artifacts`，或真实 dry-run 观察 `extra.input_artifact_source` | daily/weekly/monthly 输入均由 `shared.input_artifacts` 生成；source 记录为公共层来源 | adapter/backtest runner 直接调用底层 DB 拼输入 |
+| Unit Gate | `python -m unittest ...` | core 输出、adapter 输出、`PredictionRecord` 字段、周频上下文字段通过 | 只跑 live dry-run 替代单测 |
+| Dry-run Gate | `PYTHONNOUSERSITE=1 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id <id> --predict-date <date>` | stdout 为 JSON list；预测条数与 tenors 匹配；正式 prediction/run_log 行数不变 | 调用 `scheduler.executor` 做 readiness 检查 |
+| Backtest Gate | `python -m backtests.{scheme_id}_reproduction --no-persist` | summary 返回样本数、准确率、月度分布和 input artifact source；授权前不写库 | 把回测结果写入 `t_scheme_predictions` |
+| Backtest Persist Gate | 明确授权后运行不带 `--no-persist` 的单方案 runner | 只写 `t_backtest_runs`、`t_backtest_predictions`、`t_backtest_monthly_metrics` 中该 scheme/run 相关记录 | 修改 source 表、actuals 表或其他 scheme 的 backtest run |
+| API/Frontend Gate | `/api/backtests/factor-lab`、`/api/metrics/{scheme_id}`、浏览器矩阵 | 新方案落入正确任务格子；标题和目标展示名正常；矩阵不回退、不消失 | 用前端硬编码补方案展示 |
+| Live Gate | 明确授权后的单 scheme 受控写库或 `scheduler.executor --scheme-id <id>` | 只影响该 `scheme_id` 的 prediction/run_log；actuals/source 表不变 | broad run-once、`--include-paused` 或批量 active 方案替代单方案验收 |
+| Activation Gate | 修改 `config.yaml.status` 后重启 scheduler 并查日志 | 日志出现该方案 cron；第一次自动运行后只读核验 prediction/run_log | 未通过前置 gate 就直接 active |
+| Documentation Gate | 更新 `CURRENT_STATUS`、`TEST_PLAN`、必要时 `HISTORICAL_REPRODUCTION` | run_id、样本数、准确率、剩余观察项和报告路径齐全 | 代码合入但文档不留证据 |
+
+当前状态（2026-06-08）: harness 代码尚未落地，以上为强约束验收设计。现有方案已经满足核心输入链路要求: live adapter 和历史 backtest runner 均通过 `shared.input_artifacts` 调用统一 `shared.data_service` 生成输入 CSV 后读回。后续新增方案必须先按该矩阵人工或自动检查；未来 `harness/` 包落地后，将把这些检查固化为 CLI gate。
+
+---
+
 ## 验证完成标准
 
 所有Phase的TODO全部打勾后，系统可以进入正式运行。
