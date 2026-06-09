@@ -20,6 +20,7 @@ from harness.gates.static_gate import StaticGate
 from harness.gates.unit_gate import UnitGate
 from harness.orchestrator import onboard as run_onboard
 from harness.result import GateResult, GateStatus, OnboardReport
+from scheduler.repository import create_engine_from_env
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -154,6 +155,7 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         timeout_sec=args.timeout_sec,
         authorization=args.authorize,
         api_base_url=args.api_base_url,
+        engine_factory=create_engine_from_env,
     )
     return run_onboard(ctx, stage=args.stage)
 

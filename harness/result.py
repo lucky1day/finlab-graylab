@@ -40,3 +40,4 @@ class OnboardReport:
     results: list[GateResult]
     overall_passed: bool
     report_dir: Path
+    harness_run_id: str | None = None
