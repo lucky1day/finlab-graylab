@@ -64,7 +64,7 @@ conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id weekly_1
 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id weekly_5y_direct_production --predict-date 2026-06-06
 conda run -n forecast_env python -m scheduler.scheme_runner --scheme-id weekly_7y_cross_d_overlay --predict-date 2026-06-06
 conda run -n forecast_env python scripts/audit_daily_data_service.py
-conda run -n forecast_env python scripts/verify_backtest_reproduction.py
+python -m scripts.run_framework_repro --scheme-id t1_daily --algo-env forecast_env
 ```
 
 如 launchd 未运行，可临时启动后端:

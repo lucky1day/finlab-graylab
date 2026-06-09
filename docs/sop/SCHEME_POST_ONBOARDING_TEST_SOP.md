@@ -5,6 +5,8 @@
 **定位**: 面向**任意一个已入库方案**的标准测试验证流程（不限于现有 5 方案）。核心是 **gatekeeping（先验入库合规）→ 双版本复现对比（入库前原始 vs 改造后，同一数据接入层）→ 数据落库与前端校验 → 挂载定时任务 → 出验证结论**。
 
 > 与 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 的关系：入库 SOP 负责"把方案合规地改造进系统"；本 SOP 负责"验证改造后的方案结果与入库前原始方案一致，并完成落库/展示/挂载"。本 SOP 的多个失败分支会**打回入库 SOP**。
+>
+> **端到端主线见 [../SCHEME_INGESTION.md](../SCHEME_INGESTION.md)**（AI/新人第一入口，串联源码放哪/怎么拆/写哪张表/回测入库）。本 SOP 是其「验证 + 落库 + 挂载」段的人类执行手册。
 
 ---
 
@@ -103,6 +105,7 @@
 | **入口条件** | S3 产出 baseline_original |
 | **动作** | 用改造后的方案，**经统一数据接入层**（`shared.input_artifacts → shared.data_service`，与基准复现绑定**同一 data_version / 同一数据范围**）跑历史复现：`conda run -n forecast_env python -m backtests.{scheme_id}_reproduction --no-persist`，输出存 `reports/postonboard/{scheme_id}/repro_framework.json` |
 | **成功判定** | 退出码 0；复现样本数与 baseline 可对齐（同一历史范围）；输入 artifact 的 `data_version`/`source` 与基准复现一致 |
+| **data_version 硬判据** | 复现 artifact 的 `data_version` 必须 `== config.yaml.input_spec.data_version`，且与后续 live adapter 产出一致。三者（baseline 复现 / backtest runner / live）口径漂移即判失败（见 [SCHEME_CONTRACT.md §1/§7](../SCHEME_CONTRACT.md#7-落库后数据完整性契约)） |
 | **成功→去向** | 进入 S5 |
 | **失败判定** | 复现报错、或数据版本/范围与基准不一致（违反"同一数据接入层"） |
 | **失败→去向** | `REJECTED_TO_ONBOARDING`。原因："改造后复现失败或数据接入不一致"。由入库 SOP 排查 adapter/输入链路后从 S1 重来 |
@@ -129,6 +132,7 @@
 | **入口条件** | S5 判定一致 |
 | **动作** | 去掉 `--no-persist` 正式落库：`conda run -n bond_factor_lab_service python -m backtests.{scheme_id}_reproduction`，写入 `t_backtest_runs / t_backtest_predictions / t_backtest_monthly_metrics`。落库前后用 `probes/table_guard` 思路核验：仅 `t_backtest_*` 该 run 相关行增加，实盘表 `t_scheme_predictions/run_log/actuals` delta==0 |
 | **成功判定** | 获得 `run_id`；受保护实盘表零变化；落库样本数 == S4 复现样本数 |
+| **完整性判据** | 满足 [SCHEME_CONTRACT.md §7.2 历史回测落库](../SCHEME_CONTRACT.md#72-历史回测落库)：样本数一致、仅 `t_backtest_*` 增行、实盘表 `delta==0`、落库 run 的 `data_version` 与 §1 一致。落地校验器前由本步人工核验 |
 | **成功→去向** | 进入 S7（记录 run_id） |
 | **失败判定** | 落库报错、或误写实盘表、或样本数不符 |
 | **失败→去向** | 修复后**重试 S6**（落库是确定性写操作，非算法问题，不打回入库） |

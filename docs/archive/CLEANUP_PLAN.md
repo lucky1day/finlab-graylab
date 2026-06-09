@@ -53,7 +53,7 @@
 
 ### B2 — 一次性调试脚本归档
 
-| 对象 | `scripts/compare_weekly_wind_export.py`、`scripts/generate_daily_data_diff_report.py`（doc_refs=1~2，均为历史周频/日频差异排查的一次性脚本） |
+| 对象 | 历史周频/日频差异排查的一次性脚本（doc_refs=1~2） |
 |------|------|
 | 依据 | 完成历史使命的调试脚本，非 harness/scheduler 运行路径依赖 |
 | 取舍 | 它们仍被文档引用（验证记录里提到过），直接删会留下文档死链 |
@@ -79,7 +79,7 @@
 |---|------|----------|
 | C1 | `schemes/weekly_10y_d_overlay/core/legacy_weekly_10y_d_overlay_0529.py`（2452行） | **被 `predictors.py` 活引用**（运行时 monkey-patch 注入 DataFrame）。删除即破坏 10Y 算法。**绝不可删** |
 | C2 | 全部 legacy_*.py 作为"算法来源档" | 即便 5Y/7Y 无引用，它们是 SOP Normalize 步要求的"原始脚本归档"，是方案可追溯性的一部分。**折中：统一移到各方案 `core/` 内但加 `# ARCHIVED, not imported` 注释**，或集中到 `docs/legacy_sources/` |
-| C3 | `scripts/` 中 6 个有文档/部署引用的脚本（apply_migrations/audit_daily/check_weekly_10y_readiness/compare_refactor_outputs/verify_backtest_reproduction/write_weekly_10y_live_prediction） | 部署、回测验证、harness readiness、等价闸工具——都是活路径或被 harness/SOP 依赖 |
+| C3 | `scripts/` 中有文档/部署引用的脚本（apply_migrations/audit_daily/compare_refactor_outputs 等） | 部署、数据审计、等价闸工具——都是活路径或被 harness/SOP 依赖 |
 | C4 | `benchmarks/`（19M） | canonical 历史基准 CSV，回测复现的金标准输入，被 backtest runner 读取 |
 | C5 | 零被引的 `DEPLOYMENT.md` / `PRD.md` | 虽无文档互链，但 DEPLOYMENT 是运维手册、PRD 是需求基线，属"入口型"文档，应在 README 文档索引补上链接而非删除 |
 

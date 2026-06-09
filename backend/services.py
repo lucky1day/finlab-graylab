@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
@@ -11,6 +12,9 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
+
+
+_REGISTRY_SYNC_SIGNATURES: dict[str, tuple[tuple[str, int, int], ...]] = {}
 
 
 DEFAULT_TARGET_LABELS = {
@@ -203,9 +207,29 @@ def _metric_block(rows: list[dict]) -> dict[str, Any]:
     }
 
 
-def sync_registry_from_configs(engine: Engine) -> None:
-    """把 schemes/ 配置同步到 registry，保证 API 读到最新方案元数据。"""
-    sync_scheme_registry(engine, discover_schemes())
+def reset_registry_sync_cache() -> None:
+    """清空 registry sync 的 config 签名缓存，供测试和显式刷新使用。"""
+    _REGISTRY_SYNC_SIGNATURES.clear()
+
+
+def sync_registry_from_configs(engine: Engine, schemes_root: Path | None = None, force: bool = False) -> bool:
+    """把 schemes/ 配置同步到 registry；配置未变化时跳过写库。"""
+    signature = _scheme_config_signature(schemes_root)
+    cache_key = str(Path(schemes_root).resolve()) if schemes_root is not None else "__default__"
+    if not force and _REGISTRY_SYNC_SIGNATURES.get(cache_key) == signature:
+        return False
+    sync_scheme_registry(engine, discover_schemes(schemes_root) if schemes_root is not None else discover_schemes())
+    _REGISTRY_SYNC_SIGNATURES[cache_key] = signature
+    return True
+
+
+def _scheme_config_signature(schemes_root: Path | None = None) -> tuple[tuple[str, int, int], ...]:
+    root = Path(schemes_root) if schemes_root is not None else Path(__file__).resolve().parents[1] / "schemes"
+    items: list[tuple[str, int, int]] = []
+    for config_path in sorted(root.glob("*/config.yaml")):
+        stat = config_path.stat()
+        items.append((config_path.relative_to(root).as_posix(), stat.st_mtime_ns, stat.st_size))
+    return tuple(items)
 
 
 def list_schemes(engine: Engine) -> list[dict[str, Any]]:

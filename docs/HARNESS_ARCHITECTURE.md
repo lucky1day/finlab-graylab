@@ -1,6 +1,6 @@
 # 强约束 Harness 工程架构
 
-**更新日期**: 2026-06-08
+**更新日期**: 2026-06-09
 
 本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。
 
@@ -38,7 +38,7 @@ bond-factor-lab/
 ├── backend/                # FastAPI查询和静态前端服务
 ├── frontend/               # 原生HTML/CSS/JS展示层
 ├── scripts/                # 人工运维、审计、对比、受控操作
-├── harness/                # 未来强约束gate实现位置
+├── harness/                # 强约束 gate / orchestrator / 授权 / 留证实现
 ├── tests/                  # 单元、集成、安全边界测试
 ├── benchmarks/             # canonical历史输入
 ├── backtest_artifacts/     # 运行期输入和回测产物
@@ -46,15 +46,15 @@ bond-factor-lab/
 └── docs/                   # 架构、SOP、测试、状态文档
 ```
 
-`harness/` 的未来代码只做 gate 检查和流程编排，不承载业务算法、不定义新数据口径、不直接代替 scheduler 执行正式调度。
+`harness/` 已实现 gate 检查和流程编排，不承载业务算法、不定义新数据口径、不直接代替 scheduler 执行正式调度。当前目录包含 27 个 Python 模块，`python -m harness onboard ...` 是标准机器入口。
 
 ---
 
-## 3. 未来 Harness Gate
+## 3. Harness Gate
 
-> 本节定义"未来形态"。可执行的实现级设计（目录树、`GateResult`/`GateContext` 契约、Static Gate 机器判定规则、Orchestrator/CLI、授权机制）见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md)；方案契约的机器校验规范见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md)。
+> 本节定义已落地的强约束边界。实现级设计（目录树、`GateResult`/`GateContext` 契约、Static Gate 机器判定规则、Orchestrator/CLI、授权机制）见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md)；方案契约的机器校验规范见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md)。
 
-未来新增 `harness/` 包时，建议拆成以下模块:
+`harness/` 按以下模块职责拆分:
 
 | 模块 | 职责 | 禁止动作 |
 |------|------|----------|
@@ -66,7 +66,7 @@ bond-factor-lab/
 | `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护 | 不批量执行所有 active 方案 |
 | `harness.report` | 输出 JSON/Markdown 证据到 `reports/harness/{scheme_id}/` | 不改业务状态 |
 
-CLI 目标形态:
+CLI 标准入口:
 
 ```bash
 python -m harness.cli check \

@@ -20,7 +20,8 @@
 
 | 文档 | 内容 |
 |------|------|
-| [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | **方案契约形式化**：config.yaml schema、predict.py 接口、PredictionRecord/extra 必填、core 约束（机器可校验） |
+| [SCHEME_INGESTION.md](SCHEME_INGESTION.md) | **方案入库主线（AI/新人第一入口）**：端到端串联源码放哪/怎么拆/预测怎么放怎么验/写哪张表/回测入库；含 `t_pre_market_forecast` 澄清、落库完整性、数据口径对齐、审计追溯 |
+| [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | **方案契约形式化**：config.yaml schema、predict.py 接口、PredictionRecord/extra 必填、core 约束、落库后完整性契约（机器可校验） |
 
 ### 操作 SOP（[sop/](sop/)）
 
@@ -61,6 +62,6 @@
 ## 阅读路径建议
 
 - **第一次接触项目** → ① CODE_ARCHITECTURE → ARCHITECTURE → ② SOP
-- **要加一个新预测方案** → ② SCHEME_ONBOARDING_SOP + SCHEME_CONTRACT，用 `python -m harness onboard {scheme_id} --stage all` 驱动
+- **要加一个新预测方案（AI/新人）** → ② **SCHEME_INGESTION（端到端主线，先读）** → SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
 - **要改数据层/harness** → ① DATA_LAYER_DESIGN / HARNESS_DESIGN；重构历史见 archive/ARCH_EXECUTION_PLAN
 - **要部署/运维** → ④ DEPLOYMENT

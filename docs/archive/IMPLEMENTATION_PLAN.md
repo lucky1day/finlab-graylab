@@ -84,7 +84,7 @@
 - [x] 完成 t1 原始 baseline / framework-csv / framework-db 复现，原始 1011 行，有效 999 行，framework 两组 mismatch 均为 0
 - [x] 新增 backtest API
 - [x] 前端保持原方案结果展示，不新增历史验证结果页，并接入最新 `framework_db_aligned` 回测结果
-- [x] 新增 `scripts/verify_backtest_reproduction.py` 验证脚本并通过
+- [x] 新增历史复现验证脚本并通过
 - [x] 新增 `weekly_10y_d_overlay` 回测 runner，最新前端展示 run_id=13，并在前端周度格子展示
 - [x] 新增 `weekly_5y_direct_production` adapter 与回测 runner；当前 paused，dry-run 返回 1 条 5Y 周度预测，legacy 日期口径修正后 DB 回测已受控写入 run_id=`32`，样本 503 条、准确率 58.4%
 

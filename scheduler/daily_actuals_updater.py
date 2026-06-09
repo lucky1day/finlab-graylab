@@ -8,17 +8,22 @@ from typing import Iterable
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
+from scheduler.discovery import SCHEMES_ROOT, discover_schemes
 from scheduler.repository import create_engine_from_env, upsert_actuals
 from shared.models import ActualRecord
+from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, normalize_tenor
 
 
-TENOR_TO_INDICATOR = {
-    "1Y": "TB1YWI0C",
-    "3Y": "TB3YWI0C",
-    "5Y": "TB5YWI0C",
-    "7Y": "TB7YWI0C",
-    "10Y": "TB0YWI0C",
-}
+def active_scheme_tenors(schemes_root=SCHEMES_ROOT, frequency: str | None = None) -> list[str]:
+    """读取 active 方案配置中的期限列表。"""
+    selected: set[str] = set()
+    for cfg in discover_schemes(schemes_root):
+        if cfg.status != "active":
+            continue
+        if frequency and cfg.frequency != frequency:
+            continue
+        selected.update(normalize_tenor(tenor) for tenor in cfg.tenors)
+    return sorted(selected)
 
 
 def _normalize_date(value: str | date | datetime | None) -> str | None:
@@ -51,8 +56,8 @@ def read_yield_rows(
     end_date: str | date | datetime | None = None,
 ) -> list[dict]:
     """读取实际收益率序列。"""
-    selected_tenors = list(tenors or TENOR_TO_INDICATOR.keys())
-    code_to_tenor = {TENOR_TO_INDICATOR[tenor]: tenor for tenor in selected_tenors if tenor in TENOR_TO_INDICATOR}
+    selected_tenors = [normalize_tenor(tenor) for tenor in (tenors or TENOR_TO_INDICATOR.keys())]
+    code_to_tenor = indicator_map_for_tenors(selected_tenors)
     if not code_to_tenor:
         return []
 
@@ -126,7 +131,8 @@ def update_actuals(
     """从行情表刷新 t_scheme_actuals。"""
     engine = create_engine_from_env()
     try:
-        records = build_actual_records(engine, start_date=start_date, end_date=end_date, tenors=tenors)
+        selected_tenors = list(tenors) if tenors is not None else active_scheme_tenors(frequency="daily")
+        records = build_actual_records(engine, start_date=start_date, end_date=end_date, tenors=selected_tenors)
         return upsert_actuals(engine, records)
     finally:
         engine.dispose()
@@ -138,7 +144,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Refresh t_scheme_actuals from api_wind_daily.")
     parser.add_argument("--start-date", default=None, help="Optional start date in YYYY-MM-DD format")
     parser.add_argument("--end-date", default=None, help="Optional end date in YYYY-MM-DD format")
-    parser.add_argument("--tenor", action="append", choices=sorted(TENOR_TO_INDICATOR), help="Limit to one tenor")
+    parser.add_argument("--tenor", action="append", help="Limit to one tenor")
     args = parser.parse_args()
 
     written = update_actuals(start_date=args.start_date, end_date=args.end_date, tenors=args.tenor)

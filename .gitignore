@@ -20,6 +20,7 @@ reports/*.json
 reports/refactor_baseline/
 reports/refactor_current/
 reports/harness/
+reports/postonboard/
 !reports/README.md
 
 __pycache__/
@@ -31,7 +32,8 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 
-logs/
+logs/*
+!logs/.gitkeep
 *.log
 
 .venv/

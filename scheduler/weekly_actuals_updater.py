@@ -9,9 +9,10 @@ from typing import Iterable
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from scheduler.daily_actuals_updater import TENOR_TO_INDICATOR, read_yield_rows
+from scheduler.daily_actuals_updater import active_scheme_tenors, read_yield_rows
 from scheduler.repository import create_engine_from_env, upsert_weekly_actuals
 from shared.models import WeeklyActualRecord
+from shared.tenor_mapping import TENOR_TO_INDICATOR
 
 
 TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
@@ -220,7 +221,8 @@ def update_weekly_actuals(
     """刷新 t_scheme_weekly_actuals，不修改日度 actuals。"""
     engine = create_engine_from_env()
     try:
-        records = build_weekly_actual_records(engine, start_date=start_date, end_date=end_date, tenors=tenors)
+        selected_tenors = list(tenors) if tenors is not None else active_scheme_tenors(frequency="weekly")
+        records = build_weekly_actual_records(engine, start_date=start_date, end_date=end_date, tenors=selected_tenors)
         return upsert_weekly_actuals(engine, records)
     finally:
         engine.dispose()
@@ -232,7 +234,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Refresh t_scheme_weekly_actuals from api_wind_daily.")
     parser.add_argument("--start-date", default=None, help="Optional target date start in YYYY-MM-DD format")
     parser.add_argument("--end-date", default=None, help="Optional target date end in YYYY-MM-DD format")
-    parser.add_argument("--tenor", action="append", choices=sorted(TENOR_TO_INDICATOR), help="Limit to one tenor")
+    parser.add_argument("--tenor", action="append", help="Limit to one tenor")
     args = parser.parse_args()
 
     written = update_weekly_actuals(start_date=args.start_date, end_date=args.end_date, tenors=args.tenor)

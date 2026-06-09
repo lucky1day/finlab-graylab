@@ -254,7 +254,7 @@ harness 不重造任何执行逻辑，每个 Gate 委托一个已存在的入口
 | 回测 | `backtests/weekly_5y_direct_production_reproduction.py` 等 `--no-persist` |
 | Live 写库 | `scheduler/executor.py::execute_scheme`（单方案）→ `repository.upsert_predictions` / `write_run_log` |
 | readiness 前置 | `scripts/check_weekly_10y_readiness.py` 的逻辑收编为 `live_gate` 前置检查 |
-| 表行数审计 | `scripts/verify_backtest_reproduction.py` / `audit_daily_data_service.py` 思路 → `probes/table_guard.py` |
+| 表行数审计 | `scripts/run_framework_repro.py` / `audit_daily_data_service.py` 思路 → `probes/table_guard.py` |
 
 ---
 

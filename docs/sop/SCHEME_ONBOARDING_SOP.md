@@ -4,6 +4,8 @@
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
+>
+> **端到端主线见 [../SCHEME_INGESTION.md](../SCHEME_INGESTION.md)**（AI/新人第一入口，一图串联源码放哪/怎么拆/预测怎么放怎么验/写哪张表/回测入库）。本 SOP 是其「改造进系统」段的人类执行手册。
 
 ## 1. 核心原则
 
@@ -60,7 +62,7 @@ name: "T1-LGBM利差增强-v2"
 - Python 模块、测试、脚本统一使用小写 `snake_case.py`，例如 `latest_prediction.py`、`check_weekly_readiness.py`。
 - 方案目录必须等于 `scheme_id`，统一小写 snake_case，例如 `schemes/weekly_db_sourced_v1/`。
 - `backtests/` 下的回测 runner 必须带范围，不使用 `reproduction.py` 这类泛名；日频批次用 `daily_0529_reproduction.py`，单方案周频用 `{scheme_id}_reproduction.py`，例如 `weekly_db_sourced_v1_reproduction.py`。
-- `scripts/` 下的命令必须使用“动作 + 对象 + 目的”命名，例如 `verify_backtest_reproduction.py`、`generate_daily_data_diff_report.py`、`compare_weekly_input_artifact.py`。
+- `scripts/` 下的命令必须使用“动作 + 对象 + 目的”命名，例如 `run_framework_repro.py`、`verify_frontend_db.py`、`compare_refactor_outputs.py`。
 - 调度器中涉及频率差异的刷新模块必须显式带频率，例如 `daily_actuals_updater.py` 和 `weekly_actuals_updater.py`；不要使用 `actuals_updater.py` 这类容易和周度逻辑混淆的泛名。
 - 固定 schema 或 benchmark 文件可带版本日期，但日期前必须有分隔符，例如 `weekly_output_0529_columns.json`，不要使用 `weekly_output0529_columns.json`。
 - 前端静态资源允许使用 kebab-case，例如 `aifin-shell.js`、`aifin-lab-logo.svg`。
@@ -309,7 +311,8 @@ conda run -n forecast_env python -m scheduler.scheme_runner \
 如果方案来源于上游脚本，原则上按历史复现链路处理:
 
 ```bash
-conda run -n forecast_env python scripts/verify_backtest_reproduction.py
+python -m scripts.run_baseline --scheme-id <scheme_id>
+python -m scripts.run_framework_repro --scheme-id <scheme_id> --algo-env forecast_env
 ```
 
 新增方案如果还没有通用 backtest runner，需要先补 runner，再写入:

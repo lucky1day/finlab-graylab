@@ -1,0 +1,149 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+
+class PostOnboardScriptTests(unittest.TestCase):
+    def test_run_baseline_static_csv_writes_json_contract(self) -> None:
+        from scripts.run_baseline import run_baseline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _write_scheme_config(root, "demo_daily")
+            benchmark = root / "benchmarks" / "model_muti_0529"
+            benchmark.mkdir(parents=True)
+            (benchmark / "daily_output.csv").write_text(
+                "date,TB0YWI0C\n2026-06-05,1.7\n",
+                encoding="utf-8",
+            )
+            output_dir = root / "reports" / "demo_daily"
+
+            payload, exit_code = run_baseline("demo_daily", output_dir=output_dir, project_root=root)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["status"], "pass")
+            self.assertEqual(payload["evidence"]["morphology"], "static_benchmark_csv")
+            self.assertEqual(payload["evidence"]["sample_count"], 1)
+            output_path = Path(payload["evidence"]["output_path"])
+            self.assertTrue(output_path.exists())
+            rows = json.loads(output_path.read_text(encoding="utf-8"))
+            self.assertEqual(rows[0]["predict_date"], "2026-06-05")
+
+    def test_run_framework_repro_extracts_matching_framework_run(self) -> None:
+        from scripts.run_framework_repro import run_framework_repro
+
+        runner_payload = {
+            "runs": [
+                {"scheme_id": "demo_daily", "data_source": "baseline_original_csv", "rows": 1, "summary": {}},
+                {
+                    "scheme_id": "demo_daily",
+                    "data_source": "framework_db_aligned",
+                    "rows": 2,
+                    "summary": {"row_count": 2, "by_tenor": {"10Y": {"samples": 2}}},
+                },
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _write_scheme_config(root, "demo_daily")
+            (root / "backtests").mkdir()
+            (root / "backtests" / "demo_daily_reproduction.py").write_text("", encoding="utf-8")
+            output_dir = root / "reports" / "demo_daily"
+
+            with patch("scripts.run_framework_repro._run_backtest_runner", return_value=runner_payload):
+                payload, exit_code = run_framework_repro(
+                    "demo_daily",
+                    output_dir=output_dir,
+                    project_root=root,
+                    algo_env="forecast_env",
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload["status"], "pass")
+            self.assertEqual(payload["evidence"]["sample_count"], 2)
+            self.assertEqual(payload["evidence"]["input_artifact_source"], "shared_data_service_daily")
+            self.assertEqual(payload["evidence"]["data_version"], "shared_data_service_daily.v1")
+            self.assertTrue(Path(payload["evidence"]["output_path"]).exists())
+
+    def test_verify_frontend_db_detects_no_mismatches(self) -> None:
+        from scripts.verify_frontend_db import compare_frontend_db_cells
+
+        api_payload = {
+            "schemes": [
+                {
+                    "scheme_id": "demo_daily",
+                    "run_id": 7,
+                    "tenor": "10Y",
+                    "monthly_metrics": [
+                        {"month": "2026-06", "samples": 2, "correct": 1, "accuracy": 50.0},
+                    ],
+                }
+            ]
+        }
+        db_rows = [
+            {
+                "target_tenor": "10Y",
+                "month": "2026-06",
+                "sample_count": 2,
+                "correct_count": 1,
+                "accuracy": 0.5,
+            }
+        ]
+
+        evidence = compare_frontend_db_cells(api_payload, db_rows, scheme_id="demo_daily", run_id=7)
+
+        self.assertEqual(evidence["tenors_checked"], ["10Y"])
+        self.assertEqual(evidence["total_cells_checked"], 1)
+        self.assertEqual(evidence["mismatch_count"], 0)
+        self.assertEqual(evidence["mismatches"], [])
+
+    def test_verify_scheduler_mount_evaluates_config_registry_and_log(self) -> None:
+        from scripts.verify_scheduler_mount import evaluate_scheduler_mount
+
+        evidence, errors, status = evaluate_scheduler_mount(
+            scheme_id="demo_daily",
+            config_status="active",
+            config_cron="25 9 * * 1-5",
+            registry_status="active",
+            registry_cron="25 9 * * 1-5",
+            scheduler_running=True,
+            log_text="INFO Scheduled scheme demo_daily at 25 9 * * 1-5",
+        )
+
+        self.assertEqual(status, "pass")
+        self.assertEqual(errors, [])
+        self.assertTrue(evidence["cron_registered"])
+
+
+def _write_scheme_config(root: Path, scheme_id: str) -> None:
+    scheme_dir = root / "schemes" / scheme_id
+    scheme_dir.mkdir(parents=True)
+    (scheme_dir / "core").mkdir()
+    (scheme_dir / "config.yaml").write_text(
+        f"""
+scheme_id: {scheme_id}
+name: Demo
+description: Demo
+horizon: 1
+tenors: ["10Y"]
+frequency: daily
+schedule:
+  cron: "25 9 * * 1-5"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_daily.v1
+backtest:
+  runner: backtests.{scheme_id}_reproduction
+""".strip(),
+        encoding="utf-8",
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()

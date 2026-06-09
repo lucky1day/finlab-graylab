@@ -69,7 +69,8 @@
 生成命令:
 
 ```bash
-conda run -n forecast_env python scripts/generate_daily_data_diff_report.py
+python -m scripts.run_baseline --scheme-id t1_daily
+python -m scripts.run_framework_repro --scheme-id t1_daily --algo-env forecast_env
 conda run -n forecast_env python scripts/audit_daily_data_service.py
 ```
 
@@ -216,7 +217,7 @@ t1 无上游报告，因此以原始 `run_backtest(..., dry_run=True)` 生成的
 
 ```bash
 conda run -n forecast_env python -m backtests.daily_0529_reproduction --n-jobs 4
-conda run -n forecast_env python scripts/verify_backtest_reproduction.py
+python -m scripts.run_framework_repro --scheme-id t1_daily --algo-env forecast_env
 ```
 
 最终验证脚本输出:

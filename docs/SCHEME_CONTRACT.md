@@ -24,7 +24,7 @@
 | `schedule.timezone` | str | ➖ | 默认 `Asia/Shanghai`，合法时区 |
 | `entry_point` | str | ➖ | 默认 `predict.run`，必须 `== predict.run` |
 | `status` | str | ✅ | ∈ `{active, paused}`（新方案先 `paused`） |
-| `input_spec.data_version` | str | ✅(新) | 对应 `InputArtifact.data_version`，如 `daily_v1` / `wind_export_0529` |
+| `input_spec.data_version` | str | ✅(新) | 对应 `InputArtifact.data_version`，如 `daily_v1` / `wind_export_0529`。**同时约束 live adapter 与 backtest runner**：两者产出的 `InputArtifact.data_version` 必须等于本字段，保证历史回测与实盘预测同一数据口径（见 §7 与 [SCHEME_INGESTION.md](SCHEME_INGESTION.md) §4 数据口径对齐） |
 | `input_spec.required_columns` | list[str] | ✅(新) | InputGate 据此校验列覆盖 |
 | `input_spec.weekly_variant` | str | `frequency==weekly` 时✅(新) | 对应 `data_service.weekly_variant`，如 `unified` / `wind_export_0529` |
 | `target_rule` | str | `frequency==weekly` 时✅(新) | 目标日语义（如 `next_week_last_trading_day_vs_current_week`） |
@@ -136,5 +136,44 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 | §2 predict 接口 | StaticGate（AST） | `contracts/predict_contract.py` |
 | §4 core 约束 | StaticGate（AST） | `contracts/import_rules.py` + `static_gate.py` |
 | §3 PredictionRecord 运行期 | DryRunGate（dry-run JSON） | `gates/dry_run_gate.py` |
+| §7 落库后完整性 | LiveGate / BacktestGate（落库后） | `probes/table_guard.py` + 完整性校验器（**待落地**） |
 
 > 本文为契约规范。未创建或修改任何代码。
+
+---
+
+## 7. 落库后数据完整性契约（机器可校验）
+
+**定位**: 现有 `probes/table_guard.py` 只校验**行数 delta**（防误写其它表），缺**写入内容**的完整性校验——DB 静默写坏（方向越界、唯一键重复、样本数不符）当前无人发现。本节定义落库后必须成立的断言，由 LiveGate / BacktestGate 在写库后执行。
+
+> **校验器待落地**：本节为规范，断言逻辑由后续 harness probe 实现（建议 `probes/integrity_guard.py`）。落地前由 [POST_ONBOARDING_TEST_SOP §S6](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md#s6--落库写历史回测结果) 人工核验。
+
+### 7.1 实盘预测落库（`t_scheme_predictions`）
+
+LiveGate 写库后，对该 `scheme_id` + `predict_date` 断言：
+
+| 维度 | 断言 | 失败含义 |
+|------|------|----------|
+| 行数 | 新增行数 `== 本次有效 tenors 数` | 漏写/重复写 tenor |
+| 值域 | `predicted_direction ∈ {1, -1, 0}` | 方向越界，污染准确率 |
+| 一致性 | `horizon == config.horizon`；`target_tenor ∈ config.tenors` | 方案身份漂移 |
+| 唯一性 | 无重复 `(scheme_id, target_tenor, predict_date)` | 违反 `uk_scheme_tenor_predict` |
+| 受保护表 | 除 `t_scheme_predictions` / `t_scheme_run_log` 外，`PROTECTED_TABLES` 全部 `delta==0` | 越界写库 |
+
+> 每 scheme 行数快照可复用 `probes/table_guard.py::snapshot_scheme_counts`。
+
+### 7.2 历史回测落库（`t_backtest_*`）
+
+BacktestGate 去掉 `--no-persist` 落库后断言：
+
+| 维度 | 断言 | 失败含义 |
+|------|------|----------|
+| 样本数 | 落库样本数 `== --no-persist 复现样本数` | 落库丢样本/重样本 |
+| 表隔离 | 仅 `t_backtest_runs/_predictions/_monthly_metrics` 该 run 相关行增加 | 误写实盘表 |
+| 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
+| 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
+
+### 7.3 与现有机制的关系
+
+- §7 是 `table_guard`（行数 delta）的**内容层补强**，二者叠加：先 `delta` 守边界，再完整性守内容。
+- 与 [POST_ONBOARDING_TEST_SOP §S6](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md#s6--落库写历史回测结果) 验收点一致：S6 为人工执行版，§7 为机器契约版，落地后 S6 引用本节作为判据。

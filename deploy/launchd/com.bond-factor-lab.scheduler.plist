@@ -36,9 +36,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/tmp/bond-factor-lab-scheduler.log</string>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.scheduler.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/tmp/bond-factor-lab-scheduler.err</string>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.scheduler.err</string>
 </dict>
 </plist>
