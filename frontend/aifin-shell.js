@@ -1069,7 +1069,7 @@
       } else if (factorLabDataMode === "backtest") {
         meta.textContent = "该任务格子下共有 " + schemes.length + " 个历史回测方案。";
       } else if (factorLabDataMode === "merged") {
-        meta.textContent = "该任务格子下共有 " + schemes.length + " 个候选方案（回测+实盘合并）。";
+        meta.textContent = "该任务格子下共有 " + schemes.length + " 个候选方案。";
       } else {
         meta.textContent = "该任务格子下共有 " + schemes.length + " 个候选方案。";
       }
