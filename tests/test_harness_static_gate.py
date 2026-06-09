@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -395,6 +398,186 @@ class HarnessLiveGateTests(unittest.TestCase):
         self.assertTrue(audit_exists)
         self.assertEqual(second.status, GateStatus.BLOCKED)
         self.assertTrue(any("already used" in error for error in second.errors), second.errors)
+
+
+class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
+    def test_backtest_gate_compares_baseline_ignoring_elapsed_sec(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.backtest_gate import BacktestGate
+
+        baseline = {
+            "status": "success",
+            "scheme_id": "demo_daily",
+            "row_count": 2,
+            "monthly_count": 1,
+            "summary": {"by_tenor": {"10Y": {"samples": 2, "correct": 1}}},
+            "elapsed_sec": 1.0,
+        }
+        current = dict(baseline)
+        current["elapsed_sec"] = 99.0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            config_path = project_root / "schemes" / "demo_daily" / "config.yaml"
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8")
+                + "\nbacktest:\n"
+                + "  runner: backtests.demo_daily_reproduction\n",
+                encoding="utf-8",
+            )
+            baseline_dir = project_root / "reports" / "refactor_baseline" / "demo_daily"
+            baseline_dir.mkdir(parents=True)
+            (baseline_dir / "backtest_no_persist.json").write_text(
+                json.dumps(baseline),
+                encoding="utf-8",
+            )
+            with patch("harness.gates.backtest_gate.run_backtest_no_persist", return_value=current):
+                result = BacktestGate().run(
+                    GateContext(
+                        scheme_id="demo_daily",
+                        predict_date="2026-06-08",
+                        project_root=project_root,
+                        report_dir=project_root / "reports" / "harness" / "demo_daily",
+                    )
+                )
+
+        self.assertTrue(result.passed, result.errors)
+        evidence = _evidence_dict(result)
+        self.assertEqual(evidence["diff_count"], 0)
+        self.assertEqual(evidence["row_count"], 2)
+        self.assertEqual(evidence["monthly_count"], 1)
+
+    def test_api_gate_passes_when_factor_lab_cell_exists(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.api_gate import ApiGate
+
+        payload = {
+            "schemes": [
+                {
+                    "scheme_id": "demo_daily",
+                    "tenor": "10Y",
+                    "monthly_metrics": [{"month": "2026-05", "samples": 2}],
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            with patch("harness.gates.api_gate.fetch_json", return_value=payload):
+                result = ApiGate().run(
+                    GateContext(
+                        scheme_id="demo_daily",
+                        predict_date="2026-06-08",
+                        project_root=project_root,
+                        report_dir=project_root / "reports" / "harness" / "demo_daily",
+                    )
+                )
+
+        self.assertTrue(result.passed, result.errors)
+        evidence = _evidence_dict(result)
+        self.assertTrue(evidence["matrix_cell_present"])
+        self.assertEqual(evidence["matched_tenor"], "10Y")
+
+    def test_registry_all_excludes_live_and_orders_auto_gates(self) -> None:
+        from harness.registry import sequence_for_stage
+
+        self.assertEqual(sequence_for_stage("all"), ["static", "input", "unit", "dry-run", "backtest", "api"])
+        self.assertNotIn("live", sequence_for_stage("all"))
+
+    def test_orchestrator_fail_fast_stops_after_first_failure(self) -> None:
+        from harness.context import GateContext
+        from harness.orchestrator import onboard
+        from harness.result import Evidence, GateResult, GateStatus
+
+        calls: list[str] = []
+
+        class FakeGate:
+            def __init__(self, name: str, status: GateStatus) -> None:
+                self.name = name
+                self.status = status
+
+            def run(self, ctx: GateContext) -> GateResult:
+                calls.append(self.name)
+                return GateResult(
+                    gate_name=self.name,
+                    status=self.status,
+                    passed=self.status == GateStatus.PASSED,
+                    evidence=[Evidence("called", self.name)],
+                    errors=[] if self.status == GateStatus.PASSED else ["boom"],
+                    started_at="2026-06-08T00:00:00+00:00",
+                    finished_at="2026-06-08T00:00:01+00:00",
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            ctx = GateContext(
+                scheme_id="demo_daily",
+                predict_date="2026-06-08",
+                project_root=project_root,
+                report_dir=project_root / "reports" / "harness" / "demo_daily",
+            )
+            report = onboard(
+                ctx,
+                stage="all",
+                gates=[
+                    FakeGate("static", GateStatus.PASSED),
+                    FakeGate("input", GateStatus.FAILED),
+                    FakeGate("unit", GateStatus.PASSED),
+                ],
+            )
+
+        self.assertFalse(report.overall_passed)
+        self.assertEqual(calls, ["static", "input"])
+        self.assertEqual([item.gate_name for item in report.results], ["static", "input"])
+
+    def test_cli_exit_codes_for_pass_fail_and_blocked(self) -> None:
+        from harness.cli import main
+        from harness.result import GateResult, GateStatus, OnboardReport
+
+        def make_result(status: GateStatus) -> GateResult:
+            return GateResult(
+                gate_name="static",
+                status=status,
+                passed=status == GateStatus.PASSED,
+                evidence=[],
+                errors=[] if status == GateStatus.PASSED else ["stop"],
+                started_at="2026-06-08T00:00:00+00:00",
+                finished_at="2026-06-08T00:00:01+00:00",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            report_dir = Path(tmpdir) / "reports"
+            pass_report = OnboardReport(
+                scheme_id="demo_daily",
+                predict_date="2026-06-08",
+                stage_requested="all",
+                results=[make_result(GateStatus.PASSED)],
+                overall_passed=True,
+                report_dir=report_dir,
+            )
+            fail_report = OnboardReport(
+                scheme_id="demo_daily",
+                predict_date="2026-06-08",
+                stage_requested="all",
+                results=[make_result(GateStatus.FAILED)],
+                overall_passed=False,
+                report_dir=report_dir,
+            )
+            output = io.StringIO()
+            with patch("harness.cli.run_onboard", return_value=pass_report):
+                with contextlib.redirect_stdout(output):
+                    pass_code = main(["onboard", "demo_daily", "--predict-date", "2026-06-08", "--stage", "all"])
+            with patch("harness.cli.run_onboard", return_value=fail_report):
+                with contextlib.redirect_stdout(output):
+                    fail_code = main(["onboard", "demo_daily", "--predict-date", "2026-06-08", "--stage", "all"])
+
+        with contextlib.redirect_stdout(output):
+            blocked_code = main(["activate", "--scheme-id", "demo_daily"])
+
+        self.assertEqual(pass_code, 0)
+        self.assertEqual(fail_code, 1)
+        self.assertEqual(blocked_code, 2)
 
 
 def _evidence_keys(result) -> set[str]:
