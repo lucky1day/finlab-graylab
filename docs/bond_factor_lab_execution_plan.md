@@ -3,6 +3,8 @@
 > 配套评审：[bond_factor_lab_architecture_review.md](bond_factor_lab_architecture_review.md)
 > 决策：① 周度方案**彻底退役**；② 本轮 **P0 并行派发 + P1 串行子计划**。
 > 编制基于对仓库的实地核验（见评审报告"review vs reality"对照表）。
+>
+> **状态（2026-06-09）：P0 ✅ 已完成、P1 ✅ 已完成并独立验证（全套 123/123 通过）。** 仅余 P2（前端/分析体验）待排期。P1 详细任务说明见 [bond_factor_lab_p1_tasks.md](bond_factor_lab_p1_tasks.md)，落地里程碑见 [CURRENT_STATUS.md](CURRENT_STATUS.md)「平台改造里程碑」。
 
 ---
 
@@ -16,9 +18,9 @@
 
 ---
 
-## 1. P0 并行波次（可立即全量派发）
+## 1. P0 并行波次（可立即全量派发） ✅ 已完成
 
-> 8 个任务，文件互不重叠（H 系按热点规则隔离）。可一次性并行。
+> 9 个任务（PKG/DOCS/EXPORT/BG/STATIC/API/H1/H2/H3），文件互不重叠（H 系按热点规则隔离）。已一次性并行完成并合入主线。下列任务卡保留作落地记录。
 
 ### 任务 PKG —— harness 一等打包
 - **目标**：`harness` 作为一等模块可被 `python -m harness` 与 package 安装命中。
@@ -141,9 +143,11 @@
 
 ---
 
-## 2. P1 串行子计划（数据模型重构 —— 单 owner，按步推进，勿 naive 并行）
+## 2. P1 串行子计划（数据模型重构 —— 单 owner，按步推进，勿 naive 并行） ✅ 已完成
 
 > 这些步骤共享 `migrations/`、`shared/models.py`、`scheduler/repository.py`、`scheduler/executor.py`、`backtests/repository.py`、`backend/services.py`，互相撞车。**建议单个 owner（或一个 agent 串行）按 S1→S7 推进**，每步独立提交、可回滚。
+>
+> **落地结果**：S1→S7 已由单 agent 串行完成，7 个独立提交（`6947246`..`0cd4ebc`）。新增迁移 `005_lifecycle.sql` / `006_predictions_runid_uk.sql` / `007_backtest_immutable.sql`。三条不变量经独立核验全部守住（core 纯净 / 写库单点 / GET 只读），未碰 `schemes/`、`frontend/`，全套单测 123/123 通过，并经多轮 scratch MySQL 验证。下列各步描述保留作设计记录。
 
 - **S1 — 迁移基座（必须最先）**：新增 `migrations/005_lifecycle.sql`：建 `t_scheme_versions`、`t_harness_runs`、`t_harness_gate_results`、`t_input_artifacts`、`t_scheme_runs`、`t_scheme_serving_pointer`；为 `t_scheme_predictions` 增 `run_id`、`scheme_version`、`prediction_id`（保留旧 UK 一段过渡）；为 `t_backtest_runs` 增 `backtest_run_id`、`code_hash`、`config_hash`、`input_artifact_hash`、`run_mode`。字段以评审 §7 为准。
 - **S2 — InputArtifact 指纹**：`shared/input_artifacts.py` 增 `content_hash`、`schema_hash`、`artifact_id`、`source_watermark` 等；落 `t_input_artifacts`（写入须经唯一写库点——新建 `scheduler/repository` 内 artifact 写函数或专用 repository，**不破坏写库单点不变量**）。
@@ -157,17 +161,19 @@
 
 ---
 
-## 3. P2（实验室体验，后置，独立）
+## 3. P2（实验室体验，后置，独立） ⏳ 唯一待排期
 
-前端 ranking / 按 tenor·horizon·frequency 横向对比 / shadow vs active / confidence calibration / rolling hit ratio / drawdown·连错 / 生命周期页 / 异常告警（未出预测、actuals 未回填、输入 stale）。均在 `frontend/` + backend 只读接口，待 P1 数据模型就绪后单独排期。
+前端 ranking / 按 tenor·horizon·frequency 横向对比 / shadow vs active / confidence calibration / rolling hit ratio / drawdown·连错 / 生命周期页 / 异常告警（未出预测、actuals 未回填、输入 stale）。均在 `frontend/` + backend 只读接口。P1 数据模型（run_id / serving pointer / scheme_version / input_artifact_hash）已就绪，可作为这些视图的数据来源；待你想做实验室 UI 时单独排期。
 
 ---
 
 ## 4. 人工动作（不在 subagent 范围）
 
-1. **轮换 `.env` 中已暴露过的数据库密码**（评审 §3.1 / P0#1）——运维执行，subagent 无权触碰凭据。
-2. 设定 `HARNESS_AUTH_SECRET`（H3 依赖）、admin token 环境变量（API 依赖）于部署环境。
-3. 确认 P1 迁移在测试库先行验证后再上生产。
+> 部署形态实测：单用户、单机 Mac Studio、launchd 常驻、后端只监听 `127.0.0.1`、前端 iframe 信任、预测由 scheduler cron 自跑。基于此，原评审里按"多人平台"设计的安全项已按单用户场景**软化**，下列动作均为可选。
+
+1. ~~轮换 `.env` 中已暴露过的数据库密码~~ —— 已确认 `.env` 未对外打包泄露，**无需轮换**。
+2. `HARNESS_AUTH_SECRET` / `BOND_ADMIN_TOKEN` 均为**软默认、可选**：不配置时 harness token 退化为明文一次性确认闸、trigger/admin 接口放行（单用户本机够用）；仅当未来需要更强管控（如接入网络）时再设置即可自动升级，无需改代码。
+3. P1 迁移已在 scratch MySQL 多轮验证幂等；上正式库前按惯例再跑一次 `python scripts/apply_migrations.py` 确认即可。
 
 ---
 

@@ -23,8 +23,8 @@
 
 - `shared.calendar_service` 提供交易日历/周历查询单点入口，交易日判断只读 `t_trade_calendar.trade_flag`，`week_id_for_date` 只读 `api_wind_date.week_id`。
 - `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频、周频、月频底层统一由 `shared.data_service` 生成输出宽表，artifact 层负责写出输入 CSV 并读回给算法。
-- `harness/` 包已实现 StaticGate、InputGate、UnitGate、DryRunGate、BacktestGate、ApiGate、LiveGate，以及 contracts、table_guard、authorization、orchestrator、CLI。
-- `python -m harness onboard {scheme_id} --stage all` 可串联 static -> input -> unit -> dry-run -> backtest -> api；live/activate 不在 `all` 内，必须显式授权。
+- `harness/` 包已实现 StaticGate、InputGate、UnitGate、DryRunGate、CompareGate、BacktestGate、ApiGate、LiveGate、ActivationGate，以及 contracts、table_guard、authorization、orchestrator、persistence、CLI。
+- `python -m harness onboard {scheme_id} --stage all` 可串联 static -> input -> unit -> dry-run -> compare -> backtest -> api（compare 缺 benchmark 时 SKIP，不阻断）；live/activate 不在 `all` 内，必须显式授权。
 
 周频共享基础设施保留：
 
@@ -35,6 +35,40 @@
 - 前端周度列支持：按 `frequency=weekly` 映射，scheme-agnostic。
 
 已删除的旧周频专属内容包括方案目录、回测 runner、方案专属测试/脚本、计算型周历模块和 5Y/7Y legacy 源。
+
+## 平台改造里程碑（P0 / P1）
+
+基于 [架构评审报告](bond_factor_lab_architecture_review.md) 的两阶段改造已全部落地并通过独立验证。任务说明见 [执行计划](bond_factor_lab_execution_plan.md) 与 [P1 任务说明](bond_factor_lab_p1_tasks.md)。
+
+### P0 — 控制面加固与安全边界（已完成）
+
+- `harness` 作为一等模块纳入 `pyproject.toml`（`python -m harness` 可用、可 `pip install -e .`）。
+- **CompareGate**：比较算法原始输出 vs 平台归档输出（缺 benchmark 时 SKIP）；已接入 `--stage all`（dry-run 与 backtest 之间）。
+- **ActivationGate**：由 fail-closed 桩升级为真实激活（凭 `activate` token 把 `status: paused -> active`）。
+- **StaticGate 加固**：递归扫描 `core/**/*.py`；`legacy_*` 不再是逃逸口；禁网络/子进程/pickle/写文件/跨方案 import；收紧 `predict.py` 导入白名单。
+- **BacktestGate**：首次 no-persist 运行自动落地 baseline。
+- **授权 token 软默认**：配置 `HARNESS_AUTH_SECRET` 时附 HMAC + TTL；未配置时退化为明文一次性确认闸（单用户本机无需配置，写库/激活仍需显式 token）。
+- **backend GET 只读**：`GET /api/schemes` 不再触发 registry 写库（同步移到启动时 + 受保护的 `POST /api/admin/registry/sync`）；trigger/admin 接口软默认（未配置 `BOND_ADMIN_TOKEN` 则放行，仅监听 `127.0.0.1`）；CORS 由 `BOND_CORS_ORIGINS` 白名单替代通配符。
+- **clean export 脚本** `scripts/export_clean_repo.sh`：基于 `git archive` 并自检产物不含 `.env`/`.git`/密钥/artifacts/reports。
+- 周度方案在文档/产物中彻底退役（代码不存在），对齐为仅 `t1_daily` / `t5_daily`。
+
+### P1 — 灰度实验室数据模型（已完成，独立验证通过）
+
+S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid_uk.sql` / `007_backtest_immutable.sql`：
+
+- **S1 生命周期表**：新增 `t_scheme_versions`、`t_harness_runs`、`t_harness_gate_results`、`t_input_artifacts`、`t_scheme_runs`、`t_scheme_serving_pointer`；现有表加列（向后兼容）。
+- **S2 输入产物指纹**：`InputArtifact` 增 `content_hash`/`schema_hash`/`artifact_id`/`source_watermark`，经 `scheduler.repository.upsert_input_artifact` 幂等落 `t_input_artifacts`。
+- **S3 不可变预测**：每次运行生成 `run_id`，`executor` 走 `create_scheme_run -> insert_run_predictions(run_id) -> update_serving_pointer -> write_run_log`；UK 改为含 `run_id`，同方案同日多 run 共存不覆盖；前端经 serving pointer 读"latest approved"。
+- **S4 方案版本**：`shared.versioning` 计算 `code_hash`/`config_hash`/`manifest_hash`，落 `t_scheme_versions`。
+- **S5 harness 留痕**：`harness.persistence` 把每次 run 与每个 gate 结果落 `t_harness_runs`/`t_harness_gate_results`（仅写这两表，DB 不可用时降级本地 JSON）。
+- **S6 回测不可变**：每次回测 append 新 `backtest_run_id`，新增 `v_latest_backtest_run` 视图把"最新"改为查询语义，不再覆盖。
+- **S7 backend 读切换**：GET 预测读路径经 `t_scheme_serving_pointer`，响应透出 `run_id`/`scheme_version`/`input_artifact_hash` 可追溯字段，保持只读。
+
+**三条不变量经独立核验全部守住**：core 纯净（`schemes/*/core` 未被污染）、写库单点（新增写库仅在 `scheduler.repository` / `backtests.repository` / `harness.persistence`）、GET 只读。**全套单测 123/123 通过**（不设环境变量验证软默认路径），并经多轮 scratch MySQL 验证迁移幂等、重跑不覆盖、pointer 指向新 run、append/latest view、留痕与 trace 字段。
+
+### 仍未做（P2，前端/分析体验，依赖 P1 数据模型，待排期）
+
+方案 ranking、按 tenor/horizon/frequency 横向对比、shadow vs active 对比、confidence calibration、rolling hit ratio、drawdown/连错、生命周期页、异常告警（未出预测 / actuals 未回填 / 输入 stale）。
 
 ## 已完成
 
@@ -139,13 +173,13 @@ launchd scheduler 已成功运行 active 日度方案：
   - `GET /api/health`
   - `GET /api/targets`
   - `GET /api/predictions?limit=1`
-- `GET /api/backtests/factor-lab` 已改为只读获取 scheme metadata，不再触发 registry sync；`GET /api/schemes` 仍会同步 registry，属于正常服务行为，但不是纯只读接口；做数据库保护核验时不要把 `/api/schemes` 当作只读探针。
+- `GET /api/backtests/factor-lab` 已改为只读获取 scheme metadata，不再触发 registry sync。P0 后 `GET /api/schemes` 也已去除 registry 写副作用：registry 同步改为后端启动时执行一次，外加受保护的 `POST /api/admin/registry/sync`（未配置 `BOND_ADMIN_TOKEN` 时放行，配置后需 `X-Admin-Token`）。当前所有 GET 接口均为只读。
 - 正式运行需要写库时，只应通过明确的调度器或运维命令写入 `t_scheme_predictions`、`t_scheme_run_log`、`t_scheme_actuals`、`t_scheme_weekly_actuals` 或 `t_backtest_*`，不要改动源数据表。
 
 ## 剩余观察项
 
 1. 下一次日频 scheduler 运行后，确认日志只注册和执行 `t1_daily` / `t5_daily`。
-2. 旧周频 DB 记录已清理；下一次执行 `/api/schemes` 或 registry sync 时，确认 registry 仍只保留 `t1_daily` / `t5_daily`。
+2. 旧周频 DB 记录已清理；后端启动 registry 同步或调用 `POST /api/admin/registry/sync` 后，确认 registry 仍只保留 `t1_daily` / `t5_daily`（`GET /api/schemes` 已为只读，不再触发同步）。
 3. 新周频方案进入时，必须按 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 的 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation 流程，并证明 `week_id` 来自 DB。
 4. 拿到 panda_quantflow 外层仓库路径后完成菜单/路由接入并验证 iframe。
 
