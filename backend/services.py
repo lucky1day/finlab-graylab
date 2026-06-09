@@ -174,7 +174,7 @@ def _backtest_display_name(
     target_label: str,
     data_source: str,
 ) -> str:
-    return f"{_backtest_scheme_name(meta, scheme_id)}｜{target_label}｜{_backtest_data_source_label(data_source)}"
+    return f"{_backtest_scheme_name(meta, scheme_id)} · {target_label}"
 
 
 def list_targets(engine: Engine) -> list[dict[str, Any]]:
