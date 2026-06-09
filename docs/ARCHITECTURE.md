@@ -91,7 +91,8 @@ Scheduler触发actuals更新任务
 ```
 手动或调度触发 weekly_actuals 更新任务
   → 从 api_wind_daily 读取日频收益率
-  → 按实盘 week_id 规则取每周最后一个可用交易日
+  → 从 api_wind_date 读取 rdate→week_id 和实际周序
+  → 按 t_trade_calendar.trade_flag 取周内最后交易日
   → 目标周完整后计算下一周最后交易日 vs 本周最后交易日
   → 写入 t_scheme_weekly_actuals (UPSERT)
 ```

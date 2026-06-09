@@ -13,7 +13,7 @@
 
 2026-06-09 已删除全部旧周频预测方案代码。删除原因是旧周频方案在预测/回测路径中使用计算型周历公式推导 `week_id <-> 交易日`，而不是读取 `bond_db.api_wind_date.week_id` 的实际口径，可能从入库时起造成特征周/目标周错位。后续周频方案需要按 [新增方案 SOP](sop/SCHEME_ONBOARDING_SOP.md) 重新入库，并强制使用 `api_wind_date.week_id`。
 
-本次只清理代码和文档，不清理数据库。旧周频方案在 `t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_scheme_weekly_actuals`、`t_backtest_*` 中的历史记录按决策延后处理。
+旧周频方案在 `t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_scheme_weekly_actuals`、`t_backtest_*` 中的历史记录按决策延后处理。2026-06-09 已修复 `scheduler/weekly_actuals_updater.py`，新生成的周频 actuals 只读 `api_wind_date.week_id` 与 `t_trade_calendar.trade_flag`，不再使用计算型周历公式；DB 中既有 `t_scheme_weekly_actuals` 历史行仍待单独清空或重刷。
 
 ## 架构与 Harness
 
@@ -29,7 +29,7 @@
 - `shared/calendar_service.py`：`t_trade_calendar` 交易日查询与 `api_wind_date` 周编号查询。
 - `shared/input_artifacts.py`：`build_weekly_input_artifact()`。
 - `shared/data_service.py`：`build_weekly_output_from_db()`。
-- `scheduler/weekly_actuals_updater.py`：周频 actuals 刷新基础设施。
+- `scheduler/weekly_actuals_updater.py`：周频 actuals 刷新基础设施，周编号只读 `api_wind_date`，周内最后交易日只读 `t_trade_calendar`。
 - 前端周度列支持：按 `frequency=weekly` 映射，scheme-agnostic。
 
 已删除的旧周频专属内容包括方案目录、回测 runner、方案专属测试/脚本、计算型周历模块和 5Y/7Y legacy 源。
@@ -62,6 +62,7 @@
   - `com.bond-factor-lab.scheduler`
 - 2026-06-09 周频方案删除后已重启 scheduler；`launchctl print` 显示 `com.bond-factor-lab.scheduler` 为 `running`。
 - 前端已从真实 API 读取目标注册表和回测数据；T+1/T+5/周度筛选入口保留。
+- 周频 actuals 代码口径已修复；只读预览生成 811 条 10Y 周度 actuals，按 `feature_date/target_date -> api_wind_date.week_id` 复核无错配。正式 DB 表 `t_scheme_weekly_actuals` 尚未清空或重刷。
 
 ## 当前数据库快照
 
@@ -138,7 +139,7 @@ DB 中旧周频回测 run 暂时保留，前端或 API 若直接读取 DB 历史
 ## 剩余观察项
 
 1. 下一次日频 scheduler 运行后，确认日志只注册和执行 `t1_daily` / `t5_daily`。
-2. 如需清理旧周频 DB 记录，单独制定 SQL 审计和备份方案后再执行。
+2. 旧周频 DB 记录待清理：`t_scheme_weekly_actuals` 可整表清空；`t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_backtest_runs`、`t_backtest_predictions`、`t_backtest_monthly_metrics` 按旧周频 `scheme_id` 删除；`t_backtest_reproduction_checks` 当前为 daily benchmark 检查，不纳入周频清理。
 3. 新周频方案进入时，必须按 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 的 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation 流程，并证明 `week_id` 来自 DB。
 4. 拿到 panda_quantflow 外层仓库路径后完成菜单/路由接入并验证 iframe。
 

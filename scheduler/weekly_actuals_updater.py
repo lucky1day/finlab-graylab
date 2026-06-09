@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Iterable
 
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from scheduler.daily_actuals_updater import TENOR_TO_INDICATOR, read_yield_rows
@@ -13,6 +15,14 @@ from shared.models import WeeklyActualRecord
 
 
 TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
+
+
+@dataclass(frozen=True)
+class WeekCalendar:
+    date_to_week_id: dict[str, int]
+    next_week_id: dict[int, int]
+    week_last_trading_day: dict[int, str]
+    week_predict_date: dict[int, str]
 
 
 def _normalize_date(value: str | date | datetime | None) -> str | None:
@@ -47,48 +57,81 @@ def _price_signal(direction: int) -> str:
     return "平"
 
 
-def _first_monday_of_year(year: int) -> date:
-    first_day = date(year, 1, 1)
-    return first_day + timedelta(days=(7 - first_day.weekday()) % 7)
+def _normalize_week_id(value: object) -> int | None:
+    if value is None:
+        return None
+    text_value = str(value).strip().replace(".0", "")
+    if not text_value:
+        return None
+    return int(text_value)
 
 
-def _week_id_for_date(value: str) -> int:
-    current = datetime.strptime(value, "%Y-%m-%d").date()
-    monday_of_week = current - timedelta(days=current.weekday())
-    first_monday = _first_monday_of_year(current.year)
-    if monday_of_week < first_monday:
-        return _week_id_for_date(date(current.year - 1, 12, 31).isoformat())
-    week_number = ((monday_of_week - first_monday).days // 7) + 1
-    return int(f"{current.year:04d}{week_number:02d}")
+def _is_trading_flag(value: object) -> bool:
+    return str(value).strip() == "1"
 
 
-def _week_id_to_monday(week_id: int) -> date:
-    text = str(int(week_id))
-    year = int(text[:4])
-    week = int(text[4:])
-    return _first_monday_of_year(year) + timedelta(weeks=week - 1)
+def read_week_calendar(engine: Engine) -> list[dict]:
+    """读取周编号和交易日标记，周编号以 api_wind_date 为准。"""
+    stmt = text(
+        """
+        SELECT wd.rdate, wd.week_id, tc.trade_flag
+        FROM api_wind_date wd
+        LEFT JOIN t_trade_calendar tc ON tc.rdate = wd.rdate
+        WHERE wd.week_id IS NOT NULL
+        ORDER BY wd.rdate
+        """
+    )
+    with engine.connect() as conn:
+        return [dict(row) for row in conn.execute(stmt).mappings().all()]
 
 
-def _week_id_to_friday(week_id: int) -> date:
-    return _week_id_to_monday(week_id) + timedelta(days=4)
+def _build_week_calendar(rows: Iterable[dict]) -> WeekCalendar:
+    date_to_week_id: dict[str, int] = {}
+    rows_by_week: dict[int, list[dict]] = defaultdict(list)
+    for raw in rows:
+        rdate = _normalize_date(raw.get("rdate"))
+        week_id = _normalize_week_id(raw.get("week_id"))
+        if rdate is None or week_id is None:
+            continue
+        item = {"rdate": rdate, "is_trading": _is_trading_flag(raw.get("trade_flag"))}
+        date_to_week_id[rdate] = week_id
+        rows_by_week[week_id].append(item)
 
+    week_ids = sorted(rows_by_week, key=lambda wid: min(row["rdate"] for row in rows_by_week[wid]))
+    next_week_id = {week_id: week_ids[index + 1] for index, week_id in enumerate(week_ids[:-1])}
+    week_last_trading_day: dict[int, str] = {}
+    week_predict_date: dict[int, str] = {}
+    for week_id in week_ids:
+        week_rows = sorted(rows_by_week[week_id], key=lambda row: row["rdate"])
+        trading_days = [row["rdate"] for row in week_rows if row["is_trading"]]
+        if not trading_days:
+            continue
+        last_trading_day = trading_days[-1]
+        week_last_trading_day[week_id] = last_trading_day
+        later_dates = [row["rdate"] for row in week_rows if row["rdate"] > last_trading_day]
+        if later_dates:
+            week_predict_date[week_id] = later_dates[0]
+        else:
+            week_predict_date[week_id] = (date.fromisoformat(last_trading_day) + timedelta(days=1)).isoformat()
 
-def _next_week_id(week_id: int) -> int:
-    return _week_id_for_date((_week_id_to_monday(week_id) + timedelta(days=7)).isoformat())
-
-
-def _predict_date_for_week(feature_week_id: int) -> str:
-    return (_week_id_to_friday(feature_week_id) + timedelta(days=1)).isoformat()
+    return WeekCalendar(
+        date_to_week_id=date_to_week_id,
+        next_week_id=next_week_id,
+        week_last_trading_day=week_last_trading_day,
+        week_predict_date=week_predict_date,
+    )
 
 
 def build_weekly_actual_records_from_rows(
     rows: Iterable[dict],
+    calendar_rows: Iterable[dict],
     start_date: str | date | datetime | None = None,
     end_date: str | date | datetime | None = None,
 ) -> list[WeeklyActualRecord]:
     """按周内最后一个可用交易日生成周度实际方向。"""
     start = _normalize_date(start_date)
     end = _normalize_date(end_date)
+    calendar = _build_week_calendar(calendar_rows)
     grouped: dict[str, dict[int, dict]] = defaultdict(dict)
     max_trade_date_by_tenor: dict[str, str] = {}
 
@@ -96,7 +139,9 @@ def build_weekly_actual_records_from_rows(
         trade_date = _normalize_date(raw["trade_date"])
         if trade_date is None:
             continue
-        week_id = _week_id_for_date(trade_date)
+        week_id = calendar.date_to_week_id.get(trade_date)
+        if week_id is None:
+            raise ValueError(f"trade_date={trade_date} missing from api_wind_date")
         tenor = str(raw["tenor"])
         if tenor not in max_trade_date_by_tenor or trade_date > max_trade_date_by_tenor[tenor]:
             max_trade_date_by_tenor[tenor] = trade_date
@@ -111,10 +156,13 @@ def build_weekly_actual_records_from_rows(
     records: list[WeeklyActualRecord] = []
     for tenor, by_week in grouped.items():
         for feature_week_id in sorted(by_week):
-            target_week_id = _next_week_id(feature_week_id)
-            if target_week_id not in by_week:
+            target_week_id = calendar.next_week_id.get(feature_week_id)
+            if target_week_id is None or target_week_id not in by_week:
                 continue
-            target_week_end = _week_id_to_friday(target_week_id).isoformat()
+            target_week_end = calendar.week_last_trading_day.get(target_week_id)
+            predict_date = calendar.week_predict_date.get(feature_week_id)
+            if target_week_end is None or predict_date is None:
+                continue
             if max_trade_date_by_tenor[tenor] < target_week_end:
                 continue
             feature = by_week[feature_week_id]
@@ -129,7 +177,7 @@ def build_weekly_actual_records_from_rows(
                     tenor=tenor,
                     feature_week_id=feature_week_id,
                     target_week_id=target_week_id,
-                    predict_date=_predict_date_for_week(feature_week_id),
+                    predict_date=predict_date,
                     feature_date=feature["trade_date"],
                     target_date=target["trade_date"],
                     feature_yield=feature["close_yield"],
@@ -155,7 +203,13 @@ def build_weekly_actual_records(
 ) -> list[WeeklyActualRecord]:
     """从日频收益率源表构建周度实际方向。"""
     rows = read_yield_rows(engine, tenors=tenors, end_date=end_date)
-    return build_weekly_actual_records_from_rows(rows, start_date=start_date, end_date=end_date)
+    calendar_rows = read_week_calendar(engine)
+    return build_weekly_actual_records_from_rows(
+        rows,
+        calendar_rows,
+        start_date=start_date,
+        end_date=end_date,
+    )
 
 
 def update_weekly_actuals(
