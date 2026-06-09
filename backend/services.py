@@ -723,6 +723,118 @@ def metrics_compare(
     }
 
 
+def _run_row(row: Any) -> dict[str, Any]:
+    return {
+        "run_id": row["run_id"],
+        "scheme_version": row["scheme_version"],
+        "run_type": row["run_type"],
+        "predict_date": _iso(row["predict_date"]),
+        "status": row["status"],
+        "started_at": _iso(row["started_at"]),
+        "finished_at": _iso(row["finished_at"]),
+        "records_written": row["records_written"],
+        "error_message": row["error_message"],
+    }
+
+
+def schemes_lifecycle(engine: Engine) -> dict[str, Any]:
+    """返回方案生命周期与最近运行健康度（只读薄版）。"""
+    registry_sql = text(
+        """
+        SELECT scheme_id, name, description, horizon, tenors, frequency, status
+        FROM t_scheme_registry
+        ORDER BY status = 'active' DESC, scheme_id
+        """
+    )
+    version_sql = text(
+        """
+        SELECT v.scheme_id, v.scheme_version, v.status, v.created_at, v.approved_at
+        FROM t_scheme_versions v
+        INNER JOIN (
+            SELECT scheme_id, MAX(id) AS id
+            FROM t_scheme_versions
+            GROUP BY scheme_id
+        ) latest ON latest.id = v.id
+        """
+    )
+    runs_sql = text(
+        """
+        SELECT run_id, scheme_id, scheme_version, run_type, predict_date, status,
+               started_at, finished_at, records_written, error_message
+        FROM t_scheme_runs
+        ORDER BY scheme_id, started_at DESC, run_id DESC
+        """
+    )
+    pointer_sql = text(
+        """
+        SELECT scheme_id, MAX(predict_date) AS latest_prediction_date
+        FROM t_scheme_serving_pointer
+        WHERE serving_status = 'approved'
+        GROUP BY scheme_id
+        """
+    )
+    with engine.connect() as conn:
+        registry_rows = conn.execute(registry_sql).mappings().all()
+        version_rows = conn.execute(version_sql).mappings().all()
+        run_rows = conn.execute(runs_sql).mappings().all()
+        pointer_rows = conn.execute(pointer_sql).mappings().all()
+
+    versions = {
+        row["scheme_id"]: {
+            "scheme_version": row["scheme_version"],
+            "version_status": row["status"],
+            "version_created_at": _iso(row["created_at"]),
+            "version_approved_at": _iso(row["approved_at"]),
+        }
+        for row in version_rows
+    }
+    latest_predictions = {
+        row["scheme_id"]: _iso(row["latest_prediction_date"])
+        for row in pointer_rows
+    }
+    runs_by_scheme: dict[str, list[Any]] = defaultdict(list)
+    for row in run_rows:
+        runs_by_scheme[row["scheme_id"]].append(row)
+
+    schemes: list[dict[str, Any]] = []
+    recent_limit = 5
+    for row in registry_rows:
+        scheme_id = row["scheme_id"]
+        version = versions.get(scheme_id, {})
+        runs = runs_by_scheme.get(scheme_id, [])
+        recent_runs = runs[:recent_limit]
+        success_count = sum(1 for run in recent_runs if run["status"] == "success")
+        latest_run = _run_row(runs[0]) if runs else None
+        latest_prediction_date = latest_predictions.get(scheme_id)
+        alerts = []
+        if latest_run and latest_run["status"] == "failed":
+            alerts.append("latest_run_failed")
+        if latest_prediction_date is None:
+            alerts.append("missing_predictions")
+        schemes.append(
+            {
+                "scheme_id": scheme_id,
+                "name": row["name"],
+                "description": row["description"],
+                "registry_status": row["status"],
+                "version_status": version.get("version_status") or row["status"],
+                "scheme_version": version.get("scheme_version"),
+                "version_created_at": version.get("version_created_at"),
+                "version_approved_at": version.get("version_approved_at"),
+                "frequency": row["frequency"],
+                "horizon": row["horizon"],
+                "tenors": _json_value(row["tenors"], []),
+                "latest_run": latest_run,
+                "recent_run_count": len(recent_runs),
+                "recent_success_rate": _percent(success_count, len(recent_runs)),
+                "latest_prediction_date": latest_prediction_date,
+                "alerts": alerts,
+            }
+        )
+
+    return {"schemes": schemes}
+
+
 def _scheme_metric_month(horizon: Any, predict_date: str, extra: dict[str, Any]) -> str:
     frequency = str(extra.get("frequency") or "").lower()
     try:

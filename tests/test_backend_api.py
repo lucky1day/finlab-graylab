@@ -88,6 +88,23 @@ class MetricsCompareReadOnlyTests(unittest.TestCase):
         self.assertEqual(result, payload)
 
 
+class SchemesLifecycleReadOnlyTests(unittest.TestCase):
+    def test_api_schemes_lifecycle_does_not_call_registry_sync(self) -> None:
+        """GET /api/schemes/lifecycle 只读健康概览，不触发 registry 写同步。"""
+        engine = object()
+        payload = {"schemes": []}
+        with patch.object(main, "get_engine", return_value=engine), patch.object(
+            main, "sync_registry_from_configs"
+        ) as sync_mock, patch.object(
+            main, "schemes_lifecycle", return_value=payload
+        ) as lifecycle_mock:
+            result = main.api_schemes_lifecycle()
+
+        sync_mock.assert_not_called()
+        lifecycle_mock.assert_called_once_with(engine)
+        self.assertEqual(result, payload)
+
+
 class TriggerEndpointTests(unittest.TestCase):
     """trigger 端点本体（auth 由 Depends 单独覆盖）：未知方案 404 / 已知方案 202。"""
 

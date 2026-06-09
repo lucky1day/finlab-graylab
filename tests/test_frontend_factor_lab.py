@@ -222,5 +222,39 @@ class FactorLabRollingHealthTests(unittest.TestCase):
         self.assertEqual([point["netHit"] for point in result["points"]], [1, 0, -1, -2, -1])
 
 
+class FactorLabLifecycleTests(unittest.TestCase):
+    def test_normalize_lifecycle_cards_marks_failed_or_missing_prediction(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            return hooks.normalizeLifecycleCards([
+              {
+                scheme_id: "alpha",
+                name: "Alpha",
+                version_status: "active",
+                latest_run: { status: "success", predict_date: "2026-06-03", records_written: 2 },
+                recent_success_rate: 66.7,
+                latest_prediction_date: "2026-06-03",
+                alerts: []
+              },
+              {
+                scheme_id: "beta",
+                name: "Beta",
+                version_status: "paused",
+                latest_run: { status: "failed", predict_date: "2026-06-03", records_written: 0 },
+                recent_success_rate: 0,
+                latest_prediction_date: null,
+                alerts: ["latest_run_failed", "missing_predictions"]
+              }
+            ]);
+            """
+        )
+
+        self.assertEqual(result[0]["statusClass"], "is-active")
+        self.assertFalse(result[0]["hasAlert"])
+        self.assertEqual(result[1]["statusClass"], "is-paused")
+        self.assertTrue(result[1]["hasAlert"])
+        self.assertEqual(result[1]["alertText"], "最近运行失败 / 无已批准预测")
+
+
 if __name__ == "__main__":
     unittest.main()
