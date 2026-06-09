@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-08
+**更新日期**: 2026-06-09
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -15,7 +15,7 @@
 当前约定:
 
 - 一个 `scheme_id` 只对应一个 `horizon`。同一算法如果同时做 T+1 和 T+5，应拆成两个方案目录。
-- 当前已接入 `daily` 频率的 `t1_daily` / `t5_daily`，以及 `weekly` 频率的 `weekly_10y_d_overlay` active live 方案。新增周度方案进入 live 调度前，必须先确认周度目标日规则、actuals 对齐规则、最新特征周产出能力，以及调度时间与上游 weekly 首轮预测时间对齐。
+- 当前已接入并 active 的方案只有 `daily` 频率的 `t1_daily` / `t5_daily`。新增周度方案进入 live 调度前，必须先确认周度目标日规则、actuals 对齐规则、最新特征周产出能力，以及调度时间与上游 weekly 首轮预测时间对齐。
 - `scheme_id` 一旦写入数据库就视为稳定 ID，不要随意改名；展示名变更只改 `name`。
 - 算法核心逻辑放在 `core/` 或独立模块里，`predict.py` 只做框架适配、输入准备和输出转换。
 - 方案不能直接写 `t_scheme_predictions`；统一由 `scheduler.executor` 写库，保证运行日志和 UPSERT 口径一致。
@@ -45,7 +45,7 @@
 | 基准复现 | `t1_daily` | 已接入的 T+1 0529 原始基准 |
 | 新 T+1 方案 | `t1_lgbm_spread_v2` | T+1、LightGBM、利差增强、v2 |
 | 新 T+5 方案 | `t5_lgbm_macro_v1` | T+5、LightGBM、宏观因子版本 |
-| 新周度方案 | `weekly_10y_d_overlay` | 周六预测下周最后交易日 vs 本周最后交易日 |
+| 新周度方案 | `weekly_db_sourced_v1` | 周六预测下周最后交易日 vs 本周最后交易日 |
 
 不要把 `scheme_id` 命名成 `t1_5y`、`t5_10y` 这类只描述任务格子的名字。期限范围由 `tenors` 字段管理；方案身份由算法来源、特征集合和版本定义。
 
@@ -57,10 +57,10 @@ name: "T1-LGBM利差增强-v2"
 
 文件命名规则:
 
-- Python 模块、测试、脚本统一使用小写 `snake_case.py`，例如 `latest_prediction.py`、`check_weekly_10y_readiness.py`。
-- 方案目录必须等于 `scheme_id`，统一小写 snake_case，例如 `schemes/weekly_10y_d_overlay/`。
-- `backtests/` 下的回测 runner 必须带范围，不使用 `reproduction.py` 这类泛名；日频批次用 `daily_0529_reproduction.py`，单方案周频用 `{scheme_id}_reproduction.py`，例如 `weekly_10y_d_overlay_reproduction.py`。
-- `scripts/` 下的命令必须使用“动作 + 对象 + 目的”命名，例如 `verify_backtest_reproduction.py`、`generate_daily_data_diff_report.py`、`compare_weekly_wind_export.py`。
+- Python 模块、测试、脚本统一使用小写 `snake_case.py`，例如 `latest_prediction.py`、`check_weekly_readiness.py`。
+- 方案目录必须等于 `scheme_id`，统一小写 snake_case，例如 `schemes/weekly_db_sourced_v1/`。
+- `backtests/` 下的回测 runner 必须带范围，不使用 `reproduction.py` 这类泛名；日频批次用 `daily_0529_reproduction.py`，单方案周频用 `{scheme_id}_reproduction.py`，例如 `weekly_db_sourced_v1_reproduction.py`。
+- `scripts/` 下的命令必须使用“动作 + 对象 + 目的”命名，例如 `verify_backtest_reproduction.py`、`generate_daily_data_diff_report.py`、`compare_weekly_input_artifact.py`。
 - 调度器中涉及频率差异的刷新模块必须显式带频率，例如 `daily_actuals_updater.py` 和 `weekly_actuals_updater.py`；不要使用 `actuals_updater.py` 这类容易和周度逻辑混淆的泛名。
 - 固定 schema 或 benchmark 文件可带版本日期，但日期前必须有分隔符，例如 `weekly_output_0529_columns.json`，不要使用 `weekly_output0529_columns.json`。
 - 前端静态资源允许使用 kebab-case，例如 `aifin-shell.js`、`aifin-lab-logo.svg`。
@@ -249,7 +249,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 1. **week_id 的权威来源唯一**：`bond_db.api_wind_daily`（该表含 `rdate` + `week_id` 两列）。任何 `week_id ↔ 交易日` 的映射都必须**从 DB 读取**，不得用本地日历公式计算。
    - 日期 → week_id：读 `api_wind_daily.week_id`（经 `shared.calendar_service.week_id_for_date`，其底层查 `api_wind_*`）。
    - week_id → 交易日 / 周内最后交易日：`SELECT rdate ... FROM api_wind_daily WHERE week_id = :week_id`（取该周实际交易日，最后交易日取 `MAX(rdate)`），不得用 `week_id_to_friday/monday` 这类公式。
-2. **禁止**新增方案在预测/回测路径中 import `shared.weekly_calendar` / `shared.legacy_weekly_calendar` 的 `*_to_friday` / `*_to_monday` / `get_week_id_for_date` 等**计算型**函数来决定特征周/目标周日期。这些仅允许作为展示用近似或历史归档，不得参与数据对齐。
+2. **禁止**新增方案在预测/回测路径中 import 任何 `*_to_friday` / `*_to_monday` / `get_week_id_for_date` 这类**计算型**周历函数来决定特征周/目标周日期。这些仅允许作为展示用近似或历史归档，不得参与数据对齐。
 3. **target_week_id** 同样以 DB 口径推导：本周 week_id 的下一周，应以 `api_wind_daily` 中实际存在的下一个 week_id 为准，而非 `feature+1` 直接递增。
 4. 验收证据：adapter/runner 日志或 `extra` 中能证明 `feature_week_id`、`target_week_id`、`feature_date`、`target_date` 均来自 `api_wind_daily` 读取，而非公式计算。
 
@@ -263,7 +263,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 - `core/` 不直接 import `scheduler.repository`、`scheduler.executor` 或 SQL 写库函数。
 - `predict.py` 不直接执行 `INSERT/UPDATE/DELETE/ALTER/DROP`。
 - 普通方案和 backtest runner 不绕过 `shared.input_artifacts` 生成输入。
-- **周频/月频方案的预测与回测路径不得 import 计算型周历函数（`shared.weekly_calendar` / `shared.legacy_weekly_calendar` 的 `*_to_friday/*_to_monday/get_week_id_for_date`）来决定 week_id↔日期；week_id 必须读 `api_wind_daily`（见 Step 3a）。**
+- **周频/月频方案的预测与回测路径不得 import 计算型周历函数（例如 `*_to_friday/*_to_monday/get_week_id_for_date`）来决定 week_id↔日期；week_id 必须读 `api_wind_daily`（见 Step 3a）。**
 - 运行路径不依赖 `/Users/.../Downloads`、`Desktop` 等外部绝对路径。
 
 ### Step 5: Unit Gate - 单元验证
@@ -323,8 +323,8 @@ conda run -n forecast_env python scripts/verify_backtest_reproduction.py
 周度方案示例:
 
 ```bash
-PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_d_overlay_reproduction --no-persist
-PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.weekly_10y_d_overlay_reproduction
+PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_reproduction --no-persist
+PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_reproduction
 ```
 
 验收点:

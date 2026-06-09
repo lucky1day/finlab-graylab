@@ -54,8 +54,7 @@
   - 执行计划（已完成）：`ARCH_EXECUTION_PLAN.md`（架构重构 S0–S8）、`WEEKLY_LIVE_ROLLOUT_PLAN.md`（周度 live 上线）
   - 历史记录：`IMPLEMENTATION_PLAN.md`（Phase 1–11 搭建历史）、`MIGRATION_PLAN.md`、`RESEARCH.md`、`CLEANUP_PLAN.md`
 - **[legacy_sources/](legacy_sources/)** — 方案算法的**原始来源脚本**（审计留档，不被代码 import）
-  - `legacy_weekly_5y_direct_production_0529.py`、`legacy_weekly_7y_cross_d_overlay_0529.py`
-  - 注：`weekly_10y` 的 legacy 仍在 `schemes/weekly_10y_d_overlay/core/`，因 `predictors.py` **运行时复用**它，不可移动。
+  - 旧周频方案已随本轮清理删除；该目录当前不再保留周频 legacy 源。
 
 ---
 
