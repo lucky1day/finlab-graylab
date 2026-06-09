@@ -95,7 +95,7 @@ def _seed_predictions(engine) -> None:
             text(
                 """
                 INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
-                VALUES ('10Y', '2026-06-06', -1, -1)
+                VALUES ('10Y', '2026-06-05', -1, -1)
                 """
             )
         )

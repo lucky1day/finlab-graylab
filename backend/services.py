@@ -504,7 +504,7 @@ def scheme_metrics(
          AND sp.serving_run_id = p.run_id
         LEFT JOIN t_scheme_actuals a
           ON a.tenor = p.target_tenor
-         AND a.trade_date = p.target_date
+         AND a.trade_date = p.predict_date
         LEFT JOIN t_scheme_weekly_actuals wa
           ON wa.tenor = p.target_tenor
          AND wa.predict_date = p.predict_date
