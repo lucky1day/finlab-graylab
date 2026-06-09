@@ -158,6 +158,7 @@
     selectedTaskKey: "3Y|daily|T+5",
     selectedSchemeId: "",
     rankMetric: "overall",
+    rankDirection: "desc",
     startMonth: "2025-01",
     endMonth: "2025-05",
     chartMetrics: {
@@ -457,13 +458,23 @@
       if (!grouped[month]) grouped[month] = [];
       var predictedDirection = normalizeDirection(row.predicted_direction);
       var actualDirection = normalizeDirection(row.actual_direction);
+      var isCorrect = row.is_correct;
+      if (isCorrect === undefined || isCorrect === null) {
+        isCorrect = actualDirection === null || predictedDirection === null ? null : predictedDirection === actualDirection;
+      }
       grouped[month].push({
         day: detailDisplayDay(row),
+        predictDate: row.predict_date || "",
+        targetDate: row.target_date || "",
+        runId: row.run_id || null,
+        schemeVersion: row.scheme_version || "",
+        inputArtifactHash: row.input_artifact_hash || "",
+        confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
         predicted: directionText(predictedDirection),
         actual: directionText(actualDirection),
         predictedDirection: predictedDirection,
         actualDirection: actualDirection,
-        correct: actualDirection === null || predictedDirection === null ? null : predictedDirection === actualDirection
+        correct: isCorrect === null ? null : Boolean(isCorrect)
       });
     });
     return grouped;
@@ -755,12 +766,50 @@
     return metricFromMonthlyRows(getVisibleRowsForScheme(scheme));
   }
 
-  function sortSchemesByMetric(schemes) {
-    return schemes.slice().sort(function (a, b) {
-      var aMetric = aggregateScheme(a)[factorLabState.rankMetric] || 0;
-      var bMetric = aggregateScheme(b)[factorLabState.rankMetric] || 0;
-      return bMetric - aMetric;
+  function rankingMetricValue(scheme, metricId) {
+    var metric = aggregateScheme(scheme);
+    if (metricId === "samples") return metric.samples;
+    if (metricId === "correct") return metric.correct;
+    return metric[metricId];
+  }
+
+  function isLowSampleMetric(metric) {
+    var samples = Number(metric && metric.samples || 0);
+    return samples > 0 && samples < 30;
+  }
+
+  function sortRankingSchemes(schemes, metricId, direction) {
+    var sortMetric = metricId || "overall";
+    var sortDirection = direction === "asc" ? "asc" : "desc";
+    var directionFactor = sortDirection === "asc" ? 1 : -1;
+    return schemes.slice().map(function (scheme, index) {
+      return { scheme: scheme, index: index, value: rankingMetricValue(scheme, sortMetric) };
+    }).sort(function (a, b) {
+      var aValue = a.value === null || a.value === undefined || a.value === "" ? null : Number(a.value);
+      var bValue = b.value === null || b.value === undefined || b.value === "" ? null : Number(b.value);
+      if (aValue === null && bValue === null) return a.index - b.index;
+      if (aValue === null) return 1;
+      if (bValue === null) return -1;
+      if (aValue === bValue) return a.index - b.index;
+      return aValue < bValue ? -1 * directionFactor : directionFactor;
+    }).map(function (item) {
+      return item.scheme;
     });
+  }
+
+  function sortSchemesByMetric(schemes) {
+    return sortRankingSchemes(schemes, factorLabState.rankMetric, factorLabState.rankDirection);
+  }
+
+  function latestSchemeVersion(scheme) {
+    if (!scheme || !scheme.dailyRowsByMonth) return "";
+    var latest = "";
+    Object.keys(scheme.dailyRowsByMonth).forEach(function (month) {
+      (scheme.dailyRowsByMonth[month] || []).forEach(function (row) {
+        if (row.schemeVersion) latest = row.schemeVersion;
+      });
+    });
+    return latest;
   }
 
   function ensureSelectedScheme() {
@@ -832,11 +881,15 @@
     body.innerHTML = schemes.map(function (scheme, index) {
       var metric = aggregateScheme(scheme);
       var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
+      var version = latestSchemeVersion(scheme);
+      var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
+      var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
+      var barWidth = clampPercent(metric.overall);
       return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
         '<td>' + (index + 1) + '</td>' +
-        '<td><strong>' + escapeHtml(scheme.name) + '</strong></td>' +
-        '<td class="' + getMetricClass(metric.overall) + '">' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metric.samples + '）</td>' +
-        '<td>' + metric.samples + '</td>' +
+        '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
+        '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metric.samples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
+        '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
         '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
         '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
         '<td>' + escapeHtml(scheme.latestRun) + '</td>' +
@@ -913,6 +966,13 @@
   function updateFactorFilterUi() {
     Array.prototype.slice.call(document.querySelectorAll("[data-factor-rank-metric]")).forEach(function (button) {
       button.classList.toggle("is-active", button.getAttribute("data-factor-rank-metric") === factorLabState.rankMetric);
+    });
+    Array.prototype.slice.call(document.querySelectorAll("[data-factor-rank-sort]")).forEach(function (button) {
+      var metricId = button.getAttribute("data-factor-rank-sort");
+      var active = metricId === factorLabState.rankMetric;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-sort", active ? factorLabState.rankDirection : "none");
+      button.setAttribute("data-sort-direction", active ? factorLabState.rankDirection.toUpperCase() : "");
     });
     renderFactorMonthSelects();
   }
@@ -1177,6 +1237,23 @@
         var rankButton = event.target.closest("[data-factor-rank-metric]");
         if (rankButton) {
           factorLabState.rankMetric = rankButton.getAttribute("data-factor-rank-metric") || "overall";
+          factorLabState.rankDirection = "desc";
+          factorLabState.selectedSchemeId = "";
+          factorLabState.page = 1;
+          closeFactorCalendar();
+          renderFactorLab();
+          return;
+        }
+
+        var rankSortButton = event.target.closest("[data-factor-rank-sort]");
+        if (rankSortButton) {
+          var sortMetric = rankSortButton.getAttribute("data-factor-rank-sort") || "overall";
+          if (factorLabState.rankMetric === sortMetric) {
+            factorLabState.rankDirection = factorLabState.rankDirection === "asc" ? "desc" : "asc";
+          } else {
+            factorLabState.rankMetric = sortMetric;
+            factorLabState.rankDirection = "desc";
+          }
           factorLabState.selectedSchemeId = "";
           factorLabState.page = 1;
           closeFactorCalendar();
@@ -1256,6 +1333,12 @@
       closeFactorCalendar();
     }
   });
+
+  window.__factorLabTestHooks = {
+    aggregateScheme: aggregateScheme,
+    isLowSampleMetric: isLowSampleMetric,
+    sortRankingSchemes: sortRankingSchemes
+  };
 
   /* ─── Init ─── */
   setActiveRoute("/factor-lab", false);
