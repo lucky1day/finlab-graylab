@@ -373,14 +373,20 @@ def list_predictions(
         filters.append("predict_date <= :end_date")
         params["end_date"] = end_date
     where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
-    count_sql = text(f"SELECT COUNT(*) FROM t_scheme_predictions {where_sql}")
+    serving_filter = (
+        "WHERE (scheme_id, target_tenor, predict_date, run_id) IN ("
+        " SELECT sp.scheme_id, sp.target_tenor, sp.predict_date, sp.serving_run_id"
+        " FROM t_scheme_serving_pointer sp WHERE sp.serving_status = 'approved')"
+    )
+    full_where = serving_filter + (" AND " + " AND ".join(filters) if filters else "")
+    count_sql = text(f"SELECT COUNT(*) FROM t_scheme_predictions {full_where}")
     data_sql = text(
         f"""
         SELECT id, scheme_id, target_tenor, horizon, predict_date, target_date,
                predicted_direction, confidence, model_version, extra,
                created_at, updated_at
         FROM t_scheme_predictions
-        {where_sql}
+        {full_where}
         ORDER BY predict_date DESC, scheme_id, target_tenor
         LIMIT :limit OFFSET :offset
         """
@@ -491,6 +497,11 @@ def scheme_metrics(
                p.predicted_direction, p.confidence, p.model_version, p.extra,
                a.direction_1d, a.direction_5d, wa.direction_weekly
         FROM t_scheme_predictions p
+        INNER JOIN t_scheme_serving_pointer sp
+          ON sp.scheme_id = p.scheme_id
+         AND sp.target_tenor = p.target_tenor
+         AND sp.predict_date = p.predict_date
+         AND sp.serving_run_id = p.run_id
         LEFT JOIN t_scheme_actuals a
           ON a.tenor = p.target_tenor
          AND a.trade_date = p.target_date
@@ -498,7 +509,8 @@ def scheme_metrics(
           ON wa.tenor = p.target_tenor
          AND wa.predict_date = p.predict_date
          AND wa.target_date = p.target_date
-        WHERE {" AND ".join(filters)}
+        WHERE sp.serving_status = 'approved'
+          AND {" AND ".join(filters)}
         ORDER BY p.predict_date, p.target_tenor
         """
     )

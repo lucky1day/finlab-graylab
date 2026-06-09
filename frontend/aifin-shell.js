@@ -703,13 +703,15 @@
     ]).then(function (results) {
       var liveTasks = results[0];
       var backtestTasks = results[1];
-      if (!liveTasks && !backtestTasks) {
+      var hasLive = liveTasks && hasPopulatedTasks(liveTasks);
+      var hasBacktest = backtestTasks && hasPopulatedTasks(backtestTasks);
+      if (!hasLive && !hasBacktest) {
         return failFactorLabDataLoad({ message: "实时和回测接口均暂不可用" });
       }
       var mergedTasks = mergeFactorLabTasks(backtestTasks, liveTasks);
       var mode = "";
-      if (liveTasks && backtestTasks) mode = "merged";
-      else if (liveTasks) mode = "live";
+      if (hasLive && hasBacktest) mode = "merged";
+      else if (hasLive) mode = "live";
       else mode = "backtest";
       finishFactorLabDataLoad(mergedTasks, mode);
       return true;
@@ -1124,11 +1126,15 @@
 
   function getFactorAvailableMonths() {
     var src = factorLabState.dataSource;
-    var months = factorDailyBaseRows.concat(factorWeeklyBaseRows).reduce(function (result, row) {
-      if (src !== "all" && row._source && row._source !== src) return result;
-      if (result.indexOf(row.month) === -1) result.push(row.month);
-      return result;
-    }, []);
+    var months = [];
+    // 远程数据已加载时跳过 mock base rows（mock 行无 _source，会污染口径过滤）
+    if (!factorLabRemoteLoaded) {
+      months = factorDailyBaseRows.concat(factorWeeklyBaseRows).reduce(function (result, row) {
+        if (src !== "all" && row._source && row._source !== src) return result;
+        if (result.indexOf(row.month) === -1) result.push(row.month);
+        return result;
+      }, []);
+    }
     Object.keys(factorTaskSchemes).forEach(function (key) {
       factorTaskSchemes[key].forEach(function (scheme) {
         scheme.monthlyRows.forEach(function (row) {
@@ -1299,7 +1305,11 @@
     var calendarIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>';
 
     var html = "";
+    // 跨页检测回测->实盘分界：找到本页之前的最后一个 _source
     var prevSource = "";
+    for (var ri = 0; ri < start && ri < visibleRows.length; ri++) {
+      if (visibleRows[ri]._source) prevSource = visibleRows[ri]._source;
+    }
     pageRows.forEach(function (row) {
       // 在"全部"口径下，回测到实盘的分界处插入分隔行
       if (factorLabState.dataSource === "all" && prevSource === "backtest" && row._source === "live") {

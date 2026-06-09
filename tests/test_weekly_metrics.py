@@ -12,6 +12,7 @@ def _create_weekly_schema(engine) -> None:
                 """
                 CREATE TABLE t_scheme_predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER,
                     scheme_id TEXT,
                     target_tenor TEXT,
                     horizon INTEGER,
@@ -21,6 +22,19 @@ def _create_weekly_schema(engine) -> None:
                     confidence REAL,
                     model_version TEXT,
                     extra TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE t_scheme_serving_pointer (
+                    scheme_id TEXT,
+                    target_tenor TEXT,
+                    predict_date TEXT,
+                    serving_run_id INTEGER,
+                    serving_status TEXT
                 )
                 """
             )
@@ -62,11 +76,20 @@ class WeeklyMetricsTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_predictions
-                        (scheme_id, target_tenor, horizon, predict_date, target_date,
+                        (run_id, scheme_id, target_tenor, horizon, predict_date, target_date,
                          predicted_direction, confidence, model_version, extra)
                     VALUES
-                        ('demo_weekly_scheme', '10Y', 6, '2026-05-23', '2026-05-29',
+                        (1, 'demo_weekly_scheme', '10Y', 6, '2026-05-23', '2026-05-29',
                          -1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2026-05-22"}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_serving_pointer
+                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
+                    VALUES ('demo_weekly_scheme', '10Y', '2026-05-23', 1, 'approved')
                     """
                 )
             )
@@ -106,13 +129,24 @@ class WeeklyMetricsTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_predictions
-                        (scheme_id, target_tenor, horizon, predict_date, target_date,
+                        (run_id, scheme_id, target_tenor, horizon, predict_date, target_date,
                          predicted_direction, confidence, model_version, extra)
                     VALUES
-                        ('demo_weekly_scheme', '10Y', 6, '2025-10-25', '2025-10-31',
+                        (1, 'demo_weekly_scheme', '10Y', 6, '2025-10-25', '2025-10-31',
                          1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-24"}'),
-                        ('demo_weekly_scheme', '10Y', 6, '2025-11-01', '2025-11-07',
+                        (2, 'demo_weekly_scheme', '10Y', 6, '2025-11-01', '2025-11-07',
                          -1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-31"}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_serving_pointer
+                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
+                    VALUES
+                        ('demo_weekly_scheme', '10Y', '2025-10-25', 1, 'approved'),
+                        ('demo_weekly_scheme', '10Y', '2025-11-01', 2, 'approved')
                     """
                 )
             )
