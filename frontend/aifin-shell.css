@@ -1456,7 +1456,7 @@ button {
   position: absolute;
   inset: 0;
   border: 0;
-  background: rgba(30, 34, 38, 0.20);
+  background: transparent;
   cursor: pointer;
 }
 

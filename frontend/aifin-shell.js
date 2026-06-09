@@ -1257,12 +1257,65 @@
     body.innerHTML = html;
   }
 
-  function openFactorCalendar(month) {
+  function openFactorCalendar(month, trigger) {
     var drawer = document.getElementById("factorCalendarDrawer");
     if (!drawer) return;
     renderFactorDailyRows(month);
     drawer.classList.add("is-open");
     drawer.setAttribute("aria-hidden", "false");
+    positionFactorCalendarPanel(trigger);
+  }
+
+  function positionFactorCalendarPanel(trigger) {
+    var drawer = document.getElementById("factorCalendarDrawer");
+    var panel = drawer ? drawer.querySelector(".factor-calendar-panel") : null;
+    if (!drawer || !panel) return;
+
+    if (trigger) {
+      Array.prototype.slice.call(document.querySelectorAll(".factor-calendar-link.is-active")).forEach(function (button) {
+        button.classList.remove("is-active");
+      });
+      trigger.classList.add("is-active");
+    }
+
+    var afterPaint = window.requestAnimationFrame || function (callback) { window.setTimeout(callback, 0); };
+    afterPaint(function () {
+      var margin = 16;
+      var gap = 12;
+      var drawerRect = drawer.getBoundingClientRect();
+      var panelRect = panel.getBoundingClientRect();
+      var viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+      var viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+      var panelWidth = panelRect.width;
+      var panelHeight = panelRect.height;
+      var left = Math.max(margin, (viewportWidth - panelWidth) / 2);
+      var top = margin;
+
+      if (trigger && viewportWidth >= 760) {
+        var triggerRect = trigger.getBoundingClientRect();
+        var rightSide = triggerRect.right + gap;
+        var leftSide = triggerRect.left - panelWidth - gap;
+
+        left = rightSide + panelWidth <= viewportWidth - margin ? rightSide : leftSide;
+        left = Math.min(Math.max(left, margin), Math.max(margin, viewportWidth - panelWidth - margin));
+
+        top = triggerRect.top + triggerRect.height / 2 - panelHeight / 2;
+        top = Math.min(Math.max(top, margin), Math.max(margin, viewportHeight - panelHeight - margin));
+      }
+
+      panel.style.right = "auto";
+      panel.style.left = Math.round(left - drawerRect.left) + "px";
+      panel.style.top = Math.round(top - drawerRect.top) + "px";
+
+      var title = document.getElementById("factorCalendarTitle");
+      if (!title || typeof title.focus !== "function") return;
+      title.setAttribute("tabindex", "-1");
+      try {
+        title.focus({ preventScroll: true });
+      } catch (error) {
+        title.focus();
+      }
+    });
   }
 
   function closeFactorCalendar() {
@@ -1270,6 +1323,9 @@
     if (!drawer) return;
     drawer.classList.remove("is-open");
     drawer.setAttribute("aria-hidden", "true");
+    Array.prototype.slice.call(document.querySelectorAll(".factor-calendar-link.is-active")).forEach(function (button) {
+      button.classList.remove("is-active");
+    });
   }
 
   function bindFactorLabEvents() {
@@ -1325,7 +1381,7 @@
 
         var calendarButton = event.target.closest("[data-factor-calendar-month]");
         if (calendarButton) {
-          openFactorCalendar(calendarButton.getAttribute("data-factor-calendar-month"));
+          openFactorCalendar(calendarButton.getAttribute("data-factor-calendar-month"), calendarButton);
           return;
         }
 
