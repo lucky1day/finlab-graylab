@@ -166,5 +166,30 @@ class FactorLabCompareTests(unittest.TestCase):
         self.assertEqual(result["schemes"][1]["cells"]["10Y"]["className"], "metric-bad")
 
 
+class FactorLabCalibrationTests(unittest.TestCase):
+    def test_build_calibration_buckets_skips_empty_and_pending_rows(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            return hooks.buildCalibrationBuckets([
+              { confidence: 0.05, correct: true },
+              { confidence: 0.15, correct: false },
+              { confidence: 0.65, correct: true },
+              { confidence: 0.72, correct: true },
+              { confidence: null, correct: true },
+              { confidence: 0.88, correct: null }
+            ], 5);
+            """
+        )
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["bucket"], "0.0-0.2")
+        self.assertEqual(result[0]["samples"], 2)
+        self.assertEqual(result[0]["hitRate"], 50.0)
+        self.assertEqual(result[0]["avgConfidence"], 10.0)
+        self.assertEqual(result[1]["bucket"], "0.6-0.8")
+        self.assertEqual(result[1]["samples"], 2)
+        self.assertEqual(result[1]["hitRate"], 100.0)
+
+
 if __name__ == "__main__":
     unittest.main()

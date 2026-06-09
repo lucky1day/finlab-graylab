@@ -948,6 +948,54 @@
     };
   }
 
+  function roundOne(value) {
+    return Math.round(Number(value || 0) * 10) / 10;
+  }
+
+  function normalizeConfidence(value) {
+    if (value === null || value === undefined || value === "") return null;
+    var numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    if (numeric > 1 && numeric <= 100) numeric = numeric / 100;
+    return Math.max(0, Math.min(1, numeric));
+  }
+
+  function buildCalibrationBuckets(rows, bucketCount) {
+    var count = Math.max(1, Number(bucketCount) || 10);
+    var buckets = [];
+    for (var i = 0; i < count; i++) {
+      buckets.push({
+        index: i,
+        lower: i / count,
+        upper: (i + 1) / count,
+        samples: 0,
+        correct: 0,
+        confidenceSum: 0
+      });
+    }
+    (rows || []).forEach(function (row) {
+      var confidence = normalizeConfidence(row.confidence);
+      if (confidence === null || row.correct === null || row.correct === undefined) return;
+      var index = Math.min(count - 1, Math.floor(confidence * count));
+      buckets[index].samples += 1;
+      buckets[index].correct += row.correct ? 1 : 0;
+      buckets[index].confidenceSum += confidence;
+    });
+    return buckets.filter(function (bucket) {
+      return bucket.samples > 0;
+    }).map(function (bucket) {
+      return {
+        bucket: bucket.lower.toFixed(1) + "-" + bucket.upper.toFixed(1),
+        lower: roundOne(bucket.lower * 100),
+        upper: roundOne(bucket.upper * 100),
+        samples: bucket.samples,
+        correct: bucket.correct,
+        hitRate: roundOne(bucket.correct / bucket.samples * 100),
+        avgConfidence: roundOne(bucket.confidenceSum / bucket.samples * 100)
+      };
+    });
+  }
+
   function ensureSelectedScheme() {
     var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (!schemes.length) {
@@ -1291,6 +1339,60 @@
     host.innerHTML = svg;
   }
 
+  function renderCalibrationChart() {
+    var host = document.getElementById("factorCalibrationChart");
+    var meta = document.getElementById("factorCalibrationMeta");
+    if (!host) return;
+    var scheme = getSelectedScheme();
+    var rows = getVisibleDailyRowsForScheme(scheme);
+    var buckets = buildCalibrationBuckets(rows, 10);
+    if (meta) {
+      meta.textContent = buckets.length ? buckets.length + " 个有效置信度桶" : "暂无可校准样本";
+    }
+    if (!buckets.length) {
+      host.innerHTML = '<div class="factor-trend-empty">暂无可展示的置信度样本</div>';
+      return;
+    }
+
+    var width = 520;
+    var height = 300;
+    var left = 54;
+    var right = 24;
+    var top = 24;
+    var bottom = 44;
+    var plotWidth = width - left - right;
+    var plotHeight = height - top - bottom;
+    var x = function (value) {
+      return left + Number(value || 0) / 100 * plotWidth;
+    };
+    var y = function (value) {
+      return top + (100 - Number(value || 0)) / 100 * plotHeight;
+    };
+
+    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="置信度可靠性图">';
+    [0, 25, 50, 75, 100].forEach(function (tick) {
+      var tickY = y(tick);
+      var tickX = x(tick);
+      svg += '<line class="factor-trend-grid" x1="' + left + '" y1="' + tickY.toFixed(1) + '" x2="' + (width - right) + '" y2="' + tickY.toFixed(1) + '"></line>';
+      svg += '<line class="factor-trend-grid" x1="' + tickX.toFixed(1) + '" y1="' + top + '" x2="' + tickX.toFixed(1) + '" y2="' + (height - bottom) + '"></line>';
+      svg += '<text class="factor-trend-axis" x="' + (left - 10) + '" y="' + (tickY + 4).toFixed(1) + '" text-anchor="end">' + tick + '%</text>';
+      svg += '<text class="factor-trend-axis" x="' + tickX.toFixed(1) + '" y="' + (height - 14) + '" text-anchor="middle">' + tick + '%</text>';
+    });
+    svg += '<path class="factor-calibration-ideal" d="M' + x(0).toFixed(1) + ' ' + y(0).toFixed(1) + 'L' + x(100).toFixed(1) + ' ' + y(100).toFixed(1) + '"></path>';
+    var path = buckets.map(function (bucket, index) {
+      return (index === 0 ? "M" : "L") + x(bucket.avgConfidence).toFixed(1) + " " + y(bucket.hitRate).toFixed(1);
+    }).join(" ");
+    svg += '<path class="factor-trend-line" d="' + path + '" stroke="#155C3E"></path>';
+    buckets.forEach(function (bucket) {
+      var radius = Math.min(11, 4 + Math.sqrt(bucket.samples));
+      svg += '<g><title>' + escapeHtml(bucket.bucket + " · 命中 " + formatPercent(bucket.hitRate) + " · 样本 " + bucket.samples) + '</title>';
+      svg += '<circle class="factor-calibration-point" cx="' + x(bucket.avgConfidence).toFixed(1) + '" cy="' + y(bucket.hitRate).toFixed(1) + '" r="' + radius.toFixed(1) + '"></circle>';
+      svg += '<text class="factor-calibration-label" x="' + x(bucket.avgConfidence).toFixed(1) + '" y="' + (y(bucket.hitRate) - radius - 6).toFixed(1) + '" text-anchor="middle">' + bucket.samples + '</text></g>';
+    });
+    svg += '</svg>';
+    host.innerHTML = svg;
+  }
+
   function renderFactorDetail() {
     var tbody = document.getElementById("factorMonthlyTableBody");
     var title = document.getElementById("factorDetailTitle");
@@ -1326,6 +1428,7 @@
     tbody.innerHTML = html;
     renderFactorPagination();
     renderFactorTrendChart();
+    renderCalibrationChart();
   }
 
   function renderFactorLab() {
@@ -1588,6 +1691,7 @@
 
   window.__factorLabTestHooks = {
     aggregateScheme: aggregateScheme,
+    buildCalibrationBuckets: buildCalibrationBuckets,
     buildLocalCompareMatrix: buildLocalCompareMatrix,
     isLowSampleMetric: isLowSampleMetric,
     sortRankingSchemes: sortRankingSchemes
