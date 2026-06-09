@@ -23,6 +23,7 @@ from backend.services import (
     list_predictions,
     list_schemes,
     list_targets,
+    metrics_compare,
     scheme_metrics,
     sync_registry_from_configs,
 )
@@ -123,6 +124,24 @@ def api_targets() -> dict:
             if item["status"] == "active"
         },
     }
+
+
+@app.get("/api/metrics/compare")
+def api_metrics_compare(
+    frequency: str | None = Query(default=None, pattern=r"^(daily|weekly)$"),
+    start_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    end_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    metric: str = Query(default="overall"),
+) -> dict:
+    if start_month and end_month and end_month < start_month:
+        raise HTTPException(status_code=400, detail="end_month must be greater than or equal to start_month")
+    return metrics_compare(
+        get_engine(),
+        frequency=frequency,
+        start_month=start_month,
+        end_month=end_month,
+        metric=metric,
+    )
 
 
 @app.get("/api/metrics/{scheme_id}")

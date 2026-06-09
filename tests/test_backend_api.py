@@ -60,6 +60,34 @@ class GetSchemesReadOnlyTests(unittest.TestCase):
         self.assertEqual(result["schemes"], [{"scheme_id": "demo_daily"}])
 
 
+class MetricsCompareReadOnlyTests(unittest.TestCase):
+    def test_api_metrics_compare_does_not_call_registry_sync(self) -> None:
+        """GET /api/metrics/compare 只聚合已有数据，不触发任何 registry 写同步。"""
+        engine = object()
+        payload = {"metric": "overall", "schemes": [], "tenors": []}
+        with patch.object(main, "get_engine", return_value=engine), patch.object(
+            main, "sync_registry_from_configs"
+        ) as sync_mock, patch.object(
+            main, "metrics_compare", return_value=payload
+        ) as compare_mock:
+            result = main.api_metrics_compare(
+                frequency="daily",
+                start_month="2026-06",
+                end_month="2026-06",
+                metric="overall",
+            )
+
+        sync_mock.assert_not_called()
+        compare_mock.assert_called_once_with(
+            engine,
+            frequency="daily",
+            start_month="2026-06",
+            end_month="2026-06",
+            metric="overall",
+        )
+        self.assertEqual(result, payload)
+
+
 class TriggerEndpointTests(unittest.TestCase):
     """trigger 端点本体（auth 由 Depends 单独覆盖）：未知方案 404 / 已知方案 202。"""
 

@@ -135,5 +135,36 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertFalse(result["empty"])
 
 
+class FactorLabCompareTests(unittest.TestCase):
+    def test_build_compare_matrix_groups_tasks_by_frequency(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const tasks = {
+              "5Y|daily|T+5": [
+                { id: "alpha", name: "Alpha", monthlyRows: [{ month: "2025-01", samples: 10, correct: 7, overall: 70, upPrecision: 80, downPrecision: 50 }] }
+              ],
+              "10Y|daily|T+5": [
+                { id: "alpha", name: "Alpha", monthlyRows: [{ month: "2025-01", samples: 10, correct: 6, overall: 60, upPrecision: 55, downPrecision: 65 }] },
+                { id: "beta", name: "Beta", monthlyRows: [{ month: "2025-01", samples: 8, correct: 4, overall: 50, upPrecision: 40, downPrecision: 60 }] }
+              ],
+              "5Y|weekly|NEXT_MONDAY": [
+                { id: "weekly", name: "Weekly", monthlyRows: [{ month: "2025-01", samples: 4, correct: 4, overall: 100, upPrecision: 100, downPrecision: null }] }
+              ]
+            };
+            return hooks.buildLocalCompareMatrix(tasks, "daily", "overall");
+            """
+        )
+
+        self.assertEqual(result["frequency"], "daily")
+        self.assertEqual(result["metric"], "overall")
+        self.assertEqual(result["tenors"], ["5Y", "10Y"])
+        self.assertEqual([item["scheme_id"] for item in result["schemes"]], ["alpha", "beta"])
+        alpha = result["schemes"][0]
+        self.assertEqual(alpha["cells"]["5Y"]["value"], 70)
+        self.assertEqual(alpha["cells"]["10Y"]["value"], 60)
+        self.assertEqual(alpha["cells"]["5Y"]["className"], "metric-good")
+        self.assertEqual(result["schemes"][1]["cells"]["10Y"]["className"], "metric-bad")
+
+
 if __name__ == "__main__":
     unittest.main()

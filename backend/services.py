@@ -584,6 +584,145 @@ def scheme_metrics(
     }
 
 
+def _compare_metric_key(metric: str | None) -> str:
+    aliases = {
+        "accuracy": "overall",
+        "overall": "overall",
+        "up": "up_precision",
+        "upPrecision": "up_precision",
+        "up_precision": "up_precision",
+        "down": "down_precision",
+        "downPrecision": "down_precision",
+        "down_precision": "down_precision",
+    }
+    return aliases.get(str(metric or "overall"), "overall")
+
+
+def _compare_cell(block: dict[str, Any], metric_key: str) -> dict[str, Any]:
+    return {
+        "value": block.get(metric_key),
+        "samples": block["samples"],
+        "correct": block["correct"],
+        "overall": block["overall"],
+        "up_precision": block["up_precision"],
+        "down_precision": block["down_precision"],
+    }
+
+
+def metrics_compare(
+    engine: Engine,
+    frequency: str | None = None,
+    start_month: str | None = None,
+    end_month: str | None = None,
+    metric: str = "overall",
+) -> dict[str, Any]:
+    """跨方案、跨 tenor 聚合准确率矩阵（只读）。"""
+    target_labels = _target_labels(engine)
+    metric_key = _compare_metric_key(metric)
+    filters = ["sp.serving_status = 'approved'"]
+    params: dict[str, Any] = {}
+    if frequency:
+        filters.append(
+            "COALESCE(r.frequency, CASE WHEN p.horizon = 6 THEN 'weekly' ELSE 'daily' END) = :frequency"
+        )
+        params["frequency"] = frequency
+    start_date = _month_start(start_month)
+    end_exclusive = _month_end(end_month)
+    if start_date:
+        filters.append("p.predict_date >= :start_date")
+        params["start_date"] = start_date
+    if end_exclusive:
+        filters.append("p.predict_date < :end_exclusive")
+        params["end_exclusive"] = end_exclusive
+
+    sql = text(
+        f"""
+        SELECT p.scheme_id, COALESCE(r.name, p.scheme_id) AS scheme_name,
+               COALESCE(r.status, 'active') AS scheme_status,
+               COALESCE(r.frequency, CASE WHEN p.horizon = 6 THEN 'weekly' ELSE 'daily' END) AS frequency,
+               COALESCE(r.horizon, p.horizon) AS registry_horizon,
+               p.target_tenor, p.horizon, p.predict_date, p.target_date,
+               p.predicted_direction, a.direction_1d, a.direction_5d, wa.direction_weekly
+        FROM t_scheme_serving_pointer sp
+        INNER JOIN t_scheme_predictions p
+          ON p.run_id = sp.serving_run_id
+         AND p.scheme_id = sp.scheme_id
+         AND p.target_tenor = sp.target_tenor
+         AND p.predict_date = sp.predict_date
+        LEFT JOIN t_scheme_registry r
+          ON r.scheme_id = p.scheme_id
+        LEFT JOIN t_scheme_actuals a
+          ON a.tenor = p.target_tenor
+         AND a.trade_date = p.target_date
+        LEFT JOIN t_scheme_weekly_actuals wa
+          ON wa.tenor = p.target_tenor
+         AND wa.predict_date = p.predict_date
+         AND wa.target_date = p.target_date
+        WHERE {" AND ".join(filters)}
+        ORDER BY
+          CASE WHEN COALESCE(r.status, 'active') = 'active' THEN 0 ELSE 1 END,
+          p.scheme_id, p.target_tenor, p.predict_date
+        """
+    )
+    with engine.connect() as conn:
+        raw_rows = conn.execute(sql, params).mappings().all()
+
+    schemes: dict[str, dict[str, Any]] = {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    tenors: set[str] = set()
+    for row in raw_rows:
+        scheme_id = row["scheme_id"]
+        tenor = row["target_tenor"]
+        tenors.add(tenor)
+        schemes.setdefault(
+            scheme_id,
+            {
+                "scheme_id": scheme_id,
+                "name": row["scheme_name"],
+                "status": row["scheme_status"],
+                "frequency": row["frequency"],
+                "horizon": row["registry_horizon"],
+                "cells": {},
+            },
+        )
+        if row["horizon"] == 1:
+            actual_direction = row["direction_1d"]
+        elif row["horizon"] == 6:
+            actual_direction = row["direction_weekly"]
+        else:
+            actual_direction = row["direction_5d"]
+        if actual_direction is None:
+            continue
+        grouped[(scheme_id, tenor)].append(
+            {
+                "predicted_direction": row["predicted_direction"],
+                "actual_direction": actual_direction,
+            }
+        )
+
+    sorted_tenors = sorted(tenors, key=_tenor_sort_key)
+    empty_block = _metric_block([])
+    for scheme in schemes.values():
+        for tenor in sorted_tenors:
+            rows = grouped.get((scheme["scheme_id"], tenor), [])
+            block = _metric_block(rows) if rows else empty_block
+            scheme["cells"][tenor] = _compare_cell(block, metric_key)
+
+    return {
+        "frequency": frequency,
+        "start_month": start_month,
+        "end_month": end_month,
+        "metric": metric,
+        "metric_key": metric_key,
+        "tenors": sorted_tenors,
+        "target_labels": {
+            tenor: _target_label(tenor, target_labels)
+            for tenor in sorted_tenors
+        },
+        "schemes": list(schemes.values()),
+    }
+
+
 def _scheme_metric_month(horizon: Any, predict_date: str, extra: dict[str, Any]) -> str:
     frequency = str(extra.get("frequency") or "").lower()
     try:
