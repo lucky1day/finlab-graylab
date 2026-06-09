@@ -84,20 +84,21 @@ def build_weekly_output_from_db(
 # shared/calendar_service.py（目标设计）
 @dataclass(frozen=True)
 class CalendarService:
-    """只读交易日历/周历服务。core 不得直接查 t_trade_calendar。"""
+    """只读交易日历/周历服务。core 不得直接查日历源表。"""
     def is_trading_day(self, d: str | date) -> bool: ...
     def next_trading_days(self, after: str, n: int) -> list[str]: ...
     def nth_trading_day_after(self, feature_date: str, horizon: int) -> str: ...   # 取代 t5_daily 内联 SQL
     def week_id_for_date(self, d: str) -> int | None: ...                          # 取代 read_source_week_id_for_date
     def week_id_to_last_trading_day(self, week_id: int) -> str: ...
 
-def get_calendar(engine=None) -> CalendarService: ...
+def get_calendar(engine) -> CalendarService: ...
 ```
 
 落点：
 - `t5_daily/predict.py` 的 `_target_date_from_feature_date` 内联 SQL → `calendar.nth_trading_day_after(feature_date, 5)`。
 - 三个周频 `predict.py` 的 `read_source_week_id_for_date(...)` → `calendar.week_id_for_date(...)`。
-- 现有 `shared/weekly_calendar.py` / `shared/legacy_weekly_calendar.py` 的纯函数（week_id↔date 规则）保留，由 `calendar_service` 复用或封装，不重复实现规则。
+- 交易日判断只读 `t_trade_calendar.trade_flag`；缺失日期按非交易日处理，不回退本地节假日库或 weekday。
+- `week_id` 映射只读 `api_wind_date.week_id`；周内最后交易日通过 `api_wind_date` 找同周日期，再 join `t_trade_calendar` 过滤交易日。
 
 ### 2.3 强化 InputArtifact
 
@@ -140,7 +141,7 @@ class InputArtifact:
 |------|----------|------|------|
 | `shared.data_service` | `build_{daily,weekly,monthly}_output_from_db`、`create_sqlalchemy_engine`、`save_*_output` | **唯一** DB 导出口径 | 普通方案接入时改其业务逻辑；新增第二份周频服务 |
 | `shared.input_artifacts` | `build_daily_input_artifact` / `build_weekly_input_artifact`（返回强化后 `InputArtifact`） | **唯一**算法输入入口 | adapter/backtest runner 绕过它拼输入 |
-| `shared.calendar_service` | `get_calendar()` → `CalendarService` | **唯一**交易日历/周历查询 | core 直接查 `t_trade_calendar`；方案各自实现日历 |
+| `shared.calendar_service` | `get_calendar(engine)` → `CalendarService` | **唯一**方案侧交易日历/周历查询 | core 直接查 `t_trade_calendar` / `api_wind_date`；方案各自实现日历 |
 | `shared.models` | `PredictionRecord` / `ActualRecord` / `WeeklyActualRecord` | 统一数据模型 | 方案私自定义并行模型 |
 
 ---
@@ -173,7 +174,7 @@ DB (源表只读)
 
 - `grep -rn "from schemes\." schemes/*/predict.py` 无跨方案 import。
 - `schemes/*/core/*.py`（非 legacy）无 `sqlalchemy` / `text(` / `read_sql` —— StaticGate 规则 4 全绿。
-- `t_trade_calendar` 只在 `shared/calendar_service.py` 出现。
+- 方案侧交易日历/周历查询只在 `shared/calendar_service.py` 出现；scheduler 自身的交易日保护只在 `scheduler/calendar.py` 读取 `t_trade_calendar`。
 - `InputArtifact` 含全部新增元数据字段，InputGate 可断言 `missing_required_cols == []`。
 
 > 本文为目标设计。未创建或修改任何 `shared/` 代码。

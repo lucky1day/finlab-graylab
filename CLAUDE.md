@@ -80,7 +80,7 @@ SOP 见 [docs/sop/SCHEME_ONBOARDING_SOP.md](docs/sop/SCHEME_ONBOARDING_SOP.md)�
 
 ## 数据库表
 
-源数据表只读：`api_wind_daily/weekly/monthly`(+derivative)、`api_wind_indicators_all`、`t_trade_calendar`。
+源数据表只读：`api_wind_date`、`api_wind_daily/weekly/monthly`(+derivative)、`api_wind_indicators_all`、`t_trade_calendar`。
 
 写库表：
 - `t_scheme_predictions` — 统一预测结果表

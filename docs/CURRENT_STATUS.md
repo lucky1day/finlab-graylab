@@ -11,7 +11,7 @@
 | `t1_daily` | `daily` | 1 | `5Y/10Y` | `active` |
 | `t5_daily` | `daily` | 5 | `3Y/5Y/7Y/10Y` | `active` |
 
-2026-06-09 已删除全部旧周频预测方案代码。删除原因是旧周频方案在预测/回测路径中使用计算型周历公式推导 `week_id <-> 交易日`，而不是读取 `bond_db.api_wind_daily` 的实际 `week_id` 口径，可能从入库时起造成特征周/目标周错位。后续周频方案需要按 [新增方案 SOP](sop/SCHEME_ONBOARDING_SOP.md) 重新入库，并强制使用 DB-sourced `week_id`。
+2026-06-09 已删除全部旧周频预测方案代码。删除原因是旧周频方案在预测/回测路径中使用计算型周历公式推导 `week_id <-> 交易日`，而不是读取 `bond_db.api_wind_date.week_id` 的实际口径，可能从入库时起造成特征周/目标周错位。后续周频方案需要按 [新增方案 SOP](sop/SCHEME_ONBOARDING_SOP.md) 重新入库，并强制使用 `api_wind_date.week_id`。
 
 本次只清理代码和文档，不清理数据库。旧周频方案在 `t_scheme_registry`、`t_scheme_predictions`、`t_scheme_run_log`、`t_scheme_weekly_actuals`、`t_backtest_*` 中的历史记录按决策延后处理。
 
@@ -19,14 +19,14 @@
 
 强约束 harness 工程已从"文档设计"推进到"代码落地并可运行"。架构演进路线见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) §10，执行阶段 S0-S8 已完成：
 
-- `shared.calendar_service` 提供交易日历/周历查询单点入口，`week_id_for_date` 读取 DB 口径。
+- `shared.calendar_service` 提供交易日历/周历查询单点入口，交易日判断只读 `t_trade_calendar.trade_flag`，`week_id_for_date` 只读 `api_wind_date.week_id`。
 - `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频、周频、月频底层统一由 `shared.data_service` 生成输出宽表，artifact 层负责写出输入 CSV 并读回给算法。
 - `harness/` 包已实现 StaticGate、InputGate、UnitGate、DryRunGate、BacktestGate、ApiGate、LiveGate，以及 contracts、table_guard、authorization、orchestrator、CLI。
 - `python -m harness onboard {scheme_id} --stage all` 可串联 static -> input -> unit -> dry-run -> backtest -> api；live/activate 不在 `all` 内，必须显式授权。
 
 周频共享基础设施保留：
 
-- `shared/calendar_service.py`：DB-sourced 日历与 `week_id` 查询。
+- `shared/calendar_service.py`：`t_trade_calendar` 交易日查询与 `api_wind_date` 周编号查询。
 - `shared/input_artifacts.py`：`build_weekly_input_artifact()`。
 - `shared/data_service.py`：`build_weekly_output_from_db()`。
 - `scheduler/weekly_actuals_updater.py`：周频 actuals 刷新基础设施。
@@ -69,6 +69,7 @@
 
 | 项 | 当前值 |
 |----|--------|
+| `api_wind_date` | 6,017 行 |
 | `api_wind_daily` | 2,235,209 行，日期 `2010-01-01` 到 `2026-06-05` |
 | `api_wind_derivative_daily` | 937,312 行，日期 `2010-01-01` 到 `2026-06-04` |
 | `api_wind_weekly` | 121,553 行，周 `200901` 到 `202621` |

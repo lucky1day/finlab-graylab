@@ -246,12 +246,12 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 强制规则（适用于所有周频/月频方案的 adapter、core 与 backtest runner）：
 
-1. **week_id 的权威来源唯一**：`bond_db.api_wind_daily`（该表含 `rdate` + `week_id` 两列）。任何 `week_id ↔ 交易日` 的映射都必须**从 DB 读取**，不得用本地日历公式计算。
-   - 日期 → week_id：读 `api_wind_daily.week_id`（经 `shared.calendar_service.week_id_for_date`，其底层查 `api_wind_*`）。
-   - week_id → 交易日 / 周内最后交易日：`SELECT rdate ... FROM api_wind_daily WHERE week_id = :week_id`（取该周实际交易日，最后交易日取 `MAX(rdate)`），不得用 `week_id_to_friday/monday` 这类公式。
+1. **week_id 的权威来源唯一**：`bond_db.api_wind_date.week_id`（该表含 `rdate` + `week_id` 两列）。任何 `week_id ↔ 日期` 的映射都必须**从 DB 读取**，不得用本地日历公式计算。
+   - 日期 → week_id：读 `api_wind_date.week_id`（经 `shared.calendar_service.week_id_for_date`）。
+   - week_id → 周内最后交易日：先从 `api_wind_date` 找同周日期，再按 `t_trade_calendar.trade_flag = '1'` 过滤并取 `MAX(rdate)`，不得用 `week_id_to_friday/monday` 这类公式。
 2. **禁止**新增方案在预测/回测路径中 import 任何 `*_to_friday` / `*_to_monday` / `get_week_id_for_date` 这类**计算型**周历函数来决定特征周/目标周日期。这些仅允许作为展示用近似或历史归档，不得参与数据对齐。
-3. **target_week_id** 同样以 DB 口径推导：本周 week_id 的下一周，应以 `api_wind_daily` 中实际存在的下一个 week_id 为准，而非 `feature+1` 直接递增。
-4. 验收证据：adapter/runner 日志或 `extra` 中能证明 `feature_week_id`、`target_week_id`、`feature_date`、`target_date` 均来自 `api_wind_daily` 读取，而非公式计算。
+3. **target_week_id** 同样以 DB 口径推导：本周 week_id 的下一周，应以 `api_wind_date` 中实际存在的下一个 week_id 为准，而非 `feature+1` 直接递增。
+4. 验收证据：adapter/runner 日志或 `extra` 中能证明 `feature_week_id`、`target_week_id`、`feature_date`、`target_date` 均来自 `api_wind_date` / `t_trade_calendar` 读取，而非公式计算。
 
 ### Step 4: Static Gate - 静态边界检查
 
@@ -263,7 +263,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 - `core/` 不直接 import `scheduler.repository`、`scheduler.executor` 或 SQL 写库函数。
 - `predict.py` 不直接执行 `INSERT/UPDATE/DELETE/ALTER/DROP`。
 - 普通方案和 backtest runner 不绕过 `shared.input_artifacts` 生成输入。
-- **周频/月频方案的预测与回测路径不得 import 计算型周历函数（例如 `*_to_friday/*_to_monday/get_week_id_for_date`）来决定 week_id↔日期；week_id 必须读 `api_wind_daily`（见 Step 3a）。**
+- **周频/月频方案的预测与回测路径不得 import 计算型周历函数（例如 `*_to_friday/*_to_monday/get_week_id_for_date`）来决定 week_id↔日期；week_id 必须读 `api_wind_date`（见 Step 3a）。**
 - 运行路径不依赖 `/Users/.../Downloads`、`Desktop` 等外部绝对路径。
 
 ### Step 5: Unit Gate - 单元验证

@@ -16,16 +16,11 @@ def normalize_date(value: str | date | datetime) -> date:
 
 
 def is_trading_day(engine: Engine, value: str | date | datetime) -> bool:
-    """判断是否交易日，优先使用本机交易日历，缺失时回退到 chinese_calendar。"""
+    """只读 t_trade_calendar.trade_flag 判断交易日。"""
     day = normalize_date(value)
     sql = text("SELECT trade_flag FROM t_trade_calendar WHERE rdate = :rdate LIMIT 1")
     with engine.connect() as conn:
         flag = conn.execute(sql, {"rdate": day.isoformat()}).scalar()
     if flag is not None:
         return str(flag).strip() == "1"
-
-    try:
-        from chinese_calendar import is_workday
-    except ImportError:
-        return day.weekday() < 5
-    return bool(is_workday(day))
+    return False
