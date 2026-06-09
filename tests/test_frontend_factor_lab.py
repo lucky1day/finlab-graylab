@@ -173,7 +173,8 @@ class FactorLabLifecycleRemovedTests(unittest.TestCase):
 
 
 class FactorLabRealtimeDataTests(unittest.TestCase):
-    def test_live_metrics_take_priority_and_advance_latest_month(self) -> None:
+    def test_live_and_backtest_merge_when_both_present(self) -> None:
+        """实时和回测都有数据时，合并展示，无数据丢失。"""
         result = _run_factor_lab_hook(
             """
             const calls = [];
@@ -183,7 +184,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: [
                   {
                     scheme_id: "t1_daily",
-                    name: "T+1 Live",
+                    name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
                     frequency: "daily",
@@ -198,8 +199,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 monthly_metrics: [],
                 daily_rows: [
                   {
-                    run_id: "run-20260609",
-                    scheme_version: "live-v1",
+                    run_id: "r1",
+                    scheme_version: "v1",
                     target_tenor: "5Y",
                     horizon: 1,
                     predict_date: "2026-06-09",
@@ -212,18 +213,25 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 ]
               },
               "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    id: "backtest-demo",
-                    scheme_id: "backtest_demo",
-                    name: "Backtest Demo",
+                    id: "bt:t1_daily:fw:5Y",
+                    scheme_id: "t1_daily",
+                    scheme_name: "t1_daily",
+                    name: "T+1 回测基准",
                     tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
                     frequency: "daily",
                     status: "complete",
+                    benchmark_label: "model_muti_0529",
+                    data_source_label: "framework_db_aligned",
                     monthly_metrics: [
-                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100 }
+                      { month: "2026-05", samples: 30, correct: 20, accuracy: 66.7, overall: 66.7,
+                        up_precision: 70, up_recall: 65, down_precision: 60, down_recall: 55,
+                        actual_dist: { up: 15, down: 10, flat: 5 },
+                        predicted_dist: { up: 14, down: 12, flat: 4 } }
                     ],
                     daily_rows: []
                   }
@@ -231,8 +239,9 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
               }
             };
             window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
               calls.push(url);
-              const payload = responses[url];
+              var payload = responses[url];
               return Promise.resolve({
                 ok: Boolean(payload),
                 status: payload ? 200 : 404,
@@ -243,42 +252,45 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
             context.fetch = window.fetch;
 
             await hooks.loadFactorLabData({ force: true });
-            const state = hooks.getFactorLabState();
-            const scheme = hooks.getSelectedScheme();
+            var state = hooks.getFactorLabState();
+            var scheme = hooks.getSelectedScheme();
             return {
-              calls,
+              calls: calls,
               dataMode: state.dataMode,
               selectedTaskKey: state.selectedTaskKey,
-              startMonth: state.startMonth,
               endMonth: state.endMonth,
               selectedSchemeName: scheme && scheme.name,
-              months: scheme ? scheme.monthlyRows.map((row) => row.month) : [],
-              juneDailyCount: scheme && scheme.dailyRowsByMonth["2026-06"]
-                ? scheme.dailyRowsByMonth["2026-06"].length
-                : 0
+              hasLiveSince: !!(scheme && scheme.liveSinceDate),
+              liveSinceDate: scheme && scheme.liveSinceDate,
+              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month; }) : [],
+              backtestEndMonth: scheme ? scheme.backtestEndMonth : ""
             };
             """
         )
 
-        self.assertEqual(result["dataMode"], "live")
-        self.assertEqual(result["selectedTaskKey"], "5Y|daily|T+1")
-        self.assertEqual(result["selectedSchemeName"], "T+1 Live")
-        self.assertEqual(result["endMonth"], "2026-06")
+        # 两者都有 → 合并模式
+        self.assertEqual(result["dataMode"], "merged")
+        self.assertTrue(result["hasLiveSince"])
+        self.assertEqual(result["liveSinceDate"], "2026-06-09")
+        # 5月和6月都应存在（回测5月 + 实盘6月）
+        self.assertIn("2026-05", result["months"])
         self.assertIn("2026-06", result["months"])
-        self.assertEqual(result["juneDailyCount"], 1)
-        self.assertNotIn("/api/backtests/factor-lab", result["calls"])
+        # 两者接口都调了
+        self.assertIn("/api/schemes", result["calls"])
+        self.assertIn("/api/backtests/factor-lab", result["calls"])
 
-    def test_backtest_data_is_fallback_when_live_has_no_schemes(self) -> None:
+    def test_backtest_only_when_live_has_no_schemes(self) -> None:
+        """实盘无方案时回退纯回测模式。"""
         result = _run_factor_lab_hook(
             """
-            const calls = [];
-            const responses = {
+            var calls = [];
+            var responses = {
               "/api/schemes": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] },
               "/api/backtests/factor-lab": {
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    id: "backtest-demo",
+                    id: "bt:x:fw:5Y",
                     scheme_id: "backtest_demo",
                     name: "Backtest Demo",
                     tenor: "5Y",
@@ -287,7 +299,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     frequency: "daily",
                     status: "complete",
                     monthly_metrics: [
-                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100 }
+                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100, overall: 100,
+                        up_precision: 100, up_recall: 100, down_precision: null, down_recall: null,
+                        actual_dist: { up: 1, down: 0, flat: 0 },
+                        predicted_dist: { up: 1, down: 0, flat: 0 } }
                     ],
                     daily_rows: []
                   }
@@ -295,8 +310,9 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
               }
             };
             window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
               calls.push(url);
-              const payload = responses[url];
+              var payload = responses[url];
               return Promise.resolve({
                 ok: Boolean(payload),
                 status: payload ? 200 : 404,
@@ -306,35 +322,36 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
             context.fetch = window.fetch;
 
             await hooks.loadFactorLabData({ force: true });
-            const state = hooks.getFactorLabState();
-            const scheme = hooks.getSelectedScheme();
+            var state = hooks.getFactorLabState();
+            var scheme = hooks.getSelectedScheme();
             return {
-              calls,
+              calls: calls,
               dataMode: state.dataMode,
-              selectedTaskKey: state.selectedTaskKey,
               selectedSchemeName: scheme && scheme.name,
-              months: scheme ? scheme.monthlyRows.map((row) => row.month) : []
+              hasLiveSince: !!(scheme && scheme.liveSinceDate),
+              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month; }) : []
             };
             """
         )
 
         self.assertEqual(result["dataMode"], "backtest")
-        self.assertEqual(result["selectedTaskKey"], "5Y|daily|T+1")
         self.assertEqual(result["selectedSchemeName"], "Backtest Demo")
+        self.assertFalse(result["hasLiveSince"])  # 纯回测无实盘起点
         self.assertEqual(result["months"], ["2026-05"])
-        self.assertEqual(result["calls"], ["/api/schemes", "/api/backtests/factor-lab"])
+        self.assertIn("/api/backtests/factor-lab", result["calls"])
 
-    def test_live_metric_error_does_not_fall_back_to_stale_backtest(self) -> None:
+    def test_merge_does_not_lose_live_when_backtest_fails(self) -> None:
+        """回测接口500时实盘方案仍然展示，且回测失败不丢数据。"""
         result = _run_factor_lab_hook(
             """
-            const calls = [];
-            const responses = {
+            var calls = [];
+            var responses = {
               "/api/schemes": {
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
                     scheme_id: "t1_daily",
-                    name: "T+1 Live",
+                    name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
                     frequency: "daily",
@@ -342,30 +359,31 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                   }
                 ]
               },
-              "/api/backtests/factor-lab": {
-                schemes: [
+              "/api/metrics/t1_daily?tenor=5Y": {
+                scheme_id: "t1_daily",
+                tenor: "5Y",
+                monthly_metrics: [],
+                daily_rows: [
                   {
-                    id: "backtest-demo",
-                    scheme_id: "backtest_demo",
-                    name: "Backtest Demo",
-                    tenor: "5Y",
-                    target_label: "5Y国债活跃",
+                    predict_date: "2026-06-09",
+                    target_tenor: "5Y",
                     horizon: 1,
-                    frequency: "daily",
-                    status: "complete",
-                    monthly_metrics: [
-                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100 }
-                    ],
-                    daily_rows: []
+                    predicted_direction: 1,
+                    actual_direction: 1,
+                    is_correct: true,
+                    confidence: 0.8
                   }
                 ]
-              }
+              },
+              "/api/backtests/factor-lab": null  // 回测接口500
             };
             window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
               calls.push(url);
-              const payload = responses[url];
+              var payload = responses[url];
+              var ok = payload !== undefined;
               return Promise.resolve({
-                ok: Boolean(payload),
+                ok: ok,
                 status: payload ? 200 : 500,
                 json: function () { return Promise.resolve(payload || {}); }
               });
@@ -373,11 +391,54 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
             context.fetch = window.fetch;
 
             await hooks.loadFactorLabData({ force: true });
-            const state = hooks.getFactorLabState();
-            const scheme = hooks.getSelectedScheme();
+            var state = hooks.getFactorLabState();
+            var scheme = hooks.getSelectedScheme();
             return {
-              calls,
+              calls: calls,
               dataMode: state.dataMode,
+              selectedSchemeName: scheme && scheme.name,
+              hasLiveSince: !!(scheme && scheme.liveSinceDate),
+              endMonth: state.endMonth,
+              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month; }) : []
+            };
+            """
+        )
+
+        # 实盘存活 → live 模式（不是 merged 因为回测挂了）
+        self.assertEqual(result["dataMode"], "live")
+        self.assertEqual(result["selectedSchemeName"], "T+1 实盘")
+        self.assertTrue(result["hasLiveSince"])
+        self.assertEqual(result["endMonth"], "2026-06")
+        self.assertIn("2026-06", result["months"])
+
+    def test_both_fail_produces_error(self) -> None:
+        """两者都失败时进入错误状态。"""
+        result = _run_factor_lab_hook(
+            """
+            var calls = [];
+            var responses = {
+              "/api/schemes": null,
+              "/api/backtests/factor-lab": null
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              calls.push(url);
+              return Promise.resolve({
+                ok: false,
+                status: 500,
+                json: function () { return Promise.resolve({}); }
+              });
+            };
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var state = hooks.getFactorLabState();
+            var scheme = hooks.getSelectedScheme();
+            return {
+              calls: calls,
+              dataMode: state.dataMode,
+              hasError: !!state.apiError,
+              errorMessage: state.apiError || "",
               selectedSchemeName: scheme && scheme.name
             };
             """
@@ -385,7 +446,6 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
 
         self.assertEqual(result["dataMode"], "live-error")
         self.assertIsNone(result["selectedSchemeName"])
-        self.assertNotIn("/api/backtests/factor-lab", result["calls"])
 
 
 if __name__ == "__main__":

@@ -840,6 +840,36 @@ button {
   color: var(--text-tertiary);
 }
 
+/* ─── 实盘起点 / 回测标注 ─── */
+.factor-live-since-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  margin-top: 2px;
+  margin-right: 4px;
+  padding: 0 6px;
+  border: 1px solid rgba(21, 92, 62, 0.3);
+  border-radius: 999px;
+  color: var(--accent);
+  background: rgba(21, 92, 62, 0.07);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.factor-live-since-badge.is-backtest-only {
+  border-color: rgba(93, 101, 111, 0.2);
+  color: var(--text-tertiary);
+  background: rgba(93, 101, 111, 0.06);
+}
+
+.factor-live-since-badge.is-backtest-range {
+  border-color: rgba(93, 101, 111, 0.15);
+  color: var(--text-tertiary);
+  background: rgba(93, 101, 111, 0.04);
+  font-weight: 600;
+}
+
 .factor-score-cell {
   display: grid;
   gap: 7px;

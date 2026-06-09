@@ -616,16 +616,25 @@
         var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
         var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
         monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
+        var liveSinceDate = "";
+        if (metrics.daily_rows && metrics.daily_rows.length) {
+          var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).sort();
+          liveSinceDate = dates[0] || "";
+        }
         var taskKey = getTaskKey(tenor, column);
         if (!tasks[taskKey]) tasks[taskKey] = [];
         tasks[taskKey].push({
           id: scheme.scheme_id,
+          schemeId: scheme.scheme_id,
           taskKey: taskKey,
+          tenor: tenor,
+          column: column.id,
           name: scheme.name,
           status: normalizeBackendSchemeStatus(scheme.status),
           latestRun: scheme.last_run ? scheme.last_run.date.slice(5) : "--",
           monthlyRows: monthlyRows,
-          dailyRowsByMonth: groupedDailyRows
+          dailyRowsByMonth: groupedDailyRows,
+          liveSinceDate: liveSinceDate
         });
       });
     });
@@ -685,24 +694,108 @@
     var force = options && options.force === true;
     if ((!force && factorLabRemoteLoaded) || factorLabRemoteLoading || !window.fetch) return;
     factorLabRemoteLoading = true;
-    return fetchLiveFactorLabTasks()
-      .then(function (tasks) {
-        if (hasPopulatedTasks(tasks)) {
-          finishFactorLabDataLoad(tasks, "live");
-          return true;
-        }
-        return loadBacktestFactorLabData();
-      })
-      .catch(function (error) {
-        error = error || {};
-        if (error.isLiveMetricError) {
-          return failFactorLabDataLoad(error);
-        }
-        return loadBacktestFactorLabData();
-      })
-      .catch(function (error) {
-        return failFactorLabDataLoad(error);
+    // 同时拉取实时和回测，合并展示
+    return Promise.all([
+      fetchLiveFactorLabTasks().catch(function () { return null; }),
+      loadBacktestFactorLabDataSilent().catch(function () { return null; })
+    ]).then(function (results) {
+      var liveTasks = results[0];
+      var backtestTasks = results[1];
+      if (!liveTasks && !backtestTasks) {
+        return failFactorLabDataLoad({ message: "实时和回测接口均暂不可用" });
+      }
+      var mergedTasks = mergeFactorLabTasks(backtestTasks, liveTasks);
+      var mode = "";
+      if (liveTasks && backtestTasks) mode = "merged";
+      else if (liveTasks) mode = "live";
+      else mode = "backtest";
+      finishFactorLabDataLoad(mergedTasks, mode);
+      return true;
+    });
+  }
+
+  function loadBacktestFactorLabDataSilent() {
+    return fetchJson("/api/backtests/factor-lab").then(function (payload) {
+      if (payload && payload.schemes && payload.schemes.length) {
+        return buildBacktestTaskSchemes(payload);
+      }
+      return null;  // no backtest data, not an error
+    });
+  }
+
+  function mergeFactorLabTasks(backtestTasks, liveTasks) {
+    // 以实盘为底，合入回测（实盘覆盖同月回测）
+    var merged = initEmptyTaskSchemes();
+    var usedBacktest = {};  // "scheme_id|tenor|column" -> bool
+
+    // 先走实盘
+    if (liveTasks) {
+      Object.keys(liveTasks).forEach(function (taskKey) {
+        if (!merged[taskKey]) merged[taskKey] = [];
+        (liveTasks[taskKey] || []).forEach(function (liveScheme) {
+          var tenor = liveScheme.tenor || extractTenorFromTaskKey(taskKey);
+          var column = liveScheme.column || extractColumnFromTaskKey(taskKey);
+          if (!liveScheme.tenor) liveScheme.tenor = tenor;
+          if (!liveScheme.column) liveScheme.column = column;
+          merged[taskKey].push(liveScheme);
+        });
       });
+    }
+
+    // 合入回测：同 (scheme_id, tenor) 的合并月度数据，否则追加
+    if (backtestTasks) {
+      Object.keys(backtestTasks).forEach(function (taskKey) {
+        if (!merged[taskKey]) merged[taskKey] = [];
+        (backtestTasks[taskKey] || []).forEach(function (btScheme) {
+          var matchKey = (btScheme.schemeName || btScheme.name || "") + "|" + extractTenorFromTaskKey(taskKey);
+          var matched = false;
+          for (var i = 0; i < merged[taskKey].length; i++) {
+            var liveScheme = merged[taskKey][i];
+            var liveMatchKey = (liveScheme.schemeId || liveScheme.id || "") + "|" + (liveScheme.tenor || extractTenorFromTaskKey(taskKey));
+            if (liveMatchKey === matchKey || (liveScheme.name && liveScheme.name === btScheme.name)) {
+              // 合并：实盘月度覆盖回测，补足回测独有月份
+              var liveMonths = {};
+              (liveScheme.monthlyRows || []).forEach(function (r) { liveMonths[r.month] = true; });
+              var btOnlyMonths = (btScheme.monthlyRows || []).filter(function (r) { return !liveMonths[r.month]; });
+              liveScheme.monthlyRows = (liveScheme.monthlyRows || []).concat(btOnlyMonths);
+              liveScheme.monthlyRows.sort(function (a, b) { return (a.month || "").localeCompare(b.month || ""); });
+              // dailyRowsByMonth 同理
+              (btScheme.dailyRowsByMonth ? Object.keys(btScheme.dailyRowsByMonth) : []).forEach(function (m) {
+                if (!liveScheme.dailyRowsByMonth) liveScheme.dailyRowsByMonth = {};
+                if (!liveScheme.dailyRowsByMonth[m]) liveScheme.dailyRowsByMonth[m] = btScheme.dailyRowsByMonth[m];
+              });
+              // 标注数据来源
+              if (!liveScheme.backtestLabel) {
+                liveScheme.backtestLabel = btScheme.benchmarkLabel || btScheme.dataSourceLabel || "";
+              }
+              if (!liveScheme.backtestEndMonth) {
+                var btMonthsSorted = (btScheme.monthlyRows || []).map(function (r) { return r.month; }).sort();
+                liveScheme.backtestEndMonth = btMonthsSorted.length ? btMonthsSorted[btMonthsSorted.length - 1] : "";
+              }
+              usedBacktest[matchKey] = true;
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            // 回测独有（无实盘），直接追加
+            merged[taskKey].push(btScheme);
+          }
+        });
+      });
+    }
+
+    return merged;
+  }
+
+  function extractTenorFromTaskKey(taskKey) {
+    var parts = (taskKey || "").split("|");
+    return parts[0] || "";
+  }
+
+  function extractColumnFromTaskKey(taskKey) {
+    var parts = (taskKey || "").split("|");
+    return parts.slice(1).join("|") || "";
   }
 
   function startFactorLabAutoRefresh() {
@@ -924,6 +1017,8 @@
         meta.textContent = "实时API暂不可用，请检查服务或迁移状态。";
       } else if (factorLabDataMode === "backtest") {
         meta.textContent = "该任务格子下共有 " + schemes.length + " 个历史回测方案。";
+      } else if (factorLabDataMode === "merged") {
+        meta.textContent = "该任务格子下共有 " + schemes.length + " 个候选方案（回测+实盘合并）。";
       } else {
         meta.textContent = "该任务格子下共有 " + schemes.length + " 个候选方案。";
       }
@@ -941,9 +1036,20 @@
       var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
       var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
       var barWidth = clampPercent(metric.overall);
+      // 实盘起点标注
+      var sourceBadgeHtml = "";
+      if (scheme.liveSinceDate) {
+        var liveLabel = scheme.liveSinceDate.length >= 10 ? scheme.liveSinceDate.slice(0, 10) : scheme.liveSinceDate;
+        sourceBadgeHtml += '<span class="factor-live-since-badge">实盘自 ' + escapeHtml(liveLabel) + '</span>';
+      } else {
+        sourceBadgeHtml += '<span class="factor-live-since-badge is-backtest-only">仅回测</span>';
+      }
+      if (scheme.backtestEndMonth) {
+        sourceBadgeHtml += '<span class="factor-live-since-badge is-backtest-range">回测至 ' + escapeHtml(scheme.backtestEndMonth) + '</span>';
+      }
       return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
         '<td>' + (index + 1) + '</td>' +
-        '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
+        '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '<br>' + sourceBadgeHtml + '</td>' +
         '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metric.samples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
         '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
         '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
@@ -1395,6 +1501,7 @@
     aggregateScheme: aggregateScheme,
     getFactorLabState: function () {
       return {
+        apiError: factorLabApiError,
         dataMode: factorLabDataMode,
         endMonth: factorLabState.endMonth,
         selectedTaskKey: factorLabState.selectedTaskKey,
