@@ -1,6 +1,8 @@
 # 当前状态
 
-**更新日期**: 2026-06-09
+**更新日期**: 2026-06-10
+
+> 2026-06-10 文档清理：已实现功能的计划/设计文档均已删除。当前仅保留 8 个参考文档 + 2 个 SOP（见 [README.md](README.md)）。
 
 ## 总览
 
@@ -38,7 +40,7 @@
 
 ## 平台改造里程碑（P0 / P1）
 
-基于 [架构评审报告](bond_factor_lab_architecture_review.md) 的两阶段改造已全部落地并通过独立验证。任务说明见 [执行计划](bond_factor_lab_execution_plan.md) 与 [P1 任务说明](bond_factor_lab_p1_tasks.md)。
+基于 [架构评审报告](bond_factor_lab_architecture_review.md) 的两阶段改造已全部落地并通过独立验证。
 
 ### P0 — 控制面加固与安全边界（已完成）
 
@@ -90,7 +92,7 @@ S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid
   - 后端/API/调度器：conda `bond_factor_lab_service`
 - `t1_daily` 已完成 adapter，当前 active，预测目标为 `5Y/10Y`。
 - `t5_daily` 已完成 adapter，当前 active，预测目标为 `3Y/5Y/7Y/10Y`。
-- 强约束 harness 已落地：[HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 是方案入库总纲，[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 是代码架构主蓝图，[HARNESS_DESIGN.md](HARNESS_DESIGN.md) / [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) / [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) 是现行设计规范。
+- 强约束 harness 已落地：[HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 是方案入库总纲，[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 是代码架构主蓝图，[SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 是现行设计规范。
 - artifact 命名已统一：`backtests/` 只放回测代码，`benchmarks/{benchmark_id}/` 只放 canonical 基准输入，运行期输入在 `backtest_artifacts/runtime_inputs/{scheme_id}/`，历史回测和数据差异报告在 `backtest_artifacts/backtests/{benchmark_id}/`。
 - `t_target_registry` 当前展示 `3Y/5Y/7Y/10Y` 四个国债活跃目标；`1Y` 只保留为部分算法特征/审计输入，不作为当前前端目标。
 - launchd 已安装并启动：
@@ -182,5 +184,3 @@ launchd scheduler 已成功运行 active 日度方案：
 2. 旧周频 DB 记录已清理；后端启动 registry 同步或调用 `POST /api/admin/registry/sync` 后，确认 registry 仍只保留 `t1_daily` / `t5_daily`（`GET /api/schemes` 已为只读，不再触发同步）。
 3. 新周频方案进入时，必须按 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 的 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation 流程，并证明 `week_id` 来自 DB。
 4. 拿到 panda_quantflow 外层仓库路径后完成菜单/路由接入并验证 iframe。
-
-历史复现详细记录见 [HISTORICAL_REPRODUCTION.md](HISTORICAL_REPRODUCTION.md)。
