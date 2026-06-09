@@ -161,6 +161,7 @@
     rankDirection: "desc",
     startMonth: "2025-01",
     endMonth: "2025-05",
+    endMonthPinned: false,
     chartMetrics: {
       overall: true,
       upPrecision: true,
@@ -537,8 +538,13 @@
     });
   }
 
+  function hasPopulatedTasks(tasks) {
+    return Object.keys(tasks || {}).some(function (key) {
+      return (tasks[key] || []).length > 0;
+    });
+  }
+
   function finishFactorLabDataLoad(tasks, mode) {
-    var isInitialLoad = !factorLabRemoteLoaded;
     factorTaskSchemes = tasks;
     factorLabRemoteLoaded = true;
     factorLabRemoteLoading = false;
@@ -547,12 +553,15 @@
     var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
       return factorTaskSchemes[key].length > 0;
     });
-    if (availableTasks.length && !factorTaskSchemes[factorLabState.selectedTaskKey]) {
+    if (
+      availableTasks.length &&
+      (!factorTaskSchemes[factorLabState.selectedTaskKey] || !factorTaskSchemes[factorLabState.selectedTaskKey].length)
+    ) {
       factorLabState.selectedTaskKey = availableTasks[0];
     }
     syncFactorMonthRange();
     var months = getFactorAvailableMonths();
-    if (months.length && isInitialLoad) {
+    if (months.length && !factorLabState.endMonthPinned) {
       factorLabState.endMonth = months[months.length - 1];
     }
     renderFactorLab();
@@ -589,67 +598,110 @@
     return tasks;
   }
 
-  function loadLiveFactorLabData() {
+  function liveMetricKey(schemeId, tenor) {
+    return schemeId + "|" + tenor;
+  }
+
+  function buildLiveTaskSchemes(payload, metricsByKey) {
+    mergeTargetLabels(payload.target_labels);
+    var schemes = payload.schemes || [];
+    var tasks = initEmptyTaskSchemes();
+    schemes.forEach(function (scheme) {
+      mergeTargetLabels(scheme.target_labels);
+      var column = columnForHorizon(scheme.horizon, scheme.frequency);
+      if (!column) return;
+      (scheme.tenors || []).forEach(function (tenor) {
+        var metrics = metricsByKey[liveMetricKey(scheme.scheme_id, tenor)] || {};
+        if (metrics.target_label) factorTargetLabels[tenor] = String(metrics.target_label);
+        var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
+        var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
+        monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
+        var taskKey = getTaskKey(tenor, column);
+        if (!tasks[taskKey]) tasks[taskKey] = [];
+        tasks[taskKey].push({
+          id: scheme.scheme_id,
+          taskKey: taskKey,
+          name: scheme.name,
+          status: normalizeBackendSchemeStatus(scheme.status),
+          latestRun: scheme.last_run ? scheme.last_run.date.slice(5) : "--",
+          monthlyRows: monthlyRows,
+          dailyRowsByMonth: groupedDailyRows
+        });
+      });
+    });
+    return tasks;
+  }
+
+  function fetchLiveFactorLabTasks() {
     return fetchJson("/api/schemes")
       .then(function (payload) {
-        mergeTargetLabels(payload.target_labels);
         var schemes = payload.schemes || [];
-        var tasks = initEmptyTaskSchemes();
+        var metricsByKey = {};
         var requests = [];
         schemes.forEach(function (scheme) {
-          mergeTargetLabels(scheme.target_labels);
           var column = columnForHorizon(scheme.horizon, scheme.frequency);
           if (!column) return;
           (scheme.tenors || []).forEach(function (tenor) {
             requests.push(
               fetchJson("/api/metrics/" + encodeURIComponent(scheme.scheme_id) + "?tenor=" + encodeURIComponent(tenor))
                 .then(function (metrics) {
-                  if (metrics.target_label) factorTargetLabels[tenor] = String(metrics.target_label);
-                  var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
-                  var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
-                  monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
-                  var taskKey = getTaskKey(tenor, column);
-                  if (!tasks[taskKey]) tasks[taskKey] = [];
-                  tasks[taskKey].push({
-                    id: scheme.scheme_id,
-                    taskKey: taskKey,
-                    name: scheme.name,
-                    status: normalizeBackendSchemeStatus(scheme.status),
-                    latestRun: scheme.last_run ? scheme.last_run.date.slice(5) : "--",
-                    monthlyRows: monthlyRows,
-                    dailyRowsByMonth: groupedDailyRows
-                  });
+                  metricsByKey[liveMetricKey(scheme.scheme_id, tenor)] = metrics;
+                })
+                .catch(function (error) {
+                  error.isLiveMetricError = true;
+                  throw error;
                 })
             );
           });
         });
         return Promise.all(requests).then(function () {
-          finishFactorLabDataLoad(tasks, "live");
+          return buildLiveTaskSchemes(payload, metricsByKey);
         });
       });
+  }
+
+  function loadBacktestFactorLabData() {
+    return fetchJson("/api/backtests/factor-lab").then(function (payload) {
+      if (payload && payload.schemes && payload.schemes.length) {
+        finishFactorLabDataLoad(buildBacktestTaskSchemes(payload), "backtest");
+        return true;
+      }
+      finishFactorLabDataLoad(initEmptyTaskSchemes(), "backtest");
+      return false;
+    });
+  }
+
+  function failFactorLabDataLoad(error) {
+    factorTaskSchemes = initEmptyTaskSchemes();
+    factorLabApiError = error.message || "API unavailable";
+    factorLabRemoteLoaded = true;
+    factorLabRemoteLoading = false;
+    factorLabDataMode = "live-error";
+    renderFactorLab();
+    return false;
   }
 
   function loadFactorLabData(options) {
     var force = options && options.force === true;
     if ((!force && factorLabRemoteLoaded) || factorLabRemoteLoading || !window.fetch) return;
     factorLabRemoteLoading = true;
-    fetchJson("/api/backtests/factor-lab")
-      .then(function (payload) {
-        if (payload && payload.schemes && payload.schemes.length) {
-          finishFactorLabDataLoad(buildBacktestTaskSchemes(payload), "backtest");
-          return null;
+    return fetchLiveFactorLabTasks()
+      .then(function (tasks) {
+        if (hasPopulatedTasks(tasks)) {
+          finishFactorLabDataLoad(tasks, "live");
+          return true;
         }
-        return loadLiveFactorLabData();
-      })
-      .catch(function () {
-        return loadLiveFactorLabData();
+        return loadBacktestFactorLabData();
       })
       .catch(function (error) {
-        factorLabApiError = error.message || "API unavailable";
-        factorLabRemoteLoaded = true;
-        factorLabRemoteLoading = false;
-        factorLabDataMode = "mock";
-        renderFactorLab();
+        error = error || {};
+        if (error.isLiveMetricError) {
+          return failFactorLabDataLoad(error);
+        }
+        return loadBacktestFactorLabData();
+      })
+      .catch(function (error) {
+        return failFactorLabDataLoad(error);
       });
   }
 
@@ -869,7 +921,7 @@
       if (factorLabRemoteLoading) {
         meta.textContent = "正在读取本机方案数据。";
       } else if (factorLabApiError) {
-        meta.textContent = "API暂不可用，当前显示本地备用数据。";
+        meta.textContent = "实时API暂不可用，请检查服务或迁移状态。";
       } else if (factorLabDataMode === "backtest") {
         meta.textContent = "该任务格子下共有 " + schemes.length + " 个历史回测方案。";
       } else {
@@ -1320,6 +1372,7 @@
       endMonthInput.dataset.factorBound = "true";
       endMonthInput.addEventListener("change", function () {
         factorLabState.endMonth = endMonthInput.value || factorLabState.endMonth;
+        factorLabState.endMonthPinned = true;
         if (factorLabState.endMonth < factorLabState.startMonth) {
           factorLabState.endMonth = factorLabState.startMonth;
           endMonthInput.value = factorLabState.endMonth;
@@ -1340,7 +1393,17 @@
 
   window.__factorLabTestHooks = {
     aggregateScheme: aggregateScheme,
+    getFactorLabState: function () {
+      return {
+        dataMode: factorLabDataMode,
+        endMonth: factorLabState.endMonth,
+        selectedTaskKey: factorLabState.selectedTaskKey,
+        startMonth: factorLabState.startMonth
+      };
+    },
+    getSelectedScheme: getSelectedScheme,
     isLowSampleMetric: isLowSampleMetric,
+    loadFactorLabData: loadFactorLabData,
     sortRankingSchemes: sortRankingSchemes
   };
 

@@ -82,19 +82,30 @@ def _run_factor_lab_hook(script: str) -> dict:
         vm.runInContext(fs.readFileSync({json.dumps(str(FRONTEND_SCRIPT))}, "utf8"), context);
         const hooks = context.window.__factorLabTestHooks;
         if (!hooks) throw new Error("missing factor lab test hooks");
-        const result = (function () {{
+        const result = (async function () {{
         {script}
         }})();
-        process.stdout.write(JSON.stringify(result));
+        Promise.resolve(result)
+          .then((value) => process.stdout.write(JSON.stringify(value)))
+          .catch((error) => {{
+            console.error(error && error.stack ? error.stack : error);
+            process.exit(1);
+          }});
         """
     )
     completed = subprocess.run(
         ["node", "-e", node_script],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
     )
+    if completed.returncode != 0:
+        raise AssertionError(
+            "node factor lab hook failed\n"
+            f"stdout:\n{completed.stdout}\n"
+            f"stderr:\n{completed.stderr}"
+        )
     return json.loads(completed.stdout)
 
 
@@ -159,6 +170,222 @@ class FactorLabLifecycleRemovedTests(unittest.TestCase):
         )
 
         self.assertFalse(result["hasLifecycleHook"])
+
+
+class FactorLabRealtimeDataTests(unittest.TestCase):
+    def test_live_metrics_take_priority_and_advance_latest_month(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const calls = [];
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "t1_daily",
+                    name: "T+1 Live",
+                    status: "active",
+                    horizon: 1,
+                    frequency: "daily",
+                    tenors: ["5Y"]
+                  }
+                ]
+              },
+              "/api/metrics/t1_daily?tenor=5Y": {
+                scheme_id: "t1_daily",
+                tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: [
+                  {
+                    run_id: "run-20260609",
+                    scheme_version: "live-v1",
+                    target_tenor: "5Y",
+                    horizon: 1,
+                    predict_date: "2026-06-09",
+                    target_date: "2026-06-10",
+                    predicted_direction: 1,
+                    actual_direction: null,
+                    is_correct: null,
+                    confidence: 0.73
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                schemes: [
+                  {
+                    id: "backtest-demo",
+                    scheme_id: "backtest_demo",
+                    name: "Backtest Demo",
+                    tenor: "5Y",
+                    target_label: "5Y国债活跃",
+                    horizon: 1,
+                    frequency: "daily",
+                    status: "complete",
+                    monthly_metrics: [
+                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100 }
+                    ],
+                    daily_rows: []
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              calls.push(url);
+              const payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            const state = hooks.getFactorLabState();
+            const scheme = hooks.getSelectedScheme();
+            return {
+              calls,
+              dataMode: state.dataMode,
+              selectedTaskKey: state.selectedTaskKey,
+              startMonth: state.startMonth,
+              endMonth: state.endMonth,
+              selectedSchemeName: scheme && scheme.name,
+              months: scheme ? scheme.monthlyRows.map((row) => row.month) : [],
+              juneDailyCount: scheme && scheme.dailyRowsByMonth["2026-06"]
+                ? scheme.dailyRowsByMonth["2026-06"].length
+                : 0
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "live")
+        self.assertEqual(result["selectedTaskKey"], "5Y|daily|T+1")
+        self.assertEqual(result["selectedSchemeName"], "T+1 Live")
+        self.assertEqual(result["endMonth"], "2026-06")
+        self.assertIn("2026-06", result["months"])
+        self.assertEqual(result["juneDailyCount"], 1)
+        self.assertNotIn("/api/backtests/factor-lab", result["calls"])
+
+    def test_backtest_data_is_fallback_when_live_has_no_schemes(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const calls = [];
+            const responses = {
+              "/api/schemes": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    id: "backtest-demo",
+                    scheme_id: "backtest_demo",
+                    name: "Backtest Demo",
+                    tenor: "5Y",
+                    target_label: "5Y国债活跃",
+                    horizon: 1,
+                    frequency: "daily",
+                    status: "complete",
+                    monthly_metrics: [
+                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100 }
+                    ],
+                    daily_rows: []
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              calls.push(url);
+              const payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            const state = hooks.getFactorLabState();
+            const scheme = hooks.getSelectedScheme();
+            return {
+              calls,
+              dataMode: state.dataMode,
+              selectedTaskKey: state.selectedTaskKey,
+              selectedSchemeName: scheme && scheme.name,
+              months: scheme ? scheme.monthlyRows.map((row) => row.month) : []
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "backtest")
+        self.assertEqual(result["selectedTaskKey"], "5Y|daily|T+1")
+        self.assertEqual(result["selectedSchemeName"], "Backtest Demo")
+        self.assertEqual(result["months"], ["2026-05"])
+        self.assertEqual(result["calls"], ["/api/schemes", "/api/backtests/factor-lab"])
+
+    def test_live_metric_error_does_not_fall_back_to_stale_backtest(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const calls = [];
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "t1_daily",
+                    name: "T+1 Live",
+                    status: "active",
+                    horizon: 1,
+                    frequency: "daily",
+                    tenors: ["5Y"]
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                schemes: [
+                  {
+                    id: "backtest-demo",
+                    scheme_id: "backtest_demo",
+                    name: "Backtest Demo",
+                    tenor: "5Y",
+                    target_label: "5Y国债活跃",
+                    horizon: 1,
+                    frequency: "daily",
+                    status: "complete",
+                    monthly_metrics: [
+                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100 }
+                    ],
+                    daily_rows: []
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              calls.push(url);
+              const payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 500,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            const state = hooks.getFactorLabState();
+            const scheme = hooks.getSelectedScheme();
+            return {
+              calls,
+              dataMode: state.dataMode,
+              selectedSchemeName: scheme && scheme.name
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "live-error")
+        self.assertIsNone(result["selectedSchemeName"])
+        self.assertNotIn("/api/backtests/factor-lab", result["calls"])
 
 
 if __name__ == "__main__":
