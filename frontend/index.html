@@ -43,6 +43,14 @@
 
             <div class="factor-filter-bar" aria-label="因子实验室筛选">
               <div class="factor-filter-row factor-filter-row-months" aria-label="月份区间">
+                <strong>口径</strong>
+                <label class="factor-source-select">
+                  <select id="factorDataSource">
+                    <option value="all">回测+实盘(全部)</option>
+                    <option value="backtest">仅回测</option>
+                    <option value="live">仅实盘</option>
+                  </select>
+                </label>
                 <strong>区间</strong>
                 <label class="factor-month-input">
                   <span>起始月份</span>

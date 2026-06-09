@@ -162,6 +162,7 @@
     startMonth: "2025-01",
     endMonth: "2025-05",
     endMonthPinned: false,
+    dataSource: "all",
     chartMetrics: {
       overall: true,
       upPrecision: true,
@@ -724,78 +725,119 @@
   }
 
   function mergeFactorLabTasks(backtestTasks, liveTasks) {
-    // 以实盘为底，合入回测（实盘覆盖同月回测）
+    // 同一方案(scheme_id)的回测和实盘合并为一条记录,月度行加 _source 标记
     var merged = initEmptyTaskSchemes();
-    var usedBacktest = {};  // "scheme_id|tenor|column" -> bool
 
-    // 先走实盘
-    if (liveTasks) {
-      Object.keys(liveTasks).forEach(function (taskKey) {
-        if (!merged[taskKey]) merged[taskKey] = [];
-        (liveTasks[taskKey] || []).forEach(function (liveScheme) {
-          var tenor = liveScheme.tenor || extractTenorFromTaskKey(taskKey);
-          var column = liveScheme.column || extractColumnFromTaskKey(taskKey);
-          if (!liveScheme.tenor) liveScheme.tenor = tenor;
-          if (!liveScheme.column) liveScheme.column = column;
-          merged[taskKey].push(liveScheme);
-        });
-      });
-    }
-
-    // 合入回测：同 (scheme_id, tenor) 的合并月度数据，否则追加
+    // 先走回测(做底盘),再合实盘
     if (backtestTasks) {
       Object.keys(backtestTasks).forEach(function (taskKey) {
         if (!merged[taskKey]) merged[taskKey] = [];
         (backtestTasks[taskKey] || []).forEach(function (btScheme) {
-          var matchKey = (btScheme.schemeName || btScheme.name || "") + "|" + extractTenorFromTaskKey(taskKey);
+          var btRows = (btScheme.monthlyRows || []).map(function (r) {
+            var row = {};
+            Object.keys(r).forEach(function (k) { row[k] = r[k]; });
+            row._source = "backtest";
+            return row;
+          });
+          var btDaily = {};
+          (btScheme.dailyRowsByMonth ? Object.keys(btScheme.dailyRowsByMonth) : []).forEach(function (m) {
+            btDaily[m] = (btScheme.dailyRowsByMonth[m] || []).map(function (dr) {
+              var d = {}; Object.keys(dr).forEach(function (k) { d[k] = dr[k]; });
+              d._source = "backtest";
+              return d;
+            });
+          });
+          var btMonths = btRows.map(function (r) { return r.month; }).sort();
+          merged[taskKey].push({
+            id: btScheme.schemeName || btScheme.id,
+            schemeId: btScheme.schemeName || "",
+            taskKey: taskKey,
+            name: btScheme.name,
+            status: btScheme.status,
+            latestRun: btScheme.latestRun,
+            monthlyRows: btRows,
+            dailyRowsByMonth: btDaily,
+            benchmarkLabel: btScheme.benchmarkLabel || "",
+            dataSourceLabel: btScheme.dataSourceLabel || "",
+            backtestStartMonth: btMonths.length ? btMonths[0] : "",
+            backtestEndMonth: btMonths.length ? btMonths[btMonths.length - 1] : "",
+            liveSinceDate: ""
+          });
+        });
+      });
+    }
+
+    // 合入实盘:同 scheme_id 的合并月度数据,否则追加新条目
+    if (liveTasks) {
+      Object.keys(liveTasks).forEach(function (taskKey) {
+        if (!merged[taskKey]) merged[taskKey] = [];
+        (liveTasks[taskKey] || []).forEach(function (liveScheme) {
+          var liveSchemaId = liveScheme.schemeId || liveScheme.id || "";
           var matched = false;
           for (var i = 0; i < merged[taskKey].length; i++) {
-            var liveScheme = merged[taskKey][i];
-            var liveMatchKey = (liveScheme.schemeId || liveScheme.id || "") + "|" + (liveScheme.tenor || extractTenorFromTaskKey(taskKey));
-            if (liveMatchKey === matchKey || (liveScheme.name && liveScheme.name === btScheme.name)) {
-              // 合并：实盘月度覆盖回测，补足回测独有月份
-              var liveMonths = {};
-              (liveScheme.monthlyRows || []).forEach(function (r) { liveMonths[r.month] = true; });
-              var btOnlyMonths = (btScheme.monthlyRows || []).filter(function (r) { return !liveMonths[r.month]; });
-              liveScheme.monthlyRows = (liveScheme.monthlyRows || []).concat(btOnlyMonths);
-              liveScheme.monthlyRows.sort(function (a, b) { return (a.month || "").localeCompare(b.month || ""); });
-              // dailyRowsByMonth 同理
-              (btScheme.dailyRowsByMonth ? Object.keys(btScheme.dailyRowsByMonth) : []).forEach(function (m) {
-                if (!liveScheme.dailyRowsByMonth) liveScheme.dailyRowsByMonth = {};
-                if (!liveScheme.dailyRowsByMonth[m]) liveScheme.dailyRowsByMonth[m] = btScheme.dailyRowsByMonth[m];
+            var mScheme = merged[taskKey][i];
+            if (mScheme.schemeId && mScheme.schemeId === liveSchemaId) {
+              // 同方案:实盘行覆盖回测，补足独有月份
+              var btOnlyMonths = {};
+              mScheme.monthlyRows.forEach(function (r) {
+                if (r._source === "backtest") btOnlyMonths[r.month] = r;
               });
-              // 标注数据来源
-              if (!liveScheme.backtestLabel) {
-                liveScheme.backtestLabel = btScheme.benchmarkLabel || btScheme.dataSourceLabel || "";
-              }
-              if (!liveScheme.backtestEndMonth) {
-                var btMonthsSorted = (btScheme.monthlyRows || []).map(function (r) { return r.month; }).sort();
-                liveScheme.backtestEndMonth = btMonthsSorted.length ? btMonthsSorted[btMonthsSorted.length - 1] : "";
-              }
-              usedBacktest[matchKey] = true;
+              (liveScheme.monthlyRows || []).forEach(function (lr) {
+                var lrCopy = {}; Object.keys(lr).forEach(function (k) { lrCopy[k] = lr[k]; });
+                lrCopy._source = "live";
+                if (btOnlyMonths[lr.month]) {
+                  // 同月实盘覆盖回测
+                  for (var j = 0; j < mScheme.monthlyRows.length; j++) {
+                    if (mScheme.monthlyRows[j].month === lr.month) {
+                      mScheme.monthlyRows[j] = lrCopy;
+                      break;
+                    }
+                  }
+                } else {
+                  mScheme.monthlyRows.push(lrCopy);
+                }
+              });
+              mScheme.monthlyRows.sort(function (a, b) { return (a.month || "").localeCompare(b.month || ""); });
+              // daily 同理
+              (liveScheme.dailyRowsByMonth ? Object.keys(liveScheme.dailyRowsByMonth) : []).forEach(function (m) {
+                if (!mScheme.dailyRowsByMonth) mScheme.dailyRowsByMonth = {};
+                mScheme.dailyRowsByMonth[m] = (liveScheme.dailyRowsByMonth[m] || []).map(function (dr) {
+                  var d = {}; Object.keys(dr).forEach(function (k) { d[k] = dr[k]; });
+                  d._source = "live";
+                  return d;
+                });
+              });
+              mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
               matched = true;
               break;
             }
           }
           if (!matched) {
-            // 回测独有（无实盘），直接追加
-            merged[taskKey].push(btScheme);
+            // 仅有实盘,无回测
+            var lrOnlyRows = (liveScheme.monthlyRows || []).map(function (r) {
+              var row = {}; Object.keys(r).forEach(function (k) { row[k] = r[k]; });
+              row._source = "live";
+              return row;
+            });
+            merged[taskKey].push({
+              id: liveSchemaId,
+              schemeId: liveSchemaId,
+              taskKey: taskKey,
+              name: liveScheme.name,
+              status: liveScheme.status,
+              latestRun: liveScheme.latestRun,
+              monthlyRows: lrOnlyRows,
+              dailyRowsByMonth: liveScheme.dailyRowsByMonth || {},
+              liveSinceDate: liveScheme.liveSinceDate || "",
+              backtestStartMonth: "",
+              backtestEndMonth: ""
+            });
           }
         });
       });
     }
 
     return merged;
-  }
-
-  function extractTenorFromTaskKey(taskKey) {
-    var parts = (taskKey || "").split("|");
-    return parts[0] || "";
-  }
-
-  function extractColumnFromTaskKey(taskKey) {
-    var parts = (taskKey || "").split("|");
-    return parts.slice(1).join("|") || "";
   }
 
   function startFactorLabAutoRefresh() {
@@ -824,17 +866,23 @@
 
   function getVisibleRowsForScheme(scheme) {
     if (!scheme) return [];
+    var src = factorLabState.dataSource;
     return scheme.monthlyRows.filter(function (row) {
-      return row.month >= factorLabState.startMonth && row.month <= factorLabState.endMonth;
+      if (row.month < factorLabState.startMonth || row.month > factorLabState.endMonth) return false;
+      if (src === "all") return true;
+      return row._source === src;
     });
   }
 
   function getVisibleDailyRowsForScheme(scheme) {
     if (!scheme || !scheme.dailyRowsByMonth) return [];
+    var src = factorLabState.dataSource;
     var rows = [];
     Object.keys(scheme.dailyRowsByMonth).forEach(function (month) {
       if (month < factorLabState.startMonth || month > factorLabState.endMonth) return;
-      rows = rows.concat(scheme.dailyRowsByMonth[month] || []);
+      (scheme.dailyRowsByMonth[month] || []).forEach(function (dr) {
+        if (src === "all" || dr._source === src) rows.push(dr);
+      });
     });
     return rows.filter(function (row) {
       return normalizeDirection(row.predictedDirection) !== null && normalizeDirection(row.actualDirection) !== null;
@@ -1036,16 +1084,13 @@
       var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
       var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
       var barWidth = clampPercent(metric.overall);
-      // 实盘起点标注
+      // 实盘起点 / 无实盘
       var sourceBadgeHtml = "";
       if (scheme.liveSinceDate) {
         var liveLabel = scheme.liveSinceDate.length >= 10 ? scheme.liveSinceDate.slice(0, 10) : scheme.liveSinceDate;
         sourceBadgeHtml += '<span class="factor-live-since-badge">实盘自 ' + escapeHtml(liveLabel) + '</span>';
       } else {
-        sourceBadgeHtml += '<span class="factor-live-since-badge is-backtest-only">仅回测</span>';
-      }
-      if (scheme.backtestEndMonth) {
-        sourceBadgeHtml += '<span class="factor-live-since-badge is-backtest-range">回测至 ' + escapeHtml(scheme.backtestEndMonth) + '</span>';
+        sourceBadgeHtml += '<span class="factor-live-since-badge is-backtest-only">暂无实盘</span>';
       }
       return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
         '<td>' + (index + 1) + '</td>' +
@@ -1085,13 +1130,16 @@
   }
 
   function getFactorAvailableMonths() {
+    var src = factorLabState.dataSource;
     var months = factorDailyBaseRows.concat(factorWeeklyBaseRows).reduce(function (result, row) {
+      if (src !== "all" && row._source && row._source !== src) return result;
       if (result.indexOf(row.month) === -1) result.push(row.month);
       return result;
     }, []);
     Object.keys(factorTaskSchemes).forEach(function (key) {
       factorTaskSchemes[key].forEach(function (scheme) {
         scheme.monthlyRows.forEach(function (row) {
+          if (src !== "all" && row._source && row._source !== src) return;
           if (months.indexOf(row.month) === -1) months.push(row.month);
         });
       });
@@ -1105,6 +1153,14 @@
     if (months.indexOf(factorLabState.startMonth) === -1) factorLabState.startMonth = months[0];
     if (months.indexOf(factorLabState.endMonth) === -1) factorLabState.endMonth = months[months.length - 1];
     if (factorLabState.endMonth < factorLabState.startMonth) factorLabState.endMonth = factorLabState.startMonth;
+  }
+
+  function _resetMonthRangeForSource() {
+    var months = getFactorAvailableMonths();
+    if (!months.length) return;
+    factorLabState.startMonth = months[0];
+    factorLabState.endMonth = months[months.length - 1];
+    factorLabState.endMonthPinned = false;
   }
 
   function renderFactorMonthSelects() {
@@ -1136,6 +1192,8 @@
       button.setAttribute("aria-sort", active ? factorLabState.rankDirection : "none");
       button.setAttribute("data-sort-direction", active ? factorLabState.rankDirection.toUpperCase() : "");
     });
+    var srcSelect = document.getElementById("factorDataSource");
+    if (srcSelect) srcSelect.value = factorLabState.dataSource;
     renderFactorMonthSelects();
   }
 
@@ -1180,6 +1238,7 @@
     var bottom = 42;
     var plotWidth = width - left - right;
     var plotHeight = height - top - bottom;
+    var trendDividerColor = "#155C3E";
     var x = function (index) {
       return rows.length === 1 ? left + plotWidth / 2 : left + plotWidth * index / (rows.length - 1);
     };
@@ -1196,6 +1255,17 @@
     rows.forEach(function (row, index) {
       svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="middle">' + escapeHtml(row.month) + '</text>';
     });
+    // 实盘分隔虚线（仅"全部"口径，找到第一个 live 月份）
+    if (factorLabState.dataSource === "all") {
+      for (var di = 0; di < rows.length; di++) {
+        if (rows[di]._source === "live") {
+          var dx = x(di);
+          svg += '<line class="factor-trend-divider" x1="' + dx.toFixed(1) + '" y1="' + top + '" x2="' + dx.toFixed(1) + '" y2="' + (height - bottom) + '" stroke-dasharray="6 4" stroke="' + trendDividerColor + '" stroke-width="1.5"></line>';
+          svg += '<text class="factor-trend-divider-label" x="' + dx.toFixed(1) + '" y="' + (top - 6) + '" text-anchor="middle" fill="' + trendDividerColor + '">实盘</text>';
+          break;
+        }
+      }
+    }
     metrics.forEach(function (metric) {
       var points = rows.map(function (row, index) {
         return [x(index), y(row[metric.id]), row[metric.id], row.month];
@@ -1230,7 +1300,15 @@
     var calendarIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2"></rect><path d="M16 2v4M8 2v4M3 10h18"></path></svg>';
 
     var html = "";
+    var prevSource = "";
     pageRows.forEach(function (row) {
+      // 在"全部"口径下，回测到实盘的分界处插入分隔行
+      if (factorLabState.dataSource === "all" && prevSource === "backtest" && row._source === "live") {
+        var dividerLabel = scheme.liveSinceDate;
+        if (dividerLabel && dividerLabel.length >= 10) dividerLabel = dividerLabel.slice(0, 10);
+        html += '<tr class="factor-live-divider"><td colspan="10">&#9660; 实盘起点 ' + (dividerLabel ? escapeHtml(dividerLabel) : "") + '</td></tr>';
+      }
+      prevSource = row._source || prevSource;
       html += '<tr>';
       html += '<td>' + escapeHtml(row.month) + '</td>';
       html += '<td><strong>' + row.samples + '</strong></td>';
@@ -1485,6 +1563,19 @@
         }
         factorLabState.selectedSchemeId = "";
         factorLabState.page = 1;
+        closeFactorCalendar();
+        renderFactorLab();
+      });
+    }
+
+    var dataSourceSelect = document.getElementById("factorDataSource");
+    if (dataSourceSelect && !dataSourceSelect.dataset.factorBound) {
+      dataSourceSelect.dataset.factorBound = "true";
+      dataSourceSelect.addEventListener("change", function () {
+        factorLabState.dataSource = dataSourceSelect.value || "all";
+        factorLabState.selectedSchemeId = "";
+        factorLabState.page = 1;
+        _resetMonthRangeForSource();
         closeFactorCalendar();
         renderFactorLab();
       });

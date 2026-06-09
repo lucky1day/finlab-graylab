@@ -863,11 +863,36 @@ button {
   background: rgba(93, 101, 111, 0.06);
 }
 
-.factor-live-since-badge.is-backtest-range {
-  border-color: rgba(93, 101, 111, 0.15);
-  color: var(--text-tertiary);
-  background: rgba(93, 101, 111, 0.04);
-  font-weight: 600;
+/* ─── 口径选择 ─── */
+.factor-source-select select {
+  padding: 6px 10px;
+  border: 1px solid rgba(93, 101, 111, 0.2);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ─── 月度表实盘分隔行 ─── */
+.factor-live-divider td {
+  padding: 6px 0;
+  border-top: 2px dashed var(--accent);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+  background: rgba(21, 92, 62, 0.05);
+}
+
+/* ─── 趋势图实盘分隔线 ─── */
+.factor-trend-divider {
+  pointer-events: none;
+}
+
+.factor-trend-divider-label {
+  font-size: 10px;
+  font-weight: 700;
 }
 
 .factor-score-cell {
