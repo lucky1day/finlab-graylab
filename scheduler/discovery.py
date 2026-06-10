@@ -85,7 +85,7 @@ def load_scheme_config(config_path: Path) -> SchemeConfig:
         code_hash=code_hash,
         config_hash=config_hash,
         manifest_hash=manifest_hash,
-        scheme_version=compute_scheme_version(code_hash),
+        scheme_version=compute_scheme_version(code_hash, config_hash),
     )
 
 

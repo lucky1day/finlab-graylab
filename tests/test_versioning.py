@@ -74,7 +74,24 @@ class VersioningTests(unittest.TestCase):
         self.assertEqual(len(cfg.code_hash), 64)
         self.assertEqual(len(cfg.config_hash), 64)
         self.assertIsNone(cfg.manifest_hash)
-        self.assertEqual(cfg.scheme_version, cfg.code_hash[:12])
+        self.assertEqual(len(cfg.scheme_version), 12)
+        # scheme_version is derived from both code_hash and config_hash
+        self.assertNotEqual(cfg.scheme_version, cfg.code_hash[:12])
+
+    def test_scheme_version_changes_when_config_changes_but_code_stays(self) -> None:
+        from shared.versioning import compute_config_hash, compute_scheme_version
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_scheme(Path(tmpdir))
+            config_path = scheme_dir / "config.yaml"
+            code_hash = "a" * 64
+            first = compute_scheme_version(code_hash, compute_config_hash(config_path))
+            config_path.write_text(config_path.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+            second = compute_scheme_version(code_hash, compute_config_hash(config_path))
+
+        self.assertEqual(len(first), 12)
+        self.assertEqual(len(second), 12)
+        self.assertNotEqual(first, second)
 
 
 if __name__ == "__main__":

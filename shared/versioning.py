@@ -29,9 +29,13 @@ def compute_manifest_hash(scheme_dir: str | Path) -> str | None:
     return None
 
 
-def compute_scheme_version(code_hash: str) -> str:
-    """从代码哈希派生稳定方案版本。"""
-    return code_hash[:12]
+def compute_scheme_version(code_hash: str, config_hash: str) -> str:
+    """从代码哈希与配置哈希派生稳定方案版本。"""
+    combined = hashlib.sha256()
+    combined.update(code_hash.encode("utf-8"))
+    combined.update(b"\0")
+    combined.update(config_hash.encode("utf-8"))
+    return combined.hexdigest()[:12]
 
 
 def _hash_files(root: Path, paths) -> str:
