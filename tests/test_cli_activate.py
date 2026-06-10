@@ -8,6 +8,7 @@ from pathlib import Path
 from harness.authorization import issue_token
 from harness.cli import main
 from harness.config_loader import load_config_raw
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -50,17 +51,18 @@ class CliActivateTest(unittest.TestCase):
     def test_activate_with_valid_token_flips_status(self) -> None:
         config_path = _scaffold_scheme(self.root, status="paused")
         token = issue_token("t5_daily", "activate")
-        code = main(
-            [
-                "activate",
-                "--scheme-id",
-                "t5_daily",
-                "--project-root",
-                str(self.root),
-                "--authorize",
-                token,
-            ]
-        )
+        with patch("harness.gates.activate_gate._verify_gate_history", return_value=[]):
+            code = main(
+                [
+                    "activate",
+                    "--scheme-id",
+                    "t5_daily",
+                    "--project-root",
+                    str(self.root),
+                    "--authorize",
+                    token,
+                ]
+            )
         self.assertEqual(code, 0)
         raw = load_config_raw(config_path)
         self.assertEqual(raw["status"], "active")

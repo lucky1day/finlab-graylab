@@ -76,6 +76,25 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
+        # 校验 gate 历史：当前 scheme_version 必须有一次 stage=all 全通过的 harness 运行
+        scheme_version = _compute_scheme_version(ctx)
+        gate_history_errors = _verify_gate_history(ctx, scheme_version)
+        if gate_history_errors:
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.BLOCKED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("scheme_version", scheme_version),
+                    Evidence("gate_history_errors", gate_history_errors),
+                ],
+                errors=gate_history_errors,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+
         previous_status = str(raw.get("status"))
         if previous_status == "active":
             new_status = "active"
@@ -99,11 +118,13 @@ class ActivationGate(Gate):
             passed=True,
             evidence=[
                 Evidence("scheme_id", ctx.scheme_id),
+                Evidence("scheme_version", scheme_version),
                 Evidence("config_path", str(config_path)),
                 Evidence("previous_status", previous_status),
                 Evidence("new_status", new_status),
                 Evidence("status_flipped", flipped),
                 Evidence("cron", _cron_of(raw)),
+                Evidence("gate_history_verified", True),
                 Evidence("authorization_audit_path", str(audit_path)),
             ],
             errors=errors,
@@ -136,3 +157,87 @@ def _flip_status_to_active(config_path: Path) -> bool:
     if flipped:
         config_path.write_text("".join(lines), encoding="utf-8")
     return flipped
+
+
+def _compute_scheme_version(ctx: GateContext) -> str:
+    """读取 config.yaml 计算当前方案版本号。"""
+    config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+    scheme_dir = config_path.parent
+    from shared.versioning import compute_code_hash, compute_config_hash, compute_scheme_version
+    code_hash = compute_code_hash(scheme_dir)
+    config_hash = compute_config_hash(config_path)
+    return compute_scheme_version(code_hash, config_hash)
+
+
+REQUIRED_ACTIVATE_GATES = frozenset({
+    "static", "input", "unit", "dry-run", "compare", "backtest", "api",
+})
+
+
+def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
+    """查询 t_harness_gate_results 确认当前版本已通过全部必要 gate。
+
+    返回错误列表，空列表 = 校验通过。
+    """
+    from sqlalchemy import text
+
+    engine = _db_engine()
+    if engine is None:
+        return ["cannot connect to database to verify gate history"]
+    try:
+        with engine.begin() as conn:
+            # 查找最近一次 stage=all 且 status=passed 的 harness 运行
+            run = conn.execute(
+                text(
+                    """
+                    SELECT harness_run_id, finished_at
+                    FROM t_harness_runs
+                    WHERE scheme_id = :scheme_id
+                      AND scheme_version = :scheme_version
+                      AND stage = 'all'
+                      AND status = 'passed'
+                    ORDER BY finished_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"scheme_id": ctx.scheme_id, "scheme_version": scheme_version},
+            ).one_or_none()
+            if run is None:
+                return [
+                    f"no passed 'all' stage harness run found for {ctx.scheme_id} "
+                    f"version {scheme_version}; run 'python -m harness onboard "
+                    f"--scheme-id {ctx.scheme_id} --stage all' first"
+                ]
+
+            # 查找该运行中各 gate 的状态
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT gate_name, status
+                    FROM t_harness_gate_results
+                    WHERE harness_run_id = :harness_run_id
+                    """
+                ),
+                {"harness_run_id": run[0]},
+            ).fetchall()
+
+            passed_gates = {row[0] for row in rows if row[1] == "passed"}
+            missing = REQUIRED_ACTIVATE_GATES - passed_gates
+            if missing:
+                return [
+                    f"required gates not all passed for harness run {run[0]}: "
+                    f"missing/not passed: {sorted(missing)}"
+                ]
+            return []
+    finally:
+        if engine is not None and hasattr(engine, "dispose"):
+            engine.dispose()
+
+
+def _db_engine():
+    """创建数据库连接。"""
+    try:
+        from scheduler.repository import create_engine_from_env
+        return create_engine_from_env()
+    except Exception:
+        return None
