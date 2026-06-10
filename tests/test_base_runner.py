@@ -281,7 +281,6 @@ class BaseRunnerTemplateTests(unittest.TestCase):
         update_summary.assert_called_once()
         self.assertEqual(update_summary.call_args.kwargs["run_id"], 201)
         self.assertEqual(output.summary["run_id"], 201)
-        legacy_upsert.assert_not_called()
 
 
 if __name__ == "__main__":

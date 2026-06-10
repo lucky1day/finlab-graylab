@@ -56,6 +56,12 @@ def parse_project_yaml_subset(text: str) -> dict[str, Any]:
 
 
 def _parse_scalar(value: str, literal_ast_module) -> Any:
+    # YAML 式布尔值
+    if value.lower() in ("true", "yes", "on"):
+        return True
+    if value.lower() in ("false", "no", "off"):
+        return False
+    # Python 字面量
     try:
         return literal_ast_module.literal_eval(value)
     except Exception:

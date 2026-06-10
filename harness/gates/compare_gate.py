@@ -341,8 +341,8 @@ def _current_backtest_summary(ctx: GateContext) -> dict[str, Any]:
 
 def _load_config(config_path: Path) -> dict[str, Any]:
     """读取 config.yaml 返回字典；失败时返回空 dict 不阻断 gate。"""
-    import yaml
     try:
+        import yaml
         if config_path.exists():
             return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     except Exception:
