@@ -533,7 +533,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         # 周度的实盘起点 = 第一条 target_date 所在月首日之前的周六
         self.assertEqual(result["liveSinceDate"], "2026-05-30")
         self.assertEqual(result["liveMetricSinceDate"], "2026-06-11")
-        self.assertEqual(result["dividerText"], "实盘发出起点 2026-05-30 · 统计起点 2026-06-11")
+        self.assertEqual(result["dividerText"], "实盘发出起点 2026-05-30")
         self.assertEqual(result["months"], ["2026-06"])
         self.assertEqual(result["dailyMonths"], ["2026-06"])
 

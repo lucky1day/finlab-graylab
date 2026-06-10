@@ -322,9 +322,6 @@
   function liveDividerText(scheme, task) {
     var labels = liveDividerLabels(scheme, task);
     var dividerText = labels.dividerLabel ? "实盘发出起点 " + labels.dividerLabel : "实盘起点";
-    if (labels.metricSinceLabel && labels.metricSinceLabel !== labels.dividerLabel) {
-      dividerText += " · 统计起点 " + labels.metricSinceLabel;
-    }
     return dividerText;
   }
 
