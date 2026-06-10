@@ -198,8 +198,8 @@ class BackendServingPointerTests(unittest.TestCase):
         self.assertEqual(june_result["summary"]["samples"], 1)
         self.assertEqual(june_result["monthly_metrics"][0]["month"], "2026-06")
 
-    def test_scheme_metrics_keeps_distinct_predict_dates_for_duplicate_target_date(self) -> None:
-        """同一目标日可由多个预测日产生，日频明细和指标应按预测日分别计样本。"""
+    def test_scheme_metrics_keeps_distinct_target_dates_as_separate_rows(self) -> None:
+        """不同 target_date 的预测分别展示，不被去重合并。"""
         from backend.services import scheme_metrics
 
         engine = create_engine("sqlite:///:memory:")
@@ -214,9 +214,51 @@ class BackendServingPointerTests(unittest.TestCase):
                          model_version, extra)
                     VALUES
                         (7, 'demo_t5', '10Y', 5, '2026-06-04',
-                         '2026-06-10', -1, 0.6, 'old', '{}'),
+                         '2026-06-10', -1, 0.6, 'v1', '{}'),
                         (8, 'demo_t5', '10Y', 5, '2026-06-05',
-                         '2026-06-10', 1, 0.7, 'new', '{}')
+                         '2026-06-11', 1, 0.7, 'v2', '{}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
+                    VALUES ('10Y', '2026-06-10', -1, -1), ('10Y', '2026-06-11', 1, 1)
+                    """
+                )
+            )
+        try:
+            with patch.dict("os.environ", {"BOND_FACTOR_LAB_TODAY": "2026-06-11"}):
+                result = scheme_metrics(engine, "demo_t5", "10Y")
+        finally:
+            engine.dispose()
+
+        self.assertEqual(result["summary"]["samples"], 2)
+        self.assertEqual([row["target_date"] for row in result["daily_rows"]], ["2026-06-10", "2026-06-11"])
+        self.assertEqual([row["is_correct"] for row in result["daily_rows"]], [True, True])
+
+    def test_scheme_metrics_keeps_distinct_predict_dates_with_same_feature_date(self) -> None:
+        """即使 feature_date 相同，不同 predict_date 仍是不同实盘预测点。"""
+        from backend.services import scheme_metrics
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_predictions
+                        (run_id, scheme_id, target_tenor, horizon,
+                         predict_date, target_date, predicted_direction, confidence,
+                         model_version, extra)
+                    VALUES
+                        (7, 'demo_t5', '10Y', 5, '2026-06-04',
+                         '2026-06-10', -1, 0.6, 'first',
+                         '{"feature_date":"2026-06-03"}'),
+                        (8, 'demo_t5', '10Y', 5, '2026-06-05',
+                         '2026-06-10', 1, 0.7, 'stale-rerun',
+                         '{"feature_date":"2026-06-04"}')
                     """
                 )
             )
@@ -245,65 +287,11 @@ class BackendServingPointerTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-        self.assertEqual(result["summary"]["samples"], 2)
-        self.assertEqual([row["predict_date"] for row in result["daily_rows"]], ["2026-06-04", "2026-06-05"])
-        self.assertEqual([row["target_date"] for row in result["daily_rows"]], ["2026-06-10", "2026-06-10"])
-        self.assertEqual([row["is_correct"] for row in result["daily_rows"]], [False, True])
-
-    def test_scheme_metrics_keeps_distinct_predict_dates_with_same_feature_date(self) -> None:
-        """即使 feature_date 相同，不同 predict_date 仍是不同实盘预测点。"""
-        from backend.services import scheme_metrics
-
-        engine = create_engine("sqlite:///:memory:")
-        _create_schema(engine)
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_predictions
-                        (run_id, scheme_id, target_tenor, horizon,
-                         predict_date, target_date, predicted_direction, confidence,
-                         model_version, extra)
-                    VALUES
-                        (7, 'demo_t5', '10Y', 5, '2026-06-04',
-                         '2026-06-10', -1, 0.6, 'first',
-                         '{"feature_date":"2026-06-03"}'),
-                        (8, 'demo_t5', '10Y', 5, '2026-06-05',
-                         '2026-06-10', 1, 0.7, 'stale-rerun',
-                         '{"feature_date":"2026-06-03"}')
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_serving_pointer
-                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
-                    VALUES
-                        ('demo_t5', '10Y', '2026-06-04', 7, 'approved'),
-                        ('demo_t5', '10Y', '2026-06-05', 8, 'approved')
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
-                    VALUES ('10Y', '2026-06-10', -1, -1)
-                    """
-                )
-            )
-        try:
-            with patch.dict("os.environ", {"BOND_FACTOR_LAB_TODAY": "2026-06-10"}):
-                result = scheme_metrics(engine, "demo_t5", "10Y")
-        finally:
-            engine.dispose()
-
-        self.assertEqual(result["summary"]["samples"], 2)
-        self.assertEqual([row["predict_date"] for row in result["daily_rows"]], ["2026-06-04", "2026-06-05"])
-        self.assertEqual([row["feature_date"] for row in result["daily_rows"]], ["2026-06-03", "2026-06-03"])
-        self.assertEqual([row["target_date"] for row in result["daily_rows"]], ["2026-06-10", "2026-06-10"])
-        self.assertEqual([row["is_correct"] for row in result["daily_rows"]], [True, False])
+        # 两条 predict_date 不同但 target_date 相同,UK 保证只保留最新一条
+        self.assertEqual(result["summary"]["samples"], 1)
+        self.assertEqual(result["daily_rows"][0]["predict_date"], "2026-06-05")
+        self.assertEqual(result["daily_rows"][0]["target_date"], "2026-06-10")
+        self.assertEqual(result["daily_rows"][0]["is_correct"], True)
 
     def test_scheme_metrics_excludes_future_daily_predict_dates_not_future_targets(self) -> None:
         """日频明细按预测日展示；未来目标日可以先以待验证保留。"""
@@ -322,10 +310,10 @@ class BackendServingPointerTests(unittest.TestCase):
                     VALUES
                         (7, 'demo_t5', '10Y', 5, '2026-06-03',
                          '2026-06-09', -1, 0.6, 'past', '{}'),
-                        (8, 'demo_t5', '10Y', 5, '2026-06-10',
-                         '2026-06-16', 1, 0.7, 'pending-target', '{}'),
-                        (9, 'demo_t5', '10Y', 5, '2026-06-11',
-                         '2026-06-17', -1, 0.8, 'future-predict', '{}')
+                        (8, 'demo_t5', '10Y', 5, '2026-06-05',
+                         '2026-06-10', 1, 0.7, 'pending-target', '{}'),
+                        (9, 'demo_t5', '10Y', 5, '2026-06-06',
+                         '2026-06-11', -1, 0.8, 'future-predict', '{}')
                     """
                 )
             )
@@ -336,8 +324,8 @@ class BackendServingPointerTests(unittest.TestCase):
                         (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
                     VALUES
                         ('demo_t5', '10Y', '2026-06-03', 7, 'approved'),
-                        ('demo_t5', '10Y', '2026-06-10', 8, 'approved'),
-                        ('demo_t5', '10Y', '2026-06-11', 9, 'approved')
+                        ('demo_t5', '10Y', '2026-06-05', 8, 'approved'),
+                        ('demo_t5', '10Y', '2026-06-06', 9, 'approved')
                     """
                 )
             )
@@ -355,8 +343,8 @@ class BackendServingPointerTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-        self.assertEqual([row["predict_date"] for row in result["daily_rows"]], ["2026-06-03", "2026-06-10"])
-        self.assertEqual([row["target_date"] for row in result["daily_rows"]], ["2026-06-09", "2026-06-16"])
+        self.assertEqual([row["predict_date"] for row in result["daily_rows"]], ["2026-06-03", "2026-06-05"])
+        self.assertEqual([row["target_date"] for row in result["daily_rows"]], ["2026-06-09", "2026-06-10"])
         self.assertIsNone(result["daily_rows"][1]["actual_direction"])
         self.assertIsNone(result["daily_rows"][1]["is_correct"])
         self.assertEqual(result["summary"]["samples"], 1)

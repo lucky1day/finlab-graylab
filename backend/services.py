@@ -582,7 +582,7 @@ def _scheme_metric_month(horizon: Any, predict_date: str, target_date: str, extr
 
 
 def _prediction_point_date(row: Any) -> str:
-    return _iso(row["predict_date"]) or _iso(row["target_date"]) or ""
+    return _iso(row["target_date"]) or _iso(row["predict_date"]) or ""
 
 
 def _is_better_prediction_for_point(candidate: Any, candidate_extra: dict[str, Any], current: Any) -> bool:
