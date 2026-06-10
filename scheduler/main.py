@@ -155,7 +155,7 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
 
     scheduler.add_job(
         run_actuals_job,
-        trigger=CronTrigger(hour=16, minute=0, day_of_week="mon-fri", timezone=ASIA_SHANGHAI),
+        trigger=CronTrigger(hour=19, minute=0, day_of_week="mon-fri", timezone=ASIA_SHANGHAI),
         id="actuals",
         replace_existing=True,
         max_instances=1,
