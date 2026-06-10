@@ -201,7 +201,7 @@ def insert_run_predictions(
     *,
     scheme_version: str | None = None,
 ) -> int:
-    """按 run_id 追加预测记录，不覆盖历史。"""
+    """UPSERT 预测记录，按 UK (scheme_id, target_tenor, horizon, target_date) 覆盖。"""
     sql = text(
         """
         INSERT INTO t_scheme_predictions
@@ -210,6 +210,15 @@ def insert_run_predictions(
         VALUES
             (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :target_date,
              :predicted_direction, :confidence, :model_version, CAST(:extra AS JSON))
+        ON DUPLICATE KEY UPDATE
+            run_id = VALUES(run_id),
+            scheme_version = VALUES(scheme_version),
+            predict_date = VALUES(predict_date),
+            predicted_direction = VALUES(predicted_direction),
+            confidence = VALUES(confidence),
+            model_version = VALUES(model_version),
+            extra = VALUES(extra),
+            updated_at = CURRENT_TIMESTAMP
         """
     )
     rows = []
