@@ -489,8 +489,8 @@ def build_monthly_metrics(rows: list[dict[str, Any]], *, benchmark_id: str) -> l
 
 
 def _metric_month(row: dict[str, Any]) -> str:
-    """返回历史回测月度指标归属月份。"""
-    return str(row.get("predict_date") or row.get("target_date"))[:7]
+    """返回历史回测月度指标归属月份（按 target_date 分组）。"""
+    return str(row.get("target_date") or row.get("predict_date"))[:7]
 
 
 def metric_row(rows: list[dict[str, Any]], tenor: str, month: str, *, benchmark_id: str) -> dict[str, Any]:
