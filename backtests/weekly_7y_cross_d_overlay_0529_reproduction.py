@@ -96,7 +96,7 @@ def build_backtest_rows(
     all_weeks = [int(value) for value in weekly["week_id"].tolist()]
     weekly_by_id = {int(row["week_id"]): row for _, row in weekly.iterrows()}
 
-    for index, feature_week_id in enumerate(all_weeks[:-1]):
+    for feature_week_id in all_weeks:
         history = weekly[weekly["week_id"].le(feature_week_id)].copy()
         try:
             prediction_df = build_cross_d_overlay(history)
@@ -106,9 +106,14 @@ def build_backtest_rows(
         if feature_predictions.empty:
             continue
 
-        target_week_id = all_weeks[index + 1]
+        try:
+            target_week_id = _next_calendar_week_id(calendar, feature_week_id)
+        except ValueError:
+            continue
+        target_row = weekly_by_id.get(target_week_id)
+        if target_row is None:
+            continue
         feature_row = weekly_by_id[feature_week_id]
-        target_row = weekly_by_id[target_week_id]
         prediction_row = feature_predictions.iloc[-1]
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
@@ -154,6 +159,16 @@ def build_backtest_rows(
         )
 
     return rows
+
+
+def _next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
+    """从 DB 日历读取 feature_week_id 后的下一实际 week_id。"""
+    feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
+    for day in calendar.next_trading_days(feature_date, 15):
+        next_week = calendar.week_id_for_date(day)
+        if next_week is not None and int(next_week) != int(feature_week_id):
+            return int(next_week)
+    raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
 
 
 def compact_prediction_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

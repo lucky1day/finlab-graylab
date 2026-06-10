@@ -71,6 +71,47 @@ class Weekly7YCrossDOverlay0529BacktestTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["input_artifact_source"], "unit_test")
         self.assertEqual(rows[0]["label"], 1)
 
+    def test_prediction_rows_choose_target_week_from_calendar_not_adjacent_input_row(self) -> None:
+        from backtests import weekly_7y_cross_d_overlay_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202620, 202621, 202622])
+        calendar = _calendar_for(weekly_df["week_id"])
+        calendar.next_trading_days = lambda day, count: {
+            "2026-05-15": ["2026-05-22"],
+            "2026-05-29": [],
+        }.get(day, [])
+        calendar.week_id_for_date = lambda day: {
+            "2026-05-22": 202622,
+        }.get(day)
+
+        def fake_overlay(frame: pd.DataFrame) -> pd.DataFrame:
+            feature_week = int(frame["week_id"].iloc[-1])
+            return pd.DataFrame(
+                {
+                    "week_id": [feature_week],
+                    "cross_d_pred_label": [1],
+                    "cross_d_prob_up": [0.55],
+                    "cross_d_overlay": [False],
+                    "cross_d_signal_source": ["unit"],
+                    "main_pred_label": [1],
+                    "main_prob_up": [0.55],
+                    "d5_d_pred_label": [1],
+                    "d5_d_prob_up": [0.55],
+                }
+            )
+
+        with patch.object(runner, "build_cross_d_overlay", side_effect=fake_overlay):
+            rows = runner.build_backtest_rows(
+                weekly_df,
+                calendar=calendar,
+                artifact_path=Path("/tmp/weekly_7y.csv"),
+                artifact_source="unit_test",
+            )
+
+        self.assertEqual(rows[0]["extra"]["feature_week_id"], 202620)
+        self.assertEqual(rows[0]["extra"]["target_week_id"], 202622)
+        self.assertEqual(rows[0]["target_date"], "2026-05-22")
+
     def test_run_no_persist_returns_sop_payload_without_writes(self) -> None:
         from backtests import weekly_7y_cross_d_overlay_0529_reproduction as runner
 
@@ -137,11 +178,34 @@ def _calendar_for(week_ids: pd.Series) -> SimpleNamespace:
         int(week_id): pd.Timestamp("2026-01-02") + pd.Timedelta(days=7 * index)
         for index, week_id in enumerate(week_ids)
     }
+    week_dates[202620] = pd.Timestamp("2026-05-15")
+    week_dates[202621] = pd.Timestamp("2026-05-21")
+    week_dates[202622] = pd.Timestamp("2026-05-22")
 
     def last_trading_day(week_id: int) -> str:
         return week_dates[int(week_id)].strftime("%Y-%m-%d")
 
-    return SimpleNamespace(week_id_to_last_trading_day=last_trading_day)
+    def next_trading_days(day: str, count: int) -> list[str]:
+        current = pd.Timestamp(day)
+        days = [
+            value.strftime("%Y-%m-%d")
+            for value in sorted(week_dates.values())
+            if value > current
+        ]
+        return days[:count]
+
+    def week_id_for_date(day: str) -> int | None:
+        target = pd.Timestamp(day)
+        for week_id, value in week_dates.items():
+            if value == target:
+                return int(week_id)
+        return None
+
+    return SimpleNamespace(
+        week_id_to_last_trading_day=last_trading_day,
+        next_trading_days=next_trading_days,
+        week_id_for_date=week_id_for_date,
+    )
 
 
 if __name__ == "__main__":

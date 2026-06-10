@@ -2,7 +2,7 @@
 
 **更新日期**: 2026-06-10
 
-> 2026-06-10 新增周度方案 `weekly_5y_direct_0529`，按 SOP 全流程入库；同日修正前端/API/回测验证口径：日频与周频月度统计、明细日期均按 `predict_date`（预测侧日期）归属，真实方向仍按 `target_date` 匹配。
+> 2026-06-10 新增周度方案 `weekly_5y_direct_0529`，按 SOP 全流程入库；同日修正前端/API/回测验证口径：日频与周频月度统计、明细日期均按 `target_date`（目标交易日）归属，`predict_date` 仅用于调度日志和运行记录。
 
 ## 总览
 
@@ -101,7 +101,7 @@ S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid
   - `com.bond-factor-lab.backend`
   - `com.bond-factor-lab.scheduler`
 - 2026-06-09 周频方案删除后已重启 scheduler；`launchctl print` 显示 `com.bond-factor-lab.scheduler` 为 `running`。
-- 前端已从真实 API 读取目标注册表和回测数据；T+1/T+5/周度筛选入口保留。日频 T+N 与周度明细、月度指标均按 `predict_date` 作为预测侧归属日期；真实方向仍分别匹配 `t_scheme_actuals.trade_date = target_date` 与 `t_scheme_weekly_actuals.target_date = target_date`。`feature_date` 仅用于追溯算法实际消费的数据窗口。同一 `target_date` 下的不同 `predict_date` 是不同预测点，会分别展示和计样本；日频明细表头改为“预测日”，周度明细表头为“预测周”。
+- 前端已从真实 API 读取目标注册表和回测数据；T+1/T+5/周度筛选入口保留。日频 T+N 与周度明细、月度指标均按 `target_date` 作为目标交易日归属；真实方向仍分别匹配 `t_scheme_actuals.trade_date = target_date` 与 `t_scheme_weekly_actuals.target_date = target_date`。`feature_date` 仅用于追溯算法实际消费的数据窗口，`predict_date` 仅用于调度日志和运行记录；同一 `target_date` 下同方案同标的同 horizon 由 UK + UPSERT 保持唯一。
 - 周频 actuals 代码口径已修复并重刷入库；当前 `t_scheme_weekly_actuals` 2,927 条，按 `feature_date/target_date -> api_wind_date.week_id` 复核无错配。
 
 ## 当前数据库快照
@@ -154,13 +154,13 @@ actuals 覆盖：
 | `t5_daily` | `framework_original_csv` | `success` | `2025-01-01` 到 `2026-05-31` |
 | `t5_daily` | `framework_db_aligned` | `success`，run_id=`76` | `2025-01-01` 到 `2026-05-31` |
 | `weekly_5y_direct_0529` | `framework_db_aligned` | `success`，run_id=`80` | `2016-02-27` 到 `2026-05-30` |
-| `weekly_7y_cross_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`88` | `2016-03-12` 到 `2026-05-30` |
+| `weekly_7y_cross_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`89` | `2016-03-12` 到 `2026-05-30` |
 
 DB 中旧周频回测 run 已清理；当前新接入的周频方案 `weekly_5y_direct_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`80`。
 
-`weekly_7y_cross_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`88`，`t_backtest_predictions` 472 条、`t_backtest_monthly_metrics` 124 条；整体样本 472、正确 294、accuracy=62.3%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=7Y`、overall=62.3。`scripts/generate_benchmark_samples.py` 当前仅生成日频 `t1_daily/t5_daily` 样本，未自动生成该周频方案的四份 benchmark 文件。
+`weekly_7y_cross_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`89`，`t_backtest_predictions` 472 条、`t_backtest_monthly_metrics` 124 条；整体样本 472、正确 294、accuracy=62.3%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=7Y`、overall=62.3。`scripts/generate_benchmark_samples.py` 当前仅生成日频 `t1_daily/t5_daily` 样本，未自动生成该周频方案的四份 benchmark 文件。
 
-2026-06-10 已按 `predict_date` 月度口径重跑日频和周频回测，最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `74/75/76`，`t1_daily` baseline/framework-csv/framework-db 分别为 `77/78/79`，`weekly_5y_direct_0529` framework-db 为 `80`。`canonical_csv_vs_upstream_db_generated` 最新数据检查的整体状态仍为 `failed`，失败来自非目标字段/静态 CSV 与源 DB 的缺失及微小数值差异；目标列 `TB0YWI0C/TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C` 最大差异均为 0，且 `framework_db_comparison` 为 0 mismatch。
+2026-06-10 已按 `target_date` 月度口径重跑日频和周频回测，最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `74/75/76`，`t1_daily` baseline/framework-csv/framework-db 分别为 `77/78/79`，`weekly_5y_direct_0529` framework-db 为 `80`。`canonical_csv_vs_upstream_db_generated` 最新数据检查的整体状态仍为 `failed`，失败来自非目标字段/静态 CSV 与源 DB 的缺失及微小数值差异；目标列 `TB0YWI0C/TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C` 最大差异均为 0，且 `framework_db_comparison` 为 0 mismatch。
 
 ## 正式预测状态
 
@@ -173,15 +173,15 @@ launchd scheduler 已成功运行 active 方案：
 | `t5_daily` | `2026-06-05`、`2026-06-08`、`2026-06-09` | 4/日 | `success`，run_id=`15..17` |
 | `weekly_5y_direct_0529` | `2026-06-11` | 1 | `success`，run_id=`9` |
 
-2026-06-10 周度方案 `weekly_5y_direct_0529` 首次入库，`run_id=9`，predict_date=2026-06-11，feature_week_id=202620 → target_week_id=202621，feature_date=2026-05-29，target_date=2026-06-05，预测方向=1（上行），与 actuals 对比准确。API metrics 按 `predict_date` 归入 2026-06，返回 accuracy=100%（1/1）；2026-05 无该 live 样本。
+2026-06-10 周度方案 `weekly_5y_direct_0529` 首次入库，`run_id=9`，predict_date=2026-06-11，feature_week_id=202620 → target_week_id=202621，feature_date=2026-05-29，target_date=2026-06-05，预测方向=1（上行），与 actuals 对比准确。API metrics 按 `target_date` 归入 2026-06，返回 accuracy=100%（1/1）；2026-05 无该 live 样本。
 
-2026-06-10 周度方案 `weekly_5y_direct_0529` post-onboarding SOP 已完成：原始基准按 DB 周历归一化后 503 条，改造后 framework 复现 503 条，S5 方向差异 0；按 `predict_date` 月度口径重新正式回测落库 run_id=`80`，`t_backtest_predictions` 503 条、`t_backtest_monthly_metrics` 124 条；其中 2026-05 为 5 条、2026-06 为 0 条；`/api/backtests/factor-lab` 与 DB 逐 `tenor × month` 比对 124 格，差异 0；scheduler 已确认注册周六 11:30 任务（`30 11 * * 6`）。
+2026-06-10 周度方案 `weekly_5y_direct_0529` post-onboarding SOP 已完成：原始基准按 DB 周历归一化后 503 条，改造后 framework 复现 503 条，S5 方向差异 0；按 `target_date` 月度口径重新正式回测落库 run_id=`80`，`t_backtest_predictions` 503 条、`t_backtest_monthly_metrics` 124 条；其中 2026-05 为 5 条、2026-06 为 0 条；`/api/backtests/factor-lab` 与 DB 逐 `tenor × month` 比对 124 格，差异 0；scheduler 已确认注册周六 11:30 任务（`30 11 * * 6`）。
 
-2026-06-10 已重刷日频 actuals 至源表可用水位，并补跑 `t5_daily` 的 2026-05-26 到 2026-05-29（run_id=18..21）以及 `t1_daily` 的 2026-05-29 到 2026-06-10（run_id=22..30）。当前 6 月日频明细按预测日展示到 2026-06-10；对应目标日有 actuals 时直接计结果，目标日尚无 actuals 时保持 `待验证`，不会显示为“平”。
+2026-06-10 已重刷日频 actuals 至源表可用水位，并补跑 `t5_daily` 的 2026-05-26 到 2026-05-29（run_id=18..21）以及 `t1_daily` 的 2026-05-29 到 2026-06-10（run_id=22..30）。当前 6 月日频明细按目标日展示；对应目标日有 actuals 时直接计结果，目标日尚无 actuals 时保持 `待验证`，不会显示为“平”。
 
 2026-06-10 已验证前端/DB 一致性：`python -m scripts.verify_frontend_db --scheme-id t5_daily --run-id 76` 检查 68 格、0 mismatch；`t1_daily --run-id 79` 检查 36 格、0 mismatch（DB 中 `1Y` 回测格被前端目标注册表隐藏）；`weekly_5y_direct_0529 --run-id 80` 检查 124 格、0 mismatch。scheduler 挂载也已复核通过：`t1_daily` / `t5_daily` 注册工作日 09:25，`weekly_5y_direct_0529` 注册周六 11:30，launchd scheduler 为 running。
 
-旧周频 live prediction/run_log 记录已清理。scheduler 重启后，当前代码配置会注册日频方案与 `weekly_5y_direct_0529` 周频方案。
+旧周频 live prediction/run_log 记录已清理。scheduler 重启后，当前代码配置会注册日频方案与 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529` 周频方案。
 
 ## API 与安全边界
 
@@ -194,8 +194,8 @@ launchd scheduler 已成功运行 active 方案：
 
 ## 剩余观察项
 
-1. 下一次 scheduler 运行后，继续确认日志只注册和执行 `t1_daily` / `t5_daily` / `weekly_5y_direct_0529`。
+1. 下一次 scheduler 运行后，继续确认日志只注册和执行 `t1_daily` / `t5_daily` / `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529`。
 2. 后续新周频方案进入时，继续按 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 流程，并证明 `week_id` 来自 `api_wind_date` 而非公式计算。
 3. 2026-06-10 修复了 `backend/services.py` 中周度 metrics 的 JOIN 条件：去掉 `wa.predict_date = p.predict_date`（周度 predict_date 语义在 prediction 和 actuals 间不一致），仅按 `tenor + target_date` 匹配。
-4. 2026-06-10 修复日频 T+N 与周频前端/API/回测口径：月度指标与明细均按 `predict_date` 归属，真实方向按 `target_date` join；`feature_date` 只作为输入窗口追溯字段；日频明细仅展示到服务当天的预测日，未来目标日可先显示为 `待验证`；同一 `target_date` 下不同 `predict_date` 分别作为不同预测点展示与计量。
+4. 2026-06-10 修复日频 T+N 与周频前端/API/回测口径：月度指标与明细均按 `target_date` 归属，真实方向按 `target_date` join；`feature_date` 只作为输入窗口追溯字段，`predict_date` 只作为调度日志和运行记录；未来目标日可先显示为 `待验证`。
 5. 拿到 panda_quantflow 外层仓库路径后完成菜单/路由接入并验证 iframe。
