@@ -95,7 +95,13 @@ def execute_scheme(
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
 ) -> SchemeRunResult:
-    """执行单个方案并写入预测表和运行日志。"""
+    """执行单个方案并写入预测表和运行日志。
+
+    执行前校验：
+    1. config.yaml status == 'active'（本地配置）
+    2. t_scheme_registry.status == 'active'（DB 注册状态）
+    3. t_scheme_versions 中当前版本状态为 'active' 或 'shadow'（激活审核状态）
+    """
     engine = create_engine_from_env()
     started = time.monotonic()
     if cfg.status != "active":
@@ -105,6 +111,13 @@ def execute_scheme(
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
 
     scheme_version = getattr(cfg, "scheme_version", None)
+    ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
+    if not ok:
+        duration = time.monotonic() - started
+        write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
+        engine.dispose()
+        return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
+
     run_id: int | None = None
     try:
         run_id = create_scheme_run(
@@ -171,6 +184,45 @@ def execute_all(
 
     runnable = schemes if include_paused else [cfg for cfg in schemes if cfg.status == "active"]
     return [execute_scheme(cfg, predict_date, algo_env=algo_env) for cfg in runnable]
+
+
+def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None) -> tuple[bool, str]:
+    """校验方案在 DB 注册与版本激活状态，返回 (通过, 原因)。"""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        # 1. 校验 t_scheme_registry 中该方案为 active
+        reg_row = conn.execute(
+            text("SELECT status FROM t_scheme_registry WHERE scheme_id = :scheme_id"),
+            {"scheme_id": scheme_id},
+        ).one_or_none()
+        if reg_row is None:
+            return False, f"scheme {scheme_id} not found in t_scheme_registry"
+        if reg_row[0] != "active":
+            return False, f"scheme {scheme_id} registry status={reg_row[0]}, must be active"
+
+        # 2. 校验 t_scheme_versions 中当前版本为 active/shadow
+        if scheme_version:
+            ver_row = conn.execute(
+                text(
+                    "SELECT status FROM t_scheme_versions "
+                    "WHERE scheme_id = :scheme_id AND scheme_version = :scheme_version "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                {"scheme_id": scheme_id, "scheme_version": scheme_version},
+            ).one_or_none()
+            if ver_row is None:
+                return False, (
+                    f"scheme {scheme_id} version {scheme_version} not found in t_scheme_versions; "
+                    "run 'python -m harness activate --scheme-id {id}' first"
+                )
+            if ver_row[0] not in ("active", "shadow"):
+                return False, (
+                    f"scheme {scheme_id} version {scheme_version} status={ver_row[0]}, "
+                    "must be active or shadow"
+                )
+
+    return True, "ok"
 
 
 def main() -> None:

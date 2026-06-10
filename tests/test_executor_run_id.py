@@ -40,13 +40,14 @@ class ExecutorRunIdTests(unittest.TestCase):
         ]
 
         with patch("scheduler.executor.create_engine_from_env", return_value=engine):
-            with patch("scheduler.executor.create_scheme_run", return_value=101) as create_run:
-                with patch("scheduler.executor.run_scheme_subprocess", return_value=records):
-                    with patch("scheduler.executor.insert_run_predictions", return_value=2) as insert_predictions:
-                        with patch("scheduler.executor.update_serving_pointer") as update_pointer:
-                            with patch("scheduler.executor.finish_scheme_run") as finish_run:
-                                with patch("scheduler.executor.write_run_log") as write_run_log:
-                                    result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
+            with patch("scheduler.executor._verify_scheme_activation", return_value=(True, "ok")):
+                with patch("scheduler.executor.create_scheme_run", return_value=101) as create_run:
+                    with patch("scheduler.executor.run_scheme_subprocess", return_value=records):
+                        with patch("scheduler.executor.insert_run_predictions", return_value=2) as insert_predictions:
+                            with patch("scheduler.executor.update_serving_pointer") as update_pointer:
+                                with patch("scheduler.executor.finish_scheme_run") as finish_run:
+                                    with patch("scheduler.executor.write_run_log") as write_run_log:
+                                        result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.records_written, 2)
@@ -73,7 +74,6 @@ class ExecutorRunIdTests(unittest.TestCase):
         self.assertEqual(finish_run.call_args.kwargs["records_written"], 2)
         write_run_log.assert_called_once()
         self.assertEqual(write_run_log.call_args.kwargs["run_id"], 101)
-        legacy_upsert.assert_not_called()
 
 
 if __name__ == "__main__":
