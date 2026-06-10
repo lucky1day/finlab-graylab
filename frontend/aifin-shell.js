@@ -512,12 +512,12 @@
   }
 
   function detailGroupMonth(row, frequency, horizon) {
-    var sourceDate = row.predict_date || row.target_date || row.feature_date || "";
+    var sourceDate = row.target_date || row.predict_date || row.feature_date || "";
     return String(sourceDate).slice(0, 7);
   }
 
   function detailDisplayDay(row, frequency, horizon) {
-    var sourceDate = row.predict_date || row.target_date || row.feature_date || "";
+    var sourceDate = row.target_date || row.predict_date || row.feature_date || "";
     return String(sourceDate).slice(5, 10).replace("-", "/");
   }
 
@@ -1487,8 +1487,8 @@
     var note = document.getElementById("factorCalendarNote");
     title.textContent = month + (isWeekly ? " 周度验证表" : " 每日验证表");
     meta.textContent = (scheme ? scheme.name : "--") + " · " + task.label;
-    if (dateHeader) dateHeader.textContent = isWeekly ? "预测周" : "预测日";
-    if (note) note.textContent = isWeekly ? "表内可继续滚动查看该月全部周度预测。" : "表内可继续滚动查看该月全部预测日。";
+    if (dateHeader) dateHeader.textContent = isWeekly ? "预测周" : "交易日";
+    if (note) note.textContent = isWeekly ? "表内可继续滚动查看该月全部周度预测。" : "表内可继续滚动查看该月全部交易日的预测。";
 
     var html = "";
     var monthLabel = month.slice(5, 7);

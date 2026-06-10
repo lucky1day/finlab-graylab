@@ -607,11 +607,11 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertIsNone(result["correct"])
         self.assertEqual(result["aggregate"]["samples"], 0)
 
-    def test_daily_horizon_detail_uses_predict_date_as_prediction_point(self) -> None:
-        """日频 T+N 明细按老代码预测日展示和分组，target_date 只用于实际方向匹配。"""
+    def test_daily_horizon_detail_uses_target_date_as_display(self) -> None:
+        """日频 T+N 明细按交易日(target_date)展示和分组，与 predict_date 解耦。"""
         html = FRONTEND_INDEX.read_text(encoding="utf-8")
-        self.assertIn("<th id=\"factorDailyDateHeader\">预测日</th>", html)
-        self.assertNotIn("<th>交易日</th>", html)
+        self.assertIn("<th id=\"factorDailyDateHeader\">交易日</th>", html)
+        self.assertNotIn("<th>预测日</th>", html)
 
         result = _run_factor_lab_hook(
             """
@@ -667,7 +667,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
 
             await hooks.loadFactorLabData({ force: true });
             var scheme = hooks.getSelectedScheme();
-            var row = scheme.dailyRowsByMonth["2026-05"][0];
+            var row = scheme.dailyRowsByMonth["2026-06"][0];
             return {
               months: Object.keys(scheme.dailyRowsByMonth).sort(),
               day: row.day,
@@ -679,8 +679,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(result["months"], ["2026-05"])
-        self.assertEqual(result["day"], "05/29")
+        # 明细按 target_date 的月份(6月)分组
+        self.assertEqual(result["months"], ["2026-06"])
+        # day 取自 target_date
+        self.assertEqual(result["day"], "06/05")
         self.assertEqual(result["predictDate"], "2026-05-29")
         self.assertEqual(result["targetDate"], "2026-06-05")
         self.assertEqual(result["liveSinceDate"], "2026-05-29")
