@@ -688,8 +688,21 @@
         var liveSinceDate = "";
         var liveMetricSinceDate = "";
         if (metrics.daily_rows && metrics.daily_rows.length) {
-          var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).sort();
-          liveSinceDate = dates[0] || "";
+          if (String(scheme.frequency || "").toLowerCase() === "weekly") {
+            // 周度: liveSinceDate = 第一条 target_date 所在月首日之前的周六
+            var targetDates = metrics.daily_rows.map(function (r) { return r.target_date || ""; }).filter(Boolean).sort();
+            if (targetDates.length) {
+              var monthStart = targetDates[0].slice(0, 7) + "-01";
+              var ms = new Date(monthStart);
+              var dow = ms.getDay();                    // 0=Sun, 1=Mon, ..., 6=Sat
+              var satOffset = (dow + 1) % 7;            // 往前推到周六的天数
+              ms.setDate(ms.getDate() - satOffset);
+              liveSinceDate = ms.toISOString().slice(0, 10);
+            }
+          } else {
+            var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).sort();
+            liveSinceDate = dates[0] || "";
+          }
           var metricDates = metrics.daily_rows.map(function (r) {
             return r.predict_date || r.target_date || "";
           }).sort();
