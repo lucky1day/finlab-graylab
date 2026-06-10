@@ -120,7 +120,7 @@ class WeeklyMetricsTests(unittest.TestCase):
         self.assertEqual(result["daily_rows"][0]["actual_direction"], -1)
         self.assertTrue(result["daily_rows"][0]["is_correct"])
 
-    def test_scheme_metrics_buckets_weekly_rows_by_predict_month(self) -> None:
+    def test_scheme_metrics_buckets_weekly_rows_by_target_month(self) -> None:
         from backend.services import scheme_metrics
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -166,8 +166,9 @@ class WeeklyMetricsTests(unittest.TestCase):
         result = scheme_metrics(engine, "demo_weekly_scheme", "10Y")
         metrics = {row["month"]: row for row in result["monthly_metrics"]}
 
-        self.assertEqual(metrics["2025-10"]["samples"], 1)
-        self.assertEqual(metrics["2025-11"]["samples"], 1)
+        # 按 target_date 分组,两行 target 均在 11月
+        self.assertEqual(len(metrics), 1)
+        self.assertEqual(metrics["2025-11"]["samples"], 2)
         self.assertEqual([row["feature_date"] for row in result["daily_rows"]], ["2025-10-24", "2025-10-31"])
 
 

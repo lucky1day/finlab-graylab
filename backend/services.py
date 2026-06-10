@@ -589,7 +589,7 @@ def scheme_metrics(
 
 
 def _scheme_metric_month(horizon: Any, predict_date: str, target_date: str, extra: dict[str, Any]) -> str:
-    return str(predict_date or target_date)[:7]
+    return str(target_date or predict_date)[:7]
 
 
 def _prediction_point_date(row: Any) -> str:

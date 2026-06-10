@@ -137,8 +137,8 @@ class BackendServingPointerTests(unittest.TestCase):
         self.assertEqual(row["predicted_direction"], -1)
         self.assertTrue(row["is_correct"])
 
-    def test_scheme_metrics_buckets_daily_by_predict_date_and_matches_actuals_on_target_date(self) -> None:
-        """日频月度归属按预测日；真实方向仍按被预测日 target_date 匹配。"""
+    def test_scheme_metrics_buckets_daily_by_target_date_and_matches_actuals_on_target_date(self) -> None:
+        """日频月度归属按被预测日 target_date；真实方向仍按 target_date 匹配。"""
         from backend.services import scheme_metrics
 
         engine = create_engine("sqlite:///:memory:")
@@ -184,14 +184,14 @@ class BackendServingPointerTests(unittest.TestCase):
 
         self.assertEqual(result["summary"]["samples"], 1)
         self.assertEqual(result["summary"]["correct"], 1)
-        self.assertEqual(result["monthly_metrics"][0]["month"], "2026-05")
+        self.assertEqual(result["monthly_metrics"][0]["month"], "2026-06")
         row = result["daily_rows"][0]
         self.assertEqual(row["actual_direction"], 1)
         self.assertTrue(row["is_correct"])
-        self.assertEqual(may_result["summary"]["samples"], 1)
-        self.assertEqual(may_result["monthly_metrics"][0]["month"], "2026-05")
-        self.assertEqual(june_result["summary"]["samples"], 0)
-        self.assertEqual(june_result["monthly_metrics"], [])
+        self.assertEqual(may_result["summary"]["samples"], 0)
+        self.assertEqual(may_result["monthly_metrics"], [])
+        self.assertEqual(june_result["summary"]["samples"], 1)
+        self.assertEqual(june_result["monthly_metrics"][0]["month"], "2026-06")
 
     def test_scheme_metrics_keeps_distinct_predict_dates_for_duplicate_target_date(self) -> None:
         """同一目标日可由多个预测日产生，日频明细和指标应按预测日分别计样本。"""
