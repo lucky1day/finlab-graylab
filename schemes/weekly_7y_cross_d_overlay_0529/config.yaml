@@ -1,0 +1,22 @@
+scheme_id: weekly_7y_cross_d_overlay_0529
+name: "0529周度7Y Cross-D叠加"
+description: "0529 周频7Y方向预测，7Y固定规则投票叠加低利率反弹规则，并以5Y独立信号做窄口径Cross-D下行确认覆盖"
+horizon: 6
+tenors: ["7Y"]
+frequency: weekly
+schedule:
+  cron: "30 11 * * 6"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_weekly.v1
+  required_columns: ["week_id", "TB1YWI3C", "TB3YWI3C", "TB5YWI3C", "TB7YWI3C", "TB0YWI3C"]
+  weekly_variant: unified
+target_rule: "next_week_last_trading_day_vs_current_week_last_trading_day"
+backtest:
+  runner: backtests.weekly_7y_cross_d_overlay_0529_reproduction
+  benchmark_id: model_muti_0529
+  data_source: framework_db_aligned
+  start_week: 200901
+  end_week: 202622
