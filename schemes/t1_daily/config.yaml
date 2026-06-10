@@ -5,7 +5,7 @@ horizon: 1
 tenors: ["5Y", "10Y"]
 frequency: daily
 schedule:
-  cron: "25 9 * * 1-5"
+  cron: "3 7 * * 1-5"
   timezone: "Asia/Shanghai"
 entry_point: predict.run
 status: active
