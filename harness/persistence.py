@@ -156,6 +156,15 @@ def _ctx_scheme_version(ctx: GateContext) -> str | None:
         return ctx.config.scheme_version
     if ctx.authorization is not None and getattr(ctx.authorization, "scheme_version", None):
         return ctx.authorization.scheme_version
+    config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+    scheme_dir = config_path.parent
+    if config_path.exists() and scheme_dir.exists():
+        from shared.versioning import compute_code_hash, compute_config_hash, compute_scheme_version
+
+        return compute_scheme_version(
+            compute_code_hash(scheme_dir),
+            compute_config_hash(config_path),
+        )
     return None
 
 

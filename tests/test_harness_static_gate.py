@@ -579,6 +579,31 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
         self.assertEqual(fail_code, 1)
         self.assertEqual(blocked_code, 2)
 
+    def test_cli_onboard_defaults_to_local_backend_port(self) -> None:
+        from harness.cli import main
+        from harness.result import OnboardReport
+
+        captured = {}
+
+        def fake_onboard(ctx, stage: str) -> OnboardReport:
+            captured["api_base_url"] = ctx.api_base_url
+            return OnboardReport(
+                scheme_id=ctx.scheme_id,
+                predict_date=ctx.predict_date,
+                stage_requested=stage,
+                results=[],
+                overall_passed=True,
+                report_dir=ctx.report_dir,
+            )
+
+        output = io.StringIO()
+        with patch("harness.cli.run_onboard", side_effect=fake_onboard):
+            with contextlib.redirect_stdout(output):
+                code = main(["onboard", "demo_daily", "--predict-date", "2026-06-08", "--stage", "all"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(captured["api_base_url"], "http://127.0.0.1:8100")
+
 
 def _evidence_keys(result) -> set[str]:
     return {item.key for item in result.evidence}

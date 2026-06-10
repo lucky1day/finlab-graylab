@@ -74,7 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--algo-env", default="forecast_env")
         item.add_argument("--timeout-sec", type=int, default=600)
         item.add_argument("--authorize", default=None)
-        item.add_argument("--api-base-url", default="http://127.0.0.1:8000")
+        item.add_argument("--api-base-url", default="http://127.0.0.1:8100")
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
 
@@ -86,7 +86,7 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--report-dir", type=Path, default=None)
     onboard_parser.add_argument("--algo-env", default="forecast_env")
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
-    onboard_parser.add_argument("--api-base-url", default="http://127.0.0.1:8000")
+    onboard_parser.add_argument("--api-base-url", default="http://127.0.0.1:8100")
     onboard_parser.add_argument("--authorize", default=None)
 
     activate_parser = subparsers.add_parser("activate")

@@ -115,6 +115,41 @@ class HarnessPersistenceTests(unittest.TestCase):
 
         self.assertFalse(persisted)
 
+    def test_persistence_computes_scheme_version_without_loaded_config(self) -> None:
+        from harness.persistence import persist_harness_run_start
+        from shared.versioning import compute_code_hash, compute_config_hash, compute_scheme_version
+
+        engine = _CaptureEngine()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = root / "schemes" / "demo_daily"
+            scheme_dir.mkdir(parents=True)
+            (scheme_dir / "config.yaml").write_text("scheme_id: demo_daily\nstatus: active\n", encoding="utf-8")
+            (scheme_dir / "predict.py").write_text("SCHEME_ID = 'demo_daily'\n", encoding="utf-8")
+            expected_version = compute_scheme_version(
+                compute_code_hash(scheme_dir),
+                compute_config_hash(scheme_dir / "config.yaml"),
+            )
+            ctx = GateContext(
+                scheme_id="demo_daily",
+                predict_date="2026-06-08",
+                project_root=root,
+                report_dir=root / "reports",
+                engine_factory=lambda: engine,
+            )
+
+            self.assertTrue(
+                persist_harness_run_start(
+                    ctx,
+                    harness_run_id="hr-test",
+                    stage="all",
+                    started_at="2026-06-08T00:00:00+00:00",
+                )
+            )
+
+        _, params = engine.store["calls"][0]
+        self.assertEqual(params["scheme_version"], expected_version)
+
     def test_onboard_report_carries_generated_harness_run_id(self) -> None:
         from harness.gates.base import Gate, utc_now
         from harness.orchestrator import onboard
