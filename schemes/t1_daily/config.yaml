@@ -14,3 +14,4 @@ input_spec:
   required_columns: ["date", "TB1YWI0C", "TB5YWI0C", "TB0YWI0C"]
 backtest:
   runner: backtests.daily_0529_reproduction
+  benchmark_required: true

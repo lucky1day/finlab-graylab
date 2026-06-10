@@ -36,7 +36,28 @@ class CompareGate(Gate):
         sample_path = bench_dir / "original_predictions_sample.csv"
         summary_path = bench_dir / "original_backtest_summary.json"
 
+        # 读取配置判断 benchmark 是否为必需
+        config = _load_config(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
+        benchmark_required = bool(config.get("backtest", {}).get("benchmark_required", False))
+
         if not sample_path.exists() and not summary_path.exists():
+            if benchmark_required:
+                finished_at = utc_now()
+                return GateResult(
+                    gate_name=self.name,
+                    status=GateStatus.FAILED,
+                    passed=False,
+                    evidence=[
+                        Evidence("benchmark_required", True),
+                        Evidence("reason", "benchmark_required=true but no benchmark files present"),
+                        Evidence("benchmark_dir", str(bench_dir)),
+                        Evidence("expected_files", ["original_predictions_sample.csv", "original_backtest_summary.json"]),
+                    ],
+                    errors=["benchmark_required=true but no benchmark files present; "
+                            "place original predictions CSV and backtest summary JSON in schemes/{id}/benchmarks/"],
+                    started_at=started_at,
+                    finished_at=finished_at,
+                )
             finished_at = utc_now()
             return GateResult(
                 gate_name=self.name,
@@ -315,4 +336,15 @@ def _current_backtest_summary(ctx: GateContext) -> dict[str, Any]:
     candidate = ctx.project_root / "schemes" / ctx.scheme_id / "benchmarks" / "current_backtest_summary.json"
     if candidate.exists():
         return json.loads(candidate.read_text(encoding="utf-8"))
+    return {}
+
+
+def _load_config(config_path: Path) -> dict[str, Any]:
+    """读取 config.yaml 返回字典；失败时返回空 dict 不阻断 gate。"""
+    import yaml
+    try:
+        if config_path.exists():
+            return yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        pass
     return {}

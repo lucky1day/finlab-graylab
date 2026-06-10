@@ -89,6 +89,9 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
             errors.append("backtest must be a mapping when present")
         elif "runner" in backtest and (not isinstance(backtest["runner"], str) or not backtest["runner"].strip()):
             errors.append("backtest.runner must be a non-empty string")
+        benchmark_required = backtest.get("benchmark_required")
+        if benchmark_required is not None and not isinstance(benchmark_required, bool):
+            errors.append("backtest.benchmark_required must be a boolean")
 
     return errors
 
