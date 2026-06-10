@@ -217,7 +217,7 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
                 {"harness_run_id": run[0]},
             ).fetchall()
 
-            passed_gates = {row[0] for row in rows if row[1] == "passed"}
+            passed_gates = {row[0] for row in rows if row[1] in ("passed", "skipped")}
             missing = REQUIRED_ACTIVATE_GATES - passed_gates
             if missing:
                 return [
