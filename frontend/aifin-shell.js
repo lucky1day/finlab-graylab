@@ -685,6 +685,13 @@
         var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
         var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
         monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
+        // 月度指标与明细按 target_date 对齐: 过滤掉没有对应 daily 行的月份
+        var dailyMonths = Object.keys(groupedDailyRows);
+        if (dailyMonths.length) {
+          monthlyRows = monthlyRows.filter(function (m) {
+            return dailyMonths.indexOf(m.month) >= 0;
+          });
+        }
         var liveSinceDate = "";
         var liveMetricSinceDate = "";
         if (metrics.daily_rows && metrics.daily_rows.length) {
