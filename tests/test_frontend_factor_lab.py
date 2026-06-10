@@ -362,6 +362,100 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertIn("/api/schemes", result["calls"])
         self.assertIn("/api/backtests/factor-lab", result["calls"])
 
+    def test_same_month_backtest_and_live_split_into_two_rows(self) -> None:
+        """同月既有回测又有实盘时，应展示两行（回测行 + 实盘行），不覆盖。"""
+        result = _run_factor_lab_hook(
+            """
+            const calls = [];
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "t1_daily",
+                    name: "T+1 实盘",
+                    status: "active",
+                    horizon: 1,
+                    frequency: "daily",
+                    tenors: ["5Y"]
+                  }
+                ]
+              },
+              "/api/metrics/t1_daily?tenor=5Y": {
+                scheme_id: "t1_daily",
+                tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [
+                  { month: "2026-05", samples: 5, correct: 4, accuracy: 80.0, overall: 80.0,
+                    up_precision: 100, up_recall: 80, down_precision: 0, down_recall: 0,
+                    actual_dist: { up: 4, down: 1, flat: 0 },
+                    predicted_dist: { up: 4, down: 1, flat: 0 } }
+                ],
+                daily_rows: [
+                  { predict_date: "2026-05-27", target_tenor: "5Y", horizon: 1,
+                    predicted_direction: 1, actual_direction: 1, is_correct: true, confidence: 0.7 }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    id: "bt:t1_daily:fw:5Y",
+                    scheme_id: "t1_daily",
+                    scheme_name: "t1_daily",
+                    name: "T+1 回测基准",
+                    tenor: "5Y",
+                    target_label: "5Y国债活跃",
+                    horizon: 1,
+                    frequency: "daily",
+                    status: "complete",
+                    benchmark_label: "model_muti_0529",
+                    data_source_label: "framework_db_aligned",
+                    monthly_metrics: [
+                      { month: "2026-05", samples: 20, correct: 12, accuracy: 60.0, overall: 60.0,
+                        up_precision: 55, up_recall: 50, down_precision: 50, down_recall: 45,
+                        actual_dist: { up: 10, down: 8, flat: 2 },
+                        predicted_dist: { up: 9, down: 9, flat: 2 } }
+                    ],
+                    daily_rows: []
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              calls.push(url);
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            var rows = scheme ? scheme.monthlyRows : [];
+            return {
+              rowCount: rows.length,
+              sources: rows.map(function (r) { return r._source; }),
+              backtestAccuracy: rows.filter(function (r) { return r._source === "backtest"; })
+                .map(function (r) { return r.overall; }),
+              liveAccuracy: rows.filter(function (r) { return r._source === "live"; })
+                .map(function (r) { return r.overall; }),
+            };
+            """
+        )
+
+        # 同月应有两行：backtest + live
+        self.assertEqual(result["rowCount"], 2)
+        self.assertEqual(result["sources"], ["backtest", "live"])
+        # 回测准确率 60.0，实盘准确率 80.0，互不覆盖
+        self.assertEqual(result["backtestAccuracy"], [60.0])
+        self.assertEqual(result["liveAccuracy"], [80.0])
+
     def test_weekly_live_uses_predict_date_as_metric_start(self) -> None:
         """周度实盘统计归属按预测侧日期，不再按 target_date 月份移动。"""
         result = _run_factor_lab_hook(

@@ -867,13 +867,8 @@
                 var lrCopy = {}; Object.keys(lr).forEach(function (k) { lrCopy[k] = lr[k]; });
                 lrCopy._source = "live";
                 if (btOnlyMonths[lr.month]) {
-                  // 同月实盘覆盖回测
-                  for (var j = 0; j < mScheme.monthlyRows.length; j++) {
-                    if (mScheme.monthlyRows[j].month === lr.month) {
-                      mScheme.monthlyRows[j] = lrCopy;
-                      break;
-                    }
-                  }
+                  // 同月既有回测也有实盘:保留回测行,追加实盘行（两行展示）
+                  mScheme.monthlyRows.push(lrCopy);
                 } else {
                   mScheme.monthlyRows.push(lrCopy);
                 }
