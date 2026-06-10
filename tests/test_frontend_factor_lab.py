@@ -775,6 +775,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 daily_rows: [
                   {
                     predict_date: "2026-06-09",
+                    target_date: "2026-06-10",
                     target_tenor: "5Y",
                     horizon: 1,
                     predicted_direction: 1,

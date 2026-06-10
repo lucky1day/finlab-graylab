@@ -512,12 +512,12 @@
   }
 
   function detailGroupMonth(row, frequency, horizon) {
-    var sourceDate = row.target_date || row.predict_date || row.feature_date || "";
+    var sourceDate = row.target_date || "";
     return String(sourceDate).slice(0, 7);
   }
 
   function detailDisplayDay(row, frequency, horizon) {
-    var sourceDate = row.target_date || row.predict_date || row.feature_date || "";
+    var sourceDate = row.target_date || "";
     return String(sourceDate).slice(5, 10).replace("-", "/");
   }
 
