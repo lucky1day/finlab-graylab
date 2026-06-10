@@ -46,8 +46,7 @@ class ExecutorRunIdTests(unittest.TestCase):
                         with patch("scheduler.executor.update_serving_pointer") as update_pointer:
                             with patch("scheduler.executor.finish_scheme_run") as finish_run:
                                 with patch("scheduler.executor.write_run_log") as write_run_log:
-                                    with patch("scheduler.executor.upsert_predictions") as legacy_upsert:
-                                        result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
+                                    result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.records_written, 2)

@@ -42,7 +42,6 @@ from backtests.repository import (
     replace_backtest_monthly_metrics,
     replace_backtest_predictions,
     update_backtest_run_summary,
-    upsert_backtest_run,
 )
 from shared.artifact_paths import benchmark_input_root
 from shared.input_artifacts import build_daily_input_artifact

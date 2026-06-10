@@ -41,7 +41,7 @@ CORE_WRITE_OPEN_MODES = {"w", "a", "wb", "ab", "w+", "a+", "x", "xb"}
 # core 禁止的写文件方法名（Path.write_text / Path.write_bytes 等）
 CORE_WRITE_METHOD_NAMES = {"write_text", "write_bytes"}
 WRITE_CALL_NAMES = {
-    "upsert_predictions",
+    "insert_run_predictions",
     "write_run_log",
     "execute_scheme",
     "replace_backtest_predictions",

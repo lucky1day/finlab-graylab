@@ -119,41 +119,6 @@ def upsert_scheme_version(engine: Engine, cfg: SchemeConfig) -> str:
     return cfg.scheme_version
 
 
-def upsert_predictions(engine: Engine, records: Iterable[PredictionRecord]) -> int:
-    """UPSERT 预测记录。
-
-    Deprecated rollback path: S3 executor uses run_id-scoped inserts instead.
-    """
-    sql = text(
-        """
-        INSERT INTO t_scheme_predictions
-            (scheme_id, target_tenor, horizon, predict_date, target_date,
-             predicted_direction, confidence, model_version, extra)
-        VALUES
-            (:scheme_id, :target_tenor, :horizon, :predict_date, :target_date,
-             :predicted_direction, :confidence, :model_version, CAST(:extra AS JSON))
-        ON DUPLICATE KEY UPDATE
-            horizon = VALUES(horizon),
-            target_date = VALUES(target_date),
-            predicted_direction = VALUES(predicted_direction),
-            confidence = VALUES(confidence),
-            model_version = VALUES(model_version),
-            extra = VALUES(extra),
-            updated_at = CURRENT_TIMESTAMP
-        """
-    )
-    rows = []
-    for record in records:
-        row = asdict(record)
-        row["extra"] = json.dumps(record.extra or {}, ensure_ascii=False)
-        rows.append(row)
-    if not rows:
-        return 0
-    with engine.begin() as conn:
-        conn.execute(sql, rows)
-    return len(rows)
-
-
 def create_scheme_run(
     engine: Engine,
     *,

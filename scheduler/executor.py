@@ -15,7 +15,6 @@ from scheduler.repository import (
     insert_run_predictions,
     sync_scheme_registry,
     update_serving_pointer,
-    upsert_predictions,
     write_run_log,
 )
 from shared.models import PredictionRecord

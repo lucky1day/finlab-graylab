@@ -37,52 +37,6 @@ def json_dumps(value: Any) -> str | None:
     return json.dumps(clean_json(value), ensure_ascii=False)
 
 
-def upsert_backtest_run(
-    engine: Engine,
-    *,
-    benchmark_id: str,
-    scheme_id: str,
-    data_source: str,
-    start_date: str,
-    end_date: str,
-    status: str,
-    summary: dict[str, Any] | None = None,
-    report_path: str | None = None,
-) -> int:
-    """创建或更新一次历史复现 run，并返回 run_id。
-
-    Deprecated rollback path: S6 uses create_backtest_run for immutable append.
-    """
-    sql = text(
-        """
-        INSERT INTO t_backtest_runs
-            (benchmark_id, scheme_id, data_source, start_date, end_date, status, summary, report_path)
-        VALUES
-            (:benchmark_id, :scheme_id, :data_source, :start_date, :end_date, :status,
-             CAST(:summary AS JSON), :report_path)
-        ON DUPLICATE KEY UPDATE
-            status = VALUES(status),
-            summary = VALUES(summary),
-            report_path = VALUES(report_path),
-            updated_at = CURRENT_TIMESTAMP,
-            id = LAST_INSERT_ID(id)
-        """
-    )
-    params = {
-        "benchmark_id": benchmark_id,
-        "scheme_id": scheme_id,
-        "data_source": data_source,
-        "start_date": start_date,
-        "end_date": end_date,
-        "status": status,
-        "summary": json_dumps(summary or {}),
-        "report_path": report_path,
-    }
-    with engine.begin() as conn:
-        conn.execute(sql, params)
-        return int(conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one())
-
-
 def create_backtest_run(
     engine: Engine,
     *,

@@ -271,8 +271,7 @@ class BaseRunnerTemplateTests(unittest.TestCase):
             with patch.object(_base_runner, "replace_backtest_predictions", return_value=1) as replace_predictions:
                 with patch.object(_base_runner, "replace_backtest_monthly_metrics", return_value=1) as replace_metrics:
                     with patch.object(_base_runner, "update_backtest_run_summary") as update_summary:
-                        with patch.object(_base_runner, "upsert_backtest_run") as legacy_upsert:
-                            run_id = _base_runner.persist_run_output(engine, output, benchmark_id="demo_benchmark")
+                        run_id = _base_runner.persist_run_output(engine, output, benchmark_id="demo_benchmark")
 
         self.assertEqual(run_id, 201)
         create_run.assert_called_once()
