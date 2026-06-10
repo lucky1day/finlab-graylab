@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-09
+**更新日期**: 2026-06-10
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -24,6 +24,43 @@
 - Y 标的展示名由数据库 `t_target_registry` 管理，`target_tenor` 只作为内部稳定 key。
 - 新方案默认先用 `status: paused` 验证；通过 dry-run、手动写库和 API 检查后再改为 `active`。
 - 当前 harness 设计已定，后续新增方案必须通过 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation；没有 gate 证据时不得宣称方案完成或 live ready。
+
+### 1.0 关键数据口径约定（2026-06-10 修订）
+
+> 以下约定是本次框架审查后强化的核心规则。所有代码层（后端查询、前端展示、回测计算、去重逻辑）和所有方案（现有及新增）必须统一遵守，不能出现口径不一致。
+
+**规则一：展示与分组只看 target_date，不用 predict_date**
+- 前端的每日明细按 `target_date`（交易日）展示和分组。
+- 月度指标按 `target_date` 的月份计算。
+- 回测月度指标（`t_backtest_monthly_metrics`）同样按 `target_date` 月份分组。
+- 后端 `_prediction_point_date` 去重键必须用 `target_date`。
+- 后端 `_scheme_metric_month` 月份归属必须用 `target_date`。
+- `predict_date` 只用于调度执行日志和 `extra` 中的记录字段，不参与任何展示/分组/去重。
+
+**违反后果示例**（2026-06-10 实际踩坑）：
+1. 后端 `_scheme_metric_month` 用 predict_date → 月度指标显示 5月，明细在 6月，对不上。
+2. 前端 `detailGroupMonth` 用 predict_date → 明细按预测日展示，用户需要往前推一天才能知道预测的是哪天。
+3. 后端 `_prediction_point_date` 用 predict_date → 同一天发出的多笔预测（不同 target）被错误合并。
+4. 回测 `_metric_month` 用 predict_date → 月度指标与前端明细口径不一致，样本数对不上。
+5. 新增方案或修改方案时必须同时检查这四处是否统一使用 target_date。
+
+**规则二：唯一键用 `(scheme_id, target_tenor, horizon, target_date)` + UPSERT**
+- 禁止使用 `run_id` 作为唯一键组成部分。
+- 禁止使用 `predict_date` 作为唯一键组成部分。
+- 同一天同方案同标的同期限只能有一条预测记录；新预测覆盖旧的。
+- 不需要 serving pointer 表：UK 自身保证唯一性，后端查询直接读 `t_scheme_predictions`，无需再 JOIN `t_scheme_serving_pointer`。
+
+**违反后果示例**：
+1. 旧 UK 用 `(scheme_id, target_tenor, predict_date, run_id)` → 同一 predict_date 的多笔预测（不同 run_id）都可以存在，前端出现重复行。
+2. Serving pointer 被覆盖 → 旧 prediction（不同 target_date）因指针指向新 run 而消失。
+
+**规则三：周度实盘预测不依赖目标周源数据是否存在**
+- 周六执行预测时，下一周的数据可能尚未进入 `api_wind_weekly`。算法必须能在特征周数据可用但目标周数据不可用的情况下生成预测。
+- `predict.py` 中 `end_week` 必须设为 `current_week_id + N`（N ≥ 6），确保特征数据加载范围够大；`target_week_id` 始终取 `feature_week_id + 1`，不依赖数据是否存在。
+- `all_weeks_set` 检查不能作为"目标周必须存在"的硬拦条件；如果 `feature_week_id` 是数据中最新的周，允许以其下一周作为 target。
+
+**规则四：ActivationGate 接受 `skipped` 状态**
+- CompareGate 在 benchmark 样本文件缺失时返回 `skipped`（不是 `failed`）。`skipped` 应被视为通过，不能阻止激活。
 
 ### 1.1 强约束模块边界
 

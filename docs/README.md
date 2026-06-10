@@ -17,8 +17,9 @@
 
 | 文档 | 内容 |
 |------|------|
-| [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | 新增方案入库 SOP |
+| [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | 新增方案入库 SOP（含 2026-06-10 修订的数据口径规则） |
 | [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | 入库后测试验证 SOP |
+| [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) | 2026-06-10 框架改造踩坑记录（新增方案前必读） |
 
 ## 状态与参考
 
@@ -30,6 +31,6 @@
 ## 阅读路径
 
 - **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → SCHEME_CONTRACT
-- **新增方案** → SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
+- **新增方案** → 先读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) → 再读 SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
 - **改 harness** → HARNESS_ARCHITECTURE + 评审报告
 - **了解当前状态** → CURRENT_STATUS
