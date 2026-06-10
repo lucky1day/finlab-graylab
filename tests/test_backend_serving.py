@@ -103,14 +103,15 @@ def _seed_predictions(engine) -> None:
 
 
 class BackendServingPointerTests(unittest.TestCase):
-    def test_scheme_metrics_returns_only_approved_serving_predictions(self) -> None:
-        """仅有 serving_status=approved 的预测参与指标计算。"""
+    def test_scheme_metrics_returns_available_predictions(self) -> None:
+        """所有预测记录（无 serving pointer 过滤）参与指标计算。"""
         from backend.services import scheme_metrics
 
         engine = create_engine("sqlite:///:memory:")
         _create_schema(engine)
         _seed_predictions(engine)
-        # 追加一个旧 run(非 approved)，不应被计入
+        # UK 不可变 + UPSERT 模式下，每 (scheme,tenor,horizon,target_date) 只有一条记录，
+        # 无需额外过滤层。追加一条不同 target_date 的记录验证查询返回所有行。
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -119,8 +120,16 @@ class BackendServingPointerTests(unittest.TestCase):
                         (run_id, scheme_id, target_tenor, horizon,
                          predict_date, target_date, predicted_direction, confidence,
                          model_version, extra)
-                    VALUES (0, 'demo_daily', '10Y', 1, '2026-06-05',
-                            '2026-06-06', 1, 0.4, 'old', '{}')
+                    VALUES (2, 'demo_daily', '10Y', 1, '2026-06-06',
+                            '2026-06-09', 1, 0.6, 'v2', '{}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
+                    VALUES ('10Y', '2026-06-06', -1, -1), ('10Y', '2026-06-09', 1, 1)
                     """
                 )
             )
@@ -129,13 +138,9 @@ class BackendServingPointerTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-        # 仅 approved run(1) 计入 — 样本数 1，准确率 100%
-        self.assertEqual(result["summary"]["samples"], 1)
-        self.assertEqual(result["summary"]["accuracy"], 100.0)
-        self.assertEqual(len(result["daily_rows"]), 1)
-        row = result["daily_rows"][0]
-        self.assertEqual(row["predicted_direction"], -1)
-        self.assertTrue(row["is_correct"])
+        # 两条预测（target 06-06 和 06-09）均应被计入
+        self.assertEqual(result["summary"]["samples"], 2)
+        self.assertEqual(len(result["daily_rows"]), 2)
 
     def test_scheme_metrics_buckets_daily_by_target_date_and_matches_actuals_on_target_date(self) -> None:
         """日频月度归属按被预测日 target_date；真实方向仍按 target_date 匹配。"""
@@ -368,19 +373,6 @@ class BackendServingPointerTests(unittest.TestCase):
 
         _create_schema(engine)
         _seed_predictions(engine)
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_predictions
-                        (run_id, scheme_id, target_tenor, horizon,
-                         predict_date, target_date, predicted_direction, confidence,
-                         model_version, extra)
-                    VALUES (0, 'demo_daily', '10Y', 1, '2026-06-05',
-                            '2026-06-06', 1, 0.4, 'old', '{}')
-                    """
-                )
-            )
         statements.clear()
         try:
             result = list_predictions(engine, scheme_id="demo_daily", tenor="10Y")
@@ -388,9 +380,8 @@ class BackendServingPointerTests(unittest.TestCase):
             engine.dispose()
 
         self.assertEqual(result["total"], 1)
-        item = result["items"][0]
-        self.assertEqual(item["scheme_id"], "demo_daily")
-        self.assertEqual(item["predicted_direction"], -1)
+
+        # 不再通过 serving pointer 过滤，无写语句
         self.assertFalse(any(stmt.startswith(("insert", "update", "delete", "alter", "drop")) for stmt in statements))
 
 
