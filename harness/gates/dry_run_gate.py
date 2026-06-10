@@ -65,6 +65,7 @@ class DryRunGate(Gate):
                 Evidence("table_deltas", deltas),
                 Evidence("predictions_table_delta", deltas.get("t_scheme_predictions")),
                 Evidence("run_log_delta", deltas.get("t_scheme_run_log")),
+                Evidence("non_zero_deltas", {k: v for k, v in deltas.items() if v != 0}),
                 Evidence("sample_record", asdict(records[0]) if records else None),
             ],
             errors=errors,

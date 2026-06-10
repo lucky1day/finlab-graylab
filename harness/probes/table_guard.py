@@ -4,7 +4,24 @@ import re
 from typing import Iterable
 
 
-DRY_RUN_GUARD_TABLES = ("t_scheme_predictions", "t_scheme_run_log")
+DRY_RUN_GUARD_TABLES = (
+    "api_wind_daily",
+    "api_wind_derivative_daily",
+    "api_wind_weekly",
+    "api_wind_derivative_weekly",
+    "api_wind_indicators_all",
+    "t_trade_calendar",
+    "t_pre_market_forecast",
+    "t_shap",
+    "t_scheme_predictions",
+    "t_scheme_run_log",
+    "t_scheme_actuals",
+    "t_scheme_weekly_actuals",
+    "t_backtest_runs",
+    "t_backtest_predictions",
+    "t_backtest_monthly_metrics",
+    "t_backtest_reproduction_checks",
+)
 PROTECTED_TABLES = (
     "api_wind_daily",
     "api_wind_derivative_daily",
@@ -21,6 +38,7 @@ PROTECTED_TABLES = (
     "t_backtest_runs",
     "t_backtest_predictions",
     "t_backtest_monthly_metrics",
+    "t_backtest_reproduction_checks",
 )
 LIVE_WRITE_ALLOWED_TABLES = ("t_scheme_predictions", "t_scheme_run_log")
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
