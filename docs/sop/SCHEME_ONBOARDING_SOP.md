@@ -315,6 +315,25 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 - `PredictionRecord.extra` 包含 `input_artifact_path` 和 `input_artifact_source`。
 - 周频方案额外校验 `feature_week_id/target_week_id/feature_date/target_date`。
 
+### Step 5a: Benchmark Sample 准备（为 CompareGate 提供对比基准）
+
+CompareGate 需要四份 benchmark 样本文件来验证平台改造后的输出与原始算法是否一致。放在 `schemes/{scheme_id}/benchmarks/` 目录下：
+
+| 文件 | 内容 |
+|------|------|
+| `original_predictions_sample.csv` | 原始算法的预测样本（predict_date, tenor, direction, confidence） |
+| `original_backtest_summary.json` | 原始算法的月度指标摘要 |
+| `current_predictions_sample.csv` | 当前平台输出的预测样本（与 original 同口径，内容应一致） |
+| `current_backtest_summary.json` | 当前平台的月度指标摘要（与 original 同口径，内容应一致） |
+
+如果方案已有历史回测数据写入 `t_backtest_*` 表，可以直接用以下脚本从数据库提取样本：
+
+```bash
+conda run -n bond_factor_lab_service python scripts/generate_benchmark_samples.py
+```
+
+该脚本会根据 `v_latest_backtest_run` 视图自动提取最新回测结果，生成四份 benchmark 文件。
+
 ### Step 6: Dry-run Gate - 本地 dry-run，不写库
 
 先用算法环境直接跑入口:
@@ -331,7 +350,8 @@ conda run -n forecast_env python -m scheduler.scheme_runner \
 - stdout 是 JSON list。
 - 返回条数等于本次有效 `tenors` 数量。
 - 每条记录的 `scheme_id/horizon/target_tenor/target_date/predicted_direction` 都符合配置。
-- dry-run 前后 `t_scheme_predictions` 和 `t_scheme_run_log` 行数不变。
+- dry-run 前后所有保护表（`t_scheme_predictions`、`t_scheme_run_log` 等）行数不变。
+- **周度方案额外检查**：`target_date` 必须是 `feature_week_id` 下一周的最后一个交易日，不是当前周。如果目标周数据尚未入库，需确认 `predict.py` 中 `end_week` 设为 `current_week_id + 6`（或更大），且 `target_week_id` 不因数据缺失回退（参见 PITFALLS 坑 4）。
 
 ### Step 7: Backtest Gate - 历史回测接入
 
@@ -352,13 +372,45 @@ python -m scripts.run_baseline --scheme-id <scheme_id>
 python -m scripts.run_framework_repro --scheme-id <scheme_id> --algo-env forecast_env
 ```
 
-新增方案如果还没有通用 backtest runner，需要先补 runner，再写入:
+新增方案如果还没有通用 backtest runner，需要先补 runner。runner 放在 `backtests/` 下，命名规则为 `{scheme_id}_reproduction.py`。runner 继承 `backtests._base_runner.BaseDailyBacktestRunner`（日频）或参照 `backtests.weekly_5y_direct_0529_reproduction` 的格式（周频）。
 
-- `t_backtest_runs`
-- `t_backtest_predictions`
-- `t_backtest_monthly_metrics`
+**日频 runner 最小模板**：
 
-不要把历史回测结果写入 `t_scheme_predictions`。
+```python
+"""{scheme_id} 历史回测复现。"""
+from pathlib import Path
+from backtests._base_runner import BacktestSpec, BaseDailyBacktestRunner
+
+SPEC = BacktestSpec(
+    benchmark_id="{benchmark_id}",
+    scheme_id="{scheme_id}",
+    canonical_csv=Path("benchmarks/{benchmark_id}/daily_output.csv"),
+    target_columns=("TB0YWI0C",),  # 方案关注的收益率列
+    start_date="YYYY-MM-DD",
+    end_date="YYYY-MM-DD",
+)
+
+class MyRunner(BaseDailyBacktestRunner):
+    def predict_rows(self, daily_df, *, n_jobs=4):
+        # 调用 schemes/{scheme_id}/core 下的算法，返回预测行列表
+        ...
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-persist", action="store_true")
+    args = parser.parse_args()
+    runner = MyRunner(SPEC)
+    output = runner.run_framework_db_aligned(persist=not args.no_persist)
+    print(output.summary)
+```
+
+**周频 runner** 参照 `backtests/weekly_5y_direct_0529_reproduction.py`。周频 runner 不继承 `BaseDailyBacktestRunner`，而是直接导入方案的 core 算法循环逐周预测。Runner 必须：
+- 从 `shared.input_artifacts.build_weekly_input_artifact()` 获取输入。
+- 使用 `shared.calendar_service` 查询 `week_id`（禁止日历公式）。
+- 调用 `backtests.repository.create_backtest_run` / `replace_backtest_predictions` / `replace_backtest_monthly_metrics` 写库（`--no-persist` 时跳过写库）。
+
+回测写库后入库:
 
 周度方案示例:
 
