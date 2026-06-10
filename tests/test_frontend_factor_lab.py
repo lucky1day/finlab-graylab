@@ -9,6 +9,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_SCRIPT = PROJECT_ROOT / "frontend" / "aifin-shell.js"
+FRONTEND_INDEX = PROJECT_ROOT / "frontend" / "index.html"
 
 
 def _run_factor_lab_hook(script: str) -> dict:
@@ -110,6 +111,64 @@ def _run_factor_lab_hook(script: str) -> dict:
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_candidate_ranking_uses_deployment_date_and_remark_columns(self) -> None:
+        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+        self.assertIn("<th>部署时间</th>", html)
+        self.assertIn("<th>备注</th>", html)
+        self.assertNotIn("<th>最近运行</th>", html)
+        self.assertNotIn("<th>状态</th>", html)
+
+        result = _run_factor_lab_hook(
+            """
+            const metric = {
+              overall: 80,
+              correct: 8,
+              samples: 10,
+              upPrecision: 75,
+              downPrecision: 70
+            };
+            const rowHtml = hooks.renderSchemeRankingRowForTest(
+              {
+                id: "scheme-a",
+                name: "测试方案",
+                latestRun: "06-10",
+                status: "active",
+                remark: ""
+              },
+              0,
+              metric
+            );
+            const weeklyRowHtml = hooks.renderSchemeRankingRowForTest(
+              {
+                id: "weekly-a",
+                scheme_id: "weekly_5y_direct_0529",
+                name: "0529周度5Y独立规则投票 · 5Y国债活跃",
+                deploymentDate: "2026/06/01"
+              },
+              0,
+              metric
+            );
+            return {
+              rowHtml,
+              weeklyRowHtml,
+              deploymentDate: hooks.getSchemeDeploymentDate({}),
+              weeklyDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_5y_direct_0529" }),
+              customDeploymentDate: hooks.getSchemeDeploymentDate({ deployed_at: "2026-06-02" }),
+              remark: hooks.getSchemeRemark({ remark: "人工备注" })
+            };
+            """
+        )
+
+        self.assertEqual(result["deploymentDate"], "2026/06/01")
+        self.assertEqual(result["weeklyDeploymentDate"], "2026/06/10")
+        self.assertEqual(result["customDeploymentDate"], "2026/06/02")
+        self.assertEqual(result["remark"], "人工备注")
+        self.assertIn("2026/06/01", result["rowHtml"])
+        self.assertIn("2026/06/10", result["weeklyRowHtml"])
+        self.assertNotIn("06-10", result["rowHtml"])
+        self.assertNotIn("factor-status-pill", result["rowHtml"])
+        self.assertNotIn("active", result["rowHtml"])
+
     def test_sort_ranking_schemes_supports_metric_and_direction(self) -> None:
         result = _run_factor_lab_hook(
             """
@@ -144,6 +203,30 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertTrue(result["low"])
         self.assertFalse(result["boundary"])
         self.assertFalse(result["empty"])
+
+
+class FactorLabTrendChartTests(unittest.TestCase):
+    def test_trend_chart_layout_expands_and_thins_axis_for_long_ranges(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const layout = hooks.trendChartLayoutForTest(124, 960);
+            return {
+              width: layout.width,
+              labelStep: layout.labelStep,
+              isScrollable: layout.isScrollable,
+              firstVisible: hooks.trendMonthLabelVisibleForTest(0, 124, layout.labelStep),
+              secondVisible: hooks.trendMonthLabelVisibleForTest(1, 124, layout.labelStep),
+              lastVisible: hooks.trendMonthLabelVisibleForTest(123, 124, layout.labelStep)
+            };
+            """
+        )
+
+        self.assertGreater(result["width"], 960)
+        self.assertGreater(result["labelStep"], 1)
+        self.assertTrue(result["isScrollable"])
+        self.assertTrue(result["firstVisible"])
+        self.assertFalse(result["secondVisible"])
+        self.assertTrue(result["lastVisible"])
 
 
 class FactorLabCompareRemovedTests(unittest.TestCase):
@@ -278,6 +361,236 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         # 两者接口都调了
         self.assertIn("/api/schemes", result["calls"])
         self.assertIn("/api/backtests/factor-lab", result["calls"])
+
+    def test_weekly_live_uses_predict_date_as_metric_start(self) -> None:
+        """周度实盘统计归属按预测侧日期，不再按 target_date 月份移动。"""
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "weekly_5y_direct_0529",
+                    name: "周度实盘",
+                    status: "active",
+                    horizon: 6,
+                    frequency: "weekly",
+                    tenors: ["5Y"],
+                    last_run: { date: "2026-06-11", status: "success" }
+                  }
+                ]
+              },
+              "/api/metrics/weekly_5y_direct_0529?tenor=5Y": {
+                scheme_id: "weekly_5y_direct_0529",
+                tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [
+                  { month: "2026-06", samples: 1, correct: 1, accuracy: 100, overall: 100,
+                    up_precision: 100, up_recall: 100, down_precision: null, down_recall: null,
+                    actual_dist: { up: 1, down: 0, flat: 0 },
+                    predicted_dist: { up: 1, down: 0, flat: 0 } }
+                ],
+                daily_rows: [
+                  {
+                    target_tenor: "5Y",
+                    horizon: 6,
+                    predict_date: "2026-06-11",
+                    feature_date: "2026-05-29",
+                    target_date: "2026-06-05",
+                    predicted_direction: 1,
+                    actual_direction: 1,
+                    is_correct: true,
+                    confidence: 0.51
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: []
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              liveSinceDate: scheme && scheme.liveSinceDate,
+              liveMetricSinceDate: scheme && scheme.liveMetricSinceDate,
+              dividerText: hooks.liveDividerTextForTest(scheme, { frequency: "weekly" }),
+              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month; }) : [],
+              dailyMonths: scheme ? Object.keys(scheme.dailyRowsByMonth).sort() : []
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "live")
+        self.assertEqual(result["liveSinceDate"], "2026-06-11")
+        self.assertEqual(result["liveMetricSinceDate"], "2026-06-11")
+        self.assertEqual(result["dividerText"], "实盘发出起点 2026-06-11")
+        self.assertEqual(result["months"], ["2026-06"])
+        self.assertEqual(result["dailyMonths"], ["2026-06"])
+
+    def test_pending_actual_is_not_rendered_as_flat(self) -> None:
+        """actual_direction 为 null 时应显示待验证，而不是被 JS Number(null) 变成平。"""
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "t5_daily",
+                    name: "T5 实盘",
+                    status: "active",
+                    horizon: 5,
+                    frequency: "daily",
+                    tenors: ["5Y"],
+                    last_run: { date: "2026-06-10", status: "success" }
+                  }
+                ]
+              },
+              "/api/metrics/t5_daily?tenor=5Y": {
+                scheme_id: "t5_daily",
+                tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: [
+                  {
+                    target_tenor: "5Y",
+                    horizon: 5,
+                    predict_date: "2026-06-10",
+                    target_date: "2026-06-16",
+                    predicted_direction: 1,
+                    actual_direction: null,
+                    is_correct: null,
+                    confidence: 0.41
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: []
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            var row = scheme.dailyRowsByMonth["2026-06"][0];
+            return {
+              actual: row.actual,
+              actualDirection: row.actualDirection,
+              correct: row.correct,
+              aggregate: hooks.aggregateScheme(scheme)
+            };
+            """
+        )
+
+        self.assertEqual(result["actual"], "待验证")
+        self.assertIsNone(result["actualDirection"])
+        self.assertIsNone(result["correct"])
+        self.assertEqual(result["aggregate"]["samples"], 0)
+
+    def test_daily_horizon_detail_uses_predict_date_as_prediction_point(self) -> None:
+        """日频 T+N 明细按老代码预测日展示和分组，target_date 只用于实际方向匹配。"""
+        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+        self.assertIn("<th id=\"factorDailyDateHeader\">预测日</th>", html)
+        self.assertNotIn("<th>交易日</th>", html)
+
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "t5_daily",
+                    name: "T5 实盘",
+                    status: "active",
+                    horizon: 5,
+                    frequency: "daily",
+                    tenors: ["5Y"],
+                    last_run: { date: "2026-05-29", status: "success" }
+                  }
+                ]
+              },
+              "/api/metrics/t5_daily?tenor=5Y": {
+                scheme_id: "t5_daily",
+                tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: [
+                  {
+                    target_tenor: "5Y",
+                    horizon: 5,
+                    predict_date: "2026-05-29",
+                    target_date: "2026-06-05",
+                    predicted_direction: 1,
+                    actual_direction: 1,
+                    is_correct: true,
+                    confidence: 0.62
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: []
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            var row = scheme.dailyRowsByMonth["2026-05"][0];
+            return {
+              months: Object.keys(scheme.dailyRowsByMonth).sort(),
+              day: row.day,
+              predictDate: row.predictDate,
+              targetDate: row.targetDate,
+              liveSinceDate: scheme.liveSinceDate,
+              liveMetricSinceDate: scheme.liveMetricSinceDate
+            };
+            """
+        )
+
+        self.assertEqual(result["months"], ["2026-05"])
+        self.assertEqual(result["day"], "05/29")
+        self.assertEqual(result["predictDate"], "2026-05-29")
+        self.assertEqual(result["targetDate"], "2026-06-05")
+        self.assertEqual(result["liveSinceDate"], "2026-05-29")
+        self.assertEqual(result["liveMetricSinceDate"], "2026-05-29")
 
     def test_backtest_only_when_live_has_no_schemes(self) -> None:
         """实盘无方案时回退纯回测模式。"""

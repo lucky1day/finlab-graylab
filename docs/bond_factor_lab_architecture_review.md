@@ -1812,19 +1812,6 @@ confidence calibration
 10. LiveGate 检查写入行必须属于当前 scheme_id + predict_date + run_id
 ```
 
-## P2：实验室体验和分析能力
-
-```text
-1. 前端增加方案 ranking
-2. 增加按 tenor / horizon / frequency 的横向对比
-3. 增加 shadow vs active 对比
-4. 增加 confidence calibration 图
-5. 增加 rolling hit ratio
-6. 增加 drawdown / 连错次数 / regime 分组
-7. 增加方案生命周期页面：draft / validated / shadow / active / retired
-8. 增加异常告警：未出预测、actuals 未回填、输入数据 stale
-```
-
 ---
 
 ## 10. 必须坚持的架构硬规则

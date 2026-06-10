@@ -257,6 +257,10 @@
   var factorLabRefreshTimer = null;
   var factorLabApiError = "";
   var factorLabDataMode = "mock";
+  var DEFAULT_SCHEME_DEPLOYMENT_DATE = "2026/06/01";
+  var SCHEME_DEPLOYMENT_DATE_OVERRIDES = {
+    weekly_5y_direct_0529: "2026/06/10"
+  };
 
   function clampPercent(value) {
     return Math.max(0, Math.min(100, Number(value) || 0));
@@ -282,6 +286,65 @@
       return item.id === metricId;
     })[0];
     return metric ? metric.label : "整体准确率";
+  }
+
+  function formatDeploymentDate(value) {
+    var text = String(value || DEFAULT_SCHEME_DEPLOYMENT_DATE).trim();
+    if (!text) return DEFAULT_SCHEME_DEPLOYMENT_DATE;
+    var isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) return isoMatch[1] + "/" + isoMatch[2] + "/" + isoMatch[3];
+    var slashMatch = text.match(/^(\d{4})\/(\d{2})\/(\d{2})/);
+    if (slashMatch) return slashMatch[1] + "/" + slashMatch[2] + "/" + slashMatch[3];
+    return text;
+  }
+
+  function normalizeIsoDate(value) {
+    var match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+    return match ? match[1] + "-" + match[2] + "-" + match[3] : "";
+  }
+
+  function isWeeklyTask(task) {
+    return task && String(task.frequency || "").toLowerCase() === "weekly";
+  }
+
+  function liveDividerLabels(scheme, task) {
+    var dividerLabel = normalizeIsoDate(scheme && scheme.liveSinceDate);
+    var metricSinceLabel = normalizeIsoDate(scheme && scheme.liveMetricSinceDate);
+    if (isWeeklyTask(task)) {
+      metricSinceLabel = metricSinceLabel || dividerLabel;
+    }
+    return {
+      dividerLabel: dividerLabel,
+      metricSinceLabel: metricSinceLabel
+    };
+  }
+
+  function liveDividerText(scheme, task) {
+    var labels = liveDividerLabels(scheme, task);
+    var dividerText = labels.dividerLabel ? "实盘发出起点 " + labels.dividerLabel : "实盘起点";
+    if (labels.metricSinceLabel && labels.metricSinceLabel !== labels.dividerLabel) {
+      dividerText += " · 统计起点 " + labels.metricSinceLabel;
+    }
+    return dividerText;
+  }
+
+  function getSchemeDeploymentDate(scheme) {
+    var schemeId = String((scheme && scheme.scheme_id) || "").trim();
+    if (schemeId && SCHEME_DEPLOYMENT_DATE_OVERRIDES[schemeId]) {
+      return formatDeploymentDate(SCHEME_DEPLOYMENT_DATE_OVERRIDES[schemeId]);
+    }
+    return formatDeploymentDate(
+      scheme && (
+        scheme.deploymentDate ||
+        scheme.deployedAt ||
+        scheme.deployed_at ||
+        scheme.deployment_date
+      )
+    );
+  }
+
+  function getSchemeRemark(scheme) {
+    return String((scheme && (scheme.remark || scheme.note || scheme.notes)) || "").trim();
   }
 
   function getTaskKey(target, column) {
@@ -352,6 +415,8 @@
         name: name,
         status: status,
         latestRun: status === "archived" ? "05-21" : "05-29",
+        deploymentDate: DEFAULT_SCHEME_DEPLOYMENT_DATE,
+        remark: "",
         monthlyRows: makeMonthRows(baseRows, baseline + qualityStep - (count - 3) * 0.7)
       });
     }
@@ -385,6 +450,7 @@
   }
 
   function normalizeDirection(value) {
+    if (value === null || value === undefined || value === "") return null;
     var numeric = Number(value);
     return numeric === 1 || numeric === -1 || numeric === 0 ? numeric : null;
   }
@@ -446,14 +512,13 @@
   }
 
   function detailGroupMonth(row, frequency, horizon) {
-    var sourceDate = isWeeklyHorizon(frequency, horizon)
-      ? (row.feature_date || row.predict_date || row.target_date || "")
-      : (row.predict_date || row.target_date || "");
+    var sourceDate = row.predict_date || row.target_date || row.feature_date || "";
     return String(sourceDate).slice(0, 7);
   }
 
-  function detailDisplayDay(row) {
-    return String(row.predict_date || row.target_date || row.feature_date || "").slice(5, 10).replace("-", "/");
+  function detailDisplayDay(row, frequency, horizon) {
+    var sourceDate = row.predict_date || row.target_date || row.feature_date || "";
+    return String(sourceDate).slice(5, 10).replace("-", "/");
   }
 
   function dailyRowsByMonth(rows, frequency, horizon) {
@@ -469,7 +534,7 @@
         isCorrect = actualDirection === null || predictedDirection === null ? null : predictedDirection === actualDirection;
       }
       grouped[month].push({
-        day: detailDisplayDay(row),
+        day: detailDisplayDay(row, frequency, horizon),
         predictDate: row.predict_date || "",
         targetDate: row.target_date || "",
         runId: row.run_id || null,
@@ -593,6 +658,8 @@
         dataSourceLabel: scheme.data_source_label || scheme.data_source || "",
         status: normalizeBackendSchemeStatus(scheme.status),
         latestRun: latestRun,
+        deploymentDate: getSchemeDeploymentDate(scheme),
+        remark: getSchemeRemark(scheme),
         monthlyRows: monthlyRows,
         dailyRowsByMonth: groupedDailyRows
       });
@@ -619,9 +686,14 @@
         var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
         monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
         var liveSinceDate = "";
+        var liveMetricSinceDate = "";
         if (metrics.daily_rows && metrics.daily_rows.length) {
           var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).sort();
           liveSinceDate = dates[0] || "";
+          var metricDates = metrics.daily_rows.map(function (r) {
+            return r.predict_date || r.target_date || "";
+          }).sort();
+          liveMetricSinceDate = metricDates[0] || liveSinceDate;
         }
         var taskKey = getTaskKey(tenor, column);
         if (!tasks[taskKey]) tasks[taskKey] = [];
@@ -634,9 +706,12 @@
           name: scheme.name,
           status: normalizeBackendSchemeStatus(scheme.status),
           latestRun: scheme.last_run ? scheme.last_run.date.slice(5) : "--",
+          deploymentDate: getSchemeDeploymentDate(scheme),
+          remark: getSchemeRemark(scheme),
           monthlyRows: monthlyRows,
           dailyRowsByMonth: groupedDailyRows,
-          liveSinceDate: liveSinceDate
+          liveSinceDate: liveSinceDate,
+          liveMetricSinceDate: liveMetricSinceDate
         });
       });
     });
@@ -758,13 +833,16 @@
             name: btScheme.name,
             status: btScheme.status,
             latestRun: btScheme.latestRun,
+            deploymentDate: btScheme.deploymentDate || getSchemeDeploymentDate(btScheme),
+            remark: btScheme.remark || "",
             monthlyRows: btRows,
             dailyRowsByMonth: btDaily,
             benchmarkLabel: btScheme.benchmarkLabel || "",
             dataSourceLabel: btScheme.dataSourceLabel || "",
             backtestStartMonth: btMonths.length ? btMonths[0] : "",
             backtestEndMonth: btMonths.length ? btMonths[btMonths.length - 1] : "",
-            liveSinceDate: ""
+            liveSinceDate: "",
+            liveMetricSinceDate: ""
           });
         });
       });
@@ -811,6 +889,9 @@
                 });
               });
               mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
+              mScheme.liveMetricSinceDate = liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "";
+              mScheme.deploymentDate = liveScheme.deploymentDate || mScheme.deploymentDate || DEFAULT_SCHEME_DEPLOYMENT_DATE;
+              mScheme.remark = liveScheme.remark || mScheme.remark || "";
               matched = true;
               break;
             }
@@ -829,9 +910,12 @@
               name: liveScheme.name,
               status: liveScheme.status,
               latestRun: liveScheme.latestRun,
+              deploymentDate: liveScheme.deploymentDate || DEFAULT_SCHEME_DEPLOYMENT_DATE,
+              remark: liveScheme.remark || "",
               monthlyRows: lrOnlyRows,
               dailyRowsByMonth: liveScheme.dailyRowsByMonth || {},
               liveSinceDate: liveScheme.liveSinceDate || "",
+              liveMetricSinceDate: liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "",
               backtestStartMonth: "",
               backtestEndMonth: ""
             });
@@ -1052,6 +1136,24 @@
     body.innerHTML = html;
   }
 
+  function renderSchemeRankingRow(scheme, index, metric) {
+    var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
+    var version = latestSchemeVersion(scheme);
+    var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
+    var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
+    var barWidth = clampPercent(metric.overall);
+    return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
+      '<td>' + (index + 1) + '</td>' +
+      '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
+      '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metric.samples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
+      '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
+      '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
+      '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
+      '<td class="mono">' + escapeHtml(getSchemeDeploymentDate(scheme)) + '</td>' +
+      '<td class="factor-remark-cell">' + escapeHtml(getSchemeRemark(scheme)) + '</td>' +
+      '</tr>';
+  }
+
   function renderSchemeRanking() {
     var body = document.getElementById("factorSchemeRankingBody");
     var title = document.getElementById("factorRankingTitle");
@@ -1082,21 +1184,7 @@
 
     body.innerHTML = schemes.map(function (scheme, index) {
       var metric = aggregateScheme(scheme);
-      var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
-      var version = latestSchemeVersion(scheme);
-      var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
-      var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
-      var barWidth = clampPercent(metric.overall);
-      return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
-        '<td>' + (index + 1) + '</td>' +
-        '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
-        '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metric.samples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
-        '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
-        '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
-        '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
-        '<td>' + escapeHtml(scheme.latestRun) + '</td>' +
-        '<td><span class="factor-status-pill is-' + escapeHtml(scheme.status) + '">' + escapeHtml(factorStatusLabels[scheme.status] || scheme.status) + '</span></td>' +
-        '</tr>';
+      return renderSchemeRankingRow(scheme, index, metric);
     }).join("");
   }
 
@@ -1215,6 +1303,50 @@
     });
   }
 
+  function getTrendContainerWidth(host) {
+    var rect = host && host.getBoundingClientRect ? host.getBoundingClientRect() : null;
+    var rectWidth = rect && rect.width ? rect.width : 0;
+    return Math.max(960, Math.round(host && host.clientWidth || rectWidth || 0));
+  }
+
+  function buildTrendChartLayout(rowCount, containerWidth) {
+    var left = 58;
+    var right = 24;
+    var top = 24;
+    var bottom = 46;
+    var height = 304;
+    var pointGap = 52;
+    var minLabelGap = 96;
+    var baseWidth = Math.max(960, Number(containerWidth) || 0);
+    var width = Math.max(baseWidth, left + right + Math.max(1, rowCount - 1) * pointGap);
+    var plotWidth = width - left - right;
+    var actualPointGap = rowCount <= 1 ? plotWidth : plotWidth / (rowCount - 1);
+    var labelStep = Math.max(1, Math.ceil(minLabelGap / Math.max(1, actualPointGap)));
+    if (rowCount > 36) labelStep = Math.max(labelStep, 3);
+    return {
+      width: Math.round(width),
+      height: height,
+      left: left,
+      right: right,
+      top: top,
+      bottom: bottom,
+      plotWidth: plotWidth,
+      plotHeight: height - top - bottom,
+      labelStep: labelStep,
+      isScrollable: width > baseWidth + 1
+    };
+  }
+
+  function shouldShowTrendMonthLabel(index, rowCount, labelStep) {
+    return index === 0 || index === rowCount - 1 || index % labelStep === 0;
+  }
+
+  function trendMonthLabelAnchor(index, rowCount) {
+    if (index === 0) return "start";
+    if (index === rowCount - 1) return "end";
+    return "middle";
+  }
+
   function renderFactorTrendChart() {
     var host = document.getElementById("factorTrendChart");
     if (!host) return;
@@ -1229,12 +1361,13 @@
       return;
     }
 
-    var width = 960;
-    var height = 300;
-    var left = 58;
-    var right = 24;
-    var top = 24;
-    var bottom = 42;
+    var layout = buildTrendChartLayout(rows.length, getTrendContainerWidth(host));
+    var width = layout.width;
+    var height = layout.height;
+    var left = layout.left;
+    var right = layout.right;
+    var top = layout.top;
+    var bottom = layout.bottom;
     var plotWidth = width - left - right;
     var plotHeight = height - top - bottom;
     var trendDividerColor = "#155C3E";
@@ -1245,20 +1378,20 @@
       return top + (100 - Number(value || 0)) / 100 * plotHeight;
     };
 
-    var svg = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="月度指标趋势折线图">';
+    var svg = '<svg width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="月度指标趋势折线图">';
     [0, 25, 50, 75, 100].forEach(function (tick) {
       var tickY = y(tick);
       svg += '<line class="factor-trend-grid" x1="' + left + '" y1="' + tickY.toFixed(1) + '" x2="' + (width - right) + '" y2="' + tickY.toFixed(1) + '"></line>';
       svg += '<text class="factor-trend-axis" x="' + (left - 12) + '" y="' + (tickY + 4).toFixed(1) + '" text-anchor="end">' + tick + '%</text>';
     });
-    var labelStep = rows.length > 30 ? Math.ceil(rows.length / 15) : (rows.length > 15 ? 2 : 1);
+    var labelStep = layout.labelStep;
     rows.forEach(function (row, index) {
-      // 横轴标签防溢出：月份过多时跳隔显示
-      if (index % labelStep !== 0 && index !== rows.length - 1) {
+      // 横轴标签防溢出：月份过多时跳隔显示，点位仍完整保留。
+      if (!shouldShowTrendMonthLabel(index, rows.length, labelStep)) {
         svg += '<line class="factor-trend-tick" x1="' + x(index).toFixed(1) + '" y1="' + (height - bottom) + '" x2="' + x(index).toFixed(1) + '" y2="' + (height - bottom + 6) + '" stroke="rgba(93,101,111,0.3)"></line>';
         return;
       }
-      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="middle">' + escapeHtml(row.month) + '</text>';
+      svg += '<text class="factor-trend-axis" x="' + x(index).toFixed(1) + '" y="' + (height - 14) + '" text-anchor="' + trendMonthLabelAnchor(index, rows.length) + '">' + escapeHtml(row.month) + '</text>';
     });
     // 实盘分隔虚线（仅"全部"口径，找到第一个 live 月份）
     if (factorLabState.dataSource === "all") {
@@ -1285,7 +1418,7 @@
       });
     });
     svg += '</svg>';
-    host.innerHTML = svg;
+    host.innerHTML = '<div class="factor-trend-scroll" role="region" aria-label="月度指标趋势横向滚动区域">' + svg + '</div>';
   }
 
   function renderFactorDetail() {
@@ -1313,9 +1446,7 @@
     pageRows.forEach(function (row) {
       // 在"全部"口径下，回测到实盘的分界处插入分隔行
       if (factorLabState.dataSource === "all" && prevSource === "backtest" && row._source === "live") {
-        var dividerLabel = scheme.liveSinceDate;
-        if (dividerLabel && dividerLabel.length >= 10) dividerLabel = dividerLabel.slice(0, 10);
-        html += '<tr class="factor-live-divider"><td colspan="10">&#9660; 实盘起点 ' + (dividerLabel ? escapeHtml(dividerLabel) : "") + '</td></tr>';
+        html += '<tr class="factor-live-divider"><td colspan="10">&#9660; ' + escapeHtml(liveDividerText(scheme, task)) + '</td></tr>';
       }
       prevSource = row._source || prevSource;
       html += '<tr>';
@@ -1357,8 +1488,12 @@
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
     var isWeekly = task.frequency === "weekly";
+    var dateHeader = document.getElementById("factorDailyDateHeader");
+    var note = document.getElementById("factorCalendarNote");
     title.textContent = month + (isWeekly ? " 周度验证表" : " 每日验证表");
     meta.textContent = (scheme ? scheme.name : "--") + " · " + task.label;
+    if (dateHeader) dateHeader.textContent = isWeekly ? "预测周" : "预测日";
+    if (note) note.textContent = isWeekly ? "表内可继续滚动查看该月全部周度预测。" : "表内可继续滚动查看该月全部预测日。";
 
     var html = "";
     var monthLabel = month.slice(5, 7);
@@ -1609,8 +1744,14 @@
       };
     },
     getSelectedScheme: getSelectedScheme,
+    getSchemeDeploymentDate: getSchemeDeploymentDate,
+    getSchemeRemark: getSchemeRemark,
     isLowSampleMetric: isLowSampleMetric,
+    liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
+    trendChartLayoutForTest: buildTrendChartLayout,
+    trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,
+    renderSchemeRankingRowForTest: renderSchemeRankingRow,
     sortRankingSchemes: sortRankingSchemes
   };
 

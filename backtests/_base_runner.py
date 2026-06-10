@@ -490,20 +490,7 @@ def build_monthly_metrics(rows: list[dict[str, Any]], *, benchmark_id: str) -> l
 
 def _metric_month(row: dict[str, Any]) -> str:
     """返回历史回测月度指标归属月份。"""
-    if _is_weekly_backtest_row(row):
-        return str(row.get("feature_date") or row["predict_date"])[:7]
-    return str(row["predict_date"])[:7]
-
-
-def _is_weekly_backtest_row(row: dict[str, Any]) -> bool:
-    extra = row.get("extra") or {}
-    frequency = extra.get("frequency") if isinstance(extra, dict) else None
-    if str(frequency or "").lower() == "weekly":
-        return True
-    try:
-        return int(row.get("horizon") or 0) == 6
-    except (TypeError, ValueError):
-        return False
+    return str(row.get("predict_date") or row.get("target_date"))[:7]
 
 
 def metric_row(rows: list[dict[str, Any]], tenor: str, month: str, *, benchmark_id: str) -> dict[str, Any]:

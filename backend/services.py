@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from datetime import date, datetime
 from pathlib import Path
@@ -482,14 +483,6 @@ def scheme_metrics(
     target_labels = _target_labels(engine)
     filters = ["p.scheme_id = :scheme_id", "p.target_tenor = :tenor"]
     params: dict[str, Any] = {"scheme_id": scheme_id, "tenor": tenor}
-    start_date = _month_start(start_month)
-    end_exclusive = _month_end(end_month)
-    if start_date:
-        filters.append("p.predict_date >= :start_date")
-        params["start_date"] = start_date
-    if end_exclusive:
-        filters.append("p.predict_date < :end_exclusive")
-        params["end_exclusive"] = end_exclusive
 
     sql = text(
         f"""
@@ -504,23 +497,54 @@ def scheme_metrics(
          AND sp.serving_run_id = p.run_id
         LEFT JOIN t_scheme_actuals a
           ON a.tenor = p.target_tenor
-         AND a.trade_date = p.predict_date
+         AND a.trade_date = p.target_date
         LEFT JOIN t_scheme_weekly_actuals wa
           ON wa.tenor = p.target_tenor
-         AND wa.predict_date = p.predict_date
          AND wa.target_date = p.target_date
         WHERE sp.serving_status = 'approved'
           AND {" AND ".join(filters)}
-        ORDER BY p.predict_date, p.target_tenor
+        ORDER BY p.predict_date, p.target_date, p.target_tenor
         """
     )
     with engine.connect() as conn:
         raw_rows = conn.execute(sql, params).mappings().all()
 
+    latest_by_point: dict[tuple[Any, Any, Any, Any], Any] = {}
+    for row in raw_rows:
+        point_date = _prediction_point_date(row)
+        key = (row["scheme_id"], row["target_tenor"], row["horizon"], point_date)
+        current = latest_by_point.get(key)
+        if current is None or _is_better_prediction_for_point(row, _json_value(row["extra"], {}), current):
+            latest_by_point[key] = row
+    raw_rows = sorted(
+        latest_by_point.values(),
+        key=lambda row: (
+            _prediction_point_date(row),
+            row["predict_date"],
+            row["target_tenor"],
+        ),
+    )
+    display_until = _today_iso()
+
     daily_rows: list[dict[str, Any]] = []
     matched_rows: list[dict[str, Any]] = []
     for row in raw_rows:
         extra = _json_value(row["extra"], {})
+        predict_date = _iso(row["predict_date"])
+        target_date = _iso(row["target_date"])
+        point_date = _prediction_point_date(row)
+        if not _is_weekly_metric(row["horizon"], extra) and point_date and display_until and point_date > display_until:
+            continue
+        metric_month = _scheme_metric_month(
+            row["horizon"],
+            predict_date,
+            target_date,
+            extra,
+        )
+        if start_month and metric_month < start_month:
+            continue
+        if end_month and metric_month > end_month:
+            continue
         if row["horizon"] == 1:
             actual_direction = row["direction_1d"]
         elif row["horizon"] == 6:
@@ -531,8 +555,9 @@ def scheme_metrics(
             "scheme_id": row["scheme_id"],
             "target_tenor": row["target_tenor"],
             "horizon": row["horizon"],
-            "predict_date": _iso(row["predict_date"]),
-            "target_date": _iso(row["target_date"]),
+            "predict_date": predict_date,
+            "feature_date": _iso(extra.get("feature_date")),
+            "target_date": target_date,
             "predicted_direction": row["predicted_direction"],
             "actual_direction": actual_direction,
             "is_correct": None if actual_direction is None else row["predicted_direction"] == actual_direction,
@@ -541,10 +566,7 @@ def scheme_metrics(
         }
         daily_rows.append(item)
         if actual_direction is not None:
-            item = {
-                **item,
-                "_metric_month": _scheme_metric_month(row["horizon"], item["predict_date"], extra),
-            }
+            item = {**item, "_metric_month": metric_month}
             matched_rows.append(item)
 
     grouped: dict[str, list[dict]] = defaultdict(list)
@@ -566,15 +588,51 @@ def scheme_metrics(
     }
 
 
-def _scheme_metric_month(horizon: Any, predict_date: str, extra: dict[str, Any]) -> str:
+def _scheme_metric_month(horizon: Any, predict_date: str, target_date: str, extra: dict[str, Any]) -> str:
+    return str(predict_date or target_date)[:7]
+
+
+def _prediction_point_date(row: Any) -> str:
+    return _iso(row["predict_date"]) or _iso(row["target_date"]) or ""
+
+
+def _is_better_prediction_for_point(candidate: Any, candidate_extra: dict[str, Any], current: Any) -> bool:
+    if _is_weekly_metric(candidate["horizon"], candidate_extra):
+        return _is_better_weekly_prediction(candidate, current)
+    return int(candidate["id"] or 0) > int(current["id"] or 0)
+
+
+def _is_better_weekly_prediction(candidate: Any, current: Any) -> bool:
+    """同一预测周多次 approved 时，优先保留特征窗口更新的一条。"""
+    candidate_feature = _prediction_feature_date(candidate)
+    current_feature = _prediction_feature_date(current)
+    if candidate_feature != current_feature:
+        return candidate_feature > current_feature
+
+    candidate_predict = _iso(candidate["predict_date"]) or ""
+    current_predict = _iso(current["predict_date"]) or ""
+    if candidate_predict != current_predict:
+        return candidate_predict < current_predict
+
+    return int(candidate["id"] or 0) > int(current["id"] or 0)
+
+
+def _prediction_feature_date(row: Any) -> str:
+    extra = _json_value(row["extra"], {})
+    return _iso(extra.get("feature_date")) or _iso(row["predict_date"]) or ""
+
+
+def _today_iso() -> str:
+    return os.getenv("BOND_FACTOR_LAB_TODAY") or date.today().isoformat()
+
+
+def _is_weekly_metric(horizon: Any, extra: dict[str, Any]) -> bool:
     frequency = str(extra.get("frequency") or "").lower()
     try:
         is_weekly = int(horizon) == 6
     except (TypeError, ValueError):
         is_weekly = False
-    if is_weekly or frequency == "weekly":
-        return str(extra.get("feature_date") or predict_date)[:7]
-    return str(predict_date)[:7]
+    return is_weekly or frequency == "weekly"
 
 
 def backtest_factor_lab_results(

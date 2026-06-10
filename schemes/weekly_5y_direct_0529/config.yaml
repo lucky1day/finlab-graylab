@@ -1,0 +1,22 @@
+scheme_id: weekly_5y_direct_0529
+name: "0529周度5Y独立规则投票"
+description: "0529 周频5Y方向预测，3规则加权投票（7Y-10Y利差2周动量+5Y-10Y利差4周反转+1Y 4周动量），固定权重1.0，平局预测下行"
+horizon: 6
+tenors: ["5Y"]
+frequency: weekly
+schedule:
+  cron: "30 11 * * 6"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_weekly.v1
+  required_columns: ["week_id", "TB1YWI3C", "TB5YWI3C", "TB7YWI3C", "TB0YWI3C"]
+  weekly_variant: unified
+target_rule: "next_week_last_trading_day_vs_current_week_last_trading_day"
+backtest:
+  runner: backtests.weekly_5y_direct_0529_reproduction
+  benchmark_id: model_muti_0529
+  data_source: framework_db_aligned
+  start_week: 200901
+  end_week: 202622

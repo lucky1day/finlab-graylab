@@ -4,7 +4,7 @@ import ast
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from shared.input_artifacts import build_daily_input_artifact
+from shared.input_artifacts import build_daily_input_artifact, data_service
 from shared.models import PredictionRecord
 
 from .core.config import TENOR_CONFIGS
@@ -38,44 +38,49 @@ def run(predict_date: str) -> list[PredictionRecord]:
     """
     datetime.strptime(predict_date, "%Y-%m-%d")
     start_date = (datetime.strptime(predict_date, "%Y-%m-%d") - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
-    input_artifact = build_daily_input_artifact(
-        scheme_id=SCHEME_ID,
-        predict_date=predict_date,
-        start_date=start_date,
-        end_date=predict_date,
-    )
-    daily_df = input_artifact.dataframe
-    configured_tenors = _configured_tenors()
-
-    records: list[PredictionRecord] = []
-    for frequency, config in TENOR_CONFIGS.items():
-        if config.tenor not in configured_tenors:
-            continue
-        result = predict_latest_for_config(daily_df, config, current_date=predict_date)
-        records.append(
-            PredictionRecord(
-                scheme_id=SCHEME_ID,
-                target_tenor=config.tenor,
-                horizon=HORIZON,
-                predict_date=result.rdate,
-                target_date=result.target_date,
-                predicted_direction=result.pred_label,
-                confidence=result.prob_up,
-                model_version=f"lgbm_w{config.window}",
-                extra={
-                    "frequency": frequency,
-                    "feature_date": result.feature_date,
-                    "base_pred": result.base_pred,
-                    "base_decision": result.base_decision,
-                    "vote_sum": result.vote_sum,
-                    "decision": result.decision,
-                    "threshold": result.threshold_used,
-                    "train_start": result.train_start,
-                    "train_end": result.train_end,
-                    "input_artifact_path": str(input_artifact.path),
-                    "input_artifact_source": input_artifact.source,
-                },
-            )
+    engine = data_service.create_sqlalchemy_engine()
+    try:
+        input_artifact = build_daily_input_artifact(
+            scheme_id=SCHEME_ID,
+            predict_date=predict_date,
+            start_date=start_date,
+            end_date=predict_date,
+            engine=engine,
         )
+        daily_df = input_artifact.dataframe
+        configured_tenors = _configured_tenors()
 
-    return records
+        records: list[PredictionRecord] = []
+        for frequency, config in TENOR_CONFIGS.items():
+            if config.tenor not in configured_tenors:
+                continue
+            result = predict_latest_for_config(daily_df, config, current_date=predict_date)
+            records.append(
+                PredictionRecord(
+                    scheme_id=SCHEME_ID,
+                    target_tenor=config.tenor,
+                    horizon=HORIZON,
+                    predict_date=predict_date,
+                    target_date=result.target_date,
+                    predicted_direction=result.pred_label,
+                    confidence=result.prob_up,
+                    model_version=f"lgbm_w{config.window}",
+                    extra={
+                        "frequency": frequency,
+                        "feature_date": result.feature_date,
+                        "base_pred": result.base_pred,
+                        "base_decision": result.base_decision,
+                        "vote_sum": result.vote_sum,
+                        "decision": result.decision,
+                        "threshold": result.threshold_used,
+                        "train_start": result.train_start,
+                        "train_end": result.train_end,
+                        "input_artifact_path": str(input_artifact.path),
+                        "input_artifact_source": input_artifact.source,
+                    },
+                )
+            )
+
+        return records
+    finally:
+        engine.dispose()

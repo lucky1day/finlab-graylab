@@ -16,7 +16,6 @@ from backtests._base_runner import (
     _float_or_none as _base_float_or_none,
     _frame_profile as _base_frame_profile,
     _int_or_none as _base_int_or_none,
-    _is_weekly_backtest_row as _base_is_weekly_backtest_row,
     _metric_month as _base_metric_month,
     _normalize_scalar as _base_normalize_scalar,
     aggregate_rows as _base_aggregate_rows,
@@ -470,7 +469,7 @@ def _t1_prediction_result_to_row(daily_df: pd.DataFrame, result: Any) -> dict[st
         "scheme_id": "t1_daily",
         "target_tenor": result.tenor,
         "horizon": 1,
-        "predict_date": result.target_date,
+        "predict_date": result.feature_date,
         "feature_date": result.feature_date,
         "target_date": result.target_date,
         "label": label,
@@ -529,10 +528,6 @@ def build_monthly_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _metric_month(row: dict[str, Any]) -> str:
     """返回历史回测月度指标归属月份。"""
     return _base_metric_month(row)
-
-
-def _is_weekly_backtest_row(row: dict[str, Any]) -> bool:
-    return _base_is_weekly_backtest_row(row)
 
 
 def metric_row(rows: list[dict[str, Any]], tenor: str, month: str) -> dict[str, Any]:

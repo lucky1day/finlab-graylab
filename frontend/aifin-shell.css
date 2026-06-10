@@ -1009,9 +1009,18 @@ button {
   overflow: hidden;
 }
 
-.factor-trend-chart svg {
-  display: block;
+.factor-trend-scroll {
   width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.factor-trend-scroll svg {
+  display: block;
+  width: auto;
+  min-width: 100%;
+  max-width: none;
   height: auto;
 }
 

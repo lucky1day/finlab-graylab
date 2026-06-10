@@ -184,7 +184,7 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         self.assertEqual(result["data_source_label"], "当前DB对齐回测")
         self.assertEqual(result["schemes"][0]["scheme_name"], "周度示例")
         self.assertEqual(result["schemes"][0]["data_source_label"], "当前DB对齐回测")
-        self.assertEqual(result["schemes"][0]["name"], "周度示例｜10Y国债活跃｜当前DB对齐回测")
+        self.assertEqual(result["schemes"][0]["name"], "周度示例 · 10Y国债活跃")
 
 
 if __name__ == "__main__":

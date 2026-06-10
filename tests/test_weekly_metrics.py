@@ -116,10 +116,11 @@ class WeeklyMetricsTests(unittest.TestCase):
 
         self.assertEqual(result["summary"]["samples"], 1)
         self.assertEqual(result["summary"]["correct"], 1)
+        self.assertEqual(result["daily_rows"][0]["feature_date"], "2026-05-22")
         self.assertEqual(result["daily_rows"][0]["actual_direction"], -1)
         self.assertTrue(result["daily_rows"][0]["is_correct"])
 
-    def test_scheme_metrics_buckets_weekly_rows_by_feature_month(self) -> None:
+    def test_scheme_metrics_buckets_weekly_rows_by_predict_month(self) -> None:
         from backend.services import scheme_metrics
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -132,9 +133,9 @@ class WeeklyMetricsTests(unittest.TestCase):
                         (run_id, scheme_id, target_tenor, horizon, predict_date, target_date,
                          predicted_direction, confidence, model_version, extra)
                     VALUES
-                        (1, 'demo_weekly_scheme', '10Y', 6, '2025-10-25', '2025-10-31',
+                        (1, 'demo_weekly_scheme', '10Y', 6, '2025-10-25', '2025-11-07',
                          1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-24"}'),
-                        (2, 'demo_weekly_scheme', '10Y', 6, '2025-11-01', '2025-11-07',
+                        (2, 'demo_weekly_scheme', '10Y', 6, '2025-11-01', '2025-11-14',
                          -1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-31"}')
                     """
                 )
@@ -156,8 +157,8 @@ class WeeklyMetricsTests(unittest.TestCase):
                     INSERT INTO t_scheme_weekly_actuals
                         (tenor, predict_date, target_date, direction_weekly)
                     VALUES
-                        ('10Y', '2025-10-25', '2025-10-31', -1),
-                        ('10Y', '2025-11-01', '2025-11-07', 1)
+                        ('10Y', '2025-10-25', '2025-11-07', -1),
+                        ('10Y', '2025-11-01', '2025-11-14', 1)
                     """
                 )
             )
@@ -165,8 +166,9 @@ class WeeklyMetricsTests(unittest.TestCase):
         result = scheme_metrics(engine, "demo_weekly_scheme", "10Y")
         metrics = {row["month"]: row for row in result["monthly_metrics"]}
 
-        self.assertEqual(metrics["2025-10"]["samples"], 2)
-        self.assertNotIn("2025-11", metrics)
+        self.assertEqual(metrics["2025-10"]["samples"], 1)
+        self.assertEqual(metrics["2025-11"]["samples"], 1)
+        self.assertEqual([row["feature_date"] for row in result["daily_rows"]], ["2025-10-24", "2025-10-31"])
 
 
 if __name__ == "__main__":
