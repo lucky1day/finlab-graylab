@@ -1505,8 +1505,11 @@
 
     var html = "";
     var monthLabel = month.slice(5, 7);
+    var src = factorLabState.dataSource;
     var rows = scheme && scheme.dailyRowsByMonth && scheme.dailyRowsByMonth[month]
-      ? scheme.dailyRowsByMonth[month]
+      ? scheme.dailyRowsByMonth[month].filter(function (r) {
+          return src === "all" || r._source === src;
+        })
       : (isWeekly ? factorWeeklyRows : factorDailyRows);
     if (!rows.length) {
       body.innerHTML = '<tr><td colspan="4" class="factor-empty-cell">当前月份暂无每日明细</td></tr>';
