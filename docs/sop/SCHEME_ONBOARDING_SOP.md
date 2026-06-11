@@ -495,6 +495,22 @@ LIMIT 5;
 
 只有 Intake、Normalize、Input Gate、Static Gate、Unit Gate、Dry-run Gate、Backtest Gate、API/前端只读验证和 Live Gate 全部通过后，才允许进入 activation。周度方案还要确认 `schedule.cron` 与上游 weekly 首轮预测时间对齐。
 
+**Step 10a（强制，不允许遗漏）：激活前必须完成"源文件原始回测 vs 入库后回测"逐样本对比**
+
+> **背景**（2026-06-10 实际遗漏案例）：`weekly_7y_cross_d_overlay_0529` 首次入库激活时跳过了该对比（CompareGate 因缺 benchmark 文件 SKIP，未阻断激活），事后才补做。该对比是验证"平台改造未改变算法行为"的唯一手段，跳过等于上线了未经验证的方案。
+
+激活前必须满足以下全部条件，**任何一条不满足都不允许激活**：
+
+1. **完成 [SCHEME_POST_ONBOARDING_TEST_SOP.md](SCHEME_POST_ONBOARDING_TEST_SOP.md) S3–S5**：
+   - S3：用入库前原始脚本（或静态基准文件）跑出基准预测序列。
+   - S4：用入库后的框架代码（同一数据接入层）跑出复现序列。
+   - S5：逐样本对比，**`predicted_direction` 方向零容差**（差一个样本即不一致），浮点 `1e-9` 容差。
+2. **benchmark 文件已落到 `schemes/{scheme_id}/benchmarks/`**（四份，见 Step 5a），且 `config.yaml` 中 `backtest.benchmark_required: true`。
+3. **CompareGate 状态必须是 `passed`，不能是 `skipped`**。`skipped` 意味着对比没有发生——对于新增方案这是不可接受的（`skipped` 仅对无原始基准的纯框架内实验方案可接受，且需在 CURRENT_STATUS 中显式说明原因）。
+4. 对比证据（matched 数、direction diff、confidence diff）写入 `docs/CURRENT_STATUS.md`。
+
+执行顺序建议：Step 7（回测落库）→ Step 10a（源 vs 入库对比 + benchmark 文件）→ 重跑 `harness onboard --stage all` 确认 CompareGate passed → Step 10（激活）。
+
 ### Step 11: Documentation - 文档留痕
 
 每次新方案合入前，必须更新:
