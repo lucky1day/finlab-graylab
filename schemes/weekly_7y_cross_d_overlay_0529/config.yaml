@@ -18,5 +18,6 @@ backtest:
   runner: backtests.weekly_7y_cross_d_overlay_0529_reproduction
   benchmark_id: model_muti_0529
   data_source: framework_db_aligned
+  benchmark_required: true
   start_week: 200901
   end_week: 202622
