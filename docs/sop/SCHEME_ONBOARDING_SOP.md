@@ -6,6 +6,8 @@
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
 >
 > **端到端主线见 [../SCHEME_INGESTION.md](../SCHEME_INGESTION.md)**（AI/新人第一入口，一图串联源码放哪/怎么拆/预测怎么放怎么验/写哪张表/回测入库）。本 SOP 是其「改造进系统」段的人类执行手册。
+>
+> **新增方案开工前必须先读 [SCHEME_ONBOARDING_T0.md](SCHEME_ONBOARDING_T0.md)**。T0 是 daily / weekly 通用的硬约束范式；本文负责展开具体步骤和命令。
 
 ## 1. 核心原则
 
@@ -612,7 +614,7 @@ LIMIT 10;
 
 ### 同一个 T+1、5Y 任务能有多个方案吗？
 
-可以。隔离键是 `scheme_id + target_tenor + horizon` 的业务组合。当前数据库实盘表的唯一键是 `(scheme_id, target_tenor, predict_date)`，因此要求一个 `scheme_id` 固定一个 `horizon`。
+可以。隔离键是 `scheme_id + target_tenor + horizon` 的业务组合。当前数据库实盘表的唯一业务口径是 `(scheme_id, target_tenor, horizon, target_date)`；`predict_date` 只用于调度日志和运行记录。一个 `scheme_id` 仍要求固定一个 `horizon`，这样前端矩阵、回测指标和 live 写库都不会把不同预测长度混在一起。
 
 ### 新方案只改 `name` 可以吗？
 
