@@ -114,16 +114,16 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-06-11：当前在册 active 方案为 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`；旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役。
+状态最近更新 2026-06-11：当前在册 active 方案为 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`；旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役。
 
-| 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` |
-|--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|
-| `config.yaml` 基础字段 | ✅ | ✅ | ✅ | ✅ |
-| `input_spec.*` | ✅ | ✅ | ✅ | ✅ |
-| `target_rule` | 不适用 | 不适用 | ✅ | ✅ |
-| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ | ✅ | ✅ |
-| core 零 DB | ✅ | ✅ | ✅ | ✅ |
-| extra 必填键 | ✅ | ✅ | ✅ | ✅ |
+| 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` |
+|--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|
+| `config.yaml` 基础字段 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `input_spec.*` | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `target_rule` | 不适用 | 不适用 | ✅ | ✅ | ✅ |
+| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| core 零 DB | ✅ | ✅ | ✅ | ✅ | ✅ |
+| extra 必填键 | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 上述状态由 StaticGate / UnitGate / DryRunGate 持续守护；新增方案开工前先读 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)。
 

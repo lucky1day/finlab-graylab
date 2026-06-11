@@ -31,6 +31,7 @@ HORIZON_DAYS = 6
 TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 MODEL_VERSION = "10y_d_overlay_0529"
 REQUIRED_COLUMNS = ["week_id", TARGET_COL, "TB1YWI3C", "TB5YWI3C"]
+LIVE_TARGET_START_DATE = "2026-06-01"
 
 
 def _load_config_raw(config_path: Path) -> dict[str, Any]:
@@ -125,6 +126,8 @@ def build_backtest_rows(
         feature_row = weekly_by_id[feature_week_id]
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
+        if target_date >= LIVE_TARGET_START_DATE:
+            continue
         future_return = _weekly_future_return(feature_row, target_row)
         label = _label_from_future_return(future_return) if future_return is not None else None
         predicted_direction = _int_or_none(prediction_row.get("d_pred_label"))

@@ -153,6 +153,8 @@ class FactorLabRankingTests(unittest.TestCase):
               weeklyRowHtml,
               deploymentDate: hooks.getSchemeDeploymentDate({}),
               weeklyDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_5y_direct_0529" }),
+              weekly7YDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_7y_cross_d_overlay_0529" }),
+              weekly10YDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_10y_d_overlay_0529" }),
               customDeploymentDate: hooks.getSchemeDeploymentDate({ deployed_at: "2026-06-02" }),
               remark: hooks.getSchemeRemark({ remark: "人工备注" })
             };
@@ -161,6 +163,8 @@ class FactorLabRankingTests(unittest.TestCase):
 
         self.assertEqual(result["deploymentDate"], "2026/06/01")
         self.assertEqual(result["weeklyDeploymentDate"], "2026/06/10")
+        self.assertEqual(result["weekly7YDeploymentDate"], "2026/06/10")
+        self.assertEqual(result["weekly10YDeploymentDate"], "2026/06/10")
         self.assertEqual(result["customDeploymentDate"], "2026/06/02")
         self.assertEqual(result["remark"], "人工备注")
         self.assertIn("2026/06/01", result["rowHtml"])

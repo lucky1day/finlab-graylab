@@ -259,7 +259,9 @@
   var factorLabDataMode = "mock";
   var DEFAULT_SCHEME_DEPLOYMENT_DATE = "2026/06/01";
   var SCHEME_DEPLOYMENT_DATE_OVERRIDES = {
-    weekly_5y_direct_0529: "2026/06/10"
+    weekly_5y_direct_0529: "2026/06/10",
+    weekly_7y_cross_d_overlay_0529: "2026/06/10",
+    weekly_10y_d_overlay_0529: "2026/06/10"
   };
 
   function clampPercent(value) {

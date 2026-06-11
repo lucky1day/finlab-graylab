@@ -119,6 +119,61 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["target_week_id"], 202622)
         self.assertEqual(rows[0]["target_date"], "2026-05-22")
 
+    def test_backtest_rows_stop_before_live_target_month(self) -> None:
+        from backtests import weekly_10y_d_overlay_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202619, 202620, 202621, 202622, 202623])
+        calendar = _calendar_for(weekly_df["week_id"])
+        week_dates = {
+            202619: pd.Timestamp("2026-05-15"),
+            202620: pd.Timestamp("2026-05-22"),
+            202621: pd.Timestamp("2026-05-29"),
+            202622: pd.Timestamp("2026-06-05"),
+            202623: pd.Timestamp("2026-06-12"),
+        }
+        calendar.week_id_to_last_trading_day = lambda week_id: week_dates[int(week_id)].strftime("%Y-%m-%d")
+        calendar.next_trading_days = lambda day, count: [
+            value.strftime("%Y-%m-%d")
+            for value in sorted(week_dates.values())
+            if value > pd.Timestamp(day)
+        ][:count]
+
+        def week_id_for_date(day: str) -> int | None:
+            target = pd.Timestamp(day)
+            for week_id, value in week_dates.items():
+                if value - pd.Timedelta(days=4) <= target <= value:
+                    return int(week_id)
+            return None
+
+        calendar.week_id_for_date = week_id_for_date
+
+        def fake_overlay(frame: pd.DataFrame) -> pd.DataFrame:
+            weeks = [int(value) for value in frame["week_id"].tolist()]
+            return pd.DataFrame(
+                {
+                    "week_id": weeks,
+                    "d_pred_label": [-1 for _ in weeks],
+                    "d_prob_up": [0.32 for _ in weeks],
+                    "d_model2_overlay": [False for _ in weeks],
+                    "d_signal_source": ["unit" for _ in weeks],
+                    "score_pred_label": [-1 for _ in weeks],
+                    "score_prob_up": [0.32 for _ in weeks],
+                    "model2_prob_up": [0.32 for _ in weeks],
+                    "d_model2_pred_label": [-1 for _ in weeks],
+                }
+            )
+
+        with patch.object(runner, "build_d_overlay", side_effect=fake_overlay):
+            rows = runner.build_backtest_rows(
+                weekly_df,
+                calendar=calendar,
+                artifact_path=Path("/tmp/weekly_10y.csv"),
+                artifact_source="unit_test",
+            )
+
+        self.assertEqual([row["target_date"] for row in rows], ["2026-05-22", "2026-05-29"])
+        self.assertTrue(all(row["target_date"] < runner.LIVE_TARGET_START_DATE for row in rows))
+
     def test_run_no_persist_returns_sop_payload_without_writes(self) -> None:
         from backtests import weekly_10y_d_overlay_0529_reproduction as runner
 

@@ -425,7 +425,8 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 
 - 回测写入只作用于新 `scheme_id` 对应 run。
 - `/api/backtests/factor-lab` 返回 `frequency=weekly`，前端落到“周度”列。
-- 周度明细行按 `feature_date` 所在月份归组，显示日仍可使用周六 `predict_date`；月度样本数必须与后端 `t_backtest_monthly_metrics` 一致。
+- 周度明细行、月度指标、去重和展示月份一律按 `target_date` 归组；`feature_date` 只用于追溯输入窗口，`predict_date` 只用于调度日志和运行记录。
+- 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
 
 ### Step 8: API/前端只读验证
