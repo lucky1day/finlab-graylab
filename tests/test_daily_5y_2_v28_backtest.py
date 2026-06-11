@@ -13,6 +13,35 @@ import pandas as pd
 class Daily5Y2BacktestTests(unittest.TestCase):
     """日频 5Y_2 v28 历史回测 runner 测试。"""
 
+    def test_benchmark_files_use_may_auxiliary_source_scope(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        bench = project_root / "schemes" / "daily_5y_2_v28" / "benchmarks"
+
+        original = pd.read_csv(bench / "original_predictions_sample.csv")
+        current = pd.read_csv(bench / "current_predictions_sample.csv")
+
+        self.assertEqual(len(original), 18)
+        self.assertEqual(len(current), 18)
+        self.assertEqual(original["predict_date"].min(), "2026-05-06")
+        self.assertEqual(original["predict_date"].max(), "2026-05-29")
+        self.assertEqual(original["target_date"].iloc[0], "2026-05-13")
+        self.assertEqual(original["target_date"].iloc[-1], "2026-06-05")
+
+        merged = original.merge(
+            current,
+            on=["predict_date", "tenor"],
+            suffixes=("_original", "_current"),
+        )
+        self.assertEqual(len(merged), 18)
+        self.assertTrue((merged["direction_original"] == merged["direction_current"]).all())
+        self.assertTrue((merged["label_original"] == merged["label_current"]).all())
+        self.assertTrue((merged["confidence_original"] == merged["confidence_current"]).all())
+
+        summary = pd.read_json(bench / "original_backtest_summary.json", typ="series")
+        self.assertEqual(summary["benchmark_scope"], "may2026_auxiliary_source")
+        self.assertEqual(summary["row_count"], 18)
+        self.assertEqual(summary["eval_samples"], 14)
+
     def test_build_backtest_rows_use_anchor_predict_date_and_target_date_filter(self) -> None:
         from backtests import daily_5y_2_v28_reproduction as runner
 

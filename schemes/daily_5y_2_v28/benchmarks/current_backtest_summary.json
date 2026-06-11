@@ -1,125 +1,36 @@
 {
-  "by_tenor": {
-    "5Y": {
-      "samples": 440,
-      "correct": 213,
-      "accuracy": 0.48409090909090907,
-      "accuracy_pct": 48.4,
-      "actual_dist": {
-        "up": 179,
-        "down": 252,
-        "flat": 9,
-        "missing": 0
-      },
-      "predicted_dist": {
-        "up": 150,
-        "down": 198,
-        "flat": 92,
-        "missing": 0
-      },
-      "date_min": "2024-07-01",
-      "date_max": "2026-04-23"
-    }
-  },
-  "periods_by_tenor": {
-    "5Y": {
-      "sim": {
-        "samples": 117,
-        "correct": 51,
-        "accuracy": 0.4358974358974359,
-        "accuracy_pct": 43.6,
-        "actual_dist": {
-          "up": 59,
-          "down": 55,
-          "flat": 3,
-          "missing": 0
-        },
-        "predicted_dist": {
-          "up": 53,
-          "down": 37,
-          "flat": 27,
-          "missing": 0
-        },
-        "date_min": "2025-01-02",
-        "date_max": "2025-06-30"
-      },
-      "real": {
-        "samples": 198,
-        "correct": 98,
-        "accuracy": 0.494949494949495,
-        "accuracy_pct": 49.5,
-        "actual_dist": {
-          "up": 93,
-          "down": 100,
-          "flat": 5,
-          "missing": 0
-        },
-        "predicted_dist": {
-          "up": 59,
-          "down": 95,
-          "flat": 44,
-          "missing": 0
-        },
-        "date_min": "2025-07-01",
-        "date_max": "2026-04-23"
-      },
-      "may": {
-        "samples": 0,
-        "correct": 0,
-        "accuracy": null,
-        "accuracy_pct": null,
-        "actual_dist": {
-          "up": 0,
-          "down": 0,
-          "flat": 0,
-          "missing": 0
-        },
-        "predicted_dist": {
-          "up": 0,
-          "down": 0,
-          "flat": 0,
-          "missing": 0
-        },
-        "date_min": null,
-        "date_max": null
-      },
-      "all": {
-        "samples": 440,
-        "correct": 213,
-        "accuracy": 0.48409090909090907,
-        "accuracy_pct": 48.4,
-        "actual_dist": {
-          "up": 179,
-          "down": 252,
-          "flat": 9,
-          "missing": 0
-        },
-        "predicted_dist": {
-          "up": 150,
-          "down": 198,
-          "flat": 92,
-          "missing": 0
-        },
-        "date_min": "2024-07-01",
-        "date_max": "2026-04-23"
-      }
-    }
-  },
-  "row_count": 440,
-  "raw_row_count": 440,
-  "excluded_row_count": 0,
-  "evaluation_filter": {
-    "date_field": "target_date",
-    "ranges": [],
-    "raw_row_count": 440,
-    "included_row_count": 440,
-    "excluded_row_count": 0
-  },
-  "monthly_count": 22,
-  "daily_input_artifact_path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/backtests/v28_daily_5y_2/runtime_inputs/daily_5y_2_v28/daily_output_historical_backtest.csv",
-  "weekly_input_artifact_path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/backtests/v28_daily_5y_2/runtime_inputs/daily_5y_2_v28/weekly_output_historical_backtest.csv",
-  "monthly_input_artifact_path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/backtests/v28_daily_5y_2/runtime_inputs/daily_5y_2_v28/monthly_output_historical_backtest.csv",
-  "input_artifact_hash": "3e10919447b13e30b2734011f4dfd55caecf5a8595ce1882e931fad6865b7d30",
-  "weekly_input_artifact_hash": "ab8292c01ba9d699d4dffb6a3d8016084212b799def3b2493049ba6d49797a72",
-  "monthly_input_artifact_hash": "cde709d0e0df2d22a1a5c0a35d138d412430608c69159abeb2f28baa42823b54"
+  "benchmark_scope": "may2026_auxiliary_source",
+  "source": "/Users/macstudio0/Desktop/models-liwei-0606/outputs/reproduce_eval_0608_may_20260608/predictions/predict_5y_2_v28_may_2026_predictions.csv",
+  "data_cutoff": "2026-06-06",
+  "test_start": "2026-05-01",
+  "test_end": "2026-05-31",
+  "row_count": 18,
+  "eval_samples": 14,
+  "direction_accuracy": 0.8571428571428571,
+  "all_accuracy": 0.6666666666666666,
+  "trade_rate": 0.7777777777777778,
+  "pred_up": 3,
+  "pred_down": 11,
+  "pred_flat": 4,
+  "true_up": 2,
+  "true_down": 16,
+  "true_flat": 0,
+  "correct_trade": 12,
+  "correct_all": 12,
+  "config": {
+    "combo": "pol_tp_bf",
+    "K": 15,
+    "lgbm_w": 1.3,
+    "vt": 0.15,
+    "rebal": "monthly",
+    "ew": 378,
+    "min_acc": 0.35,
+    "seeds": [
+      42,
+      314,
+      159
+    ],
+    "ml_mode": "prob",
+    "ens_mode": "standard"
+  }
 }
