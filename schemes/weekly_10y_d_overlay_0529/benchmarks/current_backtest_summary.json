@@ -1,0 +1,103 @@
+{
+  "10Y": {
+    "2025-07": {
+      "sample_count": 3,
+      "correct_count": 1,
+      "accuracy": 0.3333333333333333,
+      "up_precision": null,
+      "up_recall": 0.0,
+      "down_precision": 0.3333333333333333,
+      "down_recall": 1.0
+    },
+    "2025-08": {
+      "sample_count": 5,
+      "correct_count": 5,
+      "accuracy": 1.0,
+      "up_precision": 1.0,
+      "up_recall": 1.0,
+      "down_precision": 1.0,
+      "down_recall": 1.0
+    },
+    "2025-09": {
+      "sample_count": 5,
+      "correct_count": 4,
+      "accuracy": 0.8,
+      "up_precision": 1.0,
+      "up_recall": 0.6666666666666666,
+      "down_precision": 0.6666666666666666,
+      "down_recall": 1.0
+    },
+    "2025-10": {
+      "sample_count": 4,
+      "correct_count": 3,
+      "accuracy": 0.75,
+      "up_precision": 0.5,
+      "up_recall": 1.0,
+      "down_precision": 1.0,
+      "down_recall": 0.6666666666666666
+    },
+    "2025-11": {
+      "sample_count": 4,
+      "correct_count": 3,
+      "accuracy": 0.75,
+      "up_precision": 1.0,
+      "up_recall": 0.6666666666666666,
+      "down_precision": 0.5,
+      "down_recall": 1.0
+    },
+    "2025-12": {
+      "sample_count": 5,
+      "correct_count": 2,
+      "accuracy": 0.4,
+      "up_precision": 0.5,
+      "up_recall": 0.3333333333333333,
+      "down_precision": 0.3333333333333333,
+      "down_recall": 0.5
+    },
+    "2026-01": {
+      "sample_count": 4,
+      "correct_count": 3,
+      "accuracy": 0.75,
+      "up_precision": null,
+      "up_recall": 0.0,
+      "down_precision": 0.75,
+      "down_recall": 1.0
+    },
+    "2026-02": {
+      "sample_count": 3,
+      "correct_count": 2,
+      "accuracy": 0.6666666666666666,
+      "up_precision": 1.0,
+      "up_recall": 1.0,
+      "down_precision": 0.5,
+      "down_recall": 1.0
+    },
+    "2026-03": {
+      "sample_count": 4,
+      "correct_count": 1,
+      "accuracy": 0.25,
+      "up_precision": 0.0,
+      "up_recall": 0.0,
+      "down_precision": 0.3333333333333333,
+      "down_recall": 0.5
+    },
+    "2026-04": {
+      "sample_count": 5,
+      "correct_count": 4,
+      "accuracy": 0.8,
+      "up_precision": null,
+      "up_recall": 0.0,
+      "down_precision": 0.8,
+      "down_recall": 1.0
+    },
+    "2026-05": {
+      "sample_count": 3,
+      "correct_count": 2,
+      "accuracy": 0.6666666666666666,
+      "up_precision": null,
+      "up_recall": 0.0,
+      "down_precision": 0.6666666666666666,
+      "down_recall": 1.0
+    }
+  }
+}
