@@ -201,7 +201,7 @@ launchd scheduler 已成功运行 active 方案：
 
 2026-06-11 已重刷日频源数据至 `api_wind_daily.rdate=2026-06-11`，实盘预测表中 `t1_daily` 覆盖 target_date=2026-06-01 到 2026-06-11，`t5_daily` 覆盖 target_date=2026-06-01 到 2026-06-17。当前 6 月日频明细按目标日展示；对应目标日有 actuals 时直接计结果，目标日尚无 actuals 时保持 `待验证`，不会显示为“平”。
 
-2026-06-10 已验证前端/DB 一致性：`python -m scripts.verify_frontend_db --scheme-id t5_daily --run-id 76` 检查 68 格、0 mismatch；`t1_daily --run-id 79` 检查 36 格、0 mismatch（DB 中 `1Y` 回测格被前端目标注册表隐藏）；`weekly_5y_direct_0529 --run-id 80` 检查 124 格、0 mismatch。2026-06-11 scheduler 配置复核：`t1_daily` / `t5_daily` 注册工作日 07:03，`weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 注册周六 11:30；前端候选方案部署时间 override 已统一三个周度方案为 `2026/06/10`，并已修复候选排行真实 row 使用 `schemeId` 时 7Y/10Y 回落到默认 `2026/06/01` 的问题。
+2026-06-10 已验证前端/DB 一致性：`python -m scripts.verify_frontend_db --scheme-id t5_daily --run-id 76` 检查 68 格、0 mismatch；`t1_daily --run-id 79` 检查 36 格、0 mismatch（DB 中 `1Y` 回测格被前端目标注册表隐藏）；`weekly_5y_direct_0529 --run-id 80` 检查 124 格、0 mismatch。2026-06-11 scheduler 配置复核：`t1_daily` / `t5_daily` 注册工作日 07:03，`weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 注册周六 11:30；前端候选方案部署时间 override 已统一三个周度方案为 `2026/06/10`，并已修复候选排行真实 row 使用 `schemeId` 时 7Y/10Y 回落到默认 `2026/06/01` 的问题。用户侧强制刷新后确认页面正确，后续遇到“静态前端已改但页面仍旧”需先提醒强制刷新/禁用缓存。
 
 旧周频 live prediction/run_log 记录已清理。scheduler 重启后，当前代码配置会注册日频方案与 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529` 周频方案。
 

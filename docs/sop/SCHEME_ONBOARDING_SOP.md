@@ -471,6 +471,7 @@ http://127.0.0.1:8100/
 - 方案排行的整体准确率、上涨准确率、下跌准确率按样本级聚合。
 - 切换排行指标时，任务格子最优指标同步变化。
 - 部署时间、备注等展示字段必须按真实候选排行 row 验证，不只直测 helper；前端 helper 需要兼容 API 原始 `scheme_id` 和 UI 归一后的 `schemeId`。
+- 如果刚改过 `frontend/aifin-shell.js` / `frontend/index.html` 后页面仍显示旧内容，第一时间提醒用户做浏览器强制刷新（macOS `Cmd+Shift+R`）或打开 DevTools 勾选 `Disable Cache` 后刷新，再继续排查 API/代码。
 
 如果前端没有出现，优先检查:
 
