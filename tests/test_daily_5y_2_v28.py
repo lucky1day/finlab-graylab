@@ -24,7 +24,7 @@ class Daily5Y2ConfigTests(unittest.TestCase):
         self.assertEqual(config["horizon"], 5)
         self.assertEqual(config["tenors"], ["5Y"])
         self.assertEqual(config["frequency"], "daily")
-        self.assertEqual(config["status"], "paused")
+        self.assertEqual(config["status"], "active")
         self.assertEqual(config["schedule"]["cron"], "3 7 * * 1-5")
         self.assertEqual(config["input_spec"]["data_version"], "shared_data_service_daily.v1")
         aux = config["input_spec"]["auxiliary_inputs"]
