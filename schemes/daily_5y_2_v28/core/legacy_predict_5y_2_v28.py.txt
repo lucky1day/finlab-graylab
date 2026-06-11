@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""5Y Config 2 — pol_tp_bf_p (V28)
+sim=60.67% real=63.82% s_tr=76.1% r_tr=76.8% bad=1
+K=15 lgbm_w=1.30 VT=0.15 monthly ew=378 mac=0.35
+policy+term_prem+butterfly, prob-ML, standard ensemble, three-class VT=0.15
+LGBM-dominant (w=1.30), monthly rebal, highest real among PASS configs
+"""
+import argparse
+from pathlib import Path
+from bond_common import run_prediction
+
+CONFIG = {
+    "name": "predict_5y_2",
+    "tenor": "5Y",
+    "close": "TB5YWI0C",
+    "self_name": "5Y",
+    "aux_pairs": [("3Y", "TB3YWI0C"), ("10Y", "TB0YWI0C")],
+    # LGBM grid — V27 extended (with slow-learning path)
+    "lgbm_windows": [200, 350, 504, 756],
+    "lgbm_leaves": [3, 5, 7, 15],
+    "lgbm_min_child": [10, 20],
+    "lgbm_alpha": [0.0, 1.0],
+    "lgbm_lambda": [0.5, 3.0],
+    "lgbm_split": [0.55, 0.70],
+    "lgbm_slow_path": True,
+    # 5Y: 3-seed LGBM (matching sweep)
+    "seeds": [42, 314, 159],
+    # Fixed config params
+    "K": 15,
+    "combo_name": "pol_tp_bf",
+    "combo_template": {"policy": 2, "term_prem": 2, "butterfly": 2},
+    "lgbm_w": 1.30,
+    "vt": 0.15,
+    "rebal": "monthly",
+    "ew": 378,
+    "min_acc": 0.35,
+    # V25: ensemble/ML/signal modes
+    "ml_mode": "prob",
+    "sig_mode": "equal",
+    "ens_mode": "standard",
+    # IC screening
+    "ic_top_self": 50,
+    "ic_top_mf": 30,
+}
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--data-dir", type=Path,
+                   default=Path(__file__).resolve().parent / "data")
+    p.add_argument("--n-workers", type=int, default=10)
+    args = p.parse_args()
+    CONFIG["data_dir"] = args.data_dir
+    CONFIG["n_workers"] = args.n_workers
+    run_prediction(CONFIG)

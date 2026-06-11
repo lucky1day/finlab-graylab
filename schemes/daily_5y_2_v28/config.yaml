@@ -1,0 +1,76 @@
+scheme_id: daily_5y_2_v28
+name: "V28日频5Y方案2"
+description: "models-liwei-0606 V28 5Y config 2；月度更新 LGBM ensemble + policy/term-premium/butterfly signals。实盘 predict_date 为信号日 T+1，feature_date 为上一交易日 T。"
+horizon: 5
+tenors: ["5Y"]
+frequency: daily
+schedule:
+  cron: "3 7 * * 1-5"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: paused
+input_spec:
+  data_version: shared_data_service_daily.v1
+  required_columns:
+    - date
+    - TB1YWI0C
+    - TB3YWI0C
+    - TB5YWI0C
+    - TB7YWI0C
+    - TB0YWI0C
+    - SH000300
+    - IFCFE00C
+    - S0031525
+    - AUSHF00C
+    - CUSHF01C
+    - RBSHF01C
+    - USDCNH0C
+    - SX5EDF0C
+    - DR007IBC
+    - M0017153
+    - G0006352
+    - G0006353
+    - M0000005
+    - M0000271
+    - M0048486
+    - G0003956
+    - B2559386
+    - G0003892
+    - DRS00001
+    - DRS00002
+    - AGSHF01C
+    - ZNSHF00C
+    - HCSHF01C
+  auxiliary_inputs:
+    - frequency: weekly
+      data_version: shared_data_service_weekly.v1
+      required_columns:
+        - week_id
+        - S0114089
+        - N1355677
+        - V0135838
+        - V0184553
+        - W0192843
+        - X0100205
+        - Y0110594
+        - HWW00001
+        - HWW00002
+        - HWW00003
+    - frequency: monthly
+      data_version: shared_data_service_monthly.v1
+      required_columns:
+        - month_id
+        - M0000545
+        - M0061518
+        - M0096870
+        - M0317126
+        - M0009970
+        - M0009973
+        - M0001227
+backtest:
+  runner: backtests.daily_5y_2_v28_reproduction
+  benchmark_id: v28_daily_5y_2
+  data_source: framework_db_aligned
+  benchmark_required: true
+  start_date: "2024-07-01"
+  end_date: "2026-04-30"

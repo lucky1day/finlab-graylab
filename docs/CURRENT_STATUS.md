@@ -1,12 +1,12 @@
 # 当前状态
 
-**更新日期**: 2026-06-11
+**更新日期**: 2026-06-12
 
 > 2026-06-11 文档已按当前 DB、代码目录和 live 回补状态刷新。新增方案入口统一为 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)；日频与周频月度统计、明细日期均按 `target_date`（目标交易日）归属，`predict_date` 仅用于调度日志和运行记录。
 
 ## 总览
 
-当前代码侧保留五个可发现、可调度的方案：
+当前代码侧保留五个 active 可调度方案，另有一个 V28 日频方案处于入库验证中：
 
 | 方案 | 频率 | Horizon | 目标 | 状态 |
 |------|------|---------|------|------|
@@ -15,12 +15,15 @@
 | `weekly_5y_direct_0529` | `weekly` | 6 | `5Y` | `active` |
 | `weekly_7y_cross_d_overlay_0529` | `weekly` | 6 | `7Y` | `active` |
 | `weekly_10y_d_overlay_0529` | `weekly` | 6 | `10Y` | `active` |
+| `daily_5y_2_v28` | `daily` | 5 | `5Y` | `paused`，CompareGate 阻塞 |
 
 2026-06-10 新增周度方案 `weekly_5y_direct_0529`，按 [SCHEME_ONBOARDING_SOP](sop/SCHEME_ONBOARDING_SOP.md) 完整通过了 Intake → Normalize → Input/Static/Unit/Dry-run Gate → Live Gate → API 验证 → Activation 全流程。方案采用 3 规则加权投票算法（7Y-10Y 利差动量 + 5Y-10Y 利差反转 + 1Y 动量），所有 week_id↔日期 映射只读 `api_wind_date.week_id`，禁止日历公式计算。
 
 2026-06-10 新增周度方案 `weekly_7y_cross_d_overlay_0529`，覆盖 `7Y`、horizon=6、周六 11:30 调度。原始脚本归档为 `schemes/weekly_7y_cross_d_overlay_0529/core/legacy_weekly_7y_cross_d_overlay_0529.py.txt`，活跃 core 为纯 DataFrame 算法；adapter 与回测 runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 取数，`week_id` / `target_week_id` / `target_date` 均经 `shared.calendar_service` 读取 DB 日历。源文件原始回测（`/Users/macstudio0/Desktop/weekly_7y_cross_d_overlay_0529 (1).py` + `/Users/macstudio0/Desktop/weekly_output.csv`）与入库后回测在源文件窗口内 43 条样本逐 `feature_week_id` 对齐：方向差异 0、label 差异 0、confidence 最大差异 0、`target_date` 月度 accuracy 差异 0；这里的 confidence 为原始算法 `cross_d_prob_up` 概率输出映射到平台统一字段，不是平台另造指标。四份 benchmark 文件已落在 `schemes/weekly_7y_cross_d_overlay_0529/benchmarks/`，且 `backtest.benchmark_required=true`。`python -m harness onboard weekly_7y_cross_d_overlay_0529 --predict-date 2026-06-06 --stage all` 已通过，CompareGate 为 `passed`；API gate 确认 `/api/backtests/factor-lab` 中 `7Y` 周度格存在，monthly_rows=124。ActivationGate 已用一次性 `activate` token 登记当前 active 版本，scheme_version=`27ece22d45f4`，并已重启 scheduler。
 
 2026-06-11 新增周度方案 `weekly_10y_d_overlay_0529`，覆盖 `10Y`、horizon=6、周六 11:30 调度。原始脚本归档为 `schemes/weekly_10y_d_overlay_0529/core/legacy_weekly_10y_d_overlay_0529.py.txt`，活跃 core 为纯 DataFrame 算法；adapter 与回测 runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 取数，`week_id` / `target_week_id` / `target_date` 均经 `shared.calendar_service` 读取 DB 日历。源文件原始回测（`/Users/macstudio0/Desktop/weekly_10y_d_overlay_0529 (1).py` + `weekly_output0529.csv`）与入库后回测在源文件窗口内 45 条样本逐 `feature_week_id` 对齐：方向差异 0、confidence 最大差异 `1.1102230246251565e-16`；这里的 confidence 为原始算法 `d_prob_up`（score/model2 overlay 后概率）映射到平台统一字段，`1e-16` 差异为浮点舍入误差。四份 benchmark 文件已落在 `schemes/weekly_10y_d_overlay_0529/benchmarks/`，且 `backtest.benchmark_required=true`。`python -m harness onboard weekly_10y_d_overlay_0529 --predict-date 2026-06-06 --stage all` 已通过，CompareGate 为 `passed`；API gate 确认 `/api/backtests/factor-lab` 中 `10Y` 周度格存在。历史回测已按灰度实盘起点截断到 `target_date < 2026-06-01`，latest run_id=`91`、monthly_rows=11；2026-06 只由 live metrics 展示。ActivationGate 已用一次性 `activate` token 登记当前 active 版本，已通过 registry 同步进入 `t_scheme_registry`，并已重启 scheduler。
+
+2026-06-12 开始入库日频 V28 方案 `daily_5y_2_v28`（对应外部 `5y_2`，因 scheme_id 规范采用平台名）。当前已完成代码侧实现并保持 `status: paused`：adapter 实盘语义为 `predict_date=signal_date=T+1`、`feature_date/anchor_date=T`（上一交易日），`target_date=T+5`；回测 runner 语义为 `predict_date=anchor_date=T`，并过滤 `target_date >= 2026-06-01`，避免把灰度实盘目标期混入历史回测。方案声明 `input_spec.auxiliary_inputs`，InputGate 会构建 daily/weekly/monthly 三类 artifact；active core 只消费原 V28 代码白名单中的 `WEEKLY_COLS` / `MONTHLY_COLS`，避免把 artifact 全量列误引入特征空间。已归档外部原始源码到 `schemes/daily_5y_2_v28/core/legacy_*.py.txt`。当前验证状态：StaticGate/InputGate/UnitGate/DryRunGate/BacktestGate 均通过；DryRunGate 样本为 predict_date=`2026-06-10`、feature_date=`2026-06-09`、target_date=`2026-06-16`、direction=`-1`，所有受保护表 delta=0；BacktestGate no-persist 440 行、22 个月度指标，并自举 `reports/refactor_baseline/daily_5y_2_v28/backtest_no_persist.json`。阻塞项：CompareGate 未通过，外部 historical source `predict_5y_2_v28_final_predictions.csv` 来自无 weekly/monthly 输入的运行（日志为 `Weekly cols: 0, Monthly cols: 0`），而当前平台方案按 Phase 1 设计使用 weekly/monthly auxiliary；轻量 CompareGate 证据为 original/current 各 440 行、missing/extra=0、direction_match_rate=`0.9022727272727272`、max_confidence_abs_diff=`1.0`。外部 May 2026 patched run 则确认为 weekly/monthly 输入（日志为 `Weekly cols: 10, Monthly cols: 7`），因此需要在继续激活前确定 `5y_2` 的正式 benchmark 口径：历史无辅助复现、还是按有辅助输入重新生成 source benchmark。
 
 旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已于 2026-06-09 退役。
 
