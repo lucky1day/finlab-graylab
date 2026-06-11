@@ -22,45 +22,61 @@ class InputGate(Gate):
         frequency = str(config.get("frequency", "")).strip()
         required_columns = [str(item) for item in input_spec.get("required_columns", [])]
         expected_data_version = str(input_spec.get("data_version", "") or "")
+        aux_specs = input_spec.get("auxiliary_inputs")
+        auxiliary_inputs = aux_specs if isinstance(aux_specs, list) else []
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else None
         try:
             artifact = self._build_artifact(ctx, frequency, engine)
+            auxiliary_results = self._build_auxiliary_artifacts(ctx, auxiliary_inputs, engine)
         finally:
             if engine is not None and hasattr(engine, "dispose"):
                 engine.dispose()
 
-        artifact_columns = list(getattr(artifact, "columns", []))
-        missing_required = [col for col in required_columns if col not in artifact_columns]
-        quality_flags = dict(getattr(artifact, "quality_flags", {}) or {})
-        quality_missing = quality_flags.get("missing_required_cols", quality_flags.get("missing_required_columns", []))
-        missing_required_cols = sorted(set(missing_required) | {str(col) for col in (quality_missing or [])})
-        date_coverage = getattr(artifact, "date_coverage", {}) or {}
-        source = str(getattr(artifact, "source", "") or "")
-        data_version = str(getattr(artifact, "data_version", "") or "")
-
         errors: list[str] = []
-        if missing_required_cols:
-            errors.append(f"missing required input columns: {missing_required_cols}")
-        if not date_coverage or date_coverage.get("start") is None or date_coverage.get("end") is None:
-            errors.append("input artifact date_coverage must include start and end")
-        if not source.startswith("shared_data_service_"):
-            errors.append(f"input artifact source must come from shared data service: {source}")
-        if expected_data_version and data_version != expected_data_version:
-            errors.append(f"input artifact data_version mismatch: expected {expected_data_version}, got {data_version}")
+        primary = self._artifact_validation(
+            artifact,
+            required_columns=required_columns,
+            expected_data_version=expected_data_version,
+        )
+        errors.extend(primary["errors"])
+
+        auxiliary_evidence: list[dict[str, Any]] = []
+        for spec, aux_artifact, build_error in auxiliary_results:
+            aux_frequency = str(spec.get("frequency", "") or "")
+            if build_error is not None:
+                errors.append(build_error)
+                auxiliary_evidence.append(
+                    {
+                        "frequency": aux_frequency,
+                        "error": build_error,
+                    }
+                )
+                continue
+            aux_required = [str(item) for item in spec.get("required_columns", [])]
+            aux_expected_data_version = str(spec.get("data_version", "") or "")
+            aux_validation = self._artifact_validation(
+                aux_artifact,
+                required_columns=aux_required,
+                expected_data_version=aux_expected_data_version,
+                error_prefix=f"auxiliary input ({aux_frequency}) ",
+            )
+            errors.extend(aux_validation["errors"])
+            auxiliary_evidence.append(self._artifact_evidence(aux_frequency, aux_artifact, aux_validation))
 
         evidence = [
             Evidence("frequency", frequency),
             Evidence("input_artifact_path", str(getattr(artifact, "path", ""))),
-            Evidence("source", source),
-            Evidence("data_version", data_version),
+            Evidence("source", primary["source"]),
+            Evidence("data_version", primary["data_version"]),
             Evidence("row_count", int(getattr(artifact, "row_count", 0))),
             Evidence("column_count", int(getattr(artifact, "column_count", 0))),
-            Evidence("columns", artifact_columns),
+            Evidence("columns", primary["columns"]),
             Evidence("required_columns", required_columns),
-            Evidence("date_coverage", date_coverage),
-            Evidence("quality_flags", quality_flags),
-            Evidence("missing_required_cols", missing_required_cols),
+            Evidence("date_coverage", primary["date_coverage"]),
+            Evidence("quality_flags", primary["quality_flags"]),
+            Evidence("missing_required_cols", primary["missing_required_cols"]),
+            Evidence("auxiliary_input_artifacts", auxiliary_evidence),
         ]
         finished_at = utc_now()
         status = GateStatus.PASSED if not errors else GateStatus.FAILED
@@ -82,8 +98,7 @@ class InputGate(Gate):
                 engine=engine,
             )
         if frequency == "daily":
-            end_date = ctx.predict_date
-            start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
+            start_date, end_date = _daily_window(ctx.predict_date)
             return build_daily_input_artifact(
                 scheme_id=ctx.scheme_id,
                 predict_date=ctx.predict_date,
@@ -92,6 +107,107 @@ class InputGate(Gate):
                 engine=engine,
             )
         raise ValueError(f"unsupported frequency for InputGate: {frequency}")
+
+    def _build_auxiliary_artifacts(
+        self,
+        ctx: GateContext,
+        aux_specs: list,
+        engine: Any,
+    ) -> list[tuple[dict, Any, str | None]]:
+        results: list[tuple[dict, Any, str | None]] = []
+        for item in aux_specs:
+            spec = item if isinstance(item, dict) else {}
+            frequency = str(spec.get("frequency", "") or "")
+            try:
+                if frequency == "daily":
+                    start_date, end_date = _daily_window(ctx.predict_date)
+                    artifact = build_daily_input_artifact(
+                        scheme_id=ctx.scheme_id,
+                        predict_date=ctx.predict_date,
+                        start_date=start_date,
+                        end_date=end_date,
+                        engine=engine,
+                    )
+                elif frequency == "weekly":
+                    artifact = build_weekly_input_artifact(
+                        scheme_id=ctx.scheme_id,
+                        predict_date=ctx.predict_date,
+                        engine=engine,
+                    )
+                elif frequency == "monthly":
+                    start_date, end_date = _daily_window(ctx.predict_date)
+                    artifact = build_monthly_input_artifact(
+                        scheme_id=ctx.scheme_id,
+                        predict_date=ctx.predict_date,
+                        start_date=start_date,
+                        end_date=end_date,
+                        engine=engine,
+                    )
+                else:
+                    raise ValueError(f"unsupported auxiliary input frequency: {frequency}")
+            except Exception as exc:  # noqa: BLE001 - gate evidence should capture build failures.
+                results.append((spec, None, f"auxiliary input ({frequency}) build failed: {exc}"))
+            else:
+                results.append((spec, artifact, None))
+        return results
+
+    def _artifact_validation(
+        self,
+        artifact: Any,
+        *,
+        required_columns: list[str],
+        expected_data_version: str,
+        error_prefix: str = "",
+    ) -> dict[str, Any]:
+        artifact_columns = list(getattr(artifact, "columns", []))
+        missing_required = [col for col in required_columns if col not in artifact_columns]
+        quality_flags = dict(getattr(artifact, "quality_flags", {}) or {})
+        quality_missing = quality_flags.get("missing_required_cols", quality_flags.get("missing_required_columns", []))
+        missing_required_cols = sorted(set(missing_required) | {str(col) for col in (quality_missing or [])})
+        date_coverage = getattr(artifact, "date_coverage", {}) or {}
+        source = str(getattr(artifact, "source", "") or "")
+        data_version = str(getattr(artifact, "data_version", "") or "")
+
+        errors: list[str] = []
+        if missing_required_cols:
+            errors.append(f"{error_prefix}missing required input columns: {missing_required_cols}")
+        if not date_coverage or date_coverage.get("start") is None or date_coverage.get("end") is None:
+            errors.append(f"{error_prefix}input artifact date_coverage must include start and end")
+        if not source.startswith("shared_data_service_"):
+            errors.append(f"{error_prefix}input artifact source must come from shared data service: {source}")
+        if expected_data_version and data_version != expected_data_version:
+            errors.append(
+                f"{error_prefix}input artifact data_version mismatch: "
+                f"expected {expected_data_version}, got {data_version}"
+            )
+
+        return {
+            "errors": errors,
+            "columns": artifact_columns,
+            "quality_flags": quality_flags,
+            "missing_required_cols": missing_required_cols,
+            "date_coverage": date_coverage,
+            "source": source,
+            "data_version": data_version,
+        }
+
+    def _artifact_evidence(self, frequency: str, artifact: Any, validation: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "frequency": frequency,
+            "path": str(getattr(artifact, "path", "")),
+            "source": validation["source"],
+            "data_version": validation["data_version"],
+            "row_count": int(getattr(artifact, "row_count", 0)),
+            "column_count": int(getattr(artifact, "column_count", 0)),
+            "date_coverage": validation["date_coverage"],
+            "missing_required_cols": validation["missing_required_cols"],
+        }
+
+
+def _daily_window(predict_date: str) -> tuple[str, str]:
+    end_date = predict_date
+    start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
+    return start_date, end_date
 
 
 def build_daily_input_artifact(**kwargs):
@@ -102,5 +218,11 @@ def build_daily_input_artifact(**kwargs):
 
 def build_weekly_input_artifact(**kwargs):
     from shared.input_artifacts import build_weekly_input_artifact as builder
+
+    return builder(**kwargs)
+
+
+def build_monthly_input_artifact(**kwargs):
+    from shared.input_artifacts import build_monthly_input_artifact as builder
 
     return builder(**kwargs)

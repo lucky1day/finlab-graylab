@@ -60,7 +60,7 @@ bond-factor-lab/
 |------|------|----------|
 | `harness.contracts` | 校验 `config.yaml`、目录结构、`predict.run()` 签名、`PredictionRecord` 字段 | 不运行算法、不写库 |
 | `harness.import_audit` | 静态扫描危险导入和绕路调用 | 不自动改代码 |
-| `harness.input_gate` | 调用公共输入层生成 artifact，验证列、日期、week 覆盖和 source | 不直接调用源表写入 |
+| `harness.input_gate` | 调用公共输入层生成主 artifact 和 `input_spec.auxiliary_inputs` 辅助 artifact，验证列、日期/month/week 覆盖、source 和 data_version，并在 `auxiliary_input_artifacts` 留证 | 不直接调用源表写入 |
 | `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表 | 不调用 `scheduler.executor` |
 | `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告 | 未授权不落 `t_backtest_*` |
 | `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护 | 不批量执行所有 active 方案 |
@@ -139,7 +139,7 @@ python -m harness.cli check \
 每个新增方案合入前，至少保留以下证据:
 
 - 静态检查结论: 目录、命名、接口、危险导入全部通过。
-- 输入 artifact 结论: frequency、path、source、行列规模、日期/week 覆盖。
+- 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
 - 回测结论: `--no-persist` summary、样本数、准确率、月度分布。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。

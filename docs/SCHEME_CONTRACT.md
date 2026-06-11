@@ -24,13 +24,15 @@
 | `schedule.timezone` | str | ➖ | 默认 `Asia/Shanghai`，合法时区 |
 | `entry_point` | str | ➖ | 默认 `predict.run`，必须 `== predict.run` |
 | `status` | str | ✅ | ∈ `{active, paused}`（新方案先 `paused`） |
-| `input_spec.data_version` | str | ✅(新) | 对应 `InputArtifact.data_version`，如 `shared_data_service_daily.v1` / `shared_data_service_weekly.v1`。**同时约束 live adapter 与 backtest runner**：两者产出的 `InputArtifact.data_version` 必须等于本字段，保证历史回测与实盘预测同一数据口径（见 §7 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)） |
+| `input_spec.data_version` | str | ✅(新) | 对应主输入 `InputArtifact.data_version`，如 `shared_data_service_daily.v1` / `shared_data_service_weekly.v1` / `shared_data_service_monthly.v1`。**同时约束 live adapter 与 backtest runner**：两者产出的主 `InputArtifact.data_version` 必须等于本字段，保证历史回测与实盘预测同一数据口径（见 §7 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)） |
 | `input_spec.required_columns` | list[str] | ✅(新) | InputGate 据此校验列覆盖 |
 | `input_spec.weekly_variant` | str | `frequency==weekly` 时✅(新) | 对应 `data_service.weekly_variant`，如 `unified` / `wind_export_0529` |
+| `input_spec.auxiliary_inputs` | list[map] | ➖ | 辅助输入声明。每项为 `{frequency, data_version, required_columns}`；`frequency ∈ {daily, weekly, monthly}`，不得等于方案主 `frequency`，同一方案内不得重复。InputGate 对每项执行与主输入相同的 source / data_version / required_columns / coverage 校验 |
 | `target_rule` | str | `frequency==weekly` 时✅(新) | 目标日语义（如 `next_week_last_trading_day_vs_current_week`） |
 | `backtest.runner` | str | ➖(新) | `backtests/{scheme_id}_reproduction.py` 模块名；参与历史排行时必填 |
 
 > 标注「新」的字段是本设计**新增的必填项**——让 harness 无需读算法即可知道输入口径、列要求、目标语义。现有方案在数据层重构阶段补齐这些字段。
+> `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
 
 ```python
 # harness/contracts/config_schema.py（设计签名）

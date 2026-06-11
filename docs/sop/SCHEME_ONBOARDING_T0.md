@@ -47,6 +47,8 @@
 1. **输入单点**：方案 adapter 和 backtest runner 只能通过 `shared.input_artifacts` 取输入。
    - daily 用 `build_daily_input_artifact()`。
    - weekly 用 `build_weekly_input_artifact()`。
+   - monthly 用 `build_monthly_input_artifact()`。
+   - daily 方案如果依赖 weekly/monthly 辅助数据，必须在 `config.yaml` 的 `input_spec.auxiliary_inputs` 声明辅助频率、data_version 和 required_columns；adapter/backtest runner 仍只能通过 `shared.input_artifacts` 构造输入，禁止自拼 DB 输入或读取外部 CSV。
 2. **写库单点**：实盘预测只通过 `scheduler.executor` / `scheduler.repository` 写库；回测只通过 `backtests.repository` 写库。
 3. **core 纯净**：`schemes/{scheme_id}/core/` 不访问 DB、不写库、不跨方案 import、不调用调度器。
 
@@ -71,7 +73,7 @@
 | 项 | daily | weekly |
 |----|-------|--------|
 | `horizon` | `1` 或 `5` | 当前用 `6` |
-| 输入入口 | `build_daily_input_artifact()` | `build_weekly_input_artifact()` |
+| 输入入口 | `build_daily_input_artifact()`；如依赖 weekly/monthly，声明 `input_spec.auxiliary_inputs` 后再调用对应 artifact builder | `build_weekly_input_artifact()` |
 | 日期来源 | 交易日历 / 源数据日期 | `week_id` 必须来自 `api_wind_date`，经 `shared.calendar_service` |
 | target 规则 | 按 T+N 目标交易日 | `feature_week_id` 的下一实际 DB 周 `target_week_id`，目标日为该周最后交易日 |
 | 禁止项 | 用 `predict_date` 做展示月 | 任何 `*_to_friday` / `*_to_monday` / 计算型 week_id 作为实盘或回测对齐依据 |
@@ -130,7 +132,7 @@ benchmark CSV 至少包含 `predict_date/tenor/direction/confidence`；周度方
 开始写代码前，确认：
 
 - [ ] 方案是新增 scheme，不是平台框架改造。
-- [ ] 已选 daily / weekly 频率，并知道对应输入入口。
+- [ ] 已选 daily / weekly 频率，并知道对应输入入口；如有 weekly/monthly 辅助输入，已声明 `input_spec.auxiliary_inputs`。
 - [ ] `target_date` / `predict_date` 语义已写清。
 - [ ] 周度方案已明确 DB 周历、target week、`end_week` 规则。
 - [ ] 原始算法文件和 source benchmark 来源已定位。

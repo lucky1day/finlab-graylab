@@ -77,6 +77,43 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
             weekly_variant = input_spec.get("weekly_variant")
             if not isinstance(weekly_variant, str) or not weekly_variant.strip():
                 errors.append("input_spec.weekly_variant is required for weekly schemes")
+        auxiliary_inputs = input_spec.get("auxiliary_inputs")
+        if auxiliary_inputs is not None:
+            if not isinstance(auxiliary_inputs, list) or not auxiliary_inputs:
+                errors.append("input_spec.auxiliary_inputs must be a non-empty list when present")
+            else:
+                seen_frequencies: set[str] = set()
+                for idx, item in enumerate(auxiliary_inputs):
+                    if not isinstance(item, dict):
+                        errors.append(f"input_spec.auxiliary_inputs[{idx}] must be a mapping")
+                        continue
+                    aux_frequency = item.get("frequency")
+                    if aux_frequency not in ALLOWED_FREQUENCIES:
+                        errors.append(
+                            f"input_spec.auxiliary_inputs[{idx}].frequency must be one of daily, weekly, monthly"
+                        )
+                    else:
+                        if aux_frequency == frequency:
+                            errors.append(
+                                f"input_spec.auxiliary_inputs[{idx}].frequency must differ from scheme frequency"
+                            )
+                        if aux_frequency in seen_frequencies:
+                            errors.append(f"input_spec.auxiliary_inputs contain duplicate frequency: {aux_frequency}")
+                        seen_frequencies.add(aux_frequency)
+
+                    aux_data_version = item.get("data_version")
+                    if not isinstance(aux_data_version, str) or not aux_data_version.strip():
+                        errors.append(f"input_spec.auxiliary_inputs[{idx}].data_version must be a non-empty string")
+
+                    aux_required = item.get("required_columns")
+                    if (
+                        not isinstance(aux_required, list)
+                        or not aux_required
+                        or not all(isinstance(col, str) and col for col in aux_required)
+                    ):
+                        errors.append(
+                            f"input_spec.auxiliary_inputs[{idx}].required_columns must be a non-empty list of strings"
+                        )
 
     if frequency == "weekly":
         target_rule = raw.get("target_rule")

@@ -25,6 +25,41 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(path.name, "daily_output_2026-06-05.csv")
         self.assertEqual(path.parent.name, "daily_scheme_bad")
 
+    def test_input_artifact_path_prefix_mapping_per_frequency(self) -> None:
+        from shared.input_artifacts import input_artifact_path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            daily = input_artifact_path(
+                scheme_id="demo",
+                frequency="daily",
+                predict_date="2026-06-05",
+                output_root=root,
+            )
+            weekly = input_artifact_path(
+                scheme_id="demo",
+                frequency="weekly",
+                predict_date="2026-06-05",
+                output_root=root,
+            )
+            monthly = input_artifact_path(
+                scheme_id="demo",
+                frequency="monthly",
+                predict_date="2026-06-05",
+                output_root=root,
+            )
+
+        self.assertEqual(daily.name, "daily_output_2026-06-05.csv")
+        self.assertEqual(weekly.name, "weekly_output_2026-06-05.csv")
+        self.assertEqual(monthly.name, "monthly_output_2026-06-05.csv")
+        with self.assertRaises(ValueError):
+            input_artifact_path(
+                scheme_id="demo",
+                frequency="quarterly",
+                predict_date="2026-06-05",
+                output_root=Path("/tmp"),
+            )
+
     def test_daily_input_artifact_delegates_to_unified_data_service_file(self) -> None:
         from shared.input_artifacts import build_daily_input_artifact
 
@@ -133,6 +168,66 @@ class InputArtifactTests(unittest.TestCase):
         self.assertIs(kwargs["engine"], engine)
         self.assertIs(data_service.save_weekly_output.call_args.args[0], weekly_df)
         self.assertEqual(data_service.save_weekly_output.call_args.args[1], artifact.path)
+
+    def test_monthly_input_artifact_delegates_to_unified_data_service_file(self) -> None:
+        from shared.input_artifacts import build_monthly_input_artifact
+
+        monthly_df = pd.DataFrame(
+            {
+                "month_id": ["202504", "202505", "bad", "2025", "202506.0"],
+                "M0000001": ["1.1", "1.2", "9.9", "8.8", "1.3"],
+            }
+        )
+        engine = object()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch("shared.input_artifacts.data_service", create=True) as data_service:
+                data_service.build_monthly_output_from_db.return_value = monthly_df
+                data_service.save_monthly_output.side_effect = lambda df, path: df.to_csv(path, index=False)
+                artifact = build_monthly_input_artifact(
+                    scheme_id="demo_monthly_scheme",
+                    predict_date="2026-06-05",
+                    start_date="2019-06-10",
+                    end_date="2026-06-05",
+                    engine=engine,
+                    output_root=root,
+                )
+                self.assertTrue(artifact.path.exists())
+                expected_content_hash = hashlib.sha256(artifact.path.read_bytes()).hexdigest()
+
+        self.assertEqual(artifact.scheme_id, "demo_monthly_scheme")
+        self.assertEqual(artifact.frequency, "monthly")
+        self.assertEqual(artifact.source, "shared_data_service_monthly")
+        self.assertEqual(artifact.data_version, "shared_data_service_monthly.v1")
+        self.assertEqual(artifact.content_hash, expected_content_hash)
+        self.assertEqual(artifact.source_watermark, "202506")
+        self.assertEqual(len(artifact.schema_hash), 64)
+        self.assertEqual(len(artifact.artifact_id), 64)
+        self.assertEqual(artifact.row_count, 3)
+        self.assertEqual(artifact.column_count, 2)
+        self.assertEqual(artifact.columns, ["month_id", "M0000001"])
+        self.assertEqual(
+            artifact.date_coverage,
+            {"field": "month_id", "start": "202504", "end": "202506"},
+        )
+        self.assertEqual(
+            artifact.quality_flags,
+            {
+                "missing_required_columns": [],
+                "empty_frame": False,
+                "null_coverage_rows": 0,
+                "duplicate_coverage_values": 0,
+            },
+        )
+        self.assertTrue(str(artifact.path).endswith("demo_monthly_scheme/monthly_output_2026-06-05.csv"))
+        self.assertEqual(artifact.dataframe["month_id"].tolist(), ["202504", "202505", "202506"])
+        self.assertEqual(artifact.dataframe["M0000001"].tolist(), [1.1, 1.2, 1.3])
+        kwargs = data_service.build_monthly_output_from_db.call_args.kwargs
+        self.assertEqual(kwargs["start_date"], "2019-06-10")
+        self.assertEqual(kwargs["end_date"], "2026-06-05")
+        self.assertIs(kwargs["engine"], engine)
+        self.assertIs(data_service.save_monthly_output.call_args.args[0], monthly_df)
+        self.assertEqual(data_service.save_monthly_output.call_args.args[1], artifact.path)
 
     def test_weekly_input_artifact_signature_removes_legacy_flags(self) -> None:
         from shared.input_artifacts import build_weekly_input_artifact

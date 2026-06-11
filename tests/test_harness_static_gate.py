@@ -5,6 +5,7 @@ import io
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -196,7 +197,171 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(evidence["row_count"], 3)
         self.assertEqual(evidence["date_coverage"], {"field": "date", "start": "2026-06-01", "end": "2026-06-03"})
         self.assertEqual(evidence["missing_required_cols"], [])
+        self.assertEqual(evidence["auxiliary_input_artifacts"], [])
         self.assertEqual(build.call_args.kwargs["scheme_id"], "demo_daily")
+
+    def test_input_gate_builds_auxiliary_inputs_with_evidence(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.input_gate import InputGate
+
+        primary = SimpleNamespace(
+            scheme_id="demo_daily",
+            frequency="daily",
+            path=Path("/tmp/daily_output.csv"),
+            dataframe=None,
+            source="shared_data_service_daily",
+            data_version="shared_data_service_daily.v1",
+            row_count=3,
+            column_count=2,
+            columns=["date", "TB0YWI0C"],
+            date_coverage={"field": "date", "start": "2026-06-01", "end": "2026-06-03"},
+            quality_flags={"missing_required_columns": []},
+        )
+        weekly = SimpleNamespace(
+            scheme_id="demo_daily",
+            frequency="weekly",
+            path=Path("/tmp/weekly_output.csv"),
+            dataframe=None,
+            source="shared_data_service_weekly",
+            data_version="shared_data_service_weekly.v1",
+            row_count=2,
+            column_count=2,
+            columns=["week_id", "TB0YWI3C"],
+            date_coverage={"field": "week_id", "start": 202621, "end": 202622},
+            quality_flags={"missing_required_columns": []},
+        )
+        monthly = SimpleNamespace(
+            scheme_id="demo_daily",
+            frequency="monthly",
+            path=Path("/tmp/monthly_output.csv"),
+            dataframe=None,
+            source="shared_data_service_monthly",
+            data_version="shared_data_service_monthly.v1",
+            row_count=2,
+            column_count=2,
+            columns=["month_id", "M0000001"],
+            date_coverage={"field": "month_id", "start": "202504", "end": "202505"},
+            quality_flags={"missing_required_columns": []},
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(
+                project_root,
+                scheme_id="demo_daily",
+                extra_config_lines=[
+                    "  auxiliary_inputs:",
+                    "    - frequency: weekly",
+                    "      data_version: shared_data_service_weekly.v1",
+                    '      required_columns: ["week_id", "TB0YWI3C"]',
+                    "    - frequency: monthly",
+                    "      data_version: shared_data_service_monthly.v1",
+                    '      required_columns: ["month_id", "M0000001"]',
+                ],
+            )
+            with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=primary):
+                with patch("harness.gates.input_gate.build_weekly_input_artifact", return_value=weekly) as build_weekly:
+                    with patch(
+                        "harness.gates.input_gate.build_monthly_input_artifact",
+                        return_value=monthly,
+                    ) as build_monthly:
+                        result = InputGate().run(
+                            GateContext(
+                                scheme_id="demo_daily",
+                                predict_date="2026-06-03",
+                                project_root=project_root,
+                                report_dir=project_root / "reports",
+                            )
+                        )
+
+        self.assertTrue(result.passed, result.errors)
+        evidence = _evidence_dict(result)
+        self.assertEqual(len(evidence["auxiliary_input_artifacts"]), 2)
+        self.assertEqual(evidence["auxiliary_input_artifacts"][0]["frequency"], "weekly")
+        self.assertEqual(evidence["auxiliary_input_artifacts"][1]["frequency"], "monthly")
+        self.assertNotIn("start_week", build_weekly.call_args.kwargs)
+        self.assertNotIn("end_week", build_weekly.call_args.kwargs)
+        expected_start = (datetime.strptime("2026-06-03", "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
+        self.assertEqual(build_monthly.call_args.kwargs["start_date"], expected_start)
+        self.assertEqual(build_monthly.call_args.kwargs["end_date"], "2026-06-03")
+
+    def test_input_gate_merges_all_auxiliary_validation_failures(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.input_gate import InputGate
+
+        primary = SimpleNamespace(
+            scheme_id="demo_daily",
+            frequency="daily",
+            path=Path("/tmp/daily_output.csv"),
+            dataframe=None,
+            source="shared_data_service_daily",
+            data_version="shared_data_service_daily.v1",
+            row_count=3,
+            column_count=2,
+            columns=["date", "TB0YWI0C"],
+            date_coverage={"field": "date", "start": "2026-06-01", "end": "2026-06-03"},
+            quality_flags={"missing_required_columns": []},
+        )
+        weekly = SimpleNamespace(
+            scheme_id="demo_daily",
+            frequency="weekly",
+            path=Path("/tmp/weekly_output.csv"),
+            dataframe=None,
+            source="shared_data_service_weekly",
+            data_version="wrong_weekly.v1",
+            row_count=2,
+            column_count=2,
+            columns=["week_id", "TB0YWI3C"],
+            date_coverage={"field": "week_id", "start": 202621, "end": 202622},
+            quality_flags={"missing_required_columns": []},
+        )
+        monthly = SimpleNamespace(
+            scheme_id="demo_daily",
+            frequency="monthly",
+            path=Path("/tmp/monthly_output.csv"),
+            dataframe=None,
+            source="shared_data_service_monthly",
+            data_version="shared_data_service_monthly.v1",
+            row_count=2,
+            column_count=1,
+            columns=["month_id"],
+            date_coverage={"field": "month_id", "start": "202504", "end": "202505"},
+            quality_flags={"missing_required_columns": []},
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(
+                project_root,
+                scheme_id="demo_daily",
+                extra_config_lines=[
+                    "  auxiliary_inputs:",
+                    "    - frequency: weekly",
+                    "      data_version: shared_data_service_weekly.v1",
+                    '      required_columns: ["week_id", "TB0YWI3C"]',
+                    "    - frequency: monthly",
+                    "      data_version: shared_data_service_monthly.v1",
+                    '      required_columns: ["month_id", "M0000001"]',
+                ],
+            )
+            with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=primary):
+                with patch("harness.gates.input_gate.build_weekly_input_artifact", return_value=weekly):
+                    with patch("harness.gates.input_gate.build_monthly_input_artifact", return_value=monthly):
+                        result = InputGate().run(
+                            GateContext(
+                                scheme_id="demo_daily",
+                                predict_date="2026-06-03",
+                                project_root=project_root,
+                                report_dir=project_root / "reports",
+                            )
+                        )
+
+        self.assertFalse(result.passed)
+        joined = "\n".join(result.errors)
+        self.assertIn(
+            "auxiliary input (weekly) input artifact data_version mismatch: "
+            "expected shared_data_service_weekly.v1, got wrong_weekly.v1",
+            joined,
+        )
+        self.assertIn("auxiliary input (monthly) missing required input columns: ['M0000001']", joined)
 
     def test_unit_gate_runs_scheme_selector_tests(self) -> None:
         from harness.context import GateContext
@@ -613,7 +778,7 @@ def _evidence_dict(result) -> dict:
     return {item.key: item.value for item in result.evidence}
 
 
-def _write_minimal_scheme(project_root: Path, *, scheme_id: str) -> Path:
+def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_lines: list[str] | None = None) -> Path:
     scheme_dir = project_root / "schemes" / scheme_id
     (scheme_dir / "core").mkdir(parents=True)
     (scheme_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -630,25 +795,23 @@ def _write_minimal_scheme(project_root: Path, *, scheme_id: str) -> Path:
         ),
         encoding="utf-8",
     )
-    (scheme_dir / "config.yaml").write_text(
-        "\n".join(
-            [
-                f"scheme_id: {scheme_id}",
-                'name: "Demo"',
-                'description: "Demo scheme"',
-                "horizon: 1",
-                'tenors: ["10Y"]',
-                "frequency: daily",
-                "schedule:",
-                '  cron: "25 9 * * 1-5"',
-                '  timezone: "Asia/Shanghai"',
-                "entry_point: predict.run",
-                "status: paused",
-                "input_spec:",
-                "  data_version: shared_data_service_daily.v1",
-                '  required_columns: ["date", "TB0YWI0C"]',
-            ]
-        ),
-        encoding="utf-8",
-    )
+    config_lines = [
+        f"scheme_id: {scheme_id}",
+        'name: "Demo"',
+        'description: "Demo scheme"',
+        "horizon: 1",
+        'tenors: ["10Y"]',
+        "frequency: daily",
+        "schedule:",
+        '  cron: "25 9 * * 1-5"',
+        '  timezone: "Asia/Shanghai"',
+        "entry_point: predict.run",
+        "status: paused",
+        "input_spec:",
+        "  data_version: shared_data_service_daily.v1",
+        '  required_columns: ["date", "TB0YWI0C"]',
+    ]
+    if extra_config_lines:
+        config_lines.extend(extra_config_lines)
+    (scheme_dir / "config.yaml").write_text("\n".join(config_lines), encoding="utf-8")
     return scheme_dir

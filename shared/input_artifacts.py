@@ -15,6 +15,12 @@ from shared.artifact_paths import RUNTIME_INPUT_ROOT, safe_path_part
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 DAILY_DATA_VERSION = "shared_data_service_daily.v1"
 WEEKLY_DATA_VERSION = "shared_data_service_weekly.v1"
+MONTHLY_DATA_VERSION = "shared_data_service_monthly.v1"
+_FREQUENCY_FILE_PREFIXES = {
+    "daily": "daily_output",
+    "weekly": "weekly_output",
+    "monthly": "monthly_output",
+}
 
 
 @dataclass(frozen=True)
@@ -50,7 +56,9 @@ def input_artifact_path(
     """生成统一的输入文件路径。"""
     safe_scheme_id = safe_path_part(scheme_id)
     safe_predict_date = str(predict_date).replace("/", "-").replace(":", "-")
-    prefix = "weekly_output" if frequency == "weekly" else "daily_output"
+    prefix = _FREQUENCY_FILE_PREFIXES.get(str(frequency))
+    if prefix is None:
+        raise ValueError(f"unsupported frequency for input artifact path: {frequency}")
     return Path(output_root) / safe_scheme_id / f"{prefix}_{safe_predict_date}.csv"
 
 
@@ -165,6 +173,58 @@ def build_weekly_input_artifact(
     )
 
 
+def build_monthly_input_artifact(
+    *,
+    scheme_id: str,
+    predict_date: str,
+    start_date: str,
+    end_date: str,
+    engine=None,
+    output_root: str | Path = DEFAULT_OUTPUT_ROOT,
+) -> InputArtifact:
+    """通过月频 data_service 生成输入 CSV，再读回给算法。"""
+    path = input_artifact_path(
+        scheme_id=scheme_id,
+        frequency="monthly",
+        predict_date=predict_date,
+        output_root=output_root,
+    )
+    df = data_service.build_monthly_output_from_db(
+        start_date=start_date,
+        end_date=end_date,
+        engine=engine,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data_service.save_monthly_output(df, path)
+    read_back = _read_monthly_output_csv(path)
+    profile = _dataframe_profile(read_back, coverage_field="month_id", required_columns=("month_id",))
+    content_hash = _file_sha256(path)
+    schema_hash = _schema_hash(read_back)
+    return InputArtifact(
+        scheme_id=scheme_id,
+        frequency="monthly",
+        path=path,
+        dataframe=read_back,
+        source="shared_data_service_monthly",
+        generated_at=_utc_now(),
+        data_version=MONTHLY_DATA_VERSION,
+        artifact_id=_artifact_id(scheme_id, predict_date, content_hash),
+        content_hash=content_hash,
+        schema_hash=schema_hash,
+        source_watermark=_source_watermark(profile),
+        row_count=profile["row_count"],
+        column_count=profile["column_count"],
+        columns=profile["columns"],
+        date_coverage=profile["date_coverage"],
+        quality_flags=profile["quality_flags"],
+        metadata={
+            "start_date": start_date,
+            "end_date": end_date,
+            "predict_date": predict_date,
+        },
+    )
+
+
 def _dataframe_profile(
     df: pd.DataFrame,
     *,
@@ -213,6 +273,12 @@ def _coverage_bounds(values: pd.Series, coverage_field: str) -> tuple[Any, Any]:
         if numeric.empty:
             return None, None
         return int(numeric.min()), int(numeric.max())
+    if coverage_field == "month_id":
+        cleaned = values.dropna().astype(str).str.strip()
+        cleaned = cleaned[cleaned.str.fullmatch(r"\d{6}", na=False)]
+        if cleaned.empty:
+            return None, None
+        return str(cleaned.min()), str(cleaned.max())
     return values.min(), values.max()
 
 
@@ -256,6 +322,20 @@ def _read_daily_output_csv(path: str | Path) -> pd.DataFrame:
     df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
     for col in df.columns:
         if col != "date":
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _read_monthly_output_csv(path: str | Path) -> pd.DataFrame:
+    df = pd.read_csv(path, dtype=str)
+    df.columns = [str(col).strip().lstrip("\ufeff") for col in df.columns]
+    if "month_id" not in df.columns:
+        raise ValueError(f"monthly input artifact missing month_id column: {path}")
+    df["month_id"] = df["month_id"].fillna("").astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    df = df[df["month_id"].str.fullmatch(r"\d{6}", na=False)].copy()
+    df = df.sort_values("month_id").reset_index(drop=True)
+    for col in df.columns:
+        if col != "month_id":
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
