@@ -511,6 +511,35 @@ LIMIT 5;
 
 执行顺序建议：Step 7（回测落库）→ Step 10a（源 vs 入库对比 + benchmark 文件）→ 重跑 `harness onboard --stage all` 确认 CompareGate passed → Step 10（激活）。
 
+**Step 10b（强制，不允许遗漏）：激活后必须回补实盘预测，覆盖 target_date 从灰度起点（2026-06-01）到当前**
+
+> **背景**（2026-06-10 实际遗漏案例）：`weekly_7y_cross_d_overlay_0529` 激活后没有回补实盘预测，导致前端没有"实盘发出起点"分隔线，也缺少 6月6日预测的 06/12"待验证"行。所有方案在前端必须有连续的实盘观察序列，从灰度起点开始。
+
+回补规则：
+
+1. **回补范围**：所有 `target_date >= 2026-06-01`（灰度观察起点）至今应当存在的实盘预测。
+   - 日频方案：每个交易日一条（从 6月1日 或激活日中较早者开始反推 predict_date）。
+   - 周频方案：每个调度周期一条（如周六调度 → 6月6日、6月13日……每周补一条）。
+2. **predict_date 取调度日历上应当发出的日期**（如周度补 6月6日的预测），不允许全部填当前日期。
+3. **执行方式**：用 `scheduler.executor.execute_scheme(cfg, '<predict_date>')` 按时间顺序逐个补跑。例如周度方案补 6月6日：
+
+```bash
+conda run -n bond_factor_lab_service python -c "
+from scheduler.discovery import discover_schemes
+from scheduler.executor import execute_scheme
+schemes = list(discover_schemes())
+cfg = [s for s in schemes if s.scheme_id == '<scheme_id>'][0]
+result = execute_scheme(cfg, '2026-06-06', algo_env='forecast_env')
+print(result)
+"
+```
+
+4. **验收点**：
+   - [ ] DB 中该方案的实盘预测 target_date 连续覆盖 2026-06-01 至今的全部应有周期。
+   - [ ] 前端出现"实盘发出起点"分隔线（前端按第一条实盘 target 月份自动反推：周度=月首日前的周六，日频=第一条 predict_date）。
+   - [ ] 尚无 actuals 的 target 显示"待验证"（参考 5Y 周度方案的 06/12 行）。
+   - [ ] 回补的预测在 `t_scheme_run_log` 有对应运行记录。
+
 ### Step 11: Documentation - 文档留痕
 
 每次新方案合入前，必须更新:
