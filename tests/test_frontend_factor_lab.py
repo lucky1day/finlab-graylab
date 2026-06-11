@@ -148,13 +148,43 @@ class FactorLabRankingTests(unittest.TestCase):
               0,
               metric
             );
+            const weekly7YRowHtml = hooks.renderSchemeRankingRowForTest(
+              {
+                id: "weekly_7y_cross_d_overlay_0529",
+                schemeId: "weekly_7y_cross_d_overlay_0529",
+                name: "0529周度7Y Cross-D叠加 · 7Y国债活跃",
+                deploymentDate: "2026/06/01"
+              },
+              0,
+              metric
+            );
+            const weekly10YRowHtml = hooks.renderSchemeRankingRowForTest(
+              {
+                id: "weekly_10y_d_overlay_0529",
+                schemeId: "weekly_10y_d_overlay_0529",
+                name: "0529周度10Y D-overlay · 10Y国债活跃",
+                deploymentDate: "2026/06/01"
+              },
+              0,
+              metric
+            );
             return {
               rowHtml,
               weeklyRowHtml,
+              weekly7YRowHtml,
+              weekly10YRowHtml,
               deploymentDate: hooks.getSchemeDeploymentDate({}),
               weeklyDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_5y_direct_0529" }),
               weekly7YDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_7y_cross_d_overlay_0529" }),
               weekly10YDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_10y_d_overlay_0529" }),
+              weekly7YDeploymentDateFromSchemeId: hooks.getSchemeDeploymentDate({
+                schemeId: "weekly_7y_cross_d_overlay_0529",
+                deploymentDate: "2026/06/01"
+              }),
+              weekly10YDeploymentDateFromSchemeId: hooks.getSchemeDeploymentDate({
+                schemeId: "weekly_10y_d_overlay_0529",
+                deploymentDate: "2026/06/01"
+              }),
               customDeploymentDate: hooks.getSchemeDeploymentDate({ deployed_at: "2026-06-02" }),
               remark: hooks.getSchemeRemark({ remark: "人工备注" })
             };
@@ -165,10 +195,14 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["weeklyDeploymentDate"], "2026/06/10")
         self.assertEqual(result["weekly7YDeploymentDate"], "2026/06/10")
         self.assertEqual(result["weekly10YDeploymentDate"], "2026/06/10")
+        self.assertEqual(result["weekly7YDeploymentDateFromSchemeId"], "2026/06/10")
+        self.assertEqual(result["weekly10YDeploymentDateFromSchemeId"], "2026/06/10")
         self.assertEqual(result["customDeploymentDate"], "2026/06/02")
         self.assertEqual(result["remark"], "人工备注")
         self.assertIn("2026/06/01", result["rowHtml"])
         self.assertIn("2026/06/10", result["weeklyRowHtml"])
+        self.assertIn("2026/06/10", result["weekly7YRowHtml"])
+        self.assertIn("2026/06/10", result["weekly10YRowHtml"])
         self.assertNotIn("06-10", result["rowHtml"])
         self.assertNotIn("factor-status-pill", result["rowHtml"])
         self.assertNotIn("active", result["rowHtml"])

@@ -328,7 +328,7 @@
   }
 
   function getSchemeDeploymentDate(scheme) {
-    var schemeId = String((scheme && scheme.scheme_id) || "").trim();
+    var schemeId = String((scheme && (scheme.scheme_id || scheme.schemeId || scheme.id)) || "").trim();
     if (schemeId && SCHEME_DEPLOYMENT_DATE_OVERRIDES[schemeId]) {
       return formatDeploymentDate(SCHEME_DEPLOYMENT_DATE_OVERRIDES[schemeId]);
     }
