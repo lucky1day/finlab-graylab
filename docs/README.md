@@ -1,8 +1,8 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-06-10
+**更新日期**: 2026-06-11
 
-> 2026-06-10 文档清理：已实现功能的计划/设计文档已删除，仅保留 8 个参考文档 + 2 个 SOP。
+> 当前文档入口以本文为准。历史评审报告保留原始语境，不作为最新状态来源；最新状态只看 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 ## 架构
 
@@ -28,10 +28,11 @@
 |------|------|
 | [CURRENT_STATUS.md](CURRENT_STATUS.md) | 项目当前状态（单一来源） |
 | [bond_factor_lab_architecture_review.md](bond_factor_lab_architecture_review.md) | 架构评审报告（2026-06-09） |
+| [bond_factor_lab_framework_review_2026-06-10.md](bond_factor_lab_framework_review_2026-06-10.md) | 框架评审报告（2026-06-10，历史审计语境） |
 
 ## 阅读路径
 
-- **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → SCHEME_CONTRACT
+- **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → SCHEME_CONTRACT → CURRENT_STATUS
 - **新增方案** → 先读 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
 - **改 harness** → HARNESS_ARCHITECTURE + 评审报告
 - **了解当前状态** → CURRENT_STATUS

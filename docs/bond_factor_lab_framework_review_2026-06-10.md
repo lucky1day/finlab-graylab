@@ -1,5 +1,7 @@
 # Bond Factor Lab 框架级 Review 报告
 
+> 历史审计快照：本报告保留 2026-06-10 当时的代码证据和评审结论，正文中的 run_id UK、serving pointer 等描述不代表当前实现状态。当前权威状态以 [CURRENT_STATUS.md](CURRENT_STATUS.md)、[SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 和 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 为准。
+
 **评审日期**: 2026-06-10
 **评审对象**: 当前工作区代码（分支 `codex/p1-runner-factorlab-slim`，含未提交改动）
 **评审定位**: 检查当前工程是否能支撑"国债盘前预测方案上生产前的灰度实验室"

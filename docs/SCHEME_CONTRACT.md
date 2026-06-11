@@ -1,8 +1,8 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-06-08
+**更新日期**: 2026-06-11
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
-**边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*`（见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md) §6）按本文落地。
+**边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
 > SOP 仍是人类执行手册；本文是机器契约。两者一致，本文更细、可判定。任何冲突以本文为准并回写 SOP。
 
@@ -24,7 +24,7 @@
 | `schedule.timezone` | str | ➖ | 默认 `Asia/Shanghai`，合法时区 |
 | `entry_point` | str | ➖ | 默认 `predict.run`，必须 `== predict.run` |
 | `status` | str | ✅ | ∈ `{active, paused}`（新方案先 `paused`） |
-| `input_spec.data_version` | str | ✅(新) | 对应 `InputArtifact.data_version`，如 `daily_v1` / `wind_export_0529`。**同时约束 live adapter 与 backtest runner**：两者产出的 `InputArtifact.data_version` 必须等于本字段，保证历史回测与实盘预测同一数据口径（见 §7 与 [SCHEME_INGESTION.md](SCHEME_INGESTION.md) §4 数据口径对齐） |
+| `input_spec.data_version` | str | ✅(新) | 对应 `InputArtifact.data_version`，如 `shared_data_service_daily.v1` / `shared_data_service_weekly.v1`。**同时约束 live adapter 与 backtest runner**：两者产出的 `InputArtifact.data_version` 必须等于本字段，保证历史回测与实盘预测同一数据口径（见 §7 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)） |
 | `input_spec.required_columns` | list[str] | ✅(新) | InputGate 据此校验列覆盖 |
 | `input_spec.weekly_variant` | str | `frequency==weekly` 时✅(新) | 对应 `data_service.weekly_variant`，如 `unified` / `wind_export_0529` |
 | `target_rule` | str | `frequency==weekly` 时✅(新) | 目标日语义（如 `next_week_last_trading_day_vs_current_week`） |
@@ -96,7 +96,7 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 | DataFrame in / 结果对象 out | core 函数签名接收 `pd.DataFrame`，返回算法结果对象 |
 | 零 DB | 非 legacy `core/*.py` 不得 import `sqlalchemy`/`pymysql`，不得 `create_engine`/`read_sql`/`text(` |
 | 零写库 | 不得 import `scheduler.repository`/`scheduler.executor`，不得出现 `INSERT/UPDATE/DELETE/ALTER/DROP` 字面量 |
-| 零跨方案 | 不得 `from schemes.<other_scheme>...` import（见 [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) §1.2 问题 B） |
+| 零跨方案 | 不得 `from schemes.<other_scheme>...` import；跨方案复用只能沉到 `shared/` 公共层，并通过架构评审 |
 | legacy 隔离 | `core/legacy_*.py` 可保留旧代码，但活跃模块不得 import 它 |
 
 危险符号黑名单（`harness/contracts/import_rules.py`）：
@@ -114,17 +114,18 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-06-09：当前在册方案仅 `t1_daily`、`t5_daily`；周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役、代码未实现，如需重启须按 SOP 重新入库。
+状态最近更新 2026-06-11：当前在册 active 方案为 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`；旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役。
 
-| 契约项 | `t1_daily` | `t5_daily` |
-|--------|:----------:|:----------:|
-| `config.yaml` 基础字段 | ✅ | ✅ |
-| 新增 `input_spec.*` / `target_rule` | 待补(S3) | 待补(S3) |
-| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ |
-| core 零 DB | ✅ | ✅ |
-| extra 必填键 | ✅ | ✅ |
+| 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` |
+|--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|
+| `config.yaml` 基础字段 | ✅ | ✅ | ✅ | ✅ |
+| `input_spec.*` | ✅ | ✅ | ✅ | ✅ |
+| `target_rule` | 不适用 | 不适用 | ✅ | ✅ |
+| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ | ✅ | ✅ |
+| core 零 DB | ✅ | ✅ | ✅ | ✅ |
+| extra 必填键 | ✅ | ✅ | ✅ | ✅ |
 
-> 「`input_spec.*` / `target_rule`」字段在 S3 强化 `InputArtifact` 时随 `config.yaml` 补齐。补齐后 StaticGate 可对全部方案持续守护。
+上述状态由 StaticGate / UnitGate / DryRunGate 持续守护；新增方案开工前先读 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)。
 
 ---
 

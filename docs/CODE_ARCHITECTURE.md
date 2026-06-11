@@ -5,7 +5,7 @@
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
 - 本文 = **代码架构**（包/模块/依赖方向/调用图/扩展点）。二者互补，不重叠。
-- [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [HARNESS_DESIGN.md](HARNESS_DESIGN.md) harness 实现 → [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md) 数据层 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 方案契约。本文把它们统一到一张依赖图上。
+- [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 方案契约 → [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 新增方案 T0 范式。本文把它们统一到一张依赖图上。
 
 > 本文为设计文档，不含实现代码。所示"现状违规"基于真实 import 扫描（2026-06-08），是数据层重构与 StaticGate 的目标。
 
@@ -112,13 +112,13 @@ tests/         → 任意（验证需要）
 
 ## 4. 现状依赖与违规
 
-初次扫描（2026-06-08）发现 4 处违规。随数据层重构推进，清零进度如下表「状态」列（最近更新 2026-06-08，S2 完成后）：
+初次扫描（2026-06-08）发现 4 处违规。随数据层重构推进，清零进度如下表「状态」列（最近更新 2026-06-11）：
 
 | # | 状态 | 违规边 | 位置 | 违反规则 | 处置（归属文档） |
 |---|------|--------|------|----------|------------------|
-| V1 | ✅ 已清零(S1) | 当时的周频 adapter 间跨方案 import `read_source_week_id_for_date`（相关周频方案已退役/代码未实现） | 跨方案 import | §3.2 跨方案禁止 | S1：adapter 改用 `shared.calendar_service.week_id_for_date`（该批周频方案现已退役，仅 `t1_daily` / `t5_daily` 在库） |
-| V2 | ✅ 已清零(S2) | 当时周频 10Y 方案 `core/weekly_data_service.py → shared.data_service`（含 `create_sqlalchemy_engine`）（该周频方案已退役/代码未实现） | core 连库 | §3.2 ✗ⁱ core 零 DB | S2：该文件已确认为死代码并删除（连同 `weekly_output_0529_columns.json` 与对应测试） |
-| V3 | ◑ 部分(S1) | 当时周频 adapter 直接取 `shared.data_service.create_sqlalchemy_engine` 传给日历查询（相关周频方案已退役/代码未实现） | adapter 直接取引擎传给日历查询 | §3.1 过渡期容忍，目标消除 | S1 已让日历查询走 `calendar_service`；该批周频 adapter 已随方案退役一并消失 |
+| V1 | ✅ 已清零(S1) | 当时的旧周频 adapter 间跨方案 import `read_source_week_id_for_date` | 跨方案 import | §3.2 跨方案禁止 | S1：adapter 改用 `shared.calendar_service.week_id_for_date`；旧周频批次已退役，当前 active 周频 5Y/7Y 已按日历单点重新入库 |
+| V2 | ✅ 已清零(S2) | 当时旧周频 10Y 方案 `core/weekly_data_service.py → shared.data_service`（含 `create_sqlalchemy_engine`） | core 连库 | §3.2 ✗ⁱ core 零 DB | S2：该文件已确认为死代码并删除（连同 `weekly_output_0529_columns.json` 与对应测试） |
+| V3 | ✅ 已清零(S1) | 当时旧周频 adapter 直接取 `shared.data_service.create_sqlalchemy_engine` 传给日历查询 | adapter 直接取引擎传给日历查询 | §3.1 过渡期容忍，目标消除 | S1 已让日历查询走 `calendar_service`；当前 active 周频 5Y/7Y adapter 不直接取 DB engine |
 | V4 | ✅ 已清零(S3) | `backtests/daily_0529_reproduction.py → shared.data_service.build_daily_output_from_db` | 回测绕过 `input_artifacts` 拼日频输入 | §3.3 输入单点 | S3：daily backtest runner 已改走 `build_daily_input_artifact` |
 
 合规的关键边（已正确）：
@@ -168,7 +168,7 @@ python -m harness onboard {scheme_id} --stage all
   授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
 ```
 
-详见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md)。
+详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
 ### 5.3 历史复现路径
 
@@ -258,7 +258,7 @@ schemes/{scheme_id}/
 
 ## 9. 强约束如何被强制（依赖规则 → StaticGate）
 
-代码架构的每条规则都映射到一条可机器执行的 StaticGate 判定（见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md) §6 / [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) §4）：
+代码架构的每条规则都映射到一条可机器执行的 StaticGate 判定（见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) / [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) §4）：
 
 | 架构规则 | StaticGate 判定 |
 |----------|-----------------|
@@ -275,17 +275,17 @@ schemes/{scheme_id}/
 
 ## 10. 演进路线
 
-> 本节是方向；可执行、可验收、可回滚的分阶段执行计划（S0–S8 已完成，归档）见 [archive/ARCH_EXECUTION_PLAN.md](archive/ARCH_EXECUTION_PLAN.md)。最新落地状态见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
+> 本节是方向；S0–S8 已完成，最新落地状态见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 ```
 现状（依赖违规已清零，harness 已落地）
   │
-  ① 数据层重构（DATA_LAYER_DESIGN.md）
+  ① 数据层重构（已落地到 `shared.data_service` / `shared.input_artifacts` / `shared.calendar_service`）
   │    新建 calendar_service → 消 V1/V3；周频去重收编 → 消 V2；backtest 统一输入 → 消 V4
   ▼
 依赖图全合规（§3.1 白名单 100% 成立）
   │
-  ② harness/ 持续演进（HARNESS_DESIGN.md）
+  ② harness/ 持续演进（见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)）
   │    contracts + StaticGate（守护依赖规则）→ 其余 Gate → 授权 → orchestrator/CLI
   ▼
 强约束自动化入库（用户给方案 → harness 驱动改造-测试-验证-实盘）

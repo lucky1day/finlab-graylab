@@ -5,7 +5,7 @@
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
 >
-> **端到端主线见 [../SCHEME_INGESTION.md](../SCHEME_INGESTION.md)**（AI/新人第一入口，一图串联源码放哪/怎么拆/预测怎么放怎么验/写哪张表/回测入库）。本 SOP 是其「改造进系统」段的人类执行手册。
+> 新增方案入口先读 [SCHEME_ONBOARDING_T0.md](SCHEME_ONBOARDING_T0.md)，再按本文执行。本文是「改造进系统」段的人类执行手册。
 >
 > **新增方案开工前必须先读 [SCHEME_ONBOARDING_T0.md](SCHEME_ONBOARDING_T0.md)**。T0 是 daily / weekly 通用的硬约束范式；本文负责展开具体步骤和命令。
 
@@ -49,7 +49,7 @@
 **规则二：唯一键用 `(scheme_id, target_tenor, horizon, target_date)` + UPSERT**
 - 禁止使用 `run_id` 作为唯一键组成部分。
 - 禁止使用 `predict_date` 作为唯一键组成部分。
-- 同一天同方案同标的同期限只能有一条预测记录；新预测覆盖旧的。
+- 同一 `scheme_id + target_tenor + horizon + target_date` 只能有一条预测记录；新预测覆盖旧的。
 - 不需要 serving pointer 表：UK 自身保证唯一性，后端查询直接读 `t_scheme_predictions`，无需再 JOIN `t_scheme_serving_pointer`。
 
 **违反后果示例**：
@@ -136,7 +136,7 @@ horizon: 1
 tenors: ["5Y", "10Y"]
 frequency: daily
 schedule:
-  cron: "25 9 * * 1-5"
+  cron: "3 7 * * 1-5"
   timezone: "Asia/Shanghai"
 entry_point: predict.run
 status: paused
@@ -149,7 +149,7 @@ status: paused
 | `scheme_id` | 必须与目录名完全一致 |
 | `horizon` | 日度使用 `1` / `5`；当前周度使用 `6` 表示周六发出、下周最后交易日为目标日 |
 | `tenors` | 内部稳定 key，当前前端展示为 `3Y国债活跃/5Y国债活跃/7Y国债活跃/10Y国债活跃`；`1Y` 可作为因子输入，但不作为当前展示目标 |
-| `schedule.cron` | 日度通常为 `25 9 * * 1-5`；当前周度 live 使用 `30 11 * * 6`，对齐旧实盘 weekly `multi` 任务首轮预测时间 |
+| `schedule.cron` | 当前日度 live 使用 `3 7 * * 1-5`；当前周度 live 使用 `30 11 * * 6` |
 | `status` | 新方案先用 `paused`；验证完成后再改 `active` |
 
 如果新增了新的 Y 标的 key，还需要先写入 `t_target_registry`:
@@ -233,7 +233,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 后续所有新方案都按以下 gate 顺序推进。旧的手动命令仍可作为每个 gate 的实现方式，但不能跳过 gate。
 
-> 可执行 harness 的统一入口设计（`python -m harness onboard {scheme_id} --stage all`、各 Gate 契约、授权机制）见 [HARNESS_DESIGN.md](../HARNESS_DESIGN.md)。下表每个 Gate 落地后对应一条 `python -m harness gate <name>` 命令；本节裸 conda 命令是该 Gate 的底层实现。
+> 可执行 harness 的统一入口为 `python -m harness onboard {scheme_id} --stage all`；边界总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。下表每个 Gate 落地后对应一条 `python -m harness gate <name>` 命令；本节裸 conda 命令是该 Gate 的底层实现。
 
 | Gate | 目标 | 通过证据 |
 |------|------|----------|
@@ -551,8 +551,7 @@ print(result)
 每次新方案合入前，必须更新:
 
 - `docs/CURRENT_STATUS.md`: 当前状态、run_id、样本数、是否 active。
-- `docs/TEST_PLAN.md`: 已通过的 gate 和剩余观察项。
-- `docs/HISTORICAL_REPRODUCTION.md`: 需要参与历史排行的方案，记录回测口径和结果。
+- `docs/CURRENT_STATUS.md`: 已通过的 gate、run_id、回测口径、API 验证、实盘回补和剩余观察项。
 - `docs/SCHEME_ONBOARDING_SOP.md`: 仅当 SOP 本身变化时更新；普通方案接入不应临时修改规则。
 
 ## 7. 上线和调度

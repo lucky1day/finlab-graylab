@@ -1,7 +1,7 @@
 # 架构设计: Bond Factor Lab
 
-**版本**: v1.0  
-**日期**: 2026-05-29
+**版本**: v1.1
+**日期**: 2026-06-11
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
 
@@ -17,9 +17,10 @@
 │  │   Scheduler     │     │   FastAPI Backend (:8100)      │ │
 │  │  (APScheduler)  │     │                                │ │
 │  │                 │     │  /api/schemes                  │ │
-│  │  9:25 weekdays  │     │  /api/metrics/{scheme_id}      │ │
-│  │  16:00 actuals  │     │  /api/predictions              │ │
-│  │                 │     │  /api/actuals                  │ │
+│  │  daily 07:03    │     │  /api/metrics/{scheme_id}      │ │
+│  │  weekly 11:30   │     │  /api/predictions              │ │
+│  │  actuals jobs   │     │  /api/actuals                  │ │
+│  │                 │     │                                │ │
 │  │  ┌───────────┐  │     │                                │ │
 │  │  │ discovery │  │     │  Static: native HTML/CSS/JS    │ │
 │  │  │ executor  │  │     └──────────────┬─────────────────┘ │
@@ -58,7 +59,7 @@
 
 ## 2. 数据流
 
-### 2.1 预测流程（日度9:25 / 周度11:30）
+### 2.1 预测流程（日度07:03 / 周度11:30）
 
 ```
 Scheduler启动
@@ -74,8 +75,9 @@ Scheduler启动
 
 当前调度口径:
 
-- 日度 `t1_daily` / `t5_daily`: 工作日 `09:25`。
-- 周度方案（`weekly_10y_d_overlay` 等）已退役/代码未实现，当前无周度 cron；如需周度方案须按 SOP 重新接入。
+- 日度 `t1_daily` / `t5_daily`: 工作日 `07:03`（`3 7 * * 1-5`）。
+- 周度 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529`: 周六 `11:30`（`30 11 * * 6`）。
+- 旧周度方案 `weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay` 已退役。
 
 ### 2.2 实际方向更新（每日16:00）
 
@@ -287,7 +289,7 @@ horizon: 5                       # 预测跨度
 tenors: ["3Y", "5Y", "7Y", "10Y"]  # 覆盖期限
 frequency: daily                 # 频率
 schedule:
-  cron: "25 9 * * 1-5"          # cron表达式
+  cron: "3 7 * * 1-5"           # cron表达式
   timezone: "Asia/Shanghai"
 entry_point: predict.run         # 入口函数
 ```
@@ -298,7 +300,7 @@ entry_point: predict.run         # 入口函数
 
 历史回测命名边界:
 
-- `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（`t1_daily`、`t5_daily`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）已退役/代码未实现。
+- `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（`t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）已退役。
 - `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；canonical 输入位于 `benchmarks/{benchmark_id}/`。
 - `data_source`: 数据口径枚举，例如 `framework_db_aligned`；API 负责映射成中文展示名，例如“当前DB对齐回测”。
 - 运行期输入 artifact: `backtest_artifacts/runtime_inputs/{scheme_id}/`。
@@ -450,8 +452,8 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵，并使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。周度列对应的周度方案已退役/代码未实现，当前无周度回测数据接入；如需周度方案须按 SOP 重新接入后再进入该任务格。
-**iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层接入片段见 [IFRAME_INTEGRATION.md](IFRAME_INTEGRATION.md)。本机尚未找到可直接修改的 `panda_quantflow` 仓库路径。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵，并使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。当前周度回测/实盘方案为 `weekly_5y_direct_0529` 与 `weekly_7y_cross_d_overlay_0529`，旧周度方案仅作为历史名称保留在归档报告中。
+**iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 由FastAPI后端直接serve这个目录作为静态文件。
 

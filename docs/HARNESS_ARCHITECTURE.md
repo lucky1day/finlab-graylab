@@ -52,7 +52,7 @@ bond-factor-lab/
 
 ## 3. Harness Gate
 
-> 本节定义已落地的强约束边界。实现级设计（目录树、`GateResult`/`GateContext` 契约、Static Gate 机器判定规则、Orchestrator/CLI、授权机制）见 [HARNESS_DESIGN.md](HARNESS_DESIGN.md)；方案契约的机器校验规范见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md)。
+> 本节定义已落地的强约束边界。方案契约的机器校验规范见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md)；新增方案的 T0 必读范式见 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)。
 
 `harness/` 按以下模块职责拆分:
 
@@ -103,7 +103,7 @@ python -m harness.cli check \
 
 ## 5. 数据库安全边界
 
-> 统一公共层（数据接入）的目标设计——周频去重、统一交易日历 `calendar_service`、强化 `InputArtifact`——见 [DATA_LAYER_DESIGN.md](DATA_LAYER_DESIGN.md)。本节只约束读写边界。
+> 统一公共层（数据接入）已落地到 `shared.data_service`、`shared.input_artifacts`、`shared.calendar_service`。本节只约束读写边界。
 
 源数据表永远只读:
 

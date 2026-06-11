@@ -6,7 +6,7 @@
 
 > 与 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 的关系：入库 SOP 负责"把方案合规地改造进系统"；本 SOP 负责"验证改造后的方案结果与入库前原始方案一致，并完成落库/展示/挂载"。本 SOP 的多个失败分支会**打回入库 SOP**。
 >
-> **端到端主线见 [../SCHEME_INGESTION.md](../SCHEME_INGESTION.md)**（AI/新人第一入口，串联源码放哪/怎么拆/写哪张表/回测入库）。本 SOP 是其「验证 + 落库 + 挂载」段的人类执行手册。
+> 新增方案入口先读 [SCHEME_ONBOARDING_T0.md](SCHEME_ONBOARDING_T0.md)，再按 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 和本文执行。本文是其「验证 + 落库 + 挂载」段的人类执行手册。
 
 ---
 
@@ -157,7 +157,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S7 DB↔前端严格一致 |
-| **动作** | 按方案 `frequency` 挂载定时预测任务：① 将 `config.yaml` 的 `status` 改为 `active`；② 确认 `schedule.cron` 与频率匹配（日频工作日 09:25 / 周频周六 11:30 / 月频按定义）；③ 重启 scheduler 使其注册该 job；④ 确认调度日志出现该方案 cron 注册 |
+| **动作** | 按方案 `frequency` 挂载定时预测任务：① 将 `config.yaml` 的 `status` 改为 `active`；② 确认 `schedule.cron` 与频率匹配（日频工作日 07:03 / 周频周六 11:30 / 月频按定义）；③ 重启 scheduler 使其注册该 job；④ 确认调度日志出现该方案 cron 注册 |
 | **成功判定** | scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；方案进入对应频率的定时预测队列 |
 | **成功→去向** | 进入 S9 |
 | **失败判定** | status 未生效 / cron 未注册 / scheduler 未识别 |
