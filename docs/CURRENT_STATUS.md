@@ -172,13 +172,13 @@ launchd scheduler 已成功运行 active 方案：
 | `t1_daily` | `2026-05-29` 到 `2026-06-10` | 2/日 | `success`，run_id=`22..30` |
 | `t5_daily` | `2026-06-05`、`2026-06-08`、`2026-06-09` | 4/日 | `success`，run_id=`15..17` |
 | `weekly_5y_direct_0529` | `2026-06-11` | 1 | `success`，run_id=`9` |
-| `weekly_7y_cross_d_overlay_0529` | `2026-06-06`（回补） | 1 | `success`，run_id=`35` |
+| `weekly_7y_cross_d_overlay_0529` | `2026-05-30`、`2026-06-06`（回补） | 1/次 | `success`，run_id=`36/35` |
 
 2026-06-10 周度方案 `weekly_5y_direct_0529` 首次入库，`run_id=9`，predict_date=2026-06-11，feature_week_id=202620 → target_week_id=202621，feature_date=2026-05-29，target_date=2026-06-05，预测方向=1（上行），与 actuals 对比准确。API metrics 按 `target_date` 归入 2026-06，返回 accuracy=100%（1/1）；2026-05 无该 live 样本。
 
 2026-06-10 周度方案 `weekly_5y_direct_0529` post-onboarding SOP 已完成：原始基准按 DB 周历归一化后 503 条，改造后 framework 复现 503 条，S5 方向差异 0；按 `target_date` 月度口径重新正式回测落库 run_id=`80`，`t_backtest_predictions` 503 条、`t_backtest_monthly_metrics` 124 条；其中 2026-05 为 5 条、2026-06 为 0 条；`/api/backtests/factor-lab` 与 DB 逐 `tenor × month` 比对 124 格，差异 0；scheduler 已确认注册周六 11:30 任务（`30 11 * * 6`）。
 
-2026-06-11 按 SOP Step 10b 回补 `weekly_7y_cross_d_overlay_0529` 实盘预测：`execute_scheme(cfg, '2026-06-06')` 成功，run_id=`35`，predict_date=2026-06-06 → target_date=2026-06-12，方向=1；`t_scheme_run_log` id=48 留痕；API 已返回该 live row（actual=None，前端显示 06/12 待验证），实盘发出起点分隔线 2026-05-30 由前端按 target 月份自动反推。坑 12 检查清单 4 项全部通过。
+2026-06-11 按 SOP Step 10b 回补 `weekly_7y_cross_d_overlay_0529` 实盘预测：先补 `execute_scheme(cfg, '2026-06-06')`，run_id=`35`，predict_date=2026-06-06 → target_date=2026-06-12，方向=1；随后发现 2026-06 周度表还缺第一条目标周，又补 `execute_scheme(cfg, '2026-05-30')`，run_id=`36`，predict_date=2026-05-30 → target_date=2026-06-05，方向=1。该经验已写入 SOP：周度回补必须按 `target_date >= 2026-06-01` 枚举目标周并反推 predict_date，不能只按 `predict_date >= 2026-06-01` 枚举。API 已返回两条 live row：06/05 已验证（actual=-1，correct=False），06/12 尚无 actual（待验证）；`t_scheme_run_log` id=`49/48` 留痕。
 
 2026-06-10 已重刷日频 actuals 至源表可用水位，并补跑 `t5_daily` 的 2026-05-26 到 2026-05-29（run_id=18..21）以及 `t1_daily` 的 2026-05-29 到 2026-06-10（run_id=22..30）。当前 6 月日频明细按目标日展示；对应目标日有 actuals 时直接计结果，目标日尚无 actuals 时保持 `待验证`，不会显示为“平”。
 

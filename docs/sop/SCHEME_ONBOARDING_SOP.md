@@ -519,9 +519,10 @@ LIMIT 5;
 
 1. **回补范围**：所有 `target_date >= 2026-06-01`（灰度观察起点）至今应当存在的实盘预测。
    - 日频方案：每个交易日一条（从 6月1日 或激活日中较早者开始反推 predict_date）。
-   - 周频方案：每个调度周期一条（如周六调度 → 6月6日、6月13日……每周补一条）。
-2. **predict_date 取调度日历上应当发出的日期**（如周度补 6月6日的预测），不允许全部填当前日期。
-3. **执行方式**：用 `scheduler.executor.execute_scheme(cfg, '<predict_date>')` 按时间顺序逐个补跑。例如周度方案补 6月6日：
+   - 周频方案：以 `target_date` 为准枚举应有目标周，再反推对应调度日；不要只从灰度起点之后的 `predict_date` 开始枚举。
+   - 例：灰度起点为 2026-06-01 时，周度 2026-06 的第一条目标周是 `target_date=2026-06-05`，其预测发出日是上一轮周六 `predict_date=2026-05-30`；下一条才是 `predict_date=2026-06-06 -> target_date=2026-06-12`。
+2. **predict_date 取调度日历上应当发出的日期**，允许早于灰度起点（只要其 `target_date` 落在灰度起点之后），不允许全部填当前日期。
+3. **执行方式**：用 `scheduler.executor.execute_scheme(cfg, '<predict_date>')` 按时间顺序逐个补跑。例如周度方案补 2026-06 首两周：
 
 ```bash
 conda run -n bond_factor_lab_service python -c "
@@ -529,6 +530,8 @@ from scheduler.discovery import discover_schemes
 from scheduler.executor import execute_scheme
 schemes = list(discover_schemes())
 cfg = [s for s in schemes if s.scheme_id == '<scheme_id>'][0]
+result = execute_scheme(cfg, '2026-05-30', algo_env='forecast_env')
+print(result)
 result = execute_scheme(cfg, '2026-06-06', algo_env='forecast_env')
 print(result)
 "
@@ -536,6 +539,7 @@ print(result)
 
 4. **验收点**：
    - [ ] DB 中该方案的实盘预测 target_date 连续覆盖 2026-06-01 至今的全部应有周期。
+   - [ ] 周频方案首个 6 月 target（如 2026-06-05）没有因为 `predict_date` 在 5 月（如 2026-05-30）而被漏掉。
    - [ ] 前端出现"实盘发出起点"分隔线（前端按第一条实盘 target 月份自动反推：周度=月首日前的周六，日频=第一条 predict_date）。
    - [ ] 尚无 actuals 的 target 显示"待验证"（参考 5Y 周度方案的 06/12 行）。
    - [ ] 回补的预测在 `t_scheme_run_log` 有对应运行记录。
