@@ -76,13 +76,13 @@ Scheduler启动
 当前调度口径:
 
 - 日度 `t1_daily` / `t5_daily`: 工作日 `07:03`（`3 7 * * 1-5`）。
-- 周度 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529`: 周六 `11:30`（`30 11 * * 6`）。
+- 周度 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529`: 周六 `11:30`（`30 11 * * 6`）。
 - 旧周度方案 `weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay` 已退役。
 
-### 2.2 实际方向更新（每日16:00）
+### 2.2 实际方向更新（每日08:30与19:00）
 
 ```
-Scheduler触发actuals更新任务
+Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由交易日检查跳过
   → 从 api_wind_indicators_all 读取最新收盘收益率
   → 计算各tenor的T+1和T+5方向
   → 写入 t_scheme_actuals (UPSERT)

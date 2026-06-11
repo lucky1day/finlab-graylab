@@ -17,6 +17,7 @@ from scheduler.repository import create_engine_from_env, sync_scheme_registry
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
+ACTUALS_REFRESH_TIMES = ((8, 30), (19, 0))
 logger = logging.getLogger(__name__)
 
 
@@ -153,16 +154,17 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
         )
         logger.info("Scheduled scheme %s at %s", cfg.scheme_id, cfg.schedule.cron)
 
-    scheduler.add_job(
-        run_actuals_job,
-        trigger=CronTrigger(hour=19, minute=0, day_of_week="mon-fri", timezone=ASIA_SHANGHAI),
-        id="actuals",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=3600,
-    )
-    logger.info("Scheduled actuals refresh at 16:00 Asia/Shanghai")
+    for hour, minute in ACTUALS_REFRESH_TIMES:
+        scheduler.add_job(
+            run_actuals_job,
+            trigger=CronTrigger(hour=hour, minute=minute, timezone=ASIA_SHANGHAI),
+            id=f"actuals:{hour:02d}{minute:02d}",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+    logger.info("Scheduled actuals refresh at 08:30 and 19:00 Asia/Shanghai")
     return scheduler
 
 
