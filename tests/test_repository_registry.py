@@ -121,7 +121,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["status"], "running")
         self.assertEqual(params["input_artifact_id"], "artifact-1")
 
-    def test_insert_run_predictions_uses_run_id_without_legacy_upsert(self) -> None:
+    def test_insert_run_predictions_upserts_target_date_business_key_with_run_id(self) -> None:
         from scheduler.repository import insert_run_predictions
         from shared.models import PredictionRecord
 
@@ -144,7 +144,10 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         sql = engine.store["sql"]
         rows = engine.store["params"]
         self.assertIn("INSERT INTO t_scheme_predictions", sql)
-        self.assertNotIn("ON DUPLICATE KEY UPDATE", sql)
+        self.assertIn("ON DUPLICATE KEY UPDATE", sql)
+        self.assertIn("run_id = VALUES(run_id)", sql)
+        self.assertIn("scheme_version = VALUES(scheme_version)", sql)
+        self.assertIn("predict_date = VALUES(predict_date)", sql)
         self.assertEqual(rows[0]["run_id"], 101)
         self.assertEqual(rows[0]["scheme_version"], "abc123")
 

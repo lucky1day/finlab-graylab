@@ -63,7 +63,7 @@ class BaseRunnerMetricsTests(unittest.TestCase):
         self.assertEqual(output.monthly_metrics[0]["benchmark_id"], "demo_benchmark")
         self.assertEqual(output.monthly_metrics[0]["accuracy"], 1.0)
 
-    def test_weekly_rows_are_grouped_by_predict_month(self) -> None:
+    def test_weekly_rows_are_grouped_by_target_month(self) -> None:
         from backtests._base_runner import build_monthly_metrics
 
         rows = [
@@ -82,11 +82,11 @@ class BaseRunnerMetricsTests(unittest.TestCase):
 
         metrics = build_monthly_metrics(rows, benchmark_id="weekly_benchmark")
 
-        self.assertEqual(metrics[0]["month"], "2025-10")
+        self.assertEqual(metrics[0]["month"], "2025-11")
         self.assertEqual(metrics[0]["sample_count"], 1)
         self.assertEqual(metrics[0]["benchmark_id"], "weekly_benchmark")
 
-    def test_daily_rows_are_grouped_by_predict_month(self) -> None:
+    def test_daily_rows_are_grouped_by_target_month(self) -> None:
         from backtests._base_runner import build_monthly_metrics
 
         rows = [
@@ -103,7 +103,7 @@ class BaseRunnerMetricsTests(unittest.TestCase):
 
         metrics = build_monthly_metrics(rows, benchmark_id="demo_benchmark")
 
-        self.assertEqual(metrics[0]["month"], "2025-12")
+        self.assertEqual(metrics[0]["month"], "2026-01")
         self.assertEqual(metrics[0]["sample_count"], 1)
 
 
