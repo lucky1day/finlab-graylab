@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-10
+**更新日期**: 2026-06-11
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -19,7 +19,7 @@
 当前约定:
 
 - 一个 `scheme_id` 只对应一个 `horizon`。同一算法如果同时做 T+1 和 T+5，应拆成两个方案目录。
-- 当前已接入并 active 的方案只有 `daily` 频率的 `t1_daily` / `t5_daily`。新增周度方案进入 live 调度前，必须先确认周度目标日规则、actuals 对齐规则、最新特征周产出能力，以及调度时间与上游 weekly 首轮预测时间对齐。
+- 当前已接入并 active 的方案包括日频 `t1_daily` / `t5_daily`，以及周频 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529`。新增周度方案进入 live 调度前，必须先确认周度目标日规则、actuals 对齐规则、最新特征周产出能力，以及调度时间与上游 weekly 首轮预测时间对齐。
 - `scheme_id` 一旦写入数据库就视为稳定 ID，不要随意改名；展示名变更只改 `name`。
 - 算法核心逻辑放在 `core/` 或独立模块里，`predict.py` 只做框架适配、输入准备和输出转换。
 - 方案不能直接写 `t_scheme_predictions`；统一由 `scheduler.executor` 写库，保证运行日志和 UPSERT 口径一致。
@@ -61,8 +61,20 @@
 - `predict.py` 中 `end_week` 必须设为 `current_week_id + N`（N ≥ 6），确保特征数据加载范围够大；`target_week_id` 始终取 `feature_week_id + 1`，不依赖数据是否存在。
 - `all_weeks_set` 检查不能作为"目标周必须存在"的硬拦条件；如果 `feature_week_id` 是数据中最新的周，允许以其下一周作为 target。
 
-**规则四：ActivationGate 接受 `skipped` 状态**
-- CompareGate 在 benchmark 样本文件缺失时返回 `skipped`（不是 `failed`）。`skipped` 应被视为通过，不能阻止激活。
+**规则四：CompareGate 的 `skipped` 只表示"对比没有发生"，不是新增方案的通过证据**
+- 框架层允许 ActivationGate 兼容 `skipped`，是为了支持没有原始基准的纯框架内实验方案；这不是普通新增方案可以跳过源文件对比的许可。
+- 只要方案来自原始脚本、原始输出文件或人工 benchmark，就必须设置 `backtest.benchmark_required: true`，四份 benchmark 文件齐全，并让 CompareGate 状态为 `passed`。
+- 对新增 source-backed 方案，`skipped` 必须视为流程未完成，不能进入激活。
+
+**规则五：灰度实盘起点和部署时间不是同一个概念**
+- 灰度实盘观察起点按 `target_date` 判定，当前为 `target_date >= 2026-06-01`。
+- 历史回测只覆盖灰度起点之前的 target；实盘区间通过 `t_scheme_predictions` 和 `/api/metrics/{scheme_id}` 展示。
+- 前端“部署时间”（当前周度方案统一显示 `2026/06/10`）只是展示字段，不参与回测截断、实盘回补范围、月份归属或唯一键计算。
+
+**规则六：`confidence` 是算法输出数值的统一承接字段**
+- `confidence` 用来承接原始算法已有的置信度、概率或分数；不是平台为模型重新生成的新信号。
+- CompareGate 的 `max_confidence_abs_diff` 是 original/current benchmark 两侧 `confidence` 的最大绝对差。`1e-16` 量级属于浮点舍入误差，视为 0。
+- 如果原始算法没有天然 `confidence`，必须在 source/current 两侧使用同一确定性映射，并在 `CURRENT_STATUS.md` 说明。
 
 ### 1.1 强约束模块边界
 
@@ -323,10 +335,12 @@ CompareGate 需要四份 benchmark 样本文件来验证平台改造后的输出
 
 | 文件 | 内容 |
 |------|------|
-| `original_predictions_sample.csv` | 原始算法的预测样本（predict_date, tenor, direction, confidence） |
+| `original_predictions_sample.csv` | 原始算法的预测样本（至少 `predict_date, tenor, direction, confidence`；周度建议额外保留 `feature_week_id, target_date` 等审计列） |
 | `original_backtest_summary.json` | 原始算法的月度指标摘要 |
-| `current_predictions_sample.csv` | 当前平台输出的预测样本（与 original 同口径，内容应一致） |
+| `current_predictions_sample.csv` | 当前平台输出的预测样本（字段与 original 同口径，内容应一致） |
 | `current_backtest_summary.json` | 当前平台的月度指标摘要（与 original 同口径，内容应一致） |
+
+`confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。CompareGate 当前按 `predict_date + tenor` 对齐预测样本；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
 如果方案已有历史回测数据写入 `t_backtest_*` 表，可以直接用以下脚本从数据库提取样本：
 
@@ -426,7 +440,7 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 - 回测写入只作用于新 `scheme_id` 对应 run。
 - `/api/backtests/factor-lab` 返回 `frequency=weekly`，前端落到“周度”列。
 - 周度明细行、月度指标、去重和展示月份一律按 `target_date` 归组；`feature_date` 只用于追溯输入窗口，`predict_date` 只用于调度日志和运行记录。
-- 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行。
+- 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行；不要用部署时间或 `predict_date` 截断历史回测。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
 
 ### Step 8: API/前端只读验证
@@ -510,7 +524,7 @@ LIMIT 5;
    - S5：逐样本对比，**`predicted_direction` 方向零容差**（差一个样本即不一致），浮点 `1e-9` 容差。
 2. **benchmark 文件已落到 `schemes/{scheme_id}/benchmarks/`**（四份，见 Step 5a），且 `config.yaml` 中 `backtest.benchmark_required: true`。
 3. **CompareGate 状态必须是 `passed`，不能是 `skipped`**。`skipped` 意味着对比没有发生——对于新增方案这是不可接受的（`skipped` 仅对无原始基准的纯框架内实验方案可接受，且需在 CURRENT_STATUS 中显式说明原因）。
-4. 对比证据（matched 数、direction diff、confidence diff）写入 `docs/CURRENT_STATUS.md`。
+4. 对比证据（matched 数、direction diff、confidence diff）写入 `docs/CURRENT_STATUS.md`；`confidence diff` 指 benchmark 两侧同一字段的浮点差异，不是新的模型指标。
 
 执行顺序建议：Step 7（回测落库）→ Step 10a（源 vs 入库对比 + benchmark 文件）→ 重跑 `harness onboard --stage all` 确认 CompareGate passed → Step 10（激活）。
 

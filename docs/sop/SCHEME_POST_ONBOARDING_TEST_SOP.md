@@ -1,6 +1,6 @@
 # 方案入库后测试验证 SOP
 
-**更新日期**: 2026-06-09
+**更新日期**: 2026-06-11
 **状态**: 已定稿 v1.0（用户 review 通过 2026-06-09）
 **定位**: 面向**任意一个已入库方案**的标准测试验证流程（不限于现有 5 方案）。核心是 **gatekeeping（先验入库合规）→ 双版本复现对比（入库前原始 vs 改造后，同一数据接入层）→ 数据落库与前端校验 → 挂载定时任务 → 出验证结论**。
 
@@ -16,6 +16,7 @@
 
 **核心判定标准（全程统一）**：
 - **方向零容差**：两版本对比时，`predicted_direction`（1/-1/0）必须**逐样本完全一致**；`confidence` 等浮点允许 `1e-9` 容差。方向差一个样本即判不一致。
+- **confidence 语义**：`confidence` 是原始算法置信度、概率或分数在平台里的统一承接字段；如果原始算法没有天然 confidence，baseline/current 两侧必须使用同一确定性代理值，并在 `CURRENT_STATUS.md` 说明。
 - **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
 - **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
 
@@ -75,7 +76,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S1 通过 |
-| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **静态基准文件**：入库前固化的基准输出（如 `benchmarks/{benchmark_id}/*.csv` 或预测结果表），含逐样本 `predict_date/target_tenor/predicted_direction` |
+| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **静态基准文件**：入库前固化的基准输出（如 `benchmarks/{benchmark_id}/*.csv` 或预测结果表），含逐样本 `predict_date/tenor(or target_tenor)/direction(or predicted_direction)` |
 | **成功判定** | ①或②至少存在其一，且能定位到具体文件/模块路径 |
 | **成功→去向** | 进入 S3（记录采用的是脚本复现还是静态基准） |
 | **失败判定** | 两种形态都不存在，或存在但无法定位/不含逐样本方向 |
@@ -90,7 +91,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S2 通过，已确定版本回测定义形态 |
-| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`。<br>**形态②（静态）**：直接读入库前静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `predict_date/target_tenor/predicted_direction/confidence`） |
+| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`。<br>**形态②（静态）**：直接读入库前静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `predict_date/tenor(or target_tenor)/predicted_direction/confidence`） |
 | **成功判定** | 基准序列成功生成、样本数 > 0、含必需字段 |
 | **成功→去向** | 进入 S4 |
 | **失败判定** | 原始脚本报错跑不出、或静态文件损坏/字段缺失 |
@@ -117,11 +118,12 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S3 baseline_original + S4 repro_framework 均就绪 |
-| **动作** | 逐样本对齐（按 `predict_date + target_tenor` 主键）比对两版本，可用 `scripts/compare_refactor_outputs.py`（方向严格、浮点 1e-9）。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
+| **动作** | 逐样本对齐（按 `predict_date + tenor`；平台内部字段可映射为 `target_tenor`）比对两版本，可用 `scripts/compare_refactor_outputs.py`（方向严格、浮点 1e-9）。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
 | **成功判定** | **所有可对齐样本 `predicted_direction` 完全一致**；`confidence` 差异 ≤ 1e-9；无"基准有而复现缺"的样本（或缺失已有合理解释并记录） |
+| **confidence 判读** | `max_confidence_abs_diff` / `mean_confidence_abs_diff` 只表示两版本同名数值字段的浮点差异；`1e-16` 量级视为舍入误差，不代表模型行为改变 |
 | **成功→去向** | 进入 S6 |
 | **失败判定** | 存在任一样本方向不一致，或样本集不可对齐 |
-| **失败→去向** | `REJECTED_TO_ONBOARDING`。**必须输出不一致明细**：哪些 `predict_date/target_tenor`、基准方向 vs 复现方向、差异数量。由入库 SOP 据此排查改造引入的偏差，改造后从 S1 重来 |
+| **失败→去向** | `REJECTED_TO_ONBOARDING`。**必须输出不一致明细**：哪些 `predict_date/tenor`、基准方向 vs 复现方向、差异数量。由入库 SOP 据此排查改造引入的偏差，改造后从 S1 重来 |
 
 ---
 

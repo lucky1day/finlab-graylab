@@ -54,8 +54,17 @@
 
 - `target_date` 是展示、分组、去重、月度指标、唯一键的日期。
 - `predict_date` 只用于调度日志和运行记录。
+- 灰度实盘观察起点也按 `target_date` 判定。当前起点为 `target_date >= 2026-06-01`；历史回测必须只覆盖起点之前的 target，不得把 live target 月写进 `t_backtest_*`。
+- `deployed_at` / 前端“部署时间”只是展示字段，不参与月份归属、回测截断、实盘回补范围或唯一键计算。
 - `t_scheme_predictions` 唯一语义是 `(scheme_id, target_tenor, horizon, target_date)`，写入必须保持 UPSERT 语义。
 - 新增方案不得依赖 serving pointer 来决定前端展示哪条预测。
+
+## 3.1 confidence 术语
+
+- `confidence` 是平台统一预测记录里的可选数值字段，用来承接原始算法的置信度、概率或分数（例如 `probability` / `score` / `prob_up`），不是平台额外生成的新标签。
+- 如果原始算法没有天然 `confidence`，可以使用确定性的代理数值，但 original/current 两侧必须使用同一映射，并在 `CURRENT_STATUS.md` 写清。
+- CompareGate 的 `max_confidence_abs_diff` / `mean_confidence_abs_diff` 只表示 original/current 两份 benchmark 的 `confidence` 数值差异；`1e-16` 量级属于浮点舍入误差，等同于 0。
+- 方案正确性先看 `predicted_direction` 零容差；`confidence` 是辅助一致性检查，不能用来替代方向一致。
 
 ## 4. 频率分支规则
 
@@ -80,6 +89,8 @@
 4. 四份 benchmark 文件落在 `schemes/{scheme_id}/benchmarks/`。
 5. `config.yaml` 设置 `backtest.benchmark_required: true`。
 6. `harness onboard --stage all` 中 CompareGate 必须是 `passed`，不能是 `skipped`。
+
+benchmark CSV 至少包含 `predict_date/tenor/direction/confidence`；周度方案还应保留 `feature_week_id/target_date` 等审计列。CompareGate 当前按 `predict_date + tenor` 对齐预测样本，月度指标和前端展示仍按 `target_date` 归属。
 
 纯框架内实验方案如果没有原始基准，必须在 `docs/CURRENT_STATUS.md` 明确说明为什么 CompareGate 可以没有 source benchmark。
 

@@ -75,6 +75,7 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 - `horizon == config.horizon`
 - `target_tenor ∈ config.tenors`
 - `predicted_direction ∈ {1, -1, 0}`（`1`=收益率上行/空，`-1`=下行/多，`0`=平）
+- `confidence is None` 或为有限浮点数。它承接算法自身输出的置信度、概率或分数，不改变方向判定；如果原始算法没有天然置信度，source/current benchmark 必须使用同一确定性代理值并在状态文档说明。
 - 返回条数 `== 本次有效 tenors 数量`
 
 `extra` 必填键：
@@ -86,6 +87,8 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 | weekly | `feature_week_id`, `target_week_id`, `feature_date`, `target_date`, `target_rule` |
 
 > 周频 `target_rule` 与 `t_scheme_weekly_actuals` / `WeeklyActualRecord.target_rule` 对齐，保证预测与实际方向口径一致。
+
+`CompareGate` 中的 `max_confidence_abs_diff` / `mean_confidence_abs_diff` 是 original/current benchmark 对 `confidence` 字段的浮点差异统计；`1e-16` 量级属于浮点舍入误差，按 0 看待。方案行为一致性的硬门槛仍是 `predicted_direction` 逐样本零容差。
 
 ---
 
@@ -158,7 +161,7 @@ LiveGate 写库后，对该 `scheme_id` + `predict_date` 断言：
 | 行数 | 新增行数 `== 本次有效 tenors 数` | 漏写/重复写 tenor |
 | 值域 | `predicted_direction ∈ {1, -1, 0}` | 方向越界，污染准确率 |
 | 一致性 | `horizon == config.horizon`；`target_tenor ∈ config.tenors` | 方案身份漂移 |
-| 唯一性 | 无重复 `(scheme_id, target_tenor, predict_date)` | 违反 `uk_scheme_tenor_predict` |
+| 唯一性 | 无重复 `(scheme_id, target_tenor, horizon, target_date)` | 违反 `t_scheme_predictions` 当前业务 UK；同一 target 被重复展示 |
 | 受保护表 | 除 `t_scheme_predictions` / `t_scheme_run_log` 外，`PROTECTED_TABLES` 全部 `delta==0` | 越界写库 |
 
 > 每 scheme 行数快照可复用 `probes/table_guard.py::snapshot_scheme_counts`。
