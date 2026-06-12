@@ -1,6 +1,6 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-06-11
+**更新日期**: 2026-06-12
 
 > 当前文档入口以本文为准。历史评审报告保留原始语境，不作为最新状态来源；最新状态只看 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
@@ -12,6 +12,7 @@
 | [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) | 代码架构主蓝图：分层模型、包依赖方向、运行时调用图 |
 | [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) | 强约束 harness 边界总纲：分层边界、DB 安全边界 |
 | [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | 方案契约：config.yaml schema、predict.py 接口、core 约束 |
+| [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) | 预测日期与实盘阶段强制语义：`predict_date` / `feature_date` / `target_date` / `prediction_phase` |
 
 ## 操作
 
@@ -32,7 +33,7 @@
 
 ## 阅读路径
 
-- **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → SCHEME_CONTRACT → CURRENT_STATUS
-- **新增方案** → 先读 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
+- **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → PREDICTION_SEMANTICS → SCHEME_CONTRACT → CURRENT_STATUS
+- **新增方案** → 先读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
 - **改 harness** → HARNESS_ARCHITECTURE + 评审报告
 - **了解当前状态** → CURRENT_STATUS

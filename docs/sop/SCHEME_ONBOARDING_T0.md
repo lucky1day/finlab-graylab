@@ -2,16 +2,17 @@
 
 **适用范围**：任何新增预测方案（daily / weekly；未来 monthly 也按同一范式扩展）。
 
-> 这是新增方案前的 **T0 必读文档**。它只定义不可破坏的范式和 gate 顺序，不替代详细 SOP。执行细节继续看 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)、[SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) 和 [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)。
+> 这是新增方案前的 **T0 必读文档**。它只定义不可破坏的范式和 gate 顺序，不替代详细 SOP。执行细节继续看 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)、[SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)、[SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) 和 [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)。
 
 ## 0. 必读顺序
 
 新增方案开工前，按顺序读：
 
 1. 本文：确认新增方案的不可破坏边界。
-2. [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)：重点看 predict vs target、周度日历、source-vs-onboarded 对比、实盘回补。
-3. [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md)：确认 config / predict.py / core 的机器契约。
-4. [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)：按 gate 执行完整入库。
+2. [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)：确认 `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的唯一语义。
+3. [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)：重点看 predict vs target、周度日历、source-vs-onboarded 对比、实盘回补。
+4. [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md)：确认 config / predict.py / core 的机器契约。
+5. [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)：按 gate 执行完整入库。
 
 ## 1. 新增方案不改框架
 
@@ -54,11 +55,16 @@
 
 ## 3. 日期语义不许混
 
-- `target_date` 是展示、分组、去重、月度指标、唯一键的日期。
-- `predict_date` 只用于调度日志和运行记录。
+- `predict_date` 是信号发出日 / 调度运行日。
+- `feature_date` 是数据截止日 / 预测站位日，是前端和业务使用的唯一数据截止字段。
+- `target_date` 是展示、分组、去重、actual join、月度指标、唯一键的日期。
+- `anchor_date` 不得作为业务字段使用；如方案内部或审计 extra 保留，必须等于 `feature_date`。
+- 回测必须满足 `predict_date = feature_date = T`，`target_date = T + horizon`。
+- 灰度实盘和正式实盘都必须满足 `predict_date = T + 1`，`feature_date = T`，`target_date = T + horizon`。
 - 全平台历史回测输出样本统一从 `predict_date >= 2025-01-01` 开始；日频/月频方案在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，周频方案写 `backtest.predict_start_date: "2025-01-01"`。
 - 历史训练、筛因子、模型更新、warmup 和输入 artifact 可以使用 `2025-01-01` 之前的数据；不要把训练起点误当成回测输出样本起点。
-- 灰度实盘观察起点也按 `target_date` 判定。当前起点为 `target_date >= 2026-06-01`；历史回测必须只覆盖起点之前的 target，不得把 live target 月写进 `t_backtest_*`。
+- 灰度实盘也算实盘，必须标识 `prediction_phase = gray_live`；正式 scheduler 自然发出的实盘标识 `prediction_phase = scheduled_live`。
+- 灰度实盘观察起点按方案级 `target_date` 判定。当前 V28 批次起点为 `target_date >= 2026-06-01`；历史回测必须只覆盖起点之前的 target，不得把 live target 月写进 `t_backtest_*`。
 - `deployed_at` / 前端“部署时间”只是展示字段，不参与月份归属、回测截断、实盘回补范围或唯一键计算。
 - `t_scheme_predictions` 唯一语义是 `(scheme_id, target_tenor, horizon, target_date)`，写入必须保持 UPSERT 语义。
 - 新增方案不得依赖 serving pointer 来决定前端展示哪条预测。
@@ -101,10 +107,11 @@ benchmark CSV 至少包含 `predict_date/tenor/direction/confidence`；周度方
 
 ## 6. 实盘回补按 target_date
 
-激活后必须补齐灰度观察起点以来应当存在的实盘预测。
+激活后必须补齐灰度观察起点以来应当存在的实盘预测。灰度补齐写入实盘预测表，但必须标识为 `gray_live`，不能和正式 scheduler 自然发出的 `scheduled_live` 混淆。
 
 - 回补范围按 `target_date >= 2026-06-01` 判断。
 - `predict_date` 按调度日历反推，可以早于灰度起点。
+- 每条补齐记录必须显式满足 `feature_date = T`，输入 artifact、辅助周/月映射和模型训练窗口都不能越过 `feature_date`；禁止因为当前 DB 已有 `T+1` 或更晚数据而读入未来信息。
 - 周度例子：`target_date=2026-06-05` 对应 `predict_date=2026-05-30`；下一条 `target_date=2026-06-12` 对应 `predict_date=2026-06-06`。
 - 验收时同时查 `t_scheme_predictions`、`t_scheme_run_log` 和 API 返回。
 
@@ -137,6 +144,8 @@ benchmark CSV 至少包含 `predict_date/tenor/direction/confidence`；周度方
 - [ ] 方案是新增 scheme，不是平台框架改造。
 - [ ] 已选 daily / weekly 频率，并知道对应输入入口；如有 weekly/monthly 辅助输入，已声明 `input_spec.auxiliary_inputs`。
 - [ ] `target_date` / `predict_date` 语义已写清。
+- [ ] 已统一使用 `feature_date` 表示数据截止日；没有让前端/业务依赖 `anchor_date`。
+- [ ] 如涉及实盘补齐，已规划 `prediction_phase=gray_live/scheduled_live` 标识，并证明灰度补齐只使用 `feature_date` 及以前数据。
 - [ ] 需要历史回测时，已声明统一输出样本起点：daily/monthly 用 `backtest.start_date: "2025-01-01"`，weekly 用 `backtest.predict_start_date: "2025-01-01"`。
 - [ ] 周度方案已明确 DB 周历、target week、`end_week` 规则。
 - [ ] 原始算法文件和 source benchmark 来源已定位。

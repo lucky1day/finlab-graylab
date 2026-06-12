@@ -1,9 +1,10 @@
 # 架构设计: Bond Factor Lab
 
 **版本**: v1.1
-**日期**: 2026-06-11
+**日期**: 2026-06-12
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
+> 预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
 
 ---
 
@@ -58,6 +59,16 @@
 ---
 
 ## 2. 数据流
+
+### 2.0 预测日期与阶段
+
+平台统一使用三类日期字段：
+
+- `predict_date`: 信号发出日 / 调度运行日。
+- `feature_date`: 数据截止日 / 预测站位日。
+- `target_date`: 验证目标日，用于展示、去重、actual join 和月度统计归属。
+
+`feature_date` 是前端和业务唯一标准数据截止字段；`anchor_date` 只允许作为方案内部变量或审计 extra。实盘预测分为 `gray_live` 和 `scheduled_live` 两个阶段，二者都属于实盘观察区；历史回测独立写入 `t_backtest_*`，不得从实盘预测表拼历史结果。
 
 ### 2.1 预测流程（日度07:03 / 周度11:30）
 
@@ -132,7 +143,7 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
   → 通过 shared.input_artifacts 生成 historical_backtest 周频 weekly_output CSV 并读回
   → 周频内部调用统一 shared.data_service
   → 运行 scheme core 中的周频算法逻辑
-  → 按 feature_date 所在月份生成月度指标
+      → 按 target_date 所在月份生成月度指标
   → 写入对应 scheme_id 的 t_backtest_runs / t_backtest_predictions / t_backtest_monthly_metrics
   → 前端通过 /api/backtests/factor-lab 读取 canonical latest success run
 ```
@@ -151,6 +162,8 @@ CREATE TABLE t_scheme_predictions (
     horizon INT NOT NULL,
     predict_date DATE NOT NULL,
     target_date DATE NOT NULL,
+    -- feature_date 为统一业务语义，当前由 extra 承载；后续 DB 迁移应提升为显式列。
+    -- prediction_phase 标识 gray_live / scheduled_live；后续 DB 迁移应提升为显式列。
     predicted_direction TINYINT NOT NULL COMMENT '1=涨, -1=跌, 0=平',
     confidence FLOAT DEFAULT NULL,
     model_version VARCHAR(64) DEFAULT NULL,
@@ -396,6 +409,8 @@ class PredictionRecord:
 
 参数: `tenor`, `start_month`, `end_month`
 
+返回中的 `daily_rows` 必须包含平台业务字段 `feature_date`。实盘阶段应能标识 `prediction_phase`（`gray_live` / `scheduled_live`）；字段迁移前可由 `extra` 或后端派生提供，前端不得依赖 `anchor_date`。
+
 ```json
 {
   "scheme_id": "t5_daily",
@@ -452,7 +467,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 由FastAPI后端直接serve这个目录作为静态文件。
@@ -499,6 +514,7 @@ BOND_DB_NAME=bond_db
 3. 新方案先 `status: paused` dry-run，再改为 `active` 手动写库验证。
 4. `predict.py` 只返回 `PredictionRecord`，不直接写 `t_scheme_predictions`。
 5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要同步写入独立 backtest 表。
+6. 新增方案必须遵守 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)：回测 `predict_date=feature_date=T`，实盘 `predict_date=T+1/feature_date=T`，灰度实盘与正式实盘通过 `prediction_phase` 区分。
 
 ---
 

@@ -5,6 +5,7 @@
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
 > SOP 仍是人类执行手册；本文是机器契约。两者一致，本文更细、可判定。任何冲突以本文为准并回写 SOP。
+> `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的业务语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
 
 ---
 
@@ -35,7 +36,7 @@
 
 > 标注「新」的字段是本设计**新增的必填项**——让 harness 无需读算法即可知道输入口径、列要求、目标语义。现有方案在数据层重构阶段补齐这些字段。
 > `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
-> 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘分界按 `target_date >= 2026-06-01` 判定。
+> 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
 
 ```python
 # harness/contracts/config_schema.py（设计签名）
@@ -74,6 +75,13 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 
 `run(predict_date)` 返回 `list[PredictionRecord]`（定义见 `shared/models.py`）。`DryRunGate` 在 dry-run 输出的 JSON 上断言：
 
+日期语义（每条记录）：
+
+- 历史回测：`predict_date = feature_date = T`，`target_date = T + horizon`。
+- 灰度实盘：`prediction_phase = gray_live`，`predict_date = T + 1`，`feature_date = T`，`target_date = T + horizon`。
+- 正式实盘：`prediction_phase = scheduled_live`，`predict_date = T + 1`，`feature_date = T`，`target_date = T + horizon`。
+- `feature_date` 是平台对外唯一数据截止字段；`anchor_date` 不得作为业务字段使用。如为审计兼容保留在 `extra` 中，必须等于 `feature_date`。
+
 字段一致性（每条记录）：
 
 - `scheme_id == config.scheme_id`
@@ -92,6 +100,7 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 | weekly | `feature_week_id`, `target_week_id`, `feature_date`, `target_date`, `target_rule` |
 
 > 周频 `target_rule` 与 `t_scheme_weekly_actuals` / `WeeklyActualRecord.target_rule` 对齐，保证预测与实际方向口径一致。
+> 实盘落库必须能追溯 `prediction_phase`（`gray_live` / `scheduled_live`）。字段迁移落地前可临时通过 `extra.prediction_phase` 留证；平台契约字段名固定为 `prediction_phase`。
 
 `CompareGate` 中的 `max_confidence_abs_diff` / `mean_confidence_abs_diff` 是 original/current benchmark 对 `confidence` 字段的浮点差异统计；`1e-16` 量级属于浮点舍入误差，按 0 看待。方案行为一致性的硬门槛仍是 `predicted_direction` 逐样本零容差。
 
@@ -167,6 +176,8 @@ LiveGate 写库后，对该 `scheme_id` + `predict_date` 断言：
 | 值域 | `predicted_direction ∈ {1, -1, 0}` | 方向越界，污染准确率 |
 | 一致性 | `horizon == config.horizon`；`target_tenor ∈ config.tenors` | 方案身份漂移 |
 | 唯一性 | 无重复 `(scheme_id, target_tenor, horizon, target_date)` | 违反 `t_scheme_predictions` 当前业务 UK；同一 target 被重复展示 |
+| 阶段 | 实盘记录可判定 `prediction_phase ∈ {gray_live, scheduled_live}`；灰度补齐和 scheduler 自然发出不得混淆 | 前端和业务把灰度与正式实盘混算 |
+| 日期 | `feature_date` 存在；日频灰度/正式实盘满足 `feature_date < predict_date` 且 `target_date` 来自 `feature_date + horizon`；回测满足 `predict_date == feature_date` | T/T+1 语义混淆，可能数据泄漏 |
 | 受保护表 | 除 `t_scheme_predictions` / `t_scheme_run_log` 外，`PROTECTED_TABLES` 全部 `delta==0` | 越界写库 |
 
 > 每 scheme 行数快照可复用 `probes/table_guard.py::snapshot_scheme_counts`。
@@ -181,6 +192,7 @@ BacktestGate 去掉 `--no-persist` 落库后断言：
 | 表隔离 | 仅 `t_backtest_runs/_predictions/_monthly_metrics` 该 run 相关行增加 | 误写实盘表 |
 | 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
 | 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
+| 日期语义 | 回测 rows 必须满足 `predict_date == feature_date`，不得读取或复制灰度/正式实盘记录 | 用 T+1 实盘结果冒充 T 回测结果 |
 
 ### 7.3 与现有机制的关系
 

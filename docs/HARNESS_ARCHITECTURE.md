@@ -2,7 +2,7 @@
 
 **更新日期**: 2026-06-12
 
-本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。
+本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
 
 ---
 
@@ -63,7 +63,7 @@ bond-factor-lab/
 | `harness.input_gate` | 调用公共输入层生成主 artifact 和 `input_spec.auxiliary_inputs` 辅助 artifact，验证列、日期/month/week 覆盖、source 和 data_version，并在 `auxiliary_input_artifacts` 留证 | 不直接调用源表写入 |
 | `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表 | 不调用 `scheduler.executor` |
 | `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01` | 未授权不落 `t_backtest_*` |
-| `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护 | 不批量执行所有 active 方案 |
+| `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护；实盘记录必须可追溯 `prediction_phase` | 不批量执行所有 active 方案 |
 | `harness.report` | 输出 JSON/Markdown 证据到 `reports/harness/{scheme_id}/` | 不改业务状态 |
 
 CLI 标准入口:
@@ -142,7 +142,8 @@ python -m harness.cli check \
 - 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
 - 回测结论: `--no-persist` summary、样本数、准确率、月度分布。
-- 回测日期结论: 输出样本最早 `predict_date >= 2025-01-01`，同时灰度实盘切分仍按 `target_date >= 2026-06-01`。
+- 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足 `predict_date=T+1/feature_date=T`；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
+- 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；当前 V28 批次灰度观察区按 `target_date >= 2026-06-01` 判定，后续方案使用方案级生命周期配置。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。
 - 前端/API 结论: `/api/backtests/factor-lab` 或 `/api/metrics/{scheme_id}` 可读，矩阵格子不消失。
 - 文档结论: 当前状态、测试记录、历史复现或上线计划已更新。

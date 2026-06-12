@@ -3,7 +3,7 @@
 **更新日期**: 2026-06-12
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
-> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
+> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
 >
 > 新增方案入口先读 [SCHEME_ONBOARDING_T0.md](SCHEME_ONBOARDING_T0.md)，再按本文执行。本文是「改造进系统」段的人类执行手册。
 >
@@ -31,7 +31,13 @@
 
 > 以下约定是本次框架审查后强化的核心规则。所有代码层（后端查询、前端展示、回测计算、去重逻辑）和所有方案（现有及新增）必须统一遵守，不能出现口径不一致。
 
-**规则一：展示与分组只看 target_date，不用 predict_date**
+**规则一：三类日期字段只允许一种业务解释**
+- `predict_date` = 信号发出日 / 调度运行日。
+- `feature_date` = 数据截止日 / 预测站位日，是前端和业务统一使用的标准字段。
+- `target_date` = 验证目标日，用于展示、去重、actual join 和月度统计归属。
+- `anchor_date` 不作为业务字段使用；如果方案内部或审计 extra 保留，必须等于 `feature_date`。
+
+**规则二：展示与分组只看 target_date，不用 predict_date**
 - 前端的每日明细按 `target_date`（交易日）展示和分组。
 - 月度指标按 `target_date` 的月份计算。
 - 回测月度指标（`t_backtest_monthly_metrics`）同样按 `target_date` 月份分组。
@@ -47,7 +53,7 @@
 4. 回测 `_metric_month` 用 predict_date → 月度指标与前端明细口径不一致，样本数对不上。
 5. 新增方案或修改方案时必须同时检查这四处是否统一使用 target_date。
 
-**规则二：唯一键用 `(scheme_id, target_tenor, horizon, target_date)` + UPSERT**
+**规则三：唯一键用 `(scheme_id, target_tenor, horizon, target_date)` + UPSERT**
 - 禁止使用 `run_id` 作为唯一键组成部分。
 - 禁止使用 `predict_date` 作为唯一键组成部分。
 - 同一 `scheme_id + target_tenor + horizon + target_date` 只能有一条预测记录；新预测覆盖旧的。
@@ -57,28 +63,34 @@
 1. 旧 UK 用 `(scheme_id, target_tenor, predict_date, run_id)` → 同一 predict_date 的多笔预测（不同 run_id）都可以存在，前端出现重复行。
 2. Serving pointer 被覆盖 → 旧 prediction（不同 target_date）因指针指向新 run 而消失。
 
-**规则三：周度实盘预测不依赖目标周源数据是否存在**
+**规则四：周度实盘预测不依赖目标周源数据是否存在**
 - 周六执行预测时，下一周的数据可能尚未进入 `api_wind_weekly`。算法必须能在特征周数据可用但目标周数据不可用的情况下生成预测。
 - `predict.py` 中 `end_week` 必须设为 `current_week_id + N`（N ≥ 6），确保特征数据加载范围够大；`target_week_id` 始终取 `feature_week_id + 1`，不依赖数据是否存在。
 - `all_weeks_set` 检查不能作为"目标周必须存在"的硬拦条件；如果 `feature_week_id` 是数据中最新的周，允许以其下一周作为 target。
 
-**规则四：CompareGate 的 `skipped` 只表示"对比没有发生"，不是新增方案的通过证据**
+**规则五：CompareGate 的 `skipped` 只表示"对比没有发生"，不是新增方案的通过证据**
 - 框架层允许 ActivationGate 兼容 `skipped`，是为了支持没有原始基准的纯框架内实验方案；这不是普通新增方案可以跳过源文件对比的许可。
 - 只要方案来自原始脚本、原始输出文件或人工 benchmark，就必须设置 `backtest.benchmark_required: true`，四份 benchmark 文件齐全，并让 CompareGate 状态为 `passed`。
 - 对新增 source-backed 方案，`skipped` 必须视为流程未完成，不能进入激活。
 
-**规则五：灰度实盘起点和部署时间不是同一个概念**
-- 灰度实盘观察起点按 `target_date` 判定，当前为 `target_date >= 2026-06-01`。
-- 历史回测只覆盖灰度起点之前的 target；实盘区间通过 `t_scheme_predictions` 和 `/api/metrics/{scheme_id}` 展示。
+**规则六：灰度实盘起点和部署时间不是同一个概念**
+- 灰度实盘也算实盘，但必须标识 `prediction_phase=gray_live`；正式 scheduler 自然发出的实盘标识 `prediction_phase=scheduled_live`。
+- 灰度实盘观察起点按方案级 `target_date` 判定，当前 V28 批次为 `target_date >= 2026-06-01`。
+- 历史回测只覆盖灰度起点之前的 target；实盘区间通过 `t_scheme_predictions` 和 `/api/metrics/{scheme_id}` 展示，并应能区分灰度与正式实盘。
 - 前端“部署时间”（当前周度方案统一显示 `2026/06/10`）只是展示字段，不参与回测截断、实盘回补范围、月份归属或唯一键计算。
 
-**规则五补充：历史回测预测起点全平台统一为 2025-01-01**
+**规则六补充：历史回测预测起点全平台统一为 2025-01-01**
 - 参与历史排行的 daily/monthly 方案必须在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，并保证 runner 输出样本满足 `predict_date >= 2025-01-01`。
 - 参与历史排行的 weekly 方案必须在 `config.yaml` 写 `backtest.predict_start_date: "2025-01-01"`；`start_week/end_week` 仍表示输入、训练和模型更新所需的历史周范围，可以早于 2025 年。
 - 模型 warmup、训练样本、因子筛选、定期更新模型所需的数据可以早于 `2025-01-01`。禁止为了统一回测样本数而截断这些历史输入。
-- 灰度实盘分界仍按 `target_date >= 2026-06-01`；不要用 `predict_date` 或部署时间切 live/backtest 区间。
+- 灰度实盘分界仍按方案级 `target_date` 起点；不要用 `predict_date` 或部署时间切 live/backtest 区间。
 
-**规则六：`confidence` 是算法输出数值的统一承接字段**
+**规则七：灰度补齐只能使用 feature_date 及以前数据**
+- 灰度补齐虽然是事后运行，但每条记录仍必须满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`。
+- 输入 artifact、辅助周/月映射、模型训练窗口都不得越过 `feature_date`。
+- 当前 DB 可能已经拥有 `T+1` 或更晚数据；补齐逻辑必须显式以 `feature_date` 约束数据，不能只依赖当前 DB 最新状态。
+
+**规则八：`confidence` 是算法输出数值的统一承接字段**
 - `confidence` 用来承接原始算法已有的置信度、概率或分数；不是平台为模型重新生成的新信号。
 - CompareGate 的 `max_confidence_abs_diff` 是 original/current benchmark 两侧 `confidence` 的最大绝对差。`1e-16` 量级属于浮点舍入误差，视为 0。
 - 如果原始算法没有天然 `confidence`，必须在 source/current 两侧使用同一确定性映射，并在 `CURRENT_STATUS.md` 说明。
@@ -550,18 +562,20 @@ LIMIT 5;
 
 执行顺序建议：Step 7（回测落库）→ Step 10a（源 vs 入库对比 + benchmark 文件）→ 重跑 `harness onboard --stage all` 确认 CompareGate passed → Step 10（激活）。
 
-**Step 10b（强制，不允许遗漏）：激活后必须回补实盘预测，覆盖 target_date 从灰度起点（2026-06-01）到当前**
+**Step 10b（强制，不允许遗漏）：激活后必须回补灰度实盘预测，覆盖 target_date 从灰度起点（2026-06-01）到当前**
 
-> **背景**（2026-06-10 实际遗漏案例）：`weekly_7y_cross_d_overlay_0529` 激活后没有回补实盘预测，导致前端没有"实盘发出起点"分隔线，也缺少 6月6日预测的 06/12"待验证"行。所有方案在前端必须有连续的实盘观察序列，从灰度起点开始。
+> **背景**（2026-06-10 实际遗漏案例）：`weekly_7y_cross_d_overlay_0529` 激活后没有回补实盘预测，导致前端没有"实盘发出起点"分隔线，也缺少 6月6日预测的 06/12"待验证"行。所有方案在前端必须有连续的实盘观察序列，从灰度起点开始。灰度也算实盘，但必须标识为 `gray_live`。
 
 回补规则：
 
-1. **回补范围**：所有 `target_date >= 2026-06-01`（灰度观察起点）至今应当存在的实盘预测。
+1. **回补范围**：所有 `target_date >= 2026-06-01`（当前 V28 批次灰度观察起点）至今应当存在的实盘预测。后续方案使用方案级灰度起点，不写死全局日期。
    - 日频方案：每个交易日一条（从 6月1日 或激活日中较早者开始反推 predict_date）。
    - 周频方案：以 `target_date` 为准枚举应有目标周，再反推对应调度日；不要只从灰度起点之后的 `predict_date` 开始枚举。
    - 例：灰度起点为 2026-06-01 时，周度 2026-06 的第一条目标周是 `target_date=2026-06-05`，其预测发出日是上一轮周六 `predict_date=2026-05-30`；下一条才是 `predict_date=2026-06-06 -> target_date=2026-06-12`。
 2. **predict_date 取调度日历上应当发出的日期**，允许早于灰度起点（只要其 `target_date` 落在灰度起点之后），不允许全部填当前日期。
-3. **执行方式**：用 `scheduler.executor.execute_scheme(cfg, '<predict_date>')` 按时间顺序逐个补跑。例如周度方案补 2026-06 首两周：
+3. **feature_date 是硬截止**：灰度补齐时必须证明 `feature_date=T`，且所有输入 artifact、辅助周/月映射和模型训练窗口均不越过 `feature_date`；禁止因为当前 DB 已有 `T+1` 或更晚数据而读入未来信息。
+4. **阶段标识**：补齐记录必须标识为 `prediction_phase=gray_live`；正式 scheduler 自然发出的记录标识为 `prediction_phase=scheduled_live`。
+5. **执行方式**：用 `scheduler.executor.execute_scheme(cfg, '<predict_date>')` 按时间顺序逐个补跑，并在写库链路中保留 `prediction_phase`。例如周度方案补 2026-06 首两周：
 
 ```bash
 conda run -n bond_factor_lab_service python -c "
@@ -576,9 +590,11 @@ print(result)
 "
 ```
 
-4. **验收点**：
+6. **验收点**：
    - [ ] DB 中该方案的实盘预测 target_date 连续覆盖 2026-06-01 至今的全部应有周期。
    - [ ] 周频方案首个 6 月 target（如 2026-06-05）没有因为 `predict_date` 在 5 月（如 2026-05-30）而被漏掉。
+   - [ ] 每条补齐记录有 `feature_date`，且前端/业务不依赖 `anchor_date`。
+   - [ ] 灰度补齐记录可判定为 `prediction_phase=gray_live`，不与 `scheduled_live` 混淆。
    - [ ] 前端出现"实盘发出起点"分隔线（前端按第一条实盘 target 月份自动反推：周度=月首日前的周六，日频=第一条 predict_date）。
    - [ ] 尚无 actuals 的 target 显示"待验证"（参考 5Y 周度方案的 06/12 行）。
    - [ ] 回补的预测在 `t_scheme_run_log` 有对应运行记录。
