@@ -133,7 +133,9 @@ class StartupSyncTests(unittest.TestCase):
             main, "sync_registry_from_configs", side_effect=RuntimeError("db down")
         ):
             # 启动同步失败不应抛出（仅记录日志）。
-            main._sync_registry_on_startup()
+            with self.assertLogs("backend.main", level="ERROR") as logs:
+                main._sync_registry_on_startup()
+        self.assertIn("Registry sync on startup failed", "\n".join(logs.output))
 
 
 class AuthDependencyWiredTests(unittest.TestCase):

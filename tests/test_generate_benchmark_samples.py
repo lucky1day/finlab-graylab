@@ -138,10 +138,13 @@ class GenerateBenchmarkSamplesTests(unittest.TestCase):
     def test_main_requires_run_id_or_scheme_id_and_benchmark_id(self) -> None:
         from scripts import generate_benchmark_samples
 
-        with self.assertRaises(SystemExit) as ctx:
-            generate_benchmark_samples.main([])
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as ctx:
+                generate_benchmark_samples.main([])
 
         self.assertNotEqual(ctx.exception.code, 0)
+        self.assertIn("provide either --run-id", stderr.getvalue())
 
     def test_generate_selects_single_canonical_latest_run(self) -> None:
         from scripts import generate_benchmark_samples

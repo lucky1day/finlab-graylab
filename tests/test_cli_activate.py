@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import tempfile
 import unittest
@@ -41,9 +43,13 @@ class CliActivateTest(unittest.TestCase):
             os.environ["HARNESS_AUTH_SECRET"] = self._prev_secret
         self._tmp.cleanup()
 
+    def _run_cli(self, argv: list[str]) -> int:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return main(argv)
+
     def test_activate_without_token_blocked(self) -> None:
         _scaffold_scheme(self.root, status="paused")
-        code = main(
+        code = self._run_cli(
             ["activate", "--scheme-id", "t5_daily", "--project-root", str(self.root)]
         )
         self.assertEqual(code, 2)
@@ -52,7 +58,7 @@ class CliActivateTest(unittest.TestCase):
         config_path = _scaffold_scheme(self.root, status="paused")
         token = issue_token("t5_daily", "activate")
         with patch("harness.gates.activate_gate._verify_gate_history", return_value=[]):
-            code = main(
+            code = self._run_cli(
                 [
                     "activate",
                     "--scheme-id",
@@ -69,7 +75,7 @@ class CliActivateTest(unittest.TestCase):
 
     def test_activate_invalid_token_blocked(self) -> None:
         _scaffold_scheme(self.root, status="paused")
-        code = main(
+        code = self._run_cli(
             [
                 "activate",
                 "--scheme-id",

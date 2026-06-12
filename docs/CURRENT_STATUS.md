@@ -76,7 +76,7 @@ S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid
 - **S6 回测不可变**：每次回测 append 新 `backtest_run_id`，`v_latest_backtest_run` 只返回同一 `benchmark_id + scheme_id + data_source` 下最新的 `status='success'` run（按 `updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性，不参与 latest 分组。
 - **S7 backend 读切换**：GET 预测直接读 `t_scheme_predictions` 并按 `target_date` 去重/分组；响应透出 `run_id`/`scheme_version`/`input_artifact_hash` 可追溯字段，保持只读。
 
-**三条不变量经独立核验全部守住**：core 纯净（`schemes/*/core` 未被污染）、写库单点（新增写库仅在 `scheduler.repository` / `backtests.repository` / `harness.persistence`）、GET 只读。**全套单测 165/165 通过**（服务环境 `bond_factor_lab_service`），并经多轮 scratch MySQL 验证迁移幂等、同一业务键 UPSERT、回测 append/latest view、留痕与 trace 字段。
+**三条不变量经独立核验全部守住**：core 纯净（`schemes/*/core` 未被污染）、写库单点（新增写库仅在 `scheduler.repository` / `backtests.repository` / `harness.persistence`）、GET 只读。**全套单测 236/236 通过**（服务环境 `bond_factor_lab_service`），并经多轮 scratch MySQL 验证迁移幂等、同一业务键 UPSERT、回测 append/latest view、留痕与 trace 字段。
 
 ## 已完成
 
@@ -126,15 +126,15 @@ S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid
 | `t_trade_calendar` | 6,209 |
 | `t_pre_market_forecast` | 930 |
 | `t_shap` | 28,147 |
-| `t_scheme_predictions` | 85 |
-| `t_scheme_actuals` | 13,919 |
+| `t_scheme_predictions` | 92 |
+| `t_scheme_actuals` | 13,927 |
 | `t_scheme_weekly_actuals` | 2,927 |
 | `t_scheme_registry` | 6 |
-| `t_scheme_run_log` | 63 |
+| `t_scheme_run_log` | 66 |
 | `t_target_registry` | 4 |
-| `t_backtest_runs` | 33 |
-| `t_backtest_predictions` | 31,222 |
-| `t_backtest_monthly_metrics` | 2,226 |
+| `t_backtest_runs` | 34 |
+| `t_backtest_predictions` | 31,555 |
+| `t_backtest_monthly_metrics` | 2,243 |
 | `t_backtest_reproduction_checks` | 7 |
 | `bfl_probe_*` 影子表 | 0 |
 
