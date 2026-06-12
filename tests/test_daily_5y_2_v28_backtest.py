@@ -42,6 +42,17 @@ class Daily5Y2BacktestTests(unittest.TestCase):
         self.assertEqual(summary["row_count"], 18)
         self.assertEqual(summary["eval_samples"], 14)
 
+    def test_backtest_end_covers_may_target_month_before_live_cutoff(self) -> None:
+        from backtests import daily_5y_2_v28_reproduction as runner
+
+        project_root = Path(__file__).resolve().parents[1]
+        config_text = (project_root / "schemes" / "daily_5y_2_v28" / "config.yaml").read_text(encoding="utf-8")
+
+        self.assertEqual(runner.BACKTEST_INPUT_END, "2026-05-29")
+        self.assertEqual(runner.BACKTEST_END, "2026-05-29")
+        self.assertEqual(runner.LIVE_TARGET_CUTOFF, "2026-06-01")
+        self.assertIn('end_date: "2026-05-29"', config_text)
+
     def test_build_backtest_rows_use_anchor_predict_date_and_target_date_filter(self) -> None:
         from backtests import daily_5y_2_v28_reproduction as runner
 

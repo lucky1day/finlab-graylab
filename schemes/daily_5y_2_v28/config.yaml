@@ -73,4 +73,4 @@ backtest:
   data_source: framework_db_aligned
   benchmark_required: true
   start_date: "2025-01-01"
-  end_date: "2026-04-30"
+  end_date: "2026-05-29"
