@@ -639,10 +639,9 @@ def backtest_factor_lab_results(
         """
         SELECT id, benchmark_id, scheme_id, data_source, start_date, end_date,
                status, summary, report_path, created_at, updated_at
-        FROM t_backtest_runs
+        FROM v_latest_backtest_run
         WHERE (:benchmark_id IS NULL OR benchmark_id = :benchmark_id)
           AND data_source = :data_source
-          AND status = 'success'
         ORDER BY scheme_id, updated_at DESC, id DESC
         """
     )

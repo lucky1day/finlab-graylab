@@ -352,13 +352,19 @@ CompareGate 需要四份 benchmark 样本文件来验证平台改造后的输出
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。CompareGate 当前按 `predict_date + tenor` 对齐预测样本；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
-如果方案已有历史回测数据写入 `t_backtest_*` 表，可以直接用以下脚本从数据库提取样本：
+如果方案已有历史回测数据写入 `t_backtest_*` 表，可以用以下脚本从数据库提取样本。必须显式指定 `--run-id`，或同时指定 `--scheme-id --benchmark-id --data-source`，避免把多个 benchmark 或旧 run 混成一份 CompareGate 基准：
 
 ```bash
-conda run -n bond_factor_lab_service python scripts/generate_benchmark_samples.py
+conda run -n bond_factor_lab_service python scripts/generate_benchmark_samples.py \
+  --scheme-id daily_5y_2_v28 \
+  --benchmark-id v28_daily_5y_2 \
+  --data-source framework_db_aligned
+
+# 或者显式锁定某一次 run：
+conda run -n bond_factor_lab_service python scripts/generate_benchmark_samples.py --run-id 93
 ```
 
-该脚本会根据 `v_latest_backtest_run` 视图自动提取最新回测结果，生成四份 benchmark 文件。
+该脚本根据 `v_latest_backtest_run` 的 canonical latest success 语义提取单一 run，生成四份 benchmark 文件；若无法唯一定位 run，会 fail-closed 并拒绝写文件。
 
 ### Step 6: Dry-run Gate - 本地 dry-run，不写库
 

@@ -136,7 +136,7 @@ def latest_backtest_run_id(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> int | None:
-    """读取指定 scope 的最新 backtest_run_id。"""
+    """读取 canonical latest success backtest_run_id。"""
     filters = [
         "benchmark_id = :benchmark_id",
         "scheme_id = :scheme_id",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +8,13 @@ from sqlalchemy import create_engine, text
 
 
 class BacktestFactorLabReadonlyTests(unittest.TestCase):
+    def test_factor_lab_query_reads_canonical_latest_view(self) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        source = inspect.getsource(backtest_factor_lab_results)
+        self.assertIn("FROM v_latest_backtest_run", source)
+        self.assertNotIn("FROM t_backtest_runs", source)
+
     def test_factor_lab_results_do_not_sync_scheme_registry(self) -> None:
         from backend.services import backtest_factor_lab_results
 
@@ -62,6 +70,24 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                         created_at TEXT,
                         updated_at TEXT
                     )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE VIEW v_latest_backtest_run AS
+                    SELECT *
+                    FROM (
+                        SELECT r.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY benchmark_id, scheme_id, data_source
+                                   ORDER BY updated_at DESC, id DESC
+                               ) AS rn
+                        FROM t_backtest_runs r
+                        WHERE status = 'success'
+                    ) ranked
+                    WHERE rn = 1
                     """
                 )
             )
@@ -247,6 +273,24 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
             conn.execute(
                 text(
                     """
+                    CREATE VIEW v_latest_backtest_run AS
+                    SELECT *
+                    FROM (
+                        SELECT r.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY benchmark_id, scheme_id, data_source
+                                   ORDER BY updated_at DESC, id DESC
+                               ) AS rn
+                        FROM t_backtest_runs r
+                        WHERE status = 'success'
+                    ) ranked
+                    WHERE rn = 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
                     CREATE TABLE t_backtest_monthly_metrics (
                         run_id INTEGER,
                         target_tenor TEXT,
@@ -364,6 +408,223 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         v28 = [scheme for scheme in result["schemes"] if scheme["scheme_id"] == "daily_5y_2_v28"][0]
         self.assertEqual(v28["run_id"], 92)
         self.assertEqual(len(v28["monthly_metrics"]), 1)
+
+    def test_factor_lab_uses_canonical_latest_success_run_per_benchmark_scheme_source(self) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_target_registry (
+                        target_code TEXT,
+                        display_name TEXT,
+                        asset_class TEXT,
+                        target_type TEXT,
+                        sort_order INTEGER,
+                        status TEXT,
+                        extra TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_scheme_registry (
+                        scheme_id TEXT,
+                        name TEXT,
+                        description TEXT,
+                        horizon INTEGER,
+                        tenors TEXT,
+                        frequency TEXT,
+                        schedule_cron TEXT,
+                        schedule_timezone TEXT,
+                        status TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_runs (
+                        id INTEGER,
+                        benchmark_id TEXT,
+                        scheme_id TEXT,
+                        data_source TEXT,
+                        start_date TEXT,
+                        end_date TEXT,
+                        status TEXT,
+                        summary TEXT,
+                        report_path TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE VIEW v_latest_backtest_run AS
+                    SELECT *
+                    FROM (
+                        SELECT r.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY benchmark_id, scheme_id, data_source
+                                   ORDER BY updated_at DESC, id DESC
+                               ) AS rn
+                        FROM t_backtest_runs r
+                        WHERE status = 'success'
+                    ) ranked
+                    WHERE rn = 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_monthly_metrics (
+                        run_id INTEGER,
+                        target_tenor TEXT,
+                        horizon INTEGER,
+                        month TEXT,
+                        sample_count INTEGER,
+                        correct_count INTEGER,
+                        accuracy REAL,
+                        up_precision REAL,
+                        up_recall REAL,
+                        down_precision REAL,
+                        down_recall REAL,
+                        actual_dist TEXT,
+                        predicted_dist TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_predictions (
+                        run_id INTEGER,
+                        target_tenor TEXT,
+                        horizon INTEGER,
+                        predict_date TEXT,
+                        feature_date TEXT,
+                        target_date TEXT,
+                        label INTEGER,
+                        predicted_direction INTEGER,
+                        confidence REAL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_target_registry
+                        (target_code, display_name, asset_class, target_type, sort_order,
+                         status, extra, created_at, updated_at)
+                    VALUES
+                        ('5Y', '5Y国债活跃', 'bond', 'active_treasury', 2, 'active', '{}', NULL, NULL),
+                        ('10Y', '10Y国债活跃', 'bond', 'active_treasury', 4, 'active', '{}', NULL, NULL)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, name, description, horizon, tenors, frequency,
+                         schedule_cron, schedule_timezone, status)
+                    VALUES
+                        ('daily_5y_2_v28', 'V28日频5Y方案2', '新基准方案', 5, '["5Y"]',
+                         'daily', '3 7 * * 1-5', 'Asia/Shanghai', 'active'),
+                        ('weekly_10y_d_overlay_0529', '周度10Y方案', '周度方案', 6, '["10Y"]',
+                         'weekly', '30 11 * * 6', 'Asia/Shanghai', 'active')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_runs
+                        (id, benchmark_id, scheme_id, data_source, start_date, end_date,
+                         status, summary, report_path, created_at, updated_at)
+                    VALUES
+                        (92, 'v28_daily_5y_2', 'daily_5y_2_v28',
+                         'framework_db_aligned', '2024-07-01', '2026-04-23',
+                         'success', '{}', NULL, NULL, '2026-06-12T02:31:03'),
+                        (93, 'v28_daily_5y_2', 'daily_5y_2_v28',
+                         'framework_db_aligned', '2025-01-02', '2026-05-22',
+                         'success', '{}', NULL, NULL, '2026-06-12T13:56:12'),
+                        (94, 'v28_daily_5y_2', 'daily_5y_2_v28',
+                         'framework_db_aligned', '2025-01-02', '2026-05-23',
+                         'failed', '{}', NULL, NULL, '2026-06-12T14:56:12'),
+                        (90, 'model_muti_0529', 'weekly_10y_d_overlay_0529',
+                         'framework_db_aligned', '2025-07-05', '2026-06-06',
+                         'success', '{}', NULL, NULL, '2026-06-11T09:00:00'),
+                        (91, 'model_muti_0529', 'weekly_10y_d_overlay_0529',
+                         'framework_db_aligned', '2025-07-05', '2026-05-23',
+                         'success', '{}', NULL, NULL, '2026-06-11T10:00:00')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_monthly_metrics
+                        (run_id, target_tenor, horizon, month, sample_count, correct_count,
+                         accuracy, up_precision, up_recall, down_precision, down_recall,
+                         actual_dist, predicted_dist)
+                    VALUES
+                        (92, '5Y', 5, '2026-04', 21, 11, 0.524, NULL, NULL, NULL, NULL, :dist, :dist),
+                        (93, '5Y', 5, '2026-05', 13, 10, 0.769, NULL, NULL, NULL, NULL, :dist, :dist),
+                        (94, '5Y', 5, '2026-06', 1, 1, 1.0, NULL, NULL, NULL, NULL, :dist, :dist),
+                        (90, '10Y', 6, '2026-06', 2, 1, 0.5, NULL, NULL, NULL, NULL, :dist, :dist),
+                        (91, '10Y', 6, '2026-05', 4, 3, 0.75, NULL, NULL, NULL, NULL, :dist, :dist)
+                    """
+                ),
+                {"dist": '{"up":0,"down":1,"flat":0}'},
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_predictions
+                        (run_id, target_tenor, horizon, predict_date, feature_date,
+                         target_date, label, predicted_direction, confidence)
+                    VALUES
+                        (92, '5Y', 5, '2026-04-23', '2026-04-23', '2026-04-30', -1, -1, 1.0),
+                        (93, '5Y', 5, '2026-05-22', '2026-05-22', '2026-05-29', -1, -1, 1.0),
+                        (94, '5Y', 5, '2026-05-23', '2026-05-23', '2026-06-01', -1, -1, 1.0),
+                        (90, '10Y', 6, '2026-06-06', '2026-06-05', '2026-06-12', -1, -1, 0.4),
+                        (91, '10Y', 6, '2026-05-23', '2026-05-22', '2026-05-29', -1, -1, 0.4)
+                    """
+                )
+            )
+
+        v28_result = backtest_factor_lab_results(
+            engine,
+            benchmark_id="v28_daily_5y_2",
+            data_source="framework_db_aligned",
+        )
+        v28 = v28_result["schemes"][0]
+        self.assertEqual(v28["run_id"], 93)
+        self.assertEqual(v28["start_date"], "2025-01-02")
+        self.assertEqual([row["month"] for row in v28["monthly_metrics"]], ["2026-05"])
+
+        weekly_result = backtest_factor_lab_results(
+            engine,
+            benchmark_id="model_muti_0529",
+            data_source="framework_db_aligned",
+        )
+        weekly = weekly_result["schemes"][0]
+        self.assertEqual(weekly["run_id"], 91)
+        self.assertEqual([row["month"] for row in weekly["monthly_metrics"]], ["2026-05"])
 
 
 if __name__ == "__main__":

@@ -99,6 +99,46 @@ class ImmutableBacktestRepositoryTests(unittest.TestCase):
         self.assertIn("v_latest_backtest_run", sql)
         self.assertEqual(params["benchmark_id"], "demo_benchmark")
         self.assertEqual(params["scheme_id"], "demo_daily")
+        self.assertNotIn("start_date", sql)
+        self.assertNotIn("end_date", sql)
+
+    def test_latest_backtest_run_query_allows_explicit_window_filter(self) -> None:
+        from backtests.repository import latest_backtest_run_id
+
+        class Result:
+            def scalar_one_or_none(self):
+                return None
+
+        class Connection(_Connection):
+            def execute(self, sql, params=None):
+                self._store.setdefault("calls", []).append((str(sql), params))
+                return Result()
+
+        class Begin(_Begin):
+            def __enter__(self) -> Connection:
+                return Connection(self._store)
+
+        class Engine(_Engine):
+            def begin(self) -> Begin:
+                return Begin(self.store)
+
+        engine = Engine()
+        run_id = latest_backtest_run_id(
+            engine,
+            benchmark_id="demo_benchmark",
+            scheme_id="demo_daily",
+            data_source="framework_db_aligned",
+            start_date="2025-01-02",
+            end_date="2026-05-22",
+        )
+
+        sql, params = engine.store["calls"][0]
+        self.assertIsNone(run_id)
+        self.assertIn("v_latest_backtest_run", sql)
+        self.assertIn("start_date = :start_date", sql)
+        self.assertIn("end_date = :end_date", sql)
+        self.assertEqual(params["start_date"], "2025-01-02")
+        self.assertEqual(params["end_date"], "2026-05-22")
 
 
 if __name__ == "__main__":

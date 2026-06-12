@@ -66,14 +66,14 @@
 
 ### P1 — 灰度实验室数据模型（已完成，独立验证通过）
 
-S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid_uk.sql` / `007_backtest_immutable.sql`：
+S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid_uk.sql` / `007_backtest_immutable.sql`；2026-06-12 追加 `009_backtest_latest_view.sql`，把历史回测 latest 语义统一到前端/API 口径。
 
 - **S1 生命周期表**：新增 `t_scheme_versions`、`t_harness_runs`、`t_harness_gate_results`、`t_input_artifacts`、`t_scheme_runs`；历史迁移中存在的 serving pointer 不再作为读取依赖。
 - **S2 输入产物指纹**：`InputArtifact` 增 `content_hash`/`schema_hash`/`artifact_id`/`source_watermark`，经 `scheduler.repository.upsert_input_artifact` 幂等落 `t_input_artifacts`。
 - **S3 实盘预测唯一口径**：每次运行生成 `run_id` 留痕，但业务唯一键按 `(scheme_id, target_tenor, horizon, target_date)` + UPSERT 保持同一目标点唯一；`predict_date` 只记录调度发出日。
 - **S4 方案版本**：`shared.versioning` 计算 `code_hash`/`config_hash`/`manifest_hash`，落 `t_scheme_versions`。
 - **S5 harness 留痕**：`harness.persistence` 把每次 run 与每个 gate 结果落 `t_harness_runs`/`t_harness_gate_results`（仅写这两表，DB 不可用时降级本地 JSON）。
-- **S6 回测不可变**：每次回测 append 新 `backtest_run_id`，新增 `v_latest_backtest_run` 视图把"最新"改为查询语义，不再覆盖。
+- **S6 回测不可变**：每次回测 append 新 `backtest_run_id`，`v_latest_backtest_run` 只返回同一 `benchmark_id + scheme_id + data_source` 下最新的 `status='success'` run（按 `updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性，不参与 latest 分组。
 - **S7 backend 读切换**：GET 预测直接读 `t_scheme_predictions` 并按 `target_date` 去重/分组；响应透出 `run_id`/`scheme_version`/`input_artifact_hash` 可追溯字段，保持只读。
 
 **三条不变量经独立核验全部守住**：core 纯净（`schemes/*/core` 未被污染）、写库单点（新增写库仅在 `scheduler.repository` / `backtests.repository` / `harness.persistence`）、GET 只读。**全套单测 165/165 通过**（服务环境 `bond_factor_lab_service`），并经多轮 scratch MySQL 验证迁移幂等、同一业务键 UPSERT、回测 append/latest view、留痕与 trace 字段。
@@ -181,7 +181,7 @@ DB 中旧周频回测 run 已清理；当前新接入的周频方案 `weekly_5y_
 
 `weekly_10y_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`91`，`t_backtest_predictions` 46 条、`t_backtest_monthly_metrics` 11 条；整体样本 46、正确 31、accuracy=67.4%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=10Y`、overall=67.4，历史回测月份截止到 2026-05，2026-06 不再出现在 backtest monthly rows。该周频方案已补齐源文件原始回测 benchmark：`original_predictions_sample.csv` / `current_predictions_sample.csv` 各 45 条，`original_backtest_summary.json` / `current_backtest_summary.json` 按 `target_date` 覆盖 12 个目标月；CompareGate 最新证据为 direction_match_rate=1.0、max_confidence_abs_diff=`1.1102230246251565e-16`、missing/extra=0，confidence 来源为 `d_prob_up`（score/model2 overlay 后概率）。
 
-`daily_5y_2_v28` 已完成历史回测落库，最新 `framework_db_aligned` run_id=`93`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条；整体样本 333、正确 163、accuracy=48.9%，`evaluation_filter.date_field=target_date`。历史回测已截断到 `target_date < 2026-06-01`，predict_date 范围为 `2025-01-02` 到 `2026-05-22`，target_date 范围为 `2025-01-09` 到 `2026-05-29`；`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 返回 `daily_5y_2_v28:5Y:framework_db_aligned`，run_id=`93`，DB↔API 月度格 17/17 一致。其中 2026-05 目标月 13 个样本、正确 10 个、accuracy=76.9%。
+`daily_5y_2_v28` 已完成历史回测落库，最新 `framework_db_aligned` run_id=`93`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条；整体样本 333、正确 163、accuracy=48.9%，`evaluation_filter.date_field=target_date`。历史回测已截断到 `target_date < 2026-06-01`，predict_date 范围为 `2025-01-02` 到 `2026-05-22`，target_date 范围为 `2025-01-09` 到 `2026-05-29`；`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 返回 `daily_5y_2_v28:5Y:framework_db_aligned`，run_id=`93`，DB↔API 月度格 17/17 一致。其中 2026-05 目标月 13 个样本、正确 10 个、accuracy=76.9%。旧 run_id=`92` 仍保留为审计历史，但不再被 `v_latest_backtest_run` 或前端 latest 查询选中。
 
 2026-06-10 已按 `target_date` 月度口径重跑日频和周频回测，最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `82/83/84`，`t1_daily` baseline/framework-csv/framework-db 分别为 `85/86/87`，`weekly_5y_direct_0529` framework-db 为 `81`，`weekly_7y_cross_d_overlay_0529` framework-db 为 `89`；2026-06-11 新增并修正 `weekly_10y_d_overlay_0529` framework-db 为 `91`。`canonical_csv_vs_upstream_db_generated` 最新数据检查的整体状态仍为 `failed`，失败来自非目标字段/静态 CSV 与源 DB 的缺失及微小数值差异；目标列 `TB0YWI0C/TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C` 最大差异均为 0，且 `framework_db_comparison` 为 0 mismatch。
 
