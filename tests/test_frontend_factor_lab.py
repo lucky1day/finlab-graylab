@@ -400,6 +400,106 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertIn("/api/schemes", result["calls"])
         self.assertIn("/api/backtests/factor-lab", result["calls"])
 
+    def test_daily_v28_backtest_and_live_start_are_visible_together(self) -> None:
+        """V28 新 benchmark 的回测月度行应与实盘发出起点一起展示。"""
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "daily_5y_2_v28",
+                    name: "V28日频5Y方案2",
+                    status: "active",
+                    horizon: 5,
+                    frequency: "daily",
+                    tenors: ["5Y"]
+                  }
+                ]
+              },
+              "/api/metrics/daily_5y_2_v28?tenor=5Y": {
+                scheme_id: "daily_5y_2_v28",
+                tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [
+                  { month: "2026-06", samples: 8, correct: 4, accuracy: 50.0, overall: 50.0,
+                    up_precision: 75, up_recall: 75, down_precision: 100, down_recall: 25,
+                    actual_dist: { up: 4, down: 4, flat: 0 },
+                    predicted_dist: { up: 4, down: 1, flat: 3 } }
+                ],
+                daily_rows: [
+                  {
+                    target_tenor: "5Y",
+                    horizon: 5,
+                    predict_date: "2026-05-26",
+                    feature_date: "2026-05-25",
+                    target_date: "2026-06-01",
+                    predicted_direction: -1,
+                    actual_direction: -1,
+                    is_correct: true,
+                    confidence: 1.0
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    id: "daily_5y_2_v28:5Y:framework_db_aligned",
+                    run_id: 92,
+                    benchmark_id: "v28_daily_5y_2",
+                    scheme_id: "daily_5y_2_v28",
+                    scheme_name: "V28日频5Y方案2",
+                    name: "V28日频5Y方案2 · 5Y国债活跃",
+                    tenor: "5Y",
+                    target_label: "5Y国债活跃",
+                    horizon: 5,
+                    frequency: "daily",
+                    status: "complete",
+                    benchmark_label: "v28_daily_5y_2",
+                    data_source_label: "framework_db_aligned",
+                    monthly_metrics: [
+                      { month: "2026-04", samples: 21, correct: 11, accuracy: 52.4, overall: 52.4,
+                        up_precision: 0, up_recall: 0, down_precision: 61.1, down_recall: 78.6,
+                        actual_dist: { up: 5, down: 14, flat: 2 },
+                        predicted_dist: { up: 2, down: 18, flat: 1 } }
+                    ],
+                    daily_rows: []
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              selectedTaskKey: hooks.getFactorLabState().selectedTaskKey,
+              liveSinceDate: scheme && scheme.liveSinceDate,
+              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month + ":" + r._source; }) : [],
+              detailMeta: document.getElementById("factorDetailMeta").textContent
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "merged")
+        self.assertEqual(result["selectedTaskKey"], "5Y|daily|T+5")
+        self.assertEqual(result["liveSinceDate"], "2026-05-26")
+        self.assertEqual(result["months"], ["2026-04:backtest", "2026-06:live"])
+        self.assertIn("实盘发出起点 2026-05-26", result["detailMeta"])
+
     def test_same_month_backtest_and_live_split_into_two_rows(self) -> None:
         """同月既有回测又有实盘时，应展示两行（回测行 + 实盘行），不覆盖。"""
         result = _run_factor_lab_hook(

@@ -156,7 +156,9 @@ def _target_label(target_tenor: str, labels: dict[str, str] | None = None) -> st
     return labels.get(str(target_tenor), str(target_tenor))
 
 
-def _backtest_benchmark_label(benchmark_id: str) -> str:
+def _backtest_benchmark_label(benchmark_id: str | None) -> str:
+    if benchmark_id in (None, "", "all"):
+        return "全部历史基准"
     return BACKTEST_BENCHMARK_LABELS.get(str(benchmark_id), str(benchmark_id))
 
 
@@ -626,7 +628,7 @@ def _is_weekly_metric(horizon: Any, extra: dict[str, Any]) -> bool:
 
 def backtest_factor_lab_results(
     engine: Engine,
-    benchmark_id: str = "model_muti_0529",
+    benchmark_id: str | None = None,
     data_source: str = "framework_db_aligned",
 ) -> dict[str, Any]:
     """返回前端方案矩阵可直接展示的最新历史回测结果。"""
@@ -638,7 +640,7 @@ def backtest_factor_lab_results(
         SELECT id, benchmark_id, scheme_id, data_source, start_date, end_date,
                status, summary, report_path, created_at, updated_at
         FROM t_backtest_runs
-        WHERE benchmark_id = :benchmark_id
+        WHERE (:benchmark_id IS NULL OR benchmark_id = :benchmark_id)
           AND data_source = :data_source
           AND status = 'success'
         ORDER BY scheme_id, updated_at DESC, id DESC
@@ -707,7 +709,7 @@ def backtest_factor_lab_results(
             )
 
     return {
-        "benchmark_id": benchmark_id,
+        "benchmark_id": benchmark_id or "all",
         "benchmark_label": _backtest_benchmark_label(benchmark_id),
         "data_source": data_source,
         "data_source_label": _backtest_data_source_label(data_source),

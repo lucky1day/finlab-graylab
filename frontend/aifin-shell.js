@@ -1444,7 +1444,13 @@
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
     if (title) title.textContent = "选中方案详情：" + task.label;
-    if (meta) meta.textContent = scheme ? scheme.name : "该任务格子下暂无可查看方案。";
+    if (meta) {
+      if (scheme) {
+        meta.textContent = scheme.name + (scheme.liveSinceDate ? " · " + liveDividerText(scheme, task) : "");
+      } else {
+        meta.textContent = "该任务格子下暂无可查看方案。";
+      }
+    }
 
     var start = (factorLabState.page - 1) * factorLabState.pageSize;
     var visibleRows = getVisibleFactorMonthRows();

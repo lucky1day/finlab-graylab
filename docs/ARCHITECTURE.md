@@ -452,7 +452,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵，并使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。当前周度回测/实盘方案为 `weekly_5y_direct_0529` 与 `weekly_7y_cross_d_overlay_0529`，旧周度方案仅作为历史名称保留在归档报告中。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 由FastAPI后端直接serve这个目录作为静态文件。
