@@ -60,15 +60,16 @@ def run(predict_date: str) -> list[PredictionRecord]:
     try:
         calendar = get_calendar(engine)
         current_week_id = _nearest_week_id(calendar, predict_date)
+        feature_date = calendar.week_id_to_last_trading_day(current_week_id)
         start_week = current_week_id - LOOKBACK_WEEKS
-        load_end_week = current_week_id + FUTURE_LOAD_WEEKS
 
         input_artifact = build_weekly_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date=predict_date,
             schema_columns=SCHEMA_COLUMNS,
             start_week=start_week,
-            end_week=load_end_week,
+            end_week=current_week_id,
+            as_of_date=feature_date,
             engine=engine,
         )
         weekly_df = input_artifact.dataframe
@@ -105,6 +106,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
                 predict_date=predict_date,
                 target_date=target_date,
                 predicted_direction=int(last_row["cross_d_pred_label"]),
+                feature_date=feature_date,
                 confidence=float(last_row["cross_d_prob_up"]),
                 model_version=MODEL_VERSION,
                 extra={

@@ -134,7 +134,7 @@ def build_backtest_rows(
         predicted_direction = _int_or_none(prediction_row.get("d_pred_label"))
         confidence = _float_or_none(prediction_row.get("d_prob_up"))
         source_row = clean_json({**feature_row.to_dict(), **prediction_row.to_dict()})
-        predict_date = _predict_date_for_feature_date(feature_date)
+        predict_date = feature_date
         if predict_date < BACKTEST_PREDICT_START_DATE:
             continue
 

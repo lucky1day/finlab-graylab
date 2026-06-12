@@ -175,10 +175,17 @@ class PredictionRecordTests(unittest.TestCase):
         df = weekly_df_override if weekly_df_override is not None else _make_weekly_df(week_ids=list(range(202601, 202633)))
 
         mock_cal = MagicMock()
-        mock_cal.week_id_for_date.return_value = 202620
+        mock_cal.week_id_for_date.side_effect = lambda day: {
+            "2026-06-12": 202620,
+            "2026-06-15": 202621,
+        }.get(day, 202620)
+        mock_cal.next_trading_days.side_effect = lambda day, count: {
+            "2026-06-12": ["2026-06-15"],
+        }.get(day, [])
         mock_cal.week_id_to_last_trading_day.side_effect = lambda wid: {
             202619: "2026-06-05",
             202620: "2026-06-12",
+            202621: "2026-06-19",
             202629: "2026-06-12",
             202630: "2026-06-19",
             202631: "2026-06-26",
@@ -279,6 +286,22 @@ class PredictionRecordTests(unittest.TestCase):
             records[0].extra["target_rule"],
             "next_week_last_trading_day_vs_current_week_last_trading_day",
         )
+
+    @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
+    def test_run_uses_feature_week_as_of_for_weekly_artifact(self, mock_get_cal, mock_ds, mock_build):
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_5y_direct_0529 import predict
+
+        predict.run("2026-06-12")
+
+        self.assertEqual(mock_build.call_args.kwargs["end_week"], 202620)
+        self.assertEqual(mock_build.call_args.kwargs["as_of_date"], "2026-06-12")
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,9 @@ def _create_schema(engine) -> None:
                     target_tenor TEXT,
                     horizon INTEGER,
                     predict_date TEXT,
+                    feature_date TEXT,
                     target_date TEXT,
+                    prediction_phase TEXT,
                     predicted_direction INTEGER,
                     confidence REAL,
                     model_version TEXT,
@@ -75,11 +77,12 @@ def _seed_predictions(engine) -> None:
                 """
                 INSERT INTO t_scheme_predictions
                     (run_id, scheme_id, target_tenor, horizon,
-                     predict_date, target_date, predicted_direction, confidence,
+                     predict_date, feature_date, target_date, prediction_phase, predicted_direction, confidence,
                      model_version, extra)
                 VALUES
                     (1, 'demo_daily', '10Y', 1, '2026-06-05',
-                     '2026-06-06', -1, 0.9, 'new', '{}')
+                     '2026-06-04', '2026-06-06', 'scheduled_live', -1, 0.9, 'new',
+                     '{"feature_date":"2026-06-04","prediction_phase":"scheduled_live"}')
                 """
             )
         )
@@ -141,6 +144,67 @@ class BackendServingPointerTests(unittest.TestCase):
         # 两条预测（target 06-06 和 06-09）均应被计入
         self.assertEqual(result["summary"]["samples"], 2)
         self.assertEqual(len(result["daily_rows"]), 2)
+
+    def test_scheme_metrics_returns_feature_date_prediction_phase_and_phase_ranges(self) -> None:
+        from backend.services import scheme_metrics
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_predictions
+                        (run_id, scheme_id, target_tenor, horizon,
+                         predict_date, feature_date, target_date, prediction_phase,
+                         predicted_direction, confidence, model_version, extra)
+                    VALUES
+                        (39, 'daily_5y_2_v28', '5Y', 5, '2026-05-26',
+                         '2026-05-25', '2026-06-01', 'gray_live',
+                         1, 0.7, 'gray', '{"anchor_date":"2026-05-25"}'),
+                        (52, 'daily_5y_2_v28', '5Y', 5, '2026-06-12',
+                         '2026-06-11', '2026-06-18', 'scheduled_live',
+                         -1, 0.8, 'scheduled', '{}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
+                    VALUES ('5Y', '2026-06-01', 1, 1)
+                    """
+                )
+            )
+        try:
+            with patch.dict("os.environ", {"BOND_FACTOR_LAB_TODAY": "2026-06-20"}):
+                result = scheme_metrics(engine, "daily_5y_2_v28", "5Y")
+        finally:
+            engine.dispose()
+
+        self.assertEqual([row["feature_date"] for row in result["daily_rows"]], ["2026-05-25", "2026-06-11"])
+        self.assertEqual([row["prediction_phase"] for row in result["daily_rows"]], ["gray_live", "scheduled_live"])
+        self.assertEqual(
+            result["phase_ranges"],
+            [
+                {
+                    "prediction_phase": "gray_live",
+                    "start_predict_date": "2026-05-26",
+                    "end_predict_date": "2026-05-26",
+                    "start_target_date": "2026-06-01",
+                    "end_target_date": "2026-06-01",
+                    "rows": 1,
+                },
+                {
+                    "prediction_phase": "scheduled_live",
+                    "start_predict_date": "2026-06-12",
+                    "end_predict_date": "2026-06-12",
+                    "start_target_date": "2026-06-18",
+                    "end_target_date": "2026-06-18",
+                    "rows": 1,
+                },
+            ],
+        )
 
     def test_scheme_metrics_buckets_daily_by_target_date_and_matches_actuals_on_target_date(self) -> None:
         """日频月度归属按被预测日 target_date；真实方向仍按 target_date 匹配。"""
@@ -311,9 +375,9 @@ class BackendServingPointerTests(unittest.TestCase):
                         (7, 'demo_t5', '10Y', 5, '2026-06-03',
                          '2026-06-09', -1, 0.6, 'past', '{}'),
                         (8, 'demo_t5', '10Y', 5, '2026-06-05',
-                         '2026-06-10', 1, 0.7, 'pending-target', '{}'),
-                        (9, 'demo_t5', '10Y', 5, '2026-06-06',
-                         '2026-06-11', -1, 0.8, 'future-predict', '{}')
+                         '2026-06-16', 1, 0.7, 'pending-target', '{}'),
+                        (9, 'demo_t5', '10Y', 5, '2026-06-11',
+                         '2026-06-17', -1, 0.8, 'future-predict', '{}')
                     """
                 )
             )
@@ -325,7 +389,7 @@ class BackendServingPointerTests(unittest.TestCase):
                     VALUES
                         ('demo_t5', '10Y', '2026-06-03', 7, 'approved'),
                         ('demo_t5', '10Y', '2026-06-05', 8, 'approved'),
-                        ('demo_t5', '10Y', '2026-06-06', 9, 'approved')
+                        ('demo_t5', '10Y', '2026-06-11', 9, 'approved')
                     """
                 )
             )
@@ -344,7 +408,7 @@ class BackendServingPointerTests(unittest.TestCase):
             engine.dispose()
 
         self.assertEqual([row["predict_date"] for row in result["daily_rows"]], ["2026-06-03", "2026-06-05"])
-        self.assertEqual([row["target_date"] for row in result["daily_rows"]], ["2026-06-09", "2026-06-10"])
+        self.assertEqual([row["target_date"] for row in result["daily_rows"]], ["2026-06-09", "2026-06-16"])
         self.assertIsNone(result["daily_rows"][1]["actual_direction"])
         self.assertIsNone(result["daily_rows"][1]["is_correct"])
         self.assertEqual(result["summary"]["samples"], 1)

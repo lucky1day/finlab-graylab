@@ -27,7 +27,9 @@ class ExecutorRunIdTests(unittest.TestCase):
                 horizon=1,
                 predict_date="2026-06-05",
                 target_date="2026-06-06",
+                feature_date="2026-06-04",
                 predicted_direction=1,
+                extra={"feature_date": "2026-06-04"},
             ),
             PredictionRecord(
                 scheme_id="t1_daily",
@@ -35,7 +37,9 @@ class ExecutorRunIdTests(unittest.TestCase):
                 horizon=1,
                 predict_date="2026-06-05",
                 target_date="2026-06-06",
+                feature_date="2026-06-04",
                 predicted_direction=-1,
+                extra={"feature_date": "2026-06-04"},
             ),
         ]
 
@@ -59,8 +63,14 @@ class ExecutorRunIdTests(unittest.TestCase):
             predict_date="2026-06-05",
             scheme_version="abc123",
             run_type="active",
+            prediction_phase="scheduled_live",
         )
-        insert_predictions.assert_called_once_with(engine, 101, records, scheme_version="abc123")
+        written_records = insert_predictions.call_args.args[2]
+        self.assertEqual([record.prediction_phase for record in written_records], ["scheduled_live", "scheduled_live"])
+        self.assertEqual([record.extra["prediction_phase"] for record in written_records], ["scheduled_live", "scheduled_live"])
+        insert_predictions.assert_called_once()
+        self.assertEqual(insert_predictions.call_args.args[:2], (engine, 101))
+        self.assertEqual(insert_predictions.call_args.kwargs["scheme_version"], "abc123")
         self.assertEqual(update_pointer.call_count, 2)
         self.assertEqual(
             [call.kwargs["target_tenor"] for call in update_pointer.call_args_list],

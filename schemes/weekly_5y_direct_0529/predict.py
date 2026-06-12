@@ -20,6 +20,16 @@ _LOOKBACK_WEEKS = 60
 _NEAREST_DATE_FALLBACK_DAYS = 5
 
 
+def _next_calendar_week_id(calendar, feature_week_id: int) -> int:
+    """从 DB 日历读取 feature_week_id 后的下一实际 week_id。"""
+    feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
+    for day in calendar.next_trading_days(feature_date, 15):
+        next_week = calendar.week_id_for_date(day)
+        if next_week is not None and int(next_week) != int(feature_week_id):
+            return int(next_week)
+    raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
+
+
 def _nearest_week_id(calendar, predict_date: str) -> int:
     """将 predict_date 解析为 week_id。
 
@@ -55,20 +65,18 @@ def run(predict_date: str) -> list[PredictionRecord]:
     try:
         calendar = get_calendar(engine)
         current_week_id = _nearest_week_id(calendar, predict_date)
+        feature_date = calendar.week_id_to_last_trading_day(current_week_id)
 
         # 加载足够历史用于 lookback（最大 4 周）+ 1 周作为 target 窗口
         start_week = current_week_id - _LOOKBACK_WEEKS
-        # 对于实盘预测, target 周的数据可能尚未在源表中可用,
-        # 此时将 end_week 放大以确保有足够的特征数据,
-        # target_week_id 直接取 feature_week_id + 1（不依赖 all_weeks_set）
-        load_end_week = current_week_id + 6
 
         input_artifact = build_weekly_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date=predict_date,
             schema_columns=SCHEMA_COLUMNS,
             start_week=start_week,
-            end_week=load_end_week,
+            end_week=current_week_id,
+            as_of_date=feature_date,
             engine=engine,
         )
         weekly_df = input_artifact.dataframe
@@ -84,17 +92,12 @@ def run(predict_date: str) -> list[PredictionRecord]:
             )
 
         # 按 current_week_id 定位特征周预测
-        # 实盘模式下 target 周的数据可能尚未可用，所以放宽约束：
-        # 如果 feature_week_id 是数据中最新的周，直接以其下一周作为 target
         vote_by_week = vote_df.set_index("week_id")
         all_weeks = sorted(weekly_df["week_id"].dropna().unique().astype(int))
-        all_weeks_set = set(all_weeks)
-        latest_week = all_weeks[-1] if all_weeks else 0
         feature_week_id = current_week_id
         while feature_week_id >= weekly_df["week_id"].min():
             if feature_week_id in vote_by_week.index:
-                if feature_week_id == latest_week or (feature_week_id + 1) in all_weeks_set:
-                    break
+                break
             feature_week_id -= 1
         if feature_week_id not in vote_by_week.index:
             raise RuntimeError(
@@ -102,11 +105,9 @@ def run(predict_date: str) -> list[PredictionRecord]:
             )
         last_row = vote_by_week.loc[feature_week_id]
 
-        # target_week_id: feature 周的下一周（实盘时可能不在数据中）
-        target_week_id = feature_week_id + 1
-
         # week_id → 日期（只读 DB，不使用日历公式）
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
+        target_week_id = _next_calendar_week_id(calendar, feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
 
         return [
@@ -117,6 +118,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
                 predict_date=predict_date,
                 target_date=target_date,
                 predicted_direction=int(last_row["final_pred_label"]),
+                feature_date=feature_date,
                 confidence=float(last_row["final_prob_up"]),
                 model_version=MODEL_VERSION,
                 extra={

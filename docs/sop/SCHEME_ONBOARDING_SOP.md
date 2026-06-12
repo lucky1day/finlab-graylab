@@ -575,7 +575,7 @@ LIMIT 5;
 2. **predict_date 取调度日历上应当发出的日期**，允许早于灰度起点（只要其 `target_date` 落在灰度起点之后），不允许全部填当前日期。
 3. **feature_date 是硬截止**：灰度补齐时必须证明 `feature_date=T`，且所有输入 artifact、辅助周/月映射和模型训练窗口均不越过 `feature_date`；禁止因为当前 DB 已有 `T+1` 或更晚数据而读入未来信息。
 4. **阶段标识**：补齐记录必须标识为 `prediction_phase=gray_live`；正式 scheduler 自然发出的记录标识为 `prediction_phase=scheduled_live`。
-5. **执行方式**：用 `scheduler.executor.execute_scheme(cfg, '<predict_date>')` 按时间顺序逐个补跑，并在写库链路中保留 `prediction_phase`。例如周度方案补 2026-06 首两周：
+5. **执行方式**：用 `scheduler.executor.execute_scheme(cfg, '<predict_date>', prediction_phase='gray_live')` 按时间顺序逐个补跑；命令行补跑则必须传 `--prediction-phase gray_live`。例如周度方案补 2026-06 首两周：
 
 ```bash
 conda run -n bond_factor_lab_service python -c "
@@ -583,9 +583,9 @@ from scheduler.discovery import discover_schemes
 from scheduler.executor import execute_scheme
 schemes = list(discover_schemes())
 cfg = [s for s in schemes if s.scheme_id == '<scheme_id>'][0]
-result = execute_scheme(cfg, '2026-05-30', algo_env='forecast_env')
+result = execute_scheme(cfg, '2026-05-30', algo_env='forecast_env', prediction_phase='gray_live')
 print(result)
-result = execute_scheme(cfg, '2026-06-06', algo_env='forecast_env')
+result = execute_scheme(cfg, '2026-06-06', algo_env='forecast_env', prediction_phase='gray_live')
 print(result)
 "
 ```

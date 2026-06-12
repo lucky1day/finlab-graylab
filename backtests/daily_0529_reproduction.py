@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import time
 from pathlib import Path
@@ -57,6 +58,7 @@ T5_BACKTEST_START = "2025-01-01"
 T5_BACKTEST_END = "2026-05-31"
 T1_BACKTEST_START = "2025-01-01"
 T1_BACKTEST_END = "2026-05-28"
+T1_CONFIG_PATH = PROJECT_ROOT / "schemes" / "t1_daily" / "config.yaml"
 EVALUATION_EXCLUDED_TARGET_RANGES = (
     {
         "label": "2026-05 last target week",
@@ -438,15 +440,26 @@ def run_t1_framework_backtest(df: pd.DataFrame) -> list[dict[str, Any]]:
     daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
     daily = daily.sort_values("date").reset_index(drop=True)
     dates = daily.loc[daily["date"].between(pd.Timestamp(T1_BACKTEST_START), pd.Timestamp(T1_BACKTEST_END)), "date"].dt.strftime("%Y-%m-%d").tolist()
+    configured_tenors = _configured_t1_tenors()
     rows: list[dict[str, Any]] = []
     for run_date in dates:
         for frequency in ("D1Y", "D5Y", "D10Y"):
+            if TENOR_CONFIGS[frequency].tenor not in configured_tenors:
+                continue
             result = predict_latest_for_config(daily, TENOR_CONFIGS[frequency], current_date=run_date)
             row = _t1_prediction_result_to_row(daily, result)
             if row["predict_date"] < T1_BACKTEST_START:
                 continue
             rows.append(row)
     return rows
+
+
+def _configured_t1_tenors() -> set[str]:
+    for line in T1_CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        if line.strip().startswith("tenors:"):
+            raw_value = line.split(":", 1)[1].strip()
+            return {str(item) for item in ast.literal_eval(raw_value)}
+    return set()
 
 
 def _t1_prediction_result_to_row(daily_df: pd.DataFrame, result: Any) -> dict[str, Any]:

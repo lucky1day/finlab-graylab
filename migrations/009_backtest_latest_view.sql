@@ -2,7 +2,7 @@
 -- Idempotent: safe to run more than once on bond_db.
 -- NOTE: This migration intentionally supersedes the v_latest_backtest_run view
 --       definition from 007_backtest_immutable.sql. 007 keeps the append-only
---       backtest schema switch; this file is the final latest-run read contract.
+--       backtest schema switch, while this file is the final latest-run read contract.
 
 SET @ddl = IF(
     (

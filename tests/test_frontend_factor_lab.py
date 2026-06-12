@@ -417,12 +417,18 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     tenors: ["5Y"]
                   }
                 ]
-              },
-              "/api/metrics/daily_5y_2_v28?tenor=5Y": {
-                scheme_id: "daily_5y_2_v28",
-                tenor: "5Y",
-                target_label: "5Y国债活跃",
-                monthly_metrics: [
+	              },
+	              "/api/metrics/daily_5y_2_v28?tenor=5Y": {
+	                scheme_id: "daily_5y_2_v28",
+	                tenor: "5Y",
+	                target_label: "5Y国债活跃",
+	                phase_ranges: [
+	                  { prediction_phase: "gray_live", start_predict_date: "2026-05-26", end_predict_date: "2026-06-11",
+	                    start_target_date: "2026-06-01", end_target_date: "2026-06-17", rows: 13 },
+	                  { prediction_phase: "scheduled_live", start_predict_date: "2026-06-12", end_predict_date: "2026-06-12",
+	                    start_target_date: "2026-06-18", end_target_date: "2026-06-18", rows: 1 }
+	                ],
+	                monthly_metrics: [
                   { month: "2026-06", samples: 8, correct: 4, accuracy: 50.0, overall: 50.0,
                     up_precision: 75, up_recall: 75, down_precision: 100, down_recall: 25,
                     actual_dist: { up: 4, down: 4, flat: 0 },
@@ -432,9 +438,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                   {
                     target_tenor: "5Y",
                     horizon: 5,
-                    predict_date: "2026-05-26",
-                    feature_date: "2026-05-25",
-                    target_date: "2026-06-01",
+	                    predict_date: "2026-05-26",
+	                    feature_date: "2026-05-25",
+	                    target_date: "2026-06-01",
+	                    prediction_phase: "gray_live",
                     predicted_direction: -1,
                     actual_direction: -1,
                     is_correct: true,
@@ -486,10 +493,11 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
             var scheme = hooks.getSelectedScheme();
             return {
               dataMode: hooks.getFactorLabState().dataMode,
-              selectedTaskKey: hooks.getFactorLabState().selectedTaskKey,
-              liveSinceDate: scheme && scheme.liveSinceDate,
-              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month + ":" + r._source; }) : [],
-              detailMeta: document.getElementById("factorDetailMeta").textContent
+	              selectedTaskKey: hooks.getFactorLabState().selectedTaskKey,
+	              liveSinceDate: scheme && scheme.liveSinceDate,
+	              phaseRanges: scheme && scheme.phaseRanges,
+	              months: scheme ? scheme.monthlyRows.map(function (r) { return r.month + ":" + r._source; }) : [],
+	              detailMeta: document.getElementById("factorDetailMeta").textContent
             };
             """
         )
@@ -497,8 +505,11 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["dataMode"], "merged")
         self.assertEqual(result["selectedTaskKey"], "5Y|daily|T+5")
         self.assertEqual(result["liveSinceDate"], "2026-05-26")
+        self.assertEqual(result["phaseRanges"][0]["prediction_phase"], "gray_live")
         self.assertEqual(result["months"], ["2026-04:backtest", "2026-06:live"])
         self.assertIn("实盘发出起点 2026-05-26", result["detailMeta"])
+        self.assertIn("灰度实盘 2026-05-26 至 2026-06-11", result["detailMeta"])
+        self.assertIn("正式调度起点 2026-06-12", result["detailMeta"])
 
     def test_same_month_backtest_and_live_split_into_two_rows(self) -> None:
         """同月既有回测又有实盘时，应展示两行（回测行 + 实盘行），不覆盖。"""
@@ -594,8 +605,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["backtestAccuracy"], [60.0])
         self.assertEqual(result["liveAccuracy"], [80.0])
 
-    def test_weekly_live_uses_predict_date_as_metric_start(self) -> None:
-        """周度实盘统计归属按预测侧日期，不再按 target_date 月份移动。"""
+    def test_weekly_live_uses_single_predict_date_start_semantics(self) -> None:
+        """周度和日度统一用第一条 predict_date 作为实盘发出起点。"""
         result = _run_factor_lab_hook(
             """
             const responses = {
@@ -668,10 +679,9 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         )
 
         self.assertEqual(result["dataMode"], "live")
-        # 周度的实盘起点 = 第一条 target_date 所在月首日之前的周六
-        self.assertEqual(result["liveSinceDate"], "2026-05-30")
+        self.assertEqual(result["liveSinceDate"], "2026-06-11")
         self.assertEqual(result["liveMetricSinceDate"], "2026-06-11")
-        self.assertEqual(result["dividerText"], "实盘发出起点 2026-05-30")
+        self.assertEqual(result["dividerText"], "实盘发出起点 2026-06-11")
         self.assertEqual(result["months"], ["2026-06"])
         self.assertEqual(result["dailyMonths"], ["2026-06"])
 

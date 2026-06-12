@@ -74,6 +74,9 @@ def run(predict_date: str) -> list[PredictionRecord]:
         anchor_date = _previous_trading_day(signal_date, calendar)
         target_date = calendar.nth_trading_day_after(anchor_date, HORIZON)
         start_date = (datetime.strptime(anchor_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
+        feature_week_id = calendar.week_id_for_date(anchor_date)
+        if feature_week_id is None:
+            raise RuntimeError(f"无法从 DB 日历解析 feature_date={anchor_date} 的 week_id")
 
         daily_artifact = build_daily_input_artifact(
             scheme_id=SCHEME_ID,
@@ -85,6 +88,8 @@ def run(predict_date: str) -> list[PredictionRecord]:
         weekly_artifact = build_weekly_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date=signal_date,
+            end_week=int(feature_week_id),
+            as_of_date=anchor_date,
             engine=engine,
         )
         monthly_artifact = build_monthly_input_artifact(
@@ -112,6 +117,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
                 predict_date=signal_date,
                 target_date=target_date,
                 predicted_direction=prediction,
+                feature_date=anchor_date,
                 confidence=confidence,
                 model_version=str(result.get("model_version") or MODEL_VERSION),
                 extra=_record_extra(

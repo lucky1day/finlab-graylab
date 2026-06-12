@@ -338,6 +338,7 @@ def build_weekly_output_from_frames(
     derivative_weekly: Optional[pd.DataFrame] = None,
     start_week: Optional[int] = None,
     end_week: Optional[int] = None,
+    as_of_date: Optional[str] = None,
     lag_map: Optional[dict[str, int]] = None,
 ) -> pd.DataFrame:
     schema = [str(col).strip() for col in schema_columns]
@@ -345,6 +346,9 @@ def build_weekly_output_from_frames(
         raise ValueError("weekly schema must start with week_id")
     value_columns = schema[1:]
     df = _prepare_weekly_long_frame([raw_weekly, derivative_weekly if derivative_weekly is not None else pd.DataFrame()])
+    if as_of_date is not None:
+        cutoff = pd.to_datetime(as_of_date).normalize()
+        df = df[df["rdate"].notna() & df["rdate"].le(cutoff)]
     if start_week is not None:
         df = df[df["week_id"] >= int(start_week)]
     if end_week is not None:
@@ -375,6 +379,7 @@ def build_weekly_output_from_metadata(
     derivative_weekly: Optional[pd.DataFrame] = None,
     start_week: Optional[int] = None,
     end_week: Optional[int] = None,
+    as_of_date: Optional[str] = None,
 ) -> pd.DataFrame:
     selected = select_factor_metadata(metadata, "weekly")
     output_columns, lag_map = _metadata_output_columns_and_lags(selected)
@@ -384,6 +389,7 @@ def build_weekly_output_from_metadata(
         derivative_weekly,
         start_week=start_week,
         end_week=end_week,
+        as_of_date=as_of_date,
         lag_map=lag_map,
     )
 
@@ -401,6 +407,7 @@ def build_weekly_output_from_db(
     schema_columns: Optional[Sequence[str]] = None,
     start_week: Optional[int] = None,
     end_week: Optional[int] = None,
+    as_of_date: Optional[str] = None,
     engine=None,
 ) -> pd.DataFrame:
     own_engine = engine is None
@@ -418,13 +425,21 @@ def build_weekly_output_from_db(
                 derivative,
                 start_week=start_week,
                 end_week=end_week,
+                as_of_date=as_of_date,
             )
 
         schema = list(schema_columns)
         codes = schema[1:]
         raw = read_weekly_long_from_db(codes, "api_wind_weekly", engine)
         derivative = read_weekly_long_from_db(codes, "api_wind_derivative_weekly", engine)
-        return build_weekly_output_from_frames(schema, raw, derivative, start_week=start_week, end_week=end_week)
+        return build_weekly_output_from_frames(
+            schema,
+            raw,
+            derivative,
+            start_week=start_week,
+            end_week=end_week,
+            as_of_date=as_of_date,
+        )
     finally:
         if own_engine:
             engine.dispose()

@@ -130,6 +130,7 @@ class InputArtifactTests(unittest.TestCase):
                     scheme_id="demo_weekly_scheme",
                     predict_date="2026-06-06",
                     end_week=202621,
+                    as_of_date="2026-05-29",
                     engine=engine,
                     output_root=root,
                 )
@@ -165,9 +166,31 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(artifact.dataframe["TB0YWI3C"].tolist(), [1.7])
         kwargs = data_service.build_weekly_output_from_db.call_args.kwargs
         self.assertEqual(kwargs["end_week"], 202621)
+        self.assertEqual(kwargs["as_of_date"], "2026-05-29")
         self.assertIs(kwargs["engine"], engine)
         self.assertIs(data_service.save_weekly_output.call_args.args[0], weekly_df)
         self.assertEqual(data_service.save_weekly_output.call_args.args[1], artifact.path)
+
+    def test_weekly_output_filters_raw_rows_by_as_of_date_before_dedup(self) -> None:
+        from shared.data_service import build_weekly_output_from_frames
+
+        raw = pd.DataFrame(
+            {
+                "rdate": ["2026-05-29", "2026-06-02", "2026-05-22"],
+                "week_id": [202621, 202621, 202620],
+                "indicators_code": ["TB0YWI3C", "TB0YWI3C", "TB0YWI3C"],
+                "indicators_value": [1.1, 9.9, 1.0],
+            }
+        )
+
+        result = build_weekly_output_from_frames(
+            ["week_id", "TB0YWI3C"],
+            raw,
+            as_of_date="2026-05-29",
+        )
+
+        self.assertEqual(result["week_id"].tolist(), [202620, 202621])
+        self.assertEqual(result["TB0YWI3C"].tolist(), [1.0, 1.1])
 
     def test_monthly_input_artifact_delegates_to_unified_data_service_file(self) -> None:
         from shared.input_artifacts import build_monthly_input_artifact

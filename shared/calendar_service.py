@@ -39,6 +39,21 @@ class CalendarService:
             rows = conn.execute(stmt, {"rdate": _date_string(value), "limit": int(count)}).scalars().all()
         return [_date_string(row) for row in rows]
 
+    def previous_trading_day(self, value: str | date | datetime) -> str:
+        """返回指定日期之前最近的交易日。"""
+        stmt = text(
+            """
+            SELECT MAX(rdate)
+            FROM t_trade_calendar
+            WHERE trade_flag = '1' AND rdate < :rdate
+            """
+        )
+        with self._engine.connect() as conn:
+            row = conn.execute(stmt, {"rdate": _date_string(value)}).scalar()
+        if row is None:
+            raise ValueError(f"no previous trading day before {_date_string(value)}")
+        return _date_string(row)
+
     def nth_trading_day_after(self, value: str | date | datetime, n: int) -> str:
         """返回指定日期之后第 n 个交易日。"""
         days = self.next_trading_days(value, n)

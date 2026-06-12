@@ -121,6 +121,7 @@ def build_weekly_input_artifact(
     schema_columns: list[str] | None = None,
     start_week: int | None = None,
     end_week: int | None = None,
+    as_of_date: str | None = None,
     engine=None,
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> InputArtifact:
@@ -135,6 +136,7 @@ def build_weekly_input_artifact(
         schema_columns=schema_columns,
         start_week=start_week,
         end_week=end_week,
+        as_of_date=as_of_date,
         engine=engine,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,6 +170,7 @@ def build_weekly_input_artifact(
         metadata={
             "start_week": start_week,
             "end_week": end_week,
+            "as_of_date": as_of_date,
             "predict_date": predict_date,
         },
     )

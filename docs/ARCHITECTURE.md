@@ -161,9 +161,9 @@ CREATE TABLE t_scheme_predictions (
     target_tenor VARCHAR(64) NOT NULL,
     horizon INT NOT NULL,
     predict_date DATE NOT NULL,
+    feature_date DATE DEFAULT NULL,
     target_date DATE NOT NULL,
-    -- feature_date 为统一业务语义，当前由 extra 承载；后续 DB 迁移应提升为显式列。
-    -- prediction_phase 标识 gray_live / scheduled_live；后续 DB 迁移应提升为显式列。
+    prediction_phase ENUM('gray_live','scheduled_live') DEFAULT NULL,
     predicted_direction TINYINT NOT NULL COMMENT '1=涨, -1=跌, 0=平',
     confidence FLOAT DEFAULT NULL,
     model_version VARCHAR(64) DEFAULT NULL,
@@ -409,7 +409,7 @@ class PredictionRecord:
 
 参数: `tenor`, `start_month`, `end_month`
 
-返回中的 `daily_rows` 必须包含平台业务字段 `feature_date`。实盘阶段应能标识 `prediction_phase`（`gray_live` / `scheduled_live`）；字段迁移前可由 `extra` 或后端派生提供，前端不得依赖 `anchor_date`。
+返回中的 `daily_rows` 必须包含平台业务字段 `feature_date` 与 `prediction_phase`（`gray_live` / `scheduled_live`），并提供 `phase_ranges` 汇总。前端不得依赖 `anchor_date`。
 
 ```json
 {

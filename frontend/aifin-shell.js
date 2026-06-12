@@ -324,7 +324,25 @@
   function liveDividerText(scheme, task) {
     var labels = liveDividerLabels(scheme, task);
     var dividerText = labels.dividerLabel ? "实盘发出起点 " + labels.dividerLabel : "实盘起点";
+    var phaseParts = phaseRangeTexts(scheme && scheme.phaseRanges);
+    if (phaseParts.length) dividerText += " · " + phaseParts.join(" · ");
     return dividerText;
+  }
+
+  function phaseRangeTexts(phaseRanges) {
+    return (phaseRanges || []).map(function (range) {
+      var phase = String(range.prediction_phase || "");
+      var start = normalizeIsoDate(range.start_predict_date);
+      var end = normalizeIsoDate(range.end_predict_date);
+      if (!start) return "";
+      if (phase === "gray_live") {
+        return "灰度实盘 " + start + (end && end !== start ? " 至 " + end : "");
+      }
+      if (phase === "scheduled_live") {
+        return "正式调度起点 " + start;
+      }
+      return "";
+    }).filter(Boolean);
   }
 
   function getSchemeDeploymentDate(scheme) {
@@ -535,7 +553,9 @@
       grouped[month].push({
         day: detailDisplayDay(row, frequency, horizon),
         predictDate: row.predict_date || "",
+        featureDate: row.feature_date || "",
         targetDate: row.target_date || "",
+        predictionPhase: row.prediction_phase || "",
         runId: row.run_id || null,
         schemeVersion: row.scheme_version || "",
         inputArtifactHash: row.input_artifact_hash || "",
@@ -694,24 +714,11 @@
         var liveSinceDate = "";
         var liveMetricSinceDate = "";
         if (metrics.daily_rows && metrics.daily_rows.length) {
-          if (String(scheme.frequency || "").toLowerCase() === "weekly") {
-            // 周度: liveSinceDate = 第一条 target_date 所在月首日之前的周六
-            var targetDates = metrics.daily_rows.map(function (r) { return r.target_date || ""; }).filter(Boolean).sort();
-            if (targetDates.length) {
-              var monthStart = targetDates[0].slice(0, 7) + "-01";
-              var ms = new Date(monthStart);
-              var dow = ms.getDay();                    // 0=Sun, 1=Mon, ..., 6=Sat
-              var satOffset = (dow + 1) % 7;            // 往前推到周六的天数
-              ms.setDate(ms.getDate() - satOffset);
-              liveSinceDate = ms.toISOString().slice(0, 10);
-            }
-          } else {
-            var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).sort();
-            liveSinceDate = dates[0] || "";
-          }
+          var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).filter(Boolean).sort();
+          liveSinceDate = dates[0] || "";
           var metricDates = metrics.daily_rows.map(function (r) {
             return r.predict_date || r.target_date || "";
-          }).sort();
+          }).filter(Boolean).sort();
           liveMetricSinceDate = metricDates[0] || liveSinceDate;
         }
         var taskKey = getTaskKey(tenor, column);
@@ -730,7 +737,8 @@
           monthlyRows: monthlyRows,
           dailyRowsByMonth: groupedDailyRows,
           liveSinceDate: liveSinceDate,
-          liveMetricSinceDate: liveMetricSinceDate
+          liveMetricSinceDate: liveMetricSinceDate,
+          phaseRanges: metrics.phase_ranges || []
         });
       });
     });
@@ -904,6 +912,7 @@
               });
               mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
               mScheme.liveMetricSinceDate = liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "";
+              mScheme.phaseRanges = liveScheme.phaseRanges || [];
               mScheme.deploymentDate = liveScheme.deploymentDate || mScheme.deploymentDate || DEFAULT_SCHEME_DEPLOYMENT_DATE;
               mScheme.remark = liveScheme.remark || mScheme.remark || "";
               matched = true;
@@ -930,6 +939,7 @@
               dailyRowsByMonth: liveScheme.dailyRowsByMonth || {},
               liveSinceDate: liveScheme.liveSinceDate || "",
               liveMetricSinceDate: liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "",
+              phaseRanges: liveScheme.phaseRanges || [],
               backtestStartMonth: "",
               backtestEndMonth: ""
             });

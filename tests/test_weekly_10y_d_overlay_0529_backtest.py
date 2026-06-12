@@ -63,7 +63,8 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["target_tenor"], "10Y")
         self.assertEqual(rows[0]["horizon"], 6)
-        self.assertEqual(rows[0]["predict_date"], "2026-01-03")
+        self.assertEqual(rows[0]["predict_date"], "2026-01-02")
+        self.assertEqual(rows[0]["predict_date"], rows[0]["feature_date"])
         self.assertEqual(rows[0]["feature_date"], "2026-01-02")
         self.assertEqual(rows[0]["target_date"], "2026-01-09")
         self.assertEqual(rows[0]["extra"]["feature_week_id"], 202601)
@@ -165,7 +166,7 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
                 artifact_source="unit_test",
             )
 
-        self.assertEqual([row["predict_date"] for row in rows], ["2025-01-04"])
+        self.assertEqual([row["predict_date"] for row in rows], ["2025-01-03"])
         self.assertTrue(all(row["predict_date"] >= runner.BACKTEST_PREDICT_START_DATE for row in rows))
 
     def test_backtest_rows_stop_before_live_target_month(self) -> None:

@@ -31,6 +31,7 @@ HORIZON_DAYS = 6
 TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 MODEL_VERSION = "rule_vote_0529"
 SCHEMA_COLUMNS = ["week_id", "TB1YWI3C", "TB5YWI3C", "TB7YWI3C", "TB0YWI3C"]
+LIVE_TARGET_START_DATE = "2026-06-01"
 
 
 def _load_config_raw(config_path: Path) -> dict[str, Any]:
@@ -97,7 +98,7 @@ def build_backtest_rows(
     all_weeks = [int(value) for value in weekly["week_id"].tolist()]
     weekly_by_id = {int(row["week_id"]): row for _, row in weekly.iterrows()}
 
-    for index, feature_week_id in enumerate(all_weeks[:-1]):
+    for feature_week_id in all_weeks:
         history = weekly[weekly["week_id"].le(feature_week_id)].copy()
         try:
             vote_df = build_rule_vote(history)
@@ -107,18 +108,25 @@ def build_backtest_rows(
         if feature_votes.empty:
             continue
 
-        target_week_id = all_weeks[index + 1]
+        try:
+            target_week_id = _next_calendar_week_id(calendar, feature_week_id)
+        except ValueError:
+            continue
         feature_row = weekly_by_id[feature_week_id]
-        target_row = weekly_by_id[target_week_id]
+        target_row = weekly_by_id.get(target_week_id)
+        if target_row is None:
+            continue
         vote_row = feature_votes.iloc[-1]
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
+        if target_date >= LIVE_TARGET_START_DATE:
+            continue
         future_return = _weekly_future_return(feature_row, target_row)
         label = _label_from_future_return(future_return) if future_return is not None else None
         predicted_direction = _int_or_none(vote_row.get("final_pred_label"))
         confidence = _float_or_none(vote_row.get("final_prob_up"))
         source_row = clean_json({**feature_row.to_dict(), **vote_row.to_dict()})
-        predict_date = _predict_date_for_feature_date(feature_date)
+        predict_date = feature_date
         if predict_date < BACKTEST_PREDICT_START_DATE:
             continue
 
@@ -155,6 +163,16 @@ def build_backtest_rows(
         )
 
     return rows
+
+
+def _next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
+    """从 DB 日历读取 feature_week_id 后的下一实际 week_id。"""
+    feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
+    for day in calendar.next_trading_days(feature_date, 15):
+        next_week = calendar.week_id_for_date(day)
+        if next_week is not None and int(next_week) != int(feature_week_id):
+            return int(next_week)
+    raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
 
 
 def compact_prediction_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:

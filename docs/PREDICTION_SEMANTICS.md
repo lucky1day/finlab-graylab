@@ -80,4 +80,4 @@ target_date  = T + horizon
 | `39`-`51` | `predict_date=2026-05-26` 至 `2026-06-11`，`target_date=2026-06-01` 至 `2026-06-17` | `gray_live` |
 | `52` | `predict_date=2026-06-12`，`feature_date=2026-06-11`，`target_date=2026-06-18` | `scheduled_live` |
 
-这些阶段标识需要由后续 DB/API 改造落地为机器字段；在字段落地前，所有文档、脚本输出和人工验收必须按本表解释，不能把 `run_id=39`-`51` 称为正式 scheduler 实盘。
+这些阶段标识已由迁移 `010_prediction_semantics.sql` 落到 `t_scheme_predictions.prediction_phase` 和 `t_scheme_runs.prediction_phase`，并由 `/api/metrics/{scheme_id}` 的 `daily_rows[].prediction_phase` 与 `phase_ranges` 对前端输出。`run_id=39`-`51` 是灰度实盘，`run_id=52` 是正式 scheduler 实盘，二者不得混称。

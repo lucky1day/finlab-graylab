@@ -14,6 +14,8 @@ class PredictionRecord:
     predict_date: str
     target_date: str
     predicted_direction: int
+    feature_date: str | None = None
+    prediction_phase: str | None = None
     confidence: float | None = None
     model_version: str | None = None
     extra: dict[str, Any] | None = None

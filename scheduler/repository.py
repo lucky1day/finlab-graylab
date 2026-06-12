@@ -13,6 +13,9 @@ from shared.input_artifacts import InputArtifact
 from shared.models import ActualRecord, PredictionRecord, WeeklyActualRecord
 
 
+VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
+
+
 def create_engine_from_env() -> Engine:
     """创建 SQLAlchemy Engine。"""
     cfg = DatabaseConfig.from_env()
@@ -126,19 +129,22 @@ def create_scheme_run(
     predict_date: str,
     scheme_version: str | None = None,
     run_type: str = "active",
+    prediction_phase: str | None = None,
     status: str = "running",
     harness_run_id: str | None = None,
     input_artifact_id: str | None = None,
     records_expected: int | None = None,
 ) -> int:
     """创建一次不可变预测运行记录，返回 run_id。"""
+    if prediction_phase is not None and prediction_phase not in VALID_PREDICTION_PHASES:
+        raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
     sql = text(
         """
         INSERT INTO t_scheme_runs
-            (scheme_id, scheme_version, run_type, predict_date, status,
+            (scheme_id, scheme_version, run_type, prediction_phase, predict_date, status,
              harness_run_id, input_artifact_id, records_expected)
         VALUES
-            (:scheme_id, :scheme_version, :run_type, :predict_date, :status,
+            (:scheme_id, :scheme_version, :run_type, :prediction_phase, :predict_date, :status,
              :harness_run_id, :input_artifact_id, :records_expected)
         """
     )
@@ -146,6 +152,7 @@ def create_scheme_run(
         "scheme_id": scheme_id,
         "scheme_version": scheme_version,
         "run_type": run_type,
+        "prediction_phase": prediction_phase,
         "predict_date": predict_date,
         "status": status,
         "harness_run_id": harness_run_id,
@@ -205,15 +212,17 @@ def insert_run_predictions(
     sql = text(
         """
         INSERT INTO t_scheme_predictions
-            (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, target_date,
-             predicted_direction, confidence, model_version, extra)
+            (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
+             prediction_phase, predicted_direction, confidence, model_version, extra)
         VALUES
-            (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :target_date,
-             :predicted_direction, :confidence, :model_version, CAST(:extra AS JSON))
+            (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
+             :prediction_phase, :predicted_direction, :confidence, :model_version, CAST(:extra AS JSON))
         ON DUPLICATE KEY UPDATE
             run_id = VALUES(run_id),
             scheme_version = VALUES(scheme_version),
             predict_date = VALUES(predict_date),
+            feature_date = VALUES(feature_date),
+            prediction_phase = VALUES(prediction_phase),
             predicted_direction = VALUES(predicted_direction),
             confidence = VALUES(confidence),
             model_version = VALUES(model_version),
@@ -224,9 +233,28 @@ def insert_run_predictions(
     rows = []
     for record in records:
         row = asdict(record)
+        extra = dict(record.extra or {})
+        feature_date = record.feature_date or extra.get("feature_date")
+        if not feature_date:
+            raise ValueError(f"feature_date is required for prediction record {record.scheme_id}/{record.target_tenor}")
+        anchor_date = extra.get("anchor_date")
+        if anchor_date and str(anchor_date) != str(feature_date):
+            raise ValueError(
+                f"anchor_date must equal feature_date for prediction record {record.scheme_id}/{record.target_tenor}"
+            )
+        phase = record.prediction_phase or extra.get("prediction_phase")
+        if phase not in VALID_PREDICTION_PHASES:
+            raise ValueError(
+                f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)} "
+                f"for prediction record {record.scheme_id}/{record.target_tenor}"
+            )
+        extra["feature_date"] = str(feature_date)
+        extra["prediction_phase"] = str(phase)
         row["run_id"] = record.run_id if record.run_id is not None else run_id
         row["scheme_version"] = record.scheme_version if record.scheme_version is not None else scheme_version
-        row["extra"] = json.dumps(record.extra or {}, ensure_ascii=False)
+        row["feature_date"] = str(feature_date)
+        row["prediction_phase"] = str(phase)
+        row["extra"] = json.dumps(extra, ensure_ascii=False)
         rows.append(row)
     if not rows:
         return 0

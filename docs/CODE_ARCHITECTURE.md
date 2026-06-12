@@ -138,7 +138,7 @@ tests/         → 任意（验证需要）
 
 ```
 APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
-  └─ scheduler.executor.execute_scheme(cfg, predict_date)
+  └─ scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase="scheduled_live")
        ├─ run_scheme_subprocess(scheme_id, predict_date, algo_env="forecast_env")
        │     └─[conda 子进程]─ python -m scheduler.scheme_runner --scheme-id --predict-date
        │           └─ importlib → schemes.{id}.predict.run(predict_date)        ← 运行时插件边

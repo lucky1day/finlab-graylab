@@ -107,6 +107,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             predict_date="2026-06-05",
             scheme_version="abc123",
             run_type="active",
+            prediction_phase="scheduled_live",
             input_artifact_id="artifact-1",
         )
 
@@ -118,10 +119,11 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["scheme_version"], "abc123")
         self.assertEqual(params["predict_date"], "2026-06-05")
         self.assertEqual(params["run_type"], "active")
+        self.assertEqual(params["prediction_phase"], "scheduled_live")
         self.assertEqual(params["status"], "running")
         self.assertEqual(params["input_artifact_id"], "artifact-1")
 
-    def test_insert_run_predictions_upserts_target_date_business_key_with_run_id(self) -> None:
+    def test_insert_run_predictions_upserts_prediction_semantics(self) -> None:
         from scheduler.repository import insert_run_predictions
         from shared.models import PredictionRecord
 
@@ -133,8 +135,11 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 horizon=1,
                 predict_date="2026-06-05",
                 target_date="2026-06-06",
+                feature_date="2026-06-04",
+                prediction_phase="scheduled_live",
                 predicted_direction=1,
                 confidence=0.8,
+                extra={"feature_date": "2026-06-04"},
             )
         ]
 
@@ -148,8 +153,29 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertIn("run_id = VALUES(run_id)", sql)
         self.assertIn("scheme_version = VALUES(scheme_version)", sql)
         self.assertIn("predict_date = VALUES(predict_date)", sql)
+        self.assertIn("feature_date = VALUES(feature_date)", sql)
+        self.assertIn("prediction_phase = VALUES(prediction_phase)", sql)
         self.assertEqual(rows[0]["run_id"], 101)
         self.assertEqual(rows[0]["scheme_version"], "abc123")
+        self.assertEqual(rows[0]["feature_date"], "2026-06-04")
+        self.assertEqual(rows[0]["prediction_phase"], "scheduled_live")
+
+    def test_insert_run_predictions_requires_feature_date_and_phase(self) -> None:
+        from scheduler.repository import insert_run_predictions
+        from shared.models import PredictionRecord
+
+        engine = _RunEngine()
+        record = PredictionRecord(
+            scheme_id="t1_daily",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-06-05",
+            target_date="2026-06-06",
+            predicted_direction=1,
+        )
+
+        with self.assertRaisesRegex(ValueError, "feature_date"):
+            insert_run_predictions(engine, 101, [record], scheme_version="abc123")
 
     def test_update_serving_pointer_upserts_latest_run(self) -> None:
         from scheduler.repository import update_serving_pointer

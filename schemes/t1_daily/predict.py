@@ -4,6 +4,7 @@ import ast
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from shared.calendar_service import get_calendar
 from shared.input_artifacts import build_daily_input_artifact, data_service
 from shared.models import PredictionRecord
 
@@ -37,14 +38,15 @@ def run(predict_date: str) -> list[PredictionRecord]:
         统一预测记录列表，每个 tenor 一条。
     """
     datetime.strptime(predict_date, "%Y-%m-%d")
-    start_date = (datetime.strptime(predict_date, "%Y-%m-%d") - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
     engine = data_service.create_sqlalchemy_engine()
     try:
+        feature_date = get_calendar(engine).previous_trading_day(predict_date)
+        start_date = (datetime.strptime(feature_date, "%Y-%m-%d") - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
         input_artifact = build_daily_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date=predict_date,
             start_date=start_date,
-            end_date=predict_date,
+            end_date=feature_date,
             engine=engine,
         )
         daily_df = input_artifact.dataframe
@@ -63,6 +65,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
                     predict_date=predict_date,
                     target_date=result.target_date,
                     predicted_direction=result.pred_label,
+                    feature_date=result.feature_date,
                     confidence=result.prob_up,
                     model_version=f"lgbm_w{config.window}",
                     extra={

@@ -55,9 +55,18 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
                 artifact_source="unit_test",
             )
 
-        self.assertEqual(vote_calls, [[202601], [202601, 202602], [202601, 202602, 202603]])
+        self.assertEqual(
+            vote_calls,
+            [
+                [202601],
+                [202601, 202602],
+                [202601, 202602, 202603],
+                [202601, 202602, 202603, 202604],
+            ],
+        )
         self.assertEqual(len(rows), 3)
-        self.assertEqual(rows[0]["predict_date"], "2026-01-03")
+        self.assertEqual(rows[0]["predict_date"], "2026-01-02")
+        self.assertEqual(rows[0]["predict_date"], rows[0]["feature_date"])
         self.assertEqual(rows[0]["target_date"], "2026-01-09")
         self.assertEqual(rows[0]["extra"]["feature_week_id"], 202601)
         self.assertEqual(rows[0]["extra"]["target_week_id"], 202602)
@@ -68,7 +77,7 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
         self.assertEqual(
             compact[0],
             {
-                "predict_date": "2026-01-03",
+                "predict_date": "2026-01-02",
                 "target_date": "2026-01-09",
                 "target_tenor": "5Y",
                 "predicted_direction": -1,
@@ -80,12 +89,26 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
         from backtests import weekly_5y_direct_0529_reproduction as runner
 
         weekly_df = _weekly_frame([202452, 202501, 202502])
+        week_dates = {
+            202452: pd.Timestamp("2024-12-27"),
+            202501: pd.Timestamp("2025-01-03"),
+            202502: pd.Timestamp("2025-01-10"),
+        }
         calendar = SimpleNamespace(
             week_id_to_last_trading_day=lambda week_id: {
                 202452: "2024-12-27",
                 202501: "2025-01-03",
                 202502: "2025-01-10",
-            }[int(week_id)]
+            }[int(week_id)],
+            next_trading_days=lambda day, count: [
+                value.strftime("%Y-%m-%d")
+                for value in sorted(week_dates.values())
+                if value > pd.Timestamp(day)
+            ][:count],
+            week_id_for_date=lambda day: {
+                value.strftime("%Y-%m-%d"): week_id
+                for week_id, value in week_dates.items()
+            }.get(day),
         )
 
         def fake_vote(frame: pd.DataFrame) -> pd.DataFrame:
@@ -109,8 +132,55 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
                 artifact_source="unit_test",
             )
 
-        self.assertEqual([row["predict_date"] for row in rows], ["2025-01-04"])
+        self.assertEqual([row["predict_date"] for row in rows], ["2025-01-03"])
         self.assertTrue(all(row["predict_date"] >= runner.BACKTEST_PREDICT_START_DATE for row in rows))
+
+    def test_backtest_rows_stop_before_live_target_month(self) -> None:
+        from backtests import weekly_5y_direct_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202619, 202620, 202621, 202622, 202623])
+        calendar = _calendar_for(weekly_df["week_id"])
+        week_dates = {
+            202619: pd.Timestamp("2026-05-15"),
+            202620: pd.Timestamp("2026-05-22"),
+            202621: pd.Timestamp("2026-05-29"),
+            202622: pd.Timestamp("2026-06-05"),
+            202623: pd.Timestamp("2026-06-12"),
+        }
+        calendar.week_id_to_last_trading_day = lambda week_id: week_dates[int(week_id)].strftime("%Y-%m-%d")
+        calendar.next_trading_days = lambda day, count: [
+            value.strftime("%Y-%m-%d")
+            for value in sorted(week_dates.values())
+            if value > pd.Timestamp(day)
+        ][:count]
+        calendar.week_id_for_date = lambda day: {
+            value.strftime("%Y-%m-%d"): week_id
+            for week_id, value in week_dates.items()
+        }.get(day)
+
+        def fake_vote(frame: pd.DataFrame) -> pd.DataFrame:
+            feature_week = int(frame["week_id"].iloc[-1])
+            return pd.DataFrame(
+                {
+                    "week_id": [feature_week],
+                    "final_pred_label": [-1],
+                    "final_prob_up": [0.32],
+                    "rule_vote": [-1.0],
+                    "source_spec": ["unit"],
+                    "score_spec": ["unit:-1.0000"],
+                }
+            )
+
+        with patch.object(runner, "build_rule_vote", side_effect=fake_vote):
+            rows = runner.build_backtest_rows(
+                weekly_df,
+                calendar=calendar,
+                artifact_path=Path("/tmp/weekly.csv"),
+                artifact_source="unit_test",
+            )
+
+        self.assertEqual([row["target_date"] for row in rows], ["2026-05-22", "2026-05-29"])
+        self.assertTrue(all(row["target_date"] < runner.LIVE_TARGET_START_DATE for row in rows))
 
     def test_run_no_persist_returns_backtest_gate_and_sop_payload(self) -> None:
         from backtests import weekly_5y_direct_0529_reproduction as runner
@@ -184,4 +254,21 @@ def _calendar_for(week_ids: pd.Series) -> SimpleNamespace:
     def last_trading_day(week_id: int) -> str:
         return week_dates[int(week_id)].strftime("%Y-%m-%d")
 
-    return SimpleNamespace(week_id_to_last_trading_day=last_trading_day)
+    def next_trading_days(day: str, count: int) -> list[str]:
+        return [
+            value.strftime("%Y-%m-%d")
+            for value in sorted(week_dates.values())
+            if value > pd.Timestamp(day)
+        ][:count]
+
+    def week_id_for_date(day: str) -> int | None:
+        return {
+            value.strftime("%Y-%m-%d"): int(week_id)
+            for week_id, value in week_dates.items()
+        }.get(day)
+
+    return SimpleNamespace(
+        week_id_to_last_trading_day=last_trading_day,
+        next_trading_days=next_trading_days,
+        week_id_for_date=week_id_for_date,
+    )

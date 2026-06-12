@@ -26,15 +26,15 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
     只做 I/O 编排，不修改 core 目录中的原始算法逻辑。
     """
-    end_date = predict_date
-    start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
     engine = data_service.create_sqlalchemy_engine()
     try:
+        feature_date = get_calendar(engine=engine).previous_trading_day(predict_date)
+        start_date = (datetime.strptime(feature_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
         input_artifact = build_daily_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date=predict_date,
             start_date=start_date,
-            end_date=end_date,
+            end_date=feature_date,
             engine=engine,
         )
         daily_df = input_artifact.dataframe
@@ -51,6 +51,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
                     predict_date=predict_date,
                     target_date=target_date,
                     predicted_direction=result.vote_pred,
+                    feature_date=result.feature_date,
                     confidence=result.confidence,
                     model_version=result.model_version,
                     extra={

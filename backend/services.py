@@ -380,8 +380,8 @@ def list_predictions(
     count_sql = text(f"SELECT COUNT(*) FROM t_scheme_predictions {full_where}")
     data_sql = text(
         f"""
-        SELECT id, scheme_id, target_tenor, horizon, predict_date, target_date,
-               predicted_direction, confidence, model_version, extra,
+        SELECT id, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
+               prediction_phase, predicted_direction, confidence, model_version, extra,
                created_at, updated_at
         FROM t_scheme_predictions
         {full_where}
@@ -403,7 +403,9 @@ def list_predictions(
                 "target_label": _target_label(row["target_tenor"], target_labels),
                 "horizon": row["horizon"],
                 "predict_date": _iso(row["predict_date"]),
+                "feature_date": _row_feature_date(row),
                 "target_date": _iso(row["target_date"]),
+                "prediction_phase": _row_prediction_phase(row),
                 "predicted_direction": row["predicted_direction"],
                 "confidence": row["confidence"],
                 "model_version": row["model_version"],
@@ -483,8 +485,8 @@ def scheme_metrics(
 
     sql = text(
         f"""
-        SELECT p.id, p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.target_date,
-               p.predicted_direction, p.confidence, p.model_version, p.extra,
+        SELECT p.id, p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.feature_date, p.target_date,
+               p.prediction_phase, p.predicted_direction, p.confidence, p.model_version, p.extra,
                a.direction_1d, a.direction_5d, wa.direction_weekly
         FROM t_scheme_predictions p
         LEFT JOIN t_scheme_actuals a
@@ -524,7 +526,7 @@ def scheme_metrics(
         predict_date = _iso(row["predict_date"])
         target_date = _iso(row["target_date"])
         point_date = _prediction_point_date(row)
-        if not _is_weekly_metric(row["horizon"], extra) and point_date and display_until and point_date > display_until:
+        if predict_date and display_until and predict_date > display_until:
             continue
         metric_month = _scheme_metric_month(
             row["horizon"],
@@ -547,8 +549,9 @@ def scheme_metrics(
             "target_tenor": row["target_tenor"],
             "horizon": row["horizon"],
             "predict_date": predict_date,
-            "feature_date": _iso(extra.get("feature_date")),
+            "feature_date": _row_feature_date(row, extra),
             "target_date": target_date,
+            "prediction_phase": _row_prediction_phase(row, extra),
             "predicted_direction": row["predicted_direction"],
             "actual_direction": actual_direction,
             "is_correct": None if actual_direction is None else row["predicted_direction"] == actual_direction,
@@ -575,6 +578,7 @@ def scheme_metrics(
         "end_month": end_month,
         "monthly_metrics": monthly_metrics,
         "summary": _metric_block(matched_rows),
+        "phase_ranges": _phase_ranges(daily_rows),
         "daily_rows": daily_rows,
     }
 
@@ -610,7 +614,40 @@ def _is_better_weekly_prediction(candidate: Any, current: Any) -> bool:
 
 def _prediction_feature_date(row: Any) -> str:
     extra = _json_value(row["extra"], {})
-    return _iso(extra.get("feature_date")) or _iso(row["predict_date"]) or ""
+    return _row_feature_date(row, extra) or _iso(row["predict_date"]) or ""
+
+
+def _row_feature_date(row: Any, extra: dict[str, Any] | None = None) -> str:
+    extra = extra if extra is not None else _json_value(row["extra"], {})
+    return _iso(row["feature_date"]) or _iso(extra.get("feature_date")) or ""
+
+
+def _row_prediction_phase(row: Any, extra: dict[str, Any] | None = None) -> str:
+    extra = extra if extra is not None else _json_value(row["extra"], {})
+    return str(row["prediction_phase"] or extra.get("prediction_phase") or "")
+
+
+def _phase_ranges(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        phase = str(row.get("prediction_phase") or "")
+        if phase:
+            grouped[phase].append(row)
+    result: list[dict[str, Any]] = []
+    for phase, items in grouped.items():
+        predict_dates = sorted(str(row.get("predict_date") or "") for row in items if row.get("predict_date"))
+        target_dates = sorted(str(row.get("target_date") or "") for row in items if row.get("target_date"))
+        result.append(
+            {
+                "prediction_phase": phase,
+                "start_predict_date": predict_dates[0] if predict_dates else "",
+                "end_predict_date": predict_dates[-1] if predict_dates else "",
+                "start_target_date": target_dates[0] if target_dates else "",
+                "end_target_date": target_dates[-1] if target_dates else "",
+                "rows": len(items),
+            }
+        )
+    return sorted(result, key=lambda item: (item["start_predict_date"], item["prediction_phase"]))
 
 
 def _today_iso() -> str:

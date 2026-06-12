@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from scheduler.discovery import SchemeConfig, discover_schemes
@@ -22,6 +22,7 @@ from shared.models import PredictionRecord
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
+VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ def _record_from_payload(item: dict) -> PredictionRecord:
         predict_date=str(item["predict_date"]),
         target_date=str(item["target_date"]),
         predicted_direction=int(item["predicted_direction"]),
+        feature_date=str(item["feature_date"]) if item.get("feature_date") is not None else None,
+        prediction_phase=str(item["prediction_phase"]) if item.get("prediction_phase") is not None else None,
         confidence=float(item["confidence"]) if item.get("confidence") is not None else None,
         model_version=str(item["model_version"]) if item.get("model_version") is not None else None,
         extra=item.get("extra") or None,
@@ -94,6 +97,7 @@ def execute_scheme(
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
+    prediction_phase: str = "scheduled_live",
 ) -> SchemeRunResult:
     """执行单个方案并写入预测表和运行日志。
 
@@ -102,6 +106,8 @@ def execute_scheme(
     2. t_scheme_registry.status == 'active'（DB 注册状态）
     3. t_scheme_versions 中当前版本状态为 'active' 或 'shadow'（激活审核状态）
     """
+    if prediction_phase not in VALID_PREDICTION_PHASES:
+        raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
     engine = create_engine_from_env()
     started = time.monotonic()
     if cfg.status != "active":
@@ -126,8 +132,10 @@ def execute_scheme(
             predict_date=predict_date,
             scheme_version=scheme_version,
             run_type="active",
+            prediction_phase=prediction_phase,
         )
         records = run_scheme_subprocess(cfg.scheme_id, predict_date, algo_env=algo_env, timeout_sec=timeout_sec)
+        records = _normalize_live_records(records, prediction_phase=prediction_phase)
         written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
         for record in records:
             update_serving_pointer(
@@ -173,6 +181,7 @@ def execute_all(
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     include_paused: bool = False,
+    prediction_phase: str = "scheduled_live",
 ) -> list[SchemeRunResult]:
     """同步 registry 后执行方案。"""
     schemes = discover_schemes()
@@ -183,7 +192,37 @@ def execute_all(
         engine.dispose()
 
     runnable = schemes if include_paused else [cfg for cfg in schemes if cfg.status == "active"]
-    return [execute_scheme(cfg, predict_date, algo_env=algo_env) for cfg in runnable]
+    return [
+        execute_scheme(cfg, predict_date, algo_env=algo_env, prediction_phase=prediction_phase)
+        for cfg in runnable
+    ]
+
+
+def _normalize_live_records(records: list[PredictionRecord], *, prediction_phase: str) -> list[PredictionRecord]:
+    """补齐平台级 feature_date / prediction_phase，一处统一控制灰度和正式实盘语义。"""
+    normalized: list[PredictionRecord] = []
+    for record in records:
+        extra = dict(record.extra or {})
+        feature_date = record.feature_date or extra.get("feature_date")
+        if not feature_date:
+            raise ValueError(f"record {record.scheme_id}/{record.target_tenor} missing feature_date")
+        anchor_date = extra.get("anchor_date")
+        if anchor_date and str(anchor_date) != str(feature_date):
+            raise ValueError(
+                f"record {record.scheme_id}/{record.target_tenor} anchor_date={anchor_date} "
+                f"does not equal feature_date={feature_date}"
+            )
+        extra["feature_date"] = str(feature_date)
+        extra["prediction_phase"] = prediction_phase
+        normalized.append(
+            replace(
+                record,
+                feature_date=str(feature_date),
+                prediction_phase=prediction_phase,
+                extra=extra,
+            )
+        )
+    return normalized
 
 
 def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None) -> tuple[bool, str]:
@@ -233,15 +272,31 @@ def main() -> None:
     parser.add_argument("--scheme-id", default=None, help="Only execute one scheme")
     parser.add_argument("--algo-env", default=os.getenv("BOND_ALGO_CONDA_ENV", DEFAULT_ALGO_ENV))
     parser.add_argument("--include-paused", action="store_true", help="Run/skip paused schemes and log skipped rows")
+    parser.add_argument(
+        "--prediction-phase",
+        choices=sorted(VALID_PREDICTION_PHASES),
+        default="scheduled_live",
+        help="Live prediction phase; gray backfill must pass gray_live explicitly.",
+    )
     args = parser.parse_args()
 
     if args.scheme_id:
         schemes = {cfg.scheme_id: cfg for cfg in discover_schemes()}
-        result = execute_scheme(schemes[args.scheme_id], args.predict_date, algo_env=args.algo_env)
+        result = execute_scheme(
+            schemes[args.scheme_id],
+            args.predict_date,
+            algo_env=args.algo_env,
+            prediction_phase=args.prediction_phase,
+        )
         print(result)
         return
 
-    for result in execute_all(args.predict_date, algo_env=args.algo_env, include_paused=args.include_paused):
+    for result in execute_all(
+        args.predict_date,
+        algo_env=args.algo_env,
+        include_paused=args.include_paused,
+        prediction_phase=args.prediction_phase,
+    ):
         print(result)
 
 

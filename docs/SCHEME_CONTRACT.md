@@ -100,7 +100,7 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 | weekly | `feature_week_id`, `target_week_id`, `feature_date`, `target_date`, `target_rule` |
 
 > 周频 `target_rule` 与 `t_scheme_weekly_actuals` / `WeeklyActualRecord.target_rule` 对齐，保证预测与实际方向口径一致。
-> 实盘落库必须能追溯 `prediction_phase`（`gray_live` / `scheduled_live`）。字段迁移落地前可临时通过 `extra.prediction_phase` 留证；平台契约字段名固定为 `prediction_phase`。
+> 实盘落库必须写入一等字段 `prediction_phase`（`gray_live` / `scheduled_live`）。`extra.prediction_phase` 仅作为过渡审计副本，不能替代平台字段。
 
 `CompareGate` 中的 `max_confidence_abs_diff` / `mean_confidence_abs_diff` 是 original/current benchmark 对 `confidence` 字段的浮点差异统计；`1e-16` 量级属于浮点舍入误差，按 0 看待。方案行为一致性的硬门槛仍是 `predicted_direction` 逐样本零容差。
 

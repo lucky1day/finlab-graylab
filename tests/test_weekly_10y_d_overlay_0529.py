@@ -178,7 +178,7 @@ class PredictionRecordTests(unittest.TestCase):
     @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
     @patch("schemes.weekly_10y_d_overlay_0529.predict.data_service")
     @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
-    def test_run_loads_full_weekly_schema_and_at_least_six_future_weeks(
+    def test_run_uses_feature_week_as_of_for_weekly_artifact(
         self,
         mock_get_cal: MagicMock,
         mock_ds: MagicMock,
@@ -208,7 +208,8 @@ class PredictionRecordTests(unittest.TestCase):
         predict.run("2026-06-13")
 
         self.assertEqual(mock_build.call_args.kwargs["start_week"], 202624 - predict.LOOKBACK_WEEKS)
-        self.assertGreaterEqual(mock_build.call_args.kwargs["end_week"], 202624 + 6)
+        self.assertEqual(mock_build.call_args.kwargs["end_week"], 202624)
+        self.assertEqual(mock_build.call_args.kwargs["as_of_date"], "2026-06-12")
         self.assertIsNone(mock_build.call_args.kwargs["schema_columns"])
         passed_to_core = mock_d_overlay.call_args.args[0]
         self.assertIn("week_date", passed_to_core.columns)

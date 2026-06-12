@@ -31,6 +31,7 @@ HORIZON_DAYS = 6
 TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 MODEL_VERSION = "cross_d_overlay_0529"
 SCHEMA_COLUMNS = ["week_id", "TB1YWI3C", "TB3YWI3C", "TB5YWI3C", "TB7YWI3C", "TB0YWI3C"]
+LIVE_TARGET_START_DATE = "2026-06-01"
 
 
 def _load_config_raw(config_path: Path) -> dict[str, Any]:
@@ -118,12 +119,14 @@ def build_backtest_rows(
         prediction_row = feature_predictions.iloc[-1]
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
+        if target_date >= LIVE_TARGET_START_DATE:
+            continue
         future_return = _weekly_future_return(feature_row, target_row)
         label = _label_from_future_return(future_return) if future_return is not None else None
         predicted_direction = _int_or_none(prediction_row.get("cross_d_pred_label"))
         confidence = _float_or_none(prediction_row.get("cross_d_prob_up"))
         source_row = clean_json({**feature_row.to_dict(), **prediction_row.to_dict()})
-        predict_date = _predict_date_for_feature_date(feature_date)
+        predict_date = feature_date
         if predict_date < BACKTEST_PREDICT_START_DATE:
             continue
 
