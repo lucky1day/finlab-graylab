@@ -1,5 +1,8 @@
 -- Immutable backtest run schema switch.
 -- Idempotent: safe to run more than once on bond_db.
+-- NOTE: This migration introduced the original v_latest_backtest_run view.
+--       Migration 009_backtest_latest_view.sql later replaces that view with
+--       the frontend/API canonical latest-success semantics. Read 007 then 009.
 
 UPDATE t_backtest_runs
 SET backtest_run_id = id
