@@ -15,3 +15,4 @@ input_spec:
 backtest:
   runner: backtests.daily_0529_reproduction
   benchmark_required: true
+  start_date: "2025-01-01"

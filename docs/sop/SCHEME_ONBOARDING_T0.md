@@ -56,6 +56,8 @@
 
 - `target_date` 是展示、分组、去重、月度指标、唯一键的日期。
 - `predict_date` 只用于调度日志和运行记录。
+- 全平台历史回测输出样本统一从 `predict_date >= 2025-01-01` 开始；日频/月频方案在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，周频方案写 `backtest.predict_start_date: "2025-01-01"`。
+- 历史训练、筛因子、模型更新、warmup 和输入 artifact 可以使用 `2025-01-01` 之前的数据；不要把训练起点误当成回测输出样本起点。
 - 灰度实盘观察起点也按 `target_date` 判定。当前起点为 `target_date >= 2026-06-01`；历史回测必须只覆盖起点之前的 target，不得把 live target 月写进 `t_backtest_*`。
 - `deployed_at` / 前端“部署时间”只是展示字段，不参与月份归属、回测截断、实盘回补范围或唯一键计算。
 - `t_scheme_predictions` 唯一语义是 `(scheme_id, target_tenor, horizon, target_date)`，写入必须保持 UPSERT 语义。
@@ -76,6 +78,7 @@
 | 输入入口 | `build_daily_input_artifact()`；如依赖 weekly/monthly，声明 `input_spec.auxiliary_inputs` 后再调用对应 artifact builder | `build_weekly_input_artifact()` |
 | 日期来源 | 交易日历 / 源数据日期 | `week_id` 必须来自 `api_wind_date`，经 `shared.calendar_service` |
 | target 规则 | 按 T+N 目标交易日 | `feature_week_id` 的下一实际 DB 周 `target_week_id`，目标日为该周最后交易日 |
+| 回测样本起点 | `backtest.start_date: "2025-01-01"`，按 `predict_date` 过滤输出样本 | `backtest.predict_start_date: "2025-01-01"`，`start_week/end_week` 仍是输入/训练范围 |
 | 禁止项 | 用 `predict_date` 做展示月 | 任何 `*_to_friday` / `*_to_monday` / 计算型 week_id 作为实盘或回测对齐依据 |
 | 数据加载 | 覆盖特征窗口和 target 计算所需数据 | `end_week >= current_week_id + 6`；目标周数据不存在时不能回退 feature 周 |
 
@@ -134,6 +137,7 @@ benchmark CSV 至少包含 `predict_date/tenor/direction/confidence`；周度方
 - [ ] 方案是新增 scheme，不是平台框架改造。
 - [ ] 已选 daily / weekly 频率，并知道对应输入入口；如有 weekly/monthly 辅助输入，已声明 `input_spec.auxiliary_inputs`。
 - [ ] `target_date` / `predict_date` 语义已写清。
+- [ ] 需要历史回测时，已声明统一输出样本起点：daily/monthly 用 `backtest.start_date: "2025-01-01"`，weekly 用 `backtest.predict_start_date: "2025-01-01"`。
 - [ ] 周度方案已明确 DB 周历、target week、`end_week` 规则。
 - [ ] 原始算法文件和 source benchmark 来源已定位。
 - [ ] 已选同频率参考方案和回测 runner。

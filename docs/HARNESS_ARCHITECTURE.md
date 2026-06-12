@@ -1,6 +1,6 @@
 # 强约束 Harness 工程架构
 
-**更新日期**: 2026-06-09
+**更新日期**: 2026-06-12
 
 本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。
 
@@ -62,7 +62,7 @@ bond-factor-lab/
 | `harness.import_audit` | 静态扫描危险导入和绕路调用 | 不自动改代码 |
 | `harness.input_gate` | 调用公共输入层生成主 artifact 和 `input_spec.auxiliary_inputs` 辅助 artifact，验证列、日期/month/week 覆盖、source 和 data_version，并在 `auxiliary_input_artifacts` 留证 | 不直接调用源表写入 |
 | `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表 | 不调用 `scheduler.executor` |
-| `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告 | 未授权不落 `t_backtest_*` |
+| `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01` | 未授权不落 `t_backtest_*` |
 | `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护 | 不批量执行所有 active 方案 |
 | `harness.report` | 输出 JSON/Markdown 证据到 `reports/harness/{scheme_id}/` | 不改业务状态 |
 
@@ -94,7 +94,7 @@ python -m harness.cli check \
 4. **Static Gate**: 静态检查目录、命名、接口、危险导入、直接写库、绕过公共输入层等问题。
 5. **Unit Gate**: 覆盖 core 输出、adapter 输出、公共输入层调用、`PredictionRecord` 字段。
 6. **Dry-run Gate**: 通过 `scheduler.scheme_runner` 返回 JSON，并确认 `t_scheme_predictions` / `t_scheme_run_log` 行数不变。
-7. **Backtest Gate**: 先 `--no-persist`，确认样本数、月度分布和准确率；用户授权后才写 `t_backtest_*`。
+7. **Backtest Gate**: 先 `--no-persist`，确认样本数、月度分布、准确率和最早 `predict_date >= 2025-01-01`；用户授权后才写 `t_backtest_*`。
 8. **Live Gate**: 用户授权后只写该 `scheme_id` 的 prediction/run_log，不能触发其他方案。
 9. **Activation**: 通过全部 gate 后，才允许从 `paused` 改为 `active` 并重启 scheduler。
 10. **Documentation**: 更新状态、回测、测试记录和 harness 报告路径。
@@ -142,6 +142,7 @@ python -m harness.cli check \
 - 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
 - 回测结论: `--no-persist` summary、样本数、准确率、月度分布。
+- 回测日期结论: 输出样本最早 `predict_date >= 2025-01-01`，同时灰度实盘切分仍按 `target_date >= 2026-06-01`。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。
 - 前端/API 结论: `/api/backtests/factor-lab` 或 `/api/metrics/{scheme_id}` 可读，矩阵格子不消失。
 - 文档结论: 当前状态、测试记录、历史复现或上线计划已更新。

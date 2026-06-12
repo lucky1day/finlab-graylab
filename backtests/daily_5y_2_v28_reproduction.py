@@ -28,8 +28,9 @@ TARGET_TENOR = "5Y"
 HORIZON = 5
 BACKTEST_INPUT_START = "2010-07-27"
 BACKTEST_INPUT_END = "2026-04-30"
-BACKTEST_START = "2024-07-01"
+BACKTEST_START = "2025-01-01"
 BACKTEST_END = "2026-04-30"
+BACKTEST_PREDICT_START_DATE = "2025-01-01"
 LIVE_TARGET_CUTOFF = "2026-06-01"
 DEFAULT_N_WORKERS = 10
 
@@ -72,6 +73,8 @@ def build_backtest_rows(
     rows: list[dict[str, Any]] = []
     for record in detail.to_dict("records"):
         anchor_date = str(record["anchor_date"])
+        if anchor_date < BACKTEST_PREDICT_START_DATE:
+            continue
         target_date = target_date_for_anchor(anchor_date)
         if target_date is None or target_date >= LIVE_TARGET_CUTOFF:
             continue

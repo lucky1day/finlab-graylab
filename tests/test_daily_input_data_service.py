@@ -149,6 +149,51 @@ class ReproductionDailyDataServiceTests(unittest.TestCase):
         self.assertIs(kwargs["engine"], engine)
         self.assertEqual(kwargs["scheme_id"], "daily_framework")
 
+    def test_t1_backtest_rows_start_from_predict_date_2025_01_01(self) -> None:
+        from backtests import daily_0529_reproduction as daily_reproduction
+        from schemes.t1_daily.core import config as t1_config
+        from schemes.t1_daily.core import lgbm_predictor
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2024-12-31", "2025-01-01", "2025-01-02"]),
+                "close": [1.0, 1.1, 1.2],
+            }
+        )
+        fake_configs = {
+            "D1Y": SimpleNamespace(frequency="D1Y", tenor="3Y", close_col="close", threshold=0.0),
+            "D5Y": SimpleNamespace(frequency="D5Y", tenor="5Y", close_col="close", threshold=0.0),
+            "D10Y": SimpleNamespace(frequency="D10Y", tenor="10Y", close_col="close", threshold=0.0),
+        }
+
+        def fake_predict_latest_for_config(_daily: pd.DataFrame, cfg: SimpleNamespace, *, current_date: str) -> SimpleNamespace:
+            feature_date = "2024-12-31" if current_date == "2025-01-01" else "2025-01-01"
+            return SimpleNamespace(
+                config=cfg,
+                tenor=cfg.tenor,
+                frequency=cfg.frequency,
+                feature_date=feature_date,
+                target_date=current_date,
+                pred_label=1,
+                prob_up=0.6,
+                base_pred=1,
+                threshold_used=0.0,
+                base_decision="model",
+                vote_sum=1,
+                decision="test",
+                train_start="2020-01-01",
+                train_end=feature_date,
+                feature_columns=["close"],
+            )
+
+        with patch.object(t1_config, "TENOR_CONFIGS", fake_configs):
+            with patch.object(lgbm_predictor, "predict_latest_for_config", side_effect=fake_predict_latest_for_config):
+                rows = daily_reproduction.run_t1_framework_backtest(daily_df)
+
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({row["predict_date"] for row in rows}, {"2025-01-01"})
+        self.assertTrue(all(row["predict_date"] >= "2025-01-01" for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -113,5 +113,70 @@ class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
         self.assertIn("input_spec.auxiliary_inputs[1] must be a mapping", errors)
 
 
+class ConfigSchemaBacktestStartTests(unittest.TestCase):
+    def test_daily_backtest_requires_start_date_2025_01_01(self) -> None:
+        config = _base_config()
+        config["backtest"] = {"runner": "backtests.demo"}
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertIn("backtest.start_date must be 2025-01-01 for daily/monthly backtests", errors)
+
+    def test_daily_backtest_start_date_2025_01_01_is_valid(self) -> None:
+        config = _base_config()
+        config["backtest"] = {
+            "runner": "backtests.demo",
+            "start_date": "2025-01-01",
+            "benchmark_required": True,
+        }
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertEqual(errors, [])
+
+    def test_weekly_backtest_requires_predict_start_date_2025_01_01(self) -> None:
+        config = _base_config()
+        config["scheme_id"] = "demo_weekly"
+        config["frequency"] = "weekly"
+        config["horizon"] = 6
+        config["target_rule"] = "next_week_last_trading_day_vs_current_week_last_trading_day"
+        config["input_spec"] = {
+            "data_version": "shared_data_service_weekly.v1",
+            "required_columns": ["week_id", "TB5YWI3C"],
+            "weekly_variant": "unified",
+        }
+        config["backtest"] = {
+            "runner": "backtests.demo_weekly",
+            "start_week": 200901,
+            "end_week": 202622,
+        }
+
+        errors = validate_config(config, dirname="demo_weekly")
+
+        self.assertIn("backtest.predict_start_date must be 2025-01-01 for weekly backtests", errors)
+
+    def test_weekly_backtest_predict_start_date_keeps_historical_start_week_valid(self) -> None:
+        config = _base_config()
+        config["scheme_id"] = "demo_weekly"
+        config["frequency"] = "weekly"
+        config["horizon"] = 6
+        config["target_rule"] = "next_week_last_trading_day_vs_current_week_last_trading_day"
+        config["input_spec"] = {
+            "data_version": "shared_data_service_weekly.v1",
+            "required_columns": ["week_id", "TB5YWI3C"],
+            "weekly_variant": "unified",
+        }
+        config["backtest"] = {
+            "runner": "backtests.demo_weekly",
+            "predict_start_date": "2025-01-01",
+            "start_week": 200901,
+            "end_week": 202622,
+        }
+
+        errors = validate_config(config, dirname="demo_weekly")
+
+        self.assertEqual(errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

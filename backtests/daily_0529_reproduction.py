@@ -55,7 +55,7 @@ TARGET_COLUMNS = ("TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
 UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 T5_BACKTEST_START = "2025-01-01"
 T5_BACKTEST_END = "2026-05-31"
-T1_BACKTEST_START = "2025-01-02"
+T1_BACKTEST_START = "2025-01-01"
 T1_BACKTEST_END = "2026-05-28"
 EVALUATION_EXCLUDED_TARGET_RANGES = (
     {
@@ -442,7 +442,10 @@ def run_t1_framework_backtest(df: pd.DataFrame) -> list[dict[str, Any]]:
     for run_date in dates:
         for frequency in ("D1Y", "D5Y", "D10Y"):
             result = predict_latest_for_config(daily, TENOR_CONFIGS[frequency], current_date=run_date)
-            rows.append(_t1_prediction_result_to_row(daily, result))
+            row = _t1_prediction_result_to_row(daily, result)
+            if row["predict_date"] < T1_BACKTEST_START:
+                continue
+            rows.append(row)
     return rows
 
 

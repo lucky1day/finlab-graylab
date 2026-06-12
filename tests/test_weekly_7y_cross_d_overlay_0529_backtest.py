@@ -112,6 +112,55 @@ class Weekly7YCrossDOverlay0529BacktestTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["target_week_id"], 202622)
         self.assertEqual(rows[0]["target_date"], "2026-05-22")
 
+    def test_backtest_rows_start_from_predict_date_2025_01_01(self) -> None:
+        from backtests import weekly_7y_cross_d_overlay_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202452, 202501, 202502])
+        week_dates = {
+            202452: pd.Timestamp("2024-12-27"),
+            202501: pd.Timestamp("2025-01-03"),
+            202502: pd.Timestamp("2025-01-10"),
+        }
+        calendar = SimpleNamespace(
+            week_id_to_last_trading_day=lambda week_id: week_dates[int(week_id)].strftime("%Y-%m-%d"),
+            next_trading_days=lambda day, count: [
+                value.strftime("%Y-%m-%d")
+                for value in sorted(week_dates.values())
+                if value > pd.Timestamp(day)
+            ][:count],
+            week_id_for_date=lambda day: {
+                value.strftime("%Y-%m-%d"): week_id
+                for week_id, value in week_dates.items()
+            }.get(day),
+        )
+
+        def fake_overlay(frame: pd.DataFrame) -> pd.DataFrame:
+            feature_week = int(frame["week_id"].iloc[-1])
+            return pd.DataFrame(
+                {
+                    "week_id": [feature_week],
+                    "cross_d_pred_label": [1],
+                    "cross_d_prob_up": [0.55],
+                    "cross_d_overlay": [False],
+                    "cross_d_signal_source": ["unit"],
+                    "main_pred_label": [1],
+                    "main_prob_up": [0.55],
+                    "d5_d_pred_label": [1],
+                    "d5_d_prob_up": [0.55],
+                }
+            )
+
+        with patch.object(runner, "build_cross_d_overlay", side_effect=fake_overlay):
+            rows = runner.build_backtest_rows(
+                weekly_df,
+                calendar=calendar,
+                artifact_path=Path("/tmp/weekly_7y.csv"),
+                artifact_source="unit_test",
+            )
+
+        self.assertEqual([row["predict_date"] for row in rows], ["2025-01-04"])
+        self.assertTrue(all(row["predict_date"] >= runner.BACKTEST_PREDICT_START_DATE for row in rows))
+
     def test_run_no_persist_returns_sop_payload_without_writes(self) -> None:
         from backtests import weekly_7y_cross_d_overlay_0529_reproduction as runner
 

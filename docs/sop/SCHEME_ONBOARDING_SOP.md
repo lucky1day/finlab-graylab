@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-11
+**更新日期**: 2026-06-12
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -38,6 +38,7 @@
 - 后端 `_prediction_point_date` 去重键必须用 `target_date`。
 - 后端 `_scheme_metric_month` 月份归属必须用 `target_date`。
 - `predict_date` 只用于调度执行日志和 `extra` 中的记录字段，不参与任何展示/分组/去重。
+- 历史回测输出样本的统一起点例外地由 `predict_date >= 2025-01-01` 控制；这是为了候选方案排行样本口径一致，不改变月度指标仍按 `target_date` 归属。
 
 **违反后果示例**（2026-06-10 实际踩坑）：
 1. 后端 `_scheme_metric_month` 用 predict_date → 月度指标显示 5月，明细在 6月，对不上。
@@ -70,6 +71,12 @@
 - 灰度实盘观察起点按 `target_date` 判定，当前为 `target_date >= 2026-06-01`。
 - 历史回测只覆盖灰度起点之前的 target；实盘区间通过 `t_scheme_predictions` 和 `/api/metrics/{scheme_id}` 展示。
 - 前端“部署时间”（当前周度方案统一显示 `2026/06/10`）只是展示字段，不参与回测截断、实盘回补范围、月份归属或唯一键计算。
+
+**规则五补充：历史回测预测起点全平台统一为 2025-01-01**
+- 参与历史排行的 daily/monthly 方案必须在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，并保证 runner 输出样本满足 `predict_date >= 2025-01-01`。
+- 参与历史排行的 weekly 方案必须在 `config.yaml` 写 `backtest.predict_start_date: "2025-01-01"`；`start_week/end_week` 仍表示输入、训练和模型更新所需的历史周范围，可以早于 2025 年。
+- 模型 warmup、训练样本、因子筛选、定期更新模型所需的数据可以早于 `2025-01-01`。禁止为了统一回测样本数而截断这些历史输入。
+- 灰度实盘分界仍按 `target_date >= 2026-06-01`；不要用 `predict_date` 或部署时间切 live/backtest 区间。
 
 **规则六：`confidence` 是算法输出数值的统一承接字段**
 - `confidence` 用来承接原始算法已有的置信度、概率或分数；不是平台为模型重新生成的新信号。
@@ -152,6 +159,9 @@ schedule:
   timezone: "Asia/Shanghai"
 entry_point: predict.run
 status: paused
+backtest:
+  runner: backtests.t1_lgbm_spread_v2_reproduction
+  start_date: "2025-01-01"  # daily/monthly 历史回测输出样本 predict_date 起点；weekly 改用 predict_start_date
 ```
 
 字段要求:
@@ -373,6 +383,8 @@ conda run -n forecast_env python -m scheduler.scheme_runner \
 
 如果新方案需要参与当前前端方案矩阵的历史排行，必须产出并写入独立 backtest 表。当前前端优先展示 `/api/backtests/factor-lab` 的最新 `framework_db_aligned` 回测结果，并统一显示为“当前DB对齐回测”；只写 `t_scheme_predictions` 的实盘结果，不会自动混入已有历史排行。
 
+全平台历史回测输出样本必须从 `predict_date >= 2025-01-01` 开始。daily/monthly runner 用 `backtest.start_date: "2025-01-01"` 表达这个预测发出起点；weekly runner 用 `backtest.predict_start_date: "2025-01-01"` 表达，且必须在生成 row 时按 `predict_date` 过滤。weekly 的 `start_week/end_week`、daily 的输入起点、模型 warmup 和训练/筛选窗口可以更早，只要最终输出样本起点对齐即可。
+
 命名约束: `scheme_id` 只能表示真实方案；`benchmark_id` 只能表示历史基准批次；`data_source` 只能表示数据口径。文件系统中运行期输入用 `backtest_artifacts/runtime_inputs/{scheme_id}/`，历史回测 artifact 用 `backtest_artifacts/backtests/{benchmark_id}/`，不得再新增 `model_muti_0529_daily` 这类混合命名。
 
 历史回测至少记录三件事:
@@ -402,7 +414,7 @@ SPEC = BacktestSpec(
     scheme_id="{scheme_id}",
     canonical_csv=Path("benchmarks/{benchmark_id}/daily_output.csv"),
     target_columns=("TB0YWI0C",),  # 方案关注的收益率列
-    start_date="YYYY-MM-DD",
+    start_date="2025-01-01",
     end_date="YYYY-MM-DD",
 )
 
@@ -424,6 +436,7 @@ if __name__ == "__main__":
 **周频 runner** 参照 `backtests/weekly_5y_direct_0529_reproduction.py`。周频 runner 不继承 `BaseDailyBacktestRunner`，而是直接导入方案的 core 算法循环逐周预测。Runner 必须：
 - 从 `shared.input_artifacts.build_weekly_input_artifact()` 获取输入。
 - 使用 `shared.calendar_service` 查询 `week_id`（禁止日历公式）。
+- 声明 `backtest.predict_start_date: "2025-01-01"`，并按 `predict_date >= 2025-01-01` 过滤输出样本；不要把早期 `start_week` 误删，因为那通常是训练和模型更新窗口。
 - 调用 `backtests.repository.create_backtest_run` / `replace_backtest_predictions` / `replace_backtest_monthly_metrics` 写库（`--no-persist` 时跳过写库）。
 
 回测写库后入库:
@@ -438,6 +451,7 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 验收点:
 
 - 回测写入只作用于新 `scheme_id` 对应 run。
+- 输出样本的最早 `predict_date` 不早于 `2025-01-01`；训练、warmup、筛因子和模型更新历史窗口可以早于该日期。
 - `/api/backtests/factor-lab` 返回 `frequency=weekly`，前端落到“周度”列。
 - 周度明细行、月度指标、去重和展示月份一律按 `target_date` 归组；`feature_date` 只用于追溯输入窗口，`predict_date` 只用于调度日志和运行记录。
 - 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行；不要用部署时间或 `predict_date` 截断历史回测。

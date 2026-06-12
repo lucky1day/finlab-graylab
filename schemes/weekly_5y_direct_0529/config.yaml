@@ -18,5 +18,6 @@ backtest:
   runner: backtests.weekly_5y_direct_0529_reproduction
   benchmark_id: model_muti_0529
   data_source: framework_db_aligned
+  predict_start_date: "2025-01-01"
   start_week: 200901
   end_week: 202622

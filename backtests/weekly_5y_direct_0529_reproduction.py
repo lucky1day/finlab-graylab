@@ -75,6 +75,7 @@ def _parse_scalar(value: str) -> Any:
 _CONFIG_RAW = _load_config_raw(CONFIG_PATH)
 _BACKTEST_CONFIG = _CONFIG_RAW.get("backtest") if isinstance(_CONFIG_RAW.get("backtest"), dict) else {}
 BENCHMARK_ID = str(_BACKTEST_CONFIG.get("benchmark_id") or "model_muti_0529")
+BACKTEST_PREDICT_START_DATE = str(_BACKTEST_CONFIG.get("predict_start_date") or "2025-01-01")
 BACKTEST_START_WEEK = int(_BACKTEST_CONFIG.get("start_week") or 200901)
 BACKTEST_END_WEEK = int(_BACKTEST_CONFIG.get("end_week") or 202622)
 BACKTEST_DATA_SOURCE = str(_BACKTEST_CONFIG.get("data_source") or DATA_SOURCE)
@@ -117,6 +118,9 @@ def build_backtest_rows(
         predicted_direction = _int_or_none(vote_row.get("final_pred_label"))
         confidence = _float_or_none(vote_row.get("final_prob_up"))
         source_row = clean_json({**feature_row.to_dict(), **vote_row.to_dict()})
+        predict_date = _predict_date_for_feature_date(feature_date)
+        if predict_date < BACKTEST_PREDICT_START_DATE:
+            continue
 
         rows.append(
             {
@@ -124,7 +128,7 @@ def build_backtest_rows(
                 "scheme_id": SCHEME_ID,
                 "target_tenor": TARGET_TENOR,
                 "horizon": HORIZON_DAYS,
-                "predict_date": _predict_date_for_feature_date(feature_date),
+                "predict_date": predict_date,
                 "feature_date": feature_date,
                 "target_date": target_date,
                 "label": label,
@@ -256,6 +260,7 @@ def _annotate_summary(output: RunOutput, artifact: Any, weekly_df: pd.DataFrame)
     summary["weekly_input_week_max"] = _int_or_none(weekly_df["week_id"].max()) if "week_id" in weekly_df else None
     summary["weekly_input_artifact_path"] = str(artifact.path)
     summary["weekly_input_artifact_source"] = str(artifact.source)
+    summary["backtest_predict_start_date"] = BACKTEST_PREDICT_START_DATE
     summary["backtest_start_week"] = BACKTEST_START_WEEK
     summary["backtest_end_week"] = BACKTEST_END_WEEK
 

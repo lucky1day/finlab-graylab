@@ -72,5 +72,5 @@ backtest:
   benchmark_id: v28_daily_5y_2
   data_source: framework_db_aligned
   benchmark_required: true
-  start_date: "2024-07-01"
+  start_date: "2025-01-01"
   end_date: "2026-04-30"

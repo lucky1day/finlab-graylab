@@ -1,6 +1,6 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-06-11
+**更新日期**: 2026-06-12
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -30,9 +30,12 @@
 | `input_spec.auxiliary_inputs` | list[map] | ➖ | 辅助输入声明。每项为 `{frequency, data_version, required_columns}`；`frequency ∈ {daily, weekly, monthly}`，不得等于方案主 `frequency`，同一方案内不得重复。InputGate 对每项执行与主输入相同的 source / data_version / required_columns / coverage 校验 |
 | `target_rule` | str | `frequency==weekly` 时✅(新) | 目标日语义（如 `next_week_last_trading_day_vs_current_week`） |
 | `backtest.runner` | str | ➖(新) | `backtests/{scheme_id}_reproduction.py` 模块名；参与历史排行时必填 |
+| `backtest.start_date` | str | `frequency in {daily, monthly}` 且参与回测时✅ | 必须等于 `2025-01-01`。含义是历史回测**预测发出起点**，即回测输出样本必须满足 `predict_date >= 2025-01-01`；训练、筛因子、模型更新和输入 artifact 可以使用更早历史数据 |
+| `backtest.predict_start_date` | str | `frequency==weekly` 且参与回测时✅ | 必须等于 `2025-01-01`。周频 `start_week/end_week` 仍表示输入/训练周范围；输出样本必须按 `predict_date >= 2025-01-01` 过滤 |
 
 > 标注「新」的字段是本设计**新增的必填项**——让 harness 无需读算法即可知道输入口径、列要求、目标语义。现有方案在数据层重构阶段补齐这些字段。
 > `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
+> 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘分界按 `target_date >= 2026-06-01` 判定。
 
 ```python
 # harness/contracts/config_schema.py（设计签名）

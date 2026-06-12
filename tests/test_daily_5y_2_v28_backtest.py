@@ -47,14 +47,15 @@ class Daily5Y2BacktestTests(unittest.TestCase):
 
         detail = pd.DataFrame(
             {
-                "anchor_date": ["2026-05-22", "2026-05-25"],
-                "prediction": [-1, 1],
-                "true_label": [-1, 1],
-                "confidence": [1.0, 1.0],
-                "vote_score": [-0.6, 0.7],
+                "anchor_date": ["2024-12-31", "2026-05-22", "2026-05-25"],
+                "prediction": [1, -1, 1],
+                "true_label": [1, -1, 1],
+                "confidence": [1.0, 1.0, 1.0],
+                "vote_score": [0.8, -0.6, 0.7],
             }
         )
         target_dates = {
+            "2024-12-31": "2025-01-08",
             "2026-05-22": "2026-05-29",
             "2026-05-25": "2026-06-01",
         }

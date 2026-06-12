@@ -76,6 +76,42 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
             },
         )
 
+    def test_backtest_rows_start_from_predict_date_2025_01_01(self) -> None:
+        from backtests import weekly_5y_direct_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202452, 202501, 202502])
+        calendar = SimpleNamespace(
+            week_id_to_last_trading_day=lambda week_id: {
+                202452: "2024-12-27",
+                202501: "2025-01-03",
+                202502: "2025-01-10",
+            }[int(week_id)]
+        )
+
+        def fake_vote(frame: pd.DataFrame) -> pd.DataFrame:
+            feature_week = int(frame["week_id"].iloc[-1])
+            return pd.DataFrame(
+                {
+                    "week_id": [feature_week],
+                    "final_pred_label": [1],
+                    "final_prob_up": [0.55],
+                    "rule_vote": [1.0],
+                    "source_spec": ["unit"],
+                    "score_spec": ["unit:1.0000"],
+                }
+            )
+
+        with patch.object(runner, "build_rule_vote", side_effect=fake_vote):
+            rows = runner.build_backtest_rows(
+                weekly_df,
+                calendar=calendar,
+                artifact_path=Path("/tmp/weekly.csv"),
+                artifact_source="unit_test",
+            )
+
+        self.assertEqual([row["predict_date"] for row in rows], ["2025-01-04"])
+        self.assertTrue(all(row["predict_date"] >= runner.BACKTEST_PREDICT_START_DATE for row in rows))
+
     def test_run_no_persist_returns_backtest_gate_and_sop_payload(self) -> None:
         from backtests import weekly_5y_direct_0529_reproduction as runner
 
