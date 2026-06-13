@@ -25,10 +25,18 @@ class InputGate(Gate):
         aux_specs = input_spec.get("auxiliary_inputs")
         auxiliary_inputs = aux_specs if isinstance(aux_specs, list) else []
 
-        engine = ctx.engine_factory() if ctx.engine_factory is not None else None
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         try:
-            artifact = self._build_artifact(ctx, frequency, engine)
-            auxiliary_results = self._build_auxiliary_artifacts(ctx, auxiliary_inputs, engine)
+            feature_date = _feature_date(ctx.predict_date, engine)
+            feature_week_id = _feature_week_id(feature_date, engine)
+            artifact = self._build_artifact(ctx, frequency, engine, feature_date=feature_date, feature_week_id=feature_week_id)
+            auxiliary_results = self._build_auxiliary_artifacts(
+                ctx,
+                auxiliary_inputs,
+                engine,
+                feature_date=feature_date,
+                feature_week_id=feature_week_id,
+            )
         finally:
             if engine is not None and hasattr(engine, "dispose"):
                 engine.dispose()
@@ -76,6 +84,8 @@ class InputGate(Gate):
             Evidence("date_coverage", primary["date_coverage"]),
             Evidence("quality_flags", primary["quality_flags"]),
             Evidence("missing_required_cols", primary["missing_required_cols"]),
+            Evidence("feature_date", feature_date),
+            Evidence("feature_week_id", feature_week_id),
             Evidence("auxiliary_input_artifacts", auxiliary_evidence),
         ]
         finished_at = utc_now()
@@ -90,15 +100,17 @@ class InputGate(Gate):
             finished_at=finished_at,
         )
 
-    def _build_artifact(self, ctx: GateContext, frequency: str, engine: Any):
+    def _build_artifact(self, ctx: GateContext, frequency: str, engine: Any, *, feature_date: str, feature_week_id: int | None):
         if frequency == "weekly":
             return build_weekly_input_artifact(
                 scheme_id=ctx.scheme_id,
                 predict_date=ctx.predict_date,
+                end_week=feature_week_id,
+                as_of_date=feature_date,
                 engine=engine,
             )
         if frequency == "daily":
-            start_date, end_date = _daily_window(ctx.predict_date)
+            start_date, end_date = _daily_window(feature_date)
             return build_daily_input_artifact(
                 scheme_id=ctx.scheme_id,
                 predict_date=ctx.predict_date,
@@ -113,6 +125,9 @@ class InputGate(Gate):
         ctx: GateContext,
         aux_specs: list,
         engine: Any,
+        *,
+        feature_date: str,
+        feature_week_id: int | None,
     ) -> list[tuple[dict, Any, str | None]]:
         results: list[tuple[dict, Any, str | None]] = []
         for item in aux_specs:
@@ -120,7 +135,7 @@ class InputGate(Gate):
             frequency = str(spec.get("frequency", "") or "")
             try:
                 if frequency == "daily":
-                    start_date, end_date = _daily_window(ctx.predict_date)
+                    start_date, end_date = _daily_window(feature_date)
                     artifact = build_daily_input_artifact(
                         scheme_id=ctx.scheme_id,
                         predict_date=ctx.predict_date,
@@ -132,10 +147,12 @@ class InputGate(Gate):
                     artifact = build_weekly_input_artifact(
                         scheme_id=ctx.scheme_id,
                         predict_date=ctx.predict_date,
+                        end_week=feature_week_id,
+                        as_of_date=feature_date,
                         engine=engine,
                     )
                 elif frequency == "monthly":
-                    start_date, end_date = _daily_window(ctx.predict_date)
+                    start_date, end_date = _daily_window(feature_date)
                     artifact = build_monthly_input_artifact(
                         scheme_id=ctx.scheme_id,
                         predict_date=ctx.predict_date,
@@ -208,6 +225,26 @@ def _daily_window(predict_date: str) -> tuple[str, str]:
     end_date = predict_date
     start_date = (datetime.strptime(end_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
     return start_date, end_date
+
+
+def _feature_date(predict_date: str, engine: Any) -> str:
+    return get_calendar(engine).previous_trading_day(predict_date)
+
+
+def _feature_week_id(feature_date: str, engine: Any) -> int | None:
+    return get_calendar(engine).week_id_for_date(feature_date)
+
+
+def get_calendar(engine: Any):
+    from shared.calendar_service import get_calendar as calendar_factory
+
+    return calendar_factory(engine)
+
+
+def _create_engine():
+    from scheduler.repository import create_engine_from_env
+
+    return create_engine_from_env()
 
 
 def build_daily_input_artifact(**kwargs):

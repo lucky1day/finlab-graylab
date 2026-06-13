@@ -12,6 +12,7 @@ from harness.authorization import (
 )
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.prediction_semantics import LIVE_PHASES
 from harness.probes.table_guard import (
     LIVE_WRITE_ALLOWED_TABLES,
     PROTECTED_TABLES,
@@ -47,13 +48,21 @@ class LiveGate(Gate):
             )
             if auth_errors:
                 errors.extend(auth_errors)
+            elif ctx.prediction_phase not in LIVE_PHASES:
+                errors.append(f"live gate requires explicit prediction_phase in {sorted(LIVE_PHASES)}, got {ctx.prediction_phase}")
             else:
                 audit_dir = _audit_dir(ctx)
                 audit_path = write_authorization_audit(auth, audit_dir)
                 mark_token_used(auth, used_tokens_path(ctx.project_root))
                 cfg = _load_config_for_execution(ctx)
                 cfg_for_run = replace(cfg, status="active")
-                run_output = execute_scheme(cfg_for_run, ctx.predict_date, algo_env=ctx.algo_env, timeout_sec=ctx.timeout_sec)
+                run_output = execute_scheme(
+                    cfg_for_run,
+                    ctx.predict_date,
+                    algo_env=ctx.algo_env,
+                    timeout_sec=ctx.timeout_sec,
+                    prediction_phase=ctx.prediction_phase,
+                )
                 status = GateStatus.PASSED
         finally:
             after = snapshot_table_counts(engine, PROTECTED_TABLES)
@@ -82,6 +91,7 @@ class LiveGate(Gate):
             passed=status == GateStatus.PASSED,
             evidence=[
                 Evidence("authorized_scheme", ctx.scheme_id),
+                Evidence("prediction_phase", ctx.prediction_phase),
                 Evidence("authorization_audit_path", str(audit_path) if audit_path else None),
                 Evidence("protected_table_counts_before", before),
                 Evidence("protected_table_counts_after", after),

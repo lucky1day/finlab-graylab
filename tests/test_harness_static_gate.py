@@ -182,14 +182,17 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
             _write_minimal_scheme(project_root, scheme_id="demo_daily")
-            with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=artifact) as build:
-                result = InputGate().run(
-                    GateContext(
-                        scheme_id="demo_daily",
-                        predict_date="2026-06-03",
-                        project_root=project_root,
-                        report_dir=project_root / "reports",
-                    )
+            engine = SimpleNamespace(dispose=lambda: None)
+            with patch("harness.gates.input_gate.get_calendar", return_value=_fake_calendar()):
+                with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=artifact) as build:
+                    result = InputGate().run(
+                        GateContext(
+                            scheme_id="demo_daily",
+                            predict_date="2026-06-03",
+                            project_root=project_root,
+                            report_dir=project_root / "reports",
+                            engine_factory=lambda: engine,
+                        )
                 )
 
         self.assertTrue(result.passed, result.errors)
@@ -198,7 +201,9 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertEqual(evidence["date_coverage"], {"field": "date", "start": "2026-06-01", "end": "2026-06-03"})
         self.assertEqual(evidence["missing_required_cols"], [])
         self.assertEqual(evidence["auxiliary_input_artifacts"], [])
+        self.assertEqual(evidence["feature_date"], "2026-06-02")
         self.assertEqual(build.call_args.kwargs["scheme_id"], "demo_daily")
+        self.assertEqual(build.call_args.kwargs["end_date"], "2026-06-02")
 
     def test_input_gate_builds_auxiliary_inputs_with_evidence(self) -> None:
         from harness.context import GateContext
@@ -258,31 +263,34 @@ class HarnessRuntimeGateTests(unittest.TestCase):
                     '      required_columns: ["month_id", "M0000001"]',
                 ],
             )
-            with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=primary):
-                with patch("harness.gates.input_gate.build_weekly_input_artifact", return_value=weekly) as build_weekly:
-                    with patch(
-                        "harness.gates.input_gate.build_monthly_input_artifact",
-                        return_value=monthly,
-                    ) as build_monthly:
-                        result = InputGate().run(
-                            GateContext(
-                                scheme_id="demo_daily",
-                                predict_date="2026-06-03",
-                                project_root=project_root,
-                                report_dir=project_root / "reports",
+            engine = SimpleNamespace(dispose=lambda: None)
+            with patch("harness.gates.input_gate.get_calendar", return_value=_fake_calendar()):
+                with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=primary):
+                    with patch("harness.gates.input_gate.build_weekly_input_artifact", return_value=weekly) as build_weekly:
+                        with patch(
+                            "harness.gates.input_gate.build_monthly_input_artifact",
+                            return_value=monthly,
+                        ) as build_monthly:
+                            result = InputGate().run(
+                                GateContext(
+                                    scheme_id="demo_daily",
+                                    predict_date="2026-06-03",
+                                    project_root=project_root,
+                                    report_dir=project_root / "reports",
+                                    engine_factory=lambda: engine,
+                                )
                             )
-                        )
 
         self.assertTrue(result.passed, result.errors)
         evidence = _evidence_dict(result)
         self.assertEqual(len(evidence["auxiliary_input_artifacts"]), 2)
         self.assertEqual(evidence["auxiliary_input_artifacts"][0]["frequency"], "weekly")
         self.assertEqual(evidence["auxiliary_input_artifacts"][1]["frequency"], "monthly")
-        self.assertNotIn("start_week", build_weekly.call_args.kwargs)
-        self.assertNotIn("end_week", build_weekly.call_args.kwargs)
-        expected_start = (datetime.strptime("2026-06-03", "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
+        self.assertEqual(build_weekly.call_args.kwargs["end_week"], 202622)
+        self.assertEqual(build_weekly.call_args.kwargs["as_of_date"], "2026-06-02")
+        expected_start = (datetime.strptime("2026-06-02", "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")
         self.assertEqual(build_monthly.call_args.kwargs["start_date"], expected_start)
-        self.assertEqual(build_monthly.call_args.kwargs["end_date"], "2026-06-03")
+        self.assertEqual(build_monthly.call_args.kwargs["end_date"], "2026-06-02")
 
     def test_input_gate_merges_all_auxiliary_validation_failures(self) -> None:
         from harness.context import GateContext
@@ -342,17 +350,20 @@ class HarnessRuntimeGateTests(unittest.TestCase):
                     '      required_columns: ["month_id", "M0000001"]',
                 ],
             )
-            with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=primary):
-                with patch("harness.gates.input_gate.build_weekly_input_artifact", return_value=weekly):
-                    with patch("harness.gates.input_gate.build_monthly_input_artifact", return_value=monthly):
-                        result = InputGate().run(
-                            GateContext(
-                                scheme_id="demo_daily",
-                                predict_date="2026-06-03",
-                                project_root=project_root,
-                                report_dir=project_root / "reports",
+            engine = SimpleNamespace(dispose=lambda: None)
+            with patch("harness.gates.input_gate.get_calendar", return_value=_fake_calendar()):
+                with patch("harness.gates.input_gate.build_daily_input_artifact", return_value=primary):
+                    with patch("harness.gates.input_gate.build_weekly_input_artifact", return_value=weekly):
+                        with patch("harness.gates.input_gate.build_monthly_input_artifact", return_value=monthly):
+                            result = InputGate().run(
+                                GateContext(
+                                    scheme_id="demo_daily",
+                                    predict_date="2026-06-03",
+                                    project_root=project_root,
+                                    report_dir=project_root / "reports",
+                                    engine_factory=lambda: engine,
+                                )
                             )
-                        )
 
         self.assertFalse(result.passed)
         joined = "\n".join(result.errors)
@@ -404,7 +415,8 @@ class HarnessRuntimeGateTests(unittest.TestCase):
             predict_date="2026-06-08",
             target_date="2026-06-09",
             predicted_direction=1,
-            extra={"input_artifact_path": "/tmp/input.csv", "feature_date": "2026-06-08"},
+            feature_date="2026-06-07",
+            extra={"input_artifact_path": "/tmp/input.csv", "feature_date": "2026-06-07"},
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
@@ -431,6 +443,48 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         evidence = _evidence_dict(result)
         self.assertEqual(evidence["predictions_table_delta"], 0)
         self.assertEqual(evidence["run_log_delta"], 0)
+
+    def test_dry_run_gate_fails_invalid_prediction_dates(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.dry_run_gate import DryRunGate
+        from shared.models import PredictionRecord
+
+        record = PredictionRecord(
+            scheme_id="demo_daily",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-06-08",
+            feature_date="2026-06-08",
+            target_date="2026-06-09",
+            predicted_direction=1,
+            extra={
+                "input_artifact_path": "/tmp/input.csv",
+                "input_artifact_source": "shared_data_service_daily",
+                "feature_date": "2026-06-08",
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            with patch("harness.gates.dry_run_gate.run_scheme_subprocess", return_value=[record]):
+                with patch(
+                    "harness.gates.dry_run_gate.snapshot_table_counts",
+                    side_effect=[
+                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
+                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
+                    ],
+                ):
+                    result = DryRunGate().run(
+                        GateContext(
+                            scheme_id="demo_daily",
+                            predict_date="2026-06-08",
+                            project_root=project_root,
+                            report_dir=project_root / "reports",
+                        )
+                    )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("feature_date must be before predict_date" in error for error in result.errors), result.errors)
 
     def test_table_guard_diffs_snapshots(self) -> None:
         from harness.probes.table_guard import diff_snapshots
@@ -527,7 +581,7 @@ class HarnessLiveGateTests(unittest.TestCase):
             ]
             with patch("harness.gates.live_gate.snapshot_table_counts", side_effect=snapshots):
                 with patch("harness.gates.live_gate.snapshot_scheme_counts", side_effect=scheme_snapshots):
-                    with patch("harness.gates.live_gate.execute_scheme", return_value=run_result):
+                    with patch("harness.gates.live_gate.execute_scheme", return_value=run_result) as execute:
                         first = LiveGate().run(
                             GateContext(
                                 scheme_id="demo_daily",
@@ -536,6 +590,7 @@ class HarnessLiveGateTests(unittest.TestCase):
                                 report_dir=project_root / "reports" / "harness" / "demo_daily",
                                 engine_factory=lambda: engine,
                                 authorization=token,
+                                prediction_phase="gray_live",
                             )
                         )
             audit_path = _evidence_dict(first)["authorization_audit_path"]
@@ -554,12 +609,43 @@ class HarnessLiveGateTests(unittest.TestCase):
                 )
 
         self.assertEqual(first.status, GateStatus.PASSED)
+        self.assertEqual(execute.call_args.kwargs["prediction_phase"], "gray_live")
         first_evidence = _evidence_dict(first)
+        self.assertEqual(first_evidence["prediction_phase"], "gray_live")
         self.assertEqual(first_evidence["protected_table_deltas"], {"api_wind_daily": 0, "t_scheme_predictions": 1, "t_scheme_run_log": 1})
         self.assertEqual(first_evidence["authorized_scheme_table_deltas"], {"t_scheme_predictions": 1, "t_scheme_run_log": 1})
         self.assertTrue(audit_exists)
         self.assertEqual(second.status, GateStatus.BLOCKED)
         self.assertTrue(any("already used" in error for error in second.errors), second.errors)
+
+    def test_live_gate_requires_explicit_prediction_phase(self) -> None:
+        from harness.authorization import issue_token
+        from harness.context import GateContext
+        from harness.gates.live_gate import LiveGate
+        from harness.result import GateStatus
+
+        token = issue_token("demo_daily", "live_write", "2026-06-08")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            engine = SimpleNamespace(dispose=lambda: None)
+            with patch("harness.gates.live_gate.snapshot_table_counts", return_value={"t_scheme_predictions": 10, "t_scheme_run_log": 20}):
+                with patch("harness.gates.live_gate.snapshot_scheme_counts", return_value={"t_scheme_predictions": 0, "t_scheme_run_log": 0}):
+                    with patch("harness.gates.live_gate.execute_scheme") as execute:
+                        result = LiveGate().run(
+                            GateContext(
+                                scheme_id="demo_daily",
+                                predict_date="2026-06-08",
+                                project_root=project_root,
+                                report_dir=project_root / "reports" / "harness" / "demo_daily",
+                                engine_factory=lambda: engine,
+                                authorization=token,
+                            )
+                        )
+
+        self.assertEqual(result.status, GateStatus.BLOCKED)
+        self.assertFalse(execute.called)
+        self.assertTrue(any("prediction_phase" in error for error in result.errors), result.errors)
 
 
 class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
@@ -593,21 +679,29 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
                 json.dumps(baseline),
                 encoding="utf-8",
             )
-            with patch("harness.gates.backtest_gate.run_backtest_no_persist", return_value=current):
-                result = BacktestGate().run(
-                    GateContext(
-                        scheme_id="demo_daily",
-                        predict_date="2026-06-08",
-                        project_root=project_root,
-                        report_dir=project_root / "reports" / "harness" / "demo_daily",
+            engine = SimpleNamespace(dispose=lambda: None)
+            snapshots = [
+                {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_backtest_runs": 3},
+                {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_backtest_runs": 3},
+            ]
+            with patch("harness.gates.backtest_gate.snapshot_table_counts", side_effect=snapshots):
+                with patch("harness.gates.backtest_gate.run_backtest_no_persist", return_value=current):
+                    result = BacktestGate().run(
+                        GateContext(
+                            scheme_id="demo_daily",
+                            predict_date="2026-06-08",
+                            project_root=project_root,
+                            report_dir=project_root / "reports" / "harness" / "demo_daily",
+                            engine_factory=lambda: engine,
+                        )
                     )
-                )
 
         self.assertTrue(result.passed, result.errors)
         evidence = _evidence_dict(result)
         self.assertEqual(evidence["diff_count"], 0)
         self.assertEqual(evidence["row_count"], 2)
         self.assertEqual(evidence["monthly_count"], 1)
+        self.assertEqual(evidence["protected_table_deltas"], {"t_backtest_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0})
 
     def test_api_gate_passes_when_factor_lab_cell_exists(self) -> None:
         from harness.context import GateContext
@@ -752,6 +846,7 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
 
         def fake_onboard(ctx, stage: str) -> OnboardReport:
             captured["api_base_url"] = ctx.api_base_url
+            captured["prediction_phase"] = ctx.prediction_phase
             return OnboardReport(
                 scheme_id=ctx.scheme_id,
                 predict_date=ctx.predict_date,
@@ -764,10 +859,22 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
         output = io.StringIO()
         with patch("harness.cli.run_onboard", side_effect=fake_onboard):
             with contextlib.redirect_stdout(output):
-                code = main(["onboard", "demo_daily", "--predict-date", "2026-06-08", "--stage", "all"])
+                code = main(
+                    [
+                        "onboard",
+                        "demo_daily",
+                        "--predict-date",
+                        "2026-06-08",
+                        "--stage",
+                        "all",
+                        "--prediction-phase",
+                        "gray_live",
+                    ]
+                )
 
         self.assertEqual(code, 0)
         self.assertEqual(captured["api_base_url"], "http://127.0.0.1:8100")
+        self.assertEqual(captured["prediction_phase"], "gray_live")
 
 
 def _evidence_keys(result) -> set[str]:
@@ -776,6 +883,13 @@ def _evidence_keys(result) -> set[str]:
 
 def _evidence_dict(result) -> dict:
     return {item.key: item.value for item in result.evidence}
+
+
+def _fake_calendar() -> SimpleNamespace:
+    return SimpleNamespace(
+        previous_trading_day=lambda _predict_date: "2026-06-02",
+        week_id_for_date=lambda _feature_date: 202622,
+    )
 
 
 def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_lines: list[str] | None = None) -> Path:

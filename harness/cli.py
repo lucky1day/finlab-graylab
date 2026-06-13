@@ -75,6 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--timeout-sec", type=int, default=600)
         item.add_argument("--authorize", default=None)
         item.add_argument("--api-base-url", default="http://127.0.0.1:8100")
+        item.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
 
@@ -88,6 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
     onboard_parser.add_argument("--api-base-url", default="http://127.0.0.1:8100")
     onboard_parser.add_argument("--authorize", default=None)
+    onboard_parser.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
 
     activate_parser = subparsers.add_parser("activate")
     activate_parser.add_argument("--scheme-id", required=True)
@@ -127,6 +129,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         algo_env=args.algo_env,
         timeout_sec=args.timeout_sec,
         authorization=args.authorize,
+        prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
         api_base_url=args.api_base_url,
     )
@@ -154,6 +157,7 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         algo_env=args.algo_env,
         timeout_sec=args.timeout_sec,
         authorization=args.authorize,
+        prediction_phase=getattr(args, "prediction_phase", None),
         api_base_url=args.api_base_url,
         engine_factory=create_engine_from_env,
     )

@@ -18,6 +18,7 @@ class GateContext:
     algo_env: str = "forecast_env"
     engine_factory: Callable[[], Any] | None = None
     authorization: Any | None = None
+    prediction_phase: str | None = None
     persist_backtest: bool = False
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"

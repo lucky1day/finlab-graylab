@@ -16,10 +16,17 @@ from harness.authorization import (
 from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
+from harness.probes.table_guard import PROTECTED_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
 
 
 IGNORE_PATHS = frozenset({"$.elapsed_sec"})
+BACKTEST_WRITE_ALLOWED_TABLES = (
+    "t_backtest_runs",
+    "t_backtest_predictions",
+    "t_backtest_monthly_metrics",
+    "t_backtest_reproduction_checks",
+)
 
 
 class BacktestGate(Gate):
@@ -44,30 +51,39 @@ class BacktestGate(Gate):
             )
 
         audit_path: Path | None = None
-        if ctx.persist_backtest:
-            auth, auth_errors = verify_authorization(
-                ctx.authorization,
-                scheme_id=ctx.scheme_id,
-                action="backtest_persist",
-                predict_date=ctx.predict_date,
-                used_store_path=used_tokens_path(ctx.project_root),
-            )
-            if auth_errors:
-                finished_at = utc_now()
-                return GateResult(
-                    gate_name=self.name,
-                    status=GateStatus.BLOCKED,
-                    passed=False,
-                    evidence=[Evidence("runner", runner), Evidence("persisted", True)],
-                    errors=auth_errors,
-                    started_at=started_at,
-                    finished_at=finished_at,
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        before: dict[str, int] = {}
+        after: dict[str, int] = {}
+        try:
+            before = snapshot_table_counts(engine, PROTECTED_TABLES)
+            if ctx.persist_backtest:
+                auth, auth_errors = verify_authorization(
+                    ctx.authorization,
+                    scheme_id=ctx.scheme_id,
+                    action="backtest_persist",
+                    predict_date=ctx.predict_date,
+                    used_store_path=used_tokens_path(ctx.project_root),
                 )
-            audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
-            mark_token_used(auth, used_tokens_path(ctx.project_root))
-            current = run_backtest_runner(runner, ctx.project_root, ctx.timeout_sec, persist=True)
-        else:
-            current = run_backtest_no_persist(runner, ctx.project_root, ctx.timeout_sec)
+                if auth_errors:
+                    finished_at = utc_now()
+                    return GateResult(
+                        gate_name=self.name,
+                        status=GateStatus.BLOCKED,
+                        passed=False,
+                        evidence=[Evidence("runner", runner), Evidence("persisted", True)],
+                        errors=auth_errors,
+                        started_at=started_at,
+                        finished_at=finished_at,
+                    )
+                audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
+                mark_token_used(auth, used_tokens_path(ctx.project_root))
+                current = run_backtest_runner(runner, ctx.project_root, ctx.timeout_sec, persist=True)
+            else:
+                current = run_backtest_no_persist(runner, ctx.project_root, ctx.timeout_sec)
+        finally:
+            after = snapshot_table_counts(engine, PROTECTED_TABLES)
+            if engine is not None and hasattr(engine, "dispose"):
+                engine.dispose()
 
         baseline_path = ctx.project_root / "reports" / "refactor_baseline" / ctx.scheme_id / "backtest_no_persist.json"
         errors: list[str] = []
@@ -90,6 +106,8 @@ class BacktestGate(Gate):
                 first_diffs = diffs[:20]
                 if diffs:
                     errors.append(f"backtest output differs from baseline: diff_count={len(diffs)}")
+        table_deltas = diff_snapshots(before, after)
+        errors.extend(_validate_backtest_table_deltas(table_deltas, persist=ctx.persist_backtest))
 
         finished_at = utc_now()
         status = GateStatus.PASSED if not errors else GateStatus.FAILED
@@ -103,6 +121,9 @@ class BacktestGate(Gate):
                 Evidence("authorization_audit_path", str(audit_path) if audit_path else None),
                 Evidence("baseline_path", str(baseline_path)),
                 Evidence("baseline_bootstrapped", baseline_bootstrapped),
+                Evidence("protected_table_counts_before", before),
+                Evidence("protected_table_counts_after", after),
+                Evidence("protected_table_deltas", table_deltas),
                 Evidence("diff_count", diff_count),
                 Evidence("first_diffs", first_diffs),
                 Evidence("status", current.get("status")),
@@ -140,6 +161,23 @@ def run_backtest_runner(runner: str, project_root: Path, timeout_sec: int, persi
     if completed.returncode != 0:
         raise RuntimeError(_tail(output))
     return _parse_json_object(output)
+
+
+def _create_engine():
+    from scheduler.repository import create_engine_from_env
+
+    return create_engine_from_env()
+
+
+def _validate_backtest_table_deltas(deltas: dict[str, int], *, persist: bool) -> list[str]:
+    errors: list[str] = []
+    for table, delta in deltas.items():
+        if persist and table in BACKTEST_WRITE_ALLOWED_TABLES:
+            continue
+        if delta != 0:
+            mode = "persist" if persist else "no-persist"
+            errors.append(f"{table} delta must remain 0 for backtest {mode}, got {delta}")
+    return errors
 
 
 def compare_json(expected: Any, actual: Any, *, ignore_paths: frozenset[str] = IGNORE_PATHS) -> list[str]:

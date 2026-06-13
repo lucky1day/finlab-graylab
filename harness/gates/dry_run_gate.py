@@ -6,6 +6,7 @@ from typing import Any
 from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
+from harness.gates.prediction_semantics import validate_live_record_semantics
 from harness.probes.table_guard import DRY_RUN_GUARD_TABLES, diff_snapshots, snapshot_table_counts
 from harness.result import Evidence, GateResult, GateStatus
 from shared.models import PredictionRecord
@@ -50,7 +51,7 @@ class DryRunGate(Gate):
         for table, delta in deltas.items():
             if delta != 0:
                 errors.append(f"{table} delta must be 0 for dry-run, got {delta}")
-        errors.extend(_validate_records(records, config, ctx.scheme_id))
+        errors.extend(_validate_records(records, config, ctx.scheme_id, predict_date=ctx.predict_date))
 
         finished_at = utc_now()
         status = GateStatus.PASSED if not errors else GateStatus.FAILED
@@ -92,7 +93,7 @@ def _create_engine():
     return create_engine_from_env()
 
 
-def _validate_records(records: list[PredictionRecord], config: dict[str, Any], scheme_id: str) -> list[str]:
+def _validate_records(records: list[PredictionRecord], config: dict[str, Any], scheme_id: str, *, predict_date: str) -> list[str]:
     errors: list[str] = []
     frequency = str(config.get("frequency", "") or "")
     horizon = int(config.get("horizon", 0) or 0)
@@ -109,6 +110,14 @@ def _validate_records(records: list[PredictionRecord], config: dict[str, Any], s
             errors.append(f"{prefix}.target_tenor {record.target_tenor} not in {tenors}")
         if record.predicted_direction not in {-1, 0, 1}:
             errors.append(f"{prefix}.predicted_direction must be -1/0/1, got {record.predicted_direction}")
+        errors.extend(
+            validate_live_record_semantics(
+                record,
+                expected_predict_date=predict_date,
+                prefix=prefix,
+                require_phase=False,
+            )
+        )
         extra = record.extra or {}
         for key in COMMON_EXTRA_KEYS:
             if key not in extra:
