@@ -323,7 +323,7 @@ def _prepare_weekly_long_frame(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
     if "rdate" not in df.columns:
         df["rdate"] = pd.NaT
     result = df[["rdate", "week_id", "indicators_code", "indicators_value", "_source_priority", "_source_order"]].copy()
-    result["rdate"] = pd.to_datetime(result["rdate"], errors="coerce").dt.normalize()
+    result["rdate"] = pd.to_datetime(result["rdate"], errors="coerce", format="mixed").dt.normalize()
     result["week_id"] = result["week_id"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
     result = result[result["week_id"].str.fullmatch(r"\d{6}", na=False)].copy()
     result["week_id"] = result["week_id"].astype(int)

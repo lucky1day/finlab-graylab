@@ -147,7 +147,7 @@ python -m harness gate live \
 - 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
 - 回测结论: `--no-persist` summary、样本数、准确率、月度分布。
-- 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足 `predict_date=T+1/feature_date=T`；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
+- 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足 `predict_date=T+1/feature_date=T`；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
 - 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；当前 V28 批次灰度观察区按 `target_date >= 2026-06-01` 判定，后续方案使用方案级生命周期配置。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。
 - 前端/API 结论: `/api/backtests/factor-lab` 或 `/api/metrics/{scheme_id}` 可读，矩阵格子不消失。

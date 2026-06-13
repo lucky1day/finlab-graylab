@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from typing import Any
 
 from shared.calendar_service import get_calendar
@@ -16,25 +15,16 @@ TARGET_TENOR = "7Y"
 TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 MODEL_VERSION = "cross_d_overlay_0529"
 LOOKBACK_WEEKS = 80
-NEAREST_DATE_FALLBACK_DAYS = 5
 FUTURE_LOAD_WEEKS = 6
 
 
-def _nearest_week_id(calendar: Any, predict_date: str) -> int:
-    """从 DB 周历取 predict_date 对应 week_id；非交易日向前找最近可用日期。"""
-    wid = calendar.week_id_for_date(predict_date)
-    if wid is not None:
-        return int(wid)
-    dt = datetime.strptime(predict_date, "%Y-%m-%d")
-    for offset in range(1, NEAREST_DATE_FALLBACK_DAYS + 1):
-        try_date = (dt - timedelta(days=offset)).strftime("%Y-%m-%d")
-        wid = calendar.week_id_for_date(try_date)
-        if wid is not None:
-            return int(wid)
-    raise ValueError(
-        f"无法将 predict_date={predict_date} 解析为 week_id "
-        f"（回退 {NEAREST_DATE_FALLBACK_DAYS} 天后仍未找到记录）"
-    )
+def _feature_week_from_predict_date(calendar: Any, predict_date: str) -> tuple[str, int]:
+    """实盘统一用 predict_date 前一交易日作为数据截止日。"""
+    feature_date = calendar.previous_trading_day(predict_date)
+    wid = calendar.week_id_for_date(feature_date)
+    if wid is None:
+        raise ValueError(f"无法从 DB 日历解析 feature_date={feature_date} 的 week_id")
+    return feature_date, int(wid)
 
 
 def _next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
@@ -59,8 +49,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     engine = data_service.create_sqlalchemy_engine()
     try:
         calendar = get_calendar(engine)
-        current_week_id = _nearest_week_id(calendar, predict_date)
-        feature_date = calendar.week_id_to_last_trading_day(current_week_id)
+        feature_date, current_week_id = _feature_week_from_predict_date(calendar, predict_date)
         start_week = current_week_id - LOOKBACK_WEEKS
 
         input_artifact = build_weekly_input_artifact(
@@ -99,7 +88,6 @@ def run(predict_date: str) -> list[PredictionRecord]:
                 f"latest_signal_week_id={feature_week_id}"
             )
         target_week_id = _next_calendar_week_id(calendar, feature_week_id)
-        feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
         last_row = prediction_df[prediction_df["week_id"].eq(feature_week_id)].iloc[-1]
 

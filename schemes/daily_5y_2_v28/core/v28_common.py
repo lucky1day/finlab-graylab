@@ -27,7 +27,7 @@ All shared functions used by the 9 production prediction scripts
 
 Public API
 ----------
-Data loading:     read_daily, load_monthly, load_weekly_simple
+Data input:       run_prediction requires DataFrame inputs from shared.input_artifacts
 Labels:           make_labels, build_fallback_signal, safe_sign
 Features:         build_bond_features, build_mf_features, build_wkmo_features
 IC screening:     ic_screen
@@ -43,7 +43,6 @@ import multiprocessing as mp
 import os
 import time
 import warnings
-from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
@@ -201,86 +200,15 @@ def _rolling_var(arr: np.ndarray, w: int) -> np.ndarray:
 # DATA LOADING
 # ============================================================================
 def read_daily(path) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df.columns = [c.strip().lstrip("﻿") for c in df.columns]
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date").reset_index(drop=True)
-    for col in df.columns:
-        if col != "date":
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-    return df
+    raise ValueError("file-based input is disabled; pass daily_df from shared.input_artifacts")
 
 
 def load_monthly(path, daily_dates) -> pd.DataFrame:
-    mo = pd.read_csv(path)
-    mo.columns = [c.strip().lstrip("﻿") for c in mo.columns]
-    for col in mo.columns:
-        if col != "month_id":
-            mo[col] = pd.to_numeric(mo[col], errors="coerce")
-    existing = [c for c in MONTHLY_COLS if c in mo.columns]
-    if not existing:
-        return pd.DataFrame(index=range(len(daily_dates)))
-    mo_idx = mo.set_index("month_id")
-
-    # Vectorised month-id lookup
-    dd = pd.DatetimeIndex(daily_dates)
-    year_arr = dd.year.values
-    month_arr = dd.month.values
-    # Previous month id: year*100 + month, shifted back by one month
-    pm_year = np.where(month_arr == 1, year_arr - 1, year_arr)
-    pm_month = np.where(month_arr == 1, 12, month_arr - 1)
-    pmids = pm_year * 100 + pm_month
-
-    result = {}
-    for col in existing:
-        col_series = mo_idx[col]
-        vals = np.full(len(daily_dates), np.nan)
-        for i, pmid in enumerate(pmids):
-            if pmid in col_series.index:
-                vals[i] = col_series[pmid]
-        result[col] = vals
-    return pd.DataFrame(result, index=range(len(daily_dates)))
+    raise ValueError("file-based input is disabled; pass monthly_df from shared.input_artifacts")
 
 
 def load_weekly_simple(path, daily_dates) -> pd.DataFrame:
-    wk = pd.read_csv(path)
-    wk.columns = [c.strip().lstrip("﻿") for c in wk.columns]
-    for col in wk.columns:
-        if col != "week_id":
-            wk[col] = pd.to_numeric(wk[col], errors="coerce")
-    existing = [c for c in WEEKLY_COLS if c in wk.columns]
-    if not existing:
-        return pd.DataFrame(index=range(len(daily_dates)))
-    dates = sorted(daily_dates)
-    wa = np.zeros(len(dates), dtype=int)
-    cy, seq, pdow = dates[0].year, 1, -1
-    for i, d in enumerate(dates):
-        if d.year != cy:
-            cy, seq, pdow = d.year, 1, -1
-        dow = d.weekday()
-        if pdow >= 0 and (
-            dow <= pdow and (d - dates[i - 1]).days > 1
-            or (d - dates[i - 1]).days > 5
-        ):
-            seq += 1
-        pdow = dow
-        wa[i] = cy * 100 + seq
-    d2i = {d: i for i, d in enumerate(dates)}
-    d2w = {d: wa[i] for i, d in enumerate(dates)}
-    aws = sorted(set(wa))
-    w2p = {w: aws[i - 1] if i > 0 else None for i, w in enumerate(aws)}
-    wk_idx = wk.set_index("week_id")
-    result = {}
-    for col in existing:
-        vals = np.full(len(daily_dates), np.nan)
-        for d in daily_dates:
-            if d not in d2w:
-                continue
-            pw = w2p.get(d2w[d])
-            if pw is not None and pw in wk_idx.index:
-                vals[d2i[d]] = wk_idx.at[pw, col]
-        result[col] = vals
-    return pd.DataFrame(result, index=range(len(daily_dates)))
+    raise ValueError("file-based input is disabled; pass weekly_df from shared.input_artifacts")
 
 
 # ============================================================================
@@ -1370,7 +1298,6 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     tenor = cfg["tenor"]
     close_col = cfg["close"]
     aux_pairs = cfg["aux_pairs"]
-    data_dir = Path(cfg.get("data_dir", "data"))
     K = cfg.get("K", 7)
     combo_name = cfg.get("combo_name", "bf_core5")
     combo_template = cfg.get("combo_template", {"butterfly": 3, "term_prem": 2})
@@ -1399,29 +1326,20 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
 
     # -- Load data --
     print(f"  Loading data...")
-    if "daily_df" in cfg:
-        df = _normalize_daily_frame(cfg["daily_df"])
-        weekly_raw = _normalize_aux_frame(cfg.get("weekly_df"), "week_id")
-        monthly_raw = _normalize_aux_frame(cfg.get("monthly_df"), "month_id")
-        if data_cutoff:
-            df = df[df["date"] < pd.Timestamp(data_cutoff)].reset_index(drop=True)
-        wk_df, mo_df = prepare_model_frames(
-            df,
-            weekly_raw,
-            monthly_raw,
-            df["date"],
-            cfg.get("date_to_week"),
-        )
-    else:
-        df = read_daily(data_dir / "daily_output.csv")
-        if data_cutoff:
-            df = df[df["date"] < pd.Timestamp(data_cutoff)].reset_index(drop=True)
-        wk_path = data_dir / "weekly_output.csv"
-        mo_path = data_dir / "monthly_output.csv"
-        wk_df = (load_weekly_simple(str(wk_path), df["date"].tolist())
-                 if wk_path.exists() else pd.DataFrame(index=df.index))
-        mo_df = (load_monthly(str(mo_path), df["date"].tolist())
-                 if mo_path.exists() else pd.DataFrame(index=df.index))
+    if "daily_df" not in cfg:
+        raise ValueError("daily_df is required; build inputs through shared.input_artifacts before calling core")
+    df = _normalize_daily_frame(cfg["daily_df"])
+    weekly_raw = _normalize_aux_frame(cfg.get("weekly_df"), "week_id")
+    monthly_raw = _normalize_aux_frame(cfg.get("monthly_df"), "month_id")
+    if data_cutoff:
+        df = df[df["date"] < pd.Timestamp(data_cutoff)].reset_index(drop=True)
+    wk_df, mo_df = prepare_model_frames(
+        df,
+        weekly_raw,
+        monthly_raw,
+        df["date"],
+        cfg.get("date_to_week"),
+    )
     print(f"  Daily: {len(df)}, Weekly cols: {len(wk_df.columns)}, "
           f"Monthly cols: {len(mo_df.columns)}")
 

@@ -192,6 +192,30 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(result["week_id"].tolist(), [202620, 202621])
         self.assertEqual(result["TB0YWI3C"].tolist(), [1.0, 1.1])
 
+    def test_weekly_output_as_of_handles_mixed_rdate_formats(self) -> None:
+        from shared.data_service import build_weekly_output_from_frames
+
+        raw = pd.DataFrame(
+            {
+                "rdate": ["2025-01-02", "2025/1/3", "2025/1/10"],
+                "week_id": [202501, 202501, 202502],
+                "indicators_code": ["N0000001", "TB0YWI3C", "TB0YWI3C"],
+                "indicators_value": [8.8, 1.6, 9.9],
+            }
+        )
+
+        result = build_weekly_output_from_frames(
+            ["week_id", "N0000001", "TB0YWI3C"],
+            raw,
+            start_week=202501,
+            end_week=202502,
+            as_of_date="2025-01-03",
+        )
+
+        self.assertEqual(result["week_id"].tolist(), [202501])
+        self.assertEqual(result["N0000001"].tolist(), [8.8])
+        self.assertEqual(result["TB0YWI3C"].tolist(), [1.6])
+
     def test_monthly_input_artifact_delegates_to_unified_data_service_file(self) -> None:
         from shared.input_artifacts import build_monthly_input_artifact
 

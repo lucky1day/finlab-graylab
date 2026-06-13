@@ -41,6 +41,7 @@ def run_historical_prediction(
     daily_df: pd.DataFrame,
     weekly_df: pd.DataFrame,
     monthly_df: pd.DataFrame,
+    date_to_week: dict[str, int | str] | None = None,
     n_workers: int = DEFAULT_N_WORKERS,
 ) -> pd.DataFrame:
     """运行历史连续预测，返回逐 anchor 明细。"""
@@ -49,6 +50,7 @@ def run_historical_prediction(
             daily_df=daily_df,
             weekly_df=weekly_df,
             monthly_df=monthly_df,
+            date_to_week=date_to_week,
             test_start=BACKTEST_START,
             test_end=BACKTEST_END,
             require_labels=True,
@@ -140,10 +142,12 @@ def run_daily_5y_2_v28_reproduction(
             engine=engine,
             output_root=output_root,
         )
+        date_to_week = _date_to_week_map(daily_artifact.dataframe, calendar)
         detail = run_historical_prediction(
             daily_df=daily_artifact.dataframe,
             weekly_df=weekly_artifact.dataframe,
             monthly_df=monthly_artifact.dataframe,
+            date_to_week=date_to_week,
             n_workers=n_workers,
         )
         rows = build_backtest_rows(
@@ -224,6 +228,16 @@ def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _target_date_from_daily(daily_df: pd.DataFrame, anchor_date: str) -> str | None:
     return infer_target_date(daily_df, anchor_date, HORIZON)
+
+
+def _date_to_week_map(daily_df: pd.DataFrame, calendar) -> dict[str, int | str]:
+    dates = pd.to_datetime(daily_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    result: dict[str, int | str] = {}
+    for day in dates.dropna().unique().tolist():
+        week_id = calendar.week_id_for_date(day)
+        if week_id is not None:
+            result[str(day)] = int(week_id)
+    return result
 
 
 def _row_extra(record: dict[str, Any], daily_artifact, weekly_artifact, monthly_artifact) -> dict[str, Any]:

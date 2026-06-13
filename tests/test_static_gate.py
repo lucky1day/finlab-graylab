@@ -143,6 +143,25 @@ class StaticGateHardeningTests(unittest.TestCase):
             self.assertIn("file write call", joined)
             self.assertIn("pickle.load", joined)
 
+    def test_core_dataframe_file_export_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            (scheme_dir / "core" / "export_bad.py").write_text(
+                "\n".join(
+                    [
+                        "def dump(df):",
+                        "    df.to_csv('/tmp/export.csv', index=False)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = _run_gate(project_root)
+
+            self.assertFalse(result.passed)
+            self.assertTrue(any("to_csv" in item for item in result.errors), result.errors)
+
     def test_predict_non_whitelisted_shared_import_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)

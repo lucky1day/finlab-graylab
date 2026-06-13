@@ -1736,7 +1736,6 @@ TARGET_RATE_COL = "TB0YWI3C"
 HORIZON = 1
 LABEL_THRESHOLD = 0.0
 
-START_DATE = pd.Timestamp("2025-07-01")
 END_DATE = pd.Timestamp("2026-05-31")
 
 # Use week_date for monthly reporting so week_id 202618, whose week_date is
@@ -2190,7 +2189,6 @@ def build_base(model2: pd.DataFrame, score: pd.DataFrame) -> pd.DataFrame:
     if df["label_mismatch"].any():
         bad = df.loc[df["label_mismatch"], ["week_id", "actual_label", "score_actual_label"]].head().to_dict("records")
         raise ValueError(f"Score/Model2 label mismatch, examples: {bad}")
-    df = df[df["month_date"] >= START_DATE].copy()
     return df.sort_values("month_date").reset_index(drop=True)
 
 

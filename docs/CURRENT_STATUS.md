@@ -1,8 +1,8 @@
 # 当前状态
 
-**更新日期**: 2026-06-12
+**更新日期**: 2026-06-13
 
-> 2026-06-12 文档已按当前 DB、代码目录和 live 回补状态刷新。新增方案入口统一为 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)；平台统一使用 `predict_date`（信号发出日）、`feature_date`（数据截止日/预测站位日）、`target_date`（验证目标日）。日频与周频月度统计、明细日期均按 `target_date` 归属；灰度实盘与正式实盘需通过 `prediction_phase=gray_live/scheduled_live` 区分。
+> 2026-06-13 文档已按当前 DB、代码目录、live 语义修复和 latest 回测重建状态刷新。新增方案入口统一为 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)；平台统一使用 `predict_date`（信号发出日）、`feature_date`（数据截止日/预测站位日）、`target_date`（验证目标日）。日频与周频月度统计、明细日期均按 `target_date` 归属；灰度实盘与正式实盘需通过 `prediction_phase=gray_live/scheduled_live` 区分。回测起点 `2025-01-01` 是输出样本起点，不是训练历史裁剪点。
 
 ## 总览
 
@@ -21,9 +21,9 @@
 
 2026-06-10 新增周度方案 `weekly_7y_cross_d_overlay_0529`，覆盖 `7Y`、horizon=6、周六 11:30 调度。原始脚本归档为 `schemes/weekly_7y_cross_d_overlay_0529/core/legacy_weekly_7y_cross_d_overlay_0529.py.txt`，活跃 core 为纯 DataFrame 算法；adapter 与回测 runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 取数，`week_id` / `target_week_id` / `target_date` 均经 `shared.calendar_service` 读取 DB 日历。源文件原始回测（`/Users/macstudio0/Desktop/weekly_7y_cross_d_overlay_0529 (1).py` + `/Users/macstudio0/Desktop/weekly_output.csv`）与入库后回测在源文件窗口内 43 条样本逐 `feature_week_id` 对齐：方向差异 0、label 差异 0、confidence 最大差异 0、`target_date` 月度 accuracy 差异 0；这里的 confidence 为原始算法 `cross_d_prob_up` 概率输出映射到平台统一字段，不是平台另造指标。四份 benchmark 文件已落在 `schemes/weekly_7y_cross_d_overlay_0529/benchmarks/`，且 `backtest.benchmark_required=true`。`python -m harness onboard weekly_7y_cross_d_overlay_0529 --predict-date 2026-06-06 --stage all` 已通过，CompareGate 为 `passed`；API gate 确认 `/api/backtests/factor-lab` 中 `7Y` 周度格存在，monthly_rows=124。ActivationGate 已用一次性 `activate` token 登记当前 active 版本，scheme_version=`27ece22d45f4`，并已重启 scheduler。
 
-2026-06-11 新增周度方案 `weekly_10y_d_overlay_0529`，覆盖 `10Y`、horizon=6、周六 11:30 调度。原始脚本归档为 `schemes/weekly_10y_d_overlay_0529/core/legacy_weekly_10y_d_overlay_0529.py.txt`，活跃 core 为纯 DataFrame 算法；adapter 与回测 runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 取数，`week_id` / `target_week_id` / `target_date` 均经 `shared.calendar_service` 读取 DB 日历。源文件原始回测（`/Users/macstudio0/Desktop/weekly_10y_d_overlay_0529 (1).py` + `weekly_output0529.csv`）与入库后回测在源文件窗口内 45 条样本逐 `feature_week_id` 对齐：方向差异 0、confidence 最大差异 `1.1102230246251565e-16`；这里的 confidence 为原始算法 `d_prob_up`（score/model2 overlay 后概率）映射到平台统一字段，`1e-16` 差异为浮点舍入误差。四份 benchmark 文件已落在 `schemes/weekly_10y_d_overlay_0529/benchmarks/`，且 `backtest.benchmark_required=true`。`python -m harness onboard weekly_10y_d_overlay_0529 --predict-date 2026-06-06 --stage all` 已通过，CompareGate 为 `passed`；API gate 确认 `/api/backtests/factor-lab` 中 `10Y` 周度格存在。历史回测已按灰度实盘起点截断到 `target_date < 2026-06-01`，latest run_id=`102`、monthly_rows=11；2026-06 只由 gray/live metrics 展示。ActivationGate 已用一次性 `activate` token 登记当前 active 版本，已通过 registry 同步进入 `t_scheme_registry`，并已重启 scheduler。
+2026-06-11 新增周度方案 `weekly_10y_d_overlay_0529`，覆盖 `10Y`、horizon=6、周六 11:30 调度。原始脚本归档为 `schemes/weekly_10y_d_overlay_0529/core/legacy_weekly_10y_d_overlay_0529.py.txt`，活跃 core 为纯 DataFrame 算法；adapter 与回测 runner 均通过 `shared.input_artifacts.build_weekly_input_artifact()` 取数，`week_id` / `target_week_id` / `target_date` 均经 `shared.calendar_service` 读取 DB 日历。源文件原始回测（`/Users/macstudio0/Desktop/weekly_10y_d_overlay_0529 (1).py` + `weekly_output0529.csv`）与入库后回测在源文件窗口内 45 条样本逐 `feature_week_id` 对齐：方向差异 0、confidence 最大差异 `1.1102230246251565e-16`；这里的 confidence 为原始算法 `d_prob_up`（score/model2 overlay 后概率）映射到平台统一字段，`1e-16` 差异为浮点舍入误差。四份 benchmark 文件已落在 `schemes/weekly_10y_d_overlay_0529/benchmarks/`，且 `backtest.benchmark_required=true`。`python -m harness onboard weekly_10y_d_overlay_0529 --predict-date 2026-06-06 --stage all` 已通过，CompareGate 为 `passed`；API gate 确认 `/api/backtests/factor-lab` 中 `10Y` 周度格存在。历史回测已按灰度实盘起点截断到 `target_date < 2026-06-01`，latest run_id=`106`、monthly_rows=11；严格 point-in-time 后首个可预测周为 `2025-07-11`，不是平台硬编码起点。2026-06 只由 gray/live metrics 展示。ActivationGate 已用一次性 `activate` token 登记当前 active 版本，已通过 registry 同步进入 `t_scheme_registry`，并已重启 scheduler。
 
-2026-06-12 完成日频 V28 方案 `daily_5y_2_v28`（对应外部 `5y_2`，因 scheme_id 规范采用平台名）入库。adapter 实盘语义为 `predict_date=signal_date=T+1`、`feature_date=T`（上一交易日），`target_date=T+5`；`anchor_date` 仅作为方案内部/审计字段保留，业务和前端统一使用 `feature_date`。回测 runner 语义为 `predict_date=feature_date=T`，并排除 `target_date >= 2026-06-01` 的灰度/实盘 target 区间。方案声明 `input_spec.auxiliary_inputs`，InputGate 会构建 daily/weekly/monthly 三类 artifact；active core 只消费原 V28 代码白名单中的 `WEEKLY_COLS` / `MONTHLY_COLS`，避免把 artifact 全量列误引入特征空间。模型更新语义保留原 V28 设计：每个预测锚点滚动重训 LGBM，训练 mask 使用 `all_idx < idx - horizon` 防泄漏；IC screening 固定在 `2024-07-01` 前；LGBM top-K 按月用此前 test-window 表现更新；信号组合按该方案 `rebal=monthly` 更新。Harness active 配置验证已通过；CompareGate 基准采用外部 May 2026 patched auxiliary source，original/current 各 18 条锚点 `2026-05-06` 至 `2026-05-29`，missing/extra=0、direction_match_rate=`1.0`、max_confidence_abs_diff=`0.0`。初始 BacktestGate 曾落库 run_id=`92`；2026-06-12 按最终预测语义重建 latest 基线 run_id=`103`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条，`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 与 DB 逐 `tenor × month` 比对 17 格、差异 0。ActivationGate 已用 `activate` token 将 `config.yaml.status` 从 `paused` 翻为 `active`，当前 active scheme_version=`293b8f057341`，并已重启 scheduler。
+2026-06-12 完成日频 V28 方案 `daily_5y_2_v28`（对应外部 `5y_2`，因 scheme_id 规范采用平台名）入库。adapter 实盘语义为 `predict_date=signal_date=T+1`、`feature_date=T`（上一交易日），`target_date=T+5`；`anchor_date` 仅作为方案内部/审计字段保留，业务和前端统一使用 `feature_date`。回测 runner 语义为 `predict_date=feature_date=T`，并排除 `target_date >= 2026-06-01` 的灰度/实盘 target 区间。方案声明 `input_spec.auxiliary_inputs`，InputGate 会构建 daily/weekly/monthly 三类 artifact；active core 只消费原 V28 代码白名单中的 `WEEKLY_COLS` / `MONTHLY_COLS`，避免把 artifact 全量列误引入特征空间。模型更新语义保留原 V28 设计：每个预测锚点滚动重训 LGBM，训练 mask 使用 `all_idx < idx - horizon` 防泄漏；IC screening 固定在 `2024-07-01` 前；LGBM top-K 按月用此前 test-window 表现更新；信号组合按该方案 `rebal=monthly` 更新。Harness active 配置验证已通过；CompareGate 基准采用外部 May 2026 patched auxiliary source，original/current 各 18 条锚点 `2026-05-06` 至 `2026-05-29`，missing/extra=0、direction_match_rate=`1.0`、max_confidence_abs_diff=`0.0`。初始 BacktestGate 曾落库 run_id=`92`；2026-06-13 按最终预测语义重建 latest 基线 run_id=`107`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条，`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 与 DB 逐 `tenor × month` 比对 17 格、差异 0。ActivationGate 已用 `activate` token 将 `config.yaml.status` 从 `paused` 翻为 `active`，当前 active scheme_version=`293b8f057341`，并已重启 scheduler。
 
 旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已于 2026-06-09 退役。
 
@@ -113,7 +113,7 @@ S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid
 
 ## 当前数据库快照
 
-核验时间：`2026-06-12`，数据库 `bond_db`，MySQL `8.0.45`。
+核验时间：`2026-06-13`，数据库 `bond_db`，MySQL `8.0.45`。
 
 | 项 | 当前值 |
 |----|--------|
@@ -126,16 +126,16 @@ S1→S7 串行落地，新增迁移 `005_lifecycle.sql` / `006_predictions_runid
 | `t_trade_calendar` | 6,209 |
 | `t_pre_market_forecast` | 930 |
 | `t_shap` | 28,147 |
-| `t_scheme_predictions` | 92 |
+| `t_scheme_predictions` | 94 |
 | `t_scheme_actuals` | 13,927 |
 | `t_scheme_weekly_actuals` | 2,927 |
 | `t_scheme_registry` | 6 |
-| `t_scheme_run_log` | 66 |
+| `t_scheme_run_log` | 69 |
 | `t_target_registry` | 4 |
-| `t_backtest_runs` | 34 |
-| `t_backtest_predictions` | 31,555 |
-| `t_backtest_monthly_metrics` | 2,243 |
-| `t_backtest_reproduction_checks` | 7 |
+| `t_backtest_runs` | 48 |
+| `t_backtest_predictions` | 38,512 |
+| `t_backtest_monthly_metrics` | 2,673 |
+| `t_backtest_reproduction_checks` | 8 |
 | `bfl_probe_*` 影子表 | 0 |
 
 actuals 覆盖：
@@ -170,20 +170,20 @@ weekly actuals 覆盖：
 | `t5_daily` | `baseline_original_csv` | `success`，run_id=`94` | `2025-01-01` 到 `2026-05-31` |
 | `t5_daily` | `framework_original_csv` | `success`，run_id=`95` | `2025-01-01` 到 `2026-05-31` |
 | `t5_daily` | `framework_db_aligned` | `success`，run_id=`96` | `2025-01-01` 到 `2026-05-31` |
-| `weekly_5y_direct_0529` | `framework_db_aligned` | `success`，run_id=`100` | `2025-01-03` 到 `2026-05-22` |
-| `weekly_7y_cross_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`101` | `2025-01-03` 到 `2026-05-22` |
-| `weekly_10y_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`102` | `2025-07-04` 到 `2026-05-22` |
-| `daily_5y_2_v28` | `framework_db_aligned` | `success`，run_id=`103` | `2025-01-02` 到 `2026-05-22` |
+| `weekly_5y_direct_0529` | `framework_db_aligned` | `success`，run_id=`104` | `2025-01-03` 到 `2026-05-08` |
+| `weekly_7y_cross_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`105` | `2025-01-03` 到 `2026-05-08` |
+| `weekly_10y_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`106` | `2025-07-11` 到 `2026-05-22` |
+| `daily_5y_2_v28` | `framework_db_aligned` | `success`，run_id=`107` | `2025-01-02` 到 `2026-05-22` |
 
-旧周频回测 run 继续保留为审计历史；`v_latest_backtest_run` 只选当前 latest success。当前新接入的周频方案 `weekly_5y_direct_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`100`，`t_backtest_predictions` 71 条、`t_backtest_monthly_metrics` 17 条。
+旧周频回测 run 继续保留为审计历史；`v_latest_backtest_run` 只选当前 latest success。当前新接入的周频方案 `weekly_5y_direct_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`104`，`t_backtest_predictions` 69 条、`t_backtest_monthly_metrics` 17 条。
 
-`weekly_7y_cross_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`101`，`t_backtest_predictions` 68 条、`t_backtest_monthly_metrics` 17 条；整体样本 68、正确 51、accuracy=75.0%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=7Y`。该周频方案已补齐源文件原始回测 benchmark：`original_predictions_sample.csv` / `current_predictions_sample.csv` 各 43 条，CompareGate 最新证据为 direction_match_rate=1.0、max_confidence_abs_diff=0、missing/extra=0，confidence 来源为 `cross_d_prob_up`。
+`weekly_7y_cross_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`105`，`t_backtest_predictions` 66 条、`t_backtest_monthly_metrics` 17 条；整体样本 66、正确 50、accuracy=75.8%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=7Y`。该周频方案已补齐源文件原始回测 benchmark：`original_predictions_sample.csv` / `current_predictions_sample.csv` 各 43 条，CompareGate 最新证据为 direction_match_rate=1.0、max_confidence_abs_diff=0、missing/extra=0，confidence 来源为 `cross_d_prob_up`。
 
-`weekly_10y_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`102`，`t_backtest_predictions` 46 条、`t_backtest_monthly_metrics` 11 条；整体样本 46、正确 31、accuracy=67.4%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=10Y`，历史回测月份截止到 2026-05，2026-06 不再出现在 backtest monthly rows。该周频方案已补齐源文件原始回测 benchmark：`original_predictions_sample.csv` / `current_predictions_sample.csv` 各 45 条，CompareGate 最新证据为 direction_match_rate=1.0、max_confidence_abs_diff=`1.1102230246251565e-16`、missing/extra=0，confidence 来源为 `d_prob_up`（score/model2 overlay 后概率）。
+`weekly_10y_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`106`，`t_backtest_predictions` 43 条、`t_backtest_monthly_metrics` 11 条；整体样本 43、正确 29、accuracy=67.4%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=10Y`，历史回测月份截止到 2026-05，2026-06 不再出现在 backtest monthly rows。`2025-07-11` 是移除输出窗口硬编码后、严格 point-in-time 输入下 core/model/selector warmup 同时满足的首个可预测周；训练历史仍可早于 `2025-01-01`。该周频方案已补齐源文件原始回测 benchmark：`original_predictions_sample.csv` / `current_predictions_sample.csv` 各 45 条，CompareGate 最新证据为 direction_match_rate=1.0、max_confidence_abs_diff=`1.1102230246251565e-16`、missing/extra=0，confidence 来源为 `d_prob_up`（score/model2 overlay 后概率）。
 
-`daily_5y_2_v28` 已完成历史回测落库，最新 `framework_db_aligned` run_id=`103`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条；整体样本 333、正确 163、accuracy=48.9%，`evaluation_filter.date_field=target_date`。历史回测已截断到 `target_date < 2026-06-01`，predict_date 范围为 `2025-01-02` 到 `2026-05-22`，target_date 范围为 `2025-01-09` 到 `2026-05-29`；`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 返回 `daily_5y_2_v28:5Y:framework_db_aligned`，run_id=`103`，DB↔API 月度格 17/17 一致。其中 2026-05 目标月 13 个样本、正确 10 个、accuracy=76.9%。旧 run_id=`92/93` 仍保留为审计历史，但不再被 `v_latest_backtest_run` 或前端 latest 查询选中。
+`daily_5y_2_v28` 已完成历史回测落库，最新 `framework_db_aligned` run_id=`107`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条；整体样本 333、正确 163、accuracy=48.9%，`evaluation_filter.date_field=target_date`。历史回测已截断到 `target_date < 2026-06-01`，predict_date 范围为 `2025-01-02` 到 `2026-05-22`，target_date 范围为 `2025-01-09` 到 `2026-05-29`；`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 返回 `daily_5y_2_v28:5Y:framework_db_aligned`，run_id=`107`，DB↔API 月度格 17/17 一致。其中 2026-05 目标月 13 个样本、正确 10 个、accuracy=76.9%。旧 run_id=`92/93/103` 仍保留为审计历史，但不再被 `v_latest_backtest_run` 或前端 latest 查询选中。
 
-2026-06-12 已按预测语义 bugfix 重跑并落库 active 方案 latest 回测，最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `94/95/96`，`t1_daily` baseline/framework-csv/framework-db 分别为 `97/98/99`，`weekly_5y_direct_0529` framework-db 为 `100`，`weekly_7y_cross_d_overlay_0529` framework-db 为 `101`，`weekly_10y_d_overlay_0529` framework-db 为 `102`，`daily_5y_2_v28` framework-db 为 `103`。SQL 复核所有 latest rows 均满足 `predict_date = feature_date`、`predict_date >= 2025-01-01`、`target_date < 2026-06-01`，且同一 `benchmark_id + scheme_id + data_source` 不存在多行 latest。
+2026-06-13 已按预测语义 bugfix 重跑并落库 active 方案 latest 回测，最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `94/95/96`，`t1_daily` baseline/framework-csv/framework-db 分别为 `97/98/99`，`weekly_5y_direct_0529` framework-db 为 `104`，`weekly_7y_cross_d_overlay_0529` framework-db 为 `105`，`weekly_10y_d_overlay_0529` framework-db 为 `106`，`daily_5y_2_v28` framework-db 为 `107`。SQL 复核所有 latest rows 均满足 `predict_date = feature_date`、`predict_date >= 2025-01-01`、`target_date < 2026-06-01`，且同一 `benchmark_id + scheme_id + data_source` 不存在多行 latest。
 
 ## 实盘预测状态
 
@@ -193,24 +193,24 @@ active 方案的 live 预测事实表当前状态：
 |------|----------|--------|------|
 | `t1_daily` | `2026-05-29` 到 `2026-06-12` | 20 条（2/日） | `gray_live` run_id=`22` 到 `29`；`scheduled_live` run_id=`34/53` |
 | `t5_daily` | `2026-05-26` 到 `2026-06-12` | 52 条（4/日） | `gray_live` run_id=`2/4/6/8/11/16` 到 `21`；`scheduled_live` run_id=`33/54` |
-| `weekly_5y_direct_0529` | `2026-06-06` | 2 条 | `gray_live`，run_id=`31/32` |
-| `weekly_7y_cross_d_overlay_0529` | `2026-05-30`、`2026-06-06`（回补） | 1/次 | `gray_live`，run_id=`36/35` |
+| `weekly_5y_direct_0529` | `2026-06-06` 到 `2026-06-13` | 3 条 | `gray_live` run_id=`31/32`；`scheduled_live` run_id=`57` |
+| `weekly_7y_cross_d_overlay_0529` | `2026-05-30` 到 `2026-06-13` | 3 条 | `gray_live` run_id=`36/35`；`scheduled_live` run_id=`56` |
 | `weekly_10y_d_overlay_0529` | `2026-05-30`、`2026-06-06`（回补） | 1/次 | `gray_live`，run_id=`37/38` |
 | `daily_5y_2_v28` | `2026-05-26` 到 `2026-06-12` | 14 条（1/日） | `gray_live` run_id=`39` 到 `51`；`scheduled_live` run_id=`52` |
 
 2026-06-13 审计确认 `weekly_5y_direct_0529` 旧 live run_id=`31` 曾出现 predict_date=2026-06-06 → target_date=2026-06-05 的反向时点异常；该记录保留为历史审计，不作为合规语义范例。当前修复分支已去掉 5Y 周频 adapter 的 stale signal fallback，后续重整 live 回补时必须按 Step 10b 以 `target_date` 覆盖为准，并满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`。
 
-2026-06-10 周度方案 `weekly_5y_direct_0529` post-onboarding SOP 已完成：原始基准按 DB 周历归一化后 503 条，改造后 framework 复现 503 条，S5 方向差异 0；当时按 `target_date` 月度口径落库的 run_id=`81` 保留为审计历史。2026-06-12 预测语义重建后，当前 latest framework_db_aligned run_id=`100`，`t_backtest_predictions` 71 条、`t_backtest_monthly_metrics` 17 条，其中 2026-05 为 5 条、2026-06 为 0 条；scheduler 已确认注册周六 11:30 任务（`30 11 * * 6`）。
+2026-06-10 周度方案 `weekly_5y_direct_0529` post-onboarding SOP 已完成：原始基准按 DB 周历归一化后 503 条，改造后 framework 复现 503 条，S5 方向差异 0；当时按 `target_date` 月度口径落库的 run_id=`81` 保留为审计历史。2026-06-13 预测语义重建后，当前 latest framework_db_aligned run_id=`104`，`t_backtest_predictions` 69 条、`t_backtest_monthly_metrics` 17 条，其中 2026-05 为 3 条、2026-06 为 0 条；scheduler 已确认注册周六 11:30 任务（`30 11 * * 6`）。
 
 2026-06-11 按 SOP Step 10b 回补 `weekly_7y_cross_d_overlay_0529` 灰度实盘预测：先补 `execute_scheme(cfg, '2026-06-06')`，run_id=`35`，predict_date=2026-06-06 → target_date=2026-06-12，方向=1；随后发现 2026-06 周度表还缺第一条目标周，又补 `execute_scheme(cfg, '2026-05-30')`，run_id=`36`，predict_date=2026-05-30 → target_date=2026-06-05，方向=1。该经验已写入 SOP：周度回补必须按 `target_date >= 2026-06-01` 枚举目标周并反推 predict_date，不能只按 `predict_date >= 2026-06-01` 枚举。API 已返回两条 live row：06/05 已验证（actual=-1，correct=False），06/12 尚无 actual（待验证）；`t_scheme_run_log` id=`49/48` 留痕。迁移 010 回填后，run_id=`35/36` 均标识为 `prediction_phase=gray_live`。
 
-2026-06-11 按 SOP Step 10b 回补 `weekly_10y_d_overlay_0529` 灰度实盘预测：registry 同步前两次 live gate 因 `scheme ... not found in t_scheme_registry` 跳过并留痕（run_log id=`50/51`），随后通过 `sync_scheme_registry` 同步 active 配置，再补 `2026-05-30` 与 `2026-06-06` 两个周六，run_id=`37/38`，分别写入 predict_date=2026-05-30 → target_date=2026-06-05、predict_date=2026-06-06 → target_date=2026-06-12，方向均为 -1。API 已返回两条 live row：06/05 已验证（actual=1，correct=False），06/12 尚无 actual（待验证）；`/api/backtests/factor-lab` 已返回 `weekly_10y_d_overlay_0529:10Y:framework_db_aligned`，run_id=`102`。本次还修复了 10Y 周度详情出现两个 2026-06 的问题：历史回测截断为 `target_date < 2026-06-01`，灰度实盘月份只由 live metrics 展示。迁移 010 回填后，run_id=`37/38` 均标识为 `prediction_phase=gray_live`。
+2026-06-11 按 SOP Step 10b 回补 `weekly_10y_d_overlay_0529` 灰度实盘预测：registry 同步前两次 live gate 因 `scheme ... not found in t_scheme_registry` 跳过并留痕（run_log id=`50/51`），随后通过 `sync_scheme_registry` 同步 active 配置，再补 `2026-05-30` 与 `2026-06-06` 两个周六，run_id=`37/38`，分别写入 predict_date=2026-05-30 → target_date=2026-06-05、predict_date=2026-06-06 → target_date=2026-06-12，方向均为 -1。API 已返回两条 live row：06/05 已验证（actual=1，correct=False），06/12 尚无 actual（待验证）；`/api/backtests/factor-lab` 已返回 `weekly_10y_d_overlay_0529:10Y:framework_db_aligned`，run_id=`106`。本次还修复了 10Y 周度详情出现两个 2026-06 的问题：历史回测截断为 `target_date < 2026-06-01`，灰度实盘月份只由 live metrics 展示。迁移 010 回填后，run_id=`37/38` 均标识为 `prediction_phase=gray_live`。
 
 2026-06-11 已重刷日频源数据至 `api_wind_daily.rdate=2026-06-11`，实盘预测表中 `t1_daily` 覆盖 target_date=2026-06-01 到 2026-06-11，`t5_daily` 覆盖 target_date=2026-06-01 到 2026-06-17。当前 6 月日频明细按目标日展示；对应目标日有 actuals 时直接计结果，目标日尚无 actuals 时保持 `待验证`，不会显示为“平”。
 
 2026-06-12 按 SOP Step 10b 回补 `daily_5y_2_v28` 灰度实盘预测：按 `target_date >= 2026-06-01` 反推 signal `predict_date`，补齐 `2026-05-26` 到 `2026-06-11` 共 13 条 gray_live row，target_date 覆盖 `2026-06-01` 到 `2026-06-17`，run_id=`39` 到 `51`，`t_scheme_run_log` 13 条均为 success。迁移 010 回填后，该批记录均为 `prediction_phase=gray_live`；`predict_date=2026-06-12`、run_id=`52` 是当前第一条 scheduler 自然触发的正式实盘记录，`prediction_phase=scheduled_live`，feature_date=`2026-06-11`、target_date=`2026-06-18`。`/api/metrics/daily_5y_2_v28?tenor=5Y` 当前返回 14 条 live row，灰度区间 `2026-05-26` 至 `2026-06-11`、正式调度起点 `2026-06-12`，未来 target 保持 `待验证`。
 
-2026-06-10 已验证前端/DB 一致性：`python -m scripts.verify_frontend_db --scheme-id t5_daily --run-id 76` 检查 68 格、0 mismatch；`t1_daily --run-id 79` 检查 36 格、0 mismatch（DB 中 `1Y` 回测格被前端目标注册表隐藏）；`weekly_5y_direct_0529 --run-id 80` 检查 124 格、0 mismatch。2026-06-12 对 `daily_5y_2_v28` 使用显式 `benchmark_id=v28_daily_5y_2` 验证 `/api/backtests/factor-lab` 与 DB 月度格：最终 latest run_id=`103` 为 17/17 一致、0 mismatch。同日修复默认 `/api/backtests/factor-lab` 只读取 `model_muti_0529` 的问题：未传 `benchmark_id` 时现在返回所有 benchmark 下各方案最新成功回测，因此前端可同时合并 `daily_5y_2_v28` 的 17 条回测月度行与实盘 2026-06 行；前端展示 `实盘发出起点 2026-05-26`，并通过 `phase_ranges` 显示灰度实盘区间与正式调度起点 `2026-06-12`。2026-06-12 scheduler 配置复核：`daily_5y_2_v28` / `t1_daily` / `t5_daily` 注册工作日 07:03，`weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 注册周六 11:30，日频 actuals 注册每日 08:30 与 19:00；已重启 `com.bond-factor-lab.scheduler`，日志确认 `Scheduled scheme daily_5y_2_v28 at 3 7 * * 1-5` 与 `Scheduled actuals refresh at 08:30 and 19:00 Asia/Shanghai`。2026-06-13 修复分支已移除前端部署日期 override，候选方案部署/灰度/正式调度展示统一依赖后端 live rows 与 `phase_ranges`。用户侧强制刷新后确认页面正确，后续遇到“静态前端已改但页面仍旧”需先提醒强制刷新/禁用缓存。
+2026-06-10 已验证前端/DB 一致性：`python -m scripts.verify_frontend_db --scheme-id t5_daily --run-id 76` 检查 68 格、0 mismatch；`t1_daily --run-id 79` 检查 36 格、0 mismatch（DB 中 `1Y` 回测格被前端目标注册表隐藏）；`weekly_5y_direct_0529 --run-id 80` 检查 124 格、0 mismatch。2026-06-13 对 `daily_5y_2_v28` 使用显式 `benchmark_id=v28_daily_5y_2` 验证 `/api/backtests/factor-lab` 与 DB 月度格：最终 latest run_id=`107` 为 17/17 一致、0 mismatch。同日修复默认 `/api/backtests/factor-lab` 只读取 `model_muti_0529` 的问题：未传 `benchmark_id` 时现在返回所有 benchmark 下各方案最新成功回测，因此前端可同时合并 `daily_5y_2_v28` 的 17 条回测月度行与实盘 2026-06 行；前端展示 `实盘发出起点 2026-05-26`，并通过 `phase_ranges` 显示灰度实盘区间与正式调度起点 `2026-06-12`。2026-06-12 scheduler 配置复核：`daily_5y_2_v28` / `t1_daily` / `t5_daily` 注册工作日 07:03，`weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 注册周六 11:30，日频 actuals 注册每日 08:30 与 19:00；已重启 `com.bond-factor-lab.scheduler`，日志确认 `Scheduled scheme daily_5y_2_v28 at 3 7 * * 1-5` 与 `Scheduled actuals refresh at 08:30 and 19:00 Asia/Shanghai`。2026-06-13 修复分支已移除前端部署日期 override，候选方案部署/灰度/正式调度展示统一依赖后端 live rows 与 `phase_ranges`。用户侧强制刷新后确认页面正确，后续遇到“静态前端已改但页面仍旧”需先提醒强制刷新/禁用缓存。
 
 旧周频 live prediction/run_log 记录已清理。scheduler 重启后，当前代码配置会注册 `daily_5y_2_v28`、`t1_daily`、`t5_daily` 日频方案与 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529` 周频方案。
 

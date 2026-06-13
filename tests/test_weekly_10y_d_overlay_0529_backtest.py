@@ -158,7 +158,7 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
                 }
             )
 
-        with patch.object(runner, "build_d_overlay", side_effect=fake_overlay):
+        with patch.object(runner, "build_d_overlay", side_effect=fake_overlay) as build_overlay:
             rows = runner.build_backtest_rows(
                 weekly_df,
                 calendar=calendar,
@@ -168,6 +168,9 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
 
         self.assertEqual([row["predict_date"] for row in rows], ["2025-01-03"])
         self.assertTrue(all(row["predict_date"] >= runner.BACKTEST_PREDICT_START_DATE for row in rows))
+        self.assertEqual(build_overlay.call_count, 1)
+        passed_history = build_overlay.call_args.args[0]
+        self.assertEqual(passed_history["week_id"].astype(int).tolist(), [202452, 202501])
 
     def test_backtest_rows_stop_before_live_target_month(self) -> None:
         from backtests import weekly_10y_d_overlay_0529_reproduction as runner

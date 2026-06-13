@@ -40,6 +40,7 @@ CORE_FORBIDDEN_QUALIFIED_CALLS = {
 CORE_WRITE_OPEN_MODES = {"w", "a", "wb", "ab", "w+", "a+", "x", "xb"}
 # core 禁止的写文件方法名（Path.write_text / Path.write_bytes 等）
 CORE_WRITE_METHOD_NAMES = {"write_text", "write_bytes"}
+CORE_EXPORT_METHOD_NAMES = {"to_csv", "to_parquet", "to_excel"}
 WRITE_CALL_NAMES = {
     "insert_run_predictions",
     "write_run_log",
@@ -165,7 +166,7 @@ def qualified_call_violations(
 
 
 def file_write_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
-    """检测写文件调用：open(..., 'w'/'a'/'wb'...) 与 Path.write_text/write_bytes。"""
+    """检测写文件调用：open 写模式、Path.write_* 与 DataFrame.to_* 导出。"""
     violations: list[RuleViolation] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -173,6 +174,9 @@ def file_write_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
         name = call_name(node.func)
         if name in CORE_WRITE_METHOD_NAMES:
             violations.append(RuleViolation(path, node.lineno, f"file write call: {name}()"))
+            continue
+        if name in CORE_EXPORT_METHOD_NAMES:
+            violations.append(RuleViolation(path, node.lineno, f"file export call: {name}()"))
             continue
         if name == "open":
             mode = _open_mode(node)

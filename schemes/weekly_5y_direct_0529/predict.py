@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
 from shared.calendar_service import get_calendar
 from shared.input_artifacts import build_weekly_input_artifact, data_service
 from shared.models import PredictionRecord
@@ -17,8 +15,6 @@ TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 MODEL_VERSION = "rule_vote_0529"
 
 _LOOKBACK_WEEKS = 60
-_NEAREST_DATE_FALLBACK_DAYS = 5
-
 
 def _next_calendar_week_id(calendar, feature_week_id: int) -> int:
     """从 DB 日历读取 feature_week_id 后的下一实际 week_id。"""
@@ -30,26 +26,13 @@ def _next_calendar_week_id(calendar, feature_week_id: int) -> int:
     raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
 
 
-def _nearest_week_id(calendar, predict_date: str) -> int:
-    """将 predict_date 解析为 week_id。
-
-    周度预测可能在周六发出，此时 predict_date 不是交易日，
-    api_wind_date 中无对应记录。向回退最多 _NEAREST_DATE_FALLBACK_DAYS 天，
-    取最近的交易日对应的 week_id。
-    """
-    wid = calendar.week_id_for_date(predict_date)
-    if wid is not None:
-        return wid
-    dt = datetime.strptime(predict_date, "%Y-%m-%d")
-    for offset in range(1, _NEAREST_DATE_FALLBACK_DAYS + 1):
-        try_date = (dt - timedelta(days=offset)).strftime("%Y-%m-%d")
-        wid = calendar.week_id_for_date(try_date)
-        if wid is not None:
-            return wid
-    raise ValueError(
-        f"无法将 predict_date={predict_date} 解析为 week_id "
-        f"（回退 {_NEAREST_DATE_FALLBACK_DAYS} 天后仍未找到交易日）"
-    )
+def _feature_week_from_predict_date(calendar, predict_date: str) -> tuple[str, int]:
+    """实盘统一用 predict_date 前一交易日作为数据截止日。"""
+    feature_date = calendar.previous_trading_day(predict_date)
+    wid = calendar.week_id_for_date(feature_date)
+    if wid is None:
+        raise ValueError(f"无法从 DB 日历解析 feature_date={feature_date} 的 week_id")
+    return feature_date, int(wid)
 
 
 def run(predict_date: str) -> list[PredictionRecord]:
@@ -64,8 +47,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     engine = data_service.create_sqlalchemy_engine()
     try:
         calendar = get_calendar(engine)
-        current_week_id = _nearest_week_id(calendar, predict_date)
-        feature_date = calendar.week_id_to_last_trading_day(current_week_id)
+        feature_date, current_week_id = _feature_week_from_predict_date(calendar, predict_date)
 
         # 加载足够历史用于 lookback（最大 4 周）+ 1 周作为 target 窗口
         start_week = current_week_id - _LOOKBACK_WEEKS
@@ -102,7 +84,6 @@ def run(predict_date: str) -> list[PredictionRecord]:
         last_row = vote_by_week.loc[feature_week_id]
 
         # week_id → 日期（只读 DB，不使用日历公式）
-        feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_week_id = _next_calendar_week_id(calendar, feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
 

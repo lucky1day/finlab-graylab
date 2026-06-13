@@ -84,6 +84,26 @@ class Daily5Y2AlignmentTests(unittest.TestCase):
 
         self.assertEqual(aligned["M0061518"].tolist(), [9.5, 9.0, 8.8])
 
+    def test_backtest_passes_db_calendar_week_mapping_to_core(self) -> None:
+        from backtests import daily_5y_2_v28_reproduction as runner
+
+        daily_df = pd.DataFrame({"date": pd.to_datetime(["2025-01-02", "2025-01-03"]), "TB5YWI0C": [2.0, 2.1]})
+        weekly_df = pd.DataFrame({"week_id": [202501], "N1355677": [1.0]})
+        monthly_df = pd.DataFrame({"month_id": ["202412"], "M0061518": [9.0]})
+        date_to_week = {"2025-01-02": 202501, "2025-01-03": 202501}
+
+        with patch.object(runner, "run_prediction", return_value=pd.DataFrame()) as mock_run:
+            runner.run_historical_prediction(
+                daily_df=daily_df,
+                weekly_df=weekly_df,
+                monthly_df=monthly_df,
+                date_to_week=date_to_week,
+                n_workers=1,
+            )
+
+        cfg = mock_run.call_args.args[0]
+        self.assertEqual(cfg["date_to_week"], date_to_week)
+
 
 class Daily5Y2PredictionRecordTests(unittest.TestCase):
     """predict.py adapter 输出合规性测试。"""
@@ -189,6 +209,16 @@ class Daily5Y2StaticBoundaryTests(unittest.TestCase):
                     module = getattr(node, "module", None) or ""
                     top = module.split(".")[0]
                     self.assertNotIn(top, banned, f"core 禁止 import {module}")
+
+    def test_core_has_no_csv_input_fallback(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        core_path = project_root / "schemes" / "daily_5y_2_v28" / "core" / "v28_common.py"
+        source = core_path.read_text(encoding="utf-8")
+
+        self.assertNotIn("daily_output.csv", source)
+        self.assertNotIn("weekly_output.csv", source)
+        self.assertNotIn("monthly_output.csv", source)
+        self.assertNotIn("pd.read_csv", source)
 
 
 if __name__ == "__main__":

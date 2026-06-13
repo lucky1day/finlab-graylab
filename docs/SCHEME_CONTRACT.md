@@ -81,6 +81,7 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 - 灰度实盘：`prediction_phase = gray_live`，`predict_date = T + 1`，`feature_date = T`，`target_date = T + horizon`。
 - 正式实盘：`prediction_phase = scheduled_live`，`predict_date = T + 1`，`feature_date = T`，`target_date = T + horizon`。
 - `feature_date` 是平台对外唯一数据截止字段；`anchor_date` 不得作为业务字段使用。如为审计兼容保留在 `extra` 中，必须等于 `feature_date`。
+- 周频实盘必须先由 `previous_trading_day(predict_date)` 得到 `feature_date`，再映射 `feature_week_id`；不得直接使用 `predict_date` 所在周作为输入截止周。
 
 字段一致性（每条记录）：
 

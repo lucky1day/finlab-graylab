@@ -56,6 +56,31 @@ class TenYDOverlayCoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "week_date"):
             build_d_overlay(_make_weekly_df())
 
+    def test_build_base_does_not_hardcode_2025h2_output_start(self) -> None:
+        from schemes.weekly_10y_d_overlay_0529.core.d_overlay import build_base
+
+        model2 = pd.DataFrame(
+            {
+                "week_id": [202501, 202527],
+                "week_date": pd.to_datetime(["2025-01-03", "2025-07-04"]),
+                "actual_label": [1, -1],
+                "model2_prob_up": [0.61, 0.32],
+                "TB0YWI3C": [2.30, 2.10],
+            }
+        )
+        score = pd.DataFrame(
+            {
+                "week_id": [202501, 202527],
+                "score_pred_label": [1, -1],
+                "score_prob_up": [0.60, 0.35],
+                "score_actual_label": [1, -1],
+            }
+        )
+
+        result = build_base(model2, score)
+
+        self.assertEqual(result["week_id"].astype(int).tolist(), [202501, 202527])
+
     def test_broad_features_excludes_db_week_date(self) -> None:
         from schemes.weekly_10y_d_overlay_0529.core.d_overlay import broad_features
 
@@ -87,6 +112,10 @@ class PredictionRecordTests(unittest.TestCase):
 
     def _mock_dependencies(self) -> tuple[MagicMock, MagicMock, MagicMock]:
         mock_cal = MagicMock()
+        mock_cal.previous_trading_day.side_effect = lambda day: {
+            "2026-06-12": "2026-06-11",
+            "2026-06-13": "2026-06-12",
+        }.get(day, "2026-06-11")
         mock_cal.next_trading_days.side_effect = lambda day, count: {
             "2026-06-12": ["2026-06-15", "2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19"],
             "2026-12-31": ["2027-01-04"],
@@ -108,6 +137,8 @@ class PredictionRecordTests(unittest.TestCase):
         def week_id_for_date(day: str) -> int | None:
             if day == "2026-06-13":
                 return None
+            if day == "2026-06-11":
+                return 202624
             target = pd.Timestamp(day)
             for wid in range(202601, 202626):
                 last = pd.Timestamp(last_trading_day(wid))
@@ -216,6 +247,44 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertIn("model_date", passed_to_core.columns)
         self.assertEqual(str(passed_to_core.loc[passed_to_core["week_id"].eq(202624), "week_date"].iloc[0])[:10], "2026-06-12")
         self.assertEqual(str(passed_to_core.loc[passed_to_core["week_id"].eq(202624), "model_date"].iloc[0])[:10], "2026-06-08")
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.data_service")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_uses_previous_trading_day_for_trading_predict_date(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_d_overlay.return_value = pd.DataFrame(
+            {
+                "week_id": [202624],
+                "d_pred_label": [-1],
+                "d_prob_up": [0.28],
+                "d_model2_overlay": [False],
+                "d_signal_source": ["score_main"],
+                "score_pred_label": [-1],
+                "score_prob_up": [0.28],
+                "model2_prob_up": [0.61],
+                "d_model2_pred_label": [1],
+            }
+        )
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        records = predict.run("2026-06-12")
+
+        self.assertEqual(records[0].feature_date, "2026-06-11")
+        self.assertEqual(records[0].extra["feature_date"], "2026-06-11")
+        self.assertEqual(mock_build.call_args.kwargs["as_of_date"], "2026-06-11")
+        mock_cal.previous_trading_day.assert_called_with("2026-06-12")
 
     def test_next_week_id_uses_db_calendar_not_numeric_increment(self) -> None:
         from schemes.weekly_10y_d_overlay_0529 import predict

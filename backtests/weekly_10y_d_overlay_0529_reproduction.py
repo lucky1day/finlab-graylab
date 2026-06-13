@@ -102,6 +102,20 @@ def build_backtest_rows(
         if feature_week_id not in weekly_by_id:
             continue
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
+        predict_date = feature_date
+        if predict_date < BACKTEST_PREDICT_START_DATE:
+            continue
+        try:
+            target_week_id = _next_calendar_week_id(calendar, feature_week_id)
+        except ValueError:
+            continue
+        target_row = weekly_by_id.get(target_week_id)
+        if target_row is None:
+            continue
+        target_date = calendar.week_id_to_last_trading_day(target_week_id)
+        if target_date >= LIVE_TARGET_START_DATE:
+            continue
+
         history_source = weekly_frame_for_feature(feature_week_id, feature_date) if weekly_frame_for_feature else weekly
         history = _attach_db_week_dates(_normalize_weekly_frame(history_source), calendar)
         history = history[history["week_id"].le(feature_week_id)].copy()
@@ -122,26 +136,13 @@ def build_backtest_rows(
             continue
         prediction_row = feature_predictions.iloc[-1]
 
-        try:
-            target_week_id = _next_calendar_week_id(calendar, feature_week_id)
-        except ValueError:
-            continue
-        target_row = weekly_by_id.get(target_week_id)
-        if target_row is None:
-            continue
         history_by_id = {int(row["week_id"]): row for _, row in history.iterrows()}
         feature_row = history_by_id[feature_week_id]
-        target_date = calendar.week_id_to_last_trading_day(target_week_id)
-        if target_date >= LIVE_TARGET_START_DATE:
-            continue
         future_return = _weekly_future_return(feature_row, target_row)
         label = _label_from_future_return(future_return) if future_return is not None else None
         predicted_direction = _int_or_none(prediction_row.get("d_pred_label"))
         confidence = _float_or_none(prediction_row.get("d_prob_up"))
         source_row = clean_json({**feature_row.to_dict(), **prediction_row.to_dict()})
-        predict_date = feature_date
-        if predict_date < BACKTEST_PREDICT_START_DATE:
-            continue
 
         rows.append(
             {

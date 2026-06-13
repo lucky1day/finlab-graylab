@@ -238,15 +238,6 @@ def main():
     ))
     print("=" * 90)
 
-    out = pd.DataFrame({
-        "date": dates,
-        "true_label": true_labels,
-        "model_pred": base_arr,
-        "vote_pred": vote_arr,
-    })
-    out.to_csv(ROOT / "7y_predictions.csv", index=False)
-    print("  Saved to 7y_predictions.csv")
-
 
 if __name__ == "__main__":
     main()
