@@ -109,7 +109,7 @@ class PredictionRecordTests(unittest.TestCase):
         return mock_cal, mock_artifact, mock_engine
 
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.data_service")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
     def test_run_returns_one_7y_prediction_with_weekly_extra(
         self,
@@ -119,7 +119,7 @@ class PredictionRecordTests(unittest.TestCase):
     ) -> None:
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_7y_cross_d_overlay_0529 import predict
@@ -140,7 +140,7 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertEqual(record.extra["target_date"], "2026-06-19")
 
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.data_service")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
     def test_run_uses_feature_week_as_of_for_weekly_artifact(
         self,
@@ -150,7 +150,7 @@ class PredictionRecordTests(unittest.TestCase):
     ) -> None:
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_7y_cross_d_overlay_0529 import predict
@@ -163,7 +163,7 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertEqual(mock_build.call_args.kwargs["schema_columns"], predict.SCHEMA_COLUMNS)
 
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.data_service")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
     def test_run_uses_previous_trading_day_for_trading_predict_date(
         self,
@@ -173,7 +173,7 @@ class PredictionRecordTests(unittest.TestCase):
     ) -> None:
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_7y_cross_d_overlay_0529 import predict
@@ -187,7 +187,7 @@ class PredictionRecordTests(unittest.TestCase):
 
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_cross_d_overlay")
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.data_service")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
     def test_run_rejects_stale_signal_week(
         self,
@@ -198,7 +198,7 @@ class PredictionRecordTests(unittest.TestCase):
     ) -> None:
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
         mock_overlay.return_value = pd.DataFrame(
             {
@@ -219,12 +219,12 @@ class PredictionRecordTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "当前特征周"):
             predict.run("2026-06-13")
 
-    def test_next_week_id_uses_db_calendar_not_numeric_increment(self) -> None:
-        from schemes.weekly_7y_cross_d_overlay_0529 import predict
+    def test_next_week_id_uses_shared_prediction_context(self) -> None:
+        from shared.prediction_context import next_calendar_week_id
 
         mock_cal, _, _ = self._mock_dependencies()
 
-        self.assertEqual(predict._next_calendar_week_id(mock_cal, 202652), 202701)
+        self.assertEqual(next_calendar_week_id(mock_cal, 202652), 202701)
 
 
 class WeekIdIntegrityTests(unittest.TestCase):
@@ -248,6 +248,14 @@ class WeekIdIntegrityTests(unittest.TestCase):
             source = path.read_text(encoding="utf-8")
             for pattern in self.FORBIDDEN_PATTERNS:
                 self.assertNotIn(pattern, source, f"{path} 禁止使用日历公式: {pattern}")
+
+    def test_adapter_uses_shared_prediction_context(self) -> None:
+        pred_path = Path(__file__).resolve().parents[1] / "schemes" / "weekly_7y_cross_d_overlay_0529" / "predict.py"
+        source = pred_path.read_text(encoding="utf-8")
+
+        self.assertIn("from shared.prediction_context import", source)
+        self.assertIn("build_weekly_live_context", source)
+        self.assertNotIn("def _next_calendar_week_id", source)
 
     def test_core_has_no_db_or_platform_imports(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

@@ -5,38 +5,20 @@ from typing import Any
 import pandas as pd
 
 from shared.calendar_service import get_calendar
-from shared.input_artifacts import build_weekly_input_artifact, data_service
+from shared.input_artifacts import build_weekly_input_artifact, create_input_engine
 from shared.models import PredictionRecord
+from shared.prediction_context import WEEKLY_TARGET_RULE, build_weekly_live_context
 
 from .core.d_overlay import build_d_overlay
 
 SCHEME_ID = "weekly_10y_d_overlay_0529"
 HORIZON = 6
 TARGET_TENOR = "10Y"
-TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
+TARGET_RULE = WEEKLY_TARGET_RULE
 MODEL_VERSION = "10y_d_overlay_0529"
 TARGET_COL = "TB0YWI3C"
 LOOKBACK_WEEKS = 600
 FUTURE_LOAD_WEEKS = 6
-
-
-def _feature_week_from_predict_date(calendar: Any, predict_date: str) -> tuple[str, int]:
-    """实盘统一用 predict_date 前一交易日作为数据截止日。"""
-    feature_date = calendar.previous_trading_day(predict_date)
-    wid = calendar.week_id_for_date(feature_date)
-    if wid is None:
-        raise ValueError(f"无法从 DB 日历解析 feature_date={feature_date} 的 week_id")
-    return feature_date, int(wid)
-
-
-def _next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
-    """从 DB 日历读取 feature_week_id 后的下一实际 week_id。"""
-    feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
-    for day in calendar.next_trading_days(feature_date, 15):
-        next_week = calendar.week_id_for_date(day)
-        if next_week is not None and int(next_week) != int(feature_week_id):
-            return int(next_week)
-    raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
 
 
 def _attach_db_week_dates(weekly_df: pd.DataFrame, calendar: Any) -> pd.DataFrame:
@@ -75,10 +57,12 @@ def run(predict_date: str) -> list[PredictionRecord]:
     Returns:
         一条 10Y 周度 PredictionRecord。
     """
-    engine = data_service.create_sqlalchemy_engine()
+    engine = create_input_engine()
     try:
         calendar = get_calendar(engine)
-        feature_date, current_week_id = _feature_week_from_predict_date(calendar, predict_date)
+        context = build_weekly_live_context(calendar, predict_date)
+        feature_date = context.feature_date
+        current_week_id = context.feature_week_id
         start_week = current_week_id - LOOKBACK_WEEKS
 
         input_artifact = build_weekly_input_artifact(
@@ -117,8 +101,8 @@ def run(predict_date: str) -> list[PredictionRecord]:
                 f"latest_signal_week_id={feature_week_id}"
             )
 
-        target_week_id = _next_calendar_week_id(calendar, feature_week_id)
-        target_date = calendar.week_id_to_last_trading_day(target_week_id)
+        target_week_id = context.target_week_id
+        target_date = context.target_date
         last_row = prediction_df[prediction_df["week_id"].eq(feature_week_id)].iloc[-1]
 
         return [

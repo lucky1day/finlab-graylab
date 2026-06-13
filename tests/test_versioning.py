@@ -23,6 +23,9 @@ def _write_scheme(root: Path, *, scheme_id: str = "demo_daily") -> Path:
                 '  cron: "25 9 * * 1-5"',
                 '  timezone: "Asia/Shanghai"',
                 "entry_point: predict.run",
+                "input_spec:",
+                "  data_version: shared_data_service_daily.v1",
+                '  required_columns: ["date", "TB0YWI0C"]',
                 "status: active",
             ]
         ),

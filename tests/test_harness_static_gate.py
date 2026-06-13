@@ -422,21 +422,22 @@ class HarnessRuntimeGateTests(unittest.TestCase):
             project_root = Path(tmpdir)
             _write_minimal_scheme(project_root, scheme_id="demo_daily")
             with patch("harness.gates.dry_run_gate.run_scheme_subprocess", return_value=[record]):
-                with patch(
-                    "harness.gates.dry_run_gate.snapshot_table_counts",
-                    side_effect=[
-                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
-                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
-                    ],
-                ):
-                    result = DryRunGate().run(
-                        GateContext(
-                            scheme_id="demo_daily",
-                            predict_date="2026-06-08",
-                            project_root=project_root,
-                            report_dir=project_root / "reports",
+                with patch("harness.gates.dry_run_gate.get_calendar", return_value=_fake_daily_semantics_calendar()):
+                    with patch(
+                        "harness.gates.dry_run_gate.snapshot_table_counts",
+                        side_effect=[
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                        ],
+                    ):
+                        result = DryRunGate().run(
+                            GateContext(
+                                scheme_id="demo_daily",
+                                predict_date="2026-06-08",
+                                project_root=project_root,
+                                report_dir=project_root / "reports",
+                            )
                         )
-                    )
 
         self.assertFalse(result.passed)
         self.assertTrue(any("input_artifact_source" in error for error in result.errors), result.errors)
@@ -467,24 +468,68 @@ class HarnessRuntimeGateTests(unittest.TestCase):
             project_root = Path(tmpdir)
             _write_minimal_scheme(project_root, scheme_id="demo_daily")
             with patch("harness.gates.dry_run_gate.run_scheme_subprocess", return_value=[record]):
-                with patch(
-                    "harness.gates.dry_run_gate.snapshot_table_counts",
-                    side_effect=[
-                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
-                        {"t_scheme_predictions": 10, "t_scheme_run_log": 20},
-                    ],
-                ):
-                    result = DryRunGate().run(
-                        GateContext(
-                            scheme_id="demo_daily",
-                            predict_date="2026-06-08",
-                            project_root=project_root,
-                            report_dir=project_root / "reports",
+                with patch("harness.gates.dry_run_gate.get_calendar", return_value=_fake_daily_semantics_calendar()):
+                    with patch(
+                        "harness.gates.dry_run_gate.snapshot_table_counts",
+                        side_effect=[
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                        ],
+                    ):
+                        result = DryRunGate().run(
+                            GateContext(
+                                scheme_id="demo_daily",
+                                predict_date="2026-06-08",
+                                project_root=project_root,
+                                report_dir=project_root / "reports",
+                            )
                         )
-                    )
 
         self.assertFalse(result.passed)
         self.assertTrue(any("feature_date must be before predict_date" in error for error in result.errors), result.errors)
+
+    def test_dry_run_gate_fails_daily_target_date_not_matching_horizon(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.dry_run_gate import DryRunGate
+        from shared.models import PredictionRecord
+
+        record = PredictionRecord(
+            scheme_id="demo_daily",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-06-08",
+            feature_date="2026-06-07",
+            target_date="2026-06-10",
+            predicted_direction=1,
+            extra={
+                "input_artifact_path": "/tmp/input.csv",
+                "input_artifact_source": "shared_data_service_daily",
+                "feature_date": "2026-06-07",
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            with patch("harness.gates.dry_run_gate.run_scheme_subprocess", return_value=[record]):
+                with patch("harness.gates.dry_run_gate.get_calendar", return_value=_fake_daily_semantics_calendar()):
+                    with patch(
+                        "harness.gates.dry_run_gate.snapshot_table_counts",
+                        side_effect=[
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                        ],
+                    ):
+                        result = DryRunGate().run(
+                            GateContext(
+                                scheme_id="demo_daily",
+                                predict_date="2026-06-08",
+                                project_root=project_root,
+                                report_dir=project_root / "reports",
+                            )
+                        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("target_date expected 2026-06-09" in error for error in result.errors), result.errors)
 
     def test_table_guard_diffs_snapshots(self) -> None:
         from harness.probes.table_guard import diff_snapshots
@@ -495,6 +540,13 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         )
 
         self.assertEqual(diff, {"t_scheme_predictions": 0, "t_scheme_run_log": 2})
+
+    def test_table_guard_tracks_scheme_runs_for_live_and_no_persist_boundaries(self) -> None:
+        from harness.probes import table_guard
+
+        self.assertIn("t_scheme_runs", table_guard.DRY_RUN_GUARD_TABLES)
+        self.assertIn("t_scheme_runs", table_guard.PROTECTED_TABLES)
+        self.assertIn("t_scheme_runs", table_guard.LIVE_WRITE_ALLOWED_TABLES)
 
 
 class HarnessLiveGateTests(unittest.TestCase):
@@ -572,12 +624,12 @@ class HarnessLiveGateTests(unittest.TestCase):
             _write_minimal_scheme(project_root, scheme_id="demo_daily")
             engine = SimpleNamespace(dispose=lambda: None)
             snapshots = [
-                {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "api_wind_daily": 30},
-                {"t_scheme_predictions": 11, "t_scheme_run_log": 21, "api_wind_daily": 30},
+                {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5, "api_wind_daily": 30},
+                {"t_scheme_predictions": 11, "t_scheme_run_log": 21, "t_scheme_runs": 6, "api_wind_daily": 30},
             ]
             scheme_snapshots = [
-                {"t_scheme_predictions": 0, "t_scheme_run_log": 0},
-                {"t_scheme_predictions": 1, "t_scheme_run_log": 1},
+                {"t_scheme_predictions": 0, "t_scheme_run_log": 0, "t_scheme_runs": 0},
+                {"t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
             ]
             with patch("harness.gates.live_gate.snapshot_table_counts", side_effect=snapshots):
                 with patch("harness.gates.live_gate.snapshot_scheme_counts", side_effect=scheme_snapshots):
@@ -612,8 +664,14 @@ class HarnessLiveGateTests(unittest.TestCase):
         self.assertEqual(execute.call_args.kwargs["prediction_phase"], "gray_live")
         first_evidence = _evidence_dict(first)
         self.assertEqual(first_evidence["prediction_phase"], "gray_live")
-        self.assertEqual(first_evidence["protected_table_deltas"], {"api_wind_daily": 0, "t_scheme_predictions": 1, "t_scheme_run_log": 1})
-        self.assertEqual(first_evidence["authorized_scheme_table_deltas"], {"t_scheme_predictions": 1, "t_scheme_run_log": 1})
+        self.assertEqual(
+            first_evidence["protected_table_deltas"],
+            {"api_wind_daily": 0, "t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
+        )
+        self.assertEqual(
+            first_evidence["authorized_scheme_table_deltas"],
+            {"t_scheme_predictions": 1, "t_scheme_run_log": 1, "t_scheme_runs": 1},
+        )
         self.assertTrue(audit_exists)
         self.assertEqual(second.status, GateStatus.BLOCKED)
         self.assertTrue(any("already used" in error for error in second.errors), second.errors)
@@ -889,6 +947,13 @@ def _fake_calendar() -> SimpleNamespace:
     return SimpleNamespace(
         previous_trading_day=lambda _predict_date: "2026-06-02",
         week_id_for_date=lambda _feature_date: 202622,
+    )
+
+
+def _fake_daily_semantics_calendar() -> SimpleNamespace:
+    return SimpleNamespace(
+        previous_trading_day=lambda _predict_date: "2026-06-07",
+        nth_trading_day_after=lambda _feature_date, _horizon: "2026-06-09",
     )
 
 

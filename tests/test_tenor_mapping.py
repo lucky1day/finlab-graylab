@@ -19,11 +19,11 @@ class TenorMappingTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            _write_scheme(root, "daily_live", "daily", "active", ["5Y", "30Y"])
+            _write_scheme(root, "daily_live", "daily", "active", ["5Y", "10Y"])
             _write_scheme(root, "daily_paused", "daily", "paused", ["1Y"])
             _write_scheme(root, "weekly_live", "weekly", "active", ["10Y"])
 
-            self.assertEqual(active_scheme_tenors(root, frequency="daily"), ["30Y", "5Y"])
+            self.assertEqual(active_scheme_tenors(root, frequency="daily"), ["10Y", "5Y"])
 
 
 def _write_scheme(root: Path, scheme_id: str, frequency: str, status: str, tenors: list[str]) -> None:
@@ -42,6 +42,15 @@ def _write_scheme(root: Path, scheme_id: str, frequency: str, status: str, tenor
                 '  cron: "25 9 * * 1-5"',
                 '  timezone: "Asia/Shanghai"',
                 "entry_point: predict.run",
+                "input_spec:",
+                f"  data_version: shared_data_service_{frequency}.v1",
+                (
+                    '  required_columns: ["week_id", "TB0YWI3C"]'
+                    if frequency == "weekly"
+                    else '  required_columns: ["date", "TB0YWI0C"]'
+                ),
+                *(["  weekly_variant: yield_curve"] if frequency == "weekly" else []),
+                *(["target_rule: next_week_last_trading_day_vs_current_week_last_trading_day"] if frequency == "weekly" else []),
                 f"status: {status}",
             ]
         ),

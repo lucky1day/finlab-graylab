@@ -12,10 +12,16 @@ import pandas as pd
 from sqlalchemy.engine import Engine
 
 from backtests._base_runner import RunOutput, make_run_output, persist_run_output
+from backtests.weekly_base_runner import (
+    WeeklyBacktestSpec,
+    WeeklyPredictionPoint,
+    build_weekly_backtest_rows,
+)
 from backtests.repository import clean_json
 from shared.calendar_service import get_calendar
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_weekly_input_artifact
+from shared.prediction_context import WEEKLY_TARGET_RULE
 from schemes.weekly_10y_d_overlay_0529.core.d_overlay import build_d_overlay
 
 
@@ -27,7 +33,7 @@ DATA_SOURCE = "framework_db_aligned"
 TARGET_TENOR = "10Y"
 TARGET_COL = "TB0YWI3C"
 HORIZON_DAYS = 6
-TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
+TARGET_RULE = WEEKLY_TARGET_RULE
 MODEL_VERSION = "10y_d_overlay_0529"
 REQUIRED_COLUMNS = ["week_id", TARGET_COL, "TB1YWI3C", "TB5YWI3C"]
 LIVE_TARGET_START_DATE = "2026-06-01"
@@ -91,106 +97,63 @@ def build_backtest_rows(
     weekly_frame_for_feature: Callable[[int, str], pd.DataFrame] | None = None,
 ) -> list[dict[str, Any]]:
     """将 10Y D-overlay 全历史预测转换为统一回测行。"""
-    weekly = _attach_db_week_dates(_normalize_weekly_frame(weekly_df), calendar)
-    if weekly.empty:
-        return []
+    spec = WeeklyBacktestSpec(
+        benchmark_id=BENCHMARK_ID,
+        scheme_id=SCHEME_ID,
+        target_tenor=TARGET_TENOR,
+        horizon_days=HORIZON_DAYS,
+        target_column=TARGET_COL,
+        target_rule=TARGET_RULE,
+        model_version=MODEL_VERSION,
+        predict_start_date=BACKTEST_PREDICT_START_DATE,
+        live_target_start_date=LIVE_TARGET_START_DATE,
+        precheck_predict_start=True,
+        precheck_target=True,
+    )
 
-    rows: list[dict[str, Any]] = []
-    weekly_by_id = {int(row["week_id"]): row for _, row in weekly.iterrows()}
+    def normalize_for_calendar(frame: pd.DataFrame) -> pd.DataFrame:
+        return _attach_db_week_dates(_normalize_weekly_frame(frame), calendar)
 
-    for feature_week_id in [int(value) for value in weekly["week_id"].tolist()]:
-        if feature_week_id not in weekly_by_id:
-            continue
-        feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
-        predict_date = feature_date
-        if predict_date < BACKTEST_PREDICT_START_DATE:
-            continue
-        try:
-            target_week_id = _next_calendar_week_id(calendar, feature_week_id)
-        except ValueError:
-            continue
-        target_row = weekly_by_id.get(target_week_id)
-        if target_row is None:
-            continue
-        target_date = calendar.week_id_to_last_trading_day(target_week_id)
-        if target_date >= LIVE_TARGET_START_DATE:
-            continue
-
-        history_source = weekly_frame_for_feature(feature_week_id, feature_date) if weekly_frame_for_feature else weekly
-        history = _attach_db_week_dates(_normalize_weekly_frame(history_source), calendar)
-        history = history[history["week_id"].le(feature_week_id)].copy()
-        if feature_week_id not in set(history["week_id"].astype(int).tolist()):
-            continue
+    def predict_for_feature(history: pd.DataFrame, feature_week_id: int) -> WeeklyPredictionPoint | None:
         try:
             prediction_df = build_d_overlay(history)
         except (RuntimeError, ValueError):
-            continue
+            return None
         if prediction_df.empty:
-            continue
+            return None
         prediction_df = prediction_df.copy()
         prediction_df["week_id"] = pd.to_numeric(prediction_df["week_id"], errors="coerce").astype("Int64")
         prediction_df = prediction_df.dropna(subset=["week_id"]).copy()
         prediction_df["week_id"] = prediction_df["week_id"].astype(int)
         feature_predictions = prediction_df[prediction_df["week_id"].eq(feature_week_id)]
         if feature_predictions.empty:
-            continue
+            return None
         prediction_row = feature_predictions.iloc[-1]
-
-        history_by_id = {int(row["week_id"]): row for _, row in history.iterrows()}
-        feature_row = history_by_id[feature_week_id]
-        future_return = _weekly_future_return(feature_row, target_row)
-        label = _label_from_future_return(future_return) if future_return is not None else None
-        predicted_direction = _int_or_none(prediction_row.get("d_pred_label"))
-        confidence = _float_or_none(prediction_row.get("d_prob_up"))
-        source_row = clean_json({**feature_row.to_dict(), **prediction_row.to_dict()})
-
-        rows.append(
-            {
-                "benchmark_id": BENCHMARK_ID,
-                "scheme_id": SCHEME_ID,
-                "target_tenor": TARGET_TENOR,
-                "horizon": HORIZON_DAYS,
-                "predict_date": predict_date,
-                "feature_date": feature_date,
-                "target_date": target_date,
-                "label": label,
-                "predicted_direction": predicted_direction,
-                "model_pred": predicted_direction,
-                "confidence": confidence,
-                "source_row": source_row,
-                "extra": {
-                    "source": MODEL_VERSION,
-                    "frequency": "weekly",
-                    "model_version": MODEL_VERSION,
-                    "target_rule": TARGET_RULE,
-                    "feature_week_id": feature_week_id,
-                    "target_week_id": target_week_id,
-                    "feature_date": feature_date,
-                    "target_date": target_date,
-                    "future_return": future_return,
-                    "model_disagree": _bool_or_none(prediction_row.get("d_model_disagree")),
-                    "overlay_applied": _bool_or_none(prediction_row.get("d_model2_overlay")),
-                    "score_pred_label": _int_or_none(prediction_row.get("score_pred_label")),
-                    "score_prob_up": _float_or_none(prediction_row.get("score_prob_up")),
-                    "model2_prob_up": _float_or_none(prediction_row.get("model2_prob_up")),
-                    "d_model2_pred_label": _int_or_none(prediction_row.get("d_model2_pred_label")),
-                    "input_artifact_path": str(artifact_path),
-                    "input_artifact_source": artifact_source,
-                },
-            }
+        return WeeklyPredictionPoint(
+            source_row=prediction_row.to_dict(),
+            predicted_direction=_int_or_none(prediction_row.get("d_pred_label")),
+            confidence=_float_or_none(prediction_row.get("d_prob_up")),
+            extra={
+                "source": MODEL_VERSION,
+                "model_disagree": _bool_or_none(prediction_row.get("d_model_disagree")),
+                "overlay_applied": _bool_or_none(prediction_row.get("d_model2_overlay")),
+                "score_pred_label": _int_or_none(prediction_row.get("score_pred_label")),
+                "score_prob_up": _float_or_none(prediction_row.get("score_prob_up")),
+                "model2_prob_up": _float_or_none(prediction_row.get("model2_prob_up")),
+                "d_model2_pred_label": _int_or_none(prediction_row.get("d_model2_pred_label")),
+            },
         )
 
-    return rows
-
-
-def _next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
-    """从 DB 日历读取 feature_week_id 后的下一实际 week_id。"""
-    feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
-    for day in calendar.next_trading_days(feature_date, 15):
-        next_week = calendar.week_id_for_date(day)
-        if next_week is not None and int(next_week) != int(feature_week_id):
-            return int(next_week)
-    raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
+    return build_weekly_backtest_rows(
+        weekly_df,
+        calendar=calendar,
+        spec=spec,
+        artifact_path=artifact_path,
+        artifact_source=artifact_source,
+        normalize_frame=normalize_for_calendar,
+        predict_for_feature=predict_for_feature,
+        weekly_frame_for_feature=weekly_frame_for_feature,
+    )
 
 
 def compact_prediction_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -360,22 +323,6 @@ def _legacy_segment_anchor_date(week_id: int) -> str:
     first_thu = jan1 + pd.Timedelta(days=(3 - jan1.weekday()) % 7)
     first_anchor = first_thu - pd.Timedelta(days=3)
     return (first_anchor + pd.Timedelta(weeks=ordinal - 1)).strftime("%Y-%m-%d")
-
-
-def _weekly_future_return(feature_row: pd.Series, target_row: pd.Series) -> float | None:
-    current_close = _float_or_none(feature_row.get(TARGET_COL))
-    target_close = _float_or_none(target_row.get(TARGET_COL))
-    if current_close is None or target_close is None or current_close == 0:
-        return None
-    return (target_close - current_close) / current_close
-
-
-def _label_from_future_return(value: float) -> int:
-    if value > 0:
-        return 1
-    if value < 0:
-        return -1
-    return 0
 
 
 def _int_or_none(value: Any) -> int | None:

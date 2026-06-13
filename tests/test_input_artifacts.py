@@ -11,6 +11,11 @@ import pandas as pd
 
 
 class InputArtifactTests(unittest.TestCase):
+    def test_input_artifacts_does_not_reexport_data_service(self) -> None:
+        import shared.input_artifacts as input_artifacts
+
+        self.assertFalse(hasattr(input_artifacts, "data_service"))
+
     def test_input_artifact_path_sanitizes_scheme_and_predict_date(self) -> None:
         from shared.input_artifacts import input_artifact_path
 
@@ -67,7 +72,7 @@ class InputArtifactTests(unittest.TestCase):
         engine = object()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            with patch("shared.input_artifacts.data_service", create=True) as daily_service:
+            with patch("shared.input_artifacts._data_service") as daily_service:
                 daily_service.build_daily_output_from_db.return_value = daily_df
                 daily_service.save_daily_output.side_effect = lambda df, path: df.to_csv(path, index=False)
                 artifact = build_daily_input_artifact(
@@ -123,7 +128,7 @@ class InputArtifactTests(unittest.TestCase):
         engine = object()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            with patch("shared.input_artifacts.data_service", create=True) as data_service:
+            with patch("shared.input_artifacts._data_service") as data_service:
                 data_service.build_weekly_output_from_db.return_value = weekly_df
                 data_service.save_weekly_output.side_effect = lambda df, path: df.to_csv(path, index=False)
                 artifact = build_weekly_input_artifact(
@@ -228,7 +233,7 @@ class InputArtifactTests(unittest.TestCase):
         engine = object()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            with patch("shared.input_artifacts.data_service", create=True) as data_service:
+            with patch("shared.input_artifacts._data_service") as data_service:
                 data_service.build_monthly_output_from_db.return_value = monthly_df
                 data_service.save_monthly_output.side_effect = lambda df, path: df.to_csv(path, index=False)
                 artifact = build_monthly_input_artifact(
@@ -291,7 +296,7 @@ class InputArtifactTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            with patch("shared.input_artifacts.data_service", create=True) as daily_service:
+            with patch("shared.input_artifacts._data_service") as daily_service:
                 daily_service.save_daily_output.side_effect = lambda df, path: df.to_csv(path, index=False)
                 daily_service.build_daily_output_from_db.return_value = first_df
                 first = build_daily_input_artifact(

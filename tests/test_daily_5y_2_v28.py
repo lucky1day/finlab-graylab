@@ -112,7 +112,7 @@ class Daily5Y2PredictionRecordTests(unittest.TestCase):
     @patch("schemes.daily_5y_2_v28.predict.build_monthly_input_artifact")
     @patch("schemes.daily_5y_2_v28.predict.build_weekly_input_artifact")
     @patch("schemes.daily_5y_2_v28.predict.build_daily_input_artifact")
-    @patch("schemes.daily_5y_2_v28.predict.data_service")
+    @patch("schemes.daily_5y_2_v28.predict.create_input_engine")
     @patch("schemes.daily_5y_2_v28.predict.get_calendar")
     def test_run_uses_previous_trading_day_as_anchor_and_predict_date_as_signal_date(
         self,
@@ -124,7 +124,7 @@ class Daily5Y2PredictionRecordTests(unittest.TestCase):
         mock_latest: MagicMock,
     ) -> None:
         mock_engine = MagicMock()
-        mock_data_service.create_sqlalchemy_engine.return_value = mock_engine
+        mock_data_service.return_value = mock_engine
         mock_calendar = MagicMock()
         mock_calendar.next_trading_days.side_effect = lambda day, count: [
             "2026-05-25",

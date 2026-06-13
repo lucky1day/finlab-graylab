@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.engine import Engine
 
 from shared.calendar_service import get_calendar
-from shared.input_artifacts import build_daily_input_artifact, data_service
+from shared.input_artifacts import build_daily_input_artifact, create_input_engine
 from shared.models import PredictionRecord
 
 from .latest_prediction import TENOR_MODULES, predict_latest_for_module
@@ -26,7 +26,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
     只做 I/O 编排，不修改 core 目录中的原始算法逻辑。
     """
-    engine = data_service.create_sqlalchemy_engine()
+    engine = create_input_engine()
     try:
         feature_date = get_calendar(engine=engine).previous_trading_day(predict_date)
         start_date = (datetime.strptime(feature_date, "%Y-%m-%d") - timedelta(days=8 * 365)).strftime("%Y-%m-%d")

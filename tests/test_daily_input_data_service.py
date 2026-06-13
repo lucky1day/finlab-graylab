@@ -40,7 +40,7 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
         fake_engine = SimpleNamespace(dispose=lambda: None)
         fake_calendar = SimpleNamespace(previous_trading_day=lambda value: "2026-06-04")
         with patch.object(predict, "build_daily_input_artifact", return_value=artifact) as build:
-            with patch.object(predict.data_service, "create_sqlalchemy_engine", return_value=fake_engine):
+            with patch.object(predict, "create_input_engine", return_value=fake_engine):
                 with patch.object(predict, "get_calendar", return_value=fake_calendar):
                     with patch.object(predict, "TENOR_CONFIGS", {"daily_10y": fake_config}):
                         with patch.object(predict, "_configured_tenors", return_value={"10Y"}):
@@ -80,7 +80,7 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
         fake_engine = SimpleNamespace(dispose=lambda: None)
         fake_calendar = SimpleNamespace(previous_trading_day=lambda value: "2026-06-04")
         with patch.object(predict, "build_daily_input_artifact", return_value=artifact) as build:
-            with patch.object(predict.data_service, "create_sqlalchemy_engine", return_value=fake_engine):
+            with patch.object(predict, "create_input_engine", return_value=fake_engine):
                 with patch.object(predict, "get_calendar", return_value=fake_calendar):
                     with patch.object(predict, "predict_latest_for_module", return_value=fake_result) as predict_latest:
                         with patch.object(predict, "_target_date_from_feature_date", return_value="2026-06-12"):

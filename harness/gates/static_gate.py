@@ -12,6 +12,7 @@ from harness.contracts.import_rules import (
     CORE_FORBIDDEN_QUALIFIED_CALLS,
     DANGEROUS_CORE_IMPORTS,
     RuleViolation,
+    backtest_runner_boundary_violations,
     call_violations,
     cross_scheme_imports,
     dangerous_imports,
@@ -19,6 +20,7 @@ from harness.contracts.import_rules import (
     has_shared_input_artifacts_import,
     legacy_active_import_violations,
     parse_python,
+    predict_input_artifact_bypass_violations,
     predict_import_whitelist_violations,
     qualified_call_violations,
     sql_write_literals,
@@ -79,6 +81,7 @@ class StaticGate(Gate):
             predict_violations.extend(
                 predict_import_whitelist_violations(predict_path, predict_tree, ctx.scheme_id)
             )
+            predict_violations.extend(predict_input_artifact_bypass_violations(predict_path, predict_tree))
             predict_violations.extend(legacy_active_import_violations(predict_path, predict_tree))
         evidence.extend(Evidence(key, value) for key, value in predict_facts.items())
 
@@ -102,7 +105,9 @@ class StaticGate(Gate):
         errors.extend(v.format(project_root) for v in cross_imports)
 
         backtest_errors = self._backtest_input_artifact_errors(config_raw, project_root)
-        evidence.append(Evidence("backtest_imports_input_artifacts", not backtest_errors, "; ".join(backtest_errors) or None))
+        evidence.append(
+            Evidence("backtest_imports_input_artifacts", not backtest_errors, "; ".join(backtest_errors) or None)
+        )
         errors.extend(backtest_errors)
 
         finished_at = utc_now()
@@ -162,9 +167,11 @@ class StaticGate(Gate):
         if not runner_path.exists():
             return [f"{runner}: backtest runner file does not exist"]
         tree = parse_python(runner_path)
-        if has_shared_input_artifacts_import(tree):
-            return []
-        return [f"{_display_path(runner_path, project_root)}: backtest runner must import shared.input_artifacts"]
+        errors: list[str] = []
+        if not has_shared_input_artifacts_import(tree):
+            errors.append(f"{_display_path(runner_path, project_root)}: backtest runner must import shared.input_artifacts")
+        errors.extend(v.format(project_root) for v in backtest_runner_boundary_violations(runner_path, tree))
+        return errors
 
 
 def _is_predict_write_violation(violation: RuleViolation) -> bool:

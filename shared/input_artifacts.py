@@ -9,7 +9,7 @@ from typing import Any
 
 import pandas as pd
 
-from shared import data_service
+from shared import data_service as _data_service
 from shared.artifact_paths import RUNTIME_INPUT_ROOT, safe_path_part
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
@@ -21,6 +21,11 @@ _FREQUENCY_FILE_PREFIXES = {
     "weekly": "weekly_output",
     "monthly": "monthly_output",
 }
+
+
+def create_input_engine():
+    """创建输入 artifact 构建所需 DB engine，避免 adapter 直接依赖 data_service。"""
+    return _data_service.create_sqlalchemy_engine()
 
 
 @dataclass(frozen=True)
@@ -78,13 +83,13 @@ def build_daily_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = data_service.build_daily_output_from_db(
+    df = _data_service.build_daily_output_from_db(
         start_date=start_date,
         end_date=end_date,
         engine=engine,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    data_service.save_daily_output(df, path)
+    _data_service.save_daily_output(df, path)
     read_back = _read_daily_output_csv(path)
     profile = _dataframe_profile(read_back, coverage_field="date", required_columns=("date",))
     content_hash = _file_sha256(path)
@@ -132,7 +137,7 @@ def build_weekly_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = data_service.build_weekly_output_from_db(
+    df = _data_service.build_weekly_output_from_db(
         schema_columns=schema_columns,
         start_week=start_week,
         end_week=end_week,
@@ -140,7 +145,7 @@ def build_weekly_input_artifact(
         engine=engine,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    data_service.save_weekly_output(df, path)
+    _data_service.save_weekly_output(df, path)
     read_back = pd.read_csv(path)
     if "week_id" in read_back.columns:
         read_back["week_id"] = pd.to_numeric(read_back["week_id"], errors="coerce").astype("Int64")
@@ -192,13 +197,13 @@ def build_monthly_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = data_service.build_monthly_output_from_db(
+    df = _data_service.build_monthly_output_from_db(
         start_date=start_date,
         end_date=end_date,
         engine=engine,
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    data_service.save_monthly_output(df, path)
+    _data_service.save_monthly_output(df, path)
     read_back = _read_monthly_output_csv(path)
     profile = _dataframe_profile(read_back, coverage_field="month_id", required_columns=("month_id",))
     content_hash = _file_sha256(path)

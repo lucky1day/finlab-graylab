@@ -10,6 +10,7 @@ try:
 except ModuleNotFoundError:  # forecast_env keeps scheduler dry-run lean and may not include PyYAML.
     yaml = None
 
+from harness.contracts.config_schema import validate_config
 from shared.versioning import compute_code_hash, compute_config_hash, compute_manifest_hash, compute_scheme_version
 
 
@@ -55,6 +56,9 @@ def _require_mapping(value: Any, path: Path) -> dict[str, Any]:
 def load_scheme_config(config_path: Path) -> SchemeConfig:
     """读取单个方案 config.yaml。"""
     raw = _require_mapping(_load_yaml(config_path), config_path)
+    errors = validate_config(raw, config_path.parent.name)
+    if errors:
+        raise ValueError(f"{config_path}: " + "; ".join(errors))
     schedule_raw = _require_mapping(raw.get("schedule", {}), config_path)
     scheme_id = str(raw["scheme_id"]).strip()
     if scheme_id != config_path.parent.name:
@@ -74,13 +78,13 @@ def load_scheme_config(config_path: Path) -> SchemeConfig:
         description=str(raw.get("description", "")),
         horizon=int(raw["horizon"]),
         tenors=[str(item) for item in tenors],
-        frequency=str(raw.get("frequency", "daily")),
+        frequency=str(raw["frequency"]),
         schedule=SchemeSchedule(
             cron=str(schedule_raw["cron"]),
             timezone=str(schedule_raw.get("timezone", "Asia/Shanghai")),
         ),
         entry_point=str(raw.get("entry_point", "predict.run")),
-        status=str(raw.get("status", "active")),
+        status=str(raw["status"]),
         path=scheme_dir,
         code_hash=code_hash,
         config_hash=config_hash,

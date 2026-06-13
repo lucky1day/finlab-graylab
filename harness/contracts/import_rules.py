@@ -59,9 +59,18 @@ PREDICT_ALLOWED_SHARED_IMPORTS = {
     "shared.input_artifacts",
     "shared.models",
     "shared.calendar_service",
+    "shared.prediction_context",
 }
 SQL_WRITE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 SQL_WRITE_PATTERN = re.compile(r"\b(" + "|".join(SQL_WRITE_KEYWORDS) + r")\b", re.IGNORECASE)
+LIVE_TABLE_NAMES = {
+    "t_scheme_predictions",
+    "t_scheme_runs",
+    "t_scheme_run_log",
+    "t_scheme_actuals",
+    "t_scheme_weekly_actuals",
+}
+BACKTEST_FORBIDDEN_IMPORTS = {"scheduler", "backend"}
 
 
 @dataclass(frozen=True)
@@ -230,6 +239,90 @@ def predict_import_whitelist_violations(
             # 其它 schemes.* 交由跨方案规则报错，这里不重复。
             continue
         # 标准库 / 第三方库（如 datetime / pathlib / pandas / sqlalchemy 的类型）不视为越层。
+    return violations
+
+
+def predict_input_artifact_bypass_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
+    """禁止 predict.py 通过 input_artifacts 暴露的 data_service 绕过输入 artifact。"""
+    violations: list[RuleViolation] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = ("." * int(node.level) + (node.module or "")).lstrip(".")
+            if module == "shared.input_artifacts":
+                for alias in node.names:
+                    if alias.name == "data_service":
+                        violations.append(
+                            RuleViolation(
+                                path,
+                                node.lineno,
+                                "predict import forbidden: shared.input_artifacts.data_service",
+                            )
+                        )
+        elif isinstance(node, ast.Call):
+            if _is_data_service_build_from_db_call(node.func):
+                violations.append(
+                    RuleViolation(
+                        path,
+                        node.lineno,
+                        f"predict call forbidden: data_service.{node.func.attr}()",
+                    )
+                )
+    return violations
+
+
+def _is_data_service_build_from_db_call(func: ast.AST) -> bool:
+    if not isinstance(func, ast.Attribute) or not isinstance(func.value, ast.Name):
+        return False
+    return (
+        func.value.id == "data_service"
+        and func.attr.startswith("build_")
+        and func.attr.endswith("_from_db")
+    )
+
+
+def backtest_runner_boundary_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
+    """Backtest runner 只能通过 backtests.repository 写 t_backtest_*，不得触碰 live 写库边界。"""
+    violations: list[RuleViolation] = []
+    violations.extend(backtest_forbidden_imports(path, tree))
+    violations.extend(live_table_sql_write_literals(path, tree))
+    return violations
+
+
+def backtest_forbidden_imports(path: Path, tree: ast.AST) -> list[RuleViolation]:
+    violations: list[RuleViolation] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                normalized = alias.name.lstrip(".")
+                if _is_backtest_forbidden_import(normalized):
+                    violations.append(RuleViolation(path, node.lineno, f"dangerous import: {normalized}"))
+        elif isinstance(node, ast.ImportFrom):
+            module = ("." * int(node.level) + (node.module or "")).lstrip(".")
+            if _is_backtest_forbidden_import(module):
+                for alias in node.names:
+                    target = f"{module}.{alias.name}" if alias.name != "*" else module
+                    violations.append(RuleViolation(path, node.lineno, f"dangerous import: {target}"))
+    return violations
+
+
+def _is_backtest_forbidden_import(normalized: str) -> bool:
+    return any(normalized == prefix or normalized.startswith(f"{prefix}.") for prefix in BACKTEST_FORBIDDEN_IMPORTS)
+
+
+def live_table_sql_write_literals(path: Path, tree: ast.AST) -> list[RuleViolation]:
+    violations: list[RuleViolation] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if not SQL_WRITE_PATTERN.search(node.value):
+            continue
+        lowered = node.value.lower()
+        for table in sorted(LIVE_TABLE_NAMES):
+            if table.lower() in lowered:
+                violations.append(
+                    RuleViolation(path, node.lineno, f"live table SQL write literal: {table}")
+                )
+                break
     return violations
 
 

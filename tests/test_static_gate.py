@@ -187,6 +187,62 @@ class StaticGateHardeningTests(unittest.TestCase):
                 result.errors,
             )
 
+    def test_predict_cannot_import_data_service_through_input_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            (scheme_dir / "predict.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact, data_service",
+                        'SCHEME_ID = "demo_daily"',
+                        "def run(predict_date: str):",
+                        "    data_service.build_daily_output_from_db()",
+                        "    return []",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        joined = "\n".join(result.errors)
+        self.assertIn("shared.input_artifacts.data_service", joined)
+        self.assertIn("data_service.build_daily_output_from_db", joined)
+
+    def test_backtest_runner_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            _write_backtest_runner(project_root, "from shared.input_artifacts import build_daily_input_artifact\nfrom scheduler import repository\n")
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_live_table_sql_write_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            _write_backtest_runner(
+                project_root,
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "SQL = 'INSERT INTO t_scheme_predictions (scheme_id) VALUES (\\'demo_daily\\')'",
+                    ]
+                ),
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("t_scheme_predictions" in item for item in result.errors), result.errors)
+
     def test_real_schemes_pass_static_gate(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         for scheme_id in ("t1_daily", "t5_daily"):
@@ -200,6 +256,22 @@ class StaticGateHardeningTests(unittest.TestCase):
                     )
                 )
                 self.assertTrue(result.passed, result.errors)
+
+
+def _append_backtest_runner(scheme_dir: Path) -> None:
+    config_path = scheme_dir / "config.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8")
+        + "\nbacktest:\n  runner: backtests.demo_daily_reproduction\n  start_date: '2025-01-01'\n",
+        encoding="utf-8",
+    )
+
+
+def _write_backtest_runner(project_root: Path, source: str) -> None:
+    backtests_dir = project_root / "backtests"
+    backtests_dir.mkdir()
+    (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+    (backtests_dir / "demo_daily_reproduction.py").write_text(source, encoding="utf-8")
 
 
 if __name__ == "__main__":

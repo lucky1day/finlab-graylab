@@ -206,7 +206,7 @@ class PredictionRecordTests(unittest.TestCase):
         return mock_cal, mock_artifact, mock_engine
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_run_returns_list_of_prediction_records(
         self, mock_get_cal, mock_ds, mock_build
@@ -214,7 +214,7 @@ class PredictionRecordTests(unittest.TestCase):
         """run() 返回 list[PredictionRecord] 且非空。"""
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_5y_direct_0529 import predict
@@ -225,7 +225,7 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertIsInstance(records[0], PredictionRecord)
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_prediction_record_fields_match_constants(
         self, mock_get_cal, mock_ds, mock_build
@@ -233,7 +233,7 @@ class PredictionRecordTests(unittest.TestCase):
         """PredictionRecord 的 scheme_id/horizon/target_tenor 与常量一致。"""
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_5y_direct_0529 import predict
@@ -244,7 +244,7 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertEqual(r.target_tenor, "5Y")
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_prediction_record_has_all_weekly_extra_keys(
         self, mock_get_cal, mock_ds, mock_build
@@ -252,7 +252,7 @@ class PredictionRecordTests(unittest.TestCase):
         """extra 字段包含周频全部必填键。"""
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_5y_direct_0529 import predict
@@ -262,13 +262,13 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertSetEqual(missing, set(), f"缺少 extra 键: {missing}")
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_predicted_direction_is_valid(self, mock_get_cal, mock_ds, mock_build):
         """predicted_direction ∈ {-1, 0, 1}。"""
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_5y_direct_0529 import predict
@@ -276,13 +276,13 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertIn(records[0].predicted_direction, {-1, 0, 1})
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_target_rule_matches_actuals_updater(self, mock_get_cal, mock_ds, mock_build):
         """extra.target_rule 与 weekly_actuals_updater 一致。"""
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_5y_direct_0529 import predict
@@ -293,12 +293,12 @@ class PredictionRecordTests(unittest.TestCase):
         )
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_run_uses_feature_week_as_of_for_weekly_artifact(self, mock_get_cal, mock_ds, mock_build):
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_5y_direct_0529 import predict
@@ -309,14 +309,14 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertEqual(mock_build.call_args.kwargs["as_of_date"], "2026-06-11")
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_run_records_previous_trading_day_as_feature_date_on_trading_predict_date(
         self, mock_get_cal, mock_ds, mock_build
     ):
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
 
         from schemes.weekly_5y_direct_0529 import predict
@@ -329,12 +329,12 @@ class PredictionRecordTests(unittest.TestCase):
 
     @patch("schemes.weekly_5y_direct_0529.predict.build_rule_vote")
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
-    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
     def test_run_rejects_stale_signal_week(self, mock_get_cal, mock_ds, mock_build, mock_vote):
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
-        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_ds.return_value = mock_engine
         mock_build.return_value = mock_artifact
         mock_vote.return_value = pd.DataFrame(
             {
@@ -408,14 +408,13 @@ class WeekIdIntegrityTests(unittest.TestCase):
             )
 
     def test_adapter_uses_calendar_service_methods(self):
-        """predict.py 仅通过 calendar_service 获取 week_id（非公式计算）。"""
+        """predict.py 通过平台 prediction_context 获取 week_id/target。"""
         pred_path = Path(__file__).resolve().parents[1] / "schemes" / "weekly_5y_direct_0529" / "predict.py"
         source = pred_path.read_text(encoding="utf-8")
-        # 必须使用 calendar_service 的方法
-        self.assertIn("week_id_to_last_trading_day", source)
-        self.assertIn("week_id_for_date", source)
-        # 确认导入了 calendar_service
         self.assertIn("from shared.calendar_service import", source)
+        self.assertIn("from shared.prediction_context import", source)
+        self.assertIn("build_weekly_live_context", source)
+        self.assertNotIn("def _next_calendar_week_id", source)
 
     def test_adapter_imports_only_allowed_shared_modules(self):
         """predict.py 仅 import 允许的 shared.* 模块。"""
@@ -423,16 +422,20 @@ class WeekIdIntegrityTests(unittest.TestCase):
         source = pred_path.read_text(encoding="utf-8")
         tree = ast.parse(source)
         # 允许的 shared.* 模块
-        allowed_shared = {"shared.input_artifacts", "shared.models", "shared.calendar_service"}
+        allowed_shared = {
+            "shared.input_artifacts",
+            "shared.models",
+            "shared.calendar_service",
+            "shared.prediction_context",
+        }
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):
                 module = getattr(node, "module", None) or ""
                 if module.startswith("shared.") and module not in allowed_shared:
-                    # data_service 通过 shared.input_artifacts 间接访问是允许的
                     if module == "shared.data_service":
                         self.fail(
                             "predict.py 不得直接 import shared.data_service；"
-                            "请通过 shared.input_artifacts.data_service 访问"
+                            "请通过 shared.input_artifacts.create_input_engine 访问 engine"
                         )
                     self.fail(f"predict.py 不允许的 import: {module}")
 

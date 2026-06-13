@@ -13,6 +13,7 @@ DRY_RUN_GUARD_TABLES = (
     "t_trade_calendar",
     "t_pre_market_forecast",
     "t_shap",
+    "t_scheme_runs",
     "t_scheme_predictions",
     "t_scheme_run_log",
     "t_scheme_actuals",
@@ -31,6 +32,7 @@ PROTECTED_TABLES = (
     "t_trade_calendar",
     "t_pre_market_forecast",
     "t_shap",
+    "t_scheme_runs",
     "t_scheme_predictions",
     "t_scheme_run_log",
     "t_scheme_actuals",
@@ -40,7 +42,7 @@ PROTECTED_TABLES = (
     "t_backtest_monthly_metrics",
     "t_backtest_reproduction_checks",
 )
-LIVE_WRITE_ALLOWED_TABLES = ("t_scheme_predictions", "t_scheme_run_log")
+LIVE_WRITE_ALLOWED_TABLES = ("t_scheme_runs", "t_scheme_predictions", "t_scheme_run_log")
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -81,6 +83,12 @@ def snapshot_scheme_counts(engine, scheme_id: str) -> dict[str, int]:
         result["t_scheme_predictions"] = int(
             conn.execute(
                 text("SELECT COUNT(*) FROM t_scheme_predictions WHERE scheme_id = :scheme_id"),
+                {"scheme_id": scheme_id},
+            ).scalar_one()
+        )
+        result["t_scheme_runs"] = int(
+            conn.execute(
+                text("SELECT COUNT(*) FROM t_scheme_runs WHERE scheme_id = :scheme_id"),
                 {"scheme_id": scheme_id},
             ).scalar_one()
         )

@@ -12,18 +12,32 @@ from sqlalchemy.engine import Engine
 from scheduler.daily_actuals_updater import active_scheme_tenors, read_yield_rows
 from scheduler.repository import create_engine_from_env, upsert_weekly_actuals
 from shared.models import WeeklyActualRecord
+from shared.prediction_context import WEEKLY_TARGET_RULE, next_calendar_week_id
 from shared.tenor_mapping import TENOR_TO_INDICATOR
 
 
-TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
+TARGET_RULE = WEEKLY_TARGET_RULE
 
 
 @dataclass(frozen=True)
 class WeekCalendar:
     date_to_week_id: dict[str, int]
-    next_week_id: dict[int, int]
     week_last_trading_day: dict[int, str]
     week_predict_date: dict[int, str]
+    trading_days: tuple[str, ...]
+
+    def week_id_for_date(self, value: str | date | datetime) -> int | None:
+        normalized = _normalize_date(value)
+        return self.date_to_week_id.get(normalized) if normalized else None
+
+    def week_id_to_last_trading_day(self, week_id: int | float | str) -> str:
+        return self.week_last_trading_day[int(week_id)]
+
+    def next_trading_days(self, value: str | date | datetime, count: int) -> list[str]:
+        normalized = _normalize_date(value)
+        if normalized is None:
+            return []
+        return [day for day in self.trading_days if day > normalized][:count]
 
 
 def _normalize_date(value: str | date | datetime | None) -> str | None:
@@ -99,7 +113,6 @@ def _build_week_calendar(rows: Iterable[dict]) -> WeekCalendar:
         rows_by_week[week_id].append(item)
 
     week_ids = sorted(rows_by_week, key=lambda wid: min(row["rdate"] for row in rows_by_week[wid]))
-    next_week_id = {week_id: week_ids[index + 1] for index, week_id in enumerate(week_ids[:-1])}
     week_last_trading_day: dict[int, str] = {}
     week_predict_date: dict[int, str] = {}
     for week_id in week_ids:
@@ -117,9 +130,16 @@ def _build_week_calendar(rows: Iterable[dict]) -> WeekCalendar:
 
     return WeekCalendar(
         date_to_week_id=date_to_week_id,
-        next_week_id=next_week_id,
         week_last_trading_day=week_last_trading_day,
         week_predict_date=week_predict_date,
+        trading_days=tuple(
+            sorted(
+                row["rdate"]
+                for week_id in week_ids
+                for row in rows_by_week[week_id]
+                if row["is_trading"]
+            )
+        ),
     )
 
 
@@ -157,8 +177,11 @@ def build_weekly_actual_records_from_rows(
     records: list[WeeklyActualRecord] = []
     for tenor, by_week in grouped.items():
         for feature_week_id in sorted(by_week):
-            target_week_id = calendar.next_week_id.get(feature_week_id)
-            if target_week_id is None or target_week_id not in by_week:
+            try:
+                target_week_id = next_calendar_week_id(calendar, feature_week_id)
+            except ValueError:
+                continue
+            if target_week_id not in by_week:
                 continue
             target_week_end = calendar.week_last_trading_day.get(target_week_id)
             predict_date = calendar.week_predict_date.get(feature_week_id)

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from shared.calendar_service import get_calendar
-from shared.input_artifacts import build_daily_input_artifact, data_service
+from shared.input_artifacts import build_daily_input_artifact, create_input_engine
 from shared.models import PredictionRecord
 
 from .core.config import TENOR_CONFIGS
@@ -38,7 +38,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
         统一预测记录列表，每个 tenor 一条。
     """
     datetime.strptime(predict_date, "%Y-%m-%d")
-    engine = data_service.create_sqlalchemy_engine()
+    engine = create_input_engine()
     try:
         feature_date = get_calendar(engine).previous_trading_day(predict_date)
         start_date = (datetime.strptime(feature_date, "%Y-%m-%d") - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")

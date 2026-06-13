@@ -13,7 +13,7 @@ from shared.input_artifacts import (
     build_daily_input_artifact,
     build_monthly_input_artifact,
     build_weekly_input_artifact,
-    data_service,
+    create_input_engine,
 )
 from shared.models import PredictionRecord
 
@@ -68,7 +68,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     predict_date 是发信日 T+1；模型特征截止到 predict_date 之前的最后一个交易日 T。
     """
     signal_date = predict_date
-    engine = data_service.create_sqlalchemy_engine()
+    engine = create_input_engine()
     try:
         calendar = get_calendar(engine=engine)
         anchor_date = _previous_trading_day(signal_date, calendar)
