@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -14,7 +15,7 @@ class _FakeEngine:
 
 
 class ExecutorRunIdTests(unittest.TestCase):
-    def test_execute_scheme_appends_predictions_and_updates_serving_pointer(self) -> None:
+    def test_execute_scheme_appends_predictions_without_serving_pointer(self) -> None:
         from scheduler.executor import execute_scheme
         from shared.models import PredictionRecord
 
@@ -48,10 +49,9 @@ class ExecutorRunIdTests(unittest.TestCase):
                 with patch("scheduler.executor.create_scheme_run", return_value=101) as create_run:
                     with patch("scheduler.executor.run_scheme_subprocess", return_value=records):
                         with patch("scheduler.executor.insert_run_predictions", return_value=2) as insert_predictions:
-                            with patch("scheduler.executor.update_serving_pointer") as update_pointer:
-                                with patch("scheduler.executor.finish_scheme_run") as finish_run:
-                                    with patch("scheduler.executor.write_run_log") as write_run_log:
-                                        result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
+                            with patch("scheduler.executor.finish_scheme_run") as finish_run:
+                                with patch("scheduler.executor.write_run_log") as write_run_log:
+                                    result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.records_written, 2)
@@ -71,12 +71,6 @@ class ExecutorRunIdTests(unittest.TestCase):
         insert_predictions.assert_called_once()
         self.assertEqual(insert_predictions.call_args.args[:2], (engine, 101))
         self.assertEqual(insert_predictions.call_args.kwargs["scheme_version"], "abc123")
-        self.assertEqual(update_pointer.call_count, 2)
-        self.assertEqual(
-            [call.kwargs["target_tenor"] for call in update_pointer.call_args_list],
-            ["5Y", "10Y"],
-        )
-        self.assertTrue(all(call.kwargs["run_id"] == 101 for call in update_pointer.call_args_list))
         finish_run.assert_called_once()
         self.assertEqual(finish_run.call_args.kwargs["run_id"], 101)
         self.assertEqual(finish_run.call_args.kwargs["status"], "success")
@@ -84,6 +78,11 @@ class ExecutorRunIdTests(unittest.TestCase):
         self.assertEqual(finish_run.call_args.kwargs["records_written"], 2)
         write_run_log.assert_called_once()
         self.assertEqual(write_run_log.call_args.kwargs["run_id"], 101)
+
+    def test_executor_does_not_write_serving_pointer(self) -> None:
+        import scheduler.executor as executor
+
+        self.assertNotIn("update_serving_pointer", inspect.getsource(executor))
 
 
 if __name__ == "__main__":

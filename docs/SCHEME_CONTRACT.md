@@ -162,8 +162,8 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 | §1 config schema | StaticGate（静态） | `contracts/config_schema.py` |
 | §2 predict 接口 | StaticGate（AST） | `contracts/predict_contract.py` |
 | §4 core 约束 | StaticGate（AST） | `contracts/import_rules.py` + `static_gate.py` |
-| §3 PredictionRecord 运行期 | DryRunGate（dry-run JSON） | `gates/dry_run_gate.py` |
-| §7 落库后完整性 | LiveGate / BacktestGate（落库后） | `probes/table_guard.py` + 完整性校验器（**待落地**） |
+| §3 PredictionRecord 运行期 | DryRunGate（dry-run JSON） | `gates/dry_run_gate.py` + `gates/prediction_semantics.py` |
+| §7 落库后完整性 | LiveGate / BacktestGate（落库前后） | `probes/table_guard.py`；BacktestGate 已落地 protected table snapshot，内容层完整性 probe 仍待补齐 |
 
 > 本文为契约规范。未创建或修改任何代码。
 
@@ -171,9 +171,9 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 7. 落库后数据完整性契约（机器可校验）
 
-**定位**: 现有 `probes/table_guard.py` 只校验**行数 delta**（防误写其它表），缺**写入内容**的完整性校验——DB 静默写坏（方向越界、唯一键重复、样本数不符）当前无人发现。本节定义落库后必须成立的断言，由 LiveGate / BacktestGate 在写库后执行。
+**定位**: `probes/table_guard.py` 和 BacktestGate protected table snapshot 负责防误写其它表；DryRunGate/LiveGate 已校验 live 日期和 phase。仍需补齐的是更细的**写入内容**完整性校验，例如方向越界、唯一键重复、落库样本数与 no-persist 摘要不一致。本节定义最终必须成立的断言，由 LiveGate / BacktestGate 持续补齐。
 
-> **校验器待落地**：本节为规范，断言逻辑由后续 harness probe 实现（建议 `probes/integrity_guard.py`）。落地前由 [POST_ONBOARDING_TEST_SOP §S6](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md#s6--落库写历史回测结果) 人工核验。
+> **部分已落地**：日期/phase 校验与 protected table snapshot 已在 harness 中执行；内容层完整性 probe 仍待落地（建议 `probes/integrity_guard.py`）。落地前由 [POST_ONBOARDING_TEST_SOP §S6](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md#s6--落库写历史回测结果) 人工核验剩余项。
 
 ### 7.1 实盘预测落库（`t_scheme_predictions`）
 
@@ -185,8 +185,8 @@ LiveGate 写库后，对该 `scheme_id` + `predict_date` 断言：
 | 值域 | `predicted_direction ∈ {1, -1, 0}` | 方向越界，污染准确率 |
 | 一致性 | `horizon == config.horizon`；`target_tenor ∈ config.tenors` | 方案身份漂移 |
 | 唯一性 | 无重复 `(scheme_id, target_tenor, horizon, target_date)` | 违反 `t_scheme_predictions` 当前业务 UK；同一 target 被重复展示 |
-| 阶段 | 实盘记录可判定 `prediction_phase ∈ {gray_live, scheduled_live}`；灰度补齐和 scheduler 自然发出不得混淆 | 前端和业务把灰度与正式实盘混算 |
-| 日期 | `feature_date` 存在；日频灰度/正式实盘满足 `feature_date < predict_date` 且 `target_date` 来自 `feature_date + horizon`；回测满足 `predict_date == feature_date` | T/T+1 语义混淆，可能数据泄漏 |
+| 阶段 | 实盘记录必须写入 `prediction_phase ∈ {gray_live, scheduled_live}`；LiveGate 必须显式传入该值 | 前端和业务把灰度与正式实盘混算 |
+| 日期 | `feature_date` 存在；灰度/正式实盘满足 `feature_date < predict_date` 且 `target_date > feature_date`；回测满足 `predict_date == feature_date` | T/T+1 语义混淆，可能数据泄漏 |
 | 受保护表 | 除 `t_scheme_predictions` / `t_scheme_run_log` 外，`PROTECTED_TABLES` 全部 `delta==0` | 越界写库 |
 
 > 每 scheme 行数快照可复用 `probes/table_guard.py::snapshot_scheme_counts`。
@@ -198,7 +198,7 @@ BacktestGate 去掉 `--no-persist` 落库后断言：
 | 维度 | 断言 | 失败含义 |
 |------|------|----------|
 | 样本数 | 落库样本数 `== --no-persist 复现样本数` | 落库丢样本/重样本 |
-| 表隔离 | 仅 `t_backtest_runs/_predictions/_monthly_metrics` 该 run 相关行增加 | 误写实盘表 |
+| 表隔离 | 仅 `t_backtest_runs/_predictions/_monthly_metrics/_reproduction_checks` 该 run 相关行增加 | 误写实盘表 |
 | 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
 | 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
 | 日期语义 | 回测 rows 必须满足 `predict_date == feature_date`，不得读取或复制灰度/正式实盘记录 | 用 T+1 实盘结果冒充 T 回测结果 |

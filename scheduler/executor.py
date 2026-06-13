@@ -14,7 +14,6 @@ from scheduler.repository import (
     finish_scheme_run,
     insert_run_predictions,
     sync_scheme_registry,
-    update_serving_pointer,
     write_run_log,
 )
 from shared.models import PredictionRecord
@@ -137,15 +136,6 @@ def execute_scheme(
         records = run_scheme_subprocess(cfg.scheme_id, predict_date, algo_env=algo_env, timeout_sec=timeout_sec)
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
-        for record in records:
-            update_serving_pointer(
-                engine,
-                scheme_id=record.scheme_id,
-                target_tenor=record.target_tenor,
-                predict_date=record.predict_date,
-                run_id=run_id,
-                status="approved",
-            )
         duration = time.monotonic() - started
         status = "success" if written == len(records) else "partial"
         error_msg = None if status == "success" else f"written={written}, returned={len(records)}"

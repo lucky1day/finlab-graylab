@@ -31,19 +31,6 @@ def _create_weekly_schema(engine) -> None:
         conn.execute(
             text(
                 """
-                CREATE TABLE t_scheme_serving_pointer (
-                    scheme_id TEXT,
-                    target_tenor TEXT,
-                    predict_date TEXT,
-                    serving_run_id INTEGER,
-                    serving_status TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
                 CREATE TABLE t_scheme_actuals (
                     tenor TEXT,
                     trade_date TEXT,
@@ -83,15 +70,6 @@ class WeeklyMetricsTests(unittest.TestCase):
                     VALUES
                         (1, 'demo_weekly_scheme', '10Y', 6, '2026-05-23', '2026-05-29',
                          -1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2026-05-22"}')
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_serving_pointer
-                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
-                    VALUES ('demo_weekly_scheme', '10Y', '2026-05-23', 1, 'approved')
                     """
                 )
             )
@@ -139,17 +117,6 @@ class WeeklyMetricsTests(unittest.TestCase):
                          1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-24"}'),
                         (2, 'demo_weekly_scheme', '10Y', 6, '2025-11-01', '2025-11-14',
                          -1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2025-10-31"}')
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_serving_pointer
-                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
-                    VALUES
-                        ('demo_weekly_scheme', '10Y', '2025-10-25', 1, 'approved'),
-                        ('demo_weekly_scheme', '10Y', '2025-11-01', 2, 'approved')
                     """
                 )
             )

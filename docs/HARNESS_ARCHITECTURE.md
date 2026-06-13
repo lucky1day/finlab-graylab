@@ -60,27 +60,31 @@ bond-factor-lab/
 |------|------|----------|
 | `harness.contracts` | 校验 `config.yaml`、目录结构、`predict.run()` 签名、`PredictionRecord` 字段 | 不运行算法、不写库 |
 | `harness.import_audit` | 静态扫描危险导入和绕路调用 | 不自动改代码 |
-| `harness.input_gate` | 调用公共输入层生成主 artifact 和 `input_spec.auxiliary_inputs` 辅助 artifact，验证列、日期/month/week 覆盖、source 和 data_version，并在 `auxiliary_input_artifacts` 留证 | 不直接调用源表写入 |
-| `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表 | 不调用 `scheduler.executor` |
-| `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01` | 未授权不落 `t_backtest_*` |
-| `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护；实盘记录必须可追溯 `prediction_phase` | 不批量执行所有 active 方案 |
+| `harness.input_gate` | 调用公共输入层生成主 artifact 和 `input_spec.auxiliary_inputs` 辅助 artifact；按 `feature_date=previous_trading_day(predict_date)` 约束 daily/monthly 窗口，按 `feature_week_id + as_of_date=feature_date` 约束 weekly 输入，并在 `auxiliary_input_artifacts` 留证 | 不直接调用源表写入 |
+| `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表，并校验 `predict_date/feature_date/target_date` 语义 | 不调用 `scheduler.executor` |
+| `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01`，并对受保护表做前后快照 | 未授权不落 `t_backtest_*`；授权落库时也只能改 `t_backtest_*` |
+| `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护；必须显式传入 `prediction_phase=gray_live/scheduled_live` | 不批量执行所有 active 方案 |
 | `harness.report` | 输出 JSON/Markdown 证据到 `reports/harness/{scheme_id}/` | 不改业务状态 |
 
 CLI 标准入口:
 
 ```bash
-python -m harness.cli check \
-  --scheme-id t1_daily \
+python -m harness onboard t1_daily \
   --predict-date 2026-06-06 \
-  --mode static
+  --stage static
 
-python -m harness.cli check \
+python -m harness onboard t1_daily \
+  --predict-date 2026-06-06 \
+  --stage all
+
+python -m harness gate live \
   --scheme-id t1_daily \
   --predict-date 2026-06-06 \
-  --mode all
+  --prediction-phase gray_live \
+  --authorize "$TOKEN"
 ```
 
-`--mode all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readonly。任何一步失败都停止（compare 缺 benchmark 时跳过，不阻断）。
+`--stage all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readonly。任何一步失败都停止（compare 缺 benchmark 时跳过，不阻断）。`live` 和持久化 backtest 不属于默认 `all`，必须显式授权。
 
 ---
 
@@ -93,9 +97,9 @@ python -m harness.cli check \
 3. **Input Gate**: adapter 和 backtest runner 必须调用 `shared.input_artifacts`，并记录 `input_artifact_path` / `input_artifact_source`。
 4. **Static Gate**: 静态检查目录、命名、接口、危险导入、直接写库、绕过公共输入层等问题。
 5. **Unit Gate**: 覆盖 core 输出、adapter 输出、公共输入层调用、`PredictionRecord` 字段。
-6. **Dry-run Gate**: 通过 `scheduler.scheme_runner` 返回 JSON，并确认 `t_scheme_predictions` / `t_scheme_run_log` 行数不变。
-7. **Backtest Gate**: 先 `--no-persist`，确认样本数、月度分布、准确率和最早 `predict_date >= 2025-01-01`；用户授权后才写 `t_backtest_*`。
-8. **Live Gate**: 用户授权后只写该 `scheme_id` 的 prediction/run_log，不能触发其他方案。
+6. **Dry-run Gate**: 通过 `scheduler.scheme_runner` 返回 JSON，并确认 `t_scheme_predictions` / `t_scheme_run_log` 行数不变，同时校验 live 日期语义。
+7. **Backtest Gate**: 先 `--no-persist`，确认样本数、月度分布、准确率和最早 `predict_date >= 2025-01-01`；用户授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
+8. **Live Gate**: 用户授权并显式传 `prediction_phase` 后，只写该 `scheme_id` 的 prediction/run_log，不能触发其他方案。
 9. **Activation**: 通过全部 gate 后，才允许从 `paused` 改为 `active` 并重启 scheduler。
 10. **Documentation**: 更新状态、回测、测试记录和 harness 报告路径。
 

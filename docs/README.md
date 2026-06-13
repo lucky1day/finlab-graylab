@@ -35,5 +35,5 @@
 
 - **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → PREDICTION_SEMANTICS → SCHEME_CONTRACT → CURRENT_STATUS
 - **新增方案** → 先读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
-- **改 harness** → HARNESS_ARCHITECTURE + 评审报告
+- **改 harness** → HARNESS_ARCHITECTURE；评审报告只作历史审计参考
 - **了解当前状态** → CURRENT_STATUS

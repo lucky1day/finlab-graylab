@@ -177,26 +177,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "feature_date"):
             insert_run_predictions(engine, 101, [record], scheme_version="abc123")
 
-    def test_update_serving_pointer_upserts_latest_run(self) -> None:
-        from scheduler.repository import update_serving_pointer
-
-        engine = _RunEngine()
-        update_serving_pointer(
-            engine,
-            scheme_id="t1_daily",
-            target_tenor="10Y",
-            predict_date="2026-06-05",
-            run_id=101,
-            status="approved",
-        )
-
-        sql = engine.store["sql"]
-        params = engine.store["params"]
-        self.assertIn("INSERT INTO t_scheme_serving_pointer", sql)
-        self.assertIn("ON DUPLICATE KEY UPDATE", sql)
-        self.assertEqual(params["serving_run_id"], 101)
-        self.assertEqual(params["serving_status"], "approved")
-
     def test_upsert_scheme_version_writes_version_hashes(self) -> None:
         from scheduler.repository import upsert_scheme_version
 

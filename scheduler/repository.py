@@ -263,44 +263,6 @@ def insert_run_predictions(
     return len(rows)
 
 
-def update_serving_pointer(
-    engine: Engine,
-    *,
-    scheme_id: str,
-    target_tenor: str,
-    predict_date: str,
-    run_id: int,
-    status: str = "approved",
-    updated_by: str = "scheduler",
-) -> None:
-    """将展示指针切到指定 run_id。"""
-    sql = text(
-        """
-        INSERT INTO t_scheme_serving_pointer
-            (scheme_id, target_tenor, predict_date, serving_run_id, serving_status, updated_by)
-        VALUES
-            (:scheme_id, :target_tenor, :predict_date, :serving_run_id, :serving_status, :updated_by)
-        ON DUPLICATE KEY UPDATE
-            serving_run_id = VALUES(serving_run_id),
-            serving_status = VALUES(serving_status),
-            updated_by = VALUES(updated_by),
-            updated_at = CURRENT_TIMESTAMP
-        """
-    )
-    with engine.begin() as conn:
-        conn.execute(
-            sql,
-            {
-                "scheme_id": scheme_id,
-                "target_tenor": target_tenor,
-                "predict_date": predict_date,
-                "serving_run_id": run_id,
-                "serving_status": status,
-                "updated_by": updated_by,
-            },
-        )
-
-
 def upsert_input_artifact(engine: Engine, artifact: InputArtifact) -> str:
     """UPSERT 输入产物指纹，返回稳定 artifact_id。"""
     predict_date = artifact.metadata.get("predict_date")

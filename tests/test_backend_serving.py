@@ -34,19 +34,6 @@ def _create_schema(engine) -> None:
         conn.execute(
             text(
                 """
-                CREATE TABLE t_scheme_serving_pointer (
-                    scheme_id TEXT,
-                    target_tenor TEXT,
-                    predict_date TEXT,
-                    serving_run_id INTEGER,
-                    serving_status TEXT
-                )
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
                 CREATE TABLE t_scheme_actuals (
                     tenor TEXT,
                     trade_date TEXT,
@@ -89,15 +76,6 @@ def _seed_predictions(engine) -> None:
         conn.execute(
             text(
                 """
-                INSERT INTO t_scheme_serving_pointer
-                    (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
-                VALUES ('demo_daily', '10Y', '2026-06-05', 1, 'approved')
-                """
-            )
-        )
-        conn.execute(
-            text(
-                """
                 INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
                 VALUES ('10Y', '2026-06-06', -1, -1)
                 """
@@ -105,7 +83,7 @@ def _seed_predictions(engine) -> None:
         )
 
 
-class BackendServingPointerTests(unittest.TestCase):
+class BackendPredictionServingTests(unittest.TestCase):
     def test_scheme_metrics_returns_available_predictions(self) -> None:
         """所有预测记录（无 serving pointer 过滤）参与指标计算。"""
         from backend.services import scheme_metrics
@@ -228,15 +206,6 @@ class BackendServingPointerTests(unittest.TestCase):
             conn.execute(
                 text(
                     """
-                    INSERT INTO t_scheme_serving_pointer
-                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
-                    VALUES ('demo_t5', '10Y', '2026-05-29', 7, 'approved')
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
                     INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
                     VALUES
                         ('10Y', '2026-05-29', -1, -1),
@@ -329,17 +298,6 @@ class BackendServingPointerTests(unittest.TestCase):
             conn.execute(
                 text(
                     """
-                    INSERT INTO t_scheme_serving_pointer
-                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
-                    VALUES
-                        ('demo_t5', '10Y', '2026-06-04', 7, 'approved'),
-                        ('demo_t5', '10Y', '2026-06-05', 8, 'approved')
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
                     INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
                     VALUES ('10Y', '2026-06-10', 1, 1)
                     """
@@ -378,18 +336,6 @@ class BackendServingPointerTests(unittest.TestCase):
                          '2026-06-16', 1, 0.7, 'pending-target', '{}'),
                         (9, 'demo_t5', '10Y', 5, '2026-06-11',
                          '2026-06-17', -1, 0.8, 'future-predict', '{}')
-                    """
-                )
-            )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO t_scheme_serving_pointer
-                        (scheme_id, target_tenor, predict_date, serving_run_id, serving_status)
-                    VALUES
-                        ('demo_t5', '10Y', '2026-06-03', 7, 'approved'),
-                        ('demo_t5', '10Y', '2026-06-05', 8, 'approved'),
-                        ('demo_t5', '10Y', '2026-06-11', 9, 'approved')
                     """
                 )
             )

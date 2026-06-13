@@ -260,7 +260,7 @@ CREATE TABLE t_scheme_runs (
     prediction_phase ENUM('gray_live','scheduled_live') DEFAULT NULL,
     predict_date DATE NOT NULL,
     status ENUM('running','success','failed','partial','skipped') NOT NULL DEFAULT 'running',
-    input_artifact_id BIGINT DEFAULT NULL,
+    input_artifact_id VARCHAR(128) DEFAULT NULL,
     harness_run_id VARCHAR(64) DEFAULT NULL,
     records_expected INT DEFAULT NULL,
     records_returned INT DEFAULT NULL,
@@ -268,14 +268,13 @@ CREATE TABLE t_scheme_runs (
     error_message TEXT DEFAULT NULL,
     started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME DEFAULT NULL,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_scheme_date (scheme_id, predict_date),
     INDEX idx_status (status),
     INDEX idx_scheme_runs_phase (scheme_id, prediction_phase, predict_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-`t_scheme_runs` 是一次执行的主审计表；`t_scheme_predictions.run_id` 指回这里。`prediction_phase` 在 run 和 prediction 两层同时落地，用于区分灰度实盘补齐与正式 scheduler 自然发出。
+`t_scheme_runs` 是一次执行的主审计表；`t_scheme_predictions.run_id` 指回这里。`prediction_phase` 在 run 和 prediction 两层同时落地，用于区分灰度实盘补齐与正式 scheduler 自然发出。物理列允许 `NULL` 只为兼容历史 dry-run/旧记录；当前 live 写库必须显式写入 `gray_live` 或 `scheduled_live`。
 
 ### 3.6 t_scheme_run_log
 
@@ -378,13 +377,17 @@ def run(predict_date: str) -> list[PredictionRecord]:
 class PredictionRecord:
     scheme_id: str
     target_tenor: str        # "1Y", "3Y", "5Y", "7Y", "10Y"
-    horizon: int             # 1 or 5
-    predict_date: str        # YYYY-MM-DD
-    target_date: str         # YYYY-MM-DD
+    horizon: int             # daily 1/5, weekly 6
+    predict_date: str        # 信号发出日 / 调度运行日
+    target_date: str         # 验证目标日，用于 actual join 和月度归属
     predicted_direction: int # 1=涨, -1=跌, 0=平
+    feature_date: str | None = None       # 数据截止日 / 预测站位日
+    prediction_phase: str | None = None   # gray_live / scheduled_live
     confidence: float | None = None
     model_version: str | None = None
     extra: dict | None = None
+    run_id: int | None = None
+    scheme_version: str | None = None
 ```
 
 ---
@@ -485,6 +488,8 @@ class PredictionRecord:
 
 前端不新增历史验证结果页；方案展示仍走原有方案结果矩阵。
 
+迁移阅读顺序：`migrations/007_backtest_immutable.sql` 引入 append-only 回测表和旧版 latest view，`migrations/009_backtest_latest_view.sql` 在保留 007 表结构的基础上替换 `v_latest_backtest_run` 为当前 canonical latest-success 语义。排查 latest 查询时必须先读 007 再读 009。
+
 ---
 
 ## 6. 前端结构
@@ -578,21 +583,30 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 3. Input Gate: 确认 live adapter 和 backtest runner 都通过 `shared.input_artifacts` 生成输入。
 4. Static Gate: 静态扫描目录、命名、接口和危险导入。
 5. Unit Gate: 覆盖 core、adapter、公共输入层调用和 `PredictionRecord` 字段。
-6. Dry-run Gate: 通过 `scheduler.scheme_runner` 返回 JSON，且正式 prediction/run_log 行数不变。
-7. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`。
-8. Live Gate: 授权后只写该 `scheme_id` 的 prediction/run_log。
+6. Dry-run Gate: 通过 `scheduler.scheme_runner` 返回 JSON，且正式 prediction/run_log 行数不变，并校验 live 日期语义。
+7. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
+8. Live Gate: 授权并显式传入 `prediction_phase` 后，只写该 `scheme_id` 的 prediction/run_log。
 9. Activation: 全部通过后才允许从 `paused` 改为 `active`。
 10. Documentation: 更新状态、测试、回测和 harness 报告路径。
 
-### 9.3 未来 CLI 目标
+### 9.3 CLI 入口
 
-未来 `harness/` 包的 CLI 目标形态:
+当前 `harness/` 包的 CLI 入口:
 
 ```bash
-python -m harness.cli check \
+python -m harness onboard t1_daily \
+  --predict-date 2026-06-06 \
+  --stage all
+
+python -m harness gate input \
+  --scheme-id t1_daily \
+  --predict-date 2026-06-06
+
+python -m harness gate live \
   --scheme-id t1_daily \
   --predict-date 2026-06-06 \
-  --mode all
+  --prediction-phase scheduled_live \
+  --authorize "$TOKEN"
 ```
 
-`--mode all` 固定执行 static -> input -> unit -> dry-run -> backtest-no-persist -> api-readonly；任一步失败即停止。写库动作不属于默认 `all`，必须由受控 backtest/live 命令单独执行。
+`--stage all` 固定执行 static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readonly；任一步失败即停止。写库动作不属于默认 `all`，必须由受控 backtest/live 命令单独执行。

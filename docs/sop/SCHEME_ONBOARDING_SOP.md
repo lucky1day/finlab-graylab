@@ -309,9 +309,9 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 ### Step 3: Input Gate - 公共输入层
 
-预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`，月频后续补 `build_monthly_input_artifact()`。底层数据导出统一由 `shared.data_service` 负责，运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；公共数据层逻辑不得在新增方案时临时改动。
+预测 adapter 不应自行从 DB 拼输入 DataFrame，也不应自行决定输入文件路径。所有方案必须先通过 `shared.input_artifacts` 生成输入 CSV，再读取该 CSV 给算法；日频使用 `build_daily_input_artifact()`，周频使用 `build_weekly_input_artifact()`，月频使用 `build_monthly_input_artifact()`。底层数据导出统一由 `shared.data_service` 负责，运行期 CSV 统一写入 `backtest_artifacts/runtime_inputs/{scheme_id}/`；公共数据层逻辑不得在新增方案时临时改动。
 
-周频 artifact 只接受 `start_week/end_week` 作为周范围过滤。旧的 `end_date` 和 `include_daily_weekly_close_fallback` 参数不属于统一数据层口径，当前会显式报错，不能在新增方案中使用。
+周频 artifact 只接受 `start_week/end_week` 作为周范围过滤，并支持 `as_of_date` 作为 point-in-time 原始行截止；实盘和灰度补齐必须传 `end_week=feature_week_id`、`as_of_date=feature_date`。旧的 `end_date` 和 `include_daily_weekly_close_fallback` 参数不属于统一数据层口径，当前会显式报错，不能在新增方案中使用。
 
 历史回测 runner 也必须遵守同一条输入链路: runner 先调用 `shared.input_artifacts` 生成 `historical_backtest` 输入文件，再把读回后的 DataFrame 交给算法。只有 `scripts/audit_*`、`scripts/compare_*` 这类数据服务审计脚本可以直接调用底层 `shared.data_service`；普通方案、live dry-run 和 backtest runner 不允许绕过公共输入 artifact。
 
@@ -347,7 +347,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 - core 函数接收 DataFrame 后能返回算法原生结果。
 - adapter 调用正确的 `build_daily_input_artifact()` 或 `build_weekly_input_artifact()`。
-- `PredictionRecord.scheme_id/horizon/target_tenor/predict_date/target_date/predicted_direction` 与 `config.yaml` 一致。
+- `PredictionRecord.scheme_id/horizon/target_tenor/predict_date/feature_date/target_date/prediction_phase/predicted_direction` 与 `config.yaml` 和预测语义一致。
 - `PredictionRecord.extra` 包含 `input_artifact_path` 和 `input_artifact_source`。
 - 周频方案额外校验 `feature_week_id/target_week_id/feature_date/target_date`。
 
