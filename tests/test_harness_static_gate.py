@@ -768,8 +768,8 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
         payload = {
             "schemes": [
                 {
-                    "scheme_id": "demo_daily",
-                    "tenor": "10Y",
+                    "scheme_id": "demo_daily__h1__10Y",
+                    "target_tenor": "10Y",
                     "monthly_metrics": [{"month": "2026-05", "samples": 2}],
                 }
             ]

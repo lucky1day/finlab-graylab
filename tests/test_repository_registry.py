@@ -34,6 +34,12 @@ class _CaptureEngine:
 
 
 class RegistrySyncTests(unittest.TestCase):
+    def test_registry_scheme_id_is_composite_for_every_tenor(self) -> None:
+        from scheduler.repository import registry_scheme_id
+
+        self.assertEqual(registry_scheme_id("t1_daily", 1, "5Y"), "t1_daily__h1__5Y")
+        self.assertEqual(registry_scheme_id("daily_5y_2_v28", 5, "5Y"), "daily_5y_2_v28__h5__5Y")
+
     def test_registry_sync_only_refreshes_updated_at_when_metadata_changes(self) -> None:
         from scheduler.repository import sync_scheme_registry
 
@@ -60,6 +66,44 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertIn("updated_at = IF(", update_clause)
         self.assertLess(update_clause.index("updated_at = IF("), update_clause.index("name = VALUES(name)"))
         self.assertNotIn("updated_at = CURRENT_TIMESTAMP", update_clause)
+        self.assertIn("deployed_at = IF(deployed_at IS NULL AND VALUES(status) = 'active'", update_clause)
+
+    def test_registry_sync_writes_one_registry_row_per_target_tenor(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        engine = _CaptureEngine()
+        scheme = SimpleNamespace(
+            scheme_id="t5_daily",
+            name="T5 Daily",
+            description="multi tenor daily scheme",
+            horizon=5,
+            tenors=["3Y", "5Y", "7Y", "10Y"],
+            frequency="daily",
+            schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
+            status="active",
+            scheme_version=None,
+            code_hash="c" * 64,
+            config_hash="f" * 64,
+            manifest_hash=None,
+        )
+
+        sync_scheme_registry(engine, [scheme])
+
+        sql = engine.store["calls"][0][0]
+        rows = engine.store["calls"][0][1]
+        self.assertNotIn("base_scheme_id, frequency, horizon, target_tenor", sql)
+        self.assertEqual(
+            [row["scheme_id"] for row in rows],
+            [
+                "t5_daily__h5__3Y",
+                "t5_daily__h5__5Y",
+                "t5_daily__h5__7Y",
+                "t5_daily__h5__10Y",
+            ],
+        )
+        self.assertEqual({row["base_scheme_id"] for row in rows}, {"t5_daily"})
+        self.assertEqual([row["target_tenor"] for row in rows], ["3Y", "5Y", "7Y", "10Y"])
+        self.assertEqual([row["tenors"] for row in rows], ['["3Y"]', '["5Y"]', '["7Y"]', '["10Y"]'])
 
 
 class _Result:

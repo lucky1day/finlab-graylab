@@ -16,6 +16,11 @@ from shared.models import ActualRecord, PredictionRecord, WeeklyActualRecord
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 
 
+def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> str:
+    """生成前端/业务层唯一方案 ID。"""
+    return f"{base_scheme_id}__h{int(horizon)}__{target_tenor}"
+
+
 def create_engine_from_env() -> Engine:
     """创建 SQLAlchemy Engine。"""
     cfg = DatabaseConfig.from_env()
@@ -37,18 +42,23 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
     sql = text(
         """
         INSERT INTO t_scheme_registry
-            (scheme_id, name, description, horizon, tenors, frequency, schedule_cron, schedule_timezone, status)
+            (scheme_id, base_scheme_id, name, description, horizon, tenors, frequency, target_tenor,
+             schedule_cron, schedule_timezone, status, deployed_at)
         VALUES
-            (:scheme_id, :name, :description, :horizon, CAST(:tenors AS JSON), :frequency,
-             :schedule_cron, :schedule_timezone, :status)
+            (:scheme_id, :base_scheme_id, :name, :description, :horizon, CAST(:tenors AS JSON), :frequency,
+             :target_tenor, :schedule_cron, :schedule_timezone, :status,
+             IF(:status = 'active', CURRENT_DATE, NULL))
         ON DUPLICATE KEY UPDATE
             updated_at = IF(
                 NOT (
+                    base_scheme_id <=> VALUES(base_scheme_id)
+                    AND
                     name <=> VALUES(name)
                     AND description <=> VALUES(description)
                     AND horizon <=> VALUES(horizon)
                     AND CAST(tenors AS CHAR) <=> CAST(VALUES(tenors) AS CHAR)
                     AND frequency <=> VALUES(frequency)
+                    AND target_tenor <=> VALUES(target_tenor)
                     AND schedule_cron <=> VALUES(schedule_cron)
                     AND schedule_timezone <=> VALUES(schedule_timezone)
                     AND status <=> VALUES(status)
@@ -56,34 +66,64 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                 CURRENT_TIMESTAMP,
                 updated_at
             ),
+            base_scheme_id = VALUES(base_scheme_id),
             name = VALUES(name),
             description = VALUES(description),
             horizon = VALUES(horizon),
             tenors = VALUES(tenors),
             frequency = VALUES(frequency),
+            target_tenor = VALUES(target_tenor),
             schedule_cron = VALUES(schedule_cron),
             schedule_timezone = VALUES(schedule_timezone),
-            status = VALUES(status)
+            status = VALUES(status),
+            deployed_at = IF(deployed_at IS NULL AND VALUES(status) = 'active', CURRENT_DATE, deployed_at)
         """
     )
-    rows = [
-        {
-            "scheme_id": cfg.scheme_id,
-            "name": cfg.name,
-            "description": cfg.description,
-            "horizon": cfg.horizon,
-            "tenors": json.dumps(cfg.tenors, ensure_ascii=False),
-            "frequency": cfg.frequency,
-            "schedule_cron": cfg.schedule.cron,
-            "schedule_timezone": cfg.schedule.timezone,
-            "status": cfg.status,
-        }
-        for cfg in scheme_list
-    ]
+    rows = []
+    active_registry_ids_by_base: dict[str, list[str]] = {}
+    for cfg in scheme_list:
+        registry_ids: list[str] = []
+        for target_tenor in cfg.tenors:
+            row_scheme_id = registry_scheme_id(cfg.scheme_id, cfg.horizon, target_tenor)
+            registry_ids.append(row_scheme_id)
+            rows.append(
+                {
+                    "scheme_id": row_scheme_id,
+                    "base_scheme_id": cfg.scheme_id,
+                    "name": cfg.name,
+                    "description": cfg.description,
+                    "horizon": cfg.horizon,
+                    "tenors": json.dumps([target_tenor], ensure_ascii=False),
+                    "frequency": cfg.frequency,
+                    "target_tenor": target_tenor,
+                    "schedule_cron": cfg.schedule.cron,
+                    "schedule_timezone": cfg.schedule.timezone,
+                    "status": cfg.status,
+                }
+            )
+        active_registry_ids_by_base[cfg.scheme_id] = registry_ids
     if not rows:
         return
     with engine.begin() as conn:
         conn.execute(sql, rows)
+        for base_scheme_id, registry_ids in active_registry_ids_by_base.items():
+            placeholders = ", ".join(f":scheme_id_{index}" for index, _ in enumerate(registry_ids))
+            params = {"base_scheme_id": base_scheme_id}
+            for index, scheme_id in enumerate(registry_ids):
+                params[f"scheme_id_{index}"] = scheme_id
+            conn.execute(
+                text(
+                    f"""
+                    UPDATE t_scheme_registry
+                    SET status = 'archived',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE base_scheme_id = :base_scheme_id
+                      AND scheme_id NOT IN ({placeholders})
+                      AND status <> 'archived'
+                    """
+                ),
+                params,
+            )
     for cfg in scheme_list:
         if getattr(cfg, "scheme_version", None):
             upsert_scheme_version(engine, cfg)

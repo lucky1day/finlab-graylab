@@ -119,7 +119,9 @@
 | 新 T+5 方案 | `t5_lgbm_macro_v1` | T+5、LightGBM、宏观因子版本 |
 | 新周度方案 | `weekly_db_sourced_v1` | 周六预测下周最后交易日 vs 本周最后交易日 |
 
-不要把 `scheme_id` 命名成 `t1_5y`、`t5_10y` 这类只描述任务格子的名字。期限范围由 `tenors` 字段管理；方案身份由算法来源、特征集合和版本定义。
+`config.yaml` 的 `scheme_id` 是算法执行身份，也就是 registry 中的 `base_scheme_id`。不要把它命名成 `t1_5y`、`t5_10y` 这类只描述任务格子的名字；期限范围由 `tenors` 字段管理，算法身份由来源、特征集合和版本定义。
+
+平台同步 registry 时会按 `tenors` 拆成业务方案行，每行 `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。单标的算法也必须使用这个 composite registry ID，例如 `weekly_5y_direct_0529__h6__5Y`。前端、业务 API 和候选排行只认 registry composite `scheme_id`；scheduler、harness、`PredictionRecord` 和 backtest 存储仍使用 base `scheme_id`。
 
 展示名 `name` 要比 `scheme_id` 更可读，建议包含来源、预测长度、模型类型和版本，例如:
 
@@ -484,16 +486,19 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 
 ```bash
 curl -s http://127.0.0.1:8100/api/targets
+curl -s http://127.0.0.1:8100/api/schemes
 curl -s http://127.0.0.1:8100/api/backtests/factor-lab
-curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2?tenor=10Y"
+curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2__h1__10Y"
 ```
 
 验收点:
 
 - `/api/targets` 能看到新 Y 标的的 `target_code/display_name/status`。
-- `/api/backtests/factor-lab` 能返回参与历史排行的新方案；如果只是 live 方案，`/api/metrics/{scheme_id}` 能返回月度指标、汇总指标和逐日样本。
+- `/api/schemes` 是纯读接口，直接返回 `t_scheme_registry` active rows；每行只有一个 `target_tenor`，没有 `tenor/tenors`。
+- `/api/backtests/factor-lab` 能返回参与历史排行的新方案，且返回的 `scheme_id` 为 registry composite ID。
+- 如果只是 live 方案，`/api/metrics/{registry_scheme_id}` 能返回月度指标、汇总指标和逐日样本；`/api/metrics/{base_scheme_id}` 或 `?tenor=...` 都不是合法入口。
 - 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
-- API 只读验收优先使用不会同步 registry 的接口；保护性核验时不要把 `/api/schemes` 当作纯只读探针。
+- registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 
 打开:
 
@@ -661,7 +666,7 @@ LIMIT 10;
 - [ ] dry-run 成功，输出 JSON list。
 - [ ] 手动写库成功，`t_scheme_predictions` 条数符合预期。
 - [ ] `t_scheme_run_log` 有成功记录。
-- [ ] `/api/schemes` 和 `/api/metrics/{scheme_id}` 返回正常。
+- [ ] `/api/schemes` 和 `/api/metrics/{registry_scheme_id}` 返回正常；registry ID 必须来自 `t_scheme_registry.scheme_id`。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
 - [ ] 如为周度方案，live adapter 与历史 backtest runner 都通过 `build_weekly_input_artifact()` 生成算法输入。
 - [ ] 文档更新: 当前状态、方案说明、历史回测结论或测试记录。
@@ -671,7 +676,7 @@ LIMIT 10;
 
 ### 同一个 T+1、5Y 任务能有多个方案吗？
 
-可以。隔离键是 `scheme_id + target_tenor + horizon` 的业务组合。当前数据库实盘表的唯一业务口径是 `(scheme_id, target_tenor, horizon, target_date)`；`predict_date` 只用于调度日志和运行记录。一个 `scheme_id` 仍要求固定一个 `horizon`，这样前端矩阵、回测指标和 live 写库都不会把不同预测长度混在一起。
+可以。前端/业务层的候选方案由 registry composite `scheme_id` 区分，例如 `t5_daily__h5__5Y` 和 `new_model__h5__5Y` 可以同时位于 `5Y国债活跃 · T+5`。实盘预测表内部仍按 base `(scheme_id, target_tenor, horizon, target_date)` 做唯一业务口径；`predict_date` 只用于调度日志和运行记录。一个 base `scheme_id` 仍要求固定一个 `horizon`，这样执行层、回测和 live 写库不会把不同预测长度混在一起。
 
 ### 新方案只改 `name` 可以吗？
 

@@ -304,18 +304,20 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    scheme_id: "t1_daily",
+                    scheme_id: "t1_daily__h1__5Y",
+                    base_scheme_id: "t1_daily",
+                    target_tenor: "5Y",
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
-                    frequency: "daily",
-                    tenors: ["5Y"]
+                    frequency: "daily"
                   }
                 ]
               },
-              "/api/metrics/t1_daily?tenor=5Y": {
-                scheme_id: "t1_daily",
-                tenor: "5Y",
+              "/api/metrics/t1_daily__h1__5Y": {
+                scheme_id: "t1_daily__h1__5Y",
+                base_scheme_id: "t1_daily",
+                target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [],
                 daily_rows: [
@@ -338,10 +340,11 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: [
                   {
                     id: "bt:t1_daily:fw:5Y",
-                    scheme_id: "t1_daily",
+                    scheme_id: "t1_daily__h1__5Y",
+                    base_scheme_id: "t1_daily",
                     scheme_name: "t1_daily",
                     name: "T+1 回测基准",
-                    tenor: "5Y",
+                    target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
                     frequency: "daily",
@@ -409,18 +412,20 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    scheme_id: "daily_5y_2_v28",
+                    scheme_id: "daily_5y_2_v28__h5__5Y",
+                    base_scheme_id: "daily_5y_2_v28",
+                    target_tenor: "5Y",
                     name: "V28日频5Y方案2",
                     status: "active",
                     horizon: 5,
-                    frequency: "daily",
-                    tenors: ["5Y"]
+                    frequency: "daily"
                   }
                 ]
 	              },
-	              "/api/metrics/daily_5y_2_v28?tenor=5Y": {
-	                scheme_id: "daily_5y_2_v28",
-	                tenor: "5Y",
+	              "/api/metrics/daily_5y_2_v28__h5__5Y": {
+	                scheme_id: "daily_5y_2_v28__h5__5Y",
+	                base_scheme_id: "daily_5y_2_v28",
+	                target_tenor: "5Y",
 	                target_label: "5Y国债活跃",
 	                phase_ranges: [
 	                  { prediction_phase: "gray_live", start_predict_date: "2026-05-26", end_predict_date: "2026-06-11",
@@ -456,10 +461,11 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     id: "daily_5y_2_v28:5Y:framework_db_aligned",
                     run_id: 92,
                     benchmark_id: "v28_daily_5y_2",
-                    scheme_id: "daily_5y_2_v28",
+                    scheme_id: "daily_5y_2_v28__h5__5Y",
+                    base_scheme_id: "daily_5y_2_v28",
                     scheme_name: "V28日频5Y方案2",
                     name: "V28日频5Y方案2 · 5Y国债活跃",
-                    tenor: "5Y",
+                    target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 5,
                     frequency: "daily",
@@ -521,18 +527,20 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    scheme_id: "t1_daily",
+                    scheme_id: "t1_daily__h1__5Y",
+                    base_scheme_id: "t1_daily",
+                    target_tenor: "5Y",
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
-                    frequency: "daily",
-                    tenors: ["5Y"]
+                    frequency: "daily"
                   }
                 ]
               },
-              "/api/metrics/t1_daily?tenor=5Y": {
-                scheme_id: "t1_daily",
-                tenor: "5Y",
+              "/api/metrics/t1_daily__h1__5Y": {
+                scheme_id: "t1_daily__h1__5Y",
+                base_scheme_id: "t1_daily",
+                target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [
                   { month: "2026-05", samples: 5, correct: 4, accuracy: 80.0, overall: 80.0,
@@ -550,10 +558,11 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: [
                   {
                     id: "bt:t1_daily:fw:5Y",
-                    scheme_id: "t1_daily",
+                    scheme_id: "t1_daily__h1__5Y",
+                    base_scheme_id: "t1_daily",
                     scheme_name: "t1_daily",
                     name: "T+1 回测基准",
-                    tenor: "5Y",
+                    target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
                     frequency: "daily",
@@ -614,19 +623,21 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    scheme_id: "weekly_5y_direct_0529",
+                    scheme_id: "weekly_5y_direct_0529__h6__5Y",
+                    base_scheme_id: "weekly_5y_direct_0529",
+                    target_tenor: "5Y",
                     name: "周度实盘",
                     status: "active",
                     horizon: 6,
                     frequency: "weekly",
-                    tenors: ["5Y"],
                     last_run: { date: "2026-06-11", status: "success" }
                   }
                 ]
               },
-              "/api/metrics/weekly_5y_direct_0529?tenor=5Y": {
-                scheme_id: "weekly_5y_direct_0529",
-                tenor: "5Y",
+              "/api/metrics/weekly_5y_direct_0529__h6__5Y": {
+                scheme_id: "weekly_5y_direct_0529__h6__5Y",
+                base_scheme_id: "weekly_5y_direct_0529",
+                target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [
                   { month: "2026-06", samples: 1, correct: 1, accuracy: 100, overall: 100,
@@ -685,6 +696,88 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["months"], ["2026-06"])
         self.assertEqual(result["dailyMonths"], ["2026-06"])
 
+    def test_live_registry_rows_use_target_tenor_and_composite_metrics_url(self) -> None:
+        """新版 registry row 只有 target_tenor；前端不得再拼 ?tenor=。"""
+        result = _run_factor_lab_hook(
+            """
+            const requests = [];
+            const responses = {
+              "/api/schemes": [
+                {
+                  scheme_id: "t5_daily__h5__3Y",
+                  base_scheme_id: "t5_daily",
+                  target_tenor: "3Y",
+                  name: "T5 3Y",
+                  status: "active",
+                  horizon: 5,
+                  frequency: "daily",
+                  deployed_at: "2026-06-04",
+                  last_run: { date: "2026-06-12", status: "success" }
+                },
+                {
+                  scheme_id: "t5_daily__h5__5Y",
+                  base_scheme_id: "t5_daily",
+                  target_tenor: "5Y",
+                  name: "T5 5Y",
+                  status: "active",
+                  horizon: 5,
+                  frequency: "daily",
+                  deployed_at: "2026-06-04",
+                  last_run: { date: "2026-06-12", status: "success" }
+                }
+              ],
+              "/api/metrics/t5_daily__h5__3Y": {
+                scheme_id: "t5_daily__h5__3Y",
+                base_scheme_id: "t5_daily",
+                target_tenor: "3Y",
+                target_label: "3Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: []
+              },
+              "/api/metrics/t5_daily__h5__5Y": {
+                scheme_id: "t5_daily__h5__5Y",
+                base_scheme_id: "t5_daily",
+                target_tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: []
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "3Y": "3Y国债活跃", "5Y": "5Y国债活跃" },
+                schemes: []
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              requests.push(url);
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              requests,
+              selectedSchemeId: scheme && scheme.schemeId,
+              deploymentDate: scheme && scheme.deploymentDate
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "live")
+        self.assertIn("/api/metrics/t5_daily__h5__3Y", result["requests"])
+        self.assertIn("/api/metrics/t5_daily__h5__5Y", result["requests"])
+        self.assertFalse(any("?tenor=" in url for url in result["requests"]))
+        self.assertIn(result["selectedSchemeId"], {"t5_daily__h5__3Y", "t5_daily__h5__5Y"})
+        self.assertEqual(result["deploymentDate"], "2026/06/04")
+
     def test_pending_actual_is_not_rendered_as_flat(self) -> None:
         """actual_direction 为 null 时应显示待验证，而不是被 JS Number(null) 变成平。"""
         result = _run_factor_lab_hook(
@@ -694,19 +787,21 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    scheme_id: "t5_daily",
+                    scheme_id: "t5_daily__h5__5Y",
+                    base_scheme_id: "t5_daily",
+                    target_tenor: "5Y",
                     name: "T5 实盘",
                     status: "active",
                     horizon: 5,
                     frequency: "daily",
-                    tenors: ["5Y"],
                     last_run: { date: "2026-06-10", status: "success" }
                   }
                 ]
               },
-              "/api/metrics/t5_daily?tenor=5Y": {
-                scheme_id: "t5_daily",
-                tenor: "5Y",
+              "/api/metrics/t5_daily__h5__5Y": {
+                scheme_id: "t5_daily__h5__5Y",
+                base_scheme_id: "t5_daily",
+                target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [],
                 daily_rows: [
@@ -769,19 +864,21 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    scheme_id: "t5_daily",
+                    scheme_id: "t5_daily__h5__5Y",
+                    base_scheme_id: "t5_daily",
+                    target_tenor: "5Y",
                     name: "T5 实盘",
                     status: "active",
                     horizon: 5,
                     frequency: "daily",
-                    tenors: ["5Y"],
                     last_run: { date: "2026-05-29", status: "success" }
                   }
                 ]
               },
-              "/api/metrics/t5_daily?tenor=5Y": {
-                scheme_id: "t5_daily",
-                tenor: "5Y",
+              "/api/metrics/t5_daily__h5__5Y": {
+                scheme_id: "t5_daily__h5__5Y",
+                base_scheme_id: "t5_daily",
+                target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [],
                 daily_rows: [
@@ -849,9 +946,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: [
                   {
                     id: "bt:x:fw:5Y",
-                    scheme_id: "backtest_demo",
+                    scheme_id: "backtest_demo__h1__5Y",
+                    base_scheme_id: "backtest_demo",
                     name: "Backtest Demo",
-                    tenor: "5Y",
+                    target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
                     frequency: "daily",
@@ -908,18 +1006,20 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    scheme_id: "t1_daily",
+                    scheme_id: "t1_daily__h1__5Y",
+                    base_scheme_id: "t1_daily",
+                    target_tenor: "5Y",
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
-                    frequency: "daily",
-                    tenors: ["5Y"]
+                    frequency: "daily"
                   }
                 ]
               },
-              "/api/metrics/t1_daily?tenor=5Y": {
-                scheme_id: "t1_daily",
-                tenor: "5Y",
+              "/api/metrics/t1_daily__h1__5Y": {
+                scheme_id: "t1_daily__h1__5Y",
+                base_scheme_id: "t1_daily",
+                target_tenor: "5Y",
                 monthly_metrics: [],
                 daily_rows: [
                   {

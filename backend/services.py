@@ -12,7 +12,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from scheduler.discovery import discover_schemes
-from scheduler.repository import sync_scheme_registry
+from scheduler.repository import registry_scheme_id, sync_scheme_registry
 
 
 _REGISTRY_SYNC_SIGNATURES: dict[str, tuple[tuple[str, int, int], ...]] = {}
@@ -236,29 +236,17 @@ def _scheme_config_signature(schemes_root: Path | None = None) -> tuple[tuple[st
 
 
 def list_schemes(engine: Engine) -> list[dict[str, Any]]:
-    """返回注册方案及最近一次运行状态。
+    """返回注册表中的业务方案行。
 
     只读路径：不再触发 registry 写库同步，直接读取 registry 表当前内容。
     registry 同步由应用启动钩子与受保护的 admin 端点负责。
     """
-    target_labels = _target_labels(engine)
     sql = text(
         """
-        SELECT r.scheme_id, r.name, r.description, r.horizon, r.tenors, r.frequency,
-               r.schedule_cron, r.schedule_timezone, r.status,
-               l.run_date AS last_run_date, l.status AS last_run_status,
-               l.duration_sec AS last_run_duration_sec, l.error_msg AS last_run_error_msg,
-               l.created_at AS last_run_at
+        SELECT r.scheme_id, r.base_scheme_id, r.name, r.description, r.horizon, r.frequency,
+               r.target_tenor, r.schedule_cron, r.schedule_timezone, r.status,
+               r.deployed_at, r.created_at, r.updated_at
         FROM t_scheme_registry r
-        LEFT JOIN (
-            SELECT log.*
-            FROM t_scheme_run_log log
-            INNER JOIN (
-                SELECT scheme_id, MAX(id) AS id
-                FROM t_scheme_run_log
-                GROUP BY scheme_id
-            ) latest ON latest.id = log.id
-        ) l ON l.scheme_id = r.scheme_id
         ORDER BY r.status = 'active' DESC, r.scheme_id
         """
     )
@@ -267,29 +255,18 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
     return [
         {
             "scheme_id": row["scheme_id"],
+            "base_scheme_id": row["base_scheme_id"],
             "name": row["name"],
             "description": row["description"],
             "horizon": row["horizon"],
-            "tenors": _json_value(row["tenors"], []),
-            "target_labels": {
-                tenor: _target_label(tenor, target_labels)
-                for tenor in _json_value(row["tenors"], [])
-            },
             "frequency": row["frequency"],
-            "schedule": {
-                "cron": row["schedule_cron"],
-                "timezone": row["schedule_timezone"],
-            },
+            "target_tenor": row["target_tenor"],
+            "schedule_cron": row["schedule_cron"],
+            "schedule_timezone": row["schedule_timezone"],
             "status": row["status"],
-            "last_run": None
-            if row["last_run_date"] is None
-            else {
-                "date": _iso(row["last_run_date"]),
-                "status": row["last_run_status"],
-                "duration_sec": row["last_run_duration_sec"],
-                "error_msg": row["last_run_error_msg"],
-                "created_at": _iso(row["last_run_at"]),
-            },
+            "deployed_at": _iso(row["deployed_at"]),
+            "created_at": _iso(row["created_at"]),
+            "updated_at": _iso(row["updated_at"]),
         }
         for row in rows
     ]
@@ -298,29 +275,28 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
 def _scheme_meta_from_config(cfg: Any) -> dict[str, Any]:
     return {
         "scheme_id": cfg.scheme_id,
+        "base_scheme_id": cfg.scheme_id,
         "name": cfg.name,
         "description": cfg.description,
         "horizon": cfg.horizon,
-        "tenors": cfg.tenors,
         "frequency": cfg.frequency,
-        "schedule": {
-            "cron": cfg.schedule.cron,
-            "timezone": cfg.schedule.timezone,
-        },
+        "schedule_cron": cfg.schedule.cron,
+        "schedule_timezone": cfg.schedule.timezone,
         "status": cfg.status,
     }
 
 
-def _backtest_scheme_meta(engine: Engine) -> dict[str, dict[str, Any]]:
+def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any]]:
     """只读获取回测矩阵所需方案元数据，不触发 registry 同步。"""
     sql = text(
         """
-        SELECT scheme_id, name, description, horizon, tenors, frequency,
-               schedule_cron, schedule_timezone, status
+        SELECT scheme_id, base_scheme_id, name, description, horizon, frequency,
+               target_tenor, schedule_cron, schedule_timezone, status,
+               deployed_at, created_at, updated_at
         FROM t_scheme_registry
         """
     )
-    meta: dict[str, dict[str, Any]] = {}
+    meta: dict[tuple[str, str], dict[str, Any]] = {}
     try:
         with engine.connect() as conn:
             rows = conn.execute(sql).mappings().all()
@@ -331,22 +307,34 @@ def _backtest_scheme_meta(engine: Engine) -> dict[str, dict[str, Any]]:
         rows = []
 
     for row in rows:
-        meta[row["scheme_id"]] = {
+        key = (str(row["base_scheme_id"]), str(row["target_tenor"]))
+        meta[key] = {
             "scheme_id": row["scheme_id"],
+            "base_scheme_id": row["base_scheme_id"],
             "name": row["name"],
             "description": row["description"],
             "horizon": row["horizon"],
-            "tenors": _json_value(row["tenors"], []),
             "frequency": row["frequency"],
-            "schedule": {
-                "cron": row["schedule_cron"],
-                "timezone": row["schedule_timezone"],
-            },
+            "target_tenor": row["target_tenor"],
+            "schedule_cron": row["schedule_cron"],
+            "schedule_timezone": row["schedule_timezone"],
             "status": row["status"],
+            "deployed_at": _iso(row["deployed_at"]),
+            "created_at": _iso(row["created_at"]),
+            "updated_at": _iso(row["updated_at"]),
         }
 
     for cfg in discover_schemes():
-        meta.setdefault(cfg.scheme_id, _scheme_meta_from_config(cfg))
+        base_meta = _scheme_meta_from_config(cfg)
+        for target_tenor in cfg.tenors:
+            meta.setdefault(
+                (cfg.scheme_id, str(target_tenor)),
+                {
+                    **base_meta,
+                    "scheme_id": registry_scheme_id(cfg.scheme_id, cfg.horizon, str(target_tenor)),
+                    "target_tenor": str(target_tenor),
+                },
+            )
     return meta
 
 
@@ -471,17 +459,52 @@ def list_actuals(
     }
 
 
+def _registry_scheme_row(engine: Engine, scheme_id: str) -> dict[str, Any]:
+    """读取单个 registry 业务方案行；metrics/API 只接受该 ID。"""
+    sql = text(
+        """
+        SELECT scheme_id, base_scheme_id, name, description, horizon, frequency,
+               target_tenor, schedule_cron, schedule_timezone, status,
+               deployed_at, created_at, updated_at
+        FROM t_scheme_registry
+        WHERE scheme_id = :scheme_id
+          AND status <> 'archived'
+        """
+    )
+    with engine.connect() as conn:
+        row = conn.execute(sql, {"scheme_id": scheme_id}).mappings().first()
+    if row is None:
+        raise LookupError(f"registry scheme not found: {scheme_id}")
+    return {
+        "scheme_id": row["scheme_id"],
+        "base_scheme_id": row["base_scheme_id"],
+        "name": row["name"],
+        "description": row["description"],
+        "horizon": row["horizon"],
+        "frequency": row["frequency"],
+        "target_tenor": row["target_tenor"],
+        "schedule_cron": row["schedule_cron"],
+        "schedule_timezone": row["schedule_timezone"],
+        "status": row["status"],
+        "deployed_at": _iso(row["deployed_at"]),
+        "created_at": _iso(row["created_at"]),
+        "updated_at": _iso(row["updated_at"]),
+    }
+
+
 def scheme_metrics(
     engine: Engine,
     scheme_id: str,
-    tenor: str,
     start_month: str | None = None,
     end_month: str | None = None,
 ) -> dict[str, Any]:
-    """实时计算方案准确率指标。"""
+    """实时计算单个 registry 业务方案的准确率指标。"""
+    registry_row = _registry_scheme_row(engine, scheme_id)
+    base_scheme_id = str(registry_row["base_scheme_id"])
+    target_tenor = str(registry_row["target_tenor"])
     target_labels = _target_labels(engine)
-    filters = ["p.scheme_id = :scheme_id", "p.target_tenor = :tenor"]
-    params: dict[str, Any] = {"scheme_id": scheme_id, "tenor": tenor}
+    filters = ["p.scheme_id = :base_scheme_id", "p.target_tenor = :target_tenor"]
+    params: dict[str, Any] = {"base_scheme_id": base_scheme_id, "target_tenor": target_tenor}
 
     sql = text(
         f"""
@@ -545,7 +568,8 @@ def scheme_metrics(
         else:
             actual_direction = row["direction_5d"]
         item = {
-            "scheme_id": row["scheme_id"],
+            "scheme_id": scheme_id,
+            "base_scheme_id": base_scheme_id,
             "target_tenor": row["target_tenor"],
             "horizon": row["horizon"],
             "predict_date": predict_date,
@@ -572,8 +596,10 @@ def scheme_metrics(
 
     return {
         "scheme_id": scheme_id,
-        "tenor": tenor,
-        "target_label": _target_label(tenor, target_labels),
+        "base_scheme_id": base_scheme_id,
+        "target_tenor": target_tenor,
+        "target_label": _target_label(target_tenor, target_labels),
+        "registry": registry_row,
         "start_month": start_month,
         "end_month": end_month,
         "monthly_metrics": monthly_metrics,
@@ -694,36 +720,42 @@ def backtest_factor_lab_results(
         metrics = _backtest_frontend_monthly_metrics(engine, run["id"])
         daily_rows = _backtest_frontend_daily_rows(engine, run["id"])
         tenors = sorted(set(metrics) | set(daily_rows), key=_tenor_sort_key)
-        meta = scheme_meta.get(run["scheme_id"], {})
         for tenor in tenors:
             if tenor not in visible_targets:
                 continue
+            meta = scheme_meta.get((run["scheme_id"], tenor), {})
             target_label = _target_label(tenor, target_labels)
             horizon = _infer_horizon(metrics.get(tenor), daily_rows.get(tenor), meta)
+            registry_id = str(meta.get("scheme_id") or registry_scheme_id(run["scheme_id"], horizon, tenor))
+            base_scheme_id = str(meta.get("base_scheme_id") or run["scheme_id"])
             frequency = meta.get("frequency") or ("weekly" if horizon == 6 else "daily")
-            scheme_name = _backtest_scheme_name(meta, run["scheme_id"])
+            scheme_name = _backtest_scheme_name(meta, base_scheme_id)
             benchmark_label = _backtest_benchmark_label(run["benchmark_id"])
             data_source_label = _backtest_data_source_label(run["data_source"])
             display_name = _backtest_display_name(
                 meta=meta,
-                scheme_id=run["scheme_id"],
+                scheme_id=base_scheme_id,
                 target_label=target_label,
                 data_source=run["data_source"],
             )
             schemes.append(
                 {
-                    "id": f'{run["benchmark_id"]}:{run["scheme_id"]}:{tenor}:{run["data_source"]}',
+                    "id": f'{run["benchmark_id"]}:{registry_id}:{run["data_source"]}',
                     "run_id": run["id"],
                     "benchmark_id": run["benchmark_id"],
                     "benchmark_label": benchmark_label,
-                    "scheme_id": run["scheme_id"],
+                    "scheme_id": registry_id,
+                    "base_scheme_id": base_scheme_id,
                     "scheme_name": scheme_name,
                     "data_source": run["data_source"],
                     "data_source_label": data_source_label,
-                    "tenor": tenor,
+                    "target_tenor": tenor,
                     "target_label": target_label,
                     "horizon": horizon,
                     "frequency": frequency,
+                    "deployed_at": meta.get("deployed_at"),
+                    "created_at": meta.get("created_at"),
+                    "updated_at": meta.get("updated_at"),
                     "display_name": display_name,
                     "name": display_name,
                     "status": "complete",

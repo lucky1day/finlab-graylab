@@ -110,18 +110,8 @@ def health() -> dict:
 
 
 @app.get("/api/schemes")
-def api_schemes() -> dict:
-    engine = get_engine()
-    targets = list_targets(engine)
-    return {
-        "targets": targets,
-        "target_labels": {
-            item["target_code"]: item["display_name"]
-            for item in targets
-            if item["status"] == "active"
-        },
-        "schemes": list_schemes(engine),
-    }
+def api_schemes() -> list[dict]:
+    return list_schemes(get_engine())
 
 
 @app.get("/api/targets")
@@ -140,13 +130,18 @@ def api_targets() -> dict:
 @app.get("/api/metrics/{scheme_id}")
 def api_metrics(
     scheme_id: str,
-    tenor: str = Query(..., description="Target tenor, e.g. 10Y"),
-    start_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
-    end_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    tenor: str | None = None,
+    start_month: str | None = None,
+    end_month: str | None = None,
 ) -> dict:
+    if tenor is not None:
+        raise HTTPException(status_code=400, detail="tenor query is not supported; use registry scheme_id")
     if start_month and end_month and end_month < start_month:
         raise HTTPException(status_code=400, detail="end_month must be greater than or equal to start_month")
-    return scheme_metrics(get_engine(), scheme_id, tenor, start_month=start_month, end_month=end_month)
+    try:
+        return scheme_metrics(get_engine(), scheme_id, start_month=start_month, end_month=end_month)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/predictions")
@@ -261,11 +256,18 @@ def _run_trigger(scheme_id: str, request: TriggerRequest) -> None:
 
 @app.post("/api/schemes/{scheme_id}/trigger", status_code=202, dependencies=[Depends(require_admin_token)])
 def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks: BackgroundTasks) -> dict:
-    known = {item["scheme_id"] for item in list_schemes(get_engine())}
-    if scheme_id not in known:
+    known = {item["scheme_id"]: item["base_scheme_id"] for item in list_schemes(get_engine())}
+    base_scheme_id = known.get(scheme_id)
+    if base_scheme_id is None:
         raise HTTPException(status_code=404, detail=f"scheme not found: {scheme_id}")
-    background_tasks.add_task(_run_trigger, scheme_id, request)
-    return {"accepted": True, "scheme_id": scheme_id, "predict_date": request.predict_date, "force": request.force}
+    background_tasks.add_task(_run_trigger, base_scheme_id, request)
+    return {
+        "accepted": True,
+        "scheme_id": scheme_id,
+        "base_scheme_id": base_scheme_id,
+        "predict_date": request.predict_date,
+        "force": request.force,
+    }
 
 
 @app.post("/api/admin/registry/sync", dependencies=[Depends(require_admin_token)])

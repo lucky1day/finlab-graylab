@@ -14,6 +14,7 @@ from harness.probes.api_probe import (
     metrics_url,
 )
 from harness.result import Evidence, GateResult, GateStatus
+from scheduler.repository import registry_scheme_id
 
 
 class ApiGate(Gate):
@@ -25,6 +26,8 @@ class ApiGate(Gate):
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         config = load_config_raw(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
         tenors = [str(item) for item in config.get("tenors", [])]
+        horizon = int(config.get("horizon"))
+        registry_ids = [registry_scheme_id(ctx.scheme_id, horizon, tenor) for tenor in tenors]
         base_url = os.getenv("BOND_FACTOR_LAB_API_BASE_URL", ctx.api_base_url).rstrip("/")
         probe_warnings: list[str] = []
         endpoint = factor_lab_url(base_url)
@@ -35,17 +38,17 @@ class ApiGate(Gate):
         try:
             payload, status_code = _normalize_fetch_response(fetch_json(endpoint, timeout_sec=min(ctx.timeout_sec, 30)))
             payload_keys = sorted(str(key) for key in payload.keys())
-            cell = find_factor_lab_cell(payload, ctx.scheme_id, tenors)
+            cell = find_factor_lab_cell(payload, registry_ids)
         except Exception as exc:
             probe_warnings.append(f"factor-lab probe failed: {exc}")
 
-        if cell is None and tenors:
-            endpoint = metrics_url(base_url, ctx.scheme_id, tenors[0])
+        if cell is None and registry_ids:
+            endpoint = metrics_url(base_url, registry_ids[0])
             try:
                 payload, status_code = _normalize_fetch_response(fetch_json(endpoint, timeout_sec=min(ctx.timeout_sec, 30)))
                 payload_keys = sorted(str(key) for key in payload.keys())
                 if metrics_cell_present(payload):
-                    cell = {"scheme_id": ctx.scheme_id, "tenor": tenors[0], **payload}
+                    cell = {"scheme_id": registry_ids[0], "target_tenor": tenors[0], **payload}
             except Exception as exc:
                 probe_warnings.append(f"metrics probe failed: {exc}")
 
@@ -66,7 +69,7 @@ class ApiGate(Gate):
                 Evidence("payload_keys", payload_keys),
                 Evidence("matrix_cell_present", cell is not None),
                 Evidence("matched_scheme_id", cell.get("scheme_id") if cell else None),
-                Evidence("matched_tenor", cell.get("tenor") if cell else None),
+                Evidence("matched_tenor", cell.get("target_tenor") if cell else None),
                 Evidence("monthly_rows", len(cell.get("monthly_metrics", [])) if cell else 0),
                 Evidence("probe_warnings", probe_warnings),
             ],

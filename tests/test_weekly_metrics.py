@@ -10,6 +10,27 @@ def _create_weekly_schema(engine) -> None:
         conn.execute(
             text(
                 """
+                CREATE TABLE t_scheme_registry (
+                    scheme_id TEXT PRIMARY KEY,
+                    base_scheme_id TEXT,
+                    name TEXT,
+                    description TEXT,
+                    horizon INTEGER,
+                    frequency TEXT,
+                    target_tenor TEXT,
+                    schedule_cron TEXT,
+                    schedule_timezone TEXT,
+                    status TEXT,
+                    deployed_at TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
                 CREATE TABLE t_scheme_predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id INTEGER,
@@ -54,12 +75,30 @@ def _create_weekly_schema(engine) -> None:
         )
 
 
+def _register_weekly_scheme(engine) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO t_scheme_registry
+                    (scheme_id, base_scheme_id, name, description, horizon, frequency, target_tenor,
+                     schedule_cron, schedule_timezone, status, deployed_at, created_at, updated_at)
+                VALUES
+                    ('demo_weekly_scheme__h6__10Y', 'demo_weekly_scheme', 'Demo Weekly', '',
+                     6, 'weekly', '10Y', '30 11 * * 6', 'Asia/Shanghai', 'active',
+                     '2026-06-09', '2026-06-09', '2026-06-09')
+                """
+            )
+        )
+
+
 class WeeklyMetricsTests(unittest.TestCase):
     def test_scheme_metrics_uses_weekly_actuals_for_horizon_6(self) -> None:
         from backend.services import scheme_metrics
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
         _create_weekly_schema(engine)
+        _register_weekly_scheme(engine)
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -92,7 +131,7 @@ class WeeklyMetricsTests(unittest.TestCase):
                 )
             )
 
-        result = scheme_metrics(engine, "demo_weekly_scheme", "10Y")
+        result = scheme_metrics(engine, "demo_weekly_scheme__h6__10Y")
 
         self.assertEqual(result["summary"]["samples"], 1)
         self.assertEqual(result["summary"]["correct"], 1)
@@ -105,6 +144,7 @@ class WeeklyMetricsTests(unittest.TestCase):
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
         _create_weekly_schema(engine)
+        _register_weekly_scheme(engine)
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -132,7 +172,7 @@ class WeeklyMetricsTests(unittest.TestCase):
                 )
             )
 
-        result = scheme_metrics(engine, "demo_weekly_scheme", "10Y")
+        result = scheme_metrics(engine, "demo_weekly_scheme__h6__10Y")
         metrics = {row["month"]: row for row in result["monthly_metrics"]}
 
         # 按 target_date 分组,两行 target 均在 11月

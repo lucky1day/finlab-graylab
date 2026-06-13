@@ -66,6 +66,12 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 完整契约（config.yaml schema、extra 必填键、core 约束，机器可校验）见 [docs/SCHEME_CONTRACT.md](docs/SCHEME_CONTRACT.md)。
 
+## 方案身份与 Registry
+
+`config.yaml` 里的 `scheme_id`、目录名、`PredictionRecord.scheme_id` 是算法执行身份，也称 `base_scheme_id`。`t_scheme_registry` 是唯一方案注册表，每一行是一个前端/业务方案，唯一键只有 registry `scheme_id`，格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`。即使原算法只预测一个标的，也必须使用这个 composite registry ID；多标的算法在 registry 中拆成多行，但 scheduler 仍按 `base_scheme_id` 只挂载一个执行任务。
+
+前端、`/api/schemes`、`/api/metrics/{scheme_id}` 和 `/api/backtests/factor-lab` 只使用 registry composite `scheme_id`；`/api/metrics/{base_scheme_id}?tenor=...` 不是合法调用。预测表、run 表和 backtest 表继续保存 base `scheme_id`，同时用 `target_tenor` 区分目标标的。
+
 ## 预测日期与实盘阶段语义
 
 平台、业务和前端统一使用三类日期字段：
@@ -106,11 +112,11 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 - 前端: 原生 JS，无构建步骤，直接由 FastAPI serve
 - 数据库字段: snake_case
 - API 路径: kebab-case
-- `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(数据口径) 三者命名分离
+- registry `scheme_id`(业务方案) / `base_scheme_id`(算法执行身份) / `benchmark_id`(基准批次) / `data_source`(数据口径) 命名分离
 
 ## 关键设计决策
 
-1. 所有方案预测结果写入同一张 MySQL 表，通过 `scheme_id` 隔离。
+1. 所有方案预测结果写入同一张 MySQL 表，通过 base `scheme_id + target_tenor + horizon + target_date` 隔离；前端业务身份由 registry composite `scheme_id` 表达。
 2. 准确率指标由后端实时计算（JOIN predictions 和 actuals 表）。
 3. 方案通过约定式目录结构自动发现，新增方案无需改动框架代码。
 4. 前端构建为静态文件，由 FastAPI serve。

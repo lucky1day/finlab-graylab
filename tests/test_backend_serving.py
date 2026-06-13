@@ -11,6 +11,27 @@ def _create_schema(engine) -> None:
         conn.execute(
             text(
                 """
+                CREATE TABLE t_scheme_registry (
+                    scheme_id TEXT PRIMARY KEY,
+                    base_scheme_id TEXT,
+                    name TEXT,
+                    description TEXT,
+                    horizon INTEGER,
+                    frequency TEXT,
+                    target_tenor TEXT,
+                    schedule_cron TEXT,
+                    schedule_timezone TEXT,
+                    status TEXT,
+                    deployed_at TEXT,
+                    created_at TEXT DEFAULT '2026-06-09 00:00:00',
+                    updated_at TEXT DEFAULT '2026-06-09 00:00:00'
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
                 CREATE TABLE t_scheme_predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id INTEGER,
@@ -57,7 +78,45 @@ def _create_schema(engine) -> None:
         )
 
 
+def _register_scheme(
+    engine,
+    *,
+    scheme_id: str,
+    base_scheme_id: str,
+    target_tenor: str,
+    horizon: int,
+    frequency: str = "daily",
+) -> None:
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO t_scheme_registry
+                    (scheme_id, base_scheme_id, name, description, horizon, frequency, target_tenor,
+                     schedule_cron, schedule_timezone, status, deployed_at)
+                VALUES
+                    (:scheme_id, :base_scheme_id, :scheme_id, '', :horizon, :frequency, :target_tenor,
+                     '3 7 * * 1-5', 'Asia/Shanghai', 'active', '2026-06-09')
+                """
+            ),
+            {
+                "scheme_id": scheme_id,
+                "base_scheme_id": base_scheme_id,
+                "horizon": horizon,
+                "frequency": frequency,
+                "target_tenor": target_tenor,
+            },
+        )
+
+
 def _seed_predictions(engine) -> None:
+    _register_scheme(
+        engine,
+        scheme_id="demo_daily__h1__10Y",
+        base_scheme_id="demo_daily",
+        target_tenor="10Y",
+        horizon=1,
+    )
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -115,19 +174,41 @@ class BackendPredictionServingTests(unittest.TestCase):
                 )
             )
         try:
-            result = scheme_metrics(engine, "demo_daily", "10Y")
+            result = scheme_metrics(engine, "demo_daily__h1__10Y")
         finally:
             engine.dispose()
 
         # 两条预测（target 06-06 和 06-09）均应被计入
         self.assertEqual(result["summary"]["samples"], 2)
         self.assertEqual(len(result["daily_rows"]), 2)
+        self.assertEqual(result["scheme_id"], "demo_daily__h1__10Y")
+        self.assertEqual(result["base_scheme_id"], "demo_daily")
+        self.assertEqual(result["target_tenor"], "10Y")
+
+    def test_scheme_metrics_rejects_base_scheme_id_entrypoint(self) -> None:
+        from backend.services import scheme_metrics
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        _seed_predictions(engine)
+        try:
+            with self.assertRaisesRegex(LookupError, "registry scheme not found"):
+                scheme_metrics(engine, "demo_daily")
+        finally:
+            engine.dispose()
 
     def test_scheme_metrics_returns_feature_date_prediction_phase_and_phase_ranges(self) -> None:
         from backend.services import scheme_metrics
 
         engine = create_engine("sqlite:///:memory:")
         _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="daily_5y_2_v28__h5__5Y",
+            base_scheme_id="daily_5y_2_v28",
+            target_tenor="5Y",
+            horizon=5,
+        )
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -156,7 +237,7 @@ class BackendPredictionServingTests(unittest.TestCase):
             )
         try:
             with patch.dict("os.environ", {"BOND_FACTOR_LAB_TODAY": "2026-06-20"}):
-                result = scheme_metrics(engine, "daily_5y_2_v28", "5Y")
+                result = scheme_metrics(engine, "daily_5y_2_v28__h5__5Y")
         finally:
             engine.dispose()
 
@@ -190,6 +271,13 @@ class BackendPredictionServingTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_t5__h5__10Y",
+            base_scheme_id="demo_t5",
+            target_tenor="10Y",
+            horizon=5,
+        )
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -214,9 +302,9 @@ class BackendPredictionServingTests(unittest.TestCase):
                 )
         )
         try:
-            result = scheme_metrics(engine, "demo_t5", "10Y")
-            may_result = scheme_metrics(engine, "demo_t5", "10Y", start_month="2026-05", end_month="2026-05")
-            june_result = scheme_metrics(engine, "demo_t5", "10Y", start_month="2026-06", end_month="2026-06")
+            result = scheme_metrics(engine, "demo_t5__h5__10Y")
+            may_result = scheme_metrics(engine, "demo_t5__h5__10Y", start_month="2026-05", end_month="2026-05")
+            june_result = scheme_metrics(engine, "demo_t5__h5__10Y", start_month="2026-06", end_month="2026-06")
         finally:
             engine.dispose()
 
@@ -237,6 +325,13 @@ class BackendPredictionServingTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_t5__h5__10Y",
+            base_scheme_id="demo_t5",
+            target_tenor="10Y",
+            horizon=5,
+        )
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -263,7 +358,7 @@ class BackendPredictionServingTests(unittest.TestCase):
             )
         try:
             with patch.dict("os.environ", {"BOND_FACTOR_LAB_TODAY": "2026-06-11"}):
-                result = scheme_metrics(engine, "demo_t5", "10Y")
+                result = scheme_metrics(engine, "demo_t5__h5__10Y")
         finally:
             engine.dispose()
 
@@ -277,6 +372,13 @@ class BackendPredictionServingTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_t5__h5__10Y",
+            base_scheme_id="demo_t5",
+            target_tenor="10Y",
+            horizon=5,
+        )
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -305,7 +407,7 @@ class BackendPredictionServingTests(unittest.TestCase):
             )
         try:
             with patch.dict("os.environ", {"BOND_FACTOR_LAB_TODAY": "2026-06-10"}):
-                result = scheme_metrics(engine, "demo_t5", "10Y")
+                result = scheme_metrics(engine, "demo_t5__h5__10Y")
         finally:
             engine.dispose()
 
@@ -321,6 +423,13 @@ class BackendPredictionServingTests(unittest.TestCase):
 
         engine = create_engine("sqlite:///:memory:")
         _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_t5__h5__10Y",
+            base_scheme_id="demo_t5",
+            target_tenor="10Y",
+            horizon=5,
+        )
         with engine.begin() as conn:
             conn.execute(
                 text(
@@ -349,7 +458,7 @@ class BackendPredictionServingTests(unittest.TestCase):
             )
         try:
             with patch.dict("os.environ", {"BOND_FACTOR_LAB_TODAY": "2026-06-10"}):
-                result = scheme_metrics(engine, "demo_t5", "10Y")
+                result = scheme_metrics(engine, "demo_t5__h5__10Y")
         finally:
             engine.dispose()
 

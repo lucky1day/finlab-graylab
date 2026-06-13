@@ -4,10 +4,35 @@ from __future__ import annotations
 
 import logging
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
 class SchedulerMainTests(unittest.TestCase):
+    def test_scheduler_jobs_are_registered_once_per_base_scheme_not_per_tenor(self) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = SimpleNamespace(
+            scheme_id="t5_daily",
+            status="active",
+            frequency="daily",
+            tenors=["3Y", "5Y", "7Y", "10Y"],
+            schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
+        )
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            prediction_jobs = [job.id for job in scheduler.get_jobs() if job.id.startswith("predict:")]
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertEqual(prediction_jobs, ["predict:t5_daily"])
+
     def test_actuals_refresh_registers_morning_and_evening_jobs(self) -> None:
         from scheduler import main as scheduler_main
 

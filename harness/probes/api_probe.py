@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -21,24 +20,20 @@ def factor_lab_url(base_url: str) -> str:
     return f"{base_url.rstrip('/')}/api/backtests/factor-lab"
 
 
-def metrics_url(base_url: str, scheme_id: str, tenor: str) -> str:
-    query = urlencode({"tenor": tenor})
-    return f"{base_url.rstrip().rstrip('/')}/api/metrics/{scheme_id}?{query}"
+def metrics_url(base_url: str, registry_scheme_id: str) -> str:
+    return f"{base_url.rstrip().rstrip('/')}/api/metrics/{registry_scheme_id}"
 
 
-def find_factor_lab_cell(payload: dict[str, Any], scheme_id: str, tenors: list[str]) -> dict[str, Any] | None:
+def find_factor_lab_cell(payload: dict[str, Any], registry_scheme_ids: list[str]) -> dict[str, Any] | None:
     """在 factor-lab 矩阵 payload 中定位指定方案的可展示格子。"""
     rows = payload.get("schemes", [])
     if not isinstance(rows, list):
         return None
-    tenor_set = {str(item) for item in tenors}
+    scheme_id_set = {str(item) for item in registry_scheme_ids}
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if row.get("scheme_id") != scheme_id:
-            continue
-        tenor = str(row.get("tenor") or "")
-        if tenor_set and tenor not in tenor_set:
+        if str(row.get("scheme_id") or "") not in scheme_id_set:
             continue
         if "monthly_metrics" in row or "daily_rows" in row:
             return row

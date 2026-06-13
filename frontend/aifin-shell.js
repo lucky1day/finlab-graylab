@@ -649,8 +649,10 @@
     (payload.schemes || []).forEach(function (scheme) {
       var column = columnForHorizon(scheme.horizon, scheme.frequency);
       if (!column) return;
-      if (scheme.target_label) factorTargetLabels[scheme.tenor] = String(scheme.target_label);
-      var taskKey = getTaskKey(scheme.tenor, column);
+      var targetTenor = scheme.target_tenor || "";
+      if (!targetTenor) return;
+      if (scheme.target_label) factorTargetLabels[targetTenor] = String(scheme.target_label);
+      var taskKey = getTaskKey(targetTenor, column);
       if (!tasks[taskKey]) tasks[taskKey] = [];
       var groupedDailyRows = dailyRowsByMonth(scheme.daily_rows || [], scheme.frequency, scheme.horizon);
       var monthlyRows = (scheme.monthly_metrics || []).map(rowFromMetric);
@@ -662,8 +664,8 @@
         id: scheme.id,
         taskKey: taskKey,
         name: getSchemeDisplayName(scheme),
-        schemeId: scheme.scheme_id || scheme.scheme_name || scheme.name || "",
-        schemeName: scheme.scheme_name || scheme.name || scheme.scheme_id || "",
+        schemeId: scheme.scheme_id || "",
+        schemeName: scheme.base_scheme_id || scheme.scheme_name || scheme.name || scheme.scheme_id || "",
         benchmarkLabel: scheme.benchmark_label || scheme.benchmark_id || "",
         dataSourceLabel: scheme.data_source_label || scheme.data_source || "",
         status: normalizeBackendSchemeStatus(scheme.status),
@@ -677,60 +679,55 @@
     return tasks;
   }
 
-  function liveMetricKey(schemeId, tenor) {
-    return schemeId + "|" + tenor;
-  }
-
   function buildLiveTaskSchemes(payload, metricsByKey) {
-    mergeTargetLabels(payload.target_labels);
-    var schemes = payload.schemes || [];
+    if (payload && !Array.isArray(payload)) mergeTargetLabels(payload.target_labels);
+    var schemes = Array.isArray(payload) ? payload : (payload.schemes || []);
     var tasks = initEmptyTaskSchemes();
     schemes.forEach(function (scheme) {
-      mergeTargetLabels(scheme.target_labels);
       var column = columnForHorizon(scheme.horizon, scheme.frequency);
       if (!column) return;
-      (scheme.tenors || []).forEach(function (tenor) {
-        var metrics = metricsByKey[liveMetricKey(scheme.scheme_id, tenor)] || {};
-        if (metrics.target_label) factorTargetLabels[tenor] = String(metrics.target_label);
-        var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
-        var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
-        monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
-        // 月度指标与明细按 target_date 对齐: 过滤掉没有对应 daily 行的月份
-        var dailyMonths = Object.keys(groupedDailyRows);
-        if (dailyMonths.length) {
-          monthlyRows = monthlyRows.filter(function (m) {
-            return dailyMonths.indexOf(m.month) >= 0;
-          });
-        }
-        var liveSinceDate = "";
-        var liveMetricSinceDate = "";
-        if (metrics.daily_rows && metrics.daily_rows.length) {
-          var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).filter(Boolean).sort();
-          liveSinceDate = dates[0] || "";
-          var metricDates = metrics.daily_rows.map(function (r) {
-            return r.predict_date || r.target_date || "";
-          }).filter(Boolean).sort();
-          liveMetricSinceDate = metricDates[0] || liveSinceDate;
-        }
-        var taskKey = getTaskKey(tenor, column);
-        if (!tasks[taskKey]) tasks[taskKey] = [];
-        tasks[taskKey].push({
-          id: scheme.scheme_id,
-          schemeId: scheme.scheme_id,
-          taskKey: taskKey,
-          tenor: tenor,
-          column: column.id,
-          name: scheme.name,
-          status: normalizeBackendSchemeStatus(scheme.status),
-          latestRun: scheme.last_run ? scheme.last_run.date.slice(5) : "--",
-          deploymentDate: getSchemeDeploymentDate(scheme),
-          remark: getSchemeRemark(scheme),
-          monthlyRows: monthlyRows,
-          dailyRowsByMonth: groupedDailyRows,
-          liveSinceDate: liveSinceDate,
-          liveMetricSinceDate: liveMetricSinceDate,
-          phaseRanges: metrics.phase_ranges || []
+      var targetTenor = scheme.target_tenor || "";
+      if (!targetTenor) return;
+      var metrics = metricsByKey[scheme.scheme_id] || {};
+      if (metrics.target_label) factorTargetLabels[targetTenor] = String(metrics.target_label);
+      var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
+      var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
+      monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
+      // 月度指标与明细按 target_date 对齐: 过滤掉没有对应 daily 行的月份
+      var dailyMonths = Object.keys(groupedDailyRows);
+      if (dailyMonths.length) {
+        monthlyRows = monthlyRows.filter(function (m) {
+          return dailyMonths.indexOf(m.month) >= 0;
         });
+      }
+      var liveSinceDate = "";
+      var liveMetricSinceDate = "";
+      if (metrics.daily_rows && metrics.daily_rows.length) {
+        var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).filter(Boolean).sort();
+        liveSinceDate = dates[0] || "";
+        var metricDates = metrics.daily_rows.map(function (r) {
+          return r.predict_date || r.target_date || "";
+        }).filter(Boolean).sort();
+        liveMetricSinceDate = metricDates[0] || liveSinceDate;
+      }
+      var taskKey = getTaskKey(targetTenor, column);
+      if (!tasks[taskKey]) tasks[taskKey] = [];
+      tasks[taskKey].push({
+        id: scheme.scheme_id,
+        schemeId: scheme.scheme_id,
+        taskKey: taskKey,
+        targetTenor: targetTenor,
+        column: column.id,
+        name: scheme.name,
+        status: normalizeBackendSchemeStatus(scheme.status),
+        latestRun: "--",
+        deploymentDate: getSchemeDeploymentDate(scheme),
+        remark: getSchemeRemark(scheme),
+        monthlyRows: monthlyRows,
+        dailyRowsByMonth: groupedDailyRows,
+        liveSinceDate: liveSinceDate,
+        liveMetricSinceDate: liveMetricSinceDate,
+        phaseRanges: metrics.phase_ranges || []
       });
     });
     return tasks;
@@ -739,27 +736,26 @@
   function fetchLiveFactorLabTasks() {
     return fetchJson("/api/schemes")
       .then(function (payload) {
-        var schemes = payload.schemes || [];
+        var schemes = Array.isArray(payload) ? payload : (payload.schemes || []);
         var metricsByKey = {};
         var requests = [];
         schemes.forEach(function (scheme) {
           var column = columnForHorizon(scheme.horizon, scheme.frequency);
           if (!column) return;
-          (scheme.tenors || []).forEach(function (tenor) {
-            requests.push(
-              fetchJson("/api/metrics/" + encodeURIComponent(scheme.scheme_id) + "?tenor=" + encodeURIComponent(tenor))
-                .then(function (metrics) {
-                  metricsByKey[liveMetricKey(scheme.scheme_id, tenor)] = metrics;
-                })
-                .catch(function (error) {
-                  error.isLiveMetricError = true;
-                  throw error;
-                })
-            );
-          });
+          if (!scheme.scheme_id || !scheme.target_tenor) return;
+          requests.push(
+            fetchJson("/api/metrics/" + encodeURIComponent(scheme.scheme_id))
+              .then(function (metrics) {
+                metricsByKey[scheme.scheme_id] = metrics;
+              })
+              .catch(function (error) {
+                error.isLiveMetricError = true;
+                throw error;
+              })
+          );
         });
         return Promise.all(requests).then(function () {
-          return buildLiveTaskSchemes(payload, metricsByKey);
+          return buildLiveTaskSchemes(schemes, metricsByKey);
         });
       });
   }

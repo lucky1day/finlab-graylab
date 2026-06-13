@@ -220,15 +220,20 @@ def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None
     from sqlalchemy import text
 
     with engine.begin() as conn:
-        # 1. 校验 t_scheme_registry 中该方案为 active
-        reg_row = conn.execute(
-            text("SELECT status FROM t_scheme_registry WHERE scheme_id = :scheme_id"),
+        # 1. 校验 t_scheme_registry 中该 base 方案至少有一个 active 业务方案行。
+        active_rows = conn.execute(
+            text(
+                """
+                SELECT COUNT(*) AS active_count
+                FROM t_scheme_registry
+                WHERE base_scheme_id = :scheme_id
+                  AND status = 'active'
+                """
+            ),
             {"scheme_id": scheme_id},
-        ).one_or_none()
-        if reg_row is None:
+        ).scalar_one()
+        if int(active_rows or 0) == 0:
             return False, f"scheme {scheme_id} not found in t_scheme_registry"
-        if reg_row[0] != "active":
-            return False, f"scheme {scheme_id} registry status={reg_row[0]}, must be active"
 
         # 2. 校验 t_scheme_versions 中当前版本为 active/shadow
         if scheme_version:

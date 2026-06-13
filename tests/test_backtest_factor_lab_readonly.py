@@ -42,14 +42,18 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                     """
                     CREATE TABLE t_scheme_registry (
                         scheme_id TEXT,
+                        base_scheme_id TEXT,
                         name TEXT,
                         description TEXT,
                         horizon INTEGER,
-                        tenors TEXT,
                         frequency TEXT,
+                        target_tenor TEXT,
                         schedule_cron TEXT,
                         schedule_timezone TEXT,
-                        status TEXT
+                        status TEXT,
+                        deployed_at TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
                     )
                     """
                 )
@@ -145,11 +149,14 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_registry
-                        (scheme_id, name, description, horizon, tenors, frequency,
-                         schedule_cron, schedule_timezone, status)
+                        (scheme_id, base_scheme_id, name, description, horizon, frequency,
+                         target_tenor, schedule_cron, schedule_timezone, status, deployed_at,
+                         created_at, updated_at)
                     VALUES
-                        ('demo_weekly_scheme', '周度示例', '只读回测方案', 6, '["10Y"]',
-                         'weekly', '30 11 * * 6', 'Asia/Shanghai', 'paused')
+                        ('demo_weekly_scheme__h6__10Y', 'demo_weekly_scheme', '周度示例',
+                         '只读回测方案', 6, 'weekly', '10Y', '30 11 * * 6',
+                         'Asia/Shanghai', 'paused', '2026-06-05',
+                         '2026-06-05T00:00:00', '2026-06-05T00:00:00')
                     """
                 )
             )
@@ -203,7 +210,9 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         ):
             result = backtest_factor_lab_results(engine, benchmark_id="model_muti_0529")
 
-        self.assertEqual(result["schemes"][0]["scheme_id"], "demo_weekly_scheme")
+        self.assertEqual(result["schemes"][0]["scheme_id"], "demo_weekly_scheme__h6__10Y")
+        self.assertEqual(result["schemes"][0]["base_scheme_id"], "demo_weekly_scheme")
+        self.assertEqual(result["schemes"][0]["target_tenor"], "10Y")
         self.assertEqual(result["schemes"][0]["frequency"], "weekly")
         self.assertEqual(result["schemes"][0]["summary"]["accuracy"], 100.0)
         self.assertEqual(result["benchmark_label"], "0529历史基准")
@@ -410,9 +419,9 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
 
         scheme_ids = {scheme["scheme_id"] for scheme in result["schemes"]}
         self.assertEqual(result["benchmark_id"], "all")
-        self.assertIn("legacy_daily", scheme_ids)
-        self.assertIn("daily_5y_2_v28", scheme_ids)
-        v28_runs = [scheme["run_id"] for scheme in result["schemes"] if scheme["scheme_id"] == "daily_5y_2_v28"]
+        self.assertIn("legacy_daily__h5__10Y", scheme_ids)
+        self.assertIn("daily_5y_2_v28__h5__5Y", scheme_ids)
+        v28_runs = [scheme["run_id"] for scheme in result["schemes"] if scheme["scheme_id"] == "daily_5y_2_v28__h5__5Y"]
         self.assertEqual(sorted(v28_runs), [92, 93])
 
     def test_factor_lab_uses_canonical_latest_success_run_per_benchmark_scheme_source(self) -> None:

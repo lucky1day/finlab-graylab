@@ -135,7 +135,9 @@ def _registry_row(scheme_id: str) -> tuple[str | None, str | None]:
             """
             SELECT status, schedule_cron
             FROM t_scheme_registry
-            WHERE scheme_id = :scheme_id
+            WHERE base_scheme_id = :scheme_id
+              AND status = 'active'
+            ORDER BY scheme_id
             LIMIT 1
             """
         )

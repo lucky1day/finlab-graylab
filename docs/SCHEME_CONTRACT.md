@@ -6,6 +6,7 @@
 
 > SOP 仍是人类执行手册；本文是机器契约。两者一致，本文更细、可判定。任何冲突以本文为准并回写 SOP。
 > `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的业务语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
+> 方案身份分两层：`config.scheme_id` / 目录名 / `PredictionRecord.scheme_id` 是算法执行身份，即 `base_scheme_id`；`t_scheme_registry.scheme_id` 是前端和业务唯一方案身份，格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`。单标的和多标的方案都必须生成 composite registry ID。
 
 ---
 
@@ -37,6 +38,7 @@
 > 标注「新」的字段是本设计**新增的必填项**——让 harness 无需读算法即可知道输入口径、列要求、目标语义。现有方案在数据层重构阶段补齐这些字段。
 > `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
 > 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
+> `config.tenors` 是算法一次执行可返回的目标集合；registry 同步会把它拆成每个 `target_tenor` 一行。`/api/schemes` 不返回 `tenor/tenors`，只返回该 registry 行的 `target_tenor`。
 
 ```python
 # harness/contracts/config_schema.py（设计签名）
@@ -85,12 +87,12 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 
 字段一致性（每条记录）：
 
-- `scheme_id == config.scheme_id`
+- `scheme_id == config.scheme_id`（base 执行身份，不是 registry composite ID）
 - `horizon == config.horizon`
 - `target_tenor ∈ config.tenors`
 - `predicted_direction ∈ {1, -1, 0}`（`1`=收益率上行/空，`-1`=下行/多，`0`=平）
 - `confidence is None` 或为有限浮点数。它承接算法自身输出的置信度、概率或分数，不改变方向判定；如果原始算法没有天然置信度，source/current benchmark 必须使用同一确定性代理值并在状态文档说明。
-- 返回条数 `== 本次有效 tenors 数量`
+- 返回条数 `== 本次有效 tenors 数量`；落到 registry 后拆成多个业务方案行
 
 `extra` 必填键：
 

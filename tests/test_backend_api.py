@@ -48,16 +48,13 @@ class GetSchemesReadOnlyTests(unittest.TestCase):
         with patch.object(main, "get_engine", return_value=object()), patch.object(
             main, "sync_registry_from_configs"
         ) as sync_mock, patch.object(
-            main, "list_targets", return_value=[]
-        ), patch.object(
             main, "list_schemes", return_value=[{"scheme_id": "demo_daily"}]
         ) as list_mock:
             result = main.api_schemes()
 
         sync_mock.assert_not_called()
         list_mock.assert_called_once()
-        self.assertIn("schemes", result)
-        self.assertEqual(result["schemes"], [{"scheme_id": "demo_daily"}])
+        self.assertEqual(result, [{"scheme_id": "demo_daily"}])
 
 
 class MetricsCompareRemovedTests(unittest.TestCase):
@@ -65,6 +62,24 @@ class MetricsCompareRemovedTests(unittest.TestCase):
         """跨标的横向对比已下线，后端不再暴露 compare GET 路由。"""
         paths = {getattr(route, "path", None) for route in main.app.routes}
         self.assertNotIn("/api/metrics/compare", paths)
+
+
+class MetricsEndpointTests(unittest.TestCase):
+    def test_metrics_endpoint_uses_registry_scheme_id_only(self) -> None:
+        engine = object()
+        with patch.object(main, "get_engine", return_value=engine), patch.object(
+            main, "scheme_metrics", return_value={"scheme_id": "demo_daily__h1__10Y"}
+        ) as metrics_mock:
+            result = main.api_metrics("demo_daily__h1__10Y")
+
+        metrics_mock.assert_called_once()
+        self.assertEqual(metrics_mock.call_args.args[:2], (engine, "demo_daily__h1__10Y"))
+        self.assertEqual(result["scheme_id"], "demo_daily__h1__10Y")
+
+    def test_metrics_endpoint_rejects_tenor_query_semantics(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            main.api_metrics("demo_daily__h1__10Y", tenor="10Y")
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 class SchemesLifecycleRemovedTests(unittest.TestCase):
@@ -79,7 +94,7 @@ class TriggerEndpointTests(unittest.TestCase):
 
     def test_trigger_unknown_scheme_is_404(self) -> None:
         with patch.object(main, "get_engine", return_value=object()), patch.object(
-            main, "list_schemes", return_value=[{"scheme_id": "demo_daily"}]
+            main, "list_schemes", return_value=[{"scheme_id": "demo_daily__h1__10Y", "base_scheme_id": "demo_daily"}]
         ):
             with self.assertRaises(HTTPException) as ctx:
                 main.api_trigger_scheme(
@@ -90,17 +105,20 @@ class TriggerEndpointTests(unittest.TestCase):
     def test_trigger_known_scheme_is_accepted(self) -> None:
         background = BackgroundTasks()
         with patch.object(main, "get_engine", return_value=object()), patch.object(
-            main, "list_schemes", return_value=[{"scheme_id": "demo_daily"}]
+            main, "list_schemes", return_value=[{"scheme_id": "demo_daily__h1__10Y", "base_scheme_id": "demo_daily"}]
         ):
             result = main.api_trigger_scheme(
-                "demo_daily",
+                "demo_daily__h1__10Y",
                 main.TriggerRequest(predict_date="2026-06-09"),
                 background,
             )
         self.assertTrue(result["accepted"])
-        self.assertEqual(result["scheme_id"], "demo_daily")
+        self.assertEqual(result["scheme_id"], "demo_daily__h1__10Y")
+        self.assertEqual(result["base_scheme_id"], "demo_daily")
         # 已排入后台任务（_run_trigger）。
         self.assertEqual(len(background.tasks), 1)
+        task = background.tasks[0]
+        self.assertEqual(task.args[0], "demo_daily")
 
     def test_run_trigger_invokes_prediction_job(self) -> None:
         with patch.object(main, "run_prediction_job") as job_mock:

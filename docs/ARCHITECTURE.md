@@ -116,7 +116,7 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
 用户选择: 任务格子(Y标的 + 预测长度) + 候选方案 + 月份范围
   → 前端通过 t_target_registry/API 获取 Y 标的展示名
   → 前端按任务格子筛选候选方案排行
-  → 选中方案后调用 GET /api/metrics/{scheme_id}?tenor=10Y&start_month=2025-01&end_month=2025-05
+  → 选中方案后调用 GET /api/metrics/{registry_scheme_id}?start_month=2025-01&end_month=2025-05
   → 后端 metric_service:
       → T+1/T+5 JOIN t_scheme_actuals
       → 周度 horizon=6 JOIN t_scheme_weekly_actuals
@@ -235,19 +235,25 @@ CREATE TABLE t_scheme_weekly_actuals (
 CREATE TABLE t_scheme_registry (
     id INT AUTO_INCREMENT PRIMARY KEY,
     scheme_id VARCHAR(64) NOT NULL UNIQUE,
+    base_scheme_id VARCHAR(64) NOT NULL,
     name VARCHAR(128) NOT NULL,
     description TEXT,
     horizon INT NOT NULL,
     tenors JSON NOT NULL,
     frequency VARCHAR(32) NOT NULL DEFAULT 'daily',
+    target_tenor VARCHAR(16) NOT NULL,
     schedule_cron VARCHAR(64) NOT NULL,
     schedule_timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
     status ENUM('active','paused','archived') NOT NULL DEFAULT 'active',
+    deployed_at DATE DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_status (status)
+    INDEX idx_status (status),
+    INDEX idx_scheme_registry_base (base_scheme_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
+
+`t_scheme_registry` 是唯一方案注册表，一行就是前端/业务定义的一个方案。`scheme_id` 是唯一业务身份，统一格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`，例如 `t5_daily__h5__10Y`；不再存在第二套 `(base_scheme_id, frequency, horizon, target_tenor)` 唯一键。`base_scheme_id` 是算法目录 / config / scheduler / backtest 存储使用的执行身份，例如 `t5_daily`；同一个 base 算法预测多个 Y 标的时，registry 拆成多行，但 scheduler 仍只按 `base_scheme_id` 挂载一个执行任务。
 
 ### 3.5 t_scheme_runs
 
@@ -342,7 +348,7 @@ entry_point: predict.run         # 入口函数
 
 周度方案示例使用 `cron: "30 11 * * 6"`，对齐旧实盘 weekly 首轮预测时间。
 
-`scheme_id` 不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `horizon + target_tenor` 决定，方案实例由 `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `3Y -> 3Y国债活跃` 等。
+`config.scheme_id` 是 base 执行身份，不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `horizon + target_tenor` 决定。前端/业务方案身份由 registry composite `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `3Y -> 3Y国债活跃` 等。
 
 历史回测命名边界:
 
@@ -397,30 +403,23 @@ class PredictionRecord:
 ### 5.1 GET /api/schemes
 
 ```json
-{
-  "target_labels": {
-    "3Y": "3Y国债活跃",
-    "5Y": "5Y国债活跃",
-    "7Y": "7Y国债活跃",
-    "10Y": "10Y国债活跃"
-  },
-  "schemes": [
-    {
-      "scheme_id": "t5_daily",
-      "name": "0529原始T5-LGBM投票基准",
-      "horizon": 5,
-      "tenors": ["3Y", "5Y", "7Y", "10Y"],
-      "target_labels": {
-        "3Y": "3Y国债活跃",
-        "5Y": "5Y国债活跃",
-        "7Y": "7Y国债活跃",
-        "10Y": "10Y国债活跃"
-      },
-      "status": "active",
-      "last_run": {"date": "2025-05-29", "status": "success"}
-    }
-  ]
-}
+[
+  {
+    "scheme_id": "t5_daily__h5__10Y",
+    "base_scheme_id": "t5_daily",
+    "name": "0529原始T5-LGBM投票基准",
+    "description": "...",
+    "horizon": 5,
+    "frequency": "daily",
+    "target_tenor": "10Y",
+    "schedule_cron": "3 7 * * 1-5",
+    "schedule_timezone": "Asia/Shanghai",
+    "status": "active",
+    "deployed_at": "2026-06-10",
+    "created_at": "2026-06-10T00:00:00",
+    "updated_at": "2026-06-10T00:00:00"
+  }
+]
 ```
 
 ### 5.2 GET /api/targets
@@ -444,14 +443,17 @@ class PredictionRecord:
 
 ### 5.3 GET /api/metrics/{scheme_id}
 
-参数: `tenor`, `start_month`, `end_month`
+参数: `start_month`, `end_month`
+
+`scheme_id` 必须是 registry composite ID，例如 `t5_daily__h5__10Y`。接口不再接受 `?tenor=...`；传入 base scheme id（如 `t5_daily`）应返回 404，传入 `tenor` query 应返回 400。
 
 返回中的 `daily_rows` 必须包含平台业务字段 `feature_date` 与 `prediction_phase`（`gray_live` / `scheduled_live`），并提供 `phase_ranges` 汇总。前端不得依赖 `anchor_date`。
 
 ```json
 {
-  "scheme_id": "t5_daily",
-  "tenor": "10Y",
+  "scheme_id": "t5_daily__h5__10Y",
+  "base_scheme_id": "t5_daily",
+  "target_tenor": "10Y",
   "target_label": "10Y国债活跃",
   "monthly_metrics": [
     {
