@@ -12,6 +12,7 @@ from sqlalchemy.engine import Engine
 from backtests._base_runner import infer_target_date, make_run_output, persist_run_output
 from backtests.repository import clean_json
 from shared.artifact_paths import benchmark_input_root
+from shared.calendar_service import get_calendar
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import (
     build_daily_input_artifact,
@@ -119,9 +120,15 @@ def run_daily_5y_2_v28_reproduction(
             engine=engine,
             output_root=output_root,
         )
+        calendar = get_calendar(engine)
+        weekly_end_week = calendar.week_id_for_date(BACKTEST_INPUT_END)
+        if weekly_end_week is None:
+            raise RuntimeError(f"无法从 DB 日历解析 backtest end week: {BACKTEST_INPUT_END}")
         weekly_artifact = build_weekly_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date="historical_backtest",
+            end_week=int(weekly_end_week),
+            as_of_date=BACKTEST_INPUT_END,
             engine=engine,
             output_root=output_root,
         )
@@ -164,6 +171,8 @@ def run_daily_5y_2_v28_reproduction(
                 "input_artifact_hash": getattr(daily_artifact, "content_hash", None),
                 "weekly_input_artifact_hash": getattr(weekly_artifact, "content_hash", None),
                 "monthly_input_artifact_hash": getattr(monthly_artifact, "content_hash", None),
+                "weekly_input_end_week": int(weekly_end_week),
+                "weekly_input_as_of_date": BACKTEST_INPUT_END,
             }
         )
         run_id = persist_run_output(engine, output, benchmark_id=BENCHMARK_ID) if persist else None
@@ -214,7 +223,7 @@ def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _target_date_from_daily(daily_df: pd.DataFrame, anchor_date: str) -> str | None:
-    return infer_target_date(daily_df, anchor_date, HORIZON) or anchor_date
+    return infer_target_date(daily_df, anchor_date, HORIZON)
 
 
 def _row_extra(record: dict[str, Any], daily_artifact, weekly_artifact, monthly_artifact) -> dict[str, Any]:

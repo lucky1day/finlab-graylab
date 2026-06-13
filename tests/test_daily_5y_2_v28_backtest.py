@@ -89,6 +89,14 @@ class Daily5Y2BacktestTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["weekly_input_artifact_source"], "weekly_source")
         self.assertEqual(rows[0]["extra"]["monthly_input_artifact_source"], "monthly_source")
 
+    def test_target_date_from_daily_does_not_fallback_to_anchor(self) -> None:
+        from backtests import daily_5y_2_v28_reproduction as runner
+
+        daily_df = pd.DataFrame({"date": pd.to_datetime(["2026-05-29"])})
+
+        self.assertIsNone(runner._target_date_from_daily(daily_df, "2026-05-29"))
+
+    @patch("backtests.daily_5y_2_v28_reproduction.get_calendar")
     @patch("backtests.daily_5y_2_v28_reproduction.run_historical_prediction")
     @patch("backtests.daily_5y_2_v28_reproduction.build_monthly_input_artifact")
     @patch("backtests.daily_5y_2_v28_reproduction.build_weekly_input_artifact")
@@ -101,12 +109,21 @@ class Daily5Y2BacktestTests(unittest.TestCase):
         mock_weekly_builder: MagicMock,
         mock_monthly_builder: MagicMock,
         mock_historical: MagicMock,
+        mock_get_calendar: MagicMock,
     ) -> None:
         from backtests import daily_5y_2_v28_reproduction as runner
 
         engine = MagicMock()
         mock_engine_factory.return_value = engine
-        daily_df = pd.DataFrame({"date": pd.to_datetime(["2026-05-22"]), "TB5YWI0C": [2.0]})
+        mock_get_calendar.return_value.week_id_for_date.return_value = 202621
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(
+                    ["2026-05-22", "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29"]
+                ),
+                "TB5YWI0C": [2.0, 2.01, 2.02, 2.03, 2.04, 2.05],
+            }
+        )
         mock_daily_builder.return_value = SimpleNamespace(
             dataframe=daily_df,
             path=Path("/tmp/daily.csv"),
@@ -144,6 +161,8 @@ class Daily5Y2BacktestTests(unittest.TestCase):
         mock_daily_builder.assert_called_once()
         mock_weekly_builder.assert_called_once()
         mock_monthly_builder.assert_called_once()
+        self.assertEqual(mock_weekly_builder.call_args.kwargs["end_week"], 202621)
+        self.assertEqual(mock_weekly_builder.call_args.kwargs["as_of_date"], runner.BACKTEST_INPUT_END)
         engine.dispose.assert_called_once()
 
 

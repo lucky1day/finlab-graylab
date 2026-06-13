@@ -303,6 +303,31 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertEqual(mock_build.call_args.kwargs["end_week"], 202620)
         self.assertEqual(mock_build.call_args.kwargs["as_of_date"], "2026-06-12")
 
+    @patch("schemes.weekly_5y_direct_0529.predict.build_rule_vote")
+    @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_5y_direct_0529.predict.data_service")
+    @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
+    def test_run_rejects_stale_signal_week(self, mock_get_cal, mock_ds, mock_build, mock_vote):
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_vote.return_value = pd.DataFrame(
+            {
+                "week_id": [202619],
+                "final_pred_label": [1],
+                "final_prob_up": [0.6],
+                "rule_vote": [1.0],
+                "source_spec": ["stale"],
+                "score_spec": ["stale:1.0000"],
+            }
+        )
+
+        from schemes.weekly_5y_direct_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "当前特征周"):
+            predict.run("2026-06-12")
+
 
 # ---------------------------------------------------------------------------
 # WeekIdIntegrityTests — 禁止 ISO 周历计算

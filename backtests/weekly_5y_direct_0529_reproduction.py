@@ -5,9 +5,8 @@ import ast
 import json
 import math
 import time
-from datetime import date, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import pandas as pd
 from sqlalchemy.engine import Engine
@@ -32,6 +31,7 @@ TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 MODEL_VERSION = "rule_vote_0529"
 SCHEMA_COLUMNS = ["week_id", "TB1YWI3C", "TB5YWI3C", "TB7YWI3C", "TB0YWI3C"]
 LIVE_TARGET_START_DATE = "2026-06-01"
+BACKTEST_MAX_AS_OF_DATE = "2026-05-29"
 
 
 def _load_config_raw(config_path: Path) -> dict[str, Any]:
@@ -88,6 +88,7 @@ def build_backtest_rows(
     calendar: Any,
     artifact_path: Path,
     artifact_source: str,
+    weekly_frame_for_feature: Callable[[int, str], pd.DataFrame] | None = None,
 ) -> list[dict[str, Any]]:
     """逐个 feature_week_id 运行规则投票并转换成统一回测行。"""
     weekly = _normalize_weekly_frame(weekly_df)
@@ -99,7 +100,12 @@ def build_backtest_rows(
     weekly_by_id = {int(row["week_id"]): row for _, row in weekly.iterrows()}
 
     for feature_week_id in all_weeks:
-        history = weekly[weekly["week_id"].le(feature_week_id)].copy()
+        feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
+        history_source = weekly_frame_for_feature(feature_week_id, feature_date) if weekly_frame_for_feature else weekly
+        history = _normalize_weekly_frame(history_source)
+        history = history[history["week_id"].le(feature_week_id)].copy()
+        if feature_week_id not in set(history["week_id"].astype(int).tolist()):
+            continue
         try:
             vote_df = build_rule_vote(history)
         except RuntimeError:
@@ -112,12 +118,12 @@ def build_backtest_rows(
             target_week_id = _next_calendar_week_id(calendar, feature_week_id)
         except ValueError:
             continue
-        feature_row = weekly_by_id[feature_week_id]
+        history_by_id = {int(row["week_id"]): row for _, row in history.iterrows()}
+        feature_row = history_by_id[feature_week_id]
         target_row = weekly_by_id.get(target_week_id)
         if target_row is None:
             continue
         vote_row = feature_votes.iloc[-1]
-        feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)
         if target_date >= LIVE_TARGET_START_DATE:
             continue
@@ -206,15 +212,32 @@ def run_weekly_5y_direct_0529_reproduction(
             schema_columns=SCHEMA_COLUMNS,
             start_week=BACKTEST_START_WEEK,
             end_week=BACKTEST_END_WEEK,
+            as_of_date=BACKTEST_MAX_AS_OF_DATE,
             engine=engine,
         )
         weekly_df = artifact.dataframe
         calendar = get_calendar(engine)
+        pit_artifacts: list[Any] = []
+
+        def weekly_frame_for_feature(feature_week_id: int, feature_date: str) -> pd.DataFrame:
+            pit_artifact = build_weekly_input_artifact(
+                scheme_id=SCHEME_ID,
+                predict_date=f"historical_backtest_{feature_week_id}",
+                schema_columns=SCHEMA_COLUMNS,
+                start_week=BACKTEST_START_WEEK,
+                end_week=feature_week_id,
+                as_of_date=feature_date,
+                engine=engine,
+            )
+            pit_artifacts.append(pit_artifact)
+            return pit_artifact.dataframe
+
         full_rows = build_backtest_rows(
             weekly_df,
             calendar=calendar,
             artifact_path=Path(artifact.path),
             artifact_source=str(artifact.source),
+            weekly_frame_for_feature=weekly_frame_for_feature,
         )
         if not full_rows:
             raise RuntimeError("weekly_5y_direct_0529 reproduction produced no rows")
@@ -222,7 +245,7 @@ def run_weekly_5y_direct_0529_reproduction(
         start_date = min(str(row["predict_date"]) for row in full_rows)
         end_date = max(str(row["predict_date"]) for row in full_rows)
         output = make_weekly_run_output(start_date, end_date, full_rows)
-        _annotate_summary(output, artifact, weekly_df)
+        _annotate_summary(output, artifact, weekly_df, pit_artifacts=pit_artifacts)
 
         run_id = persist_run_output(engine, output, benchmark_id=BENCHMARK_ID) if persist else None
         compact_rows = compact_prediction_rows(output.rows)
@@ -267,7 +290,7 @@ def make_weekly_run_output(start_date: str, end_date: str, rows: list[dict[str, 
     )
 
 
-def _annotate_summary(output: RunOutput, artifact: Any, weekly_df: pd.DataFrame) -> None:
+def _annotate_summary(output: RunOutput, artifact: Any, weekly_df: pd.DataFrame, *, pit_artifacts: list[Any] | None = None) -> None:
     summary = output.summary
     summary["frequency"] = "weekly"
     summary["target_rule"] = TARGET_RULE
@@ -281,6 +304,9 @@ def _annotate_summary(output: RunOutput, artifact: Any, weekly_df: pd.DataFrame)
     summary["backtest_predict_start_date"] = BACKTEST_PREDICT_START_DATE
     summary["backtest_start_week"] = BACKTEST_START_WEEK
     summary["backtest_end_week"] = BACKTEST_END_WEEK
+    summary["backtest_point_in_time"] = True
+    summary["backtest_max_as_of_date"] = BACKTEST_MAX_AS_OF_DATE
+    summary["point_in_time_artifact_count"] = len(pit_artifacts or [])
 
 
 def _normalize_weekly_frame(weekly_df: pd.DataFrame) -> pd.DataFrame:
@@ -314,10 +340,6 @@ def _label_from_future_return(value: float) -> int:
     if value < 0:
         return -1
     return 0
-
-
-def _predict_date_for_feature_date(feature_date: str) -> str:
-    return (date.fromisoformat(feature_date) + timedelta(days=1)).isoformat()
 
 
 def _int_or_none(value: Any) -> int | None:

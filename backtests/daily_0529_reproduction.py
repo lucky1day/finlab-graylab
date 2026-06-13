@@ -58,6 +58,7 @@ T5_BACKTEST_START = "2025-01-01"
 T5_BACKTEST_END = "2026-05-31"
 T1_BACKTEST_START = "2025-01-01"
 T1_BACKTEST_END = "2026-05-28"
+LIVE_TARGET_START_DATE = "2026-06-01"
 T1_CONFIG_PATH = PROJECT_ROOT / "schemes" / "t1_daily" / "config.yaml"
 EVALUATION_EXCLUDED_TARGET_RANGES = (
     {
@@ -297,6 +298,9 @@ def run_t5_framework_backtest(df: pd.DataFrame, n_jobs: int = 4) -> list[dict[st
         )
         for idx in test_idx:
             row = _run_t5_single_index(module, daily, labels, close, features, fallback_signal, vote_df, idx, n_jobs)
+            target_date = row.get("target_date")
+            if target_date is None or str(target_date) >= LIVE_TARGET_START_DATE:
+                continue
             rows.append(row)
     return rows
 

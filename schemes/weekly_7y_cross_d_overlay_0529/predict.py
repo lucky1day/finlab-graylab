@@ -93,6 +93,11 @@ def run(predict_date: str) -> list[PredictionRecord]:
         if not valid_weeks:
             raise RuntimeError(f"无法在 week_id ≤ {current_week_id} 范围内找到有效 Cross-D 信号")
         feature_week_id = valid_weeks[-1]
+        if int(feature_week_id) != int(current_week_id):
+            raise RuntimeError(
+                f"当前特征周未产生有效 Cross-D 信号：current_week_id={current_week_id}, "
+                f"latest_signal_week_id={feature_week_id}"
+            )
         target_week_id = _next_calendar_week_id(calendar, feature_week_id)
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)
         target_date = calendar.week_id_to_last_trading_day(target_week_id)

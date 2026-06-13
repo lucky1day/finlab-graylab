@@ -157,6 +157,40 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertEqual(mock_build.call_args.kwargs["as_of_date"], "2026-06-12")
         self.assertEqual(mock_build.call_args.kwargs["schema_columns"], predict.SCHEMA_COLUMNS)
 
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_cross_d_overlay")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.data_service")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_stale_signal_week(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.create_sqlalchemy_engine.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_overlay.return_value = pd.DataFrame(
+            {
+                "week_id": [202623],
+                "cross_d_pred_label": [1],
+                "cross_d_prob_up": [0.6],
+                "cross_d_overlay": [False],
+                "cross_d_signal_source": ["stale"],
+                "main_pred_label": [1],
+                "main_prob_up": [0.6],
+                "d5_d_pred_label": [1],
+                "d5_d_prob_up": [0.6],
+            }
+        )
+
+        from schemes.weekly_7y_cross_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "当前特征周"):
+            predict.run("2026-06-13")
+
     def test_next_week_id_uses_db_calendar_not_numeric_increment(self) -> None:
         from schemes.weekly_7y_cross_d_overlay_0529 import predict
 

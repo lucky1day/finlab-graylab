@@ -203,6 +203,53 @@ class ReproductionDailyDataServiceTests(unittest.TestCase):
         self.assertEqual({row["target_tenor"] for row in rows}, {"5Y", "10Y"})
         self.assertTrue(all(row["predict_date"] >= "2025-01-01" for row in rows))
 
+    def test_t5_backtest_rows_stop_before_live_target_start(self) -> None:
+        from backtests import daily_0529_reproduction as daily_reproduction
+        from schemes.t5_daily import latest_prediction
+        from schemes.t5_daily.core import common_utils
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-05-22", "2026-05-25"]),
+                "close": [1.0, 1.1],
+            }
+        )
+        fake_module = SimpleNamespace(
+            CLOSE_COL="close",
+            HORIZON=5,
+            build_custom_vote_signals=lambda _daily, _recipe: pd.DataFrame(index=range(len(daily_df))),
+            RECIPE=[],
+        )
+        fake_modules = {tenor: fake_module for tenor in ("3Y", "5Y", "7Y", "10Y")}
+        target_dates = {
+            "2026-05-22": "2026-05-29",
+            "2026-05-25": "2026-06-01",
+        }
+
+        def fake_row(module, daily, labels, close, features, fallback_signal, vote_df, idx, n_jobs):
+            feature_date = daily.loc[idx, "date"].strftime("%Y-%m-%d")
+            return {
+                "scheme_id": "t5_daily",
+                "target_tenor": "5Y",
+                "horizon": module.HORIZON,
+                "predict_date": feature_date,
+                "feature_date": feature_date,
+                "target_date": target_dates[feature_date],
+                "predicted_direction": 1,
+                "label": 1,
+            }
+
+        with patch.object(latest_prediction, "TENOR_MODULES", fake_modules):
+            with patch.object(latest_prediction, "_build_features", return_value=pd.DataFrame({"x": [0.0, 0.0]})):
+                with patch.object(common_utils, "make_labels", return_value=(None, [1, 1])):
+                    with patch.object(common_utils, "build_fallback_signal", return_value=pd.Series([1, 1])):
+                        with patch.object(daily_reproduction, "_run_t5_single_index", side_effect=fake_row):
+                            rows = daily_reproduction.run_t5_framework_backtest(daily_df, n_jobs=1)
+
+        self.assertTrue(rows)
+        self.assertTrue(all(row["target_date"] < daily_reproduction.LIVE_TARGET_START_DATE for row in rows))
+        self.assertNotIn("2026-06-01", {row["target_date"] for row in rows})
+
 
 if __name__ == "__main__":
     unittest.main()

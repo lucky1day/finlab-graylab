@@ -256,8 +256,15 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
                             payload = runner.run_weekly_10y_d_overlay_0529_reproduction(persist=False)
 
         persist.assert_not_called()
-        build_artifact.assert_called_once()
-        self.assertIsNone(build_artifact.call_args.kwargs["schema_columns"])
+        self.assertGreater(build_artifact.call_count, 1)
+        seed_kwargs = build_artifact.call_args_list[0].kwargs
+        self.assertIsNone(seed_kwargs["schema_columns"])
+        self.assertEqual(seed_kwargs["start_week"], runner.BACKTEST_START_WEEK)
+        self.assertEqual(seed_kwargs["end_week"], runner.BACKTEST_END_WEEK)
+        self.assertEqual(seed_kwargs["as_of_date"], runner.BACKTEST_MAX_AS_OF_DATE)
+        first_pit_kwargs = build_artifact.call_args_list[1].kwargs
+        self.assertEqual(first_pit_kwargs["end_week"], 202601)
+        self.assertEqual(first_pit_kwargs["as_of_date"], "2026-01-02")
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["scheme_id"], "weekly_10y_d_overlay_0529")
         self.assertEqual(payload["data_source"], "framework_db_aligned")

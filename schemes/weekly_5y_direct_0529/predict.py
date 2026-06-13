@@ -93,16 +93,12 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
         # 按 current_week_id 定位特征周预测
         vote_by_week = vote_df.set_index("week_id")
-        all_weeks = sorted(weekly_df["week_id"].dropna().unique().astype(int))
-        feature_week_id = current_week_id
-        while feature_week_id >= weekly_df["week_id"].min():
-            if feature_week_id in vote_by_week.index:
-                break
-            feature_week_id -= 1
-        if feature_week_id not in vote_by_week.index:
+        if current_week_id not in vote_by_week.index:
             raise RuntimeError(
-                f"无法在 week_id ≤ {current_week_id} 范围内找到有效投票信号"
+                f"当前特征周未产生有效投票信号：current_week_id={current_week_id}, "
+                f"available_signal_weeks={sorted(vote_by_week.index.astype(int).tolist())}"
             )
+        feature_week_id = current_week_id
         last_row = vote_by_week.loc[feature_week_id]
 
         # week_id → 日期（只读 DB，不使用日历公式）
