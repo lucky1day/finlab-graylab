@@ -679,7 +679,7 @@ def backtest_factor_lab_results(
         FROM v_latest_backtest_run
         WHERE (:benchmark_id IS NULL OR benchmark_id = :benchmark_id)
           AND data_source = :data_source
-        ORDER BY scheme_id, updated_at DESC, id DESC
+        ORDER BY benchmark_id, scheme_id, updated_at DESC, id DESC
         """
     )
     with engine.connect() as conn:
@@ -688,13 +688,9 @@ def backtest_factor_lab_results(
             {"benchmark_id": benchmark_id, "data_source": data_source},
         ).mappings().all()
 
-    latest_by_scheme: dict[str, dict[str, Any]] = {}
-    for row in run_rows:
-        if row["scheme_id"] not in latest_by_scheme:
-            latest_by_scheme[row["scheme_id"]] = _backtest_run_row(row)
-
     schemes: list[dict[str, Any]] = []
-    for run in latest_by_scheme.values():
+    for row in run_rows:
+        run = _backtest_run_row(row)
         metrics = _backtest_frontend_monthly_metrics(engine, run["id"])
         daily_rows = _backtest_frontend_daily_rows(engine, run["id"])
         tenors = sorted(set(metrics) | set(daily_rows), key=_tenor_sort_key)
@@ -716,7 +712,7 @@ def backtest_factor_lab_results(
             )
             schemes.append(
                 {
-                    "id": f'{run["scheme_id"]}:{tenor}:{data_source}',
+                    "id": f'{run["benchmark_id"]}:{run["scheme_id"]}:{tenor}:{run["data_source"]}',
                     "run_id": run["id"],
                     "benchmark_id": run["benchmark_id"],
                     "benchmark_label": benchmark_label,

@@ -258,11 +258,6 @@
   var factorLabApiError = "";
   var factorLabDataMode = "mock";
   var DEFAULT_SCHEME_DEPLOYMENT_DATE = "2026/06/01";
-  var SCHEME_DEPLOYMENT_DATE_OVERRIDES = {
-    weekly_5y_direct_0529: "2026/06/10",
-    weekly_7y_cross_d_overlay_0529: "2026/06/10",
-    weekly_10y_d_overlay_0529: "2026/06/10"
-  };
 
   function clampPercent(value) {
     return Math.max(0, Math.min(100, Number(value) || 0));
@@ -346,10 +341,6 @@
   }
 
   function getSchemeDeploymentDate(scheme) {
-    var schemeId = String((scheme && (scheme.scheme_id || scheme.schemeId || scheme.id)) || "").trim();
-    if (schemeId && SCHEME_DEPLOYMENT_DATE_OVERRIDES[schemeId]) {
-      return formatDeploymentDate(SCHEME_DEPLOYMENT_DATE_OVERRIDES[schemeId]);
-    }
     return formatDeploymentDate(
       scheme && (
         scheme.deploymentDate ||

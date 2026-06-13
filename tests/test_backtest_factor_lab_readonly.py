@@ -364,7 +364,10 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                          'success', '{}', NULL, NULL, '2026-06-05T21:32:13'),
                         (92, 'v28_daily_5y_2', 'daily_5y_2_v28',
                          'framework_db_aligned', '2024-07-01', '2026-04-23',
-                         'success', '{}', NULL, NULL, '2026-06-12T02:31:03')
+                         'success', '{}', NULL, NULL, '2026-06-12T02:31:03'),
+                        (93, 'v28_daily_5y_2_alt', 'daily_5y_2_v28',
+                         'framework_db_aligned', '2025-01-01', '2026-05-29',
+                         'success', '{}', NULL, NULL, '2026-06-12T03:31:03')
                     """
                 )
             )
@@ -379,6 +382,8 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                         (15, '10Y', 5, '2025-05', 2, 1,
                          0.5, NULL, NULL, 1.0, 1.0, :dist, :dist),
                         (92, '5Y', 5, '2026-04', 21, 11,
+                         0.524, 0.0, 0.0, 0.611, 0.786, :dist, :dist),
+                        (93, '5Y', 5, '2026-05', 18, 12,
                          0.524, 0.0, 0.0, 0.611, 0.786, :dist, :dist)
                     """
                 ),
@@ -394,7 +399,9 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                         (15, '10Y', 5, '2025-05-23', '2025-05-23',
                          '2025-05-30', -1, -1, 0.32),
                         (92, '5Y', 5, '2026-04-23', '2026-04-23',
-                         '2026-04-30', 0, -1, 1.0)
+                         '2026-04-30', 0, -1, 1.0),
+                        (93, '5Y', 5, '2026-05-22', '2026-05-22',
+                         '2026-05-29', -1, -1, 1.0)
                     """
                 )
             )
@@ -405,9 +412,8 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         self.assertEqual(result["benchmark_id"], "all")
         self.assertIn("legacy_daily", scheme_ids)
         self.assertIn("daily_5y_2_v28", scheme_ids)
-        v28 = [scheme for scheme in result["schemes"] if scheme["scheme_id"] == "daily_5y_2_v28"][0]
-        self.assertEqual(v28["run_id"], 92)
-        self.assertEqual(len(v28["monthly_metrics"]), 1)
+        v28_runs = [scheme["run_id"] for scheme in result["schemes"] if scheme["scheme_id"] == "daily_5y_2_v28"]
+        self.assertEqual(sorted(v28_runs), [92, 93])
 
     def test_factor_lab_uses_canonical_latest_success_run_per_benchmark_scheme_source(self) -> None:
         from backend.services import backtest_factor_lab_results
