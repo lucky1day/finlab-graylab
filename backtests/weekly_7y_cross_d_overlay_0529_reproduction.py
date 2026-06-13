@@ -86,6 +86,9 @@ BACKTEST_PREDICT_START_DATE = str(_BACKTEST_CONFIG.get("predict_start_date") or 
 BACKTEST_START_WEEK = int(_BACKTEST_CONFIG.get("start_week") or 200901)
 BACKTEST_END_WEEK = int(_BACKTEST_CONFIG.get("end_week") or 202622)
 BACKTEST_DATA_SOURCE = str(_BACKTEST_CONFIG.get("data_source") or DATA_SOURCE)
+ORIGINAL_PREDICTIONS_PATH = (
+    PROJECT_ROOT / "schemes" / SCHEME_ID / "benchmarks" / "original_predictions_sample.csv"
+)
 
 
 def build_backtest_rows(
@@ -96,7 +99,8 @@ def build_backtest_rows(
     artifact_source: str,
     weekly_frame_for_feature: Callable[[int, str], pd.DataFrame] | None = None,
 ) -> list[dict[str, Any]]:
-    """逐周模拟 7Y Cross-D 实盘预测并转换为统一回测行。"""
+    """将 7Y 原始批量 Cross-D 输出转换为统一回测行。"""
+    del weekly_frame_for_feature
     spec = WeeklyBacktestSpec(
         benchmark_id=BENCHMARK_ID,
         scheme_id=SCHEME_ID,
@@ -107,19 +111,23 @@ def build_backtest_rows(
         model_version=MODEL_VERSION,
         predict_start_date=BACKTEST_PREDICT_START_DATE,
         live_target_start_date=LIVE_TARGET_START_DATE,
+        precheck_predict_start=True,
+        precheck_target=True,
     )
 
+    full_history = _normalize_weekly_frame(weekly_df)
+    if full_history.empty:
+        return []
+    prediction_df = build_cross_d_overlay(full_history)
+    prediction_by_week_id = _prediction_points_by_week_id(prediction_df)
+
     def predict_for_feature(history: pd.DataFrame, feature_week_id: int) -> WeeklyPredictionPoint | None:
-        try:
-            prediction_df = build_cross_d_overlay(history)
-        except RuntimeError:
+        del history
+        prediction_row = prediction_by_week_id.get(int(feature_week_id))
+        if prediction_row is None:
             return None
-        feature_predictions = prediction_df[prediction_df["week_id"].astype(int).eq(feature_week_id)]
-        if feature_predictions.empty:
-            return None
-        prediction_row = feature_predictions.iloc[-1]
         return WeeklyPredictionPoint(
-            source_row=prediction_row.to_dict(),
+            source_row=dict(prediction_row),
             predicted_direction=_int_or_none(prediction_row.get("cross_d_pred_label")),
             confidence=_float_or_none(prediction_row.get("cross_d_prob_up")),
             extra={
@@ -140,8 +148,143 @@ def build_backtest_rows(
         artifact_source=artifact_source,
         normalize_frame=_normalize_weekly_frame,
         predict_for_feature=predict_for_feature,
-        weekly_frame_for_feature=weekly_frame_for_feature,
     )
+
+
+def _prediction_points_by_week_id(prediction_df: pd.DataFrame) -> dict[int, dict[str, Any]]:
+    if prediction_df.empty:
+        return {}
+    df = prediction_df.copy()
+    df["week_id"] = pd.to_numeric(df["week_id"], errors="coerce").astype("Int64")
+    df = df.dropna(subset=["week_id"]).copy()
+    df["week_id"] = df["week_id"].astype(int)
+    by_week: dict[int, dict[str, Any]] = {}
+    for _, row in df.sort_values("week_id").iterrows():
+        by_week[int(row["week_id"])] = row.to_dict()
+    return by_week
+
+
+def validate_original_benchmark_rows(
+    rows: Iterable[dict[str, Any]],
+    benchmark: pd.DataFrame | Path | str | None = None,
+    *,
+    confidence_tol: float = 1e-12,
+) -> dict[str, Any]:
+    """校验已有原始 benchmark 覆盖区间逐行一致。"""
+    benchmark_df = _load_original_benchmark(benchmark)
+    if benchmark_df.empty:
+        raise AssertionError("original benchmark is empty")
+
+    row_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for row in rows:
+        week_id = _int_or_none((row.get("extra") or {}).get("feature_week_id"))
+        if week_id is not None:
+            row_by_key[("week", week_id)] = row
+        date_key = _row_date_key(row)
+        if date_key is not None:
+            row_by_key[date_key] = row
+
+    matched = 0
+    for _, expected in benchmark_df.iterrows():
+        key, key_label = _benchmark_key(expected)
+        actual = row_by_key.get(key)
+        if actual is None:
+            raise AssertionError(f"missing benchmark {key_label}")
+
+        _assert_equal(
+            _int_or_none(actual.get("predicted_direction")),
+            _expected_direction(expected),
+            f"direction mismatch {key_label}",
+        )
+        _assert_equal(
+            str(actual.get("target_date")),
+            _expected_target_date(expected),
+            f"target_date mismatch {key_label}",
+        )
+        _assert_equal(
+            str(actual.get("target_tenor")),
+            str(expected.get("tenor")),
+            f"tenor mismatch {key_label}",
+        )
+        _assert_equal(
+            _int_or_none(actual.get("label")),
+            _int_or_none(expected.get("label")),
+            f"label mismatch {key_label}",
+        )
+        actual_correct = actual.get("predicted_direction") == actual.get("label")
+        expected_correct = _bool_or_none(expected.get("is_correct"))
+        _assert_equal(actual_correct, expected_correct, f"is_correct mismatch {key_label}")
+
+        actual_conf = _float_or_none(actual.get("confidence"))
+        expected_conf = _float_or_none(expected.get("confidence"))
+        if actual_conf is None or expected_conf is None or abs(actual_conf - expected_conf) > confidence_tol:
+            raise AssertionError(
+                f"confidence mismatch {key_label}: "
+                f"actual={actual_conf} expected={expected_conf}"
+            )
+        matched += 1
+
+    return {"benchmark_rows": int(len(benchmark_df)), "matched_rows": matched}
+
+
+def _load_original_benchmark(benchmark: pd.DataFrame | Path | str | None) -> pd.DataFrame:
+    if isinstance(benchmark, pd.DataFrame):
+        return benchmark.copy()
+    path = Path(benchmark) if benchmark is not None else ORIGINAL_PREDICTIONS_PATH
+    if not path.exists():
+        raise AssertionError(f"original benchmark file missing: {path}")
+    return pd.read_csv(path)
+
+
+def _expected_target_date(row: pd.Series) -> str:
+    value = row.get("target_date")
+    if value is None or pd.isna(value):
+        value = row.get("framework_target_date")
+    if value is None or pd.isna(value):
+        return ""
+    return str(value)
+
+
+def _expected_direction(row: pd.Series) -> int | None:
+    value = row.get("direction")
+    if value is None or pd.isna(value):
+        value = row.get("predicted_direction")
+    return _int_or_none(value)
+
+
+def _benchmark_key(row: pd.Series) -> tuple[tuple[Any, ...], str]:
+    week_id = _int_or_none(row.get("feature_week_id"))
+    if week_id is not None:
+        return ("week", week_id), f"feature_week_id={week_id}"
+
+    predict_date = _text_or_none(row.get("predict_date"))
+    target_date = _expected_target_date(row)
+    tenor = _text_or_none(row.get("tenor"))
+    if predict_date and target_date and tenor:
+        key = ("date", predict_date, target_date, tenor)
+        label = f"predict_date={predict_date}, target_date={target_date}, tenor={tenor}"
+        return key, label
+    raise AssertionError("original benchmark row missing feature_week_id or predict_date/target_date/tenor key")
+
+
+def _row_date_key(row: dict[str, Any]) -> tuple[Any, ...] | None:
+    predict_date = _text_or_none(row.get("predict_date"))
+    target_date = _text_or_none(row.get("target_date"))
+    tenor = _text_or_none(row.get("target_tenor"))
+    if predict_date and target_date and tenor:
+        return ("date", predict_date, target_date, tenor)
+    return None
+
+
+def _text_or_none(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    return str(value)
+
+
+def _assert_equal(actual: Any, expected: Any, message: str) -> None:
+    if actual != expected:
+        raise AssertionError(f"{message}: actual={actual!r} expected={expected!r}")
 
 
 def compact_prediction_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -180,35 +323,21 @@ def run_weekly_7y_cross_d_overlay_0529_reproduction(
         )
         weekly_df = artifact.dataframe
         calendar = get_calendar(engine)
-        pit_artifacts: list[Any] = []
-
-        def weekly_frame_for_feature(feature_week_id: int, feature_date: str) -> pd.DataFrame:
-            pit_artifact = build_weekly_input_artifact(
-                scheme_id=SCHEME_ID,
-                predict_date=f"historical_backtest_{feature_week_id}",
-                schema_columns=SCHEMA_COLUMNS,
-                start_week=BACKTEST_START_WEEK,
-                end_week=feature_week_id,
-                as_of_date=feature_date,
-                engine=engine,
-            )
-            pit_artifacts.append(pit_artifact)
-            return pit_artifact.dataframe
 
         full_rows = build_backtest_rows(
             weekly_df,
             calendar=calendar,
             artifact_path=Path(artifact.path),
             artifact_source=str(artifact.source),
-            weekly_frame_for_feature=weekly_frame_for_feature,
         )
         if not full_rows:
             raise RuntimeError("weekly_7y_cross_d_overlay_0529 reproduction produced no rows")
+        benchmark_validation = validate_original_benchmark_rows(full_rows)
 
         start_date = min(str(row["predict_date"]) for row in full_rows)
         end_date = max(str(row["predict_date"]) for row in full_rows)
         output = make_weekly_run_output(start_date, end_date, full_rows)
-        _annotate_summary(output, artifact, weekly_df, pit_artifacts=pit_artifacts)
+        _annotate_summary(output, artifact, weekly_df, benchmark_validation=benchmark_validation)
 
         run_id = persist_run_output(engine, output, benchmark_id=BENCHMARK_ID) if persist else None
         compact_rows = compact_prediction_rows(output.rows)
@@ -253,7 +382,13 @@ def make_weekly_run_output(start_date: str, end_date: str, rows: list[dict[str, 
     )
 
 
-def _annotate_summary(output: RunOutput, artifact: Any, weekly_df: pd.DataFrame, *, pit_artifacts: list[Any] | None = None) -> None:
+def _annotate_summary(
+    output: RunOutput,
+    artifact: Any,
+    weekly_df: pd.DataFrame,
+    *,
+    benchmark_validation: dict[str, Any] | None = None,
+) -> None:
     summary = output.summary
     summary["frequency"] = "weekly"
     summary["target_rule"] = TARGET_RULE
@@ -267,9 +402,12 @@ def _annotate_summary(output: RunOutput, artifact: Any, weekly_df: pd.DataFrame,
     summary["backtest_predict_start_date"] = BACKTEST_PREDICT_START_DATE
     summary["backtest_start_week"] = BACKTEST_START_WEEK
     summary["backtest_end_week"] = BACKTEST_END_WEEK
-    summary["backtest_point_in_time"] = True
+    summary["backtest_mode"] = "original_batch_reproduction"
+    summary["backtest_point_in_time"] = False
+    summary["historical_backtest_exception"] = True
     summary["backtest_max_as_of_date"] = BACKTEST_MAX_AS_OF_DATE
-    summary["point_in_time_artifact_count"] = len(pit_artifacts or [])
+    summary["point_in_time_artifact_count"] = 0
+    summary["original_benchmark_validation"] = benchmark_validation or {}
 
 
 def _normalize_weekly_frame(weekly_df: pd.DataFrame) -> pd.DataFrame:
@@ -312,6 +450,23 @@ def _float_or_none(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return None if math.isnan(result) or math.isinf(result) else result
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+    return bool(value)
 
 
 def _str_or_none(value: Any) -> str | None:

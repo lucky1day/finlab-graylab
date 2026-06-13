@@ -55,15 +55,10 @@
       "correct_count": 3,
       "accuracy": 0.75
     },
-    "2026-06": {
-      "sample_count": 1,
-      "correct_count": 0,
-      "accuracy": 0.0
-    },
     "overall": {
-      "sample_count": 43,
+      "sample_count": 42,
       "correct_count": 31,
-      "accuracy": 0.7209302325581395
+      "accuracy": 0.7380952380952381
     }
   }
 }

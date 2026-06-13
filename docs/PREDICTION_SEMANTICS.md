@@ -74,7 +74,15 @@ target_date  = T + horizon
 4. 回测仍必须排除灰度/实盘 target 区间，即当前 V28 批次 `target_date >= 2026-06-01` 不能进入 backtest latest。
 5. 文档必须写明为什么不能使用逐点 PIT，以及哪些 run 是被删除或替代的旧口径。
 
-当前已批准的例外只有 `weekly_10y_d_overlay_0529` 历史回测。原因是该方案的 Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号；这与源文件原始 batch 回测口径不一致。它的实盘路径仍严格遵守周频 T+1/T 规则。
+当前已批准的例外是三个 2025-05-29 来源批次周频方案的历史回测：
+
+- `weekly_5y_direct_0529`
+- `weekly_7y_cross_d_overlay_0529`
+- `weekly_10y_d_overlay_0529`
+
+批准原因是这三个方案的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
+
+这三个例外只允许用于历史回测和 benchmark 复现。它们的灰度实盘、正式实盘 adapter 仍必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
 ## 6. 前端展示规则
 
