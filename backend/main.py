@@ -34,7 +34,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 DEFAULT_CORS_ORIGINS = ["http://localhost", "http://127.0.0.1"]
 ADMIN_TOKEN_HEADER = "X-Admin-Token"
+FRONTEND_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
 logger = logging.getLogger(__name__)
+
+
+class NoCacheFrontendStaticFiles(StaticFiles):
+    """前端静态资源统一禁用浏览器缓存，避免 iframe 内继续展示旧资源。"""
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = FRONTEND_CACHE_CONTROL
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
 
 def _cors_origins() -> list[str]:
@@ -264,4 +276,4 @@ def api_admin_registry_sync() -> dict:
 
 
 if FRONTEND_ROOT.exists():
-    app.mount("/", StaticFiles(directory=FRONTEND_ROOT, html=True), name="frontend")
+    app.mount("/", NoCacheFrontendStaticFiles(directory=FRONTEND_ROOT, html=True), name="frontend")
