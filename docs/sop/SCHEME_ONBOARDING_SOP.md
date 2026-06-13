@@ -595,7 +595,7 @@ print(result)
    - [ ] 周频方案首个 6 月 target（如 2026-06-05）没有因为 `predict_date` 在 5 月（如 2026-05-30）而被漏掉。
    - [ ] 每条补齐记录有 `feature_date`，且前端/业务不依赖 `anchor_date`。
    - [ ] 灰度补齐记录可判定为 `prediction_phase=gray_live`，不与 `scheduled_live` 混淆。
-   - [ ] 前端出现"实盘发出起点"分隔线（前端按第一条实盘 target 月份自动反推：周度=月首日前的周六，日频=第一条 predict_date）。
+   - [ ] 前端出现"实盘发出起点"分隔线；前端统一取该方案 live rows 的最小 `predict_date`，不再对周度方案按 target 月份反推。灰度区间与正式调度起点由 `phase_ranges` 展示。
    - [ ] 尚无 actuals 的 target 显示"待验证"（参考 5Y 周度方案的 06/12 行）。
    - [ ] 回补的预测在 `t_scheme_run_log` 有对应运行记录。
 

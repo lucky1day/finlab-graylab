@@ -62,7 +62,7 @@
 |----|----|------|----------------------|
 | L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`build_*_output_from_db`、`get_calendar`、`PredictionRecord` |
 | L2 | `schemes/{id}/` | 算法（core）+ 平台适配（predict.py） | `run(predict_date)->list[PredictionRecord]`、`SCHEME_ID` |
-| L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`upsert_predictions` |
+| L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`insert_run_predictions` |
 | L4 | `backend/` `backtests/` `tests/` | 只读 API、历史复现、验证 | `/api/*`、`run_<scheme>_reproduction` |
 | L5 | `harness/` | Gate 检查 / 编排 / 审计 | `python -m harness ...`、`GateResult` |
 
@@ -148,8 +148,9 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
        │                 └─ schemes.{id}.core.*  (纯算法)                        ← 算法
        │           └─ print(JSON list[PredictionRecord])  → stdout
        ├─ records = parse(stdout)
-       ├─ scheduler.repository.upsert_predictions(engine, records)  → t_scheme_predictions  ← 写库单点
-       └─ scheduler.repository.write_run_log(...)                   → t_scheme_run_log
+       ├─ scheduler.repository.create_scheme_run(...)                → t_scheme_runs
+       ├─ scheduler.repository.insert_run_predictions(...)           → t_scheme_predictions  ← 写库单点
+       └─ scheduler.repository.write_run_log(...)                    → t_scheme_run_log
 ```
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
@@ -210,7 +211,7 @@ schemes/{scheme_id}/
 | `scheme_id==目录名` | 加载时强制校验 | `scheduler/discovery.py::load_scheme_config` |
 | 统一入口 | `importlib.import_module("schemes.{id}.predict").run` | `scheduler/scheme_runner.py::run_scheme` |
 | 统一输出 | `list[PredictionRecord]` → JSON | `scheduler/scheme_runner.py` |
-| 统一写库 | `upsert_predictions` UPSERT | `scheduler/executor.py` + `repository.py` |
+| 统一写库 | `create_scheme_run` + `insert_run_predictions` UPSERT | `scheduler/executor.py` + `repository.py` |
 
 因此"用户给方案 → 自动入库"在代码层的落点是：把方案塞进 `schemes/`，再由 harness（L5）按 SOP 驱动 Gate，框架（L1–L3）一行不改。
 
@@ -244,7 +245,7 @@ schemes/{scheme_id}/
 | `scheduler/discovery.py` | L3 | 约定发现 + 契约加载 | `discover_schemes`、`load_scheme_config`、`SchemeConfig` |
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
-| `scheduler/repository.py` | L3 | 写库单点 | `upsert_predictions`、`write_run_log`、`sync_scheme_registry` |
+| `scheduler/repository.py` | L3 | 写库单点 | `create_scheme_run`、`insert_run_predictions`、`write_run_log`、`sync_scheme_registry` |
 | `scheduler/{daily,weekly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/main.py` | L3 | APScheduler 调度 | `build_scheduler` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
@@ -264,7 +265,7 @@ schemes/{scheme_id}/
 |----------|-----------------|
 | core 零本仓库依赖（§3.2 ✗ⁱ） | AST 扫 `core/*.py` 命中 `sqlalchemy`/`scheduler`/`shared.input_artifacts`/`read_sql`/`text(` → FAIL |
 | 跨方案禁止（§3.2） | AST 扫 `from schemes.<other>` → FAIL |
-| 写库单点（§3.3） | predict/core 命中 `upsert_predictions`/`write_run_log`/`INSERT…` → FAIL |
+| 写库单点（§3.3） | predict/core 命中 `insert_run_predictions`/`write_run_log`/`execute_scheme`/`INSERT…` → FAIL |
 | 输入单点（§3.3） | predict 必须 import `shared.input_artifacts`；backtest runner 同 → 否则 FAIL |
 | 统一入口（§6） | `SCHEME_ID==目录名` + `def run(predict_date)` 单参 |
 | 依赖只向下（§3.3） | 扫描 import 边不在 §3.1 白名单 → FAIL |

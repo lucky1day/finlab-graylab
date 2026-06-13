@@ -119,9 +119,18 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 危险符号黑名单（`harness/contracts/import_rules.py`）：
 
 ```python
-DANGEROUS_CORE_IMPORTS = {"sqlalchemy", "pymysql", "scheduler", "shared.input_artifacts"}
-WRITE_CALL_NAMES       = {"create_engine", "create_sqlalchemy_engine", "read_sql",
-                          "upsert_predictions", "write_run_log", "execute_scheme"}
+DANGEROUS_CORE_IMPORTS = {
+    "sqlalchemy", "pymysql", "psycopg2", "requests", "urllib", "httpx",
+    "socket", "subprocess", "scheduler", "backend", "backtests",
+    "shared.input_artifacts", "shared.data_service", "shared.db_config",
+    "shared.repository",
+}
+CORE_DB_CALL_NAMES     = {"create_engine", "create_sqlalchemy_engine", "read_sql", "text"}
+WRITE_CALL_NAMES       = {
+    "insert_run_predictions", "write_run_log", "execute_scheme",
+    "replace_backtest_predictions", "replace_backtest_monthly_metrics",
+    "insert_reproduction_check",
+}
 SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 ```
 

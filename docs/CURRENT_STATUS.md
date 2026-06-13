@@ -175,7 +175,7 @@ weekly actuals 覆盖：
 | `weekly_10y_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`102` | `2025-07-04` 到 `2026-05-22` |
 | `daily_5y_2_v28` | `framework_db_aligned` | `success`，run_id=`103` | `2025-01-02` 到 `2026-05-22` |
 
-DB 中旧周频回测 run 已清理；当前新接入的周频方案 `weekly_5y_direct_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`100`，`t_backtest_predictions` 71 条、`t_backtest_monthly_metrics` 17 条。
+旧周频回测 run 继续保留为审计历史；`v_latest_backtest_run` 只选当前 latest success。当前新接入的周频方案 `weekly_5y_direct_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`100`，`t_backtest_predictions` 71 条、`t_backtest_monthly_metrics` 17 条。
 
 `weekly_7y_cross_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`101`，`t_backtest_predictions` 68 条、`t_backtest_monthly_metrics` 17 条；整体样本 68、正确 51、accuracy=75.0%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该方案 `frequency=weekly`、`horizon=6`、`tenor=7Y`。该周频方案已补齐源文件原始回测 benchmark：`original_predictions_sample.csv` / `current_predictions_sample.csv` 各 43 条，CompareGate 最新证据为 direction_match_rate=1.0、max_confidence_abs_diff=0、missing/extra=0，confidence 来源为 `cross_d_prob_up`。
 

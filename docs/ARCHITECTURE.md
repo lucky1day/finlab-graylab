@@ -157,12 +157,14 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
 ```sql
 CREATE TABLE t_scheme_predictions (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    run_id BIGINT DEFAULT NULL,
+    scheme_version VARCHAR(64) DEFAULT NULL,
     scheme_id VARCHAR(64) NOT NULL,
     target_tenor VARCHAR(64) NOT NULL,
     horizon INT NOT NULL,
     predict_date DATE NOT NULL,
-    feature_date DATE DEFAULT NULL,
     target_date DATE NOT NULL,
+    feature_date DATE DEFAULT NULL,
     prediction_phase ENUM('gray_live','scheduled_live') DEFAULT NULL,
     predicted_direction TINYINT NOT NULL COMMENT '1=涨, -1=跌, 0=平',
     confidence FLOAT DEFAULT NULL,
@@ -170,10 +172,11 @@ CREATE TABLE t_scheme_predictions (
     extra JSON DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_scheme_tenor_predict (scheme_id, target_tenor, predict_date),
+    UNIQUE KEY uk_scheme_tenor_target (scheme_id, target_tenor, horizon, target_date),
     INDEX idx_scheme_predict_date (scheme_id, predict_date),
     INDEX idx_target_date (target_date),
-    INDEX idx_tenor_target_date (target_tenor, target_date)
+    INDEX idx_tenor_target_date (target_tenor, target_date),
+    INDEX idx_scheme_predictions_phase (scheme_id, prediction_phase, predict_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
@@ -181,7 +184,8 @@ CREATE TABLE t_scheme_predictions (
 
 - `target_tenor + horizon` 定义任务格子，例如 `5Y + T+1`；前端展示名通过 target label 映射为 `5Y国债活跃 · T+1`。
 - `scheme_id` 定义具体方案实例，同一个任务格子下允许多个 `scheme_id` 并存排行。
-- 当前每个 `scheme_id` 固定一个 `horizon`，因此现有唯一键可隔离当前方案；如果未来允许同一个 `scheme_id` 同时覆盖多个预测长度，应将唯一键升级为 `(scheme_id, target_tenor, horizon, predict_date)`，或拆成不同 `scheme_id`。
+- 业务唯一键按 `(scheme_id, target_tenor, horizon, target_date)` 保证同一目标点只有一条当前实盘预测；`run_id` / `scheme_version` 负责追溯每次运行来源。
+- `feature_date` 是对外数据截止字段，`prediction_phase` 区分 `gray_live` 与 `scheduled_live`；旧 `extra.anchor_date` 只能作为审计副本，且必须等于 `feature_date`。
 
 ### 3.2 t_scheme_actuals
 
@@ -245,7 +249,35 @@ CREATE TABLE t_scheme_registry (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-### 3.5 t_scheme_run_log
+### 3.5 t_scheme_runs
+
+```sql
+CREATE TABLE t_scheme_runs (
+    run_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    scheme_id VARCHAR(64) NOT NULL,
+    scheme_version VARCHAR(64) DEFAULT NULL,
+    run_type ENUM('dry_run','shadow','active','manual') NOT NULL DEFAULT 'active',
+    prediction_phase ENUM('gray_live','scheduled_live') DEFAULT NULL,
+    predict_date DATE NOT NULL,
+    status ENUM('running','success','failed','partial','skipped') NOT NULL DEFAULT 'running',
+    input_artifact_id BIGINT DEFAULT NULL,
+    harness_run_id VARCHAR(64) DEFAULT NULL,
+    records_expected INT DEFAULT NULL,
+    records_returned INT DEFAULT NULL,
+    records_written INT DEFAULT NULL,
+    error_message TEXT DEFAULT NULL,
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME DEFAULT NULL,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_scheme_date (scheme_id, predict_date),
+    INDEX idx_status (status),
+    INDEX idx_scheme_runs_phase (scheme_id, prediction_phase, predict_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+`t_scheme_runs` 是一次执行的主审计表；`t_scheme_predictions.run_id` 指回这里。`prediction_phase` 在 run 和 prediction 两层同时落地，用于区分灰度实盘补齐与正式 scheduler 自然发出。
+
+### 3.6 t_scheme_run_log
 
 ```sql
 CREATE TABLE t_scheme_run_log (
@@ -261,7 +293,9 @@ CREATE TABLE t_scheme_run_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-### 3.6 t_target_registry
+`t_scheme_run_log` 保留轻量运行日志；正式追溯以 `t_scheme_runs` + `t_scheme_predictions.run_id` 为主。
+
+### 3.7 t_target_registry
 
 ```sql
 CREATE TABLE t_target_registry (

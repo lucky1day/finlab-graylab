@@ -118,7 +118,8 @@ python -m harness.cli check \
 
 正式预测写库只允许这些边界:
 
-- `scheduler.repository.upsert_predictions()` 写 `t_scheme_predictions`
+- `scheduler.repository.create_scheme_run()` 写 `t_scheme_runs`
+- `scheduler.repository.insert_run_predictions()` 写 `t_scheme_predictions`
 - `scheduler.repository.write_run_log()` 写 `t_scheme_run_log`
 - actuals updater 写 `t_scheme_actuals` / `t_scheme_weekly_actuals`
 - backtest repository 写 `t_backtest_*`
