@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-13
+**更新日期**: 2026-06-14
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -458,6 +458,7 @@ if __name__ == "__main__":
 - 调用 `backtests.repository.create_backtest_run` / `replace_backtest_predictions` / `replace_backtest_monthly_metrics` 写库（`--no-persist` 时跳过写库）。
 - 默认优先使用 point-in-time 回测；如果源方案只能按 source-original batch reproduction 复现，必须在 `PREDICTION_SEMANTICS.md` 和 `PITFALLS_2026-06-10.md` 记录原因，并在 persist 前校验已有 original benchmark 覆盖区间逐行一致。该例外只允许用于历史回测，不得改变 gray/live/scheduled live adapter 的 `feature_date/as_of_date` 截止规则。
 - 已批准的 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 历史回测是 source-original batch reproduction 例外：runner 一次性调用 core 生成完整历史预测，再按 DB 日历构造平台 rows；summary 必须写 `backtest_mode=original_batch_reproduction`、`backtest_point_in_time=false`、`historical_backtest_exception=true`，并写入 `original_benchmark_validation`。
+- 周频候选方案之间的样本总数不要求强行一致；runner 只能写入 core 真实产出的有效预测行。若某个日历周因为规则信号为 0、NaN、无效标签或 source core 的 inner join 被排除，不能补写空预测来凑齐样本数；必须在状态文档中记录缺失的 `feature_week_id` 和 core 过滤原因。
 - 新增方案不得直接套用上述例外。只有当源 benchmark 明确是 batch reproduction，且逐点 PIT 会改变原始评价对象时，才可以申请同类例外；批准后必须提供 benchmark 覆盖区间逐行一致证明，至少覆盖 `direction/predicted_direction`、`confidence`、`target_date`、`label/is_correct`，其中 `confidence` 只允许浮点舍入误差。
 
 回测写库后入库:

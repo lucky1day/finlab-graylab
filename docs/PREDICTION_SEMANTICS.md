@@ -1,6 +1,6 @@
 # 预测日期与实盘阶段语义
 
-**更新日期**: 2026-06-13
+**更新日期**: 2026-06-14
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
@@ -81,6 +81,8 @@ target_date  = T + horizon
 - `weekly_10y_d_overlay_0529`
 
 批准原因是这三个方案的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
+
+这三个方案的回测窗口已经对齐为同一历史输出窗口和同一灰度截断边界，但样本总数不强制相同。平台写入的是算法 core 实际产出的“有效信号行”，不是日历周占位行；如果某一周的规则信号为 0、NaN 或被源算法判定为无效，该周就不应被平台补成一条预测。当前 latest 的有效输出为：5Y run_id=`109` 共 71 条，缺 `feature_week_id=202534`；7Y run_id=`110` 共 68 条，缺 `202529/202534/202547/202608`；10Y run_id=`108` 共 72 条，无缺周。该差异是算法输出本身，不是前端隐藏、latest view 分组错误或 DB 日历缺失。
 
 这三个例外只允许用于历史回测和 benchmark 复现。它们的灰度实盘、正式实盘 adapter 仍必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
