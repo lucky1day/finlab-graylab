@@ -19,9 +19,9 @@ from scheduler.repository import create_engine_from_env
 
 VALID_PHASES = {"gray_live", "scheduled_live"}
 T1_GRAY_RUNS = set(range(22, 30))
-WEEKLY_PHASE_BY_SCHEME_RUN = {
-    ("weekly_5y_direct_0529", 57): "scheduled_live",
-    ("weekly_7y_cross_d_overlay_0529", 56): "scheduled_live",
+AUDITED_DELETE_ONLY_WEEKLY_RUNS = {
+    ("weekly_5y_direct_0529", 57),
+    ("weekly_7y_cross_d_overlay_0529", 56),
 }
 
 
@@ -61,25 +61,10 @@ def collect_repairs(engine: Engine) -> tuple[list[LivePredictionRepair], list[st
             )
             continue
 
-        mapped_phase = WEEKLY_PHASE_BY_SCHEME_RUN.get((scheme_id, run_id))
-        if mapped_phase:
-            feature_date = _clean_date(extra.get("feature_date"))
-            if not feature_date:
-                errors.append(f"prediction id={prediction_id} run_id={run_id} missing extra.feature_date")
-                continue
-            repaired_extra = dict(extra)
-            repaired_extra["feature_date"] = feature_date
-            repaired_extra["prediction_phase"] = mapped_phase
-            repairs.append(
-                LivePredictionRepair(
-                    prediction_id,
-                    run_id,
-                    scheme_id,
-                    predict_date,
-                    feature_date,
-                    mapped_phase,
-                    repaired_extra,
-                )
+        if (scheme_id, run_id) in AUDITED_DELETE_ONLY_WEEKLY_RUNS:
+            errors.append(
+                f"audited bad weekly live row id={prediction_id} scheme_id={scheme_id} run_id={run_id}; "
+                "use scripts/delete_bad_live_predictions.py instead of repairing it"
             )
             continue
 

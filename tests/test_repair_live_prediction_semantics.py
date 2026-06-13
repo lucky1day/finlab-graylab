@@ -117,8 +117,8 @@ class RepairLivePredictionSemanticsTests(unittest.TestCase):
         self.assertEqual(repairs[0].extra["feature_date"], "2026-05-29")
         self.assertEqual(repairs[0].extra["anchor_date"], "2026-05-29")
 
-    def test_weekly_missing_columns_are_repaired_from_extra_and_run_mapping(self) -> None:
-        from scripts.repair_live_prediction_semantics import apply_repairs, collect_repairs
+    def test_audited_bad_weekly_rows_are_not_repaired(self) -> None:
+        from scripts.repair_live_prediction_semantics import collect_repairs
 
         engine = create_engine("sqlite:///:memory:")
         _create_schema(engine)
@@ -133,24 +133,8 @@ class RepairLivePredictionSemanticsTests(unittest.TestCase):
         )
 
         repairs, errors = collect_repairs(engine)
-        self.assertEqual(errors, [])
-        self.assertEqual(len(repairs), 1)
-        self.assertEqual(repairs[0].feature_date, "2026-06-12")
-        self.assertEqual(repairs[0].prediction_phase, "scheduled_live")
-
-        apply_repairs(engine, repairs)
-
-        with engine.connect() as conn:
-            pred = conn.execute(
-                text("SELECT feature_date, prediction_phase, extra FROM t_scheme_predictions")
-            ).mappings().one()
-            run_phase = conn.execute(
-                text("SELECT prediction_phase FROM t_scheme_runs WHERE run_id = 57")
-            ).scalar_one()
-        self.assertEqual(pred["feature_date"], "2026-06-12")
-        self.assertEqual(pred["prediction_phase"], "scheduled_live")
-        self.assertEqual(json.loads(pred["extra"])["prediction_phase"], "scheduled_live")
-        self.assertEqual(run_phase, "scheduled_live")
+        self.assertEqual(repairs, [])
+        self.assertTrue(any("delete_bad_live_predictions.py" in error for error in errors), errors)
 
     def test_unhandled_bad_live_row_is_error(self) -> None:
         from scripts.repair_live_prediction_semantics import collect_repairs
