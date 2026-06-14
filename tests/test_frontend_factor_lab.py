@@ -212,9 +212,18 @@ class FactorLabRankingTests(unittest.TestCase):
         result = _run_factor_lab_hook(
             """
             const schemes = [
-              { id: "a", monthlyRows: [{ month: "2025-01", samples: 10, metricSamples: 10, correct: 6, overall: 60, upPrecision: 50, downPrecision: 70 }] },
-              { id: "b", monthlyRows: [{ month: "2025-01", samples: 40, metricSamples: 40, correct: 28, overall: 70, upPrecision: 75, downPrecision: 60 }] },
-              { id: "c", monthlyRows: [{ month: "2025-01", samples: 30, metricSamples: 30, correct: 18, overall: 60, upPrecision: 90, downPrecision: 30 }] }
+              { id: "a", monthlyRows: [{ month: "2025-01", samples: 10, metricSamples: 10, correct: 6, overall: 60,
+                upPrecision: 50, downPrecision: 70,
+                metricActualCounts: { up: 0, down: 0, flat: 0 },
+                metricPredictedCounts: { up: 10, down: 0, flat: 0 } }] },
+              { id: "b", monthlyRows: [{ month: "2025-01", samples: 40, metricSamples: 40, correct: 28, overall: 70,
+                upPrecision: 75, downPrecision: 60,
+                metricActualCounts: { up: 0, down: 0, flat: 0 },
+                metricPredictedCounts: { up: 40, down: 0, flat: 0 } }] },
+              { id: "c", monthlyRows: [{ month: "2025-01", samples: 30, metricSamples: 30, correct: 18, overall: 60,
+                upPrecision: 90, downPrecision: 30,
+                metricActualCounts: { up: 0, down: 0, flat: 0 },
+                metricPredictedCounts: { up: 30, down: 0, flat: 0 } }] }
             ];
             return {
               overallDesc: hooks.sortRankingSchemes(schemes, "overall", "desc").map((item) => item.id),
@@ -258,6 +267,8 @@ class FactorLabRankingTests(unittest.TestCase):
                 correct: 3,
                 actualCounts: { up: 4, down: 3, flat: 1 },
                 predictedCounts: { up: 4, down: 3, flat: 1 },
+                metricActualCounts: { up: 4, down: 3, flat: 0 },
+                metricPredictedCounts: { up: 4, down: 3, flat: 0 },
                 upPrecision: 50,
                 upRecall: 50,
                 downPrecision: 33.3333333333,
@@ -293,7 +304,9 @@ class FactorLabRankingTests(unittest.TestCase):
                   month: "2025-05",
                   samples: 8,
                   correct: 3,
-                  overall: 37.5
+                  overall: 37.5,
+                  metricActualCounts: { up: 0, down: 0, flat: 0 },
+                  metricPredictedCounts: { up: 0, down: 0, flat: 0 }
                 }],
                 dailyRowsByMonth: {}
               });
@@ -306,6 +319,86 @@ class FactorLabRankingTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("metricSamples", result["message"])
+
+    def test_monthly_metric_without_metric_actual_dist_fails_closed(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            try {
+              hooks.aggregateScheme({
+                id: "bad-monthly-metric-actual-dist",
+                monthlyRows: [{
+                  month: "2025-05",
+                  samples: 8,
+                  metricSamples: 7,
+                  correct: 3,
+                  overall: 42.9,
+                  actualDist: { up: 4, down: 3, flat: 1 },
+                  predictedDist: { up: 4, down: 3, flat: 1 },
+                  metricPredictedCounts: { up: 4, down: 3, flat: 0 }
+                }],
+                dailyRowsByMonth: {}
+              });
+              return { ok: true, message: "" };
+            } catch (error) {
+              return { ok: false, message: String(error && error.message || error) };
+            }
+            """
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("metricActualCounts", result["message"])
+
+    def test_api_monthly_metric_without_metric_predicted_dist_fails_closed(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [{
+                  id: "bad-api-monthly-metric-predicted-dist",
+                  scheme_id: "demo__h5__5Y",
+                  base_scheme_id: "demo",
+                  target_tenor: "5Y",
+                  target_label: "5Y国债活跃",
+                  horizon: 5,
+                  frequency: "daily",
+                  monthly_metrics: [{
+                    month: "2025-05",
+                    samples: 8,
+                    metric_samples: 7,
+                    correct: 3,
+                    accuracy: 42.9,
+                    actual_dist: { up: 4, down: 3, flat: 1 },
+                    predicted_dist: { up: 4, down: 3, flat: 1 },
+                    metric_actual_dist: { up: 4, down: 3, flat: 0 }
+                  }],
+                  daily_rows: []
+                }]
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              selectedScheme: hooks.getSelectedScheme()
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "live-error")
+        self.assertIsNone(result["selectedScheme"])
 
     def test_ranking_row_without_metric_samples_fails_closed(self) -> None:
         result = _run_factor_lab_hook(
@@ -495,12 +588,14 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     status: "complete",
                     benchmark_label: "model_muti_0529",
                     data_source_label: "framework_db_aligned",
-                    monthly_metrics: [
-                      { month: "2026-05", samples: 30, correct: 20, accuracy: 66.7, overall: 66.7,
-                        up_precision: 70, up_recall: 65, down_precision: 60, down_recall: 55,
-                        actual_dist: { up: 15, down: 10, flat: 5 },
-                        predicted_dist: { up: 14, down: 12, flat: 4 } }
-                    ],
+	                    monthly_metrics: [
+	                      { month: "2026-05", samples: 30, metric_samples: 26, correct: 20, accuracy: 76.9, overall: 76.9,
+	                        up_precision: 70, up_recall: 65, down_precision: 60, down_recall: 55,
+	                        actual_dist: { up: 15, down: 10, flat: 5 },
+	                        predicted_dist: { up: 14, down: 12, flat: 4 },
+	                        metric_actual_dist: { up: 15, down: 10, flat: 1 },
+	                        metric_predicted_dist: { up: 14, down: 12, flat: 0 } }
+	                    ],
                     daily_rows: []
                   }
                 ]
@@ -578,10 +673,12 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
 	                    start_target_date: "2026-06-18", end_target_date: "2026-06-18", rows: 1 }
 	                ],
 	                monthly_metrics: [
-                  { month: "2026-06", samples: 8, correct: 4, accuracy: 50.0, overall: 50.0,
+                  { month: "2026-06", samples: 8, metric_samples: 5, correct: 4, accuracy: 80.0, overall: 80.0,
                     up_precision: 75, up_recall: 75, down_precision: 100, down_recall: 25,
                     actual_dist: { up: 4, down: 4, flat: 0 },
-                    predicted_dist: { up: 4, down: 1, flat: 3 } }
+                    predicted_dist: { up: 4, down: 1, flat: 3 },
+                    metric_actual_dist: { up: 4, down: 1, flat: 0 },
+                    metric_predicted_dist: { up: 4, down: 1, flat: 0 } }
                 ],
                 daily_rows: [
                   {
@@ -617,11 +714,13 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     benchmark_label: "v28_daily_5y_2",
                     data_source_label: "framework_db_aligned",
                     monthly_metrics: [
-                      { month: "2026-04", samples: 21, correct: 11, accuracy: 52.4, overall: 52.4,
-                        up_precision: 0, up_recall: 0, down_precision: 61.1, down_recall: 78.6,
-                        actual_dist: { up: 5, down: 14, flat: 2 },
-                        predicted_dist: { up: 2, down: 18, flat: 1 } }
-                    ],
+	                      { month: "2026-04", samples: 21, metric_samples: 20, correct: 11, accuracy: 55.0, overall: 55.0,
+	                        up_precision: 0, up_recall: 0, down_precision: 61.1, down_recall: 78.6,
+	                        actual_dist: { up: 5, down: 14, flat: 2 },
+	                        predicted_dist: { up: 2, down: 18, flat: 1 },
+	                        metric_actual_dist: { up: 5, down: 14, flat: 1 },
+	                        metric_predicted_dist: { up: 2, down: 18, flat: 0 } }
+	                    ],
                     daily_rows: []
                   }
                 ]
@@ -687,10 +786,12 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [
-                  { month: "2026-05", samples: 5, correct: 4, accuracy: 80.0, overall: 80.0,
+                  { month: "2026-05", samples: 5, metric_samples: 5, correct: 4, accuracy: 80.0, overall: 80.0,
                     up_precision: 100, up_recall: 80, down_precision: 0, down_recall: 0,
                     actual_dist: { up: 4, down: 1, flat: 0 },
-                    predicted_dist: { up: 4, down: 1, flat: 0 } }
+                    predicted_dist: { up: 4, down: 1, flat: 0 },
+                    metric_actual_dist: { up: 4, down: 1, flat: 0 },
+                    metric_predicted_dist: { up: 4, down: 1, flat: 0 } }
                 ],
                 daily_rows: [
                   { predict_date: "2026-05-27", target_tenor: "5Y", horizon: 1,
@@ -714,10 +815,12 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     benchmark_label: "model_muti_0529",
                     data_source_label: "framework_db_aligned",
                     monthly_metrics: [
-                      { month: "2026-05", samples: 20, correct: 12, accuracy: 60.0, overall: 60.0,
+                      { month: "2026-05", samples: 20, metric_samples: 18, correct: 12, accuracy: 66.7, overall: 66.7,
                         up_precision: 55, up_recall: 50, down_precision: 50, down_recall: 45,
                         actual_dist: { up: 10, down: 8, flat: 2 },
-                        predicted_dist: { up: 9, down: 9, flat: 2 } }
+                        predicted_dist: { up: 9, down: 9, flat: 2 },
+                        metric_actual_dist: { up: 10, down: 8, flat: 0 },
+                        metric_predicted_dist: { up: 9, down: 9, flat: 0 } }
                     ],
                     daily_rows: []
                   }
@@ -754,8 +857,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         # 同月应有两行：backtest + live
         self.assertEqual(result["rowCount"], 2)
         self.assertEqual(result["sources"], ["backtest", "live"])
-        # 回测准确率 60.0，实盘准确率 80.0，互不覆盖
-        self.assertEqual(result["backtestAccuracy"], [60.0])
+        # 回测准确率按 metric_samples=18 计算为 12/18=66.7，实盘准确率 80.0，互不覆盖
+        self.assertEqual(result["backtestAccuracy"], [66.7])
         self.assertEqual(result["liveAccuracy"], [80.0])
 
     def test_weekly_live_uses_single_predict_date_start_semantics(self) -> None:
@@ -784,10 +887,12 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [
-                  { month: "2026-06", samples: 1, correct: 1, accuracy: 100, overall: 100,
+                  { month: "2026-06", samples: 1, metric_samples: 1, correct: 1, accuracy: 100, overall: 100,
                     up_precision: 100, up_recall: 100, down_precision: null, down_recall: null,
                     actual_dist: { up: 1, down: 0, flat: 0 },
-                    predicted_dist: { up: 1, down: 0, flat: 0 } }
+                    predicted_dist: { up: 1, down: 0, flat: 0 },
+                    metric_actual_dist: { up: 1, down: 0, flat: 0 },
+                    metric_predicted_dist: { up: 1, down: 0, flat: 0 } }
                 ],
                 daily_rows: [
                   {
@@ -1099,11 +1204,13 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     frequency: "daily",
                     status: "complete",
                     monthly_metrics: [
-                      { month: "2026-05", samples: 1, correct: 1, accuracy: 100, overall: 100,
-                        up_precision: 100, up_recall: 100, down_precision: null, down_recall: null,
-                        actual_dist: { up: 1, down: 0, flat: 0 },
-                        predicted_dist: { up: 1, down: 0, flat: 0 } }
-                    ],
+	                      { month: "2026-05", samples: 1, metric_samples: 1, correct: 1, accuracy: 100, overall: 100,
+	                        up_precision: 100, up_recall: 100, down_precision: null, down_recall: null,
+	                        actual_dist: { up: 1, down: 0, flat: 0 },
+	                        predicted_dist: { up: 1, down: 0, flat: 0 },
+	                        metric_actual_dist: { up: 1, down: 0, flat: 0 },
+	                        metric_predicted_dist: { up: 1, down: 0, flat: 0 } }
+	                    ],
                     daily_rows: []
                   }
                 ]

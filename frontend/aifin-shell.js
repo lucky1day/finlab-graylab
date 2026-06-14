@@ -399,6 +399,8 @@
         predictedDist: row.predictedDist,
         actualCounts: actualCounts,
         predictedCounts: predictedCounts,
+        metricActualCounts: actualCounts,
+        metricPredictedCounts: predictedCounts,
         metricSamples: (predictedCounts.up || 0) + (predictedCounts.down || 0),
         overall: overall,
         correct: Math.max(0, Math.min(samples, Math.round(samples * overall / 100))),
@@ -479,6 +481,24 @@
     };
   }
 
+  function hasOwnValue(object, key) {
+    return !!object && Object.prototype.hasOwnProperty.call(object, key) && object[key] !== null && object[key] !== undefined;
+  }
+
+  function requireMetricDist(row, key, context) {
+    if (!hasOwnValue(row, key)) {
+      throw new Error(context + " requires " + key);
+    }
+    return normalizeDist(row[key]);
+  }
+
+  function requireNormalizedMetricCounts(row, key, context) {
+    if (!hasOwnValue(row, key)) {
+      throw new Error(context + " requires " + key);
+    }
+    return normalizeDist(row[key]);
+  }
+
   function distText(dist) {
     dist = normalizeDist(dist);
     return [dist.up || 0, dist.down || 0, dist.flat || 0].join("/");
@@ -519,8 +539,8 @@
     var overall = metric.accuracy === null || metric.accuracy === undefined ? metric.overall : metric.accuracy;
     var actualCounts = normalizeDist(metric.actual_dist);
     var predictedCounts = normalizeDist(metric.predicted_dist);
-    var metricActualCounts = normalizeDist(metric.metric_actual_dist || metric.actual_dist);
-    var metricPredictedCounts = normalizeDist(metric.metric_predicted_dist || metric.predicted_dist);
+    var metricActualCounts = requireMetricDist(metric, "metric_actual_dist", "monthly metric");
+    var metricPredictedCounts = requireMetricDist(metric, "metric_predicted_dist", "monthly metric");
     var samples = Number(metric.total || metric.samples || 0);
     var metricSamples = metricSampleCount(metric, metricPredictedCounts);
     return {
@@ -1081,8 +1101,8 @@
     rows.forEach(function (row) {
       var actualCounts = normalizeDist(row.actualCounts || row.actualDist);
       var predictedCounts = normalizeDist(row.predictedCounts || row.predictedDist);
-      var metricActualCounts = normalizeDist(row.metricActualCounts || row.metric_actual_dist || actualCounts);
-      var metricPredictedCounts = normalizeDist(row.metricPredictedCounts || row.metric_predicted_dist || predictedCounts);
+      var metricActualCounts = requireNormalizedMetricCounts(row, "metricActualCounts", "monthly row");
+      var metricPredictedCounts = requireNormalizedMetricCounts(row, "metricPredictedCounts", "monthly row");
       metricSamples += metricSampleCount(row, metricPredictedCounts);
       predUp += metricPredictedCounts.up;
       predDown += metricPredictedCounts.down;

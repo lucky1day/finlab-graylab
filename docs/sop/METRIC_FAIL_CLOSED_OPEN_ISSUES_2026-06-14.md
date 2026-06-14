@@ -32,15 +32,19 @@
 
    已修正为没有可推导指标分母时直接报错。前端展示必须使用 `metric_samples` / `metric_*_dist`，不得使用 `samples` 作为指标分母 fallback。
 
-3. 后端不能为老 monthly row 增加兼容 fallback。
+3. 前端不能在缺少 `metric_actual_dist` / `metric_predicted_dist` 时回退到普通方向分布。
+
+   已修正为 API 月度指标行必须显式提供 `metric_actual_dist` 和 `metric_predicted_dist`；缺任一字段时前端 fail-closed。内部 normalized monthly row 必须携带 `metricActualCounts` 和 `metricPredictedCounts`；不得退回 `actual_dist` / `predicted_dist` / `actualCounts` / `predictedCounts`。
+
+4. 后端不能为老 monthly row 增加兼容 fallback。
 
    已删除旧月度汇总 API 入口和 repository writer。正常业务路径不再读取或写入独立的回测月度指标汇总。
 
-4. runner 不能写独立月度指标汇总表。
+5. runner 不能写独立月度指标汇总表。
 
    `persist_run_output()` 当前只写 `t_backtest_runs` 和 `t_backtest_predictions`，再更新 run summary；前端 canonical 月度指标由 `/api/backtests/factor-lab` 从明细动态聚合。
 
-5. 文档不能继续暗示旧汇总表是 baseline 或 fallback。
+6. 文档不能继续暗示旧汇总表是 baseline 或 fallback。
 
    已更新 `PREDICTION_SEMANTICS.md`、`CURRENT_STATUS.md`、`SCHEME_ONBOARDING_SOP.md`、`SCHEME_POST_ONBOARDING_TEST_SOP.md`、`ARCHITECTURE.md` 等文档，统一写明 `t_backtest_predictions` 明细是回测前端指标唯一事实源。
 
@@ -65,6 +69,9 @@ git diff --check
   --scheme-id daily_5y_2_v28 \
   --api-base-url http://127.0.0.1:8100
 # run_id=107, total_cells_checked=17, mismatch_count=0
+
+/Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m unittest tests.test_frontend_factor_lab -v
+# includes fail-closed coverage for missing metric_actual_dist / metric_predicted_dist
 ```
 
 同时已重启 backend 8100，并强制刷新前端页面到 `http://127.0.0.1:8100/`。
@@ -74,4 +81,5 @@ git diff --check
 - 新增指标字段时，必须同时声明“样本总数”和“指标分母”的含义。
 - 新增前端或后端统计逻辑时，必须有测试覆盖 `predicted_direction=0` 的样本。
 - 任何读取侧不得增加“缺字段时回退到 samples”的兼容逻辑。
+- 前端不得在缺少 `metric_actual_dist` / `metric_predicted_dist` 时回退到普通 `actual_dist` / `predicted_dist`。
 - 任何回测展示不得重新读取独立月度汇总表作为事实源。
