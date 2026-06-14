@@ -224,6 +224,75 @@ class BackendPredictionServingTests(unittest.TestCase):
         self.assertEqual(result["base_scheme_id"], "demo_daily")
         self.assertEqual(result["target_tenor"], "10Y")
 
+    def test_scheme_metrics_counts_flat_predictions_as_samples_not_metric_denominator(self) -> None:
+        from backend.services import scheme_metrics
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_flat__h1__10Y",
+            base_scheme_id="demo_flat",
+            target_tenor="10Y",
+            horizon=1,
+        )
+        rows = [
+            (1, "2026-06-01", "2026-06-06", 1, 1),
+            (2, "2026-06-02", "2026-06-07", -1, -1),
+            (3, "2026-06-03", "2026-06-08", 1, 1),
+            (4, "2026-06-04", "2026-06-09", -1, 1),
+            (5, "2026-06-05", "2026-06-10", 1, -1),
+            (6, "2026-06-06", "2026-06-11", -1, 1),
+            (7, "2026-06-07", "2026-06-12", 1, -1),
+            (8, "2026-06-08", "2026-06-13", 0, 0),
+        ]
+        with engine.begin() as conn:
+            for run_id, predict_date, target_date, actual, predicted in rows:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO t_scheme_predictions
+                            (run_id, scheme_id, target_tenor, horizon,
+                             predict_date, feature_date, target_date, prediction_phase,
+                             predicted_direction, confidence, model_version, extra)
+                        VALUES
+                            (:run_id, 'demo_flat', '10Y', 1,
+                             :predict_date, :predict_date, :target_date, 'scheduled_live',
+                             :predicted, 0.6, 'v1', '{}')
+                        """
+                    ),
+                    {
+                        "run_id": run_id,
+                        "predict_date": predict_date,
+                        "target_date": target_date,
+                        "predicted": predicted,
+                    },
+                )
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
+                        VALUES ('10Y', :target_date, :actual, :actual)
+                        """
+                    ),
+                    {"target_date": target_date, "actual": actual},
+                )
+
+        try:
+            result = scheme_metrics(engine, "demo_flat__h1__10Y")
+        finally:
+            engine.dispose()
+
+        month = result["monthly_metrics"][0]
+        self.assertEqual(month["samples"], 8)
+        self.assertEqual(month["metric_samples"], 7)
+        self.assertEqual(month["correct"], 3)
+        self.assertEqual(month["accuracy"], 42.9)
+        self.assertEqual(month["overall"], 42.9)
+        self.assertEqual(month["predicted_dist"]["flat"], 1)
+        self.assertEqual(result["summary"]["samples"], 8)
+        self.assertEqual(result["summary"]["metric_samples"], 7)
+
     def test_scheme_metrics_rejects_base_scheme_id_entrypoint(self) -> None:
         from backend.services import scheme_metrics
 

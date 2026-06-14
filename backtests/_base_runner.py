@@ -45,6 +45,7 @@ from backtests.repository import (
 )
 from shared.artifact_paths import benchmark_input_root
 from shared.input_artifacts import build_daily_input_artifact
+from shared.metrics import direction_metric_block
 
 
 RangeMapping = Mapping[str, Any]
@@ -495,27 +496,25 @@ def _metric_month(row: dict[str, Any]) -> str:
 
 def metric_row(rows: list[dict[str, Any]], tenor: str, month: str, *, benchmark_id: str) -> dict[str, Any]:
     valid = [row for row in rows if row.get("label") is not None and row.get("predicted_direction") is not None]
-    total = len(valid)
-    correct = sum(1 for row in valid if int(row["label"]) == int(row["predicted_direction"]))
-    pred_up = sum(1 for row in valid if row["predicted_direction"] == 1)
-    pred_down = sum(1 for row in valid if row["predicted_direction"] == -1)
-    actual_up = sum(1 for row in valid if row["label"] == 1)
-    actual_down = sum(1 for row in valid if row["label"] == -1)
+    metrics = direction_metric_block(valid, actual_key="label")
     return {
         "benchmark_id": benchmark_id,
         "scheme_id": valid[0]["scheme_id"] if valid else rows[0]["scheme_id"],
         "target_tenor": tenor,
         "horizon": int(rows[0]["horizon"]),
         "month": month,
-        "sample_count": total,
-        "correct_count": correct,
-        "accuracy": safe_div(correct, total),
-        "up_precision": safe_div(sum(1 for row in valid if row["predicted_direction"] == 1 and row["label"] == 1), pred_up),
-        "up_recall": safe_div(sum(1 for row in valid if row["predicted_direction"] == 1 and row["label"] == 1), actual_up),
-        "down_precision": safe_div(sum(1 for row in valid if row["predicted_direction"] == -1 and row["label"] == -1), pred_down),
-        "down_recall": safe_div(sum(1 for row in valid if row["predicted_direction"] == -1 and row["label"] == -1), actual_down),
-        "actual_dist": direction_dist(valid, "label"),
-        "predicted_dist": direction_dist(valid, "predicted_direction"),
+        "sample_count": metrics["samples"],
+        "metric_sample_count": metrics["metric_samples"],
+        "correct_count": metrics["correct"],
+        "accuracy": metrics["accuracy"],
+        "up_precision": metrics["up_precision"],
+        "up_recall": metrics["up_recall"],
+        "down_precision": metrics["down_precision"],
+        "down_recall": metrics["down_recall"],
+        "actual_dist": metrics["actual_dist"],
+        "predicted_dist": metrics["predicted_dist"],
+        "metric_actual_dist": metrics["metric_actual_dist"],
+        "metric_predicted_dist": metrics["metric_predicted_dist"],
     }
 
 
@@ -531,14 +530,17 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     valid = [row for row in rows if row.get("label") is not None and row.get("predicted_direction") is not None]
-    correct = sum(1 for row in valid if row["label"] == row["predicted_direction"])
+    metrics = direction_metric_block(valid, actual_key="label")
     return {
-        "samples": len(valid),
-        "correct": correct,
-        "accuracy": safe_div(correct, len(valid)),
-        "accuracy_pct": round(safe_div(correct, len(valid)) * 100, 1) if valid else None,
-        "actual_dist": direction_dist(valid, "label"),
-        "predicted_dist": direction_dist(valid, "predicted_direction"),
+        "samples": metrics["samples"],
+        "metric_samples": metrics["metric_samples"],
+        "correct": metrics["correct"],
+        "accuracy": metrics["accuracy"],
+        "accuracy_pct": round(metrics["accuracy"] * 100, 1) if metrics["accuracy"] is not None else None,
+        "actual_dist": metrics["actual_dist"],
+        "predicted_dist": metrics["predicted_dist"],
+        "metric_actual_dist": metrics["metric_actual_dist"],
+        "metric_predicted_dist": metrics["metric_predicted_dist"],
         "date_min": min((row["predict_date"] for row in valid), default=None),
         "date_max": max((row["predict_date"] for row in valid), default=None),
     }

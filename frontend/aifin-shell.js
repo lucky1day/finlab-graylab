@@ -487,17 +487,45 @@
     return value === null || value === undefined ? null : Number(value);
   }
 
+  function numberOrNull(value) {
+    if (value === null || value === undefined) return null;
+    var number = Number(value);
+    return isFinite(number) ? number : null;
+  }
+
+  function metricSampleCount(row, predictedCounts, sampleFallback) {
+    var explicit = numberOrNull(row.metricSamples);
+    if (explicit !== null) return explicit;
+    explicit = numberOrNull(row.metric_samples);
+    if (explicit !== null) return explicit;
+    explicit = numberOrNull(row.metric_sample_count);
+    if (explicit !== null) return explicit;
+    predictedCounts = predictedCounts || normalizeDist(row.predictedCounts || row.predictedDist);
+    if (predictedCounts) {
+      var distTotal = (predictedCounts.up || 0) + (predictedCounts.down || 0) + (predictedCounts.flat || 0);
+      if (distTotal > 0) return (predictedCounts.up || 0) + (predictedCounts.down || 0);
+    }
+    return Number(sampleFallback || row.samples || 0);
+  }
+
   function rowFromMetric(metric) {
     var overall = metric.accuracy === null || metric.accuracy === undefined ? metric.overall : metric.accuracy;
     var actualCounts = normalizeDist(metric.actual_dist);
     var predictedCounts = normalizeDist(metric.predicted_dist);
+    var metricActualCounts = normalizeDist(metric.metric_actual_dist || metric.actual_dist);
+    var metricPredictedCounts = normalizeDist(metric.metric_predicted_dist || metric.predicted_dist);
+    var samples = Number(metric.total || metric.samples || 0);
+    var metricSamples = metricSampleCount(metric, metricPredictedCounts, samples);
     return {
       month: metric.month,
-      samples: Number(metric.total || metric.samples || 0),
+      samples: samples,
+      metricSamples: metricSamples,
       actualDist: distText(actualCounts),
       predictedDist: distText(predictedCounts),
       actualCounts: actualCounts,
       predictedCounts: predictedCounts,
+      metricActualCounts: metricActualCounts,
+      metricPredictedCounts: metricPredictedCounts,
       overall: metricOrNull(overall),
       correct: Number(metric.correct || 0),
       upPrecision: metricOrNull(metric.up_precision),
@@ -571,10 +599,13 @@
       monthlyRows.push({
         month: month,
         samples: 0,
+        metricSamples: 0,
         actualDist: "0/0/0",
         predictedDist: "0/0/0",
         actualCounts: { up: 0, down: 0, flat: 0 },
         predictedCounts: { up: 0, down: 0, flat: 0 },
+        metricActualCounts: { up: 0, down: 0, flat: 0 },
+        metricPredictedCounts: { up: 0, down: 0, flat: 0 },
         overall: null,
         correct: 0,
         upPrecision: null,
@@ -989,23 +1020,28 @@
 
   function metricFromSampleRows(rows) {
     var samples = rows.length;
-    var correct = rows.reduce(function (sum, row) {
+    var metricRows = rows.filter(function (row) {
+      return row.predictedDirection === 1 || row.predictedDirection === -1;
+    });
+    var metricSamples = metricRows.length;
+    var correct = metricRows.reduce(function (sum, row) {
       return sum + (row.predictedDirection === row.actualDirection ? 1 : 0);
     }, 0);
-    var predUp = rows.reduce(function (sum, row) { return sum + (row.predictedDirection === 1 ? 1 : 0); }, 0);
-    var predDown = rows.reduce(function (sum, row) { return sum + (row.predictedDirection === -1 ? 1 : 0); }, 0);
-    var actualUp = rows.reduce(function (sum, row) { return sum + (row.actualDirection === 1 ? 1 : 0); }, 0);
-    var actualDown = rows.reduce(function (sum, row) { return sum + (row.actualDirection === -1 ? 1 : 0); }, 0);
-    var upTp = rows.reduce(function (sum, row) {
+    var predUp = metricRows.reduce(function (sum, row) { return sum + (row.predictedDirection === 1 ? 1 : 0); }, 0);
+    var predDown = metricRows.reduce(function (sum, row) { return sum + (row.predictedDirection === -1 ? 1 : 0); }, 0);
+    var actualUp = metricRows.reduce(function (sum, row) { return sum + (row.actualDirection === 1 ? 1 : 0); }, 0);
+    var actualDown = metricRows.reduce(function (sum, row) { return sum + (row.actualDirection === -1 ? 1 : 0); }, 0);
+    var upTp = metricRows.reduce(function (sum, row) {
       return sum + (row.predictedDirection === 1 && row.actualDirection === 1 ? 1 : 0);
     }, 0);
-    var downTp = rows.reduce(function (sum, row) {
+    var downTp = metricRows.reduce(function (sum, row) {
       return sum + (row.predictedDirection === -1 && row.actualDirection === -1 ? 1 : 0);
     }, 0);
     return {
       samples: samples,
+      metricSamples: metricSamples,
       correct: correct,
-      overall: samples ? correct / samples * 100 : null,
+      overall: metricSamples ? correct / metricSamples * 100 : null,
       upPrecision: predUp ? upTp / predUp * 100 : null,
       upRecall: actualUp ? upTp / actualUp * 100 : null,
       downPrecision: predDown ? downTp / predDown * 100 : null,
@@ -1027,6 +1063,7 @@
 
   function metricFromMonthlyRows(rows) {
     var samples = rows.reduce(function (sum, row) { return sum + row.samples; }, 0);
+    var metricSamples = 0;
     var correct = rows.reduce(function (sum, row) { return sum + row.correct; }, 0);
     var predUp = 0;
     var predDown = 0;
@@ -1037,17 +1074,21 @@
     rows.forEach(function (row) {
       var actualCounts = normalizeDist(row.actualCounts || row.actualDist);
       var predictedCounts = normalizeDist(row.predictedCounts || row.predictedDist);
-      predUp += predictedCounts.up;
-      predDown += predictedCounts.down;
-      actualUp += actualCounts.up;
-      actualDown += actualCounts.down;
-      upTp += inferTruePositive(row.upRecall, actualCounts.up, row.upPrecision, predictedCounts.up);
-      downTp += inferTruePositive(row.downRecall, actualCounts.down, row.downPrecision, predictedCounts.down);
+      var metricActualCounts = normalizeDist(row.metricActualCounts || row.metric_actual_dist || actualCounts);
+      var metricPredictedCounts = normalizeDist(row.metricPredictedCounts || row.metric_predicted_dist || predictedCounts);
+      metricSamples += metricSampleCount(row, metricPredictedCounts, row.samples);
+      predUp += metricPredictedCounts.up;
+      predDown += metricPredictedCounts.down;
+      actualUp += metricActualCounts.up;
+      actualDown += metricActualCounts.down;
+      upTp += inferTruePositive(row.upRecall, metricActualCounts.up, row.upPrecision, metricPredictedCounts.up);
+      downTp += inferTruePositive(row.downRecall, metricActualCounts.down, row.downPrecision, metricPredictedCounts.down);
     });
     return {
       samples: samples,
+      metricSamples: metricSamples,
       correct: correct,
-      overall: samples ? correct / samples * 100 : null,
+      overall: metricSamples ? correct / metricSamples * 100 : null,
       upPrecision: predUp ? upTp / predUp * 100 : null,
       upRecall: actualUp ? upTp / actualUp * 100 : null,
       downPrecision: predDown ? downTp / predDown * 100 : null,
@@ -1153,10 +1194,11 @@
     var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
     var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
     var barWidth = clampPercent(metric.overall);
+    var metricSamples = metric.metricSamples === null || metric.metricSamples === undefined ? metric.samples : metric.metricSamples;
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
       '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
-      '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metric.samples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
+      '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metricSamples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
       '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
       '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
@@ -1471,7 +1513,8 @@
       html += '<td><strong>' + row.samples + '</strong></td>';
       html += '<td>' + escapeHtml(row.actualDist) + '</td>';
       html += '<td>' + escapeHtml(row.predictedDist) + '</td>';
-      html += '<td class="' + getMetricClass(row.overall) + '">' + formatPercent(row.overall) + '（' + row.correct + '/' + row.samples + '）</td>';
+      var rowMetricSamples = row.metricSamples === null || row.metricSamples === undefined ? row.samples : row.metricSamples;
+      html += '<td class="' + getMetricClass(row.overall) + '">' + formatPercent(row.overall) + '（' + row.correct + '/' + rowMetricSamples + '）</td>';
       html += '<td class="' + getMetricClass(row.upPrecision) + '">' + formatPercent(row.upPrecision) + '</td>';
       html += '<td class="' + getMetricClass(row.upRecall) + '">' + formatPercent(row.upRecall) + '</td>';
       html += '<td class="' + getMetricClass(row.downPrecision) + '">' + formatPercent(row.downPrecision) + '</td>';

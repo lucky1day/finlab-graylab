@@ -227,6 +227,61 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["upAsc"], ["a", "b", "c"])
         self.assertEqual(result["samplesAsc"], ["a", "c", "b"])
 
+    def test_flat_predictions_count_as_samples_but_not_metric_denominator(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const rows = [
+              { predictedDirection: 1, actualDirection: 1 },
+              { predictedDirection: -1, actualDirection: -1 },
+              { predictedDirection: 1, actualDirection: 1 },
+              { predictedDirection: 1, actualDirection: -1 },
+              { predictedDirection: -1, actualDirection: 1 },
+              { predictedDirection: 1, actualDirection: -1 },
+              { predictedDirection: -1, actualDirection: 1 },
+              { predictedDirection: 0, actualDirection: 0 }
+            ];
+            const scheme = {
+              id: "flat-demo",
+              name: "平信号示例",
+              dailyRowsByMonth: { "2025-05": rows },
+              monthlyRows: []
+            };
+            const metric = hooks.aggregateScheme(scheme);
+            const rowHtml = hooks.renderSchemeRankingRowForTest(scheme, 0, metric);
+            const monthlyMetric = hooks.aggregateScheme({
+              id: "flat-monthly-demo",
+              monthlyRows: [{
+                month: "2025-05",
+                samples: 8,
+                metricSamples: 7,
+                correct: 3,
+                actualCounts: { up: 4, down: 3, flat: 1 },
+                predictedCounts: { up: 4, down: 3, flat: 1 },
+                upPrecision: 50,
+                upRecall: 50,
+                downPrecision: 33.3333333333,
+                downRecall: 33.3333333333
+              }],
+              dailyRowsByMonth: {}
+            });
+            return {
+              metric,
+              monthlyMetric,
+              rowHtml
+            };
+            """
+        )
+
+        self.assertEqual(result["metric"]["samples"], 8)
+        self.assertEqual(result["metric"]["metricSamples"], 7)
+        self.assertEqual(result["metric"]["correct"], 3)
+        self.assertAlmostEqual(result["metric"]["overall"], 3 / 7 * 100)
+        self.assertEqual(result["monthlyMetric"]["samples"], 8)
+        self.assertEqual(result["monthlyMetric"]["metricSamples"], 7)
+        self.assertAlmostEqual(result["monthlyMetric"]["overall"], 3 / 7 * 100)
+        self.assertIn("3/7", result["rowHtml"])
+        self.assertNotIn("3/8", result["rowHtml"])
+
     def test_low_sample_badge_uses_30_sample_threshold(self) -> None:
         result = _run_factor_lab_hook(
             """

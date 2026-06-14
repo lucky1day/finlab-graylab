@@ -14,6 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
+from shared.metrics import direction_metric_block
 
 
 logger = logging.getLogger(__name__)
@@ -78,14 +79,6 @@ def _percent(numerator: int, denominator: int) -> float | None:
     if denominator == 0:
         return None
     return round(numerator / denominator * 100, 1)
-
-
-def _direction_dist(rows: list[dict], key: str) -> dict[str, int]:
-    return {
-        "up": sum(1 for row in rows if row[key] == 1),
-        "down": sum(1 for row in rows if row[key] == -1),
-        "flat": sum(1 for row in rows if row[key] == 0),
-    }
 
 
 def _list_target_registry(engine: Engine) -> list[dict[str, Any]]:
@@ -188,27 +181,23 @@ def list_targets(engine: Engine) -> list[dict[str, Any]]:
 
 
 def _metric_block(rows: list[dict]) -> dict[str, Any]:
-    total = len(rows)
-    correct = sum(1 for row in rows if row["predicted_direction"] == row["actual_direction"])
-    pred_up = sum(1 for row in rows if row["predicted_direction"] == 1)
-    pred_down = sum(1 for row in rows if row["predicted_direction"] == -1)
-    actual_up = sum(1 for row in rows if row["actual_direction"] == 1)
-    actual_down = sum(1 for row in rows if row["actual_direction"] == -1)
-    up_tp = sum(1 for row in rows if row["predicted_direction"] == 1 and row["actual_direction"] == 1)
-    down_tp = sum(1 for row in rows if row["predicted_direction"] == -1 and row["actual_direction"] == -1)
-    accuracy = _percent(correct, total)
+    metrics = direction_metric_block(rows)
+    accuracy = _ratio_to_percent(metrics["accuracy"])
     return {
-        "total": total,
-        "samples": total,
-        "correct": correct,
+        "total": metrics["samples"],
+        "samples": metrics["samples"],
+        "metric_samples": metrics["metric_samples"],
+        "correct": metrics["correct"],
         "accuracy": accuracy,
         "overall": accuracy,
-        "up_precision": _percent(up_tp, pred_up),
-        "up_recall": _percent(up_tp, actual_up),
-        "down_precision": _percent(down_tp, pred_down),
-        "down_recall": _percent(down_tp, actual_down),
-        "actual_dist": _direction_dist(rows, "actual_direction"),
-        "predicted_dist": _direction_dist(rows, "predicted_direction"),
+        "up_precision": _ratio_to_percent(metrics["up_precision"]),
+        "up_recall": _ratio_to_percent(metrics["up_recall"]),
+        "down_precision": _ratio_to_percent(metrics["down_precision"]),
+        "down_recall": _ratio_to_percent(metrics["down_recall"]),
+        "actual_dist": metrics["actual_dist"],
+        "predicted_dist": metrics["predicted_dist"],
+        "metric_actual_dist": metrics["metric_actual_dist"],
+        "metric_predicted_dist": metrics["metric_predicted_dist"],
     }
 
 
@@ -721,6 +710,8 @@ def backtest_factor_lab_results(
         run = _backtest_run_row(row)
         metrics = _backtest_frontend_monthly_metrics(engine, run["id"])
         daily_rows = _backtest_frontend_daily_rows(engine, run["id"])
+        recomputed_metrics = _backtest_frontend_monthly_metrics_from_daily_rows(daily_rows)
+        metrics = {**metrics, **recomputed_metrics}
         tenors = sorted(set(metrics) | set(daily_rows), key=_tenor_sort_key)
         for tenor in tenors:
             if tenor not in visible_targets:
@@ -807,6 +798,23 @@ def _backtest_frontend_monthly_metrics(engine: Engine, run_id: int) -> dict[str,
         rows = conn.execute(sql, {"run_id": run_id}).mappings().all()
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
+        actual_dist = _json_value(row["actual_dist"], {})
+        predicted_dist = _json_value(row["predicted_dist"], {})
+        predicted_dist_total = (
+            int(predicted_dist.get("up") or 0)
+            + int(predicted_dist.get("down") or 0)
+            + int(predicted_dist.get("flat") or 0)
+        )
+        metric_samples = (
+            int(predicted_dist.get("up") or 0) + int(predicted_dist.get("down") or 0)
+            if predicted_dist_total > 0
+            else int(row["sample_count"] or 0)
+        )
+        metric_predicted_dist = {
+            "up": int(predicted_dist.get("up") or 0),
+            "down": int(predicted_dist.get("down") or 0),
+            "flat": 0,
+        }
         grouped[row["target_tenor"]].append(
             {
                 "target_tenor": row["target_tenor"],
@@ -814,6 +822,7 @@ def _backtest_frontend_monthly_metrics(engine: Engine, run_id: int) -> dict[str,
                 "month": row["month"],
                 "total": row["sample_count"],
                 "samples": row["sample_count"],
+                "metric_samples": metric_samples,
                 "correct": row["correct_count"],
                 "accuracy": _ratio_to_percent(row["accuracy"]),
                 "overall": _ratio_to_percent(row["accuracy"]),
@@ -821,11 +830,41 @@ def _backtest_frontend_monthly_metrics(engine: Engine, run_id: int) -> dict[str,
                 "up_recall": _ratio_to_percent(row["up_recall"]),
                 "down_precision": _ratio_to_percent(row["down_precision"]),
                 "down_recall": _ratio_to_percent(row["down_recall"]),
-                "actual_dist": _json_value(row["actual_dist"], {}),
-                "predicted_dist": _json_value(row["predicted_dist"], {}),
+                "actual_dist": actual_dist,
+                "predicted_dist": predicted_dist,
+                "metric_actual_dist": actual_dist,
+                "metric_predicted_dist": metric_predicted_dist,
             }
         )
     return grouped
+
+
+def _backtest_frontend_monthly_metrics_from_daily_rows(
+    daily_rows: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
+    for tenor, rows in daily_rows.items():
+        for row in rows:
+            if row.get("actual_direction") is None or row.get("predicted_direction") is None:
+                continue
+            month = str(row.get("target_date") or row.get("predict_date") or "")[:7]
+            if not month:
+                continue
+            grouped[tenor][month].append(row)
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for tenor, by_month in grouped.items():
+        result[tenor] = []
+        for month, rows in sorted(by_month.items()):
+            result[tenor].append(
+                {
+                    "target_tenor": tenor,
+                    "horizon": rows[0].get("horizon"),
+                    "month": month,
+                    **_metric_block(rows),
+                }
+            )
+    return result
 
 
 def _backtest_frontend_daily_rows(engine: Engine, run_id: int) -> dict[str, list[dict[str, Any]]]:
@@ -867,6 +906,7 @@ def _ratio_to_percent(value: Any) -> float | None:
 
 def _metric_block_from_monthly(rows: list[dict[str, Any]]) -> dict[str, Any]:
     total = sum(int(row.get("samples") or 0) for row in rows)
+    metric_samples = sum(_metric_samples_from_monthly_row(row) for row in rows)
     correct = sum(int(row.get("correct") or 0) for row in rows)
     pred_up = 0
     pred_down = 0
@@ -877,10 +917,12 @@ def _metric_block_from_monthly(rows: list[dict[str, Any]]) -> dict[str, Any]:
     for row in rows:
         actual_dist = _json_value(row.get("actual_dist"), {})
         predicted_dist = _json_value(row.get("predicted_dist"), {})
-        row_actual_up = int(actual_dist.get("up") or 0)
-        row_actual_down = int(actual_dist.get("down") or 0)
-        row_pred_up = int(predicted_dist.get("up") or 0)
-        row_pred_down = int(predicted_dist.get("down") or 0)
+        metric_actual_dist = _json_value(row.get("metric_actual_dist"), actual_dist)
+        metric_predicted_dist = _json_value(row.get("metric_predicted_dist"), predicted_dist)
+        row_actual_up = int(metric_actual_dist.get("up") or 0)
+        row_actual_down = int(metric_actual_dist.get("down") or 0)
+        row_pred_up = int(metric_predicted_dist.get("up") or 0)
+        row_pred_down = int(metric_predicted_dist.get("down") or 0)
         actual_up += row_actual_up
         actual_down += row_actual_down
         pred_up += row_pred_up
@@ -900,14 +942,33 @@ def _metric_block_from_monthly(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "total": total,
         "samples": total,
+        "metric_samples": metric_samples,
         "correct": correct,
-        "accuracy": _percent(correct, total),
-        "overall": _percent(correct, total),
+        "accuracy": _percent(correct, metric_samples),
+        "overall": _percent(correct, metric_samples),
         "up_precision": _percent(up_tp, pred_up),
         "up_recall": _percent(up_tp, actual_up),
         "down_precision": _percent(down_tp, pred_down),
         "down_recall": _percent(down_tp, actual_down),
     }
+
+
+def _metric_samples_from_monthly_row(row: dict[str, Any]) -> int:
+    value = row.get("metric_samples")
+    if value is not None:
+        return int(value or 0)
+    predicted_dist = _json_value(row.get("metric_predicted_dist"), {})
+    if not predicted_dist:
+        predicted_dist = _json_value(row.get("predicted_dist"), {})
+    if predicted_dist:
+        dist_total = (
+            int(predicted_dist.get("up") or 0)
+            + int(predicted_dist.get("down") or 0)
+            + int(predicted_dist.get("flat") or 0)
+        )
+        if dist_total > 0:
+            return int(predicted_dist.get("up") or 0) + int(predicted_dist.get("down") or 0)
+    return int(row.get("samples") or 0)
 
 
 def _true_positive_from_metrics(

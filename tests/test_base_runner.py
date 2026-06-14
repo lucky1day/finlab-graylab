@@ -106,6 +106,39 @@ class BaseRunnerMetricsTests(unittest.TestCase):
         self.assertEqual(metrics[0]["month"], "2026-01")
         self.assertEqual(metrics[0]["sample_count"], 1)
 
+    def test_flat_predictions_count_as_samples_but_not_metric_denominator(self) -> None:
+        from backtests._base_runner import build_monthly_metrics
+
+        rows = [
+            {
+                "scheme_id": "demo_daily",
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": f"2026-06-{day:02d}",
+                "target_date": f"2026-06-{day + 5:02d}",
+                "label": label,
+                "predicted_direction": predicted,
+            }
+            for day, label, predicted in [
+                (1, 1, 1),
+                (2, -1, -1),
+                (3, 1, 1),
+                (4, -1, 1),
+                (5, 1, -1),
+                (6, -1, 1),
+                (7, 1, -1),
+                (8, 0, 0),
+            ]
+        ]
+
+        metrics = build_monthly_metrics(rows, benchmark_id="demo_benchmark")
+
+        self.assertEqual(metrics[0]["sample_count"], 8)
+        self.assertEqual(metrics[0]["metric_sample_count"], 7)
+        self.assertEqual(metrics[0]["correct_count"], 3)
+        self.assertAlmostEqual(metrics[0]["accuracy"], 3 / 7)
+        self.assertEqual(metrics[0]["predicted_dist"]["flat"], 1)
+
 
 class BaseRunnerComparisonTests(unittest.TestCase):
     def test_compare_prediction_rows_normalizes_scalars_and_respects_float_tolerance(self) -> None:

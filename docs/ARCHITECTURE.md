@@ -455,6 +455,8 @@ class PredictionRecord:
 
 返回中的 `daily_rows` 必须包含平台业务字段 `feature_date` 与 `prediction_phase`（`gray_live` / `scheduled_live`），并提供 `phase_ranges` 汇总。前端不得依赖 `anchor_date`。
 
+指标字段中 `total` / `samples` 表示已验证样本总数，包含 `predicted_direction=0` 的“平”样本；`metric_samples` 表示准确率类指标分母，只包含有方向信号的预测样本。`accuracy` / `overall` 必须按 `correct / metric_samples` 计算；样本数列仍展示 `samples`。
+
 ```json
 {
   "scheme_id": "t5_daily__h5__10Y",
@@ -465,8 +467,10 @@ class PredictionRecord:
     {
       "month": "2025-01",
       "total": 18,
+      "samples": 18,
+      "metric_samples": 17,
       "correct": 7,
-      "accuracy": 38.9,
+      "accuracy": 41.2,
       "up_precision": 46.2,
       "up_recall": 60.0,
       "down_precision": 20.0,
@@ -475,6 +479,8 @@ class PredictionRecord:
   ],
   "summary": {
     "total": 97,
+    "samples": 97,
+    "metric_samples": 95,
     "accuracy": 64.9,
     "up_precision": 65.1,
     "down_precision": 64.5

@@ -86,7 +86,24 @@ target_date  = T + horizon
 
 这三个例外只允许用于历史回测和 benchmark 复现。它们的灰度实盘、正式实盘 adapter 仍必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
-## 6. 前端展示规则
+## 6. 指标统计口径
+
+预测方向 `predicted_direction=0` 表示“平”或“无方向信号”。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等指标的分母。
+
+平台统一字段含义如下：
+
+| 字段 | 含义 |
+|------|------|
+| `samples` / `sample_count` | 可评价样本总数，包含预测为平的样本 |
+| `metric_samples` / `metric_sample_count` | 指标分母，只包含 `predicted_direction in {-1, 1}` 的有方向预测样本 |
+| `correct` / `correct_count` | 只在 `metric_samples` 范围内统计方向预测正确数 |
+| `accuracy` / `overall` | `correct / metric_samples` |
+| `actual_dist` / `predicted_dist` | 全部可评价样本的实际/预测方向分布，包含 `flat` |
+| `metric_actual_dist` / `metric_predicted_dist` | 指标分母范围内的实际/预测方向分布，不包含预测为平的样本 |
+
+例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、后端 live metrics、回测 runner 和 `/api/backtests/factor-lab` 必须遵守同一口径。
+
+## 7. 前端展示规则
 
 前端可以展示灰度实盘和正式实盘，但必须能区分 `prediction_phase`：
 
@@ -95,7 +112,7 @@ target_date  = T + horizon
 
 前端与业务不读取 `anchor_date`。需要展示预测站位或数据截止时，统一显示 `feature_date`。月度行、明细归属、actual join 和去重仍统一按 `target_date`。
 
-## 7. 当前 V28 判定
+## 8. 当前 V28 判定
 
 对 `daily_5y_2_v28` 当前已知记录：
 
