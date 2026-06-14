@@ -108,6 +108,19 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 > 周频 `target_rule` 与 `t_scheme_weekly_actuals` / `WeeklyActualRecord.target_rule` 对齐，保证预测与实际方向口径一致。
 > 实盘落库必须写入一等字段 `prediction_phase`（`gray_live` / `scheduled_live`）。`extra.prediction_phase` 仅作为过渡审计副本，不能替代平台字段。
 
+### 3.1 Benchmark 样本日期契约
+
+source benchmark 的日期字段表达原始算法站位日 T。进入平台后，T 必须对齐一等字段 `feature_date`，不能对齐实盘语义下的 `predict_date`。历史旧 CSV 若仍使用列名 `predict_date` 或 `date`，也只能解释为 source T；新增 benchmark 文件必须显式写入 `feature_date` 或 `source_t`。
+
+benchmark 与数据库明细核验的主键为：
+
+| 频率 | 主键 |
+|------|------|
+| daily | `feature_date`, `target_date`, `target_tenor`, `horizon` |
+| weekly | `feature_week_id`, `feature_date`, `target_date`, `target_tenor`, `horizon` |
+
+如果 benchmark 样本的 `target_date` 位于历史回测区间，必须与 `t_backtest_predictions.feature_date` 对齐；如果 `target_date` 位于灰度/实盘观察区，必须与 `t_scheme_predictions.feature_date` 对齐，并额外校验 `prediction_phase`。`predict_date` 只校验发出时点：回测为 `predict_date == feature_date`，灰度/正式实盘为按调度规则从 `feature_date` 后发出。
+
 `CompareGate` 中的 `max_confidence_abs_diff` / `mean_confidence_abs_diff` 是 original/current benchmark 对 `confidence` 字段的浮点差异统计；`1e-16` 量级属于浮点舍入误差，按 0 看待。方案行为一致性的硬门槛仍是 `predicted_direction` 逐样本零容差。
 
 ---
@@ -208,6 +221,7 @@ BacktestGate 去掉 `--no-persist` 落库后断言：
 | 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
 | 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
 | 日期语义 | 回测 rows 必须满足 `predict_date == feature_date`，不得读取或复制灰度/正式实盘记录 | 用 T+1 实盘结果冒充 T 回测结果 |
+| benchmark 对齐 | source benchmark 的 T 必须对齐 `t_backtest_predictions.feature_date`；若 target 已进入灰度/实盘观察区，则改与 `t_scheme_predictions.feature_date` 对齐 | 把原始算法站位日误当成实盘发出日，导致 T/T+1 错位 |
 
 ### 7.3 与现有机制的关系
 

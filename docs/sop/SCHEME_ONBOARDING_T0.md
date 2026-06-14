@@ -104,12 +104,12 @@
 
 1. 原始脚本 / 原始输出生成 source benchmark。
 2. 入库后框架代码生成 current benchmark。
-3. 逐样本对齐，`predicted_direction` 零容差。
+3. 逐样本对齐，原始算法 source T 对齐平台 `feature_date`，`predicted_direction` 零容差。
 4. 四份 benchmark 文件落在 `schemes/{scheme_id}/benchmarks/`。
 5. `config.yaml` 设置 `backtest.benchmark_required: true`。
 6. `harness onboard --stage all` 中 CompareGate 必须是 `passed`，不能是 `skipped`。
 
-benchmark CSV 至少包含 `predict_date/tenor/direction/confidence`；周度方案还应保留 `feature_week_id/target_date` 等审计列。CompareGate 当前按 `predict_date + tenor` 对齐预测样本，月度指标和前端展示仍按 `target_date` 归属。
+benchmark CSV 至少包含 `feature_date(or source_t)/target_date/tenor(or target_tenor)/direction/confidence`；周度方案还必须保留 `feature_week_id` 等审计列。历史旧列名 `predict_date/date` 只能解释为原始算法 source T，也就是平台 `feature_date`，不得解释为实盘信号发出日。月度指标、前端展示、回测/live 分区仍按 `target_date` 归属；跨灰度边界的 benchmark 样本要按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions` 核验。
 
 纯框架内实验方案如果没有原始基准，必须在 `docs/CURRENT_STATUS.md` 明确说明为什么 CompareGate 可以没有 source benchmark。
 

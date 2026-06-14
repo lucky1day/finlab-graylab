@@ -24,6 +24,27 @@
 
 灰度实盘也属于实盘观察区。它与正式实盘的区别不是预测日期公式，而是来源阶段：灰度通常是方案部署前后的受控补齐或观察，正式实盘是 scheduler 在真实时钟自然触发。
 
+### 2.1 原始 benchmark 的 T 对齐规则
+
+原始算法回测或 benchmark 文件中的 `T`、`date`、`t`、历史列名 `predict_date` 都表示“原始算法站在 T 这一刻预测”，也就是预测锚点 / 数据站位日。进入平台后，这个 T 必须对齐数据库明细里的 `feature_date`，不得对齐实盘语义下的 `predict_date`。
+
+因此：
+
+```text
+原始算法 benchmark.T = 平台 feature_date
+历史回测 predict_date = feature_date = T
+灰度/正式实盘 predict_date = T + 1, feature_date = T
+```
+
+benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + horizon` 为主键；周频方案还必须包含或可唯一映射 `feature_week_id`。`predict_date` 只用于校验信号发出时点：历史回测要求 `predict_date == feature_date`，灰度/正式实盘要求 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
+
+如果原始 benchmark 的某条样本 `target_date` 已进入灰度/实盘观察区，例如 T 在 5 月末而 target 落到 6 月，则这条样本不能强行要求出现在 `t_backtest_predictions`。核验时必须按 `target_date` 分流：
+
+- `target_date < 灰度实盘起点`：与 `t_backtest_predictions.feature_date` 对齐核验。
+- `target_date >= 灰度实盘起点`：与 `t_scheme_predictions.feature_date` 对齐核验，并同时校验 `prediction_phase`。
+
+这条规则优先于旧文件列名。旧 benchmark CSV 即使列名仍叫 `predict_date`，也只能解释为 source T / 平台 `feature_date`；新增 benchmark 文件应显式写 `feature_date` 或 `source_t`，避免把原始算法站位日误读为平台信号发出日。
+
 ## 3. 灰度实盘规则
 
 灰度实盘用于补齐从灰度 target 起点到正式部署前的实盘观察序列。当前 V28 批次的灰度 target 起点是 `target_date >= 2026-06-01`；后续方案必须按方案生命周期登记自己的灰度起点和正式调度起点，不能把日期写成全局常量。

@@ -17,6 +17,7 @@
 **核心判定标准（全程统一）**：
 - **方向零容差**：两版本对比时，`predicted_direction`（1/-1/0）必须**逐样本完全一致**；`confidence` 等浮点允许 `1e-9` 容差。方向差一个样本即判不一致。
 - **confidence 语义**：`confidence` 是原始算法置信度、概率或分数在平台里的统一承接字段；如果原始算法没有天然 confidence，baseline/current 两侧必须使用同一确定性代理值，并在 `CURRENT_STATUS.md` 说明。
+- **benchmark T 对齐语义**：原始算法回测结果里的 `T/date/predict_date` 表示算法站在 T 预测，进入平台后必须对齐数据库明细的 `feature_date`，不得对齐实盘语义下的 `predict_date`。
 - **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
 - **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
 
@@ -76,7 +77,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S1 通过 |
-| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **静态基准文件**：入库前固化的基准输出（如 `benchmarks/{benchmark_id}/*.csv` 或预测结果表），含逐样本 `predict_date/tenor(or target_tenor)/direction(or predicted_direction)` |
+| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **静态基准文件**：入库前固化的基准输出（如 `benchmarks/{benchmark_id}/*.csv` 或预测结果表），含逐样本 source T（字段可为 `feature_date/source_t`，历史旧列名 `predict_date/date` 也只按 source T 解释）、`target_date`、`tenor(or target_tenor)`、`direction(or predicted_direction)` |
 | **成功判定** | ①或②至少存在其一，且能定位到具体文件/模块路径 |
 | **成功→去向** | 进入 S3（记录采用的是脚本复现还是静态基准） |
 | **失败判定** | 两种形态都不存在，或存在但无法定位/不含逐样本方向 |
@@ -91,7 +92,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S2 通过，已确定版本回测定义形态 |
-| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`。<br>**形态②（静态）**：直接读入库前静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `predict_date/tenor(or target_tenor)/predicted_direction/confidence`） |
+| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`。<br>**形态②（静态）**：直接读入库前静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `feature_date(or source_t)/target_date/tenor(or target_tenor)/predicted_direction/confidence`）。若原始文件只有历史列名 `predict_date/date`，转换时必须重命名或标注为 source T / `feature_date` |
 | **成功判定** | 基准序列成功生成、样本数 > 0、含必需字段 |
 | **成功→去向** | 进入 S4 |
 | **失败判定** | 原始脚本报错跑不出、或静态文件损坏/字段缺失 |
@@ -118,12 +119,12 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S3 baseline_original + S4 repro_framework 均就绪 |
-| **动作** | 逐样本对齐（按 `predict_date + tenor`；平台内部字段可映射为 `target_tenor`）比对两版本，可用 `scripts/compare_refactor_outputs.py`（方向严格、浮点 1e-9）。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
-| **成功判定** | **所有可对齐样本 `predicted_direction` 完全一致**；`confidence` 差异 ≤ 1e-9；无"基准有而复现缺"的样本（或缺失已有合理解释并记录） |
+| **动作** | 逐样本对齐：日频按 `feature_date + target_date + target_tenor + horizon`，周频按 `feature_week_id + feature_date + target_date + target_tenor + horizon`。原始算法 source T 必须映射到平台 `feature_date`；平台内部字段 `tenor` 可映射为 `target_tenor`。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
+| **成功判定** | **所有可对齐样本 `predicted_direction` 完全一致**；`confidence` 差异 ≤ 1e-9；无"基准有而复现缺"的样本（或缺失已有合理解释并记录）；无 source T 与 `feature_date` 错位 |
 | **confidence 判读** | `max_confidence_abs_diff` / `mean_confidence_abs_diff` 只表示两版本同名数值字段的浮点差异；`1e-16` 量级视为舍入误差，不代表模型行为改变 |
 | **成功→去向** | 进入 S6 |
 | **失败判定** | 存在任一样本方向不一致，或样本集不可对齐 |
-| **失败→去向** | `REJECTED_TO_ONBOARDING`。**必须输出不一致明细**：哪些 `predict_date/tenor`、基准方向 vs 复现方向、差异数量。由入库 SOP 据此排查改造引入的偏差，改造后从 S1 重来 |
+| **失败→去向** | `REJECTED_TO_ONBOARDING`。**必须输出不一致明细**：哪些 `feature_date/target_date/tenor`、基准方向 vs 复现方向、差异数量。由入库 SOP 据此排查改造引入的偏差，改造后从 S1 重来 |
 
 ---
 
@@ -146,8 +147,8 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S6 落库成功，得 run_id |
-| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-` |
-| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子 |
+| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 用 source benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行查 `t_scheme_predictions.feature_date` 和 `prediction_phase` |
+| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；source benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致 |
 | **成功→去向** | 进入 S8 |
 | **失败判定** | 任一前端数值与 DB 不符 |
 | **失败→去向** | 先排除浏览器静态资源缓存（强制刷新/Disable Cache），再回到 **S7 起点重新刷新**（必要时回 S6 重新落库）。"所有回测结果必须严格验证完毕"方可放行 |

@@ -360,12 +360,12 @@ CompareGate 需要四份 benchmark 样本文件来验证平台改造后的输出
 
 | 文件 | 内容 |
 |------|------|
-| `original_predictions_sample.csv` | 原始算法的预测样本（至少 `predict_date, tenor, direction, confidence`；周度建议额外保留 `feature_week_id, target_date` 等审计列） |
+| `original_predictions_sample.csv` | 原始算法的预测样本。日期列表达 source T / 平台 `feature_date`；新增文件应显式写 `feature_date` 或 `source_t`，历史列名 `predict_date/date` 仅作 source T 解释。至少包含 `feature_date(or source_t), target_date, tenor(or target_tenor), direction, confidence`；周度必须额外保留 `feature_week_id` |
 | `original_backtest_summary.json` | 原始算法的月度指标摘要 |
 | `current_predictions_sample.csv` | 当前平台输出的预测样本（字段与 original 同口径，内容应一致） |
 | `current_backtest_summary.json` | 当前平台的月度指标摘要（与 original 同口径，内容应一致） |
 
-`confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。CompareGate 当前按 `predict_date + tenor` 对齐预测样本；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
+`confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
 如果方案已有历史回测数据写入 `t_backtest_*` 表，可以用以下脚本从数据库提取样本。必须显式指定 `--run-id`，或同时指定 `--scheme-id --benchmark-id --data-source`，避免把多个 benchmark 或旧 run 混成一份 CompareGate 基准：
 
@@ -462,7 +462,7 @@ if __name__ == "__main__":
 - 默认优先使用 point-in-time 回测；如果源方案只能按 source-original batch reproduction 复现，必须在 `PREDICTION_SEMANTICS.md` 和 `PITFALLS_2026-06-10.md` 记录原因，并在 persist 前校验已有 original benchmark 覆盖区间逐行一致。该例外只允许用于历史回测，不得改变 gray/live/scheduled live adapter 的 `feature_date/as_of_date` 截止规则。
 - 已批准的 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 历史回测是 source-original batch reproduction 例外：runner 一次性调用 core 生成完整历史预测，再按 DB 日历构造平台 rows；summary 必须写 `backtest_mode=original_batch_reproduction`、`backtest_point_in_time=false`、`historical_backtest_exception=true`，并写入 `original_benchmark_validation`。
 - 周频候选方案之间的样本总数不要求强行一致；runner 只能写入 core 真实产出的有效预测行。若某个日历周因为规则信号为 0、NaN、无效标签或 source core 的 inner join 被排除，不能补写空预测来凑齐样本数；必须在状态文档中记录缺失的 `feature_week_id` 和 core 过滤原因。
-- 新增方案不得直接套用上述例外。只有当源 benchmark 明确是 batch reproduction，且逐点 PIT 会改变原始评价对象时，才可以申请同类例外；批准后必须提供 benchmark 覆盖区间逐行一致证明，至少覆盖 `direction/predicted_direction`、`confidence`、`target_date`、`label/is_correct`，其中 `confidence` 只允许浮点舍入误差。
+- 新增方案不得直接套用上述例外。只有当源 benchmark 明确是 batch reproduction，且逐点 PIT 会改变原始评价对象时，才可以申请同类例外；批准后必须提供 benchmark 覆盖区间逐行一致证明，至少覆盖 `feature_date/source_t`、`target_date`、`direction/predicted_direction`、`confidence`、`label/is_correct`，其中 source T 必须对齐平台 `feature_date`，`confidence` 只允许浮点舍入误差。
 
 回测写库后入库:
 
@@ -570,12 +570,12 @@ LIMIT 5;
 激活前必须满足以下全部条件，**任何一条不满足都不允许激活**：
 
 1. **完成 [SCHEME_POST_ONBOARDING_TEST_SOP.md](SCHEME_POST_ONBOARDING_TEST_SOP.md) S3–S5**：
-   - S3：用入库前原始脚本（或静态基准文件）跑出基准预测序列。
-   - S4：用入库后的框架代码（同一数据接入层）跑出复现序列。
-   - S5：逐样本对比，**`predicted_direction` 方向零容差**（差一个样本即不一致），浮点 `1e-9` 容差。
+	   - S3：用入库前原始脚本（或静态基准文件）跑出基准预测序列。
+	   - S4：用入库后的框架代码（同一数据接入层）跑出复现序列。
+	   - S5：逐样本对比，原始算法 source T 必须对齐平台 `feature_date`，**`predicted_direction` 方向零容差**（差一个样本即不一致），浮点 `1e-9` 容差。
 2. **benchmark 文件已落到 `schemes/{scheme_id}/benchmarks/`**（四份，见 Step 5a），且 `config.yaml` 中 `backtest.benchmark_required: true`。
 3. **CompareGate 状态必须是 `passed`，不能是 `skipped`**。`skipped` 意味着对比没有发生——对于新增方案这是不可接受的（`skipped` 仅对无原始基准的纯框架内实验方案可接受，且需在 CURRENT_STATUS 中显式说明原因）。
-4. 对比证据（matched 数、direction diff、confidence diff）写入 `docs/CURRENT_STATUS.md`；`confidence diff` 指 benchmark 两侧同一字段的浮点差异，不是新的模型指标。
+4. 对比证据（matched 数、source T/feature_date 对齐口径、direction diff、confidence diff）写入 `docs/CURRENT_STATUS.md`；`confidence diff` 指 benchmark 两侧同一字段的浮点差异，不是新的模型指标。
 
 执行顺序建议：Step 7（回测落库）→ Step 10a（源 vs 入库对比 + benchmark 文件）→ 重跑 `harness onboard --stage all` 确认 CompareGate passed → Step 10（激活）。
 

@@ -80,7 +80,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 - `feature_date` — 数据截止日 / 预测站位日
 - `target_date` — 验证目标日，用于展示、去重、actual join 和月度统计归属
 
-`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘），二者都必须满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`；历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`。完整规则见 [docs/PREDICTION_SEMANTICS.md](docs/PREDICTION_SEMANTICS.md)。
+`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘），二者都必须满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`；历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`。原始算法 benchmark 里的 `T/date/predict_date` 表达 source T / 预测站位日，进入平台后必须对齐 DB 明细的 `feature_date`，不是对齐 live `predict_date`；跨灰度边界的样本按 `target_date` 分流到回测表或实盘表核验。完整规则见 [docs/PREDICTION_SEMANTICS.md](docs/PREDICTION_SEMANTICS.md)。
 
 ## 方案入库流程（强约束 harness）
 
