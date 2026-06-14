@@ -3,7 +3,7 @@
 **更新日期**: 2026-06-14
 
 > 2026-06-14 文档已按当前 DB、代码目录、live 语义修复和 latest 回测重建状态刷新。新增方案入口统一为 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)；平台统一使用 `predict_date`（信号发出日）、`feature_date`（数据截止日/预测站位日）、`target_date`（验证目标日）。日频与周频月度统计、明细日期均按 `target_date` 归属；灰度实盘与正式实盘需通过 `prediction_phase=gray_live/scheduled_live` 区分。回测起点 `2025-01-01` 是输出样本起点，不是训练历史裁剪点。
-> 2026-06-14 追加 registry 单表 per-tenor 语义：`t_scheme_registry` 每一行就是前端/业务定义的一个方案，唯一身份为 composite `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。算法目录、scheduler、`PredictionRecord` 和 backtest 表继续使用 base `scheme_id`；前端、`/api/schemes`、`/api/metrics/{scheme_id}` 和 `/api/backtests/factor-lab` 只使用 registry composite `scheme_id`。`/api/metrics/{base_scheme_id}?tenor=...` 已废弃且不兼容。
+> 2026-06-14 追加 registry 单表 per-tenor 语义：`t_scheme_registry` 每一行就是前端/业务定义的一个方案，唯一身份为 composite `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。算法目录、scheduler、`PredictionRecord` 和 backtest 表继续使用 base `scheme_id`；前端、`/api/schemes`、`/api/metrics/{scheme_id}` 和 `/api/backtests/factor-lab` 只使用 `status='active'` 的 registry composite `scheme_id`。`/api/metrics/{base_scheme_id}?tenor=...` 已废弃且不兼容；`paused` / `archived` registry 行只用于管理或审计，不进入当前前端/业务 API，也不允许 trigger 或 scheduler 新写入该 target。
 
 ## 总览
 
@@ -184,7 +184,7 @@ weekly actuals 覆盖：
 
 `weekly_10y_d_overlay_0529` 已按 DB 周历完成历史回测落库，最新 `framework_db_aligned` run_id=`108`，`t_backtest_predictions` 72 条、`t_backtest_monthly_metrics` 17 条；整体样本 72、正确 47、accuracy=65.3%，`evaluation_filter.date_field=target_date`。`/api/backtests/factor-lab` 返回该业务方案 composite `scheme_id=weekly_10y_d_overlay_0529__h6__10Y`、`base_scheme_id=weekly_10y_d_overlay_0529`、`frequency=weekly`、`horizon=6`、`target_tenor=10Y`，历史回测月份为 2025-01 到 2026-05，2026-06 不再出现在 backtest monthly rows。该方案历史回测是批准的 source-original batch reproduction 例外：旧严格 PIT run_id=`106` 已删除；原因是 10Y D-overlay 的 Model2 固定未来分段与逐周 PIT 切片冲突，会导致 2025H1 无有效当前周信号。新 run summary 标记 `backtest_mode=original_batch_reproduction`、`backtest_point_in_time=false`，且 `original_benchmark_validation` 为 45/45 matched。实盘/灰度 adapter 仍严格使用 `feature_date`、`end_week=feature_week_id`、`as_of_date=feature_date`。
 
-`daily_5y_2_v28` 已完成历史回测落库，最新 `framework_db_aligned` run_id=`107`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条；整体样本 333、正确 163、accuracy=48.9%，`evaluation_filter.date_field=target_date`。历史回测已截断到 `target_date < 2026-06-01`，predict_date 范围为 `2025-01-02` 到 `2026-05-22`，target_date 范围为 `2025-01-09` 到 `2026-05-29`；`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 返回 `daily_5y_2_v28:5Y:framework_db_aligned`，run_id=`107`，DB↔API 月度格 17/17 一致。其中 2026-05 目标月 13 个样本、正确 10 个、accuracy=76.9%。旧 run_id=`92/93/103` 仍保留为审计历史，但不再被 `v_latest_backtest_run` 或前端 latest 查询选中。
+`daily_5y_2_v28` 已完成历史回测落库，最新 `framework_db_aligned` run_id=`107`，`t_backtest_predictions` 333 条、`t_backtest_monthly_metrics` 17 条；整体样本 333、正确 163、accuracy=48.9%，`evaluation_filter.date_field=target_date`。历史回测已截断到 `target_date < 2026-06-01`，predict_date 范围为 `2025-01-02` 到 `2026-05-22`，target_date 范围为 `2025-01-09` 到 `2026-05-29`；`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 返回 active registry 业务方案 `scheme_id=daily_5y_2_v28__h5__5Y`、`base_scheme_id=daily_5y_2_v28`、run_id=`107`，DB↔API 月度格 17/17 一致。其中 2026-05 目标月 13 个样本、正确 10 个、accuracy=76.9%。旧 run_id=`92/93/103` 仍保留为审计历史，但不再被 `v_latest_backtest_run` 或前端 latest 查询选中。
 
 2026-06-13 已按预测语义 bugfix 重跑并落库 active 方案 latest 回测，最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `94/95/96`，`t1_daily` baseline/framework-csv/framework-db 分别为 `97/98/99`，`weekly_5y_direct_0529` framework-db 为 `109`，`weekly_7y_cross_d_overlay_0529` framework-db 为 `110`，`weekly_10y_d_overlay_0529` framework-db 为 `108`，`daily_5y_2_v28` framework-db 为 `107`。SQL 复核所有 latest rows 均满足 `predict_date = feature_date`、`predict_date >= 2025-01-01`、`target_date < 2026-06-01`，且同一 `benchmark_id + scheme_id + data_source` 不存在多行 latest。`/api/backtests/factor-lab?data_source=framework_db_aligned` 已返回三个周频 latest run：5Y=`109`、7Y=`110`、10Y=`108`，各 17 个月度格。
 
@@ -223,7 +223,7 @@ active 方案的 live 预测事实表当前状态：
   - `GET /api/health`
   - `GET /api/targets`
   - `GET /api/predictions?limit=1`
-- `GET /api/backtests/factor-lab` 已改为只读获取 scheme metadata，不再触发 registry sync。P0 后 `GET /api/schemes` 也已去除 registry 写副作用：registry 同步改为后端启动时执行一次，外加受保护的 `POST /api/admin/registry/sync`（未配置 `BOND_ADMIN_TOKEN` 时放行，配置后需 `X-Admin-Token`）。当前所有 GET 接口均为只读。
+- `GET /api/backtests/factor-lab` 已改为只读获取 active registry metadata，不再触发 registry sync，也不再从 config fallback 临时拼业务 `scheme_id`。P0 后 `GET /api/schemes` 也已去除 registry 写副作用：registry 同步改为后端启动时执行一次，外加受保护的 `POST /api/admin/registry/sync`（未配置 `BOND_ADMIN_TOKEN` 时放行，配置后需 `X-Admin-Token`）。当前所有 GET 接口均为只读。
 - 正式运行需要写库时，只应通过明确的调度器或运维命令写入 `t_scheme_predictions`、`t_scheme_run_log`、`t_scheme_actuals`、`t_scheme_weekly_actuals` 或 `t_backtest_*`，不要改动源数据表。
 
 ## 剩余观察项

@@ -86,6 +86,7 @@ def _register_scheme(
     target_tenor: str,
     horizon: int,
     frequency: str = "daily",
+    status: str = "active",
 ) -> None:
     with engine.begin() as conn:
         conn.execute(
@@ -96,7 +97,7 @@ def _register_scheme(
                      schedule_cron, schedule_timezone, status, deployed_at)
                 VALUES
                     (:scheme_id, :base_scheme_id, :scheme_id, '', :horizon, :frequency, :target_tenor,
-                     '3 7 * * 1-5', 'Asia/Shanghai', 'active', '2026-06-09')
+                     '3 7 * * 1-5', 'Asia/Shanghai', :status, '2026-06-09')
                 """
             ),
             {
@@ -105,6 +106,7 @@ def _register_scheme(
                 "horizon": horizon,
                 "frequency": frequency,
                 "target_tenor": target_tenor,
+                "status": status,
             },
         )
 
@@ -143,6 +145,43 @@ def _seed_predictions(engine) -> None:
 
 
 class BackendPredictionServingTests(unittest.TestCase):
+    def test_list_schemes_returns_active_registry_rows_only(self) -> None:
+        from backend.services import list_schemes
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_active__h1__10Y",
+            base_scheme_id="demo_active",
+            target_tenor="10Y",
+            horizon=1,
+            status="active",
+        )
+        _register_scheme(
+            engine,
+            scheme_id="demo_paused__h1__10Y",
+            base_scheme_id="demo_paused",
+            target_tenor="10Y",
+            horizon=1,
+            status="paused",
+        )
+        _register_scheme(
+            engine,
+            scheme_id="demo_archived__h1__10Y",
+            base_scheme_id="demo_archived",
+            target_tenor="10Y",
+            horizon=1,
+            status="archived",
+        )
+
+        try:
+            rows = list_schemes(engine)
+        finally:
+            engine.dispose()
+
+        self.assertEqual([row["scheme_id"] for row in rows], ["demo_active__h1__10Y"])
+
     def test_scheme_metrics_returns_available_predictions(self) -> None:
         """所有预测记录（无 serving pointer 过滤）参与指标计算。"""
         from backend.services import scheme_metrics
@@ -194,6 +233,35 @@ class BackendPredictionServingTests(unittest.TestCase):
         try:
             with self.assertRaisesRegex(LookupError, "registry scheme not found"):
                 scheme_metrics(engine, "demo_daily")
+        finally:
+            engine.dispose()
+
+    def test_scheme_metrics_rejects_non_active_registry_rows(self) -> None:
+        from backend.services import scheme_metrics
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_paused__h1__10Y",
+            base_scheme_id="demo_paused",
+            target_tenor="10Y",
+            horizon=1,
+            status="paused",
+        )
+        _register_scheme(
+            engine,
+            scheme_id="demo_archived__h1__10Y",
+            base_scheme_id="demo_archived",
+            target_tenor="10Y",
+            horizon=1,
+            status="archived",
+        )
+        try:
+            with self.assertRaisesRegex(LookupError, "registry scheme not found"):
+                scheme_metrics(engine, "demo_paused__h1__10Y")
+            with self.assertRaisesRegex(LookupError, "registry scheme not found"):
+                scheme_metrics(engine, "demo_archived__h1__10Y")
         finally:
             engine.dispose()
 

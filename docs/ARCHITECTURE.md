@@ -255,6 +255,8 @@ CREATE TABLE t_scheme_registry (
 
 `t_scheme_registry` 是唯一方案注册表，一行就是前端/业务定义的一个方案。`scheme_id` 是唯一业务身份，统一格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`，例如 `t5_daily__h5__10Y`；不再存在第二套 `(base_scheme_id, frequency, horizon, target_tenor)` 唯一键。`base_scheme_id` 是算法目录 / config / scheduler / backtest 存储使用的执行身份，例如 `t5_daily`；同一个 base 算法预测多个 Y 标的时，registry 拆成多行，但 scheduler 仍只按 `base_scheme_id` 挂载一个执行任务。
 
+`active` 是唯一前端/业务可见状态。`GET /api/schemes`、`GET /api/metrics/{scheme_id}`、`GET /api/backtests/factor-lab` 和手动 trigger 只接受 / 返回 `status='active'` 的 registry composite `scheme_id`。`paused` 用于验证期管理，`archived` 用于保留审计历史；二者不进入当前前端矩阵，不允许 trigger，也不允许 scheduler 新写入对应 target。
+
 ### 3.5 t_scheme_runs
 
 ```sql
@@ -402,6 +404,8 @@ class PredictionRecord:
 
 ### 5.1 GET /api/schemes
 
+只返回 `status='active'` 的 registry rows；每行就是一个前端/业务方案。
+
 ```json
 [
   {
@@ -446,6 +450,8 @@ class PredictionRecord:
 参数: `start_month`, `end_month`
 
 `scheme_id` 必须是 registry composite ID，例如 `t5_daily__h5__10Y`。接口不再接受 `?tenor=...`；传入 base scheme id（如 `t5_daily`）应返回 404，传入 `tenor` query 应返回 400。
+
+该接口只接受 `status='active'` 的 registry row。`paused` / `archived` 或 registry 缺行的 `scheme_id` 一律返回 404。
 
 返回中的 `daily_rows` 必须包含平台业务字段 `feature_date` 与 `prediction_phase`（`gray_live` / `scheduled_live`），并提供 `phase_ranges` 汇总。前端不得依赖 `anchor_date`。
 
@@ -508,7 +514,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 由FastAPI后端直接serve这个目录作为静态文件。

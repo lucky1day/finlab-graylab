@@ -458,7 +458,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_labels: { "5Y": "5Y国债活跃" },
                 schemes: [
                   {
-                    id: "daily_5y_2_v28:5Y:framework_db_aligned",
+                    id: "v28_daily_5y_2:daily_5y_2_v28__h5__5Y:framework_db_aligned",
                     run_id: 92,
                     benchmark_id: "v28_daily_5y_2",
                     scheme_id: "daily_5y_2_v28__h5__5Y",

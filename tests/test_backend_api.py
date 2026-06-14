@@ -105,7 +105,11 @@ class TriggerEndpointTests(unittest.TestCase):
     def test_trigger_known_scheme_is_accepted(self) -> None:
         background = BackgroundTasks()
         with patch.object(main, "get_engine", return_value=object()), patch.object(
-            main, "list_schemes", return_value=[{"scheme_id": "demo_daily__h1__10Y", "base_scheme_id": "demo_daily"}]
+            main,
+            "list_schemes",
+            return_value=[
+                {"scheme_id": "demo_daily__h1__10Y", "base_scheme_id": "demo_daily", "status": "active"}
+            ],
         ):
             result = main.api_trigger_scheme(
                 "demo_daily__h1__10Y",
@@ -119,6 +123,30 @@ class TriggerEndpointTests(unittest.TestCase):
         self.assertEqual(len(background.tasks), 1)
         task = background.tasks[0]
         self.assertEqual(task.args[0], "demo_daily")
+
+    def test_trigger_non_active_scheme_is_404(self) -> None:
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main,
+            "list_schemes",
+            return_value=[
+                {"scheme_id": "demo_paused__h1__10Y", "base_scheme_id": "demo_paused", "status": "paused"},
+                {"scheme_id": "demo_archived__h1__10Y", "base_scheme_id": "demo_archived", "status": "archived"},
+            ],
+        ):
+            with self.assertRaises(HTTPException) as paused_ctx:
+                main.api_trigger_scheme(
+                    "demo_paused__h1__10Y",
+                    main.TriggerRequest(predict_date="2026-06-09"),
+                    BackgroundTasks(),
+                )
+            with self.assertRaises(HTTPException) as archived_ctx:
+                main.api_trigger_scheme(
+                    "demo_archived__h1__10Y",
+                    main.TriggerRequest(predict_date="2026-06-09"),
+                    BackgroundTasks(),
+                )
+        self.assertEqual(paused_ctx.exception.status_code, 404)
+        self.assertEqual(archived_ctx.exception.status_code, 404)
 
     def test_run_trigger_invokes_prediction_job(self) -> None:
         with patch.object(main, "run_prediction_job") as job_mock:

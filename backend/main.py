@@ -256,7 +256,11 @@ def _run_trigger(scheme_id: str, request: TriggerRequest) -> None:
 
 @app.post("/api/schemes/{scheme_id}/trigger", status_code=202, dependencies=[Depends(require_admin_token)])
 def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks: BackgroundTasks) -> dict:
-    known = {item["scheme_id"]: item["base_scheme_id"] for item in list_schemes(get_engine())}
+    known = {
+        item["scheme_id"]: item["base_scheme_id"]
+        for item in list_schemes(get_engine())
+        if item.get("status") == "active"
+    }
     base_scheme_id = known.get(scheme_id)
     if base_scheme_id is None:
         raise HTTPException(status_code=404, detail=f"scheme not found: {scheme_id}")

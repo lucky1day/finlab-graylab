@@ -155,7 +155,7 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                     VALUES
                         ('demo_weekly_scheme__h6__10Y', 'demo_weekly_scheme', '周度示例',
                          '只读回测方案', 6, 'weekly', '10Y', '30 11 * * 6',
-                         'Asia/Shanghai', 'paused', '2026-06-05',
+                         'Asia/Shanghai', 'active', '2026-06-05',
                          '2026-06-05T00:00:00', '2026-06-05T00:00:00')
                     """
                 )
@@ -248,14 +248,18 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                     """
                     CREATE TABLE t_scheme_registry (
                         scheme_id TEXT,
+                        base_scheme_id TEXT,
                         name TEXT,
                         description TEXT,
                         horizon INTEGER,
-                        tenors TEXT,
                         frequency TEXT,
+                        target_tenor TEXT,
                         schedule_cron TEXT,
                         schedule_timezone TEXT,
-                        status TEXT
+                        status TEXT,
+                        deployed_at TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
                     )
                     """
                 )
@@ -351,13 +355,16 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_registry
-                        (scheme_id, name, description, horizon, tenors, frequency,
-                         schedule_cron, schedule_timezone, status)
+                        (scheme_id, base_scheme_id, name, description, horizon, frequency,
+                         target_tenor, schedule_cron, schedule_timezone, status, deployed_at,
+                         created_at, updated_at)
                     VALUES
-                        ('legacy_daily', '旧日频', '默认基准方案', 5, '["10Y"]',
-                         'daily', '3 7 * * 1-5', 'Asia/Shanghai', 'active'),
-                        ('daily_5y_2_v28', 'V28日频5Y方案2', '新基准方案', 5, '["5Y"]',
-                         'daily', '3 7 * * 1-5', 'Asia/Shanghai', 'active')
+                        ('legacy_daily__h5__10Y', 'legacy_daily', '旧日频', '默认基准方案', 5,
+                         'daily', '10Y', '3 7 * * 1-5', 'Asia/Shanghai', 'archived',
+                         '2026-06-01', NULL, NULL),
+                        ('daily_5y_2_v28__h5__5Y', 'daily_5y_2_v28', 'V28日频5Y方案2',
+                         '新基准方案', 5, 'daily', '5Y', '3 7 * * 1-5',
+                         'Asia/Shanghai', 'active', '2026-06-12', NULL, NULL)
                     """
                 )
             )
@@ -371,6 +378,9 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                         (15, 'model_muti_0529', 'legacy_daily',
                          'framework_db_aligned', '2025-01-01', '2025-05-30',
                          'success', '{}', NULL, NULL, '2026-06-05T21:32:13'),
+                        (16, 'unregistered_t1', 't1_daily',
+                         'framework_db_aligned', '2025-01-01', '2025-05-30',
+                         'success', '{}', NULL, NULL, '2026-06-05T22:32:13'),
                         (92, 'v28_daily_5y_2', 'daily_5y_2_v28',
                          'framework_db_aligned', '2024-07-01', '2026-04-23',
                          'success', '{}', NULL, NULL, '2026-06-12T02:31:03'),
@@ -390,6 +400,8 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                     VALUES
                         (15, '10Y', 5, '2025-05', 2, 1,
                          0.5, NULL, NULL, 1.0, 1.0, :dist, :dist),
+                        (16, '10Y', 1, '2025-05', 2, 1,
+                         0.5, NULL, NULL, 1.0, 1.0, :dist, :dist),
                         (92, '5Y', 5, '2026-04', 21, 11,
                          0.524, 0.0, 0.0, 0.611, 0.786, :dist, :dist),
                         (93, '5Y', 5, '2026-05', 18, 12,
@@ -407,6 +419,8 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                     VALUES
                         (15, '10Y', 5, '2025-05-23', '2025-05-23',
                          '2025-05-30', -1, -1, 0.32),
+                        (16, '10Y', 1, '2025-05-23', '2025-05-23',
+                         '2025-05-26', -1, -1, 0.32),
                         (92, '5Y', 5, '2026-04-23', '2026-04-23',
                          '2026-04-30', 0, -1, 1.0),
                         (93, '5Y', 5, '2026-05-22', '2026-05-22',
@@ -419,7 +433,8 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
 
         scheme_ids = {scheme["scheme_id"] for scheme in result["schemes"]}
         self.assertEqual(result["benchmark_id"], "all")
-        self.assertIn("legacy_daily__h5__10Y", scheme_ids)
+        self.assertNotIn("legacy_daily__h5__10Y", scheme_ids)
+        self.assertNotIn("t1_daily__h1__10Y", scheme_ids)
         self.assertIn("daily_5y_2_v28__h5__5Y", scheme_ids)
         v28_runs = [scheme["run_id"] for scheme in result["schemes"] if scheme["scheme_id"] == "daily_5y_2_v28__h5__5Y"]
         self.assertEqual(sorted(v28_runs), [92, 93])
@@ -451,14 +466,18 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                     """
                     CREATE TABLE t_scheme_registry (
                         scheme_id TEXT,
+                        base_scheme_id TEXT,
                         name TEXT,
                         description TEXT,
                         horizon INTEGER,
-                        tenors TEXT,
                         frequency TEXT,
+                        target_tenor TEXT,
                         schedule_cron TEXT,
                         schedule_timezone TEXT,
-                        status TEXT
+                        status TEXT,
+                        deployed_at TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
                     )
                     """
                 )
@@ -554,13 +573,18 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_registry
-                        (scheme_id, name, description, horizon, tenors, frequency,
-                         schedule_cron, schedule_timezone, status)
+                        (scheme_id, base_scheme_id, name, description, horizon, frequency,
+                         target_tenor, schedule_cron, schedule_timezone, status, deployed_at,
+                         created_at, updated_at)
                     VALUES
-                        ('daily_5y_2_v28', 'V28日频5Y方案2', '新基准方案', 5, '["5Y"]',
-                         'daily', '3 7 * * 1-5', 'Asia/Shanghai', 'active'),
-                        ('weekly_10y_d_overlay_0529', '周度10Y方案', '周度方案', 6, '["10Y"]',
-                         'weekly', '30 11 * * 6', 'Asia/Shanghai', 'active')
+                        ('daily_5y_2_v28__h5__5Y', 'daily_5y_2_v28',
+                         'V28日频5Y方案2', '新基准方案', 5, 'daily', '5Y',
+                         '3 7 * * 1-5', 'Asia/Shanghai', 'active',
+                         '2026-06-12', NULL, NULL),
+                        ('weekly_10y_d_overlay_0529__h6__10Y', 'weekly_10y_d_overlay_0529',
+                         '周度10Y方案', '周度方案', 6, 'weekly', '10Y',
+                         '30 11 * * 6', 'Asia/Shanghai', 'active',
+                         '2026-06-11', NULL, NULL)
                     """
                 )
             )

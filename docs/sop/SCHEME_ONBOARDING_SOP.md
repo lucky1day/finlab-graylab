@@ -121,7 +121,7 @@
 
 `config.yaml` 的 `scheme_id` 是算法执行身份，也就是 registry 中的 `base_scheme_id`。不要把它命名成 `t1_5y`、`t5_10y` 这类只描述任务格子的名字；期限范围由 `tenors` 字段管理，算法身份由来源、特征集合和版本定义。
 
-平台同步 registry 时会按 `tenors` 拆成业务方案行，每行 `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。单标的算法也必须使用这个 composite registry ID，例如 `weekly_5y_direct_0529__h6__5Y`。前端、业务 API 和候选排行只认 registry composite `scheme_id`；scheduler、harness、`PredictionRecord` 和 backtest 存储仍使用 base `scheme_id`。
+平台同步 registry 时会按 `tenors` 拆成业务方案行，每行 `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。单标的算法也必须使用这个 composite registry ID，例如 `weekly_5y_direct_0529__h6__5Y`。前端、业务 API 和候选排行只认 `status='active'` 的 registry composite `scheme_id`；`paused` / `archived` 行只用于验证期管理或审计保留，不进入当前前端矩阵，不允许 trigger，也不允许 scheduler 新写入该 target。scheduler、harness、`PredictionRecord` 和 backtest 存储仍使用 base `scheme_id`。
 
 展示名 `name` 要比 `scheme_id` 更可读，建议包含来源、预测长度、模型类型和版本，例如:
 
@@ -494,9 +494,9 @@ curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2__h1__10Y"
 验收点:
 
 - `/api/targets` 能看到新 Y 标的的 `target_code/display_name/status`。
-- `/api/schemes` 是纯读接口，直接返回 `t_scheme_registry` active rows；每行只有一个 `target_tenor`，没有 `tenor/tenors`。
-- `/api/backtests/factor-lab` 能返回参与历史排行的新方案，且返回的 `scheme_id` 为 registry composite ID。
-- 如果只是 live 方案，`/api/metrics/{registry_scheme_id}` 能返回月度指标、汇总指标和逐日样本；`/api/metrics/{base_scheme_id}` 或 `?tenor=...` 都不是合法入口。
+- `/api/schemes` 是纯读接口，只返回 `status='active'` 的 `t_scheme_registry` rows；每行只有一个 `target_tenor`，没有 `tenor/tenors`。
+- `/api/backtests/factor-lab` 只把 latest run 映射到 active registry rows；返回的 `scheme_id` 必须为 active registry composite ID，registry 缺行、`paused` 或 `archived` 不得展示。
+- 如果只是 live 方案，`/api/metrics/{registry_scheme_id}` 能返回月度指标、汇总指标和逐日样本；`/api/metrics/{base_scheme_id}`、`paused/archived` registry ID 或 `?tenor=...` 都不是合法入口。
 - 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 

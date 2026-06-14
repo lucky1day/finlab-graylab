@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections import defaultdict
 from datetime import date, datetime
@@ -12,9 +13,10 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from scheduler.discovery import discover_schemes
-from scheduler.repository import registry_scheme_id, sync_scheme_registry
+from scheduler.repository import sync_scheme_registry
 
 
+logger = logging.getLogger(__name__)
 _REGISTRY_SYNC_SIGNATURES: dict[str, tuple[tuple[str, int, int], ...]] = {}
 
 
@@ -247,7 +249,8 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
                r.target_tenor, r.schedule_cron, r.schedule_timezone, r.status,
                r.deployed_at, r.created_at, r.updated_at
         FROM t_scheme_registry r
-        ORDER BY r.status = 'active' DESC, r.scheme_id
+        WHERE r.status = 'active'
+        ORDER BY r.scheme_id
         """
     )
     with engine.connect() as conn:
@@ -294,6 +297,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
                target_tenor, schedule_cron, schedule_timezone, status,
                deployed_at, created_at, updated_at
         FROM t_scheme_registry
+        WHERE status = 'active'
         """
     )
     meta: dict[tuple[str, str], dict[str, Any]] = {}
@@ -324,17 +328,6 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
             "updated_at": _iso(row["updated_at"]),
         }
 
-    for cfg in discover_schemes():
-        base_meta = _scheme_meta_from_config(cfg)
-        for target_tenor in cfg.tenors:
-            meta.setdefault(
-                (cfg.scheme_id, str(target_tenor)),
-                {
-                    **base_meta,
-                    "scheme_id": registry_scheme_id(cfg.scheme_id, cfg.horizon, str(target_tenor)),
-                    "target_tenor": str(target_tenor),
-                },
-            )
     return meta
 
 
@@ -468,7 +461,7 @@ def _registry_scheme_row(engine: Engine, scheme_id: str) -> dict[str, Any]:
                deployed_at, created_at, updated_at
         FROM t_scheme_registry
         WHERE scheme_id = :scheme_id
-          AND status <> 'archived'
+          AND status = 'active'
         """
     )
     with engine.connect() as conn:
@@ -724,11 +717,19 @@ def backtest_factor_lab_results(
             if tenor not in visible_targets:
                 continue
             meta = scheme_meta.get((run["scheme_id"], tenor), {})
+            if not meta:
+                logger.warning(
+                    "Skip unregistered backtest row: run_id=%s base_scheme_id=%s target_tenor=%s",
+                    run["id"],
+                    run["scheme_id"],
+                    tenor,
+                )
+                continue
             target_label = _target_label(tenor, target_labels)
             horizon = _infer_horizon(metrics.get(tenor), daily_rows.get(tenor), meta)
-            registry_id = str(meta.get("scheme_id") or registry_scheme_id(run["scheme_id"], horizon, tenor))
-            base_scheme_id = str(meta.get("base_scheme_id") or run["scheme_id"])
-            frequency = meta.get("frequency") or ("weekly" if horizon == 6 else "daily")
+            registry_id = str(meta["scheme_id"])
+            base_scheme_id = str(meta["base_scheme_id"])
+            frequency = meta["frequency"]
             scheme_name = _backtest_scheme_name(meta, base_scheme_id)
             benchmark_label = _backtest_benchmark_label(run["benchmark_id"])
             data_source_label = _backtest_data_source_label(run["data_source"])

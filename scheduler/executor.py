@@ -122,6 +122,7 @@ def execute_scheme(
         write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
         engine.dispose()
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
+    active_targets = _active_registry_targets(engine, cfg.scheme_id)
 
     run_id: int | None = None
     try:
@@ -135,6 +136,7 @@ def execute_scheme(
         )
         records = run_scheme_subprocess(cfg.scheme_id, predict_date, algo_env=algo_env, timeout_sec=timeout_sec)
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
+        _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
         written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
         duration = time.monotonic() - started
         status = "success" if written == len(records) else "partial"
@@ -213,6 +215,51 @@ def _normalize_live_records(records: list[PredictionRecord], *, prediction_phase
             )
         )
     return normalized
+
+
+def _active_registry_targets(engine, scheme_id: str) -> set[tuple[str, int]]:
+    """读取 base 方案当前 active 的业务 target 集合。"""
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT target_tenor, horizon
+                FROM t_scheme_registry
+                WHERE base_scheme_id = :scheme_id
+                  AND status = 'active'
+                """
+            ),
+            {"scheme_id": scheme_id},
+        ).mappings().all()
+    return {(str(row["target_tenor"]), int(row["horizon"])) for row in rows}
+
+
+def _validate_records_against_active_registry(
+    records: list[PredictionRecord],
+    *,
+    cfg: SchemeConfig,
+    active_targets: set[tuple[str, int]],
+) -> None:
+    """确保 live 写库记录全部对应 active registry 业务方案行。"""
+    config_horizon = int(getattr(cfg, "horizon"))
+    for record in records:
+        if record.scheme_id != cfg.scheme_id:
+            raise ValueError(
+                f"record scheme_id={record.scheme_id} does not equal config scheme_id={cfg.scheme_id}"
+            )
+        if int(record.horizon) != config_horizon:
+            raise ValueError(
+                f"record {record.scheme_id}/{record.target_tenor} horizon={record.horizon} "
+                f"does not equal config horizon={config_horizon}"
+            )
+        target = (str(record.target_tenor), int(record.horizon))
+        if target not in active_targets:
+            raise ValueError(
+                f"record {record.scheme_id}/{record.target_tenor}/h{record.horizon} "
+                "is not active in t_scheme_registry"
+            )
 
 
 def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None) -> tuple[bool, str]:

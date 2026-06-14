@@ -39,6 +39,8 @@
 > `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
 > 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
 > `config.tenors` 是算法一次执行可返回的目标集合；registry 同步会把它拆成每个 `target_tenor` 一行。`/api/schemes` 不返回 `tenor/tenors`，只返回该 registry 行的 `target_tenor`。
+>
+> 业务可见性只认 `status='active'` 的 registry row。`paused` / `archived` 行不出现在 `/api/schemes`、`/api/metrics/{scheme_id}` 或 `/api/backtests/factor-lab`，也不能被 trigger；scheduler live 写库前必须校验每条 `PredictionRecord` 对应 active registry `(base_scheme_id, horizon, target_tenor)`。
 
 ```python
 # harness/contracts/config_schema.py（设计签名）
@@ -143,16 +145,16 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-06-11：当前在册 active 方案为 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`；旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役。
+状态最近更新 2026-06-14：当前在册 active 方案为 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`、`daily_5y_2_v28`；旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役。
 
-| 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` |
-|--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|
-| `config.yaml` 基础字段 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `input_spec.*` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `target_rule` | 不适用 | 不适用 | ✅ | ✅ | ✅ |
-| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| core 零 DB | ✅ | ✅ | ✅ | ✅ | ✅ |
-| extra 必填键 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` | `daily_5y_2_v28` |
+|--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|:----------------:|
+| `config.yaml` 基础字段 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `input_spec.*` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `target_rule` | 不适用 | 不适用 | ✅ | ✅ | ✅ | 不适用 |
+| `predict.py` SCHEME_ID + run 签名 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| core 零 DB | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| extra 必填键 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 上述状态由 StaticGate / UnitGate / DryRunGate 持续守护；新增方案开工前先读 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)。
 
