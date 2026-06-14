@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backtests.daily_0529_reproduction import (
     build_db_aligned_daily,
+    build_daily0529_benchmark_frame,
     read_daily_csv,
     run_t1_reproduction,
     run_t5_reproduction,
@@ -63,8 +64,9 @@ def rebuild_daily0529_scheme_benchmarks(scheme_ids: Iterable[str], n_jobs: int =
     engine = create_sqlalchemy_engine()
     try:
         csv_df = read_daily_csv()
+        benchmark_df = build_daily0529_benchmark_frame(csv_df, engine=engine)
         _, db_aligned = build_db_aligned_daily(
-            csv_df,
+            benchmark_df,
             engine=engine,
             upstream_mode=True,
             artifact_scheme_id="daily0529_benchmark_rebuild",

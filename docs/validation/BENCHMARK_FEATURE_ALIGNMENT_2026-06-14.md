@@ -37,9 +37,9 @@
 | 指标 | 数值 |
 |------|-----:|
 | 已检查 active source-backed 方案 | 6 |
-| 原始 benchmark raw rows | 2152 |
-| 去重后可比较 rows | 2152 |
-| 与 backtest 明细比对 rows | 2147 |
+| 原始 benchmark raw rows | 2180 |
+| 去重后可比较 rows | 2180 |
+| 与 backtest 明细比对 rows | 2175 |
 | 与 live 明细比对 rows | 5 |
 | DB 缺失 rows | 0 |
 | DB 多重命中 rows | 0 |
@@ -48,15 +48,15 @@
 | 旧格式无 `target_date` rows | 0 |
 | 被排除 rows | 0 |
 
-说明：`t1_daily` / `t5_daily` 已用 `scripts/rebuild_daily0529_scheme_benchmarks.py` 重建为严格新格式完整 baseline，旧的 `PASS_WITH_LEGACY_SAMPLE_LIMITATIONS` 结论已经闭环关闭。`daily_5y_2_v28` 已用 `scripts/rebuild_v28_scheme_benchmark.py` 重建严格 May 2026 benchmark，并修复旧连续 test window 写入的灰度明细；此前失败结论已经闭环关闭。
+说明：`t1_daily` / `t5_daily` 已用 `scripts/rebuild_daily0529_scheme_benchmarks.py` 重建为严格新格式完整 baseline，旧的 `PASS_WITH_LEGACY_SAMPLE_LIMITATIONS` 结论已经闭环关闭。2026-06-14 进一步移除了 `target_date=2026-05-25..2026-05-29` 的历史临时排除，并用 DB target completion 补齐 2026-05-29 目标验证日；`daily_5y_2_v28` 已用 `scripts/rebuild_v28_scheme_benchmark.py` 重建严格 May 2026 benchmark，并修复旧连续 test window 写入的灰度明细；此前失败结论已经闭环关闭。
 
 ## 3. 逐方案结论
 
 | 方案 | 原始 rows | 可比较唯一 rows | 比对位置 | 结论 | 说明 |
 |------|----------:|----------------:|----------|------|------|
 | `daily_5y_2_v28` | 18 | 18 | backtest 13 + live 5 | `PASS` | V28 current 侧由共享 inference helper 生成；旧 `run_id=42` 错误灰度明细已删除，新 `run_id=58` 与原始 benchmark 对齐。 |
-| `t1_daily` | 664 | 664 | backtest 664 | `PASS` | 当前注册 `5Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致；不再包含 `1Y` 预测 target rows。 |
-| `t5_daily` | 1312 | 1312 | backtest 1312 | `PASS` | 当前注册 `3Y/5Y/7Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致。 |
+| `t1_daily` | 672 | 672 | backtest 672 | `PASS` | 当前注册 `5Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致；不再包含 `1Y` 预测 target rows。 |
+| `t5_daily` | 1332 | 1332 | backtest 1332 | `PASS` | 当前注册 `3Y/5Y/7Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致；2026-05 目标月已覆盖到 `target_date=2026-05-29`。 |
 | `weekly_5y_direct_0529` | 71 | 71 | backtest 71 | `PASS` | `feature_date/feature_week_id/target_date/target_tenor/horizon` 全部可定位，方向、置信度、标签一致。 |
 | `weekly_7y_cross_d_overlay_0529` | 42 | 42 | backtest 42 | `PASS` | `framework_feature_date/framework_target_date` 对齐 DB 明细，方向、置信度、标签一致。 |
 | `weekly_10y_d_overlay_0529` | 45 | 45 | backtest 45 | `PASS` | `feature_week_id` 映射到 DB `feature_date` 后逐行一致。 |
@@ -86,8 +86,9 @@ feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_corr
 
 验收结论：
 
-- `t1_daily`: original/current 各 664 行，`target_tenor` 仅包含 `5Y/10Y`，不再包含旧 sample 中的 `1Y` 预测 target rows。
-- `t5_daily`: original/current 各 1312 行，`target_tenor` 包含 `3Y/5Y/7Y/10Y`。
+- `t1_daily`: original/current 各 672 行，`target_tenor` 仅包含 `5Y/10Y`，不再包含旧 sample 中的 `1Y` 预测 target rows。
+- `t5_daily`: original/current 各 1332 行，`target_tenor` 包含 `3Y/5Y/7Y/10Y`。
+- 根目录 canonical `benchmarks/model_muti_0529/daily_output.csv` 截至 `2026-05-28`；逐方案 benchmark 为覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 追加 `2026-05-29` 目标验证日。该追加行只用于计算 `target_date=2026-05-29` 的 label/actual，source T / `feature_date` 仍不晚于 `2026-05-22`，不改变模型站位。
 - 两个方案的 CompareGate 均使用严格主键 `feature_date + target_date + target_tenor + horizon`，missing/extra=0，direction mismatch=0，confidence max abs diff=0。
 
 ## 5. V28 不一致闭环记录

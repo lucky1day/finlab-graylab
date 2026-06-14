@@ -7,7 +7,7 @@
 > 2026-06-14 指标口径已统一：预测为“平”的样本计入 `samples` / `sample_count` 和方向分布，但不进入整体准确率、上涨/下跌准确率、上涨/下跌召回率等任何指标分母；平台新增 `metric_samples` / `metric_sample_count` 表达真实指标分母，前端准确率括号展示 `correct/metric_samples`，样本数列仍展示总样本数；每日/周度验证明细中预测为“平”的行结果列展示 `-`。
 > 2026-06-14 回测前端指标事实源已收敛：`/api/backtests/factor-lab` 只从 latest run 的 `t_backtest_predictions` 明细动态聚合月度指标和 summary；正常 backtest runner 不再写独立月度指标汇总，后端也不再暴露旧月度汇总读入口。latest run 缺少回测明细时接口 fail-closed。
 > 2026-06-14 benchmark 对齐口径已明确：原始算法 benchmark 中的 `T/date/predict_date` 表示 source T / 预测站位日，进入平台后必须对齐数据库明细的 `feature_date`，不是对齐实盘语义下的 `predict_date`。若 benchmark 样本的 `target_date` 已进入灰度/实盘观察区，则与 `t_scheme_predictions.feature_date` 对齐；仍在历史回测区间的样本与 `t_backtest_predictions.feature_date` 对齐。
-> 2026-06-14 `t1_daily` / `t5_daily` 已重建严格逐方案 benchmark baseline：根目录 `benchmarks/model_muti_0529/` 保留为批次级 canonical 输入归档，真正供 CompareGate 使用的 original/current 文件位于 `schemes/{scheme_id}/benchmarks/`；字段固定为 `feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`。`t1_daily` 为 664 行、仅含 `5Y/10Y`；`t5_daily` 为 1312 行、含 `3Y/5Y/7Y/10Y`；两者已从旧的 `PASS_WITH_LEGACY_SAMPLE_LIMITATIONS` 升级为严格 `PASS`。
+> 2026-06-14 `t1_daily` / `t5_daily` 已重建严格逐方案 benchmark baseline：根目录 `benchmarks/model_muti_0529/` 保留为批次级 canonical 输入归档，真正供 CompareGate 使用的 original/current 文件位于 `schemes/{scheme_id}/benchmarks/`；字段固定为 `feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`。`t1_daily` 为 672 行、仅含 `5Y/10Y`；`t5_daily` 为 1332 行、含 `3Y/5Y/7Y/10Y`；两者已从旧的 `PASS_WITH_LEGACY_SAMPLE_LIMITATIONS` 升级为严格 `PASS`。0529 canonical CSV 截至 `2026-05-28`，逐方案 benchmark 通过 DB target completion 补齐 `2026-05-29` 目标验证日，使 T+5 的 2026-05 目标月覆盖所有交易日。
 > 2026-06-14 `daily_5y_2_v28` 的 predict/backtest inference 已收敛到同一个共享入口。该方案属于 test-window 敏感算法，核心窗口固定为 `feature_date` 所在月月初到 `feature_date`；旧连续窗口口径写入的 `run_id=42` 灰度预测明细已删除并由 `run_id=58` 重跑修复，`feature_date=2026-05-28` 当前为 `predicted_direction=1`、`confidence=1.0`。新的 V28 回测 no-persist 对比已完成，但最新 backtest run 仍等待人工确认后再落库覆盖 canonical latest。
 
 ## 总览
@@ -170,12 +170,12 @@ weekly actuals 覆盖：
 
 | 方案 | 数据源 | 状态 | 日期范围 |
 |------|--------|------|----------|
-| `t1_daily` | `baseline_original_csv` | `success`，run_id=`97` | `2025-01-01` 到 `2026-05-28` |
-| `t1_daily` | `framework_original_csv` | `success`，run_id=`98` | `2025-01-01` 到 `2026-05-28` |
-| `t1_daily` | `framework_db_aligned` | `success`，run_id=`99` | `2025-01-01` 到 `2026-05-28` |
-| `t5_daily` | `baseline_original_csv` | `success`，run_id=`94` | `2025-01-01` 到 `2026-05-31` |
-| `t5_daily` | `framework_original_csv` | `success`，run_id=`95` | `2025-01-01` 到 `2026-05-31` |
-| `t5_daily` | `framework_db_aligned` | `success`，run_id=`96` | `2025-01-01` 到 `2026-05-31` |
+| `t1_daily` | `baseline_original_csv` | `success`，run_id=`114` | `2025-01-01` 到 `2026-05-28` |
+| `t1_daily` | `framework_original_csv` | `success`，run_id=`115` | `2025-01-01` 到 `2026-05-28` |
+| `t1_daily` | `framework_db_aligned` | `success`，run_id=`116` | `2025-01-01` 到 `2026-05-28` |
+| `t5_daily` | `baseline_original_csv` | `success`，run_id=`111` | `2025-01-01` 到 `2026-05-31` |
+| `t5_daily` | `framework_original_csv` | `success`，run_id=`112` | `2025-01-01` 到 `2026-05-31` |
+| `t5_daily` | `framework_db_aligned` | `success`，run_id=`113` | `2025-01-01` 到 `2026-05-31` |
 | `weekly_5y_direct_0529` | `framework_db_aligned` | `success`，run_id=`109` | `2025-01-03` 到 `2026-05-22` |
 | `weekly_7y_cross_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`110` | `2025-01-03` 到 `2026-05-22` |
 | `weekly_10y_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`108` | `2025-01-03` 到 `2026-05-22` |
@@ -189,7 +189,7 @@ weekly actuals 覆盖：
 
 `daily_5y_2_v28` 当前 canonical latest 仍为 `framework_db_aligned` run_id=`107`，`t_backtest_predictions` 333 条；整体样本 333、正确 163、accuracy=48.9%，`evaluation_filter.date_field=target_date`。历史回测已截断到 `target_date < 2026-06-01`，predict_date 范围为 `2025-01-02` 到 `2026-05-22`，target_date 范围为 `2025-01-09` 到 `2026-05-29`；`/api/backtests/factor-lab?benchmark_id=v28_daily_5y_2&data_source=framework_db_aligned` 返回 active registry 业务方案 `scheme_id=daily_5y_2_v28__h5__5Y`、`base_scheme_id=daily_5y_2_v28`、run_id=`107`，DB 明细动态聚合↔API 月度格 17/17 一致。其中 2026-05 目标月 13 个样本、正确 10 个、accuracy=76.9%。旧 run_id=`92/93/103` 仍保留为审计历史，但不再被 `v_latest_backtest_run` 或前端 latest 查询选中。2026-06-14 用共享 inference helper 运行的 no-persist 候选回测为 333 条、17 个月度格，metric_samples=261、correct=164、accuracy=62.8%；该候选尚未落库，避免未经人工确认直接改变前端 canonical latest。
 
-2026-06-13 已按预测语义 bugfix 重跑并落库 active 方案 latest 回测，最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `94/95/96`，`t1_daily` baseline/framework-csv/framework-db 分别为 `97/98/99`，`weekly_5y_direct_0529` framework-db 为 `109`，`weekly_7y_cross_d_overlay_0529` framework-db 为 `110`，`weekly_10y_d_overlay_0529` framework-db 为 `108`，`daily_5y_2_v28` framework-db 为 `107`。SQL 复核所有 latest rows 均满足 `predict_date = feature_date`、`predict_date >= 2025-01-01`、`target_date < 2026-06-01`，且同一 `benchmark_id + scheme_id + data_source` 不存在多行 latest。`/api/backtests/factor-lab?data_source=framework_db_aligned` 已返回三个周频 latest run：5Y=`109`、7Y=`110`、10Y=`108`，各 17 个月度格。
+2026-06-14 已移除 `t1_daily` / `t5_daily` 的 2026-05 最后一周 target 临时排除，并重跑落库 latest 回测。最新 run_id：`t5_daily` baseline/framework-csv/framework-db 分别为 `111/112/113`，`t1_daily` baseline/framework-csv/framework-db 分别为 `114/115/116`，`weekly_5y_direct_0529` framework-db 为 `109`，`weekly_7y_cross_d_overlay_0529` framework-db 为 `110`，`weekly_10y_d_overlay_0529` framework-db 为 `108`，`daily_5y_2_v28` framework-db 为 `107`。SQL 复核所有 latest rows 均满足 `predict_date = feature_date`、`predict_date >= 2025-01-01`、`target_date < 2026-06-01`，且同一 `benchmark_id + scheme_id + data_source` 不存在多行 latest。`/api/backtests/factor-lab?data_source=framework_db_aligned` 中 `t5_daily__h5__5Y` 的 2026-05 目标月已有 18 条样本，并包含 `target_date=2026-05-25..2026-05-29` 五条每日明细。
 
 ## 实盘预测状态
 

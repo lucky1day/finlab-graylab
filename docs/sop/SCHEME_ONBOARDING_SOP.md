@@ -381,6 +381,8 @@ conda run -n bond_factor_lab_service python scripts/rebuild_daily0529_scheme_ben
   --scheme-id t5_daily
 ```
 
+注意：根目录 `benchmarks/model_muti_0529/daily_output.csv` 是上游批次输入归档，当前截到 `2026-05-28`；逐方案 benchmark 为了覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 补齐 `2026-05-29` 目标验证日。该补齐行只用于计算 `target_date=2026-05-29` 的 label/actual，不能把 source T / `feature_date` 推到未来，也不能作为 live 预测输入截止日。
+
 V28 `daily_5y_2_v28` 属于 test-window 敏感方案，benchmark current 侧必须由平台共享 inference helper 生成，不能从 source 文件复制：
 
 ```bash

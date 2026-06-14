@@ -43,7 +43,7 @@ from backtests.repository import (
     clean_json,
     insert_reproduction_check,
 )
-from shared.artifact_paths import benchmark_data_check_root
+from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_daily_input_artifact
 
@@ -59,21 +59,15 @@ T5_BACKTEST_END = "2026-05-31"
 T1_BACKTEST_START = "2025-01-01"
 T1_BACKTEST_END = "2026-05-28"
 LIVE_TARGET_START_DATE = "2026-06-01"
+DAILY0529_REQUIRED_TARGET_END_DATE = "2026-05-29"
 T1_CONFIG_PATH = PROJECT_ROOT / "schemes" / "t1_daily" / "config.yaml"
-EVALUATION_EXCLUDED_TARGET_RANGES = (
-    {
-        "label": "2026-05 last target week",
-        "start": "2026-05-25",
-        "end": "2026-05-29",
-        "reason": "temporary validation exclusion requested by user",
-    },
-)
+EVALUATION_EXCLUDED_TARGET_RANGES: tuple[dict[str, str], ...] = ()
 
 EXPECTED_T5_REPORT: dict[str, dict[str, Any]] = {
-    "3Y": {"all": {"samples": 328, "correct": 228, "accuracy_pct": 69.5}, "sim_n": 117, "real_n": 203, "may_n": 8},
-    "5Y": {"all": {"samples": 328, "correct": 212, "accuracy_pct": 64.6}, "sim_n": 117, "real_n": 203, "may_n": 8},
-    "7Y": {"all": {"samples": 328, "correct": 218, "accuracy_pct": 66.5}, "sim_n": 117, "real_n": 203, "may_n": 8},
-    "10Y": {"all": {"samples": 328, "correct": 208, "accuracy_pct": 63.4}, "sim_n": 117, "real_n": 203, "may_n": 8},
+    "3Y": {"all": {"samples": 333, "correct": 231, "accuracy_pct": 69.4}, "sim_n": 117, "real_n": 203, "may_n": 13},
+    "5Y": {"all": {"samples": 333, "correct": 213, "accuracy_pct": 64.0}, "sim_n": 117, "real_n": 203, "may_n": 13},
+    "7Y": {"all": {"samples": 333, "correct": 218, "accuracy_pct": 65.5}, "sim_n": 117, "real_n": 203, "may_n": 13},
+    "10Y": {"all": {"samples": 333, "correct": 211, "accuracy_pct": 63.4}, "sim_n": 117, "real_n": 203, "may_n": 13},
 }
 
 
@@ -101,6 +95,56 @@ T5_DAILY_SPEC = BacktestSpec(
 def read_daily_csv(path: str | Path = CANONICAL_DAILY) -> pd.DataFrame:
     """读取并标准化 historical daily_output。"""
     return _base_read_daily_csv(path)
+
+
+def build_daily0529_benchmark_frame(
+    csv_df: pd.DataFrame | None = None,
+    engine: Engine | None = None,
+    *,
+    artifact_builder: Any = build_daily_input_artifact,
+) -> pd.DataFrame:
+    """返回 T1/T5 benchmark 使用的日频输入。
+
+    根目录 canonical CSV 只到 2026-05-28；为覆盖 2026-05 全部 target 交易日，
+    需要从 DB 补 2026-05-29 这一目标验证日。补齐行只用于计算 label/actual，
+    不把 feature_date 推到灰度区。
+    """
+    daily = (csv_df.copy() if csv_df is not None else read_daily_csv()).copy()
+    daily["date"] = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
+    daily = daily.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    required_end = pd.Timestamp(DAILY0529_REQUIRED_TARGET_END_DATE)
+    current_end = daily["date"].max()
+    if current_end >= required_end:
+        return daily
+
+    input_artifact = artifact_builder(
+        scheme_id="daily0529_target_month_completion",
+        predict_date=DAILY0529_REQUIRED_TARGET_END_DATE,
+        start_date=daily["date"].min().strftime("%Y-%m-%d"),
+        end_date=DAILY0529_REQUIRED_TARGET_END_DATE,
+        engine=engine,
+        output_root=benchmark_input_root(BENCHMARK_ID),
+    )
+    db_df = input_artifact.dataframe.copy()
+    db_df["date"] = pd.to_datetime(db_df["date"], errors="coerce").dt.normalize()
+    db_df = db_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    extra_rows = db_df.loc[(db_df["date"] > current_end) & (db_df["date"] <= required_end)]
+    if extra_rows.empty:
+        raise ValueError(f"DB daily input missing required target completion date {DAILY0529_REQUIRED_TARGET_END_DATE}")
+    missing_target_columns = [col for col in TARGET_COLUMNS if col not in extra_rows.columns]
+    if missing_target_columns:
+        raise ValueError(f"DB daily input missing target columns for target completion: {missing_target_columns}")
+    extra_rows = extra_rows.reindex(columns=daily.columns)
+    required_row = extra_rows.loc[extra_rows["date"].eq(required_end)]
+    if required_row.empty:
+        raise ValueError(f"DB daily input missing required target completion date {DAILY0529_REQUIRED_TARGET_END_DATE}")
+    null_target_columns = [
+        col for col in TARGET_COLUMNS
+        if col in required_row.columns and pd.isna(required_row.iloc[0][col])
+    ]
+    if null_target_columns:
+        raise ValueError(f"DB daily input has null target values for target completion: {null_target_columns}")
+    return pd.concat([daily, extra_rows], ignore_index=True)
 
 
 def build_db_aligned_daily(
@@ -229,7 +273,7 @@ def _date_in_excluded_ranges(value: str) -> bool:
 
 def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None, n_jobs: int = 4) -> list[RunOutput]:
     """生成 t5 canonical-csv、framework-csv 和 framework-db 三组输出。"""
-    csv_df = read_daily_csv()
+    csv_df = build_daily0529_benchmark_frame(engine=engine)
     if db_aligned is None:
         _, db_aligned = build_db_aligned_daily(
             csv_df,
@@ -271,7 +315,7 @@ def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame |
 
 
 def run_t5_canonical_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
-    daily = read_daily_csv()
+    daily = build_daily0529_benchmark_frame()
     return run_t5_framework_backtest(daily, n_jobs=n_jobs), str(CANONICAL_DAILY)
 
 
@@ -401,7 +445,7 @@ def _run_t5_single_index(module: Any, daily: pd.DataFrame, labels: np.ndarray, c
 
 def run_t1_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None) -> list[RunOutput]:
     """生成 t1 canonical-csv、framework-csv 和 framework-db 三组输出。"""
-    csv_df = read_daily_csv()
+    csv_df = build_daily0529_benchmark_frame(engine=engine)
     if db_aligned is None:
         _, db_aligned = build_db_aligned_daily(
             csv_df,
