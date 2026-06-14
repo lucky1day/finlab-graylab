@@ -65,8 +65,8 @@
 
 **规则四：周度实盘预测不依赖目标周源数据是否存在**
 - 周六执行预测时，下一周的数据可能尚未进入 `api_wind_weekly`。算法必须能在特征周数据可用但目标周数据不可用的情况下生成预测。
-- `predict.py` 中 `end_week` 必须设为 `current_week_id + N`（N ≥ 6），确保特征数据加载范围够大；`target_week_id` 始终取 `feature_week_id + 1`，不依赖数据是否存在。
-- `all_weeks_set` 检查不能作为"目标周必须存在"的硬拦条件；如果 `feature_week_id` 是数据中最新的周，允许以其下一周作为 target。
+- live/gray 的周频 artifact 必须传 `end_week=feature_week_id`、`as_of_date=feature_date`，确保输入只含 `feature_date` 及以前可见的周频原始行；不得为了让 target 周存在而把 `end_week` 放到未来周。
+- `target_week_id/target_date` 必须由 DB 日历从 `feature_week_id` 推导到下一实际周及其最后交易日，不依赖目标周数据是否已进入 `api_wind_weekly`，也不得用公式 `feature_week_id + 1` 作为业务依据。
 
 **规则五：CompareGate 的 `skipped` 只表示"对比没有发生"，不是新增方案的通过证据**
 - 框架层允许 ActivationGate 兼容 `skipped`，是为了支持没有原始基准的纯框架内实验方案；这不是普通新增方案可以跳过源文件对比的许可。
@@ -397,7 +397,7 @@ conda run -n forecast_env python -m scheduler.scheme_runner \
 - 返回条数等于本次有效 `tenors` 数量。
 - 每条记录的 `scheme_id/horizon/target_tenor/target_date/predicted_direction` 都符合配置。
 - dry-run 前后所有保护表（`t_scheme_predictions`、`t_scheme_run_log` 等）行数不变。
-- **周度方案额外检查**：`target_date` 必须是 `feature_week_id` 下一周的最后一个交易日，不是当前周。如果目标周数据尚未入库，需确认 `predict.py` 中 `end_week` 设为 `current_week_id + 6`（或更大），且 `target_week_id` 不因数据缺失回退（参见 PITFALLS 坑 4）。
+- **周度方案额外检查**：`target_date` 必须是 DB 日历中 `feature_week_id` 下一实际周的最后一个交易日，不是当前周。live/gray artifact 必须传 `end_week=feature_week_id`、`as_of_date=feature_date`；目标周数据尚未入库时仍要能预测，但不能读取 feature 周之后的周频原始行（参见 PITFALLS 坑 4）。
 
 ### Step 7: Backtest Gate - 历史回测接入
 

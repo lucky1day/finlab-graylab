@@ -86,9 +86,9 @@
 | target 规则 | 按 T+N 目标交易日 | `feature_week_id` 的下一实际 DB 周 `target_week_id`，目标日为该周最后交易日 |
 | 回测样本起点 | `backtest.start_date: "2025-01-01"`，按 `predict_date` 过滤输出样本 | `backtest.predict_start_date: "2025-01-01"`，`start_week/end_week` 仍是输入/训练范围 |
 | 禁止项 | 用 `predict_date` 做展示月 | 任何 `*_to_friday` / `*_to_monday` / 计算型 week_id 作为实盘或回测对齐依据 |
-| 数据加载 | 覆盖特征窗口和 target 计算所需数据 | `end_week >= current_week_id + 6`；目标周数据不存在时不能回退 feature 周 |
+| 数据加载 | 覆盖特征窗口和 target 计算所需数据 | live/gray 必须 `end_week=feature_week_id`、`as_of_date=feature_date`；不得读取 feature 周之后的周频原始行 |
 
-周度方案尤其要验证：周六 `predict_date` 不是交易日时，只能向前找最近 DB 周作为 `feature_week_id`；`target_date` 必须是下一周最后交易日，不是本周。
+周度方案尤其要验证：周六 `predict_date` 不是交易日时，只能向前找最近 DB 周作为 `feature_week_id`；`target_week_id/target_date` 必须由 DB 日历从 `feature_week_id` 推导到下一实际周及其最后交易日，不允许用公式 `week_id + 1` 或未来周数据存在性决定 target。
 
 ## 5. 源文件对比是激活前强制项
 
@@ -147,7 +147,7 @@ benchmark CSV 至少包含 `predict_date/tenor/direction/confidence`；周度方
 - [ ] 已统一使用 `feature_date` 表示数据截止日；没有让前端/业务依赖 `anchor_date`。
 - [ ] 如涉及实盘补齐，已规划 `prediction_phase=gray_live/scheduled_live` 标识，并证明灰度补齐只使用 `feature_date` 及以前数据。
 - [ ] 需要历史回测时，已声明统一输出样本起点：daily/monthly 用 `backtest.start_date: "2025-01-01"`，weekly 用 `backtest.predict_start_date: "2025-01-01"`。
-- [ ] 周度方案已明确 DB 周历、target week、`end_week` 规则。
+- [ ] 周度方案已明确 DB 周历、target week、`end_week=feature_week_id` 与 `as_of_date=feature_date` 规则。
 - [ ] 原始算法文件和 source benchmark 来源已定位。
 - [ ] 已选同频率参考方案和回测 runner。
 - [ ] 已确认只会改允许范围内文件。

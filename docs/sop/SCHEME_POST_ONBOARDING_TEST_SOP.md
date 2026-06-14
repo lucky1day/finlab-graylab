@@ -159,14 +159,14 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S7 DB↔前端严格一致 |
-| **动作** | 按方案 `frequency` 挂载定时预测任务：① 将 `config.yaml` 的 `status` 改为 `active`；② 确认 `schedule.cron` 与频率匹配（日频工作日 07:03 / 周频周六 11:30 / 月频按定义）；③ 重启 scheduler 使其注册该 job；④ 确认调度日志出现该方案 cron 注册 |
-| **成功判定** | scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；方案进入对应频率的定时预测队列 |
+| **动作** | 按方案 `frequency` 挂载定时预测任务：① 确认 `schedule.cron` 与频率匹配（日频工作日 07:03 / 周频周六 11:30 / 月频按定义）；② 签发 activate 授权 token；③ 通过 `python -m harness activate --scheme-id {scheme_id} --authorize {TOKEN}` 激活，不得手动改 `config.yaml status` 绕过 ActivationGate；④ 重启 scheduler 使其注册该 job；⑤ 确认调度日志出现该方案 cron 注册 |
+| **成功判定** | ActivationGate/activate 命令成功，registry/config 状态生效，scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；方案进入对应频率的定时预测队列 |
 | **成功→去向** | 进入 S9 |
 | **失败判定** | status 未生效 / cron 未注册 / scheduler 未识别 |
 | **失败→去向** | 修复 config/调度后**重试 S8** |
 | **回滚** | 若挂载后出现异常，按入库 SOP 回滚策略：改回 `paused` + 重启，保留已写数据 |
 
-> 按用户决定：挂载为验证流程的正常收尾动作，**不需要单独授权**。
+> 挂载是副作用动作，必须授权并经过 ActivationGate。不得通过直接编辑 `status: active`、手工 SQL 或无授权脚本绕过 fail-closed 流程。
 
 ---
 
