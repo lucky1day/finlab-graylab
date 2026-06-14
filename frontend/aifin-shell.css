@@ -1346,6 +1346,11 @@ button {
   background: var(--negative);
 }
 
+.factor-result-dot.is-neutral {
+  background: #d8ddd9;
+  color: #53605a;
+}
+
 .factor-calendar-note {
   margin: 12px 0 0;
   color: var(--text-tertiary);

@@ -282,6 +282,51 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn("3/7", result["rowHtml"])
         self.assertNotIn("3/8", result["rowHtml"])
 
+    def test_flat_prediction_daily_result_displays_dash(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            return {
+              flatCorrect: hooks.renderDailyResultForTest({
+                predicted: "平",
+                predictedDirection: 0,
+                actual: "平",
+                actualDirection: 0,
+                correct: true
+              }),
+              flatWrong: hooks.renderDailyResultForTest({
+                predicted: "平",
+                predictedDirection: 0,
+                actual: "涨",
+                actualDirection: 1,
+                correct: false
+              }),
+              downWrong: hooks.renderDailyResultForTest({
+                predicted: "跌",
+                predictedDirection: -1,
+                actual: "涨",
+                actualDirection: 1,
+                correct: false
+              }),
+              pending: hooks.renderDailyResultForTest({
+                predicted: "涨",
+                predictedDirection: 1,
+                actual: "--",
+                actualDirection: null,
+                correct: null
+              })
+            };
+            """
+        )
+
+        self.assertIn(">-<", result["flatCorrect"])
+        self.assertNotIn("✓", result["flatCorrect"])
+        self.assertNotIn("×", result["flatCorrect"])
+        self.assertIn(">-<", result["flatWrong"])
+        self.assertNotIn("✓", result["flatWrong"])
+        self.assertNotIn("×", result["flatWrong"])
+        self.assertIn("×", result["downWrong"])
+        self.assertIn("?", result["pending"])
+
     def test_low_sample_badge_uses_30_sample_threshold(self) -> None:
         result = _run_factor_lab_hook(
             """

@@ -1539,6 +1539,20 @@
     renderFactorDetail();
   }
 
+  function renderDailyResult(row) {
+    var predictedDirection = normalizeDirection(
+      row && row.predictedDirection !== undefined ? row.predictedDirection : row && row.predicted_direction
+    );
+    var predictedLabel = String(row && row.predicted || "").trim();
+    if (predictedDirection === 0 || predictedLabel === "平") {
+      return '<span class="factor-result-dot is-neutral">-</span>';
+    }
+    if (row.correct === null) {
+      return '<span class="factor-result-dot" style="background:#bfc5c0;">?</span>';
+    }
+    return '<span class="factor-result-dot ' + (row.correct ? "is-correct" : "is-wrong") + '">' + (row.correct ? "✓" : "×") + '</span>';
+  }
+
   function renderFactorDailyRows(month) {
     var body = document.getElementById("factorDailyTableBody");
     var title = document.getElementById("factorCalendarTitle");
@@ -1571,9 +1585,7 @@
       var predictedClass = row.predicted === "涨" ? "direction-up" : (row.predicted === "跌" ? "direction-down" : "");
       var actualClass = row.actual === "涨" ? "direction-up" : (row.actual === "跌" ? "direction-down" : "");
       var displayDay = row.day.replace(/^\d{2}/, monthLabel);
-      var result = row.correct === null
-        ? '<span class="factor-result-dot" style="background:#bfc5c0;">?</span>'
-        : '<span class="factor-result-dot ' + (row.correct ? "is-correct" : "is-wrong") + '">' + (row.correct ? "✓" : "×") + '</span>';
+      var result = renderDailyResult(row);
       html += '<tr>';
       html += '<td class="mono">' + escapeHtml(displayDay) + '</td>';
       html += '<td class="' + predictedClass + '">' + escapeHtml(row.predicted) + '</td>';
@@ -1812,6 +1824,7 @@
     isLowSampleMetric: isLowSampleMetric,
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
+    renderDailyResultForTest: renderDailyResult,
     trendChartLayoutForTest: buildTrendChartLayout,
     trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,
     renderSchemeRankingRowForTest: renderSchemeRankingRow,

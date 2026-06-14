@@ -4,7 +4,7 @@
 
 > 2026-06-14 文档已按当前 DB、代码目录、live 语义修复和 latest 回测重建状态刷新。新增方案入口统一为 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)；平台统一使用 `predict_date`（信号发出日）、`feature_date`（数据截止日/预测站位日）、`target_date`（验证目标日）。日频与周频月度统计、明细日期均按 `target_date` 归属；灰度实盘与正式实盘需通过 `prediction_phase=gray_live/scheduled_live` 区分。回测起点 `2025-01-01` 是输出样本起点，不是训练历史裁剪点。
 > 2026-06-14 追加 registry 单表 per-tenor 语义：`t_scheme_registry` 每一行就是前端/业务定义的一个方案，唯一身份为 composite `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。算法目录、scheduler、`PredictionRecord` 和 backtest 表继续使用 base `scheme_id`；前端、`/api/schemes`、`/api/metrics/{scheme_id}`、`/api/predictions?scheme_id=...` 和 `/api/backtests/factor-lab` 只使用 `status='active'` 的 registry composite `scheme_id`。`/api/metrics/{base_scheme_id}?tenor=...` 已废弃且不兼容；`paused` / `archived` registry 行只用于管理或审计，不进入当前前端/业务 API，也不允许 trigger 或 scheduler 新写入该 target。
-> 2026-06-14 指标口径已统一：预测为“平”的样本计入 `samples` / `sample_count` 和方向分布，但不进入准确率类指标分母；平台新增 `metric_samples` / `metric_sample_count` 表达真实指标分母，前端准确率括号展示 `correct/metric_samples`，样本数列仍展示总样本数。
+> 2026-06-14 指标口径已统一：预测为“平”的样本计入 `samples` / `sample_count` 和方向分布，但不进入准确率类指标分母；平台新增 `metric_samples` / `metric_sample_count` 表达真实指标分母，前端准确率括号展示 `correct/metric_samples`，样本数列仍展示总样本数；每日/周度验证明细中预测为“平”的行结果列展示 `-`。
 
 ## 总览
 
