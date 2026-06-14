@@ -108,6 +108,8 @@ target_date  = T + horizon
 
 例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、后端 live metrics、回测 runner 和 `/api/backtests/factor-lab` 必须遵守同一口径。
 
+历史回测前端指标的唯一事实源是 `t_backtest_predictions` 明细表。`/api/backtests/factor-lab` 必须从 latest run 的明细动态聚合 `monthly_metrics` 和 `summary`；如果 latest run 缺少明细或明细不可评价，接口必须 fail-closed。新代码不得新增、读取或写入独立的回测月度指标汇总表。
+
 ## 7. 前端展示规则
 
 前端可以展示灰度实盘和正式实盘，但必须能区分 `prediction_phase`：

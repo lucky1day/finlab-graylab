@@ -15,6 +15,338 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         self.assertIn("FROM v_latest_backtest_run", source)
         self.assertNotIn("FROM t_backtest_runs", source)
 
+    def test_factor_lab_does_not_require_backtest_monthly_metrics_table(self) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_target_registry (
+                        target_code TEXT,
+                        display_name TEXT,
+                        asset_class TEXT,
+                        target_type TEXT,
+                        sort_order INTEGER,
+                        status TEXT,
+                        extra TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_scheme_registry (
+                        scheme_id TEXT,
+                        base_scheme_id TEXT,
+                        name TEXT,
+                        description TEXT,
+                        horizon INTEGER,
+                        frequency TEXT,
+                        target_tenor TEXT,
+                        schedule_cron TEXT,
+                        schedule_timezone TEXT,
+                        status TEXT,
+                        deployed_at TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_runs (
+                        id INTEGER,
+                        benchmark_id TEXT,
+                        scheme_id TEXT,
+                        data_source TEXT,
+                        start_date TEXT,
+                        end_date TEXT,
+                        status TEXT,
+                        summary TEXT,
+                        report_path TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE VIEW v_latest_backtest_run AS
+                    SELECT *
+                    FROM (
+                        SELECT r.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY benchmark_id, scheme_id, data_source
+                                   ORDER BY updated_at DESC, id DESC
+                               ) AS rn
+                        FROM t_backtest_runs r
+                        WHERE status = 'success'
+                    ) ranked
+                    WHERE rn = 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_predictions (
+                        run_id INTEGER,
+                        target_tenor TEXT,
+                        horizon INTEGER,
+                        predict_date TEXT,
+                        feature_date TEXT,
+                        target_date TEXT,
+                        label INTEGER,
+                        predicted_direction INTEGER,
+                        confidence REAL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_target_registry
+                        (target_code, display_name, asset_class, target_type, sort_order,
+                         status, extra, created_at, updated_at)
+                    VALUES
+                        ('5Y', '5Y国债活跃', 'bond', 'active_treasury',
+                         2, 'active', '{}', NULL, NULL)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, name, description, horizon, frequency,
+                         target_tenor, schedule_cron, schedule_timezone, status,
+                         deployed_at, created_at, updated_at)
+                    VALUES
+                        ('demo_daily__h5__5Y', 'demo_daily', 'demo_daily',
+                         '只读回测方案', 5, 'daily', '5Y', '3 7 * * 1-5',
+                         'Asia/Shanghai', 'active', '2026-06-05',
+                         '2026-06-05T00:00:00', '2026-06-05T00:00:00')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_runs
+                        (id, benchmark_id, scheme_id, data_source, start_date, end_date,
+                         status, summary, report_path, created_at, updated_at)
+                    VALUES
+                        (288, 'demo_benchmark', 'demo_daily',
+                         'framework_db_aligned', '2026-06-01', '2026-06-30',
+                         'success', '{}', NULL, NULL, '2026-06-10T10:00:00')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_predictions
+                        (run_id, target_tenor, horizon, predict_date, feature_date,
+                         target_date, label, predicted_direction, confidence)
+                    VALUES
+                        (288, '5Y', 5, '2026-06-01', '2026-06-01',
+                         '2026-06-08', 1, 1, 0.6)
+                    """
+                )
+            )
+
+        result = backtest_factor_lab_results(engine, benchmark_id="demo_benchmark")
+
+        self.assertEqual(result["schemes"][0]["scheme_id"], "demo_daily__h5__5Y")
+        self.assertEqual(result["schemes"][0]["monthly_metrics"][0]["correct"], 1)
+
+    def test_factor_lab_fails_closed_when_latest_run_has_no_prediction_details(self) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_target_registry (
+                        target_code TEXT,
+                        display_name TEXT,
+                        asset_class TEXT,
+                        target_type TEXT,
+                        sort_order INTEGER,
+                        status TEXT,
+                        extra TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_scheme_registry (
+                        scheme_id TEXT,
+                        base_scheme_id TEXT,
+                        name TEXT,
+                        description TEXT,
+                        horizon INTEGER,
+                        frequency TEXT,
+                        target_tenor TEXT,
+                        schedule_cron TEXT,
+                        schedule_timezone TEXT,
+                        status TEXT,
+                        deployed_at TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_runs (
+                        id INTEGER,
+                        benchmark_id TEXT,
+                        scheme_id TEXT,
+                        data_source TEXT,
+                        start_date TEXT,
+                        end_date TEXT,
+                        status TEXT,
+                        summary TEXT,
+                        report_path TEXT,
+                        created_at TEXT,
+                        updated_at TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE VIEW v_latest_backtest_run AS
+                    SELECT *
+                    FROM (
+                        SELECT r.*,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY benchmark_id, scheme_id, data_source
+                                   ORDER BY updated_at DESC, id DESC
+                               ) AS rn
+                        FROM t_backtest_runs r
+                        WHERE status = 'success'
+                    ) ranked
+                    WHERE rn = 1
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_monthly_metrics (
+                        run_id INTEGER,
+                        target_tenor TEXT,
+                        horizon INTEGER,
+                        month TEXT,
+                        sample_count INTEGER,
+                        correct_count INTEGER,
+                        accuracy REAL,
+                        up_precision REAL,
+                        up_recall REAL,
+                        down_precision REAL,
+                        down_recall REAL,
+                        actual_dist TEXT,
+                        predicted_dist TEXT
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_backtest_predictions (
+                        run_id INTEGER,
+                        target_tenor TEXT,
+                        horizon INTEGER,
+                        predict_date TEXT,
+                        feature_date TEXT,
+                        target_date TEXT,
+                        label INTEGER,
+                        predicted_direction INTEGER,
+                        confidence REAL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_target_registry
+                        (target_code, display_name, asset_class, target_type, sort_order,
+                         status, extra, created_at, updated_at)
+                    VALUES
+                        ('5Y', '5Y国债活跃', 'bond', 'active_treasury',
+                         2, 'active', '{}', NULL, NULL)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, name, description, horizon, frequency,
+                         target_tenor, schedule_cron, schedule_timezone, status,
+                         deployed_at, created_at, updated_at)
+                    VALUES
+                        ('demo_daily__h5__5Y', 'demo_daily', 'demo_daily',
+                         '只读回测方案', 5, 'daily', '5Y', '3 7 * * 1-5',
+                         'Asia/Shanghai', 'active', '2026-06-05',
+                         '2026-06-05T00:00:00', '2026-06-05T00:00:00')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_runs
+                        (id, benchmark_id, scheme_id, data_source, start_date, end_date,
+                         status, summary, report_path, created_at, updated_at)
+                    VALUES
+                        (388, 'demo_benchmark', 'demo_daily',
+                         'framework_db_aligned', '2026-06-01', '2026-06-30',
+                         'success', '{}', NULL, NULL, '2026-06-10T10:00:00')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_monthly_metrics
+                        (run_id, target_tenor, horizon, month, sample_count, correct_count,
+                         accuracy, up_precision, up_recall, down_precision, down_recall,
+                         actual_dist, predicted_dist)
+                    VALUES
+                        (388, '5Y', 5, '2026-06', 8, 8,
+                         1.0, 1.0, 1.0, 1.0, 1.0,
+                         :dist, :dist)
+                    """
+                ),
+                {"dist": '{"up":4,"down":4,"flat":0}'},
+            )
+
+        with self.assertRaisesRegex(ValueError, "has no backtest prediction details"):
+            backtest_factor_lab_results(engine, benchmark_id="demo_benchmark")
+
     def test_factor_lab_results_do_not_sync_scheme_registry(self) -> None:
         from backend.services import backtest_factor_lab_results
 
@@ -441,7 +773,7 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         self.assertEqual(scheme["summary"]["metric_samples"], 7)
         self.assertEqual(scheme["summary"]["accuracy"], 42.9)
 
-    def test_factor_lab_fails_closed_when_monthly_row_lacks_metric_denominator_sources(self) -> None:
+    def test_factor_lab_ignores_monthly_rows_and_fails_closed_without_details(self) -> None:
         from backend.services import backtest_factor_lab_results
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
@@ -614,7 +946,7 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
                 )
             )
 
-        with self.assertRaisesRegex(ValueError, "metric_samples.*predicted_dist"):
+        with self.assertRaisesRegex(ValueError, "has no backtest prediction details"):
             backtest_factor_lab_results(engine, benchmark_id="demo_benchmark")
 
     def test_factor_lab_default_includes_latest_runs_from_all_benchmarks(self) -> None:

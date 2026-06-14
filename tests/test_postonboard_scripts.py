@@ -75,9 +75,10 @@ class PostOnboardScriptTests(unittest.TestCase):
         api_payload = {
             "schemes": [
                 {
-                    "scheme_id": "demo_daily",
+                    "scheme_id": "demo_daily__h1__10Y",
+                    "base_scheme_id": "demo_daily",
                     "run_id": 7,
-                    "tenor": "10Y",
+                    "target_tenor": "10Y",
                     "monthly_metrics": [
                         {"month": "2026-06", "samples": 2, "correct": 1, "accuracy": 50.0},
                     ],
@@ -87,10 +88,17 @@ class PostOnboardScriptTests(unittest.TestCase):
         db_rows = [
             {
                 "target_tenor": "10Y",
-                "month": "2026-06",
-                "sample_count": 2,
-                "correct_count": 1,
-                "accuracy": 0.5,
+                "target_date": "2026-06-05",
+                "predict_date": "2026-06-01",
+                "label": 1,
+                "predicted_direction": 1,
+            },
+            {
+                "target_tenor": "10Y",
+                "target_date": "2026-06-06",
+                "predict_date": "2026-06-02",
+                "label": -1,
+                "predicted_direction": 1,
             }
         ]
 
@@ -100,6 +108,31 @@ class PostOnboardScriptTests(unittest.TestCase):
         self.assertEqual(evidence["total_cells_checked"], 1)
         self.assertEqual(evidence["mismatch_count"], 0)
         self.assertEqual(evidence["mismatches"], [])
+        self.assertEqual(evidence["frontend_only_cells"], 0)
+        self.assertEqual(evidence["database_only_cells"], 0)
+
+    def test_verify_frontend_db_fails_when_api_missing_db_cells(self) -> None:
+        from scripts.verify_frontend_db import compare_frontend_db_cells
+
+        evidence = compare_frontend_db_cells(
+            {"schemes": []},
+            [
+                {
+                    "target_tenor": "10Y",
+                    "target_date": "2026-06-05",
+                    "predict_date": "2026-06-01",
+                    "label": 1,
+                    "predicted_direction": 1,
+                }
+            ],
+            scheme_id="demo_daily",
+            run_id=7,
+        )
+
+        self.assertEqual(evidence["total_cells_checked"], 1)
+        self.assertEqual(evidence["mismatch_count"], 1)
+        self.assertEqual(evidence["database_only_cells"], 1)
+        self.assertEqual(evidence["mismatches"][0]["kind"], "missing_cell")
 
     def test_verify_scheduler_mount_evaluates_config_registry_and_log(self) -> None:
         from scripts.verify_scheduler_mount import evaluate_scheduler_mount

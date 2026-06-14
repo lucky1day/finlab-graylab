@@ -132,7 +132,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S5 判定一致 |
-| **动作** | 去掉 `--no-persist` 正式落库：`conda run -n bond_factor_lab_service python -m backtests.{scheme_id}_reproduction`，写入 `t_backtest_runs / t_backtest_predictions / t_backtest_monthly_metrics`。落库前后用 `probes/table_guard` 思路核验：仅 `t_backtest_*` 该 run 相关行增加，实盘表 `t_scheme_predictions/run_log/actuals` delta==0 |
+| **动作** | 去掉 `--no-persist` 正式落库：`conda run -n bond_factor_lab_service python -m backtests.{scheme_id}_reproduction`，写入 `t_backtest_runs / t_backtest_predictions`，必要时写 `t_backtest_reproduction_checks`。不得写独立的回测月度指标汇总表。落库前后用 `probes/table_guard` 思路核验：仅允许的 `t_backtest_*` 该 run 相关行增加，实盘表 `t_scheme_predictions/run_log/actuals` delta==0 |
 | **成功判定** | 获得 `run_id`；受保护实盘表零变化；落库样本数 == S4 复现样本数 |
 | **完整性判据** | 满足 [SCHEME_CONTRACT.md §7.2 历史回测落库](../SCHEME_CONTRACT.md#72-历史回测落库)：样本数一致、仅 `t_backtest_*` 增行、实盘表 `delta==0`、落库 run 的 `data_version` 与 §1 一致。落地校验器前由本步人工核验 |
 | **成功→去向** | 进入 S7（记录 run_id） |
@@ -146,7 +146,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S6 落库成功，得 run_id |
-| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的回测结果与前端展示：逐 `tenor × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与 DB 聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-` |
+| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-` |
 | **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子 |
 | **成功→去向** | 进入 S8 |
 | **失败判定** | 任一前端数值与 DB 不符 |

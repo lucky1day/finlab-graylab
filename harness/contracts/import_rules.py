@@ -46,7 +46,6 @@ WRITE_CALL_NAMES = {
     "write_run_log",
     "execute_scheme",
     "replace_backtest_predictions",
-    "replace_backtest_monthly_metrics",
     "insert_reproduction_check",
 }
 PREDICT_DANGEROUS_IMPORTS = {

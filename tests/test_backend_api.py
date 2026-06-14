@@ -64,6 +64,13 @@ class MetricsCompareRemovedTests(unittest.TestCase):
         self.assertNotIn("/api/metrics/compare", paths)
 
 
+class BacktestMonthlyMetricsRemovedTests(unittest.TestCase):
+    def test_backtest_monthly_metrics_route_is_not_registered(self) -> None:
+        """旧回测月度汇总表不再有 API 读入口。"""
+        paths = {getattr(route, "path", None) for route in main.app.routes}
+        self.assertNotIn("/api/backtests/runs/{run_id}/metrics", paths)
+
+
 class MetricsEndpointTests(unittest.TestCase):
     def test_metrics_endpoint_uses_registry_scheme_id_only(self) -> None:
         engine = object()

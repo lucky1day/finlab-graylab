@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,6 +60,8 @@ def _create_engine_with_backtest_rows():
                     scheme_id TEXT,
                     target_tenor TEXT,
                     predict_date TEXT,
+                    target_date TEXT,
+                    label INTEGER,
                     predicted_direction INTEGER,
                     confidence REAL
                 )
@@ -108,12 +111,12 @@ def _create_engine_with_backtest_rows():
             text(
                 """
                 INSERT INTO t_backtest_predictions
-                    (run_id, scheme_id, target_tenor, predict_date, predicted_direction, confidence)
+                    (run_id, scheme_id, target_tenor, predict_date, target_date, label, predicted_direction, confidence)
                 VALUES
-                    (92, 'daily_5y_2_v28', '5Y', '2026-04-23', -1, 1.0),
-                    (93, 'daily_5y_2_v28', '5Y', '2026-05-22', 1, 0.8),
-                    (84, 't5_daily', '5Y', '2026-05-22', -1, 0.5),
-                    (83, 't5_daily', '5Y', '2026-05-22', 1, 0.6)
+                    (92, 'daily_5y_2_v28', '5Y', '2026-04-23', '2026-04-30', -1, -1, 1.0),
+                    (93, 'daily_5y_2_v28', '5Y', '2026-05-22', '2026-05-29', 1, 1, 0.8),
+                    (84, 't5_daily', '5Y', '2026-05-22', '2026-05-29', -1, -1, 0.5),
+                    (83, 't5_daily', '5Y', '2026-05-22', '2026-05-29', -1, 1, 0.6)
                 """
             )
         )
@@ -131,6 +134,13 @@ def _create_engine_with_backtest_rows():
                 """
             )
         )
+    return engine
+
+
+def _create_engine_without_monthly_metrics_table():
+    engine = _create_engine_with_backtest_rows()
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE t_backtest_monthly_metrics"))
     return engine
 
 
@@ -211,3 +221,32 @@ class GenerateBenchmarkSamplesTests(unittest.TestCase):
         self.assertIn("-1", predictions)
         self.assertNotIn("0.6", predictions)
         self.assertIn('"2026-05"', summary)
+
+    def test_generate_summary_does_not_require_monthly_metrics_table(self) -> None:
+        from scripts import generate_benchmark_samples
+
+        engine = _create_engine_without_monthly_metrics_table()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(generate_benchmark_samples, "SCHEMES_ROOT", Path(tmpdir)):
+                with patch.object(generate_benchmark_samples, "create_engine_from_env", return_value=engine):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        generate_benchmark_samples.main([
+                            "--scheme-id",
+                            "daily_5y_2_v28",
+                            "--benchmark-id",
+                            "v28_daily_5y_2",
+                            "--data-source",
+                            "framework_db_aligned",
+                        ])
+
+            summary = json.loads(
+                (Path(tmpdir) / "daily_5y_2_v28" / "benchmarks" / "current_backtest_summary.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertIn("monthly_count=1", output.getvalue())
+        self.assertEqual(summary["5Y"]["2026-05"]["sample_count"], 1)
+        self.assertEqual(summary["5Y"]["2026-05"]["correct_count"], 1)
+        self.assertEqual(summary["5Y"]["2026-05"]["accuracy"], 1.0)

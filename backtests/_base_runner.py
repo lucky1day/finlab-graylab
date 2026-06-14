@@ -39,7 +39,6 @@ from sqlalchemy.engine import Engine
 from backtests.repository import (
     clean_json,
     create_backtest_run,
-    replace_backtest_monthly_metrics,
     replace_backtest_predictions,
     update_backtest_run_summary,
 )
@@ -612,7 +611,6 @@ def persist_run_output(engine: Engine, output: RunOutput, *, benchmark_id: str) 
         run_mode="persist",
     )
     replace_backtest_predictions(engine, run_id, output.rows)
-    replace_backtest_monthly_metrics(engine, run_id, output.monthly_metrics)
     output.summary["run_id"] = run_id
     update_backtest_run_summary(
         engine,

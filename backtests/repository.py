@@ -190,29 +190,6 @@ def replace_backtest_predictions(engine: Engine, run_id: int, rows: Iterable[dic
     return len(materialized)
 
 
-def replace_backtest_monthly_metrics(engine: Engine, run_id: int, rows: Iterable[dict[str, Any]]) -> int:
-    """替换某个 run 的月度指标。"""
-    materialized = list(rows)
-    delete_sql = text("DELETE FROM t_backtest_monthly_metrics WHERE run_id = :run_id")
-    insert_sql = text(
-        """
-        INSERT INTO t_backtest_monthly_metrics
-            (run_id, benchmark_id, scheme_id, target_tenor, horizon, month,
-             sample_count, correct_count, accuracy, up_precision, up_recall,
-             down_precision, down_recall, actual_dist, predicted_dist)
-        VALUES
-            (:run_id, :benchmark_id, :scheme_id, :target_tenor, :horizon, :month,
-             :sample_count, :correct_count, :accuracy, :up_precision, :up_recall,
-             :down_precision, :down_recall, CAST(:actual_dist AS JSON), CAST(:predicted_dist AS JSON))
-        """
-    )
-    with engine.begin() as conn:
-        conn.execute(delete_sql, {"run_id": run_id})
-        if materialized:
-            conn.execute(insert_sql, [_metric_params(run_id, row) for row in materialized])
-    return len(materialized)
-
-
 def insert_reproduction_check(engine: Engine, row: dict[str, Any]) -> int:
     """写入一次数据复现检查结果。"""
     sql = text(

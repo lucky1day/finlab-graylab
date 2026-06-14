@@ -24,7 +24,6 @@ IGNORE_PATHS = frozenset({"$.elapsed_sec"})
 BACKTEST_WRITE_ALLOWED_TABLES = (
     "t_backtest_runs",
     "t_backtest_predictions",
-    "t_backtest_monthly_metrics",
     "t_backtest_reproduction_checks",
 )
 

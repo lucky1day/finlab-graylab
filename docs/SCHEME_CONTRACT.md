@@ -134,8 +134,7 @@ DANGEROUS_CORE_IMPORTS = {
 CORE_DB_CALL_NAMES     = {"create_engine", "create_sqlalchemy_engine", "read_sql", "text"}
 WRITE_CALL_NAMES       = {
     "insert_run_predictions", "write_run_log", "execute_scheme",
-    "replace_backtest_predictions", "replace_backtest_monthly_metrics",
-    "insert_reproduction_check",
+    "replace_backtest_predictions", "insert_reproduction_check",
 }
 SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 ```
@@ -205,7 +204,7 @@ BacktestGate 去掉 `--no-persist` 落库后断言：
 | 维度 | 断言 | 失败含义 |
 |------|------|----------|
 | 样本数 | 落库样本数 `== --no-persist 复现样本数` | 落库丢样本/重样本 |
-| 表隔离 | 仅 `t_backtest_runs/_predictions/_monthly_metrics/_reproduction_checks` 该 run 相关行增加 | 误写实盘表 |
+| 表隔离 | 仅 `t_backtest_runs/_predictions/_reproduction_checks` 该 run 相关行增加；不得写独立的回测月度指标汇总表 | 误写实盘表或写入非 canonical 汇总结果 |
 | 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
 | 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
 | 日期语义 | 回测 rows 必须满足 `predict_date == feature_date`，不得读取或复制灰度/正式实盘记录 | 用 T+1 实盘结果冒充 T 回测结果 |

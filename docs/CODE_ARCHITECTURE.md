@@ -177,9 +177,11 @@ python -m harness onboard {scheme_id} --stage all
 python -m backtests.{scheme_id}_reproduction [--no-persist]
   ├─ shared.input_artifacts.build_*_input_artifact(...)         ← L1 唯一输入（V4 待统一）
   ├─ schemes.{id}.core.predictors.*  (逐历史点跑算法)
-  ├─ 按 target_date 归月生成月度指标
-  └─ backtests.repository → t_backtest_runs / _predictions / _monthly_metrics   ← 回测写库单点
+  ├─ 按 target_date 归月生成运行内月度指标（只用于输出/summary）
+  └─ backtests.repository → t_backtest_runs / _predictions / _reproduction_checks   ← 回测写库单点
 ```
+
+前端历史回测指标只能由 `t_backtest_predictions` 明细动态聚合。
 
 ### 5.4 查询路径
 

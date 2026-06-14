@@ -136,7 +136,8 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
   → 运行原始 t5 run_all.py / 原始 t1 run_backtest(dry_run=True) 生成 baseline
   → 运行框架内 t1_daily / t5_daily 批量回测逻辑
   → 对比 baseline、framework-csv、framework-db
-  → 写入 t_backtest_runs / t_backtest_predictions / t_backtest_monthly_metrics / t_backtest_reproduction_checks
+  → 写入 t_backtest_runs / t_backtest_predictions / t_backtest_reproduction_checks
+  → 前端回测指标只以 t_backtest_predictions 明细动态聚合为准
   → 验证结果保留在后端 API、脚本和文档中，不新增前端验证结果页
 
 手动执行 backtests.weekly_*_reproduction
@@ -144,8 +145,8 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
   → 周频内部调用统一 shared.data_service
   → 运行 scheme core 中的周频算法逻辑
       → 按 target_date 所在月份生成月度指标
-  → 写入对应 scheme_id 的 t_backtest_runs / t_backtest_predictions / t_backtest_monthly_metrics
-  → 前端通过 /api/backtests/factor-lab 读取 canonical latest success run
+  → 写入对应 scheme_id 的 t_backtest_runs / t_backtest_predictions
+  → 前端通过 /api/backtests/factor-lab 读取 canonical latest success run，并由 t_backtest_predictions 动态聚合月度指标
 ```
 
 ---
@@ -508,7 +509,6 @@ class PredictionRecord:
 
 - `GET /api/backtests/runs`
 - `GET /api/backtests/runs/{run_id}`
-- `GET /api/backtests/runs/{run_id}/metrics`
 - `GET /api/backtests/runs/{run_id}/diffs`
 - `GET /api/backtests/data-checks`
 
@@ -532,7 +532,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。回测月度指标和 summary 只从 `t_backtest_predictions` 明细动态聚合。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；历史回测 API 不可用时，前端切换到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测视图。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
 
 **前端指标口径**: 因子实验室页面必须同时展示“样本总数”和“指标分母”两种语义。月度“样本数”列使用 `samples`，包含预测为“平”的交易日或预测周；所有准确率类指标使用 `metric_samples` / `metric_*_dist`，排除预测为“平”的样本。每日/周度验证表中预测为“平”的行结果列显示 `-`，不显示 `×`，也不显示 `✓`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。

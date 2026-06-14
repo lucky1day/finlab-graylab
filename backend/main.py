@@ -15,7 +15,6 @@ from backend.db import get_engine
 from backend.services import (
     backtest_diffs,
     backtest_factor_lab_results,
-    backtest_metrics,
     get_backtest_run,
     list_actuals,
     list_backtest_runs,
@@ -208,14 +207,6 @@ def api_backtest_run(
         limit=limit,
         offset=offset,
     )
-    if result is None:
-        raise HTTPException(status_code=404, detail=f"backtest run not found: {run_id}")
-    return result
-
-
-@app.get("/api/backtests/runs/{run_id}/metrics")
-def api_backtest_metrics(run_id: int) -> dict:
-    result = backtest_metrics(get_engine(), run_id)
     if result is None:
         raise HTTPException(status_code=404, detail=f"backtest run not found: {run_id}")
     return result

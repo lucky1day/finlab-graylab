@@ -40,7 +40,7 @@
 **规则二：展示与分组只看 target_date，不用 predict_date**
 - 前端的每日明细按 `target_date`（交易日）展示和分组。
 - 月度指标按 `target_date` 的月份计算。
-- 回测月度指标（`t_backtest_monthly_metrics`）同样按 `target_date` 月份分组。
+- 回测前端月度指标以 `t_backtest_predictions` 明细按 `target_date` 月份动态聚合为准；不得新增、读取或写入独立的回测月度指标汇总表。
 - 后端 `_prediction_point_date` 去重键必须用 `target_date`。
 - 后端 `_scheme_metric_month` 月份归属必须用 `target_date`。
 - `predict_date` 只用于调度执行日志和 `extra` 中的记录字段，不参与任何展示/分组/去重。
@@ -457,7 +457,7 @@ if __name__ == "__main__":
 - 从 `shared.input_artifacts.build_weekly_input_artifact()` 获取输入。
 - 使用 `shared.calendar_service` 查询 `week_id`（禁止日历公式）。
 - 声明 `backtest.predict_start_date: "2025-01-01"`，并按 `predict_date >= 2025-01-01` 过滤输出样本；不要把早期 `start_week` 误删，因为那通常是训练和模型更新窗口。
-- 调用 `backtests.repository.create_backtest_run` / `replace_backtest_predictions` / `replace_backtest_monthly_metrics` 写库（`--no-persist` 时跳过写库）。
+- 调用 `backtests.repository.create_backtest_run` / `replace_backtest_predictions` 写库（`--no-persist` 时跳过写库）。前端 canonical 月度指标由 `/api/backtests/factor-lab` 从 `t_backtest_predictions` 动态聚合；runner 不得写入独立的月度指标汇总表。
 - 默认优先使用 point-in-time 回测；如果源方案只能按 source-original batch reproduction 复现，必须在 `PREDICTION_SEMANTICS.md` 和 `PITFALLS_2026-06-10.md` 记录原因，并在 persist 前校验已有 original benchmark 覆盖区间逐行一致。该例外只允许用于历史回测，不得改变 gray/live/scheduled live adapter 的 `feature_date/as_of_date` 截止规则。
 - 已批准的 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 历史回测是 source-original batch reproduction 例外：runner 一次性调用 core 生成完整历史预测，再按 DB 日历构造平台 rows；summary 必须写 `backtest_mode=original_batch_reproduction`、`backtest_point_in_time=false`、`historical_backtest_exception=true`，并写入 `original_benchmark_validation`。
 - 周频候选方案之间的样本总数不要求强行一致；runner 只能写入 core 真实产出的有效预测行。若某个日历周因为规则信号为 0、NaN、无效标签或 source core 的 inner join 被排除，不能补写空预测来凑齐样本数；必须在状态文档中记录缺失的 `feature_week_id` 和 core 过滤原因。

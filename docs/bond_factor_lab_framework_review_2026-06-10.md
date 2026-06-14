@@ -87,7 +87,7 @@ python -m backtests.{scheme}_reproduction [--no-persist]
   → build_db_aligned_daily/weekly（经 shared.input_artifacts，按 canonical CSV 对齐日期）
   → 方案算法逐历史点预测
   → persist: create_backtest_run（纯 INSERT append）+ replace_backtest_predictions
-            + replace_backtest_monthly_metrics（按新 run_id 先删后插）
+    （旧月度汇总写入后续已删除）
   → 最新结果由 v_latest_backtest_run 视图表达
 ```
 
@@ -142,7 +142,7 @@ python -m harness onboard {id} --stage all
 ### 第 4 步：回测结果写库
 
 - **状态**：已满足。
-- **证据**：`persist_run_output()`（_base_runner.py:597-623）只经 `backtests.repository` 写 `t_backtest_runs/_predictions/_monthly_metrics`；007 后 append-only，重跑不覆盖（create_backtest_run 纯 INSERT，repository.py:86-142）；`--persist` 经 harness 时需 `backtest_persist` token。
+- **证据**：`persist_run_output()`（_base_runner.py:597-623）只经 `backtests.repository` 写 `t_backtest_runs/_predictions`；007 后 append-only，重跑不覆盖（create_backtest_run 纯 INSERT，repository.py:86-142）；`--persist` 经 harness 时需 `backtest_persist` token。
 - **风险**：直接运行 runner（不经 harness、不带 `--no-persist`）即写库，授权可绕过；deprecated 的 `upsert_backtest_run()`（repository.py:40-83）在 scope UK 被 007 删除后**失去去重能力，已变成纯追加**，留着是误用陷阱。
 - **建议**：删除 `upsert_backtest_run` 与 `scheduler.upsert_predictions` 两个 deprecated 函数；runner main() 默认 `--no-persist`、写库需显式 `--persist`（默认安全）。
 - **优先级**：P1（删 deprecated 为 P1，默认安全为 P1）。
@@ -150,7 +150,7 @@ python -m harness onboard {id} --stage all
 ### 第 5 步：后端读取
 
 - **状态**：已满足。
-- **证据**：§4.5 路由清单；实盘读路径经 serving pointer `INNER JOIN … WHERE serving_status='approved'`（services.py:487-507）；回测读 `t_backtest_monthly_metrics`/`v_latest` 独立端点。
+- **证据**：§4.5 路由清单；实盘读路径经 serving pointer `INNER JOIN … WHERE serving_status='approved'`（services.py:487-507）；回测读取后续已统一为 latest run 明细动态聚合。
 - **风险**：无独立的 run 状态 / run_log 查询 API（仅 `/api/schemes` 透出 `last_run`），失败任务无法在前端定位（与第 10 步合并看）。
 - **优先级**：P1。
 

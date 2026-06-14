@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -169,21 +170,85 @@ def _fetch_predictions(conn: Any, run_id: int, limit: int) -> list[Any]:
 
 
 def _fetch_metrics(conn: Any, run_id: int) -> list[Any]:
-    return list(
-        conn.execute(
+    rows = [
+        dict(row)
+        for row in conn.execute(
             text(
                 """
-                SELECT target_tenor, month, sample_count, correct_count,
-                       accuracy, up_precision, up_recall,
-                       down_precision, down_recall
-                FROM t_backtest_monthly_metrics
+                SELECT target_tenor, predict_date, target_date, label, predicted_direction
+                FROM t_backtest_predictions
                 WHERE run_id = :run_id
-                ORDER BY target_tenor, month
+                ORDER BY target_tenor, target_date, predict_date
                 """
             ),
             {"run_id": run_id},
-        ).fetchall()
+        ).mappings().all()
+    ]
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        month = str(row.get("target_date") or row.get("predict_date") or "")[:7]
+        tenor = str(row.get("target_tenor") or "")
+        if month and tenor:
+            grouped[(tenor, month)].append(row)
+    return [
+        _metric_row(tenor, month, items)
+        for (tenor, month), items in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1]))
+    ]
+
+
+def _metric_row(tenor: str, month: str, rows: list[dict[str, Any]]) -> tuple[Any, ...]:
+    valid = [
+        row
+        for row in rows
+        if _int_or_none(row.get("label")) is not None
+        and _int_or_none(row.get("predicted_direction")) is not None
+    ]
+    metric_rows = [row for row in valid if _int_or_none(row.get("predicted_direction")) in (-1, 1)]
+    correct = sum(
+        1
+        for row in metric_rows
+        if _int_or_none(row.get("label")) == _int_or_none(row.get("predicted_direction"))
     )
+    pred_up = sum(1 for row in metric_rows if _int_or_none(row.get("predicted_direction")) == 1)
+    pred_down = sum(1 for row in metric_rows if _int_or_none(row.get("predicted_direction")) == -1)
+    actual_up = sum(1 for row in metric_rows if _int_or_none(row.get("label")) == 1)
+    actual_down = sum(1 for row in metric_rows if _int_or_none(row.get("label")) == -1)
+    up_tp = sum(
+        1
+        for row in metric_rows
+        if _int_or_none(row.get("predicted_direction")) == 1 and _int_or_none(row.get("label")) == 1
+    )
+    down_tp = sum(
+        1
+        for row in metric_rows
+        if _int_or_none(row.get("predicted_direction")) == -1 and _int_or_none(row.get("label")) == -1
+    )
+    return (
+        tenor,
+        month,
+        len(valid),
+        correct,
+        _ratio(correct, len(metric_rows)),
+        _ratio(up_tp, pred_up),
+        _ratio(up_tp, actual_up),
+        _ratio(down_tp, pred_down),
+        _ratio(down_tp, actual_down),
+    )
+
+
+def _ratio(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
+        return None
+    return numerator / denominator
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def generate(

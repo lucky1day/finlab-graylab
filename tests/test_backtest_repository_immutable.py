@@ -66,6 +66,11 @@ class ImmutableBacktestRepositoryTests(unittest.TestCase):
         self.assertEqual(params["input_artifact_hash"], "i" * 64)
         self.assertEqual(params["run_mode"], "persist")
 
+    def test_monthly_metric_writer_is_not_exposed(self) -> None:
+        import backtests.repository as repository
+
+        self.assertFalse(hasattr(repository, "replace_backtest_monthly_metrics"))
+
     def test_latest_backtest_run_query_reads_latest_view(self) -> None:
         from backtests.repository import latest_backtest_run_id
 

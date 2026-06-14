@@ -30,7 +30,7 @@ def verify_frontend_db(
     output_dir: str | Path | None = None,
     project_root: Path = PROJECT_ROOT,
 ) -> tuple[dict[str, Any], int]:
-    """逐格比对前端 factor-lab API 与 t_backtest_monthly_metrics。"""
+    """逐格比对前端 factor-lab API 与 t_backtest_predictions 明细动态聚合。"""
     try:
         from shared.data_service import create_sqlalchemy_engine
 
@@ -45,7 +45,7 @@ def verify_frontend_db(
             payload = make_payload("fail", {"scheme_id": scheme_id}, ["no framework_db_aligned backtest run found"])
             return payload, exit_code(payload["status"])
         api_payload = _fetch_factor_lab(api_base_url)
-        db_rows = _fetch_monthly_metrics(engine, resolved_run_id)
+        db_rows = _fetch_prediction_details(engine, resolved_run_id)
         evidence = compare_frontend_db_cells(api_payload, db_rows, scheme_id=scheme_id, run_id=resolved_run_id)
         resolved_output_dir = Path(output_dir) if output_dir else default_output_dir(scheme_id, project_root)
         output_path = write_json(resolved_output_dir / OUTPUT_FILE, evidence)
@@ -70,7 +70,7 @@ def compare_frontend_db_cells(
 ) -> dict[str, Any]:
     frontend = _frontend_cells(api_payload, scheme_id, run_id)
     database = _db_cells(db_rows)
-    keys = sorted(set(frontend), key=lambda item: (_tenor_sort_key(item[0]), item[1]))
+    keys = sorted(set(frontend) | set(database), key=lambda item: (_tenor_sort_key(item[0]), item[1]))
     mismatches: list[dict[str, Any]] = []
     for key in keys:
         left = frontend.get(key)
@@ -100,7 +100,8 @@ def compare_frontend_db_cells(
             )
 
     tenors = sorted({key[0] for key in keys}, key=_tenor_sort_key)
-    ignored_db_keys = sorted(set(database) - set(frontend), key=lambda item: (_tenor_sort_key(item[0]), item[1]))
+    frontend_only = sorted(set(frontend) - set(database), key=lambda item: (_tenor_sort_key(item[0]), item[1]))
+    database_only = sorted(set(database) - set(frontend), key=lambda item: (_tenor_sort_key(item[0]), item[1]))
     return {
         "run_id": run_id,
         "scheme_id": scheme_id,
@@ -108,7 +109,8 @@ def compare_frontend_db_cells(
         "total_cells_checked": len(keys),
         "mismatch_count": len(mismatches),
         "mismatches": mismatches,
-        "db_extra_cells_ignored": len(ignored_db_keys),
+        "frontend_only_cells": len(frontend_only),
+        "database_only_cells": len(database_only),
     }
 
 
@@ -141,13 +143,13 @@ def _fetch_factor_lab(api_base_url: str) -> dict[str, Any]:
     return payload
 
 
-def _fetch_monthly_metrics(engine: Any, run_id: int) -> list[dict[str, Any]]:
+def _fetch_prediction_details(engine: Any, run_id: int) -> list[dict[str, Any]]:
     sql = text(
         """
-        SELECT target_tenor, month, sample_count, correct_count, accuracy
-        FROM t_backtest_monthly_metrics
+        SELECT target_tenor, predict_date, target_date, label, predicted_direction
+        FROM t_backtest_predictions
         WHERE run_id = :run_id
-        ORDER BY target_tenor, month
+        ORDER BY target_tenor, target_date, predict_date
         """
     )
     with engine.connect() as conn:
@@ -161,7 +163,9 @@ def _frontend_cells(api_payload: dict[str, Any], scheme_id: str, run_id: int) ->
     for scheme in schemes:
         if not isinstance(scheme, dict):
             continue
-        if scheme.get("scheme_id") != scheme_id or int(scheme.get("run_id") or -1) != int(run_id):
+        api_scheme_id = str(scheme.get("scheme_id") or "").strip()
+        api_base_scheme_id = str(scheme.get("base_scheme_id") or "").strip()
+        if scheme_id not in {api_scheme_id, api_base_scheme_id} or int(scheme.get("run_id") or -1) != int(run_id):
             continue
         tenor = str(scheme.get("tenor") or scheme.get("target_tenor") or "").strip()
         for item in scheme.get("monthly_metrics") or []:
@@ -179,16 +183,31 @@ def _frontend_cells(api_payload: dict[str, Any], scheme_id: str, run_id: int) ->
 
 
 def _db_cells(rows: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
-    cells: dict[tuple[str, str], dict[str, Any]] = {}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
         tenor = str(row.get("target_tenor") or "").strip()
-        month = str(row.get("month") or "").strip()
+        month = str(row.get("target_date") or row.get("predict_date") or "").strip()[:7]
         if not tenor or not month:
             continue
-        cells[(tenor, month)] = {
-            "samples": _int_or_none(row.get("sample_count")),
-            "correct": _int_or_none(row.get("correct_count")),
-            "accuracy": _ratio_to_percent(row.get("accuracy")),
+        grouped.setdefault((tenor, month), []).append(row)
+    cells: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, items in grouped.items():
+        valid = [
+            row
+            for row in items
+            if _int_or_none(row.get("label")) is not None
+            and _int_or_none(row.get("predicted_direction")) is not None
+        ]
+        metric_rows = [row for row in valid if _int_or_none(row.get("predicted_direction")) in (-1, 1)]
+        correct = sum(
+            1
+            for row in metric_rows
+            if _int_or_none(row.get("label")) == _int_or_none(row.get("predicted_direction"))
+        )
+        cells[key] = {
+            "samples": len(valid),
+            "correct": correct,
+            "accuracy": _percent(correct, len(metric_rows)),
         }
     return cells
 
@@ -201,10 +220,10 @@ def _compare_cell(frontend: dict[str, Any], database: dict[str, Any]) -> list[di
     return mismatches
 
 
-def _ratio_to_percent(value: Any) -> float | None:
-    if value is None:
+def _percent(numerator: int, denominator: int) -> float | None:
+    if denominator == 0:
         return None
-    return round(float(value) * 100, 1)
+    return round(numerator / denominator * 100, 1)
 
 
 def _round_percent(value: Any) -> float | None:

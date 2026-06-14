@@ -178,6 +178,23 @@ class BacktestGateBootstrapTests(unittest.TestCase):
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("t_scheme_predictions delta must remain 0" in error for error in result.errors), result.errors)
 
+    def test_persist_backtest_does_not_allow_monthly_metrics_delta(self) -> None:
+        from harness.gates.backtest_gate import _validate_backtest_table_deltas
+
+        errors = _validate_backtest_table_deltas(
+            {
+                "t_backtest_runs": 1,
+                "t_backtest_predictions": 10,
+                "t_backtest_monthly_metrics": 1,
+            },
+            persist=True,
+        )
+
+        self.assertTrue(
+            any("t_backtest_monthly_metrics delta must remain 0" in error for error in errors),
+            errors,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
