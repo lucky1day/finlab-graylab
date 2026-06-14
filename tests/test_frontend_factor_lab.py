@@ -211,19 +211,18 @@ class FactorLabRankingTests(unittest.TestCase):
     def test_sort_ranking_schemes_supports_metric_and_direction(self) -> None:
         result = _run_factor_lab_hook(
             """
+            function makeRows(upTp, upFp, downTp, downFp) {
+              const rows = [];
+              for (let i = 0; i < upTp; i++) rows.push({ predictedDirection: 1, actualDirection: 1 });
+              for (let i = 0; i < upFp; i++) rows.push({ predictedDirection: 1, actualDirection: -1 });
+              for (let i = 0; i < downTp; i++) rows.push({ predictedDirection: -1, actualDirection: -1 });
+              for (let i = 0; i < downFp; i++) rows.push({ predictedDirection: -1, actualDirection: 1 });
+              return rows;
+            }
             const schemes = [
-              { id: "a", monthlyRows: [{ month: "2025-01", samples: 10, metricSamples: 10, correct: 6, overall: 60,
-                upPrecision: 50, downPrecision: 70,
-                metricActualCounts: { up: 0, down: 0, flat: 0 },
-                metricPredictedCounts: { up: 10, down: 0, flat: 0 } }] },
-              { id: "b", monthlyRows: [{ month: "2025-01", samples: 40, metricSamples: 40, correct: 28, overall: 70,
-                upPrecision: 75, downPrecision: 60,
-                metricActualCounts: { up: 0, down: 0, flat: 0 },
-                metricPredictedCounts: { up: 40, down: 0, flat: 0 } }] },
-              { id: "c", monthlyRows: [{ month: "2025-01", samples: 30, metricSamples: 30, correct: 18, overall: 60,
-                upPrecision: 90, downPrecision: 30,
-                metricActualCounts: { up: 0, down: 0, flat: 0 },
-                metricPredictedCounts: { up: 30, down: 0, flat: 0 } }] }
+              { id: "a", monthlyRows: [], dailyRowsByMonth: { "2025-01": makeRows(1, 1, 5, 3) } },
+              { id: "b", monthlyRows: [], dailyRowsByMonth: { "2025-01": makeRows(3, 1, 25, 11) } },
+              { id: "c", monthlyRows: [], dailyRowsByMonth: { "2025-01": makeRows(9, 1, 9, 11) } }
             ];
             return {
               overallDesc: hooks.sortRankingSchemes(schemes, "overall", "desc").map((item) => item.id),
@@ -258,27 +257,32 @@ class FactorLabRankingTests(unittest.TestCase):
             };
             const metric = hooks.aggregateScheme(scheme);
             const rowHtml = hooks.renderSchemeRankingRowForTest(scheme, 0, metric);
-            const monthlyMetric = hooks.aggregateScheme({
-              id: "flat-monthly-demo",
-              monthlyRows: [{
-                month: "2025-05",
-                samples: 8,
-                metricSamples: 7,
-                correct: 3,
-                actualCounts: { up: 4, down: 3, flat: 1 },
-                predictedCounts: { up: 4, down: 3, flat: 1 },
-                metricActualCounts: { up: 4, down: 3, flat: 0 },
-                metricPredictedCounts: { up: 4, down: 3, flat: 0 },
-                upPrecision: 50,
-                upRecall: 50,
-                downPrecision: 33.3333333333,
-                downRecall: 33.3333333333
-              }],
-              dailyRowsByMonth: {}
-            });
+            var monthlyOnlyError = "";
+            try {
+              hooks.aggregateScheme({
+                id: "flat-monthly-demo",
+                monthlyRows: [{
+                  month: "2025-05",
+                  samples: 8,
+                  metricSamples: 7,
+                  correct: 3,
+                  actualCounts: { up: 4, down: 3, flat: 1 },
+                  predictedCounts: { up: 4, down: 3, flat: 1 },
+                  metricActualCounts: { up: 4, down: 3, flat: 0 },
+                  metricPredictedCounts: { up: 4, down: 3, flat: 0 },
+                  upPrecision: 50,
+                  upRecall: 50,
+                  downPrecision: 33.3333333333,
+                  downRecall: 33.3333333333
+                }],
+                dailyRowsByMonth: {}
+              });
+            } catch (error) {
+              monthlyOnlyError = String(error && error.message || error);
+            }
             return {
               metric,
-              monthlyMetric,
+              monthlyOnlyError,
               rowHtml
             };
             """
@@ -288,9 +292,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["metric"]["metricSamples"], 7)
         self.assertEqual(result["metric"]["correct"], 3)
         self.assertAlmostEqual(result["metric"]["overall"], 3 / 7 * 100)
-        self.assertEqual(result["monthlyMetric"]["samples"], 8)
-        self.assertEqual(result["monthlyMetric"]["metricSamples"], 7)
-        self.assertAlmostEqual(result["monthlyMetric"]["overall"], 3 / 7 * 100)
+        self.assertIn("detail rows", result["monthlyOnlyError"])
         self.assertIn("3/7", result["rowHtml"])
         self.assertNotIn("3/8", result["rowHtml"])
 
@@ -318,7 +320,7 @@ class FactorLabRankingTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertIn("metricSamples", result["message"])
+        self.assertIn("detail rows", result["message"])
 
     def test_monthly_metric_without_metric_actual_dist_fails_closed(self) -> None:
         result = _run_factor_lab_hook(
@@ -346,9 +348,9 @@ class FactorLabRankingTests(unittest.TestCase):
         )
 
         self.assertFalse(result["ok"])
-        self.assertIn("metricActualCounts", result["message"])
+        self.assertIn("detail rows", result["message"])
 
-    def test_api_monthly_metric_without_metric_predicted_dist_fails_closed(self) -> None:
+    def test_api_monthly_metric_without_detail_rows_fails_closed(self) -> None:
         result = _run_factor_lab_hook(
             """
             const responses = {
@@ -399,6 +401,148 @@ class FactorLabRankingTests(unittest.TestCase):
 
         self.assertEqual(result["dataMode"], "live-error")
         self.assertIsNone(result["selectedScheme"])
+
+    def test_api_monthly_metrics_are_ignored_when_detail_rows_exist(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [{
+                  id: "detail-derived-monthly-metric",
+                  scheme_id: "demo__h5__5Y",
+                  base_scheme_id: "demo",
+                  name: "Detail Derived",
+                  target_tenor: "5Y",
+                  target_label: "5Y国债活跃",
+                  horizon: 5,
+                  frequency: "daily",
+                  monthly_metrics: [{
+                    month: "2026-05",
+                    samples: 99,
+                    metric_samples: 99,
+                    correct: 99,
+                    accuracy: 100,
+                    overall: 100,
+                    up_precision: 100,
+                    up_recall: 100,
+                    down_precision: 100,
+                    down_recall: 100,
+                    actual_dist: { up: 99, down: 0, flat: 0 },
+                    predicted_dist: { up: 99, down: 0, flat: 0 },
+                    metric_actual_dist: { up: 99, down: 0, flat: 0 },
+                    metric_predicted_dist: { up: 99, down: 0, flat: 0 }
+                  }],
+                  daily_rows: [
+                    { predict_date: "2026-05-01", feature_date: "2026-05-01", target_date: "2026-05-08",
+                      predicted_direction: 1, actual_direction: 1, is_correct: true },
+                    { predict_date: "2026-05-02", feature_date: "2026-05-02", target_date: "2026-05-09",
+                      predicted_direction: -1, actual_direction: 1, is_correct: false },
+                    { predict_date: "2026-05-03", feature_date: "2026-05-03", target_date: "2026-05-10",
+                      predicted_direction: 0, actual_direction: -1, is_correct: false }
+                  ]
+                }]
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            var aggregate = hooks.aggregateScheme(scheme);
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              monthlyRows: scheme.monthlyRows,
+              aggregate
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "backtest")
+        self.assertEqual(len(result["monthlyRows"]), 1)
+        self.assertEqual(result["monthlyRows"][0]["samples"], 3)
+        self.assertEqual(result["monthlyRows"][0]["metricSamples"], 2)
+        self.assertEqual(result["monthlyRows"][0]["correct"], 1)
+        self.assertAlmostEqual(result["monthlyRows"][0]["overall"], 50)
+        self.assertEqual(result["aggregate"]["samples"], 3)
+        self.assertEqual(result["aggregate"]["metricSamples"], 2)
+        self.assertEqual(result["aggregate"]["correct"], 1)
+        self.assertAlmostEqual(result["aggregate"]["overall"], 50)
+
+    def test_aggregate_scheme_filters_detail_rows_by_target_month(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            hooks.setFactorLabStateForTest({
+              startMonth: "2026-05",
+              endMonth: "2026-05",
+              dataSource: "all"
+            });
+            const scheme = {
+              id: "month-filter-demo",
+              monthlyRows: [],
+              dailyRowsByMonth: {
+                "2026-05": [
+                  { predictedDirection: 1, actualDirection: 1 },
+                  { predictedDirection: -1, actualDirection: 1 }
+                ],
+                "2026-06": [
+                  { predictedDirection: 1, actualDirection: -1 },
+                  { predictedDirection: 1, actualDirection: -1 }
+                ]
+              }
+            };
+            return hooks.aggregateScheme(scheme);
+            """
+        )
+
+        self.assertEqual(result["samples"], 2)
+        self.assertEqual(result["metricSamples"], 2)
+        self.assertEqual(result["correct"], 1)
+        self.assertAlmostEqual(result["overall"], 50)
+
+    def test_aggregate_scheme_filters_detail_rows_by_source(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const scheme = {
+              id: "source-filter-demo",
+              monthlyRows: [],
+              dailyRowsByMonth: {
+                "2026-05": [
+                  { _source: "backtest", predictedDirection: 1, actualDirection: 1 },
+                  { _source: "live", predictedDirection: 1, actualDirection: -1 }
+                ]
+              }
+            };
+            hooks.setFactorLabStateForTest({
+              startMonth: "2026-05",
+              endMonth: "2026-05",
+              dataSource: "backtest"
+            });
+            const backtestMetric = hooks.aggregateScheme(scheme);
+            hooks.setFactorLabStateForTest({ dataSource: "live" });
+            const liveMetric = hooks.aggregateScheme(scheme);
+            hooks.setFactorLabStateForTest({ dataSource: "all" });
+            const allMetric = hooks.aggregateScheme(scheme);
+            return { backtestMetric, liveMetric, allMetric };
+            """
+        )
+
+        self.assertEqual(result["backtestMetric"]["samples"], 1)
+        self.assertEqual(result["backtestMetric"]["correct"], 1)
+        self.assertEqual(result["liveMetric"]["samples"], 1)
+        self.assertEqual(result["liveMetric"]["correct"], 0)
+        self.assertEqual(result["allMetric"]["samples"], 2)
+        self.assertEqual(result["allMetric"]["correct"], 1)
 
     def test_ranking_row_without_metric_samples_fails_closed(self) -> None:
         result = _run_factor_lab_hook(
@@ -596,7 +740,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
 	                        metric_actual_dist: { up: 15, down: 10, flat: 1 },
 	                        metric_predicted_dist: { up: 14, down: 12, flat: 0 } }
 	                    ],
-                    daily_rows: []
+                    daily_rows: [
+                      { predict_date: "2026-05-20", feature_date: "2026-05-20", target_date: "2026-05-21",
+                        predicted_direction: 1, actual_direction: 1, is_correct: true }
+                    ]
                   }
                 ]
               }
@@ -721,7 +868,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
 	                        metric_actual_dist: { up: 5, down: 14, flat: 1 },
 	                        metric_predicted_dist: { up: 2, down: 18, flat: 0 } }
 	                    ],
-                    daily_rows: []
+                    daily_rows: [
+                      { predict_date: "2026-04-16", feature_date: "2026-04-16", target_date: "2026-04-23",
+                        predicted_direction: -1, actual_direction: -1, is_correct: true }
+                    ]
                   }
                 ]
               }
@@ -794,7 +944,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     metric_predicted_dist: { up: 4, down: 1, flat: 0 } }
                 ],
                 daily_rows: [
-                  { predict_date: "2026-05-27", target_tenor: "5Y", horizon: 1,
+                  { predict_date: "2026-05-27", target_date: "2026-05-28", target_tenor: "5Y", horizon: 1,
                     predicted_direction: 1, actual_direction: 1, is_correct: true, confidence: 0.7 }
                 ]
               },
@@ -822,7 +972,14 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                         metric_actual_dist: { up: 10, down: 8, flat: 0 },
                         metric_predicted_dist: { up: 9, down: 9, flat: 0 } }
                     ],
-                    daily_rows: []
+                    daily_rows: [
+                      { predict_date: "2026-05-01", feature_date: "2026-05-01", target_date: "2026-05-02",
+                        predicted_direction: 1, actual_direction: 1, is_correct: true },
+                      { predict_date: "2026-05-02", feature_date: "2026-05-02", target_date: "2026-05-05",
+                        predicted_direction: -1, actual_direction: -1, is_correct: true },
+                      { predict_date: "2026-05-03", feature_date: "2026-05-03", target_date: "2026-05-06",
+                        predicted_direction: 1, actual_direction: -1, is_correct: false }
+                    ]
                   }
                 ]
               }
@@ -857,9 +1014,9 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         # 同月应有两行：backtest + live
         self.assertEqual(result["rowCount"], 2)
         self.assertEqual(result["sources"], ["backtest", "live"])
-        # 回测准确率按 metric_samples=18 计算为 12/18=66.7，实盘准确率 80.0，互不覆盖
-        self.assertEqual(result["backtestAccuracy"], [66.7])
-        self.assertEqual(result["liveAccuracy"], [80.0])
+        # 月度指标只按明细重算，不读取 monthly_metrics 中的旧汇总数值。
+        self.assertAlmostEqual(result["backtestAccuracy"][0], 2 / 3 * 100)
+        self.assertEqual(result["liveAccuracy"], [100])
 
     def test_weekly_live_uses_single_predict_date_start_semantics(self) -> None:
         """周度和日度统一用第一条 predict_date 作为实盘发出起点。"""
@@ -981,7 +1138,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_tenor: "3Y",
                 target_label: "3Y国债活跃",
                 monthly_metrics: [],
-                daily_rows: []
+                daily_rows: [
+                  { predict_date: "2026-06-12", target_date: "2026-06-18",
+                    predicted_direction: 1, actual_direction: null, is_correct: null }
+                ]
               },
               "/api/metrics/t5_daily__h5__5Y": {
                 scheme_id: "t5_daily__h5__5Y",
@@ -989,7 +1149,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 target_tenor: "5Y",
                 target_label: "5Y国债活跃",
                 monthly_metrics: [],
-                daily_rows: []
+                daily_rows: [
+                  { predict_date: "2026-06-12", target_date: "2026-06-18",
+                    predicted_direction: -1, actual_direction: null, is_correct: null }
+                ]
               },
               "/api/backtests/factor-lab": {
                 target_labels: { "3Y": "3Y国债活跃", "5Y": "5Y国债活跃" },
@@ -1211,7 +1374,10 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
 	                        metric_actual_dist: { up: 1, down: 0, flat: 0 },
 	                        metric_predicted_dist: { up: 1, down: 0, flat: 0 } }
 	                    ],
-                    daily_rows: []
+                    daily_rows: [
+                      { predict_date: "2026-05-01", feature_date: "2026-05-01", target_date: "2026-05-02",
+                        predicted_direction: 1, actual_direction: 1, is_correct: true }
+                    ]
                   }
                 ]
               }

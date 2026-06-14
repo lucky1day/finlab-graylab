@@ -110,6 +110,8 @@ target_date  = T + horizon
 
 历史回测前端指标的唯一事实源是 `t_backtest_predictions` 明细表。`/api/backtests/factor-lab` 必须从 latest run 的明细动态聚合 `monthly_metrics` 和 `summary`；如果 latest run 缺少明细或明细不可评价，接口必须 fail-closed。新代码不得新增、读取或写入独立的回测月度指标汇总表。
 
+前端展示指标的唯一事实源是 API 返回的预测明细行。前端必须按 `target_date` 把明细行归属到月份，再调用统一的明细指标计算逻辑生成月度表、候选排行、趋势图和汇总卡。API 返回的 `monthly_metrics` 只允许作为传输上下文、调试信息或后端对照信息，不得作为前端展示指标的计算来源。
+
 ## 7. 前端展示规则
 
 前端可以展示灰度实盘和正式实盘，但必须能区分 `prediction_phase`：
@@ -121,10 +123,10 @@ target_date  = T + horizon
 
 前端指标展示必须遵守 §6 的两层分母：
 
-- 月度表“样本数”列展示 `samples` / `sample_count`，包含预测为平的交易日或预测周。
-- 月度表、候选排行、趋势图和汇总卡中的整体准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率均使用 `metric_samples` 和 `metric_*_dist` 口径，排除预测为平的样本。
-- 准确率括号展示 `correct/metric_samples`；不得回退成 `correct/samples`。
-- 如果读取侧没有 `metric_samples`，且无法从 `predicted_dist` / `metric_predicted_dist` 推导有方向样本数，必须直接报错；不得用 `samples` 作为兼容兜底。
+- 月度表“样本数”列展示由明细行计算出的 `samples`，包含预测为平的交易日或预测周。
+- 月度表、候选排行、趋势图和汇总卡中的整体准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率均由明细行直接计算；分母只包含预测为“涨”或“跌”的样本，排除预测为平的样本。
+- 准确率括号展示 `correct/metric_samples`；不得回退成 `correct/samples`，也不得通过月度行的 precision/recall 反推出 true positive。
+- 如果某个需要展示的方案/月度只有 `monthly_metrics` 汇总、没有预测明细行，前端必须 fail-closed，不能从月度汇总反推或回填指标。
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
 

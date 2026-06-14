@@ -412,6 +412,39 @@
     });
   }
 
+  function makeMockDetailRowsByMonth(monthlyRows) {
+    var grouped = {};
+    (monthlyRows || []).forEach(function (row) {
+      var samples = Number(row.samples) || 0;
+      var correctTarget = Math.max(0, Math.min(samples, Math.round(samples * (Number(row.overall) || 0) / 100)));
+      grouped[row.month] = [];
+      for (var i = 0; i < samples; i++) {
+        var predictedDirection = i % 8 === 7 ? 0 : (i % 2 === 0 ? 1 : -1);
+        var actualDirection = i < correctTarget && predictedDirection !== 0
+          ? predictedDirection
+          : (predictedDirection === 1 ? -1 : 1);
+        var day = String(Math.min(28, i + 1)).padStart(2, "0");
+        grouped[row.month].push({
+          day: row.month.slice(5, 7) + "/" + day,
+          predictDate: row.month + "-" + day,
+          featureDate: row.month + "-" + day,
+          targetDate: row.month + "-" + day,
+          predictionPhase: "",
+          runId: null,
+          schemeVersion: "mock",
+          inputArtifactHash: "",
+          confidence: null,
+          predicted: directionText(predictedDirection),
+          actual: directionText(actualDirection),
+          predictedDirection: predictedDirection,
+          actualDirection: actualDirection,
+          correct: predictedDirection === 0 ? false : predictedDirection === actualDirection
+        });
+      }
+    });
+    return grouped;
+  }
+
   function createTaskSchemes(target, column, count, targetIndex, columnIndex) {
     var schemes = [];
     var baseRows = column.frequency === "weekly" ? factorWeeklyBaseRows : factorDailyBaseRows;
@@ -420,6 +453,7 @@
       var name = factorSchemeNamePool[i % factorSchemeNamePool.length];
       var status = i === 0 ? "running" : (i === count - 1 && count > 3 ? "archived" : "complete");
       var qualityStep = status === "archived" ? 0.4 : i * 1.9;
+      var dailyRowsByMonth = makeMockDetailRowsByMonth(makeMonthRows(baseRows, baseline + qualityStep - (count - 3) * 0.7));
       schemes.push({
         id: target.toLowerCase() + "-" + column.id + "-s" + (i + 1),
         taskKey: getTaskKey(target, column),
@@ -428,7 +462,8 @@
         latestRun: status === "archived" ? "05-21" : "05-29",
         deploymentDate: DEFAULT_SCHEME_DEPLOYMENT_DATE,
         remark: "",
-        monthlyRows: makeMonthRows(baseRows, baseline + qualityStep - (count - 3) * 0.7)
+        monthlyRows: monthlyRowsFromGroupedDetails(dailyRowsByMonth),
+        dailyRowsByMonth: dailyRowsByMonth
       });
     }
     return schemes;
@@ -481,31 +516,9 @@
     };
   }
 
-  function hasOwnValue(object, key) {
-    return !!object && Object.prototype.hasOwnProperty.call(object, key) && object[key] !== null && object[key] !== undefined;
-  }
-
-  function requireMetricDist(row, key, context) {
-    if (!hasOwnValue(row, key)) {
-      throw new Error(context + " requires " + key);
-    }
-    return normalizeDist(row[key]);
-  }
-
-  function requireNormalizedMetricCounts(row, key, context) {
-    if (!hasOwnValue(row, key)) {
-      throw new Error(context + " requires " + key);
-    }
-    return normalizeDist(row[key]);
-  }
-
   function distText(dist) {
     dist = normalizeDist(dist);
     return [dist.up || 0, dist.down || 0, dist.flat || 0].join("/");
-  }
-
-  function metricOrNull(value) {
-    return value === null || value === undefined ? null : Number(value);
   }
 
   function numberOrNull(value) {
@@ -514,52 +527,10 @@
     return isFinite(number) ? number : null;
   }
 
-  function metricSampleCount(row, predictedCounts) {
-    var explicit = numberOrNull(row.metricSamples);
-    if (explicit !== null) return explicit;
-    explicit = numberOrNull(row.metric_samples);
-    if (explicit !== null) return explicit;
-    explicit = numberOrNull(row.metric_sample_count);
-    if (explicit !== null) return explicit;
-    predictedCounts = predictedCounts || normalizeDist(row.predictedCounts || row.predictedDist);
-    if (predictedCounts) {
-      var distTotal = (predictedCounts.up || 0) + (predictedCounts.down || 0) + (predictedCounts.flat || 0);
-      if (distTotal > 0) return (predictedCounts.up || 0) + (predictedCounts.down || 0);
-    }
-    throw new Error("metricSamples or predicted_dist with up/down/flat counts is required");
-  }
-
   function requireMetricSamples(row, context) {
     var value = numberOrNull(row && row.metricSamples);
     if (value !== null) return value;
     throw new Error(context + " requires metricSamples");
-  }
-
-  function rowFromMetric(metric) {
-    var overall = metric.accuracy === null || metric.accuracy === undefined ? metric.overall : metric.accuracy;
-    var actualCounts = normalizeDist(metric.actual_dist);
-    var predictedCounts = normalizeDist(metric.predicted_dist);
-    var metricActualCounts = requireMetricDist(metric, "metric_actual_dist", "monthly metric");
-    var metricPredictedCounts = requireMetricDist(metric, "metric_predicted_dist", "monthly metric");
-    var samples = Number(metric.total || metric.samples || 0);
-    var metricSamples = metricSampleCount(metric, metricPredictedCounts);
-    return {
-      month: metric.month,
-      samples: samples,
-      metricSamples: metricSamples,
-      actualDist: distText(actualCounts),
-      predictedDist: distText(predictedCounts),
-      actualCounts: actualCounts,
-      predictedCounts: predictedCounts,
-      metricActualCounts: metricActualCounts,
-      metricPredictedCounts: metricPredictedCounts,
-      overall: metricOrNull(overall),
-      correct: Number(metric.correct || 0),
-      upPrecision: metricOrNull(metric.up_precision),
-      upRecall: metricOrNull(metric.up_recall),
-      downPrecision: metricOrNull(metric.down_precision),
-      downRecall: metricOrNull(metric.down_recall)
-    };
   }
 
   function getSchemeDisplayName(scheme) {
@@ -616,35 +587,52 @@
     return grouped;
   }
 
-  function appendPendingMonths(monthlyRows, groupedDailyRows) {
-    var known = {};
-    monthlyRows.forEach(function (row) {
-      known[row.month] = true;
+  function directionCounts(rows, key, metricOnly) {
+    var counts = { up: 0, down: 0, flat: 0 };
+    (rows || []).forEach(function (row) {
+      var predicted = normalizeDirection(row.predictedDirection);
+      var value = normalizeDirection(row[key]);
+      if (value === null) return;
+      if (metricOnly && predicted !== 1 && predicted !== -1) return;
+      if (value === 1) counts.up += 1;
+      else if (value === -1) counts.down += 1;
+      else if (value === 0) counts.flat += 1;
     });
-    Object.keys(groupedDailyRows).sort().forEach(function (month) {
-      if (known[month]) return;
-      monthlyRows.push({
-        month: month,
-        samples: 0,
-        metricSamples: 0,
-        actualDist: "0/0/0",
-        predictedDist: "0/0/0",
-        actualCounts: { up: 0, down: 0, flat: 0 },
-        predictedCounts: { up: 0, down: 0, flat: 0 },
-        metricActualCounts: { up: 0, down: 0, flat: 0 },
-        metricPredictedCounts: { up: 0, down: 0, flat: 0 },
-        overall: null,
-        correct: 0,
-        upPrecision: null,
-        upRecall: null,
-        downPrecision: null,
-        downRecall: null
+    return counts;
+  }
+
+  function metricRowFromSampleRows(month, rows) {
+    var metric = metricFromSampleRows(rows);
+    var actualCounts = directionCounts(rows, "actualDirection", false);
+    var predictedCounts = directionCounts(rows, "predictedDirection", false);
+    var metricActualCounts = directionCounts(rows, "actualDirection", true);
+    var metricPredictedCounts = directionCounts(rows, "predictedDirection", true);
+    return {
+      month: month,
+      samples: metric.samples,
+      metricSamples: metric.metricSamples,
+      actualDist: distText(actualCounts),
+      predictedDist: distText(predictedCounts),
+      actualCounts: actualCounts,
+      predictedCounts: predictedCounts,
+      metricActualCounts: metricActualCounts,
+      metricPredictedCounts: metricPredictedCounts,
+      overall: metric.overall,
+      correct: metric.correct,
+      upPrecision: metric.upPrecision,
+      upRecall: metric.upRecall,
+      downPrecision: metric.downPrecision,
+      downRecall: metric.downRecall
+    };
+  }
+
+  function monthlyRowsFromGroupedDetails(groupedDailyRows) {
+    return Object.keys(groupedDailyRows || {}).sort().map(function (month) {
+      var rows = (groupedDailyRows[month] || []).filter(function (row) {
+        return normalizeDirection(row.predictedDirection) !== null && normalizeDirection(row.actualDirection) !== null;
       });
+      return metricRowFromSampleRows(month, rows);
     });
-    monthlyRows.sort(function (a, b) {
-      return a.month.localeCompare(b.month);
-    });
-    return monthlyRows;
   }
 
   function columnForHorizon(horizon, frequency) {
@@ -713,8 +701,10 @@
       var taskKey = getTaskKey(targetTenor, column);
       if (!tasks[taskKey]) tasks[taskKey] = [];
       var groupedDailyRows = dailyRowsByMonth(scheme.daily_rows || [], scheme.frequency, scheme.horizon);
-      var monthlyRows = (scheme.monthly_metrics || []).map(rowFromMetric);
-      monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
+      if ((!scheme.daily_rows || !scheme.daily_rows.length) && scheme.monthly_metrics && scheme.monthly_metrics.length) {
+        throw new Error("backtest scheme " + (scheme.scheme_id || "") + " has monthly_metrics but no detail rows");
+      }
+      var monthlyRows = monthlyRowsFromGroupedDetails(groupedDailyRows);
       var latestRun = scheme.latest_run && scheme.latest_run.date
         ? scheme.latest_run.date.slice(5)
         : (scheme.end_date ? scheme.end_date.slice(5) : "--");
@@ -749,15 +739,10 @@
       var metrics = metricsByKey[scheme.scheme_id] || {};
       if (metrics.target_label) factorTargetLabels[targetTenor] = String(metrics.target_label);
       var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
-      var monthlyRows = (metrics.monthly_metrics || []).map(rowFromMetric);
-      monthlyRows = appendPendingMonths(monthlyRows, groupedDailyRows);
-      // 月度指标与明细按 target_date 对齐: 过滤掉没有对应 daily 行的月份
-      var dailyMonths = Object.keys(groupedDailyRows);
-      if (dailyMonths.length) {
-        monthlyRows = monthlyRows.filter(function (m) {
-          return dailyMonths.indexOf(m.month) >= 0;
-        });
+      if ((!metrics.daily_rows || !metrics.daily_rows.length) && metrics.monthly_metrics && metrics.monthly_metrics.length) {
+        throw new Error("live scheme " + (scheme.scheme_id || "") + " has monthly_metrics but no detail rows");
       }
+      var monthlyRows = monthlyRowsFromGroupedDetails(groupedDailyRows);
       var liveSinceDate = "";
       var liveMetricSinceDate = "";
       if (metrics.daily_rows && metrics.daily_rows.length) {
@@ -1030,7 +1015,7 @@
     });
   }
 
-  function getVisibleDailyRowsForScheme(scheme) {
+  function getVisibleRawDailyRowsForScheme(scheme) {
     if (!scheme || !scheme.dailyRowsByMonth) return [];
     var src = factorLabState.dataSource;
     var rows = [];
@@ -1040,7 +1025,11 @@
         if (src === "all" || dr._source === src) rows.push(dr);
       });
     });
-    return rows.filter(function (row) {
+    return rows;
+  }
+
+  function getVisibleDailyRowsForScheme(scheme) {
+    return getVisibleRawDailyRowsForScheme(scheme).filter(function (row) {
       return normalizeDirection(row.predictedDirection) !== null && normalizeDirection(row.actualDirection) !== null;
     });
   }
@@ -1076,57 +1065,13 @@
     };
   }
 
-  function inferTruePositive(primaryMetric, primaryDenominator, fallbackMetric, fallbackDenominator) {
-    var primary = metricOrNull(primaryMetric);
-    if (primary !== null && primaryDenominator > 0) {
-      return Math.max(0, Math.min(primaryDenominator, Math.round(primary / 100 * primaryDenominator)));
-    }
-    var fallback = metricOrNull(fallbackMetric);
-    if (fallback !== null && fallbackDenominator > 0) {
-      return Math.max(0, Math.min(fallbackDenominator, Math.round(fallback / 100 * fallbackDenominator)));
-    }
-    return 0;
-  }
-
-  function metricFromMonthlyRows(rows) {
-    var samples = rows.reduce(function (sum, row) { return sum + row.samples; }, 0);
-    var metricSamples = 0;
-    var correct = rows.reduce(function (sum, row) { return sum + row.correct; }, 0);
-    var predUp = 0;
-    var predDown = 0;
-    var actualUp = 0;
-    var actualDown = 0;
-    var upTp = 0;
-    var downTp = 0;
-    rows.forEach(function (row) {
-      var actualCounts = normalizeDist(row.actualCounts || row.actualDist);
-      var predictedCounts = normalizeDist(row.predictedCounts || row.predictedDist);
-      var metricActualCounts = requireNormalizedMetricCounts(row, "metricActualCounts", "monthly row");
-      var metricPredictedCounts = requireNormalizedMetricCounts(row, "metricPredictedCounts", "monthly row");
-      metricSamples += metricSampleCount(row, metricPredictedCounts);
-      predUp += metricPredictedCounts.up;
-      predDown += metricPredictedCounts.down;
-      actualUp += metricActualCounts.up;
-      actualDown += metricActualCounts.down;
-      upTp += inferTruePositive(row.upRecall, metricActualCounts.up, row.upPrecision, metricPredictedCounts.up);
-      downTp += inferTruePositive(row.downRecall, metricActualCounts.down, row.downPrecision, metricPredictedCounts.down);
-    });
-    return {
-      samples: samples,
-      metricSamples: metricSamples,
-      correct: correct,
-      overall: metricSamples ? correct / metricSamples * 100 : null,
-      upPrecision: predUp ? upTp / predUp * 100 : null,
-      upRecall: actualUp ? upTp / actualUp * 100 : null,
-      downPrecision: predDown ? downTp / predDown * 100 : null,
-      downRecall: actualDown ? downTp / actualDown * 100 : null
-    };
-  }
-
   function aggregateScheme(scheme) {
+    var rawRows = getVisibleRawDailyRowsForScheme(scheme);
+    if (!rawRows.length) {
+      throw new Error("scheme " + ((scheme && scheme.schemeId) || scheme.id || "") + " has no detail rows for selected metric range");
+    }
     var dailyRows = getVisibleDailyRowsForScheme(scheme);
-    if (dailyRows.length) return metricFromSampleRows(dailyRows);
-    return metricFromMonthlyRows(getVisibleRowsForScheme(scheme));
+    return metricFromSampleRows(dailyRows);
   }
 
   function rankingMetricValue(scheme, metricId) {
@@ -1841,9 +1786,17 @@
         apiError: factorLabApiError,
         dataMode: factorLabDataMode,
         endMonth: factorLabState.endMonth,
+        dataSource: factorLabState.dataSource,
         selectedTaskKey: factorLabState.selectedTaskKey,
         startMonth: factorLabState.startMonth
       };
+    },
+    setFactorLabStateForTest: function (patch) {
+      Object.keys(patch || {}).forEach(function (key) {
+        if (Object.prototype.hasOwnProperty.call(factorLabState, key)) {
+          factorLabState[key] = patch[key];
+        }
+      });
     },
     getSelectedScheme: getSelectedScheme,
     getSchemeDeploymentDate: getSchemeDeploymentDate,

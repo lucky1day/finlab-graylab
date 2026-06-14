@@ -1,7 +1,7 @@
 # 指标 Fail-Closed 问题闭环记录（2026-06-14）
 
 **状态**: 已闭环  
-**闭环提交**: `56eb3eb fix: remove backtest monthly metrics fallback`  
+**闭环提交**: `56eb3eb fix: remove backtest monthly metrics fallback`；前端明细行指标闭环见本开发分支后续提交
 **适用范围**: 前端候选排行、前端月度明细、`/api/backtests/factor-lab`、live metrics、backtest runner 指标口径
 
 ## 为什么这个文档一度不可见
@@ -30,27 +30,33 @@
 
 2. 前端不能在缺少方向分布或 `metric_samples` 时回退到 `samples`。
 
-   已修正为没有可推导指标分母时直接报错。前端展示必须使用 `metric_samples` / `metric_*_dist`，不得使用 `samples` 作为指标分母 fallback。
+   已修正为没有可验证指标分母时直接报错，不得使用 `samples` 作为指标分母 fallback。当前最终规则进一步收敛为：前端展示指标只从预测明细行直接计算，不再从月度行读取或推导指标分母。
 
 3. 前端不能在缺少 `metric_actual_dist` / `metric_predicted_dist` 时回退到普通方向分布。
 
-   已修正为 API 月度指标行必须显式提供 `metric_actual_dist` 和 `metric_predicted_dist`；缺任一字段时前端 fail-closed。内部 normalized monthly row 必须携带 `metricActualCounts` 和 `metricPredictedCounts`；不得退回 `actual_dist` / `predicted_dist` / `actualCounts` / `predictedCounts`。
+   该问题已被更严格规则覆盖：前端不再使用 API 月度指标行作为展示指标来源，因此也不会从 `metric_actual_dist` / `metric_predicted_dist` 或普通 `actual_dist` / `predicted_dist` 之间做任何 fallback。缺少展示所需明细行时直接 fail-closed。
 
-4. 后端不能为老 monthly row 增加兼容 fallback。
+4. 前端展示指标不能再从 `monthly_metrics` 计算或反推。
+
+   已修正为前端月度表、候选排行、趋势图和汇总卡均只从预测明细行计算。前端按 `target_date` 把明细行归属到月份，再调用统一的明细指标计算逻辑；`monthly_metrics` 只允许作为 API 传输上下文、调试信息或后端对照信息，不再是展示指标来源。如果某个需要展示的方案/月度只有月度汇总、没有明细行，前端必须 fail-closed，不得从 precision/recall 反推 true positive。
+
+5. 后端不能为老 monthly row 增加兼容 fallback。
 
    已删除旧月度汇总 API 入口和 repository writer。正常业务路径不再读取或写入独立的回测月度指标汇总。
 
-5. runner 不能写独立月度指标汇总表。
+6. runner 不能写独立月度指标汇总表。
 
    `persist_run_output()` 当前只写 `t_backtest_runs` 和 `t_backtest_predictions`，再更新 run summary；前端 canonical 月度指标由 `/api/backtests/factor-lab` 从明细动态聚合。
 
-6. 文档不能继续暗示旧汇总表是 baseline 或 fallback。
+7. 文档不能继续暗示旧汇总表是 baseline 或 fallback。
 
    已更新 `PREDICTION_SEMANTICS.md`、`CURRENT_STATUS.md`、`SCHEME_ONBOARDING_SOP.md`、`SCHEME_POST_ONBOARDING_TEST_SOP.md`、`ARCHITECTURE.md` 等文档，统一写明 `t_backtest_predictions` 明细是回测前端指标唯一事实源。
 
 ## 保留边界
 
 `t_backtest_monthly_metrics` 如果仍出现在测试 fixture、受控删除脚本或 table guard 中，只能用于处理历史数据库状态、旧 run 清理或防止未来误写；不得重新进入业务读取、runner 写入、前端展示或 API fallback 路径。
+
+API payload 中的 `monthly_metrics` 仍可保留为后端动态聚合结果和调试对照，但前端展示指标不得读取它作为计算来源。前端必须以明细行作为唯一事实源。
 
 如需物理删除旧 DB 表，必须另起迁移计划并先完成真实库审计；这不属于本次闭环范围。
 
@@ -71,7 +77,7 @@ git diff --check
 # run_id=107, total_cells_checked=17, mismatch_count=0
 
 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m unittest tests.test_frontend_factor_lab -v
-# includes fail-closed coverage for missing metric_actual_dist / metric_predicted_dist
+# includes fail-closed coverage for missing detail rows and detail-derived frontend metrics
 ```
 
 同时已重启 backend 8100，并强制刷新前端页面到 `http://127.0.0.1:8100/`。
@@ -81,5 +87,6 @@ git diff --check
 - 新增指标字段时，必须同时声明“样本总数”和“指标分母”的含义。
 - 新增前端或后端统计逻辑时，必须有测试覆盖 `predicted_direction=0` 的样本。
 - 任何读取侧不得增加“缺字段时回退到 samples”的兼容逻辑。
-- 前端不得在缺少 `metric_actual_dist` / `metric_predicted_dist` 时回退到普通 `actual_dist` / `predicted_dist`。
+- 前端不得从 `monthly_metrics`、`metric_actual_dist`、`metric_predicted_dist`、precision 或 recall 反推展示指标；展示指标只能从明细行计算。
+- 如果某个需要展示的月份缺少明细行，前端必须 fail-closed，不能回退到月度汇总。
 - 任何回测展示不得重新读取独立月度汇总表作为事实源。
