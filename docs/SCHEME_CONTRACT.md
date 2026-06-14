@@ -189,6 +189,7 @@ LiveGate 写库后，对该 `scheme_id` + `predict_date` 断言：
 |------|------|----------|
 | 行数 | 新增行数 `== 本次有效 tenors 数` | 漏写/重复写 tenor |
 | 值域 | `predicted_direction ∈ {1, -1, 0}` | 方向越界，污染准确率 |
+| 指标口径 | `predicted_direction=0` 的样本只计入样本总数和方向分布，不进入 `correct`、准确率、precision 或 recall 分母 | 把“平”误算成错误或正确，前端指标失真 |
 | 一致性 | `horizon == config.horizon`；`target_tenor ∈ config.tenors` | 方案身份漂移 |
 | 唯一性 | 无重复 `(scheme_id, target_tenor, horizon, target_date)` | 违反 `t_scheme_predictions` 当前业务 UK；同一 target 被重复展示 |
 | 阶段 | 实盘记录必须写入 `prediction_phase ∈ {gray_live, scheduled_live}`；LiveGate 必须显式传入该值 | 前端和业务把灰度与正式实盘混算 |

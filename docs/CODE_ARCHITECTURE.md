@@ -189,6 +189,8 @@ python -m backtests.{scheme_id}_reproduction [--no-persist]
        └─ JOIN t_scheme_predictions × t_scheme_actuals|t_scheme_weekly_actuals → 月度准确率
 ```
 
+指标查询路径必须保留两层分母语义：`samples` 是月度样本总数，包含预测为“平”的样本；`metric_samples` 是准确率、precision、recall 的真实分母，只包含预测为“涨/跌”的有方向样本。前端每日/周度验证表中预测为“平”的行只显示 `-`，不得显示 `×` 或 `✓`。
+
 ---
 
 ## 6. 扩展模型（约定式插件）

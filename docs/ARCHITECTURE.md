@@ -455,7 +455,9 @@ class PredictionRecord:
 
 返回中的 `daily_rows` 必须包含平台业务字段 `feature_date` 与 `prediction_phase`（`gray_live` / `scheduled_live`），并提供 `phase_ranges` 汇总。前端不得依赖 `anchor_date`。
 
-指标字段中 `total` / `samples` 表示已验证样本总数，包含 `predicted_direction=0` 的“平”样本；`metric_samples` 表示准确率类指标分母，只包含有方向信号的预测样本。`accuracy` / `overall` 必须按 `correct / metric_samples` 计算；样本数列仍展示 `samples`。
+指标字段中 `total` / `samples` 表示已验证样本总数，包含 `predicted_direction=0` 的“平”样本；`metric_samples` 表示准确率类指标分母，只包含有方向信号的预测样本。`accuracy` / `overall` 必须按 `correct / metric_samples` 计算；样本数列仍展示 `samples`。上涨准确率、上涨召回率、下跌准确率、下跌召回率同样只使用 `metric_*_dist` 口径，预测为“平”的样本不进入任何指标分母。
+
+前端每日/周度验证明细只把预测为“平”的行作为中性样本展示：结果列显示 `-`，不显示 `✓` 或 `×`。这不改变样本总数，月度样本数仍包含该行；只是指标计算和正确/错误计数排除该行。
 
 ```json
 {
@@ -531,6 +533,8 @@ frontend/
 ```
 
 **当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；回测数据不可用时再回退到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测接口。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
+
+**前端指标口径**: 因子实验室页面必须同时展示“样本总数”和“指标分母”两种语义。月度“样本数”列使用 `samples`，包含预测为“平”的交易日或预测周；所有准确率类指标使用 `metric_samples` / `metric_*_dist`，排除预测为“平”的样本。每日/周度验证表中预测为“平”的行结果列显示 `-`，不显示 `×`，也不显示 `✓`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
 由FastAPI后端直接serve这个目录作为静态文件。

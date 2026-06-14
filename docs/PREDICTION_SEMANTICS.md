@@ -88,7 +88,12 @@ target_date  = T + horizon
 
 ## 6. 指标统计口径
 
-预测方向 `predicted_direction=0` 表示“平”或“无方向信号”。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等指标的分母。
+预测方向 `predicted_direction=0` 表示“平”或“无方向信号”。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等任何指标的分母。
+
+这里必须始终区分两层数量：
+
+- 样本总数：该月已经可评价的预测交易日 / 预测周数量，包含预测为“涨”“跌”“平”的全部样本。
+- 指标分母：只包含预测为“涨”或“跌”的有方向样本；预测为“平”的交易日只参与样本总数和方向分布，不参与任何准确率、召回率或 precision 类指标。
 
 平台统一字段含义如下：
 
@@ -96,12 +101,12 @@ target_date  = T + horizon
 |------|------|
 | `samples` / `sample_count` | 可评价样本总数，包含预测为平的样本 |
 | `metric_samples` / `metric_sample_count` | 指标分母，只包含 `predicted_direction in {-1, 1}` 的有方向预测样本 |
-| `correct` / `correct_count` | 只在 `metric_samples` 范围内统计方向预测正确数 |
+| `correct` / `correct_count` | 只在 `metric_samples` 范围内统计方向预测正确数；预测为平的样本不计入正确或错误 |
 | `accuracy` / `overall` | `correct / metric_samples` |
 | `actual_dist` / `predicted_dist` | 全部可评价样本的实际/预测方向分布，包含 `flat` |
 | `metric_actual_dist` / `metric_predicted_dist` | 指标分母范围内的实际/预测方向分布，不包含预测为平的样本 |
 
-例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、后端 live metrics、回测 runner 和 `/api/backtests/factor-lab` 必须遵守同一口径。前端每日/周度验证明细中，预测为“平”的行结果列统一展示 `-`，不展示 `✓` 或 `×`。
+例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、后端 live metrics、回测 runner 和 `/api/backtests/factor-lab` 必须遵守同一口径。
 
 ## 7. 前端展示规则
 
@@ -111,6 +116,14 @@ target_date  = T + horizon
 - `scheduled_live`：正式实盘。
 
 前端与业务不读取 `anchor_date`。需要展示预测站位或数据截止时，统一显示 `feature_date`。月度行、明细归属、actual join 和去重仍统一按 `target_date`。
+
+前端指标展示必须遵守 §6 的两层分母：
+
+- 月度表“样本数”列展示 `samples` / `sample_count`，包含预测为平的交易日或预测周。
+- 月度表、候选排行、趋势图和汇总卡中的整体准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率均使用 `metric_samples` 和 `metric_*_dist` 口径，排除预测为平的样本。
+- 准确率括号展示 `correct/metric_samples`；不得回退成 `correct/samples`。
+- 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
+- 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
 
 ## 8. 当前 V28 判定
 

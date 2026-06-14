@@ -501,6 +501,8 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 - `/api/predictions?scheme_id={registry_scheme_id}` 能返回该业务方案的底层预测明细；`/api/predictions?scheme_id={base_scheme_id}`、无 `scheme_id` 或 `?tenor=...` 都不是合法入口。
 - 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
+- 月度指标必须区分 `samples` 与 `metric_samples`：`samples` 是样本总数，包含预测为“平”的交易日或预测周；`metric_samples` 是所有准确率、precision、recall 指标的分母，只包含预测为“涨/跌”的有方向样本。
+- 若月内存在 `predicted_direction=0`，前端准确率括号必须展示 `correct/metric_samples`，不得展示 `correct/samples`；上涨/下跌准确率和召回率也必须排除这些“平”样本。
 
 打开:
 
@@ -512,7 +514,9 @@ http://127.0.0.1:8100/
 
 - 新方案出现在对应任务格子下，例如 `10Y国债活跃 · T+1`。
 - 同一个任务格子下可以同时看到多个候选方案。
-- 方案排行的整体准确率、上涨准确率、下跌准确率按样本级聚合。
+- 方案排行的整体准确率、上涨准确率、下跌准确率按样本级聚合，但预测为“平”的样本不进入任何指标分母。
+- 月度表“样本数”列仍包含预测为“平”的样本；整体准确率括号显示 `correct/metric_samples`。
+- 每日/周度验证表中，预测为“平”的行结果列必须显示 `-`，不得显示 `×` 或 `✓`。
 - 切换排行指标时，任务格子最优指标同步变化。
 - 部署时间、备注等展示字段必须按真实候选排行 row 验证，不只直测 helper；前端 helper 需要兼容 API 原始 `scheme_id` 和 UI 归一后的 `schemeId`。
 - 如果刚改过 `frontend/aifin-shell.js` / `frontend/index.html` 后页面仍显示旧内容，第一时间提醒用户做浏览器强制刷新（macOS `Cmd+Shift+R`）或打开 DevTools 勾选 `Disable Cache` 后刷新，再继续排查 API/代码。

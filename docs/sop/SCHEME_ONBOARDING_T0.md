@@ -69,7 +69,15 @@
 - `t_scheme_predictions` 唯一语义是 `(scheme_id, target_tenor, horizon, target_date)`，写入必须保持 UPSERT 语义。
 - 新增方案不得依赖 serving pointer 来决定前端展示哪条预测。
 
-## 3.1 confidence 术语
+## 3.1 指标统计和前端明细口径
+
+- `predicted_direction=0` 表示预测为“平”或无方向信号。
+- 月度样本数必须包含预测为“涨/跌/平”的全部已验证交易日或预测周。
+- 所有准确率、precision、recall 指标必须排除预测为“平”的样本；分母使用 `metric_samples` 或 `metric_*_dist`，不得使用总样本数 `samples`。
+- `correct` 只统计有方向预测中的正确数；预测为“平”的样本既不算正确，也不算错误。
+- 前端每日/周度验证表中，预测为“平”的结果列统一显示 `-`，不得显示 `×` 或 `✓`。
+
+## 3.2 confidence 术语
 
 - `confidence` 是平台统一预测记录里的可选数值字段，用来承接原始算法的置信度、概率或分数（例如 `probability` / `score` / `prob_up`），不是平台额外生成的新标签。
 - 如果原始算法没有天然 `confidence`，可以使用确定性的代理数值，但 original/current 两侧必须使用同一映射，并在 `CURRENT_STATUS.md` 写清。
