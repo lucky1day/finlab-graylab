@@ -19,17 +19,29 @@ class Daily5Y2BacktestTests(unittest.TestCase):
 
         original = pd.read_csv(bench / "original_predictions_sample.csv")
         current = pd.read_csv(bench / "current_predictions_sample.csv")
+        expected_columns = [
+            "feature_date",
+            "target_date",
+            "target_tenor",
+            "horizon",
+            "direction",
+            "confidence",
+            "label",
+            "is_correct",
+        ]
 
+        self.assertEqual(list(original.columns), expected_columns)
+        self.assertEqual(list(current.columns), expected_columns)
         self.assertEqual(len(original), 18)
         self.assertEqual(len(current), 18)
-        self.assertEqual(original["predict_date"].min(), "2026-05-06")
-        self.assertEqual(original["predict_date"].max(), "2026-05-29")
+        self.assertEqual(original["feature_date"].min(), "2026-05-06")
+        self.assertEqual(original["feature_date"].max(), "2026-05-29")
         self.assertEqual(original["target_date"].iloc[0], "2026-05-13")
         self.assertEqual(original["target_date"].iloc[-1], "2026-06-05")
 
         merged = original.merge(
             current,
-            on=["predict_date", "tenor"],
+            on=["feature_date", "target_date", "target_tenor", "horizon"],
             suffixes=("_original", "_current"),
         )
         self.assertEqual(len(merged), 18)

@@ -84,7 +84,7 @@ class Daily5Y2AlignmentTests(unittest.TestCase):
 
         self.assertEqual(aligned["M0061518"].tolist(), [9.5, 9.0, 8.8])
 
-    def test_backtest_passes_db_calendar_week_mapping_to_core(self) -> None:
+    def test_backtest_passes_month_window_and_db_calendar_week_mapping_to_shared_inference(self) -> None:
         from backtests import daily_5y_2_v28_reproduction as runner
 
         daily_df = pd.DataFrame({"date": pd.to_datetime(["2025-01-02", "2025-01-03"]), "TB5YWI0C": [2.0, 2.1]})
@@ -92,7 +92,8 @@ class Daily5Y2AlignmentTests(unittest.TestCase):
         monthly_df = pd.DataFrame({"month_id": ["202412"], "M0061518": [9.0]})
         date_to_week = {"2025-01-02": 202501, "2025-01-03": 202501}
 
-        with patch.object(runner, "run_prediction", return_value=pd.DataFrame()) as mock_run:
+        mocked_detail = pd.DataFrame({"anchor_date": ["2025-01-02"], "prediction": [1]})
+        with patch.object(runner, "run_v28_for_feature_window", return_value=mocked_detail) as mock_run:
             runner.run_historical_prediction(
                 daily_df=daily_df,
                 weekly_df=weekly_df,
@@ -101,14 +102,58 @@ class Daily5Y2AlignmentTests(unittest.TestCase):
                 n_workers=1,
             )
 
+        mock_run.assert_called_once()
+        kwargs = mock_run.call_args.kwargs
+        self.assertEqual(kwargs["date_to_week"], date_to_week)
+        self.assertEqual(kwargs["window_start"], "2025-01-01")
+        self.assertEqual(kwargs["window_end"], "2025-01-03")
+
+
+class Daily5Y2InferenceTests(unittest.TestCase):
+    """V28 共享 inference 入口测试。"""
+
+    def test_v28_feature_month_window_uses_feature_month_and_never_future(self) -> None:
+        from schemes.daily_5y_2_v28.inference import v28_feature_month_window
+
+        self.assertEqual(v28_feature_month_window("2026-05-28"), ("2026-05-01", "2026-05-28"))
+        self.assertEqual(v28_feature_month_window("2026-06-01"), ("2026-06-01", "2026-06-01"))
+
+    def test_run_v28_for_feature_date_passes_month_window_to_core_and_selects_exact_row(self) -> None:
+        from schemes.daily_5y_2_v28 import inference
+
+        detail = pd.DataFrame(
+            {
+                "anchor_date": ["2026-05-27", "2026-05-28"],
+                "prediction": [0, 1],
+                "confidence": [0.0, 1.0],
+                "vote_score": [0.01, 0.25],
+            }
+        )
+        with patch.object(inference, "run_prediction", return_value=detail) as mock_run:
+            row = inference.run_v28_for_feature_date(
+                daily_df=pd.DataFrame({"date": pd.to_datetime(["2026-05-27", "2026-05-28"])}),
+                weekly_df=pd.DataFrame({"week_id": [202620]}),
+                monthly_df=pd.DataFrame({"month_id": ["202504"]}),
+                date_to_week={"2026-05-27": 202620, "2026-05-28": 202620},
+                feature_date="2026-05-28",
+                require_labels=False,
+                n_workers=1,
+            )
+
         cfg = mock_run.call_args.args[0]
-        self.assertEqual(cfg["date_to_week"], date_to_week)
+        self.assertEqual(cfg["test_start"], "2026-05-01")
+        self.assertEqual(cfg["test_end"], "2026-05-28")
+        self.assertFalse(cfg["require_labels"])
+        self.assertTrue(cfg["return_details"])
+        self.assertEqual(row["anchor_date"], "2026-05-28")
+        self.assertEqual(row["prediction"], 1)
+        self.assertEqual(row["model_version"], "5y_2_v28")
 
 
 class Daily5Y2PredictionRecordTests(unittest.TestCase):
     """predict.py adapter 输出合规性测试。"""
 
-    @patch("schemes.daily_5y_2_v28.predict.run_latest_prediction")
+    @patch("schemes.daily_5y_2_v28.predict.run_v28_for_feature_date")
     @patch("schemes.daily_5y_2_v28.predict.build_monthly_input_artifact")
     @patch("schemes.daily_5y_2_v28.predict.build_weekly_input_artifact")
     @patch("schemes.daily_5y_2_v28.predict.build_daily_input_artifact")
@@ -121,7 +166,7 @@ class Daily5Y2PredictionRecordTests(unittest.TestCase):
         mock_daily_builder: MagicMock,
         mock_weekly_builder: MagicMock,
         mock_monthly_builder: MagicMock,
-        mock_latest: MagicMock,
+        mock_inference: MagicMock,
     ) -> None:
         mock_engine = MagicMock()
         mock_data_service.return_value = mock_engine
@@ -159,7 +204,7 @@ class Daily5Y2PredictionRecordTests(unittest.TestCase):
             source="shared_data_service_monthly",
             data_version="shared_data_service_monthly.v1",
         )
-        mock_latest.return_value = {
+        mock_inference.return_value = {
             "anchor_date": "2026-05-29",
             "prediction": -1,
             "confidence": 1.0,
@@ -187,6 +232,7 @@ class Daily5Y2PredictionRecordTests(unittest.TestCase):
         self.assertEqual(record.extra["weekly_input_artifact_source"], "shared_data_service_weekly")
         self.assertEqual(record.extra["monthly_input_artifact_source"], "shared_data_service_monthly")
         self.assertEqual(mock_daily_builder.call_args.kwargs["end_date"], "2026-05-29")
+        self.assertEqual(mock_inference.call_args.kwargs["feature_date"], "2026-05-29")
         mock_weekly_builder.assert_called_once()
         mock_monthly_builder.assert_called_once()
         mock_engine.dispose.assert_called_once()

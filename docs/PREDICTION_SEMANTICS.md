@@ -45,6 +45,20 @@ benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + 
 
 这条规则优先于旧文件列名。旧 benchmark CSV 即使列名仍叫 `predict_date`，也只能解释为 source T / 平台 `feature_date`；新增 benchmark 文件应显式写 `feature_date` 或 `source_t`，避免把原始算法站位日误读为平台信号发出日。
 
+### 2.2 test-window 敏感算法规则
+
+部分源算法把 test window 当作模型选择、ensemble 或信号组合的一部分；这类窗口不是展示参数，改变窗口就可能改变同一个 `feature_date` 的预测结果。`daily_5y_2_v28` 是当前已确认案例：源算法按月度 test window 运行，Phase C 会基于 `test_months` 做 monthly ensemble / signal selection，因此平台不得用连续窗口替代月度窗口。
+
+对 test-window 敏感方案必须遵守：
+
+1. adapter 和 backtest runner 必须共享同一个 inference helper，不得各自拼 `test_start/test_end`。
+2. 实盘/灰度必须先确定 `feature_date=T`，再使用 `feature_date` 所在月第一天到 `feature_date` 作为核心预测窗口；窗口结束不得超过 `feature_date`。
+3. 回测仍输出 `predict_date=feature_date=T`，但核心预测窗口必须与同一 `feature_date` 的实盘路径一致。
+4. benchmark current 侧必须由平台 inference helper 生成，不能复制 source CSV 冒充 current。
+5. source benchmark 的 `date/T` 只对齐平台 `feature_date`；如 `target_date` 进入灰度/实盘区间，则与 `t_scheme_predictions.feature_date` 对齐核验。
+
+`daily_5y_2_v28` 的唯一入口是 `schemes.daily_5y_2_v28.inference`：`v28_feature_month_window(feature_date)` 返回当月月初到 `feature_date`，`predict.py` 与 `backtests.daily_5y_2_v28_reproduction` 都必须通过该模块调用 core。
+
 ## 3. 灰度实盘规则
 
 灰度实盘用于补齐从灰度 target 起点到正式部署前的实盘观察序列。当前 V28 批次的灰度 target 起点是 `target_date >= 2026-06-01`；后续方案必须按方案生命周期登记自己的灰度起点和正式调度起点，不能把日期写成全局常量。
@@ -157,7 +171,10 @@ target_date  = T + horizon
 
 | run_id | 日期范围 | 阶段 |
 |--------|----------|------|
-| `39`-`51` | `predict_date=2026-05-26` 至 `2026-06-11`，`target_date=2026-06-01` 至 `2026-06-17` | `gray_live` |
+| `39`-`41`、`43`-`51`、`58` | `predict_date=2026-05-26` 至 `2026-06-11`，`target_date=2026-06-01` 至 `2026-06-17` | `gray_live` |
+| `42` | 旧连续 test window 口径写入的灰度明细已删除，`t_scheme_runs/t_scheme_run_log` 保留审计 | 历史审计 |
 | `52` | `predict_date=2026-06-12`，`feature_date=2026-06-11`，`target_date=2026-06-18` | `scheduled_live` |
 
-这些阶段标识已由迁移 `010_prediction_semantics.sql` 落到 `t_scheme_predictions.prediction_phase` 和 `t_scheme_runs.prediction_phase`，并由 `/api/metrics/{scheme_id}` 的 `daily_rows[].prediction_phase` 与 `phase_ranges` 对前端输出。`run_id=39`-`51` 是灰度实盘，`run_id=52` 是正式 scheduler 实盘，二者不得混称。
+这些阶段标识已由迁移 `010_prediction_semantics.sql` 落到 `t_scheme_predictions.prediction_phase` 和 `t_scheme_runs.prediction_phase`，并由 `/api/metrics/{scheme_id}` 的 `daily_rows[].prediction_phase` 与 `phase_ranges` 对前端输出。`run_id=39`-`41`、`43`-`51`、`58` 是灰度实盘，`run_id=52` 是正式 scheduler 实盘，二者不得混称。
+
+2026-06-14 修复确认：旧 `run_id=42` 的 `feature_date=2026-05-28` 灰度明细使用了连续窗口 `2024-07-01..feature_date`，与源算法 May 2026 月度 test window 不一致，预测方向曾偏离 original benchmark。该明细已受控删除，并用共享 inference helper 重跑为 `run_id=58`：`predict_date=2026-05-29`、`feature_date=2026-05-28`、`target_date=2026-06-04`、`prediction_phase=gray_live`、`predicted_direction=1`、`confidence=1.0`。后续 V28 回测 latest 是否重落库，必须先完成 no-persist diff 并经人工确认。

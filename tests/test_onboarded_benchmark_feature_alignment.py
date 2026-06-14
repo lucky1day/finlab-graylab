@@ -29,7 +29,7 @@ class OnboardedBenchmarkFeatureAlignmentTests(unittest.TestCase):
         self.assertEqual(report["summary"]["unexpected_database_multiples"], 0, report["summary"])
 
         conclusions = {scheme["scheme_id"]: scheme["conclusion"] for scheme in report["schemes"]}
-        self.assertEqual(conclusions["daily_5y_2_v28"], "FAIL")
+        self.assertEqual(conclusions["daily_5y_2_v28"], "PASS")
         self.assertEqual(conclusions["weekly_5y_direct_0529"], "PASS")
         self.assertEqual(conclusions["weekly_7y_cross_d_overlay_0529"], "PASS")
         self.assertEqual(conclusions["weekly_10y_d_overlay_0529"], "PASS")

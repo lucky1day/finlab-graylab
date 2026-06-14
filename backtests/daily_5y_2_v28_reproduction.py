@@ -19,7 +19,8 @@ from shared.input_artifacts import (
     build_monthly_input_artifact,
     build_weekly_input_artifact,
 )
-from schemes.daily_5y_2_v28.core.v28_common import MODEL_VERSION, model_config, run_prediction
+from schemes.daily_5y_2_v28.core.v28_common import MODEL_VERSION
+from schemes.daily_5y_2_v28.inference import run_v28_for_feature_window
 
 
 SCHEME_ID = "daily_5y_2_v28"
@@ -44,24 +45,41 @@ def run_historical_prediction(
     date_to_week: dict[str, int | str] | None = None,
     n_workers: int = DEFAULT_N_WORKERS,
 ) -> pd.DataFrame:
-    """运行历史连续预测，返回逐 anchor 明细。"""
-    detail = run_prediction(
-        model_config(
-            daily_df=daily_df,
-            weekly_df=weekly_df,
-            monthly_df=monthly_df,
-            date_to_week=date_to_week,
-            test_start=BACKTEST_START,
-            test_end=BACKTEST_END,
-            require_labels=True,
-            emit_report=False,
-            return_details=True,
-            n_workers=n_workers,
+    """按 V28 源算法月度窗口运行历史预测，返回逐 anchor 明细。"""
+    frames: list[pd.DataFrame] = []
+    for window_start, window_end in _historical_feature_windows(daily_df):
+        frames.append(
+            run_v28_for_feature_window(
+                daily_df=daily_df,
+                weekly_df=weekly_df,
+                monthly_df=monthly_df,
+                date_to_week=date_to_week,
+                window_start=window_start,
+                window_end=window_end,
+                require_labels=True,
+                n_workers=n_workers,
+            )
         )
+    if not frames:
+        raise RuntimeError("daily_5y_2_v28 historical prediction has no feature windows")
+    return pd.concat(frames, ignore_index=True).sort_values("anchor_date").reset_index(drop=True)
+
+
+def _historical_feature_windows(daily_df: pd.DataFrame) -> list[tuple[str, str]]:
+    """生成历史回测需要的 V28 月度预测窗口。训练历史不在这里裁剪。"""
+    dates = pd.to_datetime(daily_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    feature_dates = sorted(
+        {
+            str(day)
+            for day in dates.dropna().tolist()
+            if BACKTEST_START <= str(day) <= BACKTEST_END
+        }
     )
-    if not isinstance(detail, pd.DataFrame):
-        raise RuntimeError("daily_5y_2_v28 historical prediction did not return a detail frame")
-    return detail
+    windows: list[tuple[str, str]] = []
+    for month in sorted({day[:7] for day in feature_dates}):
+        month_dates = [day for day in feature_dates if day.startswith(month)]
+        windows.append((f"{month}-01", month_dates[-1]))
+    return windows
 
 
 def build_backtest_rows(
@@ -246,7 +264,7 @@ def _row_extra(record: dict[str, Any], daily_artifact, weekly_artifact, monthly_
         "anchor_date": record.get("anchor_date"),
         "vote_score": record.get("vote_score"),
         "ens_prob": record.get("ens_prob"),
-        "model_scope": "continuous_from_2024_07",
+        "model_scope": "v28_feature_month_window",
         "input_artifact_path": str(daily_artifact.path),
         "input_artifact_source": daily_artifact.source,
         "input_artifact_data_version": daily_artifact.data_version,

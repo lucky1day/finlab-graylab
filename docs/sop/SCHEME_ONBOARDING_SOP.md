@@ -367,7 +367,7 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
-`benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence` 任一字段或值时，CompareGate 必须 fail-closed。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
+`benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence`、`label`、`is_correct` 任一字段或值时，CompareGate 必须 fail-closed。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
 
 日频 0529 批次的 `t1_daily` / `t5_daily` 已使用受控脚本从原始算法回测口径重建严格 baseline：
 
@@ -376,6 +376,14 @@ conda run -n bond_factor_lab_service python scripts/rebuild_daily0529_scheme_ben
   --scheme-id t1_daily \
   --scheme-id t5_daily
 ```
+
+V28 `daily_5y_2_v28` 属于 test-window 敏感方案，benchmark current 侧必须由平台共享 inference helper 生成，不能从 source 文件复制：
+
+```bash
+conda run -n bond_factor_lab_service python scripts/rebuild_v28_scheme_benchmark.py --n-workers 10
+```
+
+该脚本把 source `date/T` 对齐为平台 `feature_date`，并用 `schemes.daily_5y_2_v28.inference` 生成 current rows；任一 strict key 缺失、方向不一致、`target_date` 不一致或 `confidence` 超容差都会 fail-closed。
 
 如果方案已有历史回测数据写入 `t_backtest_*` 表，可以用以下脚本从数据库提取样本。必须显式指定 `--run-id`，或同时指定 `--scheme-id --benchmark-id --data-source`，避免把多个 benchmark 或旧 run 混成一份 CompareGate 基准：
 
@@ -473,6 +481,8 @@ if __name__ == "__main__":
 - 已批准的 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 历史回测是 source-original batch reproduction 例外：runner 一次性调用 core 生成完整历史预测，再按 DB 日历构造平台 rows；summary 必须写 `backtest_mode=original_batch_reproduction`、`backtest_point_in_time=false`、`historical_backtest_exception=true`，并写入 `original_benchmark_validation`。
 - 周频候选方案之间的样本总数不要求强行一致；runner 只能写入 core 真实产出的有效预测行。若某个日历周因为规则信号为 0、NaN、无效标签或 source core 的 inner join 被排除，不能补写空预测来凑齐样本数；必须在状态文档中记录缺失的 `feature_week_id` 和 core 过滤原因。
 - 新增方案不得直接套用上述例外。只有当源 benchmark 明确是 batch reproduction，且逐点 PIT 会改变原始评价对象时，才可以申请同类例外；批准后必须提供 benchmark 覆盖区间逐行一致证明，至少覆盖 `feature_date/source_t`、`target_date`、`direction/predicted_direction`、`confidence`、`label/is_correct`，其中 source T 必须对齐平台 `feature_date`，`confidence` 只允许浮点舍入误差。
+- 如果源算法对 test window 敏感（例如 `daily_5y_2_v28` 的月度 test window 会参与 ensemble / signal selection），必须把窗口计算和 core 调用抽成方案内共享 inference helper。adapter、dry-run、gray/live 补齐、benchmark current 生成和 backtest runner 都必须调用同一 helper；禁止 live 使用月度窗口、backtest 使用连续窗口，或反过来。
+- 对这类方案，历史回测依然必须满足 `predict_date=feature_date`、`target_date` 由平台日历计算、`target_date < 灰度实盘起点`。窗口敏感只说明“如何调用算法 core”，不改变平台日期语义。
 
 回测写库后入库:
 

@@ -15,7 +15,16 @@ from harness.result import Evidence, GateResult, GateStatus
 DIRECTION_MATCH_RATE_REQUIRED = 1.0
 MAX_CONFIDENCE_ABS_DIFF = 1e-8
 METRIC_ACCURACY_ABS_DIFF = 0.001
-STRICT_PREDICTION_FIELDS = ("feature_date", "target_date", "target_tenor", "horizon", "direction", "confidence")
+STRICT_PREDICTION_FIELDS = (
+    "feature_date",
+    "target_date",
+    "target_tenor",
+    "horizon",
+    "direction",
+    "confidence",
+    "label",
+    "is_correct",
+)
 
 
 class CompareGate(Gate):

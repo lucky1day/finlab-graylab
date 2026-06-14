@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import sys
-from contextlib import redirect_stdout
 from datetime import datetime, timedelta
 from typing import Any
 
 import pandas as pd
-from sqlalchemy.engine import Engine
 
 from shared.calendar_service import get_calendar
 from shared.input_artifacts import (
@@ -17,7 +14,8 @@ from shared.input_artifacts import (
 )
 from shared.models import PredictionRecord
 
-from .core.v28_common import MODEL_VERSION, model_config, run_prediction
+from .core.v28_common import MODEL_VERSION
+from .inference import run_v28_for_feature_date, v28_feature_month_window
 
 
 SCHEME_ID = "daily_5y_2_v28"
@@ -35,30 +33,16 @@ def run_latest_prediction(
     anchor_date: str,
     n_workers: int = DEFAULT_N_WORKERS,
 ) -> dict[str, Any]:
-    """运行连续实盘口径预测，返回 anchor_date 对应的一条明细。"""
-    with redirect_stdout(sys.stderr):
-        detail = run_prediction(
-            model_config(
-                daily_df=daily_df,
-                weekly_df=weekly_df,
-                monthly_df=monthly_df,
-                date_to_week=date_to_week,
-                test_start="2024-07-01",
-                test_end=anchor_date,
-                require_labels=False,
-                emit_report=False,
-                return_details=True,
-                n_workers=n_workers,
-            )
-        )
-    if not isinstance(detail, pd.DataFrame) or detail.empty:
-        raise RuntimeError(f"{SCHEME_ID} produced no prediction detail")
-    matched = detail[detail["anchor_date"].astype(str) == anchor_date]
-    if matched.empty:
-        raise RuntimeError(f"{SCHEME_ID} produced no row for anchor_date={anchor_date}")
-    row = matched.iloc[-1].to_dict()
-    row["model_version"] = MODEL_VERSION
-    return row
+    """运行 V28 源算法月度窗口预测，返回 anchor_date 对应的一条明细。"""
+    return run_v28_for_feature_date(
+        daily_df=daily_df,
+        weekly_df=weekly_df,
+        monthly_df=monthly_df,
+        date_to_week=date_to_week,
+        feature_date=anchor_date,
+        require_labels=False,
+        n_workers=n_workers,
+    )
 
 
 def run(predict_date: str) -> list[PredictionRecord]:
@@ -100,12 +84,13 @@ def run(predict_date: str) -> list[PredictionRecord]:
             engine=engine,
         )
         date_to_week = _date_to_week_map(daily_artifact.dataframe, calendar)
-        result = run_latest_prediction(
+        result = run_v28_for_feature_date(
             daily_df=daily_artifact.dataframe,
             weekly_df=weekly_artifact.dataframe,
             monthly_df=monthly_artifact.dataframe,
             date_to_week=date_to_week,
-            anchor_date=anchor_date,
+            feature_date=anchor_date,
+            require_labels=False,
         )
         prediction = int(result["prediction"])
         confidence = float(result.get("confidence", abs(prediction)))
@@ -163,6 +148,7 @@ def _record_extra(
     weekly_artifact,
     monthly_artifact,
 ) -> dict[str, Any]:
+    model_test_start, model_test_end = v28_feature_month_window(anchor_date)
     return {
         "feature_date": anchor_date,
         "anchor_date": anchor_date,
@@ -171,7 +157,9 @@ def _record_extra(
         "true_label": _clean_optional(result.get("true_label")),
         "vote_score": _clean_optional(result.get("vote_score")),
         "ens_prob": _clean_optional(result.get("ens_prob")),
-        "model_scope": "continuous_from_2024_07",
+        "model_scope": "v28_feature_month_window",
+        "model_test_start": model_test_start,
+        "model_test_end": model_test_end,
         "input_artifact_path": str(daily_artifact.path),
         "input_artifact_source": daily_artifact.source,
         "input_artifact_data_version": daily_artifact.data_version,
