@@ -1,0 +1,36 @@
+{
+  "benchmark_scope": "may2026_auxiliary_source",
+  "source": "/Users/macstudio0/Desktop/models-liwei-0606/outputs/reproduce_eval_0608_may_20260608/predictions/predict_7y_1_v28_may_2026_predictions.csv",
+  "data_cutoff": "2026-06-06",
+  "test_start": "2026-05-01",
+  "test_end": "2026-05-29",
+  "row_count": 18,
+  "eval_samples": 18,
+  "direction_accuracy": 0.5555555555555556,
+  "all_accuracy": 0.5555555555555556,
+  "trade_rate": 1.0,
+  "pred_up": 8,
+  "pred_down": 10,
+  "pred_flat": 0,
+  "true_up": 0,
+  "true_down": 18,
+  "true_flat": 0,
+  "correct_trade": 10,
+  "correct_all": 10,
+  "config": {
+    "combo": "pol_tp_bf",
+    "K": 5,
+    "lgbm_w": 0.1,
+    "vt": 0.05,
+    "rebal": "quarterly",
+    "ew": 252,
+    "min_acc": 0.35,
+    "seeds": [
+      42,
+      314
+    ],
+    "ml_mode": "binary",
+    "ens_mode": "diverse"
+  },
+  "source_role": "source_original"
+}
