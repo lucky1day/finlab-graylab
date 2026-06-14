@@ -1,6 +1,8 @@
 # Bond Factor Lab 架构评审报告
 
-> 历史审计快照：本报告保留 2026-06-09 当时的评审语境和问题清单，正文中的旧周度方案、serving pointer 等描述不代表当前实现状态。当前权威状态以 [CURRENT_STATUS.md](CURRENT_STATUS.md)、[SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 和 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 为准。
+> 历史审计快照：本报告保留 2026-06-09 当时的评审语境和问题清单，正文中的旧周度方案、serving pointer、旧 API 形态、旧 run/UK 设想等描述不代表当前实现状态。
+>
+> **不要把本文中的接口、表结构或流程片段当作当前 SOP 示例复制。** 当前权威状态以 [CURRENT_STATUS.md](CURRENT_STATUS.md)、[PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)、[SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 和 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 为准。
 >
 > 审阅对象：`bond-factor-lab.zip`  
 > 审阅目标：面向“国债因子实盘测试与方案对比平台”的工程架构、分层边界、方案入库流程、回测复现流程、实盘调度流程与 harness 控制面进行评审。  

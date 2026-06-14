@@ -236,6 +236,8 @@ def run(predict_date: str) -> list[PredictionRecord]:
     # 1. 通过 shared.input_artifacts 生成输入 CSV 并读回 DataFrame。
     # 2. 调用 core/ 中的算法逻辑。
     # 3. 把算法输出转换为 PredictionRecord。
+    feature_date = "2026-05-29"
+    target_date = "2026-06-01"  # 必须由平台交易日历从 feature_date + horizon 推导。
 
     records.append(
         PredictionRecord(
@@ -243,12 +245,13 @@ def run(predict_date: str) -> list[PredictionRecord]:
             target_tenor="10Y",
             horizon=HORIZON,
             predict_date=predict_date,
-            target_date=predict_date,
+            feature_date=feature_date,
+            target_date=target_date,
             predicted_direction=1,
             confidence=0.62,
             model_version="v2",
             extra={
-                "feature_date": "2026-05-29",
+                "feature_date": feature_date,
                 "input_artifact_path": "backtest_artifacts/runtime_inputs/t1_lgbm_spread_v2/daily_output_2026-06-01.csv",
                 "input_artifact_source": "shared_data_service_daily",
             },
@@ -263,8 +266,9 @@ def run(predict_date: str) -> list[PredictionRecord]:
 - `target_tenor` 必须属于 `config.yaml.tenors`。
 - `horizon` 必须等于 `config.yaml.horizon`。
 - `predicted_direction` 只能是 `1`、`-1` 或 `0`。
-- `target_date` 必须能与指标口径对齐；当前 live metrics 后端按 `horizon=1` 取 `direction_1d`，按 `horizon=5` 取 `direction_5d`，按周度 `horizon=6` 取 `t_scheme_weekly_actuals.direction_weekly`。新增周度方案 active 前仍需确认最新特征周数据完整并完成受控写库验收。
-- `extra` 必含 `input_artifact_path` 和 `input_artifact_source`；日频另含 `feature_date`，周频另含 `feature_week_id/target_week_id/feature_date/target_date/target_rule`。完整字段契约（机器可校验）见 [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) §3。
+- `feature_date` 必须是一等字段，表示输入数据硬截止；不得只放在 `extra` 里让平台猜。
+- `target_date` 必须由 `feature_date + horizon` 的平台日历规则推导，不能直接写成 `predict_date`；当前 live metrics 后端按 `horizon=1` 取 `direction_1d`，按 `horizon=5` 取 `direction_5d`，按周度 `horizon=6` 取 `t_scheme_weekly_actuals.direction_weekly`。新增周度方案 active 前仍需确认最新特征周数据完整并完成受控写库验收。
+- `extra` 必含 `input_artifact_path` 和 `input_artifact_source`；`feature_date` 可作为审计副本保留但必须等于一等字段，周频另含 `feature_week_id/target_week_id/target_rule`。完整字段契约（机器可校验）见 [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) §3。
 
 ## 6. Harness 入库流程
 
@@ -394,7 +398,7 @@ conda run -n bond_factor_lab_service python scripts/generate_benchmark_samples.p
   --data-source framework_db_aligned
 
 # 或者显式锁定某一次 run：
-conda run -n bond_factor_lab_service python scripts/generate_benchmark_samples.py --run-id 93
+conda run -n bond_factor_lab_service python scripts/generate_benchmark_samples.py --run-id <confirmed_run_id>
 ```
 
 该脚本根据 `v_latest_backtest_run` 的 canonical latest success 语义提取单一 run，生成四份 benchmark 文件；若无法唯一定位 run，会 fail-closed 并拒绝写文件。

@@ -15,7 +15,7 @@
 - 历史回测区间样本与 `t_backtest_predictions.feature_date` 对齐。
 - `target_date >= 2026-06-01` 的灰度/实盘观察区样本与 `t_scheme_predictions.feature_date` 对齐，并检查 `prediction_phase`。
 - 完整逐行主键使用 `feature_date + target_date + target_tenor + horizon`。
-- `benchmark_required=true` 的方案不得依赖旧列名或缺字段回退；缺少 `feature_date/target_date/target_tenor/horizon/direction/confidence` 任一字段或值即 fail-closed。
+- `benchmark_required=true` 的方案不得依赖旧列名或缺字段回退；缺少 `feature_date/target_date/target_tenor/horizon/direction/confidence/label/is_correct` 任一字段或值即 fail-closed。
 
 结论等级：
 
@@ -40,21 +40,21 @@
 | 原始 benchmark raw rows | 2152 |
 | 去重后可比较 rows | 2152 |
 | 与 backtest 明细比对 rows | 2147 |
-| 与 live 明细比对 rows | 4 |
+| 与 live 明细比对 rows | 5 |
 | DB 缺失 rows | 0 |
 | DB 多重命中 rows | 0 |
 | benchmark 重复冲突 | 0 |
-| 字段不一致 rows | 1 |
+| 字段不一致 rows | 0 |
 | 旧格式无 `target_date` rows | 0 |
 | 被排除 rows | 0 |
 
-说明：`t1_daily` / `t5_daily` 已用 `scripts/rebuild_daily0529_scheme_benchmarks.py` 重建为严格新格式完整 baseline，旧的 `PASS_WITH_LEGACY_SAMPLE_LIMITATIONS` 结论已经闭环关闭。
+说明：`t1_daily` / `t5_daily` 已用 `scripts/rebuild_daily0529_scheme_benchmarks.py` 重建为严格新格式完整 baseline，旧的 `PASS_WITH_LEGACY_SAMPLE_LIMITATIONS` 结论已经闭环关闭。`daily_5y_2_v28` 已用 `scripts/rebuild_v28_scheme_benchmark.py` 重建严格 May 2026 benchmark，并修复旧连续 test window 写入的灰度明细；此前失败结论已经闭环关闭。
 
 ## 3. 逐方案结论
 
 | 方案 | 原始 rows | 可比较唯一 rows | 比对位置 | 结论 | 说明 |
 |------|----------:|----------------:|----------|------|------|
-| `daily_5y_2_v28` | 18 | 18 | backtest 13 + live 4 | `FAIL` | 有 1 条灰度实盘区间样本与原始 benchmark 不一致。 |
+| `daily_5y_2_v28` | 18 | 18 | backtest 13 + live 5 | `PASS` | V28 current 侧由共享 inference helper 生成；旧 `run_id=42` 错误灰度明细已删除，新 `run_id=58` 与原始 benchmark 对齐。 |
 | `t1_daily` | 664 | 664 | backtest 664 | `PASS` | 当前注册 `5Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致；不再包含 `1Y` 预测 target rows。 |
 | `t5_daily` | 1312 | 1312 | backtest 1312 | `PASS` | 当前注册 `3Y/5Y/7Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致。 |
 | `weekly_5y_direct_0529` | 71 | 71 | backtest 71 | `PASS` | `feature_date/feature_week_id/target_date/target_tenor/horizon` 全部可定位，方向、置信度、标签一致。 |
@@ -90,11 +90,11 @@ feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_corr
 - `t5_daily`: original/current 各 1312 行，`target_tenor` 包含 `3Y/5Y/7Y/10Y`。
 - 两个方案的 CompareGate 均使用严格主键 `feature_date + target_date + target_tenor + horizon`，missing/extra=0，direction mismatch=0，confidence max abs diff=0。
 
-## 5. 仍未闭环的不一致
+## 5. V28 不一致闭环记录
 
 ### `daily_5y_2_v28`
 
-原始 benchmark 第 18 行：
+旧问题样本：
 
 ```text
 source T / feature_date = 2026-05-28
@@ -105,7 +105,7 @@ benchmark direction     = 1
 benchmark confidence    = 1.0
 ```
 
-数据库实盘明细：
+旧数据库实盘明细曾为：
 
 ```text
 table                   = t_scheme_predictions
@@ -118,10 +118,30 @@ database direction      = 0
 database confidence     = 0.0
 ```
 
-结论：这条样本必须拿原始 benchmark 的 `2026-05-28` 对齐数据库 `feature_date=2026-05-28`。对齐后方向和置信度均不一致，因此 `daily_5y_2_v28` 不能判定为与原始 benchmark 完全一致。
+根因：V28 源算法是 test-window 敏感算法，Phase C 的 monthly ensemble / signal selection 会因 test window 改变输出。旧平台实盘 wrapper 使用连续窗口 `2024-07-01..feature_date`，而 source May 2026 benchmark 使用月度窗口 `2026-05-01..feature_date`。
+
+闭环修复：
+
+1. `predict.py`、benchmark current 生成和 backtest runner 已统一调用 `schemes.daily_5y_2_v28.inference`。
+2. 核心窗口固定为 `feature_date` 所在月月初到 `feature_date`，不得超过 `feature_date`。
+3. 旧 `run_id=42` 的错误灰度预测明细已受控删除，`t_scheme_runs/t_scheme_run_log` 保留审计。
+4. 新 `run_id=58` 已写入：
+
+```text
+table                   = t_scheme_predictions
+run_id                  = 58
+prediction_phase        = gray_live
+predict_date            = 2026-05-29
+feature_date            = 2026-05-28
+target_date             = 2026-06-04
+database direction      = 1
+database confidence     = 1.0
+```
+
+当前结论：`daily_5y_2_v28` 的 18 条 benchmark rows 全部可按 `feature_date + target_date + target_tenor + horizon` 定位，方向、置信度、标签/正确性一致，结论为 `PASS`。
 
 ## 6. 后续要求
 
-1. `daily_5y_2_v28` 需要单独排查 `feature_date=2026-05-28,target_date=2026-06-04` 的灰度实盘记录为什么与原始 benchmark 不一致。
-2. 后续所有新方案 benchmark 文件必须显式写 `feature_date,target_date,target_tenor,horizon,direction,confidence`；旧列名 `predict_date/date/tenor` 不得作为 `benchmark_required=true` 的静默回退路径。
-3. 根目录 `benchmarks/{benchmark_id}/` 只保留批次级 canonical 输入归档；逐方案 CompareGate baseline 只能放在 `schemes/{scheme_id}/benchmarks/`。
+1. 后续所有新方案 benchmark 文件必须显式写 `feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`；旧列名 `predict_date/date/tenor` 不得作为 `benchmark_required=true` 的静默回退路径。
+2. 根目录 `benchmarks/{benchmark_id}/` 只保留批次级 canonical 输入归档；逐方案 CompareGate baseline 只能放在 `schemes/{scheme_id}/benchmarks/`。
+3. 若源算法存在 test-window-sensitive 的 selector、ensemble、rolling top-K、分月校准或信号组合逻辑，必须抽共享 inference helper，并同时服务 adapter、benchmark current 和 backtest runner。

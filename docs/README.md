@@ -30,6 +30,7 @@
 | 文档 | 内容 |
 |------|------|
 | [CURRENT_STATUS.md](CURRENT_STATUS.md) | 项目当前状态（单一来源） |
+| [validation/BENCHMARK_FEATURE_ALIGNMENT_2026-06-14.md](validation/BENCHMARK_FEATURE_ALIGNMENT_2026-06-14.md) | 已入库方案 benchmark source T 与数据库 `feature_date` 对齐验证结论 |
 | [bond_factor_lab_architecture_review.md](bond_factor_lab_architecture_review.md) | 架构评审报告（2026-06-09） |
 | [bond_factor_lab_framework_review_2026-06-10.md](bond_factor_lab_framework_review_2026-06-10.md) | 框架评审报告（2026-06-10，历史审计语境） |
 
