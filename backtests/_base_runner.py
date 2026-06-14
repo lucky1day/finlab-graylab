@@ -413,7 +413,7 @@ def apply_evaluation_exclusions(
     included: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
     for row in rows:
-        target_date = row.get("target_date") or row.get("predict_date")
+        target_date = _required_target_date(row)
         if target_date and _date_in_excluded_ranges(str(target_date), excluded_target_ranges):
             excluded.append(row)
         else:
@@ -491,7 +491,19 @@ def build_monthly_metrics(rows: list[dict[str, Any]], *, benchmark_id: str) -> l
 
 def _metric_month(row: dict[str, Any]) -> str:
     """返回历史回测月度指标归属月份（按 target_date 分组）。"""
-    return str(row.get("target_date") or row.get("predict_date"))[:7]
+    return _required_target_date(row)[:7]
+
+
+def _required_target_date(row: dict[str, Any]) -> str:
+    value = row.get("target_date")
+    if value is not None and str(value).strip():
+        return str(value)
+    raise ValueError(
+        "missing required target_date for backtest row "
+        f"scheme_id={row.get('scheme_id')} "
+        f"target_tenor={row.get('target_tenor')} "
+        f"predict_date={row.get('predict_date')}"
+    )
 
 
 def metric_row(rows: list[dict[str, Any]], tenor: str, month: str, *, benchmark_id: str) -> dict[str, Any]:

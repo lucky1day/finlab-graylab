@@ -113,6 +113,8 @@ target_date  = T + horizon
 
 当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date` 截断，避免同一 target 月同时由 backtest 和 live 区间重复解释。当前 V28 批次的历史回测只保留 `target_date < 2026-06-01`。
 
+`target_date` 是回测明细的必填事实字段。runner、`/api/backtests/factor-lab` 和前端月度聚合只能用 `target_date` 归属月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
+
 ### 5.1 已批准的 source-original batch reproduction 例外
 
 默认历史回测优先使用 point-in-time 口径；但当原始方案本身是全历史 batch reproduction，并且算法内部存在固定未来分段、全局校准或一次性 selector 这类无法逐点切片复现的结构时，可以批准为方案级例外。例外必须同时满足：
@@ -169,6 +171,8 @@ target_date  = T + horizon
 - `scheduled_live`：正式实盘。
 
 前端与业务不读取 `anchor_date`。需要展示预测站位或数据截止时，统一显示 `feature_date`。月度行、明细归属、actual join 和去重仍统一按 `target_date`。
+
+前端展示的部署时间只能来自 active `t_scheme_registry.deployed_at`。`deployed_at` 的业务语义是该注册业务方案挂载对应定时任务的日期；缺失时说明 registry 数据不完整，后端 API 和前端都必须 fail-closed。禁止 hardcode 默认部署日、scheme_id override 或在前端用灰度起点/正式实盘起点替代部署时间。
 
 前端指标展示必须遵守 §6 的两层分母：
 

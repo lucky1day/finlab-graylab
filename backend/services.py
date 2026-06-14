@@ -46,6 +46,32 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
+def _require_deployed_at(row: Any, *, context: str) -> str:
+    deployed_at = _iso(row["deployed_at"])
+    if deployed_at:
+        return deployed_at
+    raise ValueError(
+        f"{context} missing deployed_at: "
+        f"scheme_id={row['scheme_id']} "
+        f"base_scheme_id={row['base_scheme_id']} "
+        f"target_tenor={row['target_tenor']}"
+    )
+
+
+def _require_target_date(value: Any, *, context: str, row: Any | None = None) -> str:
+    target_date = _iso(value)
+    if target_date:
+        return target_date
+    detail = ""
+    if row is not None:
+        detail = (
+            f" scheme_id={row['scheme_id'] if 'scheme_id' in row else None}"
+            f" target_tenor={row['target_tenor'] if 'target_tenor' in row else None}"
+            f" predict_date={_iso(row['predict_date']) if 'predict_date' in row else None}"
+        )
+    raise ValueError(f"{context} missing required target_date{detail}")
+
+
 def _json_value(value: Any, fallback: Any = None) -> Any:
     if value is None:
         return fallback
@@ -250,7 +276,7 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
             "schedule_cron": row["schedule_cron"],
             "schedule_timezone": row["schedule_timezone"],
             "status": row["status"],
-            "deployed_at": _iso(row["deployed_at"]),
+            "deployed_at": _require_deployed_at(row, context="active registry row"),
             "created_at": _iso(row["created_at"]),
             "updated_at": _iso(row["updated_at"]),
         }
@@ -306,7 +332,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
             "schedule_cron": row["schedule_cron"],
             "schedule_timezone": row["schedule_timezone"],
             "status": row["status"],
-            "deployed_at": _iso(row["deployed_at"]),
+            "deployed_at": _require_deployed_at(row, context="active registry row"),
             "created_at": _iso(row["created_at"]),
             "updated_at": _iso(row["updated_at"]),
         }
@@ -471,7 +497,7 @@ def _registry_scheme_row(engine: Engine, scheme_id: str) -> dict[str, Any]:
         "schedule_cron": row["schedule_cron"],
         "schedule_timezone": row["schedule_timezone"],
         "status": row["status"],
-        "deployed_at": _iso(row["deployed_at"]),
+        "deployed_at": _require_deployed_at(row, context="active registry row"),
         "created_at": _iso(row["created_at"]),
         "updated_at": _iso(row["updated_at"]),
     }
@@ -532,7 +558,7 @@ def scheme_metrics(
     for row in raw_rows:
         extra = _json_value(row["extra"], {})
         predict_date = _iso(row["predict_date"])
-        target_date = _iso(row["target_date"])
+        target_date = _require_target_date(row["target_date"], context="scheme metrics", row=row)
         point_date = _prediction_point_date(row)
         if predict_date and display_until and predict_date > display_until:
             continue
@@ -595,11 +621,11 @@ def scheme_metrics(
 
 
 def _scheme_metric_month(horizon: Any, predict_date: str, target_date: str, extra: dict[str, Any]) -> str:
-    return str(target_date or predict_date)[:7]
+    return _require_target_date(target_date, context="scheme metric month")[:7]
 
 
 def _prediction_point_date(row: Any) -> str:
-    return _iso(row["target_date"]) or _iso(row["predict_date"]) or ""
+    return _require_target_date(row["target_date"], context="prediction point", row=row)
 
 
 def _is_better_prediction_for_point(candidate: Any, candidate_extra: dict[str, Any], current: Any) -> bool:
@@ -784,9 +810,7 @@ def _backtest_frontend_monthly_metrics_from_daily_rows(
         for row in rows:
             if row.get("actual_direction") is None or row.get("predicted_direction") is None:
                 continue
-            month = str(row.get("target_date") or row.get("predict_date") or "")[:7]
-            if not month:
-                continue
+            month = _require_target_date(row.get("target_date"), context="backtest monthly metrics", row=row)[:7]
             grouped[tenor][month].append(row)
 
     result: dict[str, list[dict[str, Any]]] = {}
@@ -811,21 +835,32 @@ def _validate_backtest_prediction_details(
     row_count = sum(len(rows) for rows in daily_rows.values())
     if row_count <= 0:
         raise ValueError(f"backtest run id={run['id']} has no backtest prediction details")
-    bad_rows = [
-        row
-        for rows in daily_rows.values()
-        for row in rows
-        if row.get("actual_direction") is None or row.get("predicted_direction") is None
-    ]
-    if bad_rows:
-        first = bad_rows[0]
-        raise ValueError(
-            "backtest run id="
-            f"{run['id']} has non-evaluable prediction details "
-            f"target_tenor={first.get('target_tenor')} "
-            f"predict_date={first.get('predict_date')} "
-            f"target_date={first.get('target_date')}"
-        )
+    required_fields = (
+        "target_tenor",
+        "horizon",
+        "predict_date",
+        "feature_date",
+        "target_date",
+        "predicted_direction",
+        "actual_direction",
+    )
+    for rows in daily_rows.values():
+        for row in rows:
+            missing = [
+                field
+                for field in required_fields
+                if row.get(field) is None or str(row.get(field)).strip() == ""
+            ]
+            if not missing:
+                continue
+            raise ValueError(
+                "backtest run id="
+                f"{run['id']} has missing required backtest prediction fields "
+                f"{','.join(missing)} "
+                f"target_tenor={row.get('target_tenor')} "
+                f"predict_date={row.get('predict_date')} "
+                f"target_date={row.get('target_date')}"
+            )
 
 
 def _backtest_frontend_daily_rows(engine: Engine, run_id: int) -> dict[str, list[dict[str, Any]]]:

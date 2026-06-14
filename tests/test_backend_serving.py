@@ -87,6 +87,7 @@ def _register_scheme(
     horizon: int,
     frequency: str = "daily",
     status: str = "active",
+    deployed_at: str | None = "2026-06-09",
 ) -> None:
     with engine.begin() as conn:
         conn.execute(
@@ -97,7 +98,7 @@ def _register_scheme(
                      schedule_cron, schedule_timezone, status, deployed_at)
                 VALUES
                     (:scheme_id, :base_scheme_id, :scheme_id, '', :horizon, :frequency, :target_tenor,
-                     '3 7 * * 1-5', 'Asia/Shanghai', :status, '2026-06-09')
+                     '3 7 * * 1-5', 'Asia/Shanghai', :status, :deployed_at)
                 """
             ),
             {
@@ -107,6 +108,7 @@ def _register_scheme(
                 "frequency": frequency,
                 "target_tenor": target_tenor,
                 "status": status,
+                "deployed_at": deployed_at,
             },
         )
 
@@ -181,6 +183,27 @@ class BackendPredictionServingTests(unittest.TestCase):
             engine.dispose()
 
         self.assertEqual([row["scheme_id"] for row in rows], ["demo_active__h1__10Y"])
+
+    def test_list_schemes_fails_closed_when_active_registry_row_missing_deployed_at(self) -> None:
+        from backend.services import list_schemes
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_active__h1__10Y",
+            base_scheme_id="demo_active",
+            target_tenor="10Y",
+            horizon=1,
+            status="active",
+            deployed_at=None,
+        )
+
+        try:
+            with self.assertRaisesRegex(ValueError, "missing deployed_at.*demo_active__h1__10Y"):
+                list_schemes(engine)
+        finally:
+            engine.dispose()
 
     def test_scheme_metrics_returns_available_predictions(self) -> None:
         """所有预测记录（无 serving pointer 过滤）参与指标计算。"""

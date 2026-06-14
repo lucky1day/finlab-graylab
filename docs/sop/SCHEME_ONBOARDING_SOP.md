@@ -45,6 +45,7 @@
 - 后端 `_scheme_metric_month` 月份归属必须用 `target_date`。
 - `predict_date` 只用于调度执行日志和 `extra` 中的记录字段，不参与任何展示/分组/去重。
 - 历史回测输出样本的统一起点例外地由 `predict_date >= 2025-01-01` 控制；这是为了候选方案排行样本口径一致，不改变月度指标仍按 `target_date` 归属。
+- `t_backtest_predictions.target_date` 是必填字段；缺失时必须 fail-closed。禁止用 `predict_date` 替代 `target_date` 来生成月度指标、前端明细月份或 evaluation exclusion。
 
 **违反后果示例**（2026-06-10 实际踩坑）：
 1. 后端 `_scheme_metric_month` 用 predict_date → 月度指标显示 5月，明细在 6月，对不上。
@@ -79,6 +80,7 @@
 - 历史回测只覆盖灰度起点之前的 target；实盘区间通过 `t_scheme_predictions` 和 `/api/metrics/{scheme_id}` 展示，并应能区分灰度与正式实盘。
 - 前端“部署时间”来自 `t_scheme_registry.deployed_at`，语义是该业务方案挂载对应定时任务的日期；它只是展示字段，不参与回测截断、实盘回补范围、月份归属或唯一键计算。
 - 前端不得再通过 hardcoded override、默认日期或 scheme_id 特判生成部署时间；如果 API/registry 缺 `deployed_at`，应作为注册数据问题处理，不能静默显示假日期。
+- active registry 行必须有 `deployed_at`；`/api/schemes`、`/api/backtests/factor-lab` 和前端真实数据路径遇到缺失部署日必须 fail-closed。mock/demo 数据若需要展示部署时间，也必须显式写入，不能走生产兜底。
 
 **规则六补充：历史回测预测起点全平台统一为 2025-01-01**
 - 参与历史排行的 daily/monthly 方案必须在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，并保证 runner 输出样本满足 `predict_date >= 2025-01-01`。
@@ -524,7 +526,9 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 
 - `/api/targets` 能看到新 Y 标的的 `target_code/display_name/status`。
 - `/api/schemes` 是纯读接口，只返回 `status='active'` 的 `t_scheme_registry` rows；每行只有一个 `target_tenor`，没有 `tenor/tenors`。
+- `/api/schemes` 返回的每个 active registry row 必须包含非空 `deployed_at`；缺失时应暴露错误，不能让前端默认显示 `2026/06/01` 或任何硬编码日期。
 - `/api/backtests/factor-lab` 只把 latest run 映射到 active registry rows；返回的 `scheme_id` 必须为 active registry composite ID，registry 缺行、`paused` 或 `archived` 不得展示。
+- `/api/backtests/factor-lab` 的每条 `daily_rows` 必须有 `target_date`；前端历史月度表必须由这些明细按 `target_date` 动态聚合，不能在缺 `target_date` 时退回 `predict_date` 或旧月度汇总。
 - 如果只是 live 方案，`/api/metrics/{registry_scheme_id}` 能返回月度指标、汇总指标和逐日样本；`/api/metrics/{base_scheme_id}`、`paused/archived` registry ID 或 `?tenor=...` 都不是合法入口。
 - `/api/predictions?scheme_id={registry_scheme_id}` 能返回该业务方案的底层预测明细；`/api/predictions?scheme_id={base_scheme_id}`、无 `scheme_id` 或 `?tenor=...` 都不是合法入口。
 - 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
@@ -703,6 +707,8 @@ LIMIT 10;
 - [ ] `t_scheme_run_log` 有成功记录。
 - [ ] `/api/schemes` 和 `/api/metrics/{registry_scheme_id}` 返回正常；registry ID 必须来自 `t_scheme_registry.scheme_id`。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
+- [ ] `t_backtest_predictions` 明细逐行存在 `target_date`；缺失时必须修 runner 或数据，不允许通过前端/API fallback 放行。
+- [ ] active `t_scheme_registry` 行逐行存在 `deployed_at`；前端展示的部署时间来自 API/DB 字段，不来自默认值或 hardcoded override。
 - [ ] 如为周度方案，live adapter 与历史 backtest runner 都通过 `build_weekly_input_artifact()` 生成算法输入。
 - [ ] 文档更新: 当前状态、方案说明、历史回测结论或测试记录。
 - [ ] Git 提交包含代码、配置和文档。

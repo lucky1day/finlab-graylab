@@ -145,17 +145,22 @@ class FactorLabRankingTests(unittest.TestCase):
               upPrecision: 75,
               downPrecision: 70
             };
-            const rowHtml = hooks.renderSchemeRankingRowForTest(
-              {
-                id: "scheme-a",
-                name: "测试方案",
-                latestRun: "06-10",
-                status: "active",
-                remark: ""
-              },
-              0,
-              metric
-            );
+            let missingDeploymentError = "";
+            try {
+              hooks.renderSchemeRankingRowForTest(
+                {
+                  id: "scheme-a",
+                  name: "测试方案",
+                  latestRun: "06-10",
+                  status: "active",
+                  remark: ""
+                },
+                0,
+                metric
+              );
+            } catch (error) {
+              missingDeploymentError = String(error && error.message ? error.message : error);
+            }
             const weeklyRowHtml = hooks.renderSchemeRankingRowForTest(
               {
                 id: "weekly-a",
@@ -187,14 +192,11 @@ class FactorLabRankingTests(unittest.TestCase):
               metric
             );
             return {
-              rowHtml,
+              missingDeploymentError,
               weeklyRowHtml,
               weekly7YRowHtml,
               weekly10YRowHtml,
               deploymentDate: hooks.getSchemeDeploymentDate({}),
-              weeklyDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_5y_direct_0529" }),
-              weekly7YDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_7y_cross_d_overlay_0529" }),
-              weekly10YDeploymentDate: hooks.getSchemeDeploymentDate({ scheme_id: "weekly_10y_d_overlay_0529" }),
               weekly7YDeploymentDateFromSchemeId: hooks.getSchemeDeploymentDate({
                 schemeId: "weekly_7y_cross_d_overlay_0529",
                 deploymentDate: "2026/06/01"
@@ -209,21 +211,17 @@ class FactorLabRankingTests(unittest.TestCase):
             """
         )
 
-        self.assertEqual(result["deploymentDate"], "2026/06/01")
-        self.assertEqual(result["weeklyDeploymentDate"], "2026/06/01")
-        self.assertEqual(result["weekly7YDeploymentDate"], "2026/06/01")
-        self.assertEqual(result["weekly10YDeploymentDate"], "2026/06/01")
+        self.assertIn("missing deployed_at", result["missingDeploymentError"])
+        self.assertEqual(result["deploymentDate"], "")
         self.assertEqual(result["weekly7YDeploymentDateFromSchemeId"], "2026/06/01")
         self.assertEqual(result["weekly10YDeploymentDateFromSchemeId"], "2026/06/01")
         self.assertEqual(result["customDeploymentDate"], "2026/06/02")
         self.assertEqual(result["remark"], "人工备注")
-        self.assertIn("2026/06/01", result["rowHtml"])
         self.assertIn("2026/06/01", result["weeklyRowHtml"])
         self.assertIn("2026/06/01", result["weekly7YRowHtml"])
         self.assertIn("2026/06/01", result["weekly10YRowHtml"])
-        self.assertNotIn("06-10", result["rowHtml"])
-        self.assertNotIn("factor-status-pill", result["rowHtml"])
-        self.assertNotIn("active", result["rowHtml"])
+        self.assertNotIn("factor-status-pill", result["weeklyRowHtml"])
+        self.assertNotIn("active", result["weeklyRowHtml"])
 
     def test_sort_ranking_schemes_supports_metric_and_direction(self) -> None:
         result = _run_factor_lab_hook(
@@ -269,6 +267,7 @@ class FactorLabRankingTests(unittest.TestCase):
             const scheme = {
               id: "flat-demo",
               name: "平信号示例",
+              deploymentDate: "2026/06/04",
               dailyRowsByMonth: { "2025-05": rows },
               monthlyRows: []
             };
@@ -382,6 +381,7 @@ class FactorLabRankingTests(unittest.TestCase):
                   target_label: "5Y国债活跃",
                   horizon: 5,
                   frequency: "daily",
+                  deployed_at: "2026-06-04",
                   monthly_metrics: [{
                     month: "2025-05",
                     samples: 8,
@@ -435,6 +435,7 @@ class FactorLabRankingTests(unittest.TestCase):
                   target_label: "5Y国债活跃",
                   horizon: 5,
                   frequency: "daily",
+                  deployed_at: "2026-06-04",
                   monthly_metrics: [{
                     month: "2026-05",
                     samples: 99,
@@ -708,7 +709,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
-                    frequency: "daily"
+                    frequency: "daily",
+                    deployed_at: "2026-06-04"
                   }
                 ]
               },
@@ -747,6 +749,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     horizon: 1,
                     frequency: "daily",
                     status: "complete",
+                    deployed_at: "2026-06-04",
                     benchmark_label: "model_muti_0529",
                     data_source_label: "framework_db_aligned",
 	                    monthly_metrics: [
@@ -821,7 +824,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "V28日频5Y方案2",
                     status: "active",
                     horizon: 5,
-                    frequency: "daily"
+                    frequency: "daily",
+                    deployed_at: "2026-06-04"
                   }
                 ]
 	              },
@@ -875,6 +879,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     horizon: 5,
                     frequency: "daily",
                     status: "complete",
+                    deployed_at: "2026-06-04",
                     benchmark_label: "v28_daily_5y_2",
                     data_source_label: "framework_db_aligned",
                     monthly_metrics: [
@@ -943,7 +948,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
-                    frequency: "daily"
+                    frequency: "daily",
+                    deployed_at: "2026-06-04"
                   }
                 ]
               },
@@ -979,6 +985,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     horizon: 1,
                     frequency: "daily",
                     status: "complete",
+                    deployed_at: "2026-06-04",
                     benchmark_label: "model_muti_0529",
                     data_source_label: "framework_db_aligned",
                     monthly_metrics: [
@@ -1051,6 +1058,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     status: "active",
                     horizon: 6,
                     frequency: "weekly",
+                    deployed_at: "2026-06-04",
                     last_run: { date: "2026-06-11", status: "success" }
                   }
                 ]
@@ -1207,6 +1215,59 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertIn(result["selectedSchemeId"], {"t5_daily__h5__3Y", "t5_daily__h5__5Y"})
         self.assertEqual(result["deploymentDate"], "2026/06/04")
 
+    def test_live_registry_row_missing_deployed_at_fails_closed(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": [
+                {
+                  scheme_id: "t5_daily__h5__5Y",
+                  base_scheme_id: "t5_daily",
+                  target_tenor: "5Y",
+                  name: "T5 5Y",
+                  status: "active",
+                  horizon: 5,
+                  frequency: "daily"
+                }
+              ],
+              "/api/metrics/t5_daily__h5__5Y": {
+                scheme_id: "t5_daily__h5__5Y",
+                base_scheme_id: "t5_daily",
+                target_tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: [
+                  { predict_date: "2026-06-12", target_date: "2026-06-18",
+                    predicted_direction: 1, actual_direction: null, is_correct: null }
+                ]
+              },
+              "/api/backtests/factor-lab": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            var loaded = await hooks.loadFactorLabData({ force: true });
+            return {
+              loaded,
+              dataMode: hooks.getFactorLabState().dataMode,
+              apiError: hooks.getFactorLabState().apiError
+            };
+            """
+        )
+
+        self.assertFalse(result["loaded"])
+        self.assertEqual(result["dataMode"], "live-error")
+        self.assertIn("missing deployed_at", result["apiError"])
+
     def test_pending_actual_is_not_rendered_as_flat(self) -> None:
         """actual_direction 为 null 时应显示待验证，而不是被 JS Number(null) 变成平。"""
         result = _run_factor_lab_hook(
@@ -1223,6 +1284,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     status: "active",
                     horizon: 5,
                     frequency: "daily",
+                    deployed_at: "2026-06-04",
                     last_run: { date: "2026-06-10", status: "success" }
                   }
                 ]
@@ -1300,6 +1362,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     status: "active",
                     horizon: 5,
                     frequency: "daily",
+                    deployed_at: "2026-06-04",
                     last_run: { date: "2026-05-29", status: "success" }
                   }
                 ]
@@ -1383,6 +1446,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     horizon: 1,
                     frequency: "daily",
                     status: "complete",
+                    deployed_at: "2026-06-04",
                     monthly_metrics: [
 	                      { month: "2026-05", samples: 1, metric_samples: 1, correct: 1, accuracy: 100, overall: 100,
 	                        up_precision: 100, up_recall: 100, down_precision: null, down_recall: null,
@@ -1430,6 +1494,57 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["months"], ["2026-05"])
         self.assertIn("/api/backtests/factor-lab", result["calls"])
 
+    def test_backtest_scheme_missing_deployed_at_fails_closed(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    id: "bt:x:fw:5Y",
+                    scheme_id: "backtest_demo__h1__5Y",
+                    base_scheme_id: "backtest_demo",
+                    name: "Backtest Demo",
+                    target_tenor: "5Y",
+                    target_label: "5Y国债活跃",
+                    horizon: 1,
+                    frequency: "daily",
+                    status: "complete",
+                    monthly_metrics: [],
+                    daily_rows: [
+                      { predict_date: "2026-05-01", feature_date: "2026-05-01", target_date: "2026-05-02",
+                        predicted_direction: 1, actual_direction: 1, is_correct: true }
+                    ]
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            context.fetch = window.fetch;
+
+            var loaded = await hooks.loadFactorLabData({ force: true });
+            return {
+              loaded,
+              dataMode: hooks.getFactorLabState().dataMode,
+              apiError: hooks.getFactorLabState().apiError
+            };
+            """
+        )
+
+        self.assertFalse(result["loaded"])
+        self.assertEqual(result["dataMode"], "live-error")
+        self.assertIn("missing deployed_at", result["apiError"])
+
     def test_merge_does_not_lose_live_when_backtest_fails(self) -> None:
         """回测接口500时实盘方案仍然展示，且回测失败不丢数据。"""
         result = _run_factor_lab_hook(
@@ -1446,7 +1561,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
-                    frequency: "daily"
+                    frequency: "daily",
+                    deployed_at: "2026-06-04"
                   }
                 ]
               },

@@ -257,7 +257,6 @@
   var factorLabRefreshTimer = null;
   var factorLabApiError = "";
   var factorLabDataMode = "loading";
-  var DEFAULT_SCHEME_DEPLOYMENT_DATE = "2026/06/01";
 
   function clampPercent(value) {
     return Math.max(0, Math.min(100, Number(value) || 0));
@@ -286,8 +285,8 @@
   }
 
   function formatDeploymentDate(value) {
-    var text = String(value || DEFAULT_SCHEME_DEPLOYMENT_DATE).trim();
-    if (!text) return DEFAULT_SCHEME_DEPLOYMENT_DATE;
+    var text = String(value || "").trim();
+    if (!text) return "";
     var isoMatch = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
     if (isoMatch) return isoMatch[1] + "/" + isoMatch[2] + "/" + isoMatch[3];
     var slashMatch = text.match(/^(\d{4})\/(\d{2})\/(\d{2})/);
@@ -349,6 +348,13 @@
         scheme.deployment_date
       )
     );
+  }
+
+  function requireSchemeDeploymentDate(scheme, context) {
+    var value = getSchemeDeploymentDate(scheme);
+    if (value) return value;
+    var id = scheme && (scheme.schemeId || scheme.scheme_id || scheme.id || scheme.base_scheme_id || scheme.name);
+    throw new Error((context || "scheme") + " missing deployed_at for " + (id || "unknown"));
   }
 
   function getSchemeRemark(scheme) {
@@ -460,7 +466,7 @@
         name: name,
         status: status,
         latestRun: status === "archived" ? "05-21" : "05-29",
-        deploymentDate: DEFAULT_SCHEME_DEPLOYMENT_DATE,
+        deploymentDate: "2026/06/01",
         remark: "",
         monthlyRows: monthlyRowsFromGroupedDetails(dailyRowsByMonth),
         dailyRowsByMonth: dailyRowsByMonth
@@ -711,7 +717,7 @@
         dataSourceLabel: scheme.data_source_label || scheme.data_source || "",
         status: normalizeBackendSchemeStatus(scheme.status),
         latestRun: latestRun,
-        deploymentDate: getSchemeDeploymentDate(scheme),
+        deploymentDate: requireSchemeDeploymentDate(scheme, "backtest scheme"),
         remark: getSchemeRemark(scheme),
         monthlyRows: monthlyRows,
         dailyRowsByMonth: groupedDailyRows
@@ -757,7 +763,7 @@
         name: scheme.name,
         status: normalizeBackendSchemeStatus(scheme.status),
         latestRun: "--",
-        deploymentDate: getSchemeDeploymentDate(scheme),
+        deploymentDate: requireSchemeDeploymentDate(scheme, "live scheme"),
         remark: getSchemeRemark(scheme),
         monthlyRows: monthlyRows,
         dailyRowsByMonth: groupedDailyRows,
@@ -823,8 +829,14 @@
     factorLabRemoteLoading = true;
     // 同时拉取实时和回测，合并展示
     return Promise.all([
-      fetchLiveFactorLabTasks().catch(function () { return null; }),
-      loadBacktestFactorLabDataSilent().catch(function () { return null; })
+      fetchLiveFactorLabTasks().catch(function (error) {
+        if (isFailClosedDataError(error)) throw error;
+        return null;
+      }),
+      loadBacktestFactorLabDataSilent().catch(function (error) {
+        if (isFailClosedDataError(error)) throw error;
+        return null;
+      })
     ]).then(function (results) {
       var liveTasks = results[0];
       var backtestTasks = results[1];
@@ -840,7 +852,17 @@
       else mode = "backtest";
       finishFactorLabDataLoad(mergedTasks, mode);
       return true;
+    }).catch(function (error) {
+      return failFactorLabDataLoad(error);
     });
+  }
+
+  function isFailClosedDataError(error) {
+    var message = String((error && error.message) || error || "");
+    return message.indexOf("missing deployed_at") !== -1 ||
+      message.indexOf("has monthly_metrics but no detail rows") !== -1 ||
+      message.indexOf("requires metric_") !== -1 ||
+      message.indexOf("requires metricSamples") !== -1;
   }
 
   function loadBacktestFactorLabDataSilent() {
@@ -883,7 +905,7 @@
             name: btScheme.name,
             status: btScheme.status,
             latestRun: btScheme.latestRun,
-            deploymentDate: btScheme.deploymentDate || getSchemeDeploymentDate(btScheme),
+            deploymentDate: requireSchemeDeploymentDate(btScheme, "backtest scheme"),
             remark: btScheme.remark || "",
             monthlyRows: btRows,
             dailyRowsByMonth: btDaily,
@@ -936,7 +958,10 @@
               mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
               mScheme.liveMetricSinceDate = liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "";
               mScheme.phaseRanges = liveScheme.phaseRanges || [];
-              mScheme.deploymentDate = liveScheme.deploymentDate || mScheme.deploymentDate || DEFAULT_SCHEME_DEPLOYMENT_DATE;
+              mScheme.deploymentDate = requireSchemeDeploymentDate(
+                { schemeId: liveSchemaId, deploymentDate: liveScheme.deploymentDate || mScheme.deploymentDate },
+                "merged scheme"
+              );
               mScheme.remark = liveScheme.remark || mScheme.remark || "";
               matched = true;
               break;
@@ -956,7 +981,7 @@
               name: liveScheme.name,
               status: liveScheme.status,
               latestRun: liveScheme.latestRun,
-              deploymentDate: liveScheme.deploymentDate || DEFAULT_SCHEME_DEPLOYMENT_DATE,
+              deploymentDate: requireSchemeDeploymentDate(liveScheme, "live scheme"),
               remark: liveScheme.remark || "",
               monthlyRows: lrOnlyRows,
               dailyRowsByMonth: liveScheme.dailyRowsByMonth || {},
@@ -1160,6 +1185,7 @@
     var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
     var barWidth = clampPercent(metric.overall);
     var metricSamples = requireMetricSamples(metric, "ranking metric");
+    var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
       '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
@@ -1167,7 +1193,7 @@
       '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
       '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
-      '<td class="mono">' + escapeHtml(getSchemeDeploymentDate(scheme)) + '</td>' +
+      '<td class="mono">' + escapeHtml(deploymentDate) + '</td>' +
       '<td class="factor-remark-cell">' + escapeHtml(getSchemeRemark(scheme)) + '</td>' +
       '</tr>';
   }
@@ -1792,6 +1818,7 @@
     },
     getSelectedScheme: getSelectedScheme,
     getSchemeDeploymentDate: getSchemeDeploymentDate,
+    requireSchemeDeploymentDate: requireSchemeDeploymentDate,
     getSchemeRemark: getSchemeRemark,
     isLowSampleMetric: isLowSampleMetric,
     liveDividerTextForTest: liveDividerText,

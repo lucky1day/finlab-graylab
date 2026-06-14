@@ -131,6 +131,45 @@ class BaseRunnerMetricsTests(unittest.TestCase):
         self.assertEqual(metrics[0]["month"], "2026-01")
         self.assertEqual(metrics[0]["sample_count"], 1)
 
+    def test_missing_target_date_fails_closed_in_monthly_metrics(self) -> None:
+        from backtests._base_runner import build_monthly_metrics
+
+        rows = [
+            {
+                "scheme_id": "demo_daily",
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2025-12-29",
+                "label": 1,
+                "predicted_direction": 1,
+            }
+        ]
+
+        with self.assertRaisesRegex(ValueError, "missing required target_date"):
+            build_monthly_metrics(rows, benchmark_id="demo_benchmark")
+
+    def test_missing_target_date_fails_closed_before_evaluation_exclusion(self) -> None:
+        from backtests._base_runner import apply_evaluation_exclusions
+
+        rows = [
+            {
+                "scheme_id": "demo_daily",
+                "target_tenor": "5Y",
+                "horizon": 5,
+                "predict_date": "2026-01-09",
+                "label": 1,
+                "predicted_direction": 1,
+            }
+        ]
+
+        with self.assertRaisesRegex(ValueError, "missing required target_date"):
+            apply_evaluation_exclusions(
+                rows,
+                excluded_target_ranges=(
+                    {"label": "exclude one target", "start": "2026-01-10", "end": "2026-01-10"},
+                ),
+            )
+
     def test_flat_predictions_count_as_samples_but_not_metric_denominator(self) -> None:
         from backtests._base_runner import build_monthly_metrics
 
