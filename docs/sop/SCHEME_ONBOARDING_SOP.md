@@ -77,7 +77,8 @@
 - 灰度实盘也算实盘，但必须标识 `prediction_phase=gray_live`；正式 scheduler 自然发出的实盘标识 `prediction_phase=scheduled_live`。
 - 灰度实盘观察起点按方案级 `target_date` 判定，当前 V28 批次为 `target_date >= 2026-06-01`。
 - 历史回测只覆盖灰度起点之前的 target；实盘区间通过 `t_scheme_predictions` 和 `/api/metrics/{scheme_id}` 展示，并应能区分灰度与正式实盘。
-- 前端“部署时间”（当前周度方案统一显示 `2026/06/10`）只是展示字段，不参与回测截断、实盘回补范围、月份归属或唯一键计算。
+- 前端“部署时间”来自 `t_scheme_registry.deployed_at`，语义是该业务方案挂载对应定时任务的日期；它只是展示字段，不参与回测截断、实盘回补范围、月份归属或唯一键计算。
+- 前端不得再通过 hardcoded override、默认日期或 scheme_id 特判生成部署时间；如果 API/registry 缺 `deployed_at`，应作为注册数据问题处理，不能静默显示假日期。
 
 **规则六补充：历史回测预测起点全平台统一为 2025-01-01**
 - 参与历史排行的 daily/monthly 方案必须在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，并保证 runner 输出样本满足 `predict_date >= 2025-01-01`。
@@ -518,7 +519,7 @@ http://127.0.0.1:8100/
 - 月度表“样本数”列仍包含预测为“平”的样本；整体准确率括号显示 `correct/metric_samples`。
 - 每日/周度验证表中，预测为“平”的行结果列必须显示 `-`，不得显示 `×` 或 `✓`。
 - 切换排行指标时，任务格子最优指标同步变化。
-- 部署时间、备注等展示字段必须按真实候选排行 row 验证，不只直测 helper；前端 helper 需要兼容 API 原始 `scheme_id` 和 UI 归一后的 `schemeId`。
+- 部署时间必须来自 `/api/schemes` 或 `/api/backtests/factor-lab` 返回的 `deployed_at`，并在真实候选排行 row 上验证；不得只直测 helper，也不得接受前端默认日期、override 或 mock 值混入真实展示。
 - 如果刚改过 `frontend/aifin-shell.js` / `frontend/index.html` 后页面仍显示旧内容，第一时间提醒用户做浏览器强制刷新（macOS `Cmd+Shift+R`）或打开 DevTools 勾选 `Disable Cache` 后刷新，再继续排查 API/代码。
 
 如果前端没有出现，优先检查:

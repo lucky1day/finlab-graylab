@@ -24,7 +24,6 @@
 | [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | 新增方案入库 SOP（含 2026-06-10 修订的数据口径规则） |
 | [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | 入库后测试验证 SOP |
 | [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) | 2026-06-10 框架改造踩坑记录（新增方案前必读） |
-| [sop/METRIC_FAIL_CLOSED_OPEN_ISSUES_2026-06-14.md](sop/METRIC_FAIL_CLOSED_OPEN_ISSUES_2026-06-14.md) | 指标 fail-closed 问题闭环记录：预测为平的分母口径、回测明细唯一事实源 |
 
 ## 状态与参考
 
