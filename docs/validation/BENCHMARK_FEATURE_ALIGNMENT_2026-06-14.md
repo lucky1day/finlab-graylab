@@ -37,9 +37,9 @@
 | 指标 | 数值 |
 |------|-----:|
 | 已检查 active source-backed 方案 | 6 |
-| 原始 benchmark raw rows | 2180 |
-| 去重后可比较 rows | 2180 |
-| 与 backtest 明细比对 rows | 2175 |
+| 原始 benchmark raw rows | 2182 |
+| 去重后可比较 rows | 2182 |
+| 与 backtest 明细比对 rows | 2177 |
 | 与 live 明细比对 rows | 5 |
 | DB 缺失 rows | 0 |
 | DB 多重命中 rows | 0 |
@@ -55,7 +55,7 @@
 | 方案 | 原始 rows | 可比较唯一 rows | 比对位置 | 结论 | 说明 |
 |------|----------:|----------------:|----------|------|------|
 | `daily_5y_2_v28` | 18 | 18 | backtest 13 + live 5 | `PASS` | V28 current 侧由共享 inference helper 生成；旧 `run_id=42` 错误灰度明细已删除，新 `run_id=58` 与原始 benchmark 对齐。 |
-| `t1_daily` | 672 | 672 | backtest 672 | `PASS` | 当前注册 `5Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致；不再包含 `1Y` 预测 target rows。 |
+| `t1_daily` | 674 | 674 | backtest 674 | `PASS` | 当前注册 `5Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致；不再包含 `1Y` 预测 target rows；2026-05 目标月已覆盖到 `target_date=2026-05-29`。 |
 | `t5_daily` | 1332 | 1332 | backtest 1332 | `PASS` | 当前注册 `3Y/5Y/7Y/10Y` 全量严格 benchmark 已重建，字段完整且逐行一致；2026-05 目标月已覆盖到 `target_date=2026-05-29`。 |
 | `weekly_5y_direct_0529` | 71 | 71 | backtest 71 | `PASS` | `feature_date/feature_week_id/target_date/target_tenor/horizon` 全部可定位，方向、置信度、标签一致。 |
 | `weekly_7y_cross_d_overlay_0529` | 42 | 42 | backtest 42 | `PASS` | `framework_feature_date/framework_target_date` 对齐 DB 明细，方向、置信度、标签一致。 |
@@ -86,9 +86,11 @@ feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_corr
 
 验收结论：
 
-- `t1_daily`: original/current 各 672 行，`target_tenor` 仅包含 `5Y/10Y`，不再包含旧 sample 中的 `1Y` 预测 target rows。
+- `t1_daily`: original/current 各 674 行，`target_tenor` 仅包含 `5Y/10Y`，不再包含旧 sample 中的 `1Y` 预测 target rows。
 - `t5_daily`: original/current 各 1332 行，`target_tenor` 包含 `3Y/5Y/7Y/10Y`。
-- 根目录 canonical `benchmarks/model_muti_0529/daily_output.csv` 截至 `2026-05-28`；逐方案 benchmark 为覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 追加 `2026-05-29` 目标验证日。该追加行只用于计算 `target_date=2026-05-29` 的 label/actual，source T / `feature_date` 仍不晚于 `2026-05-22`，不改变模型站位。
+- 根目录 canonical `benchmarks/model_muti_0529/daily_output.csv` 截至 `2026-05-28`；逐方案 benchmark 为覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 追加 `2026-05-29` 目标验证日。
+- `t1_daily` 的旧 core 参数现在明确命名为 `target_date`：最后一条 5 月目标日是 `target_date=2026-05-29`，模型站位为最后一个 `< target_date` 的交易日，即 `feature_date=2026-05-28`。
+- `t5_daily` 的最后一组 5 月目标日为 `target_date=2026-05-25..2026-05-29`，对应 source T / `feature_date=2026-05-18..2026-05-22`。追加 `2026-05-29` 只用于 label/actual，不把 T+5 的模型输入截止推到 target 日。
 - 两个方案的 CompareGate 均使用严格主键 `feature_date + target_date + target_tenor + horizon`，missing/extra=0，direction mismatch=0，confidence max abs diff=0。
 
 ## 5. V28 不一致闭环记录

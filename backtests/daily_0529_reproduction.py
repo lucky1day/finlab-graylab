@@ -57,7 +57,7 @@ UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 T5_BACKTEST_START = "2025-01-01"
 T5_BACKTEST_END = "2026-05-31"
 T1_BACKTEST_START = "2025-01-01"
-T1_BACKTEST_END = "2026-05-28"
+T1_BACKTEST_END = "2026-05-29"
 LIVE_TARGET_START_DATE = "2026-06-01"
 DAILY0529_REQUIRED_TARGET_END_DATE = "2026-05-29"
 T1_CONFIG_PATH = PROJECT_ROOT / "schemes" / "t1_daily" / "config.yaml"
@@ -487,14 +487,17 @@ def run_t1_framework_backtest(df: pd.DataFrame) -> list[dict[str, Any]]:
     daily = df.copy()
     daily["date"] = pd.to_datetime(daily["date"]).dt.normalize()
     daily = daily.sort_values("date").reset_index(drop=True)
-    dates = daily.loc[daily["date"].between(pd.Timestamp(T1_BACKTEST_START), pd.Timestamp(T1_BACKTEST_END)), "date"].dt.strftime("%Y-%m-%d").tolist()
+    target_dates = daily.loc[
+        daily["date"].between(pd.Timestamp(T1_BACKTEST_START), pd.Timestamp(T1_BACKTEST_END)),
+        "date",
+    ].dt.strftime("%Y-%m-%d").tolist()
     configured_tenors = _configured_t1_tenors()
     rows: list[dict[str, Any]] = []
-    for run_date in dates:
+    for target_date in target_dates:
         for frequency in ("D1Y", "D5Y", "D10Y"):
             if TENOR_CONFIGS[frequency].tenor not in configured_tenors:
                 continue
-            result = predict_latest_for_config(daily, TENOR_CONFIGS[frequency], current_date=run_date)
+            result = predict_latest_for_config(daily, TENOR_CONFIGS[frequency], target_date=target_date)
             row = _t1_prediction_result_to_row(daily, result)
             if row["predict_date"] < T1_BACKTEST_START:
                 continue

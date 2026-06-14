@@ -147,8 +147,8 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S6 落库成功，得 run_id |
-| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 用 source benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行查 `t_scheme_predictions.feature_date` 和 `prediction_phase` |
-| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；source benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致 |
+| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 对同一前端任务格子 / 同一预测期限列下的候选方案做样本覆盖对齐：导出各方案 `target_date` 集合，确认相同 target 覆盖窗口内样本总数一致，若不一致必须输出 missing/extra target-date 清单或引用已批准的算法有效信号例外；⑤ 用 source benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行查 `t_scheme_predictions.feature_date` 和 `prediction_phase` |
+| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；同一前端列的候选方案样本总数一致，或已有明确 missing/extra 与批准例外说明；source benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致 |
 | **成功→去向** | 进入 S8 |
 | **失败判定** | 任一前端数值与 DB 不符 |
 | **失败→去向** | 先排除浏览器静态资源缓存（强制刷新/Disable Cache），再回到 **S7 起点重新刷新**（必要时回 S6 重新落库）。"所有回测结果必须严格验证完毕"方可放行 |

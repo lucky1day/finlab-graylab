@@ -56,7 +56,8 @@ def run(predict_date: str) -> list[PredictionRecord]:
         for frequency, config in TENOR_CONFIGS.items():
             if config.tenor not in configured_tenors:
                 continue
-            result = predict_latest_for_config(daily_df, config, current_date=predict_date)
+            target_date = predict_date
+            result = predict_latest_for_config(daily_df, config, target_date=target_date)
             records.append(
                 PredictionRecord(
                     scheme_id=SCHEME_ID,

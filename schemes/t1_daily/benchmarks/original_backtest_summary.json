@@ -1,62 +1,62 @@
 {
   "by_tenor": {
     "10Y": {
-      "samples": 336,
-      "metric_samples": 336,
+      "samples": 337,
+      "metric_samples": 337,
       "correct": 202,
-      "accuracy": 0.6011904761904762,
-      "accuracy_pct": 60.1,
+      "accuracy": 0.599406528189911,
+      "accuracy_pct": 59.9,
       "actual_dist": {
         "up": 163,
-        "down": 162,
+        "down": 163,
         "flat": 11
       },
       "predicted_dist": {
-        "up": 233,
+        "up": 234,
         "down": 103,
         "flat": 0
       },
       "metric_actual_dist": {
         "up": 163,
-        "down": 162,
+        "down": 163,
         "flat": 11
       },
       "metric_predicted_dist": {
-        "up": 233,
+        "up": 234,
         "down": 103,
         "flat": 0
       },
       "date_min": "2025-01-02",
-      "date_max": "2026-05-27"
+      "date_max": "2026-05-28"
     },
     "5Y": {
-      "samples": 336,
-      "metric_samples": 336,
-      "correct": 189,
-      "accuracy": 0.5625,
-      "accuracy_pct": 56.2,
+      "samples": 337,
+      "metric_samples": 337,
+      "correct": 190,
+      "accuracy": 0.5637982195845698,
+      "accuracy_pct": 56.4,
       "actual_dist": {
         "up": 155,
-        "down": 159,
+        "down": 160,
         "flat": 22
       },
       "predicted_dist": {
         "up": 197,
-        "down": 139,
+        "down": 140,
         "flat": 0
       },
       "metric_actual_dist": {
         "up": 155,
-        "down": 159,
+        "down": 160,
         "flat": 22
       },
       "metric_predicted_dist": {
         "up": 197,
-        "down": 139,
+        "down": 140,
         "flat": 0
       },
       "date_min": "2025-01-02",
-      "date_max": "2026-05-27"
+      "date_max": "2026-05-28"
     }
   },
   "periods_by_tenor": {
@@ -120,62 +120,62 @@
         "date_max": "2026-04-30"
       },
       "may": {
-        "samples": 16,
-        "metric_samples": 16,
+        "samples": 17,
+        "metric_samples": 17,
         "correct": 7,
-        "accuracy": 0.4375,
-        "accuracy_pct": 43.8,
+        "accuracy": 0.4117647058823529,
+        "accuracy_pct": 41.2,
         "actual_dist": {
           "up": 6,
-          "down": 9,
+          "down": 10,
           "flat": 1
         },
         "predicted_dist": {
-          "up": 13,
+          "up": 14,
           "down": 3,
           "flat": 0
         },
         "metric_actual_dist": {
           "up": 6,
-          "down": 9,
+          "down": 10,
           "flat": 1
         },
         "metric_predicted_dist": {
-          "up": 13,
+          "up": 14,
           "down": 3,
           "flat": 0
         },
         "date_min": "2026-05-06",
-        "date_max": "2026-05-27"
+        "date_max": "2026-05-28"
       },
       "all": {
-        "samples": 336,
-        "metric_samples": 336,
+        "samples": 337,
+        "metric_samples": 337,
         "correct": 202,
-        "accuracy": 0.6011904761904762,
-        "accuracy_pct": 60.1,
+        "accuracy": 0.599406528189911,
+        "accuracy_pct": 59.9,
         "actual_dist": {
           "up": 163,
-          "down": 162,
+          "down": 163,
           "flat": 11
         },
         "predicted_dist": {
-          "up": 233,
+          "up": 234,
           "down": 103,
           "flat": 0
         },
         "metric_actual_dist": {
           "up": 163,
-          "down": 162,
+          "down": 163,
           "flat": 11
         },
         "metric_predicted_dist": {
-          "up": 233,
+          "up": 234,
           "down": 103,
           "flat": 0
         },
         "date_min": "2025-01-02",
-        "date_max": "2026-05-27"
+        "date_max": "2026-05-28"
       }
     },
     "5Y": {
@@ -238,73 +238,73 @@
         "date_max": "2026-04-30"
       },
       "may": {
-        "samples": 16,
-        "metric_samples": 16,
-        "correct": 11,
-        "accuracy": 0.6875,
-        "accuracy_pct": 68.8,
+        "samples": 17,
+        "metric_samples": 17,
+        "correct": 12,
+        "accuracy": 0.7058823529411765,
+        "accuracy_pct": 70.6,
         "actual_dist": {
           "up": 3,
-          "down": 12,
+          "down": 13,
           "flat": 1
         },
         "predicted_dist": {
           "up": 5,
-          "down": 11,
+          "down": 12,
           "flat": 0
         },
         "metric_actual_dist": {
           "up": 3,
-          "down": 12,
+          "down": 13,
           "flat": 1
         },
         "metric_predicted_dist": {
           "up": 5,
-          "down": 11,
+          "down": 12,
           "flat": 0
         },
         "date_min": "2026-05-06",
-        "date_max": "2026-05-27"
+        "date_max": "2026-05-28"
       },
       "all": {
-        "samples": 336,
-        "metric_samples": 336,
-        "correct": 189,
-        "accuracy": 0.5625,
-        "accuracy_pct": 56.2,
+        "samples": 337,
+        "metric_samples": 337,
+        "correct": 190,
+        "accuracy": 0.5637982195845698,
+        "accuracy_pct": 56.4,
         "actual_dist": {
           "up": 155,
-          "down": 159,
+          "down": 160,
           "flat": 22
         },
         "predicted_dist": {
           "up": 197,
-          "down": 139,
+          "down": 140,
           "flat": 0
         },
         "metric_actual_dist": {
           "up": 155,
-          "down": 159,
+          "down": 160,
           "flat": 22
         },
         "metric_predicted_dist": {
           "up": 197,
-          "down": 139,
+          "down": 140,
           "flat": 0
         },
         "date_min": "2025-01-02",
-        "date_max": "2026-05-27"
+        "date_max": "2026-05-28"
       }
     }
   },
-  "row_count": 672,
-  "raw_row_count": 672,
+  "row_count": 674,
+  "raw_row_count": 674,
   "excluded_row_count": 0,
   "evaluation_filter": {
     "date_field": "target_date",
     "ranges": [],
-    "raw_row_count": 672,
-    "included_row_count": 672,
+    "raw_row_count": 674,
+    "included_row_count": 674,
     "excluded_row_count": 0
   },
   "monthly_count": 34

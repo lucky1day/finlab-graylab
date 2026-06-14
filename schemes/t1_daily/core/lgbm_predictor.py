@@ -71,15 +71,15 @@ def _ensure_daily_frame(df: pd.DataFrame) -> pd.DataFrame:
     return result.sort_values("date").reset_index(drop=True)
 
 
-def _target_and_feature_index(df: pd.DataFrame, current_date: str | None) -> tuple[str, int]:
-    if current_date is None:
+def _target_and_feature_index(df: pd.DataFrame, target_date: str | None) -> tuple[str, int]:
+    if target_date is None:
         if len(df) < 2:
             raise ValueError("at least two rows are required to infer a target date")
         return df["date"].iloc[-1].strftime("%Y-%m-%d"), len(df) - 2
-    target = pd.Timestamp(current_date)
+    target = pd.Timestamp(target_date)
     eligible = np.flatnonzero(df["date"].lt(target).to_numpy())
     if not len(eligible):
-        raise ValueError(f"no feature data available before target date {current_date}")
+        raise ValueError(f"no feature data available before target date {target_date}")
     return target.strftime("%Y-%m-%d"), int(eligible[-1])
 
 
@@ -121,7 +121,12 @@ def _combine_vote(config: TenorConfig, base_pred: int, vote_row: pd.Series) -> t
     return (1 if vote_sum >= 0 else -1), vote_sum, f"lightgbm_{config.vote_scheme}"
 
 
-def predict_latest_for_config(df: pd.DataFrame, config: TenorConfig, current_date: str | None = None) -> PredictionResult:
+def predict_latest_for_config(df: pd.DataFrame, config: TenorConfig, target_date: str | None = None) -> PredictionResult:
+    """预测给定目标日的 T+1 方向。
+
+    `target_date` 是被预测和验证的交易日；函数会使用严格早于该目标日的
+    最后一条交易日作为 `feature_date`。它不是平台的 live `predict_date`。
+    """
     daily = _ensure_daily_frame(df)
     required = [config.close_col]
     for col in [config.mid_col, config.long_col, config.short_col]:
@@ -131,7 +136,7 @@ def predict_latest_for_config(df: pd.DataFrame, config: TenorConfig, current_dat
     if missing:
         raise ValueError(f"daily dataframe missing required columns: {missing}")
 
-    target_date, idx = _target_and_feature_index(daily, current_date)
+    resolved_target_date, idx = _target_and_feature_index(daily, target_date)
     feature_date = daily.loc[idx, "date"].strftime("%Y-%m-%d")
     close = pd.to_numeric(daily[config.close_col], errors="coerce")
     _, labels = make_labels(daily, config.close_col, config.threshold)
@@ -176,8 +181,8 @@ def predict_latest_for_config(df: pd.DataFrame, config: TenorConfig, current_dat
 
     pred_label, vote_sum, combined_decision = _combine_vote(config, base_pred, vote_signals.iloc[idx])
     return PredictionResult(
-        rdate=target_date,
-        target_date=target_date,
+        rdate=resolved_target_date,
+        target_date=resolved_target_date,
         feature_date=feature_date,
         tenor=config.tenor,
         frequency=config.frequency,

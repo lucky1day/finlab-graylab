@@ -45,7 +45,21 @@ benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + 
 
 这条规则优先于旧文件列名。旧 benchmark CSV 即使列名仍叫 `predict_date`，也只能解释为 source T / 平台 `feature_date`；新增 benchmark 文件应显式写 `feature_date` 或 `source_t`，避免把原始算法站位日误读为平台信号发出日。
 
-### 2.2 test-window 敏感算法规则
+### 2.2 旧 core 参数名不得直接映射为平台字段
+
+legacy/core 里的参数名不一定等于平台标准字段。遇到 `current_date`、`date`、`predict_date` 等旧参数时，必须先读 core 内部如何使用它，再决定映射到平台的 `predict_date`、`feature_date` 还是 `target_date`；不得只按名字猜。
+
+已确认案例：`t1_daily` 旧 core 曾使用 `current_date` 作为参数名，但内部语义是“目标验证日”，并选择最后一个 `< current_date` 的交易日作为模型站位。因此它现在已重命名为 `target_date`，且不保留旧参数兼容入口。T1 回测最后一条 5 月样本必须是：
+
+```text
+target_date  = 2026-05-29
+feature_date = 2026-05-28
+predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
+```
+
+这不是新增第四类日期字段；它只是把旧 core 的内部参数语义改名到平台已有的 `target_date`。新增方案入库时，若 legacy 参数名含糊，必须在方案文档和 SOP 验收记录中写明它对应的平台字段。
+
+### 2.3 test-window 敏感算法规则
 
 部分源算法把 test window 当作模型选择、ensemble 或信号组合的一部分；这类窗口不是展示参数，改变窗口就可能改变同一个 `feature_date` 的预测结果。`daily_5y_2_v28` 是当前已确认案例：源算法按月度 test window 运行，Phase C 会基于 `test_months` 做 monthly ensemble / signal selection，因此平台不得用连续窗口替代月度窗口。
 

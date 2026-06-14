@@ -381,7 +381,7 @@ conda run -n bond_factor_lab_service python scripts/rebuild_daily0529_scheme_ben
   --scheme-id t5_daily
 ```
 
-注意：根目录 `benchmarks/model_muti_0529/daily_output.csv` 是上游批次输入归档，当前截到 `2026-05-28`；逐方案 benchmark 为了覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 补齐 `2026-05-29` 目标验证日。该补齐行只用于计算 `target_date=2026-05-29` 的 label/actual，不能把 source T / `feature_date` 推到未来，也不能作为 live 预测输入截止日。
+注意：根目录 `benchmarks/model_muti_0529/daily_output.csv` 是上游批次输入归档，当前截到 `2026-05-28`；逐方案 benchmark 为了覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 补齐 `2026-05-29` 目标验证日。T1 旧 core 曾把参数命名为 `current_date`，但真实语义是 `target_date`：最后一条 5 月目标日必须传入 `target_date=2026-05-29`，并由 core 选择最后一个 `< target_date` 的交易日作为 `feature_date=2026-05-28`。T5 的最后一周目标日为 `target_date=2026-05-25..2026-05-29`，对应 source T / `feature_date=2026-05-18..2026-05-22`。补齐行只用于计算 label/actual，不能把 source T / `feature_date` 推到未来，也不能作为 live 预测输入截止日。
 
 V28 `daily_5y_2_v28` 属于 test-window 敏感方案，benchmark current 侧必须由平台共享 inference helper 生成，不能从 source 文件复制：
 
@@ -507,6 +507,7 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 - 周度明细行、月度指标、去重和展示月份一律按 `target_date` 归组；`feature_date` 只用于追溯输入窗口，`predict_date` 只用于调度日志和运行记录。
 - 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行；不要用部署时间或 `predict_date` 截断历史回测。
 - 如果删除错误口径的旧回测 run，必须使用受控脚本显式指定 `scheme_id + run_id`，先 dry-run 打印命中行数，再 apply；不得手写散落 SQL 删除。
+- 同一前端任务格子 / 同一预测期限列（例如 `5Y国债活跃 · T+5`）下，候选方案在相同 data source 和相同 target 覆盖窗口内的样本总数默认必须一致。写库后必须导出各候选方案的 `target_date` 集合并做 missing/extra diff；若不一致，必须先定位是缺 target 日、重复 target 日、未验证 actual，还是算法明确不产出有效信号。只有已在 `PREDICTION_SEMANTICS.md` 和踩坑文档登记的 source-original 周频有效信号例外，才允许样本总数不同；日频方案和新增方案不得用“算法可能不同”作为静默放行理由。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
 
 ### Step 8: API/前端只读验证
@@ -541,6 +542,7 @@ http://127.0.0.1:8100/
 
 - 新方案出现在对应任务格子下，例如 `10Y国债活跃 · T+1`。
 - 同一个任务格子下可以同时看到多个候选方案。
+- 同一任务格子的每一列候选方案必须执行样本覆盖对齐检查：在相同 target 覆盖窗口内，样本总数应一致；若不一致，验收报告必须附 `target_date` missing/extra 清单或已批准的算法有效信号例外说明。
 - 方案排行的整体准确率、上涨准确率、下跌准确率按样本级聚合，但预测为“平”的样本不进入任何指标分母。
 - 月度表“样本数”列仍包含预测为“平”的样本；整体准确率括号显示 `correct/metric_samples`。
 - 每日/周度验证表中，预测为“平”的行结果列必须显示 `-`，不得显示 `×` 或 `✓`。

@@ -23,7 +23,7 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
         fake_config = SimpleNamespace(tenor="10Y", window=240)
         fake_result = SimpleNamespace(
             rdate="2026-06-05",
-            target_date="2026-06-06",
+            target_date="2026-06-05",
             feature_date="2026-06-04",
             pred_label=1,
             prob_up=0.6,
@@ -49,10 +49,10 @@ class DailyPredictAdapterDataServiceTests(unittest.TestCase):
 
         self.assertEqual(len(records), 1)
         self.assertIs(predict_latest.call_args.args[0], daily_df)
-        self.assertEqual(predict_latest.call_args.kwargs["current_date"], "2026-06-05")
+        self.assertEqual(predict_latest.call_args.kwargs["target_date"], "2026-06-05")
         self.assertEqual(records[0].predict_date, "2026-06-05")
         self.assertEqual(records[0].feature_date, "2026-06-04")
-        self.assertEqual(records[0].target_date, "2026-06-06")
+        self.assertEqual(records[0].target_date, "2026-06-05")
         kwargs = build.call_args.kwargs
         self.assertEqual(kwargs["end_date"], "2026-06-04")
         self.assertEqual(kwargs["scheme_id"], "t1_daily")
@@ -174,14 +174,14 @@ class ReproductionDailyDataServiceTests(unittest.TestCase):
             "D10Y": SimpleNamespace(frequency="D10Y", tenor="10Y", close_col="close", threshold=0.0),
         }
 
-        def fake_predict_latest_for_config(_daily: pd.DataFrame, cfg: SimpleNamespace, *, current_date: str) -> SimpleNamespace:
-            feature_date = "2024-12-31" if current_date == "2025-01-01" else "2025-01-01"
+        def fake_predict_latest_for_config(_daily: pd.DataFrame, cfg: SimpleNamespace, *, target_date: str) -> SimpleNamespace:
+            feature_date = "2024-12-31" if target_date == "2025-01-01" else "2025-01-01"
             return SimpleNamespace(
                 config=cfg,
                 tenor=cfg.tenor,
                 frequency=cfg.frequency,
                 feature_date=feature_date,
-                target_date=current_date,
+                target_date=target_date,
                 pred_label=1,
                 prob_up=0.6,
                 base_pred=1,
@@ -202,6 +202,53 @@ class ReproductionDailyDataServiceTests(unittest.TestCase):
         self.assertEqual({row["predict_date"] for row in rows}, {"2025-01-01"})
         self.assertEqual({row["target_tenor"] for row in rows}, {"5Y", "10Y"})
         self.assertTrue(all(row["predict_date"] >= "2025-01-01" for row in rows))
+
+    def test_t1_backtest_includes_final_may29_target_date(self) -> None:
+        from backtests import daily_0529_reproduction as daily_reproduction
+        from schemes.t1_daily.core import config as t1_config
+        from schemes.t1_daily.core import lgbm_predictor
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-05-28", "2026-05-29"]),
+                "close": [1.0, 0.9],
+            }
+        )
+        fake_configs = {
+            "D1Y": SimpleNamespace(frequency="D1Y", tenor="3Y", close_col="close", threshold=0.0),
+            "D5Y": SimpleNamespace(frequency="D5Y", tenor="5Y", close_col="close", threshold=0.0),
+            "D10Y": SimpleNamespace(frequency="D10Y", tenor="10Y", close_col="close", threshold=0.0),
+        }
+        seen_target_dates: list[str] = []
+
+        def fake_predict_latest_for_config(_daily: pd.DataFrame, cfg: SimpleNamespace, *, target_date: str) -> SimpleNamespace:
+            seen_target_dates.append(target_date)
+            return SimpleNamespace(
+                config=cfg,
+                tenor=cfg.tenor,
+                frequency=cfg.frequency,
+                feature_date="2026-05-28",
+                target_date=target_date,
+                pred_label=-1,
+                prob_up=0.4,
+                base_pred=-1,
+                threshold_used=0.0,
+                base_decision="model",
+                vote_sum=-1,
+                decision="test",
+                train_start="2020-01-01",
+                train_end="2026-05-28",
+                feature_columns=["close"],
+            )
+
+        with patch.object(t1_config, "TENOR_CONFIGS", fake_configs):
+            with patch.object(lgbm_predictor, "predict_latest_for_config", side_effect=fake_predict_latest_for_config):
+                rows = daily_reproduction.run_t1_framework_backtest(daily_df)
+
+        self.assertIn("2026-05-29", seen_target_dates)
+        final_rows = [row for row in rows if row["target_date"] == "2026-05-29"]
+        self.assertEqual({row["target_tenor"] for row in final_rows}, {"5Y", "10Y"})
+        self.assertEqual({row["predict_date"] for row in final_rows}, {"2026-05-28"})
 
     def test_t5_backtest_rows_stop_before_live_target_start(self) -> None:
         from backtests import daily_0529_reproduction as daily_reproduction
