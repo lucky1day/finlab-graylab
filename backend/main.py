@@ -146,22 +146,26 @@ def api_metrics(
 
 @app.get("/api/predictions")
 def api_predictions(
-    scheme_id: str | None = None,
+    scheme_id: str,
     tenor: str | None = None,
     start_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     end_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    return list_predictions(
-        get_engine(),
-        scheme_id=scheme_id,
-        tenor=tenor,
-        start_date=start_date,
-        end_date=end_date,
-        limit=limit,
-        offset=offset,
-    )
+    if tenor is not None:
+        raise HTTPException(status_code=400, detail="tenor query is not supported; use registry scheme_id")
+    try:
+        return list_predictions(
+            get_engine(),
+            scheme_id=scheme_id,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+            offset=offset,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/actuals")

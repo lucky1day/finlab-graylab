@@ -40,7 +40,8 @@
 > 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
 > `config.tenors` 是算法一次执行可返回的目标集合；registry 同步会把它拆成每个 `target_tenor` 一行。`/api/schemes` 不返回 `tenor/tenors`，只返回该 registry 行的 `target_tenor`。
 >
-> 业务可见性只认 `status='active'` 的 registry row。`paused` / `archived` 行不出现在 `/api/schemes`、`/api/metrics/{scheme_id}` 或 `/api/backtests/factor-lab`，也不能被 trigger；scheduler live 写库前必须校验每条 `PredictionRecord` 对应 active registry `(base_scheme_id, horizon, target_tenor)`。
+> 业务可见性只认 `status='active'` 的 registry row。`paused` / `archived` 行不出现在 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/predictions?scheme_id=...` 或 `/api/backtests/factor-lab`，也不能被 trigger；scheduler live 写库前必须校验每条 `PredictionRecord` 对应 active registry `(base_scheme_id, horizon, target_tenor)`。
+> `/api/predictions` 的 `scheme_id` 参数是 registry composite ID；后端解析为 `base_scheme_id + target_tenor + horizon` 后查询底层预测表，不接受 base scheme id、无 `scheme_id` 或 `?tenor=...`。
 
 ```python
 # harness/contracts/config_schema.py（设计签名）

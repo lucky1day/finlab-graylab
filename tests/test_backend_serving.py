@@ -550,14 +550,40 @@ class BackendPredictionServingTests(unittest.TestCase):
         _seed_predictions(engine)
         statements.clear()
         try:
-            result = list_predictions(engine, scheme_id="demo_daily", tenor="10Y")
+            result = list_predictions(engine, scheme_id="demo_daily__h1__10Y")
         finally:
             engine.dispose()
 
         self.assertEqual(result["total"], 1)
+        self.assertEqual(result["items"][0]["scheme_id"], "demo_daily__h1__10Y")
+        self.assertEqual(result["items"][0]["base_scheme_id"], "demo_daily")
+        self.assertEqual(result["items"][0]["target_tenor"], "10Y")
+        self.assertEqual(result["items"][0]["horizon"], 1)
 
         # 不再通过 serving pointer 过滤，无写语句
         self.assertFalse(any(stmt.startswith(("insert", "update", "delete", "alter", "drop")) for stmt in statements))
+
+    def test_list_predictions_rejects_base_or_non_active_scheme_id(self) -> None:
+        from backend.services import list_predictions
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        _seed_predictions(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_paused__h1__10Y",
+            base_scheme_id="demo_daily",
+            target_tenor="10Y",
+            horizon=1,
+            status="paused",
+        )
+        try:
+            with self.assertRaises(LookupError):
+                list_predictions(engine, scheme_id="demo_daily")
+            with self.assertRaises(LookupError):
+                list_predictions(engine, scheme_id="demo_paused__h1__10Y")
+        finally:
+            engine.dispose()
 
 
 if __name__ == "__main__":

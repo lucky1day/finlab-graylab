@@ -19,7 +19,7 @@
 │  │  (APScheduler)  │     │                                │ │
 │  │                 │     │  /api/schemes                  │ │
 │  │  daily 07:03    │     │  /api/metrics/{scheme_id}      │ │
-│  │  weekly 11:30   │     │  /api/predictions              │ │
+│  │  weekly 11:30   │     │  /api/predictions?scheme_id=...│ │
 │  │  actuals jobs   │     │  /api/actuals                  │ │
 │  │                 │     │                                │ │
 │  │  ┌───────────┐  │     │                                │ │
@@ -484,7 +484,17 @@ class PredictionRecord:
 
 ---
 
-### 5.4 历史复现 API
+### 5.4 GET /api/predictions
+
+参数: `scheme_id`, `start_date`, `end_date`, `limit`, `offset`
+
+`scheme_id` 必须是 `status='active'` 的 registry composite ID，例如 `t5_daily__h5__5Y`。接口会解析 registry 行得到 `base_scheme_id + target_tenor + horizon`，再查询底层 `t_scheme_predictions`；返回 item 中的 `scheme_id` 仍是 registry composite ID，同时用 `base_scheme_id` 留下底层存储身份。
+
+该接口不接受 base scheme id、无 `scheme_id` 或 `?tenor=...`。base scheme id 和 `paused/archived` registry ID 返回 404，`tenor` query 返回 400，缺少 `scheme_id` 由 FastAPI 返回 422。
+
+---
+
+### 5.5 历史复现 API
 
 历史回测结果不混入 `t_scheme_predictions`，统一通过独立接口读取:
 

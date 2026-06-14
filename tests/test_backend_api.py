@@ -82,6 +82,33 @@ class MetricsEndpointTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
 
+class PredictionsEndpointTests(unittest.TestCase):
+    def test_predictions_endpoint_uses_registry_scheme_id_only(self) -> None:
+        engine = object()
+        with patch.object(main, "get_engine", return_value=engine), patch.object(
+            main, "list_predictions", return_value={"items": []}
+        ) as predictions_mock:
+            result = main.api_predictions("demo_daily__h1__10Y")
+
+        predictions_mock.assert_called_once()
+        self.assertEqual(predictions_mock.call_args.args[:1], (engine,))
+        self.assertEqual(predictions_mock.call_args.kwargs["scheme_id"], "demo_daily__h1__10Y")
+        self.assertEqual(result, {"items": []})
+
+    def test_predictions_endpoint_rejects_tenor_query_semantics(self) -> None:
+        with self.assertRaises(HTTPException) as ctx:
+            main.api_predictions("demo_daily__h1__10Y", tenor="10Y")
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_predictions_endpoint_maps_unknown_registry_scheme_to_404(self) -> None:
+        with patch.object(main, "get_engine", return_value=object()), patch.object(
+            main, "list_predictions", side_effect=LookupError("scheme not found: demo_daily")
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                main.api_predictions("demo_daily")
+        self.assertEqual(ctx.exception.status_code, 404)
+
+
 class SchemesLifecycleRemovedTests(unittest.TestCase):
     def test_schemes_lifecycle_route_is_not_registered(self) -> None:
         """方案生命周期健康概览已下线，后端不再暴露 lifecycle GET 路由。"""

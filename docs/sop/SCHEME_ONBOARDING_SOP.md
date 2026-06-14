@@ -489,6 +489,7 @@ curl -s http://127.0.0.1:8100/api/targets
 curl -s http://127.0.0.1:8100/api/schemes
 curl -s http://127.0.0.1:8100/api/backtests/factor-lab
 curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2__h1__10Y"
+curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__10Y&limit=5"
 ```
 
 验收点:
@@ -497,6 +498,7 @@ curl -s "http://127.0.0.1:8100/api/metrics/t1_lgbm_spread_v2__h1__10Y"
 - `/api/schemes` 是纯读接口，只返回 `status='active'` 的 `t_scheme_registry` rows；每行只有一个 `target_tenor`，没有 `tenor/tenors`。
 - `/api/backtests/factor-lab` 只把 latest run 映射到 active registry rows；返回的 `scheme_id` 必须为 active registry composite ID，registry 缺行、`paused` 或 `archived` 不得展示。
 - 如果只是 live 方案，`/api/metrics/{registry_scheme_id}` 能返回月度指标、汇总指标和逐日样本；`/api/metrics/{base_scheme_id}`、`paused/archived` registry ID 或 `?tenor=...` 都不是合法入口。
+- `/api/predictions?scheme_id={registry_scheme_id}` 能返回该业务方案的底层预测明细；`/api/predictions?scheme_id={base_scheme_id}`、无 `scheme_id` 或 `?tenor=...` 都不是合法入口。
 - 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 

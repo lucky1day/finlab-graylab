@@ -333,31 +333,39 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
 
 def list_predictions(
     engine: Engine,
-    scheme_id: str | None = None,
-    tenor: str | None = None,
+    scheme_id: str,
     start_date: str | None = None,
     end_date: str | None = None,
     limit: int = 200,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """分页返回预测明细。"""
+    """分页返回单个 active registry 业务方案的预测明细。"""
+    if not scheme_id:
+        raise LookupError("registry scheme_id is required")
+    registry_row = _registry_scheme_row(engine, scheme_id)
+    base_scheme_id = str(registry_row["base_scheme_id"])
+    target_tenor = str(registry_row["target_tenor"])
+    horizon = int(registry_row["horizon"])
     target_labels = _target_labels(engine)
-    filters = []
-    params: dict[str, Any] = {"limit": min(max(limit, 1), 1000), "offset": max(offset, 0)}
-    if scheme_id:
-        filters.append("scheme_id = :scheme_id")
-        params["scheme_id"] = scheme_id
-    if tenor:
-        filters.append("target_tenor = :tenor")
-        params["tenor"] = tenor
+    filters = [
+        "scheme_id = :base_scheme_id",
+        "target_tenor = :target_tenor",
+        "horizon = :horizon",
+    ]
+    params: dict[str, Any] = {
+        "base_scheme_id": base_scheme_id,
+        "target_tenor": target_tenor,
+        "horizon": horizon,
+        "limit": min(max(limit, 1), 1000),
+        "offset": max(offset, 0),
+    }
     if start_date:
         filters.append("predict_date >= :start_date")
         params["start_date"] = start_date
     if end_date:
         filters.append("predict_date <= :end_date")
         params["end_date"] = end_date
-    where_sql = ("WHERE " + " AND ".join(filters)) if filters else ""
-    full_where = ("WHERE " + " AND ".join(filters) if filters else "")
+    full_where = "WHERE " + " AND ".join(filters)
     count_sql = text(f"SELECT COUNT(*) FROM t_scheme_predictions {full_where}")
     data_sql = text(
         f"""
@@ -379,7 +387,8 @@ def list_predictions(
         "offset": params["offset"],
         "items": [
             {
-                "scheme_id": row["scheme_id"],
+                "scheme_id": scheme_id,
+                "base_scheme_id": row["scheme_id"],
                 "target_tenor": row["target_tenor"],
                 "target_label": _target_label(row["target_tenor"], target_labels),
                 "horizon": row["horizon"],
