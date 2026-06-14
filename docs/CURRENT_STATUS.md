@@ -7,6 +7,7 @@
 > 2026-06-14 指标口径已统一：预测为“平”的样本计入 `samples` / `sample_count` 和方向分布，但不进入整体准确率、上涨/下跌准确率、上涨/下跌召回率等任何指标分母；平台新增 `metric_samples` / `metric_sample_count` 表达真实指标分母，前端准确率括号展示 `correct/metric_samples`，样本数列仍展示总样本数；每日/周度验证明细中预测为“平”的行结果列展示 `-`。
 > 2026-06-14 回测前端指标事实源已收敛：`/api/backtests/factor-lab` 只从 latest run 的 `t_backtest_predictions` 明细动态聚合月度指标和 summary；正常 backtest runner 不再写独立月度指标汇总，后端也不再暴露旧月度汇总读入口。latest run 缺少回测明细时接口 fail-closed。
 > 2026-06-14 benchmark 对齐口径已明确：原始算法 benchmark 中的 `T/date/predict_date` 表示 source T / 预测站位日，进入平台后必须对齐数据库明细的 `feature_date`，不是对齐实盘语义下的 `predict_date`。若 benchmark 样本的 `target_date` 已进入灰度/实盘观察区，则与 `t_scheme_predictions.feature_date` 对齐；仍在历史回测区间的样本与 `t_backtest_predictions.feature_date` 对齐。
+> 2026-06-14 `t1_daily` / `t5_daily` 已重建严格逐方案 benchmark baseline：根目录 `benchmarks/model_muti_0529/` 保留为批次级 canonical 输入归档，真正供 CompareGate 使用的 original/current 文件位于 `schemes/{scheme_id}/benchmarks/`；字段固定为 `feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`。`t1_daily` 为 664 行、仅含 `5Y/10Y`；`t5_daily` 为 1312 行、含 `3Y/5Y/7Y/10Y`；两者已从旧的 `PASS_WITH_LEGACY_SAMPLE_LIMITATIONS` 升级为严格 `PASS`。
 
 ## 总览
 

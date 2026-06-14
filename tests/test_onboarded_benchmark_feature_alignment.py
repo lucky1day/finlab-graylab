@@ -33,8 +33,8 @@ class OnboardedBenchmarkFeatureAlignmentTests(unittest.TestCase):
         self.assertEqual(conclusions["weekly_5y_direct_0529"], "PASS")
         self.assertEqual(conclusions["weekly_7y_cross_d_overlay_0529"], "PASS")
         self.assertEqual(conclusions["weekly_10y_d_overlay_0529"], "PASS")
-        self.assertEqual(conclusions["t5_daily"], "PASS_WITH_LEGACY_SAMPLE_LIMITATIONS")
-        self.assertEqual(conclusions["t1_daily"], "PASS_WITH_LEGACY_SAMPLE_LIMITATIONS")
+        self.assertEqual(conclusions["t5_daily"], "PASS")
+        self.assertEqual(conclusions["t1_daily"], "PASS")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -422,10 +422,10 @@ def _scheme_conclusion(report: dict[str, Any]) -> str:
         or report["duplicate_conflicts"]
         or report["missing_database_rows"]
         or report["unexpected_database_multiples"]
+        or any(count for count in report["excluded"].values())
+        or report["legacy_rows_without_target_date"]
     ):
         return "FAIL"
-    if any(count for count in report["excluded"].values()) or report["legacy_rows_without_target_date"]:
-        return "PASS_WITH_LEGACY_SAMPLE_LIMITATIONS"
     return "PASS"
 
 

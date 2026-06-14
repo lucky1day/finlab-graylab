@@ -77,7 +77,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S1 通过 |
-| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **静态基准文件**：入库前固化的基准输出（如 `benchmarks/{benchmark_id}/*.csv` 或预测结果表），含逐样本 source T（字段可为 `feature_date/source_t`，历史旧列名 `predict_date/date` 也只按 source T 解释）、`target_date`、`tenor(or target_tenor)`、`direction(or predicted_direction)` |
+| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **逐方案静态基准文件**：入库前固化的基准输出，必须落在 `schemes/{scheme_id}/benchmarks/`，含逐样本 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction(or predicted_direction)`、`confidence`。根目录 `benchmarks/{benchmark_id}/` 只表示批次级 canonical 输入归档，不能直接作为逐方案 CompareGate baseline。 |
 | **成功判定** | ①或②至少存在其一，且能定位到具体文件/模块路径 |
 | **成功→去向** | 进入 S3（记录采用的是脚本复现还是静态基准） |
 | **失败判定** | 两种形态都不存在，或存在但无法定位/不含逐样本方向 |
@@ -92,7 +92,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S2 通过，已确定版本回测定义形态 |
-| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`。<br>**形态②（静态）**：直接读入库前静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `feature_date(or source_t)/target_date/tenor(or target_tenor)/predicted_direction/confidence`）。若原始文件只有历史列名 `predict_date/date`，转换时必须重命名或标注为 source T / `feature_date` |
+| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`，并同步生成 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv`。<br>**形态②（静态）**：直接读入库前逐方案静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `feature_date/target_date/target_tenor/horizon/predicted_direction/confidence`）。若历史归档原始文件只有 `predict_date/date/tenor` 等旧列名，必须先通过受控重建脚本产出新格式逐方案 benchmark；不得让 CompareGate 对 `benchmark_required=true` 的方案静默回退到旧列名。 |
 | **成功判定** | 基准序列成功生成、样本数 > 0、含必需字段 |
 | **成功→去向** | 进入 S4 |
 | **失败判定** | 原始脚本报错跑不出、或静态文件损坏/字段缺失 |

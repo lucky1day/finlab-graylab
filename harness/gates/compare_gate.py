@@ -15,6 +15,7 @@ from harness.result import Evidence, GateResult, GateStatus
 DIRECTION_MATCH_RATE_REQUIRED = 1.0
 MAX_CONFIDENCE_ABS_DIFF = 1e-8
 METRIC_ACCURACY_ABS_DIFF = 0.001
+STRICT_PREDICTION_FIELDS = ("feature_date", "target_date", "target_tenor", "horizon", "direction", "confidence")
 
 
 class CompareGate(Gate):
@@ -82,7 +83,7 @@ class CompareGate(Gate):
         comparison: dict[str, Any] = {}
 
         if sample_path.exists():
-            pred_diff = _compare_predictions(original_rows, current_rows)
+            pred_diff = _compare_predictions(original_rows, current_rows, strict=benchmark_required)
             comparison["predictions"] = pred_diff
             evidence.append(Evidence("total_record_count_original", pred_diff["total_original"]))
             evidence.append(Evidence("total_record_count_current", pred_diff["total_current"]))
@@ -91,7 +92,14 @@ class CompareGate(Gate):
             evidence.append(Evidence("extra_keys", pred_diff["extra_keys"]))
             evidence.append(Evidence("max_confidence_abs_diff", pred_diff["max_confidence_abs_diff"]))
             evidence.append(Evidence("mean_confidence_abs_diff", pred_diff["mean_confidence_abs_diff"]))
+            evidence.append(Evidence("strict_prediction_key", benchmark_required))
+            evidence.append(Evidence("validation_error_count", len(pred_diff["validation_errors"])))
 
+            if pred_diff["validation_errors"]:
+                errors.append(
+                    "missing required benchmark columns/values: "
+                    f"{len(pred_diff['validation_errors'])}"
+                )
             if pred_diff["total_current"] != pred_diff["total_original"]:
                 errors.append(
                     f"record count mismatch: original={pred_diff['total_original']}, "
@@ -159,7 +167,9 @@ def _read_predictions_csv(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in csv.DictReader(handle)]
 
 
-def _row_key(row: dict[str, Any]) -> tuple[str, str]:
+def _row_key(row: dict[str, Any], *, strict: bool = False) -> tuple[str, ...]:
+    if strict:
+        return tuple(str(row.get(key) or "").strip() for key in ("feature_date", "target_date", "target_tenor", "horizon"))
     date = str(row.get("predict_date") or row.get("date") or "").strip()
     tenor = str(row.get("tenor") or "").strip()
     return date, tenor
@@ -182,9 +192,12 @@ def _row_confidence(row: dict[str, Any]) -> float | None:
 def _compare_predictions(
     original: list[dict[str, Any]],
     current: list[dict[str, Any]],
+    *,
+    strict: bool = False,
 ) -> dict[str, Any]:
-    original_map = {_row_key(row): row for row in original}
-    current_map = {_row_key(row): row for row in current}
+    validation_errors = _validate_strict_prediction_rows("original", original) + _validate_strict_prediction_rows("current", current) if strict else []
+    original_map = {_row_key(row, strict=strict): row for row in original}
+    current_map = {_row_key(row, strict=strict): row for row in current}
 
     original_keys = set(original_map)
     current_keys = set(current_map)
@@ -234,8 +247,18 @@ def _compare_predictions(
         "direction_match_rate": rate,
         "max_confidence_abs_diff": max_conf_diff,
         "mean_confidence_abs_diff": mean_conf_diff,
+        "validation_errors": validation_errors,
         "per_key": per_key,
     }
+
+
+def _validate_strict_prediction_rows(source: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=2):
+        missing = [field for field in STRICT_PREDICTION_FIELDS if str(row.get(field) or "").strip() == ""]
+        if missing:
+            errors.append({"source": source, "row_number": index, "missing": missing})
+    return errors
 
 
 def _compare_metrics(original: Any, current: Any) -> list[dict[str, Any]]:

@@ -356,16 +356,26 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 ### Step 5a: Benchmark Sample 准备（为 CompareGate 提供对比基准）
 
-CompareGate 需要四份 benchmark 样本文件来验证平台改造后的输出与原始算法是否一致。放在 `schemes/{scheme_id}/benchmarks/` 目录下：
+CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输出与原始算法是否一致。它们必须放在 `schemes/{scheme_id}/benchmarks/` 目录下；根目录 `benchmarks/{benchmark_id}/` 只用于保存批次级 canonical 输入归档，例如 `benchmarks/model_muti_0529/daily_output.csv`，不能把它当作逐方案 CompareGate baseline。
 
 | 文件 | 内容 |
 |------|------|
-| `original_predictions_sample.csv` | 原始算法的预测样本。日期列表达 source T / 平台 `feature_date`；新增文件应显式写 `feature_date` 或 `source_t`，历史列名 `predict_date/date` 仅作 source T 解释。至少包含 `feature_date(or source_t), target_date, tenor(or target_tenor), direction, confidence`；周度必须额外保留 `feature_week_id` |
+| `original_predictions_sample.csv` | 原始算法的预测样本。`benchmark_required=true` 时必须使用严格字段：`feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`；周度还必须能保留或映射 `feature_week_id`。文件名虽保留 `sample`，内容应覆盖原始 benchmark 全量可比较行，不再只放 200 行抽样。 |
 | `original_backtest_summary.json` | 原始算法的月度指标摘要 |
 | `current_predictions_sample.csv` | 当前平台输出的预测样本（字段与 original 同口径，内容应一致） |
 | `current_backtest_summary.json` | 当前平台的月度指标摘要（与 original 同口径，内容应一致） |
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
+
+`benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence` 任一字段或值时，CompareGate 必须 fail-closed。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
+
+日频 0529 批次的 `t1_daily` / `t5_daily` 已使用受控脚本从原始算法回测口径重建严格 baseline：
+
+```bash
+conda run -n bond_factor_lab_service python scripts/rebuild_daily0529_scheme_benchmarks.py \
+  --scheme-id t1_daily \
+  --scheme-id t5_daily
+```
 
 如果方案已有历史回测数据写入 `t_backtest_*` 表，可以用以下脚本从数据库提取样本。必须显式指定 `--run-id`，或同时指定 `--scheme-id --benchmark-id --data-source`，避免把多个 benchmark 或旧 run 混成一份 CompareGate 基准：
 
