@@ -124,6 +124,7 @@ class FactorLabRankingTests(unittest.TestCase):
               overall: 80,
               correct: 8,
               samples: 10,
+              metricSamples: 10,
               upPrecision: 75,
               downPrecision: 70
             };
@@ -211,9 +212,9 @@ class FactorLabRankingTests(unittest.TestCase):
         result = _run_factor_lab_hook(
             """
             const schemes = [
-              { id: "a", monthlyRows: [{ month: "2025-01", samples: 10, correct: 6, overall: 60, upPrecision: 50, downPrecision: 70 }] },
-              { id: "b", monthlyRows: [{ month: "2025-01", samples: 40, correct: 28, overall: 70, upPrecision: 75, downPrecision: 60 }] },
-              { id: "c", monthlyRows: [{ month: "2025-01", samples: 30, correct: 18, overall: 60, upPrecision: 90, downPrecision: 30 }] }
+              { id: "a", monthlyRows: [{ month: "2025-01", samples: 10, metricSamples: 10, correct: 6, overall: 60, upPrecision: 50, downPrecision: 70 }] },
+              { id: "b", monthlyRows: [{ month: "2025-01", samples: 40, metricSamples: 40, correct: 28, overall: 70, upPrecision: 75, downPrecision: 60 }] },
+              { id: "c", monthlyRows: [{ month: "2025-01", samples: 30, metricSamples: 30, correct: 18, overall: 60, upPrecision: 90, downPrecision: 30 }] }
             ];
             return {
               overallDesc: hooks.sortRankingSchemes(schemes, "overall", "desc").map((item) => item.id),
@@ -281,6 +282,49 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertAlmostEqual(result["monthlyMetric"]["overall"], 3 / 7 * 100)
         self.assertIn("3/7", result["rowHtml"])
         self.assertNotIn("3/8", result["rowHtml"])
+
+    def test_monthly_metric_without_metric_denominator_sources_fails_closed(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            try {
+              hooks.aggregateScheme({
+                id: "bad-monthly-row",
+                monthlyRows: [{
+                  month: "2025-05",
+                  samples: 8,
+                  correct: 3,
+                  overall: 37.5
+                }],
+                dailyRowsByMonth: {}
+              });
+              return { ok: true, message: "" };
+            } catch (error) {
+              return { ok: false, message: String(error && error.message || error) };
+            }
+            """
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("metricSamples", result["message"])
+
+    def test_ranking_row_without_metric_samples_fails_closed(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            try {
+              hooks.renderSchemeRankingRowForTest(
+                { id: "bad-render-row", name: "bad-render-row" },
+                0,
+                { samples: 8, correct: 3, overall: 37.5, upPrecision: 50, downPrecision: 25 }
+              );
+              return { ok: true, message: "" };
+            } catch (error) {
+              return { ok: false, message: String(error && error.message || error) };
+            }
+            """
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("metricSamples", result["message"])
 
     def test_flat_prediction_daily_result_displays_dash(self) -> None:
         result = _run_factor_lab_hook(

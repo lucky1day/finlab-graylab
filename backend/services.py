@@ -800,15 +800,12 @@ def _backtest_frontend_monthly_metrics(engine: Engine, run_id: int) -> dict[str,
     for row in rows:
         actual_dist = _json_value(row["actual_dist"], {})
         predicted_dist = _json_value(row["predicted_dist"], {})
-        predicted_dist_total = (
-            int(predicted_dist.get("up") or 0)
-            + int(predicted_dist.get("down") or 0)
-            + int(predicted_dist.get("flat") or 0)
-        )
-        metric_samples = (
-            int(predicted_dist.get("up") or 0) + int(predicted_dist.get("down") or 0)
-            if predicted_dist_total > 0
-            else int(row["sample_count"] or 0)
+        metric_samples = _metric_samples_from_predicted_dist(
+            predicted_dist,
+            context=(
+                f"backtest monthly row run_id={run_id} "
+                f"target_tenor={row['target_tenor']} month={row['month']}"
+            ),
         )
         metric_predicted_dist = {
             "up": int(predicted_dist.get("up") or 0),
@@ -960,15 +957,21 @@ def _metric_samples_from_monthly_row(row: dict[str, Any]) -> int:
     predicted_dist = _json_value(row.get("metric_predicted_dist"), {})
     if not predicted_dist:
         predicted_dist = _json_value(row.get("predicted_dist"), {})
-    if predicted_dist:
-        dist_total = (
-            int(predicted_dist.get("up") or 0)
-            + int(predicted_dist.get("down") or 0)
-            + int(predicted_dist.get("flat") or 0)
+    return _metric_samples_from_predicted_dist(
+        predicted_dist,
+        context=f"monthly metric row month={row.get('month')}",
+    )
+
+
+def _metric_samples_from_predicted_dist(predicted_dist: dict[str, Any], *, context: str) -> int:
+    pred_up = int(predicted_dist.get("up") or 0)
+    pred_down = int(predicted_dist.get("down") or 0)
+    pred_flat = int(predicted_dist.get("flat") or 0)
+    if pred_up + pred_down + pred_flat <= 0:
+        raise ValueError(
+            f"{context} cannot infer metric_samples: predicted_dist with up/down/flat counts is required"
         )
-        if dist_total > 0:
-            return int(predicted_dist.get("up") or 0) + int(predicted_dist.get("down") or 0)
-    return int(row.get("samples") or 0)
+    return pred_up + pred_down
 
 
 def _true_positive_from_metrics(

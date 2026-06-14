@@ -122,6 +122,7 @@ target_date  = T + horizon
 - 月度表“样本数”列展示 `samples` / `sample_count`，包含预测为平的交易日或预测周。
 - 月度表、候选排行、趋势图和汇总卡中的整体准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率均使用 `metric_samples` 和 `metric_*_dist` 口径，排除预测为平的样本。
 - 准确率括号展示 `correct/metric_samples`；不得回退成 `correct/samples`。
+- 如果读取侧没有 `metric_samples`，且无法从 `predicted_dist` / `metric_predicted_dist` 推导有方向样本数，必须直接报错；不得用 `samples` 作为兼容兜底。
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
 
