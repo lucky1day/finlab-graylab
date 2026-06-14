@@ -256,7 +256,7 @@
   var factorLabRemoteLoading = false;
   var factorLabRefreshTimer = null;
   var factorLabApiError = "";
-  var factorLabDataMode = "mock";
+  var factorLabDataMode = "loading";
   var DEFAULT_SCHEME_DEPLOYMENT_DATE = "2026/06/01";
 
   function clampPercent(value) {
@@ -469,14 +469,7 @@
     return schemes;
   }
 
-  var factorTaskSchemes = {};
-  factorTargets.forEach(function (target, targetIndex) {
-    factorTaskColumns.forEach(function (column, columnIndex) {
-      var count = 3 + ((targetIndex + columnIndex) % 3);
-      if (target === "3Y" && column.id === "dailyT5") count = 5;
-      factorTaskSchemes[getTaskKey(target, column)] = createTaskSchemes(target, column, count, targetIndex, columnIndex);
-    });
-  });
+  var factorTaskSchemes = initEmptyTaskSchemes();
 
   function initEmptyTaskSchemes() {
     var result = {};
@@ -1240,8 +1233,7 @@
   function getFactorAvailableMonths() {
     var src = factorLabState.dataSource;
     var months = [];
-    // 远程数据已加载时跳过 mock base rows（mock 行无 _source，会污染口径过滤）
-    if (!factorLabRemoteLoaded) {
+    if (factorLabDataMode === "mock") {
       months = factorDailyBaseRows.concat(factorWeeklyBaseRows).reduce(function (result, row) {
         if (src !== "all" && row._source && row._source !== src) return result;
         if (result.indexOf(row.month) === -1) result.push(row.month);

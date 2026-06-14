@@ -111,6 +111,23 @@ def _run_factor_lab_hook(script: str) -> dict:
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_initial_render_does_not_show_mock_candidates_before_api_returns(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              rankingHtml: document.getElementById("factorRankingBody").innerHTML,
+              metaText: document.getElementById("factorRankingMeta").textContent,
+              selectedScheme: hooks.getSelectedScheme()
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "loading")
+        self.assertNotIn("mock", result["rankingHtml"])
+        self.assertNotIn("F-v", result["rankingHtml"])
+        self.assertIsNone(result["selectedScheme"])
+
     def test_candidate_ranking_uses_deployment_date_and_remark_columns(self) -> None:
         html = FRONTEND_INDEX.read_text(encoding="utf-8")
         self.assertIn("<th>部署时间</th>", html)
