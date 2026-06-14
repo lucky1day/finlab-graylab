@@ -44,6 +44,7 @@ from backtests.repository import (
 )
 from shared.artifact_paths import benchmark_input_root
 from shared.input_artifacts import build_daily_input_artifact
+from shared.metrics import direction_dist as shared_direction_dist
 from shared.metrics import direction_metric_block
 
 
@@ -632,12 +633,9 @@ def _frame_profile(df: pd.DataFrame) -> dict[str, Any]:
 
 
 def direction_dist(rows: list[dict[str, Any]], key: str) -> dict[str, int]:
-    return {
-        "up": sum(1 for row in rows if row.get(key) == 1),
-        "down": sum(1 for row in rows if row.get(key) == -1),
-        "flat": sum(1 for row in rows if row.get(key) == 0),
-        "missing": sum(1 for row in rows if row.get(key) is None),
-    }
+    dist = dict(shared_direction_dist(rows, key))
+    dist["missing"] = sum(1 for row in rows if row.get(key) is None)
+    return dist
 
 
 def safe_div(num: int, den: int) -> float | None:

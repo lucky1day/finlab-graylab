@@ -9,6 +9,31 @@ import pandas as pd
 
 
 class BaseRunnerMetricsTests(unittest.TestCase):
+    def test_direction_dist_delegates_up_down_flat_to_shared_helper(self) -> None:
+        from backtests._base_runner import direction_dist as base_direction_dist
+        from shared.metrics import direction_dist as shared_direction_dist
+
+        rows = [
+            {"direction": 1},
+            {"direction": "1"},
+            {"direction": 1.0},
+            {"direction": -1},
+            {"direction": 0},
+            {"direction": None},
+            {},
+            {"direction": 2},
+            {"direction": "bad"},
+        ]
+
+        base_dist = base_direction_dist(rows, "direction")
+        shared_dist = shared_direction_dist(rows, "direction")
+
+        self.assertEqual(
+            {key: base_dist[key] for key in ("up", "down", "flat")},
+            shared_dist,
+        )
+        self.assertEqual(base_dist["missing"], 2)
+
     def test_make_run_output_filters_excluded_target_ranges_and_uses_spec(self) -> None:
         from backtests._base_runner import BacktestSpec, BaseDailyBacktestRunner
 
