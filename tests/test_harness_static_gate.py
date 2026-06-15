@@ -979,6 +979,7 @@ def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_li
         'name: "Demo"',
         'description: "Demo scheme"',
         "horizon: 1",
+        "task_type: T+1",
         'tenors: ["10Y"]',
         "frequency: daily",
         "schedule:",

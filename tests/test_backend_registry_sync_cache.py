@@ -42,6 +42,7 @@ def _write_scheme(root: Path, scheme_id: str, name: str) -> Path:
                 f"name: {name}",
                 "description: Demo",
                 "horizon: 1",
+                "task_type: T+1",
                 'tenors: ["10Y"]',
                 "frequency: daily",
                 "schedule:",
@@ -49,6 +50,9 @@ def _write_scheme(root: Path, scheme_id: str, name: str) -> Path:
                 '  timezone: "Asia/Shanghai"',
                 "entry_point: predict.run",
                 "status: active",
+                "input_spec:",
+                "  data_version: shared_data_service_daily.v1",
+                '  required_columns: ["date", "TB0YWI0C"]',
             ]
         ),
         encoding="utf-8",

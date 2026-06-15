@@ -16,6 +16,7 @@ def _create_weekly_schema(engine) -> None:
                     name TEXT,
                     description TEXT,
                     horizon INTEGER,
+                    task_type TEXT,
                     frequency TEXT,
                     target_tenor TEXT,
                     schedule_cron TEXT,
@@ -81,11 +82,11 @@ def _register_weekly_scheme(engine) -> None:
             text(
                 """
                 INSERT INTO t_scheme_registry
-                    (scheme_id, base_scheme_id, name, description, horizon, frequency, target_tenor,
+                    (scheme_id, base_scheme_id, name, description, horizon, task_type, frequency, target_tenor,
                      schedule_cron, schedule_timezone, status, deployed_at, created_at, updated_at)
                 VALUES
                     ('demo_weekly_scheme__h6__10Y', 'demo_weekly_scheme', 'Demo Weekly', '',
-                     6, 'weekly', '10Y', '30 11 * * 6', 'Asia/Shanghai', 'active',
+                     6, 'weekly_point', 'weekly', '10Y', '30 11 * * 6', 'Asia/Shanghai', 'active',
                      '2026-06-09', '2026-06-09', '2026-06-09')
                 """
             )

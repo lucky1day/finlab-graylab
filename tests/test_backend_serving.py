@@ -17,6 +17,7 @@ def _create_schema(engine) -> None:
                     name TEXT,
                     description TEXT,
                     horizon INTEGER,
+                    task_type TEXT,
                     frequency TEXT,
                     target_tenor TEXT,
                     schedule_cron TEXT,
@@ -86,18 +87,30 @@ def _register_scheme(
     target_tenor: str,
     horizon: int,
     frequency: str = "daily",
+    task_type: str | None = None,
     status: str = "active",
     deployed_at: str | None = "2026-06-09",
 ) -> None:
+    if task_type is None:
+        if frequency == "weekly":
+            task_type = "weekly_point"
+        elif frequency == "monthly":
+            task_type = "monthly"
+        elif horizon == 1:
+            task_type = "T+1"
+        elif horizon == 5:
+            task_type = "T+5"
+        else:
+            task_type = "T+5"
     with engine.begin() as conn:
         conn.execute(
             text(
                 """
                 INSERT INTO t_scheme_registry
-                    (scheme_id, base_scheme_id, name, description, horizon, frequency, target_tenor,
+                    (scheme_id, base_scheme_id, name, description, horizon, task_type, frequency, target_tenor,
                      schedule_cron, schedule_timezone, status, deployed_at)
                 VALUES
-                    (:scheme_id, :base_scheme_id, :scheme_id, '', :horizon, :frequency, :target_tenor,
+                    (:scheme_id, :base_scheme_id, :scheme_id, '', :horizon, :task_type, :frequency, :target_tenor,
                      '3 7 * * 1-5', 'Asia/Shanghai', :status, :deployed_at)
                 """
             ),
@@ -105,6 +118,7 @@ def _register_scheme(
                 "scheme_id": scheme_id,
                 "base_scheme_id": base_scheme_id,
                 "horizon": horizon,
+                "task_type": task_type,
                 "frequency": frequency,
                 "target_tenor": target_tenor,
                 "status": status,

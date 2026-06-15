@@ -17,6 +17,7 @@ def _write_scheme(root: Path, *, scheme_id: str = "demo_daily") -> Path:
                 'name: "Demo"',
                 'description: "Demo scheme"',
                 "horizon: 1",
+                "task_type: T+1",
                 'tenors: ["10Y"]',
                 "frequency: daily",
                 "schedule:",

@@ -36,6 +36,7 @@ def _write_scheme(root: Path, scheme_id: str, frequency: str, status: str, tenor
                 "name: Demo",
                 "description: Demo",
                 "horizon: 1",
+                f"task_type: {'weekly_point' if frequency == 'weekly' else 'T+1'}",
                 f"tenors: {tenors!r}",
                 f"frequency: {frequency}",
                 "schedule:",

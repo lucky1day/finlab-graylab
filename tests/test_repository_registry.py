@@ -49,6 +49,7 @@ class RegistrySyncTests(unittest.TestCase):
             name="Demo Weekly Scheme",
             description="weekly scheme",
             horizon=6,
+            task_type="weekly_point",
             tenors=["10Y"],
             frequency="weekly",
             schedule=SimpleNamespace(cron="30 11 * * 6", timezone="Asia/Shanghai"),
@@ -77,6 +78,7 @@ class RegistrySyncTests(unittest.TestCase):
             name="T5 Daily",
             description="multi tenor daily scheme",
             horizon=5,
+            task_type="T+5",
             tenors=["3Y", "5Y", "7Y", "10Y"],
             frequency="daily",
             schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
@@ -103,6 +105,7 @@ class RegistrySyncTests(unittest.TestCase):
         )
         self.assertEqual({row["base_scheme_id"] for row in rows}, {"t5_daily"})
         self.assertEqual([row["target_tenor"] for row in rows], ["3Y", "5Y", "7Y", "10Y"])
+        self.assertEqual({row["task_type"] for row in rows}, {"T+5"})
         self.assertEqual([row["tenors"] for row in rows], ['["3Y"]', '["5Y"]', '["7Y"]', '["10Y"]'])
 
 

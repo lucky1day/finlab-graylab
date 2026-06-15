@@ -380,6 +380,7 @@ class FactorLabRankingTests(unittest.TestCase):
                   target_tenor: "5Y",
                   target_label: "5Y国债活跃",
                   horizon: 5,
+                  task_type: "T+5",
                   frequency: "daily",
                   deployed_at: "2026-06-04",
                   monthly_metrics: [{
@@ -434,6 +435,7 @@ class FactorLabRankingTests(unittest.TestCase):
                   target_tenor: "5Y",
                   target_label: "5Y国债活跃",
                   horizon: 5,
+                  task_type: "T+5",
                   frequency: "daily",
                   deployed_at: "2026-06-04",
                   monthly_metrics: [{
@@ -709,6 +711,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
+                    task_type: "T+1",
                     frequency: "daily",
                     deployed_at: "2026-06-04"
                   }
@@ -747,6 +750,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
+                    task_type: "T+1",
                     frequency: "daily",
                     status: "complete",
                     deployed_at: "2026-06-04",
@@ -824,6 +828,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "V28日频5Y方案2",
                     status: "active",
                     horizon: 5,
+                    task_type: "T+5",
                     frequency: "daily",
                     deployed_at: "2026-06-04"
                   }
@@ -877,6 +882,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 5,
+                    task_type: "T+5",
                     frequency: "daily",
                     status: "complete",
                     deployed_at: "2026-06-04",
@@ -924,7 +930,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         )
 
         self.assertEqual(result["dataMode"], "merged")
-        self.assertEqual(result["selectedTaskKey"], "5Y|daily|T+5")
+        self.assertEqual(result["selectedTaskKey"], "5Y|T+5")
         self.assertEqual(result["liveSinceDate"], "2026-05-26")
         self.assertEqual(result["phaseRanges"][0]["prediction_phase"], "gray_live")
         self.assertEqual(result["months"], ["2026-04:backtest", "2026-06:live"])
@@ -948,6 +954,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
+                    task_type: "T+1",
                     frequency: "daily",
                     deployed_at: "2026-06-04"
                   }
@@ -983,6 +990,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
+                    task_type: "T+1",
                     frequency: "daily",
                     status: "complete",
                     deployed_at: "2026-06-04",
@@ -1057,6 +1065,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "周度实盘",
                     status: "active",
                     horizon: 6,
+                    task_type: "weekly_point",
                     frequency: "weekly",
                     deployed_at: "2026-06-04",
                     last_run: { date: "2026-06-11", status: "success" }
@@ -1141,6 +1150,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                   name: "T5 3Y",
                   status: "active",
                   horizon: 5,
+                  task_type: "T+5",
                   frequency: "daily",
                   deployed_at: "2026-06-04",
                   last_run: { date: "2026-06-12", status: "success" }
@@ -1152,6 +1162,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                   name: "T5 5Y",
                   status: "active",
                   horizon: 5,
+                  task_type: "T+5",
                   frequency: "daily",
                   deployed_at: "2026-06-04",
                   last_run: { date: "2026-06-12", status: "success" }
@@ -1227,6 +1238,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                   name: "T5 5Y",
                   status: "active",
                   horizon: 5,
+                  task_type: "T+5",
                   frequency: "daily"
                 }
               ],
@@ -1283,6 +1295,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T5 实盘",
                     status: "active",
                     horizon: 5,
+                    task_type: "T+5",
                     frequency: "daily",
                     deployed_at: "2026-06-04",
                     last_run: { date: "2026-06-10", status: "success" }
@@ -1361,6 +1374,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T5 实盘",
                     status: "active",
                     horizon: 5,
+                    task_type: "T+5",
                     frequency: "daily",
                     deployed_at: "2026-06-04",
                     last_run: { date: "2026-05-29", status: "success" }
@@ -1444,6 +1458,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
+                    task_type: "T+1",
                     frequency: "daily",
                     status: "complete",
                     deployed_at: "2026-06-04",
@@ -1510,6 +1525,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     target_tenor: "5Y",
                     target_label: "5Y国债活跃",
                     horizon: 1,
+                    task_type: "T+1",
                     frequency: "daily",
                     status: "complete",
                     monthly_metrics: [],
@@ -1561,6 +1577,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                     name: "T+1 实盘",
                     status: "active",
                     horizon: 1,
+                    task_type: "T+1",
                     frequency: "daily",
                     deployed_at: "2026-06-04"
                   }

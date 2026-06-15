@@ -11,6 +11,7 @@ def _base_config() -> dict:
         "name": "Demo",
         "description": "Demo scheme",
         "horizon": 5,
+        "task_type": "T+5",
         "tenors": ["10Y"],
         "frequency": "daily",
         "schedule": {"cron": "25 9 * * 1-5", "timezone": "Asia/Shanghai"},
@@ -139,6 +140,7 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
         config["scheme_id"] = "demo_weekly"
         config["frequency"] = "weekly"
         config["horizon"] = 6
+        config["task_type"] = "weekly_point"
         config["target_rule"] = "next_week_last_trading_day_vs_current_week_last_trading_day"
         config["input_spec"] = {
             "data_version": "shared_data_service_weekly.v1",
@@ -160,6 +162,7 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
         config["scheme_id"] = "demo_weekly"
         config["frequency"] = "weekly"
         config["horizon"] = 6
+        config["task_type"] = "weekly_point"
         config["target_rule"] = "next_week_last_trading_day_vs_current_week_last_trading_day"
         config["input_spec"] = {
             "data_version": "shared_data_service_weekly.v1",

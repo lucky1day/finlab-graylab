@@ -51,6 +51,7 @@ def _write_scheme_config(
         "name: Demo Daily",
         "description: Demo scheme",
         "horizon: 1",
+        "task_type: T+1",
         'tenors: ["10Y"]',
         f"frequency: {frequency}",
         "schedule:",
