@@ -16,32 +16,37 @@
 
 ## 1. 新增方案不改框架
 
+普通方案入库的默认边界是：只接入一个新的算法方案，不顺手改平台能力。开工前必须先确认本次任务属于普通方案入库，还是平台能力改造 + 方案入库。
+
 普通新增方案只能新增或修改这些位置：
 
 - `schemes/{scheme_id}/`
+- `schemes/{scheme_id}/benchmarks/`
 - `backtests/{scheme_id}_reproduction.py`
 - `tests/test_{scheme_id}.py`
 - `tests/test_{scheme_id}_backtest.py`
-- `docs/CURRENT_STATUS.md`
+- 只服务该方案、且命名含 `{scheme_id}` 的测试文件
+- `docs/CURRENT_STATUS.md` 中该方案的状态记录
+- `docs/legacy_sources/` 中该方案的来源归档或说明
 
-除非用户明确要求做平台改造，否则禁止修改：
+普通新增方案不得修改这些位置或语义：
 
-- `scheduler/`
-- `backend/`
-- `harness/`
-- `shared/data_service.py`
-- `shared/input_artifacts.py`
-- `shared/calendar_service.py`
-- `shared/models.py`
-- `shared/versioning.py`
-- `backtests/_base_runner.py`
-- `backtests/repository.py`
-- `frontend/`
-- `migrations/`
-- `deploy/`
-- `pyproject.toml`
+- 已有方案目录：`schemes/{other_scheme_id}/`
+- 公共输入层：`shared/data_service.py`、`shared/input_artifacts.py`
+- 公共日历层：`shared/calendar_service.py`
+- 公共模型与版本层：`shared/models.py`、`shared/versioning.py`
+- 调度和写库层：`scheduler/`
+- 后端 API 和前端服务层：`backend/`
+- 横切 gate 和契约层：`harness/`
+- 公共回测框架：`backtests/_base_runner.py`、`backtests/repository.py`
+- 前端：`frontend/`
+- DB schema / 迁移：`migrations/`
+- 部署配置：`deploy/`
+- 项目依赖和运行环境：`pyproject.toml`、conda 环境定义、launchd plist
 
-如果新增方案看起来必须改框架层，先停下来说明原因；不要顺手改。
+如果新方案看起来必须改上述公共层、DB schema、API、前端列、registry 规则、`task_type` 枚举、公共日历或公共输入 artifact，立即停止普通入库流程。这类变更必须先被定义为平台能力改造，单独评审、单独分支、单独验证；平台改造完成并合入开发分支后，再重新按本 SOP 入库方案。
+
+不得为了让单个方案通过 gate 而临时放宽公共层、添加静默 fallback、修改已有方案输出、修改公共 benchmark 规则，或在 adapter/backtest runner 中绕过统一输入和写库边界。
 
 ## 2. 三条平台不变量
 

@@ -112,6 +112,16 @@
 | `backtests/` | 历史复现和 `t_backtest_*` 写入 | 写实盘预测表 |
 | `scripts/` | 审计、对比、受控 admin 命令 | 作为普通方案运行入口绕过 SOP |
 
+### 1.2 入库改动边界检查
+
+执行普通方案入库前，必须先做一次 diff 边界判断：
+
+- 允许改动：`schemes/{scheme_id}/`、`schemes/{scheme_id}/benchmarks/`、`backtests/{scheme_id}_reproduction.py`、该方案专属测试、该方案来源归档和 `docs/CURRENT_STATUS.md` 中对应状态记录。
+- 默认禁止：`shared/`、`scheduler/`、`backend/`、`harness/`、`frontend/`、`migrations/`、`deploy/`、公共 backtest runner、已有方案目录、依赖和运行环境配置。
+- 需要升级评审：新增 `task_type`、新增前端任务列、新增 DB 字段、改变 registry composite ID 规则、改变日历/actual/输入 artifact 口径、改变 API 契约、或让多个方案共享的新公共能力。
+
+一旦命中“需要升级评审”，当前任务不再是普通方案入库。必须先把平台能力改造拆成独立开发任务，在开发分支完成测试、API/前端验证和文档更新；确认合入后，再用新的公共能力接入方案。禁止把公共层改动夹带在单个方案入库提交里。
+
 ## 2. 命名规范
 
 `scheme_id` 使用小写 snake_case，建议包含 `task_type` / 预测语义、模型或特征版本:
@@ -701,6 +711,7 @@ LIMIT 10;
 
 新增方案合入前必须确认:
 
+- [ ] Git diff 只包含本方案目录、本方案回测 runner、本方案测试、benchmark 和必要文档；若包含公共层、前端、API、DB schema 或已有方案改动，已按平台能力改造单独评审并验证。
 - [ ] `scheme_id` 与目录名一致，且没有复用旧方案 ID。
 - [ ] `name` 能表达算法来源、`task_type` / 预测语义、模型类型和版本。
 - [ ] `config.yaml` 可被 `scheduler.discovery` 发现。
