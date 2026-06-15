@@ -1,8 +1,10 @@
-# 已入库方案 Benchmark 与数据库明细对齐验证结论
+# 已入库方案 Benchmark 与数据库明细对齐验证结论（历史归档）
 
 **验证日期**: 2026-06-14
 **验证分支**: `codex/audit-bugfixes-20260613`
-**验证测试**: `tests/test_onboarded_benchmark_feature_alignment.py`
+**归档状态**: 历史一次性 DB 现场审计记录，不再作为当前常规 `unittest` 入口。
+
+> 说明：原验证入口 `tests/test_onboarded_benchmark_feature_alignment.py` 依赖当时的 active 方案数量、benchmark 文件和数据库现场状态。随着 7Y 入库、weekly 手动补平、回测 run 清理和 `task_type` 契约升级，该测试已不适合作为长期可复用测试，已从 `tests/` 中移除。本文仅保留 2026-06-14 当天的验证口径和结论，后续当前状态校验应使用 harness gate、方案 benchmark 回归测试和 API/前端契约测试。
 
 ## 1. 验证口径
 
@@ -26,7 +28,7 @@
 
 ## 2. 总体验证结果
 
-测试命令：
+当时测试命令（归档留痕；对应测试文件已移除，不再作为当前命令使用）：
 
 ```bash
 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m unittest tests.test_onboarded_benchmark_feature_alignment -v
