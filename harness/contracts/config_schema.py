@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 SCHEME_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 ALLOWED_TENORS = {"1Y", "3Y", "5Y", "7Y", "10Y"}
 ALLOWED_FREQUENCIES = {"daily", "weekly", "monthly"}
+ALLOWED_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 ALLOWED_STATUS = {"active", "paused"}
+TASK_TYPE_ERROR = "task_type must be one of T+1, T+5, weekly_point, weekly_average, monthly"
 
 
 def validate_config(raw: dict, dirname: str) -> list[str]:
@@ -44,6 +46,9 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
     frequency = raw.get("frequency")
     if frequency not in ALLOWED_FREQUENCIES:
         errors.append("frequency must be one of daily, weekly, monthly")
+
+    if raw.get("task_type") not in ALLOWED_TASK_TYPES:
+        errors.append(TASK_TYPE_ERROR)
 
     schedule = raw.get("schedule")
     if not isinstance(schedule, dict):

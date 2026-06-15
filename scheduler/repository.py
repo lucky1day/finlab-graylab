@@ -42,10 +42,10 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
     sql = text(
         """
         INSERT INTO t_scheme_registry
-            (scheme_id, base_scheme_id, name, description, horizon, tenors, frequency, target_tenor,
+            (scheme_id, base_scheme_id, name, description, horizon, task_type, tenors, frequency, target_tenor,
              schedule_cron, schedule_timezone, status, deployed_at)
         VALUES
-            (:scheme_id, :base_scheme_id, :name, :description, :horizon, CAST(:tenors AS JSON), :frequency,
+            (:scheme_id, :base_scheme_id, :name, :description, :horizon, :task_type, CAST(:tenors AS JSON), :frequency,
              :target_tenor, :schedule_cron, :schedule_timezone, :status,
              IF(:status = 'active', CURRENT_DATE, NULL))
         ON DUPLICATE KEY UPDATE
@@ -56,6 +56,7 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                     name <=> VALUES(name)
                     AND description <=> VALUES(description)
                     AND horizon <=> VALUES(horizon)
+                    AND task_type <=> VALUES(task_type)
                     AND CAST(tenors AS CHAR) <=> CAST(VALUES(tenors) AS CHAR)
                     AND frequency <=> VALUES(frequency)
                     AND target_tenor <=> VALUES(target_tenor)
@@ -70,6 +71,7 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
             name = VALUES(name),
             description = VALUES(description),
             horizon = VALUES(horizon),
+            task_type = VALUES(task_type),
             tenors = VALUES(tenors),
             frequency = VALUES(frequency),
             target_tenor = VALUES(target_tenor),
@@ -93,6 +95,7 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                     "name": cfg.name,
                     "description": cfg.description,
                     "horizon": cfg.horizon,
+                    "task_type": cfg.task_type,
                     "tenors": json.dumps([target_tenor], ensure_ascii=False),
                     "frequency": cfg.frequency,
                     "target_tenor": target_tenor,

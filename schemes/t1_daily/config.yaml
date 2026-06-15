@@ -2,6 +2,7 @@ scheme_id: t1_daily
 name: "0529原始T1-LGBM滚动基准"
 description: "0529 T+1 日频 LightGBM 滚动训练基准方案；adapter 只改输入输出，不改核心算法。"
 horizon: 1
+task_type: "T+1"
 tenors: ["5Y", "10Y"]
 frequency: daily
 schedule:

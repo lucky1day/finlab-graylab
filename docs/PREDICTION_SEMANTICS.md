@@ -165,6 +165,8 @@ target_date  = T + horizon
 
 ## 7. 前端展示规则
 
+前端任务格子由 `target_tenor + task_type` 定义。`task_type` 是业务任务类型，不是输入频率，也不是 `horizon` 的别名；固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`。`horizon` 继续用于 `target_date = feature_date + horizon` 和 actual join，`frequency` 继续用于输入与 actuals 类型判断；前端分列只能读取 registry/API 返回的 `task_type`。缺失或非法 `task_type` 必须 fail-closed，不允许根据 `frequency/horizon` 猜列。
+
 前端可以展示灰度实盘和正式实盘，但必须能区分 `prediction_phase`：
 
 - `gray_live`：灰度实盘观察。

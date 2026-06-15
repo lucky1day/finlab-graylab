@@ -35,6 +35,7 @@ class SchemeConfig:
     name: str
     description: str
     horizon: int
+    task_type: str
     tenors: list[str]
     frequency: str
     schedule: SchemeSchedule
@@ -77,6 +78,7 @@ def load_scheme_config(config_path: Path) -> SchemeConfig:
         name=str(raw["name"]),
         description=str(raw.get("description", "")),
         horizon=int(raw["horizon"]),
+        task_type=str(raw["task_type"]),
         tenors=[str(item) for item in tenors],
         frequency=str(raw["frequency"]),
         schedule=SchemeSchedule(

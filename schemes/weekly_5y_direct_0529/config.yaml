@@ -2,6 +2,7 @@ scheme_id: weekly_5y_direct_0529
 name: "0529周度5Y独立规则投票"
 description: "0529 周频5Y方向预测，3规则加权投票（7Y-10Y利差2周动量+5Y-10Y利差4周反转+1Y 4周动量），固定权重1.0，平局预测下行"
 horizon: 6
+task_type: weekly_point
 tenors: ["5Y"]
 frequency: weekly
 schedule:

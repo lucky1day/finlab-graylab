@@ -71,6 +71,8 @@
 
 ## 3.1 指标统计和前端明细口径
 
+- 前端任务格子由 `target_tenor + task_type` 定义，`task_type` 只允许 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`。
+- `frequency` 和 `horizon` 仍分别表达输入频率和目标日计算规则，但前端不得再用它们推断任务格子列。
 - `predicted_direction=0` 表示预测为“平”或无方向信号。
 - 月度样本数必须包含预测为“涨/跌/平”的全部已验证交易日或预测周。
 - 所有准确率、precision、recall 指标必须排除预测为“平”的样本；分母使用 `metric_samples` 或 `metric_*_dist`，不得使用总样本数 `samples`。

@@ -28,6 +28,7 @@ DEFAULT_TARGET_LABELS = {
     "10Y": "10Y国债活跃",
 }
 DEFAULT_TARGET_ORDER = ["3Y", "5Y", "7Y", "10Y"]
+ALLOWED_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 BACKTEST_BENCHMARK_LABELS = {
     "model_muti_0529": "0529历史基准",
 }
@@ -55,6 +56,19 @@ def _require_deployed_at(row: Any, *, context: str) -> str:
         f"scheme_id={row['scheme_id']} "
         f"base_scheme_id={row['base_scheme_id']} "
         f"target_tenor={row['target_tenor']}"
+    )
+
+
+def _require_task_type(row: Any, *, context: str) -> str:
+    task_type = str(row["task_type"] or "").strip()
+    if task_type in ALLOWED_TASK_TYPES:
+        return task_type
+    raise ValueError(
+        f"{context} invalid task_type: "
+        f"scheme_id={row['scheme_id']} "
+        f"base_scheme_id={row['base_scheme_id']} "
+        f"target_tenor={row['target_tenor']} "
+        f"task_type={task_type or None}"
     )
 
 
@@ -254,7 +268,7 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
     """
     sql = text(
         """
-        SELECT r.scheme_id, r.base_scheme_id, r.name, r.description, r.horizon, r.frequency,
+        SELECT r.scheme_id, r.base_scheme_id, r.name, r.description, r.horizon, r.task_type, r.frequency,
                r.target_tenor, r.schedule_cron, r.schedule_timezone, r.status,
                r.deployed_at, r.created_at, r.updated_at
         FROM t_scheme_registry r
@@ -271,6 +285,7 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
             "name": row["name"],
             "description": row["description"],
             "horizon": row["horizon"],
+            "task_type": _require_task_type(row, context="active registry row"),
             "frequency": row["frequency"],
             "target_tenor": row["target_tenor"],
             "schedule_cron": row["schedule_cron"],
@@ -291,6 +306,7 @@ def _scheme_meta_from_config(cfg: Any) -> dict[str, Any]:
         "name": cfg.name,
         "description": cfg.description,
         "horizon": cfg.horizon,
+        "task_type": cfg.task_type,
         "frequency": cfg.frequency,
         "schedule_cron": cfg.schedule.cron,
         "schedule_timezone": cfg.schedule.timezone,
@@ -302,7 +318,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
     """只读获取回测矩阵所需方案元数据，不触发 registry 同步。"""
     sql = text(
         """
-        SELECT scheme_id, base_scheme_id, name, description, horizon, frequency,
+        SELECT scheme_id, base_scheme_id, name, description, horizon, task_type, frequency,
                target_tenor, schedule_cron, schedule_timezone, status,
                deployed_at, created_at, updated_at
         FROM t_scheme_registry
@@ -327,6 +343,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
             "name": row["name"],
             "description": row["description"],
             "horizon": row["horizon"],
+            "task_type": _require_task_type(row, context="active registry row"),
             "frequency": row["frequency"],
             "target_tenor": row["target_tenor"],
             "schedule_cron": row["schedule_cron"],
@@ -474,7 +491,7 @@ def _registry_scheme_row(engine: Engine, scheme_id: str) -> dict[str, Any]:
     """读取单个 registry 业务方案行；metrics/API 只接受该 ID。"""
     sql = text(
         """
-        SELECT scheme_id, base_scheme_id, name, description, horizon, frequency,
+        SELECT scheme_id, base_scheme_id, name, description, horizon, task_type, frequency,
                target_tenor, schedule_cron, schedule_timezone, status,
                deployed_at, created_at, updated_at
         FROM t_scheme_registry
@@ -492,6 +509,7 @@ def _registry_scheme_row(engine: Engine, scheme_id: str) -> dict[str, Any]:
         "name": row["name"],
         "description": row["description"],
         "horizon": row["horizon"],
+        "task_type": _require_task_type(row, context="active registry row"),
         "frequency": row["frequency"],
         "target_tenor": row["target_tenor"],
         "schedule_cron": row["schedule_cron"],
@@ -610,6 +628,7 @@ def scheme_metrics(
         "base_scheme_id": base_scheme_id,
         "target_tenor": target_tenor,
         "target_label": _target_label(target_tenor, target_labels),
+        "task_type": registry_row["task_type"],
         "registry": registry_row,
         "start_month": start_month,
         "end_month": end_month,
@@ -748,6 +767,7 @@ def backtest_factor_lab_results(
             horizon = _infer_horizon(metrics.get(tenor), daily_rows.get(tenor), meta)
             registry_id = str(meta["scheme_id"])
             base_scheme_id = str(meta["base_scheme_id"])
+            task_type = str(meta["task_type"])
             frequency = meta["frequency"]
             scheme_name = _backtest_scheme_name(meta, base_scheme_id)
             benchmark_label = _backtest_benchmark_label(run["benchmark_id"])
@@ -772,6 +792,7 @@ def backtest_factor_lab_results(
                     "target_tenor": tenor,
                     "target_label": target_label,
                     "horizon": horizon,
+                    "task_type": task_type,
                     "frequency": frequency,
                     "deployed_at": meta.get("deployed_at"),
                     "created_at": meta.get("created_at"),

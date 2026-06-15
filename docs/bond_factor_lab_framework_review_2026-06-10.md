@@ -256,7 +256,8 @@ python -m harness onboard {id} --stage all
   2. `SCHEME_DEPLOYMENT_DATE_OVERRIDES = {weekly_5y_direct_0529: "2026/06/10"}`（aifin-shell.js:261-263）——**硬编码 scheme_id 特例**，每新增方案都可能要再加一条，违反"零前端改动"；根因是 API 不返回部署时间；
   3. 前端读取 `deploymentDate/remark` 等字段但 API 不存在（aifin-shell.js:331-348），靠 mock 占位；
   4. mock 降级数据（factorDailyBaseRows 等）在 API 失败时展示假数据——有 "实时API暂不可用" 提示兜底，但 mock 行残留是误读风险。
-- **建议**：`/api/schemes` 返回 `deployed_at`（取 t_scheme_registry.created_at 或首条 live run 时间）与 `remark`，删除前端 override 与 mock 行；任务列改由 `frequency+horizon` 数据驱动生成。
+- **建议**：`/api/schemes` 返回 `deployed_at`（取 t_scheme_registry.created_at 或首条 live run 时间）与 `remark`，删除前端 override 与 mock 行；任务列改由显式业务字段数据驱动生成。
+- **2026-06-15 追记**：前端任务列已改为 registry 显式 `task_type` 契约。当前固定列为 `T+1` / `T+5` / `weekly_point` / `weekly_average` / `monthly`，API 缺失或非法 `task_type` 时 fail-closed。
 - **优先级**：P1（2、3）/ P2（1、4）。
 
 ### 4.7 harness/
@@ -381,7 +382,7 @@ python -m harness onboard {id} --stage all
 | P2-3 | 日志按方案隔离（结构化字段或独立 handler）；t_scheme_run_log 与 t_scheme_runs 分工文档化或合并 | scheduler/ |
 | P2-4 | schema_migrations 版本表 | scripts/apply_migrations.py |
 | P2-5 | 状态机统一（registry 3 态 vs versions 6 态映射） | migrations、docs |
-| P2-6 | 前端任务列由 frequency+horizon 数据驱动；清 mock 残留 | frontend/ |
+| P2-6 | 前端任务列由 registry `task_type` 显式驱动；清 mock 残留 | frontend/ |
 | P2-7 | admin 脚本运行留痕（t_harness_runs stage=admin_script）；审查 backfill_live_predictions.sh | scripts/ |
 | P2-8 | IntakeGate / benchmark 样本存在性静态检查 | harness/、docs/SCHEME_CONTRACT.md |
 | P2-9 | 调度容量压测基准（20+ mock 方案） | tests/ |

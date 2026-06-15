@@ -115,9 +115,9 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
 ### 2.3 前端查询流程
 
 ```
-用户选择: 任务格子(Y标的 + 预测长度) + 候选方案 + 月份范围
+用户选择: 任务格子(Y标的 + task_type) + 候选方案 + 月份范围
   → 前端通过 t_target_registry/API 获取 Y 标的展示名
-  → 前端按任务格子筛选候选方案排行
+  → 前端按 registry.task_type 分列并筛选候选方案排行
   → 选中方案后调用 GET /api/metrics/{registry_scheme_id}?start_month=2025-01&end_month=2025-05
   → 后端 metric_service:
       → T+1/T+5 JOIN t_scheme_actuals
@@ -185,7 +185,7 @@ CREATE TABLE t_scheme_predictions (
 
 隔离口径:
 
-- `target_tenor + horizon` 定义任务格子，例如 `5Y + T+1`；前端展示名通过 target label 映射为 `5Y国债活跃 · T+1`。
+- `target_tenor + task_type` 定义任务格子，例如 `5Y + T+1` 或 `5Y + weekly_average`；前端展示名通过 target label 和 `task_type` 映射为 `5Y国债活跃 · T+1`、`5Y国债活跃 · 周平均` 等。
 - `scheme_id` 定义具体方案实例，同一个任务格子下允许多个 `scheme_id` 并存排行。
 - 业务唯一键按 `(scheme_id, target_tenor, horizon, target_date)` 保证同一目标点只有一条当前实盘预测；`run_id` / `scheme_version` 负责追溯每次运行来源。
 - `feature_date` 是对外数据截止字段，`prediction_phase` 区分 `gray_live` 与 `scheduled_live`；旧 `extra.anchor_date` 只能作为审计副本，且必须等于 `feature_date`。
@@ -242,6 +242,7 @@ CREATE TABLE t_scheme_registry (
     name VARCHAR(128) NOT NULL,
     description TEXT,
     horizon INT NOT NULL,
+    task_type VARCHAR(32) NULL,
     tenors JSON NOT NULL,
     frequency VARCHAR(32) NOT NULL DEFAULT 'daily',
     target_tenor VARCHAR(16) NOT NULL,
@@ -256,7 +257,7 @@ CREATE TABLE t_scheme_registry (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
-`t_scheme_registry` 是唯一方案注册表，一行就是前端/业务定义的一个方案。`scheme_id` 是唯一业务身份，统一格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`，例如 `t5_daily__h5__10Y`；不再存在第二套 `(base_scheme_id, frequency, horizon, target_tenor)` 唯一键。`base_scheme_id` 是算法目录 / config / scheduler / backtest 存储使用的执行身份，例如 `t5_daily`；同一个 base 算法预测多个 Y 标的时，registry 拆成多行，但 scheduler 仍只按 `base_scheme_id` 挂载一个执行任务。
+`t_scheme_registry` 是唯一方案注册表，一行就是前端/业务定义的一个方案。`scheme_id` 是唯一业务身份，统一格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`，例如 `t5_daily__h5__10Y`；不再存在第二套 `(base_scheme_id, frequency, horizon, target_tenor)` 唯一键。`base_scheme_id` 是算法目录 / config / scheduler / backtest 存储使用的执行身份，例如 `t5_daily`；同一个 base 算法预测多个 Y 标的时，registry 拆成多行，但 scheduler 仍只按 `base_scheme_id` 挂载一个执行任务。`task_type` 是前端任务格子分列的唯一语义字段，固定取值为 `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly`；字段缺失或非法时 API 必须 fail-closed，不得回退到 `frequency/horizon` 猜列。
 
 `active` 是唯一前端/业务可见状态。`GET /api/schemes`、`GET /api/metrics/{scheme_id}`、`GET /api/backtests/factor-lab` 和手动 trigger 只接受 / 返回 `status='active'` 的 registry composite `scheme_id`。`paused` 用于验证期管理，`archived` 用于保留审计历史；二者不进入当前前端矩阵，不允许 trigger，也不允许 scheduler 新写入对应 target。
 
@@ -353,7 +354,7 @@ entry_point: predict.run         # 入口函数
 
 周度方案示例使用 `cron: "30 11 * * 6"`，对齐旧实盘 weekly 首轮预测时间。
 
-`config.scheme_id` 是 base 执行身份，不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `horizon + target_tenor` 决定。前端/业务方案身份由 registry composite `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `3Y -> 3Y国债活跃` 等。
+`config.scheme_id` 是 base 执行身份，不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `task_type + target_tenor` 决定，`horizon` 保留为目标日计算和 actual join 语义。前端/业务方案身份由 registry composite `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `3Y -> 3Y国债活跃` 等。
 
 历史回测命名边界:
 
@@ -534,7 +535,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。回测月度指标和 summary 只从 `t_backtest_predictions` 明细动态聚合。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”；历史回测 API 不可用时，前端切换到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测视图。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。原始 benchmark 的 source T 也按 `feature_date` 与 DB 明细对齐，不能按 live `predict_date` 对齐。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。回测月度指标和 summary 只从 `t_backtest_predictions` 明细动态聚合。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”，并只按 API 返回的 `task_type` 分列；历史回测 API 不可用时，前端切换到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测视图。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。原始 benchmark 的 source T 也按 `feature_date` 与 DB 明细对齐，不能按 live `predict_date` 对齐。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28`、`daily_7y_1_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
 
 **前端指标口径**: 因子实验室页面必须同时展示“样本总数”和“指标分母”两种语义。月度“样本数”列使用 `samples`，包含预测为“平”的交易日或预测周；所有准确率类指标使用 `metric_samples` / `metric_*_dist`，排除预测为“平”的样本。每日/周度验证表中预测为“平”的行结果列显示 `-`，不显示 `×`，也不显示 `✓`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
@@ -578,7 +579,7 @@ BOND_DB_NAME=bond_db
 
 核心约定:
 
-1. `scheme_id` 表示具体方案实例，不表示 `Y标的 + 预测长度` 的任务格子。
+1. `scheme_id` 表示具体方案实例，不表示 `Y标的 + task_type` 的任务格子。
 2. 一个 `scheme_id` 固定一个 `horizon`；同一算法若同时覆盖 T+1 和 T+5，应拆成两个方案目录。
 3. 新方案先 `status: paused` dry-run，再改为 `active` 手动写库验证。
 4. `predict.py` 只返回 `PredictionRecord`，不直接写 `t_scheme_predictions`。

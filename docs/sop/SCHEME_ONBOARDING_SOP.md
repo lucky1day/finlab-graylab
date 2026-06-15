@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-14
+**更新日期**: 2026-06-15
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -13,12 +13,13 @@
 
 新增方案时必须先区分两个概念:
 
-- **任务格子**: `Y标的 + 预测长度`，例如 `10Y国债活跃 · T+1`。这是前端筛选和排行的格子。
+- **任务格子**: `Y标的 + task_type`，例如 `10Y国债活跃 · T+1`、`5Y国债活跃 · 周平均`。这是前端筛选和排行的格子；不要再用 `frequency/horizon` 隐式推断前端列。
 - **方案实例**: 一个具体 `scheme_id`，例如 `t1_daily`、`t1_lgbm_spread_v2`。同一个任务格子下允许多个方案实例并存排行。
 
 当前约定:
 
 - 一个 `scheme_id` 只对应一个 `horizon`。同一算法如果同时做 T+1 和 T+5，应拆成两个方案目录。
+- 一个 `scheme_id` 只对应一个 `task_type`。`weekly_point` 与 `weekly_average` 即使同为周频、预测发出节奏相同，也必须是不同任务语义。
 - 当前已接入并 active 的方案包括日频 `t1_daily` / `t5_daily`，以及周频 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529`。新增周度方案进入 live 调度前，必须先确认周度目标日规则、actuals 对齐规则、最新特征周产出能力，以及调度时间与上游 weekly 首轮预测时间对齐。
 - `scheme_id` 一旦写入数据库就视为稳定 ID，不要随意改名；展示名变更只改 `name`。
 - 算法核心逻辑放在 `core/` 或独立模块里，`predict.py` 只做框架适配、输入准备和输出转换。
@@ -113,7 +114,7 @@
 
 ## 2. 命名规范
 
-`scheme_id` 使用小写 snake_case，建议包含预测长度、模型或特征版本:
+`scheme_id` 使用小写 snake_case，建议包含 `task_type` / 预测语义、模型或特征版本:
 
 | 类型 | 示例 | 说明 |
 |------|------|------|
@@ -124,9 +125,9 @@
 
 `config.yaml` 的 `scheme_id` 是算法执行身份，也就是 registry 中的 `base_scheme_id`。不要把它命名成 `t1_5y`、`t5_10y` 这类只描述任务格子的名字；期限范围由 `tenors` 字段管理，算法身份由来源、特征集合和版本定义。
 
-平台同步 registry 时会按 `tenors` 拆成业务方案行，每行 `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。单标的算法也必须使用这个 composite registry ID，例如 `weekly_5y_direct_0529__h6__5Y`。前端、业务 API 和候选排行只认 `status='active'` 的 registry composite `scheme_id`；`paused` / `archived` 行只用于验证期管理或审计保留，不进入当前前端矩阵，不允许 trigger，也不允许 scheduler 新写入该 target。scheduler、harness、`PredictionRecord` 和 backtest 存储仍使用 base `scheme_id`。
+平台同步 registry 时会按 `tenors` 拆成业务方案行，每行 `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`，并同步 `task_type` 供前端分列。单标的算法也必须使用这个 composite registry ID，例如 `weekly_5y_direct_0529__h6__5Y`。前端、业务 API 和候选排行只认 `status='active'` 的 registry composite `scheme_id`；`paused` / `archived` 行只用于验证期管理或审计保留，不进入当前前端矩阵，不允许 trigger，也不允许 scheduler 新写入该 target。scheduler、harness、`PredictionRecord` 和 backtest 存储仍使用 base `scheme_id`。
 
-展示名 `name` 要比 `scheme_id` 更可读，建议包含来源、预测长度、模型类型和版本，例如:
+展示名 `name` 要比 `scheme_id` 更可读，建议包含来源、`task_type` / 预测语义、模型类型和版本，例如:
 
 ```yaml
 name: "T1-LGBM利差增强-v2"
@@ -169,6 +170,7 @@ scheme_id: t1_lgbm_spread_v2
 name: "T1-LGBM利差增强-v2"
 description: "T+1 方向预测，加入利差增强特征的 LightGBM 方案。"
 horizon: 1
+task_type: T+1
 tenors: ["5Y", "10Y"]
 frequency: daily
 schedule:
@@ -187,6 +189,7 @@ backtest:
 |------|------|
 | `scheme_id` | 必须与目录名完全一致 |
 | `horizon` | 日度使用 `1` / `5`；当前周度使用 `6` 表示周六发出、下周最后交易日为目标日 |
+| `task_type` | 前端任务格子显式类型，必须是 `T+1` / `T+5` / `weekly_point` / `weekly_average` / `monthly`；前端不再按 `frequency/horizon` 猜列 |
 | `tenors` | 内部稳定 key，当前前端展示为 `3Y国债活跃/5Y国债活跃/7Y国债活跃/10Y国债活跃`；`1Y` 可作为因子输入，但不作为当前展示目标 |
 | `schedule.cron` | 当前日度 live 使用 `3 7 * * 1-5`；当前周度 live 使用 `30 11 * * 6` |
 | `status` | 新方案先用 `paused`；验证完成后再改 `active` |
@@ -298,7 +301,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 | 项 | 示例 |
 |----|------|
 | 方案 ID | `t1_lgbm_spread_v2` |
-| 预测长度 | `T+1` |
+| `task_type` / 预测语义 | `T+1`、`T+5`、`weekly_point`、`weekly_average`、`monthly` |
 | 覆盖 Y 标的 | `5Y国债活跃/10Y国债活跃` |
 | 算法来源 | 上游新模型、内部改造、参数实验等 |
 | 数据来源 | `bond_db` 直接取数、DB 生成 CSV、人工补充文件等 |
@@ -505,11 +508,11 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 
 - 回测写入只作用于新 `scheme_id` 对应 run。
 - 输出样本的最早 `predict_date` 不早于 `2025-01-01`；训练、warmup、筛因子和模型更新历史窗口可以早于该日期。
-- `/api/backtests/factor-lab` 返回 `frequency=weekly`，前端落到“周度”列。
+- `/api/backtests/factor-lab` 返回合法 `task_type`；前端按 `task_type` 分列，例如 `weekly_point` 展示为“周度”，`weekly_average` 展示为“周平均”。
 - 周度明细行、月度指标、去重和展示月份一律按 `target_date` 归组；`feature_date` 只用于追溯输入窗口，`predict_date` 只用于调度日志和运行记录。
 - 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行；不要用部署时间或 `predict_date` 截断历史回测。
 - 如果删除错误口径的旧回测 run，必须使用受控脚本显式指定 `scheme_id + run_id`，先 dry-run 打印命中行数，再 apply；不得手写散落 SQL 删除。
-- 同一前端任务格子 / 同一预测期限列（例如 `5Y国债活跃 · T+5`）下，候选方案在相同 data source 和相同 target 覆盖窗口内的样本总数默认必须一致。写库后必须导出各候选方案的 `target_date` 集合并做 missing/extra diff；若不一致，必须先定位是缺 target 日、重复 target 日、未验证 actual，还是算法明确不产出有效信号。只有已在 `PREDICTION_SEMANTICS.md` 和踩坑文档登记的 source-original 周频有效信号例外，才允许样本总数不同；日频方案和新增方案不得用“算法可能不同”作为静默放行理由。
+- 同一前端任务格子 / 同一 `task_type` 列（例如 `5Y国债活跃 · T+5`）下，候选方案在相同 data source 和相同 target 覆盖窗口内的样本总数默认必须一致。写库后必须导出各候选方案的 `target_date` 集合并做 missing/extra diff；若不一致，必须先定位是缺 target 日、重复 target 日、未验证 actual，还是算法明确不产出有效信号。只有已在 `PREDICTION_SEMANTICS.md` 和踩坑文档登记的 source-original 周频有效信号例外，才允许样本总数不同；日频方案和新增方案不得用“算法可能不同”作为静默放行理由。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
 
 ### Step 8: API/前端只读验证
@@ -560,7 +563,7 @@ http://127.0.0.1:8100/
 2. `/api/schemes` 是否能看到方案。
 3. 是否已经写入实盘预测或历史回测结果。
 4. 若已有历史回测结果，当前矩阵优先读取 backtest API，新方案需要写入 backtest 表才会参与历史排行。
-5. 周度方案是否返回 `frequency=weekly` 或 `horizon=6`；前端据此映射到“周度”列。
+5. 方案是否返回合法 `task_type`；前端只按该字段分列，不再根据 `frequency/horizon` fallback。
 
 ### Step 9: Live Gate - 手动写库验证
 
@@ -699,7 +702,7 @@ LIMIT 10;
 新增方案合入前必须确认:
 
 - [ ] `scheme_id` 与目录名一致，且没有复用旧方案 ID。
-- [ ] `name` 能表达算法来源、预测长度、模型类型和版本。
+- [ ] `name` 能表达算法来源、`task_type` / 预测语义、模型类型和版本。
 - [ ] `config.yaml` 可被 `scheduler.discovery` 发现。
 - [ ] `predict.py` 暴露 `run(predict_date: str) -> list[PredictionRecord]`。
 - [ ] dry-run 成功，输出 JSON list。
@@ -717,7 +720,7 @@ LIMIT 10;
 
 ### 同一个 T+1、5Y 任务能有多个方案吗？
 
-可以。前端/业务层的候选方案由 registry composite `scheme_id` 区分，例如 `t5_daily__h5__5Y` 和 `new_model__h5__5Y` 可以同时位于 `5Y国债活跃 · T+5`。实盘预测表内部仍按 base `(scheme_id, target_tenor, horizon, target_date)` 做唯一业务口径；`predict_date` 只用于调度日志和运行记录。一个 base `scheme_id` 仍要求固定一个 `horizon`，这样执行层、回测和 live 写库不会把不同预测长度混在一起。
+可以。前端/业务层的候选方案由 registry composite `scheme_id` 区分，例如 `t5_daily__h5__5Y` 和 `new_model__h5__5Y` 可以同时位于 `5Y国债活跃 · T+5`。实盘预测表内部仍按 base `(scheme_id, target_tenor, horizon, target_date)` 做唯一业务口径；`predict_date` 只用于调度日志和运行记录。一个 base `scheme_id` 仍要求固定一个 `horizon` 和一个 `task_type`，这样执行层、回测、live 写库和前端任务分列不会把不同预测语义混在一起。
 
 ### 新方案只改 `name` 可以吗？
 
@@ -729,4 +732,4 @@ LIMIT 10;
 
 ### 什么时候需要改前端？
 
-普通新增方案不需要改前端。只有新增预测长度、展示新的 Y 期限、或改变矩阵交互逻辑时，才需要改前端。
+普通新增方案不需要改前端。只有新增 `task_type` 枚举、展示新的 Y 期限、或改变矩阵交互逻辑时，才需要改前端。

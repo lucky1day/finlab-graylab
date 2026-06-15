@@ -155,7 +155,7 @@
   var factorLabState = {
     page: 1,
     pageSize: 10,
-    selectedTaskKey: "3Y|daily|T+5",
+    selectedTaskKey: "3Y|T+5",
     selectedSchemeId: "",
     rankMetric: "overall",
     rankDirection: "desc",
@@ -180,9 +180,11 @@
     "10Y": "10Y国债活跃"
   };
   var factorTaskColumns = [
-    { id: "dailyT1", label: "T+1", frequency: "daily", horizon: "T+1" },
-    { id: "dailyT5", label: "T+5", frequency: "daily", horizon: "T+5" },
-    { id: "weekly", label: "周度", frequency: "weekly", horizon: "NEXT_MONDAY" }
+    { id: "dailyT1", label: "T+1", taskType: "T+1", frequency: "daily", horizon: "T+1" },
+    { id: "dailyT5", label: "T+5", taskType: "T+5", frequency: "daily", horizon: "T+5" },
+    { id: "weeklyPoint", label: "周度", taskType: "weekly_point", frequency: "weekly", horizon: "NEXT_MONDAY" },
+    { id: "weeklyAverage", label: "周平均", taskType: "weekly_average", frequency: "weekly", horizon: "NEXT_WEEK_AVERAGE" },
+    { id: "monthly", label: "月度", taskType: "monthly", frequency: "monthly", horizon: "MONTHLY" }
   ];
   var factorStatusLabels = {
     active: "运行中",
@@ -300,7 +302,11 @@
   }
 
   function isWeeklyTask(task) {
-    return task && String(task.frequency || "").toLowerCase() === "weekly";
+    return task && (
+      String(task.frequency || "").toLowerCase() === "weekly" ||
+      task.taskType === "weekly_point" ||
+      task.taskType === "weekly_average"
+    );
   }
 
   function liveDividerLabels(scheme, task) {
@@ -362,7 +368,7 @@
   }
 
   function getTaskKey(target, column) {
-    return target + "|" + column.frequency + "|" + column.horizon;
+    return target + "|" + column.taskType;
   }
 
   function getTargetDisplayName(target) {
@@ -378,7 +384,7 @@
   function getTaskByKey(taskKey) {
     var parts = String(taskKey || "").split("|");
     var column = factorTaskColumns.filter(function (item) {
-      return item.frequency === parts[1] && item.horizon === parts[2];
+      return item.taskType === parts[1];
     })[0] || factorTaskColumns[0];
     return {
       key: taskKey,
@@ -386,6 +392,7 @@
       targetLabel: getTargetDisplayName(parts[0] || "3Y"),
       frequency: column.frequency,
       horizon: column.horizon,
+      taskType: column.taskType,
       label: getTargetDisplayName(parts[0] || "3Y") + " · " + column.label,
       columnLabel: column.label
     };
@@ -454,7 +461,7 @@
   function createTaskSchemes(target, column, count, targetIndex, columnIndex) {
     var schemes = [];
     var baseRows = column.frequency === "weekly" ? factorWeeklyBaseRows : factorDailyBaseRows;
-    var baseline = targetIndex * 2.5 + (column.id === "dailyT5" ? 4.2 : (column.id === "weekly" ? 2.8 : 0));
+    var baseline = targetIndex * 2.5 + (column.id === "dailyT5" ? 4.2 : (column.frequency === "weekly" ? 2.8 : 0));
     for (var i = 0; i < count; i++) {
       var name = factorSchemeNamePool[i % factorSchemeNamePool.length];
       var status = i === 0 ? "running" : (i === count - 1 && count > 3 ? "archived" : "complete");
@@ -534,14 +541,6 @@
 
   function getSchemeDisplayName(scheme) {
     return String((scheme && (scheme.display_name || scheme.name || scheme.scheme_name)) || "--");
-  }
-
-  function isWeeklyHorizon(frequency, horizon) {
-    return (
-      String(frequency || "").toLowerCase() === "weekly" ||
-      String(horizon) === "NEXT_MONDAY" ||
-      Number(horizon) === 6
-    );
   }
 
   function detailGroupMonth(row, frequency, horizon) {
@@ -634,13 +633,23 @@
     });
   }
 
-  function columnForHorizon(horizon, frequency) {
-    if (isWeeklyHorizon(frequency, horizon)) {
-      return factorTaskColumns[2];
+  function columnForTaskType(taskType) {
+    return factorTaskColumns.filter(function (column) {
+      return column.taskType === taskType;
+    })[0] || null;
+  }
+
+  function columnForScheme(scheme) {
+    var context = "scheme " + ((scheme && (scheme.scheme_id || scheme.base_scheme_id || scheme.name)) || "unknown");
+    var taskType = String((scheme && scheme.task_type) || "").trim();
+    if (!taskType) {
+      throw new Error(context + " missing task_type");
     }
-    if (Number(horizon) === 1) return factorTaskColumns[0];
-    if (Number(horizon) === 5) return factorTaskColumns[1];
-    return null;
+    var column = columnForTaskType(taskType);
+    if (!column) {
+      throw new Error(context + " invalid task_type: " + taskType);
+    }
+    return column;
   }
 
   function normalizeBackendSchemeStatus(status) {
@@ -692,8 +701,7 @@
     mergeTargetLabels(payload.target_labels);
     var tasks = initEmptyTaskSchemes();
     (payload.schemes || []).forEach(function (scheme) {
-      var column = columnForHorizon(scheme.horizon, scheme.frequency);
-      if (!column) return;
+      var column = columnForScheme(scheme);
       var targetTenor = scheme.target_tenor || "";
       if (!targetTenor) return;
       if (scheme.target_label) factorTargetLabels[targetTenor] = String(scheme.target_label);
@@ -731,8 +739,7 @@
     var schemes = Array.isArray(payload) ? payload : (payload.schemes || []);
     var tasks = initEmptyTaskSchemes();
     schemes.forEach(function (scheme) {
-      var column = columnForHorizon(scheme.horizon, scheme.frequency);
-      if (!column) return;
+      var column = columnForScheme(scheme);
       var targetTenor = scheme.target_tenor || "";
       if (!targetTenor) return;
       var metrics = metricsByKey[scheme.scheme_id] || {};
@@ -782,8 +789,7 @@
         var metricsByKey = {};
         var requests = [];
         schemes.forEach(function (scheme) {
-          var column = columnForHorizon(scheme.horizon, scheme.frequency);
-          if (!column) return;
+          columnForScheme(scheme);
           if (!scheme.scheme_id || !scheme.target_tenor) return;
           requests.push(
             fetchJson("/api/metrics/" + encodeURIComponent(scheme.scheme_id))
@@ -860,6 +866,7 @@
   function isFailClosedDataError(error) {
     var message = String((error && error.message) || error || "");
     return message.indexOf("missing deployed_at") !== -1 ||
+      message.indexOf("task_type") !== -1 ||
       message.indexOf("has monthly_metrics but no detail rows") !== -1 ||
       message.indexOf("requires metric_") !== -1 ||
       message.indexOf("requires metricSamples") !== -1;
@@ -1551,7 +1558,7 @@
 
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
-    var isWeekly = task.frequency === "weekly";
+    var isWeekly = isWeeklyTask(task);
     var dateHeader = document.getElementById("factorDailyDateHeader");
     var note = document.getElementById("factorCalendarNote");
     title.textContent = month + (isWeekly ? " 周度验证表" : " 每日验证表");
@@ -1827,7 +1834,17 @@
     trendChartLayoutForTest: buildTrendChartLayout,
     trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,
     renderSchemeRankingRowForTest: renderSchemeRankingRow,
-    sortRankingSchemes: sortRankingSchemes
+    sortRankingSchemes: sortRankingSchemes,
+    getTaskSchemesForTest: function () {
+      return factorTaskSchemes;
+    },
+    getTaskSchemeCountsForTest: function () {
+      var counts = {};
+      Object.keys(factorTaskSchemes || {}).forEach(function (key) {
+        counts[key] = (factorTaskSchemes[key] || []).length;
+      });
+      return counts;
+    }
   };
 
   /* ─── Init ─── */

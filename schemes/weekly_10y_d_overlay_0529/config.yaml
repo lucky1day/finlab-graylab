@@ -2,6 +2,7 @@ scheme_id: weekly_10y_d_overlay_0529
 name: "0529周度10Y D-overlay"
 description: "0529 周频10Y方向预测，Score主模型叠加Model2 D-overlay信号，周六预测下一周最后交易日相对本周最后交易日的10Y方向"
 horizon: 6
+task_type: weekly_point
 tenors: ["10Y"]
 frequency: weekly
 schedule:
