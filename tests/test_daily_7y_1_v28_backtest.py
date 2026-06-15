@@ -50,12 +50,14 @@ class Daily7Y1BacktestTests(unittest.TestCase):
         self.assertTrue((merged["confidence_original"] == merged["confidence_current"]).all())
 
         summary = pd.read_json(bench / "original_backtest_summary.json", typ="series")
-        self.assertEqual(summary["benchmark_scope"], "may2026_auxiliary_source")
+        self.assertEqual(summary["benchmark_scope"], "may2026_target_split_pit")
+        self.assertEqual(summary["route_counts"]["backtest"], 13)
+        self.assertEqual(summary["route_counts"]["live"], 5)
         self.assertEqual(summary["row_count"], 18)
         self.assertEqual(summary["eval_samples"], 18)
-        self.assertAlmostEqual(float(summary["direction_accuracy"]), 10 / 18)
-        self.assertEqual(summary["pred_up"], 8)
-        self.assertEqual(summary["pred_down"], 10)
+        self.assertAlmostEqual(float(summary["direction_accuracy"]), 12 / 18)
+        self.assertEqual(summary["pred_up"], 6)
+        self.assertEqual(summary["pred_down"], 12)
         self.assertEqual(summary["true_down"], 18)
 
     def test_backtest_end_covers_may_target_month_before_live_cutoff(self) -> None:

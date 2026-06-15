@@ -1,22 +1,30 @@
 {
-  "benchmark_scope": "may2026_auxiliary_source",
+  "benchmark_scope": "may2026_target_split_pit",
   "source": "/Users/macstudio0/Desktop/models-liwei-0606/outputs/reproduce_eval_0608_may_20260608/predictions/predict_7y_1_v28_may_2026_predictions.csv",
-  "data_cutoff": "2026-06-06",
+  "source_note": "Rows are split by platform target_date semantics: backtest rows use historical PIT cutoff, gray-live rows use live-table feature_date semantics.",
+  "data_cutoff": "split_by_target_date",
+  "backtest_data_cutoff": "2026-05-29",
+  "live_source_data_cutoff": "2026-06-06",
+  "live_target_start": "2026-06-01",
+  "route_counts": {
+    "backtest": 13,
+    "live": 5
+  },
   "test_start": "2026-05-01",
   "test_end": "2026-05-29",
   "row_count": 18,
   "eval_samples": 18,
-  "direction_accuracy": 0.5555555555555556,
-  "all_accuracy": 0.5555555555555556,
+  "direction_accuracy": 0.6666666666666666,
+  "all_accuracy": 0.6666666666666666,
   "trade_rate": 1.0,
-  "pred_up": 8,
-  "pred_down": 10,
+  "pred_up": 6,
+  "pred_down": 12,
   "pred_flat": 0,
   "true_up": 0,
   "true_down": 18,
   "true_flat": 0,
-  "correct_trade": 10,
-  "correct_all": 10,
+  "correct_trade": 12,
+  "correct_all": 12,
   "config": {
     "combo": "pol_tp_bf",
     "K": 5,
@@ -32,5 +40,5 @@
     "ml_mode": "binary",
     "ens_mode": "diverse"
   },
-  "source_role": "source_original"
+  "source_role": "source_original_target_split"
 }
