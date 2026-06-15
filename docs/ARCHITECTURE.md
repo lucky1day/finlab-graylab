@@ -326,6 +326,7 @@ CREATE TABLE t_target_registry (
 
 | 内部 key | 展示名 |
 |----------|--------|
+| `1Y` | `1Y国债活跃` |
 | `3Y` | `3Y国债活跃` |
 | `5Y` | `5Y国债活跃` |
 | `7Y` | `7Y国债活跃` |
@@ -354,7 +355,7 @@ entry_point: predict.run         # 入口函数
 
 周度方案示例使用 `cron: "30 11 * * 6"`，对齐旧实盘 weekly 首轮预测时间。
 
-`config.scheme_id` 是 base 执行身份，不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `task_type + target_tenor` 决定，`horizon` 保留为目标日计算和 actual join 语义。前端/业务方案身份由 registry composite `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `3Y -> 3Y国债活跃` 等。
+`config.scheme_id` 是 base 执行身份，不是 `T+1/5Y` 这样的任务格子名称；任务格子由 `task_type + target_tenor` 决定，`horizon` 保留为目标日计算和 actual join 语义。前端/业务方案身份由 registry composite `scheme_id` 决定。`target_tenor` 是内部稳定 key，前端展示应使用 `t_target_registry.display_name` 或 API 返回的 `target_label`，当前数据库映射为 `1Y -> 1Y国债活跃`、`3Y -> 3Y国债活跃` 等。
 
 历史回测命名边界:
 
@@ -436,14 +437,15 @@ class PredictionRecord:
 {
   "targets": [
     {
-      "target_code": "3Y",
-      "display_name": "3Y国债活跃",
+      "target_code": "1Y",
+      "display_name": "1Y国债活跃",
       "asset_class": "bond",
       "target_type": "active_treasury",
       "status": "active"
     }
   ],
   "target_labels": {
+    "1Y": "1Y国债活跃",
     "3Y": "3Y国债活跃"
   }
 }

@@ -1,6 +1,6 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-06-12
+**更新日期**: 2026-06-15
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -21,7 +21,7 @@
 | `description` | str | ✅ | 非空 |
 | `horizon` | int | ✅ | `> 0`；日频 `1`/`5`，当前周频 `6` |
 | `task_type` | str | ✅ | 前端任务格子显式类型，必须 ∈ `{T+1, T+5, weekly_point, weekly_average, monthly}`；不得由 `frequency/horizon` 隐式推断 |
-| `tenors` | list[str] | ✅ | 非空，⊆ 已注册 Y 标的 key（`3Y/5Y/7Y/10Y` ...） |
+| `tenors` | list[str] | ✅ | 非空，⊆ 已注册 Y 标的 key（当前国债活跃目标为 `1Y/3Y/5Y/7Y/10Y`，后续以 `t_target_registry` 为准） |
 | `frequency` | str | ✅ | ∈ `{daily, weekly, monthly}` |
 | `schedule.cron` | str | ✅ | 合法 5 段 cron |
 | `schedule.timezone` | str | ➖ | 默认 `Asia/Shanghai`，合法时区 |

@@ -22,12 +22,13 @@ _REGISTRY_SYNC_SIGNATURES: dict[str, tuple[tuple[str, int, int], ...]] = {}
 
 
 DEFAULT_TARGET_LABELS = {
+    "1Y": "1Y国债活跃",
     "3Y": "3Y国债活跃",
     "5Y": "5Y国债活跃",
     "7Y": "7Y国债活跃",
     "10Y": "10Y国债活跃",
 }
-DEFAULT_TARGET_ORDER = ["3Y", "5Y", "7Y", "10Y"]
+DEFAULT_TARGET_ORDER = ["1Y", "3Y", "5Y", "7Y", "10Y"]
 ALLOWED_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 BACKTEST_BENCHMARK_LABELS = {
     "model_muti_0529": "0529历史基准",

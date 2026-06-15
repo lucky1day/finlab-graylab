@@ -200,7 +200,7 @@ backtest:
 | `scheme_id` | 必须与目录名完全一致 |
 | `horizon` | 日度使用 `1` / `5`；当前周度使用 `6` 表示周六发出、下周最后交易日为目标日 |
 | `task_type` | 前端任务格子显式类型，必须是 `T+1` / `T+5` / `weekly_point` / `weekly_average` / `monthly`；前端不再按 `frequency/horizon` 猜列 |
-| `tenors` | 内部稳定 key，当前前端展示为 `3Y国债活跃/5Y国债活跃/7Y国债活跃/10Y国债活跃`；`1Y` 可作为因子输入，但不作为当前展示目标 |
+| `tenors` | 内部稳定 key，当前前端展示为 `1Y国债活跃/3Y国债活跃/5Y国债活跃/7Y国债活跃/10Y国债活跃`；新增方案如覆盖 `1Y` 可直接作为业务可见目标 |
 | `schedule.cron` | 当前日度 live 使用 `3 7 * * 1-5`；当前周度 live 使用 `30 11 * * 6` |
 | `status` | 新方案先用 `paused`；验证完成后再改 `active` |
 
@@ -208,19 +208,20 @@ backtest:
 
 ```sql
 INSERT INTO t_target_registry
-    (target_code, display_name, asset_class, target_type, sort_order, status)
+    (target_code, display_name, asset_class, target_type, sort_order, status, extra)
 VALUES
-    ('CGB_3Y_ACTIVE', '3Y国债活跃', 'bond', 'active_treasury', 30, 'active')
+    ('1Y', '1Y国债活跃', 'bond', 'active_treasury', 10, 'active', JSON_OBJECT('legacy_tenor', '1Y'))
 ON DUPLICATE KEY UPDATE
     display_name = VALUES(display_name),
     asset_class = VALUES(asset_class),
     target_type = VALUES(target_type),
     sort_order = VALUES(sort_order),
     status = VALUES(status),
+    extra = VALUES(extra),
     updated_at = CURRENT_TIMESTAMP;
 ```
 
-当前历史基准方案仍使用 `3Y/5Y/7Y/10Y` 作为内部 key，因此数据库种子映射为 `3Y -> 3Y国债活跃`。
+当前平台可见国债活跃目标使用 `1Y/3Y/5Y/7Y/10Y` 作为内部 key，因此数据库种子映射为 `1Y -> 1Y国债活跃`、`3Y -> 3Y国债活跃` 等；具体方案是否覆盖某个目标仍由该方案 `config.yaml.tenors` 决定。
 
 ## 5. predict.py 接口模板
 

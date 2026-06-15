@@ -111,6 +111,25 @@ def _run_factor_lab_hook(script: str) -> dict:
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_task_matrix_default_targets_include_1y_active_treasury(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            hooks.renderTaskOverviewForTest();
+            return {
+              counts: hooks.getTaskSchemeCountsForTest(),
+              matrixHtml: document.getElementById("factorTaskMatrixBody").innerHTML
+            };
+            """
+        )
+
+        self.assertIn("1Y|T+1", result["counts"])
+        self.assertIn("1Y|weekly_average", result["counts"])
+        self.assertIn("1Y国债活跃", result["matrixHtml"])
+        self.assertLess(
+            result["matrixHtml"].index("1Y国债活跃"),
+            result["matrixHtml"].index("3Y国债活跃"),
+        )
+
     def test_initial_render_does_not_show_mock_candidates_before_api_returns(self) -> None:
         result = _run_factor_lab_hook(
             """
