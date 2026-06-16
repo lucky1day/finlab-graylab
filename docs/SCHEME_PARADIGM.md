@@ -212,19 +212,47 @@ core.predict() -> records ─► 框架 ─► run_mode=live     : scheduler.rep
 
 ## 7. 目录结构基线
 
+### 7.1 方案目录（就近原则 + live / backtest 分离）
+
 ```
 schemes/{scheme_id}/
-├── config.yaml          # 声明：input_spec / identity / determinism / model_parameter / 策略A|B（受 SCHEME_CONTRACT 约束）
-├── predict.py           # adapter：暴露 train(cutoff) 与 predict/run(predict_date)，只委托给 core，零业务逻辑
-├── core/                # 纯算法：零 DB、零文件 IO、零跨方案 import；实现 train/predict
-├── scripts/             # 三入口 bash：模型更新 / 实盘预测 / 历史回测
-├── check_data/          # 产物(gitignore)：每日归一化输入快照 {date}.csv（②）
-├── model_parameter/     # 产物(gitignore)：配置 + manifest（③）
-├── output/              # 产物(gitignore)：{predict_date}/ 方向+因子+shape+manifest（④）
-└── logs/                # 产物(gitignore)：按日期分类的算法内部细节
+├── config.yaml              # 声明：input_spec / identity / determinism / model_parameter / 策略A|B（受 SCHEME_CONTRACT 约束）
+├── predict.py               # adapter：暴露 train(cutoff) 与 predict/run(predict_date)，只委托给 core，零业务逻辑
+├── core/                    # 纯算法：零 DB、零文件 IO、零跨方案 import；实现 train/predict
+├── scripts/                 # 三入口 bash：模型更新 / 实盘预测 / 历史回测
+├── benchmarks/              # 入库档(checked-in)：方案专属 canonical 输入档 / 对照真值（用于 ② / §6 对齐校验）
+├── check_data/              # 产物(gitignore)：每日 live 归一化输入快照 {predict_date}.csv（②）
+├── model_parameter/         # 产物(gitignore)：配置 + manifest（③）
+├── output/                  # 产物(gitignore)：live 预测留痕 {predict_date}/ 方向+因子+shape+manifest（④的 live 分支）
+├── backtest/                # 产物(gitignore)：回测专属，跟 live 完全分离
+│   ├── inputs/{predict_date}.csv          # 回测输入快照（②的回测分支）
+│   └── output/{run_id}/{predict_date}/... # 回测产物（④的 backtest 分支）
+└── logs/                    # 产物(gitignore)：按日期分类的算法内部细节
 ```
 
-> `check_data` / `model_parameter` / `output` / `logs` 四个目录**必须** gitignore——它们都是可由「快照 + 配置 + 固定 seed」确定性重建的产物。
+> `check_data` / `model_parameter` / `output` / `backtest` / `logs` 五个目录**必须** gitignore——它们都是可由「快照 + 配置 + 固定 seed」确定性重建的产物。`benchmarks/` 是 checked-in 的入库档（方案 onboarding 时随 PR 进入仓库），不在 gitignore 之列。
+
+### 7.2 为什么 live `output/` 与 `backtest/` 必须分开
+
+- 范式 §4.5 的 run_mode 路由（live → `t_scheme_predictions` / backtest → `t_backtest_*`）在**目录层面**也要分流，避免 review 时混淆。
+- live 是每日单点产物，backtest 一次跑可能跨数年、产物数量级远大于 live；混目录会让 `output/` 被某次回测的几千个 `predict_date` 撑爆，看不清当日 live 留痕。
+- backtest 可能因为改 config 重跑多次，`{run_id}` 那层是必要的对比维度；live 没有这层。
+
+### 7.3 仓库级目录收敛（与方案目录配套）
+
+方案目录就近化之后，仓库根目录跟着收敛：
+
+| 现状 | 范式落地后 | 说明 |
+|------|------------|------|
+| `benchmarks/`（顶层） | 删除（残留归档进 `docs/legacy_sources/`） | per-scheme `schemes/{scheme_id}/benchmarks/` 已是事实标准；顶层那份是早期跨方案大对比的历史档 |
+| `backtest_artifacts/runtime_inputs/{scheme_id}/` | 并入 `schemes/{scheme_id}/backtest/inputs/` | 就近 + 与 live `check_data/` 对称 |
+| `backtest_artifacts/backtests/{scheme_id}/` | 并入 `schemes/{scheme_id}/backtest/output/{run_id}/` | 就近 + 加 `{run_id}` 区分多次回测 |
+| `backtest_artifacts/`（顶层） | 删除 | 收敛后该顶层目录不再承载内容 |
+| `backtests/_base_runner.py` / `repository.py` / `weekly_base_runner.py` | **保留**（写库单点的回测分支实现） | bash 入口最终汇到这里的 `repository.write(records)`，**全仓库只有一份回测写库代码**。可改名/搬位置（如挪进 `shared/`），但**禁止**消失或被 per-scheme bash 各自 `cursor.execute` 取代 |
+| `backtests/{scheme_id}_reproduction.py` | 范式钉死后**变薄**（不归零） | ② normalize 与 ④ records 收敛后 glue 大幅减少；scheme-specific 配置仍需要落点，可下沉到 `schemes/{scheme_id}/backtest/runner.py` 或保持在顶层 `backtests/` 由公共 runner 派发 |
+| `backend/` | **保留**（与算法生命周期完全正交） | FastAPI 服务 + 静态前端托管，算法写完 `t_scheme_predictions` 之后由 backend 读出来给前端 iframe 看；范式 §4 的边界止于写库，backend 不在范式管辖范围 |
+
+> 该收敛是**目标态**。具体迁移属平台能力改造，须按 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 的"普通入库 vs 平台改造"边界单独评审，不与单个方案入库混合执行。
 
 ---
 
