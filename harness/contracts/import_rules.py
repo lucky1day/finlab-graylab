@@ -70,6 +70,8 @@ LIVE_TABLE_NAMES = {
     "t_scheme_weekly_actuals",
 }
 BACKTEST_FORBIDDEN_IMPORTS = {"scheduler", "backend"}
+ROOT_BENCHMARK_ALLOWED_NAME_MARKERS = ("SOURCE_EVIDENCE", "SOURCE_ARCHIVE", "EXTERNAL_SOURCE", "AUDIT")
+UNKNOWN_PATH_SEGMENT = "<unknown>"
 
 
 @dataclass(frozen=True)
@@ -285,6 +287,116 @@ def backtest_runner_boundary_violations(path: Path, tree: ast.AST) -> list[RuleV
     violations.extend(backtest_forbidden_imports(path, tree))
     violations.extend(live_table_sql_write_literals(path, tree))
     return violations
+
+
+def root_benchmark_runtime_dependency_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
+    """active backtest runner 不得把根 benchmarks/ 当作普通运行输入。
+
+    根 benchmarks/ 只允许作为外部 source-evidence/audit/archive 归档路径保留；实际
+    runner 默认输入必须来自 shared.input_artifacts。
+    """
+    violations: list[RuleViolation] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            if _contains_root_benchmarks_literal(node.value) and not _targets_mark_source_evidence(node.targets):
+                violations.append(_root_benchmark_violation(path, node.lineno))
+        elif isinstance(node, ast.AnnAssign):
+            if (
+                node.value is not None
+                and _contains_root_benchmarks_literal(node.value)
+                and not _targets_mark_source_evidence([node.target])
+            ):
+                violations.append(_root_benchmark_violation(path, node.lineno))
+        elif isinstance(node, ast.Return):
+            if node.value is not None and _contains_root_benchmarks_literal(node.value):
+                violations.append(_root_benchmark_violation(path, node.lineno))
+        elif isinstance(node, ast.Expr):
+            if _contains_root_benchmarks_literal(node.value):
+                violations.append(_root_benchmark_violation(path, node.lineno))
+        elif isinstance(node, ast.FunctionDef):
+            if any(_contains_root_benchmarks_literal(default) for default in node.args.defaults):
+                violations.append(_root_benchmark_violation(path, node.lineno))
+            if any(_contains_root_benchmarks_literal(default) for default in node.args.kw_defaults if default):
+                violations.append(_root_benchmark_violation(path, node.lineno))
+    return violations
+
+
+def _root_benchmark_violation(path: Path, line: int) -> RuleViolation:
+    return RuleViolation(
+        path,
+        line,
+        "root benchmarks path is source-evidence only; use shared.input_artifacts for active backtest input",
+    )
+
+
+def _targets_mark_source_evidence(targets: Iterable[ast.AST]) -> bool:
+    names: list[str] = []
+    for target in targets:
+        names.extend(_target_names(target))
+    return bool(names) and all(_name_marks_source_evidence(name) for name in names)
+
+
+def _target_names(target: ast.AST) -> list[str]:
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if isinstance(target, ast.Attribute):
+        return [target.attr]
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: list[str] = []
+        for item in target.elts:
+            names.extend(_target_names(item))
+        return names
+    return []
+
+
+def _name_marks_source_evidence(name: str) -> bool:
+    upper = name.upper()
+    return any(marker in upper for marker in ROOT_BENCHMARK_ALLOWED_NAME_MARKERS)
+
+
+def _contains_root_benchmarks_literal(node: ast.AST) -> bool:
+    path_segments = _literal_path_segments(node)
+    if path_segments is not None and not isinstance(node, ast.Constant):
+        return _segments_reference_root_benchmarks(path_segments)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        value = node.value.replace("\\", "/").strip()
+        return (
+            value.startswith("benchmarks/")
+            or value == "./benchmarks"
+            or value.startswith("./benchmarks/")
+            or ("/benchmarks/" in value and "/schemes/" not in value)
+        )
+    return any(_contains_root_benchmarks_literal(child) for child in ast.iter_child_nodes(node))
+
+
+def _literal_path_segments(node: ast.AST) -> list[str] | None:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        left = _literal_path_segments(node.left)
+        right = _literal_path_segments(node.right)
+        if left is None and right is None:
+            return None
+        return (left or [UNKNOWN_PATH_SEGMENT]) + (right or [UNKNOWN_PATH_SEGMENT])
+    if isinstance(node, ast.Call) and call_name(node.func) == "Path" and node.args:
+        segments: list[str] = []
+        for arg in node.args:
+            arg_segments = _literal_path_segments(arg)
+            segments.extend(arg_segments or [UNKNOWN_PATH_SEGMENT])
+        return segments
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        value = node.value.replace("\\", "/").strip()
+        return [part for part in value.split("/") if part and part != "."]
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        return [UNKNOWN_PATH_SEGMENT]
+    return None
+
+
+def _segments_reference_root_benchmarks(segments: list[str]) -> bool:
+    for index, segment in enumerate(segments):
+        if segment != "benchmarks":
+            continue
+        prior_segments = set(segments[:index])
+        return "schemes" not in prior_segments
+    return False
 
 
 def backtest_forbidden_imports(path: Path, tree: ast.AST) -> list[RuleViolation]:

@@ -90,7 +90,7 @@ feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_corr
 
 - `t1_daily`: original/current 各 674 行，`target_tenor` 仅包含 `5Y/10Y`，不再包含旧 sample 中的 `1Y` 预测 target rows。
 - `t5_daily`: original/current 各 1332 行，`target_tenor` 包含 `3Y/5Y/7Y/10Y`。
-- 根目录 canonical `benchmarks/model_muti_0529/daily_output.csv` 截至 `2026-05-28`；逐方案 benchmark 为覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 追加 `2026-05-29` 目标验证日。
+- 根目录 source-evidence `benchmarks/model_muti_0529/daily_output.csv` 截至 `2026-05-28`；逐方案 benchmark 为覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 追加 `2026-05-29` 目标验证日。
 - `t1_daily` 的旧 core 参数现在明确命名为 `target_date`：最后一条 5 月目标日是 `target_date=2026-05-29`，模型站位为最后一个 `< target_date` 的交易日，即 `feature_date=2026-05-28`。
 - `t5_daily` 的最后一组 5 月目标日为 `target_date=2026-05-25..2026-05-29`，对应 source T / `feature_date=2026-05-18..2026-05-22`。追加 `2026-05-29` 只用于 label/actual，不把 T+5 的模型输入截止推到 target 日。
 - 两个方案的 CompareGate 均使用严格主键 `feature_date + target_date + target_tenor + horizon`，missing/extra=0，direction mismatch=0，confidence max abs diff=0。
@@ -148,5 +148,5 @@ database confidence     = 1.0
 ## 6. 后续要求
 
 1. 后续所有新方案 benchmark 文件必须显式写 `feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`；旧列名 `predict_date/date/tenor` 不得作为 `benchmark_required=true` 的静默回退路径。
-2. 根目录 `benchmarks/{benchmark_id}/` 只保留批次级 canonical 输入归档；逐方案 CompareGate baseline 只能放在 `schemes/{scheme_id}/benchmarks/`。
+2. 根目录 `benchmarks/{benchmark_id}/` 只保留批次级外部来源证据归档，不是平台输入真源；逐方案 CompareGate baseline 只能放在 `schemes/{scheme_id}/benchmarks/`。
 3. 若源算法存在 test-window-sensitive 的 selector、ensemble、rolling top-K、分月校准或信号组合逻辑，必须抽共享 inference helper，并同时服务 adapter、benchmark current 和 backtest runner。

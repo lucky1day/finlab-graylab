@@ -131,13 +131,11 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
 
 ```
 手动执行 backtests.daily_0529_reproduction
-  → 读取 benchmarks/model_muti_0529/daily_output.csv
-  → 通过 shared.input_artifacts 生成 DB 版 daily_output CSV 并读回
-  → 日频内部调用 shared.data_service 生成 daily_output CSV
-  → 按 canonical CSV 对齐列和日期
-  → 运行原始 t5 run_all.py / 原始 t1 run_backtest(dry_run=True) 生成 baseline
+  → 默认通过 shared.input_artifacts 从 DB 生成 DB-first daily_output 并读回
   → 运行框架内 t1_daily / t5_daily 批量回测逻辑
-  → 对比 baseline、framework-csv、framework-db
+  → 只输出 framework_db_aligned（--no-persist 时不写库）
+  → 显式 --include-source-evidence 时才读取 benchmarks/model_muti_0529/daily_output.csv
+  → source-evidence 模式对比外部归档、framework-csv、framework-db
   → 写入 t_backtest_runs / t_backtest_predictions / t_backtest_reproduction_checks
   → 前端回测指标只以 t_backtest_predictions 明细动态聚合为准
   → 验证结果保留在后端 API、脚本和文档中，不新增前端验证结果页
@@ -360,7 +358,7 @@ entry_point: predict.run         # 入口函数
 历史回测命名边界:
 
 - `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（`t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）已退役。
-- `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；canonical 输入位于 `benchmarks/{benchmark_id}/`。
+- `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；外部来源证据归档位于 `benchmarks/{benchmark_id}/`，平台 active runner 的默认输入真源必须来自 `shared.input_artifacts`。
 - `data_source`: 数据口径枚举，例如 `framework_db_aligned`；API 负责映射成中文展示名，例如“当前DB对齐回测”。
 - 运行期输入 artifact: `backtest_artifacts/runtime_inputs/{scheme_id}/`。
 - 历史回测 artifact: `backtest_artifacts/backtests/{benchmark_id}/`。
@@ -606,7 +604,7 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 | 预测任务层 | `scheduler.scheme_runner` / `scheduler.executor` | dry-run JSON 输出、正式单方案执行、统一写库 | readiness 检查不得用 broad run-once 代替 |
 | 回测层 | `backtests/{scheme_id}_reproduction.py` | 历史复现、`--no-persist` 验证、受控写 `t_backtest_*` | 禁止把回测结果写入实盘预测表 |
 | 工具脚本层 | `scripts/` | 审计、对比、人工 admin、受控写库 | 禁止新增一次性绕路脚本作为方案运行入口 |
-| 产物层 | `backtest_artifacts/` / `reports/` / `benchmarks/` | 运行期输入、历史回测产物、审计报告、canonical benchmark | 禁止放可复用业务代码 |
+| 产物层 | `backtest_artifacts/` / `reports/` / `benchmarks/` | 运行期输入、历史回测产物、审计报告、外部来源证据归档 | 禁止放可复用业务代码；`benchmarks/` 不得作为 active runner 默认输入 |
 
 ### 9.2 Harness Gate 顺序
 

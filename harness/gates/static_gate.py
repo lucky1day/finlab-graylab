@@ -23,6 +23,7 @@ from harness.contracts.import_rules import (
     predict_input_artifact_bypass_violations,
     predict_import_whitelist_violations,
     qualified_call_violations,
+    root_benchmark_runtime_dependency_violations,
     sql_write_literals,
 )
 from harness.contracts.predict_contract import validate_predict_module
@@ -171,6 +172,10 @@ class StaticGate(Gate):
         if not has_shared_input_artifacts_import(tree):
             errors.append(f"{_display_path(runner_path, project_root)}: backtest runner must import shared.input_artifacts")
         errors.extend(v.format(project_root) for v in backtest_runner_boundary_violations(runner_path, tree))
+        if str(config_raw.get("status", "")).strip() == "active":
+            errors.extend(
+                v.format(project_root) for v in root_benchmark_runtime_dependency_violations(runner_path, tree)
+            )
         return errors
 
 

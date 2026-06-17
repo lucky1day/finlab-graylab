@@ -50,7 +50,7 @@ from shared.input_artifacts import build_daily_input_artifact
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ID = "model_muti_0529"
-CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
+SOURCE_EVIDENCE_DAILY_CSV = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
 DATA_CHECK_ROOT = benchmark_data_check_root(BENCHMARK_ID)
 TARGET_COLUMNS = ("TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
 UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
@@ -75,7 +75,7 @@ EXPECTED_T5_REPORT: dict[str, dict[str, Any]] = {
 T1_DAILY_SPEC = BacktestSpec(
     benchmark_id=BENCHMARK_ID,
     scheme_id="t1_daily",
-    canonical_csv=CANONICAL_DAILY,
+    canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
     target_columns=TARGET_COLUMNS,
     start_date=T1_BACKTEST_START,
     end_date=T1_BACKTEST_END,
@@ -84,7 +84,7 @@ T1_DAILY_SPEC = BacktestSpec(
 T5_DAILY_SPEC = BacktestSpec(
     benchmark_id=BENCHMARK_ID,
     scheme_id="t5_daily",
-    canonical_csv=CANONICAL_DAILY,
+    canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
     target_columns=TARGET_COLUMNS,
     start_date=T5_BACKTEST_START,
     end_date=T5_BACKTEST_END,
@@ -93,7 +93,7 @@ T5_DAILY_SPEC = BacktestSpec(
 )
 
 
-def read_daily_csv(path: str | Path = CANONICAL_DAILY) -> pd.DataFrame:
+def read_daily_csv(path: str | Path = SOURCE_EVIDENCE_DAILY_CSV) -> pd.DataFrame:
     """读取并标准化 historical daily_output。"""
     return _base_read_daily_csv(path)
 
@@ -106,7 +106,7 @@ def build_daily0529_benchmark_frame(
 ) -> pd.DataFrame:
     """返回 T1/T5 benchmark 使用的日频输入。
 
-    根目录 canonical CSV 只到 2026-05-28；为覆盖 2026-05 全部 target 交易日，
+    根目录 source-evidence CSV 只到 2026-05-28；为覆盖 2026-05 全部 target 交易日，
     需要从 DB 补 2026-05-29 这一目标验证日。补齐行只用于计算 label/actual，
     不把 feature_date 推到灰度区。
     """
@@ -183,7 +183,7 @@ def build_db_aligned_daily(
         upstream_mode=upstream_mode,
         artifact_scheme_id=artifact_scheme_id,
         benchmark_id=BENCHMARK_ID,
-        canonical_csv=CANONICAL_DAILY,
+        canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
         artifact_builder=build_daily_input_artifact,
     )
 
@@ -194,7 +194,7 @@ def build_framework_db_aligned_daily(csv_df: pd.DataFrame | None = None, engine:
         csv_df=csv_df,
         engine=engine,
         benchmark_id=BENCHMARK_ID,
-        canonical_csv=CANONICAL_DAILY,
+        canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
         artifact_builder=build_daily_input_artifact,
     )
 
@@ -228,7 +228,7 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
             "benchmark_id": BENCHMARK_ID,
             "check_name": "canonical_csv_vs_upstream_db_generated",
             "status": report["status"],
-            "source_path": str(CANONICAL_DAILY),
+            "source_path": str(SOURCE_EVIDENCE_DAILY_CSV),
             "row_count_csv": report["csv"]["rows"],
             "row_count_db": report["db_aligned"]["rows"],
             "col_count_csv": report["csv"]["columns"],
@@ -358,7 +358,7 @@ def run_t5_reproduction(
 
 def run_t5_canonical_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
     daily = build_daily0529_benchmark_frame()
-    return run_t5_framework_backtest(daily, n_jobs=n_jobs), str(CANONICAL_DAILY)
+    return run_t5_framework_backtest(daily, n_jobs=n_jobs), str(SOURCE_EVIDENCE_DAILY_CSV)
 
 
 def run_t5_framework_backtest(df: pd.DataFrame, n_jobs: int = 4) -> list[dict[str, Any]]:
@@ -538,7 +538,7 @@ def run_t1_reproduction(
 
 
 def run_t1_canonical_csv_baseline(daily_df: pd.DataFrame) -> tuple[list[dict[str, Any]], str]:
-    return run_t1_framework_backtest(daily_df), str(CANONICAL_DAILY)
+    return run_t1_framework_backtest(daily_df), str(SOURCE_EVIDENCE_DAILY_CSV)
 
 
 def run_t1_framework_backtest(df: pd.DataFrame) -> list[dict[str, Any]]:
