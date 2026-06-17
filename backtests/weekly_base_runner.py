@@ -134,6 +134,30 @@ def build_weekly_backtest_rows(
     return rows
 
 
+def compact_weekly_benchmark_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """生成 CompareGate 使用的严格周频 benchmark 行。"""
+    compact: list[dict[str, Any]] = []
+    for row in rows:
+        direction = _int_or_none(row.get("predicted_direction"))
+        label = _int_or_none(row.get("label"))
+        extra = row.get("extra") or {}
+        compact.append(
+            {
+                "feature_date": str(row["feature_date"]),
+                "target_date": str(row["target_date"]),
+                "target_tenor": str(row["target_tenor"]),
+                "horizon": _int_or_none(row.get("horizon")),
+                "direction": direction,
+                "confidence": _float_or_none(row.get("confidence")),
+                "label": label,
+                "is_correct": direction == label if direction is not None and label is not None else None,
+                "feature_week_id": _int_or_none(extra.get("feature_week_id")),
+                "target_week_id": _int_or_none(extra.get("target_week_id")),
+            }
+        )
+    return compact
+
+
 def _resolve_target(
     calendar: Any,
     weekly_by_id: dict[int, pd.Series],
@@ -167,6 +191,17 @@ def _label_from_future_return(value: float) -> int:
     if value < 0:
         return -1
     return 0
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _float_or_none(value: Any) -> float | None:

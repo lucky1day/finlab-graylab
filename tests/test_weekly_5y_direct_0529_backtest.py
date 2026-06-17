@@ -69,11 +69,16 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
         self.assertEqual(
             compact[0],
             {
-                "predict_date": "2026-01-02",
+                "feature_date": "2026-01-02",
                 "target_date": "2026-01-09",
                 "target_tenor": "5Y",
-                "predicted_direction": -1,
+                "horizon": 6,
+                "direction": -1,
                 "confidence": 0.45,
+                "label": 1,
+                "is_correct": False,
+                "feature_week_id": 202601,
+                "target_week_id": 202602,
             },
         )
 
