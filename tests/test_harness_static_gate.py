@@ -251,6 +251,96 @@ class HarnessStaticGateTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
 
+    def test_active_backtest_runner_cannot_use_source_evidence_as_runtime_input(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.static_gate import StaticGate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(
+                project_root,
+                scheme_id="demo_daily",
+                extra_config_lines=[
+                    "status: active",
+                    "backtest:",
+                    "  runner: backtests.demo_daily_reproduction",
+                    "  benchmark_required: true",
+                    '  start_date: "2025-01-01"',
+                ],
+            )
+            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
+            runner_path.parent.mkdir(parents=True)
+            runner_path.write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        'CANONICAL_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
+                        "def main():",
+                        "    build_daily_input_artifact",
+                        "    return CANONICAL_CSV",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = StaticGate().run(
+                GateContext(
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    project_root=project_root,
+                    report_dir=project_root / "reports",
+                )
+            )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("source_evidence path is source-evidence only" in item for item in result.errors), result.errors)
+
+    def test_active_backtest_runner_allows_explicit_source_evidence_named_path(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.static_gate import StaticGate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_minimal_scheme(
+                project_root,
+                scheme_id="demo_daily",
+                extra_config_lines=[
+                    "status: active",
+                    "backtest:",
+                    "  runner: backtests.demo_daily_reproduction",
+                    "  benchmark_required: true",
+                    '  start_date: "2025-01-01"',
+                ],
+            )
+            runner_path = project_root / "backtests" / "demo_daily_reproduction.py"
+            runner_path.parent.mkdir(parents=True)
+            runner_path.write_text(
+                "\n".join(
+                    [
+                        "from pathlib import Path",
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        'SOURCE_EVIDENCE_CSV = Path("source_evidence/benchmark_batches/demo/daily_output.csv")',
+                        "def build_default_input():",
+                        "    return build_daily_input_artifact",
+                        "def read_source_evidence():",
+                        "    return SOURCE_EVIDENCE_CSV",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = StaticGate().run(
+                GateContext(
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    project_root=project_root,
+                    report_dir=project_root / "reports",
+                )
+            )
+
+        self.assertTrue(result.passed, result.errors)
+
 
 class HarnessRuntimeGateTests(unittest.TestCase):
     def test_input_gate_uses_artifact_metadata_and_required_columns(self) -> None:

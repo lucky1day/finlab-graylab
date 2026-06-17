@@ -100,9 +100,9 @@ def _read_static_benchmark(
     predict_date: str | None,
     project_root: Path,
 ) -> tuple[list[dict[str, Any]], Path]:
-    benchmark_dir = project_root / "benchmarks" / benchmark_id
+    benchmark_dir = project_root / "source_evidence" / "benchmark_batches" / benchmark_id
     if not benchmark_dir.exists():
-        raise FileNotFoundError(f"missing benchmark directory: {benchmark_dir}")
+        raise FileNotFoundError(f"missing source evidence directory: {benchmark_dir}")
 
     source_path = _select_benchmark_csv(benchmark_dir)
     rows: list[dict[str, Any]] = []
@@ -125,7 +125,7 @@ def _select_benchmark_csv(benchmark_dir: Path) -> Path:
         return preferred
     csv_files = sorted(benchmark_dir.glob("*.csv"))
     if not csv_files:
-        raise FileNotFoundError(f"no static benchmark CSV found in {benchmark_dir}")
+        raise FileNotFoundError(f"no source evidence CSV found in {benchmark_dir}")
     return csv_files[0]
 
 

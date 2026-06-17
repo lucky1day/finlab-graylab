@@ -290,42 +290,53 @@ def backtest_runner_boundary_violations(path: Path, tree: ast.AST) -> list[RuleV
 
 
 def root_benchmark_runtime_dependency_violations(path: Path, tree: ast.AST) -> list[RuleViolation]:
-    """active backtest runner 不得把根 benchmarks/ 当作普通运行输入。
+    """active backtest runner 不得把外部证据归档当作普通运行输入。
 
-    根 benchmarks/ 只允许作为外部 source-evidence/audit/archive 归档路径保留；实际
-    runner 默认输入必须来自 shared.input_artifacts。
+    旧根 benchmarks/ 和新 source_evidence/ 都只允许作为显式 source-evidence /
+    audit / archive 路径保留；runner 默认输入必须来自 shared.input_artifacts。
     """
     violations: list[RuleViolation] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
-            if _contains_root_benchmarks_literal(node.value) and not _targets_mark_source_evidence(node.targets):
-                violations.append(_root_benchmark_violation(path, node.lineno))
+            source_kind = _external_source_path_kind(node.value)
+            if source_kind and not _targets_mark_source_evidence(node.targets):
+                violations.append(_external_source_path_violation(path, node.lineno, source_kind))
         elif isinstance(node, ast.AnnAssign):
+            source_kind = _external_source_path_kind(node.value) if node.value is not None else None
             if (
-                node.value is not None
-                and _contains_root_benchmarks_literal(node.value)
+                source_kind
                 and not _targets_mark_source_evidence([node.target])
             ):
-                violations.append(_root_benchmark_violation(path, node.lineno))
+                violations.append(_external_source_path_violation(path, node.lineno, source_kind))
         elif isinstance(node, ast.Return):
-            if node.value is not None and _contains_root_benchmarks_literal(node.value):
-                violations.append(_root_benchmark_violation(path, node.lineno))
+            source_kind = _external_source_path_kind(node.value) if node.value is not None else None
+            if source_kind:
+                violations.append(_external_source_path_violation(path, node.lineno, source_kind))
         elif isinstance(node, ast.Expr):
-            if _contains_root_benchmarks_literal(node.value):
-                violations.append(_root_benchmark_violation(path, node.lineno))
+            source_kind = _external_source_path_kind(node.value)
+            if source_kind:
+                violations.append(_external_source_path_violation(path, node.lineno, source_kind))
         elif isinstance(node, ast.FunctionDef):
-            if any(_contains_root_benchmarks_literal(default) for default in node.args.defaults):
-                violations.append(_root_benchmark_violation(path, node.lineno))
-            if any(_contains_root_benchmarks_literal(default) for default in node.args.kw_defaults if default):
-                violations.append(_root_benchmark_violation(path, node.lineno))
+            for default in node.args.defaults:
+                source_kind = _external_source_path_kind(default)
+                if source_kind:
+                    violations.append(_external_source_path_violation(path, node.lineno, source_kind))
+            for default in (item for item in node.args.kw_defaults if item):
+                source_kind = _external_source_path_kind(default)
+                if source_kind:
+                    violations.append(_external_source_path_violation(path, node.lineno, source_kind))
     return violations
 
 
-def _root_benchmark_violation(path: Path, line: int) -> RuleViolation:
+def _external_source_path_violation(path: Path, line: int, source_kind: str) -> RuleViolation:
+    if source_kind == "source_evidence":
+        message = "source_evidence path is source-evidence only; use shared.input_artifacts for active backtest input"
+    else:
+        message = "root benchmarks path is source-evidence only; use shared.input_artifacts for active backtest input"
     return RuleViolation(
         path,
         line,
-        "root benchmarks path is source-evidence only; use shared.input_artifacts for active backtest input",
+        message,
     )
 
 
@@ -354,19 +365,34 @@ def _name_marks_source_evidence(name: str) -> bool:
     return any(marker in upper for marker in ROOT_BENCHMARK_ALLOWED_NAME_MARKERS)
 
 
-def _contains_root_benchmarks_literal(node: ast.AST) -> bool:
+def _external_source_path_kind(node: ast.AST | None) -> str | None:
+    if node is None:
+        return None
     path_segments = _literal_path_segments(node)
     if path_segments is not None and not isinstance(node, ast.Constant):
-        return _segments_reference_root_benchmarks(path_segments)
+        return _segments_external_source_kind(path_segments)
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         value = node.value.replace("\\", "/").strip()
-        return (
+        if (
             value.startswith("benchmarks/")
             or value == "./benchmarks"
             or value.startswith("./benchmarks/")
             or ("/benchmarks/" in value and "/schemes/" not in value)
-        )
-    return any(_contains_root_benchmarks_literal(child) for child in ast.iter_child_nodes(node))
+        ):
+            return "root_benchmarks"
+        if (
+            value.startswith("source_evidence/")
+            or value == "./source_evidence"
+            or value.startswith("./source_evidence/")
+            or "/source_evidence/" in value
+        ):
+            return "source_evidence"
+        return None
+    for child in ast.iter_child_nodes(node):
+        source_kind = _external_source_path_kind(child)
+        if source_kind:
+            return source_kind
+    return None
 
 
 def _literal_path_segments(node: ast.AST) -> list[str] | None:
@@ -390,13 +416,16 @@ def _literal_path_segments(node: ast.AST) -> list[str] | None:
     return None
 
 
-def _segments_reference_root_benchmarks(segments: list[str]) -> bool:
+def _segments_external_source_kind(segments: list[str]) -> str | None:
     for index, segment in enumerate(segments):
+        if segment == "source_evidence":
+            return "source_evidence"
         if segment != "benchmarks":
             continue
         prior_segments = set(segments[:index])
-        return "schemes" not in prior_segments
-    return False
+        if "schemes" not in prior_segments:
+            return "root_benchmarks"
+    return None
 
 
 def backtest_forbidden_imports(path: Path, tree: ast.AST) -> list[RuleViolation]:

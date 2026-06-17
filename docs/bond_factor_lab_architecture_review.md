@@ -785,7 +785,7 @@ backtest_contract:
   benchmark_id: original_research_2026_06
   start_date: "2023-01-01"
   end_date: "2025-12-31"
-  expected_metrics_file: benchmarks/expected_metrics.json
+  expected_metrics_file: schemes/tsy_daily_t5_macro_v1/benchmarks/expected_metrics.json
 runtime_contract:
   entrypoint: schemes.tsy_daily_t5_macro_v1.predict:run
   timeout_seconds: 300

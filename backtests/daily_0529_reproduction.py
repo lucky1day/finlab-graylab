@@ -43,14 +43,14 @@ from backtests.repository import (
     clean_json,
     insert_reproduction_check,
 )
-from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root
+from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root, benchmark_source_evidence_root
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_daily_input_artifact
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ID = "model_muti_0529"
-SOURCE_EVIDENCE_DAILY_CSV = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
+SOURCE_EVIDENCE_DAILY_CSV = benchmark_source_evidence_root(BENCHMARK_ID) / "daily_output.csv"
 DATA_CHECK_ROOT = benchmark_data_check_root(BENCHMARK_ID)
 TARGET_COLUMNS = ("TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
 UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")

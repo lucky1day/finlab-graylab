@@ -376,7 +376,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 ### Step 5a: Benchmark Sample 准备（为 CompareGate 提供对比基准）
 
-CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输出与原始算法是否一致。它们必须放在 `schemes/{scheme_id}/benchmarks/` 目录下；根目录 `benchmarks/{benchmark_id}/` 只用于保存批次级外部来源证据归档，例如 `benchmarks/model_muti_0529/daily_output.csv`，不能把它当作逐方案 CompareGate baseline 或 active runner 默认输入。
+CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输出与原始算法是否一致。它们必须放在 `schemes/{scheme_id}/benchmarks/` 目录下；`source_evidence/benchmark_batches/{benchmark_id}/` 只用于保存批次级外部来源证据归档，例如 `source_evidence/benchmark_batches/model_muti_0529/daily_output.csv`，不能把它当作逐方案 CompareGate baseline 或 active runner 默认输入。
 
 | 文件 | 内容 |
 |------|------|
@@ -397,7 +397,7 @@ conda run -n bond_factor_lab_service python scripts/rebuild_daily0529_scheme_ben
   --scheme-id t5_daily
 ```
 
-注意：根目录 `benchmarks/model_muti_0529/daily_output.csv` 是上游批次输入归档，当前截到 `2026-05-28`；逐方案 benchmark 为了覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 补齐 `2026-05-29` 目标验证日。T1 旧 core 曾把参数命名为 `current_date`，但真实语义是 `target_date`：最后一条 5 月目标日必须传入 `target_date=2026-05-29`，并由 core 选择最后一个 `< target_date` 的交易日作为 `feature_date=2026-05-28`。T5 的最后一周目标日为 `target_date=2026-05-25..2026-05-29`，对应 source T / `feature_date=2026-05-18..2026-05-22`。补齐行只用于计算 label/actual，不能把 source T / `feature_date` 推到未来，也不能作为 live 预测输入截止日。
+注意：`source_evidence/benchmark_batches/model_muti_0529/daily_output.csv` 是上游批次输入归档，当前截到 `2026-05-28`；逐方案 benchmark 为了覆盖完整 2026-05 目标月，会通过 `shared.input_artifacts` 从 DB 补齐 `2026-05-29` 目标验证日。T1 旧 core 曾把参数命名为 `current_date`，但真实语义是 `target_date`：最后一条 5 月目标日必须传入 `target_date=2026-05-29`，并由 core 选择最后一个 `< target_date` 的交易日作为 `feature_date=2026-05-28`。T5 的最后一周目标日为 `target_date=2026-05-25..2026-05-29`，对应 source T / `feature_date=2026-05-18..2026-05-22`。补齐行只用于计算 label/actual，不能把 source T / `feature_date` 推到未来，也不能作为 live 预测输入截止日。
 
 V28 `daily_5y_2_v28` 属于 test-window 敏感方案，benchmark current 侧必须由平台共享 inference helper 生成，不能从 source 文件复制：
 
@@ -493,7 +493,7 @@ if __name__ == "__main__":
     print(output.summary)
 ```
 
-若必须复核入库前外部批次文件，只能新增显式 `--include-source-evidence` / audit 路径读取 `benchmarks/{benchmark_id}/...`，不得让 active runner 默认执行路径依赖根目录 `benchmarks/`。
+若必须复核入库前外部批次文件，只能新增显式 `--include-source-evidence` / audit 路径读取 `source_evidence/benchmark_batches/{benchmark_id}/...`，不得让 active runner 默认执行路径依赖 `source_evidence/`。
 
 **周频 runner** 参照 `backtests/weekly_5y_direct_0529_reproduction.py`。周频 runner 不继承 `BaseDailyBacktestRunner`，而是直接导入方案的 core 算法循环逐周预测。Runner 必须：
 - 从 `shared.input_artifacts.build_weekly_input_artifact()` 获取输入。

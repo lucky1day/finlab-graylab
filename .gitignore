@@ -5,9 +5,9 @@
 # Raw copied source bundles may contain local DB credentials.
 schemes/_original_source/
 
-# Raw upstream bundle provided on the test Mac. Safe/canonical benchmark entry
-# points are kept under benchmarks/ instead of tracking this credential-bearing
-# extraction directly.
+# Raw upstream bundle provided on the test Mac. Safe source-evidence entry
+# points are kept under source_evidence/ instead of tracking this
+# credential-bearing extraction directly.
 model-mutitest-0529/
 model-mutitest-0529.zip
 

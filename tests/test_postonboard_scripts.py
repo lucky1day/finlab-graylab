@@ -14,7 +14,7 @@ class PostOnboardScriptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             _write_scheme_config(root, "demo_daily")
-            benchmark = root / "benchmarks" / "model_muti_0529"
+            benchmark = root / "source_evidence" / "benchmark_batches" / "model_muti_0529"
             benchmark.mkdir(parents=True)
             (benchmark / "daily_output.csv").write_text(
                 "date,TB0YWI0C\n2026-06-05,1.7\n",

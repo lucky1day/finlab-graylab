@@ -1,7 +1,7 @@
 {
   "benchmark_id": "model_muti_0529",
   "source_name": "model-mutitest-0529",
-  "canonical_daily_output": "benchmarks/model_muti_0529/daily_output.csv",
+  "source_evidence_daily_output": "source_evidence/benchmark_batches/model_muti_0529/daily_output.csv",
   "date_min": "2010-07-27",
   "date_max": "2026-05-28",
   "shape": {

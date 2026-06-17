@@ -120,8 +120,8 @@ python -m harness onboard {id} --stage all
 ### 第 1 步：原始方案进入平台
 
 - **状态**：部分满足（流程靠文档，无机器化 intake）。
-- **证据**：[SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 定义 Intake 清单；`benchmarks/model_muti_0529/manifest.json` 记录原始基准（3843×877，日期范围、target 列）。
-- **风险**：没有 IntakeGate；原始交付物（标的/期限/频率/回测区间/benchmark）的完整性检查靠人。原始 benchmark 的归档位置有两套约定：`benchmarks/{benchmark_id}/`（canonical 输入）与 `schemes/{id}/benchmarks/`（CompareGate 读的预测样本），新人易混淆。
+- **证据**：[SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 定义 Intake 清单；`source_evidence/benchmark_batches/model_muti_0529/manifest.json` 记录原始基准（3843×877，日期范围、target 列）。
+- **风险**：没有 IntakeGate；原始交付物（标的/期限/频率/回测区间/benchmark）的完整性检查靠人。原始 benchmark 的归档位置已收敛为 `source_evidence/benchmark_batches/{benchmark_id}/`（外部来源证据）与 `schemes/{id}/benchmarks/`（CompareGate 读的预测样本）。
 - **建议**：在 SCHEME_CONTRACT 增加 intake manifest 必填字段清单，StaticGate 校验 `schemes/{id}/benchmarks/` 样本文件存在性（结合第 3 步建议）。
 - **优先级**：P2。
 

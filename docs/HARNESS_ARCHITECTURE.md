@@ -40,7 +40,7 @@ bond-factor-lab/
 ├── scripts/                # 人工运维、审计、对比、受控操作
 ├── harness/                # 强约束 gate / orchestrator / 授权 / 留证实现
 ├── tests/                  # 单元、集成、安全边界测试
-├── benchmarks/             # 外部来源证据归档（非平台运行输入真源）
+├── source_evidence/        # 外部来源证据归档（benchmark_batches/{benchmark_id}/）
 ├── backtest_artifacts/     # 运行期输入和回测产物
 ├── reports/                # 审计和harness报告
 └── docs/                   # 架构、SOP、测试、状态文档

@@ -77,7 +77,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S1 通过 |
-| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **逐方案静态基准文件**：入库前固化的基准输出，必须落在 `schemes/{scheme_id}/benchmarks/`，含逐样本 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction(or predicted_direction)`、`confidence`。根目录 `benchmarks/{benchmark_id}/` 只表示批次级外部来源证据归档，不能直接作为逐方案 CompareGate baseline 或 active runner 默认输入。 |
+| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **逐方案静态基准文件**：入库前固化的基准输出，必须落在 `schemes/{scheme_id}/benchmarks/`，含逐样本 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction(or predicted_direction)`、`confidence`。`source_evidence/benchmark_batches/{benchmark_id}/` 只表示批次级外部来源证据归档，不能直接作为逐方案 CompareGate baseline 或 active runner 默认输入。 |
 | **成功判定** | ①或②至少存在其一，且能定位到具体文件/模块路径 |
 | **成功→去向** | 进入 S3（记录采用的是脚本复现还是静态基准） |
 | **失败判定** | 两种形态都不存在，或存在但无法定位/不含逐样本方向 |

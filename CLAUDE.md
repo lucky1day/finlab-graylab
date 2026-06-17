@@ -33,7 +33,7 @@ bond-factor-lab/
 ├── frontend/          # 原生 HTML/CSS/JS 因子实验室页面
 ├── migrations/        # SQL 迁移脚本
 ├── scripts/           # 审计/对比/受控 admin 脚本
-├── benchmarks/        # 外部来源证据归档（非平台运行输入真源）
+├── source_evidence/   # 外部来源证据归档（benchmark_batches/{benchmark_id}/）
 ├── backtest_artifacts/ # 运行期输入与回测产物（gitignore）
 ├── reports/           # 审计与 harness 报告（gitignore）
 ├── deploy/            # launchd plist
