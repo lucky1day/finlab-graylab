@@ -16,6 +16,7 @@ from backtests.weekly_base_runner import (
     WeeklyBacktestSpec,
     WeeklyPredictionPoint,
     build_weekly_backtest_rows,
+    compact_weekly_benchmark_rows,
 )
 from backtests.repository import clean_json
 from shared.calendar_service import get_calendar
@@ -206,7 +207,7 @@ def validate_original_benchmark_rows(
         )
         _assert_equal(
             str(actual.get("target_tenor")),
-            str(expected.get("tenor")),
+            _expected_target_tenor(expected),
             f"tenor mismatch feature_week_id={week_id}",
         )
         _assert_equal(
@@ -239,6 +240,10 @@ def _load_original_benchmark(benchmark: pd.DataFrame | Path | str | None) -> pd.
     return pd.read_csv(path)
 
 
+def _expected_target_tenor(row: pd.Series) -> str | None:
+    return _text_or_none(row.get("target_tenor")) or _text_or_none(row.get("tenor"))
+
+
 def _assert_equal(actual: Any, expected: Any, message: str) -> None:
     if actual != expected:
         raise AssertionError(f"{message}: actual={actual!r} expected={expected!r}")
@@ -246,21 +251,7 @@ def _assert_equal(actual: Any, expected: Any, message: str) -> None:
 
 def compact_prediction_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """生成 CompareGate 与人工验收用紧凑预测序列。"""
-    compact: list[dict[str, Any]] = []
-    for row in rows:
-        direction = _int_or_none(row.get("predicted_direction"))
-        compact.append(
-            {
-                "predict_date": str(row["predict_date"]),
-                "target_date": str(row["target_date"]),
-                "tenor": str(row["target_tenor"]),
-                "target_tenor": str(row["target_tenor"]),
-                "direction": direction,
-                "predicted_direction": direction,
-                "confidence": _float_or_none(row.get("confidence")),
-            }
-        )
-    return compact
+    return compact_weekly_benchmark_rows(list(rows))
 
 
 def run_weekly_10y_d_overlay_0529_reproduction(
@@ -418,6 +409,12 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _text_or_none(value: Any) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    return str(value)
 
 
 def _float_or_none(value: Any) -> float | None:

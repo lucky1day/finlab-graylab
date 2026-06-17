@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import csv
+import unittest
+from pathlib import Path
+
+from harness.config_loader import load_config_raw
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SCHEMES_ROOT = PROJECT_ROOT / "schemes"
+
+REQUIRED_BENCHMARK_FILES = (
+    "original_predictions_sample.csv",
+    "current_predictions_sample.csv",
+    "original_backtest_summary.json",
+    "current_backtest_summary.json",
+)
+STRICT_PREDICTION_COLUMNS = {
+    "feature_date",
+    "target_date",
+    "target_tenor",
+    "horizon",
+    "direction",
+    "confidence",
+    "label",
+    "is_correct",
+}
+LEGACY_ONLY_COLUMNS = {"predict_date", "tenor", "framework_feature_date", "framework_target_date"}
+
+
+class BenchmarkParadigmTests(unittest.TestCase):
+    """所有 active benchmark 方案必须使用逐方案严格 benchmark 基线。"""
+
+    def test_active_required_benchmarks_use_strict_prediction_schema(self) -> None:
+        failures: list[str] = []
+
+        for config_path in sorted(SCHEMES_ROOT.glob("*/config.yaml")):
+            config = load_config_raw(config_path)
+            if config.get("status") != "active":
+                continue
+            backtest = config.get("backtest")
+            if not isinstance(backtest, dict) or not backtest.get("benchmark_required"):
+                continue
+
+            scheme_id = str(config.get("scheme_id") or config_path.parent.name)
+            bench_dir = config_path.parent / "benchmarks"
+            missing_files = [name for name in REQUIRED_BENCHMARK_FILES if not (bench_dir / name).exists()]
+            if missing_files:
+                failures.append(f"{scheme_id}: missing benchmark files {missing_files}")
+                continue
+
+            original_header, original_rows = _read_csv_header_and_count(
+                bench_dir / "original_predictions_sample.csv"
+            )
+            current_header, current_rows = _read_csv_header_and_count(
+                bench_dir / "current_predictions_sample.csv"
+            )
+            for label, header, rows in (
+                ("original", original_header, original_rows),
+                ("current", current_header, current_rows),
+            ):
+                missing_columns = sorted(STRICT_PREDICTION_COLUMNS - set(header))
+                if missing_columns:
+                    failures.append(f"{scheme_id}: {label} missing strict columns {missing_columns}")
+                if rows <= 0:
+                    failures.append(f"{scheme_id}: {label} benchmark CSV is empty")
+
+            if original_header != current_header:
+                failures.append(f"{scheme_id}: original/current benchmark headers differ")
+
+            original_columns = set(original_header)
+            if LEGACY_ONLY_COLUMNS & original_columns and not STRICT_PREDICTION_COLUMNS <= original_columns:
+                failures.append(
+                    f"{scheme_id}: legacy columns present without full strict schema "
+                    f"{sorted(LEGACY_ONLY_COLUMNS & original_columns)}"
+                )
+
+        self.assertEqual(failures, [])
+
+
+def _read_csv_header_and_count(path: Path) -> tuple[list[str], int]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.reader(handle)
+        header = next(reader, [])
+        rows = sum(1 for _ in reader)
+    return header, rows
+
+
+if __name__ == "__main__":
+    unittest.main()

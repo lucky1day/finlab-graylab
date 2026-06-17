@@ -16,6 +16,7 @@ from backtests.weekly_base_runner import (
     WeeklyBacktestSpec,
     WeeklyPredictionPoint,
     build_weekly_backtest_rows,
+    compact_weekly_benchmark_rows,
 )
 from backtests.repository import clean_json
 from shared.calendar_service import get_calendar
@@ -203,7 +204,7 @@ def validate_original_benchmark_rows(
         )
         _assert_equal(
             str(actual.get("target_tenor")),
-            str(expected.get("tenor")),
+            _expected_target_tenor(expected),
             f"tenor mismatch {key_label}",
         )
         _assert_equal(
@@ -252,14 +253,18 @@ def _expected_direction(row: pd.Series) -> int | None:
     return _int_or_none(value)
 
 
+def _expected_target_tenor(row: pd.Series) -> str | None:
+    return _text_or_none(row.get("target_tenor")) or _text_or_none(row.get("tenor"))
+
+
 def _benchmark_key(row: pd.Series) -> tuple[tuple[Any, ...], str]:
     week_id = _int_or_none(row.get("feature_week_id"))
     if week_id is not None:
         return ("week", week_id), f"feature_week_id={week_id}"
 
-    predict_date = _text_or_none(row.get("predict_date"))
+    predict_date = _text_or_none(row.get("predict_date")) or _text_or_none(row.get("feature_date"))
     target_date = _expected_target_date(row)
-    tenor = _text_or_none(row.get("tenor"))
+    tenor = _expected_target_tenor(row)
     if predict_date and target_date and tenor:
         key = ("date", predict_date, target_date, tenor)
         label = f"predict_date={predict_date}, target_date={target_date}, tenor={tenor}"
@@ -289,18 +294,7 @@ def _assert_equal(actual: Any, expected: Any, message: str) -> None:
 
 def compact_prediction_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """生成 CompareGate 与人工验收用紧凑预测序列。"""
-    compact: list[dict[str, Any]] = []
-    for row in rows:
-        compact.append(
-            {
-                "predict_date": str(row["predict_date"]),
-                "target_date": str(row["target_date"]),
-                "target_tenor": str(row["target_tenor"]),
-                "predicted_direction": _int_or_none(row.get("predicted_direction")),
-                "confidence": _float_or_none(row.get("confidence")),
-            }
-        )
-    return compact
+    return compact_weekly_benchmark_rows(list(rows))
 
 
 def run_weekly_7y_cross_d_overlay_0529_reproduction(

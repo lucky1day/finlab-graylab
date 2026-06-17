@@ -376,7 +376,7 @@ touch schemes/t1_lgbm_spread_v2/core/__init__.py
 
 ### Step 5a: Benchmark Sample 准备（为 CompareGate 提供对比基准）
 
-CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输出与原始算法是否一致。它们必须放在 `schemes/{scheme_id}/benchmarks/` 目录下；根目录 `benchmarks/{benchmark_id}/` 只用于保存批次级 canonical 输入归档，例如 `benchmarks/model_muti_0529/daily_output.csv`，不能把它当作逐方案 CompareGate baseline。
+CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输出与原始算法是否一致。它们必须放在 `schemes/{scheme_id}/benchmarks/` 目录下；根目录 `benchmarks/{benchmark_id}/` 只用于保存批次级外部来源证据归档，例如 `benchmarks/model_muti_0529/daily_output.csv`，不能把它当作逐方案 CompareGate baseline 或 active runner 默认输入。
 
 | 文件 | 内容 |
 |------|------|
@@ -467,13 +467,12 @@ python -m scripts.run_framework_repro --scheme-id <scheme_id> --algo-env forecas
 
 ```python
 """{scheme_id} 历史回测复现。"""
-from pathlib import Path
 from backtests._base_runner import BacktestSpec, BaseDailyBacktestRunner
 
 SPEC = BacktestSpec(
     benchmark_id="{benchmark_id}",
     scheme_id="{scheme_id}",
-    canonical_csv=Path("benchmarks/{benchmark_id}/daily_output.csv"),
+    canonical_csv=None,  # 默认 DB-first；外部 CSV 只允许放在显式 source-evidence/audit 分支
     target_columns=("TB0YWI0C",),  # 方案关注的收益率列
     start_date="2025-01-01",
     end_date="YYYY-MM-DD",
@@ -493,6 +492,8 @@ if __name__ == "__main__":
     output = runner.run_framework_db_aligned(persist=not args.no_persist)
     print(output.summary)
 ```
+
+若必须复核入库前外部批次文件，只能新增显式 `--include-source-evidence` / audit 路径读取 `benchmarks/{benchmark_id}/...`，不得让 active runner 默认执行路径依赖根目录 `benchmarks/`。
 
 **周频 runner** 参照 `backtests/weekly_5y_direct_0529_reproduction.py`。周频 runner 不继承 `BaseDailyBacktestRunner`，而是直接导入方案的 core 算法循环逐周预测。Runner 必须：
 - 从 `shared.input_artifacts.build_weekly_input_artifact()` 获取输入。
