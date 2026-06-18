@@ -69,10 +69,12 @@ bond-factor-lab/
 ├── backtests/         # 历史回测 runner
 ├── harness/           # 强约束 gate 与授权
 ├── frontend/          # 原生 HTML/CSS/JS 因子实验室页面
-├── benchmarks/        # canonical 历史基准输入
+├── source_evidence/   # 外部来源证据归档（benchmark_batches/{benchmark_id}/）
 ├── backtest_artifacts/ # 运行期输入与回测产物（gitignore）
 ├── reports/           # 审计与 harness 报告（gitignore）
 ├── migrations/        # SQL 迁移脚本
 ├── deploy/            # launchd plist
 └── docs/              # 文档入口见 docs/README.md
 ```
+
+逐方案 CompareGate 基线固定放在 `schemes/{scheme_id}/benchmarks/`；`source_evidence/` 只做外部交付原始证据归档，不作为 active runner 默认输入。

@@ -8,16 +8,17 @@ from unittest.mock import patch
 
 
 class PostOnboardScriptTests(unittest.TestCase):
-    def test_run_baseline_static_csv_writes_json_contract(self) -> None:
+    def test_run_baseline_reads_per_scheme_static_benchmark(self) -> None:
         from scripts.run_baseline import run_baseline
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             _write_scheme_config(root, "demo_daily")
-            benchmark = root / "source_evidence" / "benchmark_batches" / "model_muti_0529"
+            benchmark = root / "schemes" / "demo_daily" / "benchmarks"
             benchmark.mkdir(parents=True)
-            (benchmark / "daily_output.csv").write_text(
-                "date,TB0YWI0C\n2026-06-05,1.7\n",
+            (benchmark / "original_predictions_sample.csv").write_text(
+                "feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct\n"
+                "2026-06-04,2026-06-05,10Y,1,1,0.7,1,1\n",
                 encoding="utf-8",
             )
             output_dir = root / "reports" / "demo_daily"
@@ -31,7 +32,49 @@ class PostOnboardScriptTests(unittest.TestCase):
             output_path = Path(payload["evidence"]["output_path"])
             self.assertTrue(output_path.exists())
             rows = json.loads(output_path.read_text(encoding="utf-8"))
-            self.assertEqual(rows[0]["predict_date"], "2026-06-05")
+            self.assertEqual(rows[0]["feature_date"], "2026-06-04")
+            self.assertEqual(rows[0]["target_date"], "2026-06-05")
+            self.assertEqual(rows[0]["target_tenor"], "10Y")
+            self.assertEqual(rows[0]["predicted_direction"], 1)
+            self.assertEqual(rows[0]["confidence"], 0.7)
+
+    def test_run_baseline_rejects_source_evidence_batch_as_static_benchmark(self) -> None:
+        from scripts.run_baseline import run_baseline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _write_scheme_config(root, "demo_daily")
+            source_evidence = root / "source_evidence" / "benchmark_batches" / "model_muti_0529"
+            source_evidence.mkdir(parents=True)
+            (source_evidence / "daily_output.csv").write_text(
+                "date,TB0YWI0C\n2026-06-05,1.7\n",
+                encoding="utf-8",
+            )
+
+            payload, exit_code = run_baseline("demo_daily", output_dir=root / "reports", project_root=root)
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertTrue(any("missing per-scheme benchmark CSV" in item for item in payload["errors"]))
+
+    def test_run_baseline_rejects_static_benchmark_missing_required_fields(self) -> None:
+        from scripts.run_baseline import run_baseline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            _write_scheme_config(root, "demo_daily")
+            benchmark = root / "schemes" / "demo_daily" / "benchmarks"
+            benchmark.mkdir(parents=True)
+            (benchmark / "original_predictions_sample.csv").write_text(
+                "date,TB0YWI0C\n2026-06-05,1.7\n",
+                encoding="utf-8",
+            )
+
+            payload, exit_code = run_baseline("demo_daily", output_dir=root / "reports", project_root=root)
+
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(payload["status"], "blocked")
+            self.assertTrue(any("missing required columns" in item for item in payload["errors"]))
 
     def test_run_framework_repro_extracts_matching_framework_run(self) -> None:
         from scripts.run_framework_repro import run_framework_repro

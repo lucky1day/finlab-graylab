@@ -296,13 +296,16 @@ def root_benchmark_runtime_dependency_violations(path: Path, tree: ast.AST) -> l
     audit / archive 路径保留；runner 默认输入必须来自 shared.input_artifacts。
     """
     violations: list[RuleViolation] = []
+    tainted_names = _external_source_assigned_names(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             source_kind = _external_source_path_kind(node.value)
+            source_kind = source_kind or _tainted_external_source_kind(node.value, tainted_names)
             if source_kind and not _targets_mark_source_evidence(node.targets):
                 violations.append(_external_source_path_violation(path, node.lineno, source_kind))
         elif isinstance(node, ast.AnnAssign):
             source_kind = _external_source_path_kind(node.value) if node.value is not None else None
+            source_kind = source_kind or _tainted_external_source_kind(node.value, tainted_names)
             if (
                 source_kind
                 and not _targets_mark_source_evidence([node.target])
@@ -325,6 +328,7 @@ def root_benchmark_runtime_dependency_violations(path: Path, tree: ast.AST) -> l
                 source_kind = _external_source_path_kind(default)
                 if source_kind:
                     violations.append(_external_source_path_violation(path, node.lineno, source_kind))
+    violations.extend(_tainted_source_return_violations(path, tree, tainted_names))
     return violations
 
 
@@ -365,6 +369,76 @@ def _name_marks_source_evidence(name: str) -> bool:
     return any(marker in upper for marker in ROOT_BENCHMARK_ALLOWED_NAME_MARKERS)
 
 
+def _external_source_assigned_names(tree: ast.AST) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            source_kind = _external_source_path_kind(node.value)
+            if source_kind:
+                for name in _target_names_for_taint(node.targets):
+                    names[name] = source_kind
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            source_kind = _external_source_path_kind(node.value)
+            if source_kind:
+                for name in _target_names_for_taint([node.target]):
+                    names[name] = source_kind
+    return names
+
+
+def _target_names_for_taint(targets: Iterable[ast.AST]) -> list[str]:
+    names: list[str] = []
+    for target in targets:
+        for name in _target_names(target):
+            names.append(name)
+    return names
+
+
+def _tainted_external_source_kind(node: ast.AST | None, tainted_names: dict[str, str]) -> str | None:
+    if node is None:
+        return None
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in tainted_names:
+            return tainted_names[child.id]
+    return None
+
+
+def _tainted_source_return_violations(
+    path: Path,
+    tree: ast.AST,
+    tainted_names: dict[str, str],
+) -> list[RuleViolation]:
+    if not tainted_names:
+        return []
+
+    violations: list[RuleViolation] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.function_stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.function_stack.append(node.name)
+            self.generic_visit(node)
+            self.function_stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.function_stack.append(node.name)
+            self.generic_visit(node)
+            self.function_stack.pop()
+
+        def visit_Return(self, node: ast.Return) -> None:
+            source_kind = _tainted_external_source_kind(node.value, tainted_names)
+            if source_kind and not self._in_explicit_source_context():
+                violations.append(_external_source_path_violation(path, node.lineno, source_kind))
+            self.generic_visit(node)
+
+        def _in_explicit_source_context(self) -> bool:
+            return bool(self.function_stack) and _name_marks_source_evidence(self.function_stack[-1])
+
+    Visitor().visit(tree)
+    return violations
+
+
 def _external_source_path_kind(node: ast.AST | None) -> str | None:
     if node is None:
         return None
@@ -402,6 +476,8 @@ def _literal_path_segments(node: ast.AST) -> list[str] | None:
         if left is None and right is None:
             return None
         return (left or [UNKNOWN_PATH_SEGMENT]) + (right or [UNKNOWN_PATH_SEGMENT])
+    if isinstance(node, ast.Call) and call_name(node.func) == "benchmark_source_evidence_root":
+        return ["source_evidence", "benchmark_batches", UNKNOWN_PATH_SEGMENT]
     if isinstance(node, ast.Call) and call_name(node.func) == "Path" and node.args:
         segments: list[str] = []
         for arg in node.args:
