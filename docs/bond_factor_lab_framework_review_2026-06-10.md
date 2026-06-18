@@ -86,7 +86,7 @@ APScheduler cron（每方案独立，来自 config.yaml schedule.cron）
 
 ```
 python -m backtests.{scheme}_reproduction [--no-persist]
-  → build_db_aligned_daily/weekly（经 shared.input_artifacts，按 canonical CSV 对齐日期）
+  → 默认经 shared.input_artifacts 走 DB-first 输入；显式 audit/source-evidence 模式才读取外部批次 CSV 做只读对照
   → 方案算法逐历史点预测
   → persist: create_backtest_run（纯 INSERT append）+ replace_backtest_predictions
     （旧月度汇总写入后续已删除）
@@ -135,11 +135,11 @@ python -m harness onboard {id} --stage all
 
 ### 第 3 步：回测 benchmark 复现对比
 
-- **状态**：部分满足。
-- **证据**：CompareGate 严格容差（方向匹配率必须 1.0、confidence ≤1e-8、metric ≤0.001，compare_gate.py:14-17）；BacktestGate baseline diff（backtest_gate.py:72-97）；CURRENT_STATUS 记录 weekly 方案 S5 方向差异 0。
-- **风险**：**CompareGate 在 `schemes/{id}/benchmarks/original_predictions_sample.csv` 缺失时 SKIPPED 且 passed=True，不阻断 `--stage all`**。即"平台改造是否保持算法行为一致"这一灰度实验室的核心验证，可以被静默跳过。BacktestGate 首跑自举 baseline（自己跟自己比），首个 baseline 的正确性无 gate 担保。
-- **建议**：config.yaml 增加 `benchmark.required: true` 字段；为 true 时 CompareGate SKIP 改 FAIL。BacktestGate 自举时在 evidence 中显式标注 `bootstrap=true` 并要求人工确认。
-- **优先级**：**P1**。
+- **状态**：已收敛到强约束范式。
+- **证据**：CompareGate 严格容差（方向匹配率必须 1.0、confidence ≤1e-8、metric ≤0.001，compare_gate.py:14-17）；`backtest.benchmark_required=true` 的方案缺少 `schemes/{id}/benchmarks/original_predictions_sample.csv` 会 fail-closed；BenchmarkParadigm 测试要求 original/current 使用 `feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct` 严格字段；BacktestGate baseline diff（backtest_gate.py:72-97）；CURRENT_STATUS 记录 weekly 方案 S5 方向差异 0。
+- **风险**：纯框架实验方案若显式没有 original benchmark，仍需在 `CURRENT_STATUS.md` 说明 CompareGate 可跳过的业务理由；BacktestGate 首跑自举 baseline 的正确性仍需人工确认。
+- **建议**：继续保留 `backtest.benchmark_required: true` 作为新增方案默认要求；BacktestGate 自举时在 evidence 中显式标注 `bootstrap=true` 并要求人工确认。
+- **优先级**：P2。
 
 ### 第 4 步：回测结果写库
 

@@ -461,6 +461,8 @@ python -m scripts.run_baseline --scheme-id <scheme_id>
 python -m scripts.run_framework_repro --scheme-id <scheme_id> --algo-env forecast_env
 ```
 
+`scripts.run_baseline` 也必须遵守逐方案基准范式：优先运行该方案归档的 `legacy_*.py`；没有 legacy 脚本时，只读取 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv`，并强制检查 `feature_date,target_date,target_tenor,horizon,direction(or predicted_direction),confidence,label,is_correct`。它不得从 `source_evidence/benchmark_batches/{benchmark_id}/` 兜底读取批次 CSV；若当前只有批次级 source-evidence，必须先通过受控重建脚本生成逐方案 benchmark 后再进入本步。
+
 新增方案如果还没有通用 backtest runner，需要先补 runner。runner 放在 `backtests/` 下，命名规则为 `{scheme_id}_reproduction.py`。runner 继承 `backtests._base_runner.BaseDailyBacktestRunner`（日频）或参照 `backtests.weekly_5y_direct_0529_reproduction` 的格式（周频）。
 
 **日频 runner 最小模板**：
@@ -472,7 +474,7 @@ from backtests._base_runner import BacktestSpec, BaseDailyBacktestRunner
 SPEC = BacktestSpec(
     benchmark_id="{benchmark_id}",
     scheme_id="{scheme_id}",
-    canonical_csv=None,  # 默认 DB-first；外部 CSV 只允许放在显式 source-evidence/audit 分支
+    canonical_csv=None,  # 历史兼容字段；普通 runner 必须保持 None，默认 DB-first
     target_columns=("TB0YWI0C",),  # 方案关注的收益率列
     start_date="2025-01-01",
     end_date="YYYY-MM-DD",
@@ -493,7 +495,7 @@ if __name__ == "__main__":
     print(output.summary)
 ```
 
-若必须复核入库前外部批次文件，只能新增显式 `--include-source-evidence` / audit 路径读取 `source_evidence/benchmark_batches/{benchmark_id}/...`，不得让 active runner 默认执行路径依赖 `source_evidence/`。
+若必须复核入库前外部批次文件，只能新增显式 `--include-source-evidence` / audit 路径读取 `source_evidence/benchmark_batches/{benchmark_id}/...`；变量、函数和 CLI 参数都必须带 `SOURCE_EVIDENCE` / `source_evidence` / `audit` 等显式语义。不得让 active runner 默认执行路径依赖 `source_evidence/`，也不得把 source-evidence CSV 填进 `canonical_csv`。
 
 **周频 runner** 参照 `backtests/weekly_5y_direct_0529_reproduction.py`。周频 runner 不继承 `BaseDailyBacktestRunner`，而是直接导入方案的 core 算法循环逐周预测。Runner 必须：
 - 从 `shared.input_artifacts.build_weekly_input_artifact()` 获取输入。

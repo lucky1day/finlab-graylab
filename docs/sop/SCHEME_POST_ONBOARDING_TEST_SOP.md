@@ -77,7 +77,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S1 通过 |
-| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **逐方案静态基准文件**：入库前固化的基准输出，必须落在 `schemes/{scheme_id}/benchmarks/`，含逐样本 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction(or predicted_direction)`、`confidence`。`source_evidence/benchmark_batches/{benchmark_id}/` 只表示批次级外部来源证据归档，不能直接作为逐方案 CompareGate baseline 或 active runner 默认输入。 |
+| **动作** | 检查该方案是否存在**入库前版本回测定义**。合法形态二选一（优先级从高到低）：<br>① **可重跑原始脚本**：入库前原始算法脚本（如 `docs/legacy_sources/legacy_*0529.py` 或 scheme core 内归档的 legacy 模块），能跨历史窗口产出预测序列；<br>② **逐方案静态基准文件**：入库前固化的基准输出，必须落在 `schemes/{scheme_id}/benchmarks/`，含逐样本 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction(or predicted_direction)`、`confidence`。`source_evidence/benchmark_batches/{benchmark_id}/` 只表示批次级外部来源证据归档；仅有 source-evidence 批次文件不满足 S2，不能直接作为逐方案 CompareGate baseline 或 active runner 默认输入。 |
 | **成功判定** | ①或②至少存在其一，且能定位到具体文件/模块路径 |
 | **成功→去向** | 进入 S3（记录采用的是脚本复现还是静态基准） |
 | **失败判定** | 两种形态都不存在，或存在但无法定位/不含逐样本方向 |
@@ -92,7 +92,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S2 通过，已确定版本回测定义形态 |
-| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`，并同步生成 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv`。<br>**形态②（静态）**：直接读入库前逐方案静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `feature_date/target_date/target_tenor/horizon/predicted_direction/confidence`）。若历史归档原始文件只有 `predict_date/date/tenor` 等旧列名，必须先通过受控重建脚本产出新格式逐方案 benchmark；不得让 CompareGate 对 `benchmark_required=true` 的方案静默回退到旧列名。 |
+| **动作** | **形态①（脚本）**：重跑入库前原始脚本，产出基准预测序列，存 `reports/postonboard/{scheme_id}/baseline_original.json`，并同步生成 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv`。<br>**形态②（静态）**：直接读入库前逐方案静态基准文件，规整为同结构 `baseline_original.json`（逐样本 `feature_date/target_date/target_tenor/horizon/predicted_direction/confidence`）。`scripts.run_baseline` 必须按这个顺序执行：有 `legacy_*.py` 则跑脚本，否则只读 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv`；不得从 `source_evidence/benchmark_batches/{benchmark_id}/` 兜底。若历史归档原始文件只有 `predict_date/date/tenor` 等旧列名，必须先通过受控重建脚本产出新格式逐方案 benchmark；不得让 CompareGate 对 `benchmark_required=true` 的方案静默回退到旧列名。 |
 | **成功判定** | 基准序列成功生成、样本数 > 0、含必需字段 |
 | **成功→去向** | 进入 S4 |
 | **失败判定** | 原始脚本报错跑不出、或静态文件损坏/字段缺失 |
@@ -147,8 +147,8 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S6 落库成功，得 run_id |
-| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × task_type × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 对同一前端任务格子 / 同一 `task_type` 列下的候选方案做样本覆盖对齐：导出各方案 `target_date` 集合，确认相同 target 覆盖窗口内样本总数一致，若不一致必须输出 missing/extra target-date 清单或引用已批准的算法有效信号例外；⑤ 用 source benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行查 `t_scheme_predictions.feature_date` 和 `prediction_phase` |
-| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；同一 `task_type` 列的候选方案样本总数一致，或已有明确 missing/extra 与批准例外说明；source benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致 |
+| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × task_type × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 对同一前端任务格子 / 同一 `task_type` 列下的候选方案做样本覆盖对齐：导出各方案 `target_date` 集合，确认相同 target 覆盖窗口内样本总数一致，若不一致必须输出 missing/extra target-date 清单或引用已批准的算法有效信号例外；⑤ 用逐方案 original benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行查 `t_scheme_predictions.feature_date` 和 `prediction_phase` |
+| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；同一 `task_type` 列的候选方案样本总数一致，或已有明确 missing/extra 与批准例外说明；逐方案 original benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致 |
 | **成功→去向** | 进入 S8 |
 | **失败判定** | 任一前端数值与 DB 不符 |
 | **失败→去向** | 先排除浏览器静态资源缓存（强制刷新/Disable Cache），再回到 **S7 起点重新刷新**（必要时回 S6 重新落库）。"所有回测结果必须严格验证完毕"方可放行 |

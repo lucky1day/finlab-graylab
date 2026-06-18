@@ -112,7 +112,7 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 
 ### 3.1 Benchmark 样本日期契约
 
-source benchmark 的日期字段表达原始算法站位日 T。进入平台后，T 必须对齐一等字段 `feature_date`，不能对齐实盘语义下的 `predict_date`。历史旧 CSV 若仍使用列名 `predict_date` 或 `date`，也只能解释为 source T；新增 benchmark 文件必须显式写入 `feature_date` 或 `source_t`。
+逐方案 original benchmark 的日期字段表达原始算法站位日 T；它存放在 `schemes/{scheme_id}/benchmarks/`，不同于 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。进入平台后，T 必须对齐一等字段 `feature_date`，不能对齐实盘语义下的 `predict_date`。历史旧 CSV 若仍使用列名 `predict_date` 或 `date`，也只能解释为 source T；新增 benchmark 文件必须显式写入 `feature_date` 或 `source_t`。
 
 benchmark 与数据库明细核验的主键为：
 
@@ -223,7 +223,7 @@ BacktestGate 去掉 `--no-persist` 落库后断言：
 | 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
 | 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
 | 日期语义 | 回测 rows 必须满足 `predict_date == feature_date`，不得读取或复制灰度/正式实盘记录 | 用 T+1 实盘结果冒充 T 回测结果 |
-| benchmark 对齐 | source benchmark 的 T 必须对齐 `t_backtest_predictions.feature_date`；若 target 已进入灰度/实盘观察区，则改与 `t_scheme_predictions.feature_date` 对齐 | 把原始算法站位日误当成实盘发出日，导致 T/T+1 错位 |
+| benchmark 对齐 | 逐方案 original benchmark 的 T 必须对齐 `t_backtest_predictions.feature_date`；若 target 已进入灰度/实盘观察区，则改与 `t_scheme_predictions.feature_date` 对齐 | 把原始算法站位日误当成实盘发出日，导致 T/T+1 错位 |
 
 ### 7.3 与现有机制的关系
 
