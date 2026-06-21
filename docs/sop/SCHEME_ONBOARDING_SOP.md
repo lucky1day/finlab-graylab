@@ -395,6 +395,8 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
+`current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与 live adapter、backtest runner 完全一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和 PIT 窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则 CompareGate 应暴露差异，不能为了通过 gate 把 current 写成 source batch。
+
 如果外部复现报告（Markdown、Excel、CSV 摘要等）已经给出月度指标，进入 CompareGate 前必须先确认该报告按哪个字段归月。源报告若按 source `date/T` 归月，则只能和 `original_predictions_sample.csv` 按 `feature_date` 重算的结果比较；前端、API、回测 latest 和 live metrics 的月度展示仍按 `target_date` 归月。不得把 source report 的 feature 月数字直接要求等于前端 target 月数字。
 
 `benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence`、`label`、`is_correct` 任一字段或值时，CompareGate 必须 fail-closed。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
@@ -563,6 +565,7 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 - 月度指标必须区分 `samples` 与 `metric_samples`：`samples` 是样本总数，包含预测为“平”的交易日或预测周；`metric_samples` 是所有准确率、precision、recall 指标的分母，只包含预测为“涨/跌”的有方向样本。
 - 若月内存在 `predicted_direction=0`，前端准确率括号必须展示 `correct/metric_samples`，不得展示 `correct/samples`；上涨/下跌准确率和召回率也必须排除这些“平”样本。
 - 对 source-backed 方案，最终前端/API 核验必须把逐方案 `original_predictions_sample.csv` 按灰度起点拆分：`target_date < gray_start` 的样本对齐 `/api/backtests/factor-lab` latest daily rows，`target_date >= gray_start` 的样本对齐 `/api/metrics/{registry_scheme_id}` live rows；`direction/confidence/label/is_correct` 必须逐行零差异，浮点 confidence 只允许既定容差。
+- 这个核验必须实际运行并保存/记录 diff 结论；CompareGate 只证明 benchmark 文件之间一致，不证明 latest backtest DB 或最终 live/API 已经与 benchmark 对齐。若出现 benchmark 文件一致但 `/api/backtests/factor-lab` 或 `/api/metrics` 不一致，方案不得宣称 Onboarding Complete。
 
 打开:
 
@@ -595,6 +598,8 @@ http://127.0.0.1:8100/
 Live Gate 是实盘写库边界，普通新增方案应在 Activation 和激活后 API Gate 通过之后执行；激活前只做 Dry-run、Backtest、Compare 和 API Readiness，不要求也不允许用 live 写库当作 activation 前置条件。不要用 broad scheduler run-once 或 `--include-paused` 作为 live 验证入口。
 
 执行单方案 live 写库必须使用 `live_write` 授权 token，并显式传入 `--prediction-phase gray_live` 或 `--prediction-phase scheduled_live`。灰度补齐使用 `gray_live`；只有 scheduler 在真实时钟自然触发的正式运行才标识为 `scheduled_live`。
+
+LiveGate 当前判定一次授权 live 写入必须带来新的 `t_scheme_predictions` 行数增量；它不适合作为已存在灰度行的 UPSERT 纠偏验收。若发现已写 gray_live 行口径错误，应先通过受控删除/重建流程或新增专门的 correction gate，再重新跑 LiveGate；不要把 LiveGate 的 failed 输出当作通过证据，即使底层 `execute_scheme` 已经成功覆盖了 prediction row。
 
 ```bash
 TOKEN=$(python -m harness auth issue \
