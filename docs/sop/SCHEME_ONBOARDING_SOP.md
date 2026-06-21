@@ -301,9 +301,17 @@ def run(predict_date: str) -> list[PredictionRecord]:
 | Unit Gate | 锁定 core 和 adapter 行为 | 单测覆盖 core 输出、adapter 输出、公共输入层调用、`PredictionRecord` 字段 |
 | Dry-run Gate | 只读运行方案 | `scheduler.scheme_runner` 返回 JSON，正式 prediction/run_log 行数不变 |
 | Backtest Gate | 历史回测可复现 | `--no-persist` summary 通过；授权后只写 `t_backtest_*` |
-| Live Gate | 受控写入单方案实盘预测 | 只写该 `scheme_id` 的 prediction/run_log，actuals 和源表不变 |
-| Activation | 启用自动调度 | 全部 gate 通过后才把 `status` 改为 `active` 并重启 scheduler |
+| API Readiness Gate | 激活前 API 就绪验收 | paused registry row 与 latest successful backtest 已就绪；`/api/backtests/factor-lab` 和 `/api/metrics/{registry_scheme_id}` 不泄漏 paused 行 |
+| Activation | 启用自动调度 | 全部自动 gate 通过后凭 token 把 `status` 改为 `active`，并同步 registry/version |
+| API Gate | 激活后 API 可见性验收 | active registry composite ID 已在 `/api/backtests/factor-lab` 或 `/api/metrics/{registry_scheme_id}` 可见 |
+| Live Gate | 激活后受控写入单方案实盘预测 | 只写该 `scheme_id` 的 prediction/run/log，actuals 和源表不变；必须显式传 `prediction_phase` |
 | Documentation | 留下审计证据 | 更新状态、测试、历史回测或上线观察文档 |
+
+完成状态必须分层记录，不能混用:
+
+- **Onboarding Complete**: 自动 gates、授权 backtest persist、activation、激活后 API Gate、gray_live 回补、scheduler 挂载验收均完成。此时方案已进入平台运行链路，但不要求已经观察到自然调度产生的正式实盘行。
+- **Production Observed**: scheduler 在真实时钟自然触发后，至少写入一条 `prediction_phase=scheduled_live` 的成功预测，并在 `t_scheme_runs/t_scheme_run_log` 与 `/api/metrics/{registry_scheme_id}` 中可追溯。
+- **Repository Closed**: 平台运行态验收完成后，代码、benchmark、测试和文档已经完成 git diff 审核、commit、push 或 PR。仓库收口是独立状态，不得用来替代平台运行态验收。
 
 ### Step 1: Intake - 确认方案身份
 
@@ -386,6 +394,8 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 | `current_backtest_summary.json` | 当前平台的月度指标摘要（与 original 同口径，内容应一致） |
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
+
+如果外部复现报告（Markdown、Excel、CSV 摘要等）已经给出月度指标，进入 CompareGate 前必须先确认该报告按哪个字段归月。源报告若按 source `date/T` 归月，则只能和 `original_predictions_sample.csv` 按 `feature_date` 重算的结果比较；前端、API、回测 latest 和 live metrics 的月度展示仍按 `target_date` 归月。不得把 source report 的 feature 月数字直接要求等于前端 target 月数字。
 
 `benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence`、`label`、`is_correct` 任一字段或值时，CompareGate 必须 fail-closed。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
 
@@ -552,6 +562,7 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 - 月度指标必须区分 `samples` 与 `metric_samples`：`samples` 是样本总数，包含预测为“平”的交易日或预测周；`metric_samples` 是所有准确率、precision、recall 指标的分母，只包含预测为“涨/跌”的有方向样本。
 - 若月内存在 `predicted_direction=0`，前端准确率括号必须展示 `correct/metric_samples`，不得展示 `correct/samples`；上涨/下跌准确率和召回率也必须排除这些“平”样本。
+- 对 source-backed 方案，最终前端/API 核验必须把逐方案 `original_predictions_sample.csv` 按灰度起点拆分：`target_date < gray_start` 的样本对齐 `/api/backtests/factor-lab` latest daily rows，`target_date >= gray_start` 的样本对齐 `/api/metrics/{registry_scheme_id}` live rows；`direction/confidence/label/is_correct` 必须逐行零差异，浮点 confidence 只允许既定容差。
 
 打开:
 
@@ -579,15 +590,24 @@ http://127.0.0.1:8100/
 4. 若已有历史回测结果，当前矩阵优先读取 backtest API，新方案需要写入 backtest 表才会参与历史排行。
 5. 方案是否返回合法 `task_type`；前端只按该字段分列，不再根据 `frequency/horizon` fallback。
 
-### Step 9: Live Gate - 手动写库验证
+### Step 9: Live Gate - 激活后受控写库验证
 
-dry-run 和回测 gate 通过后，才能在明确授权下执行单方案写库。不要用 broad scheduler run-once 或 `--include-paused` 作为 live 验证入口。需要通过调度器写库时，先把该方案 `status` 改为 `active`，再执行一次单方案调度器写库:
+Live Gate 是实盘写库边界，普通新增方案应在 Activation 和激活后 API Gate 通过之后执行；激活前只做 Dry-run、Backtest、Compare 和 API Readiness，不要求也不允许用 live 写库当作 activation 前置条件。不要用 broad scheduler run-once 或 `--include-paused` 作为 live 验证入口。
+
+执行单方案 live 写库必须使用 `live_write` 授权 token，并显式传入 `--prediction-phase gray_live` 或 `--prediction-phase scheduled_live`。灰度补齐使用 `gray_live`；只有 scheduler 在真实时钟自然触发的正式运行才标识为 `scheduled_live`。
 
 ```bash
-PYTHONNOUSERSITE=1 conda run -n bond_factor_lab_service python -m scheduler.executor \
-  2026-06-01 \
+TOKEN=$(python -m harness auth issue \
   --scheme-id t1_lgbm_spread_v2 \
-  --algo-env forecast_env
+  --action live_write \
+  --predict-date 2026-06-01 \
+  --issued-by operator)
+
+python -m harness gate live \
+  --scheme-id t1_lgbm_spread_v2 \
+  --predict-date 2026-06-01 \
+  --prediction-phase gray_live \
+  --authorize "$TOKEN"
 ```
 
 验收 SQL:
@@ -610,7 +630,7 @@ LIMIT 5;
 
 ### Step 10: Activation - 启用调度
 
-只有 Intake、Normalize、Input Gate、Static Gate、Unit Gate、Dry-run Gate、Backtest Gate、API/前端只读验证和 Live Gate 全部通过后，才允许进入 activation。周度方案还要确认 `schedule.cron` 与上游 weekly 首轮预测时间对齐。
+只有 Intake、Normalize、Input Gate、Static Gate、Unit Gate、Dry-run Gate、Compare Gate、Backtest Gate、API Readiness Gate 全部通过，并且授权 backtest persist 与 registry paused row 已就绪后，才允许进入 activation。Live Gate 是 activation 之后的受控写库验收，不作为 activation 前置条件。周度方案还要确认 `schedule.cron` 与上游 weekly 首轮预测时间对齐。
 
 **Step 10a（强制，不允许遗漏）：激活前必须完成"源文件原始回测 vs 入库后回测"逐样本对比**
 
@@ -619,14 +639,14 @@ LIMIT 5;
 激活前必须满足以下全部条件，**任何一条不满足都不允许激活**：
 
 1. **完成 [SCHEME_POST_ONBOARDING_TEST_SOP.md](SCHEME_POST_ONBOARDING_TEST_SOP.md) S3–S5**：
-	   - S3：用入库前原始脚本（或静态基准文件）跑出基准预测序列。
-	   - S4：用入库后的框架代码（同一数据接入层）跑出复现序列。
-	   - S5：逐样本对比，原始算法 source T 必须对齐平台 `feature_date`，**`predicted_direction` 方向零容差**（差一个样本即不一致），浮点 `1e-9` 容差。
+   - S3：用入库前原始脚本（或静态基准文件）跑出基准预测序列。
+   - S4：用入库后的框架代码（同一数据接入层）跑出复现序列。
+   - S5：逐样本对比，原始算法 source T 必须对齐平台 `feature_date`，**`predicted_direction` 方向零容差**（差一个样本即不一致），浮点 `1e-9` 容差。
 2. **benchmark 文件已落到 `schemes/{scheme_id}/benchmarks/`**（四份，见 Step 5a），且 `config.yaml` 中 `backtest.benchmark_required: true`。
 3. **CompareGate 状态必须是 `passed`，不能是 `skipped`**。`skipped` 意味着对比没有发生——对于新增方案这是不可接受的（`skipped` 仅对无原始基准的纯框架内实验方案可接受，且需在 CURRENT_STATUS 中显式说明原因）。
 4. 对比证据（matched 数、source T/feature_date 对齐口径、direction diff、confidence diff）写入 `docs/CURRENT_STATUS.md`；`confidence diff` 指 benchmark 两侧同一字段的浮点差异，不是新的模型指标。
 
-执行顺序建议：Step 7（回测落库）→ Step 10a（源 vs 入库对比 + benchmark 文件）→ 重跑 `harness onboard --stage all` 确认 CompareGate passed → Step 10（激活）。
+执行顺序建议：Step 7（回测落库）→ Step 10a（源 vs 入库对比 + benchmark 文件）→ 重跑 `harness onboard --stage all` 确认 CompareGate 和 ApiReadinessGate passed → Step 10（激活）→ 显式运行 `python -m harness gate api --scheme-id {scheme_id}` 做激活后验收。
 
 **Step 10b（强制，不允许遗漏）：激活后必须回补灰度实盘预测，覆盖 target_date 从灰度起点（2026-06-01）到当前**
 
@@ -635,8 +655,9 @@ LIMIT 5;
 回补规则：
 
 1. **回补范围**：所有 `target_date >= 2026-06-01`（当前 V28 批次灰度观察起点）至今应当存在的实盘预测。后续方案使用方案级灰度起点，不写死全局日期。
-   - 日频方案：每个交易日一条（从 6月1日 或激活日中较早者开始反推 predict_date）。
+   - 日频方案：每个目标交易日一条，先枚举 `target_date >= gray_start` 的应有目标日，再按平台交易日历反推 `feature_date = target_date - horizon 个交易日`，最后取 `predict_date = feature_date` 的下一交易日。不要只按 `predict_date >= gray_start` 枚举，否则会漏掉 feature 在 5 月、target 落在 6 月的 T+N 样本。
    - 周频方案：以 `target_date` 为准枚举应有目标周，再反推对应调度日；不要只从灰度起点之后的 `predict_date` 开始枚举。
+   - 例：日频 T+5 灰度起点为 2026-06-01 时，第一条目标日 `target_date=2026-06-01` 对应 `feature_date=2026-05-25`、`predict_date=2026-05-26`；该记录不能因为 `predict_date` 早于 6 月而遗漏。
    - 例：灰度起点为 2026-06-01 时，周度 2026-06 的第一条目标周是 `target_date=2026-06-05`，其预测发出日是上一轮周六 `predict_date=2026-05-30`；下一条才是 `predict_date=2026-06-06 -> target_date=2026-06-12`。
 2. **predict_date 取调度日历上应当发出的日期**，允许早于灰度起点（只要其 `target_date` 落在灰度起点之后），不允许全部填当前日期。
 3. **feature_date 是硬截止**：灰度补齐时必须证明 `feature_date=T`，且所有输入 artifact、辅助周/月映射和模型训练窗口均不越过 `feature_date`；禁止因为当前 DB 已有 `T+1` 或更晚数据而读入未来信息。
@@ -664,6 +685,7 @@ print(result)
    - [ ] 前端出现"实盘发出起点"分隔线；前端统一取该方案 live rows 的最小 `predict_date`，不再对周度方案按 target 月份反推。灰度区间与正式调度起点由 `phase_ranges` 展示。
    - [ ] 尚无 actuals 的 target 显示"待验证"（参考 5Y 周度方案的 06/12 行）。
    - [ ] 回补的预测在 `t_scheme_run_log` 有对应运行记录。
+   - [ ] 逐方案 `original_predictions_sample.csv` 跨灰度边界的样本已完成两段式前端/API 对齐：历史段对 `/api/backtests/factor-lab`，灰度/实盘段对 `/api/metrics/{registry_scheme_id}`，核心字段零差异。
 
 ### Step 11: Documentation - 文档留痕
 
@@ -689,6 +711,14 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 ```
+
+重启后必须先完成 scheduler 挂载验收；这只证明未来调度已注册，不等于已经产生 `scheduled_live`:
+
+- `launchctl print gui/$(id -u)/com.bond-factor-lab.scheduler` 或 `ps` 能看到 `python -m scheduler.main` 正在运行。
+- scheduler 启动日志包含 `Scheduled scheme {scheme_id} at {schedule.cron}`。
+- `t_scheme_registry` 中该 composite row 为 `status='active'`，且 `schedule_cron/schedule_timezone/deployed_at` 非空并与 `config.yaml` 一致。
+
+只有下一次真实调度时间到达后，DB 中出现该方案 `prediction_phase='scheduled_live'` 的成功 run，才能把状态从 **Onboarding Complete** 升级为 **Production Observed**。
 
 4. 观察下一次调度后的运行日志:
 
@@ -725,8 +755,11 @@ LIMIT 10;
 - [ ] `t_scheme_run_log` 有成功记录。
 - [ ] `/api/schemes` 和 `/api/metrics/{registry_scheme_id}` 返回正常；registry ID 必须来自 `t_scheme_registry.scheme_id`。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
+- [ ] source-backed 方案的 `original_predictions_sample.csv` 已按 `target_date` 分流到 backtest/live 两段完成 API 对齐，核心字段零差异。
 - [ ] `t_backtest_predictions` 明细逐行存在 `target_date`；缺失时必须修 runner 或数据，不允许通过前端/API fallback 放行。
 - [ ] active `t_scheme_registry` 行逐行存在 `deployed_at`；前端展示的部署时间来自 API/DB 字段，不来自默认值或 hardcoded override。
+- [ ] scheduler 挂载证据已记录：进程存在、日志包含 `Scheduled scheme ...`、registry cron/timezone/deployed_at 正确。
+- [ ] 已区分并记录当前状态是 `Onboarding Complete` 还是已观察到首条 `scheduled_live` 的 `Production Observed`。
 - [ ] 如为周度方案，live adapter 与历史 backtest runner 都通过 `build_weekly_input_artifact()` 生成算法输入。
 - [ ] 文档更新: 当前状态、方案说明、历史回测结论或测试记录。
 - [ ] Git 提交包含代码、配置和文档。

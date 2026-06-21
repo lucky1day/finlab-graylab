@@ -56,7 +56,7 @@ class BacktestGateBootstrapTests(unittest.TestCase):
 
             engine = SimpleNamespace(dispose=lambda: None)
             with patch("harness.gates.backtest_gate.snapshot_table_counts", side_effect=[{}, {}]):
-                with patch("harness.gates.backtest_gate.run_backtest_no_persist", return_value=current):
+                with patch("harness.gates.backtest_gate.run_backtest_no_persist", return_value=current) as runner:
                     result = BacktestGate().run(
                         GateContext(
                             scheme_id="demo_daily",
@@ -68,6 +68,7 @@ class BacktestGateBootstrapTests(unittest.TestCase):
                     )
 
             self.assertEqual(result.status, GateStatus.PASSED)
+            self.assertEqual(runner.call_args.kwargs["algo_env"], "forecast_env")
             self.assertTrue(result.passed, result.errors)
             evidence = _evidence_dict(result)
             self.assertTrue(evidence["baseline_bootstrapped"])

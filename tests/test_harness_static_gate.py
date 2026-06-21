@@ -1113,9 +1113,16 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
 
         self.assertEqual(
             sequence_for_stage("all"),
-            ["static", "input", "unit", "dry-run", "compare", "backtest", "api"],
+            ["static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness"],
         )
+        self.assertNotIn("api", sequence_for_stage("all"))
         self.assertNotIn("live", sequence_for_stage("all"))
+
+    def test_activation_history_requires_api_readiness_not_active_api(self) -> None:
+        from harness.gates.activate_gate import REQUIRED_ACTIVATE_GATES
+
+        self.assertIn("api-readiness", REQUIRED_ACTIVATE_GATES)
+        self.assertNotIn("api", REQUIRED_ACTIVATE_GATES)
 
     def test_orchestrator_fail_fast_stops_after_first_failure(self) -> None:
         from harness.context import GateContext

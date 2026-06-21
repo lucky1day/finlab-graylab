@@ -144,11 +144,12 @@
 6. Benchmark：准备 source/current benchmark。
 7. Dry-run Gate：只读运行，确认 `target_date`。
 8. Backtest Gate：`--no-persist` 验证后，授权 `--persist` 写库。
-9. API Gate：验证 `/api/metrics/{registry_scheme_id}` 和 `/api/backtests/factor-lab`；`registry_scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`，不得再使用 `?tenor=...`。
-10. All Gate：`python -m harness onboard {scheme_id} --stage all`。
-11. Activate：签发 token，activate，重启 scheduler。
-12. Live Backfill：按 `target_date` 回补实盘预测。
-13. Documentation：更新 `docs/CURRENT_STATUS.md`。
+9. API Readiness Gate：激活前验证 paused registry row、latest backtest，并确认 `/api/metrics/{registry_scheme_id}` 和 `/api/backtests/factor-lab` 不泄漏 paused 方案。
+10. All Gate：`python -m harness onboard {scheme_id} --stage all`（末段为 `api-readiness`，不是 active-only `api`）。
+11. Activate：签发 token，activate，并同步 registry/version。
+12. Post-activation API Gate：验证 active `/api/metrics/{registry_scheme_id}` 和 `/api/backtests/factor-lab`；`registry_scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`，不得再使用 `?tenor=...`。
+13. Live Backfill：按 `target_date` 回补实盘预测。
+14. Documentation：更新 `docs/CURRENT_STATUS.md`。
 
 没有 gate 证据，不得宣称方案完成或 live ready。
 

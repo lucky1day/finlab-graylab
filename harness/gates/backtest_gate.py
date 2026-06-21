@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -76,9 +75,20 @@ class BacktestGate(Gate):
                     )
                 audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
                 mark_token_used(auth, used_tokens_path(ctx.project_root))
-                current = run_backtest_runner(runner, ctx.project_root, ctx.timeout_sec, persist=True)
+                current = run_backtest_runner(
+                    runner,
+                    ctx.project_root,
+                    ctx.timeout_sec,
+                    persist=True,
+                    algo_env=ctx.algo_env,
+                )
             else:
-                current = run_backtest_no_persist(runner, ctx.project_root, ctx.timeout_sec)
+                current = run_backtest_no_persist(
+                    runner,
+                    ctx.project_root,
+                    ctx.timeout_sec,
+                    algo_env=ctx.algo_env,
+                )
         finally:
             after = snapshot_table_counts(engine, PROTECTED_TABLES)
             if engine is not None and hasattr(engine, "dispose"):
@@ -138,14 +148,27 @@ class BacktestGate(Gate):
         )
 
 
-def run_backtest_no_persist(runner: str, project_root: Path, timeout_sec: int) -> dict[str, Any]:
-    return run_backtest_runner(runner, project_root, timeout_sec, persist=False)
+def run_backtest_no_persist(
+    runner: str,
+    project_root: Path,
+    timeout_sec: int,
+    *,
+    algo_env: str = "forecast_env",
+) -> dict[str, Any]:
+    return run_backtest_runner(runner, project_root, timeout_sec, persist=False, algo_env=algo_env)
 
 
-def run_backtest_runner(runner: str, project_root: Path, timeout_sec: int, persist: bool) -> dict[str, Any]:
+def run_backtest_runner(
+    runner: str,
+    project_root: Path,
+    timeout_sec: int,
+    persist: bool,
+    *,
+    algo_env: str = "forecast_env",
+) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONNOUSERSITE"] = "1"
-    cmd = [sys.executable, "-m", runner]
+    cmd = ["conda", "run", "-n", algo_env, "python", "-m", runner]
     if not persist:
         cmd.append("--no-persist")
     completed = subprocess.run(

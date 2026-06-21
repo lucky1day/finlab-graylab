@@ -1,6 +1,6 @@
 # 当前状态
 
-**更新日期**: 2026-06-15
+**更新日期**: 2026-06-20
 
 > 2026-06-14 文档已按当前 DB、代码目录、live 语义修复和 latest 回测重建状态刷新。新增方案入口统一为 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)；平台统一使用 `predict_date`（信号发出日）、`feature_date`（数据截止日/预测站位日）、`target_date`（验证目标日）。日频与周频月度统计、明细日期均按 `target_date` 归属；灰度实盘与正式实盘需通过 `prediction_phase=gray_live/scheduled_live` 区分。回测起点 `2025-01-01` 是输出样本起点，不是训练历史裁剪点。
 > 2026-06-14 追加 registry 单表 per-tenor 语义：`t_scheme_registry` 每一行就是前端/业务定义的一个方案，唯一身份为 composite `scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`。算法目录、scheduler、`PredictionRecord` 和 backtest 表继续使用 base `scheme_id`；前端、`/api/schemes`、`/api/metrics/{scheme_id}`、`/api/predictions?scheme_id=...` 和 `/api/backtests/factor-lab` 只使用 `status='active'` 的 registry composite `scheme_id`。`/api/metrics/{base_scheme_id}?tenor=...` 已废弃且不兼容；`paused` / `archived` registry 行只用于管理或审计，不进入当前前端/业务 API，也不允许 trigger 或 scheduler 新写入该 target。
@@ -13,7 +13,7 @@
 
 ## 总览
 
-当前代码侧保留七个 active 可调度方案：
+当前代码侧保留八个 active 可调度方案：
 
 | 方案 | 频率 | Horizon | Task Type | 目标 | 状态 |
 |------|------|---------|-----------|------|------|
@@ -24,6 +24,11 @@
 | `weekly_10y_d_overlay_0529` | `weekly` | 6 | `weekly_point` | `10Y` | `active` |
 | `daily_5y_2_v28` | `daily` | 5 | `T+5` | `5Y` | `active` |
 | `daily_7y_1_v28` | `daily` | 5 | `T+5` | `7Y` | `active` |
+| `liwei_0616_cons_sda_k3_div_k10` | `daily` | 5 | `T+5` | `5Y` | `active` |
+
+2026-06-20 新增并激活日频方案 `liwei_0616_cons_sda_k3_div_k10`，前端中文名为 `liwei_0616 5Y_01 SDA共识-DIV回退`，对应外部源模型 `5Y_01_cons_SDA_k_3_DIV_K_10`。该方案覆盖 `5Y`、horizon=5、task_type=`T+5`，使用 `STD/DIV/ACCWT` 三基线 `k=3` 共识，并以 `DIV_K=10` 做 streak-break fallback。代码侧按平台 PIT 口径入库：adapter 使用 `predict_date=T+1`、`feature_date=T`、`target_date=T+5`；backtest 使用 `predict_date=feature_date=T` 并排除 `target_date >= 2026-06-01` 的灰度/实盘区。strict benchmark 四件套已放入 `schemes/liwei_0616_cons_sda_k3_div_k10/benchmarks/`；confidence 采用确定性代理值（非零预测为 `1.0`，平为 `0.0`）。benchmark 已按源 `latest_oos_20260616` 完整覆盖 21 条 `2026-05-06..2026-06-03` 样本，original/current 主键为 `feature_date+target_date+target_tenor+horizon`，方向、label、confidence 全部一致；其中 `target_date >= 2026-06-01` 的行仅作为跨灰度边界 benchmark，不进入历史回测落库。最新无副作用验证：UnitGate 12/12、StaticGate、InputGate、Dry-run Gate、CompareGate、BacktestGate 均通过；Dry-run 样本为 `predict_date=2026-06-11`、`feature_date=2026-06-10`、`target_date=2026-06-17`、方向 `-1`，所有受保护表 delta 为 0。BacktestGate no-persist 输出 333 条、17 个月度格、`metric_samples=292`、`correct=168`、accuracy=57.5%，相对 baseline `diff_count=0`，所有受保护表 delta 为 0。审计注意：前两次 BacktestGate 曾因外部 `/Users/macstudio0/Documents/DataBridge/manage.py wind_backfill_worker --loop --interval 2` 在 gate 运行期间向 `api_wind_daily` 写入 `2026-06-20` 源数据而 fail-closed（两轮分别触发 `api_wind_daily` delta `+91`、`+1`），确认不是方案代码写库；最终通过是在临时 `SIGSTOP` DataBridge PID `3814/3816`、gate 结束后自动 `SIGCONT` 恢复的静止源库窗口内完成。2026-06-20 已通过受控 `POST /api/admin/registry/sync` 同步 registry，并用一次性 `backtest_persist` token 授权持久化回测，BacktestGate `--persist` 通过并落库 latest run_id=`120`、333 条明细，只写 `t_backtest_runs +1` 和 `t_backtest_predictions +333`，`t_backtest_monthly_metrics` 与所有源表/实盘表 delta 均为 0，授权审计路径为 `reports/harness/liwei_0616_cons_sda_k3_div_k10/20260620T112709Z/backtest_authorization/authorization.json`。2026-06-20 修正 harness 生命周期死锁：`stage=all` 末段改为 pre-activation `api-readiness`，active-only `api` 保留为激活后验收。`python -m harness onboard liwei_0616_cons_sda_k3_div_k10 --predict-date 2026-06-11 --stage all --timeout-sec 3600` 已通过，harness_run_id=`hr_20260620T160644Z_d2a15067a18f`；ApiReadinessGate 证据为 registry composite `liwei_0616_cons_sda_k3_div_k10__h5__5Y` 存在、latest backtest run_id=`120` 且 333 条明细、paused 时 public factor-lab/metrics 均不可见。随后 ActivationGate 使用一次性 `activate` token 通过，validation_scheme_version=`d9954b4056e8`，activated_scheme_version=`66b9a7c6f5fa`，`config.yaml.status=active`，DB registry row `status=active` 且 `deployed_at` 非空，`t_scheme_versions` 已登记 active 版本；授权审计路径为 `reports/harness/liwei_0616_cons_sda_k3_div_k10/20260620T164036Z/activation_authorization/authorization.json`。激活后 `python -m harness gate api --scheme-id liwei_0616_cons_sda_k3_div_k10 --api-base-url http://127.0.0.1:8100` 通过，`/api/backtests/factor-lab` 已展示该 composite ID，`/api/metrics/liwei_0616_cons_sda_k3_div_k10__h5__5Y` 返回 200，不再 404；已 `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler` 重启 scheduler，日志确认 `Scheduled scheme liwei_0616_cons_sda_k3_div_k10 at 3 7 * * 1-5` 并 `Scheduler started`。
+
+2026-06-21 按 SOP Step 10b 完成 `liwei_0616_cons_sda_k3_div_k10` 灰度实盘回补：使用 LiveGate + 一次性 `live_write` token 逐日写入 `prediction_phase=gray_live`，补齐 predict_date `2026-05-26..2026-06-18` 共 18 条，feature_date `2026-05-25..2026-06-17`，target_date 覆盖 `2026-06-01..2026-06-25`，run_id=`92..109`，每次 gate 只允许 `t_scheme_runs/t_scheme_predictions/t_scheme_run_log` 增量各 +1，源表与回测表 delta=0；DataBridge worker 在 gate 期间临时 `SIGSTOP` 并已恢复。`/api/metrics/liwei_0616_cons_sda_k3_div_k10__h5__5Y` 当前返回 18 条 live rows、phase_ranges=`gray_live 2026-05-26..2026-06-18 / target 2026-06-01..2026-06-25`。对 `original_predictions_sample.csv` 的 21 条 source OOS 样本做最终平台对齐：13 条命中 `/api/backtests/factor-lab` 历史 backtest daily_rows，8 条命中 `/api/metrics` 灰度 live daily_rows，按 `feature_date+target_date+target_tenor+horizon` 逐样本匹配，direction、label/actual、confidence、is_correct 全部 0 diff。注意 source md 的月度表按 `feature_date`/source date 归属，前端历史与 live metrics 按 `target_date` 归属，月度行不能跨口径直接比较。
 
 2026-06-10 新增周度方案 `weekly_5y_direct_0529`，按 [SCHEME_ONBOARDING_SOP](sop/SCHEME_ONBOARDING_SOP.md) 完整通过了 Intake → Normalize → Input/Static/Unit/Dry-run Gate → Live Gate → API 验证 → Activation 全流程。方案采用 3 规则加权投票算法（7Y-10Y 利差动量 + 5Y-10Y 利差反转 + 1Y 动量），所有 week_id↔日期 映射只读 `api_wind_date.week_id`，禁止日历公式计算。2026-06-13 删除严格 PIT 旧 run_id=`104` 后，按 source-original batch reproduction 重建 latest run_id=`109`，历史回测仍按灰度实盘起点截断到 `target_date < 2026-06-01`，monthly_rows=17，original benchmark 覆盖区间 71/71 matched。实盘/灰度 adapter 仍严格使用 `feature_date`、`end_week=feature_week_id`、`as_of_date=feature_date`。
 
@@ -45,8 +50,8 @@
 
 - `shared.calendar_service` 提供交易日历/周历查询单点入口，交易日判断只读 `t_trade_calendar.trade_flag`，`week_id_for_date` 只读 `api_wind_date.week_id`。
 - `shared.input_artifacts` 是所有预测 adapter 的输入文件生成入口；日频、周频、月频底层统一由 `shared.data_service` 生成输出宽表，artifact 层负责写出输入 CSV 并读回给算法。
-- `harness/` 包已实现 StaticGate、InputGate、UnitGate、DryRunGate、CompareGate、BacktestGate、ApiGate、LiveGate、ActivationGate，以及 contracts、table_guard、authorization、orchestrator、persistence、CLI。
-- `python -m harness onboard {scheme_id} --stage all` 可串联 static -> input -> unit -> dry-run -> compare -> backtest -> api；新增方案必须准备 benchmark 并让 CompareGate `passed`，不能把 `skipped` 当作完成证据。live/activate 不在 `all` 内，必须显式授权。
+- `harness/` 包已实现 StaticGate、InputGate、UnitGate、DryRunGate、CompareGate、BacktestGate、ApiReadinessGate、ApiGate、LiveGate、ActivationGate，以及 contracts、table_guard、authorization、orchestrator、persistence、CLI。
+- `python -m harness onboard {scheme_id} --stage all` 可串联 static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness；新增方案必须准备 benchmark 并让 CompareGate `passed`，不能把 `skipped` 当作完成证据。active-only `api`、live/activate 不在 `all` 内，必须显式运行或授权。
 
 周频共享基础设施保留：
 

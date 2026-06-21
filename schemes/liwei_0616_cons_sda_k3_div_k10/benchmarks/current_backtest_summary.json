@@ -1,0 +1,14 @@
+{
+  "benchmark_id": "liwei_0616_5y_01",
+  "benchmark_scope": "source_latest_oos_20260616_full_strict_feature_target",
+  "source_model_id": "5Y_01_cons_SDA_k_3_DIV_K_10",
+  "scheme_id": "liwei_0616_cons_sda_k3_div_k10",
+  "target_tenor": "5Y",
+  "horizon": 5,
+  "row_count": 21,
+  "samples": 21,
+  "metric_samples": 19,
+  "correct": 12,
+  "accuracy": 0.631578947368421,
+  "confidence_rule": "1.0 for non-zero prediction, 0.0 for flat prediction"
+}

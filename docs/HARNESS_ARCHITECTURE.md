@@ -84,7 +84,7 @@ python -m harness gate live \
   --authorize "$TOKEN"
 ```
 
-`--stage all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readonly。任何一步失败都停止（compare 缺 benchmark 时跳过，不阻断）。`live` 和持久化 backtest 不属于默认 `all`，必须显式授权。
+`--stage all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness。任何一步失败都停止（compare 缺 benchmark 时跳过，不阻断）。`api-readiness` 是激活前只读验收：允许 registry row 仍为 `paused`，但要求 registry/backtest 已就绪且 paused 行不会泄漏到 public API。active-only 的 `api` gate 只在 ActivationGate 成功后显式运行，验证前端/API 已可见。`live`、持久化 backtest、`activate` 不属于默认 `all`，必须显式授权。
 
 ---
 
@@ -99,9 +99,11 @@ python -m harness gate live \
 5. **Unit Gate**: 覆盖 core 输出、adapter 输出、公共输入层调用、`PredictionRecord` 字段。
 6. **Dry-run Gate**: 通过 `scheduler.scheme_runner` 返回 JSON，并确认 `t_scheme_predictions` / `t_scheme_run_log` 行数不变，同时校验 live 日期语义。
 7. **Backtest Gate**: 先 `--no-persist`，确认样本数、月度分布、准确率和最早 `predict_date >= 2025-01-01`；用户授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
-8. **Live Gate**: 用户授权并显式传 `prediction_phase` 后，只写该 `scheme_id` 的 prediction/run_log，不能触发其他方案。
-9. **Activation**: 通过全部 gate 后，才允许从 `paused` 改为 `active` 并重启 scheduler。
-10. **Documentation**: 更新状态、回测、测试记录和 harness 报告路径。
+8. **API Readiness Gate**: 激活前确认 paused registry row 与 latest backtest 已就绪，且 public API 不展示 paused 方案。
+9. **Activation**: 通过全部自动 gate 后，凭 token 从 `paused` 改为 `active`，并同步 registry/version。
+10. **API Gate**: 激活后确认 active registry composite ID 已在 public API 可见。
+11. **Live Gate**: 用户授权并显式传 `prediction_phase` 后，只写该 `scheme_id` 的 prediction/run_log，不能触发其他方案。
+12. **Documentation**: 更新状态、回测、测试记录和 harness 报告路径。
 
 ---
 
