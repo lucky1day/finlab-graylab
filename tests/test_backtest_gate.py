@@ -16,7 +16,11 @@ def _evidence_dict(result) -> dict:
     return {item.key: item.value for item in result.evidence}
 
 
-def _write_scheme_with_runner(project_root: Path, scheme_id: str = "demo_daily") -> Path:
+def _write_scheme_with_runner(
+    project_root: Path,
+    scheme_id: str = "demo_daily",
+    runner_args: list[str] | None = None,
+) -> Path:
     """写出一个带 backtest.runner 的最小方案 config，仅供 BacktestGate 使用。"""
     scheme_dir = project_root / "schemes" / scheme_id
     scheme_dir.mkdir(parents=True)
@@ -28,6 +32,7 @@ def _write_scheme_with_runner(project_root: Path, scheme_id: str = "demo_daily")
                 'name: "Demo"',
                 "backtest:",
                 "  runner: backtests.demo_daily_reproduction",
+                *([f"  runner_args: {json.dumps(runner_args)}"] if runner_args is not None else []),
                 "",
             ]
         ),
@@ -69,6 +74,7 @@ class BacktestGateBootstrapTests(unittest.TestCase):
 
             self.assertEqual(result.status, GateStatus.PASSED)
             self.assertEqual(runner.call_args.kwargs["algo_env"], "forecast_env")
+            self.assertEqual(runner.call_args.kwargs["runner_args"], [])
             self.assertTrue(result.passed, result.errors)
             evidence = _evidence_dict(result)
             self.assertTrue(evidence["baseline_bootstrapped"])
@@ -77,6 +83,39 @@ class BacktestGateBootstrapTests(unittest.TestCase):
             self.assertTrue(baseline_path.exists())
             written = json.loads(baseline_path.read_text(encoding="utf-8"))
             self.assertEqual(written, current)
+
+    def test_runner_args_are_passed_to_no_persist_runner_and_recorded(self) -> None:
+        current = {
+            "status": "success",
+            "scheme_id": "demo_daily",
+            "row_count": 3,
+            "monthly_count": 1,
+            "elapsed_sec": 12.5,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_scheme_with_runner(project_root, runner_args=["--batch-mode", "monthly"])
+            baseline_dir = project_root / "reports" / "refactor_baseline" / "demo_daily"
+            baseline_dir.mkdir(parents=True)
+            (baseline_dir / "backtest_no_persist.json").write_text(json.dumps(current), encoding="utf-8")
+
+            engine = SimpleNamespace(dispose=lambda: None)
+            with patch("harness.gates.backtest_gate.snapshot_table_counts", side_effect=[{}, {}]):
+                with patch("harness.gates.backtest_gate.run_backtest_no_persist", return_value=current) as runner:
+                    result = BacktestGate().run(
+                        GateContext(
+                            scheme_id="demo_daily",
+                            predict_date="2026-06-08",
+                            project_root=project_root,
+                            report_dir=project_root / "reports" / "harness" / "demo_daily",
+                            engine_factory=lambda: engine,
+                        )
+                    )
+
+        self.assertEqual(result.status, GateStatus.PASSED)
+        self.assertEqual(runner.call_args.kwargs["runner_args"], ["--batch-mode", "monthly"])
+        evidence = _evidence_dict(result)
+        self.assertEqual(evidence["runner_args"], ["--batch-mode", "monthly"])
 
     def test_baseline_present_uses_diff_path(self) -> None:
         baseline = {

@@ -135,6 +135,30 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_daily_backtest_runner_args_are_validated(self) -> None:
+        config = _base_config()
+        config["backtest"] = {
+            "runner": "backtests.demo",
+            "runner_args": ["--batch-mode", "monthly"],
+            "start_date": "2025-01-01",
+        }
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertEqual(errors, [])
+
+    def test_daily_backtest_runner_args_cannot_override_persist_semantics(self) -> None:
+        config = _base_config()
+        config["backtest"] = {
+            "runner": "backtests.demo",
+            "runner_args": ["--no-persist"],
+            "start_date": "2025-01-01",
+        }
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertIn("backtest.runner_args must not include --no-persist", errors)
+
     def test_weekly_backtest_requires_predict_start_date_2025_01_01(self) -> None:
         config = _base_config()
         config["scheme_id"] = "demo_weekly"

@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-15
+**更新日期**: 2026-06-21
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -25,8 +25,8 @@
 - 算法核心逻辑放在 `core/` 或独立模块里，`predict.py` 只做框架适配、输入准备和输出转换。
 - 方案不能直接写 `t_scheme_predictions`；统一由 `scheduler.executor` 写库，保证运行日志和 UPSERT 口径一致。
 - Y 标的展示名由数据库 `t_target_registry` 管理，`target_tenor` 只作为内部稳定 key。
-- 新方案默认先用 `status: paused` 验证；通过 dry-run、手动写库和 API 检查后再改为 `active`。
-- 当前 harness 设计已定，后续新增方案必须通过 Intake -> Normalize -> Input Gate -> Static Gate -> Unit Gate -> Dry-run Gate -> Backtest Gate -> Live Gate -> Activation -> Documentation；没有 gate 证据时不得宣称方案完成或 live ready。
+- 新方案默认先用 `status: paused` 验证；只允许 ActivationGate 在授权后把 config、registry 和 version 翻为 `active`。不得手动改 `status`、手写 registry SQL 或用 GET/API 探针触发同步来绕过生命周期。
+- 当前 harness 设计已定，后续新增方案必须通过 Intake/Normalize、Static/Input/Unit/Dry-run/Compare/Backtest/API Readiness、授权 backtest persist、ActivationGate、激活后 API Gate、gray_live 回补、scheduler 挂载和 Documentation；没有 gate 证据时不得宣称方案达到 Onboarding Complete，更不得宣称已经 Production Observed。
 
 ### 1.0 关键数据口径约定（2026-06-10 修订）
 
@@ -202,7 +202,7 @@ backtest:
 | `task_type` | 前端任务格子显式类型，必须是 `T+1` / `T+5` / `weekly_point` / `weekly_average` / `monthly`；前端不再按 `frequency/horizon` 猜列 |
 | `tenors` | 内部稳定 key，当前前端展示为 `1Y国债活跃/3Y国债活跃/5Y国债活跃/7Y国债活跃/10Y国债活跃`；新增方案如覆盖 `1Y` 可直接作为业务可见目标 |
 | `schedule.cron` | 当前日度 live 使用 `3 7 * * 1-5`；当前周度 live 使用 `30 11 * * 6` |
-| `status` | 新方案先用 `paused`；验证完成后再改 `active` |
+| `status` | 新方案初始用 `paused`；验证、persist 和激活授权通过后由 ActivationGate 翻为 `active`，不得手动编辑绕过 |
 
 如果新增了新的 Y 标的 key，还需要先写入 `t_target_registry`:
 
@@ -395,7 +395,9 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
-`current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与 live adapter、backtest runner 完全一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和 PIT 窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则 CompareGate 应暴露差异，不能为了通过 gate 把 current 写成 source batch。
+`current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与 live adapter、backtest runner 完全一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和 PIT 窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则 CompareGate 或方案 benchmark summary 必须暴露差异，不能为了通过 gate 把 current 写成 source batch。
+
+Source `latest_oos` / batch 文件只是一种 source evidence。对于 live-like 历史回测，canonical 结果必须按每个 `feature_date` 独立截止重建；如果一次性 batch 使用了更晚 test window、streak 状态、selector 状态或标签可见性，它可能和严格 PIT 结果不同。差异应记录在 `original_backtest_summary.json` / `current_backtest_summary.json` 的审计字段或方案 README 中，包括差异日期、source batch 方向、strict PIT 方向、基线票数或 fallback/streak 状态。不得手工补预测结果，也不得把 source batch 当作平台 live 口径真值。
 
 如果外部复现报告（Markdown、Excel、CSV 摘要等）已经给出月度指标，进入 CompareGate 前必须先确认该报告按哪个字段归月。源报告若按 source `date/T` 归月，则只能和 `original_predictions_sample.csv` 按 `feature_date` 重算的结果比较；前端、API、回测 latest 和 live metrics 的月度展示仍按 `target_date` 归月。不得把 source report 的 feature 月数字直接要求等于前端 target 月数字。
 
@@ -631,7 +633,7 @@ ORDER BY id DESC
 LIMIT 5;
 ```
 
-如果结果不正确，先把 `status` 改回 `paused`，修复后重新 dry-run。
+如果结果不正确，先停止后续写库/激活动作，按受控 correction 或 delete-and-rewrite 流程修复已写 gray/live 行；修复后从 Dry-run、Compare、Backtest 或 LiveGate 的相应入口重新验证。不得绕过授权生命周期来伪装回滚，也不得把 LiveGate UPSERT failed 当作通过证据。
 
 ### Step 10: Activation - 启用调度
 
@@ -739,10 +741,11 @@ LIMIT 10;
 
 如果新方案上线后异常:
 
-1. 先把 `config.yaml` 改为 `status: paused`。
-2. 重启 scheduler。
-3. 保留已经写入的预测和日志，不直接删除，便于追溯。
-4. 如误写入明显错误的预测数据，先导出待删除记录并确认范围，再执行 SQL 清理。
+1. 先停止 scheduler 或禁用该方案的未来调度入口，避免继续产生新写入。
+2. 通过授权生命周期路径将 registry/config/version 置为 `paused` 或等价停用状态；如果当前 harness 尚未提供 pause/deactivate gate，必须先补受控 admin 命令并留下授权证据，不得直接手改 `config.yaml` 或 registry SQL。
+3. 重启 scheduler，并确认日志不再注册该方案 job。
+4. 保留已经写入的预测和日志，不直接删除，便于追溯。
+5. 如误写入明显错误的预测数据，先导出待删除记录并确认范围，再用受控删除/重建脚本处理；不得散落手写 SQL 清理。
 
 禁止使用 `git reset --hard` 或直接回滚整库数据来处理单个方案问题。
 
@@ -756,9 +759,9 @@ LIMIT 10;
 - [ ] `config.yaml` 可被 `scheduler.discovery` 发现。
 - [ ] `predict.py` 暴露 `run(predict_date: str) -> list[PredictionRecord]`。
 - [ ] dry-run 成功，输出 JSON list。
-- [ ] 手动写库成功，`t_scheme_predictions` 条数符合预期。
+- [ ] 授权 backtest persist、gray_live backfill 或 scheduled live 写库成功；对应 gate/table_guard 证据显示只写允许表。
 - [ ] `t_scheme_run_log` 有成功记录。
-- [ ] `/api/schemes` 和 `/api/metrics/{registry_scheme_id}` 返回正常；registry ID 必须来自 `t_scheme_registry.scheme_id`。
+- [ ] 激活前 `api-readiness` 通过，激活后 active-only `api` gate 通过；registry ID 必须来自 `t_scheme_registry.scheme_id`。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
 - [ ] source-backed 方案的 `original_predictions_sample.csv` 已按 `target_date` 分流到 backtest/live 两段完成 API 对齐，核心字段零差异。
 - [ ] `t_backtest_predictions` 明细逐行存在 `target_date`；缺失时必须修 runner 或数据，不允许通过前端/API fallback 放行。

@@ -164,9 +164,11 @@ python -m harness onboard {scheme_id} --stage all
        ├─ InputGate    → shared.input_artifacts.build_*  (只读生成 artifact)
        ├─ UnitGate     → unittest（tests/*{scheme_id}*）
        ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(行数不变)
+       ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        ├─ BacktestGate → backtests/{id}_reproduction(--no-persist)
-       └─ ApiGate      → probes.api_probe(只读 /api)
+       └─ ApiReadinessGate → paused registry row + latest backtest + public API 不泄漏
   授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
+  激活后验收：ApiGate(active-only public API 可见性)
 ```
 
 详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。

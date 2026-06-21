@@ -1,6 +1,6 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-06-15
+**更新日期**: 2026-06-21
 
 > 当前文档入口以本文为准。历史评审报告保留原始语境，不作为最新状态来源；最新状态只看 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
 
@@ -15,6 +15,10 @@
 | [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) | 预测日期与实盘阶段强制语义：`predict_date` / `feature_date` / `target_date` / `prediction_phase` |
 
 > Registry 方案身份已收敛为单表 per-tenor 语义：前端和业务使用 `t_scheme_registry.scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`；算法目录、scheduler 和预测记录仍使用 base `scheme_id`。前端任务格子由 registry `target_tenor + task_type` 定义，`task_type ∈ {T+1, T+5, weekly_point, weekly_average, monthly}`，不再由 `frequency/horizon` 隐式推断。细节见 [ARCHITECTURE.md](ARCHITECTURE.md) §3.4 / §5 与 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md)。
+
+> 当前入库 `stage all` 固定为 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。`api-readiness` 是激活前 paused registry row 验收；active-only `api` gate、`live` 写库、backtest persist 和 activate 都是显式授权或激活后的步骤。
+
+> Source evidence 不等于平台 canonical benchmark。外部 `latest_oos` / batch 结果可以归档为来源证据，但只要平台采用 live-like PIT 口径，`current_predictions_sample.csv`、正式 backtest 和前端/API 对齐都必须由严格 PIT 入口生成；若 source batch 使用事后窗口导致差异，需在方案 summary 和踩坑文档中记录，不能把 batch 结果当作 live PIT 真值。
 
 ## 操作
 
@@ -37,6 +41,6 @@
 ## 阅读路径
 
 - **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → PREDICTION_SEMANTICS → SCHEME_CONTRACT → CURRENT_STATUS
-- **新增方案** → 先读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动
+- **新增方案** → 先读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动 pre-activation gates
 - **改 harness** → HARNESS_ARCHITECTURE；评审报告只作历史审计参考
 - **了解当前状态** → CURRENT_STATUS

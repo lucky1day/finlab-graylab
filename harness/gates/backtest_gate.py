@@ -36,6 +36,7 @@ class BacktestGate(Gate):
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         config = load_config_raw(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
         runner = _runner_from_config(config)
+        runner_args = _runner_args_from_config(config)
         if not runner:
             finished_at = utc_now()
             return GateResult(
@@ -81,6 +82,7 @@ class BacktestGate(Gate):
                     ctx.timeout_sec,
                     persist=True,
                     algo_env=ctx.algo_env,
+                    runner_args=runner_args,
                 )
             else:
                 current = run_backtest_no_persist(
@@ -88,6 +90,7 @@ class BacktestGate(Gate):
                     ctx.project_root,
                     ctx.timeout_sec,
                     algo_env=ctx.algo_env,
+                    runner_args=runner_args,
                 )
         finally:
             after = snapshot_table_counts(engine, PROTECTED_TABLES)
@@ -126,6 +129,7 @@ class BacktestGate(Gate):
             passed=status == GateStatus.PASSED,
             evidence=[
                 Evidence("runner", runner),
+                Evidence("runner_args", runner_args),
                 Evidence("persisted", ctx.persist_backtest),
                 Evidence("authorization_audit_path", str(audit_path) if audit_path else None),
                 Evidence("baseline_path", str(baseline_path)),
@@ -154,8 +158,16 @@ def run_backtest_no_persist(
     timeout_sec: int,
     *,
     algo_env: str = "forecast_env",
+    runner_args: list[str] | None = None,
 ) -> dict[str, Any]:
-    return run_backtest_runner(runner, project_root, timeout_sec, persist=False, algo_env=algo_env)
+    return run_backtest_runner(
+        runner,
+        project_root,
+        timeout_sec,
+        persist=False,
+        algo_env=algo_env,
+        runner_args=runner_args,
+    )
 
 
 def run_backtest_runner(
@@ -165,10 +177,12 @@ def run_backtest_runner(
     persist: bool,
     *,
     algo_env: str = "forecast_env",
+    runner_args: list[str] | None = None,
 ) -> dict[str, Any]:
     env = os.environ.copy()
     env["PYTHONNOUSERSITE"] = "1"
     cmd = ["conda", "run", "-n", algo_env, "python", "-m", runner]
+    cmd.extend(runner_args or [])
     if not persist:
         cmd.append("--no-persist")
     completed = subprocess.run(
@@ -240,6 +254,20 @@ def _runner_from_config(config: dict[str, Any]) -> str | None:
         return None
     runner = backtest.get("runner")
     return str(runner) if runner else None
+
+
+def _runner_args_from_config(config: dict[str, Any]) -> list[str]:
+    backtest = config.get("backtest")
+    if not isinstance(backtest, dict):
+        return []
+    raw_args = backtest.get("runner_args")
+    if raw_args is None:
+        return []
+    if not isinstance(raw_args, list) or not all(isinstance(item, str) and item for item in raw_args):
+        raise ValueError("backtest.runner_args must be a list of non-empty strings")
+    if "--no-persist" in raw_args:
+        raise ValueError("backtest.runner_args must not include --no-persist")
+    return list(raw_args)
 
 
 def _parse_json_object(output: str) -> dict[str, Any]:

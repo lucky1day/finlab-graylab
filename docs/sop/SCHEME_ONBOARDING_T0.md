@@ -118,6 +118,8 @@
 
 这里的 original benchmark 指 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv` 等逐方案基准文件，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。benchmark CSV 至少包含 `feature_date(or source_t)/target_date/tenor(or target_tenor)/direction/confidence`；周度方案还必须保留 `feature_week_id` 等审计列。历史旧列名 `predict_date/date` 只能解释为原始算法 source T，也就是平台 `feature_date`，不得解释为实盘信号发出日。月度指标、前端展示、回测/live 分区仍按 `target_date` 归属；跨灰度边界的 benchmark 样本要按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions` 核验。
 
+Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。若 batch 是一次性事后窗口生成，它可能包含 later test window、selector/streak 状态或标签可见性，与 live-like strict PIT 不一致。平台 canonical current/backtest/live 结果必须由每个 `feature_date` 独立截止的 PIT 入口生成；batch 只能作为 source evidence 归档，差异要写入 benchmark summary、方案 README 或踩坑文档。不得为了让 CompareGate 通过而复制 batch 输出，也不得手工补预测结果。
+
 纯框架内实验方案如果没有原始基准，必须在 `docs/CURRENT_STATUS.md` 明确说明为什么 CompareGate 可以没有 original benchmark。
 
 ## 6. 实盘回补按 target_date
@@ -151,7 +153,7 @@
 13. Live Backfill：按 `target_date` 回补实盘预测。
 14. Documentation：更新 `docs/CURRENT_STATUS.md`。
 
-没有 gate 证据，不得宣称方案完成或 live ready。
+没有 gate 证据，不得宣称方案达到 Onboarding Complete，更不得宣称已经 Production Observed。
 
 ## 8. T0 出口检查
 
@@ -165,6 +167,7 @@
 - [ ] 需要历史回测时，已声明统一输出样本起点：daily/monthly 用 `backtest.start_date: "2025-01-01"`，weekly 用 `backtest.predict_start_date: "2025-01-01"`。
 - [ ] 周度方案已明确 DB 周历、target week、`end_week=feature_week_id` 与 `as_of_date=feature_date` 规则。
 - [ ] 原始算法文件和逐方案 original benchmark 来源已定位；仅有 `source_evidence/` 批次文件不算完成。
+- [ ] 如源方提供 `latest_oos` / batch 结果，已确认它是 strict PIT 还是事后批量口径；若是批量口径，已规划 source evidence 与平台 canonical strict PIT 的差异记录。
 - [ ] 已选同频率参考方案和回测 runner。
 - [ ] 已确认只会改允许范围内文件。
 - [ ] 已计划 original-vs-onboarded 对比、回测落库、API 验证、激活、实盘回补和文档留痕。

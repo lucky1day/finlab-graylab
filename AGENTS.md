@@ -90,8 +90,9 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 ```bash
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
-# 自动段：static → input → unit → dry-run → backtest → api（fail-fast，退出码 0/1/2）
-# 副作用段（live 写库 / activate）不在 all 内，必须显式 --authorize <TOKEN>（fail-closed）
+# 自动段：static → input → unit → dry-run → compare → backtest → api-readiness（fail-fast，退出码 0/1/2）
+# 副作用段（backtest persist / live 写库 / activate）不在 all 内，必须显式 --authorize <TOKEN>（fail-closed）
+# 激活后再单独运行 active-only `api` gate 验收前端/API 可见性。
 ```
 
 新增方案前先读 T0 强约束范式 [docs/sop/SCHEME_ONBOARDING_T0.md](docs/sop/SCHEME_ONBOARDING_T0.md)，再按 [docs/sop/SCHEME_ONBOARDING_SOP.md](docs/sop/SCHEME_ONBOARDING_SOP.md) 执行；harness 边界见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。

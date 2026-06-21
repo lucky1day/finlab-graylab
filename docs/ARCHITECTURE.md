@@ -581,11 +581,12 @@ BOND_DB_NAME=bond_db
 
 1. `scheme_id` 表示具体方案实例，不表示 `Y标的 + task_type` 的任务格子。
 2. 一个 `scheme_id` 固定一个 `horizon`；同一算法若同时覆盖 T+1 和 T+5，应拆成两个方案目录。
-3. 新方案先 `status: paused` dry-run，再改为 `active` 手动写库验证。
+3. 新方案初始 `status: paused`，先通过 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`；只有 ActivationGate 可在授权后翻为 `active` 并同步 registry/version。
 4. `predict.py` 只返回 `PredictionRecord`，不直接写 `t_scheme_predictions`。
-5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要同步写入独立 backtest 表。
+5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要通过授权 backtest persist 写入独立 backtest 表。
 6. 新增方案必须遵守 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)：回测 `predict_date=feature_date=T`，实盘 `predict_date=T+1/feature_date=T`，灰度实盘与正式实盘通过 `prediction_phase` 区分。
 7. benchmark 验证必须用原始算法 source T 对齐平台 `feature_date`；跨灰度边界的样本按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions`。
+8. source `latest_oos` / batch 文件只作为来源证据；平台 canonical 回测和 live 验证必须按严格 PIT 入口生成，除非文档明确批准 source-original batch reproduction 例外。
 
 ---
 
@@ -616,10 +617,13 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 4. Static Gate: 静态扫描目录、命名、接口和危险导入。
 5. Unit Gate: 覆盖 core、adapter、公共输入层调用和 `PredictionRecord` 字段。
 6. Dry-run Gate: 通过 `scheduler.scheme_runner` 返回 JSON，且正式 prediction/run_log 行数不变，并校验 live 日期语义。
-7. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
-8. Live Gate: 授权并显式传入 `prediction_phase` 后，只写该 `scheme_id` 的 prediction/run_log。
-9. Activation: 全部通过后才允许从 `paused` 改为 `active`。
-10. Documentation: 更新状态、测试、回测和 harness 报告路径。
+7. Compare Gate: 对 source-backed 方案执行 original/current benchmark 严格对比，不能把 `skipped` 当作完成证据。
+8. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
+9. API Readiness Gate: 激活前确认 paused registry row、latest backtest 已就绪，且 public API 不泄漏 paused 方案。
+10. Activation: 全部自动 gate 通过后，凭 token 从 `paused` 翻为 `active`，并同步 registry/version。
+11. API Gate: 激活后确认 active registry composite ID 已在 public API 可见。
+12. Live Gate: 激活后授权并显式传入 `prediction_phase`，只写该 `scheme_id` 的 prediction/run/log。
+13. Documentation: 更新状态、测试、回测和 harness 报告路径。
 
 ### 9.3 CLI 入口
 
@@ -641,4 +645,4 @@ python -m harness gate live \
   --authorize "$TOKEN"
 ```
 
-`--stage all` 固定执行 static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readonly；任一步失败即停止。写库动作不属于默认 `all`，必须由受控 backtest/live 命令单独执行。
+`--stage all` 固定执行 static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness；任一步失败即停止。写库动作和 active-only `api` gate 不属于默认 `all`，必须由受控 backtest/live/activate 命令或激活后验收单独执行。

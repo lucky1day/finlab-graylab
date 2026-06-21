@@ -450,9 +450,11 @@ class BaseRunnerTemplateTests(unittest.TestCase):
         self.assertEqual(run_id, 201)
         create_run.assert_called_once()
         self.assertEqual(create_run.call_args.kwargs["run_mode"], "persist")
+        self.assertEqual(create_run.call_args.kwargs["status"], "running")
         replace_predictions.assert_called_once_with(engine, 201, output.rows)
         update_summary.assert_called_once()
         self.assertEqual(update_summary.call_args.kwargs["run_id"], 201)
+        self.assertEqual(update_summary.call_args.kwargs["status"], "success")
         self.assertEqual(output.summary["run_id"], 201)
 
 

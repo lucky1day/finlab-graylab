@@ -621,7 +621,7 @@ def persist_run_output(engine: Engine, output: RunOutput, *, benchmark_id: str) 
         data_source=output.data_source,
         start_date=output.start_date,
         end_date=output.end_date,
-        status="success",
+        status="running",
         summary=output.summary,
         report_path=output.report_path,
         code_hash=output.summary.get("code_hash"),

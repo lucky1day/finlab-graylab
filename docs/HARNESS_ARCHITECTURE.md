@@ -155,4 +155,4 @@ python -m harness gate live \
 - 前端/API 结论: `/api/backtests/factor-lab` 或 `/api/metrics/{scheme_id}` 可读，矩阵格子不消失；前端月度样本数展示 `samples`，准确率括号展示 `correct/metric_samples`，每日/周度验证表中预测为“平”的行展示 `-`。
 - 文档结论: 当前状态、测试记录、历史复现或上线计划已更新。
 
-没有这些证据时，不得把方案标记为架构完成或 live ready。
+没有这些证据时，不得把方案标记为 Onboarding Complete，更不得宣称已经 Production Observed。

@@ -132,6 +132,14 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
         else:
             if "runner" in backtest and (not isinstance(backtest["runner"], str) or not backtest["runner"].strip()):
                 errors.append("backtest.runner must be a non-empty string")
+            runner_args = backtest.get("runner_args")
+            if runner_args is not None:
+                if not isinstance(runner_args, list) or not all(
+                    isinstance(item, str) and item for item in runner_args
+                ):
+                    errors.append("backtest.runner_args must be a list of non-empty strings")
+                elif "--no-persist" in runner_args:
+                    errors.append("backtest.runner_args must not include --no-persist")
             benchmark_required = backtest.get("benchmark_required")
             if benchmark_required is not None and not isinstance(benchmark_required, bool):
                 errors.append("backtest.benchmark_required must be a boolean")
