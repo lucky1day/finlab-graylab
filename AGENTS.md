@@ -6,6 +6,16 @@
 
 独立的国债因子实盘测试平台，前端通过 iframe 嵌入 panda_quantflow 的 AIFin Lab Shell。
 
+## 当前工作上下文（必须遵守）
+
+- 当前开发分支：`codex/audit-bugfixes-20260613`。
+- 备用分支：`codex/p1-runner-factorlab-slim`。
+- 不要把“备用分支”理解为需要新建 backup 分支；除非用户明确要求，不得自行创建、改名或替代备用分支。
+- 这是用户确认过的精确备用分支名；如果看到近似拼写、缺少 `codex/` 前缀或 `facterlab` 拼写的旧文本，不要沿用，必须以本条为准。
+- 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；本项目要求 `AGENTS.md` 与 `CLAUDE.md` 内容一致，更新根规范时两者要同步。
+- 分支操作、提交或暂存前必须先核对 `git status --short` 和相关分支列表，避免把未跟踪的新方案、`outputs/` 产物或其他草稿混入当前任务提交。
+- 当前未跟踪的 `liwei_0616_10y02...` 文件属于单独的 10Y02 onboarding/复现工作；除非用户明确要求，不要纳入周度/前端修复提交。
+
 ## 技术栈
 
 - **后端**: Python 3.12 + FastAPI + SQLAlchemy + APScheduler
