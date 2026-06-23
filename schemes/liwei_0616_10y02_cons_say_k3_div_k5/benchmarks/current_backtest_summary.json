@@ -1,0 +1,122 @@
+{
+  "benchmark_id": "liwei_0616_10y_02",
+  "benchmark_scope": "platform_pit_reproduction_full_strict_feature_target",
+  "source_model_id": "10Y_02_cons_SAY_k_3_DIV_K_5",
+  "scheme_id": "liwei_0616_10y02_cons_say_k3_div_k5",
+  "target_tenor": "10Y",
+  "horizon": 5,
+  "row_count": 21,
+  "samples": 21,
+  "metric_samples": 19,
+  "correct": 15,
+  "accuracy": 0.7894736842105263,
+  "active_rate": 0.9047619047619048,
+  "pred_up": 0,
+  "pred_down": 19,
+  "no_trade": 2,
+  "true_up": 6,
+  "true_down": 15,
+  "true_flat": 0,
+  "backtest_rows_before_live_cutoff": 13,
+  "gray_live_boundary_rows": 8,
+  "source_month_bucket": "source latest_oos report groups by source date / platform feature_date",
+  "platform_month_bucket": "factor-lab historical/live metrics group by platform target_date",
+  "confidence_rule": "1.0 for non-zero prediction, 0.0 for flat prediction",
+  "source_latest_oos_reference": {
+    "scope": "source batch current_end=2026-06-10; retained as external evidence only",
+    "samples": 21,
+    "metric_samples": 20,
+    "correct": 14,
+    "accuracy": 0.7,
+    "no_trade": 1
+  },
+  "monthly_fast_path_validation": {
+    "targeted_daily_dates": [
+      "2026-05-06",
+      "2026-05-13",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-25",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28",
+      "2026-05-29",
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-03"
+    ],
+    "diff_count": 0,
+    "daily_elapsed_sec": 1978.344,
+    "monthly_elapsed_sec": 178.541,
+    "cache_dir": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/backtests/liwei_0616_10y_02/pit_cache",
+    "input_end": "2026-06-10",
+    "note": "14-date targeted sample validated daily strict vs monthly fast path across historical and gray/live boundary dates; platform fields matched with diff_count=0."
+  },
+  "source_batch_differences": [
+    {
+      "feature_date": "2026-05-22",
+      "target_date": "2026-05-29",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": -1,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-05-25",
+      "target_date": "2026-06-01",
+      "source_latest_oos_direction": 0,
+      "platform_strict_pit_direction": -1,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-05-26",
+      "target_date": "2026-06-02",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": -1,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-05-27",
+      "target_date": "2026-06-03",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": -1,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-05-28",
+      "target_date": "2026-06-04",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": -1,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-05-29",
+      "target_date": "2026-06-05",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": -1,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-06-01",
+      "target_date": "2026-06-08",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": 0,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-06-02",
+      "target_date": "2026-06-09",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": 0,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    },
+    {
+      "feature_date": "2026-06-03",
+      "target_date": "2026-06-10",
+      "source_latest_oos_direction": 1,
+      "platform_strict_pit_direction": -1,
+      "reason": "source latest_oos batch sees a later window; platform benchmark uses current_end=feature_date/monthly fast path validated against daily strict targeted sample"
+    }
+  ]
+}
