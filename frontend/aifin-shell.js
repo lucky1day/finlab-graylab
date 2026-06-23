@@ -183,7 +183,7 @@
   var factorTaskColumns = [
     { id: "dailyT1", label: "T+1", taskType: "T+1", frequency: "daily", horizon: "T+1" },
     { id: "dailyT5", label: "T+5", taskType: "T+5", frequency: "daily", horizon: "T+5" },
-    { id: "weeklyPoint", label: "周度", taskType: "weekly_point", frequency: "weekly", horizon: "NEXT_MONDAY" },
+    { id: "weeklyPoint", label: "周度", taskType: "weekly_point", frequency: "weekly", horizon: "NEXT_WEEK_FRIDAY" },
     { id: "weeklyAverage", label: "周平均", taskType: "weekly_average", frequency: "weekly", horizon: "NEXT_WEEK_AVERAGE" },
     { id: "monthly", label: "月度", taskType: "monthly", frequency: "monthly", horizon: "MONTHLY" }
   ];
@@ -1107,9 +1107,15 @@
     return metric[metricId];
   }
 
-  function isLowSampleMetric(metric) {
+  function lowSampleThresholdForTask(taskLike) {
+    var task = taskLike && taskLike.frequency ? taskLike : getTaskByKey(taskLike && taskLike.taskKey);
+    if (isWeeklyTask(task)) return 3;
+    return 30;
+  }
+
+  function isLowSampleMetric(metric, taskLike) {
     var samples = Number(metric && metric.samples || 0);
-    return samples > 0 && samples < 30;
+    return samples > 0 && samples < lowSampleThresholdForTask(taskLike);
   }
 
   function sortRankingSchemes(schemes, metricId, direction) {
@@ -1190,7 +1196,7 @@
     var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
     var version = latestSchemeVersion(scheme);
     var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
-    var lowSampleHtml = isLowSampleMetric(metric) ? '<span class="factor-sample-badge">样本不足</span>' : "";
+    var lowSampleHtml = isLowSampleMetric(metric, scheme) ? '<span class="factor-sample-badge">样本不足</span>' : "";
     var barWidth = clampPercent(metric.overall);
     var metricSamples = requireMetricSamples(metric, "ranking metric");
     var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
@@ -1564,8 +1570,10 @@
     var note = document.getElementById("factorCalendarNote");
     title.textContent = month + (isWeekly ? " 周度验证表" : " 每日验证表");
     meta.textContent = (scheme ? scheme.name : "--") + " · " + task.label;
-    if (dateHeader) dateHeader.textContent = isWeekly ? "预测周" : "交易日";
-    if (note) note.textContent = isWeekly ? "表内可继续滚动查看该月全部周度预测。" : "表内可继续滚动查看该月全部交易日的预测。";
+    if (dateHeader) dateHeader.textContent = isWeekly ? "目标周五" : "交易日";
+    if (note) note.textContent = isWeekly
+      ? "表内可继续滚动查看该月全部周度预测；周五非交易日时显示该周最后交易日。"
+      : "表内可继续滚动查看该月全部交易日的预测。";
 
     var html = "";
     var monthLabel = month.slice(5, 7);
@@ -1832,6 +1840,7 @@
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
     renderDailyResultForTest: renderDailyResult,
+    renderFactorDailyRowsForTest: renderFactorDailyRows,
     renderTaskOverviewForTest: renderTaskOverview,
     trendChartLayoutForTest: buildTrendChartLayout,
     trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,

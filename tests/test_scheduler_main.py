@@ -63,6 +63,26 @@ class SchedulerMainTests(unittest.TestCase):
         )
         self.assertFalse(any("16:00" in msg for msg in logs.output))
 
+    def test_actuals_job_refreshes_daily_and_weekly_actuals(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
+            patch.object(scheduler_main, "update_actuals", return_value=5) as daily_update,
+            patch.object(scheduler_main, "update_weekly_actuals", return_value=3, create=True) as weekly_update,
+            self.assertLogs(scheduler_main.logger, level=logging.INFO) as logs,
+        ):
+            scheduler_main.run_actuals_job("2026-06-22")
+
+        daily_update.assert_called_once_with(end_date="2026-06-22")
+        weekly_update.assert_called_once_with(end_date="2026-06-22")
+        self.assertTrue(
+            any(
+                "Actuals refresh finished: date=2026-06-22 daily_records=5 weekly_records=3" in msg
+                for msg in logs.output
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

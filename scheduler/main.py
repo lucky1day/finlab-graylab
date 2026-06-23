@@ -10,6 +10,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from scheduler.daily_actuals_updater import update_actuals
+from scheduler.weekly_actuals_updater import update_weekly_actuals
 from scheduler.calendar import is_trading_day
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, execute_scheme
@@ -128,8 +129,14 @@ def run_actuals_job(run_date: str | date | None = None, force: bool = False) -> 
     if not force and not _is_trading_day(target_date):
         logger.info("Skip actuals on non-trading day %s", target_date)
         return
-    written = update_actuals(end_date=target_date)
-    logger.info("Actuals refresh finished: date=%s records=%s", target_date, written)
+    daily_written = update_actuals(end_date=target_date)
+    weekly_written = update_weekly_actuals(end_date=target_date)
+    logger.info(
+        "Actuals refresh finished: date=%s daily_records=%s weekly_records=%s",
+        target_date,
+        daily_written,
+        weekly_written,
+    )
 
 
 def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:

@@ -647,19 +647,25 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn("×", result["downWrong"])
         self.assertIn("?", result["pending"])
 
-    def test_low_sample_badge_uses_30_sample_threshold(self) -> None:
+    def test_low_sample_badge_uses_task_frequency_threshold(self) -> None:
         result = _run_factor_lab_hook(
             """
             return {
-              low: hooks.isLowSampleMetric({ samples: 29 }),
-              boundary: hooks.isLowSampleMetric({ samples: 30 }),
-              empty: hooks.isLowSampleMetric({ samples: 0 })
+              dailyLow: hooks.isLowSampleMetric({ samples: 29 }, { taskKey: "10Y|T+1" }),
+              dailyBoundary: hooks.isLowSampleMetric({ samples: 30 }, { taskKey: "10Y|T+1" }),
+              weeklyLow: hooks.isLowSampleMetric({ samples: 2 }, { taskKey: "10Y|weekly_point" }),
+              weeklyBoundary: hooks.isLowSampleMetric({ samples: 3 }, { taskKey: "10Y|weekly_point" }),
+              weeklyTwoSamples: hooks.isLowSampleMetric({ samples: 2 }, { taskKey: "10Y|weekly_point" }),
+              empty: hooks.isLowSampleMetric({ samples: 0 }, { taskKey: "10Y|weekly_point" })
             };
             """
         )
 
-        self.assertTrue(result["low"])
-        self.assertFalse(result["boundary"])
+        self.assertTrue(result["dailyLow"])
+        self.assertFalse(result["dailyBoundary"])
+        self.assertTrue(result["weeklyLow"])
+        self.assertFalse(result["weeklyBoundary"])
+        self.assertTrue(result["weeklyTwoSamples"])
         self.assertFalse(result["empty"])
 
 
@@ -1458,6 +1464,93 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["targetDate"], "2026-06-05")
         self.assertEqual(result["liveSinceDate"], "2026-05-29")
         self.assertEqual(result["liveMetricSinceDate"], "2026-05-29")
+
+    def test_weekly_detail_header_clarifies_target_friday_display(self) -> None:
+        """周度验证表按 target_date 展示下一实际周五；节假日周落到最后交易日。"""
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "10Y": "10Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "weekly_10y_d_overlay_0529__h6__10Y",
+                    base_scheme_id: "weekly_10y_d_overlay_0529",
+                    target_tenor: "10Y",
+                    name: "0529周度10Y D-overlay",
+                    status: "active",
+                    horizon: 6,
+                    task_type: "weekly_point",
+                    frequency: "weekly",
+                    deployed_at: "2026-06-01",
+                    last_run: { date: "2026-06-13", status: "success" }
+                  }
+                ]
+              },
+              "/api/metrics/weekly_10y_d_overlay_0529__h6__10Y": {
+                scheme_id: "weekly_10y_d_overlay_0529__h6__10Y",
+                base_scheme_id: "weekly_10y_d_overlay_0529",
+                target_tenor: "10Y",
+                target_label: "10Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: [
+                  {
+                    target_tenor: "10Y",
+                    horizon: 6,
+                    predict_date: "2026-06-13",
+                    feature_date: "2026-06-12",
+                    target_date: "2026-06-18",
+                    predicted_direction: -1,
+                    actual_direction: -1,
+                    is_correct: true,
+                    confidence: 0.32
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "10Y": "10Y国债活跃" },
+                schemes: []
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            hooks.setFactorLabStateForTest({
+              selectedTaskKey: "10Y|weekly_point",
+              selectedSchemeId: "weekly_10y_d_overlay_0529__h6__10Y",
+              dataSource: "live",
+              startMonth: "2026-06",
+              endMonth: "2026-06"
+            });
+            hooks.renderFactorDailyRowsForTest("2026-06");
+            var row = hooks.getSelectedScheme().dailyRowsByMonth["2026-06"][0];
+            return {
+              title: document.getElementById("factorCalendarTitle").textContent,
+              header: document.getElementById("factorDailyDateHeader").textContent,
+              note: document.getElementById("factorCalendarNote").textContent,
+              day: row.day,
+              predictDate: row.predictDate,
+              targetDate: row.targetDate
+            };
+            """
+        )
+
+        self.assertEqual(result["title"], "2026-06 周度验证表")
+        self.assertEqual(result["header"], "目标周五")
+        self.assertIn("周五非交易日时显示该周最后交易日", result["note"])
+        self.assertEqual(result["day"], "06/18")
+        self.assertEqual(result["predictDate"], "2026-06-13")
+        self.assertEqual(result["targetDate"], "2026-06-18")
 
     def test_backtest_only_when_live_has_no_schemes(self) -> None:
         """实盘无方案时回退纯回测模式。"""
