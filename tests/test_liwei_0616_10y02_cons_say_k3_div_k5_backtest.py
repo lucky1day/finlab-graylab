@@ -20,7 +20,7 @@ SCHEME_ID = "liwei_0616_10y02_cons_say_k3_div_k5"
 class Liwei061610Y02BacktestTests(unittest.TestCase):
     """历史回测 runner、strict benchmark 与加速层测试。"""
 
-    def test_benchmark_files_use_strict_feature_target_schema_and_match(self) -> None:
+    def test_benchmark_files_use_source_original_feature_target_schema_and_match(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         bench = project_root / "schemes" / SCHEME_ID / "benchmarks"
         expected_columns = [
@@ -32,6 +32,15 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
             "confidence",
             "label",
             "is_correct",
+            "vote_score",
+            "STD_score",
+            "STD_dir",
+            "ACCWT_score",
+            "ACCWT_dir",
+            "V55_7Y_score",
+            "V55_7Y_dir",
+            "DIV_score",
+            "DIV_dir",
         ]
 
         original = pd.read_csv(bench / "original_predictions_sample.csv")
@@ -41,26 +50,28 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
         self.assertEqual(list(current.columns), expected_columns)
         self.assertEqual(len(original), 21)
         self.assertEqual(len(original), len(current))
-        self.assertEqual(str(original["feature_date"].iloc[0]), "2026-05-06")
-        self.assertEqual(str(original["feature_date"].iloc[-1]), "2026-06-03")
-        self.assertEqual(str(original["target_date"].iloc[-1]), "2026-06-10")
+        self.assertEqual(str(original["feature_date"].iloc[0]), "2026-03-25")
+        self.assertEqual(str(original["feature_date"].iloc[-1]), "2026-04-23")
+        self.assertEqual(str(original["target_date"].iloc[0]), "2026-04-01")
+        self.assertEqual(str(original["target_date"].iloc[-1]), "2026-04-30")
         self.assertEqual(set(original["target_tenor"]), {"10Y"})
-        self.assertEqual(int((pd.to_datetime(original["target_date"]) < pd.Timestamp("2026-06-01")).sum()), 13)
-        self.assertEqual(int((pd.to_datetime(original["target_date"]) >= pd.Timestamp("2026-06-01")).sum()), 8)
-        strict_pit_sensitive = original.loc[
-            original["feature_date"].isin(["2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22"]),
+        self.assertEqual(int((pd.to_datetime(original["target_date"]) < pd.Timestamp("2026-06-01")).sum()), 21)
+        self.assertEqual(int((pd.to_datetime(original["target_date"]) >= pd.Timestamp("2026-06-01")).sum()), 0)
+        source_original_sensitive = original.loc[
+            original["feature_date"].isin(["2026-03-25", "2026-04-13", "2026-04-17", "2026-04-20", "2026-04-22"]),
             ["feature_date", "direction", "confidence", "label", "is_correct"],
         ].to_dict("records")
         self.assertEqual(
-            strict_pit_sensitive,
+            source_original_sensitive,
             [
-                {"feature_date": "2026-05-19", "direction": -1, "confidence": 1.0, "label": 1, "is_correct": False},
-                {"feature_date": "2026-05-20", "direction": -1, "confidence": 1.0, "label": -1, "is_correct": True},
-                {"feature_date": "2026-05-21", "direction": -1, "confidence": 1.0, "label": -1, "is_correct": True},
-                {"feature_date": "2026-05-22", "direction": -1, "confidence": 1.0, "label": -1, "is_correct": True},
+                {"feature_date": "2026-03-25", "direction": 0, "confidence": 0.0, "label": -1, "is_correct": False},
+                {"feature_date": "2026-04-13", "direction": -1, "confidence": 1.0, "label": -1, "is_correct": True},
+                {"feature_date": "2026-04-17", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
+                {"feature_date": "2026-04-20", "direction": 1, "confidence": 1.0, "label": 1, "is_correct": True},
+                {"feature_date": "2026-04-22", "direction": 1, "confidence": 1.0, "label": 1, "is_correct": True},
             ],
         )
-        self.assertEqual(int((original["direction"] == 0).sum()), 2)
+        self.assertEqual(int((original["direction"] == 0).sum()), 1)
         self.assertTrue((original.loc[original["direction"] == 0, "confidence"] == 0.0).all())
         self.assertTrue((original.loc[original["direction"] != 0, "confidence"] == 1.0).all())
         merged = original.merge(
@@ -72,25 +83,42 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
         self.assertTrue((merged["direction_original"] == merged["direction_current"]).all())
         self.assertTrue((merged["label_original"] == merged["label_current"]).all())
         self.assertTrue((merged["confidence_original"] == merged["confidence_current"]).all())
+        internal_columns = [name for name in expected_columns if name.endswith(("_score", "_dir")) or name == "vote_score"]
+        for column in internal_columns:
+            if column.endswith("_score") or column == "vote_score":
+                max_abs = (merged[f"{column}_original"] - merged[f"{column}_current"]).abs().max()
+                self.assertLessEqual(float(max_abs), 1e-8, column)
+            else:
+                self.assertTrue((merged[f"{column}_original"] == merged[f"{column}_current"]).all(), column)
 
         for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
             summary = pd.read_json(bench / summary_name, typ="series")
             self.assertEqual(summary["scheme_id"], SCHEME_ID)
             self.assertEqual(summary["source_model_id"], "10Y_02_cons_SAY_k_3_DIV_K_5")
+            self.assertEqual(summary["benchmark_scope"], "source_original_full_oos_targeted_sample")
             self.assertEqual(int(summary["row_count"]), 21)
             self.assertEqual(int(summary["samples"]), 21)
-            self.assertEqual(int(summary["metric_samples"]), 19)
+            self.assertEqual(int(summary["metric_samples"]), 20)
             self.assertEqual(int(summary["correct"]), 15)
-            self.assertEqual(int(summary["no_trade"]), 2)
-            self.assertEqual(int(summary["backtest_rows_before_live_cutoff"]), 13)
-            self.assertEqual(int(summary["gray_live_boundary_rows"]), 8)
+            self.assertEqual(int(summary["no_trade"]), 1)
+            self.assertEqual(int(summary["backtest_rows_before_live_cutoff"]), 21)
+            self.assertEqual(int(summary["gray_live_boundary_rows"]), 0)
+            self.assertEqual(summary["source_oos_start"], "2024-01-01")
+            self.assertEqual(summary["source_end"], "2026-04-30")
+            self.assertEqual(summary["source_execution_scope"], "single full-OOS test sequence from 2024-01-01 through source_end, then select target feature dates")
+            self.assertEqual(summary["vote_baselines"], ["STD", "ACCWT", "V55_7Y"])
+            self.assertEqual(summary["fallback_baseline"], "DIV")
+            self.assertEqual(int(summary["streak_K"]), 5)
             self.assertIn("feature_date", summary["source_month_bucket"])
             self.assertIn("target_date", summary["platform_month_bucket"])
-            self.assertEqual(summary["source_latest_oos_reference"]["metric_samples"], 20)
-            self.assertEqual(summary["source_latest_oos_reference"]["correct"], 14)
-            self.assertEqual(summary["source_latest_oos_reference"]["no_trade"], 1)
-            self.assertEqual(summary["monthly_fast_path_validation"]["diff_count"], 0)
-            self.assertEqual(len(summary["source_batch_differences"]), 9)
+            self.assertEqual(summary["source_data2_alignment"]["direction_diff_count"], 0)
+            self.assertEqual(summary["source_data2_alignment"]["label_diff_count"], 0)
+            self.assertFalse(summary["source_data2_alignment"]["internal_scores_exact"])
+            self.assertGreater(
+                summary["source_data2_alignment"]["max_abs_diff_by_score"]["V55_7Y_score"],
+                0.01,
+            )
+            self.assertEqual(len(summary["source_batch_differences"]), 0)
 
     def test_build_backtest_rows_use_feature_date_and_target_cutoff(self) -> None:
         from backtests import liwei_0616_10y02_cons_say_k3_div_k5_reproduction as runner

@@ -716,8 +716,12 @@ def _effective_input_end(sample_dates: list[str], calendar) -> str:
 
 
 def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
+    compact_rows: list[dict[str, Any]] = []
+    for row in rows:
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        baseline_scores = extra.get("baseline_scores") if isinstance(extra.get("baseline_scores"), dict) else {}
+        baseline_signs = extra.get("baseline_signs") if isinstance(extra.get("baseline_signs"), dict) else {}
+        item = {
             "predict_date": row["predict_date"],
             "feature_date": row["feature_date"],
             "target_date": row["target_date"],
@@ -726,8 +730,12 @@ def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "label": row["label"],
             "confidence": row["confidence"],
         }
-        for row in rows
-    ]
+        for baseline in ("STD", "ACCWT", "V55_7Y", "DIV"):
+            item[f"{baseline}_score"] = baseline_scores.get(baseline)
+            item[f"{baseline}_dir"] = baseline_signs.get(baseline)
+        item["vote_score"] = extra.get("vote_score")
+        compact_rows.append(item)
+    return compact_rows
 
 
 def _validate_before_persist(rows: list[dict[str, Any]]) -> None:
