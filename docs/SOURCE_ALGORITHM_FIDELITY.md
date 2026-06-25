@@ -1,0 +1,84 @@
+# 源算法保真强约束
+
+**更新日期**: 2026-06-25
+
+本文是所有 source-backed 方案的硬约束。凡是来自原始脚本、原始 CSV/Excel、外部 benchmark、`latest_oos` 或人工交付算法包的方案，平台接入时必须先保证“原始算法逻辑不被改变”。如与旧文档、旧 SOP 或历史案例说明冲突，以本文为准，并回写对应文档。
+
+## 1. 总原则
+
+平台可以适配原始算法，但不得重写原始算法。`predict.py`、backtest runner、harness 和输入 artifact 只能负责平台边界：取数、日期映射、调用、落库、缓存、审计和对比。算法本身的计算路径必须与原始脚本保持一致。
+
+以下事项均属于算法逻辑，默认不得修改：
+
+- 历史输入起点、训练起点、测试起点、source batch 终点、`test_start/test_end/test_ranges`。
+- PIT / batch / rolling / walk-forward / monthly fast path 的执行口径。
+- daily / weekly / monthly 对齐规则，包括周频值放置日、ffill 方向、月频滞后规则和缺失列处理。
+- label、horizon、target 日期、样本筛选、灰度/回测截断之前的算法内部样本定义。
+- 特征集合、信号族、跨期限组合、rolling 窗口、`min_periods`、fillna/ffill/bfill、符号定义。
+- LGBM 或其它模型的 grid、seeds、权重、early stopping、subsample/colsample、线程/进程策略中会影响结果的参数。
+- ensemble、selector、vote、fallback、streak、threshold、seasonal VT、report mask 和 score/confidence 映射。
+- 原始脚本里的固定算法锚点，即使它们看起来像日期窗口，也不得跟随平台 PIT 窗口移动。例如 10Y02 `latest_oos` runner 只 patch `test_idx` 的 source batch 窗口；`IC screening` 仍按原始 `2024-01-01` 截止点做 pre-test 特征筛选，平台不得改成 `current_start/test_start`。
+
+如果原始脚本里某个变量名与平台字段同名，不得按名字直接映射。必须先读原始脚本如何使用它，再决定它对应平台的 `predict_date`、`feature_date` 或 `target_date`。
+
+## 2. 允许的适配
+
+以下改动属于平台适配，允许存在，但必须保持输出等价：
+
+- 把原始文件读取改为接收 `pd.DataFrame` 或平台 input artifact。
+- 把原始输出转换为 `PredictionRecord`、backtest row 或 benchmark CSV。
+- 把 source T 映射为平台 `feature_date`，再由平台日历推导 `target_date`。
+- 把路径、缓存、日志、extra、artifact hash、run summary、授权和写库从算法外层接入平台。
+- 为了复现原始执行口径，把 source batch 的 `source_start/source_end/current_start/current_end` 显式传给 core。
+
+允许的适配不得改变算法计算结果。若改造后方向或内部模型分数发生变化，先查输入 artifact、日期窗口、对齐规则和原始脚本 diff，不得通过调参或改信号去贴结果。
+
+移植 source runner 时，必须逐行区分“runner 明确 patch 的字段”和“原始算法保留的固定字段”。不要因为外层改了 `context_start/latest_start/data_end`，就同步移动未被 runner patch 的筛因子起点、训练 warmup、report mask 或校准窗口。
+
+## 3. Source 口径分类
+
+每个 source-backed 方案在入库前必须先分类，并写入方案 benchmark README、summary 或状态文档：
+
+| 口径 | 含义 | 平台要求 |
+|------|------|----------|
+| `source_original_reproduction` | 复现原始脚本 / 原始 batch 的真实执行方式 | 历史 benchmark、current benchmark、backtest 输出必须与原始结果逐样本对齐 |
+| `source_strict_pit` | 原始算法本身就是逐 `feature_date` 硬截止 PIT | 平台 PIT helper 必须与原始 PIT 入口等价 |
+| `platform_live_pit_variant` | 原始交付是 batch/事后窗口，但业务另行要求构造 live-like PIT 变体 | 必须显式批准并标为平台变体；不得宣称它复现了原始 source 输出 |
+
+默认口径是 `source_original_reproduction`。只有在用户明确批准或原始 source 文档明确要求 live-like PIT 时，才能采用 `platform_live_pit_variant`。即使采用平台 PIT 变体，也不得修改原始算法内部逻辑；只能改变外层传入的可见数据截止和测试上下文，并必须记录它与 source-original 输出的差异。
+
+## 4. 验收标准
+
+Source-backed 方案的最低验收标准：
+
+1. `predicted_direction` 逐样本零差异。
+2. `label/actual/is_correct` 逐样本零差异。
+3. `target_date/target_tenor/horizon` 逐样本零差异。
+4. 原始算法暴露的内部模型分数、baseline score、probability 或 confidence 必须作为保真证据比对。能做到 bitwise/导出精度一致时必须一致；仍有残差时，必须证明残差来自输入 artifact 或导出精度，而不是算法逻辑变更。
+5. 若只做到方向一致但内部模型分数不一致，不得宣称“算法逻辑完全一致”；只能宣称“最终方向一致，内部数值仍有残差待归因”。
+
+对多 baseline 方案，`STD/ACCWT/V55_7Y/DIV` 这类内部输出属于验收对象，不是可忽略调试字段。它们应写入 `extra`、cache 或 compare report，便于后续审计。
+
+10Y02 的保真验收基线必须包含 `2026-05-25`：原始 `STD/ACCWT/DIV` 为正、`V55_7Y` 为负，最终共识结果为 `0`。若平台输出 `-1`，优先检查 IC screening cutoff 是否误随 `test_start` 从 `2024-01-01` 移到了 source batch 的 `2025-05-01`。
+
+5Y01 的保真验收必须同时检查 V31 口径：`vt_mode` 必须保持 `seasonal`，`build_bond_features` 的列生成顺序必须与 source 一致（spread features before streak/up-fraction features），内部 `STD/DIV/ACCWT` 的 `vs_full` 必须作为 baseline score 对比。若最终方向一致但 `vs_full` 有残差，优先检查特征列顺序、signal accuracy lookback、weekly last-trading-day ffill 和 source pkl score 映射。
+
+## 5. 禁止项
+
+- 不得为了通过 CompareGate 修改原始算法的时间起点、窗口、特征、信号、模型参数、投票或 fallback。
+- 不得把“平台认为更合理”的 PIT 口径替代原始 source 口径，除非明确标成平台变体并获批。
+- 不得把 source batch 差异解释为“正常”后继续声称 source reproduction 已通过。
+- 不得复制 benchmark 结果当作 current 输出，也不得手工补预测方向。
+- 不得用后验结果调节内部 score，使其只在当前样本上贴合原始 CSV。
+- 不得让 adapter、backtest runner 或缓存策略改变同一 `feature_date` 的算法输出。
+
+## 6. 必留证据
+
+每个 source-backed 方案至少保留：
+
+- 原始脚本或原始输出文件路径、hash、版本说明。
+- 原始算法执行口径分类。
+- 平台输入 artifact 路径、hash、data_version、source_start/source_end 或 as-of 信息。
+- original vs current 的逐样本主键、方向、actual、correctness 对比。
+- 内部模型分数对比：字段名、最大绝对差、方向差异数、最大差异日期。
+- 若内部数值不完全一致，写明残差归因和下一步，且不得把它包装成“完全一致”。

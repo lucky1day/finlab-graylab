@@ -41,6 +41,10 @@ def _write_strict_predictions(path: Path, rows: list[dict[str, str]]) -> None:
         "label",
         "is_correct",
     ]
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
@@ -171,6 +175,45 @@ class CompareGateTest(unittest.TestCase):
         self.assertEqual(result.status, GateStatus.FAILED)
         self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
         self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
+
+    def test_internal_score_mismatch_failed_when_benchmark_declares_internal_columns(self) -> None:
+        ctx = _make_ctx(self.root)
+        _write_benchmark_required_config(self.root)
+        bench = self.root / "schemes" / "demo" / "benchmarks"
+        original = [
+            {
+                "feature_date": "2026-05-18",
+                "target_date": "2026-05-25",
+                "target_tenor": "7Y",
+                "horizon": "5",
+                "direction": "0",
+                "confidence": "0.0",
+                "label": "-1",
+                "is_correct": "false",
+                "STD_score": "-1.0488493212117835",
+                "STD_dir": "-1",
+                "CROSS_5Y_score": "0.008396337253219598",
+                "CROSS_5Y_dir": "1",
+            },
+        ]
+        current = [
+            {
+                **original[0],
+                "CROSS_5Y_score": "-0.6420104710111437",
+                "CROSS_5Y_dir": "-1",
+            },
+        ]
+        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
+        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
+
+        result = CompareGate(ctx).run()
+
+        self.assertEqual(result.status, GateStatus.FAILED)
+        self.assertTrue(any("internal benchmark" in e for e in result.errors), result.errors)
+        summary = json.loads((ctx.report_dir / "comparison_summary.json").read_text(encoding="utf-8"))
+        pred = summary["comparison"]["predictions"]
+        self.assertEqual(pred["internal_mismatch_count"], 2)
+        self.assertAlmostEqual(pred["max_internal_abs_diff"], 0.6504068082643633)
 
     def test_metric_diff_failed(self) -> None:
         ctx = _make_ctx(self.root)

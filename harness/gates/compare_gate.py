@@ -14,6 +14,7 @@ from harness.result import Evidence, GateResult, GateStatus
 # 容差（PINNED）
 DIRECTION_MATCH_RATE_REQUIRED = 1.0
 MAX_CONFIDENCE_ABS_DIFF = 1e-8
+MAX_INTERNAL_ABS_DIFF = 1e-8
 METRIC_ACCURACY_ABS_DIFF = 0.001
 STRICT_PREDICTION_FIELDS = (
     "feature_date",
@@ -25,6 +26,9 @@ STRICT_PREDICTION_FIELDS = (
     "label",
     "is_correct",
 )
+INTERNAL_SCORE_FIELDS = ("vote_score",)
+INTERNAL_NUMERIC_SUFFIXES = ("_score", "_vs")
+INTERNAL_DIRECTION_SUFFIXES = ("_dir", "_sign")
 
 
 class CompareGate(Gate):
@@ -101,6 +105,9 @@ class CompareGate(Gate):
             evidence.append(Evidence("extra_keys", pred_diff["extra_keys"]))
             evidence.append(Evidence("max_confidence_abs_diff", pred_diff["max_confidence_abs_diff"]))
             evidence.append(Evidence("mean_confidence_abs_diff", pred_diff["mean_confidence_abs_diff"]))
+            evidence.append(Evidence("internal_fields", pred_diff["internal_fields"]))
+            evidence.append(Evidence("internal_mismatch_count", pred_diff["internal_mismatch_count"]))
+            evidence.append(Evidence("max_internal_abs_diff", pred_diff["max_internal_abs_diff"]))
             evidence.append(Evidence("strict_prediction_key", benchmark_required))
             evidence.append(Evidence("validation_error_count", len(pred_diff["validation_errors"])))
 
@@ -126,6 +133,16 @@ class CompareGate(Gate):
                 errors.append(
                     f"max_confidence_abs_diff {pred_diff['max_confidence_abs_diff']:.3e} > "
                     f"{MAX_CONFIDENCE_ABS_DIFF:.0e}"
+                )
+            if pred_diff["internal_mismatch_count"] > 0:
+                errors.append(
+                    "internal benchmark field mismatch: "
+                    f"{pred_diff['internal_mismatch_count']}"
+                )
+            if pred_diff["max_internal_abs_diff"] > MAX_INTERNAL_ABS_DIFF:
+                errors.append(
+                    f"max_internal_abs_diff {pred_diff['max_internal_abs_diff']:.3e} > "
+                    f"{MAX_INTERNAL_ABS_DIFF:.0e}"
                 )
 
         metric_diffs: list[dict[str, Any]] = []
@@ -217,6 +234,9 @@ def _compare_predictions(
     direction_matches = 0
     max_conf_diff = 0.0
     conf_diffs: list[float] = []
+    internal_fields = _internal_fields(original, current)
+    max_internal_diff = 0.0
+    internal_mismatches: list[dict[str, Any]] = []
     per_key: list[dict[str, Any]] = []
     for key in comparable:
         o_dir = _row_direction(original_map[key])
@@ -231,6 +251,16 @@ def _compare_predictions(
             conf_diff = abs(o_conf - c_conf)
             conf_diffs.append(conf_diff)
             max_conf_diff = max(max_conf_diff, conf_diff)
+        key_internal_mismatches: list[dict[str, Any]] = []
+        for field in internal_fields:
+            mismatch = _compare_internal_field(field, original_map[key], current_map[key])
+            if mismatch is None:
+                continue
+            if mismatch.get("abs_diff") is not None:
+                max_internal_diff = max(max_internal_diff, float(mismatch["abs_diff"]))
+            key_mismatch = {"key": list(key), **mismatch}
+            key_internal_mismatches.append(key_mismatch)
+            internal_mismatches.append(key_mismatch)
         per_key.append(
             {
                 "key": list(key),
@@ -238,6 +268,7 @@ def _compare_predictions(
                 "current_direction": c_dir,
                 "direction_match": dir_match,
                 "confidence_abs_diff": conf_diff,
+                "internal_mismatches": key_internal_mismatches,
             }
         )
 
@@ -256,9 +287,95 @@ def _compare_predictions(
         "direction_match_rate": rate,
         "max_confidence_abs_diff": max_conf_diff,
         "mean_confidence_abs_diff": mean_conf_diff,
+        "internal_fields": internal_fields,
+        "internal_mismatch_count": len(internal_mismatches),
+        "internal_mismatches": internal_mismatches,
+        "max_internal_abs_diff": max_internal_diff,
         "validation_errors": validation_errors,
         "per_key": per_key,
     }
+
+
+def _internal_fields(
+    original: list[dict[str, Any]],
+    current: list[dict[str, Any]],
+) -> list[str]:
+    fields: set[str] = set()
+    for row in [*original, *current]:
+        for field in row:
+            if field in STRICT_PREDICTION_FIELDS:
+                continue
+            if field in {"predict_date", "date", "tenor", "pred_direction", "direction", "confidence"}:
+                continue
+            if field in INTERNAL_SCORE_FIELDS or field.endswith(INTERNAL_NUMERIC_SUFFIXES + INTERNAL_DIRECTION_SUFFIXES):
+                fields.add(field)
+    return sorted(fields)
+
+
+def _compare_internal_field(field: str, original: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:
+    o_raw = original.get(field)
+    c_raw = current.get(field)
+    if _is_blank(o_raw) and _is_blank(c_raw):
+        return None
+    if _is_blank(o_raw) or _is_blank(c_raw):
+        return {
+            "field": field,
+            "original": o_raw,
+            "current": c_raw,
+            "abs_diff": None,
+            "match": False,
+            "reason": "missing_internal_value",
+        }
+    if _is_internal_numeric_field(field):
+        o_val = _float_or_none(o_raw)
+        c_val = _float_or_none(c_raw)
+        if o_val is None or c_val is None:
+            match = str(o_raw).strip() == str(c_raw).strip()
+            return None if match else {
+                "field": field,
+                "original": o_raw,
+                "current": c_raw,
+                "abs_diff": None,
+                "match": False,
+                "reason": "non_numeric_internal_value",
+            }
+        abs_diff = abs(o_val - c_val)
+        if abs_diff <= MAX_INTERNAL_ABS_DIFF:
+            return None
+        return {
+            "field": field,
+            "original": o_val,
+            "current": c_val,
+            "abs_diff": abs_diff,
+            "match": False,
+            "reason": "internal_numeric_diff",
+        }
+    match = str(o_raw).strip() == str(c_raw).strip()
+    if match:
+        return None
+    return {
+        "field": field,
+        "original": str(o_raw).strip(),
+        "current": str(c_raw).strip(),
+        "abs_diff": None,
+        "match": False,
+        "reason": "internal_value_diff",
+    }
+
+
+def _is_blank(value: Any) -> bool:
+    return value is None or str(value).strip() == ""
+
+
+def _is_internal_numeric_field(field: str) -> bool:
+    return field in INTERNAL_SCORE_FIELDS or field.endswith(INTERNAL_NUMERIC_SUFFIXES)
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _validate_strict_prediction_rows(source: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -331,6 +448,17 @@ def _write_diff_csv(path: Path, comparison: dict[str, Any]) -> None:
                     "match": item.get("direction_match"),
                 }
             )
+            for mismatch in item.get("internal_mismatches", []):
+                rows.append(
+                    {
+                        "section": "prediction_internal",
+                        "key": "/".join(str(part) for part in key) + f"/{mismatch.get('field')}",
+                        "original": mismatch.get("original"),
+                        "current": mismatch.get("current"),
+                        "abs_diff": mismatch.get("abs_diff"),
+                        "match": mismatch.get("match"),
+                    }
+                )
     for item in comparison.get("metrics", []):
         rows.append(
             {

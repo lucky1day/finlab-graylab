@@ -31,6 +31,15 @@ class Liwei06167Y01BacktestTests(unittest.TestCase):
             "confidence",
             "label",
             "is_correct",
+            "vote_score",
+            "STD_score",
+            "STD_dir",
+            "ACCWT_score",
+            "ACCWT_dir",
+            "CROSS_5Y_score",
+            "CROSS_5Y_dir",
+            "DIV_score",
+            "DIV_dir",
         ]
 
         original = pd.read_csv(bench / "original_predictions_sample.csv")
@@ -49,6 +58,11 @@ class Liwei06167Y01BacktestTests(unittest.TestCase):
         self.assertEqual(int((original["direction"] == 0).sum()), 5)
         self.assertTrue((original.loc[original["direction"] == 0, "confidence"] == 0.0).all())
         self.assertTrue((original.loc[original["direction"] != 0, "confidence"] == 1.0).all())
+        self.assertEqual(int(original.loc[original["feature_date"] == "2026-05-18", "CROSS_5Y_dir"].iloc[0]), 1)
+        self.assertAlmostEqual(
+            float(original.loc[original["feature_date"] == "2026-05-18", "CROSS_5Y_score"].iloc[0]),
+            0.008396337253219598,
+        )
         merged = original.merge(
             current,
             on=["feature_date", "target_date", "target_tenor", "horizon"],
@@ -58,6 +72,13 @@ class Liwei06167Y01BacktestTests(unittest.TestCase):
         self.assertTrue((merged["direction_original"] == merged["direction_current"]).all())
         self.assertTrue((merged["label_original"] == merged["label_current"]).all())
         self.assertTrue((merged["confidence_original"] == merged["confidence_current"]).all())
+        internal_columns = [name for name in expected_columns if name.endswith(("_score", "_dir")) or name == "vote_score"]
+        for column in internal_columns:
+            if column.endswith("_score") or column == "vote_score":
+                max_abs = (merged[f"{column}_original"] - merged[f"{column}_current"]).abs().max()
+                self.assertLessEqual(float(max_abs), 1e-8, column)
+            else:
+                self.assertTrue((merged[f"{column}_original"] == merged[f"{column}_current"]).all(), column)
 
         for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
             summary = pd.read_json(bench / summary_name, typ="series")
@@ -110,6 +131,55 @@ class Liwei06167Y01BacktestTests(unittest.TestCase):
         self.assertEqual(rows[0]["confidence"], 1.0)
         self.assertEqual(rows[0]["extra"]["source_model_id"], "7Y_01_cons_SAY_k_3_DIV_K_10")
 
+    def test_sample_input_end_uses_sample_target_date_not_global_backtest_end(self) -> None:
+        from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
+
+        calendar = MagicMock()
+        calendar.nth_trading_day_after.side_effect = lambda day, horizon: {
+            ("2026-03-25", 5): "2026-04-01",
+            ("2026-04-23", 5): "2026-04-30",
+        }[(day, horizon)]
+
+        input_end = runner._effective_input_end(["2026-03-25", "2026-04-23"], calendar)
+
+        self.assertEqual(input_end, "2026-04-30")
+
+    def test_explicit_input_end_can_pin_source_latest_oos_context(self) -> None:
+        from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
+
+        calendar = MagicMock()
+
+        input_end = runner._effective_input_end(["2026-05-06"], calendar, requested_input_end="2026-06-10")
+
+        self.assertEqual(input_end, "2026-06-10")
+        calendar.nth_trading_day_after.assert_not_called()
+
+    @patch("backtests.liwei_0616_7y01_cons_say_k3_div_k10_reproduction.run_liwei_0616_7y01_cons_say_k3_div_k10_reproduction")
+    def test_main_forwards_input_end_to_runner(self, mock_run: MagicMock) -> None:
+        from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
+
+        mock_run.return_value = {"status": "success", "row_count": 1}
+        stream = io.StringIO()
+        with patch(
+            "sys.argv",
+            ["runner", "--no-persist", "--batch-mode", "monthly", "--input-end", "2026-06-10"],
+        ), redirect_stdout(stream):
+            runner.main()
+
+        self.assertEqual(mock_run.call_args.kwargs["batch_mode"], "monthly")
+        self.assertEqual(mock_run.call_args.kwargs["input_end"], "2026-06-10")
+
+    @patch("backtests.liwei_0616_7y01_cons_say_k3_div_k10_reproduction.run_liwei_0616_7y01_cons_say_k3_div_k10_reproduction")
+    def test_main_forwards_phase_a_cache_to_runner(self, mock_run: MagicMock) -> None:
+        from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
+
+        mock_run.return_value = {"status": "success", "row_count": 1}
+        stream = io.StringIO()
+        with patch("sys.argv", ["runner", "--no-persist", "--phase-a-cache"]), redirect_stdout(stream):
+            runner.main()
+
+        self.assertTrue(mock_run.call_args.kwargs["use_phase_a_cache"])
+
     @patch("backtests.liwei_0616_7y01_cons_say_k3_div_k10_reproduction.run_7y01_for_window_silent")
     def test_historical_prediction_runs_each_feature_date_as_pit_cutoff(self, mock_runner: MagicMock) -> None:
         from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
@@ -145,9 +215,121 @@ class Liwei06167Y01BacktestTests(unittest.TestCase):
         self.assertEqual(detail["anchor_date"].tolist(), ["2026-05-18", "2026-05-19", "2026-05-20"])
         self.assertEqual(mock_runner.call_count, 3)
         called_feature_dates = [call.kwargs["feature_date"] for call in mock_runner.call_args_list]
+        called_current_starts = [call.kwargs["current_start"] for call in mock_runner.call_args_list]
         called_current_ends = [call.kwargs["current_end"] for call in mock_runner.call_args_list]
+        called_test_ranges = [call.kwargs["test_ranges"] for call in mock_runner.call_args_list]
         self.assertEqual(called_feature_dates, ["2026-05-18", "2026-05-19", "2026-05-20"])
+        self.assertEqual(called_current_starts, ["2026-05-01"] * 3)
         self.assertEqual(called_current_ends, called_feature_dates)
+        self.assertEqual(called_test_ranges, [(("2025-05-01", "2025-05-31"), ("2026-05-01", "2026-05-20"))] * 3)
+
+    @patch("backtests.liwei_0616_7y01_cons_say_k3_div_k10_reproduction.run_7y01_for_window_silent")
+    def test_targeted_monthly_sample_runs_one_source_context_across_feature_months(self, mock_runner: MagicMock) -> None:
+        from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-03-31", "2026-04-01", "2026-04-02"]),
+                "TB7YWI0C": [2.0, 2.01, 2.02],
+            }
+        )
+
+        def fake_window(**kwargs):
+            return pd.DataFrame(
+                {
+                    "anchor_date": ["2026-03-31", "2026-04-01"],
+                    "prediction": [1, -1],
+                    "true_label": [1, -1],
+                    "confidence": [1.0, 1.0],
+                    "vote_score": [0.6, -0.6],
+                }
+            )
+
+        mock_runner.side_effect = fake_window
+
+        detail = runner.run_historical_prediction(
+            daily_df=daily_df,
+            weekly_df=pd.DataFrame({"week_id": [202613, 202614]}),
+            monthly_df=pd.DataFrame({"month_id": ["202603", "202604"]}),
+            date_to_week={},
+            n_workers=1,
+            feature_dates=["2026-03-31", "2026-04-01"],
+            batch_mode="monthly",
+        )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-03-31", "2026-04-01"])
+        self.assertEqual(mock_runner.call_count, 1)
+        kwargs = mock_runner.call_args.kwargs
+        self.assertEqual(kwargs["feature_date"], "2026-04-01")
+        self.assertEqual(kwargs["current_start"], "2026-03-01")
+        self.assertEqual(kwargs["current_end"], "2026-04-01")
+        self.assertEqual(kwargs["test_ranges"], (("2025-03-01", "2025-04-30"), ("2026-03-01", "2026-04-02")))
+
+    @patch("backtests.liwei_0616_7y01_cons_say_k3_div_k10_reproduction._build_phase_a_caches")
+    @patch("backtests.liwei_0616_7y01_cons_say_k3_div_k10_reproduction.run_7y01_for_window_silent")
+    def test_full_monthly_mode_builds_phase_a_cache_once_and_reuses_for_groups(
+        self,
+        mock_runner: MagicMock,
+        mock_build_cache: MagicMock,
+    ) -> None:
+        from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-04-30", "2026-05-06"]),
+                "TB7YWI0C": [2.0, 2.01],
+            }
+        )
+        phase_a_caches = {"STD": {"cache": "std"}}
+        mock_build_cache.return_value = phase_a_caches
+
+        def fake_window(**kwargs):
+            if kwargs["current_start"] == "2026-04-01":
+                return pd.DataFrame({"anchor_date": ["2026-04-30"], "prediction": [1], "true_label": [1]})
+            return pd.DataFrame({"anchor_date": ["2026-05-06"], "prediction": [-1], "true_label": [-1]})
+
+        mock_runner.side_effect = fake_window
+
+        detail = runner.run_historical_prediction(
+            daily_df=daily_df,
+            weekly_df=pd.DataFrame({"week_id": [202618, 202619]}),
+            monthly_df=pd.DataFrame({"month_id": ["202604", "202605"]}),
+            date_to_week={},
+            n_workers=1,
+            batch_mode="monthly",
+            use_phase_a_cache=True,
+        )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-04-30", "2026-05-06"])
+        mock_build_cache.assert_called_once()
+        self.assertEqual(mock_runner.call_count, 2)
+        self.assertTrue(all(call.kwargs["phase_a_caches"] is phase_a_caches for call in mock_runner.call_args_list))
+
+    @patch("backtests.liwei_0616_7y01_cons_say_k3_div_k10_reproduction.run_prediction")
+    def test_build_phase_a_caches_redirects_source_logs_away_from_stdout(self, mock_run_prediction: MagicMock) -> None:
+        import numpy as np
+
+        from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
+
+        def fake_run_prediction(cfg):
+            print("source log on stdout")
+            return np.array([0]), {"phase_a_cache": {"baseline": cfg["name"]}}
+
+        mock_run_prediction.side_effect = fake_run_prediction
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            caches = runner._build_phase_a_caches(
+                dates=["2026-05-06"],
+                daily_df=pd.DataFrame({"date": pd.to_datetime(["2026-05-06"]), "TB7YWI0C": [2.0]}),
+                weekly_df=pd.DataFrame({"week_id": [202620]}),
+                monthly_df=pd.DataFrame({"month_id": ["202605"]}),
+                date_to_week={"2026-05-06": 202620},
+                n_workers=1,
+                model_context_end="2026-06-10",
+            )
+
+        self.assertEqual(stream.getvalue(), "")
+        self.assertEqual(set(caches), {"STD", "ACCWT", "CROSS_5Y", "DIV"})
 
     def test_missing_calendar_target_date_does_not_fallback_to_anchor(self) -> None:
         from backtests import liwei_0616_7y01_cons_say_k3_div_k10_reproduction as runner
@@ -227,6 +409,7 @@ class Liwei06167Y01BacktestTests(unittest.TestCase):
                 "confidence": [1.0],
                 "vote_score": [-0.6],
                 "baseline_signs": [{"STD": -1, "ACCWT": -1, "CROSS_5Y": -1, "DIV": -1}],
+                "baseline_scores": [{"STD": -0.7, "ACCWT": -0.8, "CROSS_5Y": -0.9, "DIV": -1.0}],
             }
         )
 
@@ -236,6 +419,10 @@ class Liwei06167Y01BacktestTests(unittest.TestCase):
         self.assertEqual(payload["scheme_id"], SCHEME_ID)
         self.assertEqual(payload["row_count"], 1)
         self.assertEqual(payload["rows"][0]["target_date"], "2026-05-29")
+        self.assertEqual(payload["rows"][0]["vote_score"], -0.6)
+        self.assertEqual(payload["rows"][0]["STD_score"], -0.7)
+        self.assertEqual(payload["rows"][0]["STD_dir"], -1)
+        self.assertEqual(payload["rows"][0]["CROSS_5Y_score"], -0.9)
         self.assertEqual(payload["runs"][0]["rows"], payload["rows"])
         calendar.nth_trading_day_after.assert_called_with("2026-05-22", runner.HORIZON)
         mock_daily_builder.assert_called_once()

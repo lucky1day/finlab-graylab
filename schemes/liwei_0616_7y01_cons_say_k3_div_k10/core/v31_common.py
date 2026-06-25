@@ -58,7 +58,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .data_alignment import align_monthly_previous_month, align_weekly_previous_complete
+from .data_alignment import align_monthly_previous_month
 
 warnings.filterwarnings("ignore")
 
@@ -131,6 +131,7 @@ WEEKLY_COLS = [
 MODEL_VERSION = "liwei_0616_7y_01_v31"
 SOURCE_MODEL_ID = "7Y_01_cons_SAY_k_3_DIV_K_10"
 TARGET_TENOR = "7Y"
+SOURCE_IC_SCREEN_START = "2024-01-01"
 
 _SHARED_LGBM: dict[str, Any] = {
     "lgbm_windows": [200, 350, 504, 756],
@@ -320,10 +321,8 @@ def prepare_model_frames(
     """把平台产出的 weekly/monthly artifact 对齐成算法特征矩阵。"""
     if weekly_df is None:
         aligned_weekly = pd.DataFrame(index=range(len(daily_dates)))
-    elif date_to_week is None:
-        aligned_weekly = _align_weekly_like_legacy(weekly_df, daily_dates)
     else:
-        aligned_weekly = align_weekly_previous_complete(weekly_df, daily_dates, date_to_week)
+        aligned_weekly = _align_weekly_like_legacy(weekly_df, daily_dates, date_to_week)
 
     if monthly_df is None:
         aligned_monthly = pd.DataFrame(index=range(len(daily_dates)))
@@ -364,70 +363,91 @@ def _normalize_aux_frame(df: pd.DataFrame | None, id_col: str) -> pd.DataFrame |
     return out
 
 
-def _align_weekly_like_legacy(weekly_df: pd.DataFrame, daily_dates: pd.Series) -> pd.DataFrame:
+def _align_weekly_like_legacy(
+    weekly_df: pd.DataFrame,
+    daily_dates: pd.Series | pd.DatetimeIndex | list,
+    date_to_week: Mapping[str, int | str] | None = None,
+) -> pd.DataFrame:
     weekly = _normalize_aux_frame(weekly_df, "week_id")
     if weekly is None:
         return pd.DataFrame(index=range(len(daily_dates)))
     existing = [col for col in WEEKLY_COLS if col in weekly.columns]
     if not existing:
         return pd.DataFrame(index=range(len(daily_dates)))
-    dates = sorted(pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize().tolist())
-    if not dates:
+    daily_index = pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize()
+    if len(daily_index) == 0:
         return pd.DataFrame(index=range(len(daily_dates)))
-    week_arr = np.zeros(len(dates), dtype=int)
-    current_year, seq, previous_dow = dates[0].year, 1, -1
-    for i, daily_date in enumerate(dates):
-        if daily_date.year != current_year:
-            current_year, seq, previous_dow = daily_date.year, 1, -1
-        dow = daily_date.weekday()
-        if previous_dow >= 0 and (
-            dow <= previous_dow and (daily_date - dates[i - 1]).days > 1
-            or (daily_date - dates[i - 1]).days > 5
-        ):
-            seq += 1
-        previous_dow = dow
-        week_arr[i] = current_year * 100 + seq
-    date_to_pos = {daily_date: i for i, daily_date in enumerate(dates)}
-    date_to_week = {daily_date: int(week_arr[i]) for i, daily_date in enumerate(dates)}
-    available_weeks = sorted(set(week_arr))
-    week_to_previous = {
-        week_id: available_weeks[i - 1] if i > 0 else None
-        for i, week_id in enumerate(available_weeks)
-    }
-    weekly_indexed = weekly.set_index("week_id")
+
+    order = np.argsort(daily_index.values, kind="stable")
+    sorted_dates = daily_index[order]
+    week_arr = _weekly_ids_for_daily_dates(sorted_dates, date_to_week)
+    last_row_by_week: dict[int, int] = {}
+    for sorted_pos, week_id in enumerate(week_arr):
+        if week_id is not None:
+            original_pos = int(order[sorted_pos])
+            last_row_by_week[int(week_id)] = original_pos
+
+    weekly = weekly.dropna(subset=["week_id"]).copy()
+    weekly["week_id"] = weekly["week_id"].astype(int)
+    weekly_indexed = weekly.sort_values("week_id").drop_duplicates("week_id", keep="last").set_index("week_id")
     result: dict[str, np.ndarray] = {
         col: np.full(len(daily_dates), np.nan, dtype=np.float64) for col in existing
     }
-    for daily_date in pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize().tolist():
-        if daily_date not in date_to_week:
-            continue
-        previous_week = week_to_previous.get(date_to_week[daily_date])
-        if previous_week is None or previous_week not in weekly_indexed.index:
-            continue
-        row_index = date_to_pos[daily_date]
-        for col in existing:
-            result[col][row_index] = weekly_indexed.at[previous_week, col]
+    for col in existing:
+        placed = np.full(len(daily_index), np.nan, dtype=np.float64)
+        for week_id, row_index in last_row_by_week.items():
+            if week_id in weekly_indexed.index:
+                placed[row_index] = float(weekly_indexed.at[week_id, col])
+        filled = pd.Series(placed[order]).ffill().to_numpy(dtype=np.float64)
+        out = np.full(len(daily_index), np.nan, dtype=np.float64)
+        out[order] = filled
+        result[col] = out
     return pd.DataFrame(result, index=range(len(daily_dates)))
 
 
+def _weekly_ids_for_daily_dates(
+    sorted_dates: pd.DatetimeIndex,
+    date_to_week: Mapping[str, int | str] | None,
+) -> list[int | None]:
+    if date_to_week is not None:
+        result: list[int | None] = []
+        for daily_date in sorted_dates:
+            raw = date_to_week.get(daily_date.strftime("%Y-%m-%d"))
+            try:
+                result.append(None if raw is None else int(raw))
+            except (TypeError, ValueError):
+                result.append(None)
+        return result
+
+    result = []
+    current_year, seq, previous_dow = int(sorted_dates[0].year), 1, -1
+    previous_date: pd.Timestamp | None = None
+    for daily_date in sorted_dates:
+        if int(daily_date.year) != current_year:
+            current_year, seq, previous_dow = int(daily_date.year), 1, -1
+        dow = int(daily_date.weekday())
+        if previous_date is not None and previous_dow >= 0 and (
+            (dow <= previous_dow and (daily_date - previous_date).days > 1)
+            or (daily_date - previous_date).days > 5
+        ):
+            seq += 1
+        previous_dow = dow
+        previous_date = daily_date
+        result.append(current_year * 100 + seq)
+    return result
+
+
 def _dynamic_report_masks(test_dates: pd.DatetimeIndex) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """按本次测试月份动态切分报告段，避免携带源脚本固定 OOS 窗口。"""
+    """按源脚本固定 OOS 段位切分 pre/sim/real。"""
     if len(test_dates) == 0:
         empty = np.zeros(0, dtype=bool)
         return empty, empty, empty
-    months = test_dates.to_period("M")
-    unique_months = sorted(months.unique())
-    split_one = max(1, len(unique_months) // 3)
-    split_two = max(split_one, (2 * len(unique_months)) // 3)
-    pre_months = set(unique_months[:split_one])
-    sim_months = set(unique_months[split_one:split_two])
-    real_months = set(unique_months[split_two:])
-    if not real_months:
-        real_months = set(unique_months[-1:])
-        sim_months = set(unique_months[:-1])
-    pre_m = np.asarray([month in pre_months for month in months], dtype=bool)
-    sim_m = np.asarray([month in sim_months for month in months], dtype=bool)
-    real_m = np.asarray([month in real_months for month in months], dtype=bool)
+    dates = pd.DatetimeIndex(test_dates)
+    sim_start = pd.Timestamp(year=2025, month=1, day=1)
+    real_start = pd.Timestamp(year=2025, month=7, day=1)
+    pre_m = np.asarray(dates < sim_start, dtype=bool)
+    sim_m = np.asarray((dates >= sim_start) & (dates < real_start), dtype=bool)
+    real_m = np.asarray(dates >= real_start, dtype=bool)
     return pre_m, sim_m, real_m
 
 
@@ -1371,6 +1391,44 @@ def run_config(config: dict) -> dict | None:
         return None
 
 
+def _make_phase_a_cache(test_dates: pd.DatetimeIndex, results: list[dict[str, Any]]) -> dict[str, Any]:
+    """保存 Phase A LGBM 输出，供同一 source 上下文的子窗口复用。"""
+    return {
+        "test_dates": [str(day.date()) for day in pd.DatetimeIndex(test_dates)],
+        "results": [
+            {
+                "config": dict(item["config"]),
+                "preds": np.asarray(item["preds"], dtype=np.int32).copy(),
+                "probs": np.asarray(item["probs"], dtype=np.float64).copy(),
+            }
+            for item in results
+        ],
+    }
+
+
+def _slice_phase_a_cache(cache: Mapping[str, Any], test_dates: pd.DatetimeIndex) -> list[dict[str, Any]]:
+    """按当前 test_dates 从 Phase A cache 中切出与普通 run_config 等价的结果。"""
+    cached_dates = [str(day) for day in cache.get("test_dates", [])]
+    position_by_date = {day: index for index, day in enumerate(cached_dates)}
+    requested_dates = [str(day.date()) for day in pd.DatetimeIndex(test_dates)]
+    missing = [day for day in requested_dates if day not in position_by_date]
+    if missing:
+        raise ValueError(f"missing cached Phase A rows for dates: {missing[:5]}")
+    indices = np.asarray([position_by_date[day] for day in requested_dates], dtype=np.int64)
+    sliced: list[dict[str, Any]] = []
+    for item in cache.get("results", []):
+        sliced.append(
+            {
+                "config": dict(item["config"]),
+                "preds": np.asarray(item["preds"], dtype=np.int32)[indices].copy(),
+                "probs": np.asarray(item["probs"], dtype=np.float64)[indices].copy(),
+            }
+        )
+    if not sliced:
+        raise ValueError("Phase A cache has no LGBM results")
+    return sliced
+
+
 # ============================================================================
 # EVALUATION
 # ============================================================================
@@ -1577,9 +1635,9 @@ def run_prediction(cfg: dict) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
     print(f"  Self features: {n_self}, MF features: {len(mf_cols)}, "
           f"Total: {feat_all.shape[1]}")
 
-    print(f"  IC screening on pre-test data (strict gap)...")
+    print(f"  IC screening on source pre-test data (strict gap)...")
     _ts_row = int(np.flatnonzero(
-        df["date"].values >= np.datetime64(test_start.strftime("%Y-%m-%d")))[0])
+        df["date"].values >= np.datetime64(SOURCE_IC_SCREEN_START))[0])
     pre_mask = ((np.arange(len(df)) < _ts_row - horizon)
                 & np.isin(labels, [-1.0, 1.0])
                 & ~np.isnan(close))
@@ -1685,30 +1743,44 @@ def run_prediction(cfg: dict) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
         cfg["lgbm_lambda"], cfg["lgbm_split"],
         slow_path=lgbm_slow_path)
 
-    _init_worker(len(df), feat_selected, labels, close, fallback,
-                 test_idx, horizon, purge_gap, seeds,
-                 period_feat_matrices, test_day_period)
-
     t1 = time.time()
     _wf_tag = " (walk-forward IC)" if wf_ic else ""
-    print(f"\n  Phase A: Training {len(lgbm_grid)} LGBM configs "
-          f"with {n_workers} workers ({len(seeds)} seeds){_wf_tag}...")
-    if n_workers <= 1:
-        results = [r for r in map(run_config, lgbm_grid) if r is not None]
+    phase_a_cache = cfg.get("phase_a_cache")
+    if phase_a_cache is not None:
+        print(f"\n  Phase A: Reusing cached LGBM configs for {len(test_idx)} test rows{_wf_tag}...")
+        results = _slice_phase_a_cache(phase_a_cache, test_dates)
     else:
-        with mp.Pool(
-            n_workers,
-            initializer=_init_worker,
-            initargs=(len(df), feat_selected, labels, close, fallback,
-                      test_idx, horizon, purge_gap, seeds,
-                      period_feat_matrices, test_day_period),
-        ) as pool:
-            results = [r for r in pool.map(run_config, lgbm_grid)
-                       if r is not None]
+        _init_worker(len(df), feat_selected, labels, close, fallback,
+                     test_idx, horizon, purge_gap, seeds,
+                     period_feat_matrices, test_day_period)
+        print(f"\n  Phase A: Training {len(lgbm_grid)} LGBM configs "
+              f"with {n_workers} workers ({len(seeds)} seeds){_wf_tag}...")
+        if n_workers <= 1:
+            results = [r for r in map(run_config, lgbm_grid) if r is not None]
+        else:
+            with mp.Pool(
+                n_workers,
+                initializer=_init_worker,
+                initargs=(len(df), feat_selected, labels, close, fallback,
+                          test_idx, horizon, purge_gap, seeds,
+                          period_feat_matrices, test_day_period),
+            ) as pool:
+                results = [r for r in pool.map(run_config, lgbm_grid)
+                           if r is not None]
     if not results:
         raise RuntimeError("all LGBM configs failed")
     print(f"  Done: {len(results)} configs in "
           f"{(time.time() - t1) / 60:.1f} min")
+    if cfg.get("phase_a_only"):
+        phase_a_only_ctx = {
+            "phase_a_cache": _make_phase_a_cache(test_dates, results),
+            "test_dates": test_dates,
+            "true_labels": true_labels,
+        }
+        empty_final = np.zeros(len(test_idx), dtype=np.int32)
+        if cfg.get("return_ctx"):
+            return empty_final, phase_a_only_ctx
+        return empty_final
 
     # -- Phase B: Signals --
     print(f"\n  Phase B: Computing signals...")
@@ -2209,10 +2281,12 @@ def run_7y01_for_feature_window(
     current_end: str,
     require_labels: bool,
     n_workers: int = 10,
+    phase_a_caches: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """运行 7Y_01 PIT 窗口，返回 current window 内逐 feature_date 明细。"""
     baseline_contexts: dict[str, dict[str, Any]] = {}
     for baseline in required_baselines():
+        phase_a_cache = phase_a_caches.get(str(baseline)) if phase_a_caches is not None else None
         _, ctx = run_prediction(
             model_config(
                 str(baseline),
@@ -2227,6 +2301,7 @@ def run_7y01_for_feature_window(
                 emit_report=False,
                 return_ctx=True,
                 n_workers=n_workers,
+                **({"phase_a_cache": phase_a_cache} if phase_a_cache is not None else {}),
             )
         )
         if not isinstance(ctx, dict) or len(ctx.get("test_dates", [])) == 0:
@@ -2265,6 +2340,10 @@ def run_7y01_for_feature_window(
     ).astype(float)
     result["baseline_signs"] = [
         {name: int(signs[name][idx]) for name in required_baselines()}
+        for idx in selected_indices
+    ]
+    result["baseline_scores"] = [
+        {name: float(baseline_scores[name][idx]) for name in required_baselines()}
         for idx in selected_indices
     ]
     result["model_version"] = MODEL_VERSION

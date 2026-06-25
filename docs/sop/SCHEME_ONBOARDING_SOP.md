@@ -3,7 +3,7 @@
 **更新日期**: 2026-06-21
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
-> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
+> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。Source-backed 方案的原始算法保真见 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
 >
 > 新增方案入口先读 [SCHEME_ONBOARDING_T0.md](SCHEME_ONBOARDING_T0.md)，再按本文执行。本文是「改造进系统」段的人类执行手册。
 >
@@ -23,6 +23,7 @@
 - 当前已接入并 active 的方案包括日频 `t1_daily` / `t5_daily`，以及周频 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529`。新增周度方案进入 live 调度前，必须先确认周度目标日规则、actuals 对齐规则、最新特征周产出能力，以及调度时间与上游 weekly 首轮预测时间对齐。
 - `scheme_id` 一旦写入数据库就视为稳定 ID，不要随意改名；展示名变更只改 `name`。
 - 算法核心逻辑放在 `core/` 或独立模块里，`predict.py` 只做框架适配、输入准备和输出转换。
+- 如果方案来自原始脚本/benchmark，`core/` 必须保持原始算法逻辑；时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射不得因平台化而改变。
 - 方案不能直接写 `t_scheme_predictions`；统一由 `scheduler.executor` 写库，保证运行日志和 UPSERT 口径一致。
 - Y 标的展示名由数据库 `t_target_registry` 管理，`target_tenor` 只作为内部稳定 key。
 - 新方案默认先用 `status: paused` 验证；只允许 ActivationGate 在授权后把 config、registry 和 version 翻为 `active`。不得手动改 `status`、手写 registry SQL 或用 GET/API 探针触发同步来绕过生命周期。
@@ -98,6 +99,13 @@
 - `confidence` 用来承接原始算法已有的置信度、概率或分数；不是平台为模型重新生成的新信号。
 - CompareGate 的 `max_confidence_abs_diff` 是 original/current benchmark 两侧 `confidence` 的最大绝对差。`1e-16` 量级属于浮点舍入误差，视为 0。
 - 如果原始算法没有天然 `confidence`，必须在 source/current 两侧使用同一确定性映射，并在 `CURRENT_STATUS.md` 说明。
+
+**规则九：source-backed 方案不改原始算法逻辑**
+- 原始算法的历史起点、source batch 终点、test window、PIT/batch 口径、weekly/monthly 对齐、特征/信号、模型参数、投票、fallback、streak、内部 score 映射都是算法逻辑，默认不得修改。
+- 原始 runner 明确 patch 的日期窗口和原始脚本未 patch 的固定算法锚点必须分开处理；不得把 `context_start/latest_start/data_end` 的移动扩散到筛因子起点、warmup、校准窗口或 report mask。10Y02 的 `latest_oos` 案例中，`test_idx` 被 patch 到 `2025-05-01..2026-06-10`，但 `IC screening` 仍必须用原始 `2024-01-01` 截止点。
+- `predict.py` 和 backtest runner 只能做输入 artifact、日期字段、结果转换、缓存、extra 和落库适配。
+- 若 source-original 与平台 current 的方向或内部 score 不一致，先查输入 artifact、data_version、as-of、周/月频对齐和 source 口径；不得用调参、改特征或改 fallback 去贴结果。
+- CompareGate/人工验收要记录内部模型分数或 baseline score 差异。只做到方向一致但内部数值仍有残差时，不得宣称算法逻辑完全一致。
 
 ### 1.1 强约束模块边界
 
@@ -296,6 +304,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 |------|------|----------|
 | Intake | 明确方案身份、频率、horizon、tenors、预测语义、调度时间、原始文件和样本数据 | 接入记录中写清楚 scheme_id、frequency、预测口径和是否需要历史回测 |
 | Normalize | 将原始算法归档并改造成框架 core | `schemes/{scheme_id}/core/` 存在，实盘路径不直接 import 外部绝对路径脚本 |
+| Source Fidelity | 确认 source 执行口径并锁定原始算法逻辑 | 记录 `source_original_reproduction` / `source_strict_pit` / `platform_live_pit_variant`；列出不可改的时间窗口、特征、对齐、模型和内部 score 字段 |
 | Input Gate | 所有算法输入由公共层生成 | adapter/backtest runner 调用 `shared.input_artifacts`，extra/summary 记录 `input_artifact_source` |
 | Static Gate | 阻断危险结构和绕路调用 | 目录、命名、接口、危险导入、直接写库检查通过 |
 | Unit Gate | 锁定 core 和 adapter 行为 | 单测覆盖 core 输出、adapter 输出、公共输入层调用、`PredictionRecord` 字段 |
@@ -325,6 +334,8 @@ def run(predict_date: str) -> list[PredictionRecord]:
 | 算法来源 | 上游新模型、内部改造、参数实验等 |
 | 数据来源 | `bond_db` 直接取数、DB 生成 CSV、人工补充文件等 |
 | 是否需要历史回测 | 是 / 否 |
+| source 执行口径 | `source_original_reproduction` / `source_strict_pit` / `platform_live_pit_variant` |
+| 原始算法不可改字段 | 时间起点、窗口、特征、周/月频对齐、模型参数、投票/fallback、内部 score |
 
 如果只是新增同一个任务格子的候选方案，不要复用旧 `scheme_id`，要新增独立目录。
 
@@ -395,9 +406,11 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
-`current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与 live adapter、backtest runner 完全一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和 PIT 窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则 CompareGate 或方案 benchmark summary 必须暴露差异，不能为了通过 gate 把 current 写成 source batch。
+`current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与已声明 source 执行口径一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则该 PIT 必须按 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md) 明确标为 `platform_live_pit_variant`，CompareGate 或方案 benchmark summary 必须暴露差异，不能为了通过 gate 把 current 写成 source batch，也不能为了贴合 source batch 去改算法内部逻辑。
 
-Source `latest_oos` / batch 文件只是一种 source evidence。对于 live-like 历史回测，canonical 结果必须按每个 `feature_date` 独立截止重建；如果一次性 batch 使用了更晚 test window、streak 状态、selector 状态或标签可见性，它可能和严格 PIT 结果不同。差异应记录在 `original_backtest_summary.json` / `current_backtest_summary.json` 的审计字段或方案 README 中，包括差异日期、source batch 方向、strict PIT 方向、基线票数或 fallback/streak 状态。不得手工补预测结果，也不得把 source batch 当作平台 live 口径真值。
+Source `latest_oos` / batch 文件只是一种 source evidence。进入平台前必须先判断它属于 `source_original_reproduction`、`source_strict_pit` 还是需要另行批准的 `platform_live_pit_variant`。如果一次性 batch 使用了更晚 test window、streak 状态、selector 状态或标签可见性，它可能和严格 PIT 结果不同。差异应记录在 `original_backtest_summary.json` / `current_backtest_summary.json` 的审计字段或方案 README 中，包括差异日期、source batch 方向、strict PIT 方向、基线票数或 fallback/streak 状态。不得手工补预测结果，也不得把 source batch 当作平台 live 口径真值；同样不得把平台 live-like PIT 口径包装成“已复现原始 source 输出”。
+
+对 source-backed 多 baseline 方案，CompareGate 或人工对比必须记录原始算法暴露的内部模型分数，例如 `STD/ACCWT/V55_7Y/DIV`、probability、score 或其它 baseline output。方向零差异是激活硬门槛；内部数值如果仍有残差，必须写明最大绝对差、方向差异数和残差归因，不能宣称算法逻辑完全一致。
 
 如果外部复现报告（Markdown、Excel、CSV 摘要等）已经给出月度指标，进入 CompareGate 前必须先确认该报告按哪个字段归月。源报告若按 source `date/T` 归月，则只能和 `original_predictions_sample.csv` 按 `feature_date` 重算的结果比较；前端、API、回测 latest 和 live metrics 的月度展示仍按 `target_date` 归月。不得把 source report 的 feature 月数字直接要求等于前端 target 月数字。
 
@@ -523,6 +536,7 @@ if __name__ == "__main__":
 - 如果源算法对 test window 敏感（例如 `daily_5y_2_v28` 的月度 test window 会参与 ensemble / signal selection），必须把窗口计算和 core 调用抽成方案内共享 inference helper。adapter、dry-run、gray/live 补齐、benchmark current 生成和 backtest runner 都必须调用同一 helper；禁止 live 使用月度窗口、backtest 使用连续窗口，或反过来。
 - 对这类方案，历史回测依然必须满足 `predict_date=feature_date`、`target_date` 由平台日历计算、`target_date < 灰度实盘起点`。窗口敏感只说明“如何调用算法 core”，不改变平台日期语义。
 - 对支持 `--sample-dates` 的日频 runner，sample mode 是验证工具，不是正式历史回测。若 sample 跨过灰度边界，runner 必须先用交易日历计算每个 sample 的 `target_date=T+horizon`，并把 daily/weekly/monthly input artifact 的 `end/as_of` 扩展到最大 sample `target_date`；sample output 可以保留 `target_date >= gray_start` 的边界 rows 以做 API/live 对齐证明，但必须标记 `backtest_scope=targeted_sample` 且禁止 persist。full historical no-persist/persist 仍必须过滤 `target_date >= gray_start`。
+- 对 source-backed 日频方案，CompareGate 和人工复核不得只看最终方向。若原始脚本能导出 baseline score、probability、vote score、`vs_full`、baseline direction 或其它内部模型输出，benchmark original/current 必须保留这些字段并逐列比较；最终方向一致但内部数值不一致时，只能记录为“方向一致、内部数值待归因”，不得进入落库授权。
 
 回测写库后入库:
 
@@ -541,6 +555,7 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 - 周度明细行、月度指标、去重和展示月份一律按 `target_date` 归组；`feature_date` 只用于追溯输入窗口，`predict_date` 只用于调度日志和运行记录。
 - 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行；不要用部署时间或 `predict_date` 截断历史回测。
 - 若用 targeted sample 验证 daily strict、monthly fast path、cache 或 shard 等加速路径，所有对比路径必须使用同一组 `sample_dates` 和同一个 effective input end；diff 结论至少覆盖 `feature_date/target_date/target_tenor/horizon/direction/confidence/label/is_correct`。
+- 对 source-backed 方案，上述 targeted sample 的 diff 还必须覆盖 source benchmark 暴露的内部模型字段，例如 `vote_score`、`*_score`、`*_vs`、`*_dir`、`*_sign`。cache、shard、monthly fast path 或任何执行优化只有在最终方向和内部字段全部 0 diff 后，才能作为 full historical no-persist/persist 的候选执行路径。
 - 如果删除错误口径的旧回测 run，必须使用受控脚本显式指定 `scheme_id + run_id`，先 dry-run 打印命中行数，再 apply；不得手写散落 SQL 删除。
 - 同一前端任务格子 / 同一 `task_type` 列（例如 `5Y国债活跃 · T+5`）下，候选方案在相同 data source 和相同 target 覆盖窗口内的样本总数默认必须一致。写库后必须导出各候选方案的 `target_date` 集合并做 missing/extra diff；若不一致，必须先定位是缺 target 日、重复 target 日、未验证 actual，还是算法明确不产出有效信号。只有已在 `PREDICTION_SEMANTICS.md` 和踩坑文档登记的 source-original 周频有效信号例外，才允许样本总数不同；日频方案和新增方案不得用“算法可能不同”作为静默放行理由。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
