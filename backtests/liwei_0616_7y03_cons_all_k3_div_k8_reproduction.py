@@ -451,8 +451,9 @@ def _source_context_end(daily_df: pd.DataFrame, *, default: str) -> str:
 
 
 def _source_current_start(dates: list[str]) -> str:
-    """返回 source latest 窗口的当前段起点：本批次首个样本日。"""
-    return min(str(day) for day in dates)
+    """返回 source latest 窗口的当前段起点：样本起始月第一天。"""
+    first = min(str(day) for day in dates)
+    return pd.Timestamp(first).replace(day=1).strftime("%Y-%m-%d")
 
 
 def _split_shards(dates: list[str], parallel_shards: int) -> list[list[str]]:
@@ -717,8 +718,12 @@ def _effective_input_end(sample_dates: list[str], calendar) -> str:
 
 
 def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
+    compact_rows: list[dict[str, Any]] = []
+    for row in rows:
+        extra = row.get("extra") if isinstance(row.get("extra"), dict) else {}
+        baseline_scores = extra.get("baseline_scores") if isinstance(extra.get("baseline_scores"), dict) else {}
+        baseline_signs = extra.get("baseline_signs") if isinstance(extra.get("baseline_signs"), dict) else {}
+        item = {
             "predict_date": row["predict_date"],
             "feature_date": row["feature_date"],
             "target_date": row["target_date"],
@@ -727,8 +732,12 @@ def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "label": row["label"],
             "confidence": row["confidence"],
         }
-        for row in rows
-    ]
+        item["vote_score"] = extra.get("vote_score")
+        for baseline in ("STD", "DIV", "ACCWT", "CROSS_5Y"):
+            item[f"{baseline}_score"] = baseline_scores.get(baseline)
+            item[f"{baseline}_dir"] = baseline_signs.get(baseline)
+        compact_rows.append(item)
+    return compact_rows
 
 
 def _validate_before_persist(rows: list[dict[str, Any]]) -> None:
