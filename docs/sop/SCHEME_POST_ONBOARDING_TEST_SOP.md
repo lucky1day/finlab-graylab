@@ -7,6 +7,8 @@
 > 与 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 的关系：入库 SOP 负责"把方案合规地改造进系统"；本 SOP 负责"验证改造后的方案结果与入库前原始方案一致，并完成落库/展示/挂载"。本 SOP 的多个失败分支会**打回入库 SOP**。
 >
 > 新增方案入口先读 [SCHEME_ONBOARDING_T0.md](SCHEME_ONBOARDING_T0.md)，再按 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md) 和本文执行。本文是其「验证 + 落库 + 挂载」段的人类执行手册。
+>
+> Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md) 为准。本文的“版本一致”不得解释为只看最终方向；原始算法暴露的内部模型分数也必须纳入证据。
 
 ---
 
@@ -17,6 +19,8 @@
 **核心判定标准（全程统一）**：
 - **方向零容差**：两版本对比时，`predicted_direction`（1/-1/0）必须**逐样本完全一致**；`confidence` 等浮点允许 `1e-9` 容差。方向差一个样本即判不一致。
 - **confidence 语义**：`confidence` 是原始算法置信度、概率或分数在平台里的统一承接字段；如果原始算法没有天然 confidence，baseline/current 两侧必须使用同一确定性代理值，并在 `CURRENT_STATUS.md` 说明。
+- **源算法保真**：source-backed 方案必须证明原始算法逻辑未改。时间起点、测试窗口、PIT/batch 口径、weekly/monthly 对齐、特征/信号、模型参数、投票/fallback 和内部 score 映射不能因平台化改变。
+- **内部数值证据**：原始算法暴露的 baseline score、probability、`*_vs`、内部 vote score 或类似数值必须进入 S5 对比。若最终方向一致但内部数值仍有残差，只能判为“方向一致、内部数值待归因”，不得判为“算法逻辑完全一致”。
 - **benchmark T 对齐语义**：原始算法回测结果里的 `T/date/predict_date` 表示算法站在 T 预测，进入平台后必须对齐数据库明细的 `feature_date`，不得对齐实盘语义下的 `predict_date`。
 - **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
 - **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
@@ -83,7 +87,7 @@
 | **失败判定** | 两种形态都不存在，或存在但无法定位/不含逐样本方向 |
 | **失败→去向** | `REJECTED_TO_ONBOARDING`。原因："缺少版本回测定义，无法定义正确性基准"。由作者补齐入库前基准后从 S1 重来 |
 
-> 说明：不在本步做时间窗口划分——按版本回测定义自身覆盖的历史范围整体复现即可。
+> 说明：不在本步做时间窗口划分——按版本回测定义自身覆盖的历史范围整体复现即可。但必须记录 source 执行口径分类：`source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。
 
 ---
 
@@ -120,8 +124,9 @@
 |----|------|
 | **入口条件** | S3 baseline_original + S4 repro_framework 均就绪 |
 | **动作** | 逐样本对齐：日频按 `feature_date + target_date + target_tenor + horizon`，周频按 `feature_week_id + feature_date + target_date + target_tenor + horizon`。原始算法 source T 必须映射到平台 `feature_date`；平台内部字段 `tenor` 可映射为 `target_tenor`。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
-| **成功判定** | **所有可对齐样本 `predicted_direction` 完全一致**；`confidence` 差异 ≤ 1e-9；无"基准有而复现缺"的样本（或缺失已有合理解释并记录）；无 source T 与 `feature_date` 错位 |
+| **成功判定** | **所有可对齐样本 `predicted_direction` 完全一致**；`confidence` 差异 ≤ 1e-9；原始算法暴露的内部模型分数已对比并记录；无"基准有而复现缺"的样本（或缺失已有合理解释并记录）；无 source T 与 `feature_date` 错位 |
 | **confidence 判读** | `max_confidence_abs_diff` / `mean_confidence_abs_diff` 只表示两版本同名数值字段的浮点差异；`1e-16` 量级视为舍入误差，不代表模型行为改变 |
+| **内部数值判读** | 对 `STD/ACCWT/V55_7Y/DIV`、probability、score、vote score 等源算法输出，记录最大绝对差和方向差异数。若差异无法归因为输入 artifact / 导出精度 / 明确获批口径差异，则打回入库 SOP 排查，不得通过调参或改算法贴结果 |
 | **成功→去向** | 进入 S6 |
 | **失败判定** | 存在任一样本方向不一致，或样本集不可对齐 |
 | **失败→去向** | `REJECTED_TO_ONBOARDING`。**必须输出不一致明细**：哪些 `feature_date/target_date/tenor`、基准方向 vs 复现方向、差异数量。由入库 SOP 据此排查改造引入的偏差，改造后从 S1 重来 |

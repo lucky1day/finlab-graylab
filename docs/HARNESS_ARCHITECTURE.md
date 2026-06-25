@@ -2,7 +2,7 @@
 
 **更新日期**: 2026-06-12
 
-本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
+本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准。
 
 ---
 
@@ -15,6 +15,7 @@ Harness 不是新的预测算法，也不是新的数据口径。Harness 的职�
 - `shared.data_service` 是唯一底层日频、周频、月频 DB 导出标准。普通方案接入时不得修改它的业务逻辑。
 - `shared.input_artifacts` 是所有算法输入文件的唯一入口。预测 adapter 和历史回测 runner 都必须先通过它生成输入 CSV，再读回 DataFrame 给算法。
 - `schemes/{scheme_id}/core/` 只放算法逻辑。core 禁止写库、禁止调 scheduler、禁止直接拼 DB 输入。
+- source-backed 方案的 core 必须保持原始算法逻辑：时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射都不得因平台化而改变。
 - `schemes/{scheme_id}/predict.py` 只做 adapter: 解析预测上下文、获取公共输入 artifact、调用 core、返回 `list[PredictionRecord]`。
 - `scheduler.scheme_runner` 是只读 dry-run 边界，只输出 JSON，不写库。
 - `scheduler.executor` / `scheduler.repository` 是正式预测写库边界。算法层不得直接写 `t_scheme_predictions` 或 `t_scheme_run_log`。
@@ -62,6 +63,7 @@ bond-factor-lab/
 | `harness.import_audit` | 静态扫描危险导入和绕路调用 | 不自动改代码 |
 | `harness.input_gate` | 调用公共输入层生成主 artifact 和 `input_spec.auxiliary_inputs` 辅助 artifact；按 `feature_date=previous_trading_day(predict_date)` 约束 daily/monthly 窗口，按 `feature_week_id + as_of_date=feature_date` 约束 weekly 输入，并在 `auxiliary_input_artifacts` 留证 | 不直接调用源表写入 |
 | `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表，并校验 `predict_date/feature_date/target_date` 语义 | 不调用 `scheduler.executor` |
+| `harness.compare_gate` | 对 source-backed 方案执行 original/current 逐样本对比，记录方向、actual、correctness、confidence 和内部模型分数差异；确认 source 口径分类 | 不用调参、手工补方向或复制 source CSV 伪造 current |
 | `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01`，并对受保护表做前后快照 | 未授权不落 `t_backtest_*`；授权落库时也只能改 `t_backtest_*` |
 | `harness.live_gate` | 受控单方案写库前的 readiness、dry-run、行数保护；必须显式传入 `prediction_phase=gray_live/scheduled_live` | 不批量执行所有 active 方案 |
 | `harness.report` | 输出 JSON/Markdown 证据到 `reports/harness/{scheme_id}/` | 不改业务状态 |
@@ -92,7 +94,7 @@ python -m harness gate live \
 
 新增方案必须按以下顺序推进:
 
-1. **Intake**: 明确 `scheme_id`、frequency、horizon、tenors、预测语义、调度时间、原始算法文件、样本 Excel/CSV、是否需要历史回测。
+1. **Intake**: 明确 `scheme_id`、frequency、horizon、tenors、预测语义、调度时间、原始算法文件、样本 Excel/CSV、是否需要历史回测，并按 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 给出 source 口径分类。
 2. **Normalize**: 新建 `schemes/{scheme_id}/`，原始脚本归档到 core，实盘 core 改造成 DataFrame 输入函数。
 3. **Input Gate**: adapter 和 backtest runner 必须调用 `shared.input_artifacts`，并记录 `input_artifact_path` / `input_artifact_source`。
 4. **Static Gate**: 静态检查目录、命名、接口、危险导入、直接写库、绕过公共输入层等问题。
@@ -149,6 +151,7 @@ python -m harness gate live \
 - 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
 - 回测结论: `--no-persist` summary、样本总数、`metric_samples`、准确率、月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。
+- 源算法保真结论: source 口径分类、原始脚本/输出 hash、original/current 的方向与 actual 对齐结果、内部模型分数差异统计。若内部数值不完全一致，必须写清残差归因，不能宣称算法逻辑完全一致。
 - 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足 `predict_date=T+1/feature_date=T`；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
 - 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；当前 V28 批次灰度观察区按 `target_date >= 2026-06-01` 判定，后续方案使用方案级生命周期配置。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。

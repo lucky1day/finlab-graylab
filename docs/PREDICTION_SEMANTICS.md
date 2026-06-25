@@ -4,6 +4,8 @@
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
+Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)。日期字段映射是平台适配，不是修改原始算法时间窗口、测试区间或 batch/PIT 口径的许可。
+
 ## 1. 三个标准日期字段
 
 | 字段 | 平台含义 | 是否给前端/业务使用 |
@@ -45,6 +47,16 @@ benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + 
 
 这条规则优先于旧文件列名。旧 benchmark CSV 即使列名仍叫 `predict_date`，也只能解释为 source T / 平台 `feature_date`；新增 benchmark 文件应显式写 `feature_date` 或 `source_t`，避免把原始算法站位日误读为平台信号发出日。
 
+### 2.1.1 Source 执行口径不得被静默改写
+
+原始算法可能是 strict PIT，也可能是一次性 batch、固定历史窗口、月度窗口、walk-forward 或带全局校准的 source-original reproduction。平台必须先分类再执行：
+
+- `source_original_reproduction`: 按原始脚本真实口径复现，current/backtest 应与 source 输出逐样本对齐。
+- `source_strict_pit`: 原始脚本本身逐 `feature_date` 硬截止，平台 PIT helper 必须与它等价。
+- `platform_live_pit_variant`: 原始交付不是 strict PIT，但业务明确要求构造 live-like PIT 变体；该变体必须获批、命名并记录与 source-original 的差异。
+
+不能因为平台 live 语义需要 `feature_date` 硬截止，就直接修改原始算法内部的 `test_start/test_end/test_ranges`、历史起点、周/月频对齐、特征或投票逻辑。若同一 `feature_date` 的 source-original 与平台 PIT 变体不同，差异必须作为口径差异记录，不能通过调参或改算法抹平。
+
 ### 2.2 旧 core 参数名不得直接映射为平台字段
 
 legacy/core 里的参数名不一定等于平台标准字段。遇到 `current_date`、`date`、`predict_date` 等旧参数时，必须先读 core 内部如何使用它，再决定映射到平台的 `predict_date`、`feature_date` 还是 `target_date`；不得只按名字猜。
@@ -70,6 +82,7 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 3. 回测仍输出 `predict_date=feature_date=T`，但核心预测窗口必须与同一 `feature_date` 的实盘路径一致。
 4. benchmark current 侧必须由平台 inference helper 生成，不能复制 source CSV 冒充 current。
 5. 逐方案 original benchmark 的 `date/T` 只对齐平台 `feature_date`；如 `target_date` 进入灰度/实盘区间，则与 `t_scheme_predictions.feature_date` 对齐核验。这里的 original benchmark 位于 `schemes/{scheme_id}/benchmarks/`，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的外部批次证据。
+6. helper 只能封装原始算法的执行口径；不得把“更短历史”“同月去年+本月”“previous complete week”等平台便利窗口替代 source 中实际使用的固定历史、batch end 或周频对齐规则。
 
 `daily_5y_2_v28` 的唯一入口是 `schemes.daily_5y_2_v28.inference`：`v28_feature_month_window(feature_date)` 返回当月月初到 `feature_date`，`predict.py` 与 `backtests.daily_5y_2_v28_reproduction` 都必须通过该模块调用 core。
 
@@ -117,7 +130,7 @@ target_date  = T + horizon
 
 ### 5.1 已批准的 source-original batch reproduction 例外
 
-默认历史回测优先使用 point-in-time 口径；但当原始方案本身是全历史 batch reproduction，并且算法内部存在固定未来分段、全局校准或一次性 selector 这类无法逐点切片复现的结构时，可以批准为方案级例外。例外必须同时满足：
+默认历史回测优先使用原始算法声明的 source 执行口径；如果该口径本身是 point-in-time，则按 PIT 复现。如果原始方案本身是全历史 batch reproduction，并且算法内部存在固定未来分段、全局校准或一次性 selector 这类无法逐点切片复现的结构时，可以批准为方案级例外。例外必须同时满足：
 
 1. 只适用于历史回测写入 `t_backtest_*`，不得扩散到 gray/live/scheduled live adapter。
 2. 对已有 original benchmark 覆盖区间逐行一致；方向、`target_date`、`label/is_correct` 必须零差异，`confidence` 只允许浮点舍入误差。

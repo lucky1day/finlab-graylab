@@ -144,8 +144,23 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
 
         self.assertEqual(dates, ["2026-05-22"])
 
+    def test_sample_input_end_uses_sample_target_date_not_global_backtest_end(self) -> None:
+        from backtests import liwei_0616_10y02_cons_say_k3_div_k5_reproduction as runner
+
+        calendar = MagicMock()
+        calendar.nth_trading_day_after.side_effect = lambda day, horizon: {
+            ("2026-03-25", 5): "2026-04-01",
+            ("2026-04-23", 5): "2026-04-30",
+        }[(day, horizon)]
+
+        input_end = runner._effective_input_end(["2026-03-25", "2026-04-23"], calendar)
+
+        self.assertEqual(input_end, "2026-04-30")
+
     @patch("backtests.liwei_0616_10y02_cons_say_k3_div_k5_reproduction.run_10y02_for_window_silent")
-    def test_historical_prediction_runs_each_feature_date_as_pit_cutoff(self, mock_runner: MagicMock) -> None:
+    def test_historical_prediction_daily_mode_selects_each_feature_date_from_full_source_context(
+        self, mock_runner: MagicMock
+    ) -> None:
         from backtests import liwei_0616_10y02_cons_say_k3_div_k5_reproduction as runner
 
         daily_df = pd.DataFrame(
@@ -181,9 +196,13 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
         self.assertEqual(detail["anchor_date"].tolist(), ["2026-05-18", "2026-05-19", "2026-05-20"])
         self.assertEqual(mock_runner.call_count, 3)
         called_feature_dates = [call.kwargs["feature_date"] for call in mock_runner.call_args_list]
+        called_current_starts = [call.kwargs["current_start"] for call in mock_runner.call_args_list]
         called_current_ends = [call.kwargs["current_end"] for call in mock_runner.call_args_list]
+        called_test_ranges = [call.kwargs["test_ranges"] for call in mock_runner.call_args_list]
         self.assertEqual(called_feature_dates, ["2026-05-18", "2026-05-19", "2026-05-20"])
+        self.assertEqual(called_current_starts, called_feature_dates)
         self.assertEqual(called_current_ends, called_feature_dates)
+        self.assertEqual(called_test_ranges, [(("2024-01-01", "2026-05-20"),)] * 3)
 
     @patch("backtests.liwei_0616_10y02_cons_say_k3_div_k5_reproduction.run_10y02_for_window_silent")
     def test_monthly_batch_runs_one_window_for_same_month_and_returns_each_date(self, mock_runner: MagicMock) -> None:
@@ -225,8 +244,50 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
         self.assertEqual(detail["anchor_date"].tolist(), ["2026-05-18", "2026-05-19", "2026-05-20"])
         self.assertEqual(mock_runner.call_count, 1)
         self.assertEqual(mock_runner.call_args.kwargs["feature_date"], "2026-05-20")
-        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-05-01")
+        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-05-18")
         self.assertEqual(mock_runner.call_args.kwargs["current_end"], "2026-05-20")
+        self.assertEqual(mock_runner.call_args.kwargs["test_ranges"], (("2024-01-01", "2026-05-20"),))
+
+    @patch("backtests.liwei_0616_10y02_cons_say_k3_div_k5_reproduction.run_10y02_for_window_silent")
+    def test_targeted_monthly_sample_runs_one_source_context_across_feature_months(self, mock_runner: MagicMock) -> None:
+        from backtests import liwei_0616_10y02_cons_say_k3_div_k5_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-03-31", "2026-04-01", "2026-04-30"]),
+                "TB0YWI0C": [2.0, 2.01, 2.02],
+            }
+        )
+
+        def fake_window(**kwargs):
+            return pd.DataFrame(
+                {
+                    "anchor_date": ["2026-03-31", "2026-04-01"],
+                    "prediction": [-1, 1],
+                    "true_label": [-1, 1],
+                    "confidence": [1.0, 1.0],
+                }
+            )
+
+        mock_runner.side_effect = fake_window
+
+        detail = runner.run_historical_prediction(
+            daily_df=daily_df,
+            weekly_df=pd.DataFrame({"week_id": [202613, 202614, 202618]}),
+            monthly_df=pd.DataFrame({"month_id": ["202603", "202604"]}),
+            date_to_week={},
+            n_workers=1,
+            feature_dates=["2026-03-31", "2026-04-01"],
+            disable_cache=True,
+            batch_mode="monthly",
+        )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-03-31", "2026-04-01"])
+        self.assertEqual(mock_runner.call_count, 1)
+        self.assertEqual(mock_runner.call_args.kwargs["feature_date"], "2026-04-01")
+        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-03-31")
+        self.assertEqual(mock_runner.call_args.kwargs["current_end"], "2026-04-01")
+        self.assertEqual(mock_runner.call_args.kwargs["test_ranges"], (("2024-01-01", "2026-04-30"),))
 
     @patch("backtests.liwei_0616_10y02_cons_say_k3_div_k5_reproduction.run_10y02_for_window_silent")
     def test_cache_on_off_and_sharded_paths_match_serial_on_targeted_dates(self, mock_runner: MagicMock) -> None:
@@ -288,6 +349,7 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
             {"artifact": "hash"},
             cache_mode="daily",
             window_end="2026-05-18",
+            model_context_end="2026-05-20",
         )
         monthly_path = runner._cache_path(
             cache_root,
@@ -295,6 +357,7 @@ class Liwei061610Y02BacktestTests(unittest.TestCase):
             {"artifact": "hash"},
             cache_mode="monthly",
             window_end="2026-05-22",
+            model_context_end="2026-05-20",
         )
 
         self.assertNotEqual(daily_path, monthly_path)

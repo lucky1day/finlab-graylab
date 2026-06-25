@@ -10,9 +10,10 @@
 
 1. 本文：确认新增方案的不可破坏边界。
 2. [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)：确认 `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的唯一语义。
-3. [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)：重点看 predict vs target、周度日历、source-vs-onboarded 对比、实盘回补。
-4. [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md)：确认 config / predict.py / core 的机器契约。
-5. [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)：按 gate 执行完整入库。
+3. [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)：确认 source-backed 方案不得修改原始算法逻辑。
+4. [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)：重点看 predict vs target、周度日历、source-vs-onboarded 对比、实盘回补。
+5. [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md)：确认 config / predict.py / core 的机器契约。
+6. [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)：按 gate 执行完整入库。
 
 ## 1. 新增方案不改框架
 
@@ -48,7 +49,7 @@
 
 不得为了让单个方案通过 gate 而临时放宽公共层、添加静默 fallback、修改已有方案输出、修改公共 benchmark 规则，或在 adapter/backtest runner 中绕过统一输入和写库边界。
 
-## 2. 三条平台不变量
+## 2. 四条平台不变量
 
 1. **输入单点**：方案 adapter 和 backtest runner 只能通过 `shared.input_artifacts` 取输入。
    - daily 用 `build_daily_input_artifact()`。
@@ -57,6 +58,8 @@
    - daily 方案如果依赖 weekly/monthly 辅助数据，必须在 `config.yaml` 的 `input_spec.auxiliary_inputs` 声明辅助频率、data_version 和 required_columns；adapter/backtest runner 仍只能通过 `shared.input_artifacts` 构造输入，禁止自拼 DB 输入或读取外部 CSV。
 2. **写库单点**：实盘预测只通过 `scheduler.executor` / `scheduler.repository` 写库；回测只通过 `backtests.repository` 写库。
 3. **core 纯净**：`schemes/{scheme_id}/core/` 不访问 DB、不写库、不跨方案 import、不调用调度器。
+4. **源算法保真**：source-backed 方案不得修改原始算法逻辑。时间起点、窗口、特征、周/月频对齐、模型参数、投票/fallback、内部 score 映射都按原始脚本复现；平台只能做 I/O、日期、落库和审计适配。
+   - 移植 source runner 时，只能移动原始 runner 明确 patch 的日期窗口；未被 patch 的固定算法锚点必须保留。例如 10Y02 `latest_oos` 的 `IC screening` 截止点仍是原始 `2024-01-01`，不能跟随 batch `test_start=2025-05-01` 移动。
 
 ## 3. 日期语义不许混
 
@@ -118,7 +121,9 @@
 
 这里的 original benchmark 指 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv` 等逐方案基准文件，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。benchmark CSV 至少包含 `feature_date(or source_t)/target_date/tenor(or target_tenor)/direction/confidence`；周度方案还必须保留 `feature_week_id` 等审计列。历史旧列名 `predict_date/date` 只能解释为原始算法 source T，也就是平台 `feature_date`，不得解释为实盘信号发出日。月度指标、前端展示、回测/live 分区仍按 `target_date` 归属；跨灰度边界的 benchmark 样本要按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions` 核验。
 
-Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。若 batch 是一次性事后窗口生成，它可能包含 later test window、selector/streak 状态或标签可见性，与 live-like strict PIT 不一致。平台 canonical current/backtest/live 结果必须由每个 `feature_date` 独立截止的 PIT 入口生成；batch 只能作为 source evidence 归档，差异要写入 benchmark summary、方案 README 或踩坑文档。不得为了让 CompareGate 通过而复制 batch 输出，也不得手工补预测结果。
+Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。若 batch 是一次性事后窗口生成，它可能包含 later test window、selector/streak 状态或标签可见性，与 live-like strict PIT 不一致。平台 current/backtest/live 结果必须先声明 source 执行口径：`source_original_reproduction` 按原始 batch/window 完整复现，`source_strict_pit` 按原始 PIT 入口复现，`platform_live_pit_variant` 则必须获批并记录与 source-original 的差异。不得为了让 CompareGate 通过而复制 batch 输出，也不得手工补预测结果。
+
+同时，source batch 与 strict PIT 的差异不能成为修改算法内部逻辑的理由。必须先按 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md) 声明 source 执行口径：复现 source-original 就按原始 batch/window 完整复现；构造平台 live-like PIT 变体则必须获批并单独命名，且只能改变外层传入的可见数据截止/上下文，不能改特征、模型、投票或 fallback。
 
 纯框架内实验方案如果没有原始基准，必须在 `docs/CURRENT_STATUS.md` 明确说明为什么 CompareGate 可以没有 original benchmark。
 
@@ -167,7 +172,10 @@ Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。�
 - [ ] 需要历史回测时，已声明统一输出样本起点：daily/monthly 用 `backtest.start_date: "2025-01-01"`，weekly 用 `backtest.predict_start_date: "2025-01-01"`。
 - [ ] 周度方案已明确 DB 周历、target week、`end_week=feature_week_id` 与 `as_of_date=feature_date` 规则。
 - [ ] 原始算法文件和逐方案 original benchmark 来源已定位；仅有 `source_evidence/` 批次文件不算完成。
+- [ ] Source-backed 方案已完成 source 口径分类，并确认不会修改原始算法逻辑。
+- [ ] 已逐项标出原始 runner 明确 patch 的日期字段，以及必须保留不动的固定算法锚点（筛因子起点、warmup、校准窗口、report mask 等）。
 - [ ] 如源方提供 `latest_oos` / batch 结果，已确认它是 strict PIT 还是事后批量口径；若是批量口径，已规划 source evidence 与平台 canonical strict PIT 的差异记录。
+- [ ] 已规划内部模型分数 / baseline score / confidence 的对比证据；不能只看最终方向。
 - [ ] 已选同频率参考方案和回测 runner。
 - [ ] 已确认只会改允许范围内文件。
 - [ ] 已计划 original-vs-onboarded 对比、回测落库、API 验证、激活、实盘回补和文档留痕。

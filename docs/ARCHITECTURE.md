@@ -5,6 +5,7 @@
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
 > 预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
+> Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准；系统架构只允许做输入、日期、落库和展示适配，不允许改变算法计算逻辑。
 
 ---
 
@@ -71,6 +72,8 @@
 `feature_date` 是前端和业务唯一标准数据截止字段；`anchor_date` 只允许作为方案内部变量或审计 extra。实盘预测分为 `gray_live` 和 `scheduled_live` 两个阶段，二者都属于实盘观察区；历史回测独立写入 `t_backtest_*`，不得从实盘预测表拼历史结果。
 
 原始算法 benchmark 中的 `T/date/predict_date` 表达的是 source T / 预测站位日。进入平台后必须对齐 `feature_date`，不能对齐实盘语义下的 `predict_date`。若 benchmark 样本 target 仍在历史回测区间，则与 `t_backtest_predictions.feature_date` 对齐；若 target 已进入灰度/实盘观察区，则与 `t_scheme_predictions.feature_date` 对齐，并校验 `prediction_phase`。
+
+Source-backed 方案必须先声明 source 执行口径：`source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。无论采用哪类口径，算法内部的时间窗口、特征、周/月频对齐、模型参数、投票和内部 score 映射都不得被平台重写。
 
 ### 2.1 预测流程（日度07:03 / 周度11:30）
 

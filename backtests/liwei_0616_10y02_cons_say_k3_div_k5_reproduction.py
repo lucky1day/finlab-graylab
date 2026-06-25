@@ -67,6 +67,7 @@ def run_historical_prediction(
     dates = _historical_feature_dates(daily_df, feature_dates=feature_dates)
     if not dates:
         raise RuntimeError("liwei_0616 10Y_02 historical prediction has no feature dates")
+    model_context_end = _source_context_end(daily_df, default=max(dates))
 
     cache_root = None if disable_cache or cache_dir is None else Path(cache_dir)
     if cache_root is not None:
@@ -80,10 +81,12 @@ def run_historical_prediction(
             monthly_df=monthly_df,
             date_to_week=date_to_week,
             n_workers=n_workers,
+            model_context_end=model_context_end,
             cache_dir=cache_root,
             cache_key_parts=cache_key_parts or {},
             parallel_shards=parallel_shards,
             parallel_backend=parallel_backend,
+            group_all_dates=True,
         )
         detail = pd.DataFrame(records)
         if detail.empty:
@@ -100,6 +103,7 @@ def run_historical_prediction(
             date_to_week=date_to_week,
             feature_date=day,
             n_workers=n_workers,
+            model_context_end=model_context_end,
             cache_dir=cache_root,
             cache_key_parts=cache_key_parts or {},
             cache_mode="daily",
@@ -120,6 +124,7 @@ def run_historical_prediction(
             monthly_df=monthly_df,
             date_to_week=date_to_week,
             n_workers=n_workers,
+            model_context_end=model_context_end,
             cache_dir=cache_root,
             cache_key_parts=cache_key_parts or {},
             parallel_shards=parallel_shards,
@@ -141,12 +146,14 @@ def _run_historical_prediction_monthly_batches(
     monthly_df: pd.DataFrame,
     date_to_week: dict[str, int | str] | None,
     n_workers: int,
+    model_context_end: str,
     cache_dir: Path | None,
     cache_key_parts: dict[str, Any],
     parallel_shards: int,
     parallel_backend: str,
+    group_all_dates: bool = False,
 ) -> list[dict[str, Any]]:
-    month_groups = _month_groups(dates)
+    month_groups = [sorted({str(day) for day in dates})] if group_all_dates else _month_groups(dates)
     if parallel_shards <= 1 or len(month_groups) <= 1:
         records: list[dict[str, Any]] = []
         for group in month_groups:
@@ -158,6 +165,7 @@ def _run_historical_prediction_monthly_batches(
                     monthly_df=monthly_df,
                     date_to_week=date_to_week,
                     n_workers=n_workers,
+                    model_context_end=model_context_end,
                     cache_dir=cache_dir,
                     cache_key_parts=cache_key_parts,
                 )
@@ -175,6 +183,7 @@ def _run_historical_prediction_monthly_batches(
                         monthly_df=monthly_df,
                         date_to_week=date_to_week,
                         n_workers=n_workers,
+                        model_context_end=model_context_end,
                         cache_dir=cache_dir,
                         cache_key_parts=cache_key_parts,
                     )
@@ -191,6 +200,7 @@ def _run_historical_prediction_monthly_batches(
             "monthly_df": monthly_df,
             "date_to_week": date_to_week,
             "n_workers": n_workers,
+            "model_context_end": model_context_end,
             "cache_dir": str(cache_dir) if cache_dir is not None else None,
             "cache_key_parts": cache_key_parts,
         }
@@ -215,6 +225,7 @@ def _run_monthly_shard_worker(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 monthly_df=payload["monthly_df"],
                 date_to_week=payload["date_to_week"],
                 n_workers=int(payload["n_workers"]),
+                model_context_end=str(payload["model_context_end"]),
                 cache_dir=cache_root,
                 cache_key_parts=dict(payload.get("cache_key_parts") or {}),
             )
@@ -230,6 +241,7 @@ def _run_monthly_batch_group(
     monthly_df: pd.DataFrame,
     date_to_week: dict[str, int | str] | None,
     n_workers: int,
+    model_context_end: str,
     cache_dir: Path | None,
     cache_key_parts: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -245,6 +257,7 @@ def _run_monthly_batch_group(
                 cache_key_parts,
                 cache_mode="monthly",
                 window_end=batch_end,
+                model_context_end=model_context_end,
             )
             if cache_dir is not None
             else None
@@ -255,7 +268,13 @@ def _run_monthly_batch_group(
             missing.append(feature_date)
 
     if missing:
-        window = liwei_0616_pit_window(batch_end)
+        source_current_start = _source_current_start(dates)
+        window = liwei_0616_pit_window(
+            batch_end,
+            source_end=model_context_end,
+            current_start=source_current_start,
+            current_end=batch_end,
+        )
         detail = run_10y02_for_window_silent(
             daily_df=daily_df,
             weekly_df=weekly_df,
@@ -283,6 +302,7 @@ def _run_monthly_batch_group(
                     cache_key_parts,
                     cache_mode="monthly",
                     window_end=batch_end,
+                    model_context_end=model_context_end,
                 )
                 if cache_dir is not None
                 else None
@@ -305,6 +325,7 @@ def _run_historical_prediction_process_shards(
     monthly_df: pd.DataFrame,
     date_to_week: dict[str, int | str] | None,
     n_workers: int,
+    model_context_end: str,
     cache_dir: Path | None,
     cache_key_parts: dict[str, Any],
     parallel_shards: int,
@@ -318,6 +339,7 @@ def _run_historical_prediction_process_shards(
             "monthly_df": monthly_df,
             "date_to_week": date_to_week,
             "n_workers": n_workers,
+            "model_context_end": model_context_end,
             "cache_dir": str(cache_dir) if cache_dir is not None else None,
             "cache_key_parts": cache_key_parts,
         }
@@ -342,6 +364,7 @@ def _run_shard_worker(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 date_to_week=payload["date_to_week"],
                 feature_date=feature_date,
                 n_workers=int(payload["n_workers"]),
+                model_context_end=str(payload["model_context_end"]),
                 cache_dir=cache_root,
                 cache_key_parts=dict(payload.get("cache_key_parts") or {}),
                 cache_mode="daily",
@@ -359,6 +382,7 @@ def _run_one_feature_date(
     date_to_week: dict[str, int | str] | None,
     feature_date: str,
     n_workers: int,
+    model_context_end: str,
     cache_dir: Path | None,
     cache_key_parts: dict[str, Any],
     cache_mode: str,
@@ -371,6 +395,7 @@ def _run_one_feature_date(
             cache_key_parts,
             cache_mode=cache_mode,
             window_end=window_end,
+            model_context_end=model_context_end,
         )
         if cache_dir is not None
         else None
@@ -378,7 +403,7 @@ def _run_one_feature_date(
     if cache_path is not None and cache_path.exists():
         return json.loads(cache_path.read_text(encoding="utf-8"))
 
-    window = liwei_0616_pit_window(feature_date)
+    window = liwei_0616_pit_window(feature_date, source_end=model_context_end)
     detail = run_10y02_for_window_silent(
         daily_df=daily_df,
         weekly_df=weekly_df,
@@ -416,6 +441,19 @@ def _historical_feature_dates(daily_df: pd.DataFrame, *, feature_dates: Iterable
     )
 
 
+def _source_context_end(daily_df: pd.DataFrame, *, default: str) -> str:
+    """返回原始算法固定历史上下文可使用的数据终点。"""
+    dates = pd.to_datetime(daily_df["date"], errors="coerce").dt.strftime("%Y-%m-%d").dropna()
+    if dates.empty:
+        return str(default)
+    return max(str(default), str(dates.max()))
+
+
+def _source_current_start(dates: list[str]) -> str:
+    """返回 source batch 需要抽取的第一条样本日期。"""
+    return min(str(day) for day in dates)
+
+
 def _split_shards(dates: list[str], parallel_shards: int) -> list[list[str]]:
     shard_count = max(1, min(int(parallel_shards), len(dates)))
     return [dates[index::shard_count] for index in range(shard_count) if dates[index::shard_count]]
@@ -435,6 +473,7 @@ def _cache_path(
     *,
     cache_mode: str,
     window_end: str,
+    model_context_end: str,
 ) -> Path | None:
     if cache_dir is None:
         return None
@@ -445,6 +484,7 @@ def _cache_path(
         "feature_date": feature_date,
         "cache_mode": cache_mode,
         "pit_window_end": window_end,
+        "model_context_end": model_context_end,
         "target_tenor": TARGET_TENOR,
         "horizon": HORIZON,
         "prod_config": PROD_CONFIG,
@@ -672,7 +712,7 @@ def _effective_input_end(sample_dates: list[str], calendar) -> str:
     ]
     if not target_dates:
         return BACKTEST_INPUT_END
-    return max([BACKTEST_INPUT_END, *target_dates])
+    return max(target_dates)
 
 
 def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -731,6 +771,7 @@ def _row_extra(record: dict[str, Any], daily_artifact, weekly_artifact, monthly_
             "streak_K": int(PROD_CONFIG["streak_K"]),
             "vote_score": record.get("vote_score"),
             "baseline_signs": record.get("baseline_signs"),
+            "baseline_scores": record.get("baseline_scores"),
             "input_artifact_path": str(daily_artifact.path),
             "input_artifact_source": daily_artifact.source,
             "input_artifact_data_version": daily_artifact.data_version,

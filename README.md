@@ -27,6 +27,7 @@
 - [docs/sop/SCHEME_ONBOARDING_T0.md](docs/sop/SCHEME_ONBOARDING_T0.md) — 新增方案前必读 T0 强约束范式
 - [docs/sop/SCHEME_ONBOARDING_SOP.md](docs/sop/SCHEME_ONBOARDING_SOP.md) — 新增方案入库 SOP
 - [docs/sop/PITFALLS_2026-06-10.md](docs/sop/PITFALLS_2026-06-10.md) — 踩坑记录与强制检查项
+- [docs/SOURCE_ALGORITHM_FIDELITY.md](docs/SOURCE_ALGORITHM_FIDELITY.md) — source-backed 方案源算法保真强约束
 - [docs/SCHEME_CONTRACT.md](docs/SCHEME_CONTRACT.md) — config / predict.py / core 机器契约
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 系统架构
 - [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md) — 代码架构与分层边界
@@ -77,4 +78,4 @@ bond-factor-lab/
 └── docs/              # 文档入口见 docs/README.md
 ```
 
-逐方案 CompareGate 基线固定放在 `schemes/{scheme_id}/benchmarks/`；`source_evidence/` 只做外部交付原始证据归档，不作为 active runner 默认输入。
+逐方案 CompareGate 基线固定放在 `schemes/{scheme_id}/benchmarks/`；`source_evidence/` 只做外部交付原始证据归档，不作为 active runner 默认输入。source-backed 方案必须遵守 [docs/SOURCE_ALGORITHM_FIDELITY.md](docs/SOURCE_ALGORITHM_FIDELITY.md)：平台只做适配，不改原始算法逻辑。

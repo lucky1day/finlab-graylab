@@ -59,7 +59,9 @@ Source-backed 方案的最低验收标准：
 
 对多 baseline 方案，`STD/ACCWT/V55_7Y/DIV` 这类内部输出属于验收对象，不是可忽略调试字段。它们应写入 `extra`、cache 或 compare report，便于后续审计。
 
-10Y02 的保真验收基线必须包含 `2026-05-25`：原始 `STD/ACCWT/DIV` 为正、`V55_7Y` 为负，最终共识结果为 `0`。若平台输出 `-1`，优先检查 IC screening cutoff 是否误随 `test_start` 从 `2024-01-01` 移到了 source batch 的 `2025-05-01`。
+10Y02 的 source-original 回测必须保留原始 full-OOS test sequence：先用 `("2024-01-01", source_end)` 作为唯一测试序列完整运行 baseline，再从结果中抽取 current target window 的 feature_date。不得把它替换成逐 feature_date strict PIT，也不得替换成 `latest_oos` runner 的“去年同期窗口 + 最新窗口”局部测试集；这些局部窗口会改变 monthly ensemble top-K、signal selection、seasonal VT 和 streak 状态。2026-04 target-date 复查已证明：full-OOS 后最终方向可与用户 CSV 21/21 对齐，而局部窗口会产生方向或 V55 数值漂移。
+
+10Y02 的保真验收基线必须包含 `2026-05-25`：原始 `STD/ACCWT/DIV` 为正、`V55_7Y` 为负，最终共识结果为 `0`。若平台输出 `-1`，优先检查 IC screening cutoff 是否误随 `test_start` 从 `2024-01-01` 移到了 source batch 的 `2025-05-01`。若最终方向一致但 `V55_7Y_vs` 仍有 `1e-2` 量级残差，不能直接判定算法不一致，也不能调参贴数；必须先固定并记录原始 CSV 对应的生成脚本、输入三件套、`api_wind_date`、LightGBM/NumPy/Pandas 版本和 source `bond_common.py` hash，再做 source-vs-platform 同环境对比。
 
 5Y01 的保真验收必须同时检查 V31 口径：`vt_mode` 必须保持 `seasonal`，`build_bond_features` 的列生成顺序必须与 source 一致（spread features before streak/up-fraction features），内部 `STD/DIV/ACCWT` 的 `vs_full` 必须作为 baseline score 对比。若最终方向一致但 `vs_full` 有残差，优先检查特征列顺序、signal accuracy lookback、weekly last-trading-day ffill 和 source pkl score 映射。
 

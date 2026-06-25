@@ -6,7 +6,7 @@
 
 > 说明：原验证入口 `tests/test_onboarded_benchmark_feature_alignment.py` 依赖当时的 active 方案数量、benchmark 文件和数据库现场状态。随着 7Y 入库、weekly 手动补平、回测 run 清理和 `task_type` 契约升级，该测试已不适合作为长期可复用测试，已从 `tests/` 中移除。本文仅保留 2026-06-14 当天的验证口径和结论，后续当前状态校验应使用 harness gate、方案 benchmark 回归测试和 API/前端契约测试。
 >
-> 2026-06-21 补充：Liwei 0616 系列入库后，本文的 source T -> `feature_date` 对齐规则仍有效，但 source `latest_oos` / batch 文件只作为 source evidence。对于 live-like 日频 T+5 方案，平台 canonical benchmark、historical backtest 与 gray/live API 对齐必须使用严格 PIT 入口；如果 source batch 使用事后窗口导致方向不同，应在方案 benchmark summary 中记录差异，不能把 batch 结果替代平台 PIT 真值。
+> 2026-06-25 补充：本文的 source T -> `feature_date` 对齐规则仍有效，但 source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。source `latest_oos` / batch 文件进入平台前必须先分类为 `source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。平台日期语义不得被用来静默改写原始算法的时间窗口、特征、周/月频对齐、模型参数、投票/fallback 或内部 score 映射。
 
 ## 1. 验证口径
 
@@ -152,4 +152,4 @@ database confidence     = 1.0
 1. 后续所有新方案 benchmark 文件必须显式写 `feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`；旧列名 `predict_date/date/tenor` 不得作为 `benchmark_required=true` 的静默回退路径。
 2. `source_evidence/benchmark_batches/{benchmark_id}/` 只保留批次级外部来源证据归档，不是平台输入真源；逐方案 CompareGate baseline 只能放在 `schemes/{scheme_id}/benchmarks/`。
 3. 若源算法存在 test-window-sensitive 的 selector、ensemble、rolling top-K、分月校准或信号组合逻辑，必须抽共享 inference helper，并同时服务 adapter、benchmark current 和 backtest runner。
-4. 若源方只给出一次性 `latest_oos` / batch 结果，必须先判断它是否严格 PIT。非 PIT batch 可以用于说明源报告数字，但平台入库验收以 strict PIT current、latest backtest DB 和 `/api/metrics/{registry_scheme_id}` 对齐为准。
+4. 若源方只给出一次性 `latest_oos` / batch 结果，必须先判断它是否严格 PIT，并按 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md) 声明 source 执行口径。若业务选择平台 live-like PIT 变体，必须获批并记录与 source-original 的差异；不得因此改写原始算法内部逻辑，也不得声称该变体复现了 source-original 输出。

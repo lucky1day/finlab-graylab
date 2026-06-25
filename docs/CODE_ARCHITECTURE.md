@@ -6,6 +6,7 @@
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
 - 本文 = **代码架构**（包/模块/依赖方向/调用图/扩展点）。二者互补，不重叠。
 - [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 方案契约 → [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 新增方案 T0 范式。本文把它们统一到一张依赖图上。
+- [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 是 source-backed 方案的源算法保真总纲；它约束 L2 core 与 L4 backtest runner 不得借平台适配改变原始算法逻辑。
 
 > 本文为设计文档，不含实现代码。所示"现状违规"基于真实 import 扫描（2026-06-08），是数据层重构与 StaticGate 的目标。
 
@@ -102,11 +103,12 @@ tests/         → 任意（验证需要）
 - importlibᵈ：`scheduler.scheme_runner` 在 **conda 子进程运行时**用 `importlib.import_module(f"schemes.{id}.predict")` 动态加载，不是静态 import 边——保持 scheduler 对具体方案零静态耦合（插件模型的关键）。
 - 跨方案：`schemes/A` **禁止** import `schemes/B`（任何子模块）。
 
-### 3.3 三条不可破坏的不变量
+### 3.3 四条不可破坏的不变量
 
 1. **依赖只向下**：上层可依赖下层，下层永不依赖上层（`shared` 不知道 `schemes` 存在；`schemes` 不知道 `scheduler` 存在）。
 2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
 3. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
+4. **源算法保真**：source-backed 方案的 L2 core 必须复现原始算法的时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射。平台适配只能发生在算法外层；若 source-original 输出与平台 current 不一致，先查输入 artifact 与 source 口径，不得调算法贴结果。
 
 ---
 

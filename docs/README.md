@@ -11,6 +11,7 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 系统架构：部署拓扑、DB schema、API 契约、数据流 |
 | [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) | 代码架构主蓝图：分层模型、包依赖方向、运行时调用图 |
 | [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) | 强约束 harness 边界总纲：分层边界、DB 安全边界 |
+| [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) | 源算法保真强约束：source-backed 方案不得改变原始算法逻辑 |
 | [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | 方案契约：config.yaml schema、predict.py 接口、core 约束 |
 | [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) | 预测日期与实盘阶段强制语义：`predict_date` / `feature_date` / `target_date` / `prediction_phase` |
 
@@ -18,7 +19,7 @@
 
 > 当前入库 `stage all` 固定为 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。`api-readiness` 是激活前 paused registry row 验收；active-only `api` gate、`live` 写库、backtest persist 和 activate 都是显式授权或激活后的步骤。
 
-> Source evidence 不等于平台 canonical benchmark。外部 `latest_oos` / batch 结果可以归档为来源证据，但只要平台采用 live-like PIT 口径，`current_predictions_sample.csv`、正式 backtest 和前端/API 对齐都必须由严格 PIT 入口生成；若 source batch 使用事后窗口导致差异，需在方案 summary 和踩坑文档中记录，不能把 batch 结果当作 live PIT 真值。
+> Source-backed 方案必须先遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)：不得修改原始算法逻辑，时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射都必须按原始脚本复现。外部 `latest_oos` / batch 结果是否作为 source-original reproduction、strict PIT 或平台 live-like PIT 变体，必须先分类并留证；平台变体不得冒充原始 source 输出。
 
 ## 操作
 
@@ -41,7 +42,7 @@
 
 ## 阅读路径
 
-- **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → PREDICTION_SEMANTICS → SCHEME_CONTRACT → CURRENT_STATUS
-- **新增方案** → 先读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动 pre-activation gates
+- **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → PREDICTION_SEMANTICS → SOURCE_ALGORITHM_FIDELITY → SCHEME_CONTRACT → CURRENT_STATUS
+- **新增方案** → 先读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) + [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动 pre-activation gates
 - **改 harness** → HARNESS_ARCHITECTURE；评审报告只作历史审计参考
 - **了解当前状态** → CURRENT_STATUS

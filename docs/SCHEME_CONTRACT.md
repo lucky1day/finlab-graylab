@@ -6,6 +6,7 @@
 
 > SOP 仍是人类执行手册；本文是机器契约。两者一致，本文更细、可判定。任何冲突以本文为准并回写 SOP。
 > `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的业务语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
+> Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准；本文的 `core/` 契约不允许借平台适配改变算法逻辑。
 > 方案身份分两层：`config.scheme_id` / 目录名 / `PredictionRecord.scheme_id` 是算法执行身份，即 `base_scheme_id`；`t_scheme_registry.scheme_id` 是前端和业务唯一方案身份，格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`。单标的和多标的方案都必须生成 composite registry ID。
 
 ---
@@ -136,6 +137,7 @@ benchmark 与数据库明细核验的主键为：
 | 零写库 | 不得 import `scheduler.repository`/`scheduler.executor`，不得出现 `INSERT/UPDATE/DELETE/ALTER/DROP` 字面量 |
 | 零跨方案 | 不得 `from schemes.<other_scheme>...` import；跨方案复用只能沉到 `shared/` 公共层，并通过架构评审 |
 | legacy 隔离 | `core/legacy_*.py` 可保留旧代码，但活跃模块不得 import 它 |
+| 源算法保真 | source-backed 活跃 core 必须保持原始算法的时间起点、窗口、特征、周/月频对齐、模型参数、投票/fallback 和内部 score 映射；任何差异都必须在 source fidelity 证据中说明，不得静默改写 |
 
 危险符号黑名单（`harness/contracts/import_rules.py`）：
 
@@ -155,6 +157,15 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 ```
 
 （`shared.input_artifacts` 在 core 中是禁止项——输入应由 adapter `predict.py` 注入；在 predict.py 中则是必需项。）
+
+### 4.1 Source-backed 保真契约
+
+对 source-backed 方案，StaticGate/CompareGate 的人工或机器证据必须覆盖：
+
+- `core/legacy_*.py` 或原始 source 文件存在，并记录 hash / 来源路径。
+- 活跃 core 与 legacy 的算法逻辑差异只允许是 I/O 适配、路径移除、日志重定向或性能不改变结果的机械改造。
+- 原始算法暴露的 baseline score、probability、confidence 或类似内部数值必须进入 benchmark/current 对比；仅方向一致不足以证明“算法逻辑完全一致”。
+- 若为了 live-like 运行传入不同 `test_ranges`、`source_end`、weekly/monthly as-of 或 batch 上下文，必须先在方案文档中声明它属于 `source_original_reproduction`、`source_strict_pit` 或 `platform_live_pit_variant`。
 
 ---
 
