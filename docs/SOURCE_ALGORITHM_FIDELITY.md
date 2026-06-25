@@ -54,10 +54,10 @@ Source-backed 方案的最低验收标准：
 1. `predicted_direction` 逐样本零差异。
 2. `label/actual/is_correct` 逐样本零差异。
 3. `target_date/target_tenor/horizon` 逐样本零差异。
-4. 原始算法暴露的内部模型分数、baseline score、probability 或 confidence 必须作为保真证据比对。能做到 bitwise/导出精度一致时必须一致；仍有残差时，必须证明残差来自输入 artifact 或导出精度，而不是算法逻辑变更。
+4. 原始算法暴露的内部模型分数、baseline score、baseline direction、probability 或 confidence 必须进入逐方案 original/current benchmark 和 CompareGate 比对。能做到 bitwise/导出精度一致时必须一致；仍有残差时，必须证明残差来自输入 artifact 或导出精度，而不是算法逻辑变更。
 5. 若只做到方向一致但内部模型分数不一致，不得宣称“算法逻辑完全一致”；只能宣称“最终方向一致，内部数值仍有残差待归因”。
 
-对多 baseline 方案，`STD/ACCWT/V55_7Y/DIV` 这类内部输出属于验收对象，不是可忽略调试字段。它们应写入 `extra`、cache 或 compare report，便于后续审计。
+对多 baseline 方案，`STD/ACCWT/V55_7Y/DIV` 这类内部输出属于验收对象，不是可忽略调试字段。它们必须写入 benchmark CSV；实盘/backtest 输出应在 `extra`、cache 或 compare report 中保留同名映射，便于后续审计。
 
 10Y02 的 source-original 回测必须保留原始 full-OOS test sequence：先用 `("2024-01-01", source_end)` 作为唯一测试序列完整运行 baseline，再从结果中抽取 current target window 的 feature_date。不得把它替换成逐 feature_date strict PIT，也不得替换成 `latest_oos` runner 的“去年同期窗口 + 最新窗口”局部测试集；这些局部窗口会改变 monthly ensemble top-K、signal selection、seasonal VT 和 streak 状态。2026-04 target-date 复查已证明：full-OOS 后最终方向可与用户 CSV 21/21 对齐，而局部窗口会产生方向或 V55 数值漂移。
 

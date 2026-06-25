@@ -115,11 +115,12 @@
 1. 原始脚本 / 原始输出生成逐方案 original benchmark。
 2. 入库后框架代码生成 current benchmark。
 3. 逐样本对齐，原始算法 source T 对齐平台 `feature_date`，`predicted_direction` 零容差。
-4. 四份 benchmark 文件落在 `schemes/{scheme_id}/benchmarks/`。
-5. `config.yaml` 设置 `backtest.benchmark_required: true`。
+4. Source-backed 方案必须把原始算法能导出的内部字段一并放入 original/current benchmark，例如 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence；只看最终方向不得进入落库或激活授权。
+5. 四份 benchmark 文件落在 `schemes/{scheme_id}/benchmarks/`。
+6. `config.yaml` 设置 `backtest.benchmark_required: true`。
 6. `harness onboard --stage all` 中 CompareGate 必须是 `passed`，不能是 `skipped`。
 
-这里的 original benchmark 指 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv` 等逐方案基准文件，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。benchmark CSV 至少包含 `feature_date(or source_t)/target_date/tenor(or target_tenor)/direction/confidence`；周度方案还必须保留 `feature_week_id` 等审计列。历史旧列名 `predict_date/date` 只能解释为原始算法 source T，也就是平台 `feature_date`，不得解释为实盘信号发出日。月度指标、前端展示、回测/live 分区仍按 `target_date` 归属；跨灰度边界的 benchmark 样本要按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions` 核验。
+这里的 original benchmark 指 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv` 等逐方案基准文件，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。benchmark CSV 至少包含 `feature_date(or source_t)/target_date/tenor(or target_tenor)/direction/confidence`；source-backed 多 baseline 方案还必须保留内部 `vote_score` 和 baseline score/dir 列，周度方案还必须保留 `feature_week_id` 等审计列。历史旧列名 `predict_date/date` 只能解释为原始算法 source T，也就是平台 `feature_date`，不得解释为实盘信号发出日。月度指标、前端展示、回测/live 分区仍按 `target_date` 归属；跨灰度边界的 benchmark 样本要按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions` 核验。
 
 Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。若 batch 是一次性事后窗口生成，它可能包含 later test window、selector/streak 状态或标签可见性，与 live-like strict PIT 不一致。平台 current/backtest/live 结果必须先声明 source 执行口径：`source_original_reproduction` 按原始 batch/window 完整复现，`source_strict_pit` 按原始 PIT 入口复现，`platform_live_pit_variant` 则必须获批并记录与 source-original 的差异。不得为了让 CompareGate 通过而复制 batch 输出，也不得手工补预测结果。
 

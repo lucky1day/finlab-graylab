@@ -31,6 +31,13 @@ class Liwei0616BacktestTests(unittest.TestCase):
             "confidence",
             "label",
             "is_correct",
+            "vote_score",
+            "STD_score",
+            "STD_dir",
+            "DIV_score",
+            "DIV_dir",
+            "ACCWT_score",
+            "ACCWT_dir",
         ]
 
         original = pd.read_csv(bench / "original_predictions_sample.csv")
@@ -53,10 +60,17 @@ class Liwei0616BacktestTests(unittest.TestCase):
         self.assertTrue((merged["direction_original"] == merged["direction_current"]).all())
         self.assertTrue((merged["label_original"] == merged["label_current"]).all())
         self.assertTrue((merged["confidence_original"] == merged["confidence_current"]).all())
+        internal_columns = [name for name in expected_columns if name.endswith(("_score", "_dir")) or name == "vote_score"]
+        for column in internal_columns:
+            if column.endswith("_score") or column == "vote_score":
+                max_abs = (merged[f"{column}_original"] - merged[f"{column}_current"]).abs().max()
+                self.assertLessEqual(float(max_abs), 1e-8, column)
+            else:
+                self.assertTrue((merged[f"{column}_original"] == merged[f"{column}_current"]).all(), column)
 
         for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
             summary = pd.read_json(bench / summary_name, typ="series")
-            self.assertEqual(summary["benchmark_scope"], "source_latest_oos_20260616_patched_window_targeted_sample")
+            self.assertEqual(summary["benchmark_scope"], "source_latest_oos_20260616_full_strict_feature_target")
             self.assertEqual(int(summary["row_count"]), 21)
             self.assertEqual(int(summary["samples"]), 21)
             self.assertEqual(int(summary["metric_samples"]), 19)
@@ -80,6 +94,11 @@ class Liwei0616BacktestTests(unittest.TestCase):
             self.assertEqual(summary["fallback_baseline"], "DIV")
             self.assertEqual(int(summary["streak_K"]), 10)
             self.assertEqual(summary["batch_mode"], "monthly")
+            self.assertTrue(summary["source_pkl_alignment"]["internal_scores_exact"])
+            self.assertEqual(summary["source_pkl_alignment"]["direction_diff_count"], 0)
+            self.assertEqual(summary["source_pkl_alignment"]["label_diff_count"], 0)
+            self.assertEqual(summary["source_pkl_alignment"]["max_abs_diff_by_score"]["vote_score"], 0.0)
+            self.assertEqual(summary["source_pkl_alignment"]["dir_diff_count_by_column"]["STD_dir"], 0)
 
     def test_build_backtest_rows_use_feature_date_and_target_cutoff(self) -> None:
         from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
@@ -305,6 +324,9 @@ class Liwei0616BacktestTests(unittest.TestCase):
         self.assertEqual(payload["scheme_id"], SCHEME_ID)
         self.assertEqual(payload["row_count"], 1)
         self.assertEqual(payload["rows"][0]["target_date"], "2026-05-29")
+        self.assertEqual(payload["rows"][0]["vote_score"], -0.6)
+        self.assertEqual(payload["rows"][0]["STD_score"], -0.61)
+        self.assertEqual(payload["rows"][0]["DIV_dir"], -1)
         self.assertEqual(payload["runs"][0]["rows"], payload["rows"])
         calendar.nth_trading_day_after.assert_called_with("2026-05-22", runner.HORIZON)
         mock_daily_builder.assert_called_once()

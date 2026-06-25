@@ -399,7 +399,7 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 
 | 文件 | 内容 |
 |------|------|
-| `original_predictions_sample.csv` | 原始算法的预测样本。`benchmark_required=true` 时必须使用严格字段：`feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`；周度还必须能保留或映射 `feature_week_id`。文件名虽保留 `sample`，内容应覆盖原始 benchmark 全量可比较行，不再只放 200 行抽样。 |
+| `original_predictions_sample.csv` | 原始算法的预测样本。`benchmark_required=true` 时必须使用严格字段：`feature_date,target_date,target_tenor,horizon,direction,confidence,label,is_correct`；source-backed 方案还必须保留原始算法能导出的内部字段，例如 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence；周度还必须能保留或映射 `feature_week_id`。文件名虽保留 `sample`，内容应覆盖原始 benchmark 全量可比较行，不再只放 200 行抽样。 |
 | `original_backtest_summary.json` | 原始算法的月度指标摘要 |
 | `current_predictions_sample.csv` | 当前平台输出的预测样本（字段与 original 同口径，内容应一致） |
 | `current_backtest_summary.json` | 当前平台的月度指标摘要（与 original 同口径，内容应一致） |
@@ -414,7 +414,7 @@ Source `latest_oos` / batch 文件只是一种 source evidence。进入平台前
 
 如果外部复现报告（Markdown、Excel、CSV 摘要等）已经给出月度指标，进入 CompareGate 前必须先确认该报告按哪个字段归月。源报告若按 source `date/T` 归月，则只能和 `original_predictions_sample.csv` 按 `feature_date` 重算的结果比较；前端、API、回测 latest 和 live metrics 的月度展示仍按 `target_date` 归月。不得把 source report 的 feature 月数字直接要求等于前端 target 月数字。
 
-`benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence`、`label`、`is_correct` 任一字段或值时，CompareGate 必须 fail-closed。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
+`benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence`、`label`、`is_correct` 任一字段或值时，CompareGate 必须 fail-closed。对 source-backed 方案，如果原始脚本或 source pkl/CSV/Excel 已暴露内部 score、baseline direction 或 probability，却未进入 original/current benchmark 和 compare report，也必须 fail-closed；不得以“最终方向一致”替代内部模型一致性验收。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
 
 日频 0529 批次的 `t1_daily` / `t5_daily` 已使用受控脚本从原始算法回测口径重建严格 baseline：
 
@@ -583,7 +583,7 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 - 月度指标必须区分 `samples` 与 `metric_samples`：`samples` 是样本总数，包含预测为“平”的交易日或预测周；`metric_samples` 是所有准确率、precision、recall 指标的分母，只包含预测为“涨/跌”的有方向样本。
 - 若月内存在 `predicted_direction=0`，前端准确率括号必须展示 `correct/metric_samples`，不得展示 `correct/samples`；上涨/下跌准确率和召回率也必须排除这些“平”样本。
-- 对 source-backed 方案，最终前端/API 核验必须把逐方案 `original_predictions_sample.csv` 按灰度起点拆分：`target_date < gray_start` 的样本对齐 `/api/backtests/factor-lab` latest daily rows，`target_date >= gray_start` 的样本对齐 `/api/metrics/{registry_scheme_id}` live rows；`direction/confidence/label/is_correct` 必须逐行零差异，浮点 confidence 只允许既定容差。
+- 对 source-backed 方案，最终前端/API 核验必须把逐方案 `original_predictions_sample.csv` 按灰度起点拆分：`target_date < gray_start` 的样本对齐 `/api/backtests/factor-lab` latest daily rows，`target_date >= gray_start` 的样本对齐 `/api/metrics/{registry_scheme_id}` live rows；`direction/confidence/label/is_correct` 必须逐行零差异，浮点 confidence 只允许既定容差。若 DB/API 暴露或 `extra` 保留内部模型字段，还必须抽样核验 `vote_score`、baseline score/dir 与 benchmark 一致；未完成内部核验时只能称为“展示层方向一致”，不能称为 source-original 全闭环。
 - 这个核验必须实际运行并保存/记录 diff 结论；CompareGate 只证明 benchmark 文件之间一致，不证明 latest backtest DB 或最终 live/API 已经与 benchmark 对齐。若出现 benchmark 文件一致但 `/api/backtests/factor-lab` 或 `/api/metrics` 不一致，方案不得宣称 Onboarding Complete。
 
 打开:
@@ -780,7 +780,7 @@ LIMIT 10;
 - [ ] `t_scheme_run_log` 有成功记录。
 - [ ] 激活前 `api-readiness` 通过，激活后 active-only `api` gate 通过；registry ID 必须来自 `t_scheme_registry.scheme_id`。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
-- [ ] source-backed 方案的 `original_predictions_sample.csv` 已按 `target_date` 分流到 backtest/live 两段完成 API 对齐，核心字段零差异。
+- [ ] source-backed 方案的 `original_predictions_sample.csv` 已按 `target_date` 分流到 backtest/live 两段完成 API 对齐，核心字段零差异；可用内部模型字段已进入 benchmark/CompareGate，且 DB/API/extra 内部值已按抽样或全量核验记录结论。
 - [ ] `t_backtest_predictions` 明细逐行存在 `target_date`；缺失时必须修 runner 或数据，不允许通过前端/API fallback 放行。
 - [ ] active `t_scheme_registry` 行逐行存在 `deployed_at`；前端展示的部署时间来自 API/DB 字段，不来自默认值或 hardcoded override。
 - [ ] scheduler 挂载证据已记录：进程存在、日志包含 `Scheduled scheme ...`、registry cron/timezone/deployed_at 正确。

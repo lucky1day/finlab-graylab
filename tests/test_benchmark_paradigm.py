@@ -27,6 +27,13 @@ STRICT_PREDICTION_COLUMNS = {
     "is_correct",
 }
 LEGACY_ONLY_COLUMNS = {"predict_date", "tenor", "framework_feature_date", "framework_target_date"}
+LIWEI_SOURCE_SCHEME_IDS = {
+    "liwei_0616_10y01_cons_say_k3_div_k10",
+    "liwei_0616_10y02_cons_say_k3_div_k5",
+    "liwei_0616_7y01_cons_say_k3_div_k10",
+    "liwei_0616_7y03_cons_all_k3_div_k8",
+    "liwei_0616_cons_sda_k3_div_k10",
+}
 
 
 class BenchmarkParadigmTests(unittest.TestCase):
@@ -75,6 +82,16 @@ class BenchmarkParadigmTests(unittest.TestCase):
                     f"{scheme_id}: legacy columns present without full strict schema "
                     f"{sorted(LEGACY_ONLY_COLUMNS & original_columns)}"
                 )
+            if scheme_id in LIWEI_SOURCE_SCHEME_IDS:
+                internal_columns = [
+                    column
+                    for column in original_header
+                    if column == "vote_score" or column.endswith(("_score", "_vs", "_dir", "_sign"))
+                ]
+                if not internal_columns:
+                    failures.append(f"{scheme_id}: source benchmark missing internal score/dir columns")
+                elif "vote_score" not in internal_columns:
+                    failures.append(f"{scheme_id}: source benchmark missing vote_score column")
 
         self.assertEqual(failures, [])
 
