@@ -42,6 +42,7 @@ class Liwei0616ConfigTests(unittest.TestCase):
 
         self.assertIn("M0041342", MONTHLY_COLS)
         self.assertEqual(config["backtest"]["runner"], f"backtests.{SCHEME_ID}_reproduction")
+        self.assertEqual(config["backtest"]["runner_args"], ["--batch-mode", "monthly"])
         self.assertEqual(config["backtest"]["benchmark_id"], "liwei_0616_5y_01")
         self.assertTrue(config["backtest"]["benchmark_required"])
 
@@ -76,20 +77,172 @@ class Liwei0616CoreTests(unittest.TestCase):
 
         self.assertEqual(result.tolist(), [1] * 10 + [-1, -1])
 
+    def test_source_v31_uses_seasonal_vt_and_spread_before_streak_features(self) -> None:
+        import numpy as np
+
+        from schemes.liwei_0616_cons_sda_k3_div_k10.core.v31_common import (
+            BASELINE_CONFIGS,
+            build_bond_features,
+        )
+
+        self.assertEqual(BASELINE_CONFIGS["STD"]["vt_mode"], "seasonal")
+        self.assertEqual(BASELINE_CONFIGS["DIV"]["vt_mode"], "seasonal")
+        self.assertEqual(BASELINE_CONFIGS["ACCWT"]["vt_mode"], "seasonal")
+        daily = pd.DataFrame(
+            {
+                "date": pd.bdate_range("2026-01-01", periods=130),
+                "TB5YWI0C": np.linspace(2.0, 2.3, 130),
+                "TB3YWI0C": np.linspace(1.8, 2.0, 130),
+                "TB0YWI0C": np.linspace(2.2, 2.4, 130),
+            }
+        )
+
+        features = build_bond_features(daily, "TB5YWI0C", [("3Y", "TB3YWI0C"), ("10Y", "TB0YWI0C")])
+        columns = list(features.columns)
+
+        self.assertLess(columns.index("spread_5Y_3Y"), columns.index("5Y_streak_count"))
+
+    def test_weekly_alignment_matches_source_last_trading_day_then_ffill(self) -> None:
+        from schemes.liwei_0616_cons_sda_k3_div_k10.core.v31_common import prepare_model_frames
+
+        daily_dates = pd.to_datetime(
+            ["2026-01-02", "2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09"]
+        )
+        weekly_df = pd.DataFrame(
+            {
+                "week_id": [202601, 202602],
+                "S0114089": [100.0, 200.0],
+            }
+        )
+        date_to_week = {
+            "2026-01-02": 202601,
+            "2026-01-05": 202602,
+            "2026-01-06": 202602,
+            "2026-01-07": 202602,
+            "2026-01-08": 202602,
+            "2026-01-09": 202602,
+        }
+
+        weekly, monthly = prepare_model_frames(
+            daily_df=pd.DataFrame({"date": daily_dates}),
+            weekly_df=weekly_df,
+            monthly_df=None,
+            daily_dates=daily_dates,
+            date_to_week=date_to_week,
+        )
+
+        self.assertEqual(weekly["S0114089"].tolist(), [100.0, 100.0, 100.0, 100.0, 100.0, 200.0])
+        self.assertTrue(monthly.empty)
+
+    def test_report_masks_match_source_fixed_oos_periods(self) -> None:
+        from schemes.liwei_0616_cons_sda_k3_div_k10.core.v31_common import _dynamic_report_masks
+
+        dates = pd.DatetimeIndex(
+            [
+                "2024-12-31",
+                "2025-01-01",
+                "2025-06-30",
+                "2025-07-01",
+                "2026-04-30",
+            ]
+        )
+
+        pre_m, sim_m, real_m = _dynamic_report_masks(dates)
+
+        self.assertEqual(pre_m.tolist(), [True, False, False, False, False])
+        self.assertEqual(sim_m.tolist(), [False, True, True, False, False])
+        self.assertEqual(real_m.tolist(), [False, False, False, True, True])
+
+    def test_ic_screening_cutoff_remains_source_20240101_when_test_window_moves(self) -> None:
+        import numpy as np
+
+        from schemes.liwei_0616_cons_sda_k3_div_k10.core import v31_common
+
+        dates = pd.DatetimeIndex(
+            [
+                *pd.bdate_range("2023-12-01", "2024-01-10"),
+                pd.Timestamp("2025-04-30"),
+                pd.Timestamp("2025-05-01"),
+            ]
+        )
+        daily = pd.DataFrame(
+            {
+                "date": dates,
+                "TB5YWI0C": np.linspace(2.0, 2.2, len(dates)),
+            }
+        )
+        expected_cutoff = int(np.flatnonzero(dates >= pd.Timestamp("2024-01-01"))[0])
+        expected_rows = expected_cutoff - v31_common.HORIZON
+        captured: dict[str, int] = {}
+
+        class StopAfterIcScreen(Exception):
+            pass
+
+        def fake_ic_screen(feat, labels, *args, **kwargs):
+            captured["rows"] = len(labels)
+            raise StopAfterIcScreen
+
+        labels = np.ones(len(dates), dtype=np.float64)
+        with (
+            patch.object(v31_common, "make_labels", return_value=labels),
+            patch.object(v31_common, "build_bond_features", return_value=pd.DataFrame({"f0": np.arange(len(dates))})),
+            patch.object(v31_common, "build_mf_features", return_value=(pd.DataFrame(index=range(len(dates))), {})),
+            patch.object(v31_common, "build_wkmo_features", return_value=pd.DataFrame(index=range(len(dates)))),
+            patch.object(v31_common, "ic_screen", side_effect=fake_ic_screen),
+            patch.dict("sys.modules", {"lightgbm": MagicMock()}),
+        ):
+            with self.assertRaises(StopAfterIcScreen):
+                v31_common.run_prediction(
+                    {
+                        **v31_common.model_config("STD"),
+                        "daily_df": daily,
+                        "weekly_df": pd.DataFrame({"week_id": []}),
+                        "monthly_df": pd.DataFrame({"month_id": []}),
+                        "date_to_week": {},
+                        "test_start": "2025-05-01",
+                        "test_end": "2025-05-01",
+                        "test_ranges": (("2025-05-01", "2025-05-01"),),
+                        "n_workers": 1,
+                        "emit_report": False,
+                    }
+                )
+
+        self.assertEqual(captured["rows"], expected_rows)
+
 
 class Liwei0616InferenceTests(unittest.TestCase):
     """PIT 窗口与共享 inference 入口测试。"""
 
-    def test_feature_window_includes_same_month_prior_year_and_current_month_only(self) -> None:
+    def test_feature_window_uses_source_compatible_fixed_history_context(self) -> None:
         from schemes.liwei_0616_cons_sda_k3_div_k10.inference import liwei_0616_pit_window
 
         window = liwei_0616_pit_window("2026-06-03")
 
-        self.assertEqual(window.current_start, "2026-06-01")
-        self.assertEqual(window.current_end, "2026-06-03")
         self.assertEqual(window.prior_start, "2025-06-01")
         self.assertEqual(window.prior_end, "2025-06-30")
+        self.assertEqual(window.latest_start, "2026-06-01")
+        self.assertEqual(window.source_end, "2026-06-03")
+        self.assertEqual(window.current_start, "2026-06-01")
+        self.assertEqual(window.current_end, "2026-06-03")
         self.assertEqual(window.test_ranges, (("2025-06-01", "2025-06-30"), ("2026-06-01", "2026-06-03")))
+
+    def test_source_batch_window_uses_latest_start_and_data_end_like_original_runner(self) -> None:
+        from schemes.liwei_0616_cons_sda_k3_div_k10.inference import liwei_0616_pit_window
+
+        window = liwei_0616_pit_window(
+            "2026-06-03",
+            source_end="2026-06-10",
+            current_start="2026-05-01",
+            current_end="2026-06-03",
+        )
+
+        self.assertEqual(window.prior_start, "2025-05-01")
+        self.assertEqual(window.prior_end, "2025-06-30")
+        self.assertEqual(window.latest_start, "2026-05-01")
+        self.assertEqual(window.source_end, "2026-06-10")
+        self.assertEqual(window.current_start, "2026-05-01")
+        self.assertEqual(window.current_end, "2026-06-03")
+        self.assertEqual(window.test_ranges, (("2025-05-01", "2025-06-30"), ("2026-05-01", "2026-06-10")))
 
     def test_run_for_feature_date_uses_pit_window_and_selects_exact_feature_date(self) -> None:
         from schemes.liwei_0616_cons_sda_k3_div_k10 import inference
@@ -101,6 +254,10 @@ class Liwei0616InferenceTests(unittest.TestCase):
                 "true_label": [None, None],
                 "confidence": [1.0, 1.0],
                 "vote_score": [-0.5, 0.75],
+                "baseline_scores": [
+                    {"STD": -0.5, "DIV": -0.4, "ACCWT": -0.6},
+                    {"STD": 0.7, "DIV": 0.8, "ACCWT": 0.75},
+                ],
             }
         )
         with patch.object(inference, "run_5y01_for_feature_window", return_value=detail) as mock_run:
@@ -172,6 +329,7 @@ class Liwei0616PredictionRecordTests(unittest.TestCase):
             "vote_score": -0.72,
             "true_label": None,
             "baseline_signs": {"STD": -1, "DIV": -1, "ACCWT": -1},
+            "baseline_scores": {"STD": -0.71, "DIV": -0.70, "ACCWT": -0.75},
             "model_version": "liwei_0616_5y_01_v31",
         }
 
@@ -191,8 +349,15 @@ class Liwei0616PredictionRecordTests(unittest.TestCase):
         self.assertEqual(record.confidence, 1.0)
         self.assertEqual(record.extra["feature_date"], "2026-06-10")
         self.assertEqual(record.extra["source_model_id"], "5Y_01_cons_SDA_k_3_DIV_K_10")
+        self.assertEqual(record.extra["baseline_scores"], {"STD": -0.71, "DIV": -0.70, "ACCWT": -0.75})
+        self.assertEqual(record.extra["model_scope"], "liwei_0616_5y01_source_compatible_context")
+        self.assertEqual(record.extra["model_latest_start"], "2026-06-01")
+        self.assertEqual(record.extra["model_source_end"], "2026-06-10")
+        self.assertEqual(record.extra["vote_baselines"], ["STD", "DIV", "ACCWT"])
+        self.assertEqual(record.extra["fallback_baseline"], "DIV")
         self.assertEqual(record.extra["weekly_input_artifact_source"], "shared_data_service_weekly")
         self.assertEqual(record.extra["monthly_input_artifact_source"], "shared_data_service_monthly")
+        self.assertEqual(mock_daily_builder.call_args.kwargs["start_date"], predict.INPUT_START_DATE)
         self.assertEqual(mock_daily_builder.call_args.kwargs["end_date"], "2026-06-10")
         self.assertEqual(mock_weekly_builder.call_args.kwargs["as_of_date"], "2026-06-10")
         mock_engine.dispose.assert_called_once()
@@ -215,7 +380,6 @@ class Liwei0616StaticBoundaryTests(unittest.TestCase):
             "weekly_output.csv",
             "monthly_output.csv",
             "2026-05-01",
-            "2024-01-01",
             "2026-04-30",
             "2025-07",
         )
@@ -229,6 +393,9 @@ class Liwei0616StaticBoundaryTests(unittest.TestCase):
                     module = getattr(node, "module", None) or ""
                     top = module.split(".")[0]
                     self.assertNotIn(top, banned, f"core 禁止 import {module}")
+
+        source = (project_root / "schemes" / SCHEME_ID / "core" / "v31_common.py").read_text(encoding="utf-8")
+        self.assertEqual(source.count('SOURCE_IC_SCREEN_START = "2024-01-01"'), 1)
 
 
 if __name__ == "__main__":

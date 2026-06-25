@@ -48,7 +48,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .data_alignment import align_monthly_previous_month, align_weekly_previous_complete
+from .data_alignment import align_monthly_previous_month
 
 warnings.filterwarnings("ignore")
 
@@ -79,6 +79,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 HORIZON = 5
 PURGE_GAP = 5
+VT_CANDIDATES = [
+    (u, d)
+    for u in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+    for d in [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
+]
 
 COL_MAP = {
     "1Y": "TB1YWI0C",
@@ -115,6 +120,7 @@ WEEKLY_COLS = [
 MODEL_VERSION = "liwei_0616_5y_01_v31"
 SOURCE_MODEL_ID = "5Y_01_cons_SDA_k_3_DIV_K_10"
 TARGET_TENOR = "5Y"
+SOURCE_IC_SCREEN_START = "2024-01-01"
 
 _SHARED_LGBM: dict[str, Any] = {
     "lgbm_windows": [200, 350, 504, 756],
@@ -126,7 +132,7 @@ _SHARED_LGBM: dict[str, Any] = {
     "lgbm_slow_path": True,
     "ic_top_self": 50,
     "ic_top_mf": 30,
-    "vt": 0.0,
+    "vt_mode": "seasonal",
     "sig_mode": "equal",
 }
 
@@ -349,16 +355,11 @@ def build_bond_features(df, close_col: str, aux_pairs: list) -> pd.DataFrame:
     features = {}
     for name, col in all_pairs:
         close = df[col].values.astype(np.float64)
-        ret = np.empty_like(close)
-        ret[0] = np.nan
-        ret[1:] = close[1:] / close[:-1] - 1.0
+        # pct_change(fill_method='pad') forward-fills NaN before computing returns
+        ret = pd.Series(close).pct_change().values
 
         # Lag returns
         for lag in (1, 2, 3, 5, 10, 15, 20, 30, 40, 60, 90, 120):
-            lr = np.empty_like(ret)
-            lr[:lag] = np.nan
-            lr[lag:] = ret[1:len(ret) - lag + 1] if lag >= 1 else ret
-            # Use pandas shift for correctness (matches original exactly)
             lr_s = pd.Series(ret).shift(lag - 1)
             features[f"{name}_ret_lag{lag}"] = lr_s.values
             features[f"{name}_sign_lag{lag}"] = np.sign(lr_s.values)
@@ -394,32 +395,11 @@ def build_bond_features(df, close_col: str, aux_pairs: list) -> pd.DataFrame:
         loss_safe = np.where(loss_ma == 0, np.nan, loss_ma)
         features[f"{name}_rsi14"] = 100 - 100 / (1 + gain_ma / loss_safe)
 
-    # V27: Streak + up-fraction features (24 features = 3 tenors × 8)
-    for name, col in all_pairs:
-        ret_s = pd.Series(df[col].values.astype(np.float64)).pct_change()
-        sign_r = np.sign(ret_s).fillna(0).values
-        # Running streak count: +N if N consecutive up, -N if consecutive down
-        streak = np.zeros(len(sign_r), dtype=np.float64)
-        for i in range(1, len(sign_r)):
-            if sign_r[i] == sign_r[i - 1] and sign_r[i] != 0:
-                streak[i] = streak[i - 1] + sign_r[i]
-            else:
-                streak[i] = sign_r[i]
-        features[f"{name}_streak_count"] = streak
-        features[f"{name}_streak_abs"] = np.abs(streak)
-        # Rolling fraction of up days in last N days
-        up_flag = (ret_s > 0).astype(float)
-        for w in [5, 10, 20]:
-            uf = up_flag.rolling(w).mean().values
-            features[f"{name}_up_frac{w}"] = uf
-            features[f"{name}_up_frac{w}_dev"] = uf - 0.5
-
-    # Spread features
+    # Spread features (must come before streak to match sweep column order)
     pair_list = []
     self_col = close_col
     for aname, acol in aux_pairs:
         pair_list.append((self_name, aname, self_col, acol))
-    # Cross-aux pairs
     if len(aux_pairs) >= 2:
         for i in range(len(aux_pairs)):
             for j in range(i + 1, len(aux_pairs)):
@@ -439,6 +419,24 @@ def build_bond_features(df, close_col: str, aux_pairs: list) -> pd.DataFrame:
             spr_shifted[:w] = np.nan
             spr_shifted[w:] = spr[:-w]
             features[f"spread_{ln}_{rn}_chg{w}"] = spr - spr_shifted
+
+    # V27: Streak + up-fraction features (24 features = 3 tenors x 8)
+    for name, col in all_pairs:
+        ret_s = pd.Series(df[col].values.astype(np.float64)).pct_change()
+        sign_r = np.sign(ret_s).fillna(0).values
+        streak = np.zeros(len(sign_r), dtype=np.float64)
+        for i in range(1, len(sign_r)):
+            if sign_r[i] == sign_r[i - 1] and sign_r[i] != 0:
+                streak[i] = streak[i - 1] + sign_r[i]
+            else:
+                streak[i] = sign_r[i]
+        features[f"{name}_streak_count"] = streak
+        features[f"{name}_streak_abs"] = np.abs(streak)
+        up_flag = (ret_s > 0).astype(float)
+        for w in [5, 10, 20]:
+            uf = up_flag.rolling(w).mean().values
+            features[f"{name}_up_frac{w}"] = uf
+            features[f"{name}_up_frac{w}_dev"] = uf - 0.5
 
     out = pd.DataFrame(features, index=df.index)
     out.replace([np.inf, -np.inf], np.nan, inplace=True)
@@ -1189,23 +1187,16 @@ def check_balance(preds, dates, max_bad: int = 1) -> Tuple[bool, list]:
 
 
 def _dynamic_report_masks(test_dates: pd.DatetimeIndex) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """按本次测试月份动态切分报告段，避免携带源脚本固定 OOS 窗口。"""
+    """按源脚本固定 OOS 段位切分 pre/sim/real。"""
     if len(test_dates) == 0:
         empty = np.zeros(0, dtype=bool)
         return empty, empty, empty
-    months = test_dates.to_period("M")
-    unique_months = sorted(months.unique())
-    split_one = max(1, len(unique_months) // 3)
-    split_two = max(split_one, (2 * len(unique_months)) // 3)
-    pre_months = set(unique_months[:split_one])
-    sim_months = set(unique_months[split_one:split_two])
-    real_months = set(unique_months[split_two:])
-    if not real_months:
-        real_months = set(unique_months[-1:])
-        sim_months = set(unique_months[:-1])
-    pre_m = np.asarray([month in pre_months for month in months], dtype=bool)
-    sim_m = np.asarray([month in sim_months for month in months], dtype=bool)
-    real_m = np.asarray([month in real_months for month in months], dtype=bool)
+    dates = pd.DatetimeIndex(test_dates)
+    sim_start = pd.Timestamp(year=2025, month=1, day=1)
+    real_start = pd.Timestamp(year=2025, month=7, day=1)
+    pre_m = np.asarray(dates < sim_start, dtype=bool)
+    sim_m = np.asarray((dates >= sim_start) & (dates < real_start), dtype=bool)
+    real_m = np.asarray(dates >= real_start, dtype=bool)
     return pre_m, sim_m, real_m
 
 
@@ -1256,10 +1247,8 @@ def prepare_model_frames(
     """把平台产出的 weekly/monthly artifact 对齐成算法特征矩阵。"""
     if weekly_df is None:
         aligned_weekly = pd.DataFrame(index=range(len(daily_dates)))
-    elif date_to_week is None:
-        aligned_weekly = _align_weekly_like_legacy(weekly_df, daily_dates)
     else:
-        aligned_weekly = align_weekly_previous_complete(weekly_df, daily_dates, date_to_week)
+        aligned_weekly = _align_weekly_like_legacy(weekly_df, daily_dates, date_to_week)
 
     if monthly_df is None:
         aligned_monthly = pd.DataFrame(index=range(len(daily_dates)))
@@ -1300,50 +1289,78 @@ def _normalize_aux_frame(df: pd.DataFrame | None, id_col: str) -> pd.DataFrame |
     return out
 
 
-def _align_weekly_like_legacy(weekly_df: pd.DataFrame, daily_dates: pd.Series) -> pd.DataFrame:
+def _align_weekly_like_legacy(
+    weekly_df: pd.DataFrame,
+    daily_dates: pd.Series | pd.DatetimeIndex | list,
+    date_to_week: Mapping[str, int | str] | None = None,
+) -> pd.DataFrame:
     weekly = _normalize_aux_frame(weekly_df, "week_id")
     if weekly is None:
         return pd.DataFrame(index=range(len(daily_dates)))
     existing = [col for col in WEEKLY_COLS if col in weekly.columns]
     if not existing:
         return pd.DataFrame(index=range(len(daily_dates)))
-    dates = sorted(pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize().tolist())
-    if not dates:
+    daily_index = pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize()
+    if len(daily_index) == 0:
         return pd.DataFrame(index=range(len(daily_dates)))
-    week_arr = np.zeros(len(dates), dtype=int)
-    current_year, seq, previous_dow = dates[0].year, 1, -1
-    for i, daily_date in enumerate(dates):
-        if daily_date.year != current_year:
-            current_year, seq, previous_dow = daily_date.year, 1, -1
-        dow = daily_date.weekday()
-        if previous_dow >= 0 and (
-            dow <= previous_dow and (daily_date - dates[i - 1]).days > 1
-            or (daily_date - dates[i - 1]).days > 5
-        ):
-            seq += 1
-        previous_dow = dow
-        week_arr[i] = current_year * 100 + seq
-    date_to_pos = {daily_date: i for i, daily_date in enumerate(dates)}
-    date_to_week = {daily_date: int(week_arr[i]) for i, daily_date in enumerate(dates)}
-    available_weeks = sorted(set(week_arr))
-    week_to_previous = {
-        week_id: available_weeks[i - 1] if i > 0 else None
-        for i, week_id in enumerate(available_weeks)
-    }
-    weekly_indexed = weekly.set_index("week_id")
+
+    order = np.argsort(daily_index.values, kind="stable")
+    sorted_dates = daily_index[order]
+    week_arr = _weekly_ids_for_daily_dates(sorted_dates, date_to_week)
+    last_row_by_week: dict[int, int] = {}
+    for sorted_pos, week_id in enumerate(week_arr):
+        if week_id is not None:
+            original_pos = int(order[sorted_pos])
+            last_row_by_week[int(week_id)] = original_pos
+
+    weekly = weekly.dropna(subset=["week_id"]).copy()
+    weekly["week_id"] = weekly["week_id"].astype(int)
+    weekly_indexed = weekly.sort_values("week_id").drop_duplicates("week_id", keep="last").set_index("week_id")
     result: dict[str, np.ndarray] = {
         col: np.full(len(daily_dates), np.nan, dtype=np.float64) for col in existing
     }
-    for daily_date in pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize().tolist():
-        if daily_date not in date_to_week:
-            continue
-        previous_week = week_to_previous.get(date_to_week[daily_date])
-        if previous_week is None or previous_week not in weekly_indexed.index:
-            continue
-        row_index = date_to_pos[daily_date]
-        for col in existing:
-            result[col][row_index] = weekly_indexed.at[previous_week, col]
+    for col in existing:
+        placed = np.full(len(daily_index), np.nan, dtype=np.float64)
+        for week_id, row_index in last_row_by_week.items():
+            if week_id in weekly_indexed.index:
+                placed[row_index] = float(weekly_indexed.at[week_id, col])
+        filled = pd.Series(placed[order]).ffill().to_numpy(dtype=np.float64)
+        out = np.full(len(daily_index), np.nan, dtype=np.float64)
+        out[order] = filled
+        result[col] = out
     return pd.DataFrame(result, index=range(len(daily_dates)))
+
+
+def _weekly_ids_for_daily_dates(
+    sorted_dates: pd.DatetimeIndex,
+    date_to_week: Mapping[str, int | str] | None,
+) -> list[int | None]:
+    if date_to_week is not None:
+        result: list[int | None] = []
+        for daily_date in sorted_dates:
+            raw = date_to_week.get(daily_date.strftime("%Y-%m-%d"))
+            try:
+                result.append(None if raw is None else int(raw))
+            except (TypeError, ValueError):
+                result.append(None)
+        return result
+
+    result = []
+    current_year, seq, previous_dow = int(sorted_dates[0].year), 1, -1
+    previous_date: pd.Timestamp | None = None
+    for daily_date in sorted_dates:
+        if int(daily_date.year) != current_year:
+            current_year, seq, previous_dow = int(daily_date.year), 1, -1
+        dow = int(daily_date.weekday())
+        if previous_date is not None and previous_dow >= 0 and (
+            (dow <= previous_dow and (daily_date - previous_date).days > 1)
+            or (daily_date - previous_date).days > 5
+        ):
+            seq += 1
+        previous_dow = dow
+        previous_date = daily_date
+        result.append(current_year * 100 + seq)
+    return result
 
 
 def _labels_for_detail(values: np.ndarray) -> list[int | None]:
@@ -1422,6 +1439,7 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     ml_mode = cfg.get("ml_mode", "prob")     # "binary" or "prob"
     sig_mode = cfg.get("sig_mode", "equal")  # "equal" or "weighted"
     ens_mode = cfg.get("ens_mode", "standard")  # "standard"/"diverse"/"accwt"
+    vt_mode = cfg.get("vt_mode", "seasonal")
     if "test_start" not in cfg or "test_end" not in cfg:
         raise ValueError("test_start and test_end are required for PIT prediction")
     test_start = pd.Timestamp(cfg["test_start"])
@@ -1472,9 +1490,9 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     print(f"  Self features: {n_self}, MF features: {len(mf_cols)}, "
           f"Total: {feat_all.shape[1]}")
 
-    print(f"  IC screening on pre-test data (strict gap)...")
+    print(f"  IC screening on source pre-test data (strict gap)...")
     _ts_row = int(np.flatnonzero(
-        df["date"].values >= np.datetime64(test_start.strftime("%Y-%m-%d")))[0])
+        df["date"].values >= np.datetime64(SOURCE_IC_SCREEN_START))[0])
     pre_mask = ((np.arange(len(df)) < _ts_row - horizon)
                 & np.isin(labels, [-1.0, 1.0])
                 & ~np.isnan(close))
@@ -1561,16 +1579,16 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
           f"Categories: {list(cat_indices.keys())}")
 
     # Signal accuracy (H=1)
+    _sa_valid_idx = np.flatnonzero(
+        np.isin(labels_h1, [-1.0, 1.0]) & ~np.isnan(close)
+    )
     sa = np.full((len(test_idx), len(sig_names)), np.nan, dtype=np.float32)
     for i, idx in enumerate(test_idx):
-        cands = np.flatnonzero(
-            (np.arange(len(df)) < idx - 1)
-            & np.isin(labels_h1, [-1.0, 1.0])
-            & ~np.isnan(close))
-        if len(cands) > ew:
-            cands = cands[-ew:]
-        if len(cands) < 40:
+        end = int(np.searchsorted(_sa_valid_idx, idx, side="left"))
+        start = max(0, end - ew)
+        if end - start < 40:
             continue
+        cands = _sa_valid_idx[start:end]
         # Vectorised accuracy: (sig == label) mean over candidates
         sa[i] = (sig_matrix[cands] == labels_h1[cands][:, None]).mean(
             axis=0).astype(np.float32)
@@ -1677,15 +1695,101 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
     vs = lgbm_w * ml_base + sig_avg
     vs_full = np.where(has_sig, vs, ml_base)
 
-    # V28: three-class — flat when VT>0 and |vs| < VT
-    final = ens.copy()
-    if vt > 0:
-        final[has_sig & (vs_full > vt)] = 1
-        final[has_sig & (vs_full < -vt)] = -1
-        final[has_sig & (np.abs(vs_full) <= vt)] = 0  # V28: flat
+    if vt_mode == "seasonal":
+        _unique_months = sorted(test_months.unique())
+        _month_indices = {m: np.where(test_months == m)[0] for m in _unique_months}
+        _seasonal_lookback = {}
+        for month in _unique_months:
+            same_last_year = month - 12
+            if same_last_year in _month_indices:
+                lb_idx = _month_indices[same_last_year]
+            else:
+                month_start = _month_indices[month][0]
+                safe_end = max(0, month_start - horizon)
+                lb_idx = np.where(np.arange(len(test_idx)) < safe_end)[0]
+                if len(lb_idx) > 60:
+                    lb_idx = lb_idx[-60:]
+            _seasonal_lookback[month] = lb_idx
+
+        ens_i32 = ens.astype(np.int32)
+        final = np.zeros(len(vs_full), dtype=np.int32)
+        vt_per_month = {}
+        vt_counts = {}
+        vt_balance_floor = float(cfg.get("vt_balance_floor", 0.0))
+        for month in _unique_months:
+            month_idx = _month_indices[month]
+            lookback_idx = _seasonal_lookback[month]
+            best_vt = (0.0, 0.0)
+            if len(lookback_idx) >= 5:
+                best_acc = -1.0
+                vs_lb = vs_full[lookback_idx]
+                lab_lb = true_labels[lookback_idx]
+                hs_lb = has_sig[lookback_idx]
+                ens_lb = ens_i32[lookback_idx]
+                n_lb = float(len(lookback_idx))
+                for vt_up, vt_down in VT_CANDIDATES:
+                    if vt_up > 0 or vt_down > 0:
+                        pred_lb = np.where(
+                            hs_lb & (vs_lb > vt_up),
+                            1,
+                            np.where(
+                                hs_lb & (vs_lb < -vt_down),
+                                -1,
+                                np.where(hs_lb, 0, ens_lb),
+                            ),
+                        )
+                    else:
+                        pred_lb = np.where(
+                            hs_lb & (vs_lb >= 0),
+                            1,
+                            np.where(hs_lb & (vs_lb < 0), -1, ens_lb),
+                        )
+                    traded = pred_lb != 0
+                    n_traded = int(traded.sum())
+                    if n_traded / n_lb < 0.70:
+                        continue
+                    if vt_balance_floor > 0 and n_traded >= 5:
+                        n_up = int((pred_lb[traded] == 1).sum())
+                        if n_up < n_traded * vt_balance_floor or n_up > n_traded * (1.0 - vt_balance_floor):
+                            continue
+                    acc = float((pred_lb[traded] == lab_lb[traded]).mean()) if n_traded > 0 else 0.0
+                    if acc > best_acc:
+                        best_acc = acc
+                        best_vt = (vt_up, vt_down)
+            vt_per_month[str(month)] = best_vt
+            vt_counts[best_vt] = vt_counts.get(best_vt, 0) + 1
+            vt_up, vt_down = best_vt
+            vs_month = vs_full[month_idx]
+            hs_month = has_sig[month_idx]
+            ens_month = ens_i32[month_idx]
+            if vt_up > 0 or vt_down > 0:
+                final[month_idx] = np.where(
+                    hs_month & (vs_month > vt_up),
+                    1,
+                    np.where(
+                        hs_month & (vs_month < -vt_down),
+                        -1,
+                        np.where(hs_month, 0, ens_month),
+                    ),
+                ).astype(np.int32)
+            else:
+                final[month_idx] = np.where(
+                    hs_month & (vs_month >= 0),
+                    1,
+                    np.where(hs_month & (vs_month < 0), -1, ens_month),
+                ).astype(np.int32)
+        dom_vtu, dom_vtd = max(vt_counts, key=vt_counts.get) if vt_counts else (0.0, 0.0)
     else:
-        final[has_sig & (vs_full >= 0)] = 1
-        final[has_sig & (vs_full < 0)] = -1
+        # V28: three-class — flat when VT>0 and |vs| < VT
+        final = ens.copy()
+        if vt > 0:
+            final[has_sig & (vs_full > vt)] = 1
+            final[has_sig & (vs_full < -vt)] = -1
+            final[has_sig & (np.abs(vs_full) <= vt)] = 0  # V28: flat
+        else:
+            final[has_sig & (vs_full >= 0)] = 1
+            final[has_sig & (vs_full < 0)] = -1
+        dom_vtu, dom_vtd = vt, vt
 
     # V25: NO balance fix — predictions are pure
 
@@ -1702,8 +1806,12 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
                 and s_tr > 0.70 and r_tr > 0.70)
 
         print(f"\n{'=' * 80}")
-        print(f"  {tenor} RESULTS  K={K} {combo_name} lgbm_w={lgbm_w} "
-              f"VT={vt} {rebal} ew={ew} mac={min_acc_val}")
+        if vt_mode == "seasonal":
+            print(f"  {tenor} RESULTS  K={K} {combo_name} lgbm_w={lgbm_w} "
+                  f"VT=seasonal dom=({dom_vtu:.2f},{dom_vtd:.2f}) {rebal} ew={ew} mac={min_acc_val}")
+        else:
+            print(f"  {tenor} RESULTS  K={K} {combo_name} lgbm_w={lgbm_w} "
+                  f"VT={vt} {rebal} ew={ew} mac={min_acc_val}")
         print(f"  ens_mode={ens_mode} ml_mode={ml_mode} sig_mode={sig_mode}")
         print(f"  seeds={seeds}")
         print(f"  pre={pv:.1%}  sim={sv:.1%}  real={rv:.1%}  bad={nb}")
@@ -1837,6 +1945,10 @@ def run_5y01_for_feature_window(
     ).astype(float)
     result["baseline_signs"] = [
         {name: int(signs[name][idx]) for name in PROD_CONFIG["baselines"]}
+        for idx in selected_indices
+    ]
+    result["baseline_scores"] = [
+        {name: float(baseline_scores[name][idx]) for name in PROD_CONFIG["baselines"]}
         for idx in selected_indices
     ]
     result["model_version"] = MODEL_VERSION

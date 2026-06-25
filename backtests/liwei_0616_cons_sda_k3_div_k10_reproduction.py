@@ -4,7 +4,7 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import pandas as pd
 from sqlalchemy.engine import Engine
@@ -19,7 +19,7 @@ from shared.input_artifacts import (
     build_monthly_input_artifact,
     build_weekly_input_artifact,
 )
-from schemes.liwei_0616_cons_sda_k3_div_k10.core.v31_common import MODEL_VERSION, SOURCE_MODEL_ID
+from schemes.liwei_0616_cons_sda_k3_div_k10.core.v31_common import MODEL_VERSION, PROD_CONFIG, SOURCE_MODEL_ID
 from schemes.liwei_0616_cons_sda_k3_div_k10.inference import liwei_0616_pit_window, run_5y01_for_window_silent
 
 
@@ -35,6 +35,7 @@ BACKTEST_END = "2026-05-29"
 BACKTEST_PREDICT_START_DATE = "2025-01-01"
 LIVE_TARGET_CUTOFF = "2026-06-01"
 DEFAULT_N_WORKERS = 10
+DEFAULT_BATCH_MODE = "daily"
 
 
 def run_historical_prediction(
@@ -44,45 +45,134 @@ def run_historical_prediction(
     monthly_df: pd.DataFrame,
     date_to_week: dict[str, int | str] | None = None,
     n_workers: int = DEFAULT_N_WORKERS,
+    feature_dates: Iterable[str] | None = None,
+    batch_mode: str = DEFAULT_BATCH_MODE,
 ) -> pd.DataFrame:
-    """按 5Y_01 PIT 月度窗口运行历史预测，返回逐 feature_date 明细。"""
-    frames: list[pd.DataFrame] = []
-    for window_start, window_end in _historical_feature_windows(daily_df):
-        window = liwei_0616_pit_window(window_end)
-        frames.append(
-            run_5y01_for_window_silent(
-                daily_df=daily_df,
-                weekly_df=weekly_df,
-                monthly_df=monthly_df,
-                date_to_week=date_to_week,
-                feature_date=window_end,
-                test_ranges=window.test_ranges,
-                current_start=window_start,
-                current_end=window_end,
-                require_labels=True,
-                n_workers=n_workers,
+    """逐 feature_date 运行 5Y_01 PIT 窗口，返回历史预测明细。"""
+    is_targeted_sample = feature_dates is not None
+    dates = _historical_feature_dates(daily_df, feature_dates=feature_dates)
+    if not dates:
+        raise RuntimeError("liwei_0616 5Y_01 historical prediction has no feature dates")
+    model_context_end = _source_context_end(daily_df, default=max(dates))
+
+    if batch_mode == "monthly":
+        groups = [dates] if is_targeted_sample else _month_groups(dates)
+        records: list[dict[str, Any]] = []
+        for group in groups:
+            records.extend(
+                _run_monthly_batch_group(
+                    group_dates=group,
+                    daily_df=daily_df,
+                    weekly_df=weekly_df,
+                    monthly_df=monthly_df,
+                    date_to_week=date_to_week,
+                    n_workers=n_workers,
+                    model_context_end=model_context_end,
+                )
             )
+        detail = pd.DataFrame(records)
+        if detail.empty:
+            raise RuntimeError("liwei_0616 5Y_01 historical prediction has no rows")
+        return detail.sort_values("anchor_date").reset_index(drop=True)
+    if batch_mode != "daily":
+        raise ValueError(f"unsupported 5Y_01 batch mode: {batch_mode}")
+
+    records: list[dict[str, Any]] = []
+    for feature_date in dates:
+        window = liwei_0616_pit_window(feature_date, source_end=model_context_end)
+        detail = run_5y01_for_window_silent(
+            daily_df=daily_df,
+            weekly_df=weekly_df,
+            monthly_df=monthly_df,
+            date_to_week=date_to_week,
+            feature_date=feature_date,
+            test_ranges=window.test_ranges,
+            current_start=window.current_start,
+            current_end=feature_date,
+            require_labels=True,
+            n_workers=n_workers,
         )
-    if not frames:
-        raise RuntimeError("liwei_0616 5Y_01 historical prediction has no feature windows")
-    return pd.concat(frames, ignore_index=True).sort_values("anchor_date").reset_index(drop=True)
+        matched = detail[detail["anchor_date"].astype(str) == feature_date]
+        if matched.empty:
+            raise RuntimeError(f"liwei_0616 5Y_01 produced no row for feature_date={feature_date}")
+        records.append(clean_json(matched.tail(1).iloc[0].to_dict()))
+    detail = pd.DataFrame(records)
+    if detail.empty:
+        raise RuntimeError("liwei_0616 5Y_01 historical prediction has no rows")
+    return detail.sort_values("anchor_date").reset_index(drop=True)
 
 
-def _historical_feature_windows(daily_df: pd.DataFrame) -> list[tuple[str, str]]:
-    """生成历史回测需要的月度 PIT current windows。"""
+def _run_monthly_batch_group(
+    *,
+    group_dates: list[str],
+    daily_df: pd.DataFrame,
+    weekly_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
+    date_to_week: dict[str, int | str] | None,
+    n_workers: int,
+    model_context_end: str,
+) -> list[dict[str, Any]]:
+    dates = sorted({str(day) for day in group_dates})
+    batch_end = max(dates)
+    source_current_start = _source_current_start(dates)
+    window = liwei_0616_pit_window(
+        batch_end,
+        source_end=model_context_end,
+        current_start=source_current_start,
+        current_end=batch_end,
+    )
+    detail = run_5y01_for_window_silent(
+        daily_df=daily_df,
+        weekly_df=weekly_df,
+        monthly_df=monthly_df,
+        date_to_week=date_to_week,
+        feature_date=batch_end,
+        test_ranges=window.test_ranges,
+        current_start=window.current_start,
+        current_end=batch_end,
+        require_labels=True,
+        n_workers=n_workers,
+    )
+    by_date = {str(row.get("anchor_date")): clean_json(row) for row in detail.to_dict("records")}
+    missing = [day for day in dates if day not in by_date]
+    if missing:
+        raise RuntimeError(f"liwei_0616 5Y_01 monthly batch missed feature dates: {missing}")
+    return [by_date[day] for day in dates]
+
+
+def _historical_feature_dates(daily_df: pd.DataFrame, *, feature_dates: Iterable[str] | None = None) -> list[str]:
+    """生成历史回测需要逐日 PIT 推理的 feature_date 列表。"""
+    if feature_dates is not None:
+        return sorted({str(day) for day in feature_dates})
     dates = pd.to_datetime(daily_df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-    feature_dates = sorted(
+    return sorted(
         {
             str(day)
             for day in dates.dropna().tolist()
             if BACKTEST_START <= str(day) <= BACKTEST_END
         }
     )
-    windows: list[tuple[str, str]] = []
-    for month in sorted({day[:7] for day in feature_dates}):
-        month_dates = [day for day in feature_dates if day.startswith(month)]
-        windows.append((f"{month}-01", month_dates[-1]))
-    return windows
+
+
+def _source_context_end(daily_df: pd.DataFrame, *, default: str) -> str:
+    """返回原始算法固定历史上下文可使用的数据终点。"""
+    dates = pd.to_datetime(daily_df["date"], errors="coerce").dt.strftime("%Y-%m-%d").dropna()
+    if dates.empty:
+        return str(default)
+    return max(str(default), str(dates.max()))
+
+
+def _source_current_start(dates: list[str]) -> str:
+    """返回 source latest 窗口的当前段起点：样本起始月第一天。"""
+    first = min(str(day) for day in dates)
+    return pd.Timestamp(first).replace(day=1).strftime("%Y-%m-%d")
+
+
+def _month_groups(dates: list[str]) -> list[list[str]]:
+    groups: dict[str, list[str]] = {}
+    for day in sorted({str(item) for item in dates}):
+        groups.setdefault(day[:7], []).append(day)
+    return [groups[key] for key in sorted(groups)]
 
 
 def build_backtest_rows(
@@ -92,6 +182,7 @@ def build_backtest_rows(
     daily_artifact,
     weekly_artifact,
     monthly_artifact,
+    exclude_live_cutoff: bool = True,
 ) -> list[dict[str, Any]]:
     """把算法明细转换为 backtests 标准逐样本行。"""
     rows: list[dict[str, Any]] = []
@@ -100,7 +191,7 @@ def build_backtest_rows(
         if anchor_date < BACKTEST_PREDICT_START_DATE:
             continue
         target_date = target_date_for_anchor(anchor_date)
-        if target_date is None or target_date >= LIVE_TARGET_CUTOFF:
+        if target_date is None or (exclude_live_cutoff and target_date >= LIVE_TARGET_CUTOFF):
             continue
         prediction = _int_or_none(record.get("prediction"))
         true_label = _int_or_none(record.get("true_label"))
@@ -129,30 +220,37 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
     persist: bool = True,
     n_workers: int = DEFAULT_N_WORKERS,
     engine: Engine | None = None,
+    sample_dates: Iterable[str] | None = None,
+    batch_mode: str = DEFAULT_BATCH_MODE,
 ) -> dict[str, Any]:
     """执行 liwei_0616 5Y_01 DB-aligned 历史复现。"""
+    sample_date_list = sorted({str(day) for day in sample_dates or []})
+    if persist and sample_date_list:
+        raise ValueError("sample mode cannot persist")
+
     started = time.time()
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     try:
         output_root = benchmark_input_root(BENCHMARK_ID)
+        calendar = get_calendar(engine)
+        effective_input_end = _effective_input_end(sample_date_list, calendar)
         daily_artifact = build_daily_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date="historical_backtest",
             start_date=BACKTEST_INPUT_START,
-            end_date=BACKTEST_INPUT_END,
+            end_date=effective_input_end,
             engine=engine,
             output_root=output_root,
         )
-        calendar = get_calendar(engine)
-        weekly_end_week = calendar.week_id_for_date(BACKTEST_INPUT_END)
+        weekly_end_week = calendar.week_id_for_date(effective_input_end)
         if weekly_end_week is None:
-            raise RuntimeError(f"无法从 DB 日历解析 backtest end week: {BACKTEST_INPUT_END}")
+            raise RuntimeError(f"无法从 DB 日历解析 backtest end week: {effective_input_end}")
         weekly_artifact = build_weekly_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date="historical_backtest",
             end_week=int(weekly_end_week),
-            as_of_date=BACKTEST_INPUT_END,
+            as_of_date=effective_input_end,
             engine=engine,
             output_root=output_root,
         )
@@ -160,7 +258,7 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
             scheme_id=SCHEME_ID,
             predict_date="historical_backtest",
             start_date=BACKTEST_INPUT_START,
-            end_date=BACKTEST_INPUT_END,
+            end_date=effective_input_end,
             engine=engine,
             output_root=output_root,
         )
@@ -171,6 +269,8 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
             monthly_df=monthly_artifact.dataframe,
             date_to_week=date_to_week,
             n_workers=n_workers,
+            feature_dates=sample_date_list or None,
+            batch_mode=batch_mode,
         )
         rows = build_backtest_rows(
             detail,
@@ -178,6 +278,7 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
             daily_artifact=daily_artifact,
             weekly_artifact=weekly_artifact,
             monthly_artifact=monthly_artifact,
+            exclude_live_cutoff=not bool(sample_date_list),
         )
         if not rows:
             raise RuntimeError("liwei_0616 5Y_01 reproduction produced no rows")
@@ -192,6 +293,13 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
         output.summary.update(
             {
                 "source_model_id": SOURCE_MODEL_ID,
+                "source_model_config": PROD_CONFIG["name"],
+                "vote_baselines": list(PROD_CONFIG["baselines"]),
+                "fallback_baseline": str(PROD_CONFIG["fallback"]),
+                "streak_K": int(PROD_CONFIG["streak_K"]),
+                "backtest_scope": "targeted_sample" if sample_date_list else "full_historical",
+                "sample_dates": sample_date_list,
+                "batch_mode": batch_mode,
                 "daily_input_artifact_path": str(daily_artifact.path),
                 "weekly_input_artifact_path": str(weekly_artifact.path),
                 "monthly_input_artifact_path": str(monthly_artifact.path),
@@ -199,9 +307,12 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
                 "weekly_input_artifact_hash": getattr(weekly_artifact, "content_hash", None),
                 "monthly_input_artifact_hash": getattr(monthly_artifact, "content_hash", None),
                 "weekly_input_end_week": int(weekly_end_week),
-                "weekly_input_as_of_date": BACKTEST_INPUT_END,
+                "weekly_input_as_of_date": effective_input_end,
+                **({"backtest_input_end": effective_input_end} if sample_date_list else {}),
             }
         )
+        if persist or not sample_date_list:
+            _validate_before_persist(output.rows)
         run_id = persist_run_output(engine, output, benchmark_id=BENCHMARK_ID) if persist else None
         compact_rows = compact_prediction_rows(output.rows)
         run_payload = {
@@ -234,6 +345,19 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
             engine.dispose()
 
 
+def _effective_input_end(sample_dates: list[str], calendar) -> str:
+    if not sample_dates:
+        return BACKTEST_INPUT_END
+    target_dates = [
+        str(target)
+        for target in (calendar.nth_trading_day_after(day, HORIZON) for day in sample_dates)
+        if target is not None
+    ]
+    if not target_dates:
+        return BACKTEST_INPUT_END
+    return max(target_dates)
+
+
 def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -247,6 +371,27 @@ def compact_prediction_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def _validate_before_persist(rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        raise RuntimeError("cannot persist empty 5Y_01 backtest output")
+    seen: set[tuple[str, str, str, int]] = set()
+    for row in rows:
+        target_date = str(row.get("target_date") or "")
+        if not target_date:
+            raise RuntimeError(f"missing target_date for feature_date={row.get('feature_date')}")
+        if target_date >= LIVE_TARGET_CUTOFF:
+            raise RuntimeError(f"historical backtest row crosses live cutoff target_date={target_date}")
+        key = (
+            str(row.get("feature_date")),
+            target_date,
+            str(row.get("target_tenor")),
+            int(row.get("horizon")),
+        )
+        if key in seen:
+            raise RuntimeError(f"duplicate historical backtest key: {key}")
+        seen.add(key)
 
 
 def _date_to_week_map(daily_df: pd.DataFrame, calendar) -> dict[str, int | str]:
@@ -263,8 +408,13 @@ def _row_extra(record: dict[str, Any], daily_artifact, weekly_artifact, monthly_
     return clean_json(
         {
             "source_model_id": SOURCE_MODEL_ID,
+            "source_model_config": PROD_CONFIG["name"],
+            "vote_baselines": list(PROD_CONFIG["baselines"]),
+            "fallback_baseline": str(PROD_CONFIG["fallback"]),
+            "streak_K": int(PROD_CONFIG["streak_K"]),
             "vote_score": record.get("vote_score"),
             "baseline_signs": record.get("baseline_signs"),
+            "baseline_scores": record.get("baseline_scores"),
             "input_artifact_path": str(daily_artifact.path),
             "input_artifact_source": daily_artifact.source,
             "input_artifact_data_version": daily_artifact.data_version,
@@ -293,14 +443,24 @@ def _float_or_default(value: Any, default: float) -> float:
     return float(value)
 
 
+def _parse_sample_dates(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-persist", action="store_true")
     parser.add_argument("--n-workers", type=int, default=DEFAULT_N_WORKERS)
+    parser.add_argument("--sample-dates")
+    parser.add_argument("--batch-mode", choices=["daily", "monthly"], default=DEFAULT_BATCH_MODE)
     args = parser.parse_args()
     result = run_liwei_0616_cons_sda_k3_div_k10_reproduction(
         persist=not args.no_persist,
         n_workers=args.n_workers,
+        sample_dates=_parse_sample_dates(args.sample_dates),
+        batch_mode=args.batch_mode,
     )
     print(json.dumps(clean_json(result), ensure_ascii=False))
 

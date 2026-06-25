@@ -56,10 +56,30 @@ class Liwei0616BacktestTests(unittest.TestCase):
 
         for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
             summary = pd.read_json(bench / summary_name, typ="series")
+            self.assertEqual(summary["benchmark_scope"], "source_latest_oos_20260616_patched_window_targeted_sample")
             self.assertEqual(int(summary["row_count"]), 21)
             self.assertEqual(int(summary["samples"]), 21)
             self.assertEqual(int(summary["metric_samples"]), 19)
             self.assertEqual(int(summary["correct"]), 12)
+            self.assertEqual(int(summary["no_trade"]), 2)
+            self.assertEqual(int(summary["pred_up"]), 12)
+            self.assertEqual(int(summary["pred_down"]), 7)
+            self.assertEqual(int(summary["backtest_rows_before_live_cutoff"]), 13)
+            self.assertEqual(int(summary["gray_live_boundary_rows"]), 8)
+            self.assertEqual(summary["source_context_start"], "2025-05-01")
+            self.assertEqual(summary["source_latest_start"], "2026-05-01")
+            self.assertEqual(summary["source_end"], "2026-06-10")
+            self.assertEqual(summary["source_prior_start"], "2025-05-01")
+            self.assertEqual(summary["source_prior_end"], "2025-06-30")
+            self.assertEqual(
+                summary["source_test_ranges"],
+                [["2025-05-01", "2025-06-30"], ["2026-05-01", "2026-06-10"]],
+            )
+            self.assertEqual(summary["source_ic_screen_start"], "2024-01-01")
+            self.assertEqual(summary["vote_baselines"], ["STD", "DIV", "ACCWT"])
+            self.assertEqual(summary["fallback_baseline"], "DIV")
+            self.assertEqual(int(summary["streak_K"]), 10)
+            self.assertEqual(summary["batch_mode"], "monthly")
 
     def test_build_backtest_rows_use_feature_date_and_target_cutoff(self) -> None:
         from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
@@ -98,6 +118,104 @@ class Liwei0616BacktestTests(unittest.TestCase):
         self.assertEqual(rows[0]["predicted_direction"], -1)
         self.assertEqual(rows[0]["confidence"], 1.0)
         self.assertEqual(rows[0]["extra"]["source_model_id"], "5Y_01_cons_SDA_k_3_DIV_K_10")
+
+    def test_sample_input_end_uses_sample_target_date_not_global_backtest_end(self) -> None:
+        from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
+
+        calendar = MagicMock()
+        calendar.nth_trading_day_after.side_effect = lambda day, horizon: {
+            ("2026-03-25", 5): "2026-04-01",
+            ("2026-04-23", 5): "2026-04-30",
+        }[(day, horizon)]
+
+        input_end = runner._effective_input_end(["2026-03-25", "2026-04-23"], calendar)
+
+        self.assertEqual(input_end, "2026-04-30")
+
+    @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction.run_5y01_for_window_silent")
+    def test_historical_prediction_runs_each_feature_date_as_pit_cutoff(self, mock_runner: MagicMock) -> None:
+        from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-05-18", "2026-05-19", "2026-05-20"]),
+                "TB5YWI0C": [2.0, 2.01, 2.02],
+            }
+        )
+
+        def fake_window(**kwargs):
+            feature_date = kwargs["feature_date"]
+            return pd.DataFrame(
+                {
+                    "anchor_date": [feature_date],
+                    "prediction": [1],
+                    "true_label": [1],
+                    "confidence": [1.0],
+                }
+            )
+
+        mock_runner.side_effect = fake_window
+
+        detail = runner.run_historical_prediction(
+            daily_df=daily_df,
+            weekly_df=pd.DataFrame({"week_id": [202620]}),
+            monthly_df=pd.DataFrame({"month_id": ["202605"]}),
+            date_to_week={},
+            n_workers=1,
+        )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-05-18", "2026-05-19", "2026-05-20"])
+        self.assertEqual(mock_runner.call_count, 3)
+        called_feature_dates = [call.kwargs["feature_date"] for call in mock_runner.call_args_list]
+        called_current_starts = [call.kwargs["current_start"] for call in mock_runner.call_args_list]
+        called_current_ends = [call.kwargs["current_end"] for call in mock_runner.call_args_list]
+        called_test_ranges = [call.kwargs["test_ranges"] for call in mock_runner.call_args_list]
+        self.assertEqual(called_feature_dates, ["2026-05-18", "2026-05-19", "2026-05-20"])
+        self.assertEqual(called_current_starts, ["2026-05-01"] * 3)
+        self.assertEqual(called_current_ends, called_feature_dates)
+        self.assertEqual(called_test_ranges, [(("2025-05-01", "2025-05-31"), ("2026-05-01", "2026-05-20"))] * 3)
+
+    @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction.run_5y01_for_window_silent")
+    def test_targeted_monthly_sample_runs_one_source_context_across_feature_months(self, mock_runner: MagicMock) -> None:
+        from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-03-31", "2026-04-01", "2026-04-02"]),
+                "TB5YWI0C": [2.0, 2.01, 2.02],
+            }
+        )
+
+        def fake_window(**kwargs):
+            return pd.DataFrame(
+                {
+                    "anchor_date": ["2026-03-31", "2026-04-01"],
+                    "prediction": [1, -1],
+                    "true_label": [1, -1],
+                    "confidence": [1.0, 1.0],
+                    "vote_score": [0.6, -0.6],
+                }
+            )
+
+        mock_runner.side_effect = fake_window
+
+        detail = runner.run_historical_prediction(
+            daily_df=daily_df,
+            weekly_df=pd.DataFrame({"week_id": [202613, 202614]}),
+            monthly_df=pd.DataFrame({"month_id": ["202603", "202604"]}),
+            date_to_week={},
+            n_workers=1,
+            feature_dates=["2026-03-31", "2026-04-01"],
+            batch_mode="monthly",
+        )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-03-31", "2026-04-01"])
+        self.assertEqual(mock_runner.call_count, 1)
+        kwargs = mock_runner.call_args.kwargs
+        self.assertEqual(kwargs["feature_date"], "2026-04-01")
+        self.assertEqual(kwargs["current_start"], "2026-03-01")
+        self.assertEqual(kwargs["current_end"], "2026-04-01")
+        self.assertEqual(kwargs["test_ranges"], (("2025-03-01", "2025-04-30"), ("2026-03-01", "2026-04-02")))
 
     def test_missing_calendar_target_date_does_not_fallback_to_anchor(self) -> None:
         from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
@@ -177,6 +295,7 @@ class Liwei0616BacktestTests(unittest.TestCase):
                 "confidence": [1.0],
                 "vote_score": [-0.6],
                 "baseline_signs": [{"STD": -1, "DIV": -1, "ACCWT": -1}],
+                "baseline_scores": [{"STD": -0.61, "DIV": -0.60, "ACCWT": -0.59}],
             }
         )
 
@@ -192,6 +311,8 @@ class Liwei0616BacktestTests(unittest.TestCase):
         mock_weekly_builder.assert_called_once()
         mock_monthly_builder.assert_called_once()
         self.assertEqual(mock_weekly_builder.call_args.kwargs["as_of_date"], runner.BACKTEST_INPUT_END)
+        self.assertEqual(mock_historical.call_args.kwargs["batch_mode"], runner.DEFAULT_BATCH_MODE)
+        self.assertIsNone(mock_historical.call_args.kwargs["feature_dates"])
         engine.dispose.assert_called_once()
 
     @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction.run_liwei_0616_cons_sda_k3_div_k10_reproduction")
