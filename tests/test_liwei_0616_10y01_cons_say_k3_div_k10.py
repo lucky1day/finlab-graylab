@@ -284,13 +284,13 @@ class Liwei061610Y01InferenceTests(unittest.TestCase):
 
         window = liwei_0616_pit_window("2026-06-03")
 
-        self.assertEqual(window.prior_start, "2025-06-03")
+        self.assertEqual(window.prior_start, "2025-06-01")
         self.assertEqual(window.prior_end, "2025-06-30")
-        self.assertEqual(window.latest_start, "2026-06-03")
+        self.assertEqual(window.latest_start, "2026-06-01")
         self.assertEqual(window.source_end, "2026-06-03")
-        self.assertEqual(window.current_start, "2026-06-03")
+        self.assertEqual(window.current_start, "2026-06-01")
         self.assertEqual(window.current_end, "2026-06-03")
-        self.assertEqual(window.test_ranges, (("2024-01-01", "2026-06-03"),))
+        self.assertEqual(window.test_ranges, (("2025-06-01", "2025-06-30"), ("2026-06-01", "2026-06-03")))
 
     def test_source_batch_window_uses_latest_start_and_data_end_like_original_runner(self) -> None:
         from schemes.liwei_0616_10y01_cons_say_k3_div_k10.inference import liwei_0616_pit_window
@@ -308,7 +308,7 @@ class Liwei061610Y01InferenceTests(unittest.TestCase):
         self.assertEqual(window.source_end, "2026-06-10")
         self.assertEqual(window.current_start, "2026-05-01")
         self.assertEqual(window.current_end, "2026-06-03")
-        self.assertEqual(window.test_ranges, (("2024-01-01", "2026-06-10"),))
+        self.assertEqual(window.test_ranges, (("2025-05-01", "2025-06-30"), ("2026-05-01", "2026-06-10")))
 
     def test_run_for_feature_date_uses_pit_window_and_selects_exact_feature_date(self) -> None:
         from schemes.liwei_0616_10y01_cons_say_k3_div_k10 import inference
@@ -335,9 +335,9 @@ class Liwei061610Y01InferenceTests(unittest.TestCase):
 
         kwargs = mock_run.call_args.kwargs
         self.assertEqual(kwargs["feature_date"], "2026-06-03")
-        self.assertEqual(kwargs["current_start"], "2026-06-03")
+        self.assertEqual(kwargs["current_start"], "2026-06-01")
         self.assertEqual(kwargs["current_end"], "2026-06-03")
-        self.assertEqual(kwargs["test_ranges"], (("2024-01-01", "2026-06-03"),))
+        self.assertEqual(kwargs["test_ranges"], (("2025-06-01", "2025-06-30"), ("2026-06-01", "2026-06-03")))
         self.assertFalse(kwargs["require_labels"])
         self.assertEqual(row["anchor_date"], "2026-06-03")
         self.assertEqual(row["prediction"], 1)

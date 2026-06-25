@@ -32,6 +32,15 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
             "confidence",
             "label",
             "is_correct",
+            "vote_score",
+            "STD_score",
+            "STD_dir",
+            "ACCWT_score",
+            "ACCWT_dir",
+            "V55_7Y_score",
+            "V55_7Y_dir",
+            "DIV_score",
+            "DIV_dir",
         ]
 
         original = pd.read_csv(bench / "original_predictions_sample.csv")
@@ -48,16 +57,18 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
         self.assertEqual(int((pd.to_datetime(original["target_date"]) < pd.Timestamp("2026-06-01")).sum()), 13)
         self.assertEqual(int((pd.to_datetime(original["target_date"]) >= pd.Timestamp("2026-06-01")).sum()), 8)
         source_original_sensitive = original.loc[
-            original["feature_date"].isin(["2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22"]),
+            original["feature_date"].isin(["2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-26", "2026-05-28"]),
             ["feature_date", "direction", "confidence", "label", "is_correct"],
         ].to_dict("records")
         self.assertEqual(
             source_original_sensitive,
             [
-                {"feature_date": "2026-05-19", "direction": -1, "confidence": 1.0, "label": 1, "is_correct": False},
-                {"feature_date": "2026-05-20", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
+                {"feature_date": "2026-05-19", "direction": 0, "confidence": 0.0, "label": 1, "is_correct": False},
+                {"feature_date": "2026-05-20", "direction": 0, "confidence": 0.0, "label": -1, "is_correct": False},
                 {"feature_date": "2026-05-21", "direction": 0, "confidence": 0.0, "label": -1, "is_correct": False},
                 {"feature_date": "2026-05-22", "direction": 0, "confidence": 0.0, "label": -1, "is_correct": False},
+                {"feature_date": "2026-05-26", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
+                {"feature_date": "2026-05-28", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
             ],
         )
         self.assertEqual(int((original["direction"] == 0).sum()), 5)
@@ -72,12 +83,19 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
         self.assertTrue((merged["direction_original"] == merged["direction_current"]).all())
         self.assertTrue((merged["label_original"] == merged["label_current"]).all())
         self.assertTrue((merged["confidence_original"] == merged["confidence_current"]).all())
+        internal_columns = [name for name in expected_columns if name == "vote_score" or name.endswith(("_score", "_dir"))]
+        for column in internal_columns:
+            if column.endswith("_score") or column == "vote_score":
+                max_abs = (merged[f"{column}_original"] - merged[f"{column}_current"]).abs().max()
+                self.assertLessEqual(float(max_abs), 1e-8, column)
+            else:
+                self.assertTrue((merged[f"{column}_original"] == merged[f"{column}_current"]).all(), column)
 
         for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
             summary = pd.read_json(bench / summary_name, typ="series")
             self.assertEqual(summary["scheme_id"], SCHEME_ID)
             self.assertEqual(summary["source_model_id"], "10Y_01_cons_SAY_k_3_DIV_K_10")
-            self.assertEqual(summary["benchmark_scope"], "source_original_full_oos_targeted_sample")
+            self.assertEqual(summary["benchmark_scope"], "source_latest_oos_20260616_full_strict_feature_target")
             self.assertEqual(int(summary["row_count"]), 21)
             self.assertEqual(int(summary["samples"]), 21)
             self.assertEqual(int(summary["metric_samples"]), 16)
@@ -85,9 +103,15 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
             self.assertEqual(int(summary["no_trade"]), 5)
             self.assertEqual(int(summary["backtest_rows_before_live_cutoff"]), 13)
             self.assertEqual(int(summary["gray_live_boundary_rows"]), 8)
-            self.assertEqual(summary["source_oos_start"], "2024-01-01")
+            self.assertEqual(summary["source_latest_start"], "2026-05-01")
             self.assertEqual(summary["source_end"], "2026-06-10")
-            self.assertIn("single full-OOS test sequence", summary["source_execution_scope"])
+            self.assertIn("prior-year window plus latest window", summary["source_execution_scope"])
+            self.assertEqual(
+                summary["source_test_ranges"],
+                [["2025-05-01", "2025-06-30"], ["2026-05-01", "2026-06-10"]],
+            )
+            self.assertEqual(int(summary["source_predictions_alignment"]["pred_diff_count"]), 0)
+            self.assertEqual(int(summary["source_internal_alignment"]["internal_score_diff_count"]), 0)
             self.assertEqual(summary["vote_baselines"], ["STD", "ACCWT", "V55_7Y"])
             self.assertEqual(summary["fallback_baseline"], "DIV")
             self.assertEqual(int(summary["streak_K"]), 10)
@@ -198,9 +222,9 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
         called_current_ends = [call.kwargs["current_end"] for call in mock_runner.call_args_list]
         called_test_ranges = [call.kwargs["test_ranges"] for call in mock_runner.call_args_list]
         self.assertEqual(called_feature_dates, ["2026-05-18", "2026-05-19", "2026-05-20"])
-        self.assertEqual(called_current_starts, called_feature_dates)
+        self.assertEqual(called_current_starts, ["2026-05-01"] * 3)
         self.assertEqual(called_current_ends, called_feature_dates)
-        self.assertEqual(called_test_ranges, [(("2024-01-01", "2026-05-20"),)] * 3)
+        self.assertEqual(called_test_ranges, [(("2025-05-01", "2025-05-31"), ("2026-05-01", "2026-05-20"))] * 3)
 
     @patch("backtests.liwei_0616_10y01_cons_say_k3_div_k10_reproduction.run_10y01_for_window_silent")
     def test_monthly_batch_runs_one_window_for_same_month_and_returns_each_date(self, mock_runner: MagicMock) -> None:
@@ -242,9 +266,9 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
         self.assertEqual(detail["anchor_date"].tolist(), ["2026-05-18", "2026-05-19", "2026-05-20"])
         self.assertEqual(mock_runner.call_count, 1)
         self.assertEqual(mock_runner.call_args.kwargs["feature_date"], "2026-05-20")
-        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-05-18")
+        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-05-01")
         self.assertEqual(mock_runner.call_args.kwargs["current_end"], "2026-05-20")
-        self.assertEqual(mock_runner.call_args.kwargs["test_ranges"], (("2024-01-01", "2026-05-20"),))
+        self.assertEqual(mock_runner.call_args.kwargs["test_ranges"], (("2025-05-01", "2025-05-31"), ("2026-05-01", "2026-05-20")))
 
     @patch("backtests.liwei_0616_10y01_cons_say_k3_div_k10_reproduction.run_10y01_for_window_silent")
     def test_targeted_monthly_sample_runs_one_source_context_across_feature_months(self, mock_runner: MagicMock) -> None:
@@ -283,9 +307,9 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
         self.assertEqual(detail["anchor_date"].tolist(), ["2026-03-31", "2026-04-01"])
         self.assertEqual(mock_runner.call_count, 1)
         self.assertEqual(mock_runner.call_args.kwargs["feature_date"], "2026-04-01")
-        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-03-31")
+        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-03-01")
         self.assertEqual(mock_runner.call_args.kwargs["current_end"], "2026-04-01")
-        self.assertEqual(mock_runner.call_args.kwargs["test_ranges"], (("2024-01-01", "2026-04-30"),))
+        self.assertEqual(mock_runner.call_args.kwargs["test_ranges"], (("2025-03-01", "2025-04-30"), ("2026-03-01", "2026-04-30")))
 
     @patch("backtests.liwei_0616_10y01_cons_say_k3_div_k10_reproduction.run_10y01_for_window_silent")
     def test_cache_on_off_and_sharded_paths_match_serial_on_targeted_dates(self, mock_runner: MagicMock) -> None:

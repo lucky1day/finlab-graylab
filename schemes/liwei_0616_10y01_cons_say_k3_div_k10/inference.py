@@ -12,7 +12,6 @@ from .core.v31_common import MODEL_VERSION, run_10y01_for_feature_window
 
 
 DEFAULT_N_WORKERS = 10
-SOURCE_OOS_START = "2024-01-01"
 
 
 @dataclass(frozen=True)
@@ -32,23 +31,17 @@ def liwei_0616_pit_window(
     feature_date: str,
     *,
     source_end: str | None = None,
-    source_start: str = SOURCE_OOS_START,
     current_start: str | None = None,
     current_end: str | None = None,
 ) -> PitWindow:
-    """返回与 source runner 一致的 full-OOS 测试窗口。"""
+    """返回与原始 latest_oos runner 等价的 PIT/source batch 测试窗口。"""
     datetime.strptime(str(feature_date), "%Y-%m-%d")
-    parsed_source_start = datetime.strptime(str(source_start), "%Y-%m-%d")
     parsed_current_end = datetime.strptime(str(current_end or feature_date), "%Y-%m-%d")
     parsed_source_end = datetime.strptime(str(source_end or feature_date), "%Y-%m-%d")
     parsed_current_start = datetime.strptime(
-        str(current_start or feature_date),
+        str(current_start or pd.Timestamp(feature_date).replace(day=1).date()),
         "%Y-%m-%d",
     )
-    if parsed_source_start > parsed_source_end:
-        raise ValueError(
-            f"source_start={parsed_source_start.date()} cannot be later than source_end={parsed_source_end.date()}"
-        )
     if parsed_source_end < parsed_current_end:
         raise ValueError(
             f"source_end={parsed_source_end.date()} cannot be earlier than current_end={parsed_current_end.date()}"
@@ -70,7 +63,7 @@ def liwei_0616_pit_window(
         source_end=source_end_str,
         current_start=parsed_current_start.strftime("%Y-%m-%d"),
         current_end=parsed_current_end.strftime("%Y-%m-%d"),
-        test_ranges=((parsed_source_start.strftime("%Y-%m-%d"), source_end_str),),
+        test_ranges=((prior_start, prior_end), (latest_start, source_end_str)),
     )
 
 
