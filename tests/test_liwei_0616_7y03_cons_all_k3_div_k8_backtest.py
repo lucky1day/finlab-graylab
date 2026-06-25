@@ -48,19 +48,19 @@ class Liwei06167Y03BacktestTests(unittest.TestCase):
         self.assertEqual(int((pd.to_datetime(original["target_date"]) < pd.Timestamp("2026-06-01")).sum()), 13)
         self.assertEqual(int((pd.to_datetime(original["target_date"]) >= pd.Timestamp("2026-06-01")).sum()), 8)
         strict_pit_sensitive = original.loc[
-            original["feature_date"].isin(["2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22"]),
+            original["feature_date"].isin(["2026-05-18", "2026-05-19", "2026-05-20", "2026-05-22"]),
             ["feature_date", "direction", "confidence", "label", "is_correct"],
         ].to_dict("records")
         self.assertEqual(
             strict_pit_sensitive,
             [
+                {"feature_date": "2026-05-18", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
                 {"feature_date": "2026-05-19", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
-                {"feature_date": "2026-05-20", "direction": 0, "confidence": 0.0, "label": -1, "is_correct": False},
-                {"feature_date": "2026-05-21", "direction": 0, "confidence": 0.0, "label": -1, "is_correct": False},
-                {"feature_date": "2026-05-22", "direction": 0, "confidence": 0.0, "label": -1, "is_correct": False},
+                {"feature_date": "2026-05-20", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
+                {"feature_date": "2026-05-22", "direction": 1, "confidence": 1.0, "label": -1, "is_correct": False},
             ],
         )
-        self.assertEqual(int((original["direction"] == 0).sum()), 3)
+        self.assertEqual(int((original["direction"] == 0).sum()), 0)
         self.assertTrue((original.loc[original["direction"] == 0, "confidence"] == 0.0).all())
         self.assertTrue((original.loc[original["direction"] != 0, "confidence"] == 1.0).all())
         merged = original.merge(
@@ -77,16 +77,23 @@ class Liwei06167Y03BacktestTests(unittest.TestCase):
             summary = pd.read_json(bench / summary_name, typ="series")
             self.assertEqual(summary["scheme_id"], SCHEME_ID)
             self.assertEqual(summary["source_model_id"], "7Y_03_cons_ALL_k_3_DIV_K_8")
+            self.assertEqual(summary["benchmark_scope"], "source_original_full_oos_targeted_sample")
             self.assertEqual(int(summary["row_count"]), 21)
             self.assertEqual(int(summary["samples"]), 21)
-            self.assertEqual(int(summary["metric_samples"]), 18)
-            self.assertEqual(int(summary["correct"]), 13)
-            self.assertEqual(int(summary["no_trade"]), 3)
+            self.assertEqual(int(summary["metric_samples"]), 21)
+            self.assertEqual(int(summary["correct"]), 11)
+            self.assertEqual(int(summary["no_trade"]), 0)
             self.assertEqual(int(summary["backtest_rows_before_live_cutoff"]), 13)
             self.assertEqual(int(summary["gray_live_boundary_rows"]), 8)
+            self.assertEqual(summary["source_oos_start"], "2024-01-01")
+            self.assertEqual(summary["source_end"], "2026-06-10")
+            self.assertEqual(summary["source_execution_scope"], "single full-OOS test sequence from 2024-01-01 through source_end, then select target feature dates")
+            self.assertEqual(summary["vote_baselines"], ["STD", "DIV", "ACCWT", "CROSS_5Y"])
+            self.assertEqual(summary["fallback_baseline"], "DIV")
+            self.assertEqual(int(summary["streak_K"]), 8)
             self.assertIn("feature_date", summary["source_month_bucket"])
             self.assertIn("target_date", summary["platform_month_bucket"])
-            self.assertEqual(len(summary["source_batch_differences"]), 3)
+            self.assertEqual(len(summary["source_batch_differences"]), 0)
 
     def test_build_backtest_rows_use_feature_date_and_target_cutoff(self) -> None:
         from backtests import liwei_0616_7y03_cons_all_k3_div_k8_reproduction as runner
@@ -177,9 +184,13 @@ class Liwei06167Y03BacktestTests(unittest.TestCase):
         self.assertEqual(detail["anchor_date"].tolist(), ["2026-05-18", "2026-05-19", "2026-05-20"])
         self.assertEqual(mock_runner.call_count, 3)
         called_feature_dates = [call.kwargs["feature_date"] for call in mock_runner.call_args_list]
+        called_current_starts = [call.kwargs["current_start"] for call in mock_runner.call_args_list]
         called_current_ends = [call.kwargs["current_end"] for call in mock_runner.call_args_list]
+        called_test_ranges = [call.kwargs["test_ranges"] for call in mock_runner.call_args_list]
         self.assertEqual(called_feature_dates, ["2026-05-18", "2026-05-19", "2026-05-20"])
+        self.assertEqual(called_current_starts, called_feature_dates)
         self.assertEqual(called_current_ends, called_feature_dates)
+        self.assertEqual(called_test_ranges, [(("2024-01-01", "2026-05-20"),)] * 3)
 
     @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction.run_7y03_for_window_silent")
     def test_monthly_batch_runs_one_window_for_same_month_and_returns_each_date(self, mock_runner: MagicMock) -> None:
@@ -221,8 +232,9 @@ class Liwei06167Y03BacktestTests(unittest.TestCase):
         self.assertEqual(detail["anchor_date"].tolist(), ["2026-05-18", "2026-05-19", "2026-05-20"])
         self.assertEqual(mock_runner.call_count, 1)
         self.assertEqual(mock_runner.call_args.kwargs["feature_date"], "2026-05-20")
-        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-05-01")
+        self.assertEqual(mock_runner.call_args.kwargs["current_start"], "2026-05-18")
         self.assertEqual(mock_runner.call_args.kwargs["current_end"], "2026-05-20")
+        self.assertEqual(mock_runner.call_args.kwargs["test_ranges"], (("2024-01-01", "2026-05-20"),))
 
     @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction.run_7y03_for_window_silent")
     def test_cache_on_off_and_sharded_paths_match_serial_on_targeted_dates(self, mock_runner: MagicMock) -> None:
@@ -284,6 +296,7 @@ class Liwei06167Y03BacktestTests(unittest.TestCase):
             {"artifact": "hash"},
             cache_mode="daily",
             window_end="2026-05-18",
+            model_context_end="2026-05-20",
         )
         monthly_path = runner._cache_path(
             cache_root,
@@ -291,6 +304,7 @@ class Liwei06167Y03BacktestTests(unittest.TestCase):
             {"artifact": "hash"},
             cache_mode="monthly",
             window_end="2026-05-22",
+            model_context_end="2026-05-20",
         )
 
         self.assertNotEqual(daily_path, monthly_path)

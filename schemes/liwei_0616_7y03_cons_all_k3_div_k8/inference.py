@@ -12,6 +12,7 @@ from .core.v31_common import MODEL_VERSION, run_7y03_for_feature_window
 
 
 DEFAULT_N_WORKERS = 10
+SOURCE_OOS_START = "2024-01-01"
 
 
 @dataclass(frozen=True)
@@ -20,26 +21,56 @@ class PitWindow:
 
     prior_start: str
     prior_end: str
+    latest_start: str
+    source_end: str
     current_start: str
     current_end: str
     test_ranges: tuple[tuple[str, str], ...]
 
 
-def liwei_0616_pit_window(feature_date: str) -> PitWindow:
-    """返回同月去年窗口 + 当前月截至 feature_date 的 PIT 测试窗口。"""
-    parsed = datetime.strptime(str(feature_date), "%Y-%m-%d")
-    current_start = parsed.replace(day=1).strftime("%Y-%m-%d")
-    current_end = parsed.strftime("%Y-%m-%d")
-    prior_start_ts = pd.Timestamp(current_start) - pd.DateOffset(years=1)
-    prior_end_ts = (pd.Timestamp(current_end) - pd.DateOffset(years=1)) + pd.offsets.MonthEnd(0)
+def liwei_0616_pit_window(
+    feature_date: str,
+    *,
+    source_end: str | None = None,
+    source_start: str = SOURCE_OOS_START,
+    current_start: str | None = None,
+    current_end: str | None = None,
+) -> PitWindow:
+    """返回与 source runner 一致的 full-OOS 测试窗口。"""
+    datetime.strptime(str(feature_date), "%Y-%m-%d")
+    parsed_source_start = datetime.strptime(str(source_start), "%Y-%m-%d")
+    parsed_current_end = datetime.strptime(str(current_end or feature_date), "%Y-%m-%d")
+    parsed_source_end = datetime.strptime(str(source_end or feature_date), "%Y-%m-%d")
+    parsed_current_start = datetime.strptime(
+        str(current_start or feature_date),
+        "%Y-%m-%d",
+    )
+    if parsed_source_start > parsed_source_end:
+        raise ValueError(
+            f"source_start={parsed_source_start.date()} cannot be later than source_end={parsed_source_end.date()}"
+        )
+    if parsed_source_end < parsed_current_end:
+        raise ValueError(
+            f"source_end={parsed_source_end.date()} cannot be earlier than current_end={parsed_current_end.date()}"
+        )
+    if parsed_current_start > parsed_current_end:
+        raise ValueError(
+            f"current_start={parsed_current_start.date()} cannot be later than current_end={parsed_current_end.date()}"
+        )
+    latest_start = parsed_current_start.strftime("%Y-%m-%d")
+    source_end_str = parsed_source_end.strftime("%Y-%m-%d")
+    prior_start_ts = pd.Timestamp(latest_start) - pd.DateOffset(years=1)
+    prior_end_ts = (pd.Timestamp(source_end_str) - pd.DateOffset(years=1)) + pd.offsets.MonthEnd(0)
     prior_start = str(prior_start_ts.date())
     prior_end = str(prior_end_ts.date())
     return PitWindow(
         prior_start=prior_start,
         prior_end=prior_end,
-        current_start=current_start,
-        current_end=current_end,
-        test_ranges=((prior_start, prior_end), (current_start, current_end)),
+        latest_start=latest_start,
+        source_end=source_end_str,
+        current_start=parsed_current_start.strftime("%Y-%m-%d"),
+        current_end=parsed_current_end.strftime("%Y-%m-%d"),
+        test_ranges=((parsed_source_start.strftime("%Y-%m-%d"), source_end_str),),
     )
 
 

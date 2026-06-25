@@ -58,7 +58,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .data_alignment import align_monthly_previous_month, align_weekly_previous_complete
+from .data_alignment import align_monthly_previous_month
 
 warnings.filterwarnings("ignore")
 
@@ -131,6 +131,7 @@ WEEKLY_COLS = [
 MODEL_VERSION = "liwei_0616_7y_03_v31"
 SOURCE_MODEL_ID = "7Y_03_cons_ALL_k_3_DIV_K_8"
 TARGET_TENOR = "7Y"
+SOURCE_IC_SCREEN_START = "2024-01-01"
 
 _SHARED_LGBM: dict[str, Any] = {
     "lgbm_windows": [200, 350, 504, 756],
@@ -320,10 +321,8 @@ def prepare_model_frames(
     """把平台产出的 weekly/monthly artifact 对齐成算法特征矩阵。"""
     if weekly_df is None:
         aligned_weekly = pd.DataFrame(index=range(len(daily_dates)))
-    elif date_to_week is None:
-        aligned_weekly = _align_weekly_like_legacy(weekly_df, daily_dates)
     else:
-        aligned_weekly = align_weekly_previous_complete(weekly_df, daily_dates, date_to_week)
+        aligned_weekly = _align_weekly_like_legacy(weekly_df, daily_dates, date_to_week)
 
     if monthly_df is None:
         aligned_monthly = pd.DataFrame(index=range(len(daily_dates)))
@@ -364,70 +363,91 @@ def _normalize_aux_frame(df: pd.DataFrame | None, id_col: str) -> pd.DataFrame |
     return out
 
 
-def _align_weekly_like_legacy(weekly_df: pd.DataFrame, daily_dates: pd.Series) -> pd.DataFrame:
+def _align_weekly_like_legacy(
+    weekly_df: pd.DataFrame,
+    daily_dates: pd.Series | pd.DatetimeIndex | list,
+    date_to_week: Mapping[str, int | str] | None = None,
+) -> pd.DataFrame:
     weekly = _normalize_aux_frame(weekly_df, "week_id")
     if weekly is None:
         return pd.DataFrame(index=range(len(daily_dates)))
     existing = [col for col in WEEKLY_COLS if col in weekly.columns]
     if not existing:
         return pd.DataFrame(index=range(len(daily_dates)))
-    dates = sorted(pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize().tolist())
-    if not dates:
+    daily_index = pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize()
+    if len(daily_index) == 0:
         return pd.DataFrame(index=range(len(daily_dates)))
-    week_arr = np.zeros(len(dates), dtype=int)
-    current_year, seq, previous_dow = dates[0].year, 1, -1
-    for i, daily_date in enumerate(dates):
-        if daily_date.year != current_year:
-            current_year, seq, previous_dow = daily_date.year, 1, -1
-        dow = daily_date.weekday()
-        if previous_dow >= 0 and (
-            dow <= previous_dow and (daily_date - dates[i - 1]).days > 1
-            or (daily_date - dates[i - 1]).days > 5
-        ):
-            seq += 1
-        previous_dow = dow
-        week_arr[i] = current_year * 100 + seq
-    date_to_pos = {daily_date: i for i, daily_date in enumerate(dates)}
-    date_to_week = {daily_date: int(week_arr[i]) for i, daily_date in enumerate(dates)}
-    available_weeks = sorted(set(week_arr))
-    week_to_previous = {
-        week_id: available_weeks[i - 1] if i > 0 else None
-        for i, week_id in enumerate(available_weeks)
-    }
-    weekly_indexed = weekly.set_index("week_id")
+
+    order = np.argsort(daily_index.values, kind="stable")
+    sorted_dates = daily_index[order]
+    week_arr = _weekly_ids_for_daily_dates(sorted_dates, date_to_week)
+    last_row_by_week: dict[int, int] = {}
+    for sorted_pos, week_id in enumerate(week_arr):
+        if week_id is not None:
+            original_pos = int(order[sorted_pos])
+            last_row_by_week[int(week_id)] = original_pos
+
+    weekly = weekly.dropna(subset=["week_id"]).copy()
+    weekly["week_id"] = weekly["week_id"].astype(int)
+    weekly_indexed = weekly.sort_values("week_id").drop_duplicates("week_id", keep="last").set_index("week_id")
     result: dict[str, np.ndarray] = {
         col: np.full(len(daily_dates), np.nan, dtype=np.float64) for col in existing
     }
-    for daily_date in pd.DatetimeIndex(pd.to_datetime(daily_dates)).normalize().tolist():
-        if daily_date not in date_to_week:
-            continue
-        previous_week = week_to_previous.get(date_to_week[daily_date])
-        if previous_week is None or previous_week not in weekly_indexed.index:
-            continue
-        row_index = date_to_pos[daily_date]
-        for col in existing:
-            result[col][row_index] = weekly_indexed.at[previous_week, col]
+    for col in existing:
+        placed = np.full(len(daily_index), np.nan, dtype=np.float64)
+        for week_id, row_index in last_row_by_week.items():
+            if week_id in weekly_indexed.index:
+                placed[row_index] = float(weekly_indexed.at[week_id, col])
+        filled = pd.Series(placed[order]).ffill().to_numpy(dtype=np.float64)
+        out = np.full(len(daily_index), np.nan, dtype=np.float64)
+        out[order] = filled
+        result[col] = out
     return pd.DataFrame(result, index=range(len(daily_dates)))
 
 
+def _weekly_ids_for_daily_dates(
+    sorted_dates: pd.DatetimeIndex,
+    date_to_week: Mapping[str, int | str] | None,
+) -> list[int | None]:
+    if date_to_week is not None:
+        result: list[int | None] = []
+        for daily_date in sorted_dates:
+            raw = date_to_week.get(daily_date.strftime("%Y-%m-%d"))
+            try:
+                result.append(None if raw is None else int(raw))
+            except (TypeError, ValueError):
+                result.append(None)
+        return result
+
+    result = []
+    current_year, seq, previous_dow = int(sorted_dates[0].year), 1, -1
+    previous_date: pd.Timestamp | None = None
+    for daily_date in sorted_dates:
+        if int(daily_date.year) != current_year:
+            current_year, seq, previous_dow = int(daily_date.year), 1, -1
+        dow = int(daily_date.weekday())
+        if previous_date is not None and previous_dow >= 0 and (
+            (dow <= previous_dow and (daily_date - previous_date).days > 1)
+            or (daily_date - previous_date).days > 5
+        ):
+            seq += 1
+        previous_dow = dow
+        previous_date = daily_date
+        result.append(current_year * 100 + seq)
+    return result
+
+
 def _dynamic_report_masks(test_dates: pd.DatetimeIndex) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """按本次测试月份动态切分报告段，避免携带源脚本固定 OOS 窗口。"""
+    """按源脚本固定 OOS 段位切分 pre/sim/real。"""
     if len(test_dates) == 0:
         empty = np.zeros(0, dtype=bool)
         return empty, empty, empty
-    months = test_dates.to_period("M")
-    unique_months = sorted(months.unique())
-    split_one = max(1, len(unique_months) // 3)
-    split_two = max(split_one, (2 * len(unique_months)) // 3)
-    pre_months = set(unique_months[:split_one])
-    sim_months = set(unique_months[split_one:split_two])
-    real_months = set(unique_months[split_two:])
-    if not real_months:
-        real_months = set(unique_months[-1:])
-        sim_months = set(unique_months[:-1])
-    pre_m = np.asarray([month in pre_months for month in months], dtype=bool)
-    sim_m = np.asarray([month in sim_months for month in months], dtype=bool)
-    real_m = np.asarray([month in real_months for month in months], dtype=bool)
+    dates = pd.DatetimeIndex(test_dates)
+    sim_start = pd.Timestamp(year=2025, month=1, day=1)
+    real_start = pd.Timestamp(year=2025, month=7, day=1)
+    pre_m = np.asarray(dates < sim_start, dtype=bool)
+    sim_m = np.asarray((dates >= sim_start) & (dates < real_start), dtype=bool)
+    real_m = np.asarray(dates >= real_start, dtype=bool)
     return pre_m, sim_m, real_m
 
 
@@ -1166,7 +1186,8 @@ def _diverse_topk(scores, config_windows, K):
 # LIGHTGBM -- grid builder + threshold calibration
 # ============================================================================
 def build_lgbm_grid(windows, leaves, min_child, alphas, lambdas,
-                    splits, slow_path: bool = False) -> list:
+                    splits, slow_path: bool = False,
+                    very_slow_path: bool = False) -> list:
     grid = list(itertools.product(
         windows, leaves, min_child, alphas, lambdas, splits))
     result = [dict(zip(["window", "num_leaves", "min_child_samples",
@@ -1183,6 +1204,18 @@ def build_lgbm_grid(windows, leaves, min_child, alphas, lambdas,
                           "reg_alpha", "reg_lambda", "split_pct"], g))
             d["learning_rate"] = 0.01
             d["n_estimators"] = 350
+            result.append(d)
+    if very_slow_path:
+        # V50: Deep-learning path — lr=0.005, n_estimators=600
+        vslow = list(itertools.product(
+            [w for w in windows if w >= 400],
+            [l for l in leaves if l >= 7],
+            [20, 40], [0.5], [1.5], [0.60]))
+        for g in vslow:
+            d = dict(zip(["window", "num_leaves", "min_child_samples",
+                          "reg_alpha", "reg_lambda", "split_pct"], g))
+            d["learning_rate"] = 0.005
+            d["n_estimators"] = 600
             result.append(d)
     return result
 
@@ -1266,11 +1299,16 @@ _G: dict = {}
 
 def _init_worker(df_len, feat, labels, close, fallback, test_idx,
                  horizon, purge_gap, seeds=None,
+                 subsample=0.85, colsample_bytree=0.90,
+                 time_weight_alpha=-1.0, early_stopping=20,
                  period_feats=None, test_day_period=None):
     _G.update(df_len=df_len, feat=feat, labels=labels, close=close,
               fallback=fallback, test_idx=test_idx,
               horizon=horizon, purge_gap=purge_gap,
-              seeds=seeds or [42, 314])
+              seeds=seeds or [42, 314],
+              subsample=subsample, colsample_bytree=colsample_bytree,
+              time_weight_alpha=time_weight_alpha,
+              early_stopping=early_stopping)
     if period_feats is not None:
         _G["period_feats"] = period_feats
         _G["test_day_period"] = test_day_period
@@ -1334,7 +1372,8 @@ def run_config(config: dict) -> dict | None:
             w_pos = len(fit_y) / (2.0 * n_pos)
             w_neg = len(fit_y) / (2.0 * n_neg)
             class_w = np.where(fit_y == 1, w_pos, w_neg)
-            time_w = np.exp(np.linspace(-1.0, 0.0, len(fit_idx)))
+            _tw_alpha = _G.get("time_weight_alpha", -1.0)
+            time_w = np.exp(np.linspace(_tw_alpha, 0.0, len(fit_idx)))
             sample_w = class_w * time_w
             cal_y = (labels[cal_idx] == 1).astype(int)
 
@@ -1350,13 +1389,15 @@ def run_config(config: dict) -> dict | None:
                     min_child_samples=config["min_child_samples"],
                     reg_alpha=config["reg_alpha"],
                     reg_lambda=config["reg_lambda"],
-                    subsample=0.85, colsample_bytree=0.90,
+                    subsample=_G.get("subsample", 0.85),
+                    colsample_bytree=_G.get("colsample_bytree", 0.90),
                     n_jobs=1, verbosity=-1, random_state=seed,
                     force_col_wise=True)
                 model.fit(feat[fit_idx], fit_y,
                           sample_weight=sample_w,
                           eval_set=[(feat[cal_idx], cal_y)],
-                          callbacks=[lgb.early_stopping(20, verbose=False)])
+                          callbacks=[lgb.early_stopping(
+                              _G.get("early_stopping", 20), verbose=False)])
                 p = float(model.predict_proba(feat[[idx]])[:, 1][0])
                 prob_seeds.append(p)
                 if cal_probs_first is None:
@@ -1529,6 +1570,10 @@ def run_prediction(cfg: dict) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
     ens_mode = cfg.get("ens_mode", "standard")  # "standard"/"diverse"/"accwt"
     # V31: seasonal VT calibration
     vt_mode = cfg.get("vt_mode", "seasonal")  # "seasonal" (V31) or "fixed" (V28)
+    lgbm_subsample = cfg.get("lgbm_subsample", 0.85)
+    lgbm_colsample = cfg.get("lgbm_colsample", 0.90)
+    time_weight_alpha = cfg.get("time_weight_alpha", -1.0)
+    early_stopping_rounds = cfg.get("early_stopping", 20)
     if "test_start" not in cfg or "test_end" not in cfg:
         raise ValueError("test_start and test_end are required for PIT prediction")
     test_start = pd.Timestamp(cfg["test_start"])
@@ -1577,9 +1622,9 @@ def run_prediction(cfg: dict) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
     print(f"  Self features: {n_self}, MF features: {len(mf_cols)}, "
           f"Total: {feat_all.shape[1]}")
 
-    print(f"  IC screening on pre-test data (strict gap)...")
+    print(f"  IC screening on source pre-test data (strict gap)...")
     _ts_row = int(np.flatnonzero(
-        df["date"].values >= np.datetime64(test_start.strftime("%Y-%m-%d")))[0])
+        df["date"].values >= np.datetime64(SOURCE_IC_SCREEN_START))[0])
     pre_mask = ((np.arange(len(df)) < _ts_row - horizon)
                 & np.isin(labels, [-1.0, 1.0])
                 & ~np.isnan(close))
@@ -1679,14 +1724,18 @@ def run_prediction(cfg: dict) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
 
     # -- Phase A: LGBM grid --
     lgbm_slow_path = cfg.get("lgbm_slow_path", False)
+    lgbm_very_slow_path = cfg.get("lgbm_very_slow_path", False)
     lgbm_grid = build_lgbm_grid(
         cfg["lgbm_windows"], cfg["lgbm_leaves"],
         cfg["lgbm_min_child"], cfg["lgbm_alpha"],
         cfg["lgbm_lambda"], cfg["lgbm_split"],
-        slow_path=lgbm_slow_path)
+        slow_path=lgbm_slow_path,
+        very_slow_path=lgbm_very_slow_path)
 
     _init_worker(len(df), feat_selected, labels, close, fallback,
                  test_idx, horizon, purge_gap, seeds,
+                 lgbm_subsample, lgbm_colsample,
+                 time_weight_alpha, early_stopping_rounds,
                  period_feat_matrices, test_day_period)
 
     t1 = time.time()
@@ -1701,6 +1750,8 @@ def run_prediction(cfg: dict) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
             initializer=_init_worker,
             initargs=(len(df), feat_selected, labels, close, fallback,
                       test_idx, horizon, purge_gap, seeds,
+                      lgbm_subsample, lgbm_colsample,
+                      time_weight_alpha, early_stopping_rounds,
                       period_feat_matrices, test_day_period),
         ) as pool:
             results = [r for r in pool.map(run_config, lgbm_grid)
@@ -2267,6 +2318,10 @@ def run_7y03_for_feature_window(
     ).astype(float)
     result["baseline_signs"] = [
         {name: int(signs[name][idx]) for name in required_baselines()}
+        for idx in selected_indices
+    ]
+    result["baseline_scores"] = [
+        {name: float(baseline_scores[name][idx]) for name in required_baselines()}
         for idx in selected_indices
     ]
     result["model_version"] = MODEL_VERSION
