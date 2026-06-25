@@ -333,6 +333,155 @@ class Liwei06167Y03BacktestTests(unittest.TestCase):
 
         self.assertNotEqual(daily_path, monthly_path)
 
+    def test_explicit_input_end_can_pin_source_latest_oos_context(self) -> None:
+        from backtests import liwei_0616_7y03_cons_all_k3_div_k8_reproduction as runner
+
+        calendar = MagicMock()
+
+        input_end = runner._effective_input_end(["2026-05-06"], calendar, requested_input_end="2026-06-10")
+
+        self.assertEqual(input_end, "2026-06-10")
+        calendar.nth_trading_day_after.assert_not_called()
+
+    @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction.run_liwei_0616_7y03_cons_all_k3_div_k8_reproduction")
+    def test_main_forwards_input_end_and_phase_a_cache_to_runner(self, mock_run: MagicMock) -> None:
+        from backtests import liwei_0616_7y03_cons_all_k3_div_k8_reproduction as runner
+
+        mock_run.return_value = {"status": "success", "row_count": 1}
+        stream = io.StringIO()
+        with patch(
+            "sys.argv",
+            ["runner", "--no-persist", "--batch-mode", "monthly", "--input-end", "2026-06-10", "--phase-a-cache"],
+        ), redirect_stdout(stream):
+            runner.main()
+
+        self.assertEqual(mock_run.call_args.kwargs["batch_mode"], "monthly")
+        self.assertEqual(mock_run.call_args.kwargs["input_end"], "2026-06-10")
+        self.assertTrue(mock_run.call_args.kwargs["use_phase_a_cache"])
+
+    @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction._build_phase_a_caches")
+    @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction.run_7y03_for_window_silent")
+    def test_full_monthly_mode_builds_phase_a_cache_once_and_reuses_for_groups(
+        self,
+        mock_runner: MagicMock,
+        mock_build_cache: MagicMock,
+    ) -> None:
+        from backtests import liwei_0616_7y03_cons_all_k3_div_k8_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-04-30", "2026-05-06"]),
+                "TB7YWI0C": [2.0, 2.01],
+            }
+        )
+        phase_a_caches = {"STD": {"cache": "std"}}
+        mock_build_cache.return_value = phase_a_caches
+
+        def fake_window(**kwargs):
+            if kwargs["current_start"] == "2026-04-01":
+                return pd.DataFrame({"anchor_date": ["2026-04-30"], "prediction": [1], "true_label": [1]})
+            return pd.DataFrame({"anchor_date": ["2026-05-06"], "prediction": [-1], "true_label": [-1]})
+
+        mock_runner.side_effect = fake_window
+
+        detail = runner.run_historical_prediction(
+            daily_df=daily_df,
+            weekly_df=pd.DataFrame({"week_id": [202618, 202619]}),
+            monthly_df=pd.DataFrame({"month_id": ["202604", "202605"]}),
+            date_to_week={},
+            n_workers=1,
+            batch_mode="monthly",
+            disable_cache=True,
+            use_phase_a_cache=True,
+        )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-04-30", "2026-05-06"])
+        mock_build_cache.assert_called_once()
+        self.assertEqual(mock_runner.call_count, 2)
+        self.assertTrue(all(call.kwargs["phase_a_caches"] is phase_a_caches for call in mock_runner.call_args_list))
+
+    @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction._build_phase_a_caches")
+    def test_full_monthly_mode_skips_phase_a_cache_when_all_row_cache_exists(
+        self,
+        mock_build_cache: MagicMock,
+    ) -> None:
+        from backtests import liwei_0616_7y03_cons_all_k3_div_k8_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-04-30", "2026-05-06"]),
+                "TB7YWI0C": [2.0, 2.01],
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_root = Path(tmp)
+            cache_key_parts = {"test": "v1"}
+            for feature_date, window_end, prediction in [
+                ("2026-04-30", "2026-04-30", 1),
+                ("2026-05-06", "2026-05-06", -1),
+            ]:
+                cache_path = runner._cache_path(
+                    cache_root,
+                    feature_date,
+                    cache_key_parts,
+                    cache_mode="monthly",
+                    window_end=window_end,
+                    model_context_end="2026-05-06",
+                )
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                cache_path.write_text(
+                    json.dumps(
+                        {
+                            "anchor_date": feature_date,
+                            "prediction": prediction,
+                            "true_label": prediction,
+                            "confidence": 1.0,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            detail = runner.run_historical_prediction(
+                daily_df=daily_df,
+                weekly_df=pd.DataFrame({"week_id": [202618, 202619]}),
+                monthly_df=pd.DataFrame({"month_id": ["202604", "202605"]}),
+                date_to_week={},
+                n_workers=1,
+                batch_mode="monthly",
+                cache_dir=cache_root,
+                cache_key_parts=cache_key_parts,
+                use_phase_a_cache=True,
+            )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-04-30", "2026-05-06"])
+        mock_build_cache.assert_not_called()
+
+    @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction.run_prediction")
+    def test_build_phase_a_caches_redirects_source_logs_away_from_stdout(self, mock_run_prediction: MagicMock) -> None:
+        import numpy as np
+
+        from backtests import liwei_0616_7y03_cons_all_k3_div_k8_reproduction as runner
+
+        def fake_run_prediction(cfg):
+            print("source log on stdout")
+            return np.array([0]), {"phase_a_cache": {"baseline": cfg["name"]}}
+
+        mock_run_prediction.side_effect = fake_run_prediction
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            caches = runner._build_phase_a_caches(
+                dates=["2026-05-06"],
+                daily_df=pd.DataFrame({"date": pd.to_datetime(["2026-05-06"]), "TB7YWI0C": [2.0]}),
+                weekly_df=pd.DataFrame({"week_id": [202620]}),
+                monthly_df=pd.DataFrame({"month_id": ["202605"]}),
+                date_to_week={"2026-05-06": 202620},
+                n_workers=1,
+                model_context_end="2026-06-10",
+            )
+
+        self.assertEqual(stream.getvalue(), "")
+        self.assertEqual(set(caches), {"STD", "DIV", "ACCWT", "CROSS_5Y"})
+
     @patch("backtests.liwei_0616_7y03_cons_all_k3_div_k8_reproduction.run_7y03_for_window_silent")
     def test_monthly_batch_matches_daily_reference_on_mocked_targeted_dates(self, mock_runner: MagicMock) -> None:
         from backtests import liwei_0616_7y03_cons_all_k3_div_k8_reproduction as runner

@@ -45,7 +45,10 @@ class Liwei06167Y03ConfigTests(unittest.TestCase):
 
         self.assertIn("M0041342", MONTHLY_COLS)
         self.assertEqual(config["backtest"]["runner"], f"backtests.{SCHEME_ID}_reproduction")
-        self.assertEqual(config["backtest"]["runner_args"], ["--batch-mode", "monthly"])
+        self.assertEqual(
+            config["backtest"]["runner_args"],
+            ["--batch-mode", "monthly", "--input-end", "2026-06-10", "--n-workers", "20", "--phase-a-cache"],
+        )
         self.assertEqual(config["backtest"]["benchmark_id"], "liwei_0616_7y_03")
         self.assertEqual(config["backtest"]["end_date"], "2026-05-22")
         self.assertTrue(config["backtest"]["benchmark_required"])
