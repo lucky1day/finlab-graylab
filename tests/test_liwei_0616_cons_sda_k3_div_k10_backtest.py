@@ -151,6 +151,32 @@ class Liwei0616BacktestTests(unittest.TestCase):
 
         self.assertEqual(input_end, "2026-04-30")
 
+    def test_explicit_input_end_can_pin_source_latest_oos_context(self) -> None:
+        from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
+
+        calendar = MagicMock()
+
+        input_end = runner._effective_input_end(["2026-05-06"], calendar, requested_input_end="2026-06-10")
+
+        self.assertEqual(input_end, "2026-06-10")
+        calendar.nth_trading_day_after.assert_not_called()
+
+    @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction.run_liwei_0616_cons_sda_k3_div_k10_reproduction")
+    def test_main_forwards_input_end_and_phase_a_cache_to_runner(self, mock_run: MagicMock) -> None:
+        from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
+
+        mock_run.return_value = {"status": "success", "row_count": 1}
+        stream = io.StringIO()
+        with patch(
+            "sys.argv",
+            ["runner", "--no-persist", "--batch-mode", "monthly", "--input-end", "2026-06-10", "--phase-a-cache"],
+        ), redirect_stdout(stream):
+            runner.main()
+
+        self.assertEqual(mock_run.call_args.kwargs["batch_mode"], "monthly")
+        self.assertEqual(mock_run.call_args.kwargs["input_end"], "2026-06-10")
+        self.assertTrue(mock_run.call_args.kwargs["use_phase_a_cache"])
+
     @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction.run_5y01_for_window_silent")
     def test_historical_prediction_runs_each_feature_date_as_pit_cutoff(self, mock_runner: MagicMock) -> None:
         from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
@@ -235,6 +261,70 @@ class Liwei0616BacktestTests(unittest.TestCase):
         self.assertEqual(kwargs["current_start"], "2026-03-01")
         self.assertEqual(kwargs["current_end"], "2026-04-01")
         self.assertEqual(kwargs["test_ranges"], (("2025-03-01", "2025-04-30"), ("2026-03-01", "2026-04-02")))
+
+    @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction._build_phase_a_caches")
+    @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction.run_5y01_for_window_silent")
+    def test_full_monthly_mode_builds_phase_a_cache_once_and_reuses_for_groups(
+        self,
+        mock_runner: MagicMock,
+        mock_build_cache: MagicMock,
+    ) -> None:
+        from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
+
+        daily_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-04-30", "2026-05-06"]),
+                "TB5YWI0C": [2.0, 2.01],
+            }
+        )
+        phase_a_caches = {"STD": {"cache": "std"}}
+        mock_build_cache.return_value = phase_a_caches
+
+        def fake_window(**kwargs):
+            if kwargs["current_start"] == "2026-04-01":
+                return pd.DataFrame({"anchor_date": ["2026-04-30"], "prediction": [1], "true_label": [1]})
+            return pd.DataFrame({"anchor_date": ["2026-05-06"], "prediction": [-1], "true_label": [-1]})
+
+        mock_runner.side_effect = fake_window
+
+        detail = runner.run_historical_prediction(
+            daily_df=daily_df,
+            weekly_df=pd.DataFrame({"week_id": [202618, 202619]}),
+            monthly_df=pd.DataFrame({"month_id": ["202604", "202605"]}),
+            date_to_week={},
+            n_workers=1,
+            batch_mode="monthly",
+            use_phase_a_cache=True,
+        )
+
+        self.assertEqual(detail["anchor_date"].tolist(), ["2026-04-30", "2026-05-06"])
+        mock_build_cache.assert_called_once()
+        self.assertEqual(mock_runner.call_count, 2)
+        self.assertTrue(all(call.kwargs["phase_a_caches"] is phase_a_caches for call in mock_runner.call_args_list))
+
+    @patch("backtests.liwei_0616_cons_sda_k3_div_k10_reproduction.run_prediction")
+    def test_build_phase_a_caches_redirects_source_logs_away_from_stdout(self, mock_run_prediction: MagicMock) -> None:
+        from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner
+
+        def fake_run_prediction(cfg):
+            print("source log on stdout")
+            return {"phase_a_cache": {"baseline": cfg["name"]}}
+
+        mock_run_prediction.side_effect = fake_run_prediction
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            caches = runner._build_phase_a_caches(
+                dates=["2026-05-06"],
+                daily_df=pd.DataFrame({"date": pd.to_datetime(["2026-05-06"]), "TB5YWI0C": [2.0]}),
+                weekly_df=pd.DataFrame({"week_id": [202620]}),
+                monthly_df=pd.DataFrame({"month_id": ["202605"]}),
+                date_to_week={"2026-05-06": 202620},
+                n_workers=1,
+                model_context_end="2026-06-10",
+            )
+
+        self.assertEqual(stream.getvalue(), "")
+        self.assertEqual(set(caches), {"STD", "DIV", "ACCWT"})
 
     def test_missing_calendar_target_date_does_not_fallback_to_anchor(self) -> None:
         from backtests import liwei_0616_cons_sda_k3_div_k10_reproduction as runner

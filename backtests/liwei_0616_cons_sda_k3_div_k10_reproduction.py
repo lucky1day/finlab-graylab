@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -19,7 +21,13 @@ from shared.input_artifacts import (
     build_monthly_input_artifact,
     build_weekly_input_artifact,
 )
-from schemes.liwei_0616_cons_sda_k3_div_k10.core.v31_common import MODEL_VERSION, PROD_CONFIG, SOURCE_MODEL_ID
+from schemes.liwei_0616_cons_sda_k3_div_k10.core.v31_common import (
+    MODEL_VERSION,
+    PROD_CONFIG,
+    SOURCE_MODEL_ID,
+    model_config,
+    run_prediction,
+)
 from schemes.liwei_0616_cons_sda_k3_div_k10.inference import liwei_0616_pit_window, run_5y01_for_window_silent
 
 
@@ -47,6 +55,7 @@ def run_historical_prediction(
     n_workers: int = DEFAULT_N_WORKERS,
     feature_dates: Iterable[str] | None = None,
     batch_mode: str = DEFAULT_BATCH_MODE,
+    use_phase_a_cache: bool = False,
 ) -> pd.DataFrame:
     """逐 feature_date 运行 5Y_01 PIT 窗口，返回历史预测明细。"""
     is_targeted_sample = feature_dates is not None
@@ -57,6 +66,19 @@ def run_historical_prediction(
 
     if batch_mode == "monthly":
         groups = [dates] if is_targeted_sample else _month_groups(dates)
+        phase_a_caches = (
+            _build_phase_a_caches(
+                dates=dates,
+                daily_df=daily_df,
+                weekly_df=weekly_df,
+                monthly_df=monthly_df,
+                date_to_week=date_to_week,
+                n_workers=n_workers,
+                model_context_end=model_context_end,
+            )
+            if use_phase_a_cache
+            else None
+        )
         records: list[dict[str, Any]] = []
         for group in groups:
             records.extend(
@@ -68,6 +90,7 @@ def run_historical_prediction(
                     date_to_week=date_to_week,
                     n_workers=n_workers,
                     model_context_end=model_context_end,
+                    phase_a_caches=phase_a_caches,
                 )
             )
         detail = pd.DataFrame(records)
@@ -111,6 +134,7 @@ def _run_monthly_batch_group(
     date_to_week: dict[str, int | str] | None,
     n_workers: int,
     model_context_end: str,
+    phase_a_caches: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     dates = sorted({str(day) for day in group_dates})
     batch_end = max(dates)
@@ -132,12 +156,59 @@ def _run_monthly_batch_group(
         current_end=batch_end,
         require_labels=True,
         n_workers=n_workers,
+        phase_a_caches=phase_a_caches,
     )
     by_date = {str(row.get("anchor_date")): clean_json(row) for row in detail.to_dict("records")}
     missing = [day for day in dates if day not in by_date]
     if missing:
         raise RuntimeError(f"liwei_0616 5Y_01 monthly batch missed feature dates: {missing}")
     return [by_date[day] for day in dates]
+
+
+def _build_phase_a_caches(
+    *,
+    dates: list[str],
+    daily_df: pd.DataFrame,
+    weekly_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
+    date_to_week: dict[str, int | str] | None,
+    n_workers: int,
+    model_context_end: str,
+) -> dict[str, Any]:
+    """为同一 source historical context 预计算各 baseline 的 Phase A 输出。"""
+    if not dates:
+        return {}
+    cache_start = _source_current_start(dates)
+    cache_end = max(dates)
+    window = liwei_0616_pit_window(
+        cache_end,
+        source_end=model_context_end,
+        current_start=cache_start,
+        current_end=cache_end,
+    )
+    caches: dict[str, Any] = {}
+    for baseline in PROD_CONFIG["baselines"]:
+        with redirect_stdout(sys.stderr):
+            ctx = run_prediction(
+                model_config(
+                    str(baseline),
+                    daily_df=daily_df,
+                    weekly_df=weekly_df,
+                    monthly_df=monthly_df,
+                    date_to_week=date_to_week,
+                    test_start=window.test_ranges[0][0],
+                    test_end=window.test_ranges[-1][1],
+                    test_ranges=window.test_ranges,
+                    require_labels=True,
+                    emit_report=False,
+                    phase_a_only=True,
+                    n_workers=n_workers,
+                )
+            )
+        if not isinstance(ctx, dict) or "phase_a_cache" not in ctx:
+            raise RuntimeError(f"5Y_01 baseline {baseline} did not return Phase A cache")
+        caches[str(baseline)] = ctx["phase_a_cache"]
+    return caches
 
 
 def _historical_feature_dates(daily_df: pd.DataFrame, *, feature_dates: Iterable[str] | None = None) -> list[str]:
@@ -222,6 +293,8 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
     engine: Engine | None = None,
     sample_dates: Iterable[str] | None = None,
     batch_mode: str = DEFAULT_BATCH_MODE,
+    input_end: str | None = None,
+    use_phase_a_cache: bool = False,
 ) -> dict[str, Any]:
     """执行 liwei_0616 5Y_01 DB-aligned 历史复现。"""
     sample_date_list = sorted({str(day) for day in sample_dates or []})
@@ -234,7 +307,7 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
     try:
         output_root = benchmark_input_root(BENCHMARK_ID)
         calendar = get_calendar(engine)
-        effective_input_end = _effective_input_end(sample_date_list, calendar)
+        effective_input_end = _effective_input_end(sample_date_list, calendar, requested_input_end=input_end)
         daily_artifact = build_daily_input_artifact(
             scheme_id=SCHEME_ID,
             predict_date="historical_backtest",
@@ -271,6 +344,7 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
             n_workers=n_workers,
             feature_dates=sample_date_list or None,
             batch_mode=batch_mode,
+            use_phase_a_cache=use_phase_a_cache,
         )
         rows = build_backtest_rows(
             detail,
@@ -300,6 +374,7 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
                 "backtest_scope": "targeted_sample" if sample_date_list else "full_historical",
                 "sample_dates": sample_date_list,
                 "batch_mode": batch_mode,
+                "phase_a_cache": bool(use_phase_a_cache),
                 "daily_input_artifact_path": str(daily_artifact.path),
                 "weekly_input_artifact_path": str(weekly_artifact.path),
                 "monthly_input_artifact_path": str(monthly_artifact.path),
@@ -308,7 +383,7 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
                 "monthly_input_artifact_hash": getattr(monthly_artifact, "content_hash", None),
                 "weekly_input_end_week": int(weekly_end_week),
                 "weekly_input_as_of_date": effective_input_end,
-                **({"backtest_input_end": effective_input_end} if sample_date_list else {}),
+                **({"backtest_input_end": effective_input_end} if sample_date_list or input_end else {}),
             }
         )
         if persist or not sample_date_list:
@@ -345,7 +420,9 @@ def run_liwei_0616_cons_sda_k3_div_k10_reproduction(
             engine.dispose()
 
 
-def _effective_input_end(sample_dates: list[str], calendar) -> str:
+def _effective_input_end(sample_dates: list[str], calendar, *, requested_input_end: str | None = None) -> str:
+    if requested_input_end:
+        return str(requested_input_end)
     if not sample_dates:
         return BACKTEST_INPUT_END
     target_dates = [
@@ -463,12 +540,16 @@ def main() -> None:
     parser.add_argument("--n-workers", type=int, default=DEFAULT_N_WORKERS)
     parser.add_argument("--sample-dates")
     parser.add_argument("--batch-mode", choices=["daily", "monthly"], default=DEFAULT_BATCH_MODE)
+    parser.add_argument("--input-end")
+    parser.add_argument("--phase-a-cache", action="store_true")
     args = parser.parse_args()
     result = run_liwei_0616_cons_sda_k3_div_k10_reproduction(
         persist=not args.no_persist,
         n_workers=args.n_workers,
         sample_dates=_parse_sample_dates(args.sample_dates),
         batch_mode=args.batch_mode,
+        input_end=args.input_end,
+        use_phase_a_cache=args.phase_a_cache,
     )
     print(json.dumps(clean_json(result), ensure_ascii=False))
 

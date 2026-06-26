@@ -1396,7 +1396,43 @@ def _prediction_detail_frame(
     )
 
 
-def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
+def _make_phase_a_cache(test_dates: pd.DatetimeIndex, results: list[dict[str, Any]]) -> dict[str, Any]:
+    """保存 Phase A LGBM 输出，供同一 source 上下文的子窗口复用。"""
+    return {
+        "test_dates": [str(day.date()) for day in pd.DatetimeIndex(test_dates)],
+        "results": [
+            {
+                "config": dict(item["config"]),
+                "preds": np.asarray(item["preds"], dtype=np.int32).copy(),
+                "probs": np.asarray(item["probs"], dtype=np.float64).copy(),
+            }
+            for item in results
+        ],
+    }
+
+
+def _slice_phase_a_cache(cache: Mapping[str, Any], test_dates: pd.DatetimeIndex) -> list[dict[str, Any]]:
+    """按当前 test_dates 从 Phase A cache 中切出与普通 run_config 等价的结果。"""
+    cached_dates = [str(day) for day in cache.get("test_dates", [])]
+    position_by_date = {day: index for index, day in enumerate(cached_dates)}
+    requested_dates = [str(day.date()) for day in pd.DatetimeIndex(test_dates)]
+    missing = [day for day in requested_dates if day not in position_by_date]
+    if missing:
+        raise ValueError(f"missing cached Phase A rows for dates: {missing[:5]}")
+    indices = np.asarray([position_by_date[day] for day in requested_dates], dtype=np.int64)
+    sliced: list[dict[str, Any]] = []
+    for item in cache.get("results", []):
+        sliced.append(
+            {
+                "config": dict(item["config"]),
+                "preds": np.asarray(item["preds"], dtype=np.int32)[indices].copy(),
+                "probs": np.asarray(item["probs"], dtype=np.float64)[indices].copy(),
+            }
+        )
+    return sliced
+
+
+def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame | dict[str, Any]:
     """Run a single fixed-config prediction.
 
     Parameters
@@ -1547,27 +1583,37 @@ def run_prediction(cfg: dict) -> np.ndarray | pd.DataFrame:
         cfg["lgbm_lambda"], cfg["lgbm_split"],
         slow_path=lgbm_slow_path)
 
-    _init_worker(len(df), feat_selected, labels, close, fallback,
-                 test_idx, horizon, purge_gap, seeds)
-
     t1 = time.time()
-    print(f"\n  Phase A: Training {len(lgbm_grid)} LGBM configs "
-          f"with {n_workers} workers ({len(seeds)} seeds)...")
-    if n_workers <= 1:
-        results = [r for r in map(run_config, lgbm_grid) if r is not None]
+    phase_a_cache = cfg.get("phase_a_cache")
+    if phase_a_cache is not None:
+        print(f"\n  Phase A: Reusing cached LGBM configs for {len(test_idx)} test rows...")
+        results = _slice_phase_a_cache(phase_a_cache, test_dates)
     else:
-        with mp.Pool(
-            n_workers,
-            initializer=_init_worker,
-            initargs=(len(df), feat_selected, labels, close, fallback,
-                      test_idx, horizon, purge_gap, seeds),
-        ) as pool:
-            results = [r for r in pool.map(run_config, lgbm_grid)
-                       if r is not None]
+        _init_worker(len(df), feat_selected, labels, close, fallback,
+                     test_idx, horizon, purge_gap, seeds)
+        print(f"\n  Phase A: Training {len(lgbm_grid)} LGBM configs "
+              f"with {n_workers} workers ({len(seeds)} seeds)...")
+        if n_workers <= 1:
+            results = [r for r in map(run_config, lgbm_grid) if r is not None]
+        else:
+            with mp.Pool(
+                n_workers,
+                initializer=_init_worker,
+                initargs=(len(df), feat_selected, labels, close, fallback,
+                          test_idx, horizon, purge_gap, seeds),
+            ) as pool:
+                results = [r for r in pool.map(run_config, lgbm_grid)
+                           if r is not None]
     if not results:
         raise RuntimeError("all LGBM configs failed")
     print(f"  Done: {len(results)} configs in "
           f"{(time.time() - t1) / 60:.1f} min")
+    if cfg.get("phase_a_only"):
+        return {
+            "phase_a_cache": _make_phase_a_cache(test_dates, results),
+            "test_dates": test_dates,
+            "true_labels": true_labels,
+        }
 
     # -- Phase B: Signals --
     print(f"\n  Phase B: Computing signals...")
@@ -1894,10 +1940,12 @@ def run_5y01_for_feature_window(
     current_end: str,
     require_labels: bool,
     n_workers: int = 10,
+    phase_a_caches: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """运行 5Y_01 PIT 窗口，返回 current window 内逐 feature_date 明细。"""
     baseline_frames: dict[str, pd.DataFrame] = {}
     for baseline in PROD_CONFIG["baselines"]:
+        phase_a_cache = phase_a_caches.get(str(baseline)) if phase_a_caches is not None else None
         detail = run_prediction(
             model_config(
                 str(baseline),
@@ -1912,6 +1960,7 @@ def run_5y01_for_feature_window(
                 emit_report=False,
                 return_details=True,
                 n_workers=n_workers,
+                **({"phase_a_cache": phase_a_cache} if phase_a_cache is not None else {}),
             )
         )
         if not isinstance(detail, pd.DataFrame) or detail.empty:
