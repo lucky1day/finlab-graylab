@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -25,6 +27,9 @@ from schemes.liwei_0616_10y02_cons_say_k3_div_k5.core.v31_common import (
     MODEL_VERSION,
     PROD_CONFIG,
     SOURCE_MODEL_ID,
+    model_config,
+    required_baselines,
+    run_prediction,
 )
 from schemes.liwei_0616_10y02_cons_say_k3_div_k5.inference import (
     liwei_0616_pit_window,
@@ -62,8 +67,11 @@ def run_historical_prediction(
     parallel_shards: int = 1,
     parallel_backend: str = "process",
     batch_mode: str = "daily",
+    target_date_for_anchor: Callable[[str], str | None] | None = None,
+    use_phase_a_cache: bool = False,
 ) -> pd.DataFrame:
     """逐 feature_date 运行 10Y_02 PIT 窗口，返回历史预测明细。"""
+    is_targeted_sample = feature_dates is not None
     dates = _historical_feature_dates(daily_df, feature_dates=feature_dates)
     if not dates:
         raise RuntimeError("liwei_0616 10Y_02 historical prediction has no feature dates")
@@ -74,6 +82,28 @@ def run_historical_prediction(
         cache_root.mkdir(parents=True, exist_ok=True)
 
     if batch_mode == "monthly":
+        group_all_dates = is_targeted_sample and target_date_for_anchor is None
+        all_monthly_rows_cached = _all_monthly_row_cache_exists(
+            dates=dates,
+            cache_dir=cache_root,
+            cache_key_parts=cache_key_parts or {},
+            model_context_end=model_context_end,
+            group_all_dates=group_all_dates,
+            target_date_for_anchor=target_date_for_anchor,
+        )
+        phase_a_caches = (
+            _build_phase_a_caches(
+                dates=dates,
+                daily_df=daily_df,
+                weekly_df=weekly_df,
+                monthly_df=monthly_df,
+                date_to_week=date_to_week,
+                n_workers=n_workers,
+                model_context_end=model_context_end,
+            )
+            if use_phase_a_cache and not all_monthly_rows_cached
+            else None
+        )
         records = _run_historical_prediction_monthly_batches(
             dates=dates,
             daily_df=daily_df,
@@ -86,7 +116,9 @@ def run_historical_prediction(
             cache_key_parts=cache_key_parts or {},
             parallel_shards=parallel_shards,
             parallel_backend=parallel_backend,
-            group_all_dates=True,
+            group_all_dates=group_all_dates,
+            target_date_for_anchor=target_date_for_anchor,
+            phase_a_caches=phase_a_caches,
         )
         detail = pd.DataFrame(records)
         if detail.empty:
@@ -138,6 +170,40 @@ def run_historical_prediction(
     return detail.sort_values("anchor_date").reset_index(drop=True)
 
 
+def _all_monthly_row_cache_exists(
+    *,
+    dates: list[str],
+    cache_dir: Path | None,
+    cache_key_parts: dict[str, Any],
+    model_context_end: str,
+    group_all_dates: bool,
+    target_date_for_anchor: Callable[[str], str | None] | None,
+) -> bool:
+    if cache_dir is None:
+        return False
+    month_groups = _monthly_source_groups(
+        dates=dates,
+        model_context_end=model_context_end,
+        group_all_dates=group_all_dates,
+        target_date_for_anchor=target_date_for_anchor,
+    )
+    for group in month_groups:
+        window_end = str(group["window_end"])
+        source_end = str(group["source_end"])
+        for feature_date in group["dates"]:
+            cache_path = _cache_path(
+                cache_dir,
+                str(feature_date),
+                cache_key_parts,
+                cache_mode="monthly",
+                window_end=window_end,
+                model_context_end=source_end,
+            )
+            if cache_path is None or not cache_path.exists():
+                return False
+    return True
+
+
 def _run_historical_prediction_monthly_batches(
     *,
     dates: list[str],
@@ -152,22 +218,31 @@ def _run_historical_prediction_monthly_batches(
     parallel_shards: int,
     parallel_backend: str,
     group_all_dates: bool = False,
+    target_date_for_anchor: Callable[[str], str | None] | None = None,
+    phase_a_caches: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    month_groups = [sorted({str(day) for day in dates})] if group_all_dates else _month_groups(dates)
+    month_groups = _monthly_source_groups(
+        dates=dates,
+        model_context_end=model_context_end,
+        group_all_dates=group_all_dates,
+        target_date_for_anchor=target_date_for_anchor,
+    )
     if parallel_shards <= 1 or len(month_groups) <= 1:
         records: list[dict[str, Any]] = []
         for group in month_groups:
             records.extend(
                 _run_monthly_batch_group(
-                    group_dates=group,
+                    group_dates=[str(day) for day in group["dates"]],
                     daily_df=daily_df,
                     weekly_df=weekly_df,
                     monthly_df=monthly_df,
                     date_to_week=date_to_week,
                     n_workers=n_workers,
                     model_context_end=model_context_end,
+                    source_end=str(group["source_end"]),
                     cache_dir=cache_dir,
                     cache_key_parts=cache_key_parts,
+                    phase_a_caches=phase_a_caches,
                 )
             )
         return records
@@ -177,15 +252,17 @@ def _run_historical_prediction_monthly_batches(
             for group in shard:
                 records.extend(
                     _run_monthly_batch_group(
-                        group_dates=group,
+                        group_dates=[str(day) for day in group["dates"]],
                         daily_df=daily_df,
                         weekly_df=weekly_df,
                         monthly_df=monthly_df,
                         date_to_week=date_to_week,
                         n_workers=n_workers,
                         model_context_end=model_context_end,
+                        source_end=str(group["source_end"]),
                         cache_dir=cache_dir,
                         cache_key_parts=cache_key_parts,
+                        phase_a_caches=phase_a_caches,
                     )
                 )
         return records
@@ -203,6 +280,7 @@ def _run_historical_prediction_monthly_batches(
             "model_context_end": model_context_end,
             "cache_dir": str(cache_dir) if cache_dir is not None else None,
             "cache_key_parts": cache_key_parts,
+            "phase_a_caches": phase_a_caches,
         }
         for shard in _split_shards(month_groups, parallel_shards)
     ]
@@ -219,15 +297,17 @@ def _run_monthly_shard_worker(payload: dict[str, Any]) -> list[dict[str, Any]]:
     for group in payload["month_groups"]:
         records.extend(
             _run_monthly_batch_group(
-                group_dates=[str(day) for day in group],
+                group_dates=[str(day) for day in group["dates"]],
                 daily_df=payload["daily_df"],
                 weekly_df=payload["weekly_df"],
                 monthly_df=payload["monthly_df"],
                 date_to_week=payload["date_to_week"],
                 n_workers=int(payload["n_workers"]),
                 model_context_end=str(payload["model_context_end"]),
+                source_end=str(group.get("source_end") or payload["model_context_end"]),
                 cache_dir=cache_root,
                 cache_key_parts=dict(payload.get("cache_key_parts") or {}),
+                phase_a_caches=payload.get("phase_a_caches"),
             )
         )
     return records
@@ -244,9 +324,12 @@ def _run_monthly_batch_group(
     model_context_end: str,
     cache_dir: Path | None,
     cache_key_parts: dict[str, Any],
+    source_end: str | None = None,
+    phase_a_caches: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     dates = sorted({str(day) for day in group_dates})
     batch_end = max(dates)
+    group_source_end = str(source_end or model_context_end)
     cached: dict[str, dict[str, Any]] = {}
     missing: list[str] = []
     for feature_date in dates:
@@ -257,7 +340,7 @@ def _run_monthly_batch_group(
                 cache_key_parts,
                 cache_mode="monthly",
                 window_end=batch_end,
-                model_context_end=model_context_end,
+                model_context_end=group_source_end,
             )
             if cache_dir is not None
             else None
@@ -271,7 +354,7 @@ def _run_monthly_batch_group(
         source_current_start = _source_current_start(dates)
         window = liwei_0616_pit_window(
             batch_end,
-            source_end=model_context_end,
+            source_end=group_source_end,
             current_start=source_current_start,
             current_end=batch_end,
         )
@@ -286,6 +369,7 @@ def _run_monthly_batch_group(
             current_end=batch_end,
             require_labels=True,
             n_workers=n_workers,
+            phase_a_caches=phase_a_caches,
         )
         missing_set = set(missing)
         for row in detail.to_dict("records"):
@@ -302,7 +386,7 @@ def _run_monthly_batch_group(
                     cache_key_parts,
                     cache_mode="monthly",
                     window_end=batch_end,
-                    model_context_end=model_context_end,
+                    model_context_end=group_source_end,
                 )
                 if cache_dir is not None
                 else None
@@ -315,6 +399,53 @@ def _run_monthly_batch_group(
     if missing_after_batch:
         raise RuntimeError(f"liwei_0616 10Y_02 monthly batch missed feature dates: {missing_after_batch}")
     return [cached[day] for day in dates]
+
+
+def _build_phase_a_caches(
+    *,
+    dates: list[str],
+    daily_df: pd.DataFrame,
+    weekly_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
+    date_to_week: dict[str, int | str] | None,
+    n_workers: int,
+    model_context_end: str,
+) -> dict[str, Any]:
+    """为同一 source historical context 预计算各 baseline 的 Phase A 输出。"""
+    if not dates:
+        return {}
+    cache_start = _source_current_start(dates)
+    cache_end = max(dates)
+    window = liwei_0616_pit_window(
+        cache_end,
+        source_end=model_context_end,
+        current_start=cache_start,
+        current_end=cache_end,
+    )
+    caches: dict[str, Any] = {}
+    for baseline in required_baselines():
+        with redirect_stdout(sys.stderr):
+            _, ctx = run_prediction(
+                model_config(
+                    str(baseline),
+                    daily_df=daily_df,
+                    weekly_df=weekly_df,
+                    monthly_df=monthly_df,
+                    date_to_week=date_to_week,
+                    test_start=window.test_ranges[0][0],
+                    test_end=window.test_ranges[-1][1],
+                    test_ranges=window.test_ranges,
+                    require_labels=True,
+                    emit_report=False,
+                    return_ctx=True,
+                    phase_a_only=True,
+                    n_workers=n_workers,
+                )
+            )
+        if not isinstance(ctx, dict) or "phase_a_cache" not in ctx:
+            raise RuntimeError(f"10Y_02 baseline {baseline} did not return Phase A cache")
+        caches[str(baseline)] = ctx["phase_a_cache"]
+    return caches
 
 
 def _run_historical_prediction_process_shards(
@@ -466,6 +597,42 @@ def _month_groups(dates: list[str]) -> list[list[str]]:
     return [groups[key] for key in sorted(groups)]
 
 
+def _monthly_source_groups(
+    *,
+    dates: list[str],
+    model_context_end: str,
+    group_all_dates: bool,
+    target_date_for_anchor: Callable[[str], str | None] | None,
+) -> list[dict[str, Any]]:
+    unique_dates = sorted({str(item) for item in dates})
+    if not unique_dates:
+        return []
+    if target_date_for_anchor is not None:
+        target_months: dict[str, dict[str, Any]] = {}
+        for day in unique_dates:
+            target_date = target_date_for_anchor(day)
+            if target_date is None:
+                raise RuntimeError(f"liwei_0616 10Y_02 missing target_date for feature_date={day}")
+            key = str(target_date)[:7]
+            group = target_months.setdefault(key, {"dates": [], "source_end": str(target_date)})
+            group["dates"].append(day)
+            group["source_end"] = max(str(group["source_end"]), str(target_date))
+        return [
+            {
+                "dates": sorted(group["dates"]),
+                "window_end": max(str(day) for day in group["dates"]),
+                "source_end": str(group["source_end"]),
+            }
+            for key, group in sorted(target_months.items())
+        ]
+    if group_all_dates:
+        return [{"dates": unique_dates, "window_end": max(unique_dates), "source_end": str(model_context_end)}]
+    return [
+        {"dates": group, "window_end": max(group), "source_end": str(model_context_end)}
+        for group in _month_groups(unique_dates)
+    ]
+
+
 def _cache_path(
     cache_dir: Path | None,
     feature_date: str,
@@ -562,6 +729,7 @@ def run_liwei_0616_10y02_cons_say_k3_div_k5_reproduction(
     cache_dir: str | Path | None = None,
     disable_cache: bool = False,
     batch_mode: str = DEFAULT_BATCH_MODE,
+    use_phase_a_cache: bool = False,
 ) -> dict[str, Any]:
     """执行 liwei_0616 10Y_02 DB-aligned 历史复现。"""
     sample_date_list = sorted({str(day) for day in sample_dates or []})
@@ -625,6 +793,8 @@ def run_liwei_0616_10y02_cons_say_k3_div_k5_reproduction(
             disable_cache=disable_cache,
             parallel_shards=parallel_shards,
             batch_mode=batch_mode,
+            target_date_for_anchor=lambda anchor: calendar.nth_trading_day_after(anchor, HORIZON),
+            use_phase_a_cache=use_phase_a_cache,
         )
         rows = build_backtest_rows(
             detail,
@@ -654,6 +824,7 @@ def run_liwei_0616_10y02_cons_say_k3_div_k5_reproduction(
             "sample_dates": sample_date_list,
             "parallel_shards": int(parallel_shards),
             "batch_mode": batch_mode,
+            "phase_a_cache": bool(use_phase_a_cache),
             "cache_enabled": bool(not disable_cache and effective_cache_dir is not None),
             "cache_dir": str(effective_cache_dir) if effective_cache_dir is not None else None,
             "daily_input_artifact_path": str(daily_artifact.path),
@@ -823,6 +994,7 @@ def main() -> None:
     parser.add_argument("--batch-mode", choices=["daily", "monthly"], default=DEFAULT_BATCH_MODE)
     parser.add_argument("--cache-dir")
     parser.add_argument("--disable-cache", action="store_true")
+    parser.add_argument("--phase-a-cache", action="store_true")
     args = parser.parse_args()
     result = run_liwei_0616_10y02_cons_say_k3_div_k5_reproduction(
         persist=not args.no_persist,
@@ -832,6 +1004,7 @@ def main() -> None:
         batch_mode=args.batch_mode,
         cache_dir=args.cache_dir,
         disable_cache=args.disable_cache,
+        use_phase_a_cache=args.phase_a_cache,
     )
     print(json.dumps(clean_json(result), ensure_ascii=False))
 

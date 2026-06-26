@@ -103,6 +103,7 @@
 **规则九：source-backed 方案不改原始算法逻辑**
 - 原始算法的历史起点、source batch 终点、test window、PIT/batch 口径、weekly/monthly 对齐、特征/信号、模型参数、投票、fallback、streak、内部 score 映射都是算法逻辑，默认不得修改。
 - 原始 runner 明确 patch 的日期窗口和原始脚本未 patch 的固定算法锚点必须分开处理；不得把 `context_start/latest_start/data_end` 的移动扩散到筛因子起点、warmup、校准窗口或 report mask。10Y02 的 `latest_oos` 案例中，`test_idx` 被 patch 到 `2025-05-01..2026-06-10`，但 `IC screening` 仍必须用原始 `2024-01-01` 截止点。
+- 历史回测的 batching/fast path 必须保持 source 分组语义；分组键、每组 `source_end`、`current_start/current_end` 和抽样范围都属于算法口径。若 source target-date 结果按 `target_date` 月份生成，平台 backtest 不得改成 feature 月分组或所有日期共用一个全局 `source_end`。
 - `predict.py` 和 backtest runner 只能做输入 artifact、日期字段、结果转换、缓存、extra 和落库适配。
 - 若 source-original 与平台 current 的方向或内部 score 不一致，先查输入 artifact、data_version、as-of、周/月频对齐和 source 口径；不得用调参、改特征或改 fallback 去贴结果。
 - CompareGate/人工验收要记录内部模型分数或 baseline score 差异。只做到方向一致但内部数值仍有残差时，不得宣称算法逻辑完全一致。
@@ -409,6 +410,8 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 `current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与已声明 source 执行口径一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则该 PIT 必须按 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md) 明确标为 `platform_live_pit_variant`，CompareGate 或方案 benchmark summary 必须暴露差异，不能为了通过 gate 把 current 写成 source batch，也不能为了贴合 source batch 去改算法内部逻辑。
 
 Source `latest_oos` / batch 文件只是一种 source evidence。进入平台前必须先判断它属于 `source_original_reproduction`、`source_strict_pit` 还是需要另行批准的 `platform_live_pit_variant`。如果一次性 batch 使用了更晚 test window、streak 状态、selector 状态或标签可见性，它可能和严格 PIT 结果不同。差异应记录在 `original_backtest_summary.json` / `current_backtest_summary.json` 的审计字段或方案 README 中，包括差异日期、source batch 方向、strict PIT 方向、基线票数或 fallback/streak 状态。不得手工补预测结果，也不得把 source batch 当作平台 live 口径真值；同样不得把平台 live-like PIT 口径包装成“已复现原始 source 输出”。
+
+对 target-date 月度样本，必须额外确认 source 是按 `feature_date` 月、`target_date` 月还是单一 batch 生成。10Y02 2026-04 复查结论已经固定为 `target_date` 月口径：`feature_date=2026-03-25..2026-04-23`、`target_date=2026-04-01..2026-04-30`、`source_end=2026-04-30`；任何 full historical runner 都必须按 target 月拆分并用该月最大 target_date 作为 `source_end`。
 
 对 source-backed 多 baseline 方案，CompareGate 或人工对比必须记录原始算法暴露的内部模型分数，例如 `STD/ACCWT/V55_7Y/DIV`、probability、score 或其它 baseline output。方向零差异是激活硬门槛；内部数值如果仍有残差，必须写明最大绝对差、方向差异数和残差归因，不能宣称算法逻辑完全一致。
 

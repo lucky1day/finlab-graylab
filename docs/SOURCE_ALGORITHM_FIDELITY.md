@@ -1,6 +1,6 @@
 # 源算法保真强约束
 
-**更新日期**: 2026-06-25
+**更新日期**: 2026-06-26
 
 本文是所有 source-backed 方案的硬约束。凡是来自原始脚本、原始 CSV/Excel、外部 benchmark、`latest_oos` 或人工交付算法包的方案，平台接入时必须先保证“原始算法逻辑不被改变”。如与旧文档、旧 SOP 或历史案例说明冲突，以本文为准，并回写对应文档。
 
@@ -11,7 +11,7 @@
 以下事项均属于算法逻辑，默认不得修改：
 
 - 历史输入起点、训练起点、测试起点、source batch 终点、`test_start/test_end/test_ranges`。
-- PIT / batch / rolling / walk-forward / monthly fast path 的执行口径。
+- PIT / batch / rolling / walk-forward / monthly fast path 的执行口径，包括分组键、每组 `source_end`、`current_start/current_end` 和最终抽取样本范围。
 - daily / weekly / monthly 对齐规则，包括周频值放置日、ffill 方向、月频滞后规则和缺失列处理。
 - label、horizon、target 日期、样本筛选、灰度/回测截断之前的算法内部样本定义。
 - 特征集合、信号族、跨期限组合、rolling 窗口、`min_periods`、fillna/ffill/bfill、符号定义。
@@ -59,7 +59,7 @@ Source-backed 方案的最低验收标准：
 
 对多 baseline 方案，`STD/ACCWT/V55_7Y/DIV` 这类内部输出属于验收对象，不是可忽略调试字段。它们必须写入 benchmark CSV；实盘/backtest 输出应在 `extra`、cache 或 compare report 中保留同名映射，便于后续审计。
 
-10Y02 的 source-original 回测必须保留原始 full-OOS test sequence：先用 `("2024-01-01", source_end)` 作为唯一测试序列完整运行 baseline，再从结果中抽取 current target window 的 feature_date。不得把它替换成逐 feature_date strict PIT，也不得替换成 `latest_oos` runner 的“去年同期窗口 + 最新窗口”局部测试集；这些局部窗口会改变 monthly ensemble top-K、signal selection、seasonal VT 和 streak 状态。2026-04 target-date 复查已证明：full-OOS 后最终方向可与用户 CSV 21/21 对齐，而局部窗口会产生方向或 V55 数值漂移。
+10Y02 的 source-original 回测必须保留原始 full-OOS test sequence：先用 `("2024-01-01", source_end)` 作为唯一测试序列完整运行 baseline，再从结果中抽取 current target window 的 feature_date。不得把它替换成逐 feature_date strict PIT，也不得替换成 `latest_oos` runner 的“去年同期窗口 + 最新窗口”局部测试集；这些局部窗口会改变 monthly ensemble top-K、signal selection、seasonal VT 和 streak 状态。target-date 月度回测还必须按 `target_date` 所属月份分组：每组 `source_end` 固定为该 target 月最后一个目标交易日，`current_start/current_end` 固定为该组 feature_date 的首尾；不得改成 feature 月分组，也不得把所有历史 feature_date 合成一个全局窗口。2026-04 target-date 复查已证明：`feature_date=2026-03-25..2026-04-23`、`target_date=2026-04-01..2026-04-30`、`source_end=2026-04-30` 的 full-OOS 口径可与用户 CSV 21/21 对齐，而局部窗口或全局 source_end 会产生方向或内部数值漂移。
 
 10Y02 的保真验收基线必须包含 `2026-05-25`：原始 `STD/ACCWT/DIV` 为正、`V55_7Y` 为负，最终共识结果为 `0`。若平台输出 `-1`，优先检查 IC screening cutoff 是否误随 `test_start` 从 `2024-01-01` 移到了 source batch 的 `2025-05-01`。若最终方向一致但 `V55_7Y_vs` 仍有 `1e-2` 量级残差，不能直接判定算法不一致，也不能调参贴数；必须先固定并记录原始 CSV 对应的生成脚本、输入三件套、`api_wind_date`、LightGBM/NumPy/Pandas 版本和 source `bond_common.py` hash，再做 source-vs-platform 同环境对比。
 

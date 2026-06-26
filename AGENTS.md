@@ -55,7 +55,7 @@ bond-factor-lab/
 1. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
 2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
 3. **core 纯净**：`schemes/*/core/`（非 legacy）零 DB、零写库、零跨方案 import。
-4. **源算法保真**：source-backed 方案不得修改原始算法逻辑；时间起点、窗口、特征、对齐、模型参数、投票/fallback、内部 score 映射都必须按原始脚本复现。平台只做输入/输出/日期/落库适配；若方向或内部模型数值不一致，先查输入 artifact 和 source 口径，不得用调参或改算法贴结果。原始算法能导出的 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence 等内部字段必须进入逐方案 benchmark 和 CompareGate；只做到最终方向一致不得宣称算法逻辑完全一致。
+4. **源算法保真**：source-backed 方案不得修改原始算法逻辑；时间起点、窗口、回测分组键、每组 `source_end/current_start/current_end`、特征、对齐、模型参数、投票/fallback、内部 score 映射都必须按原始脚本复现。平台只做输入/输出/日期/落库适配；若方向或内部模型数值不一致，先查输入 artifact 和 source 口径，不得用调参或改算法贴结果。原始算法能导出的 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence 等内部字段必须进入逐方案 benchmark 和 CompareGate；只做到最终方向一致不得宣称算法逻辑完全一致。
 
 完整依赖方向规则见 [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md)；源算法保真规则见 [docs/SOURCE_ALGORITHM_FIDELITY.md](docs/SOURCE_ALGORITHM_FIDELITY.md)；边界总纲见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
 
