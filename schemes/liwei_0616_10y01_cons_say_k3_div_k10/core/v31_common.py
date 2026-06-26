@@ -1412,6 +1412,42 @@ def run_config(config: dict) -> dict | None:
         return None
 
 
+def _make_phase_a_cache(test_dates: pd.DatetimeIndex, results: list[dict[str, Any]]) -> dict[str, Any]:
+    """保存 Phase A LGBM 输出，供同一 source 上下文的子窗口复用。"""
+    return {
+        "test_dates": [str(day.date()) for day in pd.DatetimeIndex(test_dates)],
+        "results": [
+            {
+                "config": dict(item["config"]),
+                "preds": np.asarray(item["preds"], dtype=np.int32).copy(),
+                "probs": np.asarray(item["probs"], dtype=np.float64).copy(),
+            }
+            for item in results
+        ],
+    }
+
+
+def _slice_phase_a_cache(cache: Mapping[str, Any], test_dates: pd.DatetimeIndex) -> list[dict[str, Any]]:
+    """按当前 test_dates 从 Phase A cache 中切出与普通 run_config 等价的结果。"""
+    cached_dates = [str(day) for day in cache.get("test_dates", [])]
+    position_by_date = {day: index for index, day in enumerate(cached_dates)}
+    requested_dates = [str(day.date()) for day in pd.DatetimeIndex(test_dates)]
+    missing = [day for day in requested_dates if day not in position_by_date]
+    if missing:
+        raise ValueError(f"missing cached Phase A rows for dates: {missing[:5]}")
+    indices = np.asarray([position_by_date[day] for day in requested_dates], dtype=np.int64)
+    sliced: list[dict[str, Any]] = []
+    for item in cache.get("results", []):
+        sliced.append(
+            {
+                "config": dict(item["config"]),
+                "preds": np.asarray(item["preds"], dtype=np.int32)[indices].copy(),
+                "probs": np.asarray(item["probs"], dtype=np.float64)[indices].copy(),
+            }
+        )
+    return sliced
+
+
 # ============================================================================
 # EVALUATION
 # ============================================================================
@@ -1732,34 +1768,48 @@ def run_prediction(cfg: dict) -> np.ndarray | tuple[np.ndarray, dict[str, Any]]:
         slow_path=lgbm_slow_path,
         very_slow_path=lgbm_very_slow_path)
 
-    _init_worker(len(df), feat_selected, labels, close, fallback,
-                 test_idx, horizon, purge_gap, seeds,
-                 lgbm_subsample, lgbm_colsample,
-                 time_weight_alpha, early_stopping_rounds,
-                 period_feat_matrices, test_day_period)
-
     t1 = time.time()
     _wf_tag = " (walk-forward IC)" if wf_ic else ""
-    print(f"\n  Phase A: Training {len(lgbm_grid)} LGBM configs "
-          f"with {n_workers} workers ({len(seeds)} seeds){_wf_tag}...")
-    if n_workers <= 1:
-        results = [r for r in map(run_config, lgbm_grid) if r is not None]
+    phase_a_cache = cfg.get("phase_a_cache")
+    if phase_a_cache is not None:
+        print(f"\n  Phase A: Reusing cached LGBM configs for {len(test_idx)} test rows{_wf_tag}...")
+        results = _slice_phase_a_cache(phase_a_cache, test_dates)
     else:
-        with mp.Pool(
-            n_workers,
-            initializer=_init_worker,
-            initargs=(len(df), feat_selected, labels, close, fallback,
-                      test_idx, horizon, purge_gap, seeds,
-                      lgbm_subsample, lgbm_colsample,
-                      time_weight_alpha, early_stopping_rounds,
-                      period_feat_matrices, test_day_period),
-        ) as pool:
-            results = [r for r in pool.map(run_config, lgbm_grid)
-                       if r is not None]
+        _init_worker(len(df), feat_selected, labels, close, fallback,
+                     test_idx, horizon, purge_gap, seeds,
+                     lgbm_subsample, lgbm_colsample,
+                     time_weight_alpha, early_stopping_rounds,
+                     period_feat_matrices, test_day_period)
+        print(f"\n  Phase A: Training {len(lgbm_grid)} LGBM configs "
+              f"with {n_workers} workers ({len(seeds)} seeds){_wf_tag}...")
+        if n_workers <= 1:
+            results = [r for r in map(run_config, lgbm_grid) if r is not None]
+        else:
+            with mp.Pool(
+                n_workers,
+                initializer=_init_worker,
+                initargs=(len(df), feat_selected, labels, close, fallback,
+                          test_idx, horizon, purge_gap, seeds,
+                          lgbm_subsample, lgbm_colsample,
+                          time_weight_alpha, early_stopping_rounds,
+                          period_feat_matrices, test_day_period),
+            ) as pool:
+                results = [r for r in pool.map(run_config, lgbm_grid)
+                           if r is not None]
     if not results:
         raise RuntimeError("all LGBM configs failed")
     print(f"  Done: {len(results)} configs in "
           f"{(time.time() - t1) / 60:.1f} min")
+    if cfg.get("phase_a_only"):
+        phase_a_only_ctx = {
+            "phase_a_cache": _make_phase_a_cache(test_dates, results),
+            "test_dates": test_dates,
+            "true_labels": true_labels,
+        }
+        empty_final = np.zeros(len(test_idx), dtype=np.int32)
+        if cfg.get("return_ctx"):
+            return empty_final, phase_a_only_ctx
+        return empty_final
 
     # -- Phase B: Signals --
     print(f"\n  Phase B: Computing signals...")
@@ -2262,10 +2312,12 @@ def run_10y01_for_feature_window(
     current_end: str,
     require_labels: bool,
     n_workers: int = 10,
+    phase_a_caches: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """运行 10Y_01 PIT 窗口，返回 current window 内逐 feature_date 明细。"""
     baseline_contexts: dict[str, dict[str, Any]] = {}
     for baseline in required_baselines():
+        phase_a_cache = phase_a_caches.get(str(baseline)) if phase_a_caches is not None else None
         _, ctx = run_prediction(
             model_config(
                 str(baseline),
@@ -2280,6 +2332,7 @@ def run_10y01_for_feature_window(
                 emit_report=False,
                 return_ctx=True,
                 n_workers=n_workers,
+                **({"phase_a_cache": phase_a_cache} if phase_a_cache is not None else {}),
             )
         )
         if not isinstance(ctx, dict) or len(ctx.get("test_dates", [])) == 0:
