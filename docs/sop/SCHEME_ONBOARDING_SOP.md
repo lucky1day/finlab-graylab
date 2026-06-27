@@ -409,7 +409,9 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 
 `current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与已声明 source 执行口径一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则该 PIT 必须按 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md) 明确标为 `platform_live_pit_variant`，CompareGate 或方案 benchmark summary 必须暴露差异，不能为了通过 gate 把 current 写成 source batch，也不能为了贴合 source batch 去改算法内部逻辑。
 
-Source `latest_oos` / batch 文件只是一种 source evidence。进入平台前必须先判断它属于 `source_original_reproduction`、`source_strict_pit` 还是需要另行批准的 `platform_live_pit_variant`。如果一次性 batch 使用了更晚 test window、streak 状态、selector 状态或标签可见性，它可能和严格 PIT 结果不同。差异应记录在 `original_backtest_summary.json` / `current_backtest_summary.json` 的审计字段或方案 README 中，包括差异日期、source batch 方向、strict PIT 方向、基线票数或 fallback/streak 状态。不得手工补预测结果，也不得把 source batch 当作平台 live 口径真值；同样不得把平台 live-like PIT 口径包装成“已复现原始 source 输出”。
+Source `latest_oos` / batch 文件只是一种 source evidence。进入平台前必须先判断它属于 `source_original_reproduction`、`source_strict_pit` 还是需要另行批准的 `platform_live_pit_variant`。如果一次性 batch 使用了更晚 test window、streak 状态、selector 状态或标签可见性，它可能和严格 PIT 结果不同。差异应记录在 `original_backtest_summary.json` / `current_backtest_summary.json` 的审计字段或方案 README 中，包括差异日期、source batch 方向、strict PIT 方向、基线票数或 fallback/streak 状态。不得手工补预测结果，也不得把 source batch 当作平台 live 口径真值；同样不得把平台 live-like PIT 口径包装成“已复现原始 source 输出”。如果 source-original batch 固定 `source_end` 晚于样本 `feature_date`，该 batch 的内部 score 只验收 source-original backtest；gray_live/scheduled_live 必须另用 `feature_date` 硬截止的 live-safe oracle 验收。
+
+如果 `original_predictions_sample.csv` 跨过灰度边界，必须在 compare summary 或状态文档中为每行标明 benchmark role：`historical/source-original`、`live-same-context` 或 `source-evidence-only`。只有前两者能进入对应 DB/API 零差异断言；`source-evidence-only` 行只能说明原始 batch 输出，不能作为 live 数值失败或成功的证据。后续状态报告中出现“所有结果完全一致”这类表述时，必须限定为同一执行口径；若只是 live 行 `model_scope`、version、`baseline_scores`、`model_source_end=feature_date` 通过结构校验，应写成 live-safe 结构/版本对齐，不能写成与原始 batch benchmark 数值完全一致。
 
 对 target-date 月度样本，必须额外确认 source 是按 `feature_date` 月、`target_date` 月还是单一 batch 生成。10Y02 2026-04 复查结论已经固定为 `target_date` 月口径：`feature_date=2026-03-25..2026-04-23`、`target_date=2026-04-01..2026-04-30`、`source_end=2026-04-30`；任何 full historical runner 都必须按 target 月拆分并用该月最大 target_date 作为 `source_end`。
 
@@ -586,7 +588,7 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 - 月度指标必须区分 `samples` 与 `metric_samples`：`samples` 是样本总数，包含预测为“平”的交易日或预测周；`metric_samples` 是所有准确率、precision、recall 指标的分母，只包含预测为“涨/跌”的有方向样本。
 - 若月内存在 `predicted_direction=0`，前端准确率括号必须展示 `correct/metric_samples`，不得展示 `correct/samples`；上涨/下跌准确率和召回率也必须排除这些“平”样本。
-- 对 source-backed 方案，最终前端/API 核验必须把逐方案 `original_predictions_sample.csv` 按灰度起点拆分：`target_date < gray_start` 的样本对齐 `/api/backtests/factor-lab` latest daily rows，`target_date >= gray_start` 的样本对齐 `/api/metrics/{registry_scheme_id}` live rows；`direction/confidence/label/is_correct` 必须逐行零差异，浮点 confidence 只允许既定容差。若 DB/API 暴露或 `extra` 保留内部模型字段，还必须抽样核验 `vote_score`、baseline score/dir 与 benchmark 一致；未完成内部核验时只能称为“展示层方向一致”，不能称为 source-original 全闭环。
+- 对 source-backed 方案，最终前端/API 核验必须把逐方案 `original_predictions_sample.csv` 按灰度起点拆分：`target_date < gray_start` 的样本对齐 `/api/backtests/factor-lab` latest daily rows；`target_date >= gray_start` 的样本只有在 benchmark 与 live 声明同一执行口径时，才对齐 `/api/metrics/{registry_scheme_id}` live rows。若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，不得要求 live 内部 score 与该 batch benchmark 相等，必须另行生成 live-safe oracle；此时 source benchmark 只证明 source-original backtest。`direction/confidence/label/is_correct` 必须在各自声明口径内逐行零差异，浮点 confidence 只允许既定容差。若 DB/API 暴露或 `extra` 保留内部模型字段，还必须抽样核验 `vote_score`、baseline score/dir 与同口径 benchmark 一致；未完成内部核验时只能称为“展示层方向一致”，不能称为 source-original 全闭环。
 - 这个核验必须实际运行并保存/记录 diff 结论；CompareGate 只证明 benchmark 文件之间一致，不证明 latest backtest DB 或最终 live/API 已经与 benchmark 对齐。若出现 benchmark 文件一致但 `/api/backtests/factor-lab` 或 `/api/metrics` 不一致，方案不得宣称 Onboarding Complete。
 
 打开:
@@ -712,7 +714,7 @@ print(result)
    - [ ] 前端出现"实盘发出起点"分隔线；前端统一取该方案 live rows 的最小 `predict_date`，不再对周度方案按 target 月份反推。灰度区间与正式调度起点由 `phase_ranges` 展示。
    - [ ] 尚无 actuals 的 target 显示"待验证"（参考 5Y 周度方案的 06/12 行）。
    - [ ] 回补的预测在 `t_scheme_run_log` 有对应运行记录。
-   - [ ] 逐方案 `original_predictions_sample.csv` 跨灰度边界的样本已完成两段式前端/API 对齐：历史段对 `/api/backtests/factor-lab`，灰度/实盘段对 `/api/metrics/{registry_scheme_id}`，核心字段零差异。
+   - [ ] 逐方案 `original_predictions_sample.csv` 跨灰度边界的样本已完成 role 拆分：历史段对 `/api/backtests/factor-lab`，灰度/实盘段只有同执行口径时才对 `/api/metrics/{registry_scheme_id}`；若 source batch 的 `source_end` 晚于样本 `feature_date`，已改用 live-safe oracle 核验并记录 raw source batch 与 live-safe 的差异。
 
 ### Step 11: Documentation - 文档留痕
 
@@ -783,7 +785,7 @@ LIMIT 10;
 - [ ] `t_scheme_run_log` 有成功记录。
 - [ ] 激活前 `api-readiness` 通过，激活后 active-only `api` gate 通过；registry ID 必须来自 `t_scheme_registry.scheme_id`。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
-- [ ] source-backed 方案的 `original_predictions_sample.csv` 已按 `target_date` 分流到 backtest/live 两段完成 API 对齐，核心字段零差异；可用内部模型字段已进入 benchmark/CompareGate，且 DB/API/extra 内部值已按抽样或全量核验记录结论。
+- [ ] source-backed 方案的 `original_predictions_sample.csv` 已按 `target_date` 和 benchmark role 分流；source-original 历史段与 latest backtest 同口径零差异，live 段只在同口径时对 `/api/metrics` 断言零差异，否则必须使用 live-safe oracle；可用内部模型字段已进入 benchmark/CompareGate，且 DB/API/extra 内部值已按抽样或全量核验记录结论。
 - [ ] `t_backtest_predictions` 明细逐行存在 `target_date`；缺失时必须修 runner 或数据，不允许通过前端/API fallback 放行。
 - [ ] active `t_scheme_registry` 行逐行存在 `deployed_at`；前端展示的部署时间来自 API/DB 字段，不来自默认值或 hardcoded override。
 - [ ] scheduler 挂载证据已记录：进程存在、日志包含 `Scheduled scheme ...`、registry cron/timezone/deployed_at 正确。

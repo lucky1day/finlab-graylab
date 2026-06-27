@@ -1,6 +1,6 @@
 # 源算法保真强约束
 
-**更新日期**: 2026-06-26
+**更新日期**: 2026-06-27
 
 本文是所有 source-backed 方案的硬约束。凡是来自原始脚本、原始 CSV/Excel、外部 benchmark、`latest_oos` 或人工交付算法包的方案，平台接入时必须先保证“原始算法逻辑不被改变”。如与旧文档、旧 SOP 或历史案例说明冲突，以本文为准，并回写对应文档。
 
@@ -46,6 +46,10 @@
 | `platform_live_pit_variant` | 原始交付是 batch/事后窗口，但业务另行要求构造 live-like PIT 变体 | 必须显式批准并标为平台变体；不得宣称它复现了原始 source 输出 |
 
 默认口径是 `source_original_reproduction`。只有在用户明确批准或原始 source 文档明确要求 live-like PIT 时，才能采用 `platform_live_pit_variant`。即使采用平台 PIT 变体，也不得修改原始算法内部逻辑；只能改变外层传入的可见数据截止和测试上下文，并必须记录它与 source-original 输出的差异。
+
+历史回测与实盘逐日调度必须分开验收。若 source-original batch 使用了晚于某个样本 `feature_date` 的固定 `source_end`、later test window、selector/streak 状态或同批次未来样本，那么这些内部数值只能作为 source-original backtest/benchmark 的真值，不能直接要求 `gray_live` / `scheduled_live` 逐日记录相等；实盘记录必须保持 `feature_date` 硬截止，只能与同一 live-safe 数据截止和同一外层上下文生成的 live-safe oracle 对齐。反过来，也不得把 live-safe PIT 输出冒充 source-original batch reproduction。
+
+2026-06-27 Liwei source 方案裁决固定如下：`10Y01/10Y02/7Y01/7Y03/5Y01` 的 source-original historical backtest 已按各自原始 batch/window 与 latest benchmark 对齐；live/scheduled_live 行已修正到当前 version、`baseline_scores`、`model_scope=*_source_compatible_context` 和 `model_source_end=feature_date`。这只证明 live 行结构和 live-safe 截止正确，不证明固定 `source_end=2026-06-10` 的 `original_predictions_sample.csv` live 边界样本可作为逐日 live 内部数值真值。任何报告若同时引用 source batch benchmark 与 live rows，必须显式拆成 `historical/source-original` 和 `live-safe` 两段，并分别给出 diff；不得用“benchmark 文件完全一致”替代 DB/API/live 对齐证据，也不得用 `TOTAL_BAD=0` 断言所有预测值与原始 batch benchmark 完全一致。
 
 ## 4. 验收标准
 

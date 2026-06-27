@@ -122,7 +122,9 @@ benchmark 与数据库明细核验的主键为：
 | daily | `feature_date`, `target_date`, `target_tenor`, `horizon` |
 | weekly | `feature_week_id`, `feature_date`, `target_date`, `target_tenor`, `horizon` |
 
-如果 benchmark 样本的 `target_date` 位于历史回测区间，必须与 `t_backtest_predictions.feature_date` 对齐；如果 `target_date` 位于灰度/实盘观察区，必须与 `t_scheme_predictions.feature_date` 对齐，并额外校验 `prediction_phase`。`predict_date` 只校验发出时点：回测为 `predict_date == feature_date`，灰度/正式实盘为按调度规则从 `feature_date` 后发出。
+如果 benchmark 样本的 `target_date` 位于历史回测区间，必须与 `t_backtest_predictions.feature_date` 对齐；如果 `target_date` 位于灰度/实盘观察区，必须先声明 benchmark row 与 live row 是否同一执行口径，再决定是否与 `t_scheme_predictions.feature_date` 对齐，并额外校验 `prediction_phase`。这条 live 对齐只适用于 benchmark 与 live 记录声明的是同一执行口径；若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，则该 batch 只能验收 source-original backtest，不能作为 live 逐日内部数值真值。live/gray/scheduled 记录必须另用同一 `feature_date` 硬截止的 live-safe oracle 验收。`predict_date` 只校验发出时点：回测为 `predict_date == feature_date`，灰度/正式实盘为按调度规则从 `feature_date` 后发出。
+
+跨灰度边界的 `original_predictions_sample.csv` 不能被整体宣称为“已与 DB/API/live 完全一致”。验收报告必须按 `target_date` 和执行口径拆分：历史段对 latest backtest，live 段只在同口径时对 live rows；若 live 段来自固定 future `source_end` 的 source batch，则只能记录为 source evidence，并必须生成或引用 live-safe oracle。`TOTAL_BAD=0`、版本一致或 `model_scope` 一致只证明 live 行结构与当前配置匹配，不证明内部模型数值与 source batch benchmark 相等。
 
 `CompareGate` 中的 `max_confidence_abs_diff` / `mean_confidence_abs_diff` 是 original/current benchmark 对 `confidence` 字段的浮点差异统计；`1e-16` 量级属于浮点舍入误差，按 0 看待。方案行为一致性的硬门槛仍是 `predicted_direction` 逐样本零容差。
 
@@ -234,7 +236,7 @@ BacktestGate 去掉 `--no-persist` 落库后断言：
 | 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
 | 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
 | 日期语义 | 回测 rows 必须满足 `predict_date == feature_date`，不得读取或复制灰度/正式实盘记录 | 用 T+1 实盘结果冒充 T 回测结果 |
-| benchmark 对齐 | 逐方案 original benchmark 的 T 必须对齐 `t_backtest_predictions.feature_date`；若 target 已进入灰度/实盘观察区，则改与 `t_scheme_predictions.feature_date` 对齐 | 把原始算法站位日误当成实盘发出日，导致 T/T+1 错位 |
+| benchmark 对齐 | 逐方案 original benchmark 的 T 必须对齐 `t_backtest_predictions.feature_date`；若 target 已进入灰度/实盘观察区，只有在 benchmark 与 live 声明同一执行口径时才对齐 `t_scheme_predictions.feature_date`，否则必须用 live-safe oracle | 把原始算法站位日误当成实盘发出日，或把固定 future `source_end` 的 batch benchmark 当成逐日 live 真值 |
 
 ### 7.3 与现有机制的关系
 

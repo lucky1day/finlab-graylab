@@ -164,7 +164,7 @@
 - [ ] latest 5Y/7Y/10Y backtest summary 标记 `backtest_mode=original_batch_reproduction`。
 - [ ] latest 5Y/7Y/10Y backtest summary 标记 `backtest_point_in_time=false`。
 - [ ] benchmark 覆盖区间逐行一致校验通过后才允许 persist。
-- [ ] `target_date >= 2026-06-01` 的周频样本只来自 `t_scheme_predictions` live 表，不来自 `t_backtest_*`。
+- [ ] `target_date >= 2026-06-01` 的周频样本不来自 `t_backtest_*`；同执行口径时来自 `t_scheme_predictions` live 表，否则使用 live-safe oracle 记录。
 - [ ] 对比候选方案样本数时，先区分“日历周数”和“算法有效预测行数”；有效预测行数可以不同，缺周必须记录 `feature_week_id` 和 core 过滤原因。
 
 ---
@@ -193,7 +193,7 @@
 **修复规则**：
 1. 外部复现报告给出月度数字时，先确认其月份字段是 source T、feature_date、predict_date 还是 target_date。
 2. 若报告按 source T / `feature_date` 归月，只能与 `original_predictions_sample.csv` 按 `feature_date` 重算结果比较；不得直接和前端月度表比较。
-3. 前端/API 验收必须以逐样本 strict key 为准：`feature_date + target_date + target_tenor + horizon`。跨灰度边界时，按 `target_date` 分流到 backtest 或 live metrics。
+3. 前端/API 验收必须以逐样本 strict key 为准：`feature_date + target_date + target_tenor + horizon`。跨灰度边界时，按 `target_date` 和 benchmark role 分流；同执行口径才对 live metrics 断言零差异，否则使用 live-safe oracle。
 4. `CURRENT_STATUS.md` 或方案验收记录中必须同时写清 source report 月份口径与平台 target 月份口径，避免后续复核时再次混淆。
 
 **检查清单**：

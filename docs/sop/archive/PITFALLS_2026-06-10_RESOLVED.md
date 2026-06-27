@@ -408,12 +408,12 @@ target_date  = 2026-06-05
 1. 原始 benchmark 的 `T/date/predict_date` 统一解释为 source T，即平台 `feature_date`。
 2. benchmark 与最终 DB 明细核验必须按 `feature_date + target_date + target_tenor + horizon` 对齐；周频额外按 `feature_week_id` 对齐。
 3. `predict_date` 只用于校验发出时点：回测 `predict_date=feature_date`，灰度/正式实盘 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
-4. 若 benchmark 的 `target_date` 已进入灰度/实盘观察区，必须与 `t_scheme_predictions.feature_date` 对齐核验；若仍在历史回测区间，则与 `t_backtest_predictions.feature_date` 对齐核验。
+4. 若 benchmark 的 `target_date` 已进入灰度/实盘观察区，必须先判定 benchmark row 与 live row 是否同一执行口径；同口径时才与 `t_scheme_predictions.feature_date` 对齐核验，否则必须使用 live-safe oracle。若仍在历史回测区间，则与 `t_backtest_predictions.feature_date` 对齐核验。
 
 **检查清单**：
 - [ ] 新 benchmark 文件显式写 `feature_date` 或 `source_t`，不再把 source T 模糊写成平台 `predict_date`。
 - [ ] 旧 benchmark 文件若列名仍为 `predict_date/date`，验收报告中必须说明该列语义是 source T / `feature_date`。
-- [ ] 5 月末 T、6 月 target 这类跨灰度边界样本必须去 live/gray 表查 `feature_date`，不能要求出现在 backtest latest。
+- [ ] 5 月末 T、6 月 target 这类跨灰度边界样本必须先判定 benchmark role；同执行口径时去 live/gray 表查 `feature_date`，固定 future `source_end` 的 source batch 则改用 live-safe oracle，不能要求出现在 backtest latest。
 - [ ] 比对报告同时记录 DB 目标表：`t_backtest_predictions` 或 `t_scheme_predictions`。
 
 ---

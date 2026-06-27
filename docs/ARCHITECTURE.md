@@ -71,9 +71,9 @@
 
 `feature_date` 是前端和业务唯一标准数据截止字段；`anchor_date` 只允许作为方案内部变量或审计 extra。实盘预测分为 `gray_live` 和 `scheduled_live` 两个阶段，二者都属于实盘观察区；历史回测独立写入 `t_backtest_*`，不得从实盘预测表拼历史结果。
 
-原始算法 benchmark 中的 `T/date/predict_date` 表达的是 source T / 预测站位日。进入平台后必须对齐 `feature_date`，不能对齐实盘语义下的 `predict_date`。若 benchmark 样本 target 仍在历史回测区间，则与 `t_backtest_predictions.feature_date` 对齐；若 target 已进入灰度/实盘观察区，则与 `t_scheme_predictions.feature_date` 对齐，并校验 `prediction_phase`。
+原始算法 benchmark 中的 `T/date/predict_date` 表达的是 source T / 预测站位日。进入平台后必须对齐 `feature_date`，不能对齐实盘语义下的 `predict_date`。若 benchmark 样本 target 仍在历史回测区间，则与 `t_backtest_predictions.feature_date` 对齐；若 target 已进入灰度/实盘观察区，必须先确认 benchmark 与 live 记录是否同一执行口径，同口径时才与 `t_scheme_predictions.feature_date` 对齐并校验 `prediction_phase`。若 source-original batch 固定了晚于样本 `feature_date` 的 `source_end` 或 test window，该 batch 只能作为 source-original backtest 证据，live 必须用 `feature_date` 硬截止的 live-safe oracle 验收。
 
-Source-backed 方案必须先声明 source 执行口径：`source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。无论采用哪类口径，算法内部的时间窗口、特征、周/月频对齐、模型参数、投票和内部 score 映射都不得被平台重写。
+Source-backed 方案必须先声明 source 执行口径：`source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。无论采用哪类口径，算法内部的时间窗口、特征、周/月频对齐、模型参数、投票和内部 score 映射都不得被平台重写。跨灰度边界的 `original_predictions_sample.csv` 必须按 row role 拆分；`TOTAL_BAD=0` 只能说明 live 行结构、版本和 scope 正确，不能替代同口径数值 diff。
 
 ### 2.1 预测流程（日度07:03 / 周度11:30）
 
@@ -588,8 +588,8 @@ BOND_DB_NAME=bond_db
 4. `predict.py` 只返回 `PredictionRecord`，不直接写 `t_scheme_predictions`。
 5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要通过授权 backtest persist 写入独立 backtest 表。
 6. 新增方案必须遵守 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)：回测 `predict_date=feature_date=T`，实盘 `predict_date=T+1/feature_date=T`，灰度实盘与正式实盘通过 `prediction_phase` 区分。
-7. benchmark 验证必须用原始算法 source T 对齐平台 `feature_date`；跨灰度边界的样本按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions`。
-8. source `latest_oos` / batch 文件只作为来源证据；平台 canonical 回测和 live 验证必须按严格 PIT 入口生成，除非文档明确批准 source-original batch reproduction 例外。
+7. benchmark 验证必须用原始算法 source T 对齐平台 `feature_date`；跨灰度边界的样本必须按 `target_date` 与 benchmark role 分流，历史/source-original 行对 `t_backtest_predictions`，同执行口径 live 行才对 `t_scheme_predictions`，否则用 live-safe oracle。
+8. source `latest_oos` / batch 文件只作为来源证据；平台 canonical 回测和 live 验证必须按已声明 source 口径生成。若历史回测获批使用 source-original batch reproduction 例外，该例外不得扩散到 gray/live/scheduled live 的 `feature_date` 硬截止规则。
 
 ---
 

@@ -6,7 +6,7 @@
 
 > 说明：原验证入口 `tests/test_onboarded_benchmark_feature_alignment.py` 依赖当时的 active 方案数量、benchmark 文件和数据库现场状态。随着 7Y 入库、weekly 手动补平、回测 run 清理和 `task_type` 契约升级，该测试已不适合作为长期可复用测试，已从 `tests/` 中移除。本文仅保留 2026-06-14 当天的验证口径和结论，后续当前状态校验应使用 harness gate、方案 benchmark 回归测试和 API/前端契约测试。
 >
-> 2026-06-25 补充：本文的 source T -> `feature_date` 对齐规则仍有效，但 source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。source `latest_oos` / batch 文件进入平台前必须先分类为 `source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。平台日期语义不得被用来静默改写原始算法的时间窗口、特征、周/月频对齐、模型参数、投票/fallback 或内部 score 映射。
+> 2026-06-25/27 补充：本文的 source T -> `feature_date` 对齐规则仍有效，但 source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。source `latest_oos` / batch 文件进入平台前必须先分类为 `source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。平台日期语义不得被用来静默改写原始算法的时间窗口、特征、周/月频对齐、模型参数、投票/fallback 或内部 score 映射。若 benchmark row 跨入 gray/live target 区间，还必须先判断它是否与 live 同执行口径；固定 future `source_end` 的 source batch 只能作为 source evidence，live 数值必须用 live-safe oracle 验收。
 
 ## 1. 验证口径
 
@@ -17,7 +17,7 @@
 - 原始算法 benchmark 中的 `T/date/predict_date` 表示 source T / 原始算法预测站位日。
 - 平台数据库中与 source T 对齐的字段是 `feature_date`，不是实盘语义下的 `predict_date`。
 - 历史回测区间样本与 `t_backtest_predictions.feature_date` 对齐。
-- `target_date >= 2026-06-01` 的灰度/实盘观察区样本与 `t_scheme_predictions.feature_date` 对齐，并检查 `prediction_phase`。
+- `target_date >= 2026-06-01` 的灰度/实盘观察区样本，只有在 benchmark 与 live 声明同一执行口径时才与 `t_scheme_predictions.feature_date` 对齐，并检查 `prediction_phase`；否则必须另用 live-safe oracle。
 - 完整逐行主键使用 `feature_date + target_date + target_tenor + horizon`。
 - `benchmark_required=true` 的方案不得依赖旧列名或缺字段回退；缺少 `feature_date/target_date/target_tenor/horizon/direction/confidence/label/is_correct` 任一字段或值即 fail-closed。
 

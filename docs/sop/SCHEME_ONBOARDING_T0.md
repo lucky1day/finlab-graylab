@@ -61,6 +61,7 @@
 4. **源算法保真**：source-backed 方案不得修改原始算法逻辑。时间起点、窗口、特征、周/月频对齐、模型参数、投票/fallback、内部 score 映射都按原始脚本复现；平台只能做 I/O、日期、落库和审计适配。
    - 移植 source runner 时，只能移动原始 runner 明确 patch 的日期窗口；未被 patch 的固定算法锚点必须保留。例如 10Y02 `latest_oos` 的 `IC screening` 截止点仍是原始 `2024-01-01`，不能跟随 batch `test_start=2025-05-01` 移动。
    - 回测 runner 的 monthly/fast path 也属于 source 口径：分组键、每组 `source_end`、`current_start/current_end` 和抽样窗口必须与原始算法一致。若 source 按 `target_date` 月份生成 target-date 回测，平台不得改成 feature 月分组或全局窗口。
+   - 跨灰度边界的 benchmark 必须先判定每行 role。source-original batch 若固定未来 `source_end`，只能验收 historical backtest；live 行必须使用 `feature_date` 硬截止和 live-safe oracle。`TOTAL_BAD=0` 只说明 live 结构/版本/scope 通过，不说明 live 内部数值等于 raw source batch。
 
 ## 3. 日期语义不许混
 
@@ -121,11 +122,13 @@
 6. `config.yaml` 设置 `backtest.benchmark_required: true`。
 6. `harness onboard --stage all` 中 CompareGate 必须是 `passed`，不能是 `skipped`。
 
-这里的 original benchmark 指 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv` 等逐方案基准文件，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。benchmark CSV 至少包含 `feature_date(or source_t)/target_date/tenor(or target_tenor)/direction/confidence`；source-backed 多 baseline 方案还必须保留内部 `vote_score` 和 baseline score/dir 列，周度方案还必须保留 `feature_week_id` 等审计列。历史旧列名 `predict_date/date` 只能解释为原始算法 source T，也就是平台 `feature_date`，不得解释为实盘信号发出日。月度指标、前端展示、回测/live 分区仍按 `target_date` 归属；跨灰度边界的 benchmark 样本要按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions` 核验。
+这里的 original benchmark 指 `schemes/{scheme_id}/benchmarks/original_predictions_sample.csv` 等逐方案基准文件，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。benchmark CSV 至少包含 `feature_date(or source_t)/target_date/tenor(or target_tenor)/direction/confidence`；source-backed 多 baseline 方案还必须保留内部 `vote_score` 和 baseline score/dir 列，周度方案还必须保留 `feature_week_id` 等审计列。历史旧列名 `predict_date/date` 只能解释为原始算法 source T，也就是平台 `feature_date`，不得解释为实盘信号发出日。月度指标、前端展示、回测/live 分区仍按 `target_date` 归属；跨灰度边界的 benchmark 样本要按 `target_date` 和 benchmark role 分流，历史/source-original 行对 `t_backtest_predictions` 核验，同执行口径 live 行才对 `t_scheme_predictions` 核验，否则用 live-safe oracle。
 
 Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。若 batch 是一次性事后窗口生成，它可能包含 later test window、selector/streak 状态或标签可见性，与 live-like strict PIT 不一致。平台 current/backtest/live 结果必须先声明 source 执行口径：`source_original_reproduction` 按原始 batch/window 完整复现，`source_strict_pit` 按原始 PIT 入口复现，`platform_live_pit_variant` 则必须获批并记录与 source-original 的差异。不得为了让 CompareGate 通过而复制 batch 输出，也不得手工补预测结果。
 
 同时，source batch 与 strict PIT 的差异不能成为修改算法内部逻辑的理由。必须先按 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md) 声明 source 执行口径：复现 source-original 就按原始 batch/window 完整复现；构造平台 live-like PIT 变体则必须获批并单独命名，且只能改变外层传入的可见数据截止/上下文，不能改特征、模型、投票或 fallback。
+
+source-original benchmark 跨到 gray/live 区间时，不得自动要求 live 逐日内部 score 与 source batch 相等。若 source batch 固定 `source_end` 晚于样本 `feature_date`，它只能验收 source-original backtest；gray_live/scheduled_live 必须保持 `feature_date` 硬截止，并用同一 live-safe 截止生成的 oracle 验收。任何文档、报告或口头状态都必须写清楚这是 source-original backtest、source strict PIT，还是 platform live PIT variant。若同一份 `original_predictions_sample.csv` 同时包含 historical 与 gray/live target，必须在状态文档或 summary 中把每行拆成 `historical/source-original`、`live-same-context` 或 `source-evidence-only`；只有同执行口径行能被宣称与 DB/API 完全一致。
 
 纯框架内实验方案如果没有原始基准，必须在 `docs/CURRENT_STATUS.md` 明确说明为什么 CompareGate 可以没有 original benchmark。
 
@@ -177,7 +180,7 @@ Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。�
 - [ ] Source-backed 方案已完成 source 口径分类，并确认不会修改原始算法逻辑。
 - [ ] 已逐项标出原始 runner 明确 patch 的日期字段，以及必须保留不动的固定算法锚点（筛因子起点、warmup、校准窗口、report mask 等）。
 - [ ] 已确认历史回测的分组键和 source context：按 source 要求使用 target-date 月、feature 月、单日 PIT 或完整 batch；不得用平台 fast path 静默替换。
-- [ ] 如源方提供 `latest_oos` / batch 结果，已确认它是 strict PIT 还是事后批量口径；若是批量口径，已规划 source evidence 与平台 canonical strict PIT 的差异记录。
+- [ ] 如源方提供 `latest_oos` / batch 结果，已确认它是 strict PIT 还是事后批量口径；若是批量口径，已规划 source evidence 与平台 canonical strict PIT / live-safe oracle 的差异记录，且不会把 raw source batch live 边界行当成 live 数值真值。
 - [ ] 已规划内部模型分数 / baseline score / confidence 的对比证据；不能只看最终方向。
 - [ ] 已选同频率参考方案和回测 runner。
 - [ ] 已确认只会改允许范围内文件。

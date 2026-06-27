@@ -43,7 +43,7 @@ benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + 
 如果原始 benchmark 的某条样本 `target_date` 已进入灰度/实盘观察区，例如 T 在 5 月末而 target 落到 6 月，则这条样本不能强行要求出现在 `t_backtest_predictions`。核验时必须按 `target_date` 分流：
 
 - `target_date < 灰度实盘起点`：与 `t_backtest_predictions.feature_date` 对齐核验。
-- `target_date >= 灰度实盘起点`：与 `t_scheme_predictions.feature_date` 对齐核验，并同时校验 `prediction_phase`。
+- `target_date >= 灰度实盘起点`：先判定 benchmark row 与 live row 是否同一执行口径。同口径时才与 `t_scheme_predictions.feature_date` 对齐核验，并同时校验 `prediction_phase`；若 source-original batch 使用晚于样本 `feature_date` 的固定 `source_end`、later test window、selector/streak 状态或同批未来样本，则该 row 只能作为 source evidence，live 必须另用 `feature_date` 硬截止的 live-safe oracle 验收。
 
 这条规则优先于旧文件列名。旧 benchmark CSV 即使列名仍叫 `predict_date`，也只能解释为 source T / 平台 `feature_date`；新增 benchmark 文件应显式写 `feature_date` 或 `source_t`，避免把原始算法站位日误读为平台信号发出日。
 
@@ -56,6 +56,8 @@ benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + 
 - `platform_live_pit_variant`: 原始交付不是 strict PIT，但业务明确要求构造 live-like PIT 变体；该变体必须获批、命名并记录与 source-original 的差异。
 
 不能因为平台 live 语义需要 `feature_date` 硬截止，就直接修改原始算法内部的 `test_start/test_end/test_ranges`、历史起点、周/月频对齐、特征或投票逻辑。若同一 `feature_date` 的 source-original 与平台 PIT 变体不同，差异必须作为口径差异记录，不能通过调参或改算法抹平。
+
+同一份 `original_predictions_sample.csv` 跨过灰度边界时，必须把每行标成 `historical/source-original`、`live-same-context` 或 `source-evidence-only`。只有同执行口径行可以被声明为与 DB/API/live 完全一致；`source-evidence-only` 行不能用来证明 live 成功或失败，也不能要求 live 内部 score 贴合固定 future `source_end` 的 batch 输出。
 
 ### 2.2 旧 core 参数名不得直接映射为平台字段
 
@@ -81,7 +83,7 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 2. 实盘/灰度必须先确定 `feature_date=T`，再使用 `feature_date` 所在月第一天到 `feature_date` 作为核心预测窗口；窗口结束不得超过 `feature_date`。
 3. 回测仍输出 `predict_date=feature_date=T`，但核心预测窗口必须与同一 `feature_date` 的实盘路径一致。
 4. benchmark current 侧必须由平台 inference helper 生成，不能复制 source CSV 冒充 current。
-5. 逐方案 original benchmark 的 `date/T` 只对齐平台 `feature_date`；如 `target_date` 进入灰度/实盘区间，则与 `t_scheme_predictions.feature_date` 对齐核验。这里的 original benchmark 位于 `schemes/{scheme_id}/benchmarks/`，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的外部批次证据。
+5. 逐方案 original benchmark 的 `date/T` 只对齐平台 `feature_date`；如 `target_date` 进入灰度/实盘区间，只有同执行口径时才与 `t_scheme_predictions.feature_date` 对齐核验，否则必须生成 live-safe oracle。这里的 original benchmark 位于 `schemes/{scheme_id}/benchmarks/`，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的外部批次证据。
 6. helper 只能封装原始算法的执行口径；不得把“更短历史”“同月去年+本月”“previous complete week”等平台便利窗口替代 source 中实际使用的固定历史、batch end 或周频对齐规则。
 
 `daily_5y_2_v28` 的唯一入口是 `schemes.daily_5y_2_v28.inference`：`v28_feature_month_window(feature_date)` 返回当月月初到 `feature_date`，`predict.py` 与 `backtests.daily_5y_2_v28_reproduction` 都必须通过该模块调用 core。
@@ -137,6 +139,8 @@ target_date  = T + horizon
 3. 回测输出仍必须使用平台统一日期字段：`predict_date=feature_date`，`target_date` 由平台日历确定。
 4. 回测仍必须排除灰度/实盘 target 区间，即当前 V28 批次 `target_date >= 2026-06-01` 不能进入 backtest latest。
 5. 文档必须写明为什么不能使用逐点 PIT，以及哪些 run 是被删除或替代的旧口径。
+
+若 source-original batch reproduction 的 benchmark row 跨入 gray/live target 区间，该 row 仍不得扩散为 live 数值真值；它只能证明 historical/source-original 口径。gray_live/scheduled_live adapter 与补齐必须继续按 `feature_date` 硬截止，并使用 live-safe oracle 或同口径 live benchmark 验收。
 
 当前已批准的例外是三个 2025-05-29 来源批次周频方案的历史回测：
 
