@@ -35,6 +35,26 @@
 
 移植 source runner 时，必须逐行区分“runner 明确 patch 的字段”和“原始算法保留的固定字段”。不要因为外层改了 `context_start/latest_start/data_end`，就同步移动未被 runner patch 的筛因子起点、训练 warmup、report mask 或校准窗口。
 
+## 2.1 算法改动分级与停止条件
+
+source-backed 方案入库、修复或复核时，所有改动必须先分级，再进入 gate。分级不是事后说明，而是 Intake/Normalize 阶段的硬约束：
+
+| 等级 | 定义 | 处理规则 |
+|------|------|----------|
+| L0 平台适配 | 只改变文件路径、输入 artifact、日期字段映射、输出 schema、extra、缓存、日志、授权、写库或 API 展示 | 允许，但必须证明输出等价 |
+| L1 source runner 上下文 | 把原始 runner 明确 patch 的 `source_end/current_start/current_end/test_ranges` 等外层上下文参数显式传给 core | 允许，但必须逐项列出 runner 明确 patch 的字段和不可移动的固定锚点 |
+| L2 算法内部改动 | 改变原始算法的历史起点、筛因子起点、test sequence、分组键、特征构造、周/月频对齐、模型参数、selector、streak、fallback、VT、投票或内部 score 映射 | 默认禁止；发现后必须停止原始方案入库/修复，回滚为 source 口径或另立经批准的新实验方案 |
+
+本轮 Liwei 方案复核中已经确认的 L2 误改类型，后续不得重复：
+
+- **固定算法锚点被误随窗口移动**：把 10Y02 `IC screening` 截止点从原始 `2024-01-01` 移到 source batch `test_start=2025-05-01`，会改变 baseline 选择并导致 `2026-05-25` 方向漂移。修复方式是只 patch source runner 明确 patch 的 test index，保留未 patch 的固定筛因子锚点。
+- **source test sequence 被替换**：把 10Y01 / 7Y03 source `latest_oos_20260616` 的 prior-year + latest 两段测试集改成单段 full-OOS，或把 10Y02 full-OOS sequence 改成逐日局部 PIT / `latest_oos` 局部窗口，会改变 monthly ensemble、selector、streak、fallback 和内部 score。修复方式是按 source runner 原始 test sequence 复现。
+- **回测分组键被替换**：把 10Y02 target-date 月度回测改成 feature 月分组或所有日期共用一个全局 `source_end`，会改变 4 月 target-date 结果。修复方式是按 `target_date` 月分组，每组 `source_end` 固定为该 target 月最后一个目标交易日。
+- **特征、VT 或内部 score 映射被替换**：5Y01/V31 中改变 `build_bond_features` 列顺序、`vt_mode=seasonal`、weekly last-trading-day ffill、`vs_full` score 映射或 baseline dir 映射，都会造成内部数值不一致。修复方式是按 source 构造顺序和 source pkl score 口径恢复。
+- **raw source batch 与 live-safe 混用**：把固定 `source_end=2026-06-10` 的 source batch 边界样本当成 live 逐日内部数值真值，会把正常口径差异误判为算法错误。修复方式是 historical/source-original 与 live-safe 分开验收。
+
+若出现方向一致但内部 `vote_score`、baseline `*_score/*_vs`、`*_dir/*_sign` 或 probability/confidence 不一致，不能先写“通过”。必须先定位属于 L0 数据/导出差异、L1 上下文误传，还是 L2 算法内部误改；未完成分级和归因前，不得进入 backtest persist、live repair 或 activation。
+
 ## 3. Source 口径分类
 
 每个 source-backed 方案在入库前必须先分类，并写入方案 benchmark README、summary 或状态文档：

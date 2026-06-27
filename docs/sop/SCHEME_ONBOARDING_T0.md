@@ -62,6 +62,7 @@
    - 移植 source runner 时，只能移动原始 runner 明确 patch 的日期窗口；未被 patch 的固定算法锚点必须保留。例如 10Y02 `latest_oos` 的 `IC screening` 截止点仍是原始 `2024-01-01`，不能跟随 batch `test_start=2025-05-01` 移动。
    - 回测 runner 的 monthly/fast path 也属于 source 口径：分组键、每组 `source_end`、`current_start/current_end` 和抽样窗口必须与原始算法一致。若 source 按 `target_date` 月份生成 target-date 回测，平台不得改成 feature 月分组或全局窗口。
    - 跨灰度边界的 benchmark 必须先判定每行 role。source-original batch 若固定未来 `source_end`，只能验收 historical backtest；live 行必须使用 `feature_date` 硬截止和 live-safe oracle。`TOTAL_BAD=0` 只说明 live 结构/版本/scope 通过，不说明 live 内部数值等于 raw source batch。
+   - 所有改动必须先做 L0/L1/L2 分级。L0 是平台外壳适配；L1 是原始 runner 明确 patch 的上下文传递；L2 是算法内部改动，默认禁止。移动筛因子截止点、替换 test sequence、替换 target-date 分组键、改变特征列顺序、VT/selector/streak/fallback 或内部 score 映射，均属于 L2。
 
 ## 3. 日期语义不许混
 
@@ -178,6 +179,7 @@ source-original benchmark 跨到 gray/live 区间时，不得自动要求 live �
 - [ ] 周度方案已明确 DB 周历、target week、`end_week=feature_week_id` 与 `as_of_date=feature_date` 规则。
 - [ ] 原始算法文件和逐方案 original benchmark 来源已定位；仅有 `source_evidence/` 批次文件不算完成。
 - [ ] Source-backed 方案已完成 source 口径分类，并确认不会修改原始算法逻辑。
+- [ ] 已完成 L0/L1/L2 改动分级；若出现 L2，已停止原方案入库/修复，或已按用户明确批准另立新实验方案。
 - [ ] 已逐项标出原始 runner 明确 patch 的日期字段，以及必须保留不动的固定算法锚点（筛因子起点、warmup、校准窗口、report mask 等）。
 - [ ] 已确认历史回测的分组键和 source context：按 source 要求使用 target-date 月、feature 月、单日 PIT 或完整 batch；不得用平台 fast path 静默替换。
 - [ ] 如源方提供 `latest_oos` / batch 结果，已确认它是 strict PIT 还是事后批量口径；若是批量口径，已规划 source evidence 与平台 canonical strict PIT / live-safe oracle 的差异记录，且不会把 raw source batch live 边界行当成 live 数值真值。

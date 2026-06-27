@@ -108,6 +108,13 @@
 - 若 source-original 与平台 current 的方向或内部 score 不一致，先查输入 artifact、data_version、as-of、周/月频对齐和 source 口径；不得用调参、改特征或改 fallback 去贴结果。
 - CompareGate/人工验收要记录内部模型分数或 baseline score 差异。只做到方向一致但内部数值仍有残差时，不得宣称算法逻辑完全一致。
 
+**规则十：所有 source-backed 改动必须先做 L0/L1/L2 分级**
+- L0 是平台外壳适配：路径、artifact、日期字段、输出 schema、extra、缓存、日志、授权和写库。L0 允许，但必须证明 original/current 输出等价。
+- L1 是 source runner 上下文传递：只移动原始 runner 明确 patch 的 `source_end/current_start/current_end/test_ranges` 等参数。L1 允许，但必须列出每个被 patch 的字段，以及没有移动的固定算法锚点。
+- L2 是算法内部改动：移动筛因子起点、训练/test sequence、分组键、特征列顺序、周/月频对齐、模型参数、selector、streak、fallback、VT、投票或内部 score 映射。L2 在原始方案入库/修复中默认禁止，发现后必须停止落库和 activation；若业务确实要改，必须另立新实验方案或取得用户明确批准。
+- 这次 Liwei 修复中已经发生过的 L2 错误必须作为反例检查：10Y02 `IC screening` cutoff 误移、10Y01/7Y03 source 两段窗口误替换、10Y02 target-date 月分组误改为全局 `source_end`、5Y01/V31 特征/VT/score 映射风险、raw source batch 与 live-safe 口径混用。
+- `CURRENT_STATUS.md`、benchmark summary 或方案 README 必须记录本次只有 L0/L1 改动；如果为了修复而恢复了 source 口径，也要写清“误改点、为何导致不一致、如何恢复为 source 口径”，但不得把它写成新的算法优化。
+
 ### 1.1 强约束模块边界
 
 | 模块 | 允许职责 | 明确禁止 |
@@ -336,6 +343,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 | 数据来源 | `bond_db` 直接取数、DB 生成 CSV、人工补充文件等 |
 | 是否需要历史回测 | 是 / 否 |
 | source 执行口径 | `source_original_reproduction` / `source_strict_pit` / `platform_live_pit_variant` |
+| 算法改动分级 | L0 / L1 / L2；L2 必须停止原方案入库或另立新实验方案 |
 | 原始算法不可改字段 | 时间起点、窗口、特征、周/月频对齐、模型参数、投票/fallback、内部 score |
 
 如果只是新增同一个任务格子的候选方案，不要复用旧 `scheme_id`，要新增独立目录。

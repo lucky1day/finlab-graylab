@@ -166,6 +166,7 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 - `core/legacy_*.py` 或原始 source 文件存在，并记录 hash / 来源路径。
 - 活跃 core 与 legacy 的算法逻辑差异只允许是 I/O 适配、路径移除、日志重定向或性能不改变结果的机械改造。
+- 每项改动必须标注 L0/L1/L2：L0 为平台外壳适配，L1 为原始 runner 明确 patch 的上下文传递，L2 为算法内部改动；L2 默认禁止，除非另立经批准的新实验方案。
 - 原始算法暴露的 baseline score、probability、confidence 或类似内部数值必须进入 benchmark/current 对比；仅方向一致不足以证明“算法逻辑完全一致”。
 - 若为了 live-like 运行传入不同 `test_ranges`、`source_end`、weekly/monthly as-of 或 batch 上下文，必须先在方案文档中声明它属于 `source_original_reproduction`、`source_strict_pit` 或 `platform_live_pit_variant`。
 
