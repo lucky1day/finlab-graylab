@@ -1,0 +1,6 @@
+name: bond_factor_lab_service
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+prefix: /Users/macstudio0/miniconda3/envs/bond_factor_lab_service
