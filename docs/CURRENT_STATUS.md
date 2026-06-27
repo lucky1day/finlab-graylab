@@ -25,7 +25,7 @@
 
 本轮文档裁决同时固定一个回答边界：若问题是“5 个方案是否都完成修复”，可回答“source-original 历史回测对齐已完成，live 行结构/版本已修到 `TOTAL_BAD=0`”；若问题是“所有预测结果是否都和原始 benchmark 完全一致”，只能回答“同口径 historical benchmark 完全一致，live 逐日内部数值不能和固定 source_end 的原始 batch 混为一谈，必须按 live-safe oracle 验收”。
 
-2026-06-27 分支策略更新：`master` 作为生产分支和远程默认分支；验证完成的开发分支先合并或覆盖到 `master`，再推送 GitHub。`codex/p1-runner-factorlab-slim` 不再作为备用生产分支使用，后续不再默认同步。
+2026-06-27 分支策略更新：`master` 作为生产分支和远程默认分支；验证完成的开发分支先合并或覆盖到 `master`，再推送 GitHub。后续不再维护第二生产分支，也不再默认同步其它发布分支。
 
 2026-06-27 二次文档规范收口：不再新增“五方案一次性对比报告”作为主证据，而是把本轮犯错点固化为入库流程约束。根规范、Source Fidelity、T0/SOP、Scheme Contract 和 Harness 文档已要求所有 source-backed 改动先做 L0/L1/L2 分级：L0 为平台外壳适配，L1 为原始 runner 明确 patch 的上下文传递，L2 为算法内部改动并默认禁止。本轮已记录为 L2 反例的误改包括：10Y02 `IC screening` 固定锚点误移、10Y01/7Y03 source 两段窗口误替换、10Y02 target-date 月分组误改为全局 `source_end`、5Y01/V31 特征/VT/score 映射风险，以及 raw source batch 与 live-safe 口径混用。后续入库不得再用补充历史事故文档替代 SOP 约束；若发现 L2，必须停止原方案入库/修复，恢复 source 口径或另立经批准的新实验方案。
 
