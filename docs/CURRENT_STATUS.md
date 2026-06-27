@@ -25,6 +25,8 @@
 
 本轮文档裁决同时固定一个回答边界：若问题是“5 个方案是否都完成修复”，可回答“source-original 历史回测对齐已完成，live 行结构/版本已修到 `TOTAL_BAD=0`”；若问题是“所有预测结果是否都和原始 benchmark 完全一致”，只能回答“同口径 historical benchmark 完全一致，live 逐日内部数值不能和固定 source_end 的原始 batch 混为一谈，必须按 live-safe oracle 验收”。
 
+2026-06-27 分支策略更新：`master` 作为生产分支和远程默认分支；验证完成的开发分支先合并或覆盖到 `master`，再推送 GitHub。`codex/p1-runner-factorlab-slim` 不再作为备用生产分支使用，后续不再默认同步。
+
 2026-06-27 二次文档规范收口：不再新增“五方案一次性对比报告”作为主证据，而是把本轮犯错点固化为入库流程约束。根规范、Source Fidelity、T0/SOP、Scheme Contract 和 Harness 文档已要求所有 source-backed 改动先做 L0/L1/L2 分级：L0 为平台外壳适配，L1 为原始 runner 明确 patch 的上下文传递，L2 为算法内部改动并默认禁止。本轮已记录为 L2 反例的误改包括：10Y02 `IC screening` 固定锚点误移、10Y01/7Y03 source 两段窗口误替换、10Y02 target-date 月分组误改为全局 `source_end`、5Y01/V31 特征/VT/score 映射风险，以及 raw source batch 与 live-safe 口径混用。后续入库不得再用补充历史事故文档替代 SOP 约束；若发现 L2，必须停止原方案入库/修复，恢复 source 口径或另立经批准的新实验方案。
 
 > 2026-06-25 追加 source-backed 硬约束：后续新增或修复原始算法方案，必须先读 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)。平台日期语义、PIT helper、monthly fast path 或 gray/live 适配都不得静默改变原始算法逻辑；时间起点、窗口、周/月频对齐、特征/信号、模型参数、投票/fallback 和内部 score 映射必须按 source 口径复现。若最终方向一致但内部模型数值仍有残差，只能记录为“方向一致、内部数值待归因”，不得宣称算法逻辑完全一致。下方 2026-06-21/22 历史段落中的 strict PIT 记录按当时已登记的 `platform_live_pit_variant` 理解；后续不得把该类平台变体冒充 source-original reproduction。
