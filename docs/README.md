@@ -1,8 +1,8 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-06-23
+**更新日期**: 2026-06-27
 
-> 当前文档入口以本文为准。历史评审报告保留原始语境，不作为最新状态来源；最新状态只看 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
+> 当前文档入口以本文为准。旧审查报告、一次性验证报告和历史事故归档已移除；新增或修复方案只读现行规范，不从历史踩坑文档推导规则。
 
 ## 架构
 
@@ -28,21 +28,16 @@
 | [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) | 新增方案前必读 T0 强约束范式（daily / weekly 通用） |
 | [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | 新增方案入库 SOP（含 2026-06-10 修订的数据口径规则） |
 | [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | 入库后测试验证 SOP |
-| [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) | 2026-06-10 框架改造踩坑记录（新增方案前必读） |
 
 ## 状态与参考
 
 | 文档 | 内容 |
 |------|------|
 | [CURRENT_STATUS.md](CURRENT_STATUS.md) | 项目当前状态（单一来源） |
-| [validation/BENCHMARK_FEATURE_ALIGNMENT_2026-06-14.md](validation/BENCHMARK_FEATURE_ALIGNMENT_2026-06-14.md) | 已入库方案 benchmark source T 与数据库 `feature_date` 对齐验证结论 |
-| [validation/WEEKLY_LIVE_REPAIR_2026-06-23.md](validation/WEEKLY_LIVE_REPAIR_2026-06-23.md) | 周度实盘 `target_date=2026-06-18` 补齐、前端“目标周五”展示与样本数提示修复 |
-| [bond_factor_lab_architecture_review.md](bond_factor_lab_architecture_review.md) | 架构评审报告（2026-06-09） |
-| [bond_factor_lab_framework_review_2026-06-10.md](bond_factor_lab_framework_review_2026-06-10.md) | 框架评审报告（2026-06-10，历史审计语境） |
 
 ## 阅读路径
 
 - **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → PREDICTION_SEMANTICS → SOURCE_ALGORITHM_FIDELITY → SCHEME_CONTRACT → CURRENT_STATUS
-- **新增方案** → 先读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) + [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [sop/PITFALLS_2026-06-10.md](sop/PITFALLS_2026-06-10.md) + SCHEME_CONTRACT + SCHEME_ONBOARDING_SOP，用 `python -m harness onboard {scheme_id} --stage all` 驱动 pre-activation gates
-- **改 harness** → HARNESS_ARCHITECTURE；评审报告只作历史审计参考
+- **新增方案** → 先读 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) + [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) + [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md)，用 `python -m harness onboard {scheme_id} --stage all` 驱动 pre-activation gates
+- **改 harness** → HARNESS_ARCHITECTURE → CODE_ARCHITECTURE → 对应 tests
 - **了解当前状态** → CURRENT_STATUS

@@ -2,7 +2,7 @@
 
 **适用范围**：任何新增预测方案（daily / weekly；未来 monthly 也按同一范式扩展）。
 
-> 这是新增方案前的 **T0 必读文档**。它只定义不可破坏的范式和 gate 顺序，不替代详细 SOP。执行细节继续看 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)、[SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)、[SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) 和 [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)。
+> 这是新增方案前的 **T0 必读文档**。它只定义不可破坏的范式和 gate 顺序，不替代详细 SOP。执行细节继续看 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)、[SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) 和 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)。
 
 ## 0. 必读顺序
 
@@ -11,9 +11,8 @@
 1. 本文：确认新增方案的不可破坏边界。
 2. [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)：确认 `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的唯一语义。
 3. [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)：确认 source-backed 方案不得修改原始算法逻辑。
-4. [PITFALLS_2026-06-10.md](PITFALLS_2026-06-10.md)：重点看 predict vs target、周度日历、source-vs-onboarded 对比、实盘回补。
-5. [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md)：确认 config / predict.py / core 的机器契约。
-6. [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)：按 gate 执行完整入库。
+4. [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md)：确认 config / predict.py / core 的机器契约。
+5. [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)：按 gate 执行完整入库。
 
 ## 1. 新增方案不改框架
 

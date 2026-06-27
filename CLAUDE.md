@@ -47,7 +47,7 @@ bond-factor-lab/
 ├── backtest_artifacts/ # 运行期输入与回测产物（gitignore）
 ├── reports/           # 审计与 harness 报告（gitignore）
 ├── deploy/            # launchd plist
-└── docs/              # 项目文档（入口 docs/README.md；archive/ 归档，legacy_sources/ 算法来源档）
+└── docs/              # 项目文档（入口 docs/README.md；只保留当前规范和必要设计文档）
 ```
 
 ## 强约束分层边界（不可破坏的四条不变量）

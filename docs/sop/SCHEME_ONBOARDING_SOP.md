@@ -478,7 +478,7 @@ conda run -n forecast_env python -m scheduler.scheme_runner \
 - 返回条数等于本次有效 `tenors` 数量。
 - 每条记录的 `scheme_id/horizon/target_tenor/target_date/predicted_direction` 都符合配置。
 - dry-run 前后所有保护表（`t_scheme_predictions`、`t_scheme_run_log` 等）行数不变。
-- **周度方案额外检查**：`target_date` 必须是 DB 日历中 `feature_week_id` 下一实际周的最后一个交易日，不是当前周。live/gray artifact 必须传 `end_week=feature_week_id`、`as_of_date=feature_date`；目标周数据尚未入库时仍要能预测，但不能读取 feature 周之后的周频原始行（参见 PITFALLS 坑 4）。
+- **周度方案额外检查**：`target_date` 必须是 DB 日历中 `feature_week_id` 下一实际周的最后一个交易日，不是当前周。live/gray artifact 必须传 `end_week=feature_week_id`、`as_of_date=feature_date`；目标周数据尚未入库时仍要能预测，但不能读取 feature 周之后的周频原始行。
 
 ### Step 7: Backtest Gate - 历史回测接入
 
@@ -542,7 +542,7 @@ if __name__ == "__main__":
 - 使用 `shared.calendar_service` 查询 `week_id`（禁止日历公式）。
 - 声明 `backtest.predict_start_date: "2025-01-01"`，并按 `predict_date >= 2025-01-01` 过滤输出样本；不要把早期 `start_week` 误删，因为那通常是训练和模型更新窗口。
 - 调用 `backtests.repository.create_backtest_run` / `replace_backtest_predictions` 写库（`--no-persist` 时跳过写库）。前端 canonical 月度指标由 `/api/backtests/factor-lab` 从 `t_backtest_predictions` 动态聚合；runner 不得写入独立的月度指标汇总表。
-- 默认优先使用 point-in-time 回测；如果源方案只能按 source-original batch reproduction 复现，必须在 `PREDICTION_SEMANTICS.md` 和 `PITFALLS_2026-06-10.md` 记录原因，并在 persist 前校验已有 original benchmark 覆盖区间逐行一致。该例外只允许用于历史回测，不得改变 gray/live/scheduled live adapter 的 `feature_date/as_of_date` 截止规则。
+- 默认优先使用 point-in-time 回测；如果源方案只能按 source-original batch reproduction 复现，必须在 `PREDICTION_SEMANTICS.md` 和 `SOURCE_ALGORITHM_FIDELITY.md` 记录原因，并在 persist 前校验已有 original benchmark 覆盖区间逐行一致。该例外只允许用于历史回测，不得改变 gray/live/scheduled live adapter 的 `feature_date/as_of_date` 截止规则。
 - 已批准的 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 历史回测是 source-original batch reproduction 例外：runner 一次性调用 core 生成完整历史预测，再按 DB 日历构造平台 rows；summary 必须写 `backtest_mode=original_batch_reproduction`、`backtest_point_in_time=false`、`historical_backtest_exception=true`，并写入 `original_benchmark_validation`。
 - 周频候选方案之间的样本总数不要求强行一致；runner 只能写入 core 真实产出的有效预测行。若某个日历周因为规则信号为 0、NaN、无效标签或 source core 的 inner join 被排除，不能补写空预测来凑齐样本数；必须在状态文档中记录缺失的 `feature_week_id` 和 core 过滤原因。
 - 新增方案不得直接套用上述例外。只有当源 benchmark 明确是 batch reproduction，且逐点 PIT 会改变原始评价对象时，才可以申请同类例外；批准后必须提供 benchmark 覆盖区间逐行一致证明，至少覆盖 `feature_date/source_t`、`target_date`、`direction/predicted_direction`、`confidence`、`label/is_correct`，其中 source T 必须对齐平台 `feature_date`，`confidence` 只允许浮点舍入误差。
@@ -570,7 +570,7 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 - 若用 targeted sample 验证 daily strict、monthly fast path、cache 或 shard 等加速路径，所有对比路径必须使用同一组 `sample_dates` 和同一个 effective input end；diff 结论至少覆盖 `feature_date/target_date/target_tenor/horizon/direction/confidence/label/is_correct`。
 - 对 source-backed 方案，上述 targeted sample 的 diff 还必须覆盖 source benchmark 暴露的内部模型字段，例如 `vote_score`、`*_score`、`*_vs`、`*_dir`、`*_sign`。cache、shard、monthly fast path 或任何执行优化只有在最终方向和内部字段全部 0 diff 后，才能作为 full historical no-persist/persist 的候选执行路径。
 - 如果删除错误口径的旧回测 run，必须使用受控脚本显式指定 `scheme_id + run_id`，先 dry-run 打印命中行数，再 apply；不得手写散落 SQL 删除。
-- 同一前端任务格子 / 同一 `task_type` 列（例如 `5Y国债活跃 · T+5`）下，候选方案在相同 data source 和相同 target 覆盖窗口内的样本总数默认必须一致。写库后必须导出各候选方案的 `target_date` 集合并做 missing/extra diff；若不一致，必须先定位是缺 target 日、重复 target 日、未验证 actual，还是算法明确不产出有效信号。只有已在 `PREDICTION_SEMANTICS.md` 和踩坑文档登记的 source-original 周频有效信号例外，才允许样本总数不同；日频方案和新增方案不得用“算法可能不同”作为静默放行理由。
+- 同一前端任务格子 / 同一 `task_type` 列（例如 `5Y国债活跃 · T+5`）下，候选方案在相同 data source 和相同 target 覆盖窗口内的样本总数默认必须一致。写库后必须导出各候选方案的 `target_date` 集合并做 missing/extra diff；若不一致，必须先定位是缺 target 日、重复 target 日、未验证 actual，还是算法明确不产出有效信号。只有已在 `PREDICTION_SEMANTICS.md` 或 `SOURCE_ALGORITHM_FIDELITY.md` 登记的 source-original 周频有效信号例外，才允许样本总数不同；日频方案和新增方案不得用“算法可能不同”作为静默放行理由。
 - 方案保持 `paused`，直到最新特征周产出能力和 weekly live 写库验收完成。
 
 ### Step 8: API/前端只读验证
