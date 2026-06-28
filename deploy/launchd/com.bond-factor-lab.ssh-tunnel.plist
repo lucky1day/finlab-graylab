@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Bond Factor Lab — SSH 反向隧道（本地 Mac 常驻）
+  ===========================================================================
+  作用：把本地后端 127.0.0.1:8100 反向暴露到公网入口机的 127.0.0.1:18100，
+        供入口机 Nginx proxy_pass 使用。绑定到远端 127.0.0.1，确保公网
+        无法直连裸后端，只有入口机本地 Nginx 能访问。
+
+  部署（本地 Mac）：
+    1) 把下面占位符替换为真实值：
+         <SSH_USER>     入口机 SSH 用户名
+         <TUNNEL_KEY>   本地用于连接入口机的私钥文件名（位于 ~/.ssh/）
+       建议：先用 `ssh -i ~/.ssh/<TUNNEL_KEY> <SSH_USER>@bond.finailab.cn` 手动
+             连一次，接受 host key 并确认免密登录可用。
+    2) 安装并加载：
+         cp deploy/launchd/com.bond-factor-lab.ssh-tunnel.plist \
+            ~/Library/LaunchAgents/
+         launchctl bootstrap gui/$(id -u) \
+            ~/Library/LaunchAgents/com.bond-factor-lab.ssh-tunnel.plist
+    3) 查看状态 / 日志：
+         launchctl print gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
+         tail -f logs/com.bond-factor-lab.ssh-tunnel.err
+
+  存活策略：
+    - KeepAlive=true        ssh 进程退出后由 launchd 拉起（应对网络抖动/休眠）。
+    - ServerAliveInterval   30s 无响应探测一次，连续 3 次失败即断开退出，
+      ServerAliveCountMax   交给 launchd 重连，避免“僵尸隧道”占着端口不转发。
+    - ExitOnForwardFailure  远端端口转发建立失败立即退出重试，不静默挂起。
+    - ThrottleInterval=10   防止异常时每秒疯狂重启。
+  ===========================================================================
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bond-factor-lab.ssh-tunnel</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/macstudio0/bond-factor-lab</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/ssh</string>
+    <string>-N</string>
+    <string>-T</string>
+    <string>-o</string>
+    <string>ServerAliveInterval=30</string>
+    <string>-o</string>
+    <string>ServerAliveCountMax=3</string>
+    <string>-o</string>
+    <string>ExitOnForwardFailure=yes</string>
+    <string>-o</string>
+    <string>StrictHostKeyChecking=accept-new</string>
+    <string>-o</string>
+    <string>IdentitiesOnly=yes</string>
+    <string>-i</string>
+    <string>/Users/macstudio0/.ssh/&lt;TUNNEL_KEY&gt;</string>
+    <string>-R</string>
+    <string>127.0.0.1:18100:127.0.0.1:8100</string>
+    <string>&lt;SSH_USER&gt;@bond.finailab.cn</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.ssh-tunnel.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.ssh-tunnel.err</string>
+</dict>
+</plist>
