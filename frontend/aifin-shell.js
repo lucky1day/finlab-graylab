@@ -7,6 +7,7 @@
     "/quantflow/": "factor-lab",
     "/factor-lab": "factor-lab"
   };
+  var PUBLIC_BASE_PATH = "/bond-factor-lab";
 
   var viewToRoute = {
     "factor-lab": "/"
@@ -19,7 +20,43 @@
   var reduceMotionQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
   /* ─── Routing ─── */
+  function publicBasePath() {
+    var pathname = (window.location && window.location.pathname) || "/";
+    if (pathname === PUBLIC_BASE_PATH || pathname.indexOf(PUBLIC_BASE_PATH + "/") === 0) {
+      return PUBLIC_BASE_PATH;
+    }
+    return "";
+  }
+
+  function stripPublicBasePath(pathname) {
+    var basePath = publicBasePath();
+    if (basePath && (pathname === basePath || pathname.indexOf(basePath + "/") === 0)) {
+      return pathname.slice(basePath.length) || "/";
+    }
+    return pathname;
+  }
+
+  function routeUrl(route) {
+    var basePath = publicBasePath();
+    if (!basePath) {
+      return route;
+    }
+    if (route === "/") {
+      return basePath + "/";
+    }
+    return basePath + route;
+  }
+
+  function apiUrl(path) {
+    var basePath = publicBasePath();
+    if (!basePath || path.indexOf(basePath + "/") === 0) {
+      return path;
+    }
+    return basePath + path;
+  }
+
   function normalizeRoute(pathname) {
+    pathname = stripPublicBasePath(pathname);
     if (routeToView[pathname]) {
       return pathname;
     }
@@ -57,7 +94,7 @@
 
     if (shouldPush && window.history && window.history.pushState) {
       var nextRoute = viewToRoute[viewName] || "/";
-      window.history.pushState({ view: viewName }, "", nextRoute);
+      window.history.pushState({ view: viewName }, "", routeUrl(nextRoute));
     }
 
     if (shell) {
@@ -661,9 +698,10 @@
   }
 
   function fetchJson(url) {
-    return fetch(url, { cache: "no-store", headers: { Accept: "application/json" } }).then(function (response) {
+    var requestUrl = apiUrl(url);
+    return fetch(requestUrl, { cache: "no-store", headers: { Accept: "application/json" } }).then(function (response) {
       if (!response.ok) {
-        throw new Error("HTTP " + response.status + " " + url);
+        throw new Error("HTTP " + response.status + " " + requestUrl);
       }
       return response.json();
     });
@@ -1839,6 +1877,9 @@
     isLowSampleMetric: isLowSampleMetric,
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
+    apiUrlForTest: apiUrl,
+    normalizeRouteForTest: normalizeRoute,
+    routeUrlForTest: routeUrl,
     renderDailyResultForTest: renderDailyResult,
     renderFactorDailyRowsForTest: renderFactorDailyRows,
     renderTaskOverviewForTest: renderTaskOverview,

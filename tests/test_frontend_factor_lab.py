@@ -111,6 +111,48 @@ def _run_factor_lab_hook(script: str) -> dict:
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_api_urls_and_routes_use_public_base_path_when_served_under_prefix(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            window.location.pathname = "/bond-factor-lab/";
+            const calls = [];
+            const responses = {
+              "/bond-factor-lab/api/schemes": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] },
+              "/bond-factor-lab/api/backtests/factor-lab": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              calls.push(url);
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            return {
+              apiHealthUrl: hooks.apiUrlForTest("/api/health"),
+              normalizedRoot: hooks.normalizeRouteForTest("/bond-factor-lab/"),
+              normalizedFactorLab: hooks.normalizeRouteForTest("/bond-factor-lab/factor-lab"),
+              publicRoute: hooks.routeUrlForTest("/"),
+              calls
+            };
+            """
+        )
+
+        self.assertEqual(result["apiHealthUrl"], "/bond-factor-lab/api/health")
+        self.assertEqual(result["normalizedRoot"], "/")
+        self.assertEqual(result["normalizedFactorLab"], "/factor-lab")
+        self.assertEqual(result["publicRoute"], "/bond-factor-lab/")
+        self.assertEqual(
+            result["calls"],
+            ["/bond-factor-lab/api/schemes", "/bond-factor-lab/api/backtests/factor-lab"],
+        )
+
     def test_task_matrix_default_targets_include_1y_active_treasury(self) -> None:
         result = _run_factor_lab_hook(
             """
