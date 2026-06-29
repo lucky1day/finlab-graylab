@@ -1253,7 +1253,7 @@ button {
   position: absolute;
   top: calc(var(--topbar-h) + 96px);
   right: clamp(24px, 4vw, 72px);
-  width: min(460px, calc(100vw - 48px));
+  width: min(560px, calc(100vw - 48px));
   max-height: calc(100vh - var(--topbar-h) - 136px);
   padding: 24px;
   border: 1px solid var(--border-strong);
@@ -1317,6 +1317,20 @@ button {
   background: var(--bg-subtle);
   font-size: 12px;
   font-weight: 760;
+}
+
+.factor-daily-table th:nth-child(1),
+.factor-daily-table td:nth-child(1),
+.factor-daily-table th:nth-child(2),
+.factor-daily-table td:nth-child(2) {
+  width: 78px;
+  white-space: nowrap;
+}
+
+.factor-daily-table th:nth-child(5),
+.factor-daily-table td:nth-child(5) {
+  width: 58px;
+  text-align: center;
 }
 
 .factor-daily-table tr:last-child td {
