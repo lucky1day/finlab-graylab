@@ -1,0 +1,45 @@
+{
+  "status": "success",
+  "scheme_id": "monthly_1y_rf_top30_0629",
+  "benchmark_id": "monthly_0629",
+  "data_source": "source_original_monthly_binary_runner",
+  "rows": 1,
+  "row_count": 1,
+  "monthly_count": 1,
+  "labeled_rows": 1,
+  "correct": 1,
+  "accuracy": 1.0,
+  "target_rule": "next_month_observation_yield_vs_feature_month_observation_yield",
+  "original_benchmark_validation": {
+    "benchmark_rows": 1,
+    "matched_rows": 1,
+    "strict_key": [
+      "feature_month_id",
+      "feature_date",
+      "target_month_id",
+      "target_date",
+      "target_tenor",
+      "horizon"
+    ]
+  },
+  "benchmark_provenance": {
+    "source_role": "platform_current_monthly_adapter",
+    "generator": "backtests.monthly_1y_rf_top30_0629_reproduction.run_monthly_1y_rf_top30_0629_reproduction",
+    "bootstrap_source": "platform_current_monthly_adapter",
+    "source_family": "monthly_0629_binary_runner",
+    "target_rule": "next_month_observation_yield_vs_feature_month_observation_yield",
+    "source_original_monthly_algorithm_rows": 1,
+    "platform_current_monthly_adapter_rows": 1,
+    "source_package_hash": "2ab82437de8fe96a556b0cf492d36739442497f861e87d2a58be8cc320088e47",
+    "source_package_path": "source_evidence/benchmark_batches/monthly_0629/source_package/forecast_project",
+    "source_frequency": "M1Y",
+    "source_target_tenor": "1Y",
+    "source_final_select_id": "1Y-RF30",
+    "source_model_id": "monthly_1y_rf_top30_fixed",
+    "source_candidate_id": "1Y::Random Forest::top30",
+    "source_runner_module": "src.monthly.run_monthly_pipeline",
+    "manifest_path": "source_evidence/benchmark_batches/monthly_0629/manifest.json",
+    "current_generator": "backtests.monthly_1y_rf_top30_0629_reproduction.run_monthly_1y_rf_top30_0629_reproduction",
+    "cross_frequency_reuse": false
+  }
+}

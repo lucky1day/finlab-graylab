@@ -204,6 +204,25 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_monthly_scheme_requires_target_rule(self) -> None:
+        config = _base_config()
+        config["scheme_id"] = "demo_monthly"
+        config["frequency"] = "monthly"
+        config["task_type"] = "monthly"
+        config["horizon"] = 30
+        config["input_spec"] = {
+            "data_version": "shared_data_service_monthly.v1",
+            "required_columns": ["month_id"],
+        }
+        config["backtest"] = {
+            "runner": "backtests.demo_monthly",
+            "start_date": "2025-01-01",
+        }
+
+        errors = validate_config(config, dirname="demo_monthly")
+
+        self.assertIn("target_rule is required for weekly/monthly schemes", errors)
+
 
 if __name__ == "__main__":
     unittest.main()

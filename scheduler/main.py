@@ -10,6 +10,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from scheduler.daily_actuals_updater import update_actuals
+from scheduler.monthly_actuals_updater import update_monthly_actuals
 from scheduler.weekly_actuals_updater import update_weekly_actuals
 from scheduler.calendar import is_trading_day
 from scheduler.discovery import SchemeConfig, discover_schemes
@@ -131,11 +132,13 @@ def run_actuals_job(run_date: str | date | None = None, force: bool = False) -> 
         return
     daily_written = update_actuals(end_date=target_date)
     weekly_written = update_weekly_actuals(end_date=target_date)
+    monthly_written = update_monthly_actuals(end_date=target_date)
     logger.info(
-        "Actuals refresh finished: date=%s daily_records=%s weekly_records=%s",
+        "Actuals refresh finished: date=%s daily_records=%s weekly_records=%s monthly_records=%s",
         target_date,
         daily_written,
         weekly_written,
+        monthly_written,
     )
 
 

@@ -120,10 +120,10 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
                             f"input_spec.auxiliary_inputs[{idx}].required_columns must be a non-empty list of strings"
                         )
 
-    if frequency == "weekly":
+    if frequency in {"weekly", "monthly"}:
         target_rule = raw.get("target_rule")
         if not isinstance(target_rule, str) or not target_rule.strip():
-            errors.append("target_rule is required for weekly schemes")
+            errors.append("target_rule is required for weekly/monthly schemes")
 
     backtest = raw.get("backtest")
     if backtest is not None:

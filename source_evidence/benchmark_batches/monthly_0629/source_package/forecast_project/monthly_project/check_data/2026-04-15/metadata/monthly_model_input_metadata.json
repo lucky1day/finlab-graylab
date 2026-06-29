@@ -1,0 +1,29 @@
+{
+  "frequency": "monthly",
+  "run_date": "2026-04-15",
+  "trigger_date": "2026-04-15",
+  "input_cutoff_date": "2026-04-15",
+  "scheduled_trigger_date": "2026-04-15",
+  "db_rdate": "2026-04-15",
+  "source": "database",
+  "input_tables": [
+    "api_wind_daily",
+    "api_wind_derivative_daily",
+    "api_wind_weekly",
+    "api_wind_derivative_weekly",
+    "api_wind_monthly",
+    "api_wind_derivative_monthly",
+    "api_wind_indicators_all",
+    "api_wind_date",
+    "t_trade_calendar"
+  ],
+  "feature_month_id": 202604,
+  "target_month_id": 202605,
+  "month_id_min": "201002",
+  "month_id_max": "202604",
+  "row_count": 195,
+  "column_count": 123,
+  "trading_calendar_source": "db:t_trade_calendar",
+  "month_schedule_rule": "monthly runs on calendar day 15; input data is capped at the latest trading day on or before the 15th",
+  "input_cutoff_rule": "prediction inputs use database rows on or before feature_month-15; monthly_output.month_id <= feature_month_id"
+}

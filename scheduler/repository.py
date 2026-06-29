@@ -10,7 +10,7 @@ from sqlalchemy.engine import Engine, URL
 from scheduler.discovery import SchemeConfig
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
-from shared.models import ActualRecord, PredictionRecord, WeeklyActualRecord
+from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
 
 
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
@@ -417,6 +417,55 @@ def upsert_weekly_actuals(engine: Engine, records: Iterable[WeeklyActualRecord])
         return 0
     with engine.begin() as conn:
         _assert_weekly_actuals_target_rule_unique_key(conn)
+        conn.execute(sql, rows)
+    return len(rows)
+
+
+def upsert_monthly_actuals(engine: Engine, records: Iterable[MonthlyActualRecord]) -> int:
+    """UPSERT 月度实际方向记录。"""
+    rows = []
+    for record in records:
+        row = asdict(record)
+        row["extra"] = json.dumps(record.extra or {}, ensure_ascii=False)
+        rows.append(row)
+    if not rows:
+        return 0
+
+    if engine.dialect.name == "sqlite":
+        sql = text(
+            """
+            INSERT INTO t_scheme_monthly_actuals
+                (tenor, feature_month_id, target_month_id, predict_date, feature_date, target_date,
+                 feature_yield, target_yield, direction_monthly, price_signal, target_rule, extra)
+            VALUES
+                (:tenor, :feature_month_id, :target_month_id, :predict_date, :feature_date, :target_date,
+                 :feature_yield, :target_yield, :direction_monthly, :price_signal, :target_rule, :extra)
+            """
+        )
+    else:
+        sql = text(
+            """
+            INSERT INTO t_scheme_monthly_actuals
+                (tenor, feature_month_id, target_month_id, predict_date, feature_date, target_date,
+                 feature_yield, target_yield, direction_monthly, price_signal, target_rule, extra)
+            VALUES
+                (:tenor, :feature_month_id, :target_month_id, :predict_date, :feature_date, :target_date,
+                 :feature_yield, :target_yield, :direction_monthly, :price_signal, :target_rule, CAST(:extra AS JSON))
+            ON DUPLICATE KEY UPDATE
+                feature_month_id = VALUES(feature_month_id),
+                target_month_id = VALUES(target_month_id),
+                feature_date = VALUES(feature_date),
+                target_date = VALUES(target_date),
+                feature_yield = VALUES(feature_yield),
+                target_yield = VALUES(target_yield),
+                direction_monthly = VALUES(direction_monthly),
+                price_signal = VALUES(price_signal),
+                target_rule = VALUES(target_rule),
+                extra = VALUES(extra),
+                updated_at = CURRENT_TIMESTAMP
+            """
+        )
+    with engine.begin() as conn:
         conn.execute(sql, rows)
     return len(rows)
 

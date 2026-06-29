@@ -1,0 +1,180 @@
+{
+  "run_date": "2026-04-15",
+  "db_rdate": "2026-04-15",
+  "trigger_date": "2026-04-15",
+  "input_cutoff_date": "2026-04-15",
+  "scheduled_trigger_date": "2026-04-15",
+  "feature_month": "2026-04",
+  "requested_target_month": "2026-05",
+  "effective_target_month": "2026-05",
+  "dry_run": true,
+  "selected_candidates": {
+    "M1Y": "1Y-RF30 Random Forest top30 fixed",
+    "M5Y": "5Y-06 KNN top20",
+    "M10Y": "10Y-01 Random Forest top5"
+  },
+  "candidate_ids": {
+    "M1Y": "1Y::Random Forest::top30",
+    "M5Y": "5Y::KNN::top20",
+    "M10Y": "10Y::Random Forest::top5"
+  },
+  "month_rdate_bucket_rule": "monthly DB rdate is feature_month-15; trigger_date is calendar day 15",
+  "model_target_month_rule": "target month is feature_month + 1",
+  "prediction_label_policy": "current feature_month is predicted without target_month label",
+  "system_eval_start": "2026-04-15",
+  "system_eval_end": "2026-05-15",
+  "schedule": {
+    "trigger_date": "2026-04-15",
+    "scheduled_trigger_date": "2026-04-15",
+    "db_rdate": "2026-04-15",
+    "feature_month": "2026-04",
+    "feature_month_id": 202604,
+    "target_month": "2026-05",
+    "target_month_id": 202605,
+    "system_eval_start": "2026-04-15",
+    "system_eval_end": "2026-05-15",
+    "trading_calendar_source": "db:t_trade_calendar"
+  },
+  "direction_mapping": {
+    "y_pred=1": "空",
+    "y_pred=0": "多",
+    "other": "平"
+  },
+  "output_files": {
+    "prediction": "/Users/macmini02/bondproject/forecast_project/monthly_project/output/2026-04-15/prediction/monthly_selected_predictions.csv",
+    "db_payload": "/Users/macmini02/bondproject/forecast_project/monthly_project/output/2026-04-15/db_payload/t_pre_market_forecast_monthly_dry_run.csv",
+    "canonical_payload": "/Users/macmini02/bondproject/forecast_project/monthly_project/output/2026-04-15/db_payload/monthly_t_pre_market_forecast_payload.csv",
+    "shap_summary": "/Users/macmini02/bondproject/forecast_project/monthly_project/output/2026-04-15/shap/monthly_shap_summary.json",
+    "shap_raw_rows": "/Users/macmini02/bondproject/forecast_project/monthly_project/output/2026-04-15/shap/monthly_pseudo_shap_raw_rows.csv",
+    "shap_cleaned_rows": "/Users/macmini02/bondproject/forecast_project/monthly_project/output/2026-04-15/shap/monthly_shap_cleaned_rows.csv"
+  },
+  "details": {
+    "M1Y": {
+      "rdate": "2026-04-15",
+      "db_rdate": "2026-04-15",
+      "trigger_date": "2026-04-15",
+      "input_cutoff_date": "2026-04-15",
+      "scheduled_trigger_date": "2026-04-15",
+      "frequency": "M1Y",
+      "tenor": "1Y",
+      "final_select_id": "1Y-RF30",
+      "display_name": "1Y-RF30 Random Forest top30 fixed",
+      "model_id": "monthly_1y_rf_top30_fixed",
+      "candidate_id": "1Y::Random Forest::top30",
+      "target_month_requested": 202605,
+      "requested_target_month": "2026-05",
+      "target_month_effective": "2026-05",
+      "feature_month": "2026-04",
+      "feature_month_id": "2026-04",
+      "source_y_pred": "1",
+      "signal_label": 1,
+      "result": "空",
+      "pct": 0.5682972414682355,
+      "binary_mapping": {
+        "y_pred=1": "收益率上行或持平 -> 价格空",
+        "y_pred=0": "收益率下行 -> 价格多"
+      },
+      "legacy_five_class_note": "Old production monthly five-class categories are not mixed into this final selected binary model output.",
+      "known_limit": "2026-05 target bucket is incomplete in historical evaluation and is not formal accuracy.",
+      "summary": {
+        "candidate_key": "1y_rf_top30",
+        "status": "ok",
+        "model_name": "Random Forest",
+        "top_n": "top30",
+        "params": {
+          "class_weight": "balanced",
+          "max_depth": 3,
+          "min_samples_leaf": 2,
+          "n_estimators": 30
+        },
+        "validation_overall_accuracy": 0.4583333333333333,
+        "param_selection": "fixed_params",
+        "prediction_mode": "production_unlabeled_feature_month"
+      }
+    },
+    "M5Y": {
+      "rdate": "2026-04-15",
+      "db_rdate": "2026-04-15",
+      "trigger_date": "2026-04-15",
+      "input_cutoff_date": "2026-04-15",
+      "scheduled_trigger_date": "2026-04-15",
+      "frequency": "M5Y",
+      "tenor": "5Y",
+      "final_select_id": "5Y-06",
+      "display_name": "5Y-06 KNN top20",
+      "model_id": "monthly_5y_knn_top20",
+      "candidate_id": "5Y::KNN::top20",
+      "target_month_requested": 202605,
+      "requested_target_month": "2026-05",
+      "target_month_effective": "2026-05",
+      "feature_month": "2026-04",
+      "feature_month_id": "2026-04",
+      "source_y_pred": "0",
+      "signal_label": -1,
+      "result": "多",
+      "pct": 1.0,
+      "binary_mapping": {
+        "y_pred=1": "收益率上行或持平 -> 价格空",
+        "y_pred=0": "收益率下行 -> 价格多"
+      },
+      "legacy_five_class_note": "Old production monthly five-class categories are not mixed into this final selected binary model output.",
+      "known_limit": "2026-05 target bucket is incomplete in historical evaluation and is not formal accuracy.",
+      "summary": {
+        "candidate_key": "5y06",
+        "status": "ok",
+        "model_name": "KNN",
+        "top_n": "top20",
+        "params": {
+          "n_neighbors": 3,
+          "weights": "uniform"
+        },
+        "validation_overall_accuracy": 0.75,
+        "param_selection": "validation_grid",
+        "prediction_mode": "production_unlabeled_feature_month"
+      }
+    },
+    "M10Y": {
+      "rdate": "2026-04-15",
+      "db_rdate": "2026-04-15",
+      "trigger_date": "2026-04-15",
+      "input_cutoff_date": "2026-04-15",
+      "scheduled_trigger_date": "2026-04-15",
+      "frequency": "M10Y",
+      "tenor": "10Y",
+      "final_select_id": "10Y-01",
+      "display_name": "10Y-01 Random Forest top5",
+      "model_id": "monthly_10y_rf_top5",
+      "candidate_id": "10Y::Random Forest::top5",
+      "target_month_requested": 202605,
+      "requested_target_month": "2026-05",
+      "target_month_effective": "2026-05",
+      "feature_month": "2026-04",
+      "feature_month_id": "2026-04",
+      "source_y_pred": "0",
+      "signal_label": -1,
+      "result": "多",
+      "pct": 0.6887698388630824,
+      "binary_mapping": {
+        "y_pred=1": "收益率上行或持平 -> 价格空",
+        "y_pred=0": "收益率下行 -> 价格多"
+      },
+      "legacy_five_class_note": "Old production monthly five-class categories are not mixed into this final selected binary model output.",
+      "known_limit": "2026-05 target bucket is incomplete in historical evaluation and is not formal accuracy.",
+      "summary": {
+        "candidate_key": "10y01",
+        "status": "ok",
+        "model_name": "Random Forest",
+        "top_n": "top5",
+        "params": {
+          "n_estimators": 100,
+          "max_depth": 3,
+          "min_samples_leaf": 2,
+          "class_weight": "balanced"
+        },
+        "validation_overall_accuracy": 0.6666666666666666,
+        "param_selection": "validation_grid",
+        "prediction_mode": "production_unlabeled_feature_month"
+      }
+    }
+  }
+}
