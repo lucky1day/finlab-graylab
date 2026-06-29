@@ -347,6 +347,10 @@
     );
   }
 
+  function isWeeklyAverageTask(task) {
+    return task && task.taskType === "weekly_average";
+  }
+
   function liveDividerLabels(scheme, task) {
     var dividerLabel = normalizeIsoDate(scheme && scheme.liveSinceDate);
     var metricSinceLabel = normalizeIsoDate(scheme && scheme.liveMetricSinceDate);
@@ -589,6 +593,18 @@
   function detailDisplayDay(row, frequency, horizon) {
     var sourceDate = row.target_date || "";
     return String(sourceDate).slice(5, 10).replace("-", "/");
+  }
+
+  function shortDateLabel(value, fallback) {
+    var normalized = normalizeIsoDate(value);
+    if (normalized) return normalized.slice(5).replace("-", "/");
+    return fallback || "--";
+  }
+
+  function dateCellHtml(value, fallback) {
+    var label = shortDateLabel(value, fallback);
+    var title = normalizeIsoDate(value) || label;
+    return '<td class="mono" title="' + escapeHtml(title) + '">' + escapeHtml(label) + '</td>';
   }
 
   function dailyRowsByMonth(rows, frequency, horizon) {
@@ -1604,13 +1620,18 @@
     var task = getTaskByKey(factorLabState.selectedTaskKey);
     var scheme = getSelectedScheme();
     var isWeekly = isWeeklyTask(task);
+    var isWeeklyAverage = isWeeklyAverageTask(task);
     var dateHeader = document.getElementById("factorDailyDateHeader");
     var note = document.getElementById("factorCalendarNote");
     title.textContent = month + (isWeekly ? " 周度验证表" : " 每日验证表");
     meta.textContent = (scheme ? scheme.name : "--") + " · " + task.label;
-    if (dateHeader) dateHeader.textContent = isWeekly ? "目标周五" : "交易日";
+    if (dateHeader) dateHeader.textContent = isWeeklyAverage ? "目标周" : "目标日";
     if (note) note.textContent = isWeekly
-      ? "表内可继续滚动查看该月全部周度预测；周五非交易日时显示该周最后交易日。"
+      ? (
+          isWeeklyAverage
+            ? "表内可继续滚动查看该月全部周度预测；目标周按该周最后可验证交易日标记。"
+            : "表内可继续滚动查看该月全部周度预测；目标日为下周最后一个交易日。"
+        )
       : "表内可继续滚动查看该月全部交易日的预测。";
 
     var html = "";
@@ -1622,7 +1643,7 @@
         })
       : (isWeekly ? factorWeeklyRows : factorDailyRows);
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="4" class="factor-empty-cell">当前月份暂无每日明细</td></tr>';
+      body.innerHTML = '<tr><td colspan="5" class="factor-empty-cell">当前月份暂无每日明细</td></tr>';
       return;
     }
     rows.forEach(function (row) {
@@ -1631,7 +1652,8 @@
       var displayDay = row.day.replace(/^\d{2}/, monthLabel);
       var result = renderDailyResult(row);
       html += '<tr>';
-      html += '<td class="mono">' + escapeHtml(displayDay) + '</td>';
+      html += dateCellHtml(row.predictDate, "--");
+      html += dateCellHtml(row.targetDate, displayDay);
       html += '<td class="' + predictedClass + '">' + escapeHtml(row.predicted) + '</td>';
       html += '<td class="' + actualClass + '">' + escapeHtml(row.actual) + '</td>';
       html += '<td>' + result + '</td>';
