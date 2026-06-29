@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 from typing import Iterable
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, URL
 
 from scheduler.discovery import SchemeConfig
@@ -416,8 +416,32 @@ def upsert_weekly_actuals(engine: Engine, records: Iterable[WeeklyActualRecord])
     if not rows:
         return 0
     with engine.begin() as conn:
+        _assert_weekly_actuals_target_rule_unique_key(conn)
         conn.execute(sql, rows)
     return len(rows)
+
+
+def _assert_weekly_actuals_target_rule_unique_key(conn) -> None:
+    """确认周度 actual 唯一键包含 target_rule，避免 point/average 互相覆盖。"""
+    expected = ("tenor", "predict_date", "target_rule")
+    legacy = ("tenor", "predict_date")
+    indexes = inspect(conn).get_indexes("t_scheme_weekly_actuals")
+    unique_columns = [
+        tuple(index.get("column_names") or ())
+        for index in indexes
+        if bool(index.get("unique"))
+    ]
+    if expected not in unique_columns:
+        raise RuntimeError(
+            "t_scheme_weekly_actuals missing unique key "
+            "uk_weekly_actual_predict_rule(tenor,predict_date,target_rule); "
+            "run migrations/014_weekly_average_actuals.sql before weekly actual writes"
+        )
+    if legacy in unique_columns:
+        raise RuntimeError(
+            "t_scheme_weekly_actuals still has legacy unique key on (tenor,predict_date); "
+            "run migrations/014_weekly_average_actuals.sql before weekly actual writes"
+        )
 
 
 def write_run_log(

@@ -142,17 +142,23 @@ target_date  = T + horizon
 
 若 source-original batch reproduction 的 benchmark row 跨入 gray/live target 区间，该 row 仍不得扩散为 live 数值真值；它只能证明 historical/source-original 口径。gray_live/scheduled_live adapter 与补齐必须继续按 `feature_date` 硬截止，并使用 live-safe oracle 或同口径 live benchmark 验收。
 
-当前已批准的例外是三个 2025-05-29 来源批次周频方案的历史回测：
+当前已批准的 batch reproduction 例外只包括三个 2025-05-29 来源批次周度单点源算法：
 
 - `weekly_5y_direct_0529`
 - `weekly_7y_cross_d_overlay_0529`
 - `weekly_10y_d_overlay_0529`
 
-批准原因是这三个方案的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
+批准原因是这三个源算法家族的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
 
-这三个方案的回测窗口已经对齐为同一历史输出窗口和同一灰度截断边界，但样本总数不强制相同。平台写入的是算法 core 实际产出的“有效信号行”，不是日历周占位行；如果某一周的规则信号为 0、NaN 或被源算法判定为无效，该周就不应被平台补成一条预测。当前 latest 的有效输出为：5Y run_id=`109` 共 71 条，缺 `feature_week_id=202534`；7Y run_id=`110` 共 68 条，缺 `202529/202534/202547/202608`；10Y run_id=`108` 共 72 条，无缺周。该差异是算法输出本身，不是前端隐藏、latest view 分组错误或 DB 日历缺失。
+旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 曾错误复用周度单点输出并生成 run_id=`131/132/133`，现已暂停，仅作为历史审计保留，不属于当前周平均入库口径。当前有效周平均 0529 方案来自 `/Users/macstudio0/Desktop/方案/0629/forecast_project/` 的独立 LGBM 原始周平均算法，只覆盖 `1Y/5Y/10Y`，没有 `7Y`：
 
-这三个例外只允许用于历史回测和 benchmark 复现。它们的灰度实盘、正式实盘 adapter 仍必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
+- `weekly_avg_1y_lgbm_0529`，latest backtest run_id=`137`，72 行。
+- `weekly_avg_5y_lgbm_0529`，latest backtest run_id=`138`，72 行。
+- `weekly_avg_10y_lgbm_0529`，latest backtest run_id=`139`，72 行。
+
+这三套周平均方案不得复用 `weekly_*` 周度单点方案的 label、Score、Model2、D-overlay 或 point runner；actual/label 固定为 `next_week_average_yield_vs_current_week_average_yield`，即“目标周平均收益率 vs 当前周平均收益率”。source package 每个期限原始输出 73 行，其中 `effective_week_id=202607` 重复且内容一致；平台按 weekly strict key 折叠为 72 个唯一有效周，并在 benchmark summary 记录该折叠。
+
+上述周度单点例外只允许用于历史回测和 benchmark 复现。周度单点和周平均的灰度实盘、正式实盘 adapter 都必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
 ## 6. 指标统计口径
 

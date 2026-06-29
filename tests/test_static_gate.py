@@ -38,6 +38,7 @@ def _write_minimal_scheme(project_root: Path, *, scheme_id: str = "demo_daily") 
                 "horizon: 1",
                 'tenors: ["10Y"]',
                 "frequency: daily",
+                'task_type: "T+1"',
                 "schedule:",
                 '  cron: "25 9 * * 1-5"',
                 '  timezone: "Asia/Shanghai"',
@@ -186,6 +187,28 @@ class StaticGateHardeningTests(unittest.TestCase):
                 any("whitelist" in item and "shared.data_service" in item for item in result.errors),
                 result.errors,
             )
+
+    def test_predict_can_import_weekly_average_source_evidence_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            (scheme_dir / "predict.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from shared.weekly_average_source_evidence import require_weekly_average_source_evidence",
+                        'SCHEME_ID = "demo_daily"',
+                        "def run(predict_date: str):",
+                        "    require_weekly_average_source_evidence(SCHEME_ID)",
+                        "    return []",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = _run_gate(project_root)
+
+            self.assertTrue(result.passed, result.errors)
 
     def test_predict_cannot_import_data_service_through_input_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

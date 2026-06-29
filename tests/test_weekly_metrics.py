@@ -69,7 +69,8 @@ def _create_weekly_schema(engine) -> None:
                     tenor TEXT,
                     predict_date TEXT,
                     target_date TEXT,
-                    direction_weekly INTEGER
+                    direction_weekly INTEGER,
+                    target_rule TEXT
                 )
                 """
             )
@@ -96,6 +97,7 @@ def _register_weekly_scheme(engine) -> None:
 class WeeklyMetricsTests(unittest.TestCase):
     def test_scheme_metrics_uses_weekly_actuals_for_horizon_6(self) -> None:
         from backend.services import scheme_metrics
+        from shared.prediction_context import WEEKLY_TARGET_RULE
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
         _create_weekly_schema(engine)
@@ -126,10 +128,11 @@ class WeeklyMetricsTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_weekly_actuals
-                        (tenor, predict_date, target_date, direction_weekly)
-                    VALUES ('10Y', '2026-05-23', '2026-05-29', -1)
+                        (tenor, predict_date, target_date, direction_weekly, target_rule)
+                    VALUES ('10Y', '2026-05-23', '2026-05-29', -1, :target_rule)
                     """
-                )
+                ),
+                {"target_rule": WEEKLY_TARGET_RULE},
             )
 
         result = scheme_metrics(engine, "demo_weekly_scheme__h6__10Y")
@@ -142,6 +145,7 @@ class WeeklyMetricsTests(unittest.TestCase):
 
     def test_scheme_metrics_buckets_weekly_rows_by_target_month(self) -> None:
         from backend.services import scheme_metrics
+        from shared.prediction_context import WEEKLY_TARGET_RULE
 
         engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
         _create_weekly_schema(engine)
@@ -165,12 +169,13 @@ class WeeklyMetricsTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_weekly_actuals
-                        (tenor, predict_date, target_date, direction_weekly)
+                        (tenor, predict_date, target_date, direction_weekly, target_rule)
                     VALUES
-                        ('10Y', '2025-10-25', '2025-11-07', -1),
-                        ('10Y', '2025-11-01', '2025-11-14', 1)
+                        ('10Y', '2025-10-25', '2025-11-07', -1, :target_rule),
+                        ('10Y', '2025-11-01', '2025-11-14', 1, :target_rule)
                     """
-                )
+                ),
+                {"target_rule": WEEKLY_TARGET_RULE},
             )
 
         result = scheme_metrics(engine, "demo_weekly_scheme__h6__10Y")
@@ -180,6 +185,62 @@ class WeeklyMetricsTests(unittest.TestCase):
         self.assertEqual(len(metrics), 1)
         self.assertEqual(metrics["2025-11"]["samples"], 2)
         self.assertEqual([row["feature_date"] for row in result["daily_rows"]], ["2025-10-24", "2025-10-31"])
+
+    def test_scheme_metrics_uses_weekly_average_actuals_for_weekly_average_task(self) -> None:
+        from backend.services import scheme_metrics
+        from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        _create_weekly_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, name, description, horizon, task_type, frequency, target_tenor,
+                         schedule_cron, schedule_timezone, status, deployed_at, created_at, updated_at)
+                    VALUES
+                        ('demo_weekly_average__h6__10Y', 'demo_weekly_average', 'Demo Weekly Average', '',
+                         6, 'weekly_average', 'weekly', '10Y', '30 11 * * 6', 'Asia/Shanghai', 'active',
+                         '2026-06-09', '2026-06-09', '2026-06-09')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_predictions
+                        (run_id, scheme_id, target_tenor, horizon, predict_date, target_date,
+                         predicted_direction, confidence, model_version, extra)
+                    VALUES
+                        (1, 'demo_weekly_average', '10Y', 6, '2026-05-23', '2026-05-29',
+                         1, 0.32, 'test', '{"frequency":"weekly","feature_date":"2026-05-22"}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_weekly_actuals
+                        (tenor, predict_date, target_date, direction_weekly, target_rule)
+                    VALUES
+                        ('10Y', '2026-05-23', '2026-05-29', -1, :point_rule),
+                        ('10Y', '2026-05-23', '2026-05-29', 1, :average_rule)
+                    """
+                ),
+                {
+                    "point_rule": WEEKLY_TARGET_RULE,
+                    "average_rule": WEEKLY_AVERAGE_TARGET_RULE,
+                },
+            )
+
+        result = scheme_metrics(engine, "demo_weekly_average__h6__10Y")
+
+        self.assertEqual(result["task_type"], "weekly_average")
+        self.assertEqual(result["summary"]["samples"], 1)
+        self.assertEqual(result["summary"]["correct"], 1)
+        self.assertEqual(result["daily_rows"][0]["actual_direction"], 1)
+        self.assertTrue(result["daily_rows"][0]["is_correct"])
 
 
 if __name__ == "__main__":

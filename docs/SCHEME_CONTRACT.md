@@ -174,7 +174,7 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-06-14：当前在册 active 方案为 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`、`daily_5y_2_v28`；旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役。
+状态最近更新 2026-06-29：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案与独立周平均 LGBM 方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。
 
 | 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` | `daily_5y_2_v28` |
 |--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|:----------------:|

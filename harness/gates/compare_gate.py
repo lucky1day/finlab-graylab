@@ -9,6 +9,11 @@ from typing import Any
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
+from shared.weekly_average_source_evidence import (
+    PLATFORM_CURRENT_SOURCE_ROLE,
+    WEEKLY_AVERAGE_SOURCE_ROLE,
+    is_point_backed_weekly_average_provenance,
+)
 
 
 # 容差（PINNED）
@@ -26,7 +31,23 @@ STRICT_PREDICTION_FIELDS = (
     "label",
     "is_correct",
 )
+WEEKLY_STRICT_PREDICTION_FIELDS = (
+    "feature_week_id",
+    "feature_date",
+    "target_week_id",
+    "target_date",
+    "target_tenor",
+    "horizon",
+    "direction",
+    "confidence",
+    "label",
+    "is_correct",
+)
+WEEKLY_AVERAGE_STRICT_PREDICTION_FIELDS = WEEKLY_STRICT_PREDICTION_FIELDS + ("target_rule",)
+STRICT_KEY_FIELDS = ("feature_date", "target_date", "target_tenor", "horizon")
+WEEKLY_STRICT_KEY_FIELDS = ("feature_week_id", "feature_date", "target_date", "target_tenor", "horizon")
 INTERNAL_SCORE_FIELDS = ("vote_score",)
+INTERNAL_NUMERIC_FIELDS = ("rule_vote",)
 INTERNAL_NUMERIC_SUFFIXES = ("_score", "_vs")
 INTERNAL_DIRECTION_SUFFIXES = ("_dir", "_sign")
 
@@ -52,7 +73,13 @@ class CompareGate(Gate):
 
         # 读取配置判断 benchmark 是否为必需
         config = _load_config(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
-        benchmark_required = bool(config.get("backtest", {}).get("benchmark_required", False))
+        backtest_config = config.get("backtest", {}) if isinstance(config.get("backtest"), dict) else {}
+        benchmark_required = bool(backtest_config.get("benchmark_required", False))
+        strict_fields = _strict_prediction_fields(config)
+        key_fields = _strict_key_fields(config)
+        exact_match_fields = _exact_match_fields(config)
+        expected_exact_values = _expected_exact_values(config)
+        required_internal_fields = _required_internal_fields(backtest_config)
 
         if not sample_path.exists() and not summary_path.exists():
             if benchmark_required:
@@ -89,6 +116,10 @@ class CompareGate(Gate):
 
         errors: list[str] = []
         evidence: list[Evidence] = [Evidence("benchmark_dir", str(bench_dir))]
+        provenance_errors = _weekly_average_provenance_errors(config, bench_dir, ctx.scheme_id)
+        if provenance_errors:
+            errors.extend(provenance_errors)
+            evidence.append(Evidence("weekly_average_provenance_errors", provenance_errors))
 
         original_rows = _read_predictions_csv(sample_path) if sample_path.exists() else []
         current_rows = _current_platform_predictions(ctx)
@@ -96,7 +127,16 @@ class CompareGate(Gate):
         comparison: dict[str, Any] = {}
 
         if sample_path.exists():
-            pred_diff = _compare_predictions(original_rows, current_rows, strict=benchmark_required)
+            pred_diff = _compare_predictions(
+                original_rows,
+                current_rows,
+                strict=benchmark_required,
+                strict_fields=strict_fields,
+                key_fields=key_fields,
+                exact_match_fields=exact_match_fields,
+                expected_exact_values=expected_exact_values,
+                required_internal_fields=required_internal_fields,
+            )
             comparison["predictions"] = pred_diff
             evidence.append(Evidence("total_record_count_original", pred_diff["total_original"]))
             evidence.append(Evidence("total_record_count_current", pred_diff["total_current"]))
@@ -106,15 +146,34 @@ class CompareGate(Gate):
             evidence.append(Evidence("max_confidence_abs_diff", pred_diff["max_confidence_abs_diff"]))
             evidence.append(Evidence("mean_confidence_abs_diff", pred_diff["mean_confidence_abs_diff"]))
             evidence.append(Evidence("internal_fields", pred_diff["internal_fields"]))
+            evidence.append(Evidence("required_internal_fields", required_internal_fields))
             evidence.append(Evidence("internal_mismatch_count", pred_diff["internal_mismatch_count"]))
             evidence.append(Evidence("max_internal_abs_diff", pred_diff["max_internal_abs_diff"]))
             evidence.append(Evidence("strict_prediction_key", benchmark_required))
             evidence.append(Evidence("validation_error_count", len(pred_diff["validation_errors"])))
+            evidence.append(Evidence("strict_value_mismatch_count", len(pred_diff["strict_value_mismatches"])))
+            evidence.append(Evidence("duplicate_key_error_count", len(pred_diff["duplicate_key_errors"])))
+            evidence.append(Evidence("required_internal_error_count", len(pred_diff["required_internal_errors"])))
 
             if pred_diff["validation_errors"]:
                 errors.append(
                     "missing required benchmark columns/values: "
                     f"{len(pred_diff['validation_errors'])}"
+                )
+            if pred_diff["strict_value_mismatches"]:
+                errors.append(
+                    "strict benchmark value mismatches: "
+                    f"{len(pred_diff['strict_value_mismatches'])}"
+                )
+            if pred_diff["duplicate_key_errors"]:
+                errors.append(
+                    "duplicate strict benchmark keys: "
+                    f"{len(pred_diff['duplicate_key_errors'])}"
+                )
+            if pred_diff["required_internal_errors"]:
+                errors.append(
+                    "missing required internal benchmark columns/values: "
+                    f"{len(pred_diff['required_internal_errors'])}"
                 )
             if pred_diff["total_current"] != pred_diff["total_original"]:
                 errors.append(
@@ -193,9 +252,93 @@ def _read_predictions_csv(path: Path) -> list[dict[str, str]]:
         return [dict(row) for row in csv.DictReader(handle)]
 
 
-def _row_key(row: dict[str, Any], *, strict: bool = False) -> tuple[str, ...]:
+def _strict_prediction_fields(config: dict[str, Any]) -> tuple[str, ...]:
+    frequency = str(config.get("frequency") or "").strip()
+    task_type = str(config.get("task_type") or "").strip()
+    if task_type == "weekly_average":
+        return WEEKLY_AVERAGE_STRICT_PREDICTION_FIELDS
+    if frequency == "weekly" or task_type.startswith("weekly_"):
+        return WEEKLY_STRICT_PREDICTION_FIELDS
+    return STRICT_PREDICTION_FIELDS
+
+
+def _strict_key_fields(config: dict[str, Any]) -> tuple[str, ...]:
+    frequency = str(config.get("frequency") or "").strip()
+    task_type = str(config.get("task_type") or "").strip()
+    if frequency == "weekly" or task_type.startswith("weekly_"):
+        return WEEKLY_STRICT_KEY_FIELDS
+    return STRICT_KEY_FIELDS
+
+
+def _exact_match_fields(config: dict[str, Any]) -> tuple[str, ...]:
+    task_type = str(config.get("task_type") or "").strip()
+    if task_type == "weekly_average":
+        return ("target_rule",)
+    return ()
+
+
+def _expected_exact_values(config: dict[str, Any]) -> dict[str, str]:
+    task_type = str(config.get("task_type") or "").strip()
+    if task_type != "weekly_average":
+        return {}
+    target_rule = str(config.get("target_rule") or "").strip()
+    return {"target_rule": target_rule} if target_rule else {}
+
+
+def _weekly_average_provenance_errors(
+    config: dict[str, Any],
+    bench_dir: Path,
+    scheme_id: str,
+) -> list[str]:
+    task_type = str(config.get("task_type") or "").strip()
+    if task_type != "weekly_average":
+        return []
+
+    errors: list[str] = []
+    expected_roles = {
+        "original_backtest_summary.json": {WEEKLY_AVERAGE_SOURCE_ROLE},
+        "current_backtest_summary.json": {PLATFORM_CURRENT_SOURCE_ROLE, "platform_current_weekly_average_runner"},
+    }
+    for summary_name, allowed_roles in expected_roles.items():
+        summary_path = bench_dir / summary_name
+        if not summary_path.exists():
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            errors.append(f"weekly average benchmark provenance unreadable: {summary_name}: {exc}")
+            continue
+        provenance = summary.get("benchmark_provenance")
+        if not isinstance(provenance, dict):
+            errors.append(f"weekly average benchmark provenance missing: {summary_name}")
+            continue
+        if is_point_backed_weekly_average_provenance(provenance, scheme_id=scheme_id):
+            errors.append(f"weekly average benchmark provenance is point-backed: {summary_name}")
+            continue
+        source_role = str(provenance.get("source_role") or "").strip()
+        if source_role not in allowed_roles:
+            errors.append(
+                "weekly average benchmark provenance source_role invalid: "
+                f"{summary_name}: {source_role!r}"
+            )
+    return errors
+
+
+def _required_internal_fields(backtest_config: dict[str, Any]) -> list[str]:
+    raw = backtest_config.get("required_internal_fields")
+    if not isinstance(raw, list):
+        return []
+    return [str(field) for field in raw if str(field).strip()]
+
+
+def _row_key(
+    row: dict[str, Any],
+    *,
+    strict: bool = False,
+    key_fields: tuple[str, ...] = STRICT_KEY_FIELDS,
+) -> tuple[str, ...]:
     if strict:
-        return tuple(str(row.get(key) or "").strip() for key in ("feature_date", "target_date", "target_tenor", "horizon"))
+        return tuple(str(row.get(key) or "").strip() for key in key_fields)
     date = str(row.get("predict_date") or row.get("date") or "").strip()
     tenor = str(row.get("tenor") or "").strip()
     return date, tenor
@@ -220,10 +363,40 @@ def _compare_predictions(
     current: list[dict[str, Any]],
     *,
     strict: bool = False,
+    strict_fields: tuple[str, ...] = STRICT_PREDICTION_FIELDS,
+    key_fields: tuple[str, ...] = STRICT_KEY_FIELDS,
+    exact_match_fields: tuple[str, ...] = (),
+    expected_exact_values: dict[str, str] | None = None,
+    required_internal_fields: list[str] | None = None,
 ) -> dict[str, Any]:
-    validation_errors = _validate_strict_prediction_rows("original", original) + _validate_strict_prediction_rows("current", current) if strict else []
-    original_map = {_row_key(row, strict=strict): row for row in original}
-    current_map = {_row_key(row, strict=strict): row for row in current}
+    required_internal_fields = required_internal_fields or []
+    expected_exact_values = expected_exact_values or {}
+    validation_errors = (
+        _validate_strict_prediction_rows("original", original, strict_fields)
+        + _validate_strict_prediction_rows("current", current, strict_fields)
+        if strict
+        else []
+    )
+    strict_value_mismatches = (
+        _validate_expected_exact_fields("original", original, expected_exact_values)
+        + _validate_expected_exact_fields("current", current, expected_exact_values)
+        if strict
+        else []
+    )
+    required_internal_errors = (
+        _validate_required_internal_fields("original", original, required_internal_fields)
+        + _validate_required_internal_fields("current", current, required_internal_fields)
+        if strict
+        else []
+    )
+    duplicate_key_errors = (
+        _duplicate_key_errors("original", original, key_fields)
+        + _duplicate_key_errors("current", current, key_fields)
+        if strict
+        else []
+    )
+    original_map = {_row_key(row, strict=strict, key_fields=key_fields): row for row in original}
+    current_map = {_row_key(row, strict=strict, key_fields=key_fields): row for row in current}
 
     original_keys = set(original_map)
     current_keys = set(current_map)
@@ -234,7 +407,7 @@ def _compare_predictions(
     direction_matches = 0
     max_conf_diff = 0.0
     conf_diffs: list[float] = []
-    internal_fields = _internal_fields(original, current)
+    internal_fields = _internal_fields(original, current, required_internal_fields)
     max_internal_diff = 0.0
     internal_mismatches: list[dict[str, Any]] = []
     per_key: list[dict[str, Any]] = []
@@ -252,6 +425,15 @@ def _compare_predictions(
             conf_diffs.append(conf_diff)
             max_conf_diff = max(max_conf_diff, conf_diff)
         key_internal_mismatches: list[dict[str, Any]] = []
+        key_strict_value_mismatches: list[dict[str, Any]] = []
+        if strict:
+            for field in exact_match_fields:
+                mismatch = _compare_exact_field(field, original_map[key], current_map[key])
+                if mismatch is None:
+                    continue
+                key_mismatch = {"key": list(key), **mismatch}
+                key_strict_value_mismatches.append(key_mismatch)
+                strict_value_mismatches.append(key_mismatch)
         for field in internal_fields:
             mismatch = _compare_internal_field(field, original_map[key], current_map[key])
             if mismatch is None:
@@ -268,6 +450,7 @@ def _compare_predictions(
                 "current_direction": c_dir,
                 "direction_match": dir_match,
                 "confidence_abs_diff": conf_diff,
+                "strict_value_mismatches": key_strict_value_mismatches,
                 "internal_mismatches": key_internal_mismatches,
             }
         )
@@ -292,6 +475,9 @@ def _compare_predictions(
         "internal_mismatches": internal_mismatches,
         "max_internal_abs_diff": max_internal_diff,
         "validation_errors": validation_errors,
+        "strict_value_mismatches": strict_value_mismatches,
+        "duplicate_key_errors": duplicate_key_errors,
+        "required_internal_errors": required_internal_errors,
         "per_key": per_key,
     }
 
@@ -299,11 +485,12 @@ def _compare_predictions(
 def _internal_fields(
     original: list[dict[str, Any]],
     current: list[dict[str, Any]],
+    required_internal_fields: list[str] | None = None,
 ) -> list[str]:
-    fields: set[str] = set()
+    fields: set[str] = set(required_internal_fields or [])
     for row in [*original, *current]:
         for field in row:
-            if field in STRICT_PREDICTION_FIELDS:
+            if field in WEEKLY_AVERAGE_STRICT_PREDICTION_FIELDS:
                 continue
             if field in {"predict_date", "date", "tenor", "pred_direction", "direction", "confidence"}:
                 continue
@@ -363,12 +550,29 @@ def _compare_internal_field(field: str, original: dict[str, Any], current: dict[
     }
 
 
+def _compare_exact_field(field: str, original: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:
+    o_raw = original.get(field)
+    c_raw = current.get(field)
+    if _is_blank(o_raw) and _is_blank(c_raw):
+        return None
+    match = str(o_raw).strip() == str(c_raw).strip()
+    if match:
+        return None
+    return {
+        "field": field,
+        "original": "" if o_raw is None else str(o_raw).strip(),
+        "current": "" if c_raw is None else str(c_raw).strip(),
+        "match": False,
+        "reason": "strict_value_diff",
+    }
+
+
 def _is_blank(value: Any) -> bool:
     return value is None or str(value).strip() == ""
 
 
 def _is_internal_numeric_field(field: str) -> bool:
-    return field in INTERNAL_SCORE_FIELDS or field.endswith(INTERNAL_NUMERIC_SUFFIXES)
+    return field in INTERNAL_SCORE_FIELDS or field in INTERNAL_NUMERIC_FIELDS or field.endswith(INTERNAL_NUMERIC_SUFFIXES)
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -378,12 +582,80 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
-def _validate_strict_prediction_rows(source: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _validate_strict_prediction_rows(
+    source: str,
+    rows: list[dict[str, Any]],
+    strict_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
     errors: list[dict[str, Any]] = []
     for index, row in enumerate(rows, start=2):
-        missing = [field for field in STRICT_PREDICTION_FIELDS if str(row.get(field) or "").strip() == ""]
+        missing = [field for field in strict_fields if _is_blank(row.get(field))]
         if missing:
             errors.append({"source": source, "row_number": index, "missing": missing})
+    return errors
+
+
+def _validate_required_internal_fields(
+    source: str,
+    rows: list[dict[str, Any]],
+    required_internal_fields: list[str],
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    if not required_internal_fields:
+        return errors
+    for index, row in enumerate(rows, start=2):
+        missing = [field for field in required_internal_fields if _is_blank(row.get(field))]
+        if missing:
+            errors.append({"source": source, "row_number": index, "missing": missing})
+    return errors
+
+
+def _validate_expected_exact_fields(
+    source: str,
+    rows: list[dict[str, Any]],
+    expected_values: dict[str, str],
+) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    if not expected_values:
+        return errors
+    for index, row in enumerate(rows, start=2):
+        for field, expected in expected_values.items():
+            actual = "" if row.get(field) is None else str(row.get(field)).strip()
+            if actual != expected:
+                errors.append(
+                    {
+                        "source": source,
+                        "row_number": index,
+                        "field": field,
+                        "expected": expected,
+                        "actual": actual,
+                        "reason": "unexpected_strict_value",
+                    }
+                )
+    return errors
+
+
+def _duplicate_key_errors(
+    source: str,
+    rows: list[dict[str, Any]],
+    key_fields: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    seen: dict[tuple[str, ...], int] = {}
+    errors: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=2):
+        key = _row_key(row, strict=True, key_fields=key_fields)
+        first = seen.get(key)
+        if first is not None:
+            errors.append(
+                {
+                    "source": source,
+                    "row_number": index,
+                    "first_row_number": first,
+                    "key": list(key),
+                }
+            )
+            continue
+        seen[key] = index
     return errors
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import unittest
 from pathlib import Path
 
@@ -25,6 +26,12 @@ STRICT_PREDICTION_COLUMNS = {
     "confidence",
     "label",
     "is_correct",
+}
+WEEKLY_AVERAGE_COLUMNS = {
+    "feature_week_id",
+    "target_week_id",
+    "target_rule",
+    "benchmark_role",
 }
 LEGACY_ONLY_COLUMNS = {"predict_date", "tenor", "framework_feature_date", "framework_target_date"}
 LIWEI_SOURCE_SCHEME_IDS = {
@@ -77,6 +84,27 @@ class BenchmarkParadigmTests(unittest.TestCase):
                 failures.append(f"{scheme_id}: original/current benchmark headers differ")
 
             original_columns = set(original_header)
+            task_type = str(config.get("task_type") or "")
+            if task_type == "weekly_average":
+                for label, header in (("original", original_header), ("current", current_header)):
+                    missing_weekly = sorted(WEEKLY_AVERAGE_COLUMNS - set(header))
+                    if missing_weekly:
+                        failures.append(f"{scheme_id}: {label} missing weekly average columns {missing_weekly}")
+                required_internal = backtest.get("required_internal_fields")
+                if not isinstance(required_internal, list) or not required_internal:
+                    failures.append(f"{scheme_id}: weekly average benchmark missing backtest.required_internal_fields")
+                    required_internal = []
+                for field in required_internal:
+                    if field not in original_columns:
+                        failures.append(f"{scheme_id}: original missing required internal field {field}")
+                    if field not in set(current_header):
+                        failures.append(f"{scheme_id}: current missing required internal field {field}")
+                for summary_name in ("original_backtest_summary.json", "current_backtest_summary.json"):
+                    summary = json.loads((bench_dir / summary_name).read_text(encoding="utf-8"))
+                    provenance = summary.get("benchmark_provenance")
+                    if not isinstance(provenance, dict):
+                        failures.append(f"{scheme_id}: {summary_name} missing benchmark_provenance")
+
             if LEGACY_ONLY_COLUMNS & original_columns and not STRICT_PREDICTION_COLUMNS <= original_columns:
                 failures.append(
                     f"{scheme_id}: legacy columns present without full strict schema "

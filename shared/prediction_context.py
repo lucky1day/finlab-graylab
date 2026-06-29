@@ -5,6 +5,7 @@ from typing import Any
 
 
 WEEKLY_TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
+WEEKLY_AVERAGE_TARGET_RULE = "next_week_average_yield_vs_current_week_average_yield"
 
 
 @dataclass(frozen=True)

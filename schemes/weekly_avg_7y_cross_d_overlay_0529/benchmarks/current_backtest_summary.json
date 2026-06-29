@@ -1,0 +1,208 @@
+{
+  "by_tenor": {
+    "7Y": {
+      "samples": 68,
+      "metric_samples": 68,
+      "correct": 45,
+      "accuracy": 0.6617647058823529,
+      "accuracy_pct": 66.2,
+      "actual_dist": {
+        "up": 30,
+        "down": 38,
+        "flat": 0
+      },
+      "predicted_dist": {
+        "up": 21,
+        "down": 47,
+        "flat": 0
+      },
+      "metric_actual_dist": {
+        "up": 30,
+        "down": 38,
+        "flat": 0
+      },
+      "metric_predicted_dist": {
+        "up": 21,
+        "down": 47,
+        "flat": 0
+      },
+      "date_min": "2025-01-03",
+      "date_max": "2026-05-22"
+    }
+  },
+  "periods_by_tenor": {
+    "7Y": {
+      "sim": {
+        "samples": 26,
+        "metric_samples": 26,
+        "correct": 18,
+        "accuracy": 0.6923076923076923,
+        "accuracy_pct": 69.2,
+        "actual_dist": {
+          "up": 11,
+          "down": 15,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 9,
+          "down": 17,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 11,
+          "down": 15,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 9,
+          "down": 17,
+          "flat": 0
+        },
+        "date_min": "2025-01-03",
+        "date_max": "2025-06-27"
+      },
+      "real": {
+        "samples": 39,
+        "metric_samples": 39,
+        "correct": 25,
+        "accuracy": 0.6410256410256411,
+        "accuracy_pct": 64.1,
+        "actual_dist": {
+          "up": 19,
+          "down": 20,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 11,
+          "down": 28,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 19,
+          "down": 20,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 11,
+          "down": 28,
+          "flat": 0
+        },
+        "date_min": "2025-07-04",
+        "date_max": "2026-04-30"
+      },
+      "may": {
+        "samples": 3,
+        "metric_samples": 3,
+        "correct": 2,
+        "accuracy": 0.6666666666666666,
+        "accuracy_pct": 66.7,
+        "actual_dist": {
+          "up": 0,
+          "down": 3,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 1,
+          "down": 2,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 0,
+          "down": 3,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 1,
+          "down": 2,
+          "flat": 0
+        },
+        "date_min": "2026-05-08",
+        "date_max": "2026-05-22"
+      },
+      "all": {
+        "samples": 68,
+        "metric_samples": 68,
+        "correct": 45,
+        "accuracy": 0.6617647058823529,
+        "accuracy_pct": 66.2,
+        "actual_dist": {
+          "up": 30,
+          "down": 38,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 21,
+          "down": 47,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 30,
+          "down": 38,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 21,
+          "down": 47,
+          "flat": 0
+        },
+        "date_min": "2025-01-03",
+        "date_max": "2026-05-22"
+      }
+    }
+  },
+  "row_count": 68,
+  "raw_row_count": 68,
+  "excluded_row_count": 0,
+  "evaluation_filter": {
+    "date_field": "target_date",
+    "ranges": [],
+    "raw_row_count": 68,
+    "included_row_count": 68,
+    "excluded_row_count": 0
+  },
+  "monthly_count": 17,
+  "frequency": "weekly",
+  "target_rule": "next_week_average_yield_vs_current_week_average_yield",
+  "model_version": "cross_d_overlay_0529",
+  "data_version": "shared_data_service_weekly.v1",
+  "weekly_input_rows": 811,
+  "weekly_input_week_min": 201029,
+  "weekly_input_week_max": 202620,
+  "weekly_input_artifact_path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/runtime_inputs/weekly_avg_7y_cross_d_overlay_0529/weekly_output_historical_backtest.csv",
+  "weekly_input_artifact_source": "shared_data_service_weekly",
+  "backtest_predict_start_date": "2025-01-01",
+  "backtest_start_week": 200901,
+  "backtest_end_week": 202622,
+  "backtest_mode": "original_batch_reproduction",
+  "backtest_point_in_time": false,
+  "historical_backtest_exception": true,
+  "backtest_max_as_of_date": "2026-05-29",
+  "point_in_time_artifact_count": 0,
+  "original_benchmark_validation": {
+    "benchmark_rows": 68,
+    "matched_rows": 68,
+    "strict_key": [
+      "feature_week_id",
+      "feature_date",
+      "target_date",
+      "target_tenor",
+      "horizon"
+    ]
+  },
+  "benchmark_provenance": {
+    "source_role": "blocked_platform_current_pending_source_original",
+    "generator": "blocked: platform current runner not validated against source-original weekly average algorithm",
+    "bootstrap_source": "missing_source_original_weekly_average_algorithm",
+    "target_rule": "next_week_average_yield_vs_current_week_average_yield",
+    "blocked": true,
+    "blocker": "missing source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/manifest.json; previous point-backed benchmark cannot be used for SOP sign-off",
+    "supersedes_previous_point_backed_benchmark": true,
+    "previous_source_role": "platform_current_weekly_average_runner",
+    "previous_bootstrap_source": "source_backed_point_runner_plus_weekly_average_oracle",
+    "previous_generator": "backtests.weekly_avg_7y_cross_d_overlay_0529_reproduction.run_weekly_avg_7y_cross_d_overlay_0529_reproduction",
+    "strict_source_original_rows": 0,
+    "source_compatible_extension_rows": 0,
+    "manifest_path": "source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/manifest.json",
+    "current_generator": "backtests.weekly_avg_7y_cross_d_overlay_0529_reproduction.run_weekly_avg_7y_cross_d_overlay_0529_reproduction"
+  }
+}

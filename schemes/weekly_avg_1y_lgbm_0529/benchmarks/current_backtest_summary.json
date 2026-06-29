@@ -1,0 +1,211 @@
+{
+  "by_tenor": {
+    "1Y": {
+      "samples": 72,
+      "metric_samples": 72,
+      "correct": 51,
+      "accuracy": 0.7083333333333334,
+      "accuracy_pct": 70.8,
+      "actual_dist": {
+        "up": 32,
+        "down": 40,
+        "flat": 0
+      },
+      "predicted_dist": {
+        "up": 23,
+        "down": 49,
+        "flat": 0
+      },
+      "metric_actual_dist": {
+        "up": 32,
+        "down": 40,
+        "flat": 0
+      },
+      "metric_predicted_dist": {
+        "up": 23,
+        "down": 49,
+        "flat": 0
+      },
+      "date_min": "2025-01-03",
+      "date_max": "2026-05-22"
+    }
+  },
+  "periods_by_tenor": {
+    "1Y": {
+      "sim": {
+        "samples": 26,
+        "metric_samples": 26,
+        "correct": 20,
+        "accuracy": 0.7692307692307693,
+        "accuracy_pct": 76.9,
+        "actual_dist": {
+          "up": 13,
+          "down": 13,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 9,
+          "down": 17,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 13,
+          "down": 13,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 9,
+          "down": 17,
+          "flat": 0
+        },
+        "date_min": "2025-01-03",
+        "date_max": "2025-06-27"
+      },
+      "real": {
+        "samples": 43,
+        "metric_samples": 43,
+        "correct": 29,
+        "accuracy": 0.6744186046511628,
+        "accuracy_pct": 67.4,
+        "actual_dist": {
+          "up": 18,
+          "down": 25,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 12,
+          "down": 31,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 18,
+          "down": 25,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 12,
+          "down": 31,
+          "flat": 0
+        },
+        "date_min": "2025-07-04",
+        "date_max": "2026-04-30"
+      },
+      "may": {
+        "samples": 3,
+        "metric_samples": 3,
+        "correct": 2,
+        "accuracy": 0.6666666666666666,
+        "accuracy_pct": 66.7,
+        "actual_dist": {
+          "up": 1,
+          "down": 2,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 2,
+          "down": 1,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 1,
+          "down": 2,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 2,
+          "down": 1,
+          "flat": 0
+        },
+        "date_min": "2026-05-08",
+        "date_max": "2026-05-22"
+      },
+      "all": {
+        "samples": 72,
+        "metric_samples": 72,
+        "correct": 51,
+        "accuracy": 0.7083333333333334,
+        "accuracy_pct": 70.8,
+        "actual_dist": {
+          "up": 32,
+          "down": 40,
+          "flat": 0
+        },
+        "predicted_dist": {
+          "up": 23,
+          "down": 49,
+          "flat": 0
+        },
+        "metric_actual_dist": {
+          "up": 32,
+          "down": 40,
+          "flat": 0
+        },
+        "metric_predicted_dist": {
+          "up": 23,
+          "down": 49,
+          "flat": 0
+        },
+        "date_min": "2025-01-03",
+        "date_max": "2026-05-22"
+      }
+    }
+  },
+  "row_count": 72,
+  "raw_row_count": 72,
+  "excluded_row_count": 0,
+  "evaluation_filter": {
+    "date_field": "target_date",
+    "ranges": [],
+    "raw_row_count": 72,
+    "included_row_count": 72,
+    "excluded_row_count": 0
+  },
+  "monthly_count": 17,
+  "frequency": "weekly",
+  "target_rule": "next_week_average_yield_vs_current_week_average_yield",
+  "model_version": "WEEKLY-1Y-LGBM-01",
+  "source_frequency": "W1Y",
+  "source_target_column": "TB1YWI1C",
+  "source_role": "source_original_weekly_average_algorithm",
+  "source_package_hash": "b00e77cadcb29ad9aaeef6713a3982ea218bdf91cde181ad4c39e01d38c100ce",
+  "source_runner_module": "weekly.run_backtest",
+  "source_detail_rows": 219,
+  "source_detail_rows_for_frequency": 73,
+  "source_detail_unique_effective_weeks_for_frequency": 72,
+  "source_duplicate_effective_week_count": 1,
+  "source_duplicate_effective_week_rows_collapsed": 1,
+  "backtest_predict_start_date": "2025-01-01",
+  "backtest_source_start_date": "2025-01-01",
+  "backtest_source_end_date": "2026-05-23",
+  "backtest_label_end_date": "2026-05-29",
+  "backtest_mode": "source_package_weekly_lgbm_reproduction",
+  "backtest_point_in_time": false,
+  "historical_backtest_exception": true,
+  "original_benchmark_validation": {
+    "benchmark_rows": 72,
+    "matched_rows": 72,
+    "strict_key": [
+      "feature_week_id",
+      "feature_date",
+      "target_date",
+      "target_tenor",
+      "horizon"
+    ]
+  },
+  "benchmark_provenance": {
+    "source_role": "platform_current_weekly_average_adapter",
+    "generator": "backtests.weekly_avg_1y_lgbm_0529_reproduction.run_weekly_avg_1y_lgbm_0529_reproduction",
+    "bootstrap_source": "source_original_weekly_average_algorithm",
+    "target_rule": "next_week_average_yield_vs_current_week_average_yield",
+    "strict_source_original_rows": 72,
+    "source_compatible_extension_rows": 0,
+    "source_package_hash": "b00e77cadcb29ad9aaeef6713a3982ea218bdf91cde181ad4c39e01d38c100ce",
+    "source_package_path": "source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/source_package/forecast_project",
+    "source_frequency": "W1Y",
+    "source_model_id": "WEEKLY-1Y-LGBM-01",
+    "source_target_column": "TB1YWI1C",
+    "source_runner_module": "weekly.run_backtest",
+    "manifest_path": "source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/manifest.json",
+    "current_generator": "backtests.weekly_avg_1y_lgbm_0529_reproduction.run_weekly_avg_1y_lgbm_0529_reproduction"
+  }
+}

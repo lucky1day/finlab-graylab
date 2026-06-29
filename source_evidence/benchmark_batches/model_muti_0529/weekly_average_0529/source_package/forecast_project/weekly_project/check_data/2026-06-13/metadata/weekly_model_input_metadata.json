@@ -1,0 +1,22 @@
+{
+  "rdate": "2026-06-13",
+  "source": "db:api_wind_weekly+api_wind_derivative_weekly",
+  "requested_week_id": 202622,
+  "effective_week_id": 202622,
+  "latest_week_id": 202622,
+  "input_latest_week_id": 202624,
+  "row_count": 842,
+  "column_count": 575,
+  "week_id_min": 200901,
+  "week_id_max": 202622,
+  "target_columns": {
+    "W1Y": "TB1YWI1C",
+    "W5Y": "TB5YWI1C",
+    "W10Y": "TB0YWI1C"
+  },
+  "missing_target_columns": [],
+  "all_null_column_count": 0,
+  "all_null_columns_sample": [],
+  "schema_source": "weekly_wi1c_lgbm_selected_models",
+  "created_at": "2026-06-23 20:24:57"
+}

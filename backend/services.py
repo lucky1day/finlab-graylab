@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
 from shared.metrics import direction_metric_block
+from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,10 @@ DEFAULT_TARGET_LABELS = {
 }
 DEFAULT_TARGET_ORDER = ["1Y", "3Y", "5Y", "7Y", "10Y"]
 ALLOWED_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
+WEEKLY_TASK_TARGET_RULES = {
+    "weekly_point": WEEKLY_TARGET_RULE,
+    "weekly_average": WEEKLY_AVERAGE_TARGET_RULE,
+}
 BACKTEST_BENCHMARK_LABELS = {
     "model_muti_0529": "0529历史基准",
 }
@@ -532,9 +537,15 @@ def scheme_metrics(
     registry_row = _registry_scheme_row(engine, scheme_id)
     base_scheme_id = str(registry_row["base_scheme_id"])
     target_tenor = str(registry_row["target_tenor"])
+    task_type = str(registry_row["task_type"])
+    weekly_target_rule = WEEKLY_TASK_TARGET_RULES.get(task_type, WEEKLY_TARGET_RULE)
     target_labels = _target_labels(engine)
     filters = ["p.scheme_id = :base_scheme_id", "p.target_tenor = :target_tenor"]
-    params: dict[str, Any] = {"base_scheme_id": base_scheme_id, "target_tenor": target_tenor}
+    params: dict[str, Any] = {
+        "base_scheme_id": base_scheme_id,
+        "target_tenor": target_tenor,
+        "weekly_target_rule": weekly_target_rule,
+    }
 
     sql = text(
         f"""
@@ -547,7 +558,9 @@ def scheme_metrics(
          AND a.trade_date = p.target_date
         LEFT JOIN t_scheme_weekly_actuals wa
           ON wa.tenor = p.target_tenor
+         AND wa.predict_date = p.predict_date
          AND wa.target_date = p.target_date
+         AND wa.target_rule = :weekly_target_rule
         WHERE {" AND ".join(filters)}
         ORDER BY p.predict_date, p.target_date, p.target_tenor
         """
@@ -591,10 +604,10 @@ def scheme_metrics(
             continue
         if end_month and metric_month > end_month:
             continue
-        if row["horizon"] == 1:
-            actual_direction = row["direction_1d"]
-        elif row["horizon"] == 6:
+        if task_type in WEEKLY_TASK_TARGET_RULES:
             actual_direction = row["direction_weekly"]
+        elif row["horizon"] == 1:
+            actual_direction = row["direction_1d"]
         else:
             actual_direction = row["direction_5d"]
         item = {

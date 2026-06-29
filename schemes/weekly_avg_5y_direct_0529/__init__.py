@@ -1,0 +1,1 @@
+"""0529 5Y weekly direct rule-vote prediction scheme."""
