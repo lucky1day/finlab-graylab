@@ -15,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
 from shared.metrics import direction_metric_block
-from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
+from shared.prediction_context import MONTHLY_TARGET_RULE, WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
 
 
 logger = logging.getLogger(__name__)
@@ -545,13 +545,14 @@ def scheme_metrics(
         "base_scheme_id": base_scheme_id,
         "target_tenor": target_tenor,
         "weekly_target_rule": weekly_target_rule,
+        "monthly_target_rule": MONTHLY_TARGET_RULE,
     }
 
     sql = text(
         f"""
         SELECT p.id, p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.feature_date, p.target_date,
                p.prediction_phase, p.predicted_direction, p.confidence, p.model_version, p.extra,
-               a.direction_1d, a.direction_5d, wa.direction_weekly
+               a.direction_1d, a.direction_5d, wa.direction_weekly, ma.direction_monthly
         FROM t_scheme_predictions p
         LEFT JOIN t_scheme_actuals a
           ON a.tenor = p.target_tenor
@@ -561,6 +562,11 @@ def scheme_metrics(
          AND wa.predict_date = p.predict_date
          AND wa.target_date = p.target_date
          AND wa.target_rule = :weekly_target_rule
+        LEFT JOIN t_scheme_monthly_actuals ma
+          ON ma.tenor = p.target_tenor
+         AND ma.predict_date = p.predict_date
+         AND ma.target_date = p.target_date
+         AND ma.target_rule = :monthly_target_rule
         WHERE {" AND ".join(filters)}
         ORDER BY p.predict_date, p.target_date, p.target_tenor
         """
@@ -606,6 +612,8 @@ def scheme_metrics(
             continue
         if task_type in WEEKLY_TASK_TARGET_RULES:
             actual_direction = row["direction_weekly"]
+        elif task_type == "monthly":
+            actual_direction = row["direction_monthly"]
         elif row["horizon"] == 1:
             actual_direction = row["direction_1d"]
         else:

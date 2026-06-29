@@ -75,6 +75,26 @@ def _create_weekly_schema(engine) -> None:
                 """
             )
         )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE t_scheme_monthly_actuals (
+                    tenor TEXT,
+                    feature_month_id TEXT,
+                    target_month_id TEXT,
+                    predict_date TEXT,
+                    feature_date TEXT,
+                    target_date TEXT,
+                    feature_yield REAL,
+                    target_yield REAL,
+                    direction_monthly INTEGER,
+                    price_signal TEXT,
+                    target_rule TEXT,
+                    extra TEXT
+                )
+                """
+            )
+        )
 
 
 def _register_weekly_scheme(engine) -> None:
@@ -237,6 +257,72 @@ class WeeklyMetricsTests(unittest.TestCase):
         result = scheme_metrics(engine, "demo_weekly_average__h6__10Y")
 
         self.assertEqual(result["task_type"], "weekly_average")
+        self.assertEqual(result["summary"]["samples"], 1)
+        self.assertEqual(result["summary"]["correct"], 1)
+        self.assertEqual(result["daily_rows"][0]["actual_direction"], 1)
+        self.assertTrue(result["daily_rows"][0]["is_correct"])
+
+    def test_scheme_metrics_uses_monthly_actuals_for_monthly_task(self) -> None:
+        from backend.services import scheme_metrics
+        from shared.prediction_context import MONTHLY_TARGET_RULE
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        _create_weekly_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, name, description, horizon, task_type, frequency, target_tenor,
+                         schedule_cron, schedule_timezone, status, deployed_at, created_at, updated_at)
+                    VALUES
+                        ('demo_monthly__h30__10Y', 'demo_monthly', 'Demo Monthly', '',
+                         30, 'monthly', 'monthly', '10Y', '0 18 15 * *', 'Asia/Shanghai', 'active',
+                         '2026-06-29', '2026-06-29', '2026-06-29')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_predictions
+                        (run_id, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
+                         predicted_direction, confidence, model_version, extra)
+                    VALUES
+                        (1, 'demo_monthly', '10Y', 30, '2026-04-15', '2026-04-15', '2026-05-15',
+                         1, 0.68, 'test',
+                         '{"frequency":"monthly","feature_month_id":"2026-04","target_month_id":"2026-05",
+                           "feature_date":"2026-04-15","target_date":"2026-05-15",
+                           "target_rule":"next_month_observation_yield_vs_feature_month_observation_yield"}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_actuals
+                        (tenor, trade_date, direction_1d, direction_5d)
+                    VALUES ('10Y', '2026-05-15', -1, -1)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_monthly_actuals
+                        (tenor, feature_month_id, target_month_id, predict_date, feature_date, target_date,
+                         feature_yield, target_yield, direction_monthly, price_signal, target_rule, extra)
+                    VALUES
+                        ('10Y', '2026-04', '2026-05', '2026-04-15', '2026-04-15', '2026-05-15',
+                         1.77, 1.82, 1, '空', :target_rule, '{}')
+                    """
+                ),
+                {"target_rule": MONTHLY_TARGET_RULE},
+            )
+
+        result = scheme_metrics(engine, "demo_monthly__h30__10Y")
+
+        self.assertEqual(result["task_type"], "monthly")
         self.assertEqual(result["summary"]["samples"], 1)
         self.assertEqual(result["summary"]["correct"], 1)
         self.assertEqual(result["daily_rows"][0]["actual_direction"], 1)

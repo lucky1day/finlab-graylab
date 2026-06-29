@@ -1,0 +1,44 @@
+{
+  "M1Y": {
+    "final_select_id": "1Y-RF30",
+    "model_id": "monthly_1y_rf_top30_fixed",
+    "candidate_id": "1Y::Random Forest::top30",
+    "model_config": {
+      "tenor": "1Y",
+      "model_name": "Random Forest",
+      "top_n": "top30",
+      "fixed_params": {
+        "class_weight": "balanced",
+        "max_depth": 3,
+        "min_samples_leaf": 2,
+        "n_estimators": 30
+      }
+    }
+  },
+  "M5Y": {
+    "final_select_id": "5Y-06",
+    "model_id": "monthly_5y_knn_top20",
+    "candidate_id": "5Y::KNN::top20",
+    "model_config": {
+      "tenor": "5Y",
+      "model_name": "KNN",
+      "top_n": "top20"
+    }
+  },
+  "M10Y": {
+    "final_select_id": "10Y-01",
+    "model_id": "monthly_10y_rf_top5",
+    "candidate_id": "10Y::Random Forest::top5",
+    "model_config": {
+      "tenor": "10Y",
+      "model_name": "Random Forest",
+      "top_n": "top5"
+    }
+  },
+  "month_schedule_rule": "monthly runs on calendar day 15; input data is capped at the latest trading day on or before the 15th",
+  "db_rdate_rule": "t_pre_market_forecast.rdate is feature_month-15, not trigger_date or month start",
+  "binary_direction_mapping": {
+    "y_pred=1": "空",
+    "y_pred=0": "多"
+  }
+}

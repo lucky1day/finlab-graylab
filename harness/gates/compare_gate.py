@@ -9,6 +9,7 @@ from typing import Any
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
+from shared.monthly_source_evidence import MONTHLY_SOURCE_ROLE, PLATFORM_CURRENT_MONTHLY_ROLE
 from shared.weekly_average_source_evidence import (
     PLATFORM_CURRENT_SOURCE_ROLE,
     WEEKLY_AVERAGE_SOURCE_ROLE,
@@ -44,8 +45,29 @@ WEEKLY_STRICT_PREDICTION_FIELDS = (
     "is_correct",
 )
 WEEKLY_AVERAGE_STRICT_PREDICTION_FIELDS = WEEKLY_STRICT_PREDICTION_FIELDS + ("target_rule",)
+MONTHLY_STRICT_PREDICTION_FIELDS = (
+    "feature_month_id",
+    "feature_date",
+    "target_month_id",
+    "target_date",
+    "target_tenor",
+    "horizon",
+    "target_rule",
+    "direction",
+    "confidence",
+    "label",
+    "is_correct",
+)
 STRICT_KEY_FIELDS = ("feature_date", "target_date", "target_tenor", "horizon")
 WEEKLY_STRICT_KEY_FIELDS = ("feature_week_id", "feature_date", "target_date", "target_tenor", "horizon")
+MONTHLY_STRICT_KEY_FIELDS = (
+    "feature_month_id",
+    "feature_date",
+    "target_month_id",
+    "target_date",
+    "target_tenor",
+    "horizon",
+)
 INTERNAL_SCORE_FIELDS = ("vote_score",)
 INTERNAL_NUMERIC_FIELDS = ("rule_vote",)
 INTERNAL_NUMERIC_SUFFIXES = ("_score", "_vs")
@@ -117,9 +139,10 @@ class CompareGate(Gate):
         errors: list[str] = []
         evidence: list[Evidence] = [Evidence("benchmark_dir", str(bench_dir))]
         provenance_errors = _weekly_average_provenance_errors(config, bench_dir, ctx.scheme_id)
+        provenance_errors.extend(_monthly_provenance_errors(config, bench_dir))
         if provenance_errors:
             errors.extend(provenance_errors)
-            evidence.append(Evidence("weekly_average_provenance_errors", provenance_errors))
+            evidence.append(Evidence("benchmark_provenance_errors", provenance_errors))
 
         original_rows = _read_predictions_csv(sample_path) if sample_path.exists() else []
         current_rows = _current_platform_predictions(ctx)
@@ -257,6 +280,8 @@ def _strict_prediction_fields(config: dict[str, Any]) -> tuple[str, ...]:
     task_type = str(config.get("task_type") or "").strip()
     if task_type == "weekly_average":
         return WEEKLY_AVERAGE_STRICT_PREDICTION_FIELDS
+    if frequency == "monthly" or task_type == "monthly":
+        return MONTHLY_STRICT_PREDICTION_FIELDS
     if frequency == "weekly" or task_type.startswith("weekly_"):
         return WEEKLY_STRICT_PREDICTION_FIELDS
     return STRICT_PREDICTION_FIELDS
@@ -265,6 +290,8 @@ def _strict_prediction_fields(config: dict[str, Any]) -> tuple[str, ...]:
 def _strict_key_fields(config: dict[str, Any]) -> tuple[str, ...]:
     frequency = str(config.get("frequency") or "").strip()
     task_type = str(config.get("task_type") or "").strip()
+    if frequency == "monthly" or task_type == "monthly":
+        return MONTHLY_STRICT_KEY_FIELDS
     if frequency == "weekly" or task_type.startswith("weekly_"):
         return WEEKLY_STRICT_KEY_FIELDS
     return STRICT_KEY_FIELDS
@@ -272,14 +299,14 @@ def _strict_key_fields(config: dict[str, Any]) -> tuple[str, ...]:
 
 def _exact_match_fields(config: dict[str, Any]) -> tuple[str, ...]:
     task_type = str(config.get("task_type") or "").strip()
-    if task_type == "weekly_average":
+    if task_type in {"weekly_average", "monthly"}:
         return ("target_rule",)
     return ()
 
 
 def _expected_exact_values(config: dict[str, Any]) -> dict[str, str]:
     task_type = str(config.get("task_type") or "").strip()
-    if task_type != "weekly_average":
+    if task_type not in {"weekly_average", "monthly"}:
         return {}
     target_rule = str(config.get("target_rule") or "").strip()
     return {"target_rule": target_rule} if target_rule else {}
@@ -321,6 +348,44 @@ def _weekly_average_provenance_errors(
                 "weekly average benchmark provenance source_role invalid: "
                 f"{summary_name}: {source_role!r}"
             )
+    return errors
+
+
+def _monthly_provenance_errors(config: dict[str, Any], bench_dir: Path) -> list[str]:
+    task_type = str(config.get("task_type") or "").strip()
+    if task_type != "monthly":
+        return []
+
+    errors: list[str] = []
+    expected_roles = {
+        "original_backtest_summary.json": {MONTHLY_SOURCE_ROLE},
+        "current_backtest_summary.json": {PLATFORM_CURRENT_MONTHLY_ROLE},
+    }
+    banned_tokens = ("point_runner", "point_scheme_id", "weekly_point", "weekly_*", "source_backed_point")
+    for summary_name, allowed_roles in expected_roles.items():
+        summary_path = bench_dir / summary_name
+        if not summary_path.exists():
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            errors.append(f"monthly benchmark provenance unreadable: {summary_name}: {exc}")
+            continue
+        provenance = summary.get("benchmark_provenance")
+        if not isinstance(provenance, dict):
+            errors.append(f"monthly benchmark provenance missing: {summary_name}")
+            continue
+        source_role = str(provenance.get("source_role") or "").strip()
+        if source_role not in allowed_roles:
+            errors.append(
+                "monthly benchmark provenance source_role invalid: "
+                f"{summary_name}: {source_role!r}"
+            )
+        rendered = json.dumps(provenance, ensure_ascii=False).lower()
+        for token in banned_tokens:
+            if token in rendered:
+                errors.append(f"monthly benchmark provenance contains banned point/weekly token: {summary_name}: {token}")
+                break
     return errors
 
 
@@ -488,9 +553,15 @@ def _internal_fields(
     required_internal_fields: list[str] | None = None,
 ) -> list[str]:
     fields: set[str] = set(required_internal_fields or [])
+    strict_prediction_fields = set(
+        STRICT_PREDICTION_FIELDS
+        + WEEKLY_STRICT_PREDICTION_FIELDS
+        + WEEKLY_AVERAGE_STRICT_PREDICTION_FIELDS
+        + MONTHLY_STRICT_PREDICTION_FIELDS
+    )
     for row in [*original, *current]:
         for field in row:
-            if field in WEEKLY_AVERAGE_STRICT_PREDICTION_FIELDS:
+            if field in strict_prediction_fields:
                 continue
             if field in {"predict_date", "date", "tenor", "pred_direction", "direction", "confidence"}:
                 continue

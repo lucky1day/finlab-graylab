@@ -6,6 +6,43 @@ from shared.models import PredictionRecord
 
 
 class PredictionSemanticsTests(unittest.TestCase):
+    def test_monthly_semantics_accepts_source_trigger_day_context(self) -> None:
+        from harness.gates.prediction_semantics import validate_live_record_semantics
+        from shared.prediction_context import MONTHLY_TARGET_RULE
+
+        calendar = _MonthlyCalendar()
+        record = PredictionRecord(
+            scheme_id="monthly_10y_rf_top5_0629",
+            target_tenor="10Y",
+            horizon=30,
+            predict_date="2026-04-15",
+            feature_date="2026-04-15",
+            target_date="2026-05-15",
+            predicted_direction=-1,
+            extra={
+                "frequency": "monthly",
+                "db_rdate": "2026-04-15",
+                "trigger_date": "2026-04-15",
+                "scheduled_trigger_date": "2026-04-15",
+                "input_cutoff_date": "2026-04-15",
+                "feature_month_id": "2026-04",
+                "target_month_id": "2026-05",
+                "target_rule": MONTHLY_TARGET_RULE,
+            },
+        )
+
+        errors = validate_live_record_semantics(
+            record,
+            expected_predict_date="2026-04-15",
+            prefix="record[0]",
+            require_phase=False,
+            frequency="monthly",
+            horizon=30,
+            calendar=calendar,
+        )
+
+        self.assertEqual(errors, [])
+
     def test_weekly_average_target_rule_can_override_calendar_default_rule(self) -> None:
         from harness.gates.prediction_semantics import validate_live_record_semantics
         from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE
@@ -52,6 +89,23 @@ class _Calendar:
 
     def week_id_to_last_trading_day(self, week_id: int) -> str:
         return {202624: "2026-06-12", 202625: "2026-06-19"}[int(week_id)]
+
+
+class _MonthlyCalendar:
+    def is_trading_day(self, day: str) -> bool:
+        return day in {"2026-04-15", "2026-05-15"}
+
+    def next_trading_days(self, day: str, count: int) -> list[str]:
+        return {
+            "2026-04-14": ["2026-04-15"],
+            "2026-05-14": ["2026-05-15"],
+        }.get(day, [])[:count]
+
+    def previous_trading_day(self, day: str) -> str:
+        return {
+            "2026-04-16": "2026-04-15",
+            "2026-05-16": "2026-05-15",
+        }[day]
 
 
 if __name__ == "__main__":

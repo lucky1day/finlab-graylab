@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Any
 
 
 WEEKLY_TARGET_RULE = "next_week_last_trading_day_vs_current_week_last_trading_day"
 WEEKLY_AVERAGE_TARGET_RULE = "next_week_average_yield_vs_current_week_average_yield"
+MONTHLY_TARGET_RULE = "next_month_observation_yield_vs_feature_month_observation_yield"
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,18 @@ class WeeklyLiveContext:
     target_week_id: int
     target_date: str
     target_rule: str = WEEKLY_TARGET_RULE
+
+
+@dataclass(frozen=True)
+class MonthlyLiveContext:
+    trigger_date: str
+    scheduled_trigger_date: str
+    db_rdate: str
+    feature_date: str
+    feature_month_id: str
+    target_month_id: str
+    target_date: str
+    target_rule: str = MONTHLY_TARGET_RULE
 
 
 def build_daily_live_context(calendar: Any, predict_date: str, *, horizon: int) -> DailyLiveContext:
@@ -46,6 +60,29 @@ def build_weekly_live_context(calendar: Any, predict_date: str) -> WeeklyLiveCon
     )
 
 
+def build_monthly_live_context(calendar: Any, predict_date: str) -> MonthlyLiveContext:
+    """月频 source 语义：每月 15 日触发，输入截止到 15 日及以前最近交易日。"""
+    scheduled = date.fromisoformat(str(predict_date)[:10])
+    trigger = date(scheduled.year, scheduled.month, 15)
+    scheduled_trigger = _first_trading_day_on_or_after(calendar, trigger)
+    if scheduled.isoformat() != scheduled_trigger:
+        raise ValueError(
+            f"monthly predict_date must be scheduled trigger date {scheduled_trigger}, got {scheduled.isoformat()}"
+        )
+    feature_date = _last_trading_day_on_or_before(calendar, trigger)
+    target_anchor = _add_month(trigger)
+    target_date = _last_trading_day_on_or_before(calendar, target_anchor)
+    return MonthlyLiveContext(
+        trigger_date=trigger.isoformat(),
+        scheduled_trigger_date=scheduled_trigger,
+        db_rdate=trigger.isoformat(),
+        feature_date=feature_date,
+        feature_month_id=trigger.strftime("%Y-%m"),
+        target_month_id=target_anchor.strftime("%Y-%m"),
+        target_date=target_date,
+    )
+
+
 def next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
     """从 DB 日历读取 feature_week_id 后的下一实际 week_id。"""
     feature_date = calendar.week_id_to_last_trading_day(int(feature_week_id))
@@ -54,3 +91,28 @@ def next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
         if next_week is not None and int(next_week) != int(feature_week_id):
             return int(next_week)
     raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
+
+
+def _first_trading_day_on_or_after(calendar: Any, value: date) -> str:
+    day = value.isoformat()
+    if calendar.is_trading_day(day):
+        return day
+    previous_day = (value - timedelta(days=1)).isoformat()
+    days = calendar.next_trading_days(previous_day, 15)
+    for item in days:
+        if str(item)[:10] >= day:
+            return str(item)[:10]
+    raise ValueError(f"无法在 DB 日历中找到 {day} 及之后的月频触发交易日")
+
+
+def _last_trading_day_on_or_before(calendar: Any, value: date) -> str:
+    day = value.isoformat()
+    if calendar.is_trading_day(day):
+        return day
+    return str(calendar.previous_trading_day(day))[:10]
+
+
+def _add_month(value: date) -> date:
+    if value.month == 12:
+        return date(value.year + 1, 1, value.day)
+    return date(value.year, value.month + 1, value.day)

@@ -847,6 +847,53 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(any("target_date expected 2026-06-09" in error for error in result.errors), result.errors)
 
+    def test_dry_run_gate_fails_monthly_required_extra_missing(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.dry_run_gate import DryRunGate
+        from shared.models import PredictionRecord
+        from shared.prediction_context import MONTHLY_TARGET_RULE
+
+        record = PredictionRecord(
+            scheme_id="demo_monthly",
+            target_tenor="10Y",
+            horizon=30,
+            predict_date="2026-04-15",
+            feature_date="2026-04-15",
+            target_date="2026-05-15",
+            predicted_direction=1,
+            extra={
+                "input_artifact_path": "/tmp/monthly.csv",
+                "input_artifact_source": "shared_data_service_monthly",
+                "feature_date": "2026-04-15",
+                "target_date": "2026-05-15",
+                "feature_month_id": "2026-04",
+                "target_rule": MONTHLY_TARGET_RULE,
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_monthly_scheme(project_root, scheme_id="demo_monthly")
+            with patch("harness.gates.dry_run_gate.run_scheme_subprocess", return_value=[record]):
+                with patch("harness.gates.dry_run_gate.get_calendar", return_value=_fake_monthly_semantics_calendar()):
+                    with patch(
+                        "harness.gates.dry_run_gate.snapshot_table_counts",
+                        side_effect=[
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                            {"t_scheme_predictions": 10, "t_scheme_run_log": 20, "t_scheme_runs": 5},
+                        ],
+                    ):
+                        result = DryRunGate().run(
+                            GateContext(
+                                scheme_id="demo_monthly",
+                                predict_date="2026-04-15",
+                                project_root=project_root,
+                                report_dir=project_root / "reports",
+                            )
+                        )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("target_month_id" in error for error in result.errors), result.errors)
+
     def test_table_guard_diffs_snapshots(self) -> None:
         from harness.probes.table_guard import diff_snapshots
 
@@ -862,6 +909,8 @@ class HarnessRuntimeGateTests(unittest.TestCase):
 
         self.assertIn("t_scheme_runs", table_guard.DRY_RUN_GUARD_TABLES)
         self.assertIn("t_scheme_runs", table_guard.PROTECTED_TABLES)
+        self.assertIn("t_scheme_monthly_actuals", table_guard.DRY_RUN_GUARD_TABLES)
+        self.assertIn("t_scheme_monthly_actuals", table_guard.PROTECTED_TABLES)
         self.assertIn("t_scheme_runs", table_guard.LIVE_WRITE_ALLOWED_TABLES)
 
 
@@ -1280,6 +1329,17 @@ def _fake_daily_semantics_calendar() -> SimpleNamespace:
     )
 
 
+def _fake_monthly_semantics_calendar() -> SimpleNamespace:
+    return SimpleNamespace(
+        is_trading_day=lambda day: day in {"2026-04-15", "2026-05-15"},
+        previous_trading_day=lambda day: {"2026-04-16": "2026-04-15", "2026-05-16": "2026-05-15"}[day],
+        next_trading_days=lambda day, count: {
+            "2026-04-14": ["2026-04-15"],
+            "2026-05-14": ["2026-05-15"],
+        }.get(day, [])[:count],
+    )
+
+
 def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_lines: list[str] | None = None) -> Path:
     scheme_dir = project_root / "schemes" / scheme_id
     (scheme_dir / "core").mkdir(parents=True)
@@ -1317,4 +1377,33 @@ def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_li
     if extra_config_lines:
         config_lines.extend(extra_config_lines)
     (scheme_dir / "config.yaml").write_text("\n".join(config_lines), encoding="utf-8")
+    return scheme_dir
+
+
+def _write_monthly_scheme(project_root: Path, *, scheme_id: str) -> Path:
+    scheme_dir = project_root / "schemes" / scheme_id
+    scheme_dir.mkdir(parents=True)
+    (scheme_dir / "config.yaml").write_text(
+        "\n".join(
+            [
+                f"scheme_id: {scheme_id}",
+                'name: "Demo Monthly"',
+                'description: "Demo monthly scheme"',
+                "horizon: 30",
+                "task_type: monthly",
+                'tenors: ["10Y"]',
+                "frequency: monthly",
+                "target_rule: next_month_observation_yield_vs_feature_month_observation_yield",
+                "schedule:",
+                '  cron: "0 18 15 * *"',
+                '  timezone: "Asia/Shanghai"',
+                "entry_point: predict.run",
+                "status: paused",
+                "input_spec:",
+                "  data_version: shared_data_service_monthly.v1",
+                '  required_columns: ["month_id", "M0000001"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
     return scheme_dir

@@ -62,6 +62,7 @@ PREDICT_ALLOWED_SHARED_IMPORTS = {
     "shared.weekly_average_source_evidence",
     "shared.weekly_average_lgbm_source_runner",
     "shared.weekly_average_lgbm_predict_adapter",
+    "shared.monthly_predict_adapter",
 }
 SQL_WRITE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 SQL_WRITE_PATTERN = re.compile(r"\b(" + "|".join(SQL_WRITE_KEYWORDS) + r")\b", re.IGNORECASE)
@@ -71,6 +72,7 @@ LIVE_TABLE_NAMES = {
     "t_scheme_run_log",
     "t_scheme_actuals",
     "t_scheme_weekly_actuals",
+    "t_scheme_monthly_actuals",
 }
 BACKTEST_FORBIDDEN_IMPORTS = {"scheduler", "backend"}
 ROOT_BENCHMARK_ALLOWED_NAME_MARKERS = ("SOURCE_EVIDENCE", "SOURCE_ARCHIVE", "EXTERNAL_SOURCE", "AUDIT")

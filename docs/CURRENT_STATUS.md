@@ -2,6 +2,22 @@
 
 **更新日期**: 2026-06-29
 
+## 2026-06-29 月度 0629 三方案入库完成
+
+用户确认 `/Users/macstudio0/Desktop/方案/0629/forecast_project/monthly_project/` 是月度三方案原始包；原始运行核心为加密 `.so`，已归档到 `source_evidence/benchmark_batches/monthly_0629/source_package/forecast_project/`，manifest 记录 source package tree hash=`2ab82437de8fe96a556b0cf492d36739442497f861e87d2a58be8cc320088e47`。平台未改原始算法逻辑，只做 source package 解封装、输入/输出/日期语义、extra、benchmark、CompareGate、落库和 API 适配。
+
+月度 actual 方向固定为 **目标月观测收益率 vs 当前 feature 月观测收益率**，即 `next_month_observation_yield_vs_feature_month_observation_yield`。`t_scheme_monthly_actuals` 已通过 `migrations/015_monthly_actuals.sql` 建表并刷新，当前 `1Y/5Y/10Y` 合计 422 行；`2026-06-15` 灰度预测的 `target_date=2026-07-15` 尚未到期，因此 API 明细中的 `actual_direction/is_correct` 暂为空是正常状态。
+
+| 方案 | Registry ID | latest backtest | benchmark / CompareGate | API / live 状态 |
+|------|-------------|-----------------|--------------------------|-----------------|
+| `monthly_1y_rf_top30_0629` | `monthly_1y_rf_top30_0629__h30__1Y` | run_id=`140`，1 行 | source-original/current 1/1，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live run_id=`423`，`predict_date=2026-06-15`，方向 `-1` |
+| `monthly_5y_knn_top20_0629` | `monthly_5y_knn_top20_0629__h30__5Y` | run_id=`141`，1 行 | source-original/current 1/1，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live run_id=`424`，`predict_date=2026-06-15`，方向 `1` |
+| `monthly_10y_rf_top5_0629` | `monthly_10y_rf_top5_0629__h30__10Y` | run_id=`142`，1 行 | source-original/current 1/1，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live run_id=`425`，`predict_date=2026-06-15`，方向 `-1` |
+
+验证证据：三方案 paused 版本 `stage=all` 均通过，harness_run_id 分别为 `hr_20260629T141528Z_6d83a6938104`、`hr_20260629T141729Z_421b31de4ed4`、`hr_20260629T141926Z_1a4a0028823b`。授权 backtest persist 只写 `t_backtest_runs +1` 与 `t_backtest_predictions +1`（每方案各一次），源表、actuals、实盘表和 run_log delta 均为 0。随后 ActivationGate 将三套 config/registry/version 切为 active，激活版本分别为 `f9278202690a`、`77a1c6f983a5`、`46aa34bd1ac9`，DB registry row 均为 `status=active`、`task_type=monthly`、`deployed_at=2026-06-29`、cron=`0 18 15 * *`。
+
+2026-06-29 已按用户授权完成最近一期 `gray_live` 回填：三套方案均使用 `predict_date=2026-06-15`、`feature_date=2026-06-15`、`target_date=2026-07-15`。回填前 no-write DryRunGate 全部通过，所有受保护表 delta 为 0；回填时逐条 LiveGate 使用一次性 `live_write` token，3 条均通过，每条只写 `t_scheme_runs +1`、`t_scheme_predictions +1`、`t_scheme_run_log +1`，源表、actuals、backtest 表均为 0 delta。激活后 active-only ApiGate 三套均通过，`/api/metrics/{composite_id}` 三套均返回 1 条 `gray_live` 明细与 phase range，scheduler 已 `kickstart` 并通过 `scripts.verify_scheduler_mount`，日志确认三套 active cron 均为 `0 18 15 * *`。
+
 ## 2026-06-29 周平均 0529 独立算法入库完成
 
 用户确认 `/Users/macstudio0/Desktop/方案/0629/forecast_project/` 就是周平均原始方案，且原始周平均只包含 `1Y/5Y/10Y`，没有 `7Y`。当前有效入库方案因此改为 `weekly_avg_1y_lgbm_0529`、`weekly_avg_5y_lgbm_0529`、`weekly_avg_10y_lgbm_0529`；旧 `weekly_avg_5y_direct_0529`、`weekly_avg_7y_cross_d_overlay_0529`、`weekly_avg_10y_d_overlay_0529` 为 point-backed 错误口径历史审计，已停用为 `paused`，不得再作为周平均 strict benchmark。

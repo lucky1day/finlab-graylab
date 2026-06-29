@@ -1,0 +1,5 @@
+{
+  "version": "2026-06-19",
+  "rule": "latest hyper_params directory with date <= run_date",
+  "created_for": "forecast_project_0616 production-format local migration"
+}
