@@ -121,6 +121,12 @@ def _run_factor_lab_hook(script: str) -> dict:
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_topbar_status_label_displays_online(self) -> None:
+        html = FRONTEND_INDEX.read_text(encoding="utf-8")
+
+        self.assertIn("<span>OnLine</span>", html)
+        self.assertNotIn("<span>LOCAL</span>", html)
+
     def test_hero_summary_layout_allows_long_scheme_names_without_squeezing_title(self) -> None:
         hero_rule = _css_rule(".factor-lab-hero")
         summary_card_rule = _css_rule(".factor-lab-summary div")
