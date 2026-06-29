@@ -150,7 +150,7 @@ def build_backtest_rows(
         spec=spec,
         artifact_path=artifact_path,
         artifact_source=artifact_source,
-        normalize_frame=normalize_for_calendar,
+        normalize_frame=_normalize_weekly_frame,
         predict_for_feature=predict_for_feature,
         weekly_frame_for_feature=weekly_frame_for_feature,
     )

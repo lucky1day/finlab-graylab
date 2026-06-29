@@ -3,6 +3,12 @@ from __future__ import annotations
 import unittest
 
 
+def _point_records(records):
+    from shared.prediction_context import WEEKLY_TARGET_RULE
+
+    return [record for record in records if record.target_rule == WEEKLY_TARGET_RULE]
+
+
 def _calendar_rows() -> list[dict]:
     rows = []
     for rdate, week_id, trade_flag in [
@@ -32,6 +38,23 @@ def _calendar_rows() -> list[dict]:
     return rows
 
 
+def _create_weekly_actuals_table(conn) -> None:
+    from sqlalchemy import text
+
+    conn.execute(
+        text(
+            """
+            CREATE TABLE t_scheme_weekly_actuals (
+                id INTEGER PRIMARY KEY,
+                tenor TEXT NOT NULL,
+                predict_date TEXT NOT NULL,
+                target_rule TEXT NOT NULL
+            )
+            """
+        )
+    )
+
+
 class WeeklyActualsTests(unittest.TestCase):
     def test_build_weekly_actuals_uses_last_trading_day_and_price_signal(self) -> None:
         from scheduler.weekly_actuals_updater import build_weekly_actual_records_from_rows
@@ -46,8 +69,10 @@ class WeeklyActualsTests(unittest.TestCase):
 
         records = build_weekly_actual_records_from_rows(rows, _calendar_rows())
 
-        self.assertEqual(len(records), 2)
-        first = records[0]
+        point_records = _point_records(records)
+
+        self.assertEqual(len(point_records), 2)
+        first = point_records[0]
         self.assertEqual(first.tenor, "10Y")
         self.assertEqual(first.feature_week_id, 202619)
         self.assertEqual(first.feature_date, "2026-05-22")
@@ -59,7 +84,7 @@ class WeeklyActualsTests(unittest.TestCase):
         self.assertEqual(first.direction_weekly, 1)
         self.assertEqual(first.price_signal, "空")
 
-        second = records[1]
+        second = point_records[1]
         self.assertEqual(second.feature_week_id, 202620)
         self.assertEqual(second.target_week_id, 202621)
         self.assertEqual(second.direction_weekly, 0)
@@ -76,11 +101,38 @@ class WeeklyActualsTests(unittest.TestCase):
 
         records = build_weekly_actual_records_from_rows(rows, _calendar_rows())
 
-        self.assertEqual(len(records), 1)
-        self.assertEqual(records[0].feature_date, "2026-05-21")
-        self.assertEqual(records[0].target_date, "2026-05-28")
-        self.assertEqual(records[0].direction_weekly, -1)
-        self.assertEqual(records[0].price_signal, "多")
+        point_records = _point_records(records)
+
+        self.assertEqual(len(point_records), 1)
+        self.assertEqual(point_records[0].feature_date, "2026-05-21")
+        self.assertEqual(point_records[0].target_date, "2026-05-28")
+        self.assertEqual(point_records[0].direction_weekly, -1)
+        self.assertEqual(point_records[0].price_signal, "多")
+
+    def test_build_weekly_actuals_emits_average_rule_using_weekly_means(self) -> None:
+        from scheduler.weekly_actuals_updater import build_weekly_actual_records_from_rows
+        from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
+
+        rows = [
+            {"tenor": "10Y", "trade_date": "2026-05-21", "close_yield": 1.00},
+            {"tenor": "10Y", "trade_date": "2026-05-22", "close_yield": 3.00},
+            {"tenor": "10Y", "trade_date": "2026-05-28", "close_yield": 2.50},
+            {"tenor": "10Y", "trade_date": "2026-05-29", "close_yield": 2.70},
+        ]
+
+        records = build_weekly_actual_records_from_rows(rows, _calendar_rows())
+        by_rule = {record.target_rule: record for record in records}
+
+        self.assertEqual(set(by_rule), {WEEKLY_TARGET_RULE, WEEKLY_AVERAGE_TARGET_RULE})
+        self.assertEqual(by_rule[WEEKLY_TARGET_RULE].feature_yield, 3.00)
+        self.assertEqual(by_rule[WEEKLY_TARGET_RULE].target_yield, 2.70)
+        self.assertEqual(by_rule[WEEKLY_TARGET_RULE].direction_weekly, -1)
+        self.assertEqual(by_rule[WEEKLY_AVERAGE_TARGET_RULE].feature_date, "2026-05-22")
+        self.assertEqual(by_rule[WEEKLY_AVERAGE_TARGET_RULE].target_date, "2026-05-29")
+        self.assertEqual(by_rule[WEEKLY_AVERAGE_TARGET_RULE].feature_yield, 2.00)
+        self.assertEqual(by_rule[WEEKLY_AVERAGE_TARGET_RULE].target_yield, 2.60)
+        self.assertEqual(by_rule[WEEKLY_AVERAGE_TARGET_RULE].direction_weekly, 1)
+        self.assertEqual(by_rule[WEEKLY_AVERAGE_TARGET_RULE].price_signal, "空")
 
     def test_build_weekly_actuals_skips_incomplete_target_week(self) -> None:
         from scheduler.weekly_actuals_updater import build_weekly_actual_records_from_rows
@@ -141,12 +193,53 @@ class WeeklyActualsTests(unittest.TestCase):
         finally:
             engine.dispose()
 
-        self.assertEqual(len(records), 2)
-        self.assertEqual(records[0].feature_week_id, 202619)
-        self.assertEqual(records[0].target_week_id, 202620)
-        self.assertEqual(records[0].predict_date, "2026-05-23")
-        self.assertEqual(records[1].feature_week_id, 202620)
-        self.assertEqual(records[1].target_week_id, 202621)
+        point_records = _point_records(records)
+
+        self.assertEqual(len(point_records), 2)
+        self.assertEqual(point_records[0].feature_week_id, 202619)
+        self.assertEqual(point_records[0].target_week_id, 202620)
+        self.assertEqual(point_records[0].predict_date, "2026-05-23")
+        self.assertEqual(point_records[1].feature_week_id, 202620)
+        self.assertEqual(point_records[1].target_week_id, 202621)
+
+    def test_weekly_actual_write_guard_rejects_legacy_unique_key(self) -> None:
+        from sqlalchemy import create_engine, text
+
+        from scheduler.repository import _assert_weekly_actuals_target_rule_unique_key
+
+        engine = create_engine("sqlite:///:memory:")
+        with engine.begin() as conn:
+            _create_weekly_actuals_table(conn)
+            conn.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX uk_weekly_actual_predict
+                    ON t_scheme_weekly_actuals (tenor, predict_date)
+                    """
+                )
+            )
+            with self.assertRaisesRegex(RuntimeError, "uk_weekly_actual_predict_rule"):
+                _assert_weekly_actuals_target_rule_unique_key(conn)
+        engine.dispose()
+
+    def test_weekly_actual_write_guard_accepts_target_rule_unique_key(self) -> None:
+        from sqlalchemy import create_engine, text
+
+        from scheduler.repository import _assert_weekly_actuals_target_rule_unique_key
+
+        engine = create_engine("sqlite:///:memory:")
+        with engine.begin() as conn:
+            _create_weekly_actuals_table(conn)
+            conn.execute(
+                text(
+                    """
+                    CREATE UNIQUE INDEX uk_weekly_actual_predict_rule
+                    ON t_scheme_weekly_actuals (tenor, predict_date, target_rule)
+                    """
+                )
+            )
+            _assert_weekly_actuals_target_rule_unique_key(conn)
+        engine.dispose()
 
 
 if __name__ == "__main__":

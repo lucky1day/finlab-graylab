@@ -4,21 +4,21 @@
 
 ## 当前状态
 
-截至 2026-06-11，当前可发现、可调度的 active 方案为：
+截至 2026-06-29，当前 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
 
 | 方案 | 频率 | Horizon | 目标 |
 |------|------|---------|------|
 | `t1_daily` | daily | 1 | `5Y/10Y` |
 | `t5_daily` | daily | 5 | `3Y/5Y/7Y/10Y` |
-| `weekly_5y_direct_0529` | weekly | 6 | `5Y` |
-| `weekly_7y_cross_d_overlay_0529` | weekly | 6 | `7Y` |
+| `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` | weekly | 6 | `5Y/7Y/10Y` |
+| `weekly_avg_1y_lgbm_0529` / `weekly_avg_5y_lgbm_0529` / `weekly_avg_10y_lgbm_0529` | weekly | 6 | `1Y/5Y/10Y` |
 
 当前调度配置：
 
 - 日频：`3 7 * * 1-5`
 - 周频：`30 11 * * 6`
 
-旧周度方案 `weekly_10y_d_overlay`、`weekly_5y_direct_production`、`weekly_7y_cross_d_overlay` 已退役；当前周度 live 只保留 5Y 与 7Y 两个 0529 方案。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
+旧周度方案 `weekly_10y_d_overlay`、`weekly_5y_direct_production`、`weekly_7y_cross_d_overlay` 已退役；当前 0529 周度单点覆盖 5Y/7Y/10Y，周平均独立 LGBM 原始方案覆盖 1Y/5Y/10Y（无 7Y）。旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 已暂停，仅保留历史审计。周平均 actual 方向固定为“目标周平均收益率 vs 当前周平均收益率”。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
 
 ## 文档入口
 
@@ -42,7 +42,7 @@
 
 ```bash
 curl -sS http://127.0.0.1:8100/api/health
-curl -sS "http://127.0.0.1:8100/api/metrics/weekly_7y_cross_d_overlay_0529?tenor=7Y"
+curl -sS "http://127.0.0.1:8100/api/metrics/weekly_avg_5y_lgbm_0529__h6__5Y"
 curl -sS http://127.0.0.1:8100/api/backtests/factor-lab
 ```
 
@@ -50,7 +50,7 @@ curl -sS http://127.0.0.1:8100/api/backtests/factor-lab
 
 ```bash
 conda run -n bond_factor_lab_service python -m scheduler.scheme_runner --scheme-id t1_daily --predict-date 2026-06-11
-conda run -n bond_factor_lab_service python -m scheduler.scheme_runner --scheme-id weekly_7y_cross_d_overlay_0529 --predict-date 2026-06-06
+conda run -n bond_factor_lab_service python -m scheduler.scheme_runner --scheme-id weekly_avg_5y_lgbm_0529 --predict-date 2026-06-06
 ```
 
 写库类命令（`scheduler.executor`、actuals updater、backtest persist、activation）只在明确需要刷新正式表时执行，并按 SOP 记录 gate 证据。
@@ -64,7 +64,11 @@ bond-factor-lab/
 │   ├── t1_daily/
 │   ├── t5_daily/
 │   ├── weekly_5y_direct_0529/
-│   └── weekly_7y_cross_d_overlay_0529/
+│   ├── weekly_7y_cross_d_overlay_0529/
+│   ├── weekly_10y_d_overlay_0529/
+│   ├── weekly_avg_1y_lgbm_0529/
+│   ├── weekly_avg_5y_lgbm_0529/
+│   └── weekly_avg_10y_lgbm_0529/
 ├── scheduler/         # discovery / executor / repository / actuals updater
 ├── backend/           # FastAPI API 与静态前端 serve
 ├── backtests/         # 历史回测 runner

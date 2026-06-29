@@ -59,6 +59,9 @@ PREDICT_ALLOWED_SHARED_IMPORTS = {
     "shared.models",
     "shared.calendar_service",
     "shared.prediction_context",
+    "shared.weekly_average_source_evidence",
+    "shared.weekly_average_lgbm_source_runner",
+    "shared.weekly_average_lgbm_predict_adapter",
 }
 SQL_WRITE_KEYWORDS = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 SQL_WRITE_PATTERN = re.compile(r"\b(" + "|".join(SQL_WRITE_KEYWORDS) + r")\b", re.IGNORECASE)

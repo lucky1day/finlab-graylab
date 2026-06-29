@@ -1,6 +1,24 @@
 # 当前状态
 
-**更新日期**: 2026-06-27
+**更新日期**: 2026-06-29
+
+## 2026-06-29 周平均 0529 独立算法入库完成
+
+用户确认 `/Users/macstudio0/Desktop/方案/0629/forecast_project/` 就是周平均原始方案，且原始周平均只包含 `1Y/5Y/10Y`，没有 `7Y`。当前有效入库方案因此改为 `weekly_avg_1y_lgbm_0529`、`weekly_avg_5y_lgbm_0529`、`weekly_avg_10y_lgbm_0529`；旧 `weekly_avg_5y_direct_0529`、`weekly_avg_7y_cross_d_overlay_0529`、`weekly_avg_10y_d_overlay_0529` 为 point-backed 错误口径历史审计，已停用为 `paused`，不得再作为周平均 strict benchmark。
+
+原始证据归档在 `source_evidence/benchmark_batches/model_muti_0529/weekly_average_0529/`，manifest 指向归档 source package，并固定 runner 为 `weekly.run_backtest` / `weekly.run_weekly`。benchmark 由重跑 source-original 周平均包生成，不复用任何 `weekly_*` 周度单点方案的 label、Score、Model2、D-overlay 或 point runner。actual 方向仍固定为 **目标周平均收益率 vs 当前周平均收益率**，即 `next_week_average_yield_vs_current_week_average_yield`；周平均 oracle 只负责 label/actual 验证，不生成 original prediction。
+
+| 方案 | Registry ID | latest backtest | benchmark / CompareGate | API / live 状态 |
+|------|-------------|-----------------|--------------------------|-----------------|
+| `weekly_avg_1y_lgbm_0529` | `weekly_avg_1y_lgbm_0529__h6__1Y` | run_id=`137`，72 行 | original/current 72/72，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live 5 行 run_id=`408/411/414/417/420` |
+| `weekly_avg_5y_lgbm_0529` | `weekly_avg_5y_lgbm_0529__h6__5Y` | run_id=`138`，72 行 | original/current 72/72，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live 5 行 run_id=`409/412/415/418/421` |
+| `weekly_avg_10y_lgbm_0529` | `weekly_avg_10y_lgbm_0529__h6__10Y` | run_id=`139`，72 行 | original/current 72/72，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live 5 行 run_id=`410/413/416/419/422` |
+
+source package 回测明细每个期限有 73 行，其中 `effective_week_id=202607` 在 `source_output_date=2026-02-21/2026-02-28` 重复且内容完全一致；平台 benchmark/backtest 层按同一 weekly strict key 折叠为 72 个唯一有效周，并在 summary 中记录 `source_duplicate_effective_week_count=1`、`source_duplicate_effective_week_rows_collapsed=1`。若未来同一有效周重复行的预测或内部字段不一致，当前 runner 会 fail-closed。
+
+验证证据：三方案 paused 版本 `stage=all` 均通过，harness_run_id 分别为 `hr_20260629T105051Z_4be24633bf28`、`hr_20260629T105150Z_513d7991b13b`、`hr_20260629T105250Z_c3adef7c1a81`；随后 ActivationGate 将三套 config/registry/version 切为 active，激活版本分别为 `a6990418e39c`、`0ee7a9d223f7`、`246062333936`。授权 backtest persist 只写 `t_backtest_runs +1` 与 `t_backtest_predictions +72`（每方案各一次），源表、actuals、实盘表和 run_log delta 均为 0。激活后 active-only ApiGate 三套均通过，scheduler 已 `kickstart` 并通过 `scripts.verify_scheduler_mount`，日志确认三套 active cron 均为 `30 11 * * 6`。
+
+2026-06-29 已按用户授权完成 `gray_live` 回填：覆盖 `predict_date=2026-05-30/2026-06-06/2026-06-13/2026-06-20/2026-06-27`，对应 `feature_date=2026-05-29..2026-06-26`、`target_date=2026-06-05..2026-07-03`。回填前 no-write DryRunGate 全部通过，所有受保护表 delta 为 0；回填时逐条 LiveGate 使用一次性 `live_write` token，15 条均通过，每条只写 `t_scheme_runs +1`、`t_scheme_predictions +1`、`t_scheme_run_log +1`，源表、actuals、backtest 表均为 0 delta。`/api/metrics/{composite_id}` 三套均返回 5 条 `gray_live`，phase range 为 `start_predict_date=2026-05-30`、`end_predict_date=2026-06-27`、`start_target_date=2026-06-05`、`end_target_date=2026-07-03`。
 
 ## 2026-06-27 Liwei Source/Live 口径裁决
 
@@ -52,7 +70,7 @@
 
 ## 总览
 
-当前代码侧保留十二个 active 可调度方案：
+当前代码侧保留十五个 active 可调度方案：
 
 | 方案 | 频率 | Horizon | Task Type | 目标 | 状态 |
 |------|------|---------|-----------|------|------|
@@ -61,6 +79,9 @@
 | `weekly_5y_direct_0529` | `weekly` | 6 | `weekly_point` | `5Y` | `active` |
 | `weekly_7y_cross_d_overlay_0529` | `weekly` | 6 | `weekly_point` | `7Y` | `active` |
 | `weekly_10y_d_overlay_0529` | `weekly` | 6 | `weekly_point` | `10Y` | `active` |
+| `weekly_avg_1y_lgbm_0529` | `weekly` | 6 | `weekly_average` | `1Y` | `active / source-original weekly average aligned; gray_live rows current` |
+| `weekly_avg_5y_lgbm_0529` | `weekly` | 6 | `weekly_average` | `5Y` | `active / source-original weekly average aligned; gray_live rows current` |
+| `weekly_avg_10y_lgbm_0529` | `weekly` | 6 | `weekly_average` | `10Y` | `active / source-original weekly average aligned; gray_live rows current` |
 | `daily_5y_2_v28` | `daily` | 5 | `T+5` | `5Y` | `active` |
 | `daily_7y_1_v28` | `daily` | 5 | `T+5` | `7Y` | `active` |
 | `liwei_0616_cons_sda_k3_div_k10` | `daily` | 5 | `T+5` | `5Y` | `active / source-original backtest aligned; live-safe rows current` |
@@ -241,6 +262,12 @@ weekly actuals 覆盖：
 | `weekly_5y_direct_0529` | `framework_db_aligned` | `success`，run_id=`109` | `2025-01-03` 到 `2026-05-22` |
 | `weekly_7y_cross_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`110` | `2025-01-03` 到 `2026-05-22` |
 | `weekly_10y_d_overlay_0529` | `framework_db_aligned` | `success`，run_id=`108` | `2025-01-03` 到 `2026-05-22` |
+| `weekly_avg_5y_direct_0529` | `framework_db_aligned` | `superseded point-backed run`，run_id=`131` | `2025-01-03` 到 `2026-05-22` |
+| `weekly_avg_7y_cross_d_overlay_0529` | `framework_db_aligned` | `superseded point-backed run`，run_id=`132` | `2025-01-03` 到 `2026-05-22` |
+| `weekly_avg_10y_d_overlay_0529` | `framework_db_aligned` | `superseded point-backed run`，run_id=`133` | `2025-01-03` 到 `2026-05-22` |
+| `weekly_avg_1y_lgbm_0529` | `framework_db_aligned` | `success`，run_id=`137` | `2025-01-03` 到 `2026-05-22` |
+| `weekly_avg_5y_lgbm_0529` | `framework_db_aligned` | `success`，run_id=`138` | `2025-01-03` 到 `2026-05-22` |
+| `weekly_avg_10y_lgbm_0529` | `framework_db_aligned` | `success`，run_id=`139` | `2025-01-03` 到 `2026-05-22` |
 | `daily_5y_2_v28` | `framework_db_aligned` | `success`，run_id=`107` | `2025-01-02` 到 `2026-05-22` |
 
 已确认错误口径并受控删除的周频回测 run 包括 `weekly_5y_direct_0529` run_id=`104`、`weekly_7y_cross_d_overlay_0529` run_id=`105`、`weekly_10y_d_overlay_0529` run_id=`106`；旧的正确审计 run 继续保留，`v_latest_backtest_run` 只选当前 latest success。当前新接入的周频方案 `weekly_5y_direct_0529` 已按 source-original batch reproduction 完成历史回测落库，最新 `framework_db_aligned` run_id=`109`，`t_backtest_predictions` 71 条；整体样本 71、正确 41、accuracy=57.7%，`evaluation_filter.date_field=target_date`。该方案历史回测是批准的 source-original batch reproduction 例外：旧严格 PIT run_id=`104` 已删除；新 run summary 标记 `backtest_mode=original_batch_reproduction`、`backtest_point_in_time=false`、`historical_backtest_exception=true`，且 `original_benchmark_validation` 为 71/71 matched。实盘/灰度 adapter 仍严格使用 `feature_date`、`end_week=feature_week_id`、`as_of_date=feature_date`。

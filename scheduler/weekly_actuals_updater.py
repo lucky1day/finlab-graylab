@@ -12,11 +12,12 @@ from sqlalchemy.engine import Engine
 from scheduler.daily_actuals_updater import active_scheme_tenors, read_yield_rows
 from scheduler.repository import create_engine_from_env, upsert_weekly_actuals
 from shared.models import WeeklyActualRecord
-from shared.prediction_context import WEEKLY_TARGET_RULE, next_calendar_week_id
+from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE, next_calendar_week_id
 from shared.tenor_mapping import TENOR_TO_INDICATOR
 
 
 TARGET_RULE = WEEKLY_TARGET_RULE
+TARGET_RULES = (WEEKLY_TARGET_RULE, WEEKLY_AVERAGE_TARGET_RULE)
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,10 @@ def _price_signal(direction: int) -> str:
     if direction < 0:
         return "多"
     return "平"
+
+
+def _average_yield(items: list[dict]) -> float:
+    return sum(item["close_yield"] for item in items) / len(items)
 
 
 def _normalize_week_id(value: object) -> int | None:
@@ -170,9 +175,11 @@ def build_weekly_actual_records_from_rows(
             "trade_date": trade_date,
             "close_yield": _to_float(raw["close_yield"]),
         }
-        existing = grouped[tenor].get(week_id)
+        bucket = grouped[tenor].setdefault(week_id, {"items": [], "last": None})
+        bucket["items"].append(item)
+        existing = bucket["last"]
         if existing is None or trade_date > existing["trade_date"]:
-            grouped[tenor][week_id] = item
+            bucket["last"] = item
 
     records: list[WeeklyActualRecord] = []
     for tenor, by_week in grouped.items():
@@ -189,34 +196,53 @@ def build_weekly_actual_records_from_rows(
                 continue
             if max_trade_date_by_tenor[tenor] < target_week_end:
                 continue
-            feature = by_week[feature_week_id]
-            target = by_week[target_week_id]
+            feature_bucket = by_week[feature_week_id]
+            target_bucket = by_week[target_week_id]
+            feature = feature_bucket["last"]
+            target = target_bucket["last"]
             if start and target["trade_date"] < start:
                 continue
             if end and target["trade_date"] > end:
                 continue
-            direction = _sign(target["close_yield"] - feature["close_yield"])
-            records.append(
-                WeeklyActualRecord(
-                    tenor=tenor,
-                    feature_week_id=feature_week_id,
-                    target_week_id=target_week_id,
-                    predict_date=predict_date,
-                    feature_date=feature["trade_date"],
-                    target_date=target["trade_date"],
-                    feature_yield=feature["close_yield"],
-                    target_yield=target["close_yield"],
-                    direction_weekly=direction,
-                    price_signal=_price_signal(direction),
-                    target_rule=TARGET_RULE,
-                    extra={
-                        "direction_basis": "yield",
-                        "yield_direction_1": "price_short",
-                        "yield_direction_minus_1": "price_long",
-                    },
-                )
+
+            for target_rule, feature_yield, target_yield, aggregation in (
+                (
+                    WEEKLY_TARGET_RULE,
+                    feature["close_yield"],
+                    target["close_yield"],
+                    "last_available_trading_day",
+                ),
+                (
+                    WEEKLY_AVERAGE_TARGET_RULE,
+                    _average_yield(feature_bucket["items"]),
+                    _average_yield(target_bucket["items"]),
+                    "available_trading_day_average",
+                ),
+            ):
+                direction = _sign(target_yield - feature_yield)
+                records.append(
+                    WeeklyActualRecord(
+                        tenor=tenor,
+                        feature_week_id=feature_week_id,
+                        target_week_id=target_week_id,
+                        predict_date=predict_date,
+                        feature_date=feature["trade_date"],
+                        target_date=target["trade_date"],
+                        feature_yield=feature_yield,
+                        target_yield=target_yield,
+                        direction_weekly=direction,
+                        price_signal=_price_signal(direction),
+                        target_rule=target_rule,
+                        extra={
+                            "direction_basis": "yield",
+                            "aggregation": aggregation,
+                            "yield_direction_1": "price_short",
+                            "yield_direction_minus_1": "price_long",
+                        },
+                    )
             )
-    return sorted(records, key=lambda record: (record.tenor, record.predict_date))
+    rule_order = {rule: index for index, rule in enumerate(TARGET_RULES)}
+    return sorted(records, key=lambda record: (record.tenor, record.predict_date, rule_order[record.target_rule]))
 
 
 def build_weekly_actual_records(

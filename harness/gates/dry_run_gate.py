@@ -135,6 +135,7 @@ def _validate_records(
                 frequency=frequency,
                 horizon=horizon,
                 calendar=calendar,
+                expected_weekly_target_rule=config.get("target_rule") if frequency == "weekly" else None,
             )
         )
         extra = record.extra or {}
