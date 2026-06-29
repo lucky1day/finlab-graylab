@@ -321,7 +321,7 @@ button {
 
 .factor-lab-hero {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.6fr);
   gap: 24px;
   align-items: center;
   min-height: 124px;
@@ -336,6 +336,8 @@ button {
   font-weight: 760;
   line-height: 1.08;
   letter-spacing: 0;
+  word-break: keep-all;
+  overflow-wrap: normal;
 }
 
 .factor-lab-hero p:not(.eyebrow) {
@@ -350,10 +352,12 @@ button {
   display: grid;
   grid-template-columns: repeat(3, minmax(94px, 1fr));
   gap: 10px;
+  width: 100%;
+  min-width: 0;
 }
 
 .factor-lab-summary div {
-  min-width: 96px;
+  min-width: 0;
   padding: 14px 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -375,9 +379,11 @@ button {
   color: var(--text);
   font-size: 18px;
   font-weight: 760;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .factor-filter-bar {

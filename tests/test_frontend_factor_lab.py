@@ -10,6 +10,16 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_SCRIPT = PROJECT_ROOT / "frontend" / "aifin-shell.js"
 FRONTEND_INDEX = PROJECT_ROOT / "frontend" / "index.html"
+FRONTEND_CSS = PROJECT_ROOT / "frontend" / "aifin-shell.css"
+
+
+def _css_rule(selector: str) -> str:
+    """读取指定 CSS selector 的声明块，供静态布局契约测试使用。"""
+    css = FRONTEND_CSS.read_text(encoding="utf-8")
+    marker = selector + " {"
+    start = css.index(marker) + len(marker)
+    end = css.index("\n}", start)
+    return css[start:end]
 
 
 def _run_factor_lab_hook(script: str) -> dict:
@@ -111,6 +121,19 @@ def _run_factor_lab_hook(script: str) -> dict:
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_hero_summary_layout_allows_long_scheme_names_without_squeezing_title(self) -> None:
+        hero_rule = _css_rule(".factor-lab-hero")
+        summary_card_rule = _css_rule(".factor-lab-summary div")
+        summary_value_rule = _css_rule(".factor-lab-summary strong")
+        heading_rule = _css_rule(".factor-lab-hero h2")
+
+        self.assertIn("grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.6fr);", hero_rule)
+        self.assertIn("min-width: 0;", summary_card_rule)
+        self.assertIn("white-space: normal;", summary_value_rule)
+        self.assertIn("overflow-wrap: anywhere;", summary_value_rule)
+        self.assertNotIn("white-space: nowrap;", summary_value_rule)
+        self.assertIn("word-break: keep-all;", heading_rule)
+
     def test_api_urls_and_routes_use_public_base_path_when_served_under_prefix(self) -> None:
         result = _run_factor_lab_hook(
             """
