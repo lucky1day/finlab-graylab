@@ -71,6 +71,22 @@ cp deploy/launchd/com.bond-factor-lab.backend.plist ~/Library/LaunchAgents/
 launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 ```
 
+### 4) 本地 Mac：scheduler 错峰与并发
+
+`deploy/launchd/com.bond-factor-lab.scheduler.plist` 默认设置：
+
+- `BOND_SCHEDULER_STAGGER_MINUTES=2`：同一业务 cron 下的 active 方案按稳定顺序每 2 分钟错开启动。
+- `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY=1`：同一时刻最多 1 个预测方案进入算法子进程，避免多个 `conda run` 同时压机器。
+
+调整参数后需要重启 scheduler：
+
+```bash
+cp deploy/launchd/com.bond-factor-lab.scheduler.plist ~/Library/LaunchAgents/
+launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler
+```
+
+错峰只改变物理启动时间，不改变 `predict_date`、`feature_date`、`target_date` 或方案 `config.yaml` 中的业务基准 cron。
+
 ## 验收
 
 ```bash
