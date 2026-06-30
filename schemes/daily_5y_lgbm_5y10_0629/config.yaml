@@ -1,0 +1,22 @@
+scheme_id: daily_5y_lgbm_5y10_0629
+name: "0629日度5Y LGBM 5Y10"
+description: "0629 原始日度 D5Y/5Y10 fixed LGBM + 7-signal + combo + monthly quota T+1 方案；平台只做输入、日期、extra、benchmark 和落库适配"
+horizon: 1
+task_type: "T+1"
+tenors: ["5Y"]
+frequency: daily
+schedule:
+  cron: "3 7 * * 1-5"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_daily.v1
+  required_columns: ["date", "TB5YWI0C"]
+backtest:
+  runner: backtests.daily_5y_lgbm_5y10_0629_reproduction
+  benchmark_id: daily_0629
+  data_source: framework_db_aligned
+  benchmark_required: true
+  required_internal_fields: ["frequency", "final_select_id", "candidate_id", "target_col", "prediction_mode", "candidate_pred", "model_pred", "vote_pred", "prob_up", "threshold", "decision", "signal_sum", "vote_sum", "active_score", "pre_quota_candidate_pred", "candidate_pred_before_direction_tuning", "direction_tuning_rule"]
+  start_date: "2025-01-01"
