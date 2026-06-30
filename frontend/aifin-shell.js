@@ -351,6 +351,71 @@
     return task && task.taskType === "weekly_average";
   }
 
+  function isMonthlyTask(task) {
+    return task && (
+      String(task.frequency || "").toLowerCase() === "monthly" ||
+      task.taskType === "monthly"
+    );
+  }
+
+  function monthFromDate(value) {
+    var normalized = normalizeIsoDate(value);
+    return normalized ? normalized.slice(0, 7) : "";
+  }
+
+  function monthlyLiveBacktestCutoffMonth(liveScheme, task) {
+    if (!isMonthlyTask(task)) return "";
+    var months = [];
+    (liveScheme && liveScheme.monthlyRows || []).forEach(function (row) {
+      if (row.month) months.push(row.month);
+    });
+    var liveDailyByMonth = liveScheme && liveScheme.dailyRowsByMonth || {};
+    Object.keys(liveDailyByMonth).forEach(function (month) {
+      if (month) months.push(month);
+    });
+    (liveScheme && liveScheme.phaseRanges || []).forEach(function (range) {
+      var month = monthFromDate(range && range.start_target_date);
+      if (month) months.push(month);
+    });
+    if (months.length) {
+      return months.sort()[0];
+    }
+    return monthFromDate(
+      liveScheme && (
+        liveScheme.liveSinceDate ||
+        liveScheme.liveMetricSinceDate ||
+        ((liveScheme.phaseRanges || [])[0] && (liveScheme.phaseRanges || [])[0].start_predict_date)
+      )
+    );
+  }
+
+  function updateBacktestMonthRange(scheme) {
+    var months = (scheme.monthlyRows || []).filter(function (row) {
+      return row._source === "backtest" && row.month;
+    }).map(function (row) {
+      return row.month;
+    }).sort();
+    scheme.backtestStartMonth = months.length ? months[0] : "";
+    scheme.backtestEndMonth = months.length ? months[months.length - 1] : "";
+  }
+
+  function trimMonthlyBacktestAtLiveStart(scheme, liveScheme, taskKey) {
+    var cutoffMonth = monthlyLiveBacktestCutoffMonth(liveScheme, getTaskByKey(taskKey));
+    if (!cutoffMonth) return;
+    scheme.monthlyRows = (scheme.monthlyRows || []).filter(function (row) {
+      return row._source !== "backtest" || !row.month || row.month < cutoffMonth;
+    });
+    var dailyByMonth = scheme.dailyRowsByMonth || {};
+    Object.keys(dailyByMonth).forEach(function (month) {
+      if (month < cutoffMonth) return;
+      dailyByMonth[month] = (dailyByMonth[month] || []).filter(function (row) {
+        return row._source !== "backtest";
+      });
+      if (!dailyByMonth[month].length) delete dailyByMonth[month];
+    });
+    updateBacktestMonthRange(scheme);
+  }
+
   function liveDividerLabels(scheme, task) {
     var dividerLabel = normalizeIsoDate(scheme && scheme.liveSinceDate);
     var metricSinceLabel = normalizeIsoDate(scheme && scheme.liveMetricSinceDate);
@@ -993,6 +1058,7 @@
             var mScheme = merged[taskKey][i];
             if (mScheme.schemeId && mScheme.schemeId === liveSchemaId) {
               // 同方案:实盘行覆盖回测，补足独有月份
+              trimMonthlyBacktestAtLiveStart(mScheme, liveScheme, taskKey);
               var btOnlyMonths = {};
               mScheme.monthlyRows.forEach(function (r) {
                 if (r._source === "backtest") btOnlyMonths[r.month] = r;

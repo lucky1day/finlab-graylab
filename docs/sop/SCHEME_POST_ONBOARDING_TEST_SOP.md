@@ -1,6 +1,6 @@
 # 方案入库后测试验证 SOP
 
-**更新日期**: 2026-06-11
+**更新日期**: 2026-06-30
 **状态**: 已定稿 v1.0（用户 review 通过 2026-06-09）
 **定位**: 面向**任意一个已入库方案**的标准测试验证流程（不限于现有 5 方案）。核心是 **gatekeeping（先验入库合规）→ 双版本复现对比（入库前原始 vs 改造后，同一数据接入层）→ 数据落库与前端校验 → 挂载定时任务 → 出验证结论**。
 
@@ -22,6 +22,7 @@
 - **源算法保真**：source-backed 方案必须证明原始算法逻辑未改。时间起点、测试窗口、PIT/batch 口径、weekly/monthly 对齐、特征/信号、模型参数、投票/fallback 和内部 score 映射不能因平台化改变。
 - **内部数值证据**：原始算法暴露的 baseline score、probability、`*_vs`、内部 vote score 或类似数值必须进入 S5 对比。若最终方向一致但内部数值仍有残差，只能判为“方向一致、内部数值待归因”，不得判为“算法逻辑完全一致”。
 - **benchmark T 对齐语义**：原始算法回测结果里的 `T/date/predict_date` 表示算法站在 T 预测，进入平台后必须对齐数据库明细的 `feature_date`，不得对齐实盘语义下的 `predict_date`。
+- **月度自然 15 号语义**：月度 source-backed 方案若声明每月 15 号预测，则 `predict_date` 保留自然 15 号，无论是否交易日；`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。灰度/回测边界仍按 `target_date` 判定。
 - **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
 - **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
 
@@ -152,8 +153,8 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S6 落库成功，得 run_id |
-| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × task_type × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 对同一前端任务格子 / 同一 `task_type` 列下的候选方案做样本覆盖对齐：导出各方案 `target_date` 集合，确认相同 target 覆盖窗口内样本总数一致，若不一致必须输出 missing/extra target-date 清单或引用已批准的算法有效信号例外；⑤ 用逐方案 original benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行必须先判定 benchmark role；只有同执行口径才查 `t_scheme_predictions.feature_date` 和 `prediction_phase`，否则用 live-safe oracle |
-| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；同一 `task_type` 列的候选方案样本总数一致，或已有明确 missing/extra 与批准例外说明；逐方案 original benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表或 live-safe oracle 中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致；固定 future `source_end` 的 batch 行不得被当作 live 数值真值 |
+| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × task_type × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 对同一前端任务格子 / 同一 `task_type` 列下的候选方案做样本覆盖对齐：导出各方案 `target_date` 集合，确认相同 target 覆盖窗口内样本总数一致，若不一致必须输出 missing/extra target-date 清单或引用已批准的算法有效信号例外；⑤ 用逐方案 original benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行必须先判定 benchmark role；只有同执行口径才查 `t_scheme_predictions.feature_date` 和 `prediction_phase`，否则用 live-safe oracle；⑥ 若该 task 存在 live 行，前端合并视图必须按 live `target_date` 月份插入虚线分隔，虚线以上不得含灰度 target 月，虚线以下必须含已回补的 gray_live target 月 |
+| **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；同一 `task_type` 列的候选方案样本总数一致，或已有明确 missing/extra 与批准例外说明；逐方案 original benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表或 live-safe oracle 中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致；固定 future `source_end` 的 batch 行不得被当作 live 数值真值；月度 live 分隔不得按发出月误删上一 target 月回测行 |
 | **成功→去向** | 进入 S8 |
 | **失败判定** | 任一前端数值与 DB 不符 |
 | **失败→去向** | 先排除浏览器静态资源缓存（强制刷新/Disable Cache），再回到 **S7 起点重新刷新**（必要时回 S6 重新落库）。"所有回测结果必须严格验证完毕"方可放行 |

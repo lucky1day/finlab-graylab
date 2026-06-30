@@ -42,6 +42,7 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "baseline_original_csv": "原始代码基准CSV回测",
     "framework_original_csv": "框架算法基准CSV回测",
     "framework_db_aligned": "当前DB对齐回测",
+    "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
 
 
@@ -562,9 +563,12 @@ def scheme_metrics(
          AND wa.predict_date = p.predict_date
          AND wa.target_date = p.target_date
          AND wa.target_rule = :weekly_target_rule
-        LEFT JOIN t_scheme_monthly_actuals ma
+        LEFT JOIN (
+            SELECT tenor, target_date, target_rule, MAX(direction_monthly) AS direction_monthly
+            FROM t_scheme_monthly_actuals
+            GROUP BY tenor, target_date, target_rule
+        ) ma
           ON ma.tenor = p.target_tenor
-         AND ma.predict_date = p.predict_date
          AND ma.target_date = p.target_date
          AND ma.target_rule = :monthly_target_rule
         WHERE {" AND ".join(filters)}

@@ -144,7 +144,7 @@ def build_monthly_actual_records_from_rows(
             feature_anchor = _month_anchor(feature_month_id)
             target_anchor = _add_month(feature_anchor)
             try:
-                predict_date = calendar.first_trading_day_on_or_after(feature_anchor)
+                predict_date = feature_anchor.isoformat()
                 feature_date = calendar.last_trading_day_on_or_before(feature_anchor)
                 target_date = calendar.last_trading_day_on_or_before(target_anchor)
             except ValueError:

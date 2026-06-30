@@ -109,8 +109,12 @@ def _create_minimal_factor_lab_backtest_schema(engine) -> None:
                     (target_code, display_name, asset_class, target_type, sort_order,
                      status, extra, created_at, updated_at)
                 VALUES
+                    ('1Y', '1Y国债活跃', 'bond', 'active_treasury',
+                     1, 'active', '{}', NULL, NULL),
                     ('5Y', '5Y国债活跃', 'bond', 'active_treasury',
-                     2, 'active', '{}', NULL, NULL)
+                     2, 'active', '{}', NULL, NULL),
+                    ('10Y', '10Y国债活跃', 'bond', 'active_treasury',
+                     4, 'active', '{}', NULL, NULL)
                 """
             )
         )
@@ -279,6 +283,84 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
 
         self.assertEqual(result["schemes"][0]["scheme_id"], "demo_daily__h5__5Y")
         self.assertEqual(result["schemes"][0]["monthly_metrics"][0]["correct"], 1)
+
+    def test_default_factor_lab_includes_monthly_framework_db_aligned_backtests(self) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        _create_minimal_factor_lab_backtest_schema(engine)
+        monthly_schemes = [
+            ("monthly_1y_rf_top30_0629", "monthly_1y_rf_top30_0629__h30__1Y", "1Y", 301),
+            ("monthly_5y_knn_top20_0629", "monthly_5y_knn_top20_0629__h30__5Y", "5Y", 302),
+            ("monthly_10y_rf_top5_0629", "monthly_10y_rf_top5_0629__h30__10Y", "10Y", 303),
+        ]
+        with engine.begin() as conn:
+            for base_scheme_id, registry_id, tenor, run_id in monthly_schemes:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO t_scheme_registry
+                            (scheme_id, base_scheme_id, name, description, horizon, task_type,
+                             frequency, target_tenor, schedule_cron, schedule_timezone, status,
+                             deployed_at, created_at, updated_at)
+                        VALUES
+                            (:registry_id, :base_scheme_id, :base_scheme_id,
+                             '月度默认矩阵可见性测试', 30, 'monthly', 'monthly', :tenor,
+                             '0 18 15 * *', 'Asia/Shanghai', 'active',
+                             '2026-06-30', NULL, NULL)
+                        """
+                    ),
+                    {"registry_id": registry_id, "base_scheme_id": base_scheme_id, "tenor": tenor},
+                )
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO t_backtest_runs
+                            (id, benchmark_id, scheme_id, data_source, start_date, end_date,
+                             status, summary, report_path, created_at, updated_at)
+                        VALUES
+                            (:source_run_id, 'monthly_0629', :base_scheme_id,
+                             'source_original_monthly_binary_runner', '2026-04-15',
+                             '2026-05-15', 'success', '{}', NULL, NULL,
+                             '2026-06-29T10:00:00'),
+                            (:framework_run_id, 'monthly_0629', :base_scheme_id,
+                             'framework_db_aligned', '2026-04-15', '2026-05-15',
+                             'success', '{}', NULL, NULL, '2026-06-30T10:00:00')
+                        """
+                    ),
+                    {
+                        "source_run_id": run_id - 100,
+                        "framework_run_id": run_id,
+                        "base_scheme_id": base_scheme_id,
+                    },
+                )
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO t_backtest_predictions
+                            (run_id, target_tenor, horizon, predict_date, feature_date,
+                             target_date, label, predicted_direction, confidence)
+                        VALUES
+                            (:run_id, :tenor, 30, '2026-04-15', '2026-04-15',
+                             '2026-05-15', -1, -1, 0.8)
+                        """
+                    ),
+                    {"run_id": run_id, "tenor": tenor},
+                )
+
+        result = backtest_factor_lab_results(engine)
+
+        by_scheme = {scheme["scheme_id"]: scheme for scheme in result["schemes"]}
+        self.assertEqual(result["data_source"], "framework_db_aligned")
+        for _base_scheme_id, registry_id, _tenor, run_id in monthly_schemes:
+            with self.subTest(registry_id=registry_id):
+                scheme = by_scheme[registry_id]
+                self.assertEqual(scheme["run_id"], run_id)
+                self.assertEqual(scheme["data_source"], "framework_db_aligned")
+                self.assertEqual(scheme["task_type"], "monthly")
+                self.assertEqual(scheme["monthly_metrics"][0]["month"], "2026-05")
+                self.assertEqual(scheme["monthly_metrics"][0]["overall"], 100.0)
+                self.assertEqual(scheme["summary"]["overall"], 100.0)
 
     def test_factor_lab_fallback_targets_do_not_filter_out_active_1y_registry_row(self) -> None:
         from backend.services import backtest_factor_lab_results

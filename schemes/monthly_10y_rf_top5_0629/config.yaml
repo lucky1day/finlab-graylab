@@ -17,7 +17,7 @@ input_spec:
 backtest:
   runner: backtests.monthly_10y_rf_top5_0629_reproduction
   benchmark_id: monthly_0629
-  data_source: source_original_monthly_binary_runner
+  data_source: framework_db_aligned
   benchmark_required: true
   required_internal_fields: ["frequency", "final_select_id", "candidate_id", "model_name", "top_n", "y_pred", "pred_proba_up", "pred_proba_down", "param_index", "params_json", "training_rows", "validation_rows"]
   start_date: "2025-01-01"

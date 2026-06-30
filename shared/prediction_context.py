@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 
@@ -61,20 +61,19 @@ def build_weekly_live_context(calendar: Any, predict_date: str) -> WeeklyLiveCon
 
 
 def build_monthly_live_context(calendar: Any, predict_date: str) -> MonthlyLiveContext:
-    """月频 source 语义：每月 15 日触发，输入截止到 15 日及以前最近交易日。"""
+    """月频 source 语义：自然月 15 日触发，输入截止到 15 日及以前最近交易日。"""
     scheduled = date.fromisoformat(str(predict_date)[:10])
     trigger = date(scheduled.year, scheduled.month, 15)
-    scheduled_trigger = _first_trading_day_on_or_after(calendar, trigger)
-    if scheduled.isoformat() != scheduled_trigger:
+    if scheduled != trigger:
         raise ValueError(
-            f"monthly predict_date must be scheduled trigger date {scheduled_trigger}, got {scheduled.isoformat()}"
+            f"monthly predict_date must be natural month 15 {trigger.isoformat()}, got {scheduled.isoformat()}"
         )
     feature_date = _last_trading_day_on_or_before(calendar, trigger)
     target_anchor = _add_month(trigger)
     target_date = _last_trading_day_on_or_before(calendar, target_anchor)
     return MonthlyLiveContext(
         trigger_date=trigger.isoformat(),
-        scheduled_trigger_date=scheduled_trigger,
+        scheduled_trigger_date=trigger.isoformat(),
         db_rdate=trigger.isoformat(),
         feature_date=feature_date,
         feature_month_id=trigger.strftime("%Y-%m"),
@@ -91,18 +90,6 @@ def next_calendar_week_id(calendar: Any, feature_week_id: int) -> int:
         if next_week is not None and int(next_week) != int(feature_week_id):
             return int(next_week)
     raise ValueError(f"无法在 DB 日历中找到 week_id={feature_week_id} 的下一周")
-
-
-def _first_trading_day_on_or_after(calendar: Any, value: date) -> str:
-    day = value.isoformat()
-    if calendar.is_trading_day(day):
-        return day
-    previous_day = (value - timedelta(days=1)).isoformat()
-    days = calendar.next_trading_days(previous_day, 15)
-    for item in days:
-        if str(item)[:10] >= day:
-            return str(item)[:10]
-    raise ValueError(f"无法在 DB 日历中找到 {day} 及之后的月频触发交易日")
 
 
 def _last_trading_day_on_or_before(calendar: Any, value: date) -> str:

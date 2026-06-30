@@ -1,6 +1,6 @@
 # 代码架构设计（Code Architecture）
 
-**更新日期**: 2026-06-09
+**更新日期**: 2026-06-30
 **定位**: 本仓库的**代码架构主蓝图**。定义分层模型、包依赖方向规则、运行时调用图、扩展模型与横切关注点。是所有其它设计文档的总索引。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -156,6 +156,8 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 ```
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
+
+日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
 ### 5.2 入库 harness 路径（已实现，自动化方案入库）
 

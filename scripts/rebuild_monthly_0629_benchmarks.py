@@ -53,7 +53,26 @@ STRICT_KEY_FIELDS = (
     "target_tenor",
     "horizon",
 )
-DEFAULT_PREDICT_DATES = ("2026-04-15",)
+DEFAULT_PREDICT_DATES = (
+    "2025-01-15",
+    "2025-02-15",
+    "2025-03-15",
+    "2025-04-15",
+    "2025-05-15",
+    "2025-06-15",
+    "2025-07-15",
+    "2025-08-15",
+    "2025-09-15",
+    "2025-10-15",
+    "2025-11-15",
+    "2025-12-15",
+    "2026-01-15",
+    "2026-02-15",
+    "2026-03-15",
+    "2026-04-15",
+)
+SOURCE_ORIGINAL_DATA_SOURCE = "source_original_monthly_binary_runner"
+CURRENT_DATA_SOURCE = "framework_db_aligned"
 
 
 @dataclass(frozen=True)
@@ -63,7 +82,6 @@ class MonthlyBenchmarkSpec:
     current_runner_module: str
     current_runner_function: str
     benchmark_id: str = MONTHLY_SOURCE_BATCH
-    data_source: str = "source_original_monthly_binary_runner"
 
 
 SPECS: dict[str, MonthlyBenchmarkSpec] = {
@@ -138,6 +156,7 @@ def rebuild_one(spec: MonthlyBenchmarkSpec, *, predict_dates: tuple[str, ...]) -
         generator=evidence.generator,
         evidence=evidence,
         current_generator=f"{spec.current_runner_module}.{spec.current_runner_function}",
+        data_source=SOURCE_ORIGINAL_DATA_SOURCE,
     )
     current_summary = _summary_for_export(
         spec,
@@ -146,6 +165,7 @@ def rebuild_one(spec: MonthlyBenchmarkSpec, *, predict_dates: tuple[str, ...]) -
         generator=f"{spec.current_runner_module}.{spec.current_runner_function}",
         evidence=evidence,
         current_generator=f"{spec.current_runner_module}.{spec.current_runner_function}",
+        data_source=CURRENT_DATA_SOURCE,
     )
     _write_json(bench_dir / "original_backtest_summary.json", original_summary)
     _write_json(bench_dir / "current_backtest_summary.json", current_summary)
@@ -225,9 +245,9 @@ def _call_runner(
 
 def _monthly_label(engine: Any, target_tenor: str, context: Any) -> int:
     actuals = build_monthly_actual_records(engine, tenors=[target_tenor], end_date=context.target_date)
-    key = (target_tenor, context.scheduled_trigger_date, context.target_date, MONTHLY_TARGET_RULE)
+    key = (target_tenor, context.target_date, MONTHLY_TARGET_RULE)
     labels = {
-        (record.tenor, record.predict_date, record.target_date, record.target_rule): record.direction_monthly
+        (record.tenor, record.target_date, record.target_rule): record.direction_monthly
         for record in actuals
     }
     if key not in labels:
@@ -322,6 +342,7 @@ def _summary_for_export(
     generator: str,
     evidence: MonthlySourceEvidence,
     current_generator: str,
+    data_source: str,
 ) -> dict[str, Any]:
     labeled = [row for row in rows if not _is_blank(row.get("label"))]
     correct = [row for row in labeled if str(row.get("is_correct")).lower() == "true"]
@@ -330,7 +351,7 @@ def _summary_for_export(
         "status": "success",
         "scheme_id": spec.scheme_id,
         "benchmark_id": spec.benchmark_id,
-        "data_source": spec.data_source,
+        "data_source": data_source,
         "rows": row_count,
         "row_count": row_count,
         "monthly_count": row_count,
@@ -349,6 +370,8 @@ def _summary_for_export(
             "bootstrap_source": source_role,
             "source_family": "monthly_0629_binary_runner",
             "target_rule": MONTHLY_TARGET_RULE,
+            "data_source": data_source,
+            "source_original_data_source": SOURCE_ORIGINAL_DATA_SOURCE,
             "source_original_monthly_algorithm_rows": row_count,
             "platform_current_monthly_adapter_rows": row_count,
             "source_package_hash": evidence.source_package_hash,
