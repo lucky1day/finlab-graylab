@@ -727,6 +727,26 @@ class FactorLabRankingTests(unittest.TestCase):
               weeklyLow: hooks.isLowSampleMetric({ samples: 2 }, { taskKey: "10Y|weekly_point" }),
               weeklyBoundary: hooks.isLowSampleMetric({ samples: 3 }, { taskKey: "10Y|weekly_point" }),
               weeklyTwoSamples: hooks.isLowSampleMetric({ samples: 2 }, { taskKey: "10Y|weekly_point" }),
+              monthlyLow: hooks.isLowSampleMetric({ samples: 11 }, { taskKey: "10Y|monthly" }),
+              monthlyBoundary: hooks.isLowSampleMetric({ samples: 12 }, { taskKey: "10Y|monthly" }),
+              monthlyCurrent: hooks.isLowSampleMetric({ samples: 17 }, { taskKey: "10Y|monthly" }),
+              monthlyRowHtml: hooks.renderSchemeRankingRowForTest(
+                {
+                  id: "monthly-10y",
+                  taskKey: "10Y|monthly",
+                  name: "0629月度10Y RF top5 · 10Y国债活跃",
+                  deploymentDate: "2026/06/01"
+                },
+                0,
+                {
+                  overall: 58.8,
+                  correct: 10,
+                  samples: 17,
+                  metricSamples: 17,
+                  upPrecision: 60,
+                  downPrecision: 57.1
+                }
+              ),
               empty: hooks.isLowSampleMetric({ samples: 0 }, { taskKey: "10Y|weekly_point" })
             };
             """
@@ -737,6 +757,10 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertTrue(result["weeklyLow"])
         self.assertFalse(result["weeklyBoundary"])
         self.assertTrue(result["weeklyTwoSamples"])
+        self.assertTrue(result["monthlyLow"])
+        self.assertFalse(result["monthlyBoundary"])
+        self.assertFalse(result["monthlyCurrent"])
+        self.assertNotIn("样本不足", result["monthlyRowHtml"])
         self.assertFalse(result["empty"])
 
 

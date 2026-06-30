@@ -1230,6 +1230,7 @@
   function lowSampleThresholdForTask(taskLike) {
     var task = taskLike && taskLike.frequency ? taskLike : getTaskByKey(taskLike && taskLike.taskKey);
     if (isWeeklyTask(task)) return 3;
+    if (isMonthlyTask(task)) return 12;
     return 30;
   }
 
