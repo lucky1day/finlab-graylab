@@ -112,6 +112,8 @@ feature_date = T
 target_date  = T + horizon
 ```
 
+scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方案做分钟级物理错峰，并限制同时进入算法子进程的预测任务数。错峰只改变进程实际启动时间，不改变 `predict_date`、`feature_date`、`target_date`、`prediction_phase` 或方案 `config.yaml` 中登记的业务基准 cron。
+
 周频实盘也遵守同一条 T/T+1 规则：adapter 必须先用交易日历计算 `feature_date = previous_trading_day(predict_date)`，再由 `feature_date` 映射 `feature_week_id`，并以 `end_week=feature_week_id`、`as_of_date=feature_date` 构建周频输入。禁止直接用 `predict_date` 所在周作为 feature week；否则交易日手工运行或灰度补齐可能读到当前周未来数据。
 
 月频 0629 source-backed 方案使用独立的自然月触发语义：每个自然月 **15 号预测一次，无论 15 号是否交易日**。平台不得把 `predict_date` 顺延到 15 号之后的首个交易日；非交易日 15 号时，`predict_date`、`trigger_date`、`scheduled_trigger_date` 和 `db_rdate` 仍为自然 15 号，`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取下一个自然月 15 号及以前最近交易日。例如 `predict_date=2025-02-15` 时，如果 2025-02-15 与 2025-03-15 都不是交易日，则平台记录应为：

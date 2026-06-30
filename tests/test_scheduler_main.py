@@ -3,9 +3,26 @@
 from __future__ import annotations
 
 import logging
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+
+
+def _cfg(
+    scheme_id: str,
+    *,
+    frequency: str = "daily",
+    cron: str = "3 7 * * 1-5",
+    status: str = "active",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        scheme_id=scheme_id,
+        status=status,
+        frequency=frequency,
+        tenors=["5Y"],
+        schedule=SimpleNamespace(cron=cron, timezone="Asia/Shanghai"),
+    )
 
 
 class SchedulerMainTests(unittest.TestCase):
@@ -32,6 +49,121 @@ class SchedulerMainTests(unittest.TestCase):
                 scheduler.shutdown(wait=False)
 
         self.assertEqual(prediction_jobs, ["predict:t5_daily"])
+
+    def test_scheduler_staggers_prediction_jobs_with_same_base_cron(self) -> None:
+        from scheduler import main as scheduler_main
+
+        schemes = [
+            _cfg("scheme_c"),
+            _cfg("scheme_a"),
+            _cfg("scheme_b"),
+            _cfg("paused_scheme", status="paused"),
+        ]
+        with (
+            patch.dict(os.environ, {"BOND_SCHEDULER_STAGGER_MINUTES": "2"}),
+            patch.object(scheduler_main, "discover_schemes", return_value=schemes),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+            self.assertLogs(scheduler_main.logger, level=logging.INFO) as logs,
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            prediction_jobs = sorted(
+                (job.id, str(job.trigger))
+                for job in scheduler.get_jobs()
+                if job.id.startswith("predict:")
+            )
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertEqual([job_id for job_id, _ in prediction_jobs], [
+            "predict:scheme_a",
+            "predict:scheme_b",
+            "predict:scheme_c",
+        ])
+        self.assertTrue(any("hour='7'" in trigger and "minute='3'" in trigger for _, trigger in prediction_jobs))
+        self.assertTrue(any("hour='7'" in trigger and "minute='5'" in trigger for _, trigger in prediction_jobs))
+        self.assertTrue(any("hour='7'" in trigger and "minute='7'" in trigger for _, trigger in prediction_jobs))
+        self.assertTrue(
+            any("Scheduled scheme scheme_b at 3 7 * * 1-5 -> 5 7 * * 1-5" in msg for msg in logs.output)
+        )
+
+    def test_zero_stagger_keeps_original_prediction_cron(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.dict(os.environ, {"BOND_SCHEDULER_STAGGER_MINUTES": "0"}),
+            patch.object(scheduler_main, "discover_schemes", return_value=[_cfg("scheme_a"), _cfg("scheme_b")]),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            prediction_triggers = [
+                str(job.trigger)
+                for job in scheduler.get_jobs()
+                if job.id.startswith("predict:")
+            ]
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertEqual(len(prediction_triggers), 2)
+        self.assertTrue(all("hour='7'" in trigger and "minute='3'" in trigger for trigger in prediction_triggers))
+
+    def test_cron_offset_rolls_minutes_without_crossing_day(self) -> None:
+        from scheduler import main as scheduler_main
+
+        self.assertEqual(scheduler_main._offset_cron_expr("58 7 * * 1-5", 5), "3 8 * * 1-5")
+        with self.assertRaisesRegex(ValueError, "crosses a natural day"):
+            scheduler_main._offset_cron_expr("59 23 * * *", 1)
+        with self.assertRaisesRegex(ValueError, "numeric minute and hour"):
+            scheduler_main._offset_cron_expr("*/5 7 * * 1-5", 2)
+
+    def test_scheduler_env_int_fails_closed(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with patch.dict(os.environ, {"BOND_SCHEDULER_STAGGER_MINUTES": "abc"}):
+            with self.assertRaisesRegex(ValueError, "BOND_SCHEDULER_STAGGER_MINUTES"):
+                scheduler_main._env_int("BOND_SCHEDULER_STAGGER_MINUTES", 2, min_value=0)
+        with patch.dict(os.environ, {"BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY": "0"}):
+            with self.assertRaisesRegex(ValueError, "BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY"):
+                scheduler_main._env_int("BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY", 1, min_value=1)
+
+    def test_daily_prediction_skips_non_trading_day(self) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = _cfg("daily_demo", frequency="daily")
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+            patch.object(scheduler_main, "_is_trading_day", return_value=False) as trading_day,
+            patch.object(scheduler_main, "execute_scheme") as execute_scheme,
+            self.assertLogs(scheduler_main.logger, level=logging.INFO) as logs,
+        ):
+            scheduler_main.run_prediction_job("daily_demo", run_date="2026-06-15")
+
+        trading_day.assert_called_once_with("2026-06-15")
+        execute_scheme.assert_not_called()
+        self.assertTrue(any("Skip daily_demo on non-trading day 2026-06-15" in msg for msg in logs.output))
+
+    def test_weekly_and_monthly_predictions_run_on_non_trading_day(self) -> None:
+        from scheduler import main as scheduler_main
+
+        for frequency in ("weekly", "monthly"):
+            with self.subTest(frequency=frequency):
+                cfg = _cfg(f"{frequency}_demo", frequency=frequency)
+                with (
+                    patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+                    patch.object(scheduler_main, "_sync_registry", return_value=None),
+                    patch.object(scheduler_main, "_is_trading_day", return_value=False) as trading_day,
+                    patch.object(scheduler_main, "execute_scheme", return_value="ok") as execute_scheme,
+                ):
+                    scheduler_main.run_prediction_job(f"{frequency}_demo", run_date="2026-06-15")
+
+                trading_day.assert_not_called()
+                execute_scheme.assert_called_once_with(cfg, "2026-06-15", algo_env=scheduler_main.DEFAULT_ALGO_ENV)
 
     def test_actuals_refresh_registers_morning_and_evening_jobs(self) -> None:
         from scheduler import main as scheduler_main
