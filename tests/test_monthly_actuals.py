@@ -33,6 +33,33 @@ class MonthlyActualsTests(unittest.TestCase):
         self.assertEqual(record.price_signal, "空")
         self.assertEqual(record.target_rule, MONTHLY_TARGET_RULE)
 
+    def test_build_monthly_actual_records_keeps_natural_15th_predict_date(self) -> None:
+        from scheduler.monthly_actuals_updater import build_monthly_actual_records_from_rows
+        from shared.prediction_context import MONTHLY_TARGET_RULE
+
+        rows = [
+            {"tenor": "10Y", "trade_date": "2025-02-14", "close_yield": 1.77},
+            {"tenor": "10Y", "trade_date": "2025-03-14", "close_yield": 1.82},
+        ]
+        calendar_rows = [
+            {"rdate": "2025-02-14", "trade_flag": "1"},
+            {"rdate": "2025-02-15", "trade_flag": "0"},
+            {"rdate": "2025-03-14", "trade_flag": "1"},
+            {"rdate": "2025-03-15", "trade_flag": "0"},
+        ]
+
+        records = build_monthly_actual_records_from_rows(rows, calendar_rows)
+
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.predict_date, "2025-02-15")
+        self.assertEqual(record.feature_date, "2025-02-14")
+        self.assertEqual(record.target_date, "2025-03-14")
+        self.assertEqual(record.feature_month_id, "2025-02")
+        self.assertEqual(record.target_month_id, "2025-03")
+        self.assertEqual(record.direction_monthly, 1)
+        self.assertEqual(record.target_rule, MONTHLY_TARGET_RULE)
+
     def test_upsert_monthly_actuals_writes_json_extra(self) -> None:
         from scheduler.repository import upsert_monthly_actuals
         from shared.models import MonthlyActualRecord

@@ -71,6 +71,7 @@
 - `anchor_date` 不得作为业务字段使用；如方案内部或审计 extra 保留，必须等于 `feature_date`。
 - 回测必须满足 `predict_date = feature_date = T`，`target_date = T + horizon`。
 - 灰度实盘和正式实盘都必须满足 `predict_date = T + 1`，`feature_date = T`，`target_date = T + horizon`。
+- 月度方案是唯一当前例外：若 source 声明每月自然 15 号预测，则 `predict_date` 必须保留自然月 15 号，无论是否交易日；`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取目标月 15 号及以前最近交易日。
 - 全平台历史回测输出样本统一从 `predict_date >= 2025-01-01` 开始；日频/月频方案在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，周频方案写 `backtest.predict_start_date: "2025-01-01"`。
 - 历史训练、筛因子、模型更新、warmup 和输入 artifact 可以使用 `2025-01-01` 之前的数据；不要把训练起点误当成回测输出样本起点。
 - 灰度实盘也算实盘，必须标识 `prediction_phase = gray_live`；正式 scheduler 自然发出的实盘标识 `prediction_phase = scheduled_live`。
@@ -98,15 +99,15 @@
 
 ## 4. 频率分支规则
 
-| 项 | daily | weekly |
-|----|-------|--------|
-| `horizon` | `1` 或 `5` | 当前用 `6` |
-| 输入入口 | `build_daily_input_artifact()`；如依赖 weekly/monthly，声明 `input_spec.auxiliary_inputs` 后再调用对应 artifact builder | `build_weekly_input_artifact()` |
-| 日期来源 | 交易日历 / 源数据日期 | `week_id` 必须来自 `api_wind_date`，经 `shared.calendar_service` |
-| target 规则 | 按 T+N 目标交易日 | `feature_week_id` 的下一实际 DB 周 `target_week_id`，目标日为该周最后交易日 |
-| 回测样本起点 | `backtest.start_date: "2025-01-01"`，按 `predict_date` 过滤输出样本 | `backtest.predict_start_date: "2025-01-01"`，`start_week/end_week` 仍是输入/训练范围 |
-| 禁止项 | 用 `predict_date` 做展示月 | 任何 `*_to_friday` / `*_to_monday` / 计算型 week_id 作为实盘或回测对齐依据 |
-| 数据加载 | 覆盖特征窗口和 target 计算所需数据 | live/gray 必须 `end_week=feature_week_id`、`as_of_date=feature_date`；不得读取 feature 周之后的周频原始行 |
+| 项 | daily | weekly | monthly |
+|----|-------|--------|---------|
+| `horizon` | `1` 或 `5` | 当前用 `6` | 当前 0629 月度用 `30`，实际目标日由自然月 15 号规则推导 |
+| 输入入口 | `build_daily_input_artifact()`；如依赖 weekly/monthly，声明 `input_spec.auxiliary_inputs` 后再调用对应 artifact builder | `build_weekly_input_artifact()` | `build_monthly_input_artifact()` |
+| 日期来源 | 交易日历 / 源数据日期 | `week_id` 必须来自 `api_wind_date`，经 `shared.calendar_service` | 自然月 15 号触发；`feature_date` / `target_date` 取对应月 15 号及以前最近交易日 |
+| target 规则 | 按 T+N 目标交易日 | `feature_week_id` 的下一实际 DB 周 `target_week_id`，目标日为该周最后交易日 | `target_rule=next_month_observation_yield_vs_feature_month_observation_yield`，actual 为目标月观测收益率 vs 当前 feature 月观测收益率 |
+| 回测样本起点 | `backtest.start_date: "2025-01-01"`，按 `predict_date` 过滤输出样本 | `backtest.predict_start_date: "2025-01-01"`，`start_week/end_week` 仍是输入/训练范围 | `backtest.start_date: "2025-01-01"`，输出样本仍按自然 15 号 `predict_date` 枚举 |
+| 禁止项 | 用 `predict_date` 做展示月 | 任何 `*_to_friday` / `*_to_monday` / 计算型 week_id 作为实盘或回测对齐依据 | 把 15 号顺延为交易日 predict_date；用 `predict_date` 或部署时间切分 gray/backtest；让 target 月同时进入 backtest 和 live |
+| 数据加载 | 覆盖特征窗口和 target 计算所需数据 | live/gray 必须 `end_week=feature_week_id`、`as_of_date=feature_date`；不得读取 feature 周之后的周频原始行 | live/gray 必须以 `feature_date` 硬截止，不能因当前 DB 已有目标月或后续月数据而读未来 |
 
 周度方案尤其要验证：周六 `predict_date` 不是交易日时，只能向前找最近 DB 周作为 `feature_week_id`；`target_week_id/target_date` 必须由 DB 日历从 `feature_week_id` 推导到下一实际周及其最后交易日，不允许用公式 `week_id + 1` 或未来周数据存在性决定 target。
 
@@ -140,9 +141,10 @@ source-original benchmark 跨到 gray/live 区间时，不得自动要求 live �
 - `predict_date` 按调度日历反推，可以早于灰度起点。
 - 每条补齐记录必须显式满足 `feature_date = T`，输入 artifact、辅助周/月映射和模型训练窗口都不能越过 `feature_date`；禁止因为当前 DB 已有 `T+1` 或更晚数据而读入未来信息。
 - 周度例子：`target_date=2026-06-05` 对应 `predict_date=2026-05-30`；下一条 `target_date=2026-06-12` 对应 `predict_date=2026-06-06`。
+- 月度例子：灰度起点为 `target_date >= 2026-06-01` 时，`predict_date=2026-05-15 -> target_date=2026-06-15` 已是灰度实盘，必须写入 `t_scheme_predictions.prediction_phase=gray_live`，不能留在 latest historical backtest；`predict_date=2026-06-15 -> target_date=2026-07-15` 同样是灰度实盘。
 - 验收时同时查 `t_scheme_predictions`、`t_scheme_run_log` 和 API 返回。
 
-不要只按 `predict_date >= 2026-06-01` 回补；这会漏掉周度 6 月第一条目标周。
+不要只按 `predict_date >= 2026-06-01` 回补；这会漏掉周度 6 月第一条目标周，也会漏掉月度 `predict_date=2026-05-15 -> target_date=2026-06-15` 的首个灰度 target 月。
 
 ## 7. Gate 顺序
 

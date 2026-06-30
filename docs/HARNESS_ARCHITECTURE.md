@@ -1,6 +1,6 @@
 # 强约束 Harness 工程架构
 
-**更新日期**: 2026-06-12
+**更新日期**: 2026-06-30
 
 本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准。
 
@@ -152,10 +152,10 @@ python -m harness gate live \
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
 - 回测结论: `--no-persist` summary、样本总数、`metric_samples`、准确率、月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。
 - 源算法保真结论: source 口径分类、L0/L1/L2 改动分级、原始脚本/输出 hash、original/current 的方向与 actual 对齐结果、内部模型分数差异统计。若内部数值不完全一致，必须写清残差归因，不能宣称算法逻辑完全一致。跨灰度边界的 benchmark 必须记录 row role；固定 future `source_end` 的 source batch 不能替代 live-safe oracle。
-- 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足 `predict_date=T+1/feature_date=T`；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
-- 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；当前 V28 批次灰度观察区按 `target_date >= 2026-06-01` 判定，后续方案使用方案级生命周期配置。
+- 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足对应频率的发出规则；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；月度 source-backed 方案若声明自然 15 号触发，必须证明 `predict_date` 保留自然 15 号，`feature_date/target_date` 分别取对应月 15 号及以前最近交易日；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。
+- 实盘阶段结论: 灰度实盘和正式实盘必须能区分为 `gray_live` / `scheduled_live`；当前 V28/0629 灰度观察区按 `target_date >= 2026-06-01` 判定，后续方案使用方案级生命周期配置；月度回补必须按目标月枚举，不能按 `predict_date >= gray_start` 漏掉首个 target 月。
 - 若落库: 写库前后受保护表行数对比，证明只影响授权表和授权 scheme。
-- 前端/API 结论: `/api/backtests/factor-lab` 或 `/api/metrics/{scheme_id}` 可读，矩阵格子不消失；前端月度样本数展示 `samples`，准确率括号展示 `correct/metric_samples`，每日/周度验证表中预测为“平”的行展示 `-`。
+- 前端/API 结论: `/api/backtests/factor-lab` 或 `/api/metrics/{scheme_id}` 可读，矩阵格子不消失；前端月度样本数展示 `samples`，准确率括号展示 `correct/metric_samples`，每日/周度验证表中预测为“平”的行展示 `-`；有 live 区间时，前端必须按 live `target_date` 月份插入虚线分隔，backtest 区不得含 `target_date >= gray_start` 的 target 月。
 - 文档结论: 当前状态、测试记录、历史复现或上线计划已更新。
 
 没有这些证据时，不得把方案标记为 Onboarding Complete，更不得宣称已经 Production Observed。

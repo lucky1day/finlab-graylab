@@ -1,6 +1,6 @@
 # 预测日期与实盘阶段语义
 
-**更新日期**: 2026-06-14
+**更新日期**: 2026-06-30
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
@@ -114,6 +114,16 @@ target_date  = T + horizon
 
 周频实盘也遵守同一条 T/T+1 规则：adapter 必须先用交易日历计算 `feature_date = previous_trading_day(predict_date)`，再由 `feature_date` 映射 `feature_week_id`，并以 `end_week=feature_week_id`、`as_of_date=feature_date` 构建周频输入。禁止直接用 `predict_date` 所在周作为 feature week；否则交易日手工运行或灰度补齐可能读到当前周未来数据。
 
+月频 0629 source-backed 方案使用独立的自然月触发语义：每个自然月 **15 号预测一次，无论 15 号是否交易日**。平台不得把 `predict_date` 顺延到 15 号之后的首个交易日；非交易日 15 号时，`predict_date`、`trigger_date`、`scheduled_trigger_date` 和 `db_rdate` 仍为自然 15 号，`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取下一个自然月 15 号及以前最近交易日。例如 `predict_date=2025-02-15` 时，如果 2025-02-15 与 2025-03-15 都不是交易日，则平台记录应为：
+
+```text
+predict_date = 2025-02-15
+feature_date = 2025-02-14
+target_date  = 2025-03-14
+```
+
+月度 actual join 和前端月度统计仍以 `target_date + target_rule + target_tenor` 为事实键；不得依赖 actual 表中历史遗留的顺延 `predict_date` 来判断是否有真实方向。
+
 ## 5. 回测规则
 
 历史回测必须保持 T 语义：
@@ -126,7 +136,9 @@ target_date  = T + horizon
 
 回测结果只写 `t_backtest_*`，不得读取或复制 `t_scheme_predictions` 中的灰度/正式实盘记录来拼历史结果。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；这是输出样本起点，不是训练起点。训练、筛因子、模型 warmup 和定期更新可使用更早历史数据，但每个预测点的输入和标签可见性都必须严格停在对应 `feature_date`。
 
-当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date` 截断，避免同一 target 月同时由 backtest 和 live 区间重复解释。当前 V28 批次的历史回测只保留 `target_date < 2026-06-01`。
+当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date` 截断，避免同一 target 月同时由 backtest 和 live 区间重复解释。当前灰度批次的历史回测只保留 `target_date < 2026-06-01`。
+
+月度方案仍坚持“每个自然月 15 号预测一次”：`2026-06-15` 发出的月度预测属于灰度实盘，若目标月为下月观察点，则进入 live 侧并以 `target_date=2026-07-15` 等待 actual。对应地，`predict_date=2026-05-15,target_date=2026-06-15` 已落入灰度 target 区间，不得继续作为 latest historical backtest 样本，而应作为 `gray_live` 出现在前端虚线下方；月度 0629 三方案的 strict backtest latest 截止到 `predict_date=2026-04-15,target_date=2026-05-15`。
 
 `target_date` 是回测明细的必填事实字段。runner、`/api/backtests/factor-lab` 和前端月度聚合只能用 `target_date` 归属月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
 

@@ -34,6 +34,8 @@ MONTHLY_COLUMNS = {
 
 
 class Monthly0629SchemeTests(unittest.TestCase):
+    EXPECTED_MONTHLY_BACKTEST_ROWS = 16
+
     def test_configs_declare_monthly_source_original_contract(self) -> None:
         for scheme_id in SCHEME_IDS:
             with self.subTest(scheme_id=scheme_id):
@@ -45,6 +47,7 @@ class Monthly0629SchemeTests(unittest.TestCase):
                 self.assertEqual(config["target_rule"], MONTHLY_TARGET_RULE)
                 self.assertTrue(config["backtest"]["benchmark_required"])
                 self.assertEqual(config["backtest"]["benchmark_id"], "monthly_0629")
+                self.assertEqual(config["backtest"]["data_source"], "framework_db_aligned")
                 required = set(config["backtest"]["required_internal_fields"])
                 self.assertTrue(required)
                 self.assertTrue(required <= set(INTERNAL_FIELDS))
@@ -62,6 +65,7 @@ class Monthly0629SchemeTests(unittest.TestCase):
                     self.assertTrue(required <= set(header))
                     for row in rows:
                         self.assertEqual(row["target_rule"], MONTHLY_TARGET_RULE)
+                        self.assertLess(row["target_date"], "2026-06-01")
                         for field in MONTHLY_COLUMNS | required:
                             self.assertNotEqual(row.get(field), "", f"{scheme_id} {csv_name} missing {field}")
 
@@ -70,13 +74,26 @@ class Monthly0629SchemeTests(unittest.TestCase):
             with self.subTest(scheme_id=scheme_id):
                 bench_dir = PROJECT_ROOT / "schemes" / scheme_id / "benchmarks"
                 expected_roles = {
-                    "original_backtest_summary.json": MONTHLY_SOURCE_ROLE,
-                    "current_backtest_summary.json": PLATFORM_CURRENT_MONTHLY_ROLE,
+                    "original_backtest_summary.json": (
+                        MONTHLY_SOURCE_ROLE,
+                        "source_original_monthly_binary_runner",
+                    ),
+                    "current_backtest_summary.json": (
+                        PLATFORM_CURRENT_MONTHLY_ROLE,
+                        "framework_db_aligned",
+                    ),
                 }
-                for summary_name, expected_role in expected_roles.items():
+                for summary_name, (expected_role, expected_data_source) in expected_roles.items():
                     summary = json.loads((bench_dir / summary_name).read_text(encoding="utf-8"))
+                    self.assertEqual(summary["data_source"], expected_data_source)
+                    self.assertEqual(summary["row_count"], self.EXPECTED_MONTHLY_BACKTEST_ROWS)
+                    self.assertEqual(summary["monthly_count"], self.EXPECTED_MONTHLY_BACKTEST_ROWS)
                     provenance = summary["benchmark_provenance"]
                     self.assertEqual(provenance["source_role"], expected_role)
+                    self.assertEqual(
+                        provenance["source_original_data_source"],
+                        "source_original_monthly_binary_runner",
+                    )
                     rendered = json.dumps(provenance, ensure_ascii=False).lower()
                     self.assertNotIn("point_runner", rendered)
                     self.assertNotIn("point_scheme_id", rendered)

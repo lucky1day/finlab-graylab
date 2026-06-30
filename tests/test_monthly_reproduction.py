@@ -8,6 +8,16 @@ from shared.prediction_context import MONTHLY_TARGET_RULE
 
 
 class MonthlyReproductionTests(unittest.TestCase):
+    def test_default_reproduction_dates_stop_before_gray_live_target_month(self) -> None:
+        from backtests.monthly_0629_reproduction import DEFAULT_PREDICT_DATES
+
+        self.assertEqual(len(DEFAULT_PREDICT_DATES), 16)
+        self.assertEqual(DEFAULT_PREDICT_DATES[0], "2025-01-15")
+        self.assertEqual(DEFAULT_PREDICT_DATES[-1], "2026-04-15")
+        self.assertIn("2025-02-15", DEFAULT_PREDICT_DATES)
+        self.assertIn("2026-02-15", DEFAULT_PREDICT_DATES)
+        self.assertNotIn("2026-05-15", DEFAULT_PREDICT_DATES)
+
     def test_no_persist_reproduction_joins_monthly_actual_label(self) -> None:
         from backtests.monthly_0629_reproduction import run_monthly_0629_reproduction
 
@@ -44,7 +54,7 @@ class MonthlyReproductionTests(unittest.TestCase):
             patch("backtests.monthly_0629_reproduction.run_monthly_prediction", return_value=[record]),
             patch(
                 "backtests.monthly_0629_reproduction._monthly_actual_lookup",
-                return_value={("10Y", "2026-04-15", "2026-05-15", MONTHLY_TARGET_RULE): -1},
+                return_value={("10Y", "2026-05-15", MONTHLY_TARGET_RULE): -1},
             ),
         ):
             payload = run_monthly_0629_reproduction(
@@ -54,7 +64,14 @@ class MonthlyReproductionTests(unittest.TestCase):
             )
 
         self.assertEqual(payload["status"], "success")
+        self.assertEqual(payload["data_source"], "framework_db_aligned")
         self.assertEqual(payload["row_count"], 1)
+        self.assertEqual(payload["summary"]["source_original_data_source"], "source_original_monthly_binary_runner")
+        self.assertEqual(payload["summary"]["benchmark_provenance"]["source_role"], "platform_current_monthly_adapter")
+        self.assertEqual(
+            payload["summary"]["benchmark_provenance"]["source_original_data_source"],
+            "source_original_monthly_binary_runner",
+        )
         row = payload["rows"][0]
         self.assertEqual(row["label"], -1)
         self.assertEqual(row["is_correct"], True)

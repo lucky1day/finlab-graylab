@@ -1,6 +1,6 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-06-28
+**更新日期**: 2026-06-30
 
 > 当前文档入口以本文为准。旧审查报告、一次性验证报告和历史事故归档已移除；新增或修复方案只读现行规范，不从历史踩坑文档推导规则。
 
@@ -23,11 +23,13 @@
 
 > Source-backed 方案必须先遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)：不得修改原始算法逻辑，时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射都必须按原始脚本复现。外部 `latest_oos` / batch 结果是否作为 source-original reproduction、strict PIT 或平台 live-like PIT 变体，必须先分类并留证；所有改动先分级为 L0/L1/L2，L2 算法内部改动默认禁止。平台变体不得冒充原始 source 输出。跨灰度边界的 benchmark 必须按 row role 拆分，固定 future `source_end` 的 source batch 不能直接当作 live-safe 逐日数值真值。
 
+> 月度方案有独立调度语义：每个自然月 15 号预测一次，无论 15 号是否交易日；`predict_date` 保留自然 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。灰度/实盘边界按方案级 `target_date` 判定；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为 `gray_live`，历史回测 latest 截止到 `target_date=2026-05-15`。
+
 ## 操作
 
 | 文档 | 内容 |
 |------|------|
-| [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) | 新增方案前必读 T0 强约束范式（daily / weekly 通用） |
+| [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) | 新增方案前必读 T0 强约束范式（daily / weekly / monthly 通用） |
 | [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | 新增方案入库 SOP（含 2026-06-10 修订的数据口径规则） |
 | [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | 入库后测试验证 SOP |
 | [CLOUD_ENVIRONMENT.md](CLOUD_ENVIRONMENT.md) | 云服务器第一步：Conda 双环境复刻、依赖快照和只读烟测 |

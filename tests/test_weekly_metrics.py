@@ -313,7 +313,7 @@ class WeeklyMetricsTests(unittest.TestCase):
                         (tenor, feature_month_id, target_month_id, predict_date, feature_date, target_date,
                          feature_yield, target_yield, direction_monthly, price_signal, target_rule, extra)
                     VALUES
-                        ('10Y', '2026-04', '2026-05', '2026-04-15', '2026-04-15', '2026-05-15',
+                        ('10Y', '2026-04', '2026-05', '2026-04-16', '2026-04-15', '2026-05-15',
                          1.77, 1.82, 1, '空', :target_rule, '{}')
                     """
                 ),

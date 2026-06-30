@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-21
+**更新日期**: 2026-06-30
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。Source-backed 方案的原始算法保真见 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -80,6 +80,7 @@
 - 灰度实盘也算实盘，但必须标识 `prediction_phase=gray_live`；正式 scheduler 自然发出的实盘标识 `prediction_phase=scheduled_live`。
 - 灰度实盘观察起点按方案级 `target_date` 判定，当前 V28 批次为 `target_date >= 2026-06-01`。
 - 历史回测只覆盖灰度起点之前的 target；实盘区间通过 `t_scheme_predictions` 和 `/api/metrics/{scheme_id}` 展示，并应能区分灰度与正式实盘。
+- 月度方案若 source 声明每月自然 15 号预测，则 `predict_date` 必须保留自然 15 号，不能顺延到交易日；灰度/回测分界仍按 `target_date` 月份判定，前端合并也按 live 明细的 `target_date` 月份切分。
 - 前端“部署时间”来自 `t_scheme_registry.deployed_at`，语义是该业务方案挂载对应定时任务的日期；它只是展示字段，不参与回测截断、实盘回补范围、月份归属或唯一键计算。
 - 前端不得再通过 hardcoded override、默认日期或 scheme_id 特判生成部署时间；如果 API/registry 缺 `deployed_at`，应作为注册数据问题处理，不能静默显示假日期。
 - active registry 行必须有 `deployed_at`；`/api/schemes`、`/api/backtests/factor-lab` 和前端真实数据路径遇到缺失部署日必须 fail-closed。mock/demo 数据若需要展示部署时间，也必须显式写入，不能走生产兜底。
@@ -91,7 +92,7 @@
 - 灰度实盘分界仍按方案级 `target_date` 起点；不要用 `predict_date` 或部署时间切 live/backtest 区间。
 
 **规则七：灰度补齐只能使用 feature_date 及以前数据**
-- 灰度补齐虽然是事后运行，但每条记录仍必须满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`。
+- 灰度补齐虽然是事后运行，但每条记录仍必须满足对应频率的日期语义：日频为 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`；周频由调度日反推上一交易日 `feature_date` 再映射周；月频自然 15 号方案保留 15 号 `predict_date`，并以当前月/目标月 15 号及以前最近交易日作为 `feature_date/target_date`。
 - 输入 artifact、辅助周/月映射、模型训练窗口都不得越过 `feature_date`。
 - 当前 DB 可能已经拥有 `T+1` 或更晚数据；补齐逻辑必须显式以 `feature_date` 约束数据，不能只依赖当前 DB 最新状态。
 
@@ -567,6 +568,7 @@ PYTHONNOUSERSITE=1 conda run -n forecast_env python -m backtests.{scheme_id}_rep
 - `/api/backtests/factor-lab` 返回合法 `task_type`；前端按 `task_type` 分列，例如 `weekly_point` 展示为“周度”，`weekly_average` 展示为“周平均”。
 - 周度明细行、月度指标、去重和展示月份一律按 `target_date` 归组；`feature_date` 只用于追溯输入窗口，`predict_date` 只用于调度日志和运行记录。
 - 如果方案已有灰度实盘起点（当前为 `target_date >= 2026-06-01`），历史回测 runner 必须排除该实盘区间（即回测 `target_date < 2026-06-01`），避免前端同一个 target 月同时出现 backtest 与 live 两行；不要用部署时间或 `predict_date` 截断历史回测。
+- 月度 historical backtest 必须按 target 月截断。以 0629 月度三方案为例，latest backtest 只保留 `target_date < 2026-06-01`，即截止 `predict_date=2026-04-15,target_date=2026-05-15`；`predict_date=2026-05-15,target_date=2026-06-15` 必须进入 gray_live。
 - 若用 targeted sample 验证 daily strict、monthly fast path、cache 或 shard 等加速路径，所有对比路径必须使用同一组 `sample_dates` 和同一个 effective input end；diff 结论至少覆盖 `feature_date/target_date/target_tenor/horizon/direction/confidence/label/is_correct`。
 - 对 source-backed 方案，上述 targeted sample 的 diff 还必须覆盖 source benchmark 暴露的内部模型字段，例如 `vote_score`、`*_score`、`*_vs`、`*_dir`、`*_sign`。cache、shard、monthly fast path 或任何执行优化只有在最终方向和内部字段全部 0 diff 后，才能作为 full historical no-persist/persist 的候选执行路径。
 - 如果删除错误口径的旧回测 run，必须使用受控脚本显式指定 `scheme_id + run_id`，先 dry-run 打印命中行数，再 apply；不得手写散落 SQL 删除。
@@ -694,8 +696,10 @@ LIMIT 5;
 1. **回补范围**：所有 `target_date >= 2026-06-01`（当前 V28 批次灰度观察起点）至今应当存在的实盘预测。后续方案使用方案级灰度起点，不写死全局日期。
    - 日频方案：每个目标交易日一条，先枚举 `target_date >= gray_start` 的应有目标日，再按平台交易日历反推 `feature_date = target_date - horizon 个交易日`，最后取 `predict_date = feature_date` 的下一交易日。不要只按 `predict_date >= gray_start` 枚举，否则会漏掉 feature 在 5 月、target 落在 6 月的 T+N 样本。
    - 周频方案：以 `target_date` 为准枚举应有目标周，再反推对应调度日；不要只从灰度起点之后的 `predict_date` 开始枚举。
+   - 月频方案：以目标月 `target_date` 为准枚举应有月度目标点，再反推自然月 15 号 `predict_date`；不要只从灰度起点之后的 `predict_date` 开始枚举，也不要把非交易日 15 号顺延为 predict_date。
    - 例：日频 T+5 灰度起点为 2026-06-01 时，第一条目标日 `target_date=2026-06-01` 对应 `feature_date=2026-05-25`、`predict_date=2026-05-26`；该记录不能因为 `predict_date` 早于 6 月而遗漏。
    - 例：灰度起点为 2026-06-01 时，周度 2026-06 的第一条目标周是 `target_date=2026-06-05`，其预测发出日是上一轮周六 `predict_date=2026-05-30`；下一条才是 `predict_date=2026-06-06 -> target_date=2026-06-12`。
+   - 例：月度 0629 灰度起点为 2026-06-01 时，第一条目标月是 `predict_date=2026-05-15 -> target_date=2026-06-15`，该记录必须作为 `gray_live` 在前端虚线下方展示；下一条为 `predict_date=2026-06-15 -> target_date=2026-07-15`。
 2. **predict_date 取调度日历上应当发出的日期**，允许早于灰度起点（只要其 `target_date` 落在灰度起点之后），不允许全部填当前日期。
 3. **feature_date 是硬截止**：灰度补齐时必须证明 `feature_date=T`，且所有输入 artifact、辅助周/月映射和模型训练窗口均不越过 `feature_date`；禁止因为当前 DB 已有 `T+1` 或更晚数据而读入未来信息。
 4. **阶段标识**：补齐记录必须标识为 `prediction_phase=gray_live`；正式 scheduler 自然发出的记录标识为 `prediction_phase=scheduled_live`。

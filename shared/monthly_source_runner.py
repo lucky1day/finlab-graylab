@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -31,14 +33,19 @@ def run_source_monthly_live(
     )
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=64)
 def _run_source_monthly_live_cached(
     source_package_path: str,
     source_package_hash: str,
     runner_module: str,
     predict_date: str,
 ) -> tuple[dict[str, Any], ...]:
-    del source_package_hash
+    cache_path = _source_cache_path(source_package_hash, runner_module, predict_date)
+    if cache_path is not None:
+        cached = _read_source_cache(cache_path, source_package_hash, runner_module, predict_date)
+        if cached is not None:
+            return cached
+
     with _source_runtime(Path(source_package_path)) as source_root:
         monthly_root = source_root / "monthly_project"
         _run_monthly_module(
@@ -47,7 +54,64 @@ def _run_source_monthly_live_cached(
             source_root=source_root,
             monthly_root=monthly_root,
         )
-        return tuple(_read_prediction_rows(monthly_root / "output"))
+        rows = tuple(_read_prediction_rows(monthly_root / "output"))
+    if cache_path is not None:
+        _write_source_cache(cache_path, source_package_hash, runner_module, predict_date, rows)
+    return rows
+
+
+def _source_cache_path(source_package_hash: str, runner_module: str, predict_date: str) -> Path | None:
+    if os.environ.get("MONTHLY_SOURCE_CACHE_DISABLE") == "1":
+        return None
+    raw_root = os.environ.get("MONTHLY_SOURCE_CACHE_DIR")
+    root = Path(raw_root) if raw_root else Path(__file__).resolve().parents[1] / "backtest_artifacts" / "monthly_source_cache"
+    module_key = hashlib.sha256(runner_module.encode("utf-8")).hexdigest()[:16]
+    return root / source_package_hash / module_key / f"{str(predict_date)[:10]}.json"
+
+
+def _read_source_cache(
+    path: Path,
+    source_package_hash: str,
+    runner_module: str,
+    predict_date: str,
+) -> tuple[dict[str, Any], ...] | None:
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("source_package_hash") != source_package_hash:
+        return None
+    if payload.get("runner_module") != runner_module:
+        return None
+    if payload.get("predict_date") != str(predict_date)[:10]:
+        return None
+    rows = payload.get("rows")
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        return None
+    return tuple(dict(row) for row in rows)
+
+
+def _write_source_cache(
+    path: Path,
+    source_package_hash: str,
+    runner_module: str,
+    predict_date: str,
+    rows: tuple[dict[str, Any], ...],
+) -> None:
+    payload = {
+        "source_package_hash": source_package_hash,
+        "runner_module": runner_module,
+        "predict_date": str(predict_date)[:10],
+        "rows": list(rows),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 class _source_runtime:

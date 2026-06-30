@@ -1,6 +1,6 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-06-15
+**更新日期**: 2026-06-30
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -24,7 +24,7 @@
 | `task_type` | str | ✅ | 前端任务格子显式类型，必须 ∈ `{T+1, T+5, weekly_point, weekly_average, monthly}`；不得由 `frequency/horizon` 隐式推断 |
 | `tenors` | list[str] | ✅ | 非空，⊆ 已注册 Y 标的 key（当前国债活跃目标为 `1Y/3Y/5Y/7Y/10Y`，后续以 `t_target_registry` 为准） |
 | `frequency` | str | ✅ | ∈ `{daily, weekly, monthly}` |
-| `schedule.cron` | str | ✅ | 合法 5 段 cron |
+| `schedule.cron` | str | ✅ | 合法 5 段 cron。月度 source-backed 方案若声明每月 15 号触发，必须写自然 15 号 cron（如 `0 18 15 * *`），不得因 15 号非交易日而顺延 cron |
 | `schedule.timezone` | str | ➖ | 默认 `Asia/Shanghai`，合法时区 |
 | `entry_point` | str | ➖ | 默认 `predict.run`，必须 `== predict.run` |
 | `status` | str | ✅ | ∈ `{active, paused}`（新方案先 `paused`） |
@@ -32,7 +32,7 @@
 | `input_spec.required_columns` | list[str] | ✅(新) | InputGate 据此校验列覆盖 |
 | `input_spec.weekly_variant` | str | `frequency==weekly` 时✅(新) | 对应 `data_service.weekly_variant`，如 `unified` / `wind_export_0529` |
 | `input_spec.auxiliary_inputs` | list[map] | ➖ | 辅助输入声明。每项为 `{frequency, data_version, required_columns}`；`frequency ∈ {daily, weekly, monthly}`，不得等于方案主 `frequency`，同一方案内不得重复。InputGate 对每项执行与主输入相同的 source / data_version / required_columns / coverage 校验 |
-| `target_rule` | str | `frequency==weekly` 时✅(新) | 目标日语义（如 `next_week_last_trading_day_vs_current_week`） |
+| `target_rule` | str | `frequency in {weekly, monthly}` 时✅(新) | 目标日/actual 语义（如 `next_week_last_trading_day_vs_current_week`、`next_month_observation_yield_vs_feature_month_observation_yield`） |
 | `backtest.runner` | str | ➖(新) | `backtests/{scheme_id}_reproduction.py` 模块名；参与历史排行时必填 |
 | `backtest.start_date` | str | `frequency in {daily, monthly}` 且参与回测时✅ | 必须等于 `2025-01-01`。含义是历史回测**预测发出起点**，即回测输出样本必须满足 `predict_date >= 2025-01-01`；训练、筛因子、模型更新和输入 artifact 可以使用更早历史数据 |
 | `backtest.predict_start_date` | str | `frequency==weekly` 且参与回测时✅ | 必须等于 `2025-01-01`。周频 `start_week/end_week` 仍表示输入/训练周范围；输出样本必须按 `predict_date >= 2025-01-01` 过滤 |
@@ -40,6 +40,7 @@
 > 标注「新」的字段是本设计**新增的必填项**——让 harness 无需读算法即可知道输入口径、列要求、目标语义。现有方案在数据层重构阶段补齐这些字段。
 > `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
 > 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
+> 月度方案使用独立的自然月触发语义：`predict_date` 必须是自然月 15 号；`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取目标月 15 号及以前最近交易日。月度灰度回补仍按 `target_date` 判定，不能按 `predict_date` 或部署时间截断。
 > `config.tenors` 是算法一次执行可返回的目标集合；registry 同步会把它拆成每个 `target_tenor` 一行。`/api/schemes` 不返回 `tenor/tenors`，只返回该 registry 行的 `target_tenor`。
 > `task_type` 会同步到 `t_scheme_registry.task_type` 并由 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/backtests/factor-lab` 返回；前端任务格子只按该字段分列。字段缺失或非法时必须 fail-closed。
 >

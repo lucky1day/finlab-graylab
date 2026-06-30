@@ -1146,6 +1146,110 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertAlmostEqual(result["backtestAccuracy"][0], 2 / 3 * 100)
         self.assertEqual(result["liveAccuracy"], [100])
 
+    def test_monthly_live_target_month_cuts_backtest_target_month(self) -> None:
+        """月度实盘按 target 月归属，live target 月起不再算回测。"""
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "1Y": "1Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "monthly_1y_rf_top30_0629__h30__1Y",
+                    base_scheme_id: "monthly_1y_rf_top30_0629",
+                    target_tenor: "1Y",
+                    name: "0629月度1Y RF top30",
+                    status: "active",
+                    horizon: 30,
+                    task_type: "monthly",
+                    frequency: "monthly",
+                    deployed_at: "2026-06-15"
+                  }
+                ]
+              },
+              "/api/metrics/monthly_1y_rf_top30_0629__h30__1Y": {
+                scheme_id: "monthly_1y_rf_top30_0629__h30__1Y",
+                base_scheme_id: "monthly_1y_rf_top30_0629",
+                target_tenor: "1Y",
+                target_label: "1Y国债活跃",
+                phase_ranges: [
+                  { prediction_phase: "gray_live", start_predict_date: "2026-05-15", end_predict_date: "2026-06-15",
+                    start_target_date: "2026-06-15", end_target_date: "2026-07-15", rows: 2 }
+                ],
+                monthly_metrics: [],
+                daily_rows: [
+                  { predict_date: "2026-05-15", feature_date: "2026-05-15", target_date: "2026-06-15",
+                    prediction_phase: "gray_live", target_tenor: "1Y", horizon: 30,
+                    predicted_direction: 1, actual_direction: -1, is_correct: false, confidence: 0.57 },
+                  { predict_date: "2026-06-15", feature_date: "2026-06-15", target_date: "2026-07-15",
+                    prediction_phase: "gray_live", target_tenor: "1Y", horizon: 30,
+                    predicted_direction: 1, actual_direction: null, is_correct: null, confidence: 0.61 }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "1Y": "1Y国债活跃" },
+                schemes: [
+                  {
+                    id: "monthly_0629:monthly_1y_rf_top30_0629__h30__1Y:framework_db_aligned",
+                    scheme_id: "monthly_1y_rf_top30_0629__h30__1Y",
+                    base_scheme_id: "monthly_1y_rf_top30_0629",
+                    scheme_name: "monthly_1y_rf_top30_0629",
+                    name: "0629月度1Y RF top30",
+                    target_tenor: "1Y",
+                    target_label: "1Y国债活跃",
+                    horizon: 30,
+                    task_type: "monthly",
+                    frequency: "monthly",
+                    status: "complete",
+                    deployed_at: "2026-06-15",
+                    benchmark_label: "monthly_0629",
+                    data_source_label: "framework_db_aligned",
+                    monthly_metrics: [],
+                    daily_rows: [
+                      { predict_date: "2026-04-15", feature_date: "2026-04-15", target_date: "2026-05-15",
+                        target_tenor: "1Y", horizon: 30,
+                        predicted_direction: -1, actual_direction: -1, is_correct: true },
+                      { predict_date: "2026-05-15", feature_date: "2026-05-15", target_date: "2026-06-15",
+                        target_tenor: "1Y", horizon: 30,
+                        predicted_direction: 1, actual_direction: 1, is_correct: true }
+                    ]
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              liveSinceDate: scheme && scheme.liveSinceDate,
+              monthlyRows: scheme ? scheme.monthlyRows.map(function (r) {
+                return r.month + ":" + r._source + ":" + r.samples;
+              }) : [],
+              dailyMonths: scheme ? Object.keys(scheme.dailyRowsByMonth).sort() : [],
+              aggregate: hooks.aggregateScheme(scheme)
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "merged")
+        self.assertEqual(result["liveSinceDate"], "2026-05-15")
+        self.assertEqual(result["monthlyRows"], ["2026-05:backtest:1", "2026-06:live:1", "2026-07:live:0"])
+        self.assertEqual(result["dailyMonths"], ["2026-05", "2026-06", "2026-07"])
+        self.assertEqual(result["aggregate"]["samples"], 2)
+        self.assertEqual(result["aggregate"]["correct"], 1)
+
     def test_weekly_live_uses_single_predict_date_start_semantics(self) -> None:
         """周度和日度统一用第一条 predict_date 作为实盘发出起点。"""
         result = _run_factor_lab_hook(
