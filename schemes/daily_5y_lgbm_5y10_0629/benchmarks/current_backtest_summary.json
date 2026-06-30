@@ -1,0 +1,30 @@
+{
+  "accuracy": 0.3857566765578635,
+  "benchmark_provenance": {
+    "bootstrap_source": "platform_current_daily_0629_adapter",
+    "cross_frequency_reuse": false,
+    "data_source": "framework_db_aligned",
+    "generator": "backtests.daily_0629_reproduction.run_daily_0629_reproduction:daily_5y_lgbm_5y10_0629",
+    "manifest_path": "source_evidence/benchmark_batches/daily_0629/manifest.json",
+    "source_candidate_id": "5Y_weekmap_top120_seed_quota_7sig_combo_rolling40_target_0.50_mtd_floor_0.50_causal",
+    "source_family": "daily_0629_binary_runner",
+    "source_final_select_id": "5Y10",
+    "source_frequency": "D5Y",
+    "source_live_runner_module": "daily.run_daily",
+    "source_original_data_source": "source_original_daily_0629_binary_runner",
+    "source_package_hash": "de63375f51810962ad10162444f93f7b2fbde6236b7f4b9921734ae6b8fad1e3",
+    "source_package_path": "source_evidence/benchmark_batches/daily_0629/source_package/forecast_project",
+    "source_role": "platform_current_daily_0629_adapter",
+    "source_runner_module": "daily.run_backtest",
+    "source_target_col": "TB5YWI0C",
+    "source_target_tenor": "5Y"
+  },
+  "correct": 130,
+  "data_source": "framework_db_aligned",
+  "horizon": 1,
+  "labeled_rows": 337,
+  "row_count": 337,
+  "rows": 337,
+  "source_original_data_source": "source_original_daily_0629_binary_runner",
+  "source_run_date": "2026-06-10"
+}
