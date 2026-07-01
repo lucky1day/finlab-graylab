@@ -1,6 +1,26 @@
 # 当前状态
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-01
+
+## 2026-07-01 日度 0629 三方案 SOP 收口
+
+本轮补齐 `daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`、`daily_10y_lgbm_10y04_0629` 的 SOP 尾段。算法仍使用 0629 source-original encrypted daily binary runner；平台只修正 historical output 起点过滤、benchmark/current backtest、authorized latest backtest、gray_live 回补、live 顶层 `model_version` 落库长度适配和审计文档，不修改原始算法逻辑。
+
+日度 T+1 语义固定为：`predict_date=target_date`，`feature_date` 为 `predict_date` 前一交易日，`target_date` 为 T+1 目标交易日。历史 backtest 只保留 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01` 的样本；灰度实盘补齐 `target_date=2026-06-01..2026-07-01` 的 22 个交易日。
+
+| 方案 | Registry ID | latest backtest | benchmark / CompareGate | API / live 状态 |
+|------|-------------|-----------------|--------------------------|-----------------|
+| `daily_1y_xgb_1y13_0629` | `daily_1y_xgb_1y13_0629__h1__1Y` | run_id=`155`，337 行，`framework_db_aligned`，accuracy=`138/337=40.9%` | original/current 337/337，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live 22 行，run_id=`447..468`，覆盖 `target_date=2026-06-01..2026-07-01` |
+| `daily_5y_lgbm_5y10_0629` | `daily_5y_lgbm_5y10_0629__h1__5Y` | run_id=`156`，337 行，`framework_db_aligned`，accuracy=`130/337=38.6%` | original/current 337/337，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live 22 行，run_id=`470..491`，覆盖 `target_date=2026-06-01..2026-07-01` |
+| `daily_10y_lgbm_10y04_0629` | `daily_10y_lgbm_10y04_0629__h1__10Y` | run_id=`157`，337 行，`framework_db_aligned`，accuracy=`203/337=60.2%` | original/current 337/337，direction=1.0，internal mismatch=0，DB latest diff=0 | active，ApiGate 通过；gray_live 22 行，run_id=`492..513`，覆盖 `target_date=2026-06-01..2026-07-01` |
+
+验证证据：先补回归测试确认旧 1Y benchmark 含 `feature_date=2024-12-31` 的历史起点污染；修复 `backtests/daily_0629_reproduction.py` 后重建三方案 benchmark，最终均为 337 行。`tests.test_daily_0629_schemes` 与 `tests.test_daily_0629_source_runner` 通过；CompareGate 三套均 `direction_match_rate=1.0`、`internal_mismatch_count=0`；修复 5Y live `model_version` 长度适配后，最终 `stage=all` no-persist 全部通过，报告分别为 `reports/harness/daily_1y_xgb_1y13_0629/20260701T093840Z/onboard_report.json`、`reports/harness/daily_5y_lgbm_5y10_0629/20260701T093911Z/onboard_report.json`、`reports/harness/daily_10y_lgbm_10y04_0629/20260701T093943Z/onboard_report.json`，harness_run_id 分别为 `hr_20260701T093840Z_10f6f1b2591f`、`hr_20260701T093911Z_b28d6f4f6d81`、`hr_20260701T093943Z_a6a300cb390b`。最终回归 `tests.test_daily_0629_source_runner`、`tests.test_daily_0629_schemes`、`tests.test_benchmark_paradigm`、`tests.test_config_schema`、`tests.test_harness_static_gate`、`tests.test_backend_api` 共 80 项通过；active-only ApiGate 三套均通过。授权 backtest persist 每方案只追加 `t_backtest_runs +1` 与 `t_backtest_predictions +337`，源表、actuals、实盘表和 run_log delta 均为 0；逐行 DB latest vs `current_predictions_sample.csv` 按 `feature_date+target_date+target_tenor+horizon` 对齐，direction、confidence、label、is_correct 与 required internal fields 全部 0 diff。
+
+gray_live 回填前对 66 个 `(scheme, predict_date)` 组合执行 DryRunGate。最终 66/66 均有通过记录；首轮 1Y/`2026-06-17` 曾因外部 `/Users/macstudio0/Documents/DataBridge/manage.py wind_backfill_worker --loop --interval 2` 在 gate 运行期间向 `api_wind_daily` 写入 1 行而 fail-closed，确认不是方案代码写库，源表稳定后已从同一日期重跑通过。授权 live 回填最终写齐 66 条 `gray_live` prediction；所有成功 prediction 行的 run 均为 `status=success`、`records_written=1`，`prediction_phase=gray_live`，`predict_date=target_date`，`feature_date` 为上一交易日。回填过程中另有两次 LiveGate 因外部 `api_wind_daily +4` fail-closed，但对应 `run_result.status=success`、`records_written=1`，并且 allowed live 表各 `+1`；DB 覆盖验收已确认这些行有效。5Y 首次 live 写入曾暴露平台适配 bug：source `model_id` 长度 83，超过 `t_scheme_predictions.model_version varchar(64)`，导致 run_id=`469` 失败且未写 prediction；已按 TDD 修复为日度 0629 live 顶层 `model_version=final_select_id`（5Y 为 `5Y10`，10Y 为 `10Y04`），完整 source model/candidate ID 保留在 `extra.source_model_id` 与 `extra.candidate_id`，不改变算法方向、置信度或 internal fields。修复后 focused DryRunGate 5Y/`2026-06-01` 通过，后续成功回填 5Y 22 行。
+
+DB/API/前端验收：`/api/metrics/{composite_id}` 三套均返回 22 条 `daily_rows`，phase range 均为 `gray_live`、`start_target_date=2026-06-01`、`end_target_date=2026-07-01`；1Y 顶层 `model_version` 保持既有短于 64 的 source ID，5Y/10Y 分别为 `5Y10`/`10Y04`。`scripts.verify_scheduler_mount` 三套均 `status=pass`，registry/config 均为 active，cron=`3 7 * * 1-5`，scheduler 正在运行。浏览器前端 `http://127.0.0.1:8100` 验收确认任务格子最优指标显示 `1Y T+1=54.4%`、`5Y T+1=58.8%`、`10Y T+1=59.5%`；候选排行分别出现 `0629日度1Y XGB 1Y13`、`0629日度5Y LGBM 5Y10`、`0629日度10Y LGBM 10Y04`；详情页均显示 `实盘发出起点 2026-06-01 · 灰度实盘 2026-06-01 至 2026-07-01`。
+
+剩余观察项：等待下一次真实 scheduler 自然触发成功后升级为 Production Observed。当前文档中保留两类过程异常用于审计：外部 DataBridge 源表同步导致的 fail-closed gate，以及 5Y run_id=`469` 的修复前失败 run；二者均未造成最终 prediction 缺口。
 
 ## 2026-06-29 月度 0629 三方案入库完成
 

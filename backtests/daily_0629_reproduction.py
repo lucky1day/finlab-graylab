@@ -126,7 +126,7 @@ def build_daily_0629_rows(
         target_date = str((next_source or {}).get("date") or "")[:10]
         if not target_date:
             continue
-        if target_date < start_date or target_date >= gray_start_date:
+        if feature_date < start_date or target_date >= gray_start_date:
             continue
         raw_rows.append(
             _row_from_source(

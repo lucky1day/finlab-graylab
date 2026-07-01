@@ -16,6 +16,11 @@ SCHEME_IDS = (
     "daily_5y_lgbm_5y10_0629",
     "daily_10y_lgbm_10y04_0629",
 )
+EXPECTED_BENCHMARK_ROWS = {
+    "daily_1y_xgb_1y13_0629": 337,
+    "daily_5y_lgbm_5y10_0629": 337,
+    "daily_10y_lgbm_10y04_0629": 337,
+}
 DAILY_COLUMNS = {
     "feature_date",
     "target_date",
@@ -61,6 +66,24 @@ class Daily0629SchemeTests(unittest.TestCase):
                         self.assertLess(row["target_date"], "2026-06-01")
                         for field in DAILY_COLUMNS | required:
                             self.assertNotEqual(row.get(field), "", f"{scheme_id} {csv_name} missing {field}")
+
+    def test_benchmark_outputs_start_at_config_start_date(self) -> None:
+        for scheme_id in SCHEME_IDS:
+            with self.subTest(scheme_id=scheme_id):
+                config = load_config_raw(PROJECT_ROOT / "schemes" / scheme_id / "config.yaml")
+                start_date = str(config["backtest"]["start_date"])
+                bench_dir = PROJECT_ROOT / "schemes" / scheme_id / "benchmarks"
+                for csv_name in ("original_predictions_sample.csv", "current_predictions_sample.csv"):
+                    _, rows = _read_csv(bench_dir / csv_name)
+                    self.assertEqual(len(rows), EXPECTED_BENCHMARK_ROWS[scheme_id])
+                    self.assertTrue(
+                        all(row["feature_date"] >= start_date for row in rows),
+                        f"{scheme_id} {csv_name} contains feature_date before {start_date}",
+                    )
+                    self.assertTrue(
+                        all(row["target_date"] < "2026-06-01" for row in rows),
+                        f"{scheme_id} {csv_name} contains gray/live target_date",
+                    )
 
     def test_benchmark_provenance_is_source_original_daily_runner(self) -> None:
         for scheme_id in SCHEME_IDS:
