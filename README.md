@@ -4,12 +4,13 @@
 
 ## 当前状态
 
-截至 2026-06-30，核心与近期入库 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
+截至 2026-07-02，核心与近期入库 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
 
 | 方案 | 频率 | Horizon | 目标 |
 |------|------|---------|------|
 | `t1_daily` | daily | 1 | `5Y/10Y` |
 | `t5_daily` | daily | 5 | `3Y/5Y/7Y/10Y` |
+| `daily_1y_xgb_1y13_0629` / `daily_5y_lgbm_5y10_0629` / `daily_10y_lgbm_10y04_0629` | daily | 1 | `1Y/5Y/10Y` |
 | `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` | weekly | 6 | `5Y/7Y/10Y` |
 | `weekly_avg_1y_lgbm_0529` / `weekly_avg_5y_lgbm_0529` / `weekly_avg_10y_lgbm_0529` | weekly | 6 | `1Y/5Y/10Y` |
 | `monthly_1y_rf_top30_0629` / `monthly_5y_knn_top20_0629` / `monthly_10y_rf_top5_0629` | monthly | 30 | `1Y/5Y/10Y` |
@@ -20,7 +21,7 @@
 - 周频：`30 11 * * 6`
 - 月频：`0 18 15 * *`（自然月 15 号预测一次，无论是否交易日）
 
-旧周度方案 `weekly_10y_d_overlay`、`weekly_5y_direct_production`、`weekly_7y_cross_d_overlay` 已退役；当前 0529 周度单点覆盖 5Y/7Y/10Y，周平均独立 LGBM 原始方案覆盖 1Y/5Y/10Y（无 7Y）。旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 已暂停，仅保留历史审计。周平均 actual 方向固定为“目标周平均收益率 vs 当前周平均收益率”。月度 0629 三方案的 actual 方向固定为“目标月观测收益率 vs 当前 feature 月观测收益率”；当前灰度边界按 `target_date >= 2026-06-01` 判定，`2026-06-15` 与 `2026-07-15` 目标点都作为 `gray_live` 展示。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
+旧周度方案 `weekly_10y_d_overlay`、`weekly_5y_direct_production`、`weekly_7y_cross_d_overlay` 已退役；当前 0529 周度单点覆盖 5Y/7Y/10Y，周平均独立 LGBM 原始方案覆盖 1Y/5Y/10Y（无 7Y）。旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 已暂停，仅保留历史审计。周平均 actual 方向固定为“目标周平均收益率 vs 当前周平均收益率”。月度 0629 三方案的 actual 方向固定为“目标月观测收益率 vs 当前 feature 月观测收益率”；当前灰度边界按 `target_date >= 2026-06-01` 判定，`2026-06-15` 与 `2026-07-15` 目标点都作为 `gray_live` 展示。日度 0629 三方案已完成 SOP 收口：latest backtest 均为 337 行，`target_date=2026-06-01..2026-07-01` 的 22 个交易日已补齐为 `gray_live`。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
 
 ## 文档入口
 
@@ -64,6 +65,9 @@ bond-factor-lab/
 ├── schemes/           # 方案插件目录
 │   ├── t1_daily/
 │   ├── t5_daily/
+│   ├── daily_1y_xgb_1y13_0629/
+│   ├── daily_5y_lgbm_5y10_0629/
+│   ├── daily_10y_lgbm_10y04_0629/
 │   ├── weekly_5y_direct_0529/
 │   ├── weekly_7y_cross_d_overlay_0529/
 │   ├── weekly_10y_d_overlay_0529/

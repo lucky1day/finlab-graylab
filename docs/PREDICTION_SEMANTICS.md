@@ -1,6 +1,6 @@
 # 预测日期与实盘阶段语义
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-02
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
@@ -136,9 +136,11 @@ feature_date = T
 target_date  = T + horizon
 ```
 
-回测结果只写 `t_backtest_*`，不得读取或复制 `t_scheme_predictions` 中的灰度/正式实盘记录来拼历史结果。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；这是输出样本起点，不是训练起点。训练、筛因子、模型 warmup 和定期更新可使用更早历史数据，但每个预测点的输入和标签可见性都必须严格停在对应 `feature_date`。
+回测结果只写 `t_backtest_*`，不得读取或复制 `t_scheme_predictions` 中的灰度/正式实盘记录来拼历史结果。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；历史回测中 `predict_date=feature_date=T`，所以 runner 的输出起点判定必须落在 `feature_date` / source T 上，不得用 `target_date >= 2025-01-01` 反推保留样本。这是输出样本起点，不是训练起点。训练、筛因子、模型 warmup 和定期更新可使用更早历史数据，但每个预测点的输入和标签可见性都必须严格停在对应 `feature_date`。
 
 当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date` 截断，避免同一 target 月同时由 backtest 和 live 区间重复解释。当前灰度批次的历史回测只保留 `target_date < 2026-06-01`。
+
+日度 0629 三方案的最终 SOP 口径是该规则的当前基准：历史段保留 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01`，因此每个方案 latest backtest 为 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日进入 `gray_live`，不进入 latest backtest。
 
 月度方案仍坚持“每个自然月 15 号预测一次”：`2026-06-15` 发出的月度预测属于灰度实盘，若目标月为下月观察点，则进入 live 侧并以 `target_date=2026-07-15` 等待 actual。对应地，`predict_date=2026-05-15,target_date=2026-06-15` 已落入灰度 target 区间，不得继续作为 latest historical backtest 样本，而应作为 `gray_live` 出现在前端虚线下方；月度 0629 三方案的 strict backtest latest 截止到 `predict_date=2026-04-15,target_date=2026-05-15`。
 

@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-02
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。Source-backed 方案的原始算法保真见 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -86,7 +86,7 @@
 - active registry 行必须有 `deployed_at`；`/api/schemes`、`/api/backtests/factor-lab` 和前端真实数据路径遇到缺失部署日必须 fail-closed。mock/demo 数据若需要展示部署时间，也必须显式写入，不能走生产兜底。
 
 **规则六补充：历史回测预测起点全平台统一为 2025-01-01**
-- 参与历史排行的 daily/monthly 方案必须在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，并保证 runner 输出样本满足 `predict_date >= 2025-01-01`。
+- 参与历史排行的 daily/monthly 方案必须在 `config.yaml` 写 `backtest.start_date: "2025-01-01"`，并保证 runner 输出样本满足 `predict_date >= 2025-01-01`。历史回测中 `predict_date == feature_date`，因此 source-backed runner / benchmark rebuild 的起点过滤应按 `feature_date` / source T 执行；不得用 `target_date >= 2025-01-01` 保留 `feature_date` 早于起点的样本。
 - 参与历史排行的 weekly 方案必须在 `config.yaml` 写 `backtest.predict_start_date: "2025-01-01"`；`start_week/end_week` 仍表示输入、训练和模型更新所需的历史周范围，可以早于 2025 年。
 - 模型 warmup、训练样本、因子筛选、定期更新模型所需的数据可以早于 `2025-01-01`。禁止为了统一回测样本数而截断这些历史输入。
 - 灰度实盘分界仍按方案级 `target_date` 起点；不要用 `predict_date` 或部署时间切 live/backtest 区间。
@@ -100,6 +100,11 @@
 - `confidence` 用来承接原始算法已有的置信度、概率或分数；不是平台为模型重新生成的新信号。
 - CompareGate 的 `max_confidence_abs_diff` 是 original/current benchmark 两侧 `confidence` 的最大绝对差。`1e-16` 量级属于浮点舍入误差，视为 0。
 - 如果原始算法没有天然 `confidence`，必须在 source/current 两侧使用同一确定性映射，并在 `CURRENT_STATUS.md` 说明。
+
+**规则八补充：`model_version` 是 DB 顶层短版本字段**
+- `t_scheme_predictions.model_version` 是 `VARCHAR(64)`，只承载稳定短版本号或短模型选择 ID。
+- Source-backed 方案若原始 `model_id`、候选模型名或 runner ID 超过 64 字符，不能直接写入顶层 `model_version`；应使用 source 中稳定的短 select id / final id，并把完整原始 ID 写入 `extra.source_model_id`、`extra.candidate_id` 或等价审计字段。
+- 该适配属于 L0 输出/落库适配，不得改变预测方向、置信度、内部 score 或 source 算法选择逻辑。
 
 **规则九：source-backed 方案不改原始算法逻辑**
 - 原始算法的历史起点、source batch 终点、test window、PIT/batch 口径、weekly/monthly 对齐、特征/信号、模型参数、投票、fallback、streak、内部 score 映射都是算法逻辑，默认不得修改。
@@ -795,6 +800,7 @@ LIMIT 10;
 - [ ] dry-run 成功，输出 JSON list。
 - [ ] 授权 backtest persist、gray_live backfill 或 scheduled live 写库成功；对应 gate/table_guard 证据显示只写允许表。
 - [ ] `t_scheme_run_log` 有成功记录。
+- [ ] live 顶层 `model_version` 长度不超过 64；若 source 原始模型 ID 更长，完整 ID 已保留在 `extra` 审计字段。
 - [ ] 激活前 `api-readiness` 通过，激活后 active-only `api` gate 通过；registry ID 必须来自 `t_scheme_registry.scheme_id`。
 - [ ] 如需参与历史排行，backtest 表已写入并在前端对应任务格子可见。
 - [ ] source-backed 方案的 `original_predictions_sample.csv` 已按 `target_date` 和 benchmark role 分流；source-original 历史段与 latest backtest 同口径零差异，live 段只在同口径时对 `/api/metrics` 断言零差异，否则必须使用 live-safe oracle；可用内部模型字段已进入 benchmark/CompareGate，且 DB/API/extra 内部值已按抽样或全量核验记录结论。
