@@ -101,6 +101,32 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
         self.assertEqual(rows[0]["frequency"], "D10Y")
         self.assertEqual(rows[0]["source_output_date"], "2026-06-10")
 
+    def test_live_model_version_uses_short_select_id_for_db_column(self) -> None:
+        from shared.daily_0629_predict_adapter import _model_version_from_evidence
+        from shared.daily_0629_source_evidence import Daily0629SourceEvidence
+
+        evidence = Daily0629SourceEvidence(
+            scheme_id="daily_5y_lgbm_5y10_0629",
+            source_role="source_original_daily_0629_algorithm",
+            generator="fake",
+            manifest_path=Path("manifest.json"),
+            source_package_path=Path("forecast_project"),
+            source_package_hash="0" * 64,
+            runner_module="daily.run_backtest",
+            live_runner_module="daily.run_daily",
+            frequency="D5Y",
+            target_tenor="5Y",
+            final_select_id="5Y10",
+            candidate_id="5Y_weekmap_top120_seed_quota_7sig_combo_rolling40_target_0.50_mtd_floor_0.50_causal",
+            target_col="TB5YWI0C",
+            model_id="5Y_weekmap_top120_seed_quota_7sig_combo_rolling40_target_0.50_mtd_floor_0.50_causal",
+        )
+
+        self.assertGreater(len(evidence.model_id), 64)
+        model_version = _model_version_from_evidence(evidence)
+        self.assertEqual(model_version, "5Y10")
+        self.assertLessEqual(len(model_version), 64)
+
 
 if __name__ == "__main__":
     unittest.main()

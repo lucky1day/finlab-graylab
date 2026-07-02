@@ -1,6 +1,6 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-02
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -39,7 +39,7 @@
 
 > 标注「新」的字段是本设计**新增的必填项**——让 harness 无需读算法即可知道输入口径、列要求、目标语义。现有方案在数据层重构阶段补齐这些字段。
 > `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
-> 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
+> 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`；历史回测中 `predict_date == feature_date`，所以 runner 和 benchmark rebuild 必须按 `feature_date` / source T 判定输出起点，不能按 `target_date` 判定。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
 > 月度方案使用独立的自然月触发语义：`predict_date` 必须是自然月 15 号；`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取目标月 15 号及以前最近交易日。月度灰度回补仍按 `target_date` 判定，不能按 `predict_date` 或部署时间截断。
 > `config.tenors` 是算法一次执行可返回的目标集合；registry 同步会把它拆成每个 `target_tenor` 一行。`/api/schemes` 不返回 `tenor/tenors`，只返回该 registry 行的 `target_tenor`。
 > `task_type` 会同步到 `t_scheme_registry.task_type` 并由 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/backtests/factor-lab` 返回；前端任务格子只按该字段分列。字段缺失或非法时必须 fail-closed。
@@ -99,6 +99,7 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 - `target_tenor ∈ config.tenors`
 - `predicted_direction ∈ {1, -1, 0}`（`1`=收益率上行/空，`-1`=下行/多，`0`=平）
 - `confidence is None` 或为有限浮点数。它承接算法自身输出的置信度、概率或分数，不改变方向判定；如果原始算法没有天然置信度，source/current benchmark 必须使用同一确定性代理值并在状态文档说明。
+- `model_version is None` 或长度不超过 DB 字段 `VARCHAR(64)`；如果原始 source 的完整模型 ID、候选 ID 或 runner ID 更长，顶层 `model_version` 必须使用稳定短 ID，完整原始 ID 写入 `extra.source_model_id`、`extra.candidate_id` 或等价审计字段。
 - 返回条数 `== 本次有效 tenors 数量`；落到 registry 后拆成多个业务方案行
 
 `extra` 必填键：
@@ -175,7 +176,7 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-06-29：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案与独立周平均 LGBM 方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。
+状态最近更新 2026-07-02：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案、独立周平均 LGBM 方案、月度 0629 三方案和日度 0629 三方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。
 
 | 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` | `daily_5y_2_v28` |
 |--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|:----------------:|

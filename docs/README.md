@@ -1,6 +1,6 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-02
 
 > 当前文档入口以本文为准。旧审查报告、一次性验证报告和历史事故归档已移除；新增或修复方案只读现行规范，不从历史踩坑文档推导规则。
 
@@ -24,6 +24,8 @@
 > Source-backed 方案必须先遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)：不得修改原始算法逻辑，时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射都必须按原始脚本复现。外部 `latest_oos` / batch 结果是否作为 source-original reproduction、strict PIT 或平台 live-like PIT 变体，必须先分类并留证；所有改动先分级为 L0/L1/L2，L2 算法内部改动默认禁止。平台变体不得冒充原始 source 输出。跨灰度边界的 benchmark 必须按 row role 拆分，固定 future `source_end` 的 source batch 不能直接当作 live-safe 逐日数值真值。
 
 > 月度方案有独立调度语义：每个自然月 15 号预测一次，无论 15 号是否交易日；`predict_date` 保留自然 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。灰度/实盘边界按方案级 `target_date` 判定；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为 `gray_live`，历史回测 latest 截止到 `target_date=2026-05-15`。
+
+> 日度 0629 三方案（`daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`、`daily_10y_lgbm_10y04_0629`）已完成 SOP 收口。历史回测统一按 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01` 输出，latest backtest 每方案 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日已作为 `gray_live` 补齐。live 顶层 `model_version` 必须适配 DB `VARCHAR(64)`，完整 source model id 应放入 `extra` 审计字段。
 
 ## 操作
 

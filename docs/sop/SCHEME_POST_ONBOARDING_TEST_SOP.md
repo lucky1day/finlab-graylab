@@ -1,6 +1,6 @@
 # 方案入库后测试验证 SOP
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-02
 **状态**: 已定稿 v1.0（用户 review 通过 2026-06-09）
 **定位**: 面向**任意一个已入库方案**的标准测试验证流程（不限于现有 5 方案）。核心是 **gatekeeping（先验入库合规）→ 双版本复现对比（入库前原始 vs 改造后，同一数据接入层）→ 数据落库与前端校验 → 挂载定时任务 → 出验证结论**。
 
@@ -22,6 +22,8 @@
 - **源算法保真**：source-backed 方案必须证明原始算法逻辑未改。时间起点、测试窗口、PIT/batch 口径、weekly/monthly 对齐、特征/信号、模型参数、投票/fallback 和内部 score 映射不能因平台化改变。
 - **内部数值证据**：原始算法暴露的 baseline score、probability、`*_vs`、内部 vote score 或类似数值必须进入 S5 对比。若最终方向一致但内部数值仍有残差，只能判为“方向一致、内部数值待归因”，不得判为“算法逻辑完全一致”。
 - **benchmark T 对齐语义**：原始算法回测结果里的 `T/date/predict_date` 表示算法站在 T 预测，进入平台后必须对齐数据库明细的 `feature_date`，不得对齐实盘语义下的 `predict_date`。
+- **历史输出起点语义**：历史回测统一从 `predict_date >= 2025-01-01` 开始；回测中 `predict_date=feature_date`，所以验证时必须确认 benchmark/current/DB 明细均无 `feature_date < 2025-01-01` 的输出行。不得用 `target_date >= 2025-01-01` 保留起点前的 source T。
+- **live 版本字段长度**：`model_version` 顶层字段必须能落入 `t_scheme_predictions.model_version VARCHAR(64)`；完整 source 模型 ID 如果更长，必须在 `extra` 中留审计字段，不能让 live 写库到最后一步才失败。
 - **月度自然 15 号语义**：月度 source-backed 方案若声明每月 15 号预测，则 `predict_date` 保留自然 15 号，无论是否交易日；`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。灰度/回测边界仍按 `target_date` 判定。
 - **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
 - **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
