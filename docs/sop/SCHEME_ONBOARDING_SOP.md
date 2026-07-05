@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-07-02
+**更新日期**: 2026-07-05
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。Source-backed 方案的原始算法保真见 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -208,6 +208,7 @@ frequency: daily
 schedule:
   cron: "3 7 * * 1-5"
   timezone: "Asia/Shanghai"
+  timeout_sec: 600  # 可选；慢速 source-backed 方案可提高，例如 3600
 entry_point: predict.run
 status: paused
 backtest:
@@ -224,6 +225,7 @@ backtest:
 | `task_type` | 前端任务格子显式类型，必须是 `T+1` / `T+5` / `weekly_point` / `weekly_average` / `monthly`；前端不再按 `frequency/horizon` 猜列 |
 | `tenors` | 内部稳定 key，当前前端展示为 `1Y国债活跃/3Y国债活跃/5Y国债活跃/7Y国债活跃/10Y国债活跃`；新增方案如覆盖 `1Y` 可直接作为业务可见目标 |
 | `schedule.cron` | 当前日度 live 使用 `3 7 * * 1-5`；当前周度 live 使用 `30 11 * * 6` |
+| `schedule.timeout_sec` | 可选正整数，只控制 executor 等待算法子进程的预算；慢速 source-backed 方案应显式配置并补测试，不得通过改变算法窗口或复用旧信号来规避 timeout |
 | `status` | 新方案初始用 `paused`；验证、persist 和激活授权通过后由 ActivationGate 翻为 `active`，不得手动编辑绕过 |
 
 如果新增了新的 Y 标的 key，还需要先写入 `t_target_registry`:
@@ -600,6 +602,7 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 - 如果只是 live 方案，`/api/metrics/{registry_scheme_id}` 能返回月度指标、汇总指标和逐日样本；`/api/metrics/{base_scheme_id}`、`paused/archived` registry ID 或 `?tenor=...` 都不是合法入口。
 - `/api/predictions?scheme_id={registry_scheme_id}` 能返回该业务方案的底层预测明细；`/api/predictions?scheme_id={base_scheme_id}`、无 `scheme_id` 或 `?tenor=...` 都不是合法入口。
 - 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
+- 排查“最新数据未验证”时必须先查 actual 源水位：日频查 `api_wind_indicators_all` 对应活跃目标指标最大 `rdate` 与 `t_scheme_actuals.max(trade_date)`，周频查 `t_scheme_weekly_actuals` 对应 `target_week_id` 是否已完整。若 source actual 尚未覆盖目标日/周，前端应展示待验证 `--`，不能记为后端或前端 bug。
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 - 月度指标必须区分 `samples` 与 `metric_samples`：`samples` 是样本总数，包含预测为“平”的交易日或预测周；`metric_samples` 是所有准确率、precision、recall 指标的分母，只包含预测为“涨/跌”的有方向样本。
 - 若月内存在 `predicted_direction=0`，前端准确率括号必须展示 `correct/metric_samples`，不得展示 `correct/samples`；上涨/下跌准确率和召回率也必须排除这些“平”样本。
@@ -622,7 +625,8 @@ http://127.0.0.1:8100/
 - 每日/周度验证表中，预测为“平”的行结果列必须显示 `-`，不得显示 `×` 或 `✓`。
 - 切换排行指标时，任务格子最优指标同步变化。
 - 部署时间必须来自 `/api/schemes` 或 `/api/backtests/factor-lab` 返回的 `deployed_at`，并在真实候选排行 row 上验证；不得只直测 helper，也不得接受前端默认日期、override 或 mock 值混入真实展示。
-- 如果刚改过 `frontend/aifin-shell.js` / `frontend/index.html` 后页面仍显示旧内容，第一时间提醒用户做浏览器强制刷新（macOS `Cmd+Shift+R`）或打开 DevTools 勾选 `Disable Cache` 后刷新，再继续排查 API/代码。
+- 如果刚改过 `frontend/aifin-shell.js` / `frontend/index.html` 后页面仍显示旧内容，先确认 `index.html` 的静态资源 query version 已 bump，再提醒用户做浏览器强制刷新（macOS `Cmd+Shift+R`）或打开 DevTools 勾选 `Disable Cache` 后刷新。仍旧不对时再继续排查 API/代码。
+- live 方案的“最新运行”必须来自 `/api/metrics/{registry_scheme_id}` 明细中的最大 `predict_date`，而不是固定默认值或只看 backtest API；月度最新验证页必须按 `target_date` 归属，只统计 actual 已到的 target 月，未来 target 月展示待验证 `--（0/0）`。
 
 如果前端没有出现，优先检查:
 
@@ -763,6 +767,7 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 - `launchctl print gui/$(id -u)/com.bond-factor-lab.scheduler` 或 `ps` 能看到 `python -m scheduler.main` 正在运行。
 - scheduler 启动日志包含 `Scheduled scheme {scheme_id} at {schedule.cron}`。
 - `t_scheme_registry` 中该 composite row 为 `status='active'`，且 `schedule_cron/schedule_timezone/deployed_at` 非空并与 `config.yaml` 一致。
+- 若方案配置 `schedule.timeout_sec`，启动后必须通过 discovery 或单元测试确认配置被加载；下一次运行后记录 `t_scheme_run_log.duration_sec`，确认运行时长小于配置预算。
 
 只有下一次真实调度时间到达后，DB 中出现该方案 `prediction_phase='scheduled_live'` 的成功 run，才能把状态从 **Onboarding Complete** 升级为 **Production Observed**。
 
@@ -775,6 +780,8 @@ WHERE scheme_id = 't1_lgbm_spread_v2'
 ORDER BY id DESC
 LIMIT 10;
 ```
+
+生产观察还必须做近期连续性检查：按方案频率枚举最近应触发的交易日、周或自然 15 号，核对 `t_scheme_predictions` 是否连续覆盖；若缺口存在，先按 `t_scheme_run_log.error_msg` 区分 timeout、输入缺失、source 信号未成熟、actual 未到或 scheduler 未加载，不要直接归因给前端刷新。
 
 ## 8. 回滚策略
 
@@ -807,6 +814,8 @@ LIMIT 10;
 - [ ] `t_backtest_predictions` 明细逐行存在 `target_date`；缺失时必须修 runner 或数据，不允许通过前端/API fallback 放行。
 - [ ] active `t_scheme_registry` 行逐行存在 `deployed_at`；前端展示的部署时间来自 API/DB 字段，不来自默认值或 hardcoded override。
 - [ ] scheduler 挂载证据已记录：进程存在、日志包含 `Scheduled scheme ...`、registry cron/timezone/deployed_at 正确。
+- [ ] 如配置 `schedule.timeout_sec`，已验证 discovery/executor 生效，并记录实际运行耗时与 timeout 预算。
+- [ ] 最近应触发窗口的 prediction 连续性已检查；未验证样本已区分为 actual 水位未到、source 信号未成熟、任务失败或前端展示问题。
 - [ ] 已区分并记录当前状态是 `Onboarding Complete` 还是已观察到首条 `scheduled_live` 的 `Production Observed`。
 - [ ] 如为周度方案，live adapter 与历史 backtest runner 都通过 `build_weekly_input_artifact()` 生成算法输入。
 - [ ] 文档更新: 当前状态、方案说明、历史回测结论或测试记录。

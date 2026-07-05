@@ -50,6 +50,24 @@ def build_weekly_live_context(calendar: Any, predict_date: str) -> WeeklyLiveCon
     feature_week_id = calendar.week_id_for_date(feature_date)
     if feature_week_id is None:
         raise ValueError(f"无法从 DB 日历解析 feature_date={feature_date} 的 week_id")
+    try:
+        return _weekly_live_context_from_feature_week(calendar, str(feature_date), int(feature_week_id))
+    except ValueError:
+        fallback = _fallback_weekly_live_context_from_predict_week(
+            calendar,
+            predict_date,
+            primary_feature_week_id=int(feature_week_id),
+        )
+        if fallback is not None:
+            return fallback
+        raise
+
+
+def _weekly_live_context_from_feature_week(
+    calendar: Any,
+    feature_date: str,
+    feature_week_id: int,
+) -> WeeklyLiveContext:
     target_week_id = next_calendar_week_id(calendar, int(feature_week_id))
     target_date = calendar.week_id_to_last_trading_day(target_week_id)
     return WeeklyLiveContext(
@@ -58,6 +76,28 @@ def build_weekly_live_context(calendar: Any, predict_date: str) -> WeeklyLiveCon
         target_week_id=int(target_week_id),
         target_date=str(target_date),
     )
+
+
+def _fallback_weekly_live_context_from_predict_week(
+    calendar: Any,
+    predict_date: str,
+    *,
+    primary_feature_week_id: int,
+) -> WeeklyLiveContext | None:
+    """源周历提前切周时，回退到触发日所在源周的完整输入周。"""
+    predict_week_id = calendar.week_id_for_date(str(predict_date)[:10])
+    if predict_week_id is None or int(predict_week_id) == int(primary_feature_week_id):
+        return None
+    try:
+        feature_date = str(calendar.week_id_to_last_trading_day(int(predict_week_id)))[:10]
+    except ValueError:
+        return None
+    if feature_date >= str(predict_date)[:10]:
+        return None
+    try:
+        return _weekly_live_context_from_feature_week(calendar, feature_date, int(predict_week_id))
+    except ValueError:
+        return None
 
 
 def build_monthly_live_context(calendar: Any, predict_date: str) -> MonthlyLiveContext:

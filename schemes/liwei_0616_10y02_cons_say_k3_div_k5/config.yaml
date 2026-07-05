@@ -8,6 +8,7 @@ frequency: daily
 schedule:
   cron: "3 7 * * 1-5"
   timezone: "Asia/Shanghai"
+  timeout_sec: 3600
 entry_point: predict.run
 status: active
 input_spec:

@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-07-02，核心与近期入库 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
+截至 2026-07-05，核心与近期入库 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
 
 | 方案 | 频率 | Horizon | 目标 |
 |------|------|---------|------|
@@ -21,7 +21,9 @@
 - 周频：`30 11 * * 6`
 - 月频：`0 18 15 * *`（自然月 15 号预测一次，无论是否交易日）
 
-旧周度方案 `weekly_10y_d_overlay`、`weekly_5y_direct_production`、`weekly_7y_cross_d_overlay` 已退役；当前 0529 周度单点覆盖 5Y/7Y/10Y，周平均独立 LGBM 原始方案覆盖 1Y/5Y/10Y（无 7Y）。旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 已暂停，仅保留历史审计。周平均 actual 方向固定为“目标周平均收益率 vs 当前周平均收益率”。月度 0629 三方案的 actual 方向固定为“目标月观测收益率 vs 当前 feature 月观测收益率”；当前灰度边界按 `target_date >= 2026-06-01` 判定，`2026-06-15` 与 `2026-07-15` 目标点都作为 `gray_live` 展示。日度 0629 三方案已完成 SOP 收口：latest backtest 均为 337 行，`target_date=2026-06-01..2026-07-01` 的 22 个交易日已补齐为 `gray_live`。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
+旧周度方案 `weekly_10y_d_overlay`、`weekly_5y_direct_production`、`weekly_7y_cross_d_overlay` 已退役；当前 0529 周度单点覆盖 5Y/7Y/10Y，周平均独立 LGBM 原始方案覆盖 1Y/5Y/10Y（无 7Y）。旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 已暂停，仅保留历史审计。周平均 actual 方向固定为“目标周平均收益率 vs 当前周平均收益率”。月度 0629 三方案的 actual 方向固定为“目标月观测收益率 vs 当前 feature 月观测收益率”；当前灰度边界按 `target_date >= 2026-06-01` 判定，`2026-06-15` 与 `2026-07-15` 目标点都作为 `gray_live` 展示。日度 0629 三方案已完成 SOP 收口：latest backtest 均为 337 行，`target_date=2026-06-01..2026-07-01` 的 22 个交易日已补齐为 `gray_live`。
+
+2026-07-05 运维复审结论：launchd scheduler 已重启并确认加载全部 active 方案；日频 T+1/T+5 active 方案预测水位已补齐到 `predict_date=2026-07-03`。`liwei_0616_10y02_cons_say_k3_div_k5` 的缺口根因是旧全局 600 秒 timeout，不是输入缺失或前端刷新；当前使用方案级 `schedule.timeout_sec=3600`，并已通过正式 executor 补齐 `2026-06-26..2026-07-03` 相关缺口。前端静态资源版本已刷新到 `20260705a`，live 最新运行从 `/api/metrics` 明细计算。仍未验证的 `target_date>=2026-07-03` 日频行来自上游 actual 水位只到 `2026-07-02`；周点值 `2026-07-04` fail-closed 来自源算法有效投票信号只到 `202624`。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
 
 ## 文档入口
 
@@ -56,6 +58,8 @@ conda run -n bond_factor_lab_service python -m scheduler.scheme_runner --scheme-
 ```
 
 写库类命令（`scheduler.executor`、actuals updater、backtest persist、activation）只在明确需要刷新正式表时执行，并按 SOP 记录 gate 证据。
+
+慢速 source-backed 方案可以在 `config.yaml` 中配置 `schedule.timeout_sec` 覆盖 executor 默认运行预算；它只影响算法子进程等待时间，不改变 cron、日期语义、输入截止或 source 算法逻辑。配置变更后必须重启 scheduler 并复核启动日志。
 
 ## 目录说明
 

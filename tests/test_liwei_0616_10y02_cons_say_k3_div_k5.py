@@ -33,6 +33,7 @@ class Liwei061610Y02ConfigTests(unittest.TestCase):
         self.assertEqual(config["frequency"], "daily")
         self.assertIn(config["status"], {"paused", "active"})
         self.assertEqual(config["schedule"]["cron"], "3 7 * * 1-5")
+        self.assertEqual(config["schedule"]["timeout_sec"], 3600)
         self.assertIn("TB0YWI0C", config["input_spec"]["required_columns"])
         self.assertNotIn("v55", config["scheme_id"].lower())
         self.assertNotIn("7y", config["scheme_id"].lower())

@@ -60,6 +60,9 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
         timezone = schedule.get("timezone", "Asia/Shanghai")
         if not isinstance(timezone, str) or not _valid_timezone(timezone):
             errors.append("schedule.timezone must be a valid timezone")
+        timeout_sec = schedule.get("timeout_sec")
+        if timeout_sec is not None and (not isinstance(timeout_sec, int) or timeout_sec <= 0):
+            errors.append("schedule.timeout_sec must be a positive integer when present")
 
     entry_point = raw.get("entry_point", "predict.run")
     if entry_point != "predict.run":

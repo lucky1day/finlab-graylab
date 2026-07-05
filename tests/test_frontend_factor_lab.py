@@ -815,6 +815,82 @@ class FactorLabLifecycleRemovedTests(unittest.TestCase):
 
 
 class FactorLabRealtimeDataTests(unittest.TestCase):
+    def test_live_task_latest_run_uses_latest_metric_prediction_date(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/schemes": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: [
+                  {
+                    scheme_id: "t1_daily__h1__5Y",
+                    base_scheme_id: "t1_daily",
+                    target_tenor: "5Y",
+                    name: "T+1 实盘",
+                    status: "active",
+                    horizon: 1,
+                    task_type: "T+1",
+                    frequency: "daily",
+                    deployed_at: "2026-06-04"
+                  }
+                ]
+              },
+              "/api/metrics/t1_daily__h1__5Y": {
+                scheme_id: "t1_daily__h1__5Y",
+                base_scheme_id: "t1_daily",
+                target_tenor: "5Y",
+                target_label: "5Y国债活跃",
+                monthly_metrics: [],
+                daily_rows: [
+                  {
+                    target_tenor: "5Y",
+                    horizon: 1,
+                    predict_date: "2026-07-02",
+                    target_date: "2026-07-03",
+                    predicted_direction: 1,
+                    actual_direction: null,
+                    is_correct: null
+                  },
+                  {
+                    target_tenor: "5Y",
+                    horizon: 1,
+                    predict_date: "2026-07-03",
+                    target_date: "2026-07-06",
+                    predicted_direction: -1,
+                    actual_direction: null,
+                    is_correct: null
+                  }
+                ]
+              },
+              "/api/backtests/factor-lab": {
+                target_labels: { "5Y": "5Y国债活跃" },
+                schemes: []
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            var scheme = hooks.getSelectedScheme();
+            return {
+              dataMode: hooks.getFactorLabState().dataMode,
+              latestRun: scheme && scheme.latestRun
+            };
+            """
+        )
+
+        self.assertEqual(result["dataMode"], "live")
+        self.assertEqual(result["latestRun"], "07-03")
+
     def test_live_and_backtest_merge_when_both_present(self) -> None:
         """实时和回测都有数据时，合并展示，无数据丢失。"""
         result = _run_factor_lab_hook(
