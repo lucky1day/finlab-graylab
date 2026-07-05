@@ -1,6 +1,6 @@
 # 强约束 Harness 工程架构
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-05
 
 本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准。
 
@@ -88,6 +88,8 @@ python -m harness gate live \
 
 `--stage all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness。任何一步失败都停止（compare 缺 benchmark 时跳过，不阻断）。`api-readiness` 是激活前只读验收：允许 registry row 仍为 `paused`，但要求 registry/backtest 已就绪且 paused 行不会泄漏到 public API。active-only 的 `api` gate 只在 ActivationGate 成功后显式运行，验证前端/API 已可见。`live`、持久化 backtest、`activate` 不属于默认 `all`，必须显式授权。
 
+`config.yaml.schedule.timeout_sec` 是 executor 层运行预算，harness config schema 只校验其为正整数。它不能替代 Unit/Dry-run/Compare/Backtest 证据，也不能作为放宽 source fidelity、日期语义或 protected table guard 的理由。若方案依赖更长 timeout 才能完成，验证报告应同时记录实际 `duration_sec` 与配置值。
+
 ---
 
 ## 4. 方案入库 SOP
@@ -150,6 +152,7 @@ python -m harness gate live \
 - 静态检查结论: 目录、命名、接口、危险导入全部通过。
 - 输入 artifact 结论: 主输入 frequency、path、source、行列规模、日期/week 覆盖；如声明 `auxiliary_inputs`，同时保留每个辅助输入的 frequency、path、source、data_version、行列规模、覆盖范围和缺列结论。
 - dry-run 结论: JSON 输出、预测条数、关键字段、正式表行数不变。
+- 执行预算结论: 若方案配置 `schedule.timeout_sec`，记录实际运行耗时、timeout 配置和是否仍在预算内；确认该字段只影响 executor 等待，不改变算法输出。
 - 回测结论: `--no-persist` summary、样本总数、`metric_samples`、准确率、月度分布；预测为“平”的样本计入样本总数但不进入任何指标分母。
 - 源算法保真结论: source 口径分类、L0/L1/L2 改动分级、原始脚本/输出 hash、original/current 的方向与 actual 对齐结果、内部模型分数差异统计。若内部数值不完全一致，必须写清残差归因，不能宣称算法逻辑完全一致。跨灰度边界的 benchmark 必须记录 row role；固定 future `source_end` 的 source batch 不能替代 live-safe oracle。
 - 日期语义结论: 回测样本满足 `predict_date == feature_date` 且最早 `predict_date >= 2025-01-01`；实盘样本满足对应频率的发出规则；周频实盘必须由 `feature_date=previous_trading_day(predict_date)` 再映射 `feature_week_id`，输入使用 `end_week=feature_week_id/as_of_date=feature_date`；月度 source-backed 方案若声明自然 15 号触发，必须证明 `predict_date` 保留自然 15 号，`feature_date/target_date` 分别取对应月 15 号及以前最近交易日；前端/业务表达数据截止时只用 `feature_date`，不依赖 `anchor_date`。

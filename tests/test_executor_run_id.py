@@ -80,6 +80,49 @@ class ExecutorRunIdTests(unittest.TestCase):
         write_run_log.assert_called_once()
         self.assertEqual(write_run_log.call_args.kwargs["run_id"], 101)
 
+    def test_execute_scheme_uses_per_scheme_schedule_timeout(self) -> None:
+        from scheduler.executor import execute_scheme
+        from shared.models import PredictionRecord
+
+        engine = _FakeEngine()
+        cfg = SimpleNamespace(
+            scheme_id="slow_daily",
+            status="active",
+            scheme_version="abc123",
+            horizon=5,
+            schedule=SimpleNamespace(timeout_sec=1800),
+        )
+        records = [
+            PredictionRecord(
+                scheme_id="slow_daily",
+                target_tenor="10Y",
+                horizon=5,
+                predict_date="2026-07-03",
+                target_date="2026-07-10",
+                feature_date="2026-07-02",
+                predicted_direction=1,
+                extra={"feature_date": "2026-07-02"},
+            )
+        ]
+
+        with patch("scheduler.executor.create_engine_from_env", return_value=engine):
+            with patch("scheduler.executor._verify_scheme_activation", return_value=(True, "ok")):
+                with patch("scheduler.executor._active_registry_targets", return_value={("10Y", 5)}):
+                    with patch("scheduler.executor.create_scheme_run", return_value=201):
+                        with patch("scheduler.executor.run_scheme_subprocess", return_value=records) as runner:
+                            with patch("scheduler.executor.insert_run_predictions", return_value=1):
+                                with patch("scheduler.executor.finish_scheme_run"):
+                                    with patch("scheduler.executor.write_run_log"):
+                                        result = execute_scheme(cfg, "2026-07-03", algo_env="test_env")
+
+        self.assertEqual(result.status, "success")
+        runner.assert_called_once_with(
+            "slow_daily",
+            "2026-07-03",
+            algo_env="test_env",
+            timeout_sec=1800,
+        )
+
     def test_execute_scheme_rejects_records_outside_active_registry_targets(self) -> None:
         from scheduler.executor import execute_scheme
         from shared.models import PredictionRecord

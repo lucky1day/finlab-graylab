@@ -854,6 +854,13 @@
     return tasks;
   }
 
+  function latestRunFromMetricRows(rows) {
+    var dates = (rows || []).map(function (row) {
+      return row.predict_date || row.predictDate || row.target_date || row.targetDate || "";
+    }).filter(Boolean).sort();
+    return dates.length ? String(dates[dates.length - 1]).slice(5) : "--";
+  }
+
   function buildLiveTaskSchemes(payload, metricsByKey) {
     if (payload && !Array.isArray(payload)) mergeTargetLabels(payload.target_labels);
     var schemes = Array.isArray(payload) ? payload : (payload.schemes || []);
@@ -889,7 +896,7 @@
         column: column.id,
         name: scheme.name,
         status: normalizeBackendSchemeStatus(scheme.status),
-        latestRun: "--",
+        latestRun: latestRunFromMetricRows(metrics.daily_rows || []),
         deploymentDate: requireSchemeDeploymentDate(scheme, "live scheme"),
         remark: getSchemeRemark(scheme),
         monthlyRows: monthlyRows,
@@ -1086,6 +1093,7 @@
               mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
               mScheme.liveMetricSinceDate = liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "";
               mScheme.phaseRanges = liveScheme.phaseRanges || [];
+              mScheme.latestRun = liveScheme.latestRun || mScheme.latestRun || "--";
               mScheme.deploymentDate = requireSchemeDeploymentDate(
                 { schemeId: liveSchemaId, deploymentDate: liveScheme.deploymentDate || mScheme.deploymentDate },
                 "merged scheme"

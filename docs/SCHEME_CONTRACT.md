@@ -1,6 +1,6 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-07-02
+**更新日期**: 2026-07-05
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -26,6 +26,7 @@
 | `frequency` | str | ✅ | ∈ `{daily, weekly, monthly}` |
 | `schedule.cron` | str | ✅ | 合法 5 段 cron。月度 source-backed 方案若声明每月 15 号触发，必须写自然 15 号 cron（如 `0 18 15 * *`），不得因 15 号非交易日而顺延 cron |
 | `schedule.timezone` | str | ➖ | 默认 `Asia/Shanghai`，合法时区 |
+| `schedule.timeout_sec` | int | ➖ | 方案级算法子进程 timeout 覆盖值，必须为正整数。仅用于 L3 executor 等待预算，不得影响算法输入、日期语义、source core 或 registry 可见性 |
 | `entry_point` | str | ➖ | 默认 `predict.run`，必须 `== predict.run` |
 | `status` | str | ✅ | ∈ `{active, paused}`（新方案先 `paused`） |
 | `input_spec.data_version` | str | ✅(新) | 对应主输入 `InputArtifact.data_version`，如 `shared_data_service_daily.v1` / `shared_data_service_weekly.v1` / `shared_data_service_monthly.v1`。**同时约束 live adapter 与 backtest runner**：两者产出的主 `InputArtifact.data_version` 必须等于本字段，保证历史回测与实盘预测同一数据口径（见 §7 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)） |
@@ -43,6 +44,7 @@
 > 月度方案使用独立的自然月触发语义：`predict_date` 必须是自然月 15 号；`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取目标月 15 号及以前最近交易日。月度灰度回补仍按 `target_date` 判定，不能按 `predict_date` 或部署时间截断。
 > `config.tenors` 是算法一次执行可返回的目标集合；registry 同步会把它拆成每个 `target_tenor` 一行。`/api/schemes` 不返回 `tenor/tenors`，只返回该 registry 行的 `target_tenor`。
 > `task_type` 会同步到 `t_scheme_registry.task_type` 并由 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/backtests/factor-lab` 返回；前端任务格子只按该字段分列。字段缺失或非法时必须 fail-closed。
+> `schedule.timeout_sec` 只解决运维执行预算。它不能被 scheme adapter/core 读取后改变窗口、fallback、特征或输出；慢速 source-backed 方案需要更长运行时间时，应优先配置该字段并补充单测，而不是放宽全局 executor timeout。
 >
 > 业务可见性只认 `status='active'` 的 registry row。`paused` / `archived` 行不出现在 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/predictions?scheme_id=...` 或 `/api/backtests/factor-lab`，也不能被 trigger；scheduler live 写库前必须校验每条 `PredictionRecord` 对应 active registry `(base_scheme_id, horizon, target_tenor)`。
 > `/api/predictions` 的 `scheme_id` 参数是 registry composite ID；后端解析为 `base_scheme_id + target_tenor + horizon` 后查询底层预测表，不接受 base scheme id、无 `scheme_id` 或 `?tenor=...`。
@@ -176,7 +178,7 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-07-02：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案、独立周平均 LGBM 方案、月度 0629 三方案和日度 0629 三方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。
+状态最近更新 2026-07-05：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案、独立周平均 LGBM 方案、月度 0629 三方案和日度 0629 三方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。`liwei_0616_10y02_cons_say_k3_div_k5` 已登记 `schedule.timeout_sec=3600` 作为慢速 source-backed 方案的执行预算，属于 L3 运维适配，不改变 L2 算法保真。
 
 | 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` | `daily_5y_2_v28` |
 |--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|:----------------:|

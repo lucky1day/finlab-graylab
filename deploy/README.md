@@ -21,6 +21,14 @@ https://bond.finailab.cn/bond-factor-lab/
 | 本地 Mac | 后端、scheduler、SSH 反向隧道 | `deploy/launchd/*.plist` |
 | 任意可联公网点 | 验收 / 监控 | `scripts/check_public_access.sh`、`scripts/healthcheck_alert.sh` |
 
+## 当前运维基线
+
+2026-07-05 复审后的本地运行基线：
+
+- backend 和 scheduler 均由 launchd 管理，服务端口仍为 `127.0.0.1:8100`。
+- scheduler 调整配置、方案 `config.yaml` 或代码后，必须 `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler` 重启，并复核日志中 active 日频、周频、周平均、月频方案均已注册。
+- 慢速 source-backed 方案使用 `config.yaml.schedule.timeout_sec` 配置方案级 executor timeout，例如 10Y02 当前为 `3600` 秒；该配置只影响算法子进程等待预算，不改变业务 cron 或日期语义。
+
 ## 访问控制（默认拒绝 + 展示白名单）
 
 由 Nginx 入口实现（PRD §6），后端不参与：
@@ -77,6 +85,7 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 
 - `BOND_SCHEDULER_STAGGER_MINUTES=2`：同一业务 cron 下的 active 方案按稳定顺序每 2 分钟错开启动。
 - `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY=1`：同一时刻最多 1 个预测方案进入算法子进程，避免多个 `conda run` 同时压机器。
+- `config.yaml.schedule.timeout_sec`：单方案 executor timeout 覆盖值，用于慢速 source-backed 方案；没有配置时使用 executor 默认预算。
 
 调整参数后需要重启 scheduler：
 

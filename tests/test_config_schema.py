@@ -114,6 +114,24 @@ class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
         self.assertIn("input_spec.auxiliary_inputs[1] must be a mapping", errors)
 
 
+class ConfigSchemaScheduleTests(unittest.TestCase):
+    def test_schedule_timeout_sec_accepts_positive_integer(self) -> None:
+        config = _base_config()
+        config["schedule"]["timeout_sec"] = 1800
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertEqual(errors, [])
+
+    def test_schedule_timeout_sec_rejects_non_positive_integer(self) -> None:
+        config = _base_config()
+        config["schedule"]["timeout_sec"] = 0
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertIn("schedule.timeout_sec must be a positive integer when present", errors)
+
+
 class ConfigSchemaBacktestStartTests(unittest.TestCase):
     def test_daily_backtest_requires_start_date_2025_01_01(self) -> None:
         config = _base_config()

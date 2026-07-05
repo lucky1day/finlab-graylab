@@ -1,6 +1,6 @@
 # 方案入库后测试验证 SOP
 
-**更新日期**: 2026-07-02
+**更新日期**: 2026-07-05
 **状态**: 已定稿 v1.0（用户 review 通过 2026-06-09）
 **定位**: 面向**任意一个已入库方案**的标准测试验证流程（不限于现有 5 方案）。核心是 **gatekeeping（先验入库合规）→ 双版本复现对比（入库前原始 vs 改造后，同一数据接入层）→ 数据落库与前端校验 → 挂载定时任务 → 出验证结论**。
 
@@ -25,6 +25,7 @@
 - **历史输出起点语义**：历史回测统一从 `predict_date >= 2025-01-01` 开始；回测中 `predict_date=feature_date`，所以验证时必须确认 benchmark/current/DB 明细均无 `feature_date < 2025-01-01` 的输出行。不得用 `target_date >= 2025-01-01` 保留起点前的 source T。
 - **live 版本字段长度**：`model_version` 顶层字段必须能落入 `t_scheme_predictions.model_version VARCHAR(64)`；完整 source 模型 ID 如果更长，必须在 `extra` 中留审计字段，不能让 live 写库到最后一步才失败。
 - **月度自然 15 号语义**：月度 source-backed 方案若声明每月 15 号预测，则 `predict_date` 保留自然 15 号，无论是否交易日；`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。灰度/回测边界仍按 `target_date` 判定。
+- **运维水位先分层**：排查“前端最新数据不对”时，必须依次拆成预测是否落库、任务是否启动、actual 源水位是否覆盖、API 是否返回、前端是否刷新。actual 尚未覆盖的 target 只能标记待验证；source core 无当前周有效信号时必须 fail-closed，不能复用旧信号补写。
 - **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
 - **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
 
@@ -155,7 +156,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S6 落库成功，得 run_id |
-| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新）；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × task_type × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 对同一前端任务格子 / 同一 `task_type` 列下的候选方案做样本覆盖对齐：导出各方案 `target_date` 集合，确认相同 target 覆盖窗口内样本总数一致，若不一致必须输出 missing/extra target-date 清单或引用已批准的算法有效信号例外；⑤ 用逐方案 original benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行必须先判定 benchmark role；只有同执行口径才查 `t_scheme_predictions.feature_date` 和 `prediction_phase`，否则用 live-safe oracle；⑥ 若该 task 存在 live 行，前端合并视图必须按 live `target_date` 月份插入虚线分隔，虚线以上不得含灰度 target 月，虚线以下必须含已回补的 gray_live target 月 |
+| **动作** | ① 强制刷新前端读取最新静态资源和最新 run（macOS `Cmd+Shift+R`；必要时 DevTools 勾选 `Disable Cache` 后刷新），若改过静态文件必须确认 `index.html` 中 query version 已 bump；② 请求 `/api/backtests/factor-lab`；③ **严格比对** DB 中该 run 的 `t_backtest_predictions` 明细动态聚合结果与前端展示：逐 `tenor × task_type × 月份` 的样本数、`metric_samples`、准确率必须与 API/DB 一致；整体准确率与明细聚合一致；若存在预测为“平”的明细行，前端每日/周度验证表结果列必须显示 `-`；④ 对同一前端任务格子 / 同一 `task_type` 列下的候选方案做样本覆盖对齐：导出各方案 `target_date` 集合，确认相同 target 覆盖窗口内样本总数一致，若不一致必须输出 missing/extra target-date 清单或引用已批准的算法有效信号例外；⑤ 用逐方案 original benchmark 再对最终 DB 明细做一次按 `feature_date` 的核验：`target_date` 仍在历史回测区间的行查 `t_backtest_predictions.feature_date`，`target_date` 已进入灰度/实盘区间的行必须先判定 benchmark role；只有同执行口径才查 `t_scheme_predictions.feature_date` 和 `prediction_phase`，否则用 live-safe oracle；⑥ 若该 task 存在 live 行，前端合并视图必须按 live `target_date` 月份插入虚线分隔，虚线以上不得含灰度 target 月，虚线以下必须含已回补的 gray_live target 月；⑦ live 方案的最新运行显示必须从 `/api/metrics/{registry_scheme_id}` 明细最大 `predict_date` 得出，月度最新验证页按 `target_date` 展示，actual 尚未到的未来月显示待验证 `--（0/0）` |
 | **成功判定** | 前端每一个展示数值都能在 DB 或 API 找到完全相等的来源；样本数使用 `samples`，准确率分母使用 `metric_samples`；预测为“平”的明细行不显示 `×` 或 `✓`；无"前端有 DB 无"或"DB 有前端漏"的格子；同一 `task_type` 列的候选方案样本总数一致，或已有明确 missing/extra 与批准例外说明；逐方案 original benchmark 的每个 T 都能按 `feature_date` 在正确 DB 表或 live-safe oracle 中找到对应明细，且方向、`target_date`、`target_tenor`、`horizon`、`confidence` 口径一致；固定 future `source_end` 的 batch 行不得被当作 live 数值真值；月度 live 分隔不得按发出月误删上一 target 月回测行 |
 | **成功→去向** | 进入 S8 |
 | **失败判定** | 任一前端数值与 DB 不符 |
@@ -168,8 +169,8 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S7 DB↔前端严格一致 |
-| **动作** | 按方案 `frequency` 挂载定时预测任务：① 确认 `schedule.cron` 与频率匹配（日频工作日 07:03 / 周频周六 11:30 / 月频按定义）；② 签发 activate 授权 token；③ 通过 `python -m harness activate --scheme-id {scheme_id} --authorize {TOKEN}` 激活，不得手动改 `config.yaml status` 绕过 ActivationGate；④ 重启 scheduler 使其注册该 job；⑤ 确认调度日志出现该方案 cron 注册 |
-| **成功判定** | ActivationGate/activate 命令成功，registry/config 状态生效，scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；方案进入对应频率的定时预测队列 |
+| **动作** | 按方案 `frequency` 挂载定时预测任务：① 确认 `schedule.cron` 与频率匹配（日频工作日 07:03 / 周频周六 11:30 / 月频按定义）；② 若方案需要较长运行时间，确认 `schedule.timeout_sec` 已配置为正整数并有单测；③ 签发 activate 授权 token；④ 通过 `python -m harness activate --scheme-id {scheme_id} --authorize {TOKEN}` 激活，不得手动改 `config.yaml status` 绕过 ActivationGate；⑤ 重启 scheduler 使其注册该 job；⑥ 确认调度日志出现该方案 cron 注册；⑦ 对最近应触发窗口做 prediction 连续性检查，并把缺口按任务未启动、timeout、输入缺失、source 信号未成熟或 actual 未到分类 |
+| **成功判定** | ActivationGate/activate 命令成功，registry/config 状态生效，scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；如有 `schedule.timeout_sec`，discovery/executor 已读取配置；方案进入对应频率的定时预测队列，近期 prediction 连续性检查无未解释缺口 |
 | **成功→去向** | 进入 S9 |
 | **失败判定** | status 未生效 / cron 未注册 / scheduler 未识别 |
 | **失败→去向** | 修复 config/调度后**重试 S8** |
@@ -184,7 +185,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S8 挂载成功 |
-| **动作** | 汇总产出该方案的**验证结论报告**，含：最终状态（PASS）、入库合规结论（S1）、采用的版本回测定义形态（S2）、复现样本数与准确率（S3/S4）、对比结论（S5 一致）、落库 run_id（S6）、前端比对结论（S7）、挂载 cron（S8）。更新 [CURRENT_STATUS.md](../CURRENT_STATUS.md) |
+| **动作** | 汇总产出该方案的**验证结论报告**，含：最终状态（PASS）、入库合规结论（S1）、采用的版本回测定义形态（S2）、复现样本数与准确率（S3/S4）、对比结论（S5 一致）、落库 run_id（S6）、前端比对结论（S7）、挂载 cron 与 scheduler 重载证据（S8）、近期 prediction 连续性、actual/source 水位判定和剩余待验证 target。更新 [CURRENT_STATUS.md](../CURRENT_STATUS.md) |
 | **成功→去向** | 终态 `PASS` |
 
 ---

@@ -1,6 +1,33 @@
 # 当前状态
 
-**更新日期**: 2026-07-02
+**更新日期**: 2026-07-05
+
+## 2026-07-05 生产水位复审与运维修复
+
+本轮按运维口径复审所有 active 方案的最新水位、调度进程、actual 水位、API 与前端月度展示。结论：平台链路缺陷已修复，近期日频 active 方案连续性已补齐；仍存在的未验证行来自上游数据或源算法信号水位，不得误判为前端刷新失败。
+
+已修复问题：
+
+- 调度器曾运行旧进程，未加载部分 0629 日频方案。已 `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler`，当前 launchd `com.bond-factor-lab.scheduler` 运行中，PID=`52590`；日志确认 active 日频、周频、周平均与月频方案全部注册。
+- 0629 日频三方案缺 `2026-07-02/2026-07-03` 实盘点，已通过正式 executor 补齐，run_id=`538..543`。当前日频 T+1/T+5 active 方案最新 `predict_date=2026-07-03`、`feature_date=2026-07-02`。
+- `liwei_0616_10y02_cons_say_k3_div_k5` 原因不是缺输入，而是全局 600 秒执行 timeout；该方案单次实测约 2266-2306 秒。已新增方案级 `schedule.timeout_sec=3600`，并通过正式 executor 补齐旧缺口：`2026-06-26` run_id=`548`、`2026-06-29` run_id=`549`、`2026-06-30` run_id=`550`、`2026-07-01` run_id=`551`、`2026-07-02` run_id=`552`，另有最新点 `2026-07-03` run_id=`547`。当前 10Y02 `/api/metrics` 返回 `daily_rows=28`，`scheduled_live` 覆盖 `predict_date=2026-06-23..2026-07-03` 共 9 行。
+- 周频 live context 在源周历提前切周且下一周尚未进入 DB 日历时会 fail；已在 `shared.prediction_context.build_weekly_live_context()` 增加受限 fallback：若上一交易日所在源周无下一周，且触发日所在源周已有完整上一交易日，则回退到触发日源周对应的完整输入周，不移动 source-backed core 算法。
+- 前端 live 方案 `latestRun` 曾固定为 `"--"`，导致即使 API 已有新行也不展示最新运行。已改为从 `/api/metrics` 的 `daily_rows` 计算最大 `predict_date`，并刷新静态资源到 `aifin-shell.js?v=20260705a` / `aifin-shell.css?v=20260705a`。
+
+复审后仍保留的外部水位限制：
+
+- 活跃目标日频源指标 `TB0YWI0C/TB1YWI0C/TB3YWI0C/TB5YWI0C/TB7YWI0C` 当前最大 `rdate=2026-07-02`，`t_scheme_actuals` 各 tenor 最大 `trade_date=2026-07-02`。因此 `target_date>=2026-07-03` 的 actual 暂为空是上游数据未到，不是后端或前端 bug。
+- 周点值三方案 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529` 的 `2026-07-04` 运行仍 fail-closed。直接运行原方案报 `current_week_id=202625`，有效投票信号只到 `202624`；这属于源算法输入信号水位未成熟，不能复用旧周信号补写，否则会破坏 source-backed 保真约束。
+- 月频 0629 三方案当前只有 `target_date=2026-06-15` 已验证，`target_date=2026-07-15` 尚未到期。API `monthly_metrics` 只统计 `2026-06`，前端最新页显示 `2026-07` 样本数 0、准确率 `--（0/0）` 是正确语义。
+
+验证证据：
+
+- 近期日频 active 方案按交易日 `2026-06-23..2026-07-03` 做连续性检查，无缺口输出；10Y02 明细连续覆盖 `predict_date=2026-06-23..2026-07-03`。
+- `/api/metrics/liwei_0616_10y02_cons_say_k3_div_k5__h5__10Y` 返回 `daily_rows=28`，尾部 `predict_date=2026-06-26..2026-07-03` 均存在，`target_date=2026-07-03` 及以后因 actual 水位暂为空。
+- `/api/metrics/monthly_1y_rf_top30_0629__h30__1Y` 返回 2 条 gray_live 明细；`monthly_metrics` 只有 `2026-06` 一行，`2026-07-15` 仍为待验证。
+- 浏览器前端 `http://127.0.0.1:8100/` DOM 验收确认任务格子为“回测+实盘”口径；月度 1Y/5Y/10Y 最新页均显示 `2026-06` 已验证、`2026-07` 待验证。
+- 回归测试 `conda run -n bond_factor_lab_service python -m unittest tests.test_config_schema.ConfigSchemaScheduleTests tests.test_executor_run_id tests.test_scheduler_main tests.test_prediction_context tests.test_frontend_factor_lab tests.test_frontend_static_cache tests.test_liwei_0616_10y02_cons_say_k3_div_k5.Liwei061610Y02ConfigTests` 通过，59/59 OK。
+- 活文档已同步本轮复审结论：入口 README、系统/代码架构、预测语义、方案契约、harness、部署 README、T0/SOP/入库后测试 SOP 均已补充 scheduler 重载、方案级 timeout、actual 水位、周频 fail-closed 与前端静态缓存验收规则；历史计划和 source evidence 归档保持原样。
 
 ## 2026-07-01 日度 0629 三方案 SOP 收口
 

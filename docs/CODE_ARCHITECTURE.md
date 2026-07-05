@@ -1,6 +1,6 @@
 # 代码架构设计（Code Architecture）
 
-**更新日期**: 2026-06-30
+**更新日期**: 2026-07-05
 **定位**: 本仓库的**代码架构主蓝图**。定义分层模型、包依赖方向规则、运行时调用图、扩展模型与横切关注点。是所有其它设计文档的总索引。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -141,7 +141,8 @@ tests/         → 任意（验证需要）
 ```
 APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
   └─ scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase="scheduled_live")
-       ├─ run_scheme_subprocess(scheme_id, predict_date, algo_env="forecast_env")
+       ├─ timeout_sec = cfg.schedule.timeout_sec or executor default
+       ├─ run_scheme_subprocess(scheme_id, predict_date, algo_env="forecast_env", timeout_sec=timeout_sec)
        │     └─[conda 子进程]─ python -m scheduler.scheme_runner --scheme-id --predict-date
        │           └─ importlib → schemes.{id}.predict.run(predict_date)        ← 运行时插件边
        │                 ├─ shared.input_artifacts.build_*_input_artifact(...)   ← L1 唯一输入
@@ -158,6 +159,8 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
 
 日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
+
+`schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。生产上调整该字段后必须重启 scheduler，让 `discovery` 重新加载 config，并复核 launchd 日志中 active jobs 已注册。
 
 ### 5.2 入库 harness 路径（已实现，自动化方案入库）
 
@@ -233,6 +236,7 @@ schemes/{scheme_id}/
 |--------|------|----------|
 | **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | 引擎工厂收敛：adapter 经 `calendar_service`/`input_artifacts` 间接用引擎，不再裸取（消除 V3） |
 | **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | 维持；`config.yaml` schema 由 `SCHEME_CONTRACT.md` 形式化 |
+| **执行预算** | executor 有全局默认 timeout，`config.yaml.schedule.timeout_sec` 可按方案覆盖 | 维持；仅控制算法子进程等待时间，不进入 L2 core 语义 |
 | **产物路径** | `shared/artifact_paths.py` 统一 `RUNTIME_INPUT_ROOT`；运行期 `backtest_artifacts/runtime_inputs/{scheme_id}/`，回测 `backtest_artifacts/backtests/{benchmark_id}/` | 维持；harness 报告 `reports/harness/{scheme_id}/{ts}/` |
 | **进程/依赖隔离** | conda：算法 `forecast_env`、服务 `bond_factor_lab_service`；子进程 + JSON stdout | 维持；这是 scheduler 与算法依赖解耦的关键边界 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |

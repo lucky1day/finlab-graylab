@@ -134,7 +134,13 @@ def execute_scheme(
             run_type="active",
             prediction_phase=prediction_phase,
         )
-        records = run_scheme_subprocess(cfg.scheme_id, predict_date, algo_env=algo_env, timeout_sec=timeout_sec)
+        effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
+        records = run_scheme_subprocess(
+            cfg.scheme_id,
+            predict_date,
+            algo_env=algo_env,
+            timeout_sec=effective_timeout_sec,
+        )
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
         written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
@@ -167,6 +173,18 @@ def execute_scheme(
         return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, error_msg, run_id)
     finally:
         engine.dispose()
+
+
+def _effective_timeout_sec(cfg: SchemeConfig, default_timeout_sec: int) -> int:
+    """读取方案级执行 timeout；未配置时保持全局默认。"""
+    schedule = getattr(cfg, "schedule", None)
+    configured = getattr(schedule, "timeout_sec", None)
+    if configured is None:
+        configured = getattr(cfg, "execution_timeout_sec", None)
+    timeout = int(configured) if configured is not None else int(default_timeout_sec)
+    if timeout <= 0:
+        raise ValueError(f"scheme {cfg.scheme_id} timeout_sec must be positive, got {timeout}")
+    return timeout
 
 
 def execute_all(
