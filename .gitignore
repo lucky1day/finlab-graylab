@@ -24,7 +24,11 @@ reports/refactor_baseline/
 reports/refactor_current/
 reports/harness/
 reports/postonboard/
+reports/verification/
 !reports/README.md
+
+# Local investigation exports and scratch evidence.
+outputs/
 
 __pycache__/
 *.py[cod]
