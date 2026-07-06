@@ -146,6 +146,63 @@ class WeeklyActualsTests(unittest.TestCase):
 
         self.assertEqual(records, [])
 
+    def test_build_weekly_actuals_normalizes_isolated_week_id_jump(self) -> None:
+        from scheduler.weekly_actuals_updater import build_weekly_actual_records_from_rows
+
+        calendar_rows = _calendar_rows() + [
+            {"rdate": "2026-06-08", "week_id": 202622, "trade_flag": "1"},
+            {"rdate": "2026-06-09", "week_id": 202622, "trade_flag": "1"},
+            {"rdate": "2026-06-10", "week_id": 202622, "trade_flag": "1"},
+            {"rdate": "2026-06-11", "week_id": 202622, "trade_flag": "1"},
+            {"rdate": "2026-06-12", "week_id": 202622, "trade_flag": "1"},
+            {"rdate": "2026-06-13", "week_id": 202622, "trade_flag": "0"},
+            {"rdate": "2026-06-14", "week_id": 202622, "trade_flag": "0"},
+            {"rdate": "2026-06-15", "week_id": 202623, "trade_flag": "1"},
+            {"rdate": "2026-06-16", "week_id": 202623, "trade_flag": "1"},
+            {"rdate": "2026-06-17", "week_id": 202623, "trade_flag": "1"},
+            {"rdate": "2026-06-18", "week_id": 202623, "trade_flag": "1"},
+            {"rdate": "2026-06-19", "week_id": 202623, "trade_flag": "1"},
+            {"rdate": "2026-06-20", "week_id": 202623, "trade_flag": "0"},
+            {"rdate": "2026-06-21", "week_id": 202623, "trade_flag": "0"},
+            {"rdate": "2026-06-22", "week_id": 202624, "trade_flag": "1"},
+            {"rdate": "2026-06-23", "week_id": 202624, "trade_flag": "1"},
+            {"rdate": "2026-06-24", "week_id": 202624, "trade_flag": "1"},
+            {"rdate": "2026-06-25", "week_id": 202624, "trade_flag": "1"},
+            {"rdate": "2026-06-26", "week_id": 202624, "trade_flag": "1"},
+            {"rdate": "2026-06-27", "week_id": 202624, "trade_flag": "0"},
+            {"rdate": "2026-06-28", "week_id": 202624, "trade_flag": "0"},
+            {"rdate": "2026-06-29", "week_id": 202625, "trade_flag": "1"},
+            {"rdate": "2026-06-30", "week_id": 202625, "trade_flag": "1"},
+            {"rdate": "2026-07-01", "week_id": 202625, "trade_flag": "1"},
+            {"rdate": "2026-07-02", "week_id": 202625, "trade_flag": "1"},
+            {"rdate": "2026-07-03", "week_id": 202626, "trade_flag": "1"},
+            {"rdate": "2026-07-04", "week_id": 202625, "trade_flag": "0"},
+            {"rdate": "2026-07-05", "week_id": 202625, "trade_flag": "0"},
+            {"rdate": "2026-07-06", "week_id": 202626, "trade_flag": "1"},
+            {"rdate": "2026-07-07", "week_id": 202626, "trade_flag": "1"},
+            {"rdate": "2026-07-08", "week_id": 202626, "trade_flag": "1"},
+            {"rdate": "2026-07-09", "week_id": 202626, "trade_flag": "1"},
+            {"rdate": "2026-07-10", "week_id": 202626, "trade_flag": "1"},
+        ]
+        rows = [
+            {"tenor": "10Y", "trade_date": "2026-06-26", "close_yield": 1.80},
+            {"tenor": "10Y", "trade_date": "2026-06-29", "close_yield": 1.81},
+            {"tenor": "10Y", "trade_date": "2026-06-30", "close_yield": 1.82},
+            {"tenor": "10Y", "trade_date": "2026-07-01", "close_yield": 1.83},
+            {"tenor": "10Y", "trade_date": "2026-07-02", "close_yield": 1.84},
+            {"tenor": "10Y", "trade_date": "2026-07-03", "close_yield": 1.85},
+            {"tenor": "10Y", "trade_date": "2026-07-10", "close_yield": 1.86},
+        ]
+
+        records = build_weekly_actual_records_from_rows(rows, calendar_rows)
+        point_records = _point_records(records)
+        actual = next(record for record in point_records if record.feature_week_id == 202624)
+
+        self.assertEqual(actual.target_week_id, 202625)
+        self.assertEqual(actual.target_date, "2026-07-03")
+        self.assertEqual(actual.target_yield, 1.85)
+        self.assertEqual(actual.direction_weekly, 1)
+
     def test_build_weekly_actuals_reads_canonical_week_id_from_db(self) -> None:
         from sqlalchemy import create_engine, text
 

@@ -14,6 +14,7 @@ from scheduler.repository import create_engine_from_env, upsert_weekly_actuals
 from shared.models import WeeklyActualRecord
 from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE, next_calendar_week_id
 from shared.tenor_mapping import TENOR_TO_INDICATOR
+from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 
 TARGET_RULE = WEEKLY_TARGET_RULE
@@ -108,7 +109,7 @@ def read_week_calendar(engine: Engine) -> list[dict]:
 def _build_week_calendar(rows: Iterable[dict]) -> WeekCalendar:
     date_to_week_id: dict[str, int] = {}
     rows_by_week: dict[int, list[dict]] = defaultdict(list)
-    for raw in rows:
+    for raw in normalize_week_calendar_rows(rows):
         rdate = _normalize_date(raw.get("rdate"))
         week_id = _normalize_week_id(raw.get("week_id"))
         if rdate is None or week_id is None:

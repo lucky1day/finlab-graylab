@@ -560,7 +560,6 @@ def scheme_metrics(
          AND a.trade_date = p.target_date
         LEFT JOIN t_scheme_weekly_actuals wa
           ON wa.tenor = p.target_tenor
-         AND wa.predict_date = p.predict_date
          AND wa.target_date = p.target_date
          AND wa.target_rule = :weekly_target_rule
         LEFT JOIN (

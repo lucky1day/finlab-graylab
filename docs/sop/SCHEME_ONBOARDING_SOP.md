@@ -1,6 +1,6 @@
 # 新增预测方案 SOP
 
-**更新日期**: 2026-07-05
+**更新日期**: 2026-07-06
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
 > 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)。Source-backed 方案的原始算法保真见 [SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
@@ -602,7 +602,7 @@ curl -s "http://127.0.0.1:8100/api/predictions?scheme_id=t1_lgbm_spread_v2__h1__
 - 如果只是 live 方案，`/api/metrics/{registry_scheme_id}` 能返回月度指标、汇总指标和逐日样本；`/api/metrics/{base_scheme_id}`、`paused/archived` registry ID 或 `?tenor=...` 都不是合法入口。
 - `/api/predictions?scheme_id={registry_scheme_id}` 能返回该业务方案的底层预测明细；`/api/predictions?scheme_id={base_scheme_id}`、无 `scheme_id` 或 `?tenor=...` 都不是合法入口。
 - 还没有 actuals 的未来目标日可以暂时无准确率；这不是接入失败。
-- 排查“最新数据未验证”时必须先查 actual 源水位：日频查 `api_wind_indicators_all` 对应活跃目标指标最大 `rdate` 与 `t_scheme_actuals.max(trade_date)`，周频查 `t_scheme_weekly_actuals` 对应 `target_week_id` 是否已完整。若 source actual 尚未覆盖目标日/周，前端应展示待验证 `--`，不能记为后端或前端 bug。
+- 排查“最新数据未验证”时必须先查 actual 源水位：日频查 `api_wind_indicators_all` 对应活跃目标指标最大 `rdate` 与 `t_scheme_actuals.max(trade_date)`，周频先查目标 tenor 的源指标是否覆盖目标周最后交易日，再查 `t_scheme_weekly_actuals` 是否存在相同 `target_tenor + target_date + target_rule` 的 actual。若 source actual 尚未覆盖目标日/周，前端应展示待验证 `--`，不能记为后端或前端 bug；若 actual 已存在但仍待验证，再排查后端 join 和前端缓存。
 - registry 同步只在后端启动或受保护的 `POST /api/admin/registry/sync` 中发生；普通 GET 验收不得产生写库副作用。
 - 月度指标必须区分 `samples` 与 `metric_samples`：`samples` 是样本总数，包含预测为“平”的交易日或预测周；`metric_samples` 是所有准确率、precision、recall 指标的分母，只包含预测为“涨/跌”的有方向样本。
 - 若月内存在 `predicted_direction=0`，前端准确率括号必须展示 `correct/metric_samples`，不得展示 `correct/samples`；上涨/下跌准确率和召回率也必须排除这些“平”样本。

@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-截至 2026-07-05，核心与近期入库 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
+截至 2026-07-06，核心与近期入库 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
 
 | 方案 | 频率 | Horizon | 目标 |
 |------|------|---------|------|
@@ -23,7 +23,7 @@
 
 旧周度方案 `weekly_10y_d_overlay`、`weekly_5y_direct_production`、`weekly_7y_cross_d_overlay` 已退役；当前 0529 周度单点覆盖 5Y/7Y/10Y，周平均独立 LGBM 原始方案覆盖 1Y/5Y/10Y（无 7Y）。旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 已暂停，仅保留历史审计。周平均 actual 方向固定为“目标周平均收益率 vs 当前周平均收益率”。月度 0629 三方案的 actual 方向固定为“目标月观测收益率 vs 当前 feature 月观测收益率”；当前灰度边界按 `target_date >= 2026-06-01` 判定，`2026-06-15` 与 `2026-07-15` 目标点都作为 `gray_live` 展示。日度 0629 三方案已完成 SOP 收口：latest backtest 均为 337 行，`target_date=2026-06-01..2026-07-01` 的 22 个交易日已补齐为 `gray_live`。
 
-2026-07-05 运维复审结论：launchd scheduler 已重启并确认加载全部 active 方案；日频 T+1/T+5 active 方案预测水位已补齐到 `predict_date=2026-07-03`。`liwei_0616_10y02_cons_say_k3_div_k5` 的缺口根因是旧全局 600 秒 timeout，不是输入缺失或前端刷新；当前使用方案级 `schedule.timeout_sec=3600`，并已通过正式 executor 补齐 `2026-06-26..2026-07-03` 相关缺口。前端静态资源版本已刷新到 `20260705a`，live 最新运行从 `/api/metrics` 明细计算。仍未验证的 `target_date>=2026-07-03` 日频行来自上游 actual 水位只到 `2026-07-02`；周点值 `2026-07-04` fail-closed 来自源算法有效投票信号只到 `202624`。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
+2026-07-06 运维复审结论：周度 `2026-06-26` 待验证根因是后端 weekly actual JOIN 误把 `predict_date` 审计字段当事实键，已改为按 `target_tenor + target_date + target_rule` 匹配；周度 `2026-07-03` 待验证根因分层处理，10Y 源指标已覆盖并完成 point/average actual 写入，1Y/5Y/7Y 源指标仍只到 `2026-07-01`，因此其 `target_date=2026-07-03` 继续待验证是正确状态。源周历中 `2026-07-03` 的孤立 forward jump 已由只读 `shared.week_calendar_normalizer` 在预测侧和 actuals updater 统一归一化，不改源表、不复用旧周信号。全量 active API 扫描覆盖 25 个前端方案、466 条明细，`semantic_mismatch_count=0`、`unexpected_issue_count=0`；剩余待验证均为源数据未覆盖或未来目标日。详细数据库快照、run_id、回测结果和剩余观察项见 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md)。
 
 ## 文档入口
 

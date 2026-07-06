@@ -1,6 +1,6 @@
 # 强约束 Harness 工程架构
 
-**更新日期**: 2026-07-05
+**更新日期**: 2026-07-06
 
 本文是 Bond Factor Lab 后续方案入库的强约束总纲。目标是把“用户给出一个预测方案”变成可重复执行的工程流程: 改造、输入生成、测试、回测、前端验收、受控实盘、自动调度。任何新增日频、周频、月频方案都必须先满足本文约束，再进入实盘链路。预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准。
 
@@ -14,6 +14,7 @@ Harness 不是新的预测算法，也不是新的数据口径。Harness 的职�
 
 - `shared.data_service` 是唯一底层日频、周频、月频 DB 导出标准。普通方案接入时不得修改它的业务逻辑。
 - `shared.input_artifacts` 是所有算法输入文件的唯一入口。预测 adapter 和历史回测 runner 都必须先通过它生成输入 CSV，再读回 DataFrame 给算法。
+- `shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 必须共享同一周历事实；源周历孤立 forward jump 只允许通过公共只读 normalizer 处理，不能在方案 adapter、core 或临时脚本里各自修正。
 - `schemes/{scheme_id}/core/` 只放算法逻辑。core 禁止写库、禁止调 scheduler、禁止直接拼 DB 输入。
 - source-backed 方案的 core 必须保持原始算法逻辑：时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射都不得因平台化而改变。
 - `schemes/{scheme_id}/predict.py` 只做 adapter: 解析预测上下文、获取公共输入 artifact、调用 core、返回 `list[PredictionRecord]`。

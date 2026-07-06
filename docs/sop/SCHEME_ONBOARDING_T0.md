@@ -1,6 +1,6 @@
 # 新增方案 T0 强约束范式
 
-**更新日期**：2026-07-05
+**更新日期**：2026-07-06
 **适用范围**：任何新增预测方案（daily / weekly；未来 monthly 也按同一范式扩展）。
 
 > 这是新增方案前的 **T0 必读文档**。它只定义不可破坏的范式和 gate 顺序，不替代详细 SOP。执行细节继续看 [PREDICTION_SEMANTICS.md](../PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../SOURCE_ALGORITHM_FIDELITY.md)、[SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) 和 [SCHEME_ONBOARDING_SOP.md](SCHEME_ONBOARDING_SOP.md)。
@@ -112,7 +112,7 @@
 | 禁止项 | 用 `predict_date` 做展示月 | 任何 `*_to_friday` / `*_to_monday` / 计算型 week_id 作为实盘或回测对齐依据 | 把 15 号顺延为交易日 predict_date；用 `predict_date` 或部署时间切分 gray/backtest；让 target 月同时进入 backtest 和 live |
 | 数据加载 | 覆盖特征窗口和 target 计算所需数据 | live/gray 必须 `end_week=feature_week_id`、`as_of_date=feature_date`；不得读取 feature 周之后的周频原始行 | live/gray 必须以 `feature_date` 硬截止，不能因当前 DB 已有目标月或后续月数据而读未来 |
 
-周度方案尤其要验证：周六 `predict_date` 不是交易日时，只能向前找最近 DB 周作为 `feature_week_id`；`target_week_id/target_date` 必须由 DB 日历从 `feature_week_id` 推导到下一实际周及其最后交易日，不允许用公式 `week_id + 1` 或未来周数据存在性决定 target。
+周度方案尤其要验证：周六 `predict_date` 不是交易日时，只能向前找最近 DB 周作为 `feature_week_id`；`target_week_id/target_date` 必须由 DB 日历从 `feature_week_id` 推导到下一实际周及其最后交易日，不允许用公式 `week_id + 1` 或未来周数据存在性决定 target。若源周历出现单个交易日提前跳周、随后非交易日回落的孤立 forward jump，只能依赖 `shared.week_calendar_normalizer` 的只读归一化，不能在方案里另写周历修补逻辑。
 
 若源周历在调度日附近提前切周，平台可以在 `shared.prediction_context` 做受限日历 fallback 来确定完整输入周；但 source core 对当前 `feature_week_id` 没有有效信号时必须 fail-closed。任何新增周频方案都不得把上一周预测、旧投票或旧 selector 状态复制成当前周预测。
 

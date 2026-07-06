@@ -1,6 +1,6 @@
 # 代码架构设计（Code Architecture）
 
-**更新日期**: 2026-07-05
+**更新日期**: 2026-07-06
 **定位**: 本仓库的**代码架构主蓝图**。定义分层模型、包依赖方向规则、运行时调用图、扩展模型与横切关注点。是所有其它设计文档的总索引。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -61,7 +61,7 @@
 
 | 层 | 包 | 职责 | 对外稳定符号（节选） |
 |----|----|------|----------------------|
-| L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`build_*_output_from_db`、`get_calendar`、`PredictionRecord` |
+| L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`build_*_output_from_db`、`get_calendar`、`normalize_week_calendar_rows`、`PredictionRecord` |
 | L2 | `schemes/{id}/` | 算法（core）+ 平台适配（predict.py） | `run(predict_date)->list[PredictionRecord]`、`SCHEME_ID` |
 | L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`insert_run_predictions` |
 | L4 | `backend/` `backtests/` `tests/` | 只读 API、历史复现、验证 | `/api/*`、`run_<scheme>_reproduction` |
@@ -129,6 +129,7 @@ tests/         → 任意（验证需要）
 - `scheduler` 只依赖 `shared` + 自身，对具体方案零静态耦合 ✅
 - `backtests` 通过 import `schemes/*/core/predictors` 调用算法，不碰 adapter ✅
 - `shared` 无任何上行依赖 ✅
+- `shared.week_calendar_normalizer` 是只读周历归一化公共点，供 `shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 共享；它只修正源周历孤立 forward jump，不能被方案 core 用来重算任意周编号或绕过 source 信号水位 ✅
 
 > 进度：V1（S1）、V2（S2）、V4（S3）已清零；V3 部分完成（日历查询已收敛到 `calendar_service`，adapter 仍自建 engine 传入——属白名单内 `adapter→shared` 边，不阻塞 StaticGate，engine 工厂下沉作为独立小重构后续处理）。数据层依赖白名单（§3.1）实质成立。每步均通过等价闸（`scripts/compare_refactor_outputs.py`，diff_count=0）验证行为保持。
 
@@ -158,7 +159,7 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
 
-日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
+日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
 `schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。生产上调整该字段后必须重启 scheduler，让 `discovery` 重新加载 config，并复核 launchd 日志中 active jobs 已注册。
 

@@ -72,7 +72,28 @@ def _create_schema(engine) -> None:
                     tenor TEXT,
                     predict_date TEXT,
                     target_date TEXT,
-                    direction_weekly INTEGER
+                    direction_weekly INTEGER,
+                    target_rule TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE t_scheme_monthly_actuals (
+                    tenor TEXT,
+                    feature_month_id TEXT,
+                    target_month_id TEXT,
+                    predict_date TEXT,
+                    feature_date TEXT,
+                    target_date TEXT,
+                    feature_yield REAL,
+                    target_yield REAL,
+                    direction_monthly INTEGER,
+                    price_signal TEXT,
+                    target_rule TEXT,
+                    extra TEXT
                 )
                 """
             )
