@@ -1,6 +1,28 @@
 # 当前状态
 
-**更新日期**: 2026-07-05
+**更新日期**: 2026-07-06
+
+## 2026-07-06 周度 07/03 与全量前端复扫
+
+用户继续复核 `2026-07-03` 目标周。深排结论分三类：
+
+- 任务不是没启动：scheduler 日志显示 actuals 任务在 `2026-07-03 08:30/19:00` 均成功执行；`2026-07-04` 周频预测任务也自然触发。
+- 前端不是缓存问题：API 是前端事实源，修复后直接访问 `/api/metrics/...` 已能看到更新结果。
+- 数据源不是所有 tenor 都已覆盖：`api_wind_daily` 中 `TB0YWI0C(10Y)` 已到 `2026-07-03`，但 `TB1YWI0C/TB5YWI0C/TB7YWI0C` 只到 `2026-07-01`，因此 1Y/5Y/7Y 的 `target_date=2026-07-03` 仍待验证是正确状态。
+
+根因一是源周历存在孤立异常：`api_wind_date` 把 `2026-07-03` 标为 `week_id=202626`，但 `2026-07-04/2026-07-05` 又回到 `202625`。旧 `weekly_actuals_updater` 逐字使用该异常周历，导致 10Y actual 只能落到 `2026-07-02`，无法匹配前端预测的 `target_date=2026-07-03`。已新增 `shared.week_calendar_normalizer.normalize_week_calendar_rows()`，只修正“交易日提前跳到下一周、随后非交易日又回到上一周”的孤立 forward jump；不改源表。`shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 共享该归一化逻辑。随后通过官方 updater 执行 `python -m scheduler.weekly_actuals_updater --start-date 2026-07-03 --end-date 2026-07-03`，写入 10Y point/average actual 2 条。
+
+根因二是该周历异常已影响 `2026-07-04` 三条周平均预测的 `feature_date`：旧行写成 `2026-07-02`，修正后应为 `2026-07-03`，`target_date` 仍为 `2026-07-10`。三条周平均方案 dry-run 均通过，已用正式 executor 重写：`weekly_avg_1y_lgbm_0529` run_id=`553`、`weekly_avg_10y_lgbm_0529` run_id=`554`、`weekly_avg_5y_lgbm_0529` run_id=`555`。三条 weekly point 方案对 `2026-07-04` 仍 fail-closed，原因是算法有效信号只到 `week_id=202624`，无法为当前 `week_id=202625` 生成信号；该状态属于 source signal 水位限制，不允许复用旧周信号补写。
+
+全量前端复扫还发现两类历史脏数据并已处理：`weekly_5y_direct_0529` 旧 run_id=`31` 有 `predict_date=2026-06-06,target_date=2026-06-05` 的反向时点异常，已加入 `scripts.delete_bad_live_predictions` 审计白名单并删除 prediction 明细（保留 run/run_log）；随后用 executor 补齐正确的 `predict_date=2026-05-30,target_date=2026-06-05`，run_id=`564`。`t1_daily` 早期 8 个灰度交易日仍沿用旧偏移语义，已按当前 `predict_date=target_date, feature_date=previous_trading_day(predict_date)` 用 executor 重写 `2026-06-01/02/03/04/05/08/09/10`，run_id=`556..563`。
+
+最终验收：`/api/metrics/weekly_avg_1y_lgbm_0529__h6__1Y?start_month=2026-06&end_month=2026-06` 返回 4 条已验证明细，`06/26` 行为 `actual_direction=-1,is_correct=true`，月度统计 `4/4=100%`。`/api/metrics/weekly_avg_10y_lgbm_0529__h6__10Y?start_month=2026-07&end_month=2026-07` 中 `target_date=2026-07-03` 已验证，actual 为 `-1` 且预测正确；`2026-07-10` 因未来目标周仍待验证。全量 active API 扫描覆盖 25 个前端方案、466 条明细：`semantic_mismatch_count=0`、`unexpected_issue_count=0`；剩余 65 条待验证全部归类为源数据未覆盖或未来目标日。回归测试 `conda run -n bond_factor_lab_service python -m unittest tests.test_calendar_service tests.test_weekly_actuals tests.test_weekly_metrics tests.test_backend_serving tests.test_frontend_factor_lab tests.test_delete_backtest_runs tests.test_prediction_context tests.test_scheduler_main` 通过，84/84 OK；`git diff --check` 通过。backend/scheduler 已 `launchctl kickstart -k`，当前 backend PID=`76305`、scheduler PID=`76308`，scheduler 日志确认 active 方案和 actuals 任务已重新注册。入口 README、docs 索引、系统/代码架构、预测语义、方案契约、harness 和 SOP 已同步本次 07/03 周度复审结论。
+
+## 2026-07-06 周度 06/26 待验证修复
+
+用户复核前端 `2026-06` 周平均验证表时发现 `weekly_avg_1y_lgbm_0529__h6__1Y` 的 `predict_date=2026-06-20,target_date=2026-06-26` 仍显示待验证。排查结论：不是前端缓存，也不是 actual 缺失；`t_scheme_weekly_actuals` 已有该目标周 actual，周平均规则下实际方向为 `-1`。根因是后端 `/api/metrics` 对周频 actual 的 JOIN 同时要求 `wa.predict_date = p.predict_date`，而 2026-06-19 是非交易日、源周历在该周把 feature week 的 `week_predict_date` 写为 `2026-06-19`，预测表则按业务周六调度写 `predict_date=2026-06-20`。两边 `target_date=2026-06-26`、`target_rule=next_week_average_yield_vs_current_week_average_yield`、`tenor=1Y` 均一致，但因审计字段 `predict_date` 不一致导致未匹配。
+
+已修复：`backend.services.scheme_metrics()` 的周频 actual join 改为按事实键 `target_tenor + target_date + target_rule` 匹配，不再要求 `predict_date` 相等。新增回归测试 `tests.test_weekly_metrics.WeeklyMetricsTests.test_scheme_metrics_matches_weekly_actual_when_holiday_week_predict_date_differs` 覆盖节假日周调度日与 actual 审计 predict_date 不一致的场景。后端重启后，`/api/metrics/weekly_avg_1y_lgbm_0529__h6__1Y?start_month=2026-06&end_month=2026-06` 返回 4 条已验证明细，06/26 行为 `predicted_direction=-1, actual_direction=-1, is_correct=true`，2026-06 月度统计更新为 `4/4=100%`。
 
 ## 2026-07-05 生产水位复审与运维修复
 

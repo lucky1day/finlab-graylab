@@ -1,6 +1,6 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-07-05
+**更新日期**: 2026-07-06
 
 > 当前文档入口以本文为准。旧审查报告、一次性验证报告和历史事故归档已移除；新增或修复方案只读现行规范，不从历史踩坑文档推导规则。
 
@@ -27,7 +27,7 @@
 
 > 日度 0629 三方案（`daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`、`daily_10y_lgbm_10y04_0629`）已完成 SOP 收口。历史回测统一按 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01` 输出，latest backtest 每方案 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日已作为 `gray_live` 补齐。live 顶层 `model_version` 必须适配 DB `VARCHAR(64)`，完整 source model id 应放入 `extra` 审计字段。
 
-> 2026-07-05 运维复审已完成：调度器已重启并确认加载全部 active 方案；日频 T+1/T+5 active 方案已补齐到 `predict_date=2026-07-03`，10Y02 旧 600 秒 timeout 缺口已通过方案级 `schedule.timeout_sec=3600` 和 run_id `548..552` 补齐。当前未验证行主要来自活跃目标源指标 actual 水位只到 `2026-07-02`；周点值 `2026-07-04` 仍因源算法有效投票信号只到 `202624` 而 fail-closed，不得用旧周信号补写。详见 [CURRENT_STATUS.md](CURRENT_STATUS.md) §2026-07-05。
+> 2026-07-06 周度复审已完成：`2026-06-26` 周平均待验证由后端 weekly actual join 事实键修复；`2026-07-03` 周度目标已确认不是前端缓存或任务未启动。10Y 源 actual 已覆盖并写入 point/average actual，1Y/5Y/7Y 源指标仍只到 `2026-07-01`，对应 `target_date=2026-07-03` 继续待验证是正确语义。源周历孤立 forward jump 已由 `shared.week_calendar_normalizer` 在预测侧和 actuals updater 共享归一化；全量 active API 扫描 `semantic_mismatch_count=0`、`unexpected_issue_count=0`。详见 [CURRENT_STATUS.md](CURRENT_STATUS.md) §2026-07-06。
 
 ## 操作
 

@@ -96,6 +96,51 @@ class CalendarServiceTests(unittest.TestCase):
         self.assertEqual(calendar.week_id_to_last_trading_day(202621), "2026-06-05")
         self.assertEqual(calendar.week_id_to_last_trading_day(202622), "2026-06-12")
 
+    def test_isolated_week_id_jump_is_normalized(self) -> None:
+        from shared.calendar_service import get_calendar
+
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO t_trade_calendar (rdate, trade_flag) VALUES (:rdate, :trade_flag)"),
+                [
+                    {"rdate": "2026-06-29", "trade_flag": "1"},
+                    {"rdate": "2026-06-30", "trade_flag": "1"},
+                    {"rdate": "2026-07-01", "trade_flag": "1"},
+                    {"rdate": "2026-07-02", "trade_flag": "1"},
+                    {"rdate": "2026-07-03", "trade_flag": "1"},
+                    {"rdate": "2026-07-04", "trade_flag": "0"},
+                    {"rdate": "2026-07-05", "trade_flag": "0"},
+                    {"rdate": "2026-07-06", "trade_flag": "1"},
+                    {"rdate": "2026-07-07", "trade_flag": "1"},
+                    {"rdate": "2026-07-08", "trade_flag": "1"},
+                    {"rdate": "2026-07-09", "trade_flag": "1"},
+                    {"rdate": "2026-07-10", "trade_flag": "1"},
+                ],
+            )
+            conn.execute(
+                text("INSERT INTO api_wind_date (rdate, week_id) VALUES (:rdate, :week_id)"),
+                [
+                    {"rdate": "2026-06-29", "week_id": "202625"},
+                    {"rdate": "2026-06-30", "week_id": "202625"},
+                    {"rdate": "2026-07-01", "week_id": "202625"},
+                    {"rdate": "2026-07-02", "week_id": "202625"},
+                    {"rdate": "2026-07-03", "week_id": "202626"},
+                    {"rdate": "2026-07-04", "week_id": "202625"},
+                    {"rdate": "2026-07-05", "week_id": "202625"},
+                    {"rdate": "2026-07-06", "week_id": "202626"},
+                    {"rdate": "2026-07-07", "week_id": "202626"},
+                    {"rdate": "2026-07-08", "week_id": "202626"},
+                    {"rdate": "2026-07-09", "week_id": "202626"},
+                    {"rdate": "2026-07-10", "week_id": "202626"},
+                ],
+            )
+
+        calendar = get_calendar(engine=self.engine)
+
+        self.assertEqual(calendar.week_id_for_date("2026-07-03"), 202625)
+        self.assertEqual(calendar.week_id_to_last_trading_day(202625), "2026-07-03")
+        self.assertEqual(calendar.week_id_to_last_trading_day(202626), "2026-07-10")
+
 
 if __name__ == "__main__":
     unittest.main()

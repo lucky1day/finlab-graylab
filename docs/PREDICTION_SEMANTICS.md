@@ -1,6 +1,6 @@
 # 预测日期与实盘阶段语义
 
-**更新日期**: 2026-07-05
+**更新日期**: 2026-07-06
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
@@ -118,6 +118,8 @@ scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方�
 
 源周历可能在调度日附近提前切到新 `week_id`，而 `previous_trading_day(predict_date)` 所在周在 DB 周历中暂时找不到下一实际周。平台允许 `shared.prediction_context.build_weekly_live_context()` 做受限日历 fallback：只有当触发日所在源周已经拥有完整的上一交易日、且可由 DB 周历推导出目标周时，才用触发日源周确定完整输入周。该 fallback 只解决周历上下文，不得把旧 `feature_week_id` 的算法信号复用到新周；如果 source core 对当前 `feature_week_id` 没有有效投票、label、selector 或其它必要信号，必须 fail-closed。
 
+源周历还可能出现孤立 forward jump，例如某个交易日提前标为下一周，但随后的非交易日又回到上一周。平台不得手工改源表；`shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 只允许通过 `shared.week_calendar_normalizer` 对这类“单个交易日跳周、随后非交易日回落”的明显不连续周历行做只读归一化，保证预测侧 `target_date` 与 actuals updater 使用同一周历事实。该归一化不能推广为任意重算周编号，也不能用于绕过 source core 的信号水位检查。周度 actual 的事实匹配键是 `target_tenor + target_date + target_rule`；actual 表中的 `predict_date` 是审计字段，不能要求它与周六调度预测的 `predict_date` 完全相同。
+
 月频 0629 source-backed 方案使用独立的自然月触发语义：每个自然月 **15 号预测一次，无论 15 号是否交易日**。平台不得把 `predict_date` 顺延到 15 号之后的首个交易日；非交易日 15 号时，`predict_date`、`trigger_date`、`scheduled_trigger_date` 和 `db_rdate` 仍为自然 15 号，`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取下一个自然月 15 号及以前最近交易日。例如 `predict_date=2025-02-15` 时，如果 2025-02-15 与 2025-03-15 都不是交易日，则平台记录应为：
 
 ```text
@@ -225,7 +227,7 @@ target_date  = T + horizon
 - 如果某个需要展示的方案/月度只有 `monthly_metrics` 汇总、没有预测明细行，前端必须 fail-closed，不能从月度汇总反推或回填指标。
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
-- 当 `t_scheme_actuals` 或 `t_scheme_weekly_actuals` 的源实际值水位尚未覆盖某个 `target_date` / `target_week_id` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查源 actual 水位，再判断是否为后端 join 或前端计算问题。
+- 当 `t_scheme_actuals` 或 `t_scheme_weekly_actuals` 的源实际值水位尚未覆盖某个 `target_date` / `target_week_id` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查源 actual 水位，再判断是否为后端 join 或前端计算问题；同一目标周内不同 tenor 的源水位可以不同，已覆盖的 tenor 应立即验证，未覆盖的 tenor 继续待验证。
 
 ## 8. 当前 V28 判定
 

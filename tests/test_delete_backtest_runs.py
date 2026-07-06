@@ -69,10 +69,10 @@ class DeleteBadLivePredictionsTests(unittest.TestCase):
         summary = delete_bad_live_predictions.delete_bad_live_predictions(engine, apply=True)
 
         self.assertTrue(summary["applied"])
-        self.assertEqual(summary["deleted_prediction_rows"], 3)
+        self.assertEqual(summary["deleted_prediction_rows"], 4)
         self.assertEqual(_count(engine, "t_scheme_predictions"), 1)
-        self.assertEqual(_count(engine, "t_scheme_runs"), 4)
-        self.assertEqual(_count(engine, "t_scheme_run_log"), 4)
+        self.assertEqual(_count(engine, "t_scheme_runs"), 5)
+        self.assertEqual(_count(engine, "t_scheme_run_log"), 5)
         with engine.connect() as conn:
             remaining = conn.execute(text("SELECT run_id FROM t_scheme_predictions")).scalar_one()
         self.assertEqual(remaining, 58)
@@ -216,6 +216,7 @@ def _engine_with_live_predictions():
                 INSERT INTO t_scheme_predictions
                     (id, run_id, scheme_id, predict_date, feature_date, target_date, prediction_phase)
                 VALUES
+                    (5, 31, 'weekly_5y_direct_0529', '2026-06-06', '2026-05-29', '2026-06-05', 'gray_live'),
                     (1, 57, 'weekly_5y_direct_0529', '2026-06-13', '2026-05-15', '2026-05-22', 'scheduled_live'),
                     (2, 56, 'weekly_7y_cross_d_overlay_0529', '2026-06-13', '2026-05-15', '2026-05-22', 'scheduled_live'),
                     (3, 58, 'weekly_5y_direct_0529', '2026-06-20', '2026-06-12', '2026-06-19', 'scheduled_live'),
@@ -228,6 +229,7 @@ def _engine_with_live_predictions():
                 """
                 INSERT INTO t_scheme_runs (run_id, scheme_id, status)
                 VALUES
+                    (31, 'weekly_5y_direct_0529', 'success'),
                     (57, 'weekly_5y_direct_0529', 'success'),
                     (56, 'weekly_7y_cross_d_overlay_0529', 'success'),
                     (58, 'weekly_5y_direct_0529', 'success'),
@@ -240,6 +242,7 @@ def _engine_with_live_predictions():
                 """
                 INSERT INTO t_scheme_run_log (id, run_id, scheme_id, status)
                 VALUES
+                    (5, 31, 'weekly_5y_direct_0529', 'success'),
                     (1, 57, 'weekly_5y_direct_0529', 'success'),
                     (2, 56, 'weekly_7y_cross_d_overlay_0529', 'success'),
                     (3, 58, 'weekly_5y_direct_0529', 'success'),

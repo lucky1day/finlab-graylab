@@ -1,6 +1,6 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-07-05
+**更新日期**: 2026-07-06
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -178,7 +178,7 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-07-05：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案、独立周平均 LGBM 方案、月度 0629 三方案和日度 0629 三方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。`liwei_0616_10y02_cons_say_k3_div_k5` 已登记 `schedule.timeout_sec=3600` 作为慢速 source-backed 方案的执行预算，属于 L3 运维适配，不改变 L2 算法保真。
+状态最近更新 2026-07-06：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案、独立周平均 LGBM 方案、月度 0629 三方案和日度 0629 三方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。`liwei_0616_10y02_cons_say_k3_div_k5` 已登记 `schedule.timeout_sec=3600` 作为慢速 source-backed 方案的执行预算，属于 L3 运维适配，不改变 L2 算法保真。周频 actual 对齐以 `target_tenor + target_date + target_rule` 为事实键，`predict_date` 仅做审计；源周历孤立 forward jump 只能由公共只读 normalizer 处理，方案不得自建周历修正逻辑。
 
 | 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` | `daily_5y_2_v28` |
 |--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|:----------------:|
