@@ -79,6 +79,12 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
                 "is_correct": False,
                 "feature_week_id": 202601,
                 "target_week_id": 202602,
+                "frequency": "weekly",
+                "model_version": "rule_vote_0529",
+                "target_rule": "next_week_last_trading_day_vs_current_week_last_trading_day",
+                "rule_vote": -1.0,
+                "source_spec": "demo_rule",
+                "score_spec": "demo_rule:1.0000",
             },
         )
 
