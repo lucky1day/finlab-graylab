@@ -7,14 +7,14 @@ from typing import Any, Iterable
 
 from sqlalchemy.engine import Engine
 
+from backtests.actuals import build_monthly_actual_records
 from backtests.repository import (
     clean_json,
+    create_engine_from_env,
     create_backtest_run,
     replace_backtest_predictions,
     update_backtest_run_summary,
 )
-from scheduler.monthly_actuals_updater import build_monthly_actual_records
-from scheduler.repository import create_engine_from_env
 from shared.models import PredictionRecord
 from shared.monthly_predict_adapter import run_monthly_prediction
 from shared.monthly_source_evidence import PLATFORM_CURRENT_MONTHLY_ROLE, require_monthly_source_evidence

@@ -246,6 +246,118 @@ class StaticGateHardeningTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
 
+    def test_backtest_runner_transitive_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from backtests.shared_runner import run",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_package_alias_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from backtests import shared_runner",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_relative_package_alias_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from . import shared_runner",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_relative_module_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from .shared_runner import run",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
     def test_backtest_runner_live_table_sql_write_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)

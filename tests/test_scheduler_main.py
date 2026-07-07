@@ -217,6 +217,25 @@ class SchedulerMainTests(unittest.TestCase):
             )
         )
 
+    def test_actuals_job_refreshes_monthly_actuals_on_non_trading_day(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.object(scheduler_main, "_is_trading_day", return_value=False),
+            patch.object(scheduler_main, "update_actuals") as daily_update,
+            patch.object(scheduler_main, "update_weekly_actuals", create=True) as weekly_update,
+            patch.object(scheduler_main, "update_monthly_actuals", return_value=2, create=True) as monthly_update,
+            self.assertLogs(scheduler_main.logger, level=logging.INFO) as logs,
+        ):
+            scheduler_main.run_actuals_job("2026-08-15")
+
+        daily_update.assert_not_called()
+        weekly_update.assert_not_called()
+        monthly_update.assert_called_once_with(end_date="2026-08-15")
+        self.assertTrue(
+            any("Skip daily/weekly actuals on non-trading day 2026-08-15" in msg for msg in logs.output)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

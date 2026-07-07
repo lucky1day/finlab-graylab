@@ -18,12 +18,13 @@ def _clear_admin_token() -> None:
 class RequireAdminTokenTests(unittest.TestCase):
     """直接调用 auth 依赖，覆盖缺失配置 / 缺失头 / 不匹配 / 匹配四种情形。"""
 
-    def test_missing_server_config_is_open(self) -> None:
-        # 软默认：未配置 BOND_ADMIN_TOKEN 时放行（单用户本机场景）。
+    def test_missing_server_config_fails_closed(self) -> None:
+        # 未配置 BOND_ADMIN_TOKEN 时禁用写接口，避免本地直连/隧道误配暴露写库入口。
         with patch.dict("os.environ", {}, clear=False):
             _clear_admin_token()
-            self.assertIsNone(main.require_admin_token(x_admin_token=None))
-            self.assertIsNone(main.require_admin_token(x_admin_token="anything"))
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin_token(x_admin_token=None)
+            self.assertEqual(ctx.exception.status_code, 503)
 
     def test_missing_header_is_unauthorized(self) -> None:
         with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):

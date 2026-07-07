@@ -127,7 +127,7 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S3 baseline_original + S4 repro_framework 均就绪 |
-| **动作** | 逐样本对齐：日频按 `feature_date + target_date + target_tenor + horizon`，周频按 `feature_week_id + feature_date + target_date + target_tenor + horizon`。原始算法 source T 必须映射到平台 `feature_date`；平台内部字段 `tenor` 可映射为 `target_tenor`。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
+| **动作** | 逐样本对齐：日频按 `feature_date + target_date + target_tenor + horizon + benchmark_role`，周频按 `feature_week_id + feature_date + target_date + target_tenor + horizon + benchmark_role`。`benchmark_role` 是可比较执行口径，不是 original/current 文件来源；两侧可比较行 role 必须一致，文件来源差异由 summary provenance 记录。原始算法 source T 必须映射到平台 `feature_date`；平台内部字段 `tenor` 可映射为 `target_tenor`。输出对比报告 `reports/postonboard/{scheme_id}/compare.json` |
 | **成功判定** | **所有可对齐样本 `predicted_direction` 完全一致**；`confidence` 差异 ≤ 1e-9；原始算法暴露的内部模型分数已对比并记录；无"基准有而复现缺"的样本（或缺失已有合理解释并记录）；无 source T 与 `feature_date` 错位 |
 | **confidence 判读** | `max_confidence_abs_diff` / `mean_confidence_abs_diff` 只表示两版本同名数值字段的浮点差异；`1e-16` 量级视为舍入误差，不代表模型行为改变 |
 | **内部数值判读** | 对 `STD/ACCWT/V55_7Y/DIV`、probability、score、vote score 等源算法输出，记录最大绝对差和方向差异数。若差异无法归因为输入 artifact / 导出精度 / 明确获批口径差异，则打回入库 SOP 排查，不得通过调参或改算法贴结果 |

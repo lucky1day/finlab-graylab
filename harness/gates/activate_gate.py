@@ -240,6 +240,10 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
     """
     from sqlalchemy import text
 
+    config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+    raw_config = load_config_raw(config_path) if config_path.exists() else {}
+    backtest_config = raw_config.get("backtest") if isinstance(raw_config.get("backtest"), dict) else {}
+    benchmark_required = bool(backtest_config.get("benchmark_required"))
     engine = _db_engine()
     if engine is None:
         return ["cannot connect to database to verify gate history"]
@@ -280,7 +284,17 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
                 {"harness_run_id": run[0]},
             ).fetchall()
 
-            passed_gates = {row[0] for row in rows if row[1] in ("passed", "skipped")}
+            gate_statuses = {str(row[0]): str(row[1]) for row in rows}
+            if benchmark_required and gate_statuses.get("compare") == "skipped":
+                return [
+                    f"CompareGate status is skipped for benchmark_required scheme {ctx.scheme_id}; "
+                    "run compare with original/current benchmarks until status=passed"
+                ]
+            passed_gates = {
+                gate_name
+                for gate_name, status in gate_statuses.items()
+                if status == "passed" or (status == "skipped" and not benchmark_required)
+            }
             missing = REQUIRED_ACTIVATE_GATES - passed_gates
             if missing:
                 return [

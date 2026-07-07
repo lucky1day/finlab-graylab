@@ -7,14 +7,14 @@ from typing import Any
 
 from sqlalchemy.engine import Engine
 
+from backtests.actuals import build_actual_records
 from backtests.repository import (
     clean_json,
+    create_engine_from_env,
     create_backtest_run,
     replace_backtest_predictions,
     update_backtest_run_summary,
 )
-from scheduler.daily_actuals_updater import build_actual_records
-from scheduler.repository import create_engine_from_env
 from shared.daily_0629_predict_adapter import (
     DAILY_0629_INTERNAL_FIELDS,
     HORIZON_DAYS,

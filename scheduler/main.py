@@ -244,11 +244,14 @@ def run_all_prediction_jobs(
 def run_actuals_job(run_date: str | date | None = None, force: bool = False) -> None:
     """执行 actuals 刷新任务。"""
     target_date = _normalize_run_date(run_date)
-    if not force and not _is_trading_day(target_date):
-        logger.info("Skip actuals on non-trading day %s", target_date)
-        return
-    daily_written = update_actuals(end_date=target_date)
-    weekly_written = update_weekly_actuals(end_date=target_date)
+    is_trading_day = _is_trading_day(target_date)
+    if not force and not is_trading_day:
+        logger.info("Skip daily/weekly actuals on non-trading day %s; monthly actuals still refresh", target_date)
+        daily_written = 0
+        weekly_written = 0
+    else:
+        daily_written = update_actuals(end_date=target_date)
+        weekly_written = update_weekly_actuals(end_date=target_date)
     monthly_written = update_monthly_actuals(end_date=target_date)
     logger.info(
         "Actuals refresh finished: date=%s daily_records=%s weekly_records=%s monthly_records=%s",

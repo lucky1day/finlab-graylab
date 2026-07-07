@@ -1,6 +1,6 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-07-06
+**更新日期**: 2026-07-07
 
 > 当前文档入口以本文为准。旧审查报告、一次性验证报告和历史事故归档已移除；新增或修复方案只读现行规范，不从历史踩坑文档推导规则。
 
@@ -27,7 +27,7 @@
 
 > 日度 0629 三方案（`daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`、`daily_10y_lgbm_10y04_0629`）已完成 SOP 收口。历史回测统一按 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01` 输出，latest backtest 每方案 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日已作为 `gray_live` 补齐。live 顶层 `model_version` 必须适配 DB `VARCHAR(64)`，完整 source model id 应放入 `extra` 审计字段。
 
-> 2026-07-06 周度复审已完成：`2026-06-26` 周平均待验证由后端 weekly actual join 事实键修复；`2026-07-03` 周度目标已确认不是前端缓存或任务未启动。10Y 源 actual 已覆盖并写入 point/average actual，1Y/5Y/7Y 源指标仍只到 `2026-07-01`，对应 `target_date=2026-07-03` 继续待验证是正确语义。源周历孤立 forward jump 已由 `shared.week_calendar_normalizer` 在预测侧和 actuals updater 共享归一化；全量 active API 扫描 `semantic_mismatch_count=0`、`unexpected_issue_count=0`。详见 [CURRENT_STATUS.md](CURRENT_STATUS.md) §2026-07-06。
+> 2026-07-06/07 运维复审已完成：07/06 scheduler miss 已受控补跑可产出方案；stale actual tail 已清理；07/07 进一步发现 `t1_daily/t5_daily` 在源水位不足时复用旧 `feature_date=2026-07-03`，其中 `t5_daily` 因业务唯一键覆盖 07/06 明细。已在 executor 增加 daily live 日期语义 fail-closed，在 `scripts/check_production_daily_health.py` 增加 run/prediction 明细一致性与 stale live 检查，并完成生产数据修复。当前剩余 warning 均为上游源水位阻塞：`1Y/3Y/5Y/7Y=2026-07-01`、`10Y=2026-07-03`，早于 07/07 expected feature date `2026-07-06`。详见 [CURRENT_STATUS.md](CURRENT_STATUS.md) 与 [OPS_AUDIT_2026-07-06.md](OPS_AUDIT_2026-07-06.md)。
 
 ## 操作
 
@@ -38,11 +38,14 @@
 | [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | 入库后测试验证 SOP |
 | [CLOUD_ENVIRONMENT.md](CLOUD_ENVIRONMENT.md) | 云服务器第一步：Conda 双环境复刻、依赖快照和只读烟测 |
 
+日常生产巡检：`scripts/check_production_daily_health.py` 是只读健康检查入口，用于发现交易日日频预测整体缺失、active 日频方案缺成功 run、run log 成功数与 prediction 明细不一致、active 日频 prediction 复用旧 feature/target、actual 晚于源表水位等问题；用法见 [deploy/README.md](../deploy/README.md) §监控。
+
 ## 状态与参考
 
 | 文档 | 内容 |
 |------|------|
 | [CURRENT_STATUS.md](CURRENT_STATUS.md) | 项目当前状态（单一来源） |
+| [OPS_AUDIT_2026-07-06.md](OPS_AUDIT_2026-07-06.md) | 2026-07-06 运维深度审计报告：发现、验证、修复、残余风险和后续处置 |
 
 ## 阅读路径
 

@@ -5,8 +5,10 @@ import math
 from datetime import date, datetime
 from typing import Any, Iterable
 
-from sqlalchemy import text
-from sqlalchemy.engine import Engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine, URL
+
+from shared.db_config import DatabaseConfig
 
 
 def clean_json(value: Any) -> Any:
@@ -35,6 +37,21 @@ def json_dumps(value: Any) -> str | None:
     if value is None:
         return None
     return json.dumps(clean_json(value), ensure_ascii=False)
+
+
+def create_engine_from_env() -> Engine:
+    """创建回测写库/读库 Engine。"""
+    cfg = DatabaseConfig.from_env()
+    url = URL.create(
+        drivername="mysql+pymysql",
+        username=cfg.user,
+        password=cfg.password,
+        host=cfg.host,
+        port=cfg.port,
+        database=cfg.database,
+        query={"charset": cfg.charset},
+    )
+    return create_engine(url, future=True)
 
 
 def create_backtest_run(

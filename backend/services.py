@@ -538,13 +538,19 @@ def scheme_metrics(
     registry_row = _registry_scheme_row(engine, scheme_id)
     base_scheme_id = str(registry_row["base_scheme_id"])
     target_tenor = str(registry_row["target_tenor"])
+    horizon = int(registry_row["horizon"])
     task_type = str(registry_row["task_type"])
     weekly_target_rule = WEEKLY_TASK_TARGET_RULES.get(task_type, WEEKLY_TARGET_RULE)
     target_labels = _target_labels(engine)
-    filters = ["p.scheme_id = :base_scheme_id", "p.target_tenor = :target_tenor"]
+    filters = [
+        "p.scheme_id = :base_scheme_id",
+        "p.target_tenor = :target_tenor",
+        "p.horizon = :horizon",
+    ]
     params: dict[str, Any] = {
         "base_scheme_id": base_scheme_id,
         "target_tenor": target_tenor,
+        "horizon": horizon,
         "weekly_target_rule": weekly_target_rule,
         "monthly_target_rule": MONTHLY_TARGET_RULE,
     }

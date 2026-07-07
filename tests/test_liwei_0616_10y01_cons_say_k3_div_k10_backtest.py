@@ -28,6 +28,7 @@ class Liwei061610Y01BacktestTests(unittest.TestCase):
             "target_date",
             "target_tenor",
             "horizon",
+            "benchmark_role",
             "direction",
             "confidence",
             "label",
