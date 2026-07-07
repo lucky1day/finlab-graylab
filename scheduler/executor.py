@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, replace
@@ -16,12 +17,15 @@ from scheduler.repository import (
     sync_scheme_registry,
     write_run_log,
 )
+from shared.calendar_service import get_calendar
 from shared.models import PredictionRecord
+from shared.prediction_context import build_daily_live_context
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
+TIMEOUT_OUTPUT_DRAIN_SEC = 1
 
 
 @dataclass(frozen=True)
@@ -76,19 +80,99 @@ def run_scheme_subprocess(
         "--predict-date",
         predict_date,
     ]
-    completed = subprocess.run(
+    completed = _run_process_group(
         cmd,
         cwd=PROJECT_ROOT,
         env=env,
-        check=True,
-        capture_output=True,
-        text=True,
         timeout=timeout_sec,
     )
     payload = json.loads(completed.stdout)
     if not isinstance(payload, list):
         raise ValueError(f"scheme runner returned non-list payload for {scheme_id}")
     return [_record_from_payload(item) for item in payload]
+
+
+def _run_process_group(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    """启动独立进程组，timeout 时清理 conda wrapper 及其子进程。"""
+    process = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_group(process)
+        stdout, stderr = _drain_timed_out_process_output(process)
+        raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr) from exc
+    completed = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
+    if completed.returncode != 0:
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            cmd,
+            output=completed.stdout,
+            stderr=completed.stderr,
+        )
+    return completed
+
+
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """先 SIGTERM，若进程未退出再 SIGKILL 整个进程组。"""
+    try:
+        pgid = os.getpgid(process.pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            process.wait(timeout=5)
+        except ProcessLookupError:
+            return
+        except subprocess.TimeoutExpired:
+            return
+
+
+def _drain_timed_out_process_output(process: subprocess.Popen[str]) -> tuple[str, str]:
+    """timeout 清理后短暂收集输出，避免子进程持管道导致无界等待。"""
+    try:
+        return process.communicate(timeout=TIMEOUT_OUTPUT_DRAIN_SEC)
+    except subprocess.TimeoutExpired as exc:
+        _close_process_pipes(process)
+        return _timeout_payload_to_text(exc.output), _timeout_payload_to_text(exc.stderr)
+
+
+def _close_process_pipes(process: subprocess.Popen[str]) -> None:
+    for pipe in (process.stdout, process.stderr):
+        if pipe is None:
+            continue
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def _timeout_payload_to_text(value: str | bytes | None) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value
 
 
 def execute_scheme(
@@ -142,6 +226,7 @@ def execute_scheme(
             timeout_sec=effective_timeout_sec,
         )
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
+        _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
         written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
         duration = time.monotonic() - started
@@ -252,6 +337,42 @@ def _active_registry_targets(engine, scheme_id: str) -> set[tuple[str, int]]:
             {"scheme_id": scheme_id},
         ).mappings().all()
     return {(str(row["target_tenor"]), int(row["horizon"])) for row in rows}
+
+
+def _validate_live_record_dates(
+    records: list[PredictionRecord],
+    *,
+    cfg: SchemeConfig,
+    predict_date: str,
+    engine,
+) -> None:
+    """校验实盘记录没有复用旧输入窗口或旧 target。"""
+    if getattr(cfg, "frequency", None) != "daily":
+        return
+    calendar = get_calendar(engine=engine)
+    expected_by_horizon: dict[int, object] = {}
+    run_predict_date = str(predict_date)[:10]
+    for record in records:
+        horizon = int(record.horizon)
+        expected = expected_by_horizon.get(horizon)
+        if expected is None:
+            expected = build_daily_live_context(calendar, run_predict_date, horizon=horizon)
+            expected_by_horizon[horizon] = expected
+        record_predict_date = str(record.predict_date)[:10]
+        record_feature_date = str(record.feature_date)[:10] if record.feature_date is not None else None
+        record_target_date = str(record.target_date)[:10]
+        problems = []
+        if record_predict_date != run_predict_date:
+            problems.append(f"expected predict_date={run_predict_date}, got {record_predict_date}")
+        if record_feature_date != expected.feature_date:
+            problems.append(f"expected feature_date={expected.feature_date}, got {record_feature_date}")
+        if record_target_date != expected.target_date:
+            problems.append(f"expected target_date={expected.target_date}, got {record_target_date}")
+        if problems:
+            raise ValueError(
+                f"daily live record {record.scheme_id}/{record.target_tenor}/h{horizon} has invalid dates: "
+                + "; ".join(problems)
+            )
 
 
 def _validate_records_against_active_registry(

@@ -27,6 +27,7 @@ STRICT_PREDICTION_FIELDS = (
     "target_date",
     "target_tenor",
     "horizon",
+    "benchmark_role",
     "direction",
     "confidence",
     "label",
@@ -39,6 +40,7 @@ WEEKLY_STRICT_PREDICTION_FIELDS = (
     "target_date",
     "target_tenor",
     "horizon",
+    "benchmark_role",
     "direction",
     "confidence",
     "label",
@@ -52,14 +54,22 @@ MONTHLY_STRICT_PREDICTION_FIELDS = (
     "target_date",
     "target_tenor",
     "horizon",
+    "benchmark_role",
     "target_rule",
     "direction",
     "confidence",
     "label",
     "is_correct",
 )
-STRICT_KEY_FIELDS = ("feature_date", "target_date", "target_tenor", "horizon")
-WEEKLY_STRICT_KEY_FIELDS = ("feature_week_id", "feature_date", "target_date", "target_tenor", "horizon")
+STRICT_KEY_FIELDS = ("feature_date", "target_date", "target_tenor", "horizon", "benchmark_role")
+WEEKLY_STRICT_KEY_FIELDS = (
+    "feature_week_id",
+    "feature_date",
+    "target_date",
+    "target_tenor",
+    "horizon",
+    "benchmark_role",
+)
 MONTHLY_STRICT_KEY_FIELDS = (
     "feature_month_id",
     "feature_date",
@@ -67,6 +77,7 @@ MONTHLY_STRICT_KEY_FIELDS = (
     "target_date",
     "target_tenor",
     "horizon",
+    "benchmark_role",
 )
 INTERNAL_SCORE_FIELDS = ("vote_score",)
 INTERNAL_NUMERIC_FIELDS = ("rule_vote",)

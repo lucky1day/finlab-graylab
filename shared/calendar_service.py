@@ -77,12 +77,21 @@ class CalendarService:
             return row
 
         raw_wid = str(wid)
-        fallback = text("SELECT MAX(rdate) FROM api_wind_date WHERE week_id = :week_id")
+        fallback = text(
+            """
+            SELECT MAX(wd.rdate)
+            FROM api_wind_date wd
+            JOIN t_trade_calendar tc
+              ON tc.rdate = wd.rdate
+             AND tc.trade_flag = '1'
+            WHERE wd.week_id = :week_id
+            """
+        )
         with self._engine.connect() as conn:
             row = conn.execute(fallback, {"week_id": raw_wid}).scalar()
         if row is not None:
             return _date_string(row)
-        raise ValueError(f"no date found for week_id={raw_wid} in api_wind_date")
+        raise ValueError(f"no trading day found for week_id={raw_wid} in api_wind_date/t_trade_calendar")
 
     @cached_property
     def _normalized_week_rows(self) -> list[dict]:

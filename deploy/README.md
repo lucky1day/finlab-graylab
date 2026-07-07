@@ -115,6 +115,22 @@ curl -s http://127.0.0.1:8100/api/predictions   # 仍 200
 外部 uptime 服务直接探 `https://bond.finailab.cn/bond-factor-lab/api/health`；
 或用 `scripts/healthcheck_alert.sh` 接入告警通道，cron/timer 周期调度（脚本顶部有示例）。
 
+本地生产数据巡检可使用只读脚本：
+
+```bash
+set -a; source .env; set +a
+conda run -n bond_factor_lab_service python scripts/check_production_daily_health.py --predict-date "$(date +%F)"
+```
+
+退出码约定：`0=ok`，`1=warning`，`2=error`。交易日日频预测整体缺失且不能由源表水位全阻塞解释时会报 error；actual 晚于源表水位会报 error；部分 active 方案没有成功 run 默认报 warning，避免 source-backed 方案 fail-closed 时诱导人工补写。对已知日频方案族，输出会同时列出缺 run 对应的 source watermark 阻塞期限，例如 `expected_feature_date=2026-07-03` 但 `1Y/3Y/5Y/7Y source_max=2026-07-01`。验收窗口可追加 `--strict-runs` 将缺成功 run 升级为 error。
+
+巡检脚本还会检查两类生产一致性问题：
+
+- successful run 的 `records_written` 必须能按 `run_id` 对上 `t_scheme_predictions` 明细，否则报 `successful_run_prediction_rows_mismatch` error。
+- active 日频 prediction 的 `predict_date/feature_date/target_date` 必须符合平台 live 日期语义，否则报 `daily_prediction_date_semantics_mismatch` error。
+
+若某交易日所有 active 日频方案都因源表水位早于 expected feature date 而没有有效预测，`daily_predictions_missing` 会降级为 warning，并在 `daily_run_input_watermark_blocked` 中列出阻塞期限；这是外部数据阻塞，不应人工伪造预测。
+
 ## 回滚
 
 ```bash
@@ -125,7 +141,8 @@ sudo nginx -t && sudo systemctl reload nginx
 # 本地 Mac：停隧道
 launchctl bootout gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
 
-# 本地 Mac：撤销 admin token（删 plist 里 BOND_ADMIN_TOKEN 后 kickstart -k 重载）
+# 本地 Mac：如需回滚 token 值，替换 plist 里的 BOND_ADMIN_TOKEN 后 kickstart -k 重载；
+# 不要删除 BOND_ADMIN_TOKEN，未配置时 admin/trigger 写接口会 fail-closed 返回 503。
 ```
 
 ## 安全约束

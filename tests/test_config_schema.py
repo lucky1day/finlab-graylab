@@ -146,12 +146,27 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
         config["backtest"] = {
             "runner": "backtests.demo",
             "start_date": "2025-01-01",
+            "benchmark_id": "demo_benchmark",
+            "data_source": "framework_db_aligned",
             "benchmark_required": True,
         }
 
         errors = validate_config(config, dirname="demo_daily")
 
         self.assertEqual(errors, [])
+
+    def test_benchmark_required_requires_identity_fields(self) -> None:
+        config = _base_config()
+        config["backtest"] = {
+            "runner": "backtests.demo",
+            "start_date": "2025-01-01",
+            "benchmark_required": True,
+        }
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertIn("backtest.benchmark_id is required when benchmark_required=true", errors)
+        self.assertIn("backtest.data_source is required when benchmark_required=true", errors)
 
     def test_daily_backtest_runner_args_are_validated(self) -> None:
         config = _base_config()

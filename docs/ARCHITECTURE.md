@@ -426,6 +426,7 @@ class PredictionRecord:
     "name": "0529原始T5-LGBM投票基准",
     "description": "...",
     "horizon": 5,
+    "task_type": "T+5",
     "frequency": "daily",
     "target_tenor": "10Y",
     "schedule_cron": "3 7 * * 1-5",

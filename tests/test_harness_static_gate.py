@@ -174,6 +174,8 @@ class HarnessStaticGateTests(unittest.TestCase):
                     "backtest:",
                     "  runner: backtests.demo_daily_reproduction",
                     "  benchmark_required: true",
+                    "  benchmark_id: demo_benchmark",
+                    "  data_source: framework_db_aligned",
                     '  start_date: "2025-01-01"',
                 ],
             )
@@ -220,6 +222,8 @@ class HarnessStaticGateTests(unittest.TestCase):
                     "backtest:",
                     "  runner: backtests.demo_daily_reproduction",
                     "  benchmark_required: true",
+                    "  benchmark_id: demo_benchmark",
+                    "  data_source: framework_db_aligned",
                     '  start_date: "2025-01-01"',
                 ],
             )
@@ -265,6 +269,8 @@ class HarnessStaticGateTests(unittest.TestCase):
                     "backtest:",
                     "  runner: backtests.demo_daily_reproduction",
                     "  benchmark_required: true",
+                    "  benchmark_id: demo_benchmark",
+                    "  data_source: framework_db_aligned",
                     '  start_date: "2025-01-01"',
                 ],
             )
@@ -310,6 +316,8 @@ class HarnessStaticGateTests(unittest.TestCase):
                     "backtest:",
                     "  runner: backtests.demo_daily_reproduction",
                     "  benchmark_required: true",
+                    "  benchmark_id: demo_benchmark",
+                    "  data_source: framework_db_aligned",
                     '  start_date: "2025-01-01"',
                 ],
             )
@@ -355,6 +363,8 @@ class HarnessStaticGateTests(unittest.TestCase):
                     "backtest:",
                     "  runner: backtests.demo_daily_reproduction",
                     "  benchmark_required: true",
+                    "  benchmark_id: demo_benchmark",
+                    "  data_source: framework_db_aligned",
                     '  start_date: "2025-01-01"',
                 ],
             )
@@ -400,6 +410,8 @@ class HarnessStaticGateTests(unittest.TestCase):
                     "backtest:",
                     "  runner: backtests.demo_daily_reproduction",
                     "  benchmark_required: true",
+                    "  benchmark_id: demo_benchmark",
+                    "  data_source: framework_db_aligned",
                     '  start_date: "2025-01-01"',
                 ],
             )
@@ -445,6 +457,8 @@ class HarnessStaticGateTests(unittest.TestCase):
                     "backtest:",
                     "  runner: backtests.demo_daily_reproduction",
                     "  benchmark_required: true",
+                    "  benchmark_id: demo_benchmark",
+                    "  data_source: framework_db_aligned",
                     '  start_date: "2025-01-01"',
                 ],
             )

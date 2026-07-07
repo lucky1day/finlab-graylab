@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
@@ -9,9 +10,12 @@ from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
 from scheduler.discovery import SCHEMES_ROOT, discover_schemes
-from scheduler.repository import create_engine_from_env, upsert_actuals
+from scheduler.repository import create_engine_from_env, delete_actuals_after_source_watermark, upsert_actuals
 from shared.models import ActualRecord
 from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, normalize_tenor
+
+
+logger = logging.getLogger(__name__)
 
 
 def active_scheme_tenors(schemes_root=SCHEMES_ROOT, frequency: str | None = None) -> list[str]:
@@ -89,6 +93,42 @@ def read_yield_rows(
     ]
 
 
+def read_source_watermarks(
+    engine: Engine,
+    tenors: Iterable[str] | None = None,
+    end_date: str | date | datetime | None = None,
+) -> dict[str, str]:
+    """读取每个期限在源表中的最新可用日期。"""
+    selected_tenors = [normalize_tenor(tenor) for tenor in (tenors or TENOR_TO_INDICATOR.keys())]
+    code_to_tenor = indicator_map_for_tenors(selected_tenors)
+    if not code_to_tenor:
+        return {}
+
+    params = {
+        "codes": list(code_to_tenor.keys()),
+        "end_date": _normalize_date(end_date),
+    }
+    end_filter = "AND rdate <= :end_date" if params["end_date"] else ""
+    sql = text(
+        f"""
+        SELECT indicators_code, MAX(rdate) AS max_date
+        FROM api_wind_daily
+        WHERE indicators_code IN :codes
+          AND indicators_value IS NOT NULL
+          {end_filter}
+        GROUP BY indicators_code
+        """
+    ).bindparams(bindparam("codes", expanding=True))
+
+    with engine.connect() as conn:
+        rows = conn.execute(sql, params).mappings().all()
+    return {
+        code_to_tenor[str(row["indicators_code"])]: str(row["max_date"])
+        for row in rows
+        if row["max_date"] is not None
+    }
+
+
 def build_actual_records(
     engine: Engine,
     start_date: str | date | datetime | None = None,
@@ -133,7 +173,16 @@ def update_actuals(
     try:
         selected_tenors = list(tenors) if tenors is not None else active_scheme_tenors(frequency="daily")
         records = build_actual_records(engine, start_date=start_date, end_date=end_date, tenors=selected_tenors)
-        return upsert_actuals(engine, records)
+        written = upsert_actuals(engine, records)
+        source_watermarks = read_source_watermarks(engine, tenors=selected_tenors, end_date=end_date)
+        pruned = delete_actuals_after_source_watermark(
+            engine,
+            source_watermarks,
+            end_date=_normalize_date(end_date),
+        )
+        if pruned:
+            logger.warning("Pruned stale daily actuals beyond source watermark: records=%s", pruned)
+        return written
     finally:
         engine.dispose()
 

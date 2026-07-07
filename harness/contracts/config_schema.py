@@ -146,6 +146,13 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
             benchmark_required = backtest.get("benchmark_required")
             if benchmark_required is not None and not isinstance(benchmark_required, bool):
                 errors.append("backtest.benchmark_required must be a boolean")
+            if benchmark_required is True:
+                benchmark_id = backtest.get("benchmark_id")
+                if not isinstance(benchmark_id, str) or not benchmark_id.strip():
+                    errors.append("backtest.benchmark_id is required when benchmark_required=true")
+                data_source = backtest.get("data_source")
+                if not isinstance(data_source, str) or not data_source.strip():
+                    errors.append("backtest.data_source is required when benchmark_required=true")
             if frequency == "weekly":
                 if backtest.get("predict_start_date") != "2025-01-01":
                     errors.append("backtest.predict_start_date must be 2025-01-01 for weekly backtests")

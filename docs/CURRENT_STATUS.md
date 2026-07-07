@@ -1,6 +1,16 @@
 # 当前状态
 
-**更新日期**: 2026-07-06
+**更新日期**: 2026-07-07
+
+## 2026-07-07 日频生产复审与最终排查汇总
+
+2026-07-06 的直接原因已确认：生产 scheduler 当天 14:17 才启动，07:03-07:25 的日频任务超过 APScheduler 30 分钟 grace 后被判定 missed，初始 `t_scheme_runs/t_scheme_predictions` 均为 0 行。授权修复后，daily actual tail stale 已清理，`t1_daily`、`t5_daily`、`liwei_0616_10y01_cons_say_k3_div_k10`、`liwei_0616_10y02_cons_say_k3_div_k5` 已按 `scheduled_live` 补写 2026-07-06；其余 8 个 active 日频方案因源 runner/算法在 `feature_date=2026-07-03` 无有效输出而 fail-closed，未人工伪造预测。
+
+2026-07-07 追加发现一个平台护栏缺口：`t1_daily/t5_daily` 在源水位不足时仍输出旧 `feature_date=2026-07-03`。其中 `t5_daily` 因预测表业务唯一键为 `(scheme_id,target_tenor,horizon,target_date)`，把 07/06 `run_id=568` 的 `target_date=2026-07-10` 明细覆盖成 07/07 `run_id=580`。已修复 executor：daily scheduled_live 统一校验 `predict_date`、`feature_date=previous_trading_day(predict_date)`、`target_date=feature_date+horizon trading days`，不匹配即 fail-closed 且不写库。只读巡检 `scripts/check_production_daily_health.py` 也已新增 run/prediction 明细一致性和 stale live 日期语义检查。
+
+生产数据已受控修复：`t5_daily` 07/06 的 4 条明细已归还 `run_id=568`；07/07 stale 的 `t1_daily` 2 条明细已删除；`run_id=579/580` 已标记为 failed。当前只读健康检查结果：`2026-07-06` 为 warning（8 个 active 日频方案被源水位阻塞，无 error），`2026-07-07` 为 warning（12 个 active 日频方案全部被源水位阻塞，`predictions_count=0`，无 error）。运行中 FastAPI 指标确认 t1/t5 前端最新行回到 2026-07-06，07/07 stale 行不再进入 `daily_rows`。
+
+剩余状态不是前端问题，也不是后端刷新问题：截至本次复审，源水位仍为 `1Y/3Y/5Y/7Y=2026-07-01`、`10Y=2026-07-03`，早于 2026-07-07 日频 expected feature date `2026-07-06`。因此 2026-07-07 没有有效日频预测、部分 07/06 target 仍待验证，均属于上游源数据未覆盖或目标日未到，不应人工补写。完整证据和修复清单见 [OPS_AUDIT_2026-07-06.md](OPS_AUDIT_2026-07-06.md)。
 
 ## 2026-07-06 周度 07/03 与全量前端复扫
 
@@ -241,7 +251,7 @@ source package 回测明细每个期限有 73 行，其中 `effective_week_id=20
 - **StaticGate 加固**：递归扫描 `core/**/*.py`；`legacy_*` 不再是逃逸口；禁网络/子进程/pickle/写文件/跨方案 import；收紧 `predict.py` 导入白名单。
 - **BacktestGate**：首次 no-persist 运行自动落地 baseline。
 - **授权 token 软默认**：配置 `HARNESS_AUTH_SECRET` 时附 HMAC + TTL；未配置时退化为明文一次性确认闸（单用户本机无需配置，写库/激活仍需显式 token）。
-- **backend GET 只读**：`GET /api/schemes` 不再触发 registry 写库（同步移到启动时 + 受保护的 `POST /api/admin/registry/sync`）；trigger/admin 接口软默认（未配置 `BOND_ADMIN_TOKEN` 则放行，仅监听 `127.0.0.1`）；CORS 由 `BOND_CORS_ORIGINS` 白名单替代通配符。
+- **backend GET 只读**：`GET /api/schemes` 不再触发 registry 写库（同步移到启动时 + 受保护的 `POST /api/admin/registry/sync`）；trigger/admin 写接口必须配置 `BOND_ADMIN_TOKEN`，未配置时 fail-closed 返回 503；CORS 由 `BOND_CORS_ORIGINS` 白名单替代通配符。
 - **clean export 脚本** `scripts/export_clean_repo.sh`：基于 `git archive` 并自检产物不含 `.env`/`.git`/密钥/artifacts/reports。
 - 旧周度方案在文档/产物中退役；当前 active 周度方案为 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529`。
 
@@ -408,7 +418,7 @@ active 方案的 live 预测事实表当前状态：
   - `GET /api/health`
   - `GET /api/targets`
   - `GET /api/predictions?scheme_id=t5_daily__h5__5Y&limit=1`
-- `GET /api/backtests/factor-lab` 已改为只读获取 active registry metadata，不再触发 registry sync，也不再从 config fallback 临时拼业务 `scheme_id`。P0 后 `GET /api/schemes` 也已去除 registry 写副作用：registry 同步改为后端启动时执行一次，外加受保护的 `POST /api/admin/registry/sync`（未配置 `BOND_ADMIN_TOKEN` 时放行，配置后需 `X-Admin-Token`）。当前所有 GET 接口均为只读。
+- `GET /api/backtests/factor-lab` 已改为只读获取 active registry metadata，不再触发 registry sync，也不再从 config fallback 临时拼业务 `scheme_id`。P0 后 `GET /api/schemes` 也已去除 registry 写副作用：registry 同步改为后端启动时执行一次，外加受保护的 `POST /api/admin/registry/sync`（必须配置 `BOND_ADMIN_TOKEN`，请求需携带匹配的 `X-Admin-Token`；未配置时返回 503）。当前所有 GET 接口均为只读。
 - `GET /api/predictions` 已收敛为 active registry composite `scheme_id` 入口；base scheme id、无 `scheme_id` 和 `?tenor=...` 都不是合法业务查询。
 - 正式运行需要写库时，只应通过明确的调度器或运维命令写入 `t_scheme_predictions`、`t_scheme_run_log`、`t_scheme_actuals`、`t_scheme_weekly_actuals` 或 `t_backtest_*`，不要改动源数据表。
 

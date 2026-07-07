@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, URL
@@ -382,6 +382,39 @@ def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:
     with engine.begin() as conn:
         conn.execute(sql, rows)
     return len(rows)
+
+
+def delete_actuals_after_source_watermark(
+    engine: Engine,
+    source_watermarks: Mapping[str, str],
+    end_date: str | None = None,
+) -> int:
+    """删除晚于当前源表水位的日频 actual 尾部脏数据。
+
+    只清理每个 tenor 的 tail，不处理源表中间缺口，避免上游短暂缺行时误删历史验证。
+    """
+    rows = [
+        {"tenor": str(tenor), "source_max_date": str(source_max_date), "end_date": end_date}
+        for tenor, source_max_date in source_watermarks.items()
+        if source_max_date
+    ]
+    if not rows:
+        return 0
+    end_filter = "AND trade_date <= :end_date" if end_date else ""
+    sql = text(
+        f"""
+        DELETE FROM t_scheme_actuals
+        WHERE tenor = :tenor
+          AND trade_date > :source_max_date
+          {end_filter}
+        """
+    )
+    deleted = 0
+    with engine.begin() as conn:
+        for row in rows:
+            result = conn.execute(sql, row)
+            deleted += int(result.rowcount or 0)
+    return deleted
 
 
 def upsert_weekly_actuals(engine: Engine, records: Iterable[WeeklyActualRecord]) -> int:

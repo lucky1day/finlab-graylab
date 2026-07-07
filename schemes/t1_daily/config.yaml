@@ -15,5 +15,7 @@ input_spec:
   required_columns: ["date", "TB1YWI0C", "TB5YWI0C", "TB0YWI0C"]
 backtest:
   runner: backtests.daily_0529_reproduction
+  benchmark_id: model_muti_0529
+  data_source: framework_db_aligned
   benchmark_required: true
   start_date: "2025-01-01"

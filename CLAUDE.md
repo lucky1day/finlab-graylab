@@ -116,8 +116,9 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 
 写库表：
 - `t_scheme_predictions` — 统一预测结果表
-- `t_scheme_actuals` / `t_scheme_weekly_actuals` — 实际方向表（日频 / 周频）
+- `t_scheme_actuals` / `t_scheme_weekly_actuals` / `t_scheme_monthly_actuals` — 实际方向表（日频 / 周频 / 月频）
 - `t_scheme_registry` — 方案注册表
+- `t_scheme_runs` — 结构化运行表（版本、阶段、输入 artifact 链接）
 - `t_scheme_run_log` — 运行日志表
 - `t_target_registry` — Y 标的注册与展示名
 - `t_backtest_*` — 历史复现结果（独立于实盘预测）

@@ -435,7 +435,7 @@ Source `latest_oos` / batch 文件只是一种 source evidence。进入平台前
 
 如果外部复现报告（Markdown、Excel、CSV 摘要等）已经给出月度指标，进入 CompareGate 前必须先确认该报告按哪个字段归月。源报告若按 source `date/T` 归月，则只能和 `original_predictions_sample.csv` 按 `feature_date` 重算的结果比较；前端、API、回测 latest 和 live metrics 的月度展示仍按 `target_date` 归月。不得把 source report 的 feature 月数字直接要求等于前端 target 月数字。
 
-`benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon`。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`direction`、`confidence`、`label`、`is_correct` 任一字段或值时，CompareGate 必须 fail-closed。对 source-backed 方案，如果原始脚本或 source pkl/CSV/Excel 已暴露内部 score、baseline direction 或 probability，却未进入 original/current benchmark 和 compare report，也必须 fail-closed；不得以“最终方向一致”替代内部模型一致性验收。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
+`benchmark_required=true` 的方案采用严格主键 `feature_date + target_date + target_tenor + horizon + benchmark_role`；周频还必须纳入 `feature_week_id`，月频还必须纳入 `feature_month_id + target_month_id`。`benchmark_role` 表示逐样本可比较口径，不表示 original/current 文件来源；两侧可比较行必须使用相同 role，文件来源差异写入 summary provenance。缺少 `feature_date`、`target_date`、`target_tenor`、`horizon`、`benchmark_role`、`direction`、`confidence`、`label`、`is_correct` 任一字段或值时，CompareGate 必须 fail-closed。对 source-backed 方案，如果原始脚本或 source pkl/CSV/Excel 已暴露内部 score、baseline direction 或 probability，却未进入 original/current benchmark 和 compare report，也必须 fail-closed；不得以“最终方向一致”替代内部模型一致性验收。旧列名 `predict_date/date/tenor` 只允许在历史说明中解释，不允许作为新增 benchmark 的静默回退逻辑。
 
 日频 0529 批次的 `t1_daily` / `t5_daily` 已使用受控脚本从原始算法回测口径重建严格 baseline：
 

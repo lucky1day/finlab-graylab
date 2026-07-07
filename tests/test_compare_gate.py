@@ -36,6 +36,7 @@ def _write_strict_predictions(path: Path, rows: list[dict[str, str]]) -> None:
         "target_date",
         "target_tenor",
         "horizon",
+        "benchmark_role",
         "direction",
         "confidence",
         "label",
@@ -49,7 +50,7 @@ def _write_strict_predictions(path: Path, rows: list[dict[str, str]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(row)
+            writer.writerow({"benchmark_role": "platform_current", **row})
 
 
 def _write_benchmark_required_config(
@@ -84,6 +85,23 @@ def _write_benchmark_required_config(
         "\n".join(lines) + "\n",
         encoding="utf-8",
     )
+
+
+def _benchmark_role_key(row: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    candidates = [
+        "feature_month_id",
+        "feature_week_id",
+        "feature_date",
+        "target_month_id",
+        "target_week_id",
+        "target_date",
+        "target_tenor",
+        "tenor",
+        "horizon",
+        "predict_date",
+        "date",
+    ]
+    return tuple((name, str(row.get(name) or "").strip()) for name in candidates if name in row)
 
 
 class CompareGateTest(unittest.TestCase):
@@ -181,6 +199,33 @@ class CompareGateTest(unittest.TestCase):
                 "is_correct": "true",
             },
         ]
+        _write_strict_predictions(bench / "original_predictions_sample.csv", original)
+        _write_strict_predictions(bench / "current_predictions_sample.csv", current)
+
+        result = CompareGate(ctx).run()
+
+        self.assertEqual(result.status, GateStatus.FAILED)
+        self.assertTrue(any("missing dates/tenors" in e for e in result.errors), result.errors)
+        self.assertTrue(any("extra dates/tenors" in e for e in result.errors), result.errors)
+
+    def test_benchmark_required_new_format_uses_benchmark_role_in_key(self) -> None:
+        ctx = _make_ctx(self.root)
+        _write_benchmark_required_config(self.root)
+        bench = self.root / "schemes" / "demo" / "benchmarks"
+        original = [
+            {
+                "feature_date": "2025-01-02",
+                "target_date": "2025-01-09",
+                "target_tenor": "5Y",
+                "horizon": "5",
+                "benchmark_role": "source-original",
+                "direction": "1",
+                "confidence": "0.6",
+                "label": "1",
+                "is_correct": "true",
+            },
+        ]
+        current = [{**original[0], "benchmark_role": "source-compatible-extension"}]
         _write_strict_predictions(bench / "original_predictions_sample.csv", original)
         _write_strict_predictions(bench / "current_predictions_sample.csv", current)
 
@@ -592,6 +637,51 @@ class CompareGateTest(unittest.TestCase):
         pred = summary["comparison"]["predictions"]
         self.assertEqual(pred["internal_mismatch_count"], 2)
         self.assertAlmostEqual(pred["max_internal_abs_diff"], 0.6504068082643633)
+
+    def test_tracked_benchmark_samples_have_nonempty_aligned_roles(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        missing_or_blank: list[str] = []
+        inconsistent: list[str] = []
+
+        for bench_dir in sorted((project_root / "schemes").glob("*/benchmarks")):
+            original_path = bench_dir / "original_predictions_sample.csv"
+            current_path = bench_dir / "current_predictions_sample.csv"
+            if not original_path.exists() or not current_path.exists():
+                continue
+            with original_path.open(newline="", encoding="utf-8") as handle:
+                original_reader = csv.DictReader(handle)
+                original_rows = list(original_reader)
+                original_fields = original_reader.fieldnames or []
+            with current_path.open(newline="", encoding="utf-8") as handle:
+                current_reader = csv.DictReader(handle)
+                current_rows = list(current_reader)
+                current_fields = current_reader.fieldnames or []
+
+            for path, fields, rows in (
+                (original_path, original_fields, original_rows),
+                (current_path, current_fields, current_rows),
+            ):
+                if "benchmark_role" not in fields:
+                    missing_or_blank.append(str(path.relative_to(project_root)))
+                    continue
+                blank_count = sum(1 for row in rows if not str(row.get("benchmark_role") or "").strip())
+                if blank_count:
+                    missing_or_blank.append(f"{path.relative_to(project_root)}:{blank_count} blank roles")
+
+            original_role_by_key = {
+                _benchmark_role_key(row): str(row.get("benchmark_role") or "").strip()
+                for row in original_rows
+            }
+            for row in current_rows:
+                key = _benchmark_role_key(row)
+                expected_role = original_role_by_key.get(key)
+                current_role = str(row.get("benchmark_role") or "").strip()
+                if expected_role and current_role != expected_role:
+                    inconsistent.append(str(current_path.relative_to(project_root)))
+                    break
+
+        self.assertEqual(missing_or_blank, [])
+        self.assertEqual(inconsistent, [])
 
     def test_metric_diff_failed(self) -> None:
         ctx = _make_ctx(self.root)

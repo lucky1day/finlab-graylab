@@ -9,7 +9,7 @@
 当前 Bond Factor Lab 的后端和静态前端由同一个 FastAPI 应用服务，launchd 将 uvicorn 绑定在 `127.0.0.1:8100`。这是适合本机和内网 iframe 接入的安全默认值。对外开放后，不能只把监听地址改成 `0.0.0.0`，因为当前应用存在以下外部访问风险：
 
 - GET 页面和 GET API 默认无登录保护。
-- `BOND_ADMIN_TOKEN` 未配置时，管理类 POST 接口默认放行，适合本机场景但不适合公网入口。
+- `BOND_ADMIN_TOKEN` 未配置时，管理类 POST 接口 fail-closed 返回 503。
 - CORS 目前只配置了 localhost 默认来源，外部域名和 iframe 父页面来源未配置化。
 - 当前服务没有明确的 Host 白名单、安全响应头、CSP `frame-ancestors` 和外部访问运行模式。
 
@@ -74,7 +74,7 @@ External user
 - `BOND_CORS_ORIGINS`: 逗号分隔 API 跨域来源。独立同源部署时可只包含 `BOND_PUBLIC_BASE_URL` 和本地开发来源。
 - `BOND_FRAME_ANCESTORS`: 逗号分隔 iframe 父页面 origin，用于 CSP `frame-ancestors`。
 - `BOND_ALLOWED_PARENT_ORIGINS`: 逗号分隔 postMessage 父页面 origin，供前端校验跨域导航消息。
-- `BOND_ADMIN_TOKEN`: 管理类 POST token。`BOND_PUBLIC_MODE=true` 时必须配置，否则管理类 POST 返回 503 或 403。
+- `BOND_ADMIN_TOKEN`: 管理类 POST token。必须配置；未配置时管理类 POST 返回 503。
 
 ### Host 与代理头
 
@@ -100,9 +100,8 @@ FastAPI 增加 `TrustedHostMiddleware`，只接受 `BOND_ALLOWED_HOSTS` 中的 H
 
 规则：
 
-- `BOND_PUBLIC_MODE=false` 时保留现有本机软默认，兼容本地单用户流程。
-- `BOND_PUBLIC_MODE=true` 且未配置 `BOND_ADMIN_TOKEN` 时，所有管理类 POST fail-closed。
-- `BOND_PUBLIC_MODE=true` 且配置 token 时，必须携带匹配的 `X-Admin-Token`。
+- 未配置 `BOND_ADMIN_TOKEN` 时，所有管理类 POST fail-closed 返回 503。
+- 配置 `BOND_ADMIN_TOKEN` 时，必须携带匹配的 `X-Admin-Token`。
 - 代理层也应禁止外部访问 `/api/admin/*` 和 `/api/schemes/*/trigger`；应用层保护作为第二道防线。
 
 ### 健康检查

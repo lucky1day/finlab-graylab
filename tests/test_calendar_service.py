@@ -96,6 +96,30 @@ class CalendarServiceTests(unittest.TestCase):
         self.assertEqual(calendar.week_id_to_last_trading_day(202621), "2026-06-05")
         self.assertEqual(calendar.week_id_to_last_trading_day(202622), "2026-06-12")
 
+    def test_week_id_to_last_trading_day_does_not_fallback_to_non_trading_day(self) -> None:
+        from shared.calendar_service import get_calendar
+
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO api_wind_date (rdate, week_id) VALUES (:rdate, :week_id)"),
+                [
+                    {"rdate": "2026-06-13", "week_id": "202623"},
+                    {"rdate": "2026-06-14", "week_id": "202623"},
+                ],
+            )
+            conn.execute(
+                text("INSERT INTO t_trade_calendar (rdate, trade_flag) VALUES (:rdate, :trade_flag)"),
+                [
+                    {"rdate": "2026-06-13", "trade_flag": "0"},
+                    {"rdate": "2026-06-14", "trade_flag": "0"},
+                ],
+            )
+
+        calendar = get_calendar(engine=self.engine)
+
+        with self.assertRaisesRegex(ValueError, "no trading day found"):
+            calendar.week_id_to_last_trading_day(202623)
+
     def test_isolated_week_id_jump_is_normalized(self) -> None:
         from shared.calendar_service import get_calendar
 
