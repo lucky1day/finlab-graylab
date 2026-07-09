@@ -766,6 +766,8 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 
 - `launchctl print gui/$(id -u)/com.bond-factor-lab.scheduler` 或 `ps` 能看到 `python -m scheduler.main` 正在运行。
 - scheduler 启动日志包含 `Scheduled scheme {scheme_id} at {schedule.cron}`。
+- launchd 运行态必须显示 `RunAtLoad/KeepAlive`，并带 `BOND_SCHEDULER_STARTUP_CATCHUP=1`；若 scheduler 在当天 cron 后才启动，startup catch-up 只能补跑当天已过 cron 且无终态 run 的 active 任务，已有 `success/partial/failed/skipped` run 不应重复补跑。
+- scheduler 启动日志必须包含 `Scheduled actuals refresh at 08:30, 19:00, 23:45 Asia/Shanghai`，确保晚间 Wind 日频导入后还有一次 actual 刷新窗口。
 - `t_scheme_registry` 中该 composite row 为 `status='active'`，且 `schedule_cron/schedule_timezone/deployed_at` 非空并与 `config.yaml` 一致。
 - 若方案配置 `schedule.timeout_sec`，启动后必须通过 discovery 或单元测试确认配置被加载；下一次运行后记录 `t_scheme_run_log.duration_sec`，确认运行时长小于配置预算。
 
@@ -814,6 +816,7 @@ LIMIT 10;
 - [ ] `t_backtest_predictions` 明细逐行存在 `target_date`；缺失时必须修 runner 或数据，不允许通过前端/API fallback 放行。
 - [ ] active `t_scheme_registry` 行逐行存在 `deployed_at`；前端展示的部署时间来自 API/DB 字段，不来自默认值或 hardcoded override。
 - [ ] scheduler 挂载证据已记录：进程存在、日志包含 `Scheduled scheme ...`、registry cron/timezone/deployed_at 正确。
+- [ ] scheduler launchd 运行态已确认 `RunAtLoad/KeepAlive`、`BOND_SCHEDULER_STARTUP_CATCHUP=1`，且日志包含 `08:30, 19:00, 23:45` 三档 actual refresh。
 - [ ] 如配置 `schedule.timeout_sec`，已验证 discovery/executor 生效，并记录实际运行耗时与 timeout 预算。
 - [ ] 最近应触发窗口的 prediction 连续性已检查；未验证样本已区分为 actual 水位未到、source 信号未成熟、任务失败或前端展示问题。
 - [ ] 已区分并记录当前状态是 `Onboarding Complete` 还是已观察到首条 `scheduled_live` 的 `Production Observed`。

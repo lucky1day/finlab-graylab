@@ -90,6 +90,25 @@ class ExecutorRunIdTests(unittest.TestCase):
         self.assertEqual(ctx.exception.output, "partial")
         self.assertEqual(ctx.exception.stderr, "err")
 
+    def test_run_scheme_subprocess_disables_conda_output_capture(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        class FakeProcess:
+            pid = 12345
+            returncode = 0
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                return "[]", ""
+
+        with patch("scheduler.executor.subprocess.Popen", return_value=FakeProcess()) as popen:
+            records = run_scheme_subprocess("demo", "2026-07-03", algo_env="test_env", timeout_sec=7)
+
+        self.assertEqual(records, [])
+        cmd = popen.call_args.args[0]
+        self.assertEqual(cmd[:4], ["conda", "run", "--no-capture-output", "-n"])
+
     def test_execute_scheme_appends_predictions_without_serving_pointer(self) -> None:
         from scheduler.executor import execute_scheme
         from shared.models import PredictionRecord

@@ -70,6 +70,7 @@ def run_scheme_subprocess(
     cmd = [
         "conda",
         "run",
+        "--no-capture-output",
         "-n",
         algo_env,
         "python",
