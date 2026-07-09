@@ -71,6 +71,15 @@ tail -f logs/com.bond-factor-lab.ssh-tunnel.err
 curl -s http://127.0.0.1:18100/api/health
 ```
 
+### 2a) Bond Project Pro 测试站反向隧道（可选）
+
+`deploy/launchd/com.bondprojectpro.ssh-tunnel.plist` 与 `deploy/nginx/bondprojectpro-test*.conf`
+用于 `https://test.finailab.cn/` 测试入口：
+
+- 公网 Nginx 使用 `deploy/nginx/bondprojectpro-test-acme.conf` 完成 ACME 首次签证；证书签发后切换为 `deploy/nginx/bondprojectpro-test.conf`。
+- 本地 Mac 使用 `deploy/launchd/com.bondprojectpro.ssh-tunnel.plist` 常驻 SSH 反向隧道，把公网机 `127.0.0.1:18080` 转发到本地 `127.0.0.1:80`。
+- 该 plist 只记录 key 路径，不包含私钥内容；实际部署前仍需确认 key 文件权限、远端账号与端口占用。
+
 ### 3) 本地 Mac：后端 admin token（第二道闸，R7）
 
 ```bash
