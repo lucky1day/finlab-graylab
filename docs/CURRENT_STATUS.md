@@ -1,6 +1,20 @@
 # 当前状态
 
-**更新日期**: 2026-07-07
+**更新日期**: 2026-07-09
+
+## 2026-07-09 调度自启动、启动追跑与 23:45 actual 刷新
+
+本轮复核确认：`2026-07-09` 的日频预测不是没跑，也不是前端刷新问题。`t_scheme_predictions` 中 `predict_date=2026-07-09` 已有 16 条 `scheduled_live` 明细，覆盖 12 个 active 日频 base scheme，`feature_date=2026-07-08`，日期语义检查为 `status=ok`。`2026-07-06..2026-07-09` 每个交易日均有 16 条日频预测，近期 `status='running'` 的 run 为 0。
+
+仍待验证的原因是 actual/source 水位：`api_wind_daily` 与 `t_scheme_actuals` 对 `1Y/3Y/5Y/7Y/10Y` 当前均只到 `2026-07-08`，尚无 `2026-07-09` 的验证 actual。BondPrediction 当天日志显示 17:45 盘后任务请求了 `2026-07-09` 的中国国债到期收益率 `1Y/5Y/10Y` 等指标，但实际仍未写入 07/09；05:05 的 `daily_lastday` 对活跃券 `TB1YWI0C/TB5YWI0C/TB7YWI0C/TB0YWI0C` 多数返回空值并保留旧数据。因此前端对 `target_date=2026-07-09` 或更晚目标日显示“待验证”是数据水位未到，不是预测缺失。
+
+为避免后续反复出现“更新后无人启动/错过早间 cron”的生产缺口，已完成两项平台级修复：
+
+- launchd 安装态已同步到仓库新版 `deploy/launchd/com.bond-factor-lab.scheduler.plist`，`RunAtLoad=true`、`KeepAlive=true`，运行态环境包含 `BOND_SCHEDULER_STARTUP_CATCHUP=1`、`BOND_SCHEDULER_STAGGER_MINUTES=2`、`BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY=1`。
+- `scheduler.main` 新增 startup catch-up：scheduler 启动后会对当天业务 cron 已过、且 `t_scheme_runs` 尚无 `success/partial/failed/skipped` 终态记录的 active 方案自动补跑；已有终态 run 的方案跳过，避免重启后重复覆盖。
+- actual 刷新从 `08:30/19:00` 扩展为 `08:30/19:00/23:45`。新增 `23:45` 用于承接 BondPrediction `23:25` 左右的 Wind 日频导入，避免源表夜间补齐后平台 actual 仍等到次日早上才更新。
+
+运行态验收：`launchctl print gui/$(id -u)/com.bond-factor-lab.scheduler` 显示 scheduler 为 `running`，日志确认 active 日频、周频、月频方案均已注册，并出现 `Scheduled actuals refresh at 08:30, 19:00, 23:45 Asia/Shanghai`。启动追跑已执行并对 `2026-07-09` 的 12 个 active 日频方案全部识别为已有终态 run 后跳过，没有重复写库。验证命令 `conda run --no-capture-output -n bond_factor_lab_service python -m unittest tests.test_scheduler_main tests.test_executor_run_id tests.test_production_daily_health` 通过 31/31；`scripts/check_production_daily_health.py --predict-date 2026-07-09 --strict-runs` 返回 `status=ok`、`findings=[]`；`/api/health` 返回 `{"status":"ok"}`。
 
 ## 2026-07-07 日频生产复审与最终排查汇总
 
@@ -410,7 +424,7 @@ active 方案的 live 预测事实表当前状态：
 
 2026-06-10 已验证前端/DB 一致性：`python -m scripts.verify_frontend_db --scheme-id t5_daily --run-id 76` 检查 68 格、0 mismatch；`t1_daily --run-id 79` 检查 36 格、0 mismatch（当时 `1Y` 尚未升级为前端可见目标）；`weekly_5y_direct_0529 --run-id 80` 检查 124 格、0 mismatch。2026-06-13 对 `daily_5y_2_v28` 使用显式 `benchmark_id=v28_daily_5y_2` 验证 `/api/backtests/factor-lab` 与 DB 月度格：最终 latest run_id=`107` 为 17/17 一致、0 mismatch。同日修复默认 `/api/backtests/factor-lab` 只读取 `model_muti_0529` 的问题：未传 `benchmark_id` 时现在返回所有 benchmark 下各方案最新成功回测，因此前端可同时合并 `daily_5y_2_v28` 的 17 条回测月度行与实盘 2026-06 行；前端展示 `实盘发出起点 2026-05-26`，并通过 `phase_ranges` 显示灰度实盘区间与正式调度起点 `2026-06-12`。2026-06-12 scheduler 配置复核：`daily_5y_2_v28` / `t1_daily` / `t5_daily` 注册工作日 07:03，`weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 注册周六 11:30，日频 actuals 注册每日 08:30 与 19:00；已重启 `com.bond-factor-lab.scheduler`，日志确认 `Scheduled scheme daily_5y_2_v28 at 3 7 * * 1-5` 与 `Scheduled actuals refresh at 08:30 and 19:00 Asia/Shanghai`。2026-06-13 修复分支已移除前端部署日期 override，候选方案部署/灰度/正式调度展示统一依赖后端 live rows 与 `phase_ranges`。用户侧强制刷新后确认页面正确，后续遇到“静态前端已改但页面仍旧”需先提醒强制刷新/禁用缓存。
 
-旧周频 live prediction/run_log 记录已清理。scheduler 重启后，当前代码配置会注册 `daily_5y_2_v28`、`t1_daily`、`t5_daily` 日频方案与 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529` 周频方案。
+旧周频 live prediction/run_log 记录已清理。当前 scheduler 重启后会按 active config 注册全部日频、周频、周平均与月频方案；运行态还必须确认 startup catch-up 已注册、actuals 刷新为 `08:30/19:00/23:45` 三档。
 
 ## API 与安全边界
 
@@ -424,7 +438,7 @@ active 方案的 live 预测事实表当前状态：
 
 ## 剩余观察项
 
-1. 下一次 scheduler 运行后，继续确认日志注册和执行 `daily_5y_2_v28` / `t1_daily` / `t5_daily` / `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529`，并确认 actuals jobs 为 `actuals:0830` / `actuals:1900`。
+1. 下一次 scheduler 运行后，继续确认 active 日频、周频、周平均与月频方案均按配置注册并自然触发；同时确认 launchd `RunAtLoad/KeepAlive`、`BOND_SCHEDULER_STARTUP_CATCHUP=1` 和 actuals jobs `actuals:0830` / `actuals:1900` / `actuals:2345` 均存在。
 2. 后续新周频方案进入时，继续按 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) 流程，并证明 `week_id` 来自 `api_wind_date` 而非公式计算。
 3. 2026-06-10 修复了 `backend/services.py` 中周度 metrics 的 JOIN 条件：去掉 `wa.predict_date = p.predict_date`（周度 predict_date 语义在 prediction 和 actuals 间不一致），仅按 `tenor + target_date` 匹配。
 4. 2026-06-12 固化日频 T+N 与周频前端/API/回测口径：月度指标与明细均按 `target_date` 归属，真实方向按 `target_date` join；`feature_date` 是前端和业务统一的数据截止字段，`predict_date` 是信号发出/调度日；灰度实盘和正式实盘需通过 `prediction_phase=gray_live/scheduled_live` 区分；未来目标日可先显示为 `待验证`。

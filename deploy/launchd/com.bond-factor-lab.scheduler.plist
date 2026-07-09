@@ -31,6 +31,8 @@
     <string>2</string>
     <key>BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY</key>
     <string>1</string>
+    <key>BOND_SCHEDULER_STARTUP_CATCHUP</key>
+    <string>1</string>
   </dict>
 
   <key>RunAtLoad</key>

@@ -169,8 +169,8 @@
 | 项 | 定义 |
 |----|------|
 | **入口条件** | S7 DB↔前端严格一致 |
-| **动作** | 按方案 `frequency` 挂载定时预测任务：① 确认 `schedule.cron` 与频率匹配（日频工作日 07:03 / 周频周六 11:30 / 月频按定义）；② 若方案需要较长运行时间，确认 `schedule.timeout_sec` 已配置为正整数并有单测；③ 签发 activate 授权 token；④ 通过 `python -m harness activate --scheme-id {scheme_id} --authorize {TOKEN}` 激活，不得手动改 `config.yaml status` 绕过 ActivationGate；⑤ 重启 scheduler 使其注册该 job；⑥ 确认调度日志出现该方案 cron 注册；⑦ 对最近应触发窗口做 prediction 连续性检查，并把缺口按任务未启动、timeout、输入缺失、source 信号未成熟或 actual 未到分类 |
-| **成功判定** | ActivationGate/activate 命令成功，registry/config 状态生效，scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；如有 `schedule.timeout_sec`，discovery/executor 已读取配置；方案进入对应频率的定时预测队列，近期 prediction 连续性检查无未解释缺口 |
+| **动作** | 按方案 `frequency` 挂载定时预测任务：① 确认 `schedule.cron` 与频率匹配（日频工作日 07:03 / 周频周六 11:30 / 月频按定义）；② 若方案需要较长运行时间，确认 `schedule.timeout_sec` 已配置为正整数并有单测；③ 签发 activate 授权 token；④ 通过 `python -m harness activate --scheme-id {scheme_id} --authorize {TOKEN}` 激活，不得手动改 `config.yaml status` 绕过 ActivationGate；⑤ 重启 scheduler 使其注册该 job；⑥ 确认调度日志出现该方案 cron 注册，并确认 launchd 运行态有 `RunAtLoad/KeepAlive`、`BOND_SCHEDULER_STARTUP_CATCHUP=1`、actual refresh `08:30/19:00/23:45`；⑦ 对最近应触发窗口做 prediction 连续性检查，并把缺口按任务未启动、timeout、输入缺失、source 信号未成熟或 actual 未到分类 |
+| **成功判定** | ActivationGate/activate 命令成功，registry/config 状态生效，scheduler 日志确认 `Scheduled scheme {scheme_id} at {cron}`；launchd 自启动/保活与 startup catch-up 配置生效；actual 三档刷新已注册；如有 `schedule.timeout_sec`，discovery/executor 已读取配置；方案进入对应频率的定时预测队列，近期 prediction 连续性检查无未解释缺口 |
 | **成功→去向** | 进入 S9 |
 | **失败判定** | status 未生效 / cron 未注册 / scheduler 未识别 |
 | **失败→去向** | 修复 config/调度后**重试 S8** |

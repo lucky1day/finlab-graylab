@@ -1,7 +1,7 @@
 # 架构设计: Bond Factor Lab
 
 **版本**: v1.1
-**日期**: 2026-07-06
+**日期**: 2026-07-09
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
 > 预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
@@ -80,6 +80,7 @@ Source-backed 方案必须先声明 source 执行口径：`source_original_repro
 ```
 Scheduler启动
   → discovery.py 扫描 schemes/ 目录
+  → startup catch-up 检查当天已过 cron 且无终态 run 的 active 任务
   → 对每个active方案:
       → executor.py 检查是否交易日
       → 读取方案级 schedule.timeout_sec（如有）作为子进程等待预算
@@ -99,14 +100,18 @@ Scheduler启动
 
 同一业务 cron 下的 active 方案可按稳定顺序错峰启动，并通过 `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY` 限制同时进入算法子进程的数量。慢速 source-backed 方案可以在 `config.yaml` 的 `schedule.timeout_sec` 配置方案级执行 timeout 覆盖 executor 默认预算；这只影响子进程等待时间，不改变 `predict_date` / `feature_date` / `target_date`、业务 cron、并发规则或 source 算法逻辑。生产上修改调度配置后必须重启 launchd scheduler，并复核日志中每个 active 方案的 `Scheduled scheme ...` 注册记录。
 
-### 2.2 实际方向更新（每日08:30与19:00）
+launchd scheduler 使用 `RunAtLoad=true` 与 `KeepAlive=true`，用户登录后自动拉起并在进程退出时重启。`BOND_SCHEDULER_STARTUP_CATCHUP=1` 时，scheduler 启动后会执行一次启动追跑：只补跑当天业务 cron 已过且 `t_scheme_runs` 尚无 `success/partial/failed/skipped` 终态记录的 active 方案；已有终态 run 的方案不会因重启反复补跑。
+
+### 2.2 实际方向更新（每日08:30、19:00与23:45）
 
 ```
-Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由交易日检查跳过
-  → 从 api_wind_indicators_all 读取最新收盘收益率
+Scheduler在每日08:30、19:00和23:45触发 actuals 更新任务；非交易日 daily/weekly 由交易日检查跳过，monthly 仍刷新
+  → 从 api_wind_daily 读取最新收盘收益率
   → 计算各tenor的T+1和T+5方向
   → 写入 t_scheme_actuals (UPSERT)
 ```
+
+其中 `23:45` 夜间刷新用于承接上游 BondPrediction `23:25` 左右的 Wind 日频导入，避免源表夜间补齐后前端仍等到次日 `08:30` 才显示验证结果。
 
 周度 actuals 独立维护:
 

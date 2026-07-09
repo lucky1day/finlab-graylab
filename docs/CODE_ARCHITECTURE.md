@@ -1,6 +1,6 @@
 # 代码架构设计（Code Architecture）
 
-**更新日期**: 2026-07-06
+**更新日期**: 2026-07-09
 **定位**: 本仓库的**代码架构主蓝图**。定义分层模型、包依赖方向规则、运行时调用图、扩展模型与横切关注点。是所有其它设计文档的总索引。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -141,6 +141,7 @@ tests/         → 任意（验证需要）
 
 ```
 APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
+  ├─ startup catch-up(DateTrigger) → 当天 cron 已过且无终态 run 时补跑
   └─ scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase="scheduled_live")
        ├─ timeout_sec = cfg.schedule.timeout_sec or executor default
        ├─ run_scheme_subprocess(scheme_id, predict_date, algo_env="forecast_env", timeout_sec=timeout_sec)
@@ -160,9 +161,11 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
 
-日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
+日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`scheduler.main` 的 startup catch-up 只在服务启动时补跑当天已错过且没有终态 run 的 active 任务，不改变方案 cron、预测日期语义或 source core 逻辑。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
 `schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。生产上调整该字段后必须重启 scheduler，让 `discovery` 重新加载 config，并复核 launchd 日志中 active jobs 已注册。
+
+日频、周频、月频 actuals 由 scheduler 注册为独立刷新任务。当前生产节奏为 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日 daily/weekly actuals 跳过，monthly actuals 仍刷新以支持自然 15 号月度规则。
 
 ### 5.2 入库 harness 路径（已实现，自动化方案入库）
 
@@ -262,7 +265,7 @@ schemes/{scheme_id}/
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
 | `scheduler/repository.py` | L3 | 写库单点 | `create_scheme_run`、`insert_run_predictions`、`write_run_log`、`sync_scheme_registry` |
-| `scheduler/{daily,weekly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
+| `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/main.py` | L3 | APScheduler 调度 | `build_scheduler` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -165,7 +166,7 @@ class SchedulerMainTests(unittest.TestCase):
                 trading_day.assert_not_called()
                 execute_scheme.assert_called_once_with(cfg, "2026-06-15", algo_env=scheduler_main.DEFAULT_ALGO_ENV)
 
-    def test_actuals_refresh_registers_morning_and_evening_jobs(self) -> None:
+    def test_actuals_refresh_registers_morning_evening_and_late_jobs(self) -> None:
         from scheduler import main as scheduler_main
 
         with (
@@ -185,13 +186,14 @@ class SchedulerMainTests(unittest.TestCase):
             if scheduler.running:
                 scheduler.shutdown(wait=False)
 
-        self.assertEqual(len(actual_jobs), 2)
-        self.assertEqual([job_id for job_id, _ in actual_jobs], ["actuals:0830", "actuals:1900"])
+        self.assertEqual(len(actual_jobs), 3)
+        self.assertEqual([job_id for job_id, _ in actual_jobs], ["actuals:0830", "actuals:1900", "actuals:2345"])
         self.assertTrue(any("hour='8'" in trigger and "minute='30'" in trigger for _, trigger in actual_jobs))
         self.assertTrue(any("hour='19'" in trigger and "minute='0'" in trigger for _, trigger in actual_jobs))
+        self.assertTrue(any("hour='23'" in trigger and "minute='45'" in trigger for _, trigger in actual_jobs))
         self.assertFalse(any("day_of_week='mon-fri'" in trigger for _, trigger in actual_jobs))
         self.assertTrue(
-            any("Scheduled actuals refresh at 08:30 and 19:00 Asia/Shanghai" in msg for msg in logs.output)
+            any("Scheduled actuals refresh at 08:30, 19:00, 23:45 Asia/Shanghai" in msg for msg in logs.output)
         )
         self.assertFalse(any("16:00" in msg for msg in logs.output))
 
@@ -235,6 +237,51 @@ class SchedulerMainTests(unittest.TestCase):
         self.assertTrue(
             any("Skip daily/weekly actuals on non-trading day 2026-08-15" in msg for msg in logs.output)
         )
+
+    def test_startup_prediction_catchup_detects_due_staggered_jobs(self) -> None:
+        from scheduler import main as scheduler_main
+
+        now = datetime(2026, 7, 9, 7, 4, tzinfo=scheduler_main.ASIA_SHANGHAI)
+        jobs = scheduler_main._startup_prediction_catchup_due_jobs(
+            [_cfg("scheme_a"), _cfg("scheme_b")],
+            now=now,
+            interval_minutes=2,
+        )
+
+        self.assertEqual([job.cfg.scheme_id for job in jobs], ["scheme_a"])
+
+    def test_startup_prediction_catchup_ignores_non_matching_cron_date(self) -> None:
+        from scheduler import main as scheduler_main
+
+        saturday = datetime(2026, 7, 11, 9, 0, tzinfo=scheduler_main.ASIA_SHANGHAI)
+        jobs = scheduler_main._startup_prediction_catchup_due_jobs(
+            [_cfg("daily_demo", cron="3 7 * * 1-5")],
+            now=saturday,
+            interval_minutes=0,
+        )
+
+        self.assertEqual(jobs, [])
+
+    def test_startup_prediction_catchup_runs_only_missing_due_jobs(self) -> None:
+        from scheduler import main as scheduler_main
+
+        now = datetime(2026, 7, 9, 7, 6, tzinfo=scheduler_main.ASIA_SHANGHAI)
+        schemes = [_cfg("scheme_a"), _cfg("scheme_b")]
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=schemes),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+            patch.object(scheduler_main, "_prediction_run_exists", side_effect=[True, False]) as run_exists,
+            patch.object(scheduler_main, "run_prediction_job") as run_prediction_job,
+            patch.object(scheduler_main, "create_engine_from_env") as create_engine,
+            self.assertLogs(scheduler_main.logger, level=logging.WARNING),
+        ):
+            engine = create_engine.return_value
+            scheduler_main.run_startup_prediction_catchup(now=now, algo_env="forecast_env")
+
+        run_exists.assert_any_call(engine, "scheme_a", "2026-07-09")
+        run_exists.assert_any_call(engine, "scheme_b", "2026-07-09")
+        run_prediction_job.assert_called_once_with("scheme_b", run_date="2026-07-09", algo_env="forecast_env")
+        engine.dispose.assert_called_once()
 
 
 if __name__ == "__main__":

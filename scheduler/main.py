@@ -7,12 +7,14 @@ from dataclasses import dataclass
 import logging
 import os
 import threading
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
+from sqlalchemy import text
 
 from scheduler.daily_actuals_updater import update_actuals
 from scheduler.monthly_actuals_updater import update_monthly_actuals
@@ -24,9 +26,10 @@ from scheduler.repository import create_engine_from_env, sync_scheme_registry
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
-ACTUALS_REFRESH_TIMES = ((8, 30), (19, 0))
+ACTUALS_REFRESH_TIMES = ((8, 30), (19, 0), (23, 45))
 STAGGER_MINUTES_ENV = "BOND_SCHEDULER_STAGGER_MINUTES"
 PREDICTION_MAX_CONCURRENCY_ENV = "BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY"
+STARTUP_CATCHUP_ENV = "BOND_SCHEDULER_STARTUP_CATCHUP"
 DEFAULT_STAGGER_MINUTES = 2
 DEFAULT_PREDICTION_MAX_CONCURRENCY = 1
 logger = logging.getLogger(__name__)
@@ -76,6 +79,22 @@ def _env_int(name: str, default: int, *, min_value: int) -> int:
     if value < min_value:
         raise ValueError(f"{name} must be an integer >= {min_value}, got {value}")
     return value
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean, got {raw!r}")
+
+
+def _format_actuals_refresh_times() -> str:
+    return ", ".join(f"{hour:02d}:{minute:02d}" for hour, minute in ACTUALS_REFRESH_TIMES)
 
 
 def _configure_prediction_semaphore(max_concurrency: int) -> None:
@@ -175,6 +194,80 @@ def _cron_trigger(cron_expr: str, timezone: str) -> CronTrigger:
     )
 
 
+def _cron_field_matches(field: str, value: int) -> bool:
+    if field == "*":
+        return True
+    for item in field.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "-" in item:
+            start_raw, end_raw = item.split("-", 1)
+            start = int(start_raw)
+            end = int(end_raw)
+            if start <= value <= end:
+                return True
+            continue
+        if int(item) == value:
+            return True
+    return False
+
+
+def _cron_day_of_week_matches(field: str, value: int) -> bool:
+    if field == "*":
+        return True
+
+    def parse_day(raw: str) -> int:
+        normalized = raw.strip().lower()
+        aliases = {
+            "mon": 0,
+            "tue": 1,
+            "wed": 2,
+            "thu": 3,
+            "fri": 4,
+            "sat": 5,
+            "sun": 6,
+        }
+        if normalized in aliases:
+            return aliases[normalized]
+        numeric = int(normalized)
+        if numeric in {0, 7}:
+            return 6
+        return numeric - 1
+
+    for item in field.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "-" in item:
+            start_raw, end_raw = item.split("-", 1)
+            start = parse_day(start_raw)
+            end = parse_day(end_raw)
+            if start <= value <= end:
+                return True
+            continue
+        if parse_day(item) == value:
+            return True
+    return False
+
+
+def _scheduled_datetime_for_date(cron_expr: str, run_date: date, timezone: str) -> datetime | None:
+    parts = cron_expr.split()
+    if len(parts) != 5:
+        raise ValueError(f"unsupported cron expression: {cron_expr}")
+    minute, hour, day, month, day_of_week = parts
+    if not minute.isdigit() or not hour.isdigit():
+        raise ValueError(f"cron expression must use numeric minute and hour: {cron_expr}")
+    run_at = datetime.combine(run_date, time(int(hour), int(minute)), tzinfo=ZoneInfo(timezone))
+    if not _cron_field_matches(day, run_at.day):
+        return None
+    if not _cron_field_matches(month, run_at.month):
+        return None
+    if not _cron_day_of_week_matches(day_of_week, run_at.weekday()):
+        return None
+    return run_at
+
+
 def _staggered_prediction_jobs(
     schemes: Iterable[SchemeConfig],
     interval_minutes: int,
@@ -198,6 +291,88 @@ def _staggered_prediction_jobs(
                 )
             )
     return jobs
+
+
+def _startup_prediction_catchup_due_jobs(
+    schemes: Iterable[SchemeConfig],
+    *,
+    now: datetime,
+    interval_minutes: int,
+) -> list[StaggeredPredictionJob]:
+    """返回今天调度时间已过、适合启动时补跑的 active 预测任务。"""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ASIA_SHANGHAI)
+    due_jobs: list[StaggeredPredictionJob] = []
+    for job in _staggered_prediction_jobs(schemes, interval_minutes):
+        scheduled_at = _scheduled_datetime_for_date(
+            job.effective_cron,
+            now.astimezone(ZoneInfo(job.cfg.schedule.timezone)).date(),
+            job.cfg.schedule.timezone,
+        )
+        if scheduled_at is None:
+            continue
+        if scheduled_at <= now.astimezone(scheduled_at.tzinfo):
+            due_jobs.append(job)
+    return due_jobs
+
+
+def _prediction_run_exists(engine, scheme_id: str, predict_date: str) -> bool:
+    sql = text(
+        """
+        SELECT 1
+        FROM t_scheme_runs
+        WHERE scheme_id = :scheme_id
+          AND predict_date = :predict_date
+          AND prediction_phase = 'scheduled_live'
+          AND status IN ('success', 'partial', 'failed', 'skipped')
+        LIMIT 1
+        """
+    )
+    with engine.begin() as conn:
+        return conn.execute(sql, {"scheme_id": scheme_id, "predict_date": predict_date}).first() is not None
+
+
+def run_startup_prediction_catchup(
+    *,
+    now: datetime | None = None,
+    algo_env: str = DEFAULT_ALGO_ENV,
+) -> None:
+    """启动时补跑今天已错过且没有运行记录的预测任务。"""
+    run_now = now or datetime.now(ASIA_SHANGHAI)
+    if run_now.tzinfo is None:
+        run_now = run_now.replace(tzinfo=ASIA_SHANGHAI)
+    stagger_minutes = _env_int(STAGGER_MINUTES_ENV, DEFAULT_STAGGER_MINUTES, min_value=0)
+    schemes = discover_schemes()
+    _sync_registry(schemes)
+    due_jobs = _startup_prediction_catchup_due_jobs(
+        schemes,
+        now=run_now,
+        interval_minutes=stagger_minutes,
+    )
+    if not due_jobs:
+        logger.info("Startup prediction catchup: no due jobs")
+        return
+
+    engine = create_engine_from_env()
+    try:
+        for job in due_jobs:
+            predict_date = run_now.astimezone(ZoneInfo(job.cfg.schedule.timezone)).date().isoformat()
+            if _prediction_run_exists(engine, job.cfg.scheme_id, predict_date):
+                logger.info(
+                    "Startup prediction catchup skipped existing run: scheme=%s predict_date=%s",
+                    job.cfg.scheme_id,
+                    predict_date,
+                )
+                continue
+            logger.warning(
+                "Startup prediction catchup running missed job: scheme=%s predict_date=%s scheduled_cron=%s",
+                job.cfg.scheme_id,
+                predict_date,
+                job.effective_cron,
+            )
+            run_prediction_job(job.cfg.scheme_id, run_date=predict_date, algo_env=algo_env)
+    finally:
+        engine.dispose()
 
 
 def _skips_non_trading_day(cfg: SchemeConfig) -> bool:
@@ -307,7 +482,19 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
             coalesce=True,
             misfire_grace_time=3600,
         )
-    logger.info("Scheduled actuals refresh at 08:30 and 19:00 Asia/Shanghai")
+    logger.info("Scheduled actuals refresh at %s Asia/Shanghai", _format_actuals_refresh_times())
+    if _env_bool(STARTUP_CATCHUP_ENV, True):
+        scheduler.add_job(
+            run_startup_prediction_catchup,
+            trigger=DateTrigger(run_date=datetime.now(ASIA_SHANGHAI), timezone=ASIA_SHANGHAI),
+            kwargs={"algo_env": algo_env},
+            id="startup:prediction-catchup",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=3600,
+        )
+        logger.info("Scheduled startup prediction catchup")
     return scheduler
 
 
