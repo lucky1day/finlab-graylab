@@ -105,13 +105,14 @@ launchd scheduler 使用 `RunAtLoad=true` 与 `KeepAlive=true`，用户登录后
 ### 2.2 实际方向更新（每日08:30、19:00与23:45）
 
 ```
-Scheduler在每日08:30、19:00和23:45触发 actuals 更新任务；非交易日 daily/weekly 由交易日检查跳过，monthly 仍刷新
+Scheduler在每日08:30、19:00和23:45触发 actuals 更新任务；交易日 daily/weekly 刷新到当日，非交易日 daily/weekly 刷新到上一交易日，monthly 仍刷新到自然 run date
   → 从 api_wind_daily 读取最新收盘收益率
   → 计算各tenor的T+1和T+5方向
   → 写入 t_scheme_actuals (UPSERT)
 ```
 
 其中 `23:45` 夜间刷新用于承接上游 BondPrediction `23:25` 左右的 Wind 日频导入，避免源表夜间补齐后前端仍等到次日 `08:30` 才显示验证结果。
+若周五源 actual 晚于 `23:45` 才进入 `api_wind_daily`，周六的 actuals job 会以周五为 daily/weekly end date 自动补刷，避免 T+1 最新验证卡在上一交易日。
 
 周度 actuals 独立维护:
 

@@ -165,7 +165,7 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 
 `schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。生产上调整该字段后必须重启 scheduler，让 `discovery` 重新加载 config，并复核 launchd 日志中 active jobs 已注册。
 
-日频、周频、月频 actuals 由 scheduler 注册为独立刷新任务。当前生产节奏为 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日 daily/weekly actuals 跳过，monthly actuals 仍刷新以支持自然 15 号月度规则。
+日频、周频、月频 actuals 由 scheduler 注册为独立刷新任务。当前生产节奏为 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日 daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时覆盖周末补刷和自然 15 号月度规则。
 
 ### 5.2 入库 harness 路径（已实现，自动化方案入库）
 
