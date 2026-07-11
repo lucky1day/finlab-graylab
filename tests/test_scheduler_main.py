@@ -214,28 +214,35 @@ class SchedulerMainTests(unittest.TestCase):
         monthly_update.assert_called_once_with(end_date="2026-06-22")
         self.assertTrue(
             any(
-                "Actuals refresh finished: date=2026-06-22 daily_records=5 weekly_records=3 monthly_records=2" in msg
+                "Actuals refresh finished: date=2026-06-22 daily_weekly_end_date=2026-06-22 "
+                "daily_records=5 weekly_records=3 monthly_records=2" in msg
                 for msg in logs.output
             )
         )
 
-    def test_actuals_job_refreshes_monthly_actuals_on_non_trading_day(self) -> None:
+    def test_actuals_job_refreshes_daily_weekly_to_previous_trading_day_on_non_trading_day(self) -> None:
         from scheduler import main as scheduler_main
 
         with (
             patch.object(scheduler_main, "_is_trading_day", return_value=False),
-            patch.object(scheduler_main, "update_actuals") as daily_update,
-            patch.object(scheduler_main, "update_weekly_actuals", create=True) as weekly_update,
+            patch.object(scheduler_main, "_previous_trading_day", return_value="2026-08-14") as previous_trading_day,
+            patch.object(scheduler_main, "update_actuals", return_value=5) as daily_update,
+            patch.object(scheduler_main, "update_weekly_actuals", return_value=3, create=True) as weekly_update,
             patch.object(scheduler_main, "update_monthly_actuals", return_value=2, create=True) as monthly_update,
             self.assertLogs(scheduler_main.logger, level=logging.INFO) as logs,
         ):
             scheduler_main.run_actuals_job("2026-08-15")
 
-        daily_update.assert_not_called()
-        weekly_update.assert_not_called()
+        previous_trading_day.assert_called_once_with("2026-08-15")
+        daily_update.assert_called_once_with(end_date="2026-08-14")
+        weekly_update.assert_called_once_with(end_date="2026-08-14")
         monthly_update.assert_called_once_with(end_date="2026-08-15")
         self.assertTrue(
-            any("Skip daily/weekly actuals on non-trading day 2026-08-15" in msg for msg in logs.output)
+            any(
+                "Refresh daily/weekly actuals to previous trading day 2026-08-14 on non-trading day 2026-08-15"
+                in msg
+                for msg in logs.output
+            )
         )
 
     def test_startup_prediction_catchup_detects_due_staggered_jobs(self) -> None:

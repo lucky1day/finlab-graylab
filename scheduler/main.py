@@ -134,6 +134,28 @@ def _is_trading_day(run_date: str) -> bool:
         engine.dispose()
 
 
+def _previous_trading_day(run_date: str) -> str:
+    engine = create_engine_from_env()
+    try:
+        sql = text(
+            """
+            SELECT MAX(rdate)
+            FROM t_trade_calendar
+            WHERE trade_flag = '1'
+              AND rdate < :rdate
+            """
+        )
+        with engine.connect() as conn:
+            value = conn.execute(sql, {"rdate": run_date}).scalar()
+        if value is None:
+            raise ValueError(f"no previous trading day before {run_date}")
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value)[:10]
+    finally:
+        engine.dispose()
+
+
 def _translate_cron_day_of_week(value: str) -> str:
     mapping = {
         "0": "sun",
@@ -421,16 +443,24 @@ def run_actuals_job(run_date: str | date | None = None, force: bool = False) -> 
     target_date = _normalize_run_date(run_date)
     is_trading_day = _is_trading_day(target_date)
     if not force and not is_trading_day:
-        logger.info("Skip daily/weekly actuals on non-trading day %s; monthly actuals still refresh", target_date)
-        daily_written = 0
-        weekly_written = 0
+        daily_weekly_end_date = _previous_trading_day(target_date)
+        logger.info(
+            "Refresh daily/weekly actuals to previous trading day %s on non-trading day %s; "
+            "monthly actuals still refresh to %s",
+            daily_weekly_end_date,
+            target_date,
+            target_date,
+        )
     else:
-        daily_written = update_actuals(end_date=target_date)
-        weekly_written = update_weekly_actuals(end_date=target_date)
+        daily_weekly_end_date = target_date
+    daily_written = update_actuals(end_date=daily_weekly_end_date)
+    weekly_written = update_weekly_actuals(end_date=daily_weekly_end_date)
     monthly_written = update_monthly_actuals(end_date=target_date)
     logger.info(
-        "Actuals refresh finished: date=%s daily_records=%s weekly_records=%s monthly_records=%s",
+        "Actuals refresh finished: date=%s daily_weekly_end_date=%s daily_records=%s weekly_records=%s "
+        "monthly_records=%s",
         target_date,
+        daily_weekly_end_date,
         daily_written,
         weekly_written,
         monthly_written,

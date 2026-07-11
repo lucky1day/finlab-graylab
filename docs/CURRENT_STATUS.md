@@ -1,6 +1,16 @@
 # 当前状态
 
-**更新日期**: 2026-07-09
+**更新日期**: 2026-07-11
+
+## 2026-07-11 T+1 最新验证与周末 actual 补刷
+
+本轮复核确认：T+1 预测本身已更新到最新交易日。5 个 active T+1 业务方案均已有 `predict_date=2026-07-10`、`feature_date=2026-07-09`、`target_date=2026-07-10` 的 `scheduled_live` 明细；`scripts/check_production_daily_health.py --predict-date 2026-07-10 --strict-runs` 返回 `status=ok`、`findings=[]`。
+
+前端当时看不到最新验证结果的原因不是预测缺失，也不是前端缓存，而是 actual 表晚于源表：`api_wind_daily` 的 `1Y/3Y/5Y/7Y/10Y` 已到 `2026-07-10`，但 `t_scheme_actuals` 仍停在 `2026-07-09`。日志显示 `2026-07-10 08:30/19:00/23:45` actuals job 均执行过；结合当前水位判断，`2026-07-10` 源 actual 是在最后一次 `23:45` 后才补入的。`2026-07-11` 是非交易日，旧 `run_actuals_job()` 在非交易日跳过 daily/weekly actuals，导致周六没有自动补刷上一交易日。
+
+已通过官方 updater 补齐：`python -m scheduler.daily_actuals_updater --start-date 2026-07-10 --end-date 2026-07-10` 写入 5 条 daily actual。复核后 `api_wind_daily` 与 `t_scheme_actuals` 对 `1Y/3Y/5Y/7Y/10Y` 均到 `2026-07-10`；`/api/metrics/t1_daily__h1__5Y?start_month=2026-07&end_month=2026-07` 已返回 `target_date=2026-07-10` 行，`actual_direction=1,is_correct=true`。
+
+平台侧已修复周末补刷缺口：`scheduler.main.run_actuals_job()` 在非交易日不再完全跳过 daily/weekly actuals，而是把 daily/weekly 的 `end_date` 设为上一交易日，monthly actuals 仍按自然 run date 刷新。这样周五源数据若晚于 `23:45` 才到，周六 `08:30/19:00/23:45` 会自动补齐上一交易日 actual。回归测试 `tests.test_scheduler_main tests.test_production_daily_health` 通过，scheduler 已 `launchctl kickstart -k`，运行态为 `running`。
 
 ## 2026-07-09 调度自启动、启动追跑与 23:45 actual 刷新
 

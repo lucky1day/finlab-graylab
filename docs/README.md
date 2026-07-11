@@ -1,6 +1,6 @@
 # 文档索引（Bond Factor Lab Docs）
 
-**更新日期**: 2026-07-09
+**更新日期**: 2026-07-11
 
 > 当前文档入口以本文为准。旧审查报告、一次性验证报告和历史事故归档已移除；新增或修复方案只读现行规范，不从历史踩坑文档推导规则。
 
@@ -27,7 +27,7 @@
 
 > 日度 0629 三方案（`daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`、`daily_10y_lgbm_10y04_0629`）已完成 SOP 收口。历史回测统一按 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01` 输出，latest backtest 每方案 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日已作为 `gray_live` 补齐。live 顶层 `model_version` 必须适配 DB `VARCHAR(64)`，完整 source model id 应放入 `extra` 审计字段。
 
-> 2026-07-06/09 运维复审已完成：07/06 scheduler miss 已受控补跑可产出方案；stale actual tail 已清理；07/07 进一步发现 `t1_daily/t5_daily` 在源水位不足时复用旧 `feature_date=2026-07-03`，其中 `t5_daily` 因业务唯一键覆盖 07/06 明细。已在 executor 增加 daily live 日期语义 fail-closed，在 `scripts/check_production_daily_health.py` 增加 run/prediction 明细一致性与 stale live 检查，并完成生产数据修复。07/09 又补齐 scheduler launchd 运行态基线：`RunAtLoad + KeepAlive`、`BOND_SCHEDULER_STARTUP_CATCHUP=1`，启动时会补跑当天已过 cron 且无终态 run 的 active 任务；actual 刷新扩展为 `08:30/19:00/23:45`，夜间档承接上游 `23:25` 左右 Wind 日频导入。当前 07/09 预测已齐，待验证来自 `api_wind_daily/t_scheme_actuals` 仍只到 `2026-07-08`。详见 [CURRENT_STATUS.md](CURRENT_STATUS.md) 与 [OPS_AUDIT_2026-07-06.md](OPS_AUDIT_2026-07-06.md)。
+> 2026-07-06/11 运维复审已完成：07/06 scheduler miss 已受控补跑可产出方案；stale actual tail 已清理；07/07 进一步发现 `t1_daily/t5_daily` 在源水位不足时复用旧 `feature_date=2026-07-03`，其中 `t5_daily` 因业务唯一键覆盖 07/06 明细。已在 executor 增加 daily live 日期语义 fail-closed，在 `scripts/check_production_daily_health.py` 增加 run/prediction 明细一致性与 stale live 检查，并完成生产数据修复。07/09 补齐 scheduler launchd 运行态基线：`RunAtLoad + KeepAlive`、`BOND_SCHEDULER_STARTUP_CATCHUP=1`，启动时会补跑当天已过 cron 且无终态 run 的 active 任务；actual 刷新扩展为 `08:30/19:00/23:45`。07/11 修复周末 actual 补刷缺口：非交易日 daily/weekly actuals 刷新到上一交易日，避免周五源数据晚于 `23:45` 入库后 T+1 最新验证卡住。当前 07/10 T+1 预测与 actual 均已齐。详见 [CURRENT_STATUS.md](CURRENT_STATUS.md) 与 [OPS_AUDIT_2026-07-06.md](OPS_AUDIT_2026-07-06.md)。
 
 ## 操作
 
