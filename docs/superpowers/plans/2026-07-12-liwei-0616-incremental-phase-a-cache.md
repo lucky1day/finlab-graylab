@@ -84,7 +84,7 @@ assert extended["STD"]["test_dates"] == ["2026-07-01", "2026-07-02", "2026-07-03
 Run:
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_liwei_0616_phase_a_cache.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_liwei_0616_phase_a_cache
 ```
 
 Expected: collection/import failure because `shared.liwei_0616_phase_a_cache` does not exist.
@@ -157,7 +157,7 @@ The historical-revision test changes a value before the old watermark and expect
 Run:
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_liwei_0616_phase_a_cache.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_liwei_0616_phase_a_cache
 ```
 
 Expected: failures for missing prefix validation, quarantine, lock re-read, or atomic-write behavior.
@@ -209,7 +209,7 @@ Update the prediction test to require `use_incremental_cache=True` and the five 
 - [ ] **Step 2: Run the 5Y test file and confirm failure**
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_liwei_0616_cons_sda_k3_div_k10.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_liwei_0616_cons_sda_k3_div_k10
 ```
 
 Expected: unexpected keyword or missing cache audit assertions.
@@ -241,7 +241,7 @@ Use cache family `liwei_0616_5y_v31`. In `predict.py`, pass `use_incremental_cac
 - [ ] **Step 4: Run 5Y tests and relevant StaticGate**
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_liwei_0616_cons_sda_k3_div_k10.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_liwei_0616_cons_sda_k3_div_k10
 conda run --no-capture-output -n bond_factor_lab_service python -m harness gate static --scheme-id liwei_0616_cons_sda_k3_div_k10
 ```
 
@@ -271,7 +271,7 @@ Assert both modules use cache family `liwei_0616_7y_v31`, canonical baseline con
 - [ ] **Step 2: Run both 7Y test files and confirm failure**
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_liwei_0616_7y01_cons_say_k3_div_k10.py tests/test_liwei_0616_7y03_cons_all_k3_div_k8.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_liwei_0616_7y01_cons_say_k3_div_k10 tests.test_liwei_0616_7y03_cons_all_k3_div_k8
 ```
 
 Expected: missing cache family/wiring/audit assertions.
@@ -315,7 +315,7 @@ Assert both modules use `liwei_0616_10y_v61`, baseline configs match, and the 10
 - [ ] **Step 2: Run both 10Y tests and confirm failure**
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_liwei_0616_10y01_cons_say_k3_div_k10.py tests/test_liwei_0616_10y02_cons_say_k3_div_k5.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_liwei_0616_10y01_cons_say_k3_div_k10 tests.test_liwei_0616_10y02_cons_say_k3_div_k5
 ```
 
 Expected: missing cache wiring/family/audit assertions.
@@ -358,7 +358,7 @@ Assert returned JSON contains per-scheme cache status/watermark and the module n
 - [ ] **Step 2: Run the prewarm test and confirm failure**
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_prewarm_liwei_0616_phase_a_cache.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_prewarm_liwei_0616_phase_a_cache
 ```
 
 Expected: module import failure.
@@ -382,7 +382,7 @@ def prewarm(predict_date: str, run_scheme_fn=run_scheme) -> list[dict[str, Any]]
 - [ ] **Step 4: Run the prewarm test and help output**
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest tests/test_prewarm_liwei_0616_phase_a_cache.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v tests.test_prewarm_liwei_0616_phase_a_cache
 conda run --no-capture-output -n forecast_env python -m scripts.prewarm_liwei_0616_phase_a_cache --help
 ```
 
@@ -404,14 +404,14 @@ git commit -m "feat: add liwei phase a cache prewarm"
 - [ ] **Step 1: Run all targeted unit tests**
 
 ```bash
-conda run --no-capture-output -n forecast_env python -m pytest \
-  tests/test_liwei_0616_phase_a_cache.py \
-  tests/test_liwei_0616_cons_sda_k3_div_k10.py \
-  tests/test_liwei_0616_7y01_cons_say_k3_div_k10.py \
-  tests/test_liwei_0616_7y03_cons_all_k3_div_k8.py \
-  tests/test_liwei_0616_10y01_cons_say_k3_div_k10.py \
-  tests/test_liwei_0616_10y02_cons_say_k3_div_k5.py \
-  tests/test_prewarm_liwei_0616_phase_a_cache.py -v
+conda run --no-capture-output -n bond_factor_lab_service python -m unittest -v \
+  tests.test_liwei_0616_phase_a_cache \
+  tests.test_liwei_0616_cons_sda_k3_div_k10 \
+  tests.test_liwei_0616_7y01_cons_say_k3_div_k10 \
+  tests.test_liwei_0616_7y03_cons_all_k3_div_k8 \
+  tests.test_liwei_0616_10y01_cons_say_k3_div_k10 \
+  tests.test_liwei_0616_10y02_cons_say_k3_div_k5 \
+  tests.test_prewarm_liwei_0616_phase_a_cache
 ```
 
 Expected: all pass.
