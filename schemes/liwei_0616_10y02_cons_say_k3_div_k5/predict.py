@@ -65,6 +65,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
             date_to_week=date_to_week,
             feature_date=feature_date,
             require_labels=False,
+            use_incremental_cache=True,
         )
         prediction = int(result["prediction"])
         confidence = float(result.get("confidence", abs(prediction)))
@@ -115,6 +116,7 @@ def _record_extra(
     monthly_artifact,
 ) -> dict[str, Any]:
     window = liwei_0616_pit_window(feature_date)
+    cache_audit = dict(result.get("phase_a_cache_audit") or {})
     return {
         "feature_date": feature_date,
         "anchor_date": feature_date,
@@ -136,6 +138,12 @@ def _record_extra(
         "model_current_start": window.current_start,
         "model_current_end": window.current_end,
         "model_test_ranges": [list(item) for item in window.test_ranges],
+        "phase_a_cache": cache_audit,
+        "phase_a_cache_status": cache_audit.get("status"),
+        "phase_a_cache_watermark": cache_audit.get("watermark"),
+        "phase_a_cache_missing_dates": cache_audit.get("missing_dates", []),
+        "phase_a_cache_version": cache_audit.get("version"),
+        "phase_a_cache_fingerprint": cache_audit.get("fingerprint"),
         "input_artifact_path": str(daily_artifact.path),
         "input_artifact_source": daily_artifact.source,
         "input_artifact_data_version": daily_artifact.data_version,

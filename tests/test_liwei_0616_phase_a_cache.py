@@ -220,6 +220,17 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
         self.assertEqual(y01_core.BASELINE_CONFIGS, y03_core.BASELINE_CONFIGS)
         self.assertEqual(y01_core.required_baselines(), ["STD", "ACCWT", "CROSS_5Y", "DIV"])
 
+    def test_10y_scheme_pair_declares_one_shared_baseline_family(self) -> None:
+        from schemes.liwei_0616_10y01_cons_say_k3_div_k10 import inference as y01_inference
+        from schemes.liwei_0616_10y01_cons_say_k3_div_k10.core import v31_common as y01_core
+        from schemes.liwei_0616_10y02_cons_say_k3_div_k5 import inference as y02_inference
+        from schemes.liwei_0616_10y02_cons_say_k3_div_k5.core import v31_common as y02_core
+
+        self.assertEqual(y01_inference.CACHE_FAMILY, "liwei_0616_10y_v61")
+        self.assertEqual(y02_inference.CACHE_FAMILY, y01_inference.CACHE_FAMILY)
+        self.assertEqual(y01_core.BASELINE_CONFIGS, y02_core.BASELINE_CONFIGS)
+        self.assertEqual(y01_core.required_baselines(), ["STD", "ACCWT", "V55_7Y", "DIV"])
+
     def _common(self, root: Path, trainer):
         return {
             "spec": self.spec,
