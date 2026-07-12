@@ -10,7 +10,7 @@ from scheduler.scheme_runner import run_scheme
 PREWARM_SCHEMES = (
     "liwei_0616_cons_sda_k3_div_k10",
     "liwei_0616_7y01_cons_say_k3_div_k10",
-    "liwei_0616_10y01_cons_say_k3_div_k10",
+    "liwei_0616_10y02_cons_say_k3_div_k5",
 )
 
 

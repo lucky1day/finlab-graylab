@@ -1,6 +1,16 @@
 # 当前状态
 
-**更新日期**: 2026-07-11
+**更新日期**: 2026-07-12
+
+## 2026-07-12 liwei_0616 T+5 日频增量 Phase A 缓存
+
+本轮只修改五个 `liwei_0616` 日频 T+5 方案。实盘 adapter 首次运行会按 baseline 生成 `.pkl` Phase A 缓存，后续日期在锁内读取上一水位，只对 `missing_dates` 执行原始滚动训练，再把完整缓存交给未改动的 Phase B/C、seasonal VT、consensus 和 fallback 路径。历史 backtest/benchmark 默认仍走原路径，不强制使用该实盘缓存。
+
+缓存按期限共享：5Y 家族 3 个 baseline；7Y_01/7Y_03 共用 4 个 baseline；10Y_01/10Y_02 共用 4 个 baseline。默认目录为 `backtest_artifacts/runtime_cache/liwei_0616/{5y|7y|10y}/{baseline}.pkl`。缓存 identity 覆盖 canonical baseline 配置、IC 起点、horizon/purge gap、ABI 以及 Python/NumPy/pandas/LightGBM 版本；已完成的 daily/weekly/monthly 历史前缀发生修订时冷重建。当前未结束周/月的聚合值允许随新日变化，待下一周/月出现后再纳入受保护前缀，避免正常日更被误判为历史修订。写入使用逐 baseline `flock`、临时文件、`fsync` 和 `os.replace`；损坏文件隔离，失败扩展保留旧缓存，较早截断请求不会降低较新持久水位。
+
+真实隔离 DryRunGate 使用 `predict_date=2026-06-11/2026-06-12` 验证：5Y、7Y_01、10Y_01 均得到 `cold_build → extended`，扩展时 `missing_dates` 只有 `2026-06-11`；同日重跑为 `hit`。7Y_03 直接复用 7Y_01 的缓存并返回 `hit`。5Y 另以“完整冷建到 2026-06-11”与“从 2026-06-10 增量追加 2026-06-11”两份独立缓存逐值比较，最终方向、置信度、target date、`vote_score`、全部 baseline score/sign 完全一致。所有 DryRunGate 受保护表 delta 为 0。10Y_02 的完整 OOS 日期集合是 10Y_01 两段窗口的超集，因此预热 CLI 选择 10Y_02 作为 10Y 家族代表，确保首建后两个 10Y 方案均可复用。
+
+验证结果：缓存/五方案 adapter/预热聚焦单测 89/89 通过；五个回测模块 82/82 通过；五方案 Static/Input/Unit/Compare Gate 共 20/20 通过；`forecast_env` 下预热 CLI `--help` 通过。未执行正式缓存预热、scheduler 重启、业务写库、`master` 合并或远程推送。
 
 ## 2026-07-11 T+1 最新验证与周末 actual 补刷
 

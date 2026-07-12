@@ -349,9 +349,11 @@ Patch `scheduler.scheme_runner.run_scheme` and assert the script executes exactl
 PREWARM_SCHEMES = (
     "liwei_0616_cons_sda_k3_div_k10",
     "liwei_0616_7y01_cons_say_k3_div_k10",
-    "liwei_0616_10y01_cons_say_k3_div_k10",
+    "liwei_0616_10y02_cons_say_k3_div_k5",
 )
 ```
+
+10Y 代表必须选择完整 OOS 日期集合的 10Y_02；它是 10Y_01 两段窗口的超集，反向预热不能覆盖 10Y_02 的首次运行。
 
 Assert returned JSON contains per-scheme cache status/watermark and the module never imports `scheduler.repository` or calls a persistence API.
 

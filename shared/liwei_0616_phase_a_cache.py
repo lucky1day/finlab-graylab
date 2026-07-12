@@ -65,23 +65,36 @@ def prepare_phase_a_caches(
         with _exclusive_lock(path.with_suffix(".lock")):
             envelope = _load_envelope(path)
             cached = None
+            preserve_newer_watermark = False
             if envelope is not None:
                 identity_ok = envelope.get("baseline_fingerprint") == fingerprint
-                input_ok = identity_ok and _input_prefix_matches(
-                    envelope.get("input_prefix"),
-                    daily_df=daily_df,
-                    weekly_df=weekly_df,
-                    monthly_df=monthly_df,
-                )
-                if identity_ok and input_ok:
+                validated_candidate = None
+                if identity_ok:
                     try:
-                        cached = _validate_phase_a_cache(envelope.get("phase_a_cache"))
+                        validated_candidate = _validate_phase_a_cache(envelope.get("phase_a_cache"))
                     except (TypeError, ValueError):
                         _quarantine_invalid_cache(path)
                         envelope = None
-                else:
+                if envelope is not None and not identity_ok:
                     _quarantine_invalid_cache(path)
                     envelope = None
+                elif envelope is not None and validated_candidate is not None:
+                    cached_watermark = _phase_a_watermark(validated_candidate)
+                    preserve_newer_watermark = bool(
+                        cached_watermark and _max_daily_date(daily_df) < cached_watermark
+                    )
+                    if preserve_newer_watermark:
+                        envelope = None
+                    elif _input_prefix_matches(
+                        envelope.get("input_prefix"),
+                        daily_df=daily_df,
+                        weekly_df=weekly_df,
+                        monthly_df=monthly_df,
+                    ):
+                        cached = validated_candidate
+                    else:
+                        _quarantine_invalid_cache(path)
+                        envelope = None
             cached_dates = set(cached["test_dates"]) if cached is not None else set()
             missing_dates = [day for day in requested_dates if day not in cached_dates]
 
@@ -107,7 +120,8 @@ def prepare_phase_a_caches(
                     monthly_df=monthly_df,
                     created_at=(envelope or {}).get("created_at"),
                 )
-                _atomic_pickle_dump(path, envelope)
+                if not preserve_newer_watermark:
+                    _atomic_pickle_dump(path, envelope)
             if merged is None:
                 raise RuntimeError(f"baseline {baseline} cache is empty after preparation")
         caches[baseline] = merged
@@ -116,6 +130,7 @@ def prepare_phase_a_caches(
             "watermark": max(merged["test_dates"]),
             "missing_dates": missing_dates,
             "fingerprint": fingerprint,
+            "preserved_newer_watermark": preserve_newer_watermark,
         }
 
     statuses = {str(item["status"]) for item in baseline_audits.values()}
@@ -160,6 +175,24 @@ def _requested_dates(
     for start, end in test_ranges:
         in_range |= dates.between(str(start), str(end), inclusive="both")
     return sorted(set(dates[valid & in_range].astype(str).tolist()))
+
+
+def _max_daily_date(daily_df: pd.DataFrame) -> str:
+    if "date" not in daily_df.columns:
+        return ""
+    dates = pd.to_datetime(daily_df["date"], errors="coerce").dropna()
+    if dates.empty:
+        return ""
+    return dates.max().strftime("%Y-%m-%d")
+
+
+def _phase_a_watermark(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return ""
+    dates = value.get("test_dates")
+    if not isinstance(dates, (list, tuple)) or not dates:
+        return ""
+    return max(str(day) for day in dates)
 
 
 def _baseline_fingerprint(spec: PhaseACacheSpec, baseline: str) -> str:
@@ -325,8 +358,8 @@ def _input_prefix_state(
     monthly_df: pd.DataFrame,
     watermark: str,
 ) -> dict[str, Any]:
-    weekly_bound = _max_bound(weekly_df, "week_id")
-    monthly_bound = _max_bound(monthly_df, "month_id")
+    weekly_bound = _max_completed_bound(weekly_df, "week_id")
+    monthly_bound = _max_completed_bound(monthly_df, "month_id")
     bounds = {"daily": watermark, "weekly": weekly_bound, "monthly": monthly_bound}
     return {
         "bounds": bounds,
@@ -359,13 +392,13 @@ def _input_prefix_matches(
     return current == {name: str(fingerprints.get(name)) for name in current}
 
 
-def _max_bound(df: pd.DataFrame, key: str) -> str | int | None:
+def _max_completed_bound(df: pd.DataFrame, key: str) -> str | int | None:
     if key not in df.columns or df.empty:
         return None
-    values = _normalized_key(df[key], key).dropna()
-    if values.empty:
+    values = sorted(_normalized_key(df[key], key).dropna().unique().tolist())
+    if len(values) < 2:
         return None
-    value = values.max()
+    value = values[-2]
     return int(value) if key == "week_id" else str(value)
 
 
@@ -374,7 +407,9 @@ def _frame_prefix_fingerprint(df: pd.DataFrame, key: str, bound: Any) -> str:
         raise ValueError(f"input frame missing prefix key {key}")
     work = df.copy()
     work[key] = _normalized_key(work[key], key)
-    if bound is not None:
+    if bound is None:
+        work = work.iloc[0:0]
+    else:
         normalized_bound = _normalized_bound(bound, key)
         work = work[work[key].notna() & (work[key] <= normalized_bound)]
     work = work.sort_values(key).reset_index(drop=True)

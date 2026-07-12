@@ -205,7 +205,7 @@ seasonal VT、信号精度、共识和 streak fallback 具有路径依赖，因�
 
 - 5Y_01：生成 5Y 三个 baseline。
 - 7Y_01：其 required baselines 包含 fallback `DIV`，生成 7Y 四个 baseline。
-- 10Y_01：其 required baselines 包含 fallback `DIV`，生成 10Y 四个 baseline。
+- 10Y_02：其完整 OOS 日期集合覆盖 10Y_01 的两段窗口，并生成 10Y 四个 baseline；用超集方案预热可保证两个 10Y 方案直接复用。
 
 部署顺序：
 

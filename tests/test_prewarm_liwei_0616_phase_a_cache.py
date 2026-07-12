@@ -32,7 +32,7 @@ class PrewarmLiwei0616PhaseACacheTests(unittest.TestCase):
             (
                 "liwei_0616_cons_sda_k3_div_k10",
                 "liwei_0616_7y01_cons_say_k3_div_k10",
-                "liwei_0616_10y01_cons_say_k3_div_k10",
+                "liwei_0616_10y02_cons_say_k3_div_k5",
             ),
         )
         self.assertEqual(calls, [(scheme_id, "2026-07-10") for scheme_id in PREWARM_SCHEMES])

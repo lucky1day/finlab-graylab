@@ -153,7 +153,7 @@ def _prepare_incremental_phase_a_caches(
 
     def train_missing(baseline: str, missing_ranges: tuple[tuple[str, str], ...]) -> Mapping[str, Any]:
         with redirect_stdout(sys.stderr):
-            context = run_prediction(
+            output = run_prediction(
                 model_config(
                     baseline,
                     daily_df=daily_df,
@@ -166,9 +166,11 @@ def _prepare_incremental_phase_a_caches(
                     require_labels=False,
                     emit_report=False,
                     phase_a_only=True,
+                    return_ctx=True,
                     n_workers=n_workers,
                 )
             )
+        context = output[1] if isinstance(output, tuple) and len(output) == 2 else output
         if not isinstance(context, Mapping) or "phase_a_cache" not in context:
             raise RuntimeError(f"7Y baseline {baseline} did not return Phase A cache")
         return context["phase_a_cache"]
