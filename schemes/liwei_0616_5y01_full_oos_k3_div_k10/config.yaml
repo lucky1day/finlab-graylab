@@ -1,0 +1,25 @@
+scheme_id: liwei_0616_5y01_full_oos_k3_div_k10
+name: "liwei_0616 5Y_01 原脚本Full-OOS"
+description: "models-liwei-0616 5Y_01_cons_SDA_k_3_DIV_K_10 原脚本；STD/DIV/ACCWT 三基线 k=3 共识，DIV_K=10 streak-break fallback；2024-01-01 起单段连续 Full-OOS；日频 T+5。"
+horizon: 5
+task_type: "T+5"
+tenors: ["5Y"]
+frequency: daily
+schedule:
+  cron: "3 7 * * 1-5"
+  timezone: "Asia/Shanghai"
+  timeout_sec: 3600
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_daily.v1
+  required_columns: ["date", "TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C", "SH000300", "IFCFE00C", "S0031525", "AUSHF00C", "CUSHF01C", "RBSHF01C", "USDCNH0C", "SX5EDF0C", "DR007IBC", "M0017153", "G0006352", "G0006353", "M0000005", "M0000271", "M0048486", "G0003956", "B2559386", "G0003892", "DRS00001", "DRS00002", "AGSHF01C", "ZNSHF00C", "HCSHF01C"]
+  auxiliary_inputs: [{"frequency": "weekly", "data_version": "shared_data_service_weekly.v1", "required_columns": ["week_id", "S0114089", "N1355677", "V0135838", "V0184553", "W0192843", "X0100205", "Y0110594", "HWW00001", "HWW00002", "HWW00003"]}, {"frequency": "monthly", "data_version": "shared_data_service_monthly.v1", "required_columns": ["month_id", "M0000545", "M0061518", "M0096870", "M0317126", "M0009970", "M0009973", "M0001227"]}]
+backtest:
+  runner: backtests.liwei_0616_5y01_full_oos_k3_div_k10_reproduction
+  runner_args: ["--batch-mode", "monthly", "--n-workers", "20", "--phase-a-cache"]
+  benchmark_id: liwei_0616_5y01_full_oos
+  data_source: framework_db_aligned
+  benchmark_required: True
+  start_date: "2025-01-01"
+  end_date: "2026-05-22"

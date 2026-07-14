@@ -1,0 +1,66 @@
+{
+  "benchmark_id": "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+  "scheme_id": "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+  "target_tenor": "5Y",
+  "horizon": 5,
+  "benchmark_role": "historical/source-configured-experiment",
+  "model_scope": "experimental/platform_live_pit_variant",
+  "screen_metric": "auc",
+  "screen_rebal": "yearly",
+  "vote_baselines": [
+    "STD",
+    "DIV",
+    "ACCWT",
+    "CROSS_7Y"
+  ],
+  "fallback_baseline": "DIV",
+  "streak_K": 10,
+  "row_count": 12,
+  "samples": 12,
+  "metric_samples": 10,
+  "correct": 8,
+  "accuracy": 0.8,
+  "active_rate": 0.8333333333333334,
+  "feature_start": "2026-05-06",
+  "feature_end": "2026-05-21",
+  "target_start": "2026-05-13",
+  "target_end": "2026-05-28",
+  "source_context_start": "2024-01-02",
+  "source_context_end": "2026-07-03",
+  "source_cache_root": "backtest_artifacts/prod_screen_july/repro_clean_v2/cache/5y/auc_yearly",
+  "source_cache_fingerprints": {
+    "STD": "9f99a641e9e85f05121d727e6116224263f0e92090de164ed462806a548f57ba",
+    "DIV": "04cb699d480120d48abad78414c824a78153050642e3b1f37ead1bb28ea39a09",
+    "ACCWT": "dfa5552de7601f5525ca207a7e803a9067223df98416ffe732ad7968075e1be7",
+    "CROSS_7Y": "eda6118786e5d435d46cca20d1dd96bff499069eca2e2aab2371fda0015025a8"
+  },
+  "input_artifacts": {
+    "daily": {
+      "path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/runtime_inputs/liwei_0616_5y_auc_yearly_all_k3_div_k10/daily_output_2026-07-10.csv",
+      "content_hash": "bdf191549e731e9b090f69e80a635dd881f69a1987e8b357214e5ea21fadcc1f",
+      "source": "shared_data_service_daily",
+      "data_version": "shared_data_service_daily.v1"
+    },
+    "weekly": {
+      "path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/runtime_inputs/liwei_0616_5y_auc_yearly_all_k3_div_k10/weekly_output_2026-07-10.csv",
+      "content_hash": "37f775744c09465e404661dcbc6aed574653599518390e711c69cbf44e2776b4",
+      "source": "shared_data_service_weekly",
+      "data_version": "shared_data_service_weekly.v1"
+    },
+    "monthly": {
+      "path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/runtime_inputs/liwei_0616_5y_auc_yearly_all_k3_div_k10/monthly_output_2026-07-10.csv",
+      "content_hash": "c9033bb8b4eaca2e21c0c2102b459aa23d38ee9d3b143f0536fedbe21179bd3a",
+      "source": "shared_data_service_monthly",
+      "data_version": "shared_data_service_monthly.v1"
+    }
+  },
+  "trading_day_alignment": "shared.calendar_service DB calendar; target_date=T+5 trading days",
+  "metric_month_alignment": "target_date",
+  "flat_accuracy_policy": "prediction == 0 excluded",
+  "numeric_tolerance": "1e-8 fail-closed",
+  "benchmark_provenance": {
+    "source_role": "platform_core_reexecution_from_source_phase_a_cache",
+    "execution": "platform core run_5y_all_for_feature_window; current is not copied from original",
+    "yearly_wiring_note": "prod_screen runner wf_ic wiring fix: wf_ic={'rebal':'yearly','cap':2000} supplied before clean cache generation"
+  }
+}
