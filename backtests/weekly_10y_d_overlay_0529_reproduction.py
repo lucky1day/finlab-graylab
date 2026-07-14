@@ -17,6 +17,8 @@ from backtests.weekly_base_runner import (
     WeeklyPredictionPoint,
     build_weekly_backtest_rows,
     compact_weekly_benchmark_rows,
+    index_weekly_core_output_rows,
+    policy_generated_flat_summary,
 )
 from backtests.repository import clean_json
 from shared.calendar_service import get_calendar
@@ -113,6 +115,8 @@ def build_backtest_rows(
         live_target_start_date=LIVE_TARGET_START_DATE,
         precheck_predict_start=True,
         precheck_target=True,
+        no_signal_policy="flat",
+        no_signal_source_component="d_overlay",
     )
 
     def normalize_for_calendar(frame: pd.DataFrame) -> pd.DataFrame:
@@ -157,16 +161,10 @@ def build_backtest_rows(
 
 
 def _prediction_points_by_week_id(prediction_df: pd.DataFrame) -> dict[int, dict[str, Any]]:
-    if prediction_df.empty:
-        return {}
-    df = prediction_df.copy()
-    df["week_id"] = pd.to_numeric(df["week_id"], errors="coerce").astype("Int64")
-    df = df.dropna(subset=["week_id"]).copy()
-    df["week_id"] = df["week_id"].astype(int)
-    by_week: dict[int, dict[str, Any]] = {}
-    for _, row in df.sort_values("week_id").iterrows():
-        by_week[int(row["week_id"])] = row.to_dict()
-    return by_week
+    return index_weekly_core_output_rows(
+        prediction_df,
+        source_component="D-overlay",
+    )
 
 
 def validate_original_benchmark_rows(
@@ -299,6 +297,7 @@ def run_weekly_10y_d_overlay_0529_reproduction(
             "end_date": output.end_date,
             "rows": compact_rows,
             "row_count": len(output.rows),
+            "benchmark_row_count": len(compact_rows),
             "monthly_count": len(output.monthly_metrics),
             "summary": output.summary,
         }
@@ -311,6 +310,7 @@ def run_weekly_10y_d_overlay_0529_reproduction(
             "start_date": output.start_date,
             "end_date": output.end_date,
             "row_count": len(output.rows),
+            "benchmark_row_count": len(compact_rows),
             "monthly_count": len(output.monthly_metrics),
             "summary": output.summary,
             "rows": compact_rows,
@@ -359,6 +359,7 @@ def _annotate_summary(
     summary["backtest_max_as_of_date"] = BACKTEST_MAX_AS_OF_DATE
     summary["point_in_time_artifact_count"] = 0
     summary["original_benchmark_validation"] = benchmark_validation or {}
+    summary.update(policy_generated_flat_summary(output.rows))
 
 
 def _normalize_weekly_frame(weekly_df: pd.DataFrame) -> pd.DataFrame:

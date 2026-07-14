@@ -59,6 +59,7 @@ PREDICT_ALLOWED_SHARED_IMPORTS = {
     "shared.models",
     "shared.calendar_service",
     "shared.prediction_context",
+    "shared.signal_policy",
     "shared.weekly_average_source_evidence",
     "shared.weekly_average_lgbm_source_runner",
     "shared.weekly_average_lgbm_predict_adapter",

@@ -331,7 +331,9 @@ class PredictionRecordTests(unittest.TestCase):
     @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
     @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
     @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
-    def test_run_rejects_stale_signal_week(self, mock_get_cal, mock_ds, mock_build, mock_vote):
+    def test_run_turns_missing_current_signal_into_flat_record(
+        self, mock_get_cal, mock_ds, mock_build, mock_vote
+    ):
         mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
         mock_get_cal.return_value = mock_cal
         mock_ds.return_value = mock_engine
@@ -349,8 +351,143 @@ class PredictionRecordTests(unittest.TestCase):
 
         from schemes.weekly_5y_direct_0529 import predict
 
-        with self.assertRaisesRegex(RuntimeError, "当前特征周"):
+        try:
+            records = predict.run("2026-06-12")
+        except RuntimeError as exc:
+            self.fail(f"缺少当前周信号时应返回平记录，不应抛异常: {exc}")
+
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record.predicted_direction, 0)
+        self.assertEqual(record.confidence, 0.0)
+        self.assertEqual(record.feature_date, "2026-06-11")
+        self.assertEqual(record.target_date, "2026-06-19")
+        self.assertEqual(record.extra["feature_week_id"], 202620)
+        self.assertEqual(record.extra["target_week_id"], 202621)
+        self.assertEqual(record.extra["input_artifact_path"], "/tmp/test_weekly_output.csv")
+        self.assertEqual(record.extra["signal_state"], "no_signal")
+        self.assertEqual(record.extra["signal_policy"], "no_signal_to_flat_v1")
+        self.assertIs(record.extra["signal_policy_applied"], True)
+        self.assertEqual(
+            record.extra["no_signal_reason"],
+            "core_output_missing_current_feature",
+        )
+        self.assertEqual(record.extra["source_component"], "rule_vote")
+        self.assertEqual(record.extra["available_signal_weeks"], (202619,))
+        self.assertEqual(record.extra["latest_signal_week_id"], 202619)
+
+    @patch("schemes.weekly_5y_direct_0529.predict.build_rule_vote")
+    @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
+    @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
+    def test_run_rejects_completely_empty_core_output(
+        self, mock_get_cal, mock_ds, mock_build, mock_vote
+    ):
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_vote.return_value = pd.DataFrame()
+
+        from schemes.weekly_5y_direct_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "规则投票未产生有效行"):
             predict.run("2026-06-12")
+
+    @patch("schemes.weekly_5y_direct_0529.predict.build_rule_vote")
+    @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
+    @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
+    def test_run_rejects_missing_current_feature_input_before_core(
+        self, mock_get_cal, mock_ds, mock_build, mock_vote
+    ):
+        historical_only = _make_weekly_df(week_ids=list(range(202601, 202620)))
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies(historical_only)
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_5y_direct_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "输入水位不足.*202620"):
+            predict.run("2026-06-12")
+        mock_vote.assert_not_called()
+
+    @patch("schemes.weekly_5y_direct_0529.predict.build_rule_vote")
+    @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
+    @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
+    def test_run_rejects_missing_current_feature_required_value(
+        self, mock_get_cal, mock_ds, mock_build, mock_vote
+    ):
+        current_missing = _make_weekly_df(week_ids=list(range(202601, 202621)))
+        current_missing.loc[current_missing["week_id"].eq(202620), "TB5YWI3C"] = None
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies(current_missing)
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_5y_direct_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "当前周必要输入缺失.*TB5YWI3C"):
+            predict.run("2026-06-12")
+        mock_vote.assert_not_called()
+
+    @patch("schemes.weekly_5y_direct_0529.predict.build_rule_vote")
+    @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
+    @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
+    def test_run_rejects_fractional_output_week_id(
+        self, mock_get_cal, mock_ds, mock_build, mock_vote
+    ):
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_vote.return_value = pd.DataFrame(
+            {
+                "week_id": [202619.5],
+                "final_pred_label": [1],
+                "final_prob_up": [0.6],
+                "rule_vote": [1.0],
+                "source_spec": ["fractional"],
+            }
+        )
+
+        from schemes.weekly_5y_direct_0529 import predict
+
+        with self.assertRaisesRegex(ValueError, "week_id 必须为严格整数"):
+            predict.run("2026-06-12")
+
+    @patch("schemes.weekly_5y_direct_0529.predict.build_rule_vote")
+    @patch("schemes.weekly_5y_direct_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_5y_direct_0529.predict.create_input_engine")
+    @patch("schemes.weekly_5y_direct_0529.predict.get_calendar")
+    def test_run_preserves_native_flat_without_policy_marker(
+        self, mock_get_cal, mock_ds, mock_build, mock_vote
+    ):
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_vote.return_value = pd.DataFrame(
+            {
+                "week_id": [202620],
+                "final_pred_label": [0],
+                "final_prob_up": [0.5],
+                "rule_vote": [0.0],
+                "source_spec": ["native_flat"],
+            }
+        )
+
+        from schemes.weekly_5y_direct_0529 import predict
+
+        record = predict.run("2026-06-12")[0]
+
+        self.assertEqual(record.predicted_direction, 0)
+        self.assertEqual(record.confidence, 0.5)
+        self.assertEqual(record.extra["rule_vote"], 0.0)
+        self.assertNotIn("signal_policy_applied", record.extra)
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +564,7 @@ class WeekIdIntegrityTests(unittest.TestCase):
             "shared.models",
             "shared.calendar_service",
             "shared.prediction_context",
+            "shared.signal_policy",
         }
         for node in ast.walk(tree):
             if isinstance(node, (ast.Import, ast.ImportFrom)):

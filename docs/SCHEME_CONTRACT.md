@@ -1,6 +1,6 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-07-06
+**更新日期**: 2026-07-14
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
@@ -102,7 +102,8 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 - `predicted_direction ∈ {1, -1, 0}`（`1`=收益率上行/空，`-1`=下行/多，`0`=平）
 - `confidence is None` 或为有限浮点数。它承接算法自身输出的置信度、概率或分数，不改变方向判定；如果原始算法没有天然置信度，source/current benchmark 必须使用同一确定性代理值并在状态文档说明。
 - `model_version is None` 或长度不超过 DB 字段 `VARCHAR(64)`；如果原始 source 的完整模型 ID、候选 ID 或 runner ID 更长，顶层 `model_version` 必须使用稳定短 ID，完整原始 ID 写入 `extra.source_model_id`、`extra.candidate_id` 或等价审计字段。
-- 返回条数 `== 本次有效 tenors 数量`；落到 registry 后拆成多个业务方案行
+- 一次成功 live run 必须为本次 active registry target 集合中的每个 target 返回且仅返回一条记录；返回 target 集合必须与 active target 集合完全相等。空列表、缺少 target、重复 target 或多余 target 均 fail-closed。
+- `t_scheme_runs.records_expected` 必须在启动算法前写为 active target 数量；成功状态只允许在 `records_expected == records_returned == records_written` 时成立。executor 只校验完整性，不捕获异常生成业务信号。
 
 `extra` 必填键：
 
@@ -115,7 +116,21 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 > 周频 `target_rule` 与 `t_scheme_weekly_actuals` / `WeeklyActualRecord.target_rule` 对齐，保证预测与实际方向口径一致。
 > 实盘落库必须写入一等字段 `prediction_phase`（`gray_live` / `scheduled_live`）。`extra.prediction_phase` 仅作为过渡审计副本，不能替代平台字段。
 
-### 3.1 Benchmark 样本日期契约
+### 3.1 投票类方案的无信号输出
+
+对已批准采用 `no_signal_to_flat_v1` 的投票、共识或投票叠加方案，如果输入 artifact 确实包含当前 `feature_date` / `feature_week_id` 且必要字段有效、日期上下文和 core 均正常完成、core 结果非空且 feature key 合法，但结果中明确缺少当前 key 的最终输出，则 adapter 可以把该业务上的“无方向信号”转换为平台平信号：
+
+- `predicted_direction=0`
+- `confidence=0.0`
+- `signal_state="no_signal"`
+- `signal_policy="no_signal_to_flat_v1"`
+- `signal_policy_applied=true`
+- `no_signal_reason="core_output_missing_current_feature"`
+- `source_component` 写明缺失最终输出的组件
+
+算法原生输出的 `0` 必须原样保留，且不得写入 `signal_policy_applied=true`。core 返回整体空结果或非法 feature key、输入水位不足、当前周必要字段缺失、日历异常、artifact 错误、模型异常、超时或代码错误仍必须 fail-closed；不得由 adapter 或 executor 转换为平。该规则只改变平台输出契约，不修改 core、投票、fallback、阈值或 source benchmark。
+
+### 3.2 Benchmark 样本日期契约
 
 逐方案 original benchmark 的日期字段表达原始算法站位日 T；它存放在 `schemes/{scheme_id}/benchmarks/`，不同于 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。进入平台后，T 必须对齐一等字段 `feature_date`，不能对齐实盘语义下的 `predict_date`。历史旧 CSV 若仍使用列名 `predict_date` 或 `date`，也只能解释为 source T；新增 benchmark 文件必须显式写入 `feature_date` 或 `source_t`。
 

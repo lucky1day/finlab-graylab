@@ -114,7 +114,7 @@
 
 周度方案尤其要验证：周六 `predict_date` 不是交易日时，只能向前找最近 DB 周作为 `feature_week_id`；`target_week_id/target_date` 必须由 DB 日历从 `feature_week_id` 推导到下一实际周及其最后交易日，不允许用公式 `week_id + 1` 或未来周数据存在性决定 target。若源周历出现单个交易日提前跳周、随后非交易日回落的孤立 forward jump，只能依赖 `shared.week_calendar_normalizer` 的只读归一化，不能在方案里另写周历修补逻辑。
 
-若源周历在调度日附近提前切周，平台可以在 `shared.prediction_context` 做受限日历 fallback 来确定完整输入周；但 source core 对当前 `feature_week_id` 没有有效信号时必须 fail-closed。任何新增周频方案都不得把上一周预测、旧投票或旧 selector 状态复制成当前周预测。
+若源周历在调度日附近提前切周，平台可以在 `shared.prediction_context` 做受限日历 fallback 来确定完整输入周。输入 artifact 必须包含当前 `feature_week_id` 且方案必要字段有效；输入水位、日历、模型、超时、代码异常或 core 整体空/非法输出均必须 fail-closed。只有经批准采用 `no_signal_to_flat_v1` 的投票类方案，才可在非空合法 core 结果明确缺少当前 feature key 时生成带政策审计字段的平信号。任何方案都不得把上一周预测、旧投票或旧 selector 状态复制成当前周预测。
 
 ## 5. 源文件对比是激活前强制项
 

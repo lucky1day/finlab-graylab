@@ -72,6 +72,75 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
         self.assertEqual(rows[0]["extra"]["target_date"], "2026-01-09")
         self.assertEqual(rows[0]["extra"]["input_artifact_source"], "unit_test")
         self.assertEqual(rows[0]["label"], 1)
+        output = runner.make_weekly_run_output("2026-01-02", "2026-01-16", rows)
+        runner._annotate_summary(
+            output,
+            SimpleNamespace(path=Path("/tmp/weekly_10y.csv"), source="unit_test"),
+            weekly_df,
+        )
+        self.assertEqual(output.summary["policy_generated_flat_count"], 0)
+        self.assertEqual(output.summary["policy_generated_flat_feature_keys"], [])
+
+    def test_missing_source_week_becomes_d_overlay_policy_flat(self) -> None:
+        from backtests import weekly_10y_d_overlay_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202601, 202602, 202603])
+        calendar = _calendar_for(weekly_df["week_id"])
+
+        def fake_overlay(frame: pd.DataFrame) -> pd.DataFrame:
+            del frame
+            return pd.DataFrame(
+                {
+                    "week_id": [202602],
+                    "d_pred_label": [1],
+                    "d_prob_up": [0.62],
+                    "d_model2_overlay": [True],
+                    "d_signal_source": ["source"],
+                    "score_pred_label": [-1],
+                    "score_prob_up": [0.38],
+                    "model2_prob_up": [0.62],
+                    "d_model2_pred_label": [1],
+                }
+            )
+
+        with patch.object(runner, "build_d_overlay", side_effect=fake_overlay):
+            rows = runner.build_backtest_rows(
+                weekly_df,
+                calendar=calendar,
+                artifact_path=Path("/tmp/weekly_10y.csv"),
+                artifact_source="unit_test",
+            )
+
+        self.assertEqual([row["extra"]["feature_week_id"] for row in rows], [202601, 202602])
+        self.assertEqual(rows[0]["predicted_direction"], 0)
+        self.assertEqual(rows[0]["confidence"], 0.0)
+        self.assertIs(rows[0]["extra"]["signal_policy_applied"], True)
+        self.assertEqual(rows[0]["extra"]["source_component"], "d_overlay")
+        self.assertEqual(rows[1]["predicted_direction"], 1)
+        self.assertEqual(rows[1]["confidence"], 0.62)
+        self.assertNotIn("signal_policy_applied", rows[1]["extra"])
+
+        output = runner.make_weekly_run_output("2026-01-02", "2026-01-09", rows)
+        runner._annotate_summary(
+            output,
+            SimpleNamespace(path=Path("/tmp/weekly_10y.csv"), source="unit_test"),
+            weekly_df,
+        )
+        self.assertEqual(output.summary["policy_generated_flat_count"], 1)
+        self.assertEqual(output.summary["policy_generated_flat_feature_keys"], [202601])
+
+    def test_empty_core_batch_fails_closed_instead_of_generating_all_flat(self) -> None:
+        from backtests import weekly_10y_d_overlay_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202601, 202602, 202603])
+        with patch.object(runner, "build_d_overlay", return_value=pd.DataFrame()):
+            with self.assertRaisesRegex(RuntimeError, "D-overlay core 未产生任何输出"):
+                runner.build_backtest_rows(
+                    weekly_df,
+                    calendar=_calendar_for(weekly_df["week_id"]),
+                    artifact_path=Path("/tmp/weekly_10y.csv"),
+                    artifact_source="unit_test",
+                )
 
     def test_prediction_rows_choose_target_week_from_calendar_not_adjacent_input_row(self) -> None:
         from backtests import weekly_10y_d_overlay_0529_reproduction as runner
@@ -324,7 +393,8 @@ class Weekly10YDOverlay0529BacktestTests(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["scheme_id"], "weekly_10y_d_overlay_0529")
         self.assertEqual(payload["data_source"], "framework_db_aligned")
-        self.assertEqual(payload["row_count"], len(payload["rows"]))
+        self.assertEqual(payload["benchmark_row_count"], len(payload["rows"]))
+        self.assertGreaterEqual(payload["row_count"], payload["benchmark_row_count"])
         self.assertEqual(payload["runs"][0]["rows"], payload["rows"])
         self.assertGreater(payload["monthly_count"], 0)
         self.assertEqual(payload["summary"]["backtest_mode"], "original_batch_reproduction")
