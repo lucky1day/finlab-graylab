@@ -210,6 +210,27 @@ class StaticGateHardeningTests(unittest.TestCase):
 
             self.assertTrue(result.passed, result.errors)
 
+    def test_predict_can_import_signal_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            (scheme_dir / "predict.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from shared.signal_policy import no_signal_as_flat",
+                        'SCHEME_ID = "demo_daily"',
+                        "def run(predict_date: str):",
+                        "    return [no_signal_as_flat(source_component='vote')]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = _run_gate(project_root)
+
+            self.assertTrue(result.passed, result.errors)
+
     def test_predict_cannot_import_data_service_through_input_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)

@@ -1,6 +1,6 @@
 # 源算法保真强约束
 
-**更新日期**: 2026-06-27
+**更新日期**: 2026-07-14
 
 本文是所有 source-backed 方案的硬约束。凡是来自原始脚本、原始 CSV/Excel、外部 benchmark、`latest_oos` 或人工交付算法包的方案，平台接入时必须先保证“原始算法逻辑不被改变”。如与旧文档、旧 SOP 或历史案例说明冲突，以本文为准，并回写对应文档。
 
@@ -30,6 +30,7 @@
 - 把 source T 映射为平台 `feature_date`，再由平台日历推导 `target_date`。
 - 把路径、缓存、日志、extra、artifact hash、run summary、授权和写库从算法外层接入平台。
 - 为了复现原始执行口径，把 source batch 的 `source_start/source_end/current_start/current_end` 显式传给 core。
+- 对经批准的投票类方案，在当前 feature 输入及必要字段有效、core 正常完成且输出非空/feature key 合法、但当前 feature key 缺少最终输出时，由 adapter/backtest 输出层按 `no_signal_to_flat_v1` 生成平台平记录。该规则属于 L0 业务输出适配，不得修改 core、投票、fallback、阈值或内部 score；平台政策行必须从 source-original/current benchmark 和 compact CompareGate 输出中排除。
 
 允许的适配不得改变算法计算结果。若改造后方向或内部模型分数发生变化，先查输入 artifact、日期窗口、对齐规则和原始脚本 diff，不得通过调参或改信号去贴结果。
 
@@ -95,6 +96,7 @@ Source-backed 方案的最低验收标准：
 - 不得把“平台认为更合理”的 PIT 口径替代原始 source 口径，除非明确标成平台变体并获批。
 - 不得把 source batch 差异解释为“正常”后继续声称 source reproduction 已通过。
 - 不得复制 benchmark 结果当作 current 输出，也不得手工补预测方向。
+- 不得把 `signal_policy_applied=true` 的平台补平行写入或导出为 source-original/current benchmark。平台补平是可审计的确定性输出规则，不是手工预测，也不是原始算法输出。
 - 不得用后验结果调节内部 score，使其只在当前样本上贴合原始 CSV。
 - 不得让 adapter、backtest runner 或缓存策略改变同一 `feature_date` 的算法输出。
 

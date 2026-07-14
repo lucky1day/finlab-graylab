@@ -281,6 +281,49 @@ class Liwei0616InferenceTests(unittest.TestCase):
         self.assertEqual(row["prediction"], 1)
         self.assertEqual(row["model_version"], "liwei_0616_5y_01_v31")
 
+    def test_live_incremental_cache_is_passed_to_full_source_window(self) -> None:
+        from schemes.liwei_0616_cons_sda_k3_div_k10 import inference
+
+        detail = pd.DataFrame(
+            {
+                "anchor_date": ["2026-06-03"],
+                "prediction": [1],
+                "confidence": [1.0],
+                "vote_score": [0.7],
+            }
+        )
+        phase_a_caches = {"STD": {"test_dates": ["2026-06-03"], "results": []}}
+        audit = {
+            "status": "extended",
+            "watermark": "2026-06-03",
+            "missing_dates": ["2026-06-03"],
+            "version": "liwei_0616.phase_a.v1",
+            "fingerprint": "abc",
+            "baselines": {},
+        }
+        with (
+            patch.object(inference, "prepare_phase_a_caches", return_value=(phase_a_caches, audit)),
+            patch.object(inference, "run_5y01_for_feature_window", return_value=detail) as mock_run,
+        ):
+            row = inference.run_5y01_for_feature_date(
+                daily_df=pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(["2026-06-03"]),
+                        "TB5YWI0C": [2.0],
+                    }
+                ),
+                weekly_df=pd.DataFrame({"week_id": [202623]}),
+                monthly_df=pd.DataFrame({"month_id": ["202605"]}),
+                date_to_week={"2026-06-03": 202623},
+                feature_date="2026-06-03",
+                require_labels=False,
+                n_workers=1,
+                use_incremental_cache=True,
+            )
+
+        self.assertEqual(mock_run.call_args.kwargs["phase_a_caches"], phase_a_caches)
+        self.assertEqual(row["phase_a_cache_audit"], audit)
+
 
 class Liwei0616PredictionRecordTests(unittest.TestCase):
     """predict.py adapter 输出合规性测试。"""
@@ -334,6 +377,14 @@ class Liwei0616PredictionRecordTests(unittest.TestCase):
             "baseline_signs": {"STD": -1, "DIV": -1, "ACCWT": -1},
             "baseline_scores": {"STD": -0.71, "DIV": -0.70, "ACCWT": -0.75},
             "model_version": "liwei_0616_5y_01_v31",
+            "phase_a_cache_audit": {
+                "status": "extended",
+                "watermark": "2026-06-10",
+                "missing_dates": ["2026-06-10"],
+                "version": "liwei_0616.phase_a.v1",
+                "fingerprint": "cache-fingerprint",
+                "baselines": {"STD": {"status": "extended"}},
+            },
         }
 
         from schemes.liwei_0616_cons_sda_k3_div_k10 import predict
@@ -360,6 +411,12 @@ class Liwei0616PredictionRecordTests(unittest.TestCase):
         self.assertEqual(record.extra["fallback_baseline"], "DIV")
         self.assertEqual(record.extra["weekly_input_artifact_source"], "shared_data_service_weekly")
         self.assertEqual(record.extra["monthly_input_artifact_source"], "shared_data_service_monthly")
+        self.assertEqual(record.extra["phase_a_cache_status"], "extended")
+        self.assertEqual(record.extra["phase_a_cache_watermark"], "2026-06-10")
+        self.assertEqual(record.extra["phase_a_cache_missing_dates"], ["2026-06-10"])
+        self.assertEqual(record.extra["phase_a_cache_version"], "liwei_0616.phase_a.v1")
+        self.assertEqual(record.extra["phase_a_cache_fingerprint"], "cache-fingerprint")
+        self.assertEqual(mock_inference.call_args.kwargs["use_incremental_cache"], True)
         self.assertEqual(mock_daily_builder.call_args.kwargs["start_date"], predict.INPUT_START_DATE)
         self.assertEqual(mock_daily_builder.call_args.kwargs["end_date"], "2026-06-10")
         self.assertEqual(mock_weekly_builder.call_args.kwargs["as_of_date"], "2026-06-10")

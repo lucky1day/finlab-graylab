@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import subprocess
 import time
+from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -26,6 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 TIMEOUT_OUTPUT_DRAIN_SEC = 1
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -210,6 +213,8 @@ def execute_scheme(
     active_targets = _active_registry_targets(engine, cfg.scheme_id)
 
     run_id: int | None = None
+    records_returned: int | None = None
+    records_written = 0
     try:
         run_id = create_scheme_run(
             engine,
@@ -218,7 +223,13 @@ def execute_scheme(
             scheme_version=scheme_version,
             run_type="active",
             prediction_phase=prediction_phase,
+            records_expected=len(active_targets),
         )
+        if not active_targets:
+            raise ValueError(
+                f"active registry targets empty for scheme {cfg.scheme_id}: "
+                "missing=[], extra=[], duplicates=[]"
+            )
         effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
         records = run_scheme_subprocess(
             cfg.scheme_id,
@@ -226,39 +237,67 @@ def execute_scheme(
             algo_env=algo_env,
             timeout_sec=effective_timeout_sec,
         )
+        records_returned = len(records)
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
-        written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
+        current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
+        if current_active_targets != active_targets:
+            raise ValueError(
+                "active registry targets changed during run: "
+                f"initial={sorted(active_targets)}, current={sorted(current_active_targets)}"
+            )
+        records_written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
         duration = time.monotonic() - started
-        status = "success" if written == len(records) else "partial"
-        error_msg = None if status == "success" else f"written={written}, returned={len(records)}"
+        expected = len(active_targets)
+        status = "success" if expected == records_returned == records_written else "partial"
+        error_msg = (
+            None
+            if status == "success"
+            else f"expected={expected}, returned={records_returned}, written={records_written}"
+        )
         finish_scheme_run(
             engine,
             run_id=run_id,
             status=status,
-            records_returned=len(records),
-            records_written=written,
+            records_returned=records_returned,
+            records_written=records_written,
             error_message=error_msg,
         )
-        write_run_log(engine, cfg.scheme_id, predict_date, status, duration, error_msg, run_id=run_id)
-        return SchemeRunResult(cfg.scheme_id, status, written, duration, error_msg, run_id)
+        try:
+            write_run_log(engine, cfg.scheme_id, predict_date, status, duration, error_msg, run_id=run_id)
+        except Exception:
+            logger.exception("failed to write run log for completed scheme run_id=%s", run_id)
+        return SchemeRunResult(cfg.scheme_id, status, records_written, duration, error_msg, run_id)
     except Exception as exc:
         duration = time.monotonic() - started
         error_msg = str(exc)
         if run_id is not None:
-            finish_scheme_run(
-                engine,
-                run_id=run_id,
-                status="failed",
-                records_returned=None,
-                records_written=0,
-                error_message=error_msg,
-            )
-        write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
-        return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, error_msg, run_id)
+            try:
+                finish_scheme_run(
+                    engine,
+                    run_id=run_id,
+                    status="failed",
+                    records_returned=records_returned,
+                    records_written=records_written,
+                    error_message=error_msg,
+                )
+            except Exception as audit_exc:
+                logger.exception("failed to finish failed scheme run_id=%s", run_id)
+                error_msg = _append_audit_error(error_msg, "finish_scheme_run", audit_exc)
+        try:
+            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
+        except Exception as audit_exc:
+            logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
+            error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
+        return SchemeRunResult(cfg.scheme_id, "failed", records_written, duration, error_msg, run_id)
     finally:
         engine.dispose()
+
+
+def _append_audit_error(error_msg: str, operation: str, exc: Exception) -> str:
+    """保留原始错误并追加 best-effort 审计失败信息。"""
+    return f"{error_msg}; {operation} audit failed: {exc}"
 
 
 def _effective_timeout_sec(cfg: SchemeConfig, default_timeout_sec: int) -> int:
@@ -382,7 +421,7 @@ def _validate_records_against_active_registry(
     cfg: SchemeConfig,
     active_targets: set[tuple[str, int]],
 ) -> None:
-    """确保 live 写库记录全部对应 active registry 业务方案行。"""
+    """确保 live 返回 target multiset 与 active registry target set 一致。"""
     config_horizon = int(getattr(cfg, "horizon"))
     for record in records:
         if record.scheme_id != cfg.scheme_id:
@@ -394,12 +433,20 @@ def _validate_records_against_active_registry(
                 f"record {record.scheme_id}/{record.target_tenor} horizon={record.horizon} "
                 f"does not equal config horizon={config_horizon}"
             )
-        target = (str(record.target_tenor), int(record.horizon))
-        if target not in active_targets:
-            raise ValueError(
-                f"record {record.scheme_id}/{record.target_tenor}/h{record.horizon} "
-                "is not active in t_scheme_registry"
-            )
+
+    returned_targets = Counter((str(record.target_tenor), int(record.horizon)) for record in records)
+    returned_target_set = set(returned_targets)
+    missing = sorted(active_targets - returned_target_set)
+    extra = sorted(returned_target_set - active_targets)
+    duplicates = sorted(
+        (target_tenor, horizon, count)
+        for (target_tenor, horizon), count in returned_targets.items()
+        if count > 1
+    )
+    if missing or extra or duplicates:
+        raise ValueError(
+            f"live target mismatch: missing={missing}, extra={extra}, duplicates={duplicates}"
+        )
 
 
 def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None) -> tuple[bool, str]:

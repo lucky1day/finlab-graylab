@@ -1,6 +1,6 @@
 # 预测日期与实盘阶段语义
 
-**更新日期**: 2026-07-07
+**更新日期**: 2026-07-14
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
@@ -118,7 +118,7 @@ scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方�
 
 周频实盘也遵守同一条 T/T+1 规则：adapter 必须先用交易日历计算 `feature_date = previous_trading_day(predict_date)`，再由 `feature_date` 映射 `feature_week_id`，并以 `end_week=feature_week_id`、`as_of_date=feature_date` 构建周频输入。禁止直接用 `predict_date` 所在周作为 feature week；否则交易日手工运行或灰度补齐可能读到当前周未来数据。
 
-源周历可能在调度日附近提前切到新 `week_id`，而 `previous_trading_day(predict_date)` 所在周在 DB 周历中暂时找不到下一实际周。平台允许 `shared.prediction_context.build_weekly_live_context()` 做受限日历 fallback：只有当触发日所在源周已经拥有完整的上一交易日、且可由 DB 周历推导出目标周时，才用触发日源周确定完整输入周。该 fallback 只解决周历上下文，不得把旧 `feature_week_id` 的算法信号复用到新周；如果 source core 对当前 `feature_week_id` 没有有效投票、label、selector 或其它必要信号，必须 fail-closed。
+源周历可能在调度日附近提前切到新 `week_id`，而 `previous_trading_day(predict_date)` 所在周在 DB 周历中暂时找不到下一实际周。平台允许 `shared.prediction_context.build_weekly_live_context()` 做受限日历 fallback：只有当触发日所在源周已经拥有完整的上一交易日、且可由 DB 周历推导出目标周时，才用触发日源周确定完整输入周。该 fallback 只解决周历上下文，不得把旧 `feature_week_id` 的算法信号复用到新周。对已批准 `no_signal_to_flat_v1` 的投票类方案，只有在输入、日历和 core 正常完成、core 结果非空、但当前 `feature_week_id` 缺少最终输出时，才生成审计可识别的平信号；label、selector 所需上下文缺失，或输入、周历、模型、超时、代码异常，仍必须 fail-closed。
 
 源周历还可能出现孤立 forward jump，例如某个交易日提前标为下一周，但随后的非交易日又回到上一周。平台不得手工改源表；`shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 只允许通过 `shared.week_calendar_normalizer` 对这类“单个交易日跳周、随后非交易日回落”的明显不连续周历行做只读归一化，保证预测侧 `target_date` 与 actuals updater 使用同一周历事实。该归一化不能推广为任意重算周编号，也不能用于绕过 source core 的信号水位检查。周度 actual 的事实匹配键是 `target_tenor + target_date + target_rule`；actual 表中的 `predict_date` 是审计字段，不能要求它与周六调度预测的 `predict_date` 完全相同。
 
@@ -152,6 +152,8 @@ target_date  = T + horizon
 
 `target_date` 是回测明细的必填事实字段。runner、`/api/backtests/factor-lab` 和前端月度聚合只能用 `target_date` 归属月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
 
+周频公共回测的无信号策略默认是 `skip`。只有明确声明 `no_signal_policy="flat"` 的方案，才能在 feature、target、日期和 label 上下文均有效，且整批 core 输出非空、`week_id` 全部合法、当前 feature key 单独缺少输出时生成平台平记录。该记录必须保留完整 `feature_week_id/target_week_id`、日期、artifact 和 `no_signal_to_flat_v1` 审计字段；core 整体空/非法输出、输入或日历异常不得被捕获补平。source-original/current benchmark 仍只包含原算法实际输出行，平台补平行只进入平台 backtest/live 明细；runner payload 的 `row_count` 表示平台明细总数，`benchmark_row_count` 表示过滤政策行后的 compact benchmark 数量。
+
 ### 5.1 已批准的 source-original batch reproduction 例外
 
 默认历史回测优先使用原始算法声明的 source 执行口径；如果该口径本身是 point-in-time，则按 PIT 复现。如果原始方案本身是全历史 batch reproduction，并且算法内部存在固定未来分段、全局校准或一次性 selector 这类无法逐点切片复现的结构时，可以批准为方案级例外。例外必须同时满足：
@@ -184,7 +186,7 @@ target_date  = T + horizon
 
 ## 6. 指标统计口径
 
-预测方向 `predicted_direction=0` 表示“平”或“无方向信号”。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等任何指标的分母。
+预测方向 `predicted_direction=0` 表示“平”。它可能是算法原生平，也可能是 `no_signal_to_flat_v1` 生成的平台无信号平；两者必须通过 `extra.signal_policy_applied` 区分，原生平不得冒充平台补平。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等任何指标的分母。
 
 这里必须始终区分两层数量：
 
@@ -203,6 +205,8 @@ target_date  = T + horizon
 | `metric_actual_dist` / `metric_predicted_dist` | 指标分母范围内的实际/预测方向分布，不包含预测为平的样本 |
 
 例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、后端 live metrics、回测 runner 和 `/api/backtests/factor-lab` 必须遵守同一口径。
+
+回测 summary 还必须单独报告 `policy_generated_flat_count` 及对应的缺失 feature key 清单。source-original/current benchmark 的生成与导出必须过滤 `signal_policy_applied=true` 的平台行，不能把业务输出规则生成的平记录声明为原始算法输出。
 
 历史回测前端指标的唯一事实源是 `t_backtest_predictions` 明细表。`/api/backtests/factor-lab` 必须从 latest run 的明细动态聚合 `monthly_metrics` 和 `summary`；如果 latest run 缺少明细或明细不可评价，接口必须 fail-closed。新代码不得新增、读取或写入独立的回测月度指标汇总表。
 

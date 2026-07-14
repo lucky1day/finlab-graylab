@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 import pandas as pd
 from sqlalchemy import text
@@ -12,6 +12,7 @@ from sqlalchemy.engine import Engine
 
 from backtests.repository import clean_json
 from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE, next_calendar_week_id
+from shared.signal_policy import no_signal_as_flat
 from shared.tenor_mapping import TENOR_TO_INDICATOR
 
 
@@ -30,6 +31,17 @@ class WeeklyBacktestSpec:
     target_rule: str = WEEKLY_TARGET_RULE
     precheck_predict_start: bool = False
     precheck_target: bool = False
+    no_signal_policy: Literal["skip", "flat"] = "skip"
+    no_signal_source_component: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.no_signal_policy not in {"skip", "flat"}:
+            raise ValueError(f"invalid no_signal_policy: {self.no_signal_policy!r}")
+        if self.no_signal_policy == "flat" and not (
+            isinstance(self.no_signal_source_component, str)
+            and self.no_signal_source_component.strip()
+        ):
+            raise ValueError("no_signal_source_component is required when no_signal_policy='flat'")
 
 
 @dataclass(frozen=True)
@@ -54,6 +66,41 @@ class WeeklyAverageLabel:
     target_yield: float
     future_return: float | None
     label: int | None
+
+
+def index_weekly_core_output_rows(
+    frame: pd.DataFrame,
+    *,
+    source_component: str,
+) -> dict[int, dict[str, Any]]:
+    """严格校验周频 core 批量输出，并按 week_id 建立索引。"""
+    if frame.empty:
+        raise RuntimeError(f"{source_component} core 未产生任何输出，禁止批量补平")
+    if "week_id" not in frame.columns:
+        raise ValueError(f"{source_component} core 输出缺少 week_id")
+
+    normalized = frame.copy()
+
+    def normalize_week_id(value: Any) -> int:
+        if isinstance(value, bool):
+            raise ValueError(f"{source_component} core 输出 week_id 必须为严格整数: {value!r}")
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                f"{source_component} core 输出 week_id 必须为严格整数: {value!r}"
+            ) from exc
+        if not math.isfinite(numeric) or not numeric.is_integer():
+            raise ValueError(f"{source_component} core 输出 week_id 必须为严格整数: {value!r}")
+        return int(numeric)
+
+    normalized["week_id"] = normalized["week_id"].map(normalize_week_id)
+    by_week: dict[int, dict[str, Any]] = {}
+    for _, row in normalized.sort_values("week_id").iterrows():
+        by_week[int(row["week_id"])] = row.to_dict()
+    if not by_week:
+        raise RuntimeError(f"{source_component} core 未产生任何合法输出，禁止批量补平")
+    return by_week
 
 
 def read_weekly_average_label_rows(
@@ -225,7 +272,7 @@ def build_weekly_backtest_rows(
             continue
 
         point = predict_for_feature(history, feature_week_id)
-        if point is None:
+        if point is None and spec.no_signal_policy == "skip":
             continue
 
         if target is None:
@@ -239,6 +286,16 @@ def build_weekly_backtest_rows(
         target_week_id, target_date, target_row = target
         future_return = _weekly_future_return(feature_row, target_row, spec.target_column)
         label = _label_from_future_return(future_return) if future_return is not None else None
+        if point is None:
+            if label is None:
+                continue
+            policy_outcome = no_signal_as_flat(str(spec.no_signal_source_component))
+            point = WeeklyPredictionPoint(
+                source_row={},
+                predicted_direction=policy_outcome.predicted_direction,
+                confidence=policy_outcome.confidence,
+                extra=policy_outcome.extra,
+            )
         source_row = clean_json({**feature_row.to_dict(), **dict(point.source_row)})
         extra = {
             "frequency": "weekly",
@@ -275,10 +332,33 @@ def build_weekly_backtest_rows(
     return rows
 
 
+def policy_generated_flat_summary(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """汇总平台无信号政策生成的周频平记录。"""
+    policy_rows = [
+        row
+        for row in rows
+        if (row.get("extra") or {}).get("signal_policy_applied") is True
+    ]
+    feature_keys = sorted(
+        {
+            feature_week_id
+            for row in policy_rows
+            if (feature_week_id := _int_or_none((row.get("extra") or {}).get("feature_week_id")))
+            is not None
+        }
+    )
+    return {
+        "policy_generated_flat_count": len(policy_rows),
+        "policy_generated_flat_feature_keys": feature_keys,
+    }
+
+
 def compact_weekly_benchmark_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """生成 CompareGate 使用的严格周频 benchmark 行。"""
     compact: list[dict[str, Any]] = []
     for row in rows:
+        if (row.get("extra") or {}).get("signal_policy_applied") is True:
+            continue
         direction = _int_or_none(row.get("predicted_direction"))
         label = _int_or_none(row.get("label"))
         extra = row.get("extra") or {}

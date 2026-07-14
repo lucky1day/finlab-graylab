@@ -25,7 +25,7 @@
 - **历史输出起点语义**：历史回测统一从 `predict_date >= 2025-01-01` 开始；回测中 `predict_date=feature_date`，所以验证时必须确认 benchmark/current/DB 明细均无 `feature_date < 2025-01-01` 的输出行。不得用 `target_date >= 2025-01-01` 保留起点前的 source T。
 - **live 版本字段长度**：`model_version` 顶层字段必须能落入 `t_scheme_predictions.model_version VARCHAR(64)`；完整 source 模型 ID 如果更长，必须在 `extra` 中留审计字段，不能让 live 写库到最后一步才失败。
 - **月度自然 15 号语义**：月度 source-backed 方案若声明每月 15 号预测，则 `predict_date` 保留自然 15 号，无论是否交易日；`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。灰度/回测边界仍按 `target_date` 判定。
-- **运维水位先分层**：排查“前端最新数据不对”时，必须依次拆成预测是否落库、任务是否启动、actual 源水位是否覆盖、API 是否返回、前端是否刷新。actual 尚未覆盖的 target 只能标记待验证；actual 已存在但前端仍待验证时，优先检查后端 join 是否使用了错误审计字段。source core 无当前周有效信号时必须 fail-closed，不能复用旧信号补写。
+- **运维水位先分层**：排查“前端最新数据不对”时，必须依次拆成预测是否落库、任务是否启动、actual 源水位是否覆盖、API 是否返回、前端是否刷新。actual 尚未覆盖的 target 只能标记待验证；actual 已存在但前端仍待验证时，优先检查后端 join 是否使用了错误审计字段。输入必须包含当前 feature key 且必要字段有效；输入、日历、模型、超时、代码异常或 core 整体空/非法输出必须 fail-closed。经批准的投票类方案若非空合法 core 结果只缺当前 feature key，则按 `no_signal_to_flat_v1` 输出政策平；旧信号一律不得复用。
 - **合规判据**：入库是否合规以 `python -m harness gate static` 的 `passed/failed` 为唯一机器判据。
 - **同一数据接入层**：两版本复现必须使用**同一份 `shared.data_service` 导出的同一版本数据**（同一 `data_version` / 同一周范围 / 同一日期范围），否则对比无意义。
 

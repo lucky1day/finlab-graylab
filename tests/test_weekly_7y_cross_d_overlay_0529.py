@@ -189,7 +189,7 @@ class PredictionRecordTests(unittest.TestCase):
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
     @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
-    def test_run_rejects_stale_signal_week(
+    def test_run_turns_missing_current_signal_into_flat_record(
         self,
         mock_get_cal: MagicMock,
         mock_ds: MagicMock,
@@ -216,8 +216,170 @@ class PredictionRecordTests(unittest.TestCase):
 
         from schemes.weekly_7y_cross_d_overlay_0529 import predict
 
-        with self.assertRaisesRegex(RuntimeError, "当前特征周"):
+        try:
+            record = predict.run("2026-06-13")[0]
+        except RuntimeError as exc:
+            self.fail(f"缺少当前周信号时应返回平记录，不应抛异常: {exc}")
+
+        self.assertEqual(record.predicted_direction, 0)
+        self.assertEqual(record.confidence, 0.0)
+        self.assertEqual(record.feature_date, "2026-06-12")
+        self.assertEqual(record.target_date, "2026-06-19")
+        self.assertEqual(record.extra["feature_week_id"], 202624)
+        self.assertEqual(record.extra["target_week_id"], 202625)
+        self.assertEqual(record.extra["input_artifact_path"], "/tmp/weekly_7y.csv")
+        self.assertEqual(record.extra["signal_state"], "no_signal")
+        self.assertEqual(record.extra["signal_policy"], "no_signal_to_flat_v1")
+        self.assertIs(record.extra["signal_policy_applied"], True)
+        self.assertEqual(
+            record.extra["no_signal_reason"],
+            "core_output_missing_current_feature",
+        )
+        self.assertEqual(record.extra["source_component"], "cross_d_overlay")
+        self.assertEqual(record.extra["available_signal_weeks"], (202623,))
+        self.assertEqual(record.extra["latest_signal_week_id"], 202623)
+
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_cross_d_overlay")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_completely_empty_core_output(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_overlay.return_value = pd.DataFrame()
+
+        from schemes.weekly_7y_cross_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "Cross-D 算法未产生有效行"):
             predict.run("2026-06-13")
+
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_cross_d_overlay")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_missing_current_feature_input_before_core(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_artifact.dataframe = _make_weekly_df(list(range(202601, 202624)))
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_7y_cross_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "输入水位不足.*202624"):
+            predict.run("2026-06-13")
+        mock_overlay.assert_not_called()
+
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_cross_d_overlay")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_missing_current_feature_required_value(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_artifact.dataframe.loc[
+            mock_artifact.dataframe["week_id"].eq(202624), "TB7YWI3C"
+        ] = None
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_7y_cross_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "当前周必要输入缺失.*TB7YWI3C"):
+            predict.run("2026-06-13")
+        mock_overlay.assert_not_called()
+
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_cross_d_overlay")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_fractional_output_week_id(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_overlay.return_value = pd.DataFrame(
+            {
+                "week_id": [202623.5],
+                "cross_d_pred_label": [1],
+                "cross_d_prob_up": [0.6],
+                "cross_d_overlay": [False],
+                "cross_d_signal_source": ["fractional"],
+                "main_pred_label": [1],
+                "main_prob_up": [0.6],
+                "d5_d_pred_label": [1],
+                "d5_d_prob_up": [0.6],
+            }
+        )
+
+        from schemes.weekly_7y_cross_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(ValueError, "week_id 必须为严格整数"):
+            predict.run("2026-06-13")
+
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_cross_d_overlay")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_7y_cross_d_overlay_0529.predict.get_calendar")
+    def test_run_preserves_native_flat_without_policy_marker(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_overlay.return_value = pd.DataFrame(
+            {
+                "week_id": [202624],
+                "cross_d_pred_label": [0],
+                "cross_d_prob_up": [0.5],
+                "cross_d_overlay": [False],
+                "cross_d_signal_source": ["native_flat"],
+                "main_pred_label": [0],
+                "main_prob_up": [0.5],
+                "d5_d_pred_label": [0],
+                "d5_d_prob_up": [0.5],
+            }
+        )
+
+        from schemes.weekly_7y_cross_d_overlay_0529 import predict
+
+        record = predict.run("2026-06-13")[0]
+
+        self.assertEqual(record.predicted_direction, 0)
+        self.assertEqual(record.confidence, 0.5)
+        self.assertEqual(record.extra["cross_d_signal_source"], "native_flat")
+        self.assertNotIn("signal_policy_applied", record.extra)
 
     def test_next_week_id_uses_shared_prediction_context(self) -> None:
         from shared.prediction_context import next_calendar_week_id

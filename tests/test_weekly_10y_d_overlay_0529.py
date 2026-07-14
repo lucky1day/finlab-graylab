@@ -286,6 +286,276 @@ class PredictionRecordTests(unittest.TestCase):
         self.assertEqual(mock_build.call_args.kwargs["as_of_date"], "2026-06-11")
         mock_cal.previous_trading_day.assert_called_with("2026-06-12")
 
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_turns_missing_current_signal_into_flat_record(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_d_overlay.return_value = pd.DataFrame(
+            {
+                "week_id": [202623],
+                "d_pred_label": [1],
+                "d_prob_up": [0.72],
+            }
+        )
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        try:
+            record = predict.run("2026-06-13")[0]
+        except RuntimeError as exc:
+            self.fail(f"缺少当前周信号时应返回平记录，不应抛异常: {exc}")
+
+        self.assertEqual(record.predicted_direction, 0)
+        self.assertEqual(record.confidence, 0.0)
+        self.assertEqual(record.feature_date, "2026-06-12")
+        self.assertEqual(record.target_date, "2026-06-19")
+        self.assertEqual(record.extra["feature_week_id"], 202624)
+        self.assertEqual(record.extra["target_week_id"], 202625)
+        self.assertEqual(record.extra["input_artifact_path"], "/tmp/weekly_10y.csv")
+        self.assertEqual(record.extra["source"], "10y_d_overlay_0529")
+        self.assertEqual(record.extra["signal_state"], "no_signal")
+        self.assertEqual(record.extra["signal_policy"], "no_signal_to_flat_v1")
+        self.assertIs(record.extra["signal_policy_applied"], True)
+        self.assertEqual(
+            record.extra["no_signal_reason"],
+            "core_output_missing_current_feature",
+        )
+        self.assertEqual(record.extra["source_component"], "d_overlay")
+        self.assertEqual(record.extra["available_signal_weeks"], (202623,))
+        self.assertEqual(record.extra["latest_signal_week_id"], 202623)
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_completely_empty_core_output(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_d_overlay.return_value = pd.DataFrame()
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "10Y D-overlay 算法未产生有效行"):
+            predict.run("2026-06-13")
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_missing_current_feature_input_before_core(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_artifact.dataframe = _make_weekly_df(list(range(202601, 202624)))
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "输入水位不足.*202624"):
+            predict.run("2026-06-13")
+        mock_d_overlay.assert_not_called()
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_missing_current_target_value(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_artifact.dataframe.loc[
+            mock_artifact.dataframe["week_id"].eq(202624), "TB0YWI3C"
+        ] = None
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "当前周必要输入缺失.*TB0YWI3C"):
+            predict.run("2026-06-13")
+        mock_d_overlay.assert_not_called()
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_missing_current_auxiliary_rate_value(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_artifact.dataframe.loc[
+            mock_artifact.dataframe["week_id"].eq(202624), "TB1YWI3C"
+        ] = None
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "当前周必要输入缺失.*TB1YWI3C"):
+            predict.run("2026-06-13")
+        mock_d_overlay.assert_not_called()
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_rejects_fractional_output_week_id(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_d_overlay.return_value = pd.DataFrame(
+            {
+                "week_id": [202623.5],
+                "d_pred_label": [1],
+                "d_prob_up": [0.72],
+            }
+        )
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(ValueError, "week_id 必须为严格整数"):
+            predict.run("2026-06-13")
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_preserves_native_flat_without_policy_marker(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_d_overlay.return_value = pd.DataFrame(
+            {
+                "week_id": [202624],
+                "d_pred_label": [0],
+                "d_prob_up": [0.5],
+                "d_model2_overlay": [False],
+                "d_signal_source": ["native_flat"],
+                "score_pred_label": [0],
+                "score_prob_up": [0.5],
+                "model2_prob_up": [0.5],
+                "d_model2_pred_label": [0],
+            }
+        )
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        record = predict.run("2026-06-13")[0]
+
+        self.assertEqual(record.predicted_direction, 0)
+        self.assertEqual(record.confidence, 0.5)
+        self.assertEqual(record.extra["d_signal_source"], "native_flat")
+        self.assertNotIn("signal_policy_applied", record.extra)
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_d_overlay")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_propagates_d_overlay_exception(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+        mock_d_overlay: MagicMock,
+    ) -> None:
+        mock_cal, mock_artifact, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.return_value = mock_artifact
+        mock_d_overlay.side_effect = RuntimeError("model failed")
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "model failed"):
+            predict.run("2026-06-13")
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_input_artifact")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_propagates_artifact_exception(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_build: MagicMock,
+    ) -> None:
+        mock_cal, _, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_build.side_effect = RuntimeError("artifact failed")
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(RuntimeError, "artifact failed"):
+            predict.run("2026-06-13")
+
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.build_weekly_live_context")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.create_input_engine")
+    @patch("schemes.weekly_10y_d_overlay_0529.predict.get_calendar")
+    def test_run_propagates_calendar_context_exception(
+        self,
+        mock_get_cal: MagicMock,
+        mock_ds: MagicMock,
+        mock_context: MagicMock,
+    ) -> None:
+        mock_cal, _, mock_engine = self._mock_dependencies()
+        mock_get_cal.return_value = mock_cal
+        mock_ds.return_value = mock_engine
+        mock_context.side_effect = ValueError("calendar parse failed")
+
+        from schemes.weekly_10y_d_overlay_0529 import predict
+
+        with self.assertRaisesRegex(ValueError, "calendar parse failed"):
+            predict.run("2026-06-13")
+
     def test_next_week_id_uses_shared_prediction_context(self) -> None:
         from shared.prediction_context import next_calendar_week_id
 
