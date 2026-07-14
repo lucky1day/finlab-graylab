@@ -1,0 +1,406 @@
+#!/usr/bin/env python3
+"""predict_10y_v61_wf.py -- Walk-Forward Consensus Ensemble v61
+
+2 retained production configs (#1,#2), selected via sim-only methodology.
+Real period (2025-07 ~ 2026-04) is pure out-of-sample.
+
+Baselines:
+  STD    -- standard ensemble (prob mode, equal sig, 3 seeds)
+  DIV    -- diverse ensemble (binary mode, 2 categories, 3 seeds)
+  ACCWT  -- accuracy-weighted ensemble (prob mode, accwt, 3 seeds)
+  V55_7Y -- 7Y cross-tenor (prob mode, butterfly+term_prem, 2 seeds)
+
+Consensus: k-of-n baselines must agree on direction.
+Streak-break: after K consecutive same-direction, fallback to DIV signal.
+"""
+import argparse, pickle, time, logging
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from bond_common import run_prediction
+
+RANDOM_STATE = 42
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
+
+# ── Baseline Configs ──────────────────────────────────────────────────────
+
+SHARED_LGBM = {
+    "lgbm_windows": [200, 350, 504, 756],
+    "lgbm_leaves": [3, 5, 7, 15],
+    "lgbm_min_child": [10, 20],
+    "lgbm_alpha": [0.0, 1.0],
+    "lgbm_lambda": [0.5, 3.0],
+    "lgbm_split": [0.55, 0.70],
+    "lgbm_slow_path": True,
+    "ic_top_self": 50, "ic_top_mf": 30,
+    "vt_mode": "seasonal", "sig_mode": "equal", "return_ctx": True,
+}
+
+BASELINES = {
+    "STD": {**SHARED_LGBM,
+        "name": "10y_std", "tenor": "10Y", "close": "TB0YWI0C",
+        "aux_pairs": [("5Y", "TB5YWI0C"), ("1Y", "TB1YWI0C")],
+        "seeds": [42, 314, 159], "K": 10,
+        "combo_template": {"rel_value": 2, "policy": 2, "butterfly": 2},
+        "lgbm_w": 0.10, "rebal": "quarterly", "ew": 504, "min_acc": 0.48,
+        "ml_mode": "prob", "ens_mode": "standard",
+    },
+    "DIV": {**SHARED_LGBM,
+        "name": "10y_div", "tenor": "10Y", "close": "TB0YWI0C",
+        "aux_pairs": [("5Y", "TB5YWI0C"), ("1Y", "TB1YWI0C")],
+        "seeds": [42, 314, 159], "K": 5,
+        "combo_template": {"policy": 2, "butterfly": 2},
+        "lgbm_w": 0.30, "rebal": "quarterly", "ew": 378, "min_acc": 0.50,
+        "ml_mode": "binary", "ens_mode": "diverse",
+    },
+    "ACCWT": {**SHARED_LGBM,
+        "name": "10y_accwt", "tenor": "10Y", "close": "TB0YWI0C",
+        "aux_pairs": [("5Y", "TB5YWI0C"), ("1Y", "TB1YWI0C")],
+        "seeds": [42, 314, 159], "K": 10,
+        "combo_template": {"rel_value": 2, "policy": 2, "butterfly": 2},
+        "lgbm_w": 0.10, "rebal": "quarterly", "ew": 504, "min_acc": 0.48,
+        "ml_mode": "prob", "ens_mode": "accwt",
+    },
+    "V55_7Y": {**SHARED_LGBM,
+        "name": "10y_7y_cross", "tenor": "7Y", "close": "TB7YWI0C",
+        "self_name": "7Y",
+        "aux_pairs": [("5Y", "TB5YWI0C"), ("10Y", "TB0YWI0C")],
+        "seeds": [42, 314], "K": 15,
+        "combo_template": {"butterfly": 3, "term_prem": 2},
+        "lgbm_w": 1.50, "rebal": "quarterly", "ew": 252, "min_acc": 0.45,
+        "ml_mode": "prob", "ens_mode": "standard",
+    },
+}
+
+CTX_KEYS = [
+    "vs_full", "ml_base", "sig_avg", "has_sig", "ens",
+    "true_labels", "test_dates", "sim_m", "real_m", "pre_m",
+    "test_months", "months", "month_idx", "lookback",
+]
+
+# ── Retained Production Configs (sim-only selected, real = pure OOS) ──
+
+PROD_CONFIGS = [
+    {"model_no": 1, "name": "cons(SAY,k=3)+DIV_K=5",
+     "baselines": ["STD", "ACCWT", "V55_7Y"], "k_agree": 3,
+     "fallback": "DIV", "streak_K": 5},
+    {"model_no": 2, "name": "cons(SAY,k=3)+DIV_K=5",
+     "baselines": ["STD", "ACCWT", "V55_7Y"], "k_agree": 3,
+     "fallback": "DIV", "streak_K": 5},
+]
+
+
+# ── Baseline Training / Loading ──────────────────────────────────────────
+
+def train_or_load(cfg: dict, pkl_path: Path, data_dir: Path,
+                  n_workers: int) -> dict:
+    if pkl_path.exists():
+        log.info(f"  Loading cached: {pkl_path.name}")
+        with open(pkl_path, "rb") as f:
+            return pickle.load(f)
+    cfg_run = {**cfg, "data_dir": data_dir, "n_workers": n_workers}
+    final, ctx = run_prediction(cfg_run)
+    save = {"final": final}
+    for k in CTX_KEYS:
+        if k in ctx:
+            save[k] = ctx[k]
+    with open(pkl_path, "wb") as f:
+        pickle.dump(save, f)
+    log.info(f"  Saved: {pkl_path.name}")
+    return save
+
+
+def align_cross_tenor(vs_src, dates_src, dates_ref, n_ref):
+    bd = pd.to_datetime(dates_src)
+    rd = pd.to_datetime(dates_ref)
+    common = rd.isin(bd)
+    b_idx = np.array([np.where(bd == d)[0][0] for d in rd[common]])
+    aligned = np.zeros(n_ref, dtype=np.float64)
+    aligned[common] = vs_src[b_idx]
+    return aligned
+
+
+# ── Consensus + Streak-Break ─────────────────────────────────────────────
+
+def apply_consensus(signs: dict, baselines: list, k_agree: int,
+                    N: int) -> np.ndarray:
+    votes = np.column_stack([signs[n] for n in baselines])
+    up = (votes > 0).sum(axis=1)
+    dn = (votes < 0).sum(axis=1)
+    pred = np.zeros(N, dtype=np.int32)
+    pred[up >= k_agree] = 1
+    pred[dn >= k_agree] = -1
+    return pred
+
+
+def apply_streak_break(pred: np.ndarray, fb_signs: np.ndarray,
+                       streak_K: int) -> np.ndarray:
+    out = pred.copy()
+    streak = 0
+    last_dir = 0
+    for i in range(len(pred)):
+        c = pred[i]
+        if c != 0 and c == last_dir:
+            streak += 1
+        elif c != 0:
+            streak = 1
+            last_dir = c
+        if streak > streak_K and fb_signs[i] != 0:
+            out[i] = fb_signs[i]
+            if fb_signs[i] != last_dir:
+                streak = 0
+    return out
+
+
+def build_prediction(cfg: dict, signs: dict, N: int) -> np.ndarray:
+    pred = apply_consensus(signs, cfg["baselines"], cfg["k_agree"], N)
+    return apply_streak_break(pred, signs[cfg["fallback"]], cfg["streak_K"])
+
+
+# ── Full Monthly Evaluation (CLAUDE.md spec) ─────────────────────────────
+
+def print_full_evaluation(final, true_labels, test_dates, mask, period_label,
+                          title):
+    p = final[mask]
+    t = true_labels[mask]
+    d = pd.to_datetime(test_dates[mask])
+    months = pd.Series(d).dt.to_period("M")
+
+    eval_start = str(months.min())
+    eval_end = str(months.max())
+
+    print(f"\n{'=' * 180}")
+    print(f"  T+1日预测，日频方向准确率评估汇总 ({eval_start} ~ {eval_end})")
+    print(f"  {title} [{period_label}]")
+    print(f"{'=' * 180}")
+    print(f"{'月份':>10} {'总样本':>5} {'涨样本':>5} {'跌样本':>5} {'平样本':>5}"
+          f" {'预测涨':>5} {'预测跌':>5} {'不交易':>5} {'出手率':>6}"
+          f" {'方向准确率':>16} {'当月准确率':>10}"
+          f" {'涨精确率':>14} {'涨召回率':>14}"
+          f" {'跌精确率':>14} {'跌召回率':>14} {'bad':>4}")
+    print("-" * 180)
+
+    total_corr = 0
+    total_traded = 0
+    total_samples = 0
+    month_accs = []
+    up_precs = []
+    dn_precs = []
+    bad_count = 0
+
+    for m in sorted(months.unique()):
+        mi = (months == m).values
+        pm = p[mi]
+        tm = t[mi]
+        n_total = len(tm)
+        n_up = int((tm > 0).sum())
+        n_dn = int((tm < 0).sum())
+        n_flat = int((tm == 0).sum())
+        pred_up = int((pm > 0).sum())
+        pred_dn = int((pm < 0).sum())
+        no_trade = int((pm == 0).sum())
+        traded = pm != 0
+        n_traded = int(traded.sum())
+        trade_rate = n_traded / n_total if n_total > 0 else 0
+
+        if n_traded > 0:
+            corr = int(((pm == tm) & traded).sum())
+            acc = corr / n_traded
+        else:
+            corr = 0
+            acc = 0.0
+
+        tp_up = int(((pm > 0) & (tm > 0)).sum())
+        tp_dn = int(((pm < 0) & (tm < 0)).sum())
+
+        def fmt_pr(tp, denom):
+            if denom > 0:
+                return f"{tp/denom:>5.0%} ({tp}/{denom})"
+            return f"{'N/A':>5} (0/0)"
+
+        up_prec_str = fmt_pr(tp_up, pred_up)
+        up_recall_str = fmt_pr(tp_up, n_up)
+        dn_prec_str = fmt_pr(tp_dn, pred_dn)
+        dn_recall_str = fmt_pr(tp_dn, n_dn)
+
+        if pred_up > 0:
+            up_precs.append(tp_up / pred_up)
+        if pred_dn > 0:
+            dn_precs.append(tp_dn / pred_dn)
+
+        traded_preds = pm[traded]
+        is_bad = 0
+        if len(traded_preds) >= 3:
+            if (traded_preds > 0).sum() < 1 or (traded_preds < 0).sum() < 1:
+                is_bad = 1
+
+        total_corr += corr
+        total_traded += n_traded
+        total_samples += n_total
+        if n_traded > 0:
+            month_accs.append(acc)
+        bad_count += is_bad
+
+        print(f"{str(m):>10} {n_total:>5} {n_up:>5} {n_dn:>5} {n_flat:>5}"
+              f" {pred_up:>5} {pred_dn:>5} {no_trade:>5} {trade_rate:>5.0%}"
+              f" {acc:>5.2%} ({corr:>3}/{n_traded:>3})"
+              f" {acc:>10.6f}"
+              f" {up_prec_str:>14} {up_recall_str:>14}"
+              f" {dn_prec_str:>14} {dn_recall_str:>14} {is_bad:>4}")
+
+    weighted_acc = total_corr / total_traded if total_traded > 0 else 0
+    mean_acc = np.mean(month_accs) if month_accs else 0
+    best_acc = max(month_accs) if month_accs else 0
+    worst_acc = min(month_accs) if month_accs else 0
+    std_acc = np.std(month_accs) if month_accs else 0
+    trade_rate = total_traded / total_samples if total_samples > 0 else 0
+    up_prec_w = np.mean(up_precs) if up_precs else 0
+    dn_prec_w = np.mean(dn_precs) if dn_precs else 0
+
+    best_m = worst_m = ""
+    idx = 0
+    for m in sorted(months.unique()):
+        mi = (months == m).values
+        pm = p[mi]
+        n_traded = int((pm != 0).sum())
+        if n_traded > 0:
+            if month_accs[idx] == best_acc and not best_m:
+                best_m = str(m)
+            if month_accs[idx] == worst_acc and not worst_m:
+                worst_m = str(m)
+            idx += 1
+
+    print()
+    print("-" * 60)
+    print("测试集汇总准确率统计摘要:")
+    print(f"  整体方向准确率（加权平均）: {weighted_acc:.4f} ({weighted_acc:.2%})")
+    print(f"  平均方向准确率: {mean_acc:.4f} ({mean_acc:.2%})")
+    print(f"  最高方向准确率: {best_acc:.4f} ({best_acc:.2%}) - {best_m}")
+    print(f"  最低方向准确率: {worst_acc:.4f} ({worst_acc:.2%}) - {worst_m}")
+    print(f"  准确率标准差: {std_acc:.4f}")
+    print(f"  总出手率: {trade_rate:.4f} ({trade_rate:.2%})")
+    print(f"  加权平均涨准确率: {up_prec_w:.4f} ({up_prec_w:.2%})")
+    print(f"  加权平均跌准确率: {dn_prec_w:.4f} ({dn_prec_w:.2%})")
+    print(f"  bad_month数: {bad_count}")
+
+    return weighted_acc, bad_count
+
+
+# ── Main ───────────────────────────────────────────────────────────────────
+
+def main(data_dir: Path, n_workers: int):
+    t0 = time.time()
+    pkl_dir = Path(__file__).resolve().parent
+
+    # ── Phase 1: Load 4 baselines ──
+    log.info("=" * 70)
+    log.info("Phase 1: Loading 4 baselines")
+    log.info("=" * 70)
+
+    bl_pkls = [
+        ("STD",    "v60_std_ctx.pkl"),
+        ("DIV",    "v60_div_ctx.pkl"),
+        ("ACCWT",  "v60_accwt_ctx.pkl"),
+        ("V55_7Y", "v60_7y_ctx.pkl"),
+    ]
+
+    bl_ctx = {}
+    for i, (name, pkl_name) in enumerate(bl_pkls, 1):
+        log.info(f"[{i}/4] {name}")
+        bl_ctx[name] = train_or_load(
+            BASELINES[name], pkl_dir / pkl_name, data_dir, n_workers)
+
+    ref = bl_ctx["STD"]
+    tl = ref["true_labels"]
+    td = ref["test_dates"]
+    sm = ref["sim_m"]
+    rm = ref["real_m"]
+    N = len(tl)
+
+    vs = {}
+    for name, ctx in bl_ctx.items():
+        v = ctx["vs_full"]
+        if len(v) != N and "test_dates" in ctx:
+            v = align_cross_tenor(v, ctx["test_dates"], td, N)
+        vs[name] = v
+    signs = {n: np.sign(vs[n]).astype(np.int32) for n in vs}
+
+    log.info(f"Baselines loaded: {time.time() - t0:.1f}s")
+    log.info(f"Test samples: {N}  sim={sm.sum()}  real={rm.sum()}")
+
+    # Baseline individual accuracies
+    print(f"\n{'=' * 70}")
+    print("  各 baseline 单独准确率")
+    print(f"{'=' * 70}")
+    for name in ["STD", "DIV", "ACCWT", "V55_7Y"]:
+        s = signs[name]
+        s_traded = s[sm] != 0
+        s_corr = ((s[sm] == tl[sm]) & s_traded).sum()
+        s_nt = s_traded.sum()
+        s_acc = s_corr / s_nt if s_nt > 0 else 0
+        r_traded = s[rm] != 0
+        r_corr = ((s[rm] == tl[rm]) & r_traded).sum()
+        r_nt = r_traded.sum()
+        r_acc = r_corr / r_nt if r_nt > 0 else 0
+        print(f"  {name:>8}: sim={s_acc:.1%} ({s_corr}/{s_nt})  "
+              f"real={r_acc:.1%} ({r_corr}/{r_nt})")
+
+    n_prod = len(PROD_CONFIGS)
+    log.info("")
+    log.info("=" * 70)
+    log.info(f"Phase 2: Evaluating {n_prod} production configs")
+    log.info("=" * 70)
+
+    summary = []
+    for ci, cfg in enumerate(PROD_CONFIGS, 1):
+        model_no = cfg.get("model_no", ci)
+        log.info(f"[{ci}/{n_prod}] {cfg['name']}")
+        final = build_prediction(cfg, signs, N)
+
+        # Sim
+        s_acc, s_bad = print_full_evaluation(
+            final, tl, td, sm, "sim",
+            f"#{model_no} {cfg['name']}")
+
+        # Real (pure OOS)
+        r_acc, r_bad = print_full_evaluation(
+            final, tl, td, rm, "real (OOS)",
+            f"#{model_no} {cfg['name']}")
+
+        # Combined
+        combined_mask = sm | rm
+        o_acc, o_bad = print_full_evaluation(
+            final, tl, td, combined_mask, "sim+real",
+            f"#{model_no} {cfg['name']}")
+
+        total_bad = s_bad + r_bad
+        gate = "PASS" if s_acc >= 0.60 and r_acc >= 0.60 and total_bad <= 1 else "FAIL"
+
+        summary.append({
+            "model_no": model_no, "name": cfg["name"], "sim": s_acc, "real": r_acc,
+            "s_bad": s_bad, "r_bad": r_bad, "gate": gate,
+        })
+
+    # ── Phase 3: Summary ──
+    print(f"\n{'=' * 100}")
+    print(f"  10Y 生产配置汇总  (GATE: sim>=60% AND real>=60% AND bad<=1)")
+    print(f"{'=' * 100}")
+    print(f"{'#':>3} {'配置':>32} | {'sim':>6} {'s_bad':>5} | {'real':>6} {'r_bad':>5} | {'GATE':>5}")
+    print("-" * 100)
+    for s in summary:
+        print(f"{s['model_no']:>3} {s['name']:>32} | {s['sim']:>5.1%} {s['s_bad']:>5} "
+              f"| {s['real']:>5.1%} {s['r_bad']:>5} | {s['gate']:>5}")
+
+    print(f"\nTotal time: {time.time() - t0:.1f}s")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--data-dir", type=Path,
+                   default=Path(__file__).resolve().parent.parent / "data")
+    p.add_argument("--n-workers", type=int, default=4)
+    args = p.parse_args()
+    main(args.data_dir, args.n_workers)

@@ -1,8 +1,10 @@
 # 预测日期与实盘阶段语义
 
-**更新日期**: 2026-06-14
+**更新日期**: 2026-07-14
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
+
+Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)。日期字段映射是平台适配，不是修改原始算法时间窗口、测试区间或 batch/PIT 口径的许可。
 
 ## 1. 三个标准日期字段
 
@@ -36,14 +38,26 @@
 灰度/正式实盘 predict_date = T + 1, feature_date = T
 ```
 
-benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + horizon` 为主键；周频方案还必须包含或可唯一映射 `feature_week_id`。`predict_date` 只用于校验信号发出时点：历史回测要求 `predict_date == feature_date`，灰度/正式实盘要求 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
+benchmark 逐样本核验必须以 `feature_date + target_date + target_tenor + horizon + benchmark_role` 为主键；周频方案还必须包含或可唯一映射 `feature_week_id`，月频方案还必须包含或可唯一映射 `feature_month_id + target_month_id`。`benchmark_role` 表示该行所属的可比较执行口径（如 source-original 历史段或 source-compatible extension），不是 original/current 文件来源；文件来源应由 `original_backtest_summary.json` / `current_backtest_summary.json` 的 provenance 表达。`predict_date` 只用于校验信号发出时点：历史回测要求 `predict_date == feature_date`，灰度/正式实盘要求 `predict_date` 是站在 `feature_date` 后按调度规则应发出的日期。
 
 如果原始 benchmark 的某条样本 `target_date` 已进入灰度/实盘观察区，例如 T 在 5 月末而 target 落到 6 月，则这条样本不能强行要求出现在 `t_backtest_predictions`。核验时必须按 `target_date` 分流：
 
 - `target_date < 灰度实盘起点`：与 `t_backtest_predictions.feature_date` 对齐核验。
-- `target_date >= 灰度实盘起点`：与 `t_scheme_predictions.feature_date` 对齐核验，并同时校验 `prediction_phase`。
+- `target_date >= 灰度实盘起点`：先判定 benchmark row 与 live row 是否同一执行口径。同口径时才与 `t_scheme_predictions.feature_date` 对齐核验，并同时校验 `prediction_phase`；若 source-original batch 使用晚于样本 `feature_date` 的固定 `source_end`、later test window、selector/streak 状态或同批未来样本，则该 row 只能作为 source evidence，live 必须另用 `feature_date` 硬截止的 live-safe oracle 验收。
 
 这条规则优先于旧文件列名。旧 benchmark CSV 即使列名仍叫 `predict_date`，也只能解释为 source T / 平台 `feature_date`；新增 benchmark 文件应显式写 `feature_date` 或 `source_t`，避免把原始算法站位日误读为平台信号发出日。
+
+### 2.1.1 Source 执行口径不得被静默改写
+
+原始算法可能是 strict PIT，也可能是一次性 batch、固定历史窗口、月度窗口、walk-forward 或带全局校准的 source-original reproduction。平台必须先分类再执行：
+
+- `source_original_reproduction`: 按原始脚本真实口径复现，current/backtest 应与 source 输出逐样本对齐。
+- `source_strict_pit`: 原始脚本本身逐 `feature_date` 硬截止，平台 PIT helper 必须与它等价。
+- `platform_live_pit_variant`: 原始交付不是 strict PIT，但业务明确要求构造 live-like PIT 变体；该变体必须获批、命名并记录与 source-original 的差异。
+
+不能因为平台 live 语义需要 `feature_date` 硬截止，就直接修改原始算法内部的 `test_start/test_end/test_ranges`、历史起点、周/月频对齐、特征或投票逻辑。若同一 `feature_date` 的 source-original 与平台 PIT 变体不同，差异必须作为口径差异记录，不能通过调参或改算法抹平。
+
+同一份 `original_predictions_sample.csv` 跨过灰度边界时，必须把每行标成 `historical/source-original`、`live-same-context` 或 `source-evidence-only`。只有同执行口径行可以被声明为与 DB/API/live 完全一致；`source-evidence-only` 行不能用来证明 live 成功或失败，也不能要求 live 内部 score 贴合固定 future `source_end` 的 batch 输出。
 
 ### 2.2 旧 core 参数名不得直接映射为平台字段
 
@@ -69,7 +83,8 @@ predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 2. 实盘/灰度必须先确定 `feature_date=T`，再使用 `feature_date` 所在月第一天到 `feature_date` 作为核心预测窗口；窗口结束不得超过 `feature_date`。
 3. 回测仍输出 `predict_date=feature_date=T`，但核心预测窗口必须与同一 `feature_date` 的实盘路径一致。
 4. benchmark current 侧必须由平台 inference helper 生成，不能复制 source CSV 冒充 current。
-5. source benchmark 的 `date/T` 只对齐平台 `feature_date`；如 `target_date` 进入灰度/实盘区间，则与 `t_scheme_predictions.feature_date` 对齐核验。
+5. 逐方案 original benchmark 的 `date/T` 只对齐平台 `feature_date`；如 `target_date` 进入灰度/实盘区间，只有同执行口径时才与 `t_scheme_predictions.feature_date` 对齐核验，否则必须生成 live-safe oracle。这里的 original benchmark 位于 `schemes/{scheme_id}/benchmarks/`，不是 `source_evidence/benchmark_batches/{benchmark_id}/` 的外部批次证据。
+6. helper 只能封装原始算法的执行口径；不得把“更短历史”“同月去年+本月”“previous complete week”等平台便利窗口替代 source 中实际使用的固定历史、batch end 或周频对齐规则。
 
 `daily_5y_2_v28` 的唯一入口是 `schemes.daily_5y_2_v28.inference`：`v28_feature_month_window(feature_date)` 返回当月月初到 `feature_date`，`predict.py` 与 `backtests.daily_5y_2_v28_reproduction` 都必须通过该模块调用 core。
 
@@ -97,7 +112,25 @@ feature_date = T
 target_date  = T + horizon
 ```
 
+scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方案做分钟级物理错峰，并限制同时进入算法子进程的预测任务数。错峰只改变进程实际启动时间，不改变 `predict_date`、`feature_date`、`target_date`、`prediction_phase` 或方案 `config.yaml` 中登记的业务基准 cron。
+
+日频正式实盘由 `scheduler.executor` 在写库前做统一日期语义校验：记录中的 `predict_date` 必须等于本次 run 日期，`feature_date` 必须等于 `previous_trading_day(predict_date)`，`target_date` 必须等于该 `feature_date` 后第 `horizon` 个交易日。若算法因为源表水位不足而复用旧 `feature_date` 或旧 `target_date`，必须 fail-closed，不得写入 `t_scheme_predictions`；前端显示的“待验证”不能通过人工补写旧预测解决。
+
 周频实盘也遵守同一条 T/T+1 规则：adapter 必须先用交易日历计算 `feature_date = previous_trading_day(predict_date)`，再由 `feature_date` 映射 `feature_week_id`，并以 `end_week=feature_week_id`、`as_of_date=feature_date` 构建周频输入。禁止直接用 `predict_date` 所在周作为 feature week；否则交易日手工运行或灰度补齐可能读到当前周未来数据。
+
+源周历可能在调度日附近提前切到新 `week_id`，而 `previous_trading_day(predict_date)` 所在周在 DB 周历中暂时找不到下一实际周。平台允许 `shared.prediction_context.build_weekly_live_context()` 做受限日历 fallback：只有当触发日所在源周已经拥有完整的上一交易日、且可由 DB 周历推导出目标周时，才用触发日源周确定完整输入周。该 fallback 只解决周历上下文，不得把旧 `feature_week_id` 的算法信号复用到新周。对已批准 `no_signal_to_flat_v1` 的投票类方案，只有在输入、日历和 core 正常完成、core 结果非空、但当前 `feature_week_id` 缺少最终输出时，才生成审计可识别的平信号；label、selector 所需上下文缺失，或输入、周历、模型、超时、代码异常，仍必须 fail-closed。
+
+源周历还可能出现孤立 forward jump，例如某个交易日提前标为下一周，但随后的非交易日又回到上一周。平台不得手工改源表；`shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 只允许通过 `shared.week_calendar_normalizer` 对这类“单个交易日跳周、随后非交易日回落”的明显不连续周历行做只读归一化，保证预测侧 `target_date` 与 actuals updater 使用同一周历事实。该归一化不能推广为任意重算周编号，也不能用于绕过 source core 的信号水位检查。周度 actual 的事实匹配键是 `target_tenor + target_date + target_rule`；actual 表中的 `predict_date` 是审计字段，不能要求它与周六调度预测的 `predict_date` 完全相同。
+
+月频 0629 source-backed 方案使用独立的自然月触发语义：每个自然月 **15 号预测一次，无论 15 号是否交易日**。平台不得把 `predict_date` 顺延到 15 号之后的首个交易日；非交易日 15 号时，`predict_date`、`trigger_date`、`scheduled_trigger_date` 和 `db_rdate` 仍为自然 15 号，`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取下一个自然月 15 号及以前最近交易日。例如 `predict_date=2025-02-15` 时，如果 2025-02-15 与 2025-03-15 都不是交易日，则平台记录应为：
+
+```text
+predict_date = 2025-02-15
+feature_date = 2025-02-14
+target_date  = 2025-03-14
+```
+
+月度 actual join 和前端月度统计仍以 `target_date + target_rule + target_tenor` 为事实键；不得依赖 actual 表中历史遗留的顺延 `predict_date` 来判断是否有真实方向。
 
 ## 5. 回测规则
 
@@ -109,15 +142,21 @@ feature_date = T
 target_date  = T + horizon
 ```
 
-回测结果只写 `t_backtest_*`，不得读取或复制 `t_scheme_predictions` 中的灰度/正式实盘记录来拼历史结果。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；这是输出样本起点，不是训练起点。训练、筛因子、模型 warmup 和定期更新可使用更早历史数据，但每个预测点的输入和标签可见性都必须严格停在对应 `feature_date`。
+回测结果只写 `t_backtest_*`，不得读取或复制 `t_scheme_predictions` 中的灰度/正式实盘记录来拼历史结果。参与前端历史排行的样本统一要求 `predict_date >= 2025-01-01`；历史回测中 `predict_date=feature_date=T`，所以 runner 的输出起点判定必须落在 `feature_date` / source T 上，不得用 `target_date >= 2025-01-01` 反推保留样本。这是输出样本起点，不是训练起点。训练、筛因子、模型 warmup 和定期更新可使用更早历史数据，但每个预测点的输入和标签可见性都必须严格停在对应 `feature_date`。
 
-当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date` 截断，避免同一 target 月同时由 backtest 和 live 区间重复解释。当前 V28 批次的历史回测只保留 `target_date < 2026-06-01`。
+当方案已有灰度实盘观察区时，历史回测 runner 必须按 `target_date` 截断，避免同一 target 月同时由 backtest 和 live 区间重复解释。当前灰度批次的历史回测只保留 `target_date < 2026-06-01`。
+
+日度 0629 三方案的最终 SOP 口径是该规则的当前基准：历史段保留 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01`，因此每个方案 latest backtest 为 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日进入 `gray_live`，不进入 latest backtest。
+
+月度方案仍坚持“每个自然月 15 号预测一次”：`2026-06-15` 发出的月度预测属于灰度实盘，若目标月为下月观察点，则进入 live 侧并以 `target_date=2026-07-15` 等待 actual。对应地，`predict_date=2026-05-15,target_date=2026-06-15` 已落入灰度 target 区间，不得继续作为 latest historical backtest 样本，而应作为 `gray_live` 出现在前端虚线下方；月度 0629 三方案的 strict backtest latest 截止到 `predict_date=2026-04-15,target_date=2026-05-15`。
 
 `target_date` 是回测明细的必填事实字段。runner、`/api/backtests/factor-lab` 和前端月度聚合只能用 `target_date` 归属月份；如果 `t_backtest_predictions` 明细缺 `target_date`，必须 fail-closed。禁止用 `predict_date`、`feature_date`、月份字段或旧 `monthly_metrics` 表推断、替代或回填 `target_date`。
 
+周频公共回测的无信号策略默认是 `skip`。只有明确声明 `no_signal_policy="flat"` 的方案，才能在 feature、target、日期和 label 上下文均有效，且整批 core 输出非空、`week_id` 全部合法、当前 feature key 单独缺少输出时生成平台平记录。该记录必须保留完整 `feature_week_id/target_week_id`、日期、artifact 和 `no_signal_to_flat_v1` 审计字段；core 整体空/非法输出、输入或日历异常不得被捕获补平。source-original/current benchmark 仍只包含原算法实际输出行，平台补平行只进入平台 backtest/live 明细；runner payload 的 `row_count` 表示平台明细总数，`benchmark_row_count` 表示过滤政策行后的 compact benchmark 数量。
+
 ### 5.1 已批准的 source-original batch reproduction 例外
 
-默认历史回测优先使用 point-in-time 口径；但当原始方案本身是全历史 batch reproduction，并且算法内部存在固定未来分段、全局校准或一次性 selector 这类无法逐点切片复现的结构时，可以批准为方案级例外。例外必须同时满足：
+默认历史回测优先使用原始算法声明的 source 执行口径；如果该口径本身是 point-in-time，则按 PIT 复现。如果原始方案本身是全历史 batch reproduction，并且算法内部存在固定未来分段、全局校准或一次性 selector 这类无法逐点切片复现的结构时，可以批准为方案级例外。例外必须同时满足：
 
 1. 只适用于历史回测写入 `t_backtest_*`，不得扩散到 gray/live/scheduled live adapter。
 2. 对已有 original benchmark 覆盖区间逐行一致；方向、`target_date`、`label/is_correct` 必须零差异，`confidence` 只允许浮点舍入误差。
@@ -125,21 +164,29 @@ target_date  = T + horizon
 4. 回测仍必须排除灰度/实盘 target 区间，即当前 V28 批次 `target_date >= 2026-06-01` 不能进入 backtest latest。
 5. 文档必须写明为什么不能使用逐点 PIT，以及哪些 run 是被删除或替代的旧口径。
 
-当前已批准的例外是三个 2025-05-29 来源批次周频方案的历史回测：
+若 source-original batch reproduction 的 benchmark row 跨入 gray/live target 区间，该 row 仍不得扩散为 live 数值真值；它只能证明 historical/source-original 口径。gray_live/scheduled_live adapter 与补齐必须继续按 `feature_date` 硬截止，并使用 live-safe oracle 或同口径 live benchmark 验收。
+
+当前已批准的 batch reproduction 例外只包括三个 2025-05-29 来源批次周度单点源算法：
 
 - `weekly_5y_direct_0529`
 - `weekly_7y_cross_d_overlay_0529`
 - `weekly_10y_d_overlay_0529`
 
-批准原因是这三个方案的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
+批准原因是这三个源算法家族的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
 
-这三个方案的回测窗口已经对齐为同一历史输出窗口和同一灰度截断边界，但样本总数不强制相同。平台写入的是算法 core 实际产出的“有效信号行”，不是日历周占位行；如果某一周的规则信号为 0、NaN 或被源算法判定为无效，该周就不应被平台补成一条预测。当前 latest 的有效输出为：5Y run_id=`109` 共 71 条，缺 `feature_week_id=202534`；7Y run_id=`110` 共 68 条，缺 `202529/202534/202547/202608`；10Y run_id=`108` 共 72 条，无缺周。该差异是算法输出本身，不是前端隐藏、latest view 分组错误或 DB 日历缺失。
+旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 曾错误复用周度单点输出并生成 run_id=`131/132/133`，现已暂停，仅作为历史审计保留，不属于当前周平均入库口径。当前有效周平均 0529 方案来自 `/Users/macstudio0/Desktop/方案/0629/forecast_project/` 的独立 LGBM 原始周平均算法，只覆盖 `1Y/5Y/10Y`，没有 `7Y`：
 
-这三个例外只允许用于历史回测和 benchmark 复现。它们的灰度实盘、正式实盘 adapter 仍必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
+- `weekly_avg_1y_lgbm_0529`，latest backtest run_id=`137`，72 行。
+- `weekly_avg_5y_lgbm_0529`，latest backtest run_id=`138`，72 行。
+- `weekly_avg_10y_lgbm_0529`，latest backtest run_id=`139`，72 行。
+
+这三套周平均方案不得复用 `weekly_*` 周度单点方案的 label、Score、Model2、D-overlay 或 point runner；actual/label 固定为 `next_week_average_yield_vs_current_week_average_yield`，即“目标周平均收益率 vs 当前周平均收益率”。source package 每个期限原始输出 73 行，其中 `effective_week_id=202607` 重复且内容一致；平台按 weekly strict key 折叠为 72 个唯一有效周，并在 benchmark summary 记录该折叠。
+
+上述周度单点例外只允许用于历史回测和 benchmark 复现。周度单点和周平均的灰度实盘、正式实盘 adapter 都必须严格遵守周频 T+1/T 规则：`feature_date=previous_trading_day(predict_date)`，输入 artifact 传 `end_week=feature_week_id`、`as_of_date=feature_date`，不得读取未来周或当前 DB 最新全量数据。
 
 ## 6. 指标统计口径
 
-预测方向 `predicted_direction=0` 表示“平”或“无方向信号”。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等任何指标的分母。
+预测方向 `predicted_direction=0` 表示“平”。它可能是算法原生平，也可能是 `no_signal_to_flat_v1` 生成的平台无信号平；两者必须通过 `extra.signal_policy_applied` 区分，原生平不得冒充平台补平。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等任何指标的分母。
 
 这里必须始终区分两层数量：
 
@@ -158,6 +205,8 @@ target_date  = T + horizon
 | `metric_actual_dist` / `metric_predicted_dist` | 指标分母范围内的实际/预测方向分布，不包含预测为平的样本 |
 
 例如某月共有 8 条已验证预测，其中 1 条预测为平、3 条方向预测正确、4 条方向预测错误，则样本数展示为 `8`，整体准确率展示为 `3/7`，而不是 `3/8`。前端候选排行、月度详情、后端 live metrics、回测 runner 和 `/api/backtests/factor-lab` 必须遵守同一口径。
+
+回测 summary 还必须单独报告 `policy_generated_flat_count` 及对应的缺失 feature key 清单。source-original/current benchmark 的生成与导出必须过滤 `signal_policy_applied=true` 的平台行，不能把业务输出规则生成的平记录声明为原始算法输出。
 
 历史回测前端指标的唯一事实源是 `t_backtest_predictions` 明细表。`/api/backtests/factor-lab` 必须从 latest run 的明细动态聚合 `monthly_metrics` 和 `summary`；如果 latest run 缺少明细或明细不可评价，接口必须 fail-closed。新代码不得新增、读取或写入独立的回测月度指标汇总表。
 
@@ -184,6 +233,7 @@ target_date  = T + horizon
 - 如果某个需要展示的方案/月度只有 `monthly_metrics` 汇总、没有预测明细行，前端必须 fail-closed，不能从月度汇总反推或回填指标。
 - 每日/周度验证明细中，只要预测方向为“平”（`predicted_direction=0` 或前端归一化后 `predicted="平"`），结果列统一展示 `-`，不展示 `✓` 或 `×`。这条展示规则独立于 `actual_direction` 和 `is_correct`，因为“平”不进入指标计算。
 - 待验证样本仍展示待验证符号；有方向预测才根据验证结果展示 `✓` 或 `×`。
+- 当 `t_scheme_actuals` 或 `t_scheme_weekly_actuals` 的源实际值水位尚未覆盖某个 `target_date` / `target_week_id` 时，该样本属于待验证；API 和前端应展示 `actual_direction = null` / 准确率 `--`，不得把它计为错误、缺数据修复项或前端刷新失败。运维排查必须先查源 actual 水位，再判断是否为后端 join 或前端计算问题；同一目标周内不同 tenor 的源水位可以不同，已覆盖的 tenor 应立即验证，未覆盖的 tenor 继续待验证。
 
 ## 8. 当前 V28 判定
 

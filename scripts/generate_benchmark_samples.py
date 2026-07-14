@@ -152,14 +152,16 @@ def _select_run(conn: Any, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _fetch_predictions(conn: Any, run_id: int, limit: int) -> list[Any]:
+    policy_filter = _non_policy_prediction_predicate(conn)
     return list(
         conn.execute(
             text(
-                """
+                f"""
                 SELECT predict_date, target_tenor AS tenor,
                        predicted_direction AS direction, confidence
                 FROM t_backtest_predictions
                 WHERE run_id = :run_id
+                  AND {policy_filter}
                 ORDER BY predict_date, target_tenor
                 LIMIT :limit
                 """
@@ -170,14 +172,16 @@ def _fetch_predictions(conn: Any, run_id: int, limit: int) -> list[Any]:
 
 
 def _fetch_metrics(conn: Any, run_id: int) -> list[Any]:
+    policy_filter = _non_policy_prediction_predicate(conn)
     rows = [
         dict(row)
         for row in conn.execute(
             text(
-                """
+                f"""
                 SELECT target_tenor, predict_date, target_date, label, predicted_direction
                 FROM t_backtest_predictions
                 WHERE run_id = :run_id
+                  AND {policy_filter}
                 ORDER BY target_tenor, target_date, predict_date
                 """
             ),
@@ -194,6 +198,19 @@ def _fetch_metrics(conn: Any, run_id: int) -> list[Any]:
         _metric_row(tenor, month, items)
         for (tenor, month), items in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1]))
     ]
+
+
+def _non_policy_prediction_predicate(conn: Any) -> str:
+    """返回排除平台政策生成行的数据库 JSON 谓词。"""
+    dialect = str(conn.dialect.name)
+    if dialect == "sqlite":
+        return "json_type(extra, '$.signal_policy_applied') IS NOT 'true'"
+    if dialect == "mysql":
+        return (
+            "COALESCE(JSON_UNQUOTE(JSON_EXTRACT(extra, '$.signal_policy_applied')), 'false') "
+            "<> 'true'"
+        )
+    raise RuntimeError(f"unsupported database dialect for benchmark export: {dialect}")
 
 
 def _metric_row(tenor: str, month: str, rows: list[dict[str, Any]]) -> tuple[Any, ...]:

@@ -69,13 +69,114 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
         self.assertEqual(
             compact[0],
             {
-                "predict_date": "2026-01-02",
+                "feature_date": "2026-01-02",
                 "target_date": "2026-01-09",
                 "target_tenor": "5Y",
-                "predicted_direction": -1,
+                "horizon": 6,
+                "direction": -1,
                 "confidence": 0.45,
+                "label": 1,
+                "is_correct": False,
+                "feature_week_id": 202601,
+                "target_week_id": 202602,
+                "frequency": "weekly",
+                "model_version": "rule_vote_0529",
+                "target_rule": "next_week_last_trading_day_vs_current_week_last_trading_day",
+                "rule_vote": -1.0,
+                "source_spec": "demo_rule",
+                "score_spec": "demo_rule:1.0000",
             },
         )
+        output = runner.make_weekly_run_output("2026-01-02", "2026-01-16", rows)
+        runner._annotate_summary(
+            output,
+            SimpleNamespace(path=Path("/tmp/weekly.csv"), source="unit_test"),
+            weekly_df,
+        )
+        self.assertEqual(output.summary["policy_generated_flat_count"], 0)
+        self.assertEqual(output.summary["policy_generated_flat_feature_keys"], [])
+
+    def test_missing_source_week_becomes_audited_flat_without_changing_source_row_metrics(self) -> None:
+        from backtests import weekly_5y_direct_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202601, 202602, 202603])
+        calendar = _calendar_for(weekly_df["week_id"])
+
+        def fake_vote(frame: pd.DataFrame) -> pd.DataFrame:
+            del frame
+            return pd.DataFrame(
+                {
+                    "week_id": [202602],
+                    "final_pred_label": [1],
+                    "final_prob_up": [0.6],
+                    "rule_vote": [1.0],
+                    "source_spec": ["source_rule"],
+                    "score_spec": ["source_rule:1.0000"],
+                }
+            )
+
+        with patch.object(runner, "build_rule_vote", side_effect=fake_vote):
+            rows = runner.build_backtest_rows(
+                weekly_df,
+                calendar=calendar,
+                artifact_path=Path("/tmp/weekly.csv"),
+                artifact_source="unit_test",
+            )
+
+        self.assertEqual([row["extra"]["feature_week_id"] for row in rows], [202601, 202602])
+        flat_row, source_row = rows
+        self.assertEqual(flat_row["predicted_direction"], 0)
+        self.assertEqual(flat_row["confidence"], 0.0)
+        self.assertIs(flat_row["extra"]["signal_policy_applied"], True)
+        self.assertEqual(flat_row["extra"]["source_component"], "rule_vote")
+        self.assertEqual(flat_row["extra"]["input_artifact_path"], "/tmp/weekly.csv")
+        self.assertEqual(source_row["predicted_direction"], 1)
+        self.assertEqual(source_row["confidence"], 0.6)
+        self.assertNotIn("signal_policy_applied", source_row["extra"])
+
+        output = runner.make_weekly_run_output("2026-01-02", "2026-01-09", rows)
+        runner._annotate_summary(
+            output,
+            SimpleNamespace(path=Path("/tmp/weekly.csv"), source="unit_test"),
+            weekly_df,
+        )
+
+        metrics = output.summary["by_tenor"]["5Y"]
+        self.assertEqual(metrics["samples"], 2)
+        self.assertEqual(metrics["metric_samples"], 1)
+        self.assertEqual(metrics["predicted_dist"], {"up": 1, "down": 0, "flat": 1})
+        self.assertEqual(metrics["accuracy"], 1.0)
+        self.assertEqual(output.summary["policy_generated_flat_count"], 1)
+        self.assertEqual(output.summary["policy_generated_flat_feature_keys"], [202601])
+
+        benchmark = pd.DataFrame(
+            {
+                "feature_week_id": [202602],
+                "tenor": ["5Y"],
+                "direction": [1],
+                "confidence": [0.6],
+                "target_date": ["2026-01-16"],
+                "label": [1],
+                "is_correct": [True],
+            }
+        )
+        self.assertEqual(
+            runner.validate_original_benchmark_rows(rows, benchmark),
+            {"benchmark_rows": 1, "matched_rows": 1},
+        )
+
+    def test_empty_core_batch_fails_closed_instead_of_generating_all_flat(self) -> None:
+        from backtests import weekly_5y_direct_0529_reproduction as runner
+
+        weekly_df = _weekly_frame([202601, 202602, 202603])
+        with patch.object(runner, "build_rule_vote", return_value=pd.DataFrame()):
+            with self.assertRaisesRegex(RuntimeError, "规则投票 core 未产生任何输出"):
+                runner.build_backtest_rows(
+                    weekly_df,
+                    calendar=_calendar_for(weekly_df["week_id"]),
+                    artifact_path=Path("/tmp/weekly.csv"),
+                    artifact_source="unit_test",
+                )
 
     def test_backtest_rows_start_from_predict_date_2025_01_01(self) -> None:
         from backtests import weekly_5y_direct_0529_reproduction as runner
@@ -255,7 +356,8 @@ class Weekly5YDirect0529BacktestTests(unittest.TestCase):
         self.assertEqual(payload["status"], "success")
         self.assertEqual(payload["scheme_id"], "weekly_5y_direct_0529")
         self.assertEqual(payload["data_source"], "framework_db_aligned")
-        self.assertEqual(payload["row_count"], len(payload["rows"]))
+        self.assertEqual(payload["benchmark_row_count"], len(payload["rows"]))
+        self.assertGreaterEqual(payload["row_count"], payload["benchmark_row_count"])
         self.assertEqual(payload["runs"][0]["rows"], payload["rows"])
         self.assertGreater(payload["monthly_count"], 0)
         self.assertEqual(payload["summary"]["backtest_mode"], "original_batch_reproduction")

@@ -43,14 +43,14 @@ from backtests.repository import (
     clean_json,
     insert_reproduction_check,
 )
-from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root
+from shared.artifact_paths import benchmark_data_check_root, benchmark_input_root, benchmark_source_evidence_root
 from shared.data_service import create_sqlalchemy_engine
 from shared.input_artifacts import build_daily_input_artifact
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BENCHMARK_ID = "model_muti_0529"
-CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
+SOURCE_EVIDENCE_DAILY_CSV = benchmark_source_evidence_root(BENCHMARK_ID) / "daily_output.csv"
 DATA_CHECK_ROOT = benchmark_data_check_root(BENCHMARK_ID)
 TARGET_COLUMNS = ("TB1YWI0C", "TB3YWI0C", "TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
 UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
@@ -60,6 +60,7 @@ T1_BACKTEST_START = "2025-01-01"
 T1_BACKTEST_END = "2026-05-29"
 LIVE_TARGET_START_DATE = "2026-06-01"
 DAILY0529_REQUIRED_TARGET_END_DATE = "2026-05-29"
+DAILY0529_DB_INPUT_START_DATE = "2010-07-27"
 T1_CONFIG_PATH = PROJECT_ROOT / "schemes" / "t1_daily" / "config.yaml"
 EVALUATION_EXCLUDED_TARGET_RANGES: tuple[dict[str, str], ...] = ()
 
@@ -74,7 +75,7 @@ EXPECTED_T5_REPORT: dict[str, dict[str, Any]] = {
 T1_DAILY_SPEC = BacktestSpec(
     benchmark_id=BENCHMARK_ID,
     scheme_id="t1_daily",
-    canonical_csv=CANONICAL_DAILY,
+    canonical_csv=None,
     target_columns=TARGET_COLUMNS,
     start_date=T1_BACKTEST_START,
     end_date=T1_BACKTEST_END,
@@ -83,7 +84,7 @@ T1_DAILY_SPEC = BacktestSpec(
 T5_DAILY_SPEC = BacktestSpec(
     benchmark_id=BENCHMARK_ID,
     scheme_id="t5_daily",
-    canonical_csv=CANONICAL_DAILY,
+    canonical_csv=None,
     target_columns=TARGET_COLUMNS,
     start_date=T5_BACKTEST_START,
     end_date=T5_BACKTEST_END,
@@ -92,7 +93,7 @@ T5_DAILY_SPEC = BacktestSpec(
 )
 
 
-def read_daily_csv(path: str | Path = CANONICAL_DAILY) -> pd.DataFrame:
+def read_daily_csv(path: str | Path = SOURCE_EVIDENCE_DAILY_CSV) -> pd.DataFrame:
     """读取并标准化 historical daily_output。"""
     return _base_read_daily_csv(path)
 
@@ -105,7 +106,7 @@ def build_daily0529_benchmark_frame(
 ) -> pd.DataFrame:
     """返回 T1/T5 benchmark 使用的日频输入。
 
-    根目录 canonical CSV 只到 2026-05-28；为覆盖 2026-05 全部 target 交易日，
+    根目录 source-evidence CSV 只到 2026-05-28；为覆盖 2026-05 全部 target 交易日，
     需要从 DB 补 2026-05-29 这一目标验证日。补齐行只用于计算 label/actual，
     不把 feature_date 推到灰度区。
     """
@@ -147,13 +148,31 @@ def build_daily0529_benchmark_frame(
     return pd.concat([daily, extra_rows], ignore_index=True)
 
 
-def build_db_aligned_daily(
+def build_daily0529_db_input_frame(
+    engine: Engine | None = None,
+    artifact_scheme_id: str = "daily0529_db_first",
+) -> pd.DataFrame:
+    """从 DB-first input artifact 生成 0529 日频回测输入。"""
+    input_artifact = build_daily_input_artifact(
+        scheme_id=artifact_scheme_id,
+        predict_date=DAILY0529_REQUIRED_TARGET_END_DATE,
+        start_date=DAILY0529_DB_INPUT_START_DATE,
+        end_date=DAILY0529_REQUIRED_TARGET_END_DATE,
+        engine=engine,
+        output_root=benchmark_input_root(BENCHMARK_ID),
+    )
+    daily = input_artifact.dataframe.copy()
+    daily["date"] = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
+    return daily.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+
+
+def build_source_evidence_db_aligned_daily(
     csv_df: pd.DataFrame | None = None,
     engine: Engine | None = None,
     upstream_mode: bool = True,
     artifact_scheme_id: str = "daily_common",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """生成完整 DB 版 daily_output 和按 canonical CSV 对齐后的版本。
+    """生成完整 DB 版 daily_output 和按 source-evidence CSV 对齐后的版本。
 
     历史复现的 DB 输入统一经过 shared.input_artifacts 生成和读回，
     再喂给算法。upstream_mode 保留为旧调用兼容参数，不再绕过统一输入层。
@@ -164,35 +183,55 @@ def build_db_aligned_daily(
         upstream_mode=upstream_mode,
         artifact_scheme_id=artifact_scheme_id,
         benchmark_id=BENCHMARK_ID,
-        canonical_csv=CANONICAL_DAILY,
+        canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
         artifact_builder=build_daily_input_artifact,
     )
 
 
-def build_framework_db_aligned_daily(csv_df: pd.DataFrame | None = None, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_db_aligned_daily(
+    csv_df: pd.DataFrame | None = None,
+    engine: Engine | None = None,
+    upstream_mode: bool = True,
+    artifact_scheme_id: str = "daily_common",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """兼容旧脚本入口；实际语义是显式 source-evidence 对齐。"""
+    return build_source_evidence_db_aligned_daily(
+        csv_df=csv_df,
+        engine=engine,
+        upstream_mode=upstream_mode,
+        artifact_scheme_id=artifact_scheme_id,
+    )
+
+
+def build_source_evidence_framework_db_aligned_daily(csv_df: pd.DataFrame | None = None, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """生成当前框架 data_service 默认口径的 DB daily_output，用于额外对照。"""
     return _base_build_framework_db_aligned_daily(
         csv_df=csv_df,
         engine=engine,
         benchmark_id=BENCHMARK_ID,
-        canonical_csv=CANONICAL_DAILY,
+        canonical_csv=SOURCE_EVIDENCE_DAILY_CSV,
         artifact_builder=build_daily_input_artifact,
     )
 
 
-def run_data_alignment_check(engine: Engine | None = None, persist: bool = True) -> dict[str, Any]:
-    """对比 canonical CSV 与当前 DB 生成的 daily_output。"""
+def build_framework_db_aligned_daily(csv_df: pd.DataFrame | None = None, engine: Engine | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """兼容旧脚本入口；实际语义是显式 source-evidence 对齐。"""
+    return build_source_evidence_framework_db_aligned_daily(csv_df=csv_df, engine=engine)
+
+
+def run_source_evidence_data_alignment_check(engine: Engine | None = None, persist: bool = True) -> dict[str, Any]:
+    """对比 source-evidence CSV 与当前 DB 生成的 daily_output。"""
     own_engine = engine is None
     engine = engine or create_sqlalchemy_engine()
     try:
         csv_df = read_daily_csv()
-        upstream_full, upstream_aligned = build_db_aligned_daily(
+        upstream_full, upstream_aligned = build_source_evidence_db_aligned_daily(
             csv_df,
             engine=engine,
             upstream_mode=True,
             artifact_scheme_id="daily_common",
         )
-        framework_full, framework_aligned = build_framework_db_aligned_daily(csv_df, engine=engine)
+        framework_full, framework_aligned = build_source_evidence_framework_db_aligned_daily(csv_df, engine=engine)
         report = compare_daily_frames(csv_df, upstream_full, upstream_aligned)
         effective_csv, effective_aligned = exclude_daily_rows_for_evaluation_week(csv_df, upstream_aligned)
         report["evaluation_exclusion"] = evaluation_exclusion_summary(len(csv_df), len(effective_csv))
@@ -205,11 +244,11 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
         }
         report["framework_db_comparison"] = compare_generated_frames(upstream_aligned, framework_aligned)
         report["framework_db_full"] = _frame_profile(framework_full)
-        row = {
+        source_evidence_row = {
             "benchmark_id": BENCHMARK_ID,
-            "check_name": "canonical_csv_vs_upstream_db_generated",
+            "check_name": "source_evidence_csv_vs_upstream_db_generated",
             "status": report["status"],
-            "source_path": str(CANONICAL_DAILY),
+            "source_path": str(SOURCE_EVIDENCE_DAILY_CSV),
             "row_count_csv": report["csv"]["rows"],
             "row_count_db": report["db_aligned"]["rows"],
             "col_count_csv": report["csv"]["columns"],
@@ -227,7 +266,7 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
             "report": report,
         }
         if persist:
-            insert_reproduction_check(engine, row)
+            insert_reproduction_check(engine, source_evidence_row)
         artifact = DATA_CHECK_ROOT / "upstream_db_generated_daily_output.csv"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         upstream_aligned.to_csv(artifact, index=False)
@@ -239,6 +278,11 @@ def run_data_alignment_check(engine: Engine | None = None, persist: bool = True)
     finally:
         if own_engine:
             engine.dispose()
+
+
+def run_data_alignment_check(engine: Engine | None = None, persist: bool = True) -> dict[str, Any]:
+    """兼容旧脚本入口；实际语义是 source-evidence 数据对齐审计。"""
+    return run_source_evidence_data_alignment_check(engine=engine, persist=persist)
 
 
 def compare_daily_frames(csv_df: pd.DataFrame, db_full: pd.DataFrame, db_aligned: pd.DataFrame) -> dict[str, Any]:
@@ -271,32 +315,55 @@ def _date_in_excluded_ranges(value: str) -> bool:
     return any(item["start"] <= value <= item["end"] for item in EVALUATION_EXCLUDED_TARGET_RANGES)
 
 
-def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None, n_jobs: int = 4) -> list[RunOutput]:
-    """生成 t5 canonical-csv、framework-csv 和 framework-db 三组输出。"""
-    csv_df = build_daily0529_benchmark_frame(engine=engine)
+def run_t5_reproduction(
+    engine: Engine | None = None,
+    db_aligned: pd.DataFrame | None = None,
+    n_jobs: int = 4,
+    *,
+    include_source_evidence: bool = False,
+) -> list[RunOutput]:
+    """生成 t5 DB-first 输出；显式 source evidence 模式才生成 CSV 对照。"""
+    csv_df = build_daily0529_benchmark_frame(engine=engine) if include_source_evidence else None
     if db_aligned is None:
-        _, db_aligned = build_db_aligned_daily(
-            csv_df,
-            engine=engine,
-            upstream_mode=True,
-            artifact_scheme_id="t5_daily",
-        )
+        if include_source_evidence:
+            _, db_aligned = build_source_evidence_db_aligned_daily(
+                csv_df,
+                engine=engine,
+                upstream_mode=True,
+                artifact_scheme_id="t5_daily",
+            )
+        else:
+            db_aligned = build_daily0529_db_input_frame(engine=engine, artifact_scheme_id="t5_daily")
 
-    baseline_rows, baseline_path = run_t5_canonical_csv_baseline(n_jobs=n_jobs)
-    baseline = make_run_output("t5_daily", "baseline_original_csv", T5_BACKTEST_START, T5_BACKTEST_END, baseline_rows, report_path=baseline_path)
-    framework_csv = make_run_output(
-        "t5_daily",
-        "framework_original_csv",
-        T5_BACKTEST_START,
-        T5_BACKTEST_END,
-        run_t5_framework_backtest(csv_df, n_jobs=n_jobs),
-    )
     framework_db = make_run_output(
         "t5_daily",
         "framework_db_aligned",
         T5_BACKTEST_START,
         T5_BACKTEST_END,
         run_t5_framework_backtest(db_aligned, n_jobs=n_jobs),
+    )
+    framework_db.summary["expected_report"] = EXPECTED_T5_REPORT
+    framework_db.summary["report_reproduction"] = compare_t5_expected_report(
+        framework_db.summary.get("periods_by_tenor", {})
+    )
+    if not include_source_evidence:
+        return [framework_db]
+
+    baseline_rows, baseline_path = run_t5_source_evidence_csv_baseline(n_jobs=n_jobs)
+    baseline = make_run_output(
+        "t5_daily",
+        "baseline_original_csv",
+        T5_BACKTEST_START,
+        T5_BACKTEST_END,
+        baseline_rows,
+        report_path=baseline_path,
+    )
+    framework_csv = make_run_output(
+        "t5_daily",
+        "framework_original_csv",
+        T5_BACKTEST_START,
+        T5_BACKTEST_END,
+        run_t5_framework_backtest(csv_df, n_jobs=n_jobs),
     )
     framework_csv.summary["comparison"] = compare_prediction_rows(
         baseline.rows,
@@ -308,15 +375,20 @@ def run_t5_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame |
         framework_db.rows,
         fields=("label", "predicted_direction", "model_pred"),
     )
-    for output in (baseline, framework_csv, framework_db):
+    for output in (baseline, framework_csv):
         output.summary["expected_report"] = EXPECTED_T5_REPORT
         output.summary["report_reproduction"] = compare_t5_expected_report(output.summary.get("periods_by_tenor", {}))
     return [baseline, framework_csv, framework_db]
 
 
-def run_t5_canonical_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
+def run_t5_source_evidence_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
     daily = build_daily0529_benchmark_frame()
-    return run_t5_framework_backtest(daily, n_jobs=n_jobs), str(CANONICAL_DAILY)
+    return run_t5_framework_backtest(daily, n_jobs=n_jobs), str(SOURCE_EVIDENCE_DAILY_CSV)
+
+
+def run_t5_canonical_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
+    """兼容旧脚本入口；实际语义是 source-evidence CSV baseline。"""
+    return run_t5_source_evidence_csv_baseline(n_jobs=n_jobs)
 
 
 def run_t5_framework_backtest(df: pd.DataFrame, n_jobs: int = 4) -> list[dict[str, Any]]:
@@ -443,26 +515,25 @@ def _run_t5_single_index(module: Any, daily: pd.DataFrame, labels: np.ndarray, c
     }
 
 
-def run_t1_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame | None = None) -> list[RunOutput]:
-    """生成 t1 canonical-csv、framework-csv 和 framework-db 三组输出。"""
-    csv_df = build_daily0529_benchmark_frame(engine=engine)
+def run_t1_reproduction(
+    engine: Engine | None = None,
+    db_aligned: pd.DataFrame | None = None,
+    *,
+    include_source_evidence: bool = False,
+) -> list[RunOutput]:
+    """生成 t1 DB-first 输出；显式 source evidence 模式才生成 CSV 对照。"""
+    csv_df = build_daily0529_benchmark_frame(engine=engine) if include_source_evidence else None
     if db_aligned is None:
-        _, db_aligned = build_db_aligned_daily(
-            csv_df,
-            engine=engine,
-            upstream_mode=True,
-            artifact_scheme_id="t1_daily",
-        )
+        if include_source_evidence:
+            _, db_aligned = build_source_evidence_db_aligned_daily(
+                csv_df,
+                engine=engine,
+                upstream_mode=True,
+                artifact_scheme_id="t1_daily",
+            )
+        else:
+            db_aligned = build_daily0529_db_input_frame(engine=engine, artifact_scheme_id="t1_daily")
 
-    baseline_rows, baseline_path = run_t1_canonical_csv_baseline(csv_df)
-    baseline = make_run_output("t1_daily", "baseline_original_csv", T1_BACKTEST_START, T1_BACKTEST_END, baseline_rows, report_path=baseline_path)
-    framework_csv = make_run_output(
-        "t1_daily",
-        "framework_original_csv",
-        T1_BACKTEST_START,
-        T1_BACKTEST_END,
-        run_t1_framework_backtest(csv_df),
-    )
     framework_db = make_run_output(
         "t1_daily",
         "framework_db_aligned",
@@ -471,13 +542,38 @@ def run_t1_reproduction(engine: Engine | None = None, db_aligned: pd.DataFrame |
         run_t1_framework_backtest(db_aligned),
     )
     fields = ("label", "predicted_direction", "model_pred")
+    if not include_source_evidence:
+        return [framework_db]
+
+    baseline_rows, baseline_path = run_t1_source_evidence_csv_baseline(csv_df)
+    baseline = make_run_output(
+        "t1_daily",
+        "baseline_original_csv",
+        T1_BACKTEST_START,
+        T1_BACKTEST_END,
+        baseline_rows,
+        report_path=baseline_path,
+    )
+    framework_csv = make_run_output(
+        "t1_daily",
+        "framework_original_csv",
+        T1_BACKTEST_START,
+        T1_BACKTEST_END,
+        run_t1_framework_backtest(csv_df),
+    )
+    fields = ("label", "predicted_direction", "model_pred")
     framework_csv.summary["comparison"] = compare_prediction_rows(baseline.rows, framework_csv.rows, fields=fields, float_fields=("confidence",), float_tolerance=1e-6)
     framework_db.summary["comparison"] = compare_prediction_rows(baseline.rows, framework_db.rows, fields=fields, float_fields=("confidence",), float_tolerance=1e-6)
     return [baseline, framework_csv, framework_db]
 
 
+def run_t1_source_evidence_csv_baseline(daily_df: pd.DataFrame) -> tuple[list[dict[str, Any]], str]:
+    return run_t1_framework_backtest(daily_df), str(SOURCE_EVIDENCE_DAILY_CSV)
+
+
 def run_t1_canonical_csv_baseline(daily_df: pd.DataFrame) -> tuple[list[dict[str, Any]], str]:
-    return run_t1_framework_backtest(daily_df), str(CANONICAL_DAILY)
+    """兼容旧脚本入口；实际语义是 source-evidence CSV baseline。"""
+    return run_t1_source_evidence_csv_baseline(daily_df)
 
 
 def run_t1_framework_backtest(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -653,16 +749,40 @@ def persist_run_output(engine: Engine, output: RunOutput) -> int:
     return _base_persist_run_output(engine, output, benchmark_id=BENCHMARK_ID)
 
 
-def run_daily_0529_reproduction(include_t1: bool = True, include_t5: bool = True, n_jobs: int = 4, persist: bool = True) -> dict[str, Any]:
+def run_daily_0529_reproduction(
+    include_t1: bool = True,
+    include_t5: bool = True,
+    n_jobs: int = 4,
+    persist: bool = True,
+    *,
+    include_source_evidence: bool = False,
+) -> dict[str, Any]:
     started = time.time()
     engine = create_sqlalchemy_engine()
     try:
-        data_check = run_data_alignment_check(engine=engine, persist=persist)
+        data_check = (
+            run_data_alignment_check(engine=engine, persist=persist)
+            if include_source_evidence
+            else {"status": "skipped_source_evidence"}
+        )
         outputs: list[RunOutput] = []
         if include_t5:
-            outputs.extend(run_t5_reproduction(engine=engine, n_jobs=n_jobs))
+            outputs.extend(
+                run_t5_reproduction(
+                    engine=engine,
+                    n_jobs=n_jobs,
+                    include_source_evidence=include_source_evidence,
+                )
+            )
         if include_t1:
-            outputs.extend(run_t1_reproduction(engine=engine))
+            outputs.extend(
+                run_t1_reproduction(
+                    engine=engine,
+                    include_source_evidence=include_source_evidence,
+                )
+            )
+        if not include_source_evidence:
+            outputs = [output for output in outputs if output.data_source == "framework_db_aligned"]
         run_ids = []
         if persist:
             for output in outputs:
@@ -720,12 +840,14 @@ def main(argv: list[str] | None = None) -> dict[str, Any]:
     parser.add_argument("--skip-t5", action="store_true")
     parser.add_argument("--n-jobs", type=int, default=4)
     parser.add_argument("--no-persist", action="store_true")
+    parser.add_argument("--include-source-evidence", action="store_true")
     args = parser.parse_args(argv)
     result = run_daily_0529_reproduction(
         include_t1=not args.skip_t1,
         include_t5=not args.skip_t5,
         n_jobs=args.n_jobs,
         persist=not args.no_persist,
+        include_source_evidence=args.include_source_evidence,
     )
     print(json.dumps(clean_json(result), ensure_ascii=False, indent=2))
     return result

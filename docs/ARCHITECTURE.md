@@ -1,10 +1,11 @@
 # 架构设计: Bond Factor Lab
 
 **版本**: v1.1
-**日期**: 2026-06-12
+**日期**: 2026-07-09
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
 > 预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
+> Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准；系统架构只允许做输入、日期、落库和展示适配，不允许改变算法计算逻辑。
 
 ---
 
@@ -70,15 +71,19 @@
 
 `feature_date` 是前端和业务唯一标准数据截止字段；`anchor_date` 只允许作为方案内部变量或审计 extra。实盘预测分为 `gray_live` 和 `scheduled_live` 两个阶段，二者都属于实盘观察区；历史回测独立写入 `t_backtest_*`，不得从实盘预测表拼历史结果。
 
-原始算法 benchmark 中的 `T/date/predict_date` 表达的是 source T / 预测站位日。进入平台后必须对齐 `feature_date`，不能对齐实盘语义下的 `predict_date`。若 benchmark 样本 target 仍在历史回测区间，则与 `t_backtest_predictions.feature_date` 对齐；若 target 已进入灰度/实盘观察区，则与 `t_scheme_predictions.feature_date` 对齐，并校验 `prediction_phase`。
+原始算法 benchmark 中的 `T/date/predict_date` 表达的是 source T / 预测站位日。进入平台后必须对齐 `feature_date`，不能对齐实盘语义下的 `predict_date`。若 benchmark 样本 target 仍在历史回测区间，则与 `t_backtest_predictions.feature_date` 对齐；若 target 已进入灰度/实盘观察区，必须先确认 benchmark 与 live 记录是否同一执行口径，同口径时才与 `t_scheme_predictions.feature_date` 对齐并校验 `prediction_phase`。若 source-original batch 固定了晚于样本 `feature_date` 的 `source_end` 或 test window，该 batch 只能作为 source-original backtest 证据，live 必须用 `feature_date` 硬截止的 live-safe oracle 验收。
+
+Source-backed 方案必须先声明 source 执行口径：`source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。无论采用哪类口径，算法内部的时间窗口、特征、周/月频对齐、模型参数、投票和内部 score 映射都不得被平台重写。跨灰度边界的 `original_predictions_sample.csv` 必须按 row role 拆分；`TOTAL_BAD=0` 只能说明 live 行结构、版本和 scope 正确，不能替代同口径数值 diff。
 
 ### 2.1 预测流程（日度07:03 / 周度11:30）
 
 ```
 Scheduler启动
   → discovery.py 扫描 schemes/ 目录
+  → startup catch-up 检查当天已过 cron 且无终态 run 的 active 任务
   → 对每个active方案:
       → executor.py 检查是否交易日
+      → 读取方案级 schedule.timeout_sec（如有）作为子进程等待预算
       → 动态import scheme的predict.py
       → 调用 run(predict_date=today)
       → 返回 list[PredictionRecord]
@@ -89,17 +94,25 @@ Scheduler启动
 当前调度口径:
 
 - 日度 `t1_daily` / `t5_daily`: 工作日 `07:03`（`3 7 * * 1-5`）。
-- 周度 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529`: 周六 `11:30`（`30 11 * * 6`）。
+- 周度 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 以及周平均 `weekly_avg_1y_lgbm_0529` / `weekly_avg_5y_lgbm_0529` / `weekly_avg_10y_lgbm_0529`: 周六 `11:30`（`30 11 * * 6`）。
+- 月度 `monthly_1y_rf_top30_0629` / `monthly_5y_knn_top20_0629` / `monthly_10y_rf_top5_0629`: 自然月 15 号 `18:00`（`0 18 15 * *`）。
 - 旧周度方案 `weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay` 已退役。
 
-### 2.2 实际方向更新（每日08:30与19:00）
+同一业务 cron 下的 active 方案可按稳定顺序错峰启动，并通过 `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY` 限制同时进入算法子进程的数量。慢速 source-backed 方案可以在 `config.yaml` 的 `schedule.timeout_sec` 配置方案级执行 timeout 覆盖 executor 默认预算；这只影响子进程等待时间，不改变 `predict_date` / `feature_date` / `target_date`、业务 cron、并发规则或 source 算法逻辑。生产上修改调度配置后必须重启 launchd scheduler，并复核日志中每个 active 方案的 `Scheduled scheme ...` 注册记录。
+
+launchd scheduler 使用 `RunAtLoad=true` 与 `KeepAlive=true`，用户登录后自动拉起并在进程退出时重启。`BOND_SCHEDULER_STARTUP_CATCHUP=1` 时，scheduler 启动后会执行一次启动追跑：只补跑当天业务 cron 已过且 `t_scheme_runs` 尚无 `success/partial/failed/skipped` 终态记录的 active 方案；已有终态 run 的方案不会因重启反复补跑。
+
+### 2.2 实际方向更新（每日08:30、19:00与23:45）
 
 ```
-Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由交易日检查跳过
-  → 从 api_wind_indicators_all 读取最新收盘收益率
+Scheduler在每日08:30、19:00和23:45触发 actuals 更新任务；交易日 daily/weekly 刷新到当日，非交易日 daily/weekly 刷新到上一交易日，monthly 仍刷新到自然 run date
+  → 从 api_wind_daily 读取最新收盘收益率
   → 计算各tenor的T+1和T+5方向
   → 写入 t_scheme_actuals (UPSERT)
 ```
+
+其中 `23:45` 夜间刷新用于承接上游 BondPrediction `23:25` 左右的 Wind 日频导入，避免源表夜间补齐后前端仍等到次日 `08:30` 才显示验证结果。
+若周五源 actual 晚于 `23:45` 才进入 `api_wind_daily`，周六的 actuals job 会以周五为 daily/weekly end date 自动补刷，避免 T+1 最新验证卡在上一交易日。
 
 周度 actuals 独立维护:
 
@@ -131,13 +144,11 @@ Scheduler在每日08:30和19:00触发日频actuals更新任务；非交易日由
 
 ```
 手动执行 backtests.daily_0529_reproduction
-  → 读取 benchmarks/model_muti_0529/daily_output.csv
-  → 通过 shared.input_artifacts 生成 DB 版 daily_output CSV 并读回
-  → 日频内部调用 shared.data_service 生成 daily_output CSV
-  → 按 canonical CSV 对齐列和日期
-  → 运行原始 t5 run_all.py / 原始 t1 run_backtest(dry_run=True) 生成 baseline
+  → 默认通过 shared.input_artifacts 从 DB 生成 DB-first daily_output 并读回
   → 运行框架内 t1_daily / t5_daily 批量回测逻辑
-  → 对比 baseline、framework-csv、framework-db
+  → 只输出 framework_db_aligned（--no-persist 时不写库）
+  → 显式 --include-source-evidence 时才读取 source_evidence/benchmark_batches/model_muti_0529/daily_output.csv
+  → source-evidence 模式对比外部归档、framework-csv、framework-db
   → 写入 t_backtest_runs / t_backtest_predictions / t_backtest_reproduction_checks
   → 前端回测指标只以 t_backtest_predictions 明细动态聚合为准
   → 验证结果保留在后端 API、脚本和文档中，不新增前端验证结果页
@@ -226,11 +237,13 @@ CREATE TABLE t_scheme_weekly_actuals (
     extra JSON DEFAULT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_weekly_actual_predict (tenor, predict_date),
+    UNIQUE KEY uk_weekly_actual_predict_rule (tenor, predict_date, target_rule),
     INDEX idx_weekly_actual_target (tenor, target_date),
     INDEX idx_weekly_actual_week (feature_week_id, target_week_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
+
+周频 actuals 写入前由 `scheduler.weekly_actuals_updater` 读取 `api_wind_date + t_trade_calendar` 构造周历；预测侧 `shared.calendar_service` 与 actuals updater 共享 `shared.week_calendar_normalizer`，只对源周历中“单个交易日提前跳到下一周、随后非交易日回落上一周”的孤立不连续行做只读归一化。归一化不修改源表，也不能替代 source core 的信号水位检查。
 
 ### 3.4 t_scheme_registry
 
@@ -359,8 +372,8 @@ entry_point: predict.run         # 入口函数
 
 历史回测命名边界:
 
-- `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（`t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）已退役。
-- `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；canonical 输入位于 `benchmarks/{benchmark_id}/`。
+- `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（例如 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_avg_5y_lgbm_0529`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）和旧 point-backed 周平均方案（如 `weekly_avg_7y_cross_d_overlay_0529`）已退役或暂停。
+- `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；外部来源证据归档位于 `source_evidence/benchmark_batches/{benchmark_id}/`，平台 active runner 的默认输入真源必须来自 `shared.input_artifacts`。
 - `data_source`: 数据口径枚举，例如 `framework_db_aligned`；API 负责映射成中文展示名，例如“当前DB对齐回测”。
 - 运行期输入 artifact: `backtest_artifacts/runtime_inputs/{scheme_id}/`。
 - 历史回测 artifact: `backtest_artifacts/backtests/{benchmark_id}/`。
@@ -419,6 +432,7 @@ class PredictionRecord:
     "name": "0529原始T5-LGBM投票基准",
     "description": "...",
     "horizon": 5,
+    "task_type": "T+5",
     "frequency": "daily",
     "target_tenor": "10Y",
     "schedule_cron": "3 7 * * 1-5",
@@ -537,7 +551,9 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。回测月度指标和 summary 只从 `t_backtest_predictions` 明细动态聚合。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”，并只按 API 返回的 `task_type` 分列；历史回测 API 不可用时，前端切换到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测视图。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。原始 benchmark 的 source T 也按 `feature_date` 与 DB 明细对齐，不能按 live `predict_date` 对齐。当前回测/实盘方案包含日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28`、`daily_7y_1_v28` 与周频 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`。
+**当前状态**: 前端优先读取 `GET /api/backtests/factor-lab` 展示最新 `framework_db_aligned` 历史回测矩阵；该 API 与 `v_latest_backtest_run` 使用同一套 canonical latest success 语义：同一 `benchmark_id + scheme_id + data_source` 下只取最新 `status='success'` run（`updated_at DESC, id DESC`），`start_date/end_date` 仅作为 run 属性。未传 `benchmark_id` 时返回所有 benchmark 下各方案最新成功 run，显式传 `benchmark_id` 时收窄到指定历史基准批次。该 API 只把 latest run 映射到 active registry rows；registry 缺行、`paused` 或 `archived` 的 target 不会进入前端候选排行，也不会从 config 临时拼业务 `scheme_id`。回测月度指标和 summary 只从 `t_backtest_predictions` 明细动态聚合；source-backed 方案如果需要保留原始算法来源，只能把 source-original data source、source role、hash 写入 summary/extra/provenance，不能只落库到非默认 data_source 后期待前端任务格子自动展示。前端使用 API 返回的 `display_name` 统一显示为“方案名｜Y标的｜数据口径”，并只按 API 返回的 `task_type` 分列；历史回测 API 不可用时，前端切换到 `GET /api/schemes` 和 `GET /api/metrics/...` 的实盘预测视图。前端和业务统一使用 `feature_date` 表示数据截止日，不使用 `anchor_date`；实盘展示应能区分 `gray_live` 与 `scheduled_live`。当前月度 0629 三方案的 latest historical backtest 只保留 16 个样本，截止 `target_date=2026-05-15`；`predict_date=2026-05-15,target_date=2026-06-15` 与 `predict_date=2026-06-15,target_date=2026-07-15` 均由 `/api/metrics` 作为 `gray_live` 行展示。当前日度 0629 三方案 latest historical backtest 每方案 337 行，历史段按 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01` 截断；`target_date=2026-06-01..2026-07-01` 的 22 个交易日均由 `/api/metrics` 作为 `gray_live` 行展示。前端合并 backtest/live 时，月度任务会按 live 明细的 `target_date` 月份过滤回测侧同月及之后的 target 月，防止旧 17 行 run 将灰度 target 区间误归类为回测，也防止按发出月误删 `2026-05` 回测行。原始 benchmark 的 source T 也按 `feature_date` 与 DB 明细对齐，不能按 live `predict_date` 对齐；月度 source-backed 方案的 `predict_date` 固定为自然月 15 号，不因非交易日顺延。当前 active base 方案共 21 个：日频 `t1_daily`、`t5_daily`、`daily_5y_2_v28`、`daily_7y_1_v28`、`liwei_0616_cons_sda_k3_div_k10`、`liwei_0616_7y01_cons_say_k3_div_k10`、`liwei_0616_7y03_cons_all_k3_div_k8`、`liwei_0616_10y01_cons_say_k3_div_k10`、`liwei_0616_10y02_cons_say_k3_div_k5`、`daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`、`daily_10y_lgbm_10y04_0629`，周度单点 `weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`，周平均 `weekly_avg_1y_lgbm_0529`、`weekly_avg_5y_lgbm_0529`、`weekly_avg_10y_lgbm_0529`，月度 `monthly_1y_rf_top30_0629`、`monthly_5y_knn_top20_0629`、`monthly_10y_rf_top5_0629`；其中周平均 actual 方向为目标周平均收益率 vs 当前周平均收益率，月度 actual 方向为目标月观测收益率 vs 当前 feature 月观测收益率，旧 point-backed 周平均 5Y/7Y/10Y 方案仅保留为 paused 历史审计。
+
+2026-07-06 前端运维口径：静态资源当前版本为 `aifin-shell.js?v=20260705a` / `aifin-shell.css?v=20260705a`。live 方案的 `latestRun` 必须从 `/api/metrics/{registry_scheme_id}` 返回的 live 明细最大 `predict_date` 推导，不得固定为 `"--"` 或只依赖历史回测 API。月度最新验证页只统计已有 actual 的 target 月；例如 `target_date=2026-07-15` 尚未到期时应展示待验证 `--（0/0）`，不能把它误判为前端刷新失败。周度最新验证页必须先区分 actual 源水位、后端 join 和前端缓存：若 `t_scheme_weekly_actuals` 已有相同 `target_tenor + target_date + target_rule` 的 actual，即使 actual 审计 `predict_date` 与周六预测 `predict_date` 不同，也必须计入验证；若目标 tenor 源指标尚未覆盖目标周最后交易日，则继续展示待验证。
 
 **前端指标口径**: 因子实验室页面必须同时展示“样本总数”和“指标分母”两种语义。月度“样本数”列使用 `samples`，包含预测为“平”的交易日或预测周；所有准确率类指标使用 `metric_samples` / `metric_*_dist`，排除预测为“平”的样本。每日/周度验证表中预测为“平”的行结果列显示 `-`，不显示 `×`，也不显示 `✓`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。
@@ -583,11 +599,12 @@ BOND_DB_NAME=bond_db
 
 1. `scheme_id` 表示具体方案实例，不表示 `Y标的 + task_type` 的任务格子。
 2. 一个 `scheme_id` 固定一个 `horizon`；同一算法若同时覆盖 T+1 和 T+5，应拆成两个方案目录。
-3. 新方案先 `status: paused` dry-run，再改为 `active` 手动写库验证。
+3. 新方案初始 `status: paused`，先通过 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`；只有 ActivationGate 可在授权后翻为 `active` 并同步 registry/version。
 4. `predict.py` 只返回 `PredictionRecord`，不直接写 `t_scheme_predictions`。
-5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要同步写入独立 backtest 表。
-6. 新增方案必须遵守 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)：回测 `predict_date=feature_date=T`，实盘 `predict_date=T+1/feature_date=T`，灰度实盘与正式实盘通过 `prediction_phase` 区分。
-7. benchmark 验证必须用原始算法 source T 对齐平台 `feature_date`；跨灰度边界的样本按 `target_date` 分流到 `t_backtest_predictions` 或 `t_scheme_predictions`。
+5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要通过授权 backtest persist 写入独立 backtest 表。
+6. 新增方案必须遵守 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)：回测 `predict_date=feature_date=T`；实盘日期按频率规则生成，日频为 `predict_date=T+1/feature_date=T`，周频由调度日反推 feature 周，月频自然 15 号方案保留自然 15 号 `predict_date`；灰度实盘与正式实盘通过 `prediction_phase` 区分。
+7. benchmark 验证必须用原始算法 source T 对齐平台 `feature_date`；跨灰度边界的样本必须按 `target_date` 与 benchmark role 分流，历史/source-original 行对 `t_backtest_predictions`，同执行口径 live 行才对 `t_scheme_predictions`，否则用 live-safe oracle。
+8. source `latest_oos` / batch 文件只作为来源证据；平台 canonical 回测和 live 验证必须按已声明 source 口径生成。若历史回测获批使用 source-original batch reproduction 例外，该例外不得扩散到 gray/live/scheduled live 的 `feature_date` 硬截止规则。
 
 ---
 
@@ -606,7 +623,7 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 | 预测任务层 | `scheduler.scheme_runner` / `scheduler.executor` | dry-run JSON 输出、正式单方案执行、统一写库 | readiness 检查不得用 broad run-once 代替 |
 | 回测层 | `backtests/{scheme_id}_reproduction.py` | 历史复现、`--no-persist` 验证、受控写 `t_backtest_*` | 禁止把回测结果写入实盘预测表 |
 | 工具脚本层 | `scripts/` | 审计、对比、人工 admin、受控写库 | 禁止新增一次性绕路脚本作为方案运行入口 |
-| 产物层 | `backtest_artifacts/` / `reports/` / `benchmarks/` | 运行期输入、历史回测产物、审计报告、canonical benchmark | 禁止放可复用业务代码 |
+| 产物层 | `backtest_artifacts/` / `reports/` / `source_evidence/` | 运行期输入、历史回测产物、审计报告、外部来源证据归档 | 禁止放可复用业务代码；`source_evidence/` 不得作为 active runner 默认输入 |
 
 ### 9.2 Harness Gate 顺序
 
@@ -618,10 +635,13 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 4. Static Gate: 静态扫描目录、命名、接口和危险导入。
 5. Unit Gate: 覆盖 core、adapter、公共输入层调用和 `PredictionRecord` 字段。
 6. Dry-run Gate: 通过 `scheduler.scheme_runner` 返回 JSON，且正式 prediction/run_log 行数不变，并校验 live 日期语义。
-7. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
-8. Live Gate: 授权并显式传入 `prediction_phase` 后，只写该 `scheme_id` 的 prediction/run_log。
-9. Activation: 全部通过后才允许从 `paused` 改为 `active`。
-10. Documentation: 更新状态、测试、回测和 harness 报告路径。
+7. Compare Gate: 对 source-backed 方案执行 original/current benchmark 严格对比，不能把 `skipped` 当作完成证据。
+8. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
+9. API Readiness Gate: 激活前确认 paused registry row、latest backtest 已就绪，且 public API 不泄漏 paused 方案。
+10. Activation: 全部自动 gate 通过后，凭 token 从 `paused` 翻为 `active`，并同步 registry/version。
+11. API Gate: 激活后确认 active registry composite ID 已在 public API 可见。
+12. Live Gate: 激活后授权并显式传入 `prediction_phase`，只写该 `scheme_id` 的 prediction/run/log。
+13. Documentation: 更新状态、测试、回测和 harness 报告路径。
 
 ### 9.3 CLI 入口
 
@@ -643,4 +663,4 @@ python -m harness gate live \
   --authorize "$TOKEN"
 ```
 
-`--stage all` 固定执行 static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readonly；任一步失败即停止。写库动作不属于默认 `all`，必须由受控 backtest/live 命令单独执行。
+`--stage all` 固定执行 static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness；任一步失败即停止。写库动作和 active-only `api` gate 不属于默认 `all`，必须由受控 backtest/live/activate 命令或激活后验收单独执行。

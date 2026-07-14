@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
@@ -63,7 +64,8 @@ def _create_engine_with_backtest_rows():
                     target_date TEXT,
                     label INTEGER,
                     predicted_direction INTEGER,
-                    confidence REAL
+                    confidence REAL,
+                    extra TEXT
                 )
                 """
             )
@@ -111,12 +113,15 @@ def _create_engine_with_backtest_rows():
             text(
                 """
                 INSERT INTO t_backtest_predictions
-                    (run_id, scheme_id, target_tenor, predict_date, target_date, label, predicted_direction, confidence)
+                    (run_id, scheme_id, target_tenor, predict_date, target_date, label,
+                     predicted_direction, confidence, extra)
                 VALUES
-                    (92, 'daily_5y_2_v28', '5Y', '2026-04-23', '2026-04-30', -1, -1, 1.0),
-                    (93, 'daily_5y_2_v28', '5Y', '2026-05-22', '2026-05-29', 1, 1, 0.8),
-                    (84, 't5_daily', '5Y', '2026-05-22', '2026-05-29', -1, -1, 0.5),
-                    (83, 't5_daily', '5Y', '2026-05-22', '2026-05-29', -1, 1, 0.6)
+                    (92, 'daily_5y_2_v28', '5Y', '2026-04-23', '2026-04-30', -1, -1, 1.0, '{}'),
+                    (93, 'daily_5y_2_v28', '5Y', '2026-05-22', '2026-05-29', 1, 1, 0.8, '{}'),
+                    (93, 'daily_5y_2_v28', '5Y', '2026-05-23', '2026-05-30', 1, 0, 0.0,
+                     '{"signal_policy_applied": true, "signal_policy": "no_signal_to_flat_v1"}'),
+                    (84, 't5_daily', '5Y', '2026-05-22', '2026-05-29', -1, -1, 0.5, '{}'),
+                    (83, 't5_daily', '5Y', '2026-05-22', '2026-05-29', -1, 1, 0.6, '{}')
                 """
             )
         )
@@ -145,6 +150,17 @@ def _create_engine_without_monthly_metrics_table():
 
 
 class GenerateBenchmarkSamplesTests(unittest.TestCase):
+    def test_mysql_policy_filter_uses_json_extract_and_unquote(self) -> None:
+        from scripts import generate_benchmark_samples
+
+        conn = SimpleNamespace(dialect=SimpleNamespace(name="mysql"))
+
+        predicate = generate_benchmark_samples._non_policy_prediction_predicate(conn)
+
+        self.assertIn("JSON_UNQUOTE", predicate)
+        self.assertIn("JSON_EXTRACT", predicate)
+        self.assertIn("signal_policy_applied", predicate)
+
     def test_main_requires_run_id_or_scheme_id_and_benchmark_id(self) -> None:
         from scripts import generate_benchmark_samples
 
@@ -176,13 +192,22 @@ class GenerateBenchmarkSamplesTests(unittest.TestCase):
 
             bench_dir = Path(tmpdir) / "daily_5y_2_v28" / "benchmarks"
             predictions = (bench_dir / "current_predictions_sample.csv").read_text(encoding="utf-8")
-            summary = (bench_dir / "current_backtest_summary.json").read_text(encoding="utf-8")
+            original_predictions = (bench_dir / "original_predictions_sample.csv").read_text(encoding="utf-8")
+            summary = json.loads((bench_dir / "current_backtest_summary.json").read_text(encoding="utf-8"))
+            original_summary = json.loads(
+                (bench_dir / "original_backtest_summary.json").read_text(encoding="utf-8")
+            )
 
         self.assertIn("selected run_id=93", output.getvalue())
         self.assertIn("2026-05-22", predictions)
         self.assertNotIn("2026-04-23", predictions)
-        self.assertIn('"2026-05"', summary)
-        self.assertNotIn('"2026-04"', summary)
+        self.assertNotIn("2026-05-23", predictions)
+        self.assertNotIn("2026-05-23", original_predictions)
+        self.assertEqual(summary, original_summary)
+        self.assertEqual(summary["5Y"]["2026-05"]["sample_count"], 1)
+        self.assertEqual(summary["5Y"]["2026-05"]["correct_count"], 1)
+        self.assertEqual(summary["5Y"]["2026-05"]["accuracy"], 1.0)
+        self.assertNotIn("2026-04", summary["5Y"])
 
     def test_generate_run_id_selection_rejects_scheme_mismatch(self) -> None:
         from scripts import generate_benchmark_samples

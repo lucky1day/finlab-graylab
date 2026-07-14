@@ -11,14 +11,15 @@
 #
 # Idempotency:
 #   Safe to re-run. The scheduler executor inserts predictions with a
-#   UNIQUE KEY constraint on (scheme_id, target_tenor, predict_date, run_id),
-#   so duplicate runs on the same date will either succeed with no new rows
-#   or log a skipped status.
+#   UNIQUE KEY constraint on (scheme_id, target_tenor, horizon, target_date),
+#   so duplicate runs for the same business target update the canonical row.
+#   This historical gap belongs to gray_live, so every executor call passes
+#   --prediction-phase gray_live explicitly.
 #
 # Non-trading days:
-#   The scheduler's execute_scheme consults the trade calendar and auto-skips
-#   non-trading days (status="skipped"). There's no need to trim the date
-#   list — the script passes all dates and lets the scheduler decide.
+#   This script prechecks t_trade_calendar before calling scheduler.executor.
+#   scheduler.main has the production non-trading-day guard, but this script
+#   invokes executor directly so it must fail closed on weekends/holidays here.
 #
 # Requirements:
 #   - conda environment "bond_factor_lab_service" must exist and be usable
@@ -93,6 +94,18 @@ declare -a RESULTS=()   # "scheme_id|date|status|details"
 TOTAL=$(( ${#SCHEMES[@]} * ${#DATES[@]} ))
 CURRENT=0
 
+is_trading_day() {
+    local value="$1"
+    conda run -n bond_factor_lab_service python - "$value" <<'PY'
+import sys
+from scheduler.calendar import is_trading_day
+from scheduler.repository import create_engine_from_env
+
+engine = create_engine_from_env()
+print("1" if is_trading_day(engine, sys.argv[1]) else "0")
+PY
+}
+
 echo
 echo -e "${CYAN}--- Running predictions ---${NC}"
 echo
@@ -102,12 +115,31 @@ for scheme_id in "${SCHEMES[@]}"; do
         CURRENT=$((CURRENT + 1))
         LABEL="[$CURRENT/$TOTAL] $scheme_id @ $predict_date"
 
+        CALENDAR_OUTPUT=""
+        set +e
+        CALENDAR_OUTPUT=$(is_trading_day "$predict_date" 2>&1)
+        CALENDAR_RC=$?
+        set -e
+        if [ "$CALENDAR_RC" -ne 0 ]; then
+            ERR_MSG=$(echo "$CALENDAR_OUTPUT" | tail -5 | tr '\n' ' ')
+            echo -e "  $LABEL  … ${FAIL}  calendar check failed: ${ERR_MSG}"
+            RESULTS+=("$scheme_id|$predict_date|failed|calendar check failed: ${ERR_MSG}")
+            continue
+        fi
+        TRADING_FLAG=$(echo "$CALENDAR_OUTPUT" | tail -1 | tr -d '[:space:]')
+        if [ "$TRADING_FLAG" != "1" ]; then
+            echo -e "  $LABEL  … ${SKIP}  (non-trading day)"
+            RESULTS+=("$scheme_id|$predict_date|skipped|non-trading day")
+            continue
+        fi
+
         OUTPUT=""
         set +e
         OUTPUT=$(conda run -n bond_factor_lab_service \
             python -m scheduler.executor \
                 "$predict_date" \
                 --scheme-id "$scheme_id" \
+                --prediction-phase gray_live \
             2>&1)
         RC=$?
         set -e

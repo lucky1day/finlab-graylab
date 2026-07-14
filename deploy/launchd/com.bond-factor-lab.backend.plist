@@ -30,6 +30,17 @@
     <string>1</string>
     <key>BOND_ALGO_CONDA_ENV</key>
     <string>forecast_env</string>
+    <!--
+      BOND_ADMIN_TOKEN：trigger / admin 写入接口的第二道闸（纵深防御）。
+      公网入口 Nginx 已对这些 POST 直接返回 403；此处令牌再保证即便有人
+      直连本地 8100，也必须携带 X-Admin-Token 才能写库/触发。
+      部署时把占位符替换为真实随机串（如 `openssl rand -hex 24`）。
+      安全建议：即便私有仓库，真实 token 不入库——改本地副本后再
+      `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend` 重载。
+      留空/不设置会禁用 admin/trigger 写接口并返回 503。
+    -->
+    <key>BOND_ADMIN_TOKEN</key>
+    <string>__SET_REAL_TOKEN__</string>
   </dict>
 
   <key>RunAtLoad</key>

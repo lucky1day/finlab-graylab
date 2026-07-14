@@ -1,0 +1,26 @@
+scheme_id: weekly_avg_1y_lgbm_0529
+name: "0529周平均1Y LGBM"
+description: "0529 原始周平均 W1Y LGBM 方案；actual 方向按目标周平均收益率相对当前周平均收益率计算"
+horizon: 6
+task_type: weekly_average
+tenors: ["1Y"]
+frequency: weekly
+schedule:
+  cron: "30 11 * * 6"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_weekly.v1
+  required_columns: ["week_id", "TB1YWI1C"]
+  weekly_variant: source_package_wi1c
+target_rule: "next_week_average_yield_vs_current_week_average_yield"
+backtest:
+  runner: backtests.weekly_avg_1y_lgbm_0529_reproduction
+  benchmark_id: model_muti_0529
+  data_source: framework_db_aligned
+  benchmark_required: true
+  required_internal_fields: ["frequency", "model_id", "source", "close_col", "prob_up", "threshold_used", "model_margin", "training_rows", "calibration_rows", "feature_count", "effective_week_id"]
+  predict_start_date: "2025-01-01"
+  source_start_date: "2025-01-01"
+  source_end_date: "2026-05-23"

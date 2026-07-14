@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Iterable
+from typing import Iterable, Mapping
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, URL
 
 from scheduler.discovery import SchemeConfig
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
-from shared.models import ActualRecord, PredictionRecord, WeeklyActualRecord
+from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
 
 
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
@@ -384,6 +384,39 @@ def upsert_actuals(engine: Engine, records: Iterable[ActualRecord]) -> int:
     return len(rows)
 
 
+def delete_actuals_after_source_watermark(
+    engine: Engine,
+    source_watermarks: Mapping[str, str],
+    end_date: str | None = None,
+) -> int:
+    """删除晚于当前源表水位的日频 actual 尾部脏数据。
+
+    只清理每个 tenor 的 tail，不处理源表中间缺口，避免上游短暂缺行时误删历史验证。
+    """
+    rows = [
+        {"tenor": str(tenor), "source_max_date": str(source_max_date), "end_date": end_date}
+        for tenor, source_max_date in source_watermarks.items()
+        if source_max_date
+    ]
+    if not rows:
+        return 0
+    end_filter = "AND trade_date <= :end_date" if end_date else ""
+    sql = text(
+        f"""
+        DELETE FROM t_scheme_actuals
+        WHERE tenor = :tenor
+          AND trade_date > :source_max_date
+          {end_filter}
+        """
+    )
+    deleted = 0
+    with engine.begin() as conn:
+        for row in rows:
+            result = conn.execute(sql, row)
+            deleted += int(result.rowcount or 0)
+    return deleted
+
+
 def upsert_weekly_actuals(engine: Engine, records: Iterable[WeeklyActualRecord]) -> int:
     """UPSERT 周度实际方向记录。"""
     sql = text(
@@ -416,8 +449,81 @@ def upsert_weekly_actuals(engine: Engine, records: Iterable[WeeklyActualRecord])
     if not rows:
         return 0
     with engine.begin() as conn:
+        _assert_weekly_actuals_target_rule_unique_key(conn)
         conn.execute(sql, rows)
     return len(rows)
+
+
+def upsert_monthly_actuals(engine: Engine, records: Iterable[MonthlyActualRecord]) -> int:
+    """UPSERT 月度实际方向记录。"""
+    rows = []
+    for record in records:
+        row = asdict(record)
+        row["extra"] = json.dumps(record.extra or {}, ensure_ascii=False)
+        rows.append(row)
+    if not rows:
+        return 0
+
+    if engine.dialect.name == "sqlite":
+        sql = text(
+            """
+            INSERT INTO t_scheme_monthly_actuals
+                (tenor, feature_month_id, target_month_id, predict_date, feature_date, target_date,
+                 feature_yield, target_yield, direction_monthly, price_signal, target_rule, extra)
+            VALUES
+                (:tenor, :feature_month_id, :target_month_id, :predict_date, :feature_date, :target_date,
+                 :feature_yield, :target_yield, :direction_monthly, :price_signal, :target_rule, :extra)
+            """
+        )
+    else:
+        sql = text(
+            """
+            INSERT INTO t_scheme_monthly_actuals
+                (tenor, feature_month_id, target_month_id, predict_date, feature_date, target_date,
+                 feature_yield, target_yield, direction_monthly, price_signal, target_rule, extra)
+            VALUES
+                (:tenor, :feature_month_id, :target_month_id, :predict_date, :feature_date, :target_date,
+                 :feature_yield, :target_yield, :direction_monthly, :price_signal, :target_rule, CAST(:extra AS JSON))
+            ON DUPLICATE KEY UPDATE
+                feature_month_id = VALUES(feature_month_id),
+                target_month_id = VALUES(target_month_id),
+                feature_date = VALUES(feature_date),
+                target_date = VALUES(target_date),
+                feature_yield = VALUES(feature_yield),
+                target_yield = VALUES(target_yield),
+                direction_monthly = VALUES(direction_monthly),
+                price_signal = VALUES(price_signal),
+                target_rule = VALUES(target_rule),
+                extra = VALUES(extra),
+                updated_at = CURRENT_TIMESTAMP
+            """
+        )
+    with engine.begin() as conn:
+        conn.execute(sql, rows)
+    return len(rows)
+
+
+def _assert_weekly_actuals_target_rule_unique_key(conn) -> None:
+    """确认周度 actual 唯一键包含 target_rule，避免 point/average 互相覆盖。"""
+    expected = ("tenor", "predict_date", "target_rule")
+    legacy = ("tenor", "predict_date")
+    indexes = inspect(conn).get_indexes("t_scheme_weekly_actuals")
+    unique_columns = [
+        tuple(index.get("column_names") or ())
+        for index in indexes
+        if bool(index.get("unique"))
+    ]
+    if expected not in unique_columns:
+        raise RuntimeError(
+            "t_scheme_weekly_actuals missing unique key "
+            "uk_weekly_actual_predict_rule(tenor,predict_date,target_rule); "
+            "run migrations/014_weekly_average_actuals.sql before weekly actual writes"
+        )
+    if legacy in unique_columns:
+        raise RuntimeError(
+            "t_scheme_weekly_actuals still has legacy unique key on (tenor,predict_date); "
+            "run migrations/014_weekly_average_actuals.sql before weekly actual writes"
+        )
 
 
 def write_run_log(

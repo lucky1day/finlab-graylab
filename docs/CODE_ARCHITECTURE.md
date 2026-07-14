@@ -1,11 +1,12 @@
 # 代码架构设计（Code Architecture）
 
-**更新日期**: 2026-06-09
+**更新日期**: 2026-07-09
 **定位**: 本仓库的**代码架构主蓝图**。定义分层模型、包依赖方向规则、运行时调用图、扩展模型与横切关注点。是所有其它设计文档的总索引。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
 - 本文 = **代码架构**（包/模块/依赖方向/调用图/扩展点）。二者互补，不重叠。
 - [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 方案契约 → [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 新增方案 T0 范式。本文把它们统一到一张依赖图上。
+- [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 是 source-backed 方案的源算法保真总纲；它约束 L2 core 与 L4 backtest runner 不得借平台适配改变原始算法逻辑。
 
 > 本文为设计文档，不含实现代码。所示"现状违规"基于真实 import 扫描（2026-06-08），是数据层重构与 StaticGate 的目标。
 
@@ -60,7 +61,7 @@
 
 | 层 | 包 | 职责 | 对外稳定符号（节选） |
 |----|----|------|----------------------|
-| L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`build_*_output_from_db`、`get_calendar`、`PredictionRecord` |
+| L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`build_*_output_from_db`、`get_calendar`、`normalize_week_calendar_rows`、`PredictionRecord` |
 | L2 | `schemes/{id}/` | 算法（core）+ 平台适配（predict.py） | `run(predict_date)->list[PredictionRecord]`、`SCHEME_ID` |
 | L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`insert_run_predictions` |
 | L4 | `backend/` `backtests/` `tests/` | 只读 API、历史复现、验证 | `/api/*`、`run_<scheme>_reproduction` |
@@ -102,11 +103,12 @@ tests/         → 任意（验证需要）
 - importlibᵈ：`scheduler.scheme_runner` 在 **conda 子进程运行时**用 `importlib.import_module(f"schemes.{id}.predict")` 动态加载，不是静态 import 边——保持 scheduler 对具体方案零静态耦合（插件模型的关键）。
 - 跨方案：`schemes/A` **禁止** import `schemes/B`（任何子模块）。
 
-### 3.3 三条不可破坏的不变量
+### 3.3 四条不可破坏的不变量
 
 1. **依赖只向下**：上层可依赖下层，下层永不依赖上层（`shared` 不知道 `schemes` 存在；`schemes` 不知道 `scheduler` 存在）。
 2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
 3. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
+4. **源算法保真**：source-backed 方案的 L2 core 必须复现原始算法的时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射。平台适配只能发生在算法外层；若 source-original 输出与平台 current 不一致，先查输入 artifact 与 source 口径，不得调算法贴结果。若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，该 batch 只能验收 source-original backtest；gray/live/scheduled live 必须保持 `feature_date` 硬截止并用 live-safe oracle 验收。所有改动必须先分级为 L0/L1/L2；L2 算法内部改动默认禁止。
 
 ---
 
@@ -127,6 +129,7 @@ tests/         → 任意（验证需要）
 - `scheduler` 只依赖 `shared` + 自身，对具体方案零静态耦合 ✅
 - `backtests` 通过 import `schemes/*/core/predictors` 调用算法，不碰 adapter ✅
 - `shared` 无任何上行依赖 ✅
+- `shared.week_calendar_normalizer` 是只读周历归一化公共点，供 `shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 共享；它只修正源周历孤立 forward jump，不能被方案 core 用来重算任意周编号或绕过 source 信号水位 ✅
 
 > 进度：V1（S1）、V2（S2）、V4（S3）已清零；V3 部分完成（日历查询已收敛到 `calendar_service`，adapter 仍自建 engine 传入——属白名单内 `adapter→shared` 边，不阻塞 StaticGate，engine 工厂下沉作为独立小重构后续处理）。数据层依赖白名单（§3.1）实质成立。每步均通过等价闸（`scripts/compare_refactor_outputs.py`，diff_count=0）验证行为保持。
 
@@ -138,8 +141,10 @@ tests/         → 任意（验证需要）
 
 ```
 APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
+  ├─ startup catch-up(DateTrigger) → 当天 cron 已过且无终态 run 时补跑
   └─ scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase="scheduled_live")
-       ├─ run_scheme_subprocess(scheme_id, predict_date, algo_env="forecast_env")
+       ├─ timeout_sec = cfg.schedule.timeout_sec or executor default
+       ├─ run_scheme_subprocess(scheme_id, predict_date, algo_env="forecast_env", timeout_sec=timeout_sec)
        │     └─[conda 子进程]─ python -m scheduler.scheme_runner --scheme-id --predict-date
        │           └─ importlib → schemes.{id}.predict.run(predict_date)        ← 运行时插件边
        │                 ├─ shared.input_artifacts.build_*_input_artifact(...)   ← L1 唯一输入
@@ -148,12 +153,19 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
        │                 └─ schemes.{id}.core.*  (纯算法)                        ← 算法
        │           └─ print(JSON list[PredictionRecord])  → stdout
        ├─ records = parse(stdout)
+       ├─ daily live 日期语义校验（predict/feature/target 与交易日历一致，否则 fail-closed）
        ├─ scheduler.repository.create_scheme_run(...)                → t_scheme_runs
        ├─ scheduler.repository.insert_run_predictions(...)           → t_scheme_predictions  ← 写库单点
        └─ scheduler.repository.write_run_log(...)                    → t_scheme_run_log
 ```
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
+
+日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`scheduler.main` 的 startup catch-up 只在服务启动时补跑当天已错过且没有终态 run 的 active 任务，不改变方案 cron、预测日期语义或 source core 逻辑。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
+
+`schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。生产上调整该字段后必须重启 scheduler，让 `discovery` 重新加载 config，并复核 launchd 日志中 active jobs 已注册。
+
+日频、周频、月频 actuals 由 scheduler 注册为独立刷新任务。当前生产节奏为 `08:30/19:00/23:45`，其中夜间 `23:45` 用于承接上游 Wind 日频晚间导入；非交易日 daily/weekly actuals 刷新到上一交易日，monthly actuals 仍刷新到自然 run date，以同时覆盖周末补刷和自然 15 号月度规则。
 
 ### 5.2 入库 harness 路径（已实现，自动化方案入库）
 
@@ -164,9 +176,11 @@ python -m harness onboard {scheme_id} --stage all
        ├─ InputGate    → shared.input_artifacts.build_*  (只读生成 artifact)
        ├─ UnitGate     → unittest（tests/*{scheme_id}*）
        ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(行数不变)
+       ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        ├─ BacktestGate → backtests/{id}_reproduction(--no-persist)
-       └─ ApiGate      → probes.api_probe(只读 /api)
+       └─ ApiReadinessGate → paused registry row + latest backtest + public API 不泄漏
   授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
+  激活后验收：ApiGate(active-only public API 可见性)
 ```
 
 详见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
@@ -227,6 +241,7 @@ schemes/{scheme_id}/
 |--------|------|----------|
 | **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | 引擎工厂收敛：adapter 经 `calendar_service`/`input_artifacts` 间接用引擎，不再裸取（消除 V3） |
 | **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | 维持；`config.yaml` schema 由 `SCHEME_CONTRACT.md` 形式化 |
+| **执行预算** | executor 有全局默认 timeout，`config.yaml.schedule.timeout_sec` 可按方案覆盖 | 维持；仅控制算法子进程等待时间，不进入 L2 core 语义 |
 | **产物路径** | `shared/artifact_paths.py` 统一 `RUNTIME_INPUT_ROOT`；运行期 `backtest_artifacts/runtime_inputs/{scheme_id}/`，回测 `backtest_artifacts/backtests/{benchmark_id}/` | 维持；harness 报告 `reports/harness/{scheme_id}/{ts}/` |
 | **进程/依赖隔离** | conda：算法 `forecast_env`、服务 `bond_factor_lab_service`；子进程 + JSON stdout | 维持；这是 scheduler 与算法依赖解耦的关键边界 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
@@ -250,7 +265,7 @@ schemes/{scheme_id}/
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
 | `scheduler/repository.py` | L3 | 写库单点 | `create_scheme_run`、`insert_run_predictions`、`write_run_log`、`sync_scheme_registry` |
-| `scheduler/{daily,weekly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
+| `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/main.py` | L3 | APScheduler 调度 | `build_scheduler` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |

@@ -1,0 +1,115 @@
+{
+  "benchmark_id": "liwei_0616_7y_03",
+  "benchmark_scope": "source_latest_oos_20260616_full_strict_feature_target",
+  "source_model_id": "7Y_03_cons_ALL_k_3_DIV_K_8",
+  "source_model_config": "cons(ALL,k=3)+DIV_K=8",
+  "scheme_id": "liwei_0616_7y03_cons_all_k3_div_k8",
+  "target_tenor": "7Y",
+  "horizon": 5,
+  "row_count": 21,
+  "samples": 21,
+  "metric_samples": 20,
+  "correct": 15,
+  "accuracy": 0.75,
+  "active_rate": 0.9523809523809523,
+  "pred_up": 8,
+  "pred_down": 12,
+  "no_trade": 1,
+  "true_up": 3,
+  "true_down": 18,
+  "true_flat": 0,
+  "backtest_rows_before_live_cutoff": 13,
+  "gray_live_boundary_rows": 8,
+  "source_execution_scope": "source latest_oos_20260616 two-window test index: prior-year window plus latest window, then select current feature dates",
+  "source_context_start": "2025-05-01",
+  "source_latest_start": "2026-05-01",
+  "source_end": "2026-06-10",
+  "source_test_ranges": [
+    [
+      "2025-05-01",
+      "2025-06-30"
+    ],
+    [
+      "2026-05-01",
+      "2026-06-10"
+    ]
+  ],
+  "source_month_bucket": "source latest_oos report groups by source date / platform feature_date",
+  "platform_month_bucket": "Factor Lab historical/live metrics group by platform target_date",
+  "confidence_rule": "1.0 for non-zero prediction, 0.0 for flat prediction",
+  "vote_baselines": [
+    "STD",
+    "DIV",
+    "ACCWT",
+    "CROSS_5Y"
+  ],
+  "fallback_baseline": "DIV",
+  "streak_K": 8,
+  "backtest_scope": "targeted_sample",
+  "sample_dates": [
+    "2026-05-06",
+    "2026-05-07",
+    "2026-05-08",
+    "2026-05-11",
+    "2026-05-12",
+    "2026-05-13",
+    "2026-05-14",
+    "2026-05-15",
+    "2026-05-18",
+    "2026-05-19",
+    "2026-05-20",
+    "2026-05-21",
+    "2026-05-22",
+    "2026-05-25",
+    "2026-05-26",
+    "2026-05-27",
+    "2026-05-28",
+    "2026-05-29",
+    "2026-06-01",
+    "2026-06-02",
+    "2026-06-03"
+  ],
+  "batch_mode": "monthly",
+  "cache_enabled": false,
+  "daily_input_artifact_path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/backtests/liwei_0616_7y_03/runtime_inputs/liwei_0616_7y03_cons_all_k3_div_k8/daily_output_historical_backtest.csv",
+  "weekly_input_artifact_path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/backtests/liwei_0616_7y_03/runtime_inputs/liwei_0616_7y03_cons_all_k3_div_k8/weekly_output_historical_backtest.csv",
+  "monthly_input_artifact_path": "/Users/macstudio0/bond-factor-lab/backtest_artifacts/backtests/liwei_0616_7y_03/runtime_inputs/liwei_0616_7y03_cons_all_k3_div_k8/monthly_output_historical_backtest.csv",
+  "input_artifact_hash": "a741e60655bd6c4de9eacee17fc593a1ce580bf2ca8846a481c082cf5032ba6a",
+  "weekly_input_artifact_hash": "71a733d75bfa1c2aa95a67907646af1211a1c9a0d74369ca876007a91f3ddb81",
+  "monthly_input_artifact_hash": "0b13f460d84130691580b99abecd60f917237c29df03780cbad84042b576a958",
+  "weekly_input_end_week": 202622,
+  "weekly_input_as_of_date": "2026-06-10",
+  "backtest_input_end": "2026-06-10",
+  "source_predictions_alignment": {
+    "path": "/Users/macstudio0/Desktop/models-liwei-0616/bond_predict_merged/reproduction_outputs/latest_oos_20260616/outputs/7y/7Y_03_cons_ALL_k_3_DIV_K_8/predictions.csv",
+    "row_count": 21,
+    "merge_counts": {
+      "both": 21,
+      "left_only": 0,
+      "right_only": 0
+    },
+    "pred_diff_count": 0,
+    "true_diff_count": 0,
+    "is_trade_diff_count": 0,
+    "is_correct_diff_count": 0
+  },
+  "source_internal_alignment": {
+    "source_cache_dir": "/Users/macstudio0/Desktop/models-liwei-0616/bond_predict_merged/reproduction_outputs/latest_oos_20260616/patched_modules/7y/cache",
+    "row_count": 21,
+    "internal_score_diff_count": 0,
+    "max_abs_diff_by_score": {
+      "vote_score": 0.0,
+      "STD_score": 0.0,
+      "DIV_score": 0.0,
+      "ACCWT_score": 0.0,
+      "CROSS_5Y_score": 0.0
+    },
+    "dir_diff_by_score": {
+      "STD_dir": 0,
+      "DIV_dir": 0,
+      "ACCWT_dir": 0,
+      "CROSS_5Y_dir": 0
+    }
+  },
+  "source_batch_differences": []
+}

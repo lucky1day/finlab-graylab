@@ -76,9 +76,9 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
-        # 校验 gate 历史：当前 scheme_version 必须有一次 stage=all 全通过的 harness 运行
-        scheme_version = _compute_scheme_version(ctx)
-        gate_history_errors = _verify_gate_history(ctx, scheme_version)
+        # 校验 gate 历史：当前 paused 版本必须有一次 stage=all 全通过的 harness 运行。
+        validation_scheme_version = _compute_scheme_version(ctx)
+        gate_history_errors = _verify_gate_history(ctx, validation_scheme_version)
         if gate_history_errors:
             finished_at = utc_now()
             return GateResult(
@@ -87,7 +87,7 @@ class ActivationGate(Gate):
                 passed=False,
                 evidence=[
                     Evidence("scheme_id", ctx.scheme_id),
-                    Evidence("scheme_version", scheme_version),
+                    Evidence("validation_scheme_version", validation_scheme_version),
                     Evidence("gate_history_errors", gate_history_errors),
                 ],
                 errors=gate_history_errors,
@@ -103,6 +103,38 @@ class ActivationGate(Gate):
             new_status = "active"
             flipped = _flip_status_to_active(config_path)
 
+        try:
+            activated_scheme_version = _sync_registry_after_activation(ctx)
+        except Exception as exc:
+            rollback_error: str | None = None
+            if flipped and previous_status != "active":
+                try:
+                    _set_status(config_path, previous_status)
+                except Exception as rollback_exc:
+                    rollback_error = str(rollback_exc)
+            finished_at = utc_now()
+            errors = [f"registry sync after activation failed: {exc}"]
+            if rollback_error:
+                errors.append(f"failed to roll back config status after sync failure: {rollback_error}")
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.FAILED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("validation_scheme_version", validation_scheme_version),
+                    Evidence("config_path", str(config_path)),
+                    Evidence("previous_status", previous_status),
+                    Evidence("new_status", new_status),
+                    Evidence("status_flipped", flipped),
+                    Evidence("status_rolled_back", rollback_error is None and flipped and previous_status != "active"),
+                    Evidence("registry_synced", False),
+                ],
+                errors=errors,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+
         # 授权审计 + 一次性消费
         audit_dir = ctx.report_dir / "activation_authorization"
         audit_path = write_authorization_audit(auth, audit_dir)
@@ -114,13 +146,15 @@ class ActivationGate(Gate):
             passed=True,
             evidence=[
                 Evidence("scheme_id", ctx.scheme_id),
-                Evidence("scheme_version", scheme_version),
+                Evidence("validation_scheme_version", validation_scheme_version),
+                Evidence("activated_scheme_version", activated_scheme_version),
                 Evidence("config_path", str(config_path)),
                 Evidence("previous_status", previous_status),
                 Evidence("new_status", new_status),
                 Evidence("status_flipped", flipped),
                 Evidence("cron", _cron_of(raw)),
                 Evidence("gate_history_verified", True),
+                Evidence("registry_synced", True),
                 Evidence("authorization_audit_path", str(audit_path)),
             ],
             errors=errors,
@@ -140,6 +174,11 @@ def _cron_of(raw: dict) -> str | None:
 
 def _flip_status_to_active(config_path: Path) -> bool:
     """将 config.yaml 中 status 行从 paused 翻转为 active（保留其余文本）。"""
+    return _set_status(config_path, "active")
+
+
+def _set_status(config_path: Path, status: str) -> bool:
+    """替换 config.yaml 中的 status 行（保留其余文本）。"""
     text = config_path.read_text(encoding="utf-8")
     lines = text.splitlines(keepends=True)
     flipped = False
@@ -147,7 +186,7 @@ def _flip_status_to_active(config_path: Path) -> bool:
         stripped = line.strip()
         if stripped.startswith("status:"):
             newline = "\n" if line.endswith("\n") else ""
-            lines[index] = f"status: active{newline}"
+            lines[index] = f"status: {status}{newline}"
             flipped = True
             break
     if flipped:
@@ -166,8 +205,32 @@ def _compute_scheme_version(ctx: GateContext) -> str:
 
 
 REQUIRED_ACTIVATE_GATES = frozenset({
-    "static", "input", "unit", "dry-run", "compare", "backtest", "api",
+    "static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness",
 })
+
+
+def _sync_registry_after_activation(ctx: GateContext) -> str:
+    """激活 config 后同步 registry 与 scheme version，并返回激活后的版本号。"""
+    from scheduler.discovery import discover_schemes
+    from scheduler.repository import sync_scheme_registry
+
+    schemes_root = ctx.project_root / "schemes"
+    configs = discover_schemes(schemes_root=schemes_root, strict=False)
+    target = next((cfg for cfg in configs if cfg.scheme_id == ctx.scheme_id), None)
+    if target is None:
+        raise ValueError(f"scheme not discovered after activation: {ctx.scheme_id}")
+    if target.status != "active":
+        raise ValueError(f"activated config status is not active: {target.status}")
+    engine = ctx.engine_factory() if ctx.engine_factory is not None else _db_engine()
+    owns_engine = ctx.engine_factory is None
+    if engine is None:
+        raise RuntimeError("cannot connect to database for registry sync")
+    try:
+        sync_scheme_registry(engine, configs)
+    finally:
+        if owns_engine and engine is not None and hasattr(engine, "dispose"):
+            engine.dispose()
+    return target.scheme_version
 
 
 def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
@@ -177,6 +240,10 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
     """
     from sqlalchemy import text
 
+    config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+    raw_config = load_config_raw(config_path) if config_path.exists() else {}
+    backtest_config = raw_config.get("backtest") if isinstance(raw_config.get("backtest"), dict) else {}
+    benchmark_required = bool(backtest_config.get("benchmark_required"))
     engine = _db_engine()
     if engine is None:
         return ["cannot connect to database to verify gate history"]
@@ -217,7 +284,17 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
                 {"harness_run_id": run[0]},
             ).fetchall()
 
-            passed_gates = {row[0] for row in rows if row[1] in ("passed", "skipped")}
+            gate_statuses = {str(row[0]): str(row[1]) for row in rows}
+            if benchmark_required and gate_statuses.get("compare") == "skipped":
+                return [
+                    f"CompareGate status is skipped for benchmark_required scheme {ctx.scheme_id}; "
+                    "run compare with original/current benchmarks until status=passed"
+                ]
+            passed_gates = {
+                gate_name
+                for gate_name, status in gate_statuses.items()
+                if status == "passed" or (status == "skipped" and not benchmark_required)
+            }
             missing = REQUIRED_ACTIVATE_GATES - passed_gates
             if missing:
                 return [

@@ -1,0 +1,26 @@
+scheme_id: weekly_avg_10y_d_overlay_0529
+name: "0529周平均10Y D-overlay"
+description: "0529 周频10Y方向预测，Score主模型叠加Model2 D-overlay信号；actual 方向按目标周平均收益率相对当前周平均收益率计算"
+horizon: 6
+task_type: weekly_average
+tenors: ["10Y"]
+frequency: weekly
+schedule:
+  cron: "30 11 * * 6"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: paused
+input_spec:
+  data_version: shared_data_service_weekly.v1
+  required_columns: ["week_id", "TB0YWI3C", "TB1YWI3C", "TB5YWI3C"]
+  weekly_variant: unified
+target_rule: "next_week_average_yield_vs_current_week_average_yield"
+backtest:
+  runner: backtests.weekly_avg_10y_d_overlay_0529_reproduction
+  benchmark_id: model_muti_0529
+  data_source: framework_db_aligned
+  benchmark_required: true
+  required_internal_fields: ["score_dir", "score_score", "model2_dir", "model2_score", "d_final_score", "d_model2_overlay", "d_signal_source"]
+  predict_start_date: "2025-01-01"
+  start_week: 200901
+  end_week: 202622

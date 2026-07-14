@@ -38,6 +38,31 @@ class PredictionContextTests(unittest.TestCase):
         self.assertEqual(context.target_date, "2026-06-19")
         self.assertEqual(context.target_rule, WEEKLY_TARGET_RULE)
 
+    def test_build_weekly_live_context_falls_back_to_predict_week_when_latest_week_has_no_next_week(self) -> None:
+        from shared.prediction_context import build_weekly_live_context
+
+        calendar = _Calendar(
+            previous={"2026-07-04": "2026-07-03"},
+            week_for_date={
+                "2026-07-02": 202625,
+                "2026-07-03": 202626,
+                "2026-07-04": 202625,
+                "2026-07-06": 202626,
+            },
+            next_days={
+                "2026-07-02": ["2026-07-06"],
+                "2026-07-10": [],
+            },
+            last_day={202625: "2026-07-02", 202626: "2026-07-10"},
+        )
+
+        context = build_weekly_live_context(calendar, "2026-07-04")
+
+        self.assertEqual(context.feature_date, "2026-07-02")
+        self.assertEqual(context.feature_week_id, 202625)
+        self.assertEqual(context.target_week_id, 202626)
+        self.assertEqual(context.target_date, "2026-07-10")
+
     def test_next_calendar_week_id_rejects_missing_next_week(self) -> None:
         from shared.prediction_context import next_calendar_week_id
 

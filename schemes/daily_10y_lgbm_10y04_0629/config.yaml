@@ -1,0 +1,22 @@
+scheme_id: daily_10y_lgbm_10y04_0629
+name: "0629日度10Y LGBM 10Y04"
+description: "0629 原始日度 D10Y/10Y04 all-factor IC top200 rolling LGBM + 7-signal vote T+1 方案；平台只做输入、日期、extra、benchmark 和落库适配"
+horizon: 1
+task_type: "T+1"
+tenors: ["10Y"]
+frequency: daily
+schedule:
+  cron: "3 7 * * 1-5"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_daily.v1
+  required_columns: ["date", "TB0YWI0C"]
+backtest:
+  runner: backtests.daily_10y_lgbm_10y04_0629_reproduction
+  benchmark_id: daily_0629
+  data_source: framework_db_aligned
+  benchmark_required: true
+  required_internal_fields: ["frequency", "final_select_id", "candidate_id", "target_col", "prediction_mode", "model_pred", "raw_vote_pred", "vote_pred", "prob_up", "threshold", "decision", "signal_sum", "vote_sum", "tie_lowconf_flip_width", "tie_lowconf_flipped", "fit_n", "cal_n"]
+  start_date: "2025-01-01"

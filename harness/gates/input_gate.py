@@ -8,6 +8,10 @@ from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
+from shared.prediction_context import build_monthly_live_context
+
+
+MONTHLY_SOURCE_START_DATE = "2010-01-01"
 
 
 class InputGate(Gate):
@@ -27,9 +31,17 @@ class InputGate(Gate):
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         try:
-            feature_date = _feature_date(ctx.predict_date, engine)
-            feature_week_id = _feature_week_id(feature_date, engine)
-            artifact = self._build_artifact(ctx, frequency, engine, feature_date=feature_date, feature_week_id=feature_week_id)
+            calendar = get_calendar(engine)
+            monthly_context = build_monthly_live_context(calendar, ctx.predict_date) if frequency == "monthly" else None
+            feature_date = monthly_context.feature_date if monthly_context is not None else _feature_date(ctx.predict_date, engine)
+            feature_week_id = None if monthly_context is not None else _feature_week_id(feature_date, engine)
+            artifact = self._build_artifact(
+                ctx,
+                frequency,
+                engine,
+                feature_date=feature_date,
+                feature_week_id=feature_week_id,
+            )
             auxiliary_results = self._build_auxiliary_artifacts(
                 ctx,
                 auxiliary_inputs,
@@ -86,6 +98,8 @@ class InputGate(Gate):
             Evidence("missing_required_cols", primary["missing_required_cols"]),
             Evidence("feature_date", feature_date),
             Evidence("feature_week_id", feature_week_id),
+            Evidence("feature_month_id", monthly_context.feature_month_id if monthly_context is not None else None),
+            Evidence("target_month_id", monthly_context.target_month_id if monthly_context is not None else None),
             Evidence("auxiliary_input_artifacts", auxiliary_evidence),
         ]
         finished_at = utc_now()
@@ -116,6 +130,14 @@ class InputGate(Gate):
                 predict_date=ctx.predict_date,
                 start_date=start_date,
                 end_date=end_date,
+                engine=engine,
+            )
+        if frequency == "monthly":
+            return build_monthly_input_artifact(
+                scheme_id=ctx.scheme_id,
+                predict_date=ctx.predict_date,
+                start_date=MONTHLY_SOURCE_START_DATE,
+                end_date=feature_date,
                 engine=engine,
             )
         raise ValueError(f"unsupported frequency for InputGate: {frequency}")

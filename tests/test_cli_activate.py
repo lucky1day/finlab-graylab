@@ -58,18 +58,23 @@ class CliActivateTest(unittest.TestCase):
         config_path = _scaffold_scheme(self.root, status="paused")
         token = issue_token("t5_daily", "activate")
         with patch("harness.gates.activate_gate._verify_gate_history", return_value=[]):
-            code = self._run_cli(
-                [
-                    "activate",
-                    "--scheme-id",
-                    "t5_daily",
-                    "--project-root",
-                    str(self.root),
-                    "--authorize",
-                    token,
-                ]
-            )
+            with patch(
+                "harness.gates.activate_gate._sync_registry_after_activation",
+                return_value="activated-version",
+            ) as sync:
+                code = self._run_cli(
+                    [
+                        "activate",
+                        "--scheme-id",
+                        "t5_daily",
+                        "--project-root",
+                        str(self.root),
+                        "--authorize",
+                        token,
+                    ]
+                )
         self.assertEqual(code, 0)
+        sync.assert_called_once()
         raw = load_config_raw(config_path)
         self.assertEqual(raw["status"], "active")
 

@@ -1,10 +1,13 @@
-# 方案范式强制规范（SPEC）
+# 方案生命周期目标态提案（DRAFT）
 
-**更新日期**: 2026-06-16
-**定位**: 定义任何预测方案从「取数 → 消费 → 保存 → 输出」全生命周期的**唯一强制范式**。这是灰度实验室与生产对标的地基：凡按本文入库的方案，灰度通过即可直接对标生产，不做二次改造。
-**边界**: 本文是规范（normative），不含校验器实现代码。机器校验由 `harness/*` 按本文落地；与 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 的字段级契约互补——本文管**生命周期与数据流**，SCHEME_CONTRACT 管 **config/predict.py/core 的字段与 AST 契约**。两者冲突时，生命周期语义以本文为准并回写 SCHEME_CONTRACT。
+**更新日期**: 2026-07-14
+**状态**: 目标态设计提案，非现行强制规范。
+**定位**: 描述方案从「取数 → 消费 → 保存 → 输出」的候选目标范式，供后续平台能力改造评审。本文不会自动改变现有方案接口、目录结构、source benchmark 或 harness gate。
+**现行契约优先级**: [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md)、[PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)、[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 与 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 共同构成当前可执行规则；与本文冲突时，以这些现行文档和机器 gate 为准。
 
-> 关键词 **必须 / 禁止 / 应当** 按 RFC 2119 强度理解。「必须 / 禁止」是 fail-closed 硬约束，违反即 gate 拒绝。
+> 本文中的 **必须 / 禁止 / 应当** 只描述目标态验收标准。只有对应接口、迁移、gate、测试和现行契约同步落地后，条款才可转为 fail-closed 规则。不得使用本文尚未落地的 `train/predict`、`SnapshotGate`、`DeterminismGate` 或目录要求拒绝当前方案。
+>
+> source-backed 方案迁移仍受算法保真分级约束：L0 平台 I/O 适配可以评审，L1 必须证明未移动算法锚点，L2 算法内部改动默认禁止。本文不得被用来重写原始训练、窗口、投票、fallback、阈值或内部 score 映射。
 > 业务语义前置依赖：
 > - 日期语义（`predict_date` / `feature_date` / `target_date` / `prediction_phase`）以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
 > - 分层边界（输入单点 / 写库单点 / core 纯净）以 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 与 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 为准。
@@ -16,11 +19,22 @@
 
 ### 0.1 唯一总纲（一句话）
 
-> **框架只认「数据流 + 生命周期 + 契约」，模型类型全程对框架不可见。新增方案 = 放目录 + 写 `config.yaml` + 实现 `train` / `predict` 两个纯函数。**
+> **目标态框架只按「数据流 + 生命周期 + 契约」调度，不按具体模型类型分支。完成平台迁移后的新范式方案，才使用 `train` / `predict` 纯钩子。**
 
-框架/公共层/harness 代码中**禁止**出现任何具体模型字眼（`xgb`、`lgbm`、`vote`、`regression`、`stepwise` …）。任何模型特定逻辑只能存在于 `schemes/{scheme_id}/core/`。
+现行方案继续遵守 `predict.py::run(predict_date) -> list[PredictionRecord]`。目标态要求框架不得针对 `xgb`、`lgbm`、投票、回归等模型类型编写不同执行分支；通用审计字段中的描述性值（例如 `source_component="rule_vote"`）不属于模型分支，允许保留。
 
-### 0.2 四段生命周期
+### 0.2 落地状态
+
+| 能力 | 当前状态 | 本文角色 |
+|---|---|---|
+| `shared.input_artifacts` 唯一输入入口 | 已落地、强制 | 必须保持 |
+| `predict.py::run(predict_date)` + `PredictionRecord` | 已落地、强制 | 迁移期间兼容 |
+| source fidelity L0/L1/L2 与 CompareGate | 已落地、强制 | 不得被目标态覆盖 |
+| `train/predict` 双钩子、param store | 未落地 | 候选目标态 |
+| `SnapshotGate` / `DeterminismGate` | 未落地 | 设计名，不是现有 gate |
+| per-scheme `check_data/model_parameter/output/backtest` | 未统一落地 | 目录迁移提案 |
+
+### 0.3 四段生命周期
 
 | 段 | 名称 | 唯一动作 | 产物 |
 |:--:|------|----------|------|
@@ -29,7 +43,7 @@
 | ③ | 保存 | `model_parameter` = 配置（产物，gitignore）；模型确定性重训、不落盘 | model_parameter/ |
 | ④ | 输出 | core 只返回富 `PredictionRecord`；框架做 output 留痕 + 写库单点 + run_mode 路由 | output/ + DB 行 |
 
-### 0.3 框架 vs 算法 边界总表（贯穿四段）
+### 0.4 框架 vs 算法 边界总表（贯穿四段）
 
 | 框架 / 公共层 / harness 拥有（任何方案不变） | 算法 core 拥有（黑盒，随方案变） |
 |---|---|
@@ -45,7 +59,7 @@
 
 ## 1. ①取数
 
-**1.1** 算法输入**必须**且只能经 `shared.data_service` 从 DB 取得，产出内存 `DataFrame`。adapter（`predict.py`）、backtest runner **禁止**自拼 SQL、自连 DB、自读源表。此即「输入单点」不变量（[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)）。
+**1.1** 当前与目标态都必须保持 `shared.input_artifacts` 为算法输入唯一入口；它内部调用 `shared.data_service` 从 DB 导出并生成 `InputArtifact`。adapter（`predict.py`）和 backtest runner **禁止**绕过 `input_artifacts` 自拼 SQL、自连 DB、自读源表。此即「输入单点」不变量（[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)）。
 
 **1.2** 方案**必须**在 `config.yaml` 的 `input_spec` 声明取数口径（`data_version` / `required_columns` / 频率 / 必要的 `weekly_variant` / `auxiliary_inputs`），使 harness 无需读算法即可校验输入（字段级契约见 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) §1）。
 
@@ -55,10 +69,15 @@
 
 ## 2. ②消费：内存 df → 无损快照 → 注入 core
 
-### 2.1 数据通路（唯一合法路径）
+### 2.1 数据通路
+
+当前合法路径是 `shared.input_artifacts.build_*_input_artifact(...) -> InputArtifact.dataframe`，并由公共层负责 canonical CSV、hash、coverage 和 metadata。现行实现会把公共层产出的 CSV 读回后交给算法；任何取消读回的改造必须先证明 dtype、NaN、排序和浮点往返完全等价，再同步修改 InputGate 与回归测试。
+
+目标态候选路径如下：
 
 ```
-df_raw   = data_service.build_*(...)        # ① DB 直出
+artifact = input_artifacts.build_*(...)     # ① 唯一输入入口，内部调用 data_service
+df_raw   = artifact.dataframe
 df_norm  = normalize(df_raw)                # 唯一归一化（纯函数：dtype / 排序 / NaN）
 save_csv(df_norm, check_data/{date}.csv)    # 落 canonical 无损快照
 content_hash = sha256(file_bytes)           # 审计钉定
@@ -67,11 +86,11 @@ inject(df_norm) → core.train / core.predict # 直接内存注入，禁止读�
 
 **2.2 `normalize` 必须是幂等纯函数**，在落盘前调用一次；core 消费的就是其输出。同一方案的 live 与 backtest **必须**用同一个 `normalize`。
 
-**2.3 禁止「写完再读回」**。去掉读回的前提是把往返做成无损（见 2.4），否则不得删除读回。
+**2.3 目标态禁止不必要的「写完再读回」**。但现行 `InputArtifact.dataframe` 仍以公共层读回结果为权威输入；在 SnapshotGate 和等价性迁移完成前，不得由单个方案自行删除读回。
 
 **2.4 canonical 快照必须无损往返**：CSV 以足够精度保存（`float_format="%.17g"`，float64 可精确还原）+ 复现读取时显式指定 dtype。保证「从 check_data 复现的 df」≡「实盘内存 df」，从而读回是可证明的 no-op。
 
-**2.5** `check_data/` 只存「实盘预测当次用到的、归一化后的输入快照」，文件名为日期，**一日一份**。它是审计与回测复现的唯一输入来源。
+**2.5** 目标态可把方案级 `check_data/` 作为实盘输入快照视图。当前权威运行期位置仍是 `backtest_artifacts/runtime_inputs/{scheme_id}/`，路径由 `shared.artifact_paths` 管理；未完成仓库级迁移前不得另建第二套权威输入来源。
 
 **2.6 core 零 DB、零文件 IO**：core 只吃传入的 `DataFrame`，**禁止**自己读写任何文件或连库（[CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) core 纯净不变量）。
 
@@ -93,7 +112,7 @@ inject(df_norm) → core.train / core.predict # 直接内存注入，禁止读�
 
 ### 3.2 两个纯钩子（全部扩展面）
 
-core **必须**实现且仅实现两个纯函数（零 DB、零文件 IO、(df, config, seed) 给定下确定性）：
+完成目标态平台迁移的新范式 core 才要求实现两个纯函数（零 DB、零文件 IO、在 `(df, config, seed)` 给定下确定性）：
 
 ```
 train(df_snapshot, cutoff_date, ctx)            -> 写出 config 产物（可为 no-op / 空 {}）
@@ -133,27 +152,28 @@ predict(df_snapshot, config, cutoff_date, ctx)  -> list[PredictionRecord]
 2. ❌ 算法层查 `api_wind_indicators_all`、读 factor_map 之类做 factor→code 命名（算法越界碰 DB / 命名）；
 3. ❌ 算法层硬编码业务 schema：方向词（多/空/平）、`frequency="D10Y"`、目标表名。
 
-### 4.2 PredictionRecord 携带内容
+### 4.3 PredictionRecord 携带内容
 
-core 把「该说的」全塞进结构化记录，框架据此既入库又留痕：
+当前字段名必须以 `shared.models.PredictionRecord` 为准。尚未进入 dataclass 的富审计字段先放在 `extra`，不得由本文虚构新的必填列：
 
 ```
 PredictionRecord:
-  # 身份（算法只填 base 值，框架/registry 解释）
-  base_scheme_id, target_tenor, horizon
+  # 身份（scheme_id 填 base scheme id，框架/registry 解释）
+  scheme_id, target_tenor, horizon
   predict_date, feature_date, target_date     # target_date 由框架按 calendar 推导并校验
   # 预测主体
-  direction            # 中性枚举（如 -1/0/1）；"多/空/平" 措辞由框架/registry 映射
-  prob / score         # 可选
-  # 留痕（model-agnostic，可空）
-  feature_attribution  # [(factor, contribution, side)]：shap / |coef| / vote 权重 / 空——形态由算法定
-  diagnostics          # 输出 shape：输入 df shape、特征数、训练样本数、窗口
-  extra                # 方案声明的必填键（如 KS），按 SCHEME_CONTRACT §3
+  predicted_direction  # -1/0/1；"多/空/平" 措辞由框架映射
+  confidence           # 可选
+  model_version, scheme_version, prediction_phase
+  # 留痕（model-agnostic，可空，当前放在 extra）
+  extra.feature_attribution
+  extra.diagnostics
+  extra.*               # 方案必填键及 signal policy 审计字段，按 SCHEME_CONTRACT §3
 ```
 
-**4.3 「选用因子」必须抽象成 model-agnostic 的 `feature_attribution`**，**禁止**在框架契约层绑定 SHAP。xgb 给 shap、回归给 |coef|、投票给权重、规则模型给空——框架只负责持久化，不解释其语义。
+**4.4 「选用因子」必须抽象成 model-agnostic 的 `feature_attribution`**，**禁止**在框架契约层绑定 SHAP。xgb 给 shap、回归给 |coef|、投票给权重、规则模型给空——框架只负责持久化，不解释其语义。
 
-### 4.3 output/ 落盘约定
+### 4.4 output/ 落盘约定
 
 框架（**非算法**）把返回记录 dump 成留痕，目录对齐 check_data，整目录 gitignore（产物，可复现）：
 
@@ -165,24 +185,24 @@ schemes/{scheme_id}/output/{predict_date}/
   manifest.json            # provenance: input_content_hash(②) + config_hash(③) + seed + code_version
 ```
 
-**4.4 provenance 链必须钉死**：`snapshot_hash → config_hash → output`。路线甲（确定性）下重跑逐位复现 output 与入库行。
+**4.5 provenance 链必须钉死**：`snapshot_hash → config_hash → output`。路线甲（确定性）下重跑逐位复现 output 与入库行。
 
-### 4.4 写库单点 + run_mode 路由
+### 4.6 写库单点 + run_mode 路由
 
 ```
 core.predict() -> records ─► 框架 ─► run_mode=live     : scheduler.repository  → t_scheme_predictions
                                  └► run_mode=backtest : backtests.repository  → t_backtest_*
 ```
 
-**4.5** 同一份 records，框架按 run_mode 路由到不同表，**算法永远不知道写哪张表**。upsert / 去重（按 base `scheme_id + target_tenor + horizon + target_date`）、方向词映射、tenor/task_type/frequency、factor→indicators_code 归一，**全部在框架 / registry / repository**。入库写 base `scheme_id`，前端业务身份由 registry composite `scheme_id` 表达。
+**4.7** 同一份 records，框架按 run_mode 路由到不同表，**算法永远不知道写哪张表**。upsert / 去重（按 base `scheme_id + target_tenor + horizon + target_date`）、方向词映射、tenor/task_type/frequency、factor→indicators_code 归一，**全部在框架 / registry / repository**。入库写 base `scheme_id`，前端业务身份由 registry composite `scheme_id` 表达。
 
 ---
 
 ## 5. 扩展性契约（模型无关性证明）
 
-### 5.1 入库 = 声明 4 项 + 实现 2 个纯钩子
+### 5.1 目标态入库 = 声明 4 项 + 实现 2 个纯钩子
 
-**声明（config.yaml）**：① `data_spec`（取哪些源表/列/频率/回看）② `identity`（base_scheme_id / tenors / horizon / task_type）③ `determinism`（seed；配置选择策略 A/B）④ `model_parameter`（会写哪些配置文件名）。
+**候选声明（config.yaml）**：① 复用现行 `input_spec`（取哪些列/频率/回看）② identity（base scheme / tenors / horizon / task_type）③ determinism（seed；配置选择策略 A/B）④ model_parameter（会写哪些配置文件名）。新增字段必须先进入 `SCHEME_CONTRACT` 与 config schema，不能只按本文直接写入。
 **实现（core）**：`train` 与 `predict` 两个纯函数。
 
 不碰框架一行。
@@ -234,7 +254,7 @@ schemes/{scheme_id}/
 
 ### 7.2 为什么 live `output/` 与 `backtest/` 必须分开
 
-- 范式 §4.5 的 run_mode 路由（live → `t_scheme_predictions` / backtest → `t_backtest_*`）在**目录层面**也要分流，避免 review 时混淆。
+- 范式 §4.6 的 run_mode 路由（live → `t_scheme_predictions` / backtest → `t_backtest_*`）在**目录层面**也要分流，避免 review 时混淆。
 - live 是每日单点产物，backtest 一次跑可能跨数年、产物数量级远大于 live；混目录会让 `output/` 被某次回测的几千个 `predict_date` 撑爆，看不清当日 live 留痕。
 - backtest 可能因为改 config 重跑多次，`{run_id}` 那层是必要的对比维度；live 没有这层。
 
@@ -247,7 +267,7 @@ schemes/{scheme_id}/
 | `benchmarks/`（顶层） | 删除（残留归档进 `docs/legacy_sources/`） | per-scheme `schemes/{scheme_id}/benchmarks/` 已是事实标准；顶层那份是早期跨方案大对比的历史档 |
 | `backtest_artifacts/runtime_inputs/{scheme_id}/` | 并入 `schemes/{scheme_id}/backtest/inputs/` | 就近 + 与 live `check_data/` 对称 |
 | `backtest_artifacts/backtests/{scheme_id}/` | 并入 `schemes/{scheme_id}/backtest/output/{run_id}/` | 就近 + 加 `{run_id}` 区分多次回测 |
-| `backtest_artifacts/`（顶层） | 删除 | 收敛后该顶层目录不再承载内容 |
+| `backtest_artifacts/`（顶层） | 目标态评估是否删除 | 当前仍是 `shared.artifact_paths` 管理的权威运行期目录；只有全量迁移、兼容读取和清理策略完成后才能删除 |
 | `backtests/_base_runner.py` / `repository.py` / `weekly_base_runner.py` | **保留**（写库单点的回测分支实现） | bash 入口最终汇到这里的 `repository.write(records)`，**全仓库只有一份回测写库代码**。可改名/搬位置（如挪进 `shared/`），但**禁止**消失或被 per-scheme bash 各自 `cursor.execute` 取代 |
 | `backtests/{scheme_id}_reproduction.py` | 范式钉死后**变薄**（不归零） | ② normalize 与 ④ records 收敛后 glue 大幅减少；scheme-specific 配置仍需要落点，可下沉到 `schemes/{scheme_id}/backtest/runner.py` 或保持在顶层 `backtests/` 由公共 runner 派发 |
 | `backend/` | **保留**（与算法生命周期完全正交） | FastAPI 服务 + 静态前端托管，算法写完 `t_scheme_predictions` 之后由 backend 读出来给前端 iframe 看；范式 §4 的边界止于写库，backend 不在范式管辖范围 |
@@ -256,13 +276,15 @@ schemes/{scheme_id}/
 
 ---
 
-## 8. 强约束清单（fail-closed，机器可校验）
+## 8. 目标态强约束清单（设计）
+
+本表混合了已落地不变量与尚未实现的候选 gate；是否已生效以 §0.2 和现行 harness 为准，不得仅凭本表执行 fail-closed。
 
 | # | 约束 | 守护点（设计） |
 |:--:|------|----------------|
-| C1 | 输入只经 `shared.data_service`；adapter/runner 不自拼 DB | StaticGate |
+| C1 | 输入只经 `shared.input_artifacts`；其内部统一调用 `data_service`；adapter/runner 不自拼 DB | StaticGate |
 | C2 | core 零 DB、零文件 IO | StaticGate（AST） |
-| C3 | 框架/公共层/harness 代码无具体模型字眼 | StaticGate（grep 白名单） |
+| C3 | 框架/公共层/harness 不按具体模型类型分支 | StaticGate（目标态） |
 | C4 | `normalize` 单一、幂等、live==backtest | SnapshotGate |
 | C5 | canonical 快照无损往返；禁止读回 | SnapshotGate |
 | C6 | `model_parameter` 只存配置、不存权威模型；整目录 gitignore | StaticGate + repo 检查 |
@@ -278,9 +300,9 @@ schemes/{scheme_id}/
 
 ## 9. 与现有文档的关系
 
-- 本文是**生命周期与数据流的范式总纲**；新增方案前置必读，置于 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 之前作为范式基线。
-- [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 落地本文的 config / predict.py / core **字段级机器契约**；本文 §3 的 `train` 钩子与 §4 的 `PredictionRecord` 富化字段，需要 SCHEME_CONTRACT 同步补齐字段定义。
+- 本文是**生命周期与数据流的目标态提案**，不是新增方案前置强制读物。新增方案仍以 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 和现行契约为准。
+- [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 是 config / predict.py / core 的当前字段级机器契约；本文 §3 的 `train` 钩子与 §4 的富化字段只有在 SCHEME_CONTRACT、schema、gate 和迁移同步完成后才生效。
 - [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 定义本文反复引用的日期语义。
 - [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) / [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) 定义本文依赖的分层与 gate 边界；§8 中的 SnapshotGate / DeterminismGate 为本文新增的设计性 gate，须按这两份文档的 harness 边界落地。
 
-> 本文为设计规范，描述目标范式；具体 gate 实现与现有 `run(predict_date)` 单钩子契约的迁移，按平台能力改造流程单独评审落地，不在普通方案入库范围内。
+> 本文描述候选目标范式。具体 gate 实现、目录迁移与现有 `run(predict_date)` 单钩子契约的迁移，必须按平台能力改造流程单独设计、验证和授权；在此之前不得改变现有方案验收结论。

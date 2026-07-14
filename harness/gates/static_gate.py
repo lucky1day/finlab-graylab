@@ -23,6 +23,7 @@ from harness.contracts.import_rules import (
     predict_input_artifact_bypass_violations,
     predict_import_whitelist_violations,
     qualified_call_violations,
+    root_benchmark_runtime_dependency_violations,
     sql_write_literals,
 )
 from harness.contracts.predict_contract import validate_predict_module
@@ -170,8 +171,96 @@ class StaticGate(Gate):
         errors: list[str] = []
         if not has_shared_input_artifacts_import(tree):
             errors.append(f"{_display_path(runner_path, project_root)}: backtest runner must import shared.input_artifacts")
-        errors.extend(v.format(project_root) for v in backtest_runner_boundary_violations(runner_path, tree))
+        runner_paths = self._backtest_runner_dependency_paths(runner_path, project_root)
+        for path in runner_paths:
+            path_tree = tree if path == runner_path else parse_python(path)
+            errors.extend(v.format(project_root) for v in backtest_runner_boundary_violations(path, path_tree))
+        if str(config_raw.get("status", "")).strip() == "active":
+            for path in runner_paths:
+                path_tree = tree if path == runner_path else parse_python(path)
+                errors.extend(
+                    v.format(project_root) for v in root_benchmark_runtime_dependency_violations(path, path_tree)
+                )
         return errors
+
+    def _backtest_runner_dependency_paths(self, runner_path: Path, project_root: Path) -> list[Path]:
+        """返回入口 runner 及其 backtests.* 本地依赖。"""
+        paths: list[Path] = []
+        seen: set[Path] = set()
+
+        def visit(path: Path) -> None:
+            resolved = path.resolve()
+            if resolved in seen or not path.exists():
+                return
+            seen.add(resolved)
+            paths.append(path)
+            tree = parse_python(path)
+            for candidate in _backtest_dependency_candidates(path, tree, project_root):
+                visit(candidate)
+
+        visit(runner_path)
+        return paths
+
+
+def _backtest_dependency_candidates(current_path: Path, tree: ast.AST, project_root: Path) -> list[Path]:
+    """解析 backtests 本地 import 的候选文件，覆盖 from backtests import x 形态。"""
+    candidates: list[Path] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                normalized = alias.name.lstrip(".")
+                if normalized == "backtests" or normalized.startswith("backtests."):
+                    candidates.extend(_module_path_candidates(normalized, project_root))
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = _resolve_import_from_module(current_path, node, project_root)
+        if module == "backtests":
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                candidates.extend(_module_path_candidates(f"backtests.{alias.name}", project_root))
+            continue
+        if module.startswith("backtests."):
+            candidates.extend(_module_path_candidates(module, project_root))
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                candidates.extend(_module_path_candidates(f"{module}.{alias.name}", project_root))
+    return candidates
+
+
+def _resolve_import_from_module(current_path: Path, node: ast.ImportFrom, project_root: Path) -> str:
+    if node.level <= 0:
+        return node.module or ""
+    package = _package_name_for_path(current_path, project_root)
+    if not package:
+        return node.module or ""
+    parts = package.split(".")
+    if node.level > len(parts):
+        return node.module or ""
+    base_parts = parts[: len(parts) - node.level + 1]
+    if node.module:
+        base_parts.extend(node.module.split("."))
+    return ".".join(base_parts)
+
+
+def _package_name_for_path(path: Path, project_root: Path) -> str:
+    try:
+        rel = path.relative_to(project_root)
+    except ValueError:
+        return ""
+    module_parts = list(rel.with_suffix("").parts)
+    if not module_parts:
+        return ""
+    if module_parts[-1] == "__init__":
+        return ".".join(module_parts[:-1])
+    return ".".join(module_parts[:-1])
+
+
+def _module_path_candidates(module: str, project_root: Path) -> list[Path]:
+    module_path = project_root / module.replace(".", "/")
+    return [module_path.with_suffix(".py"), module_path / "__init__.py"]
 
 
 def _is_predict_write_violation(violation: RuleViolation) -> bool:

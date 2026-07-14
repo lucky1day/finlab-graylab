@@ -12,11 +12,11 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from shared.artifact_paths import benchmark_data_check_root
+from shared.artifact_paths import benchmark_data_check_root, benchmark_source_evidence_root
 from shared.data_service import build_daily_output_from_db as build_shared_daily_output_from_db
 from shared.data_service import create_sqlalchemy_engine
 
-CANONICAL_DAILY = PROJECT_ROOT / "benchmarks" / "model_muti_0529" / "daily_output.csv"
+SOURCE_EVIDENCE_DAILY_CSV = benchmark_source_evidence_root("model_muti_0529") / "daily_output.csv"
 ARTIFACT_ROOT = benchmark_data_check_root("model_muti_0529")
 UPSTREAM_DAILY_TARGETS = ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
 
@@ -132,9 +132,9 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=ARTIFACT_ROOT)
     args = parser.parse_args()
 
-    canonical = _read_daily(CANONICAL_DAILY)
-    start_date = args.start_date or canonical["date"].min().strftime("%Y-%m-%d")
-    end_date = args.end_date or canonical["date"].max().strftime("%Y-%m-%d")
+    source_evidence = _read_daily(SOURCE_EVIDENCE_DAILY_CSV)
+    start_date = args.start_date or source_evidence["date"].min().strftime("%Y-%m-%d")
+    end_date = args.end_date or source_evidence["date"].max().strftime("%Y-%m-%d")
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -146,7 +146,7 @@ def main() -> None:
     finally:
         engine.dispose()
 
-    shared_input_aligned = _align_like(canonical, shared_input_full)
+    shared_input_aligned = _align_like(source_evidence, shared_input_full)
 
     shared_input_path = output_dir / "shared_daily_data_service_generated_daily_output.csv"
     shared_input_aligned_path = output_dir / "shared_daily_data_service_generated_daily_output_aligned.csv"
@@ -158,7 +158,7 @@ def main() -> None:
     summary = {
         "source": {
             "daily_data_service": "shared/data_service.py",
-            "canonical_daily": str(CANONICAL_DAILY),
+            "source_evidence_daily": str(SOURCE_EVIDENCE_DAILY_CSV),
             "start_date": start_date,
             "end_date": end_date,
             "upstream_daily_targets": list(UPSTREAM_DAILY_TARGETS),
@@ -168,7 +168,12 @@ def main() -> None:
             "shared_input_aligned": str(shared_input_aligned_path),
         },
         "comparisons": {
-            "canonical_vs_shared_input_aligned": _compare(canonical, shared_input_aligned, "canonical", "shared_input"),
+            "source_evidence_vs_shared_input_aligned": _compare(
+                source_evidence,
+                shared_input_aligned,
+                "source_evidence",
+                "shared_input",
+            ),
         },
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

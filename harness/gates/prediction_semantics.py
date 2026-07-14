@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 
 from shared.models import PredictionRecord
-from shared.prediction_context import build_daily_live_context, build_weekly_live_context
+from shared.prediction_context import build_daily_live_context, build_monthly_live_context, build_weekly_live_context
 
 
 LIVE_PHASES = {"gray_live", "scheduled_live"}
@@ -19,6 +19,7 @@ def validate_live_record_semantics(
     frequency: str | None = None,
     horizon: int | None = None,
     calendar: Any | None = None,
+    expected_weekly_target_rule: str | None = None,
 ) -> list[str]:
     """校验 live/dry-run 预测记录的日期与 phase 语义。"""
     errors: list[str] = []
@@ -28,6 +29,12 @@ def validate_live_record_semantics(
     feature_date = _date_string(record.feature_date)
     if not feature_date:
         errors.append(f"{prefix}.feature_date is required")
+    elif frequency == "monthly":
+        if feature_date > expected_predict_date:
+            errors.append(
+                f"{prefix}.feature_date must be on or before predict_date for monthly, "
+                f"got {feature_date} > {expected_predict_date}"
+            )
     elif feature_date >= expected_predict_date:
         errors.append(f"{prefix}.feature_date must be before predict_date, got {feature_date} >= {expected_predict_date}")
 
@@ -53,6 +60,7 @@ def validate_live_record_semantics(
                 calendar=calendar,
                 feature_date=feature_date,
                 target_date=target_date,
+                expected_weekly_target_rule=expected_weekly_target_rule,
             )
         )
     return errors
@@ -68,6 +76,7 @@ def _validate_against_calendar_context(
     calendar: Any,
     feature_date: str,
     target_date: str,
+    expected_weekly_target_rule: str | None,
 ) -> list[str]:
     errors: list[str] = []
     try:
@@ -81,6 +90,7 @@ def _validate_against_calendar_context(
                 errors.append(f"{prefix}.target_date expected {expected.target_date}, got {target_date}")
         elif frequency == "weekly":
             expected = build_weekly_live_context(calendar, expected_predict_date)
+            expected_target_rule = expected_weekly_target_rule or expected.target_rule
             extra = record.extra or {}
             if feature_date and feature_date != expected.feature_date:
                 errors.append(f"{prefix}.feature_date expected {expected.feature_date}, got {feature_date}")
@@ -94,8 +104,29 @@ def _validate_against_calendar_context(
                 errors.append(
                     f"{prefix}.extra.target_week_id expected {expected.target_week_id}, got {extra.get('target_week_id')}"
                 )
-            if extra.get("target_rule") and extra.get("target_rule") != expected.target_rule:
-                errors.append(f"{prefix}.extra.target_rule expected {expected.target_rule}, got {extra.get('target_rule')}")
+            if extra.get("target_rule") and extra.get("target_rule") != expected_target_rule:
+                errors.append(
+                    f"{prefix}.extra.target_rule expected {expected_target_rule}, got {extra.get('target_rule')}"
+                )
+        elif frequency == "monthly":
+            expected = build_monthly_live_context(calendar, expected_predict_date)
+            extra = record.extra or {}
+            if feature_date and feature_date != expected.feature_date:
+                errors.append(f"{prefix}.feature_date expected {expected.feature_date}, got {feature_date}")
+            if target_date and target_date != expected.target_date:
+                errors.append(f"{prefix}.target_date expected {expected.target_date}, got {target_date}")
+            expected_values = {
+                "trigger_date": expected.trigger_date,
+                "scheduled_trigger_date": expected.scheduled_trigger_date,
+                "db_rdate": expected.db_rdate,
+                "input_cutoff_date": expected.feature_date,
+                "feature_month_id": expected.feature_month_id,
+                "target_month_id": expected.target_month_id,
+                "target_rule": expected.target_rule,
+            }
+            for key, expected_value in expected_values.items():
+                if extra.get(key) and str(extra.get(key)) != str(expected_value):
+                    errors.append(f"{prefix}.extra.{key} expected {expected_value}, got {extra.get(key)}")
     except Exception as exc:
         errors.append(f"{prefix}.date_semantics calendar validation failed: {exc}")
     return errors

@@ -1,11 +1,12 @@
 # 方案契约形式化规范（机器可校验）
 
-**更新日期**: 2026-06-15
+**更新日期**: 2026-07-14
 **定位**: 把散落在 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) §4/§5 的方案约束收敛成**单一权威契约**，供 harness 的 `StaticGate` / `DryRunGate` 机器校验。
 **边界**: 本文是规范，不含校验器实现代码。校验逻辑由 `harness/contracts/*` 按本文落地，harness 边界见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
 
 > SOP 仍是人类执行手册；本文是机器契约。两者一致，本文更细、可判定。任何冲突以本文为准并回写 SOP。
 > `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的业务语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
+> Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 为准；本文的 `core/` 契约不允许借平台适配改变算法逻辑。
 > 方案身份分两层：`config.scheme_id` / 目录名 / `PredictionRecord.scheme_id` 是算法执行身份，即 `base_scheme_id`；`t_scheme_registry.scheme_id` 是前端和业务唯一方案身份，格式为 `{base_scheme_id}__h{horizon}__{target_tenor}`。单标的和多标的方案都必须生成 composite registry ID。
 
 ---
@@ -23,24 +24,27 @@
 | `task_type` | str | ✅ | 前端任务格子显式类型，必须 ∈ `{T+1, T+5, weekly_point, weekly_average, monthly}`；不得由 `frequency/horizon` 隐式推断 |
 | `tenors` | list[str] | ✅ | 非空，⊆ 已注册 Y 标的 key（当前国债活跃目标为 `1Y/3Y/5Y/7Y/10Y`，后续以 `t_target_registry` 为准） |
 | `frequency` | str | ✅ | ∈ `{daily, weekly, monthly}` |
-| `schedule.cron` | str | ✅ | 合法 5 段 cron |
+| `schedule.cron` | str | ✅ | 合法 5 段 cron。月度 source-backed 方案若声明每月 15 号触发，必须写自然 15 号 cron（如 `0 18 15 * *`），不得因 15 号非交易日而顺延 cron |
 | `schedule.timezone` | str | ➖ | 默认 `Asia/Shanghai`，合法时区 |
+| `schedule.timeout_sec` | int | ➖ | 方案级算法子进程 timeout 覆盖值，必须为正整数。仅用于 L3 executor 等待预算，不得影响算法输入、日期语义、source core 或 registry 可见性 |
 | `entry_point` | str | ➖ | 默认 `predict.run`，必须 `== predict.run` |
 | `status` | str | ✅ | ∈ `{active, paused}`（新方案先 `paused`） |
 | `input_spec.data_version` | str | ✅(新) | 对应主输入 `InputArtifact.data_version`，如 `shared_data_service_daily.v1` / `shared_data_service_weekly.v1` / `shared_data_service_monthly.v1`。**同时约束 live adapter 与 backtest runner**：两者产出的主 `InputArtifact.data_version` 必须等于本字段，保证历史回测与实盘预测同一数据口径（见 §7 与 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md)） |
 | `input_spec.required_columns` | list[str] | ✅(新) | InputGate 据此校验列覆盖 |
 | `input_spec.weekly_variant` | str | `frequency==weekly` 时✅(新) | 对应 `data_service.weekly_variant`，如 `unified` / `wind_export_0529` |
 | `input_spec.auxiliary_inputs` | list[map] | ➖ | 辅助输入声明。每项为 `{frequency, data_version, required_columns}`；`frequency ∈ {daily, weekly, monthly}`，不得等于方案主 `frequency`，同一方案内不得重复。InputGate 对每项执行与主输入相同的 source / data_version / required_columns / coverage 校验 |
-| `target_rule` | str | `frequency==weekly` 时✅(新) | 目标日语义（如 `next_week_last_trading_day_vs_current_week`） |
+| `target_rule` | str | `frequency in {weekly, monthly}` 时✅(新) | 目标日/actual 语义（如 `next_week_last_trading_day_vs_current_week`、`next_month_observation_yield_vs_feature_month_observation_yield`） |
 | `backtest.runner` | str | ➖(新) | `backtests/{scheme_id}_reproduction.py` 模块名；参与历史排行时必填 |
 | `backtest.start_date` | str | `frequency in {daily, monthly}` 且参与回测时✅ | 必须等于 `2025-01-01`。含义是历史回测**预测发出起点**，即回测输出样本必须满足 `predict_date >= 2025-01-01`；训练、筛因子、模型更新和输入 artifact 可以使用更早历史数据 |
 | `backtest.predict_start_date` | str | `frequency==weekly` 且参与回测时✅ | 必须等于 `2025-01-01`。周频 `start_week/end_week` 仍表示输入/训练周范围；输出样本必须按 `predict_date >= 2025-01-01` 过滤 |
 
 > 标注「新」的字段是本设计**新增的必填项**——让 harness 无需读算法即可知道输入口径、列要求、目标语义。现有方案在数据层重构阶段补齐这些字段。
 > `auxiliary_inputs` 只声明辅助 artifact 的机器校验口径，不改变 §3 `extra` 的通用必填键；需要审计辅助 artifact 的方案应在 `extra` 中额外记录自己的路径、source 和 data_version。
-> 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
+> 全平台历史回测样本起点统一为 `predict_date >= 2025-01-01`；历史回测中 `predict_date == feature_date`，所以 runner 和 benchmark rebuild 必须按 `feature_date` / source T 判定输出起点，不能按 `target_date` 判定。这条规则不改变月度指标按 `target_date` 分组，也不改变灰度实盘观察区按方案级 `target_date` 起点判定。
+> 月度方案使用独立的自然月触发语义：`predict_date` 必须是自然月 15 号；`feature_date` 取当前月 15 号及以前最近交易日，`target_date` 取目标月 15 号及以前最近交易日。月度灰度回补仍按 `target_date` 判定，不能按 `predict_date` 或部署时间截断。
 > `config.tenors` 是算法一次执行可返回的目标集合；registry 同步会把它拆成每个 `target_tenor` 一行。`/api/schemes` 不返回 `tenor/tenors`，只返回该 registry 行的 `target_tenor`。
 > `task_type` 会同步到 `t_scheme_registry.task_type` 并由 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/backtests/factor-lab` 返回；前端任务格子只按该字段分列。字段缺失或非法时必须 fail-closed。
+> `schedule.timeout_sec` 只解决运维执行预算。它不能被 scheme adapter/core 读取后改变窗口、fallback、特征或输出；慢速 source-backed 方案需要更长运行时间时，应优先配置该字段并补充单测，而不是放宽全局 executor timeout。
 >
 > 业务可见性只认 `status='active'` 的 registry row。`paused` / `archived` 行不出现在 `/api/schemes`、`/api/metrics/{scheme_id}`、`/api/predictions?scheme_id=...` 或 `/api/backtests/factor-lab`，也不能被 trigger；scheduler live 写库前必须校验每条 `PredictionRecord` 对应 active registry `(base_scheme_id, horizon, target_tenor)`。
 > `/api/predictions` 的 `scheme_id` 参数是 registry composite ID；后端解析为 `base_scheme_id + target_tenor + horizon` 后查询底层预测表，不接受 base scheme id、无 `scheme_id` 或 `?tenor=...`。
@@ -97,7 +101,9 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 - `target_tenor ∈ config.tenors`
 - `predicted_direction ∈ {1, -1, 0}`（`1`=收益率上行/空，`-1`=下行/多，`0`=平）
 - `confidence is None` 或为有限浮点数。它承接算法自身输出的置信度、概率或分数，不改变方向判定；如果原始算法没有天然置信度，source/current benchmark 必须使用同一确定性代理值并在状态文档说明。
-- 返回条数 `== 本次有效 tenors 数量`；落到 registry 后拆成多个业务方案行
+- `model_version is None` 或长度不超过 DB 字段 `VARCHAR(64)`；如果原始 source 的完整模型 ID、候选 ID 或 runner ID 更长，顶层 `model_version` 必须使用稳定短 ID，完整原始 ID 写入 `extra.source_model_id`、`extra.candidate_id` 或等价审计字段。
+- 一次成功 live run 必须为本次 active registry target 集合中的每个 target 返回且仅返回一条记录；返回 target 集合必须与 active target 集合完全相等。空列表、缺少 target、重复 target 或多余 target 均 fail-closed。
+- `t_scheme_runs.records_expected` 必须在启动算法前写为 active target 数量；成功状态只允许在 `records_expected == records_returned == records_written` 时成立。executor 只校验完整性，不捕获异常生成业务信号。
 
 `extra` 必填键：
 
@@ -110,9 +116,23 @@ def validate_predict_module(predict_path: Path, scheme_id: str) -> list[str]:
 > 周频 `target_rule` 与 `t_scheme_weekly_actuals` / `WeeklyActualRecord.target_rule` 对齐，保证预测与实际方向口径一致。
 > 实盘落库必须写入一等字段 `prediction_phase`（`gray_live` / `scheduled_live`）。`extra.prediction_phase` 仅作为过渡审计副本，不能替代平台字段。
 
-### 3.1 Benchmark 样本日期契约
+### 3.1 投票类方案的无信号输出
 
-source benchmark 的日期字段表达原始算法站位日 T。进入平台后，T 必须对齐一等字段 `feature_date`，不能对齐实盘语义下的 `predict_date`。历史旧 CSV 若仍使用列名 `predict_date` 或 `date`，也只能解释为 source T；新增 benchmark 文件必须显式写入 `feature_date` 或 `source_t`。
+对已批准采用 `no_signal_to_flat_v1` 的投票、共识或投票叠加方案，如果输入 artifact 确实包含当前 `feature_date` / `feature_week_id` 且必要字段有效、日期上下文和 core 均正常完成、core 结果非空且 feature key 合法，但结果中明确缺少当前 key 的最终输出，则 adapter 可以把该业务上的“无方向信号”转换为平台平信号：
+
+- `predicted_direction=0`
+- `confidence=0.0`
+- `signal_state="no_signal"`
+- `signal_policy="no_signal_to_flat_v1"`
+- `signal_policy_applied=true`
+- `no_signal_reason="core_output_missing_current_feature"`
+- `source_component` 写明缺失最终输出的组件
+
+算法原生输出的 `0` 必须原样保留，且不得写入 `signal_policy_applied=true`。core 返回整体空结果或非法 feature key、输入水位不足、当前周必要字段缺失、日历异常、artifact 错误、模型异常、超时或代码错误仍必须 fail-closed；不得由 adapter 或 executor 转换为平。该规则只改变平台输出契约，不修改 core、投票、fallback、阈值或 source benchmark。
+
+### 3.2 Benchmark 样本日期契约
+
+逐方案 original benchmark 的日期字段表达原始算法站位日 T；它存放在 `schemes/{scheme_id}/benchmarks/`，不同于 `source_evidence/benchmark_batches/{benchmark_id}/` 的批次级外部证据归档。进入平台后，T 必须对齐一等字段 `feature_date`，不能对齐实盘语义下的 `predict_date`。历史旧 CSV 若仍使用列名 `predict_date` 或 `date`，也只能解释为 source T；新增 benchmark 文件必须显式写入 `feature_date` 或 `source_t`。
 
 benchmark 与数据库明细核验的主键为：
 
@@ -121,7 +141,9 @@ benchmark 与数据库明细核验的主键为：
 | daily | `feature_date`, `target_date`, `target_tenor`, `horizon` |
 | weekly | `feature_week_id`, `feature_date`, `target_date`, `target_tenor`, `horizon` |
 
-如果 benchmark 样本的 `target_date` 位于历史回测区间，必须与 `t_backtest_predictions.feature_date` 对齐；如果 `target_date` 位于灰度/实盘观察区，必须与 `t_scheme_predictions.feature_date` 对齐，并额外校验 `prediction_phase`。`predict_date` 只校验发出时点：回测为 `predict_date == feature_date`，灰度/正式实盘为按调度规则从 `feature_date` 后发出。
+如果 benchmark 样本的 `target_date` 位于历史回测区间，必须与 `t_backtest_predictions.feature_date` 对齐；如果 `target_date` 位于灰度/实盘观察区，必须先声明 benchmark row 与 live row 是否同一执行口径，再决定是否与 `t_scheme_predictions.feature_date` 对齐，并额外校验 `prediction_phase`。这条 live 对齐只适用于 benchmark 与 live 记录声明的是同一执行口径；若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，则该 batch 只能验收 source-original backtest，不能作为 live 逐日内部数值真值。live/gray/scheduled 记录必须另用同一 `feature_date` 硬截止的 live-safe oracle 验收。`predict_date` 只校验发出时点：回测为 `predict_date == feature_date`，灰度/正式实盘为按调度规则从 `feature_date` 后发出。
+
+跨灰度边界的 `original_predictions_sample.csv` 不能被整体宣称为“已与 DB/API/live 完全一致”。验收报告必须按 `target_date` 和执行口径拆分：历史段对 latest backtest，live 段只在同口径时对 live rows；若 live 段来自固定 future `source_end` 的 source batch，则只能记录为 source evidence，并必须生成或引用 live-safe oracle。`TOTAL_BAD=0`、版本一致或 `model_scope` 一致只证明 live 行结构与当前配置匹配，不证明内部模型数值与 source batch benchmark 相等。
 
 `CompareGate` 中的 `max_confidence_abs_diff` / `mean_confidence_abs_diff` 是 original/current benchmark 对 `confidence` 字段的浮点差异统计；`1e-16` 量级属于浮点舍入误差，按 0 看待。方案行为一致性的硬门槛仍是 `predicted_direction` 逐样本零容差。
 
@@ -136,6 +158,7 @@ benchmark 与数据库明细核验的主键为：
 | 零写库 | 不得 import `scheduler.repository`/`scheduler.executor`，不得出现 `INSERT/UPDATE/DELETE/ALTER/DROP` 字面量 |
 | 零跨方案 | 不得 `from schemes.<other_scheme>...` import；跨方案复用只能沉到 `shared/` 公共层，并通过架构评审 |
 | legacy 隔离 | `core/legacy_*.py` 可保留旧代码，但活跃模块不得 import 它 |
+| 源算法保真 | source-backed 活跃 core 必须保持原始算法的时间起点、窗口、特征、周/月频对齐、模型参数、投票/fallback 和内部 score 映射；任何差异都必须在 source fidelity 证据中说明，不得静默改写 |
 
 危险符号黑名单（`harness/contracts/import_rules.py`）：
 
@@ -156,11 +179,21 @@ SQL_WRITE_KEYWORDS     = ("INSERT", "UPDATE", "DELETE", "ALTER", "DROP")
 
 （`shared.input_artifacts` 在 core 中是禁止项——输入应由 adapter `predict.py` 注入；在 predict.py 中则是必需项。）
 
+### 4.1 Source-backed 保真契约
+
+对 source-backed 方案，StaticGate/CompareGate 的人工或机器证据必须覆盖：
+
+- `core/legacy_*.py` 或原始 source 文件存在，并记录 hash / 来源路径。
+- 活跃 core 与 legacy 的算法逻辑差异只允许是 I/O 适配、路径移除、日志重定向或性能不改变结果的机械改造。
+- 每项改动必须标注 L0/L1/L2：L0 为平台外壳适配，L1 为原始 runner 明确 patch 的上下文传递，L2 为算法内部改动；L2 默认禁止，除非另立经批准的新实验方案。
+- 原始算法暴露的 baseline score、probability、confidence 或类似内部数值必须进入 benchmark/current 对比；仅方向一致不足以证明“算法逻辑完全一致”。
+- 若为了 live-like 运行传入不同 `test_ranges`、`source_end`、weekly/monthly as-of 或 batch 上下文，必须先在方案文档中声明它属于 `source_original_reproduction`、`source_strict_pit` 或 `platform_live_pit_variant`。
+
 ---
 
 ## 5. 契约与现有方案对账
 
-状态最近更新 2026-06-14：当前在册 active 方案为 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_7y_cross_d_overlay_0529`、`weekly_10y_d_overlay_0529`、`daily_5y_2_v28`；旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役。
+状态最近更新 2026-07-06：下表为代表性 active 方案契约对账样本；完整在册 active 清单见 [CURRENT_STATUS.md](CURRENT_STATUS.md)。旧周度方案（`weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay`）已退役，0529 周度单点方案、独立周平均 LGBM 方案、月度 0629 三方案和日度 0629 三方案均按同一平台契约接受 StaticGate / UnitGate / DryRunGate 守护；周平均当前只覆盖 `1Y/5Y/10Y`，不得复用周度单点 runner 或内部字段。`liwei_0616_10y02_cons_say_k3_div_k5` 已登记 `schedule.timeout_sec=3600` 作为慢速 source-backed 方案的执行预算，属于 L3 运维适配，不改变 L2 算法保真。周频 actual 对齐以 `target_tenor + target_date + target_rule` 为事实键，`predict_date` 仅做审计；源周历孤立 forward jump 只能由公共只读 normalizer 处理，方案不得自建周历修正逻辑。
 
 | 契约项 | `t1_daily` | `t5_daily` | `weekly_5y_direct_0529` | `weekly_7y_cross_d_overlay_0529` | `weekly_10y_d_overlay_0529` | `daily_5y_2_v28` |
 |--------|:----------:|:----------:|:-----------------------:|:--------------------------------:|:-------------------------------:|:----------------:|
@@ -223,7 +256,7 @@ BacktestGate 去掉 `--no-persist` 落库后断言：
 | 实盘表零变化 | `t_scheme_predictions/run_log/actuals` `delta==0` | 回测污染实盘 |
 | 口径一致 | 落库 run 的 `data_version` 与 §1 `input_spec.data_version` 及 live 一致 | backtest↔live 口径漂移（见 §1） |
 | 日期语义 | 回测 rows 必须满足 `predict_date == feature_date`，不得读取或复制灰度/正式实盘记录 | 用 T+1 实盘结果冒充 T 回测结果 |
-| benchmark 对齐 | source benchmark 的 T 必须对齐 `t_backtest_predictions.feature_date`；若 target 已进入灰度/实盘观察区，则改与 `t_scheme_predictions.feature_date` 对齐 | 把原始算法站位日误当成实盘发出日，导致 T/T+1 错位 |
+| benchmark 对齐 | 逐方案 original benchmark 的 T 必须对齐 `t_backtest_predictions.feature_date`；若 target 已进入灰度/实盘观察区，只有在 benchmark 与 live 声明同一执行口径时才对齐 `t_scheme_predictions.feature_date`，否则必须用 live-safe oracle | 把原始算法站位日误当成实盘发出日，或把固定 future `source_end` 的 batch benchmark 当成逐日 live 真值 |
 
 ### 7.3 与现有机制的关系
 

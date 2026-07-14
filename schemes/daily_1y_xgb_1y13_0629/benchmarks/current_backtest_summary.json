@@ -1,0 +1,30 @@
+{
+  "accuracy": 0.4094955489614243,
+  "benchmark_provenance": {
+    "bootstrap_source": "platform_current_daily_0629_adapter",
+    "cross_frequency_reuse": false,
+    "data_source": "framework_db_aligned",
+    "generator": "backtests.daily_0629_reproduction.run_daily_0629_reproduction:daily_1y_xgb_1y13_0629",
+    "manifest_path": "source_evidence/benchmark_batches/daily_0629/manifest.json",
+    "source_candidate_id": "1Y_hist_xgb_d1_lr0p035_n80_top45_main36_cal0p55",
+    "source_family": "daily_0629_binary_runner",
+    "source_final_select_id": "1Y13",
+    "source_frequency": "D1Y",
+    "source_live_runner_module": "daily.run_daily",
+    "source_original_data_source": "source_original_daily_0629_binary_runner",
+    "source_package_hash": "de63375f51810962ad10162444f93f7b2fbde6236b7f4b9921734ae6b8fad1e3",
+    "source_package_path": "source_evidence/benchmark_batches/daily_0629/source_package/forecast_project",
+    "source_role": "platform_current_daily_0629_adapter",
+    "source_runner_module": "daily.run_backtest",
+    "source_target_col": "TB1YWI0C",
+    "source_target_tenor": "1Y"
+  },
+  "correct": 138,
+  "data_source": "framework_db_aligned",
+  "horizon": 1,
+  "labeled_rows": 337,
+  "row_count": 337,
+  "rows": 337,
+  "source_original_data_source": "source_original_daily_0629_binary_runner",
+  "source_run_date": "2026-06-10"
+}

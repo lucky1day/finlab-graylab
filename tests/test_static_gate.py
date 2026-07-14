@@ -38,6 +38,7 @@ def _write_minimal_scheme(project_root: Path, *, scheme_id: str = "demo_daily") 
                 "horizon: 1",
                 'tenors: ["10Y"]',
                 "frequency: daily",
+                'task_type: "T+1"',
                 "schedule:",
                 '  cron: "25 9 * * 1-5"',
                 '  timezone: "Asia/Shanghai"',
@@ -187,6 +188,49 @@ class StaticGateHardeningTests(unittest.TestCase):
                 result.errors,
             )
 
+    def test_predict_can_import_weekly_average_source_evidence_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            (scheme_dir / "predict.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from shared.weekly_average_source_evidence import require_weekly_average_source_evidence",
+                        'SCHEME_ID = "demo_daily"',
+                        "def run(predict_date: str):",
+                        "    require_weekly_average_source_evidence(SCHEME_ID)",
+                        "    return []",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = _run_gate(project_root)
+
+            self.assertTrue(result.passed, result.errors)
+
+    def test_predict_can_import_signal_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            (scheme_dir / "predict.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from shared.signal_policy import no_signal_as_flat",
+                        'SCHEME_ID = "demo_daily"',
+                        "def run(predict_date: str):",
+                        "    return [no_signal_as_flat(source_component='vote')]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = _run_gate(project_root)
+
+            self.assertTrue(result.passed, result.errors)
+
     def test_predict_cannot_import_data_service_through_input_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             project_root = Path(tmpdir)
@@ -221,6 +265,118 @@ class StaticGateHardeningTests(unittest.TestCase):
             result = _run_gate(project_root)
 
         self.assertFalse(result.passed)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_transitive_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from backtests.shared_runner import run",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_package_alias_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from backtests import shared_runner",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_relative_package_alias_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from . import shared_runner",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
+        self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
+
+    def test_backtest_runner_relative_module_live_repository_import_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root)
+            backtests_dir = project_root / "backtests"
+            backtests_dir.mkdir()
+            (backtests_dir / "__init__.py").write_text("", encoding="utf-8")
+            (backtests_dir / "shared_runner.py").write_text(
+                "from scheduler import repository\n",
+                encoding="utf-8",
+            )
+            (backtests_dir / "demo_daily_reproduction.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from .shared_runner import run",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            _append_backtest_runner(scheme_dir)
+
+            result = _run_gate(project_root)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(any("backtests/shared_runner.py" in item for item in result.errors), result.errors)
         self.assertTrue(any("scheduler.repository" in item for item in result.errors), result.errors)
 
     def test_backtest_runner_live_table_sql_write_is_flagged(self) -> None:

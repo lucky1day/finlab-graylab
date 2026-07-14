@@ -24,6 +24,7 @@ class Daily5Y2BacktestTests(unittest.TestCase):
             "target_date",
             "target_tenor",
             "horizon",
+            "benchmark_role",
             "direction",
             "confidence",
             "label",

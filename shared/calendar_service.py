@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from functools import cached_property
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+
+from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 
 class CalendarService:
@@ -62,37 +65,69 @@ class CalendarService:
         return days[-1]
 
     def week_id_for_date(self, value: str | date | datetime) -> int | None:
-        """唯一权威源：api_wind_date.week_id。"""
+        """读取 DB 周编号，并修正源表中孤立的周编号跳变。"""
         target_date = _date_string(value)
-        stmt = text("SELECT week_id FROM api_wind_date WHERE rdate = :rdate LIMIT 1")
-        with self._engine.connect() as conn:
-            row = conn.execute(stmt, {"rdate": target_date}).mappings().first()
-        if row and row["week_id"] is not None:
-            return int(row["week_id"])
-        return None
+        return self._date_to_week_id.get(target_date)
 
     def week_id_to_last_trading_day(self, week_id: int | float | str) -> str:
         """同周日期中取 t_trade_calendar.trade_flag='1' 的最大日期。"""
-        wid = str(int(week_id))
-        stmt = text(
+        wid = int(week_id)
+        row = self._week_last_trading_day.get(wid)
+        if row is not None:
+            return row
+
+        raw_wid = str(wid)
+        fallback = text(
             """
             SELECT MAX(wd.rdate)
             FROM api_wind_date wd
-            JOIN t_trade_calendar tc ON tc.rdate = wd.rdate
-            WHERE wd.week_id = :week_id AND tc.trade_flag = '1'
+            JOIN t_trade_calendar tc
+              ON tc.rdate = wd.rdate
+             AND tc.trade_flag = '1'
+            WHERE wd.week_id = :week_id
             """
         )
         with self._engine.connect() as conn:
-            row = conn.execute(stmt, {"week_id": wid}).scalar()
+            row = conn.execute(fallback, {"week_id": raw_wid}).scalar()
         if row is not None:
             return _date_string(row)
+        raise ValueError(f"no trading day found for week_id={raw_wid} in api_wind_date/t_trade_calendar")
 
-        fallback = text("SELECT MAX(rdate) FROM api_wind_date WHERE week_id = :week_id")
+    @cached_property
+    def _normalized_week_rows(self) -> list[dict]:
+        stmt = text(
+            """
+            SELECT wd.rdate, wd.week_id, tc.trade_flag
+            FROM api_wind_date wd
+            LEFT JOIN t_trade_calendar tc ON tc.rdate = wd.rdate
+            WHERE wd.week_id IS NOT NULL
+            ORDER BY wd.rdate
+            """
+        )
         with self._engine.connect() as conn:
-            row = conn.execute(fallback, {"week_id": wid}).scalar()
-        if row is not None:
-            return _date_string(row)
-        raise ValueError(f"no date found for week_id={wid} in api_wind_date")
+            rows = [dict(row) for row in conn.execute(stmt).mappings().all()]
+        return normalize_week_calendar_rows(rows)
+
+    @cached_property
+    def _date_to_week_id(self) -> dict[str, int]:
+        result = {}
+        for row in self._normalized_week_rows:
+            week_id = row.get("week_id")
+            if week_id is not None:
+                result[_date_string(row["rdate"])] = int(week_id)
+        return result
+
+    @cached_property
+    def _week_last_trading_day(self) -> dict[int, str]:
+        result: dict[int, str] = {}
+        for row in self._normalized_week_rows:
+            if str(row.get("trade_flag")).strip() != "1" or row.get("week_id") is None:
+                continue
+            week_id = int(row["week_id"])
+            rdate = _date_string(row["rdate"])
+            if week_id not in result or rdate > result[week_id]:
+                result[week_id] = rdate
+        return result
 
 
 def get_calendar(engine: Engine) -> CalendarService:

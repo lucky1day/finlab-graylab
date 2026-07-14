@@ -72,7 +72,28 @@ def _create_schema(engine) -> None:
                     tenor TEXT,
                     predict_date TEXT,
                     target_date TEXT,
-                    direction_weekly INTEGER
+                    direction_weekly INTEGER,
+                    target_rule TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE TABLE t_scheme_monthly_actuals (
+                    tenor TEXT,
+                    feature_month_id TEXT,
+                    target_month_id TEXT,
+                    predict_date TEXT,
+                    feature_date TEXT,
+                    target_date TEXT,
+                    feature_yield REAL,
+                    target_yield REAL,
+                    direction_monthly INTEGER,
+                    price_signal TEXT,
+                    target_rule TEXT,
+                    extra TEXT
                 )
                 """
             )
@@ -260,6 +281,62 @@ class BackendPredictionServingTests(unittest.TestCase):
         self.assertEqual(result["scheme_id"], "demo_daily__h1__10Y")
         self.assertEqual(result["base_scheme_id"], "demo_daily")
         self.assertEqual(result["target_tenor"], "10Y")
+
+    def test_scheme_metrics_isolates_registry_horizon(self) -> None:
+        """同一 base/tenor 下的不同 horizon 不得串入 composite registry 指标。"""
+        from backend.services import scheme_metrics
+
+        engine = create_engine("sqlite:///:memory:")
+        _create_schema(engine)
+        _register_scheme(
+            engine,
+            scheme_id="demo_mix__h1__10Y",
+            base_scheme_id="demo_mix",
+            target_tenor="10Y",
+            horizon=1,
+        )
+        _register_scheme(
+            engine,
+            scheme_id="demo_mix__h5__10Y",
+            base_scheme_id="demo_mix",
+            target_tenor="10Y",
+            horizon=5,
+        )
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_predictions
+                        (run_id, scheme_id, target_tenor, horizon,
+                         predict_date, target_date, predicted_direction, confidence,
+                         model_version, extra)
+                    VALUES
+                        (1, 'demo_mix', '10Y', 1, '2026-06-01',
+                         '2026-06-02', 1, 0.6, 'h1', '{}'),
+                        (2, 'demo_mix', '10Y', 5, '2026-06-01',
+                         '2026-06-08', -1, 0.6, 'h5', '{}')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_actuals (tenor, trade_date, direction_1d, direction_5d)
+                    VALUES
+                        ('10Y', '2026-06-02', 1, 1),
+                        ('10Y', '2026-06-08', -1, -1)
+                    """
+                )
+            )
+        try:
+            result = scheme_metrics(engine, "demo_mix__h1__10Y")
+        finally:
+            engine.dispose()
+
+        self.assertEqual(result["summary"]["samples"], 1)
+        self.assertEqual(len(result["daily_rows"]), 1)
+        self.assertEqual(result["daily_rows"][0]["horizon"], 1)
+        self.assertEqual(result["daily_rows"][0]["target_date"], "2026-06-02")
 
     def test_scheme_metrics_counts_flat_predictions_as_samples_not_metric_denominator(self) -> None:
         from backend.services import scheme_metrics

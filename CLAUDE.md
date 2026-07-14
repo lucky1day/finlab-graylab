@@ -6,6 +6,16 @@
 
 独立的国债因子实盘测试平台，前端通过 iframe 嵌入 panda_quantflow 的 AIFin Lab Shell。
 
+## 当前工作上下文（必须遵守）
+
+- 当前开发分支：`codex/audit-bugfixes-20260613`。
+- 生产分支：`master`。`master` 是后续生产版本的基准。
+- 经过验证的开发分支只有在用户明确确认后，才能合并或覆盖到 `master` 并推送远程；agent 不得自行决定发布到 `master`。
+- 不再维护第二生产分支；除非用户明确要求，验证后的更新也不得发布到其它发布分支。
+- 用户口头说根目录 `agent.md` 时，优先理解为根目录 `AGENTS.md`；本项目要求 `AGENTS.md` 与 `CLAUDE.md` 内容一致，更新根规范时两者要同步。
+- 分支操作、提交或暂存前必须先核对 `git status --short` 和相关分支列表，避免把未跟踪的新方案、`outputs/` 产物或其他草稿混入当前任务提交。
+- 当前未跟踪的 `outputs/` 属于临时分析/导出产物；除非用户明确要求，不要纳入文档、方案或修复提交。
+
 ## 技术栈
 
 - **后端**: Python 3.12 + FastAPI + SQLAlchemy + APScheduler
@@ -33,20 +43,23 @@ bond-factor-lab/
 ├── frontend/          # 原生 HTML/CSS/JS 因子实验室页面
 ├── migrations/        # SQL 迁移脚本
 ├── scripts/           # 审计/对比/受控 admin 脚本
-├── benchmarks/        # canonical 历史基准输入
+├── source_evidence/   # 外部来源证据归档（benchmark_batches/{benchmark_id}/）
 ├── backtest_artifacts/ # 运行期输入与回测产物（gitignore）
 ├── reports/           # 审计与 harness 报告（gitignore）
 ├── deploy/            # launchd plist
-└── docs/              # 项目文档（入口 docs/README.md；archive/ 归档，legacy_sources/ 算法来源档）
+└── docs/              # 项目文档（入口 docs/README.md；只保留当前规范和必要设计文档）
 ```
 
-## 强约束分层边界（不可破坏的三条不变量）
+## 强约束分层边界（不可破坏的四条不变量）
 
 1. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
 2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
 3. **core 纯净**：`schemes/*/core/`（非 legacy）零 DB、零写库、零跨方案 import。
+4. **源算法保真**：source-backed 方案不得修改原始算法逻辑；时间起点、窗口、回测分组键、每组 `source_end/current_start/current_end`、特征、对齐、模型参数、投票/fallback、内部 score 映射都必须按原始脚本复现。平台只做输入/输出/日期/落库适配；若方向或内部模型数值不一致，先查输入 artifact 和 source 口径，不得用调参或改算法贴结果。原始算法能导出的 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence 等内部字段必须进入逐方案 benchmark 和 CompareGate；只做到最终方向一致不得宣称算法逻辑完全一致。若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，该 batch 只能验收 source-original backtest，不能直接当作 gray/scheduled live 逐日内部数值真值；live 必须保持 `feature_date` 硬截止并用同口径 live-safe oracle 验收。跨灰度边界的 `original_predictions_sample.csv` 必须先判定每行 benchmark role；`TOTAL_BAD=0` 只表示 live 行结构、版本和 source-compatible scope 通过，不表示 live 内部数值可与固定 source batch benchmark 混称“完全一致”。
 
-完整依赖方向规则见 [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md)；边界总纲见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
+source-backed 方案入库或修复前必须做算法改动分级：L0 只允许平台 I/O、日期字段、extra、缓存、落库和审计适配；L1 是 source runner 明确暴露的上下文参数传递，必须逐项证明没有移动未 patch 的固定算法锚点；L2 是算法内部改动，默认禁止并 fail-closed。移动 IC screening cutoff、把 source 两段窗口改成单段窗口、把 target-date 月分组改成 feature 月或全局 `source_end`、改变特征列顺序、VT/selector/streak/fallback、内部 score 映射，都属于 L2；除非用户明确批准为新实验方案，不得纳入原始方案修复。
+
+完整依赖方向规则见 [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md)；源算法保真规则见 [docs/SOURCE_ALGORITHM_FIDELITY.md](docs/SOURCE_ALGORITHM_FIDELITY.md)；边界总纲见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
 
 ## 方案接口规范
 
@@ -82,7 +95,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 - `feature_date` — 数据截止日 / 预测站位日
 - `target_date` — 验证目标日，用于展示、去重、actual join 和月度统计归属
 
-`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘），二者都必须满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`；历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`。原始算法 benchmark 里的 `T/date/predict_date` 表达 source T / 预测站位日，进入平台后必须对齐 DB 明细的 `feature_date`，不是对齐 live `predict_date`；跨灰度边界的样本按 `target_date` 分流到回测表或实盘表核验。完整规则见 [docs/PREDICTION_SEMANTICS.md](docs/PREDICTION_SEMANTICS.md)。
+`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘）；日频实盘满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`，周频实盘先由 `predict_date` 反推上一交易日 `feature_date` 再映射周，月频 source-backed 方案若声明自然 15 号触发则 `predict_date` 保留自然月 15 号、`feature_date/target_date` 分别取当前月/目标月 15 号及以前最近交易日。历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`，但已有灰度观察区时必须按方案级 `target_date` 起点截断；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为灰度实盘，不得留在 latest backtest。原始算法 benchmark 里的 `T/date/predict_date` 表达 source T / 预测站位日，进入平台后必须对齐 DB 明细的 `feature_date`，不是对齐 live `predict_date`；跨灰度边界的样本必须先按 `target_date` 和 benchmark role 分流，同执行口径才可对实盘表断言数值一致，否则用 live-safe oracle 核验。完整规则见 [docs/PREDICTION_SEMANTICS.md](docs/PREDICTION_SEMANTICS.md)。
 
 ## 方案入库流程（强约束 harness）
 
@@ -90,8 +103,9 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 ```bash
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
-# 自动段：static → input → unit → dry-run → backtest → api（fail-fast，退出码 0/1/2）
-# 副作用段（live 写库 / activate）不在 all 内，必须显式 --authorize <TOKEN>（fail-closed）
+# 自动段：static → input → unit → dry-run → compare → backtest → api-readiness（fail-fast，退出码 0/1/2）
+# 副作用段（backtest persist / live 写库 / activate）不在 all 内，必须显式 --authorize <TOKEN>（fail-closed）
+# 激活后再单独运行 active-only `api` gate 验收前端/API 可见性。
 ```
 
 新增方案前先读 T0 强约束范式 [docs/sop/SCHEME_ONBOARDING_T0.md](docs/sop/SCHEME_ONBOARDING_T0.md)，再按 [docs/sop/SCHEME_ONBOARDING_SOP.md](docs/sop/SCHEME_ONBOARDING_SOP.md) 执行；harness 边界见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
@@ -102,8 +116,9 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 
 写库表：
 - `t_scheme_predictions` — 统一预测结果表
-- `t_scheme_actuals` / `t_scheme_weekly_actuals` — 实际方向表（日频 / 周频）
+- `t_scheme_actuals` / `t_scheme_weekly_actuals` / `t_scheme_monthly_actuals` — 实际方向表（日频 / 周频 / 月频）
 - `t_scheme_registry` — 方案注册表
+- `t_scheme_runs` — 结构化运行表（版本、阶段、输入 artifact 链接）
 - `t_scheme_run_log` — 运行日志表
 - `t_target_registry` — Y 标的注册与展示名
 - `t_backtest_*` — 历史复现结果（独立于实盘预测）

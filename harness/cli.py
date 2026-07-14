@@ -11,6 +11,7 @@ from harness.authorization import issue_token
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
 from harness.gates.api_gate import ApiGate
+from harness.gates.api_readiness_gate import ApiReadinessGate
 from harness.gates.backtest_gate import BacktestGate
 from harness.gates.compare_gate import CompareGate
 from harness.gates.dry_run_gate import DryRunGate
@@ -65,10 +66,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
-    for gate_name in ("static", "input", "unit", "dry-run", "compare", "backtest", "api", "live"):
+    for gate_name in ("static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness", "api", "live"):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
-        item.add_argument("--predict-date", default="static" if gate_name in {"static", "unit", "compare", "backtest", "api"} else None)
+        item.add_argument(
+            "--predict-date",
+            default="static" if gate_name in {"static", "unit", "compare", "backtest", "api-readiness", "api"} else None,
+        )
         item.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
         item.add_argument("--report-dir", type=Path, default=None)
         item.add_argument("--algo-env", default="forecast_env")
@@ -140,6 +144,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         "dry-run": DryRunGate(),
         "compare": CompareGate(),
         "backtest": BacktestGate(),
+        "api-readiness": ApiReadinessGate(),
         "api": ApiGate(),
         "live": LiveGate(),
     }

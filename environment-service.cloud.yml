@@ -1,0 +1,5 @@
+name: bond_factor_lab_service
+channels:
+  - defaults
+dependencies:
+  - python=3.12

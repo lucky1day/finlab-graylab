@@ -22,6 +22,17 @@ from scripts.postonboard_common import (
 
 DEFAULT_BENCHMARK_ID = "model_muti_0529"
 OUTPUT_FILE = "baseline_original.json"
+STATIC_BENCHMARK_FILE = "original_predictions_sample.csv"
+STATIC_REQUIRED_COLUMNS = {
+    "feature_date",
+    "target_date",
+    "target_tenor",
+    "horizon",
+    "confidence",
+    "label",
+    "is_correct",
+}
+STATIC_DIRECTION_COLUMNS = {"direction", "predicted_direction"}
 
 
 def run_baseline(
@@ -55,7 +66,7 @@ def run_baseline(
 
     try:
         rows, source_path = _read_static_benchmark(
-            benchmark_id=benchmark_id,
+            scheme_id=scheme_id,
             predict_date=predict_date,
             project_root=project_root,
         )
@@ -70,7 +81,7 @@ def run_baseline(
         return payload, exit_code(payload["status"])
 
     output_path = write_json(resolved_output_dir / OUTPUT_FILE, rows)
-    dates = [row["predict_date"] for row in rows if row.get("predict_date")]
+    dates = [row["feature_date"] for row in rows if row.get("feature_date")]
     evidence = {
         "scheme_id": scheme_id,
         "benchmark_id": benchmark_id,
@@ -96,21 +107,21 @@ def _benchmark_id(config: dict[str, Any]) -> str:
 
 
 def _read_static_benchmark(
-    benchmark_id: str,
+    scheme_id: str,
     predict_date: str | None,
     project_root: Path,
 ) -> tuple[list[dict[str, Any]], Path]:
-    benchmark_dir = project_root / "benchmarks" / benchmark_id
-    if not benchmark_dir.exists():
-        raise FileNotFoundError(f"missing benchmark directory: {benchmark_dir}")
+    source_path = project_root / "schemes" / scheme_id / "benchmarks" / STATIC_BENCHMARK_FILE
+    if not source_path.exists():
+        raise FileNotFoundError(f"missing per-scheme benchmark CSV: {source_path}")
 
-    source_path = _select_benchmark_csv(benchmark_dir)
     rows: list[dict[str, Any]] = []
     with source_path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
             raise ValueError(f"benchmark CSV has no header: {source_path}")
         fieldnames = [str(name).strip() for name in reader.fieldnames]
+        _validate_static_fieldnames(fieldnames, source_path)
         for index, raw in enumerate(reader):
             normalized = _normalize_static_row(raw, index=index, source_columns=fieldnames)
             if predict_date and normalized.get("predict_date") != predict_date:
@@ -119,23 +130,30 @@ def _read_static_benchmark(
     return rows, source_path
 
 
-def _select_benchmark_csv(benchmark_dir: Path) -> Path:
-    preferred = benchmark_dir / "daily_output.csv"
-    if preferred.exists():
-        return preferred
-    csv_files = sorted(benchmark_dir.glob("*.csv"))
-    if not csv_files:
-        raise FileNotFoundError(f"no static benchmark CSV found in {benchmark_dir}")
-    return csv_files[0]
+def _validate_static_fieldnames(fieldnames: list[str], source_path: Path) -> None:
+    normalized = {name.strip() for name in fieldnames}
+    missing = sorted(STATIC_REQUIRED_COLUMNS - normalized)
+    if not normalized.intersection(STATIC_DIRECTION_COLUMNS):
+        missing.append("direction|predicted_direction")
+    if missing:
+        raise ValueError(f"{source_path}: missing required columns: {missing}")
 
 
 def _normalize_static_row(raw: dict[str, Any], index: int, source_columns: list[str]) -> dict[str, Any]:
-    predict_date = _first_present(raw, ("predict_date", "date", "rdate", "feature_date"))
+    feature_date = _date_string_or_none(_first_present(raw, ("feature_date",)))
+    target_date = _date_string_or_none(_first_present(raw, ("target_date",)))
+    predicted_direction = _int_or_none(_first_present(raw, ("predicted_direction", "direction")))
+    predict_date = _date_string_or_none(_first_present(raw, ("predict_date",))) or feature_date
     record = {
-        "predict_date": _date_string_or_none(predict_date),
-        "target_tenor": _string_or_none(_first_present(raw, ("target_tenor", "tenor", "bond_tenor"))),
-        "predicted_direction": _int_or_none(_first_present(raw, ("predicted_direction", "prediction", "label_pred"))),
+        "predict_date": predict_date,
+        "feature_date": feature_date,
+        "target_date": target_date,
+        "target_tenor": _string_or_none(_first_present(raw, ("target_tenor",))),
+        "horizon": _int_or_none(_first_present(raw, ("horizon",))),
+        "predicted_direction": predicted_direction,
         "confidence": _float_or_none(_first_present(raw, ("confidence", "probability", "score"))),
+        "label": _int_or_none(_first_present(raw, ("label",))),
+        "is_correct": _bool_or_none(_first_present(raw, ("is_correct",))),
         "source_row_index": index,
         "extra": {
             "source_columns_count": len(source_columns),
@@ -244,6 +262,19 @@ def _float_or_none(value: Any) -> float | None:
         return float(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "yes", "y"}:
+        return True
+    if text in {"false", "0", "no", "n"}:
+        return False
+    return None
 
 
 def _stderr_or_stdout(completed: subprocess.CompletedProcess[str]) -> str:

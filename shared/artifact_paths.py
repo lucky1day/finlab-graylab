@@ -7,6 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKTEST_ARTIFACT_ROOT = PROJECT_ROOT / "backtest_artifacts"
 RUNTIME_INPUT_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_inputs"
 HISTORICAL_BACKTEST_ROOT = BACKTEST_ARTIFACT_ROOT / "backtests"
+SOURCE_EVIDENCE_ROOT = PROJECT_ROOT / "source_evidence"
+BENCHMARK_SOURCE_EVIDENCE_ROOT = SOURCE_EVIDENCE_ROOT / "benchmark_batches"
 
 
 def safe_path_part(value: str) -> str:
@@ -27,3 +29,8 @@ def benchmark_input_root(benchmark_id: str) -> Path:
 def benchmark_data_check_root(benchmark_id: str) -> Path:
     """Return the root for generated data-alignment and audit reports."""
     return benchmark_artifact_root(benchmark_id) / "data_checks"
+
+
+def benchmark_source_evidence_root(benchmark_id: str) -> Path:
+    """Return the read-only external source evidence root for a benchmark batch."""
+    return BENCHMARK_SOURCE_EVIDENCE_ROOT / safe_path_part(benchmark_id)

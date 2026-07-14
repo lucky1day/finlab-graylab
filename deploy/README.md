@@ -1,0 +1,165 @@
+# 部署：本地灰度实验室外网只读访问
+
+落地 PRD [`docs/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md`](../docs/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md)。
+本目录是**配置 + 脚本**交付物，**不改任何业务代码**（backend / frontend / schemes / scheduler）。
+
+## 链路
+
+```
+https://bond.finailab.cn/bond-factor-lab/
+  -> Nginx 443（默认拒绝 + 展示白名单 + 前缀剥离）        [公网入口机]
+  -> proxy_pass http://127.0.0.1:18100
+  -> SSH 反向隧道                                          [本地 Mac launchd 常驻]
+  -> 本地 Mac 127.0.0.1:8100（FastAPI：前端静态 + 只读展示 API）
+```
+
+## 三类机器职责
+
+| 机器 | 组件 | 交付物 |
+|------|------|--------|
+| 公网入口机 | Nginx 443 入口 + 访问控制 | `deploy/nginx/bond-factor-lab.conf`、`deploy/nginx/snippets/bond-proxy-headers.conf` |
+| 本地 Mac | 后端、scheduler、SSH 反向隧道 | `deploy/launchd/*.plist` |
+| 任意可联公网点 | 验收 / 监控 | `scripts/check_public_access.sh`、`scripts/healthcheck_alert.sh` |
+
+## 当前运维基线
+
+2026-07-05 复审后的本地运行基线：
+
+- backend 和 scheduler 均由 launchd 管理，服务端口仍为 `127.0.0.1:8100`。
+- scheduler 调整配置、方案 `config.yaml` 或代码后，必须 `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler` 重启，并复核日志中 active 日频、周频、周平均、月频方案均已注册。
+- scheduler 的 launchd 配置使用 `RunAtLoad=true` 与 `KeepAlive=true`：Mac 登录该用户会自动拉起，进程退出会被 launchd 重新拉起。若需要无人登录前启动，应另行制作 root `LaunchDaemon`，不能直接复用当前依赖用户 conda 环境的 `LaunchAgent`。
+- scheduler 启动后会执行一次 startup catch-up：对当天业务 cron 已过、且 `t_scheme_runs` 尚无终态记录的 active 方案自动补跑，避免系统/服务在早间预测窗口之后恢复时静默缺当天预测。
+- actuals 每天 `08:30/19:00/23:45` 三档刷新；`23:45` 用于承接 BondPrediction `23:25` 左右的 Wind 日频导入。若源表在最后一档之后才补齐，非交易日 actuals job 会补刷上一交易日的 daily/weekly actual，避免前端 T+1 最新验证卡在上一交易日。
+- 慢速 source-backed 方案使用 `config.yaml.schedule.timeout_sec` 配置方案级 executor timeout，例如 10Y02 当前为 `3600` 秒；该配置只影响算法子进程等待预算，不改变业务 cron 或日期语义。
+
+## 访问控制（默认拒绝 + 展示白名单）
+
+由 Nginx 入口实现（PRD §6），后端不参与：
+
+- **放行（GET）**：`/bond-factor-lab/`、静态资源、`/api/health`、`/api/schemes`、`/api/metrics/{id}`、`/api/backtests/factor-lab`。
+- **403**：其余所有 `/api/*`（`predictions`/`actuals`/`targets`/`backtests/runs*`/`data-checks` 原始数据导出，`schemes/{id}/trigger`、`admin/registry/sync` 写入接口），以及任何非 GET 方法。
+
+> Nginx location 优先级细节见 `deploy/nginx/bond-factor-lab.conf` 顶部注释。
+
+## 部署步骤
+
+### 1) 公网入口机：Nginx
+
+```bash
+# 复制配置与公共片段
+sudo cp deploy/nginx/bond-factor-lab.conf       /etc/nginx/sites-available/bond-factor-lab
+sudo cp deploy/nginx/snippets/bond-proxy-headers.conf /etc/nginx/snippets/
+sudo ln -sf /etc/nginx/sites-available/bond-factor-lab /etc/nginx/sites-enabled/bond-factor-lab
+
+# 按入口机实际情况确认：TLS 证书路径、80->443 跳转是否已有（见 conf 注释，二选一）
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+### 2) 本地 Mac：SSH 反向隧道（launchd 常驻）
+
+```bash
+# 先把 plist 里的 <SSH_USER> / <TUNNEL_KEY> 占位符替换为真实值，
+# 并确认可免密 ssh 到入口机（接受 host key）。
+cp deploy/launchd/com.bond-factor-lab.ssh-tunnel.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.bond-factor-lab.ssh-tunnel.plist
+
+# 状态 / 日志
+launchctl print gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
+tail -f logs/com.bond-factor-lab.ssh-tunnel.err
+
+# 入口机自检（隧道通了应返回 {"status":"ok"}）
+curl -s http://127.0.0.1:18100/api/health
+```
+
+### 2a) Bond Project Pro 测试站反向隧道（可选）
+
+`deploy/launchd/com.bondprojectpro.ssh-tunnel.plist` 与 `deploy/nginx/bondprojectpro-test*.conf`
+用于 `https://test.finailab.cn/` 测试入口：
+
+- 公网 Nginx 使用 `deploy/nginx/bondprojectpro-test-acme.conf` 完成 ACME 首次签证；证书签发后切换为 `deploy/nginx/bondprojectpro-test.conf`。
+- 本地 Mac 使用 `deploy/launchd/com.bondprojectpro.ssh-tunnel.plist` 常驻 SSH 反向隧道，把公网机 `127.0.0.1:18080` 转发到本地 `127.0.0.1:80`。
+- 该 plist 只记录 key 路径，不包含私钥内容；实际部署前仍需确认 key 文件权限、远端账号与端口占用。
+
+### 3) 本地 Mac：后端 admin token（第二道闸，R7）
+
+```bash
+# 编辑 deploy/launchd/com.bond-factor-lab.backend.plist，
+# 把 BOND_ADMIN_TOKEN 的 __SET_REAL_TOKEN__ 换成随机串（建议不入库）：
+openssl rand -hex 24
+# 重新安装并重载
+cp deploy/launchd/com.bond-factor-lab.backend.plist ~/Library/LaunchAgents/
+launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
+```
+
+### 4) 本地 Mac：scheduler 错峰与并发
+
+`deploy/launchd/com.bond-factor-lab.scheduler.plist` 默认设置：
+
+- `BOND_SCHEDULER_STAGGER_MINUTES=2`：同一业务 cron 下的 active 方案按稳定顺序每 2 分钟错开启动。
+- `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY=1`：同一时刻最多 1 个预测方案进入算法子进程，避免多个 `conda run` 同时压机器。
+- `BOND_SCHEDULER_STARTUP_CATCHUP=1`：scheduler 启动后补跑当天已错过且没有终态 run 的预测任务；已存在 `success/partial/failed/skipped` run 的方案不会因重启反复补跑。
+- `config.yaml.schedule.timeout_sec`：单方案 executor timeout 覆盖值，用于慢速 source-backed 方案；没有配置时使用 executor 默认预算。
+
+调整参数后需要重启 scheduler：
+
+```bash
+cp deploy/launchd/com.bond-factor-lab.scheduler.plist ~/Library/LaunchAgents/
+launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler
+```
+
+错峰只改变物理启动时间，不改变 `predict_date`、`feature_date`、`target_date` 或方案 `config.yaml` 中的业务基准 cron。
+
+## 验收
+
+```bash
+# 200/403 矩阵（在能访问公网的机器上运行；覆盖 R3/R4/R5/R6/R8）
+bash scripts/check_public_access.sh
+# -> 退出码 0；逐项 PASS
+
+# 前端回归（本地，PRD §8.3）
+conda run -n bond_factor_lab_service python -m unittest tests.test_frontend_factor_lab
+
+# 本地不受影响（仅公网被收口）
+curl -s http://127.0.0.1:8100/api/predictions   # 仍 200
+```
+
+## 监控（轻量，可选）
+
+外部 uptime 服务直接探 `https://bond.finailab.cn/bond-factor-lab/api/health`；
+或用 `scripts/healthcheck_alert.sh` 接入告警通道，cron/timer 周期调度（脚本顶部有示例）。
+
+本地生产数据巡检可使用只读脚本：
+
+```bash
+set -a; source .env; set +a
+conda run -n bond_factor_lab_service python scripts/check_production_daily_health.py --predict-date "$(date +%F)"
+```
+
+退出码约定：`0=ok`，`1=warning`，`2=error`。交易日日频预测整体缺失且不能由源表水位全阻塞解释时会报 error；actual 晚于源表水位会报 error；部分 active 方案没有成功 run 默认报 warning，避免 source-backed 方案 fail-closed 时诱导人工补写。对已知日频方案族，输出会同时列出缺 run 对应的 source watermark 阻塞期限，例如 `expected_feature_date=2026-07-03` 但 `1Y/3Y/5Y/7Y source_max=2026-07-01`。验收窗口可追加 `--strict-runs` 将缺成功 run 升级为 error。
+
+巡检脚本还会检查两类生产一致性问题：
+
+- successful run 的 `records_written` 必须能按 `run_id` 对上 `t_scheme_predictions` 明细，否则报 `successful_run_prediction_rows_mismatch` error。
+- active 日频 prediction 的 `predict_date/feature_date/target_date` 必须符合平台 live 日期语义，否则报 `daily_prediction_date_semantics_mismatch` error。
+
+若某交易日所有 active 日频方案都因源表水位早于 expected feature date 而没有有效预测，`daily_predictions_missing` 会降级为 warning，并在 `daily_run_input_watermark_blocked` 中列出阻塞期限；这是外部数据阻塞，不应人工伪造预测。
+
+## 回滚
+
+```bash
+# 入口机：摘掉 Nginx 站点
+sudo rm -f /etc/nginx/sites-enabled/bond-factor-lab
+sudo nginx -t && sudo systemctl reload nginx
+
+# 本地 Mac：停隧道
+launchctl bootout gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
+
+# 本地 Mac：如需回滚 token 值，替换 plist 里的 BOND_ADMIN_TOKEN 后 kickstart -k 重载；
+# 不要删除 BOND_ADMIN_TOKEN，未配置时 admin/trigger 写接口会 fail-closed 返回 503。
+```
+
+## 安全约束
+
+- 真实 `BOND_ADMIN_TOKEN`、SSH 私钥**不入库**（仓库内只放占位符）。
+- 隧道远端绑 `127.0.0.1:18100`，公网无法直连裸后端，只有入口机本地 Nginx 可达。
+- 展示接口的 JSON 在浏览器天然可见（客户端渲染）；用户能取得的不超过页面已展示内容（PRD §6.3）。

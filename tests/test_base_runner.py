@@ -352,6 +352,63 @@ class BaseRunnerTemplateTests(unittest.TestCase):
         self.assertEqual(output.summary["row_count"], 1)
         self.assertEqual(output.monthly_metrics[0]["benchmark_id"], "demo_benchmark")
 
+    def test_run_framework_db_aligned_without_source_csv_uses_spec_dates(self) -> None:
+        from backtests._base_runner import BacktestSpec, BaseDailyBacktestRunner
+
+        class DemoRunner(BaseDailyBacktestRunner):
+            def __init__(self, spec: BacktestSpec) -> None:
+                super().__init__(spec)
+                self.seen_dates: list[str] = []
+
+            def predict_rows(self, daily_df: pd.DataFrame, *, n_jobs: int = 4) -> list[dict[str, object]]:
+                self.seen_dates = daily_df["date"].dt.strftime("%Y-%m-%d").tolist()
+                return [
+                    {
+                        "scheme_id": "demo_daily",
+                        "target_tenor": "10Y",
+                        "horizon": 1,
+                        "predict_date": "2026-01-02",
+                        "target_date": "2026-01-05",
+                        "label": 1,
+                        "predicted_direction": 1,
+                    }
+                ]
+
+        spec = BacktestSpec(
+            benchmark_id="demo_benchmark",
+            scheme_id="demo_daily",
+            canonical_csv=None,
+            target_columns=("TB0YWI0C",),
+            start_date="2026-01-02",
+            end_date="2026-01-05",
+        )
+        generated = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-01-02", "2026-01-05"]),
+                "TB0YWI0C": [2.1, 2.2],
+            }
+        )
+        calls: list[dict[str, object]] = []
+
+        def fake_build_daily_input_artifact(**kwargs: object) -> SimpleNamespace:
+            calls.append(kwargs)
+            return SimpleNamespace(dataframe=generated, path=Path("/tmp/demo.csv"), source="test")
+
+        runner = DemoRunner(spec)
+
+        output = runner.run_framework_db_aligned(
+            engine=object(),
+            persist=False,
+            artifact_builder=fake_build_daily_input_artifact,
+        )
+
+        self.assertEqual(runner.seen_dates, ["2026-01-02", "2026-01-05"])
+        self.assertEqual(calls[0]["scheme_id"], "demo_daily")
+        self.assertEqual(calls[0]["predict_date"], "2026-01-05")
+        self.assertEqual(calls[0]["start_date"], "2026-01-02")
+        self.assertEqual(calls[0]["end_date"], "2026-01-05")
+        self.assertEqual(output.data_source, "framework_db_aligned")
+
     def test_persist_run_output_uses_append_backtest_run(self) -> None:
         from backtests import _base_runner
 
@@ -393,9 +450,11 @@ class BaseRunnerTemplateTests(unittest.TestCase):
         self.assertEqual(run_id, 201)
         create_run.assert_called_once()
         self.assertEqual(create_run.call_args.kwargs["run_mode"], "persist")
+        self.assertEqual(create_run.call_args.kwargs["status"], "running")
         replace_predictions.assert_called_once_with(engine, 201, output.rows)
         update_summary.assert_called_once()
         self.assertEqual(update_summary.call_args.kwargs["run_id"], 201)
+        self.assertEqual(update_summary.call_args.kwargs["status"], "success")
         self.assertEqual(output.summary["run_id"], 201)
 
 

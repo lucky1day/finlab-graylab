@@ -20,6 +20,7 @@ from scheduler.repository import create_engine_from_env
 VALID_PHASES = {"gray_live", "scheduled_live"}
 T1_GRAY_RUNS = set(range(22, 30))
 AUDITED_DELETE_ONLY_WEEKLY_RUNS = {
+    ("weekly_5y_direct_0529", 31),
     ("weekly_5y_direct_0529", 57),
     ("weekly_7y_cross_d_overlay_0529", 56),
 }

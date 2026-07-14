@@ -1,0 +1,23 @@
+scheme_id: monthly_10y_rf_top5_0629
+name: "0629月度10Y RF top5"
+description: "0629 原始月度 M10Y RF top5 binary runner 方案；actual 方向按目标月观测收益率相对当前 feature 月观测收益率计算"
+horizon: 30
+task_type: monthly
+tenors: ["10Y"]
+frequency: monthly
+target_rule: "next_month_observation_yield_vs_feature_month_observation_yield"
+schedule:
+  cron: "0 18 15 * *"
+  timezone: "Asia/Shanghai"
+entry_point: predict.run
+status: active
+input_spec:
+  data_version: shared_data_service_monthly.v1
+  required_columns: ["month_id"]
+backtest:
+  runner: backtests.monthly_10y_rf_top5_0629_reproduction
+  benchmark_id: monthly_0629
+  data_source: framework_db_aligned
+  benchmark_required: true
+  required_internal_fields: ["frequency", "final_select_id", "candidate_id", "model_name", "top_n", "y_pred", "pred_proba_up", "pred_proba_down", "param_index", "params_json", "training_rows", "validation_rows"]
+  start_date: "2025-01-01"

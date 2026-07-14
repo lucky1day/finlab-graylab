@@ -16,6 +16,17 @@ from shared.models import PredictionRecord
 COMMON_EXTRA_KEYS = ("input_artifact_path", "input_artifact_source")
 DAILY_EXTRA_KEYS = ("feature_date",)
 WEEKLY_EXTRA_KEYS = ("feature_week_id", "target_week_id", "feature_date", "target_date", "target_rule")
+MONTHLY_EXTRA_KEYS = (
+    "db_rdate",
+    "trigger_date",
+    "scheduled_trigger_date",
+    "input_cutoff_date",
+    "feature_month_id",
+    "target_month_id",
+    "feature_date",
+    "target_date",
+    "target_rule",
+)
 
 
 class DryRunGate(Gate):
@@ -135,17 +146,29 @@ def _validate_records(
                 frequency=frequency,
                 horizon=horizon,
                 calendar=calendar,
+                expected_weekly_target_rule=config.get("target_rule") if frequency == "weekly" else None,
             )
         )
         extra = record.extra or {}
         for key in COMMON_EXTRA_KEYS:
             if key not in extra:
                 errors.append(f"{prefix}.extra missing {key}")
-        frequency_keys = DAILY_EXTRA_KEYS if frequency == "daily" else WEEKLY_EXTRA_KEYS if frequency == "weekly" else ()
+        if frequency == "daily":
+            frequency_keys = DAILY_EXTRA_KEYS
+        elif frequency == "weekly":
+            frequency_keys = WEEKLY_EXTRA_KEYS
+        elif frequency == "monthly":
+            frequency_keys = MONTHLY_EXTRA_KEYS
+        else:
+            frequency_keys = ()
         for key in frequency_keys:
             if key not in extra:
                 errors.append(f"{prefix}.extra missing {key}")
         if frequency == "weekly":
+            expected_rule = config.get("target_rule")
+            if expected_rule and extra.get("target_rule") != expected_rule:
+                errors.append(f"{prefix}.extra.target_rule expected {expected_rule}, got {extra.get('target_rule')}")
+        if frequency == "monthly":
             expected_rule = config.get("target_rule")
             if expected_rule and extra.get("target_rule") != expected_rule:
                 errors.append(f"{prefix}.extra.target_rule expected {expected_rule}, got {extra.get('target_rule')}")

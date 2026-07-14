@@ -1,0 +1,8 @@
+pandas
+numpy
+scikit-learn
+lightgbm
+xgboost
+pytest
+pymysql
+sqlalchemy

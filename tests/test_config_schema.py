@@ -114,6 +114,24 @@ class ConfigSchemaAuxiliaryInputTests(unittest.TestCase):
         self.assertIn("input_spec.auxiliary_inputs[1] must be a mapping", errors)
 
 
+class ConfigSchemaScheduleTests(unittest.TestCase):
+    def test_schedule_timeout_sec_accepts_positive_integer(self) -> None:
+        config = _base_config()
+        config["schedule"]["timeout_sec"] = 1800
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertEqual(errors, [])
+
+    def test_schedule_timeout_sec_rejects_non_positive_integer(self) -> None:
+        config = _base_config()
+        config["schedule"]["timeout_sec"] = 0
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertIn("schedule.timeout_sec must be a positive integer when present", errors)
+
+
 class ConfigSchemaBacktestStartTests(unittest.TestCase):
     def test_daily_backtest_requires_start_date_2025_01_01(self) -> None:
         config = _base_config()
@@ -128,12 +146,51 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
         config["backtest"] = {
             "runner": "backtests.demo",
             "start_date": "2025-01-01",
+            "benchmark_id": "demo_benchmark",
+            "data_source": "framework_db_aligned",
             "benchmark_required": True,
         }
 
         errors = validate_config(config, dirname="demo_daily")
 
         self.assertEqual(errors, [])
+
+    def test_benchmark_required_requires_identity_fields(self) -> None:
+        config = _base_config()
+        config["backtest"] = {
+            "runner": "backtests.demo",
+            "start_date": "2025-01-01",
+            "benchmark_required": True,
+        }
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertIn("backtest.benchmark_id is required when benchmark_required=true", errors)
+        self.assertIn("backtest.data_source is required when benchmark_required=true", errors)
+
+    def test_daily_backtest_runner_args_are_validated(self) -> None:
+        config = _base_config()
+        config["backtest"] = {
+            "runner": "backtests.demo",
+            "runner_args": ["--batch-mode", "monthly"],
+            "start_date": "2025-01-01",
+        }
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertEqual(errors, [])
+
+    def test_daily_backtest_runner_args_cannot_override_persist_semantics(self) -> None:
+        config = _base_config()
+        config["backtest"] = {
+            "runner": "backtests.demo",
+            "runner_args": ["--no-persist"],
+            "start_date": "2025-01-01",
+        }
+
+        errors = validate_config(config, dirname="demo_daily")
+
+        self.assertIn("backtest.runner_args must not include --no-persist", errors)
 
     def test_weekly_backtest_requires_predict_start_date_2025_01_01(self) -> None:
         config = _base_config()
@@ -179,6 +236,25 @@ class ConfigSchemaBacktestStartTests(unittest.TestCase):
         errors = validate_config(config, dirname="demo_weekly")
 
         self.assertEqual(errors, [])
+
+    def test_monthly_scheme_requires_target_rule(self) -> None:
+        config = _base_config()
+        config["scheme_id"] = "demo_monthly"
+        config["frequency"] = "monthly"
+        config["task_type"] = "monthly"
+        config["horizon"] = 30
+        config["input_spec"] = {
+            "data_version": "shared_data_service_monthly.v1",
+            "required_columns": ["month_id"],
+        }
+        config["backtest"] = {
+            "runner": "backtests.demo_monthly",
+            "start_date": "2025-01-01",
+        }
+
+        errors = validate_config(config, dirname="demo_monthly")
+
+        self.assertIn("target_rule is required for weekly/monthly schemes", errors)
 
 
 if __name__ == "__main__":

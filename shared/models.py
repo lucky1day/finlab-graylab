@@ -50,3 +50,21 @@ class WeeklyActualRecord:
     price_signal: str
     target_rule: str
     extra: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class MonthlyActualRecord:
+    """月度实际方向记录，方向为收益率口径；展示时映射为空/多/平。"""
+
+    tenor: str
+    feature_month_id: str
+    target_month_id: str
+    predict_date: str
+    feature_date: str
+    target_date: str
+    feature_yield: float
+    target_yield: float
+    direction_monthly: int
+    price_signal: str
+    target_rule: str
+    extra: dict[str, Any] | None = None

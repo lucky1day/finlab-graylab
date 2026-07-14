@@ -1,0 +1,29 @@
+{
+  "run_date": "2026-04-15",
+  "trigger_date": "2026-04-15",
+  "scheduled_trigger_date": "2026-04-15",
+  "db_rdate": "2026-04-15",
+  "feature_month": "2026-04",
+  "input_cutoff_date": "2026-04-15",
+  "target_month": 202605,
+  "requested_target_month": "2026-05",
+  "rdate_bucket_rule": "monthly DB rdate is feature_month-15",
+  "model_target_month_rule": "target month is feature_month + 1",
+  "prediction_label_policy": "prediction never requires target_month realized data; target_month is only for later evaluation",
+  "boundary_examples": {
+    "2025-06-15": "feature_month=2025-06,target_month=2025-07,db_rdate=2025-06-15",
+    "2025-07-15": "feature_month=2025-07,target_month=2025-08,db_rdate=2025-07-15"
+  },
+  "schedule": {
+    "trigger_date": "2026-04-15",
+    "scheduled_trigger_date": "2026-04-15",
+    "db_rdate": "2026-04-15",
+    "feature_month": "2026-04",
+    "feature_month_id": 202604,
+    "target_month": "2026-05",
+    "target_month_id": 202605,
+    "system_eval_start": "2026-04-15",
+    "system_eval_end": "2026-05-15",
+    "trading_calendar_source": "db:t_trade_calendar"
+  }
+}

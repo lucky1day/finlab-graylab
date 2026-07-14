@@ -16,6 +16,7 @@ from scheduler.repository import create_engine_from_env
 
 
 AUDITED_BAD_PREDICTIONS = (
+    ("weekly_5y_direct_0529", 31, None),
     ("weekly_5y_direct_0529", 57, None),
     ("weekly_7y_cross_d_overlay_0529", 56, None),
     ("daily_5y_2_v28", 42, "2026-05-28"),

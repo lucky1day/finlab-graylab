@@ -60,6 +60,9 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
         timezone = schedule.get("timezone", "Asia/Shanghai")
         if not isinstance(timezone, str) or not _valid_timezone(timezone):
             errors.append("schedule.timezone must be a valid timezone")
+        timeout_sec = schedule.get("timeout_sec")
+        if timeout_sec is not None and (not isinstance(timeout_sec, int) or timeout_sec <= 0):
+            errors.append("schedule.timeout_sec must be a positive integer when present")
 
     entry_point = raw.get("entry_point", "predict.run")
     if entry_point != "predict.run":
@@ -120,10 +123,10 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
                             f"input_spec.auxiliary_inputs[{idx}].required_columns must be a non-empty list of strings"
                         )
 
-    if frequency == "weekly":
+    if frequency in {"weekly", "monthly"}:
         target_rule = raw.get("target_rule")
         if not isinstance(target_rule, str) or not target_rule.strip():
-            errors.append("target_rule is required for weekly schemes")
+            errors.append("target_rule is required for weekly/monthly schemes")
 
     backtest = raw.get("backtest")
     if backtest is not None:
@@ -132,9 +135,24 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
         else:
             if "runner" in backtest and (not isinstance(backtest["runner"], str) or not backtest["runner"].strip()):
                 errors.append("backtest.runner must be a non-empty string")
+            runner_args = backtest.get("runner_args")
+            if runner_args is not None:
+                if not isinstance(runner_args, list) or not all(
+                    isinstance(item, str) and item for item in runner_args
+                ):
+                    errors.append("backtest.runner_args must be a list of non-empty strings")
+                elif "--no-persist" in runner_args:
+                    errors.append("backtest.runner_args must not include --no-persist")
             benchmark_required = backtest.get("benchmark_required")
             if benchmark_required is not None and not isinstance(benchmark_required, bool):
                 errors.append("backtest.benchmark_required must be a boolean")
+            if benchmark_required is True:
+                benchmark_id = backtest.get("benchmark_id")
+                if not isinstance(benchmark_id, str) or not benchmark_id.strip():
+                    errors.append("backtest.benchmark_id is required when benchmark_required=true")
+                data_source = backtest.get("data_source")
+                if not isinstance(data_source, str) or not data_source.strip():
+                    errors.append("backtest.data_source is required when benchmark_required=true")
             if frequency == "weekly":
                 if backtest.get("predict_start_date") != "2025-01-01":
                     errors.append("backtest.predict_start_date must be 2025-01-01 for weekly backtests")

@@ -3,13 +3,12 @@
 
 单方案 runner 最小写法示例:
 
-    from pathlib import Path
     from backtests._base_runner import BacktestSpec, BaseDailyBacktestRunner
 
     SPEC = BacktestSpec(
         benchmark_id="my_benchmark",
         scheme_id="my_daily",
-        canonical_csv=Path("benchmarks/my_benchmark/daily_output.csv"),
+        canonical_csv=None,  # 默认 DB-first；外部 CSV 仅作为显式 source-evidence 使用
         target_columns=("TB0YWI0C",),
         start_date="2025-01-01",
         end_date="2026-05-31",
@@ -99,7 +98,7 @@ class BaseDailyBacktestRunner:
         artifact_scheme_id: str | None = None,
         artifact_builder: ArtifactBuilder = build_daily_input_artifact,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """通过公共输入层生成 DB daily_output 并按 canonical 日期/列对齐。"""
+        """通过公共输入层生成 DB daily_output；有 source CSV 时才按其日期/列对齐。"""
         return build_db_aligned_daily(
             csv_df=csv_df,
             engine=engine,
@@ -107,6 +106,8 @@ class BaseDailyBacktestRunner:
             artifact_scheme_id=artifact_scheme_id or self.spec.scheme_id,
             benchmark_id=self.spec.benchmark_id,
             canonical_csv=self.spec.canonical_csv,
+            start_date=self.spec.start_date,
+            end_date=self.spec.end_date,
             artifact_builder=artifact_builder,
         )
 
@@ -196,22 +197,25 @@ def build_db_aligned_daily(
     *,
     benchmark_id: str,
     canonical_csv: str | Path | None,
+    start_date: str | None = None,
+    end_date: str | None = None,
     artifact_builder: ArtifactBuilder = build_daily_input_artifact,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """生成完整 DB 版 daily_output 和按 canonical CSV 对齐后的版本。
+    """生成完整 DB 版 daily_output，以及必要时按 source CSV 对齐后的版本。
 
     DB 输入统一经过 shared.input_artifacts 生成和读回，再喂给算法。
     upstream_mode 保留为旧调用兼容参数，不参与分支。
     """
     _ = upstream_mode
     if csv_df is None:
-        if canonical_csv is None:
-            raise ValueError("canonical_csv is required when csv_df is not provided")
-        original = read_daily_csv(canonical_csv)
+        original = read_daily_csv(canonical_csv) if canonical_csv is not None else None
     else:
         original = csv_df
-    start_date = original["date"].min().strftime("%Y-%m-%d")
-    end_date = original["date"].max().strftime("%Y-%m-%d")
+    if original is not None:
+        start_date = original["date"].min().strftime("%Y-%m-%d")
+        end_date = original["date"].max().strftime("%Y-%m-%d")
+    if not start_date or not end_date:
+        raise ValueError("start_date and end_date are required when no source CSV is provided")
     input_artifact = artifact_builder(
         scheme_id=artifact_scheme_id,
         predict_date=end_date,
@@ -224,6 +228,8 @@ def build_db_aligned_daily(
     db_df = db_df.copy()
     db_df["date"] = pd.to_datetime(db_df["date"], errors="coerce").dt.normalize()
     db_df = db_df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    if original is None:
+        return db_df, db_df
 
     aligned = db_df.set_index("date")
     aligned = aligned.reindex(original["date"])
@@ -615,7 +621,7 @@ def persist_run_output(engine: Engine, output: RunOutput, *, benchmark_id: str) 
         data_source=output.data_source,
         start_date=output.start_date,
         end_date=output.end_date,
-        status="success",
+        status="running",
         summary=output.summary,
         report_path=output.report_path,
         code_hash=output.summary.get("code_hash"),
