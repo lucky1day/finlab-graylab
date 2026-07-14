@@ -18,6 +18,18 @@
 
 验收结果：新增边界聚焦回归 103/103、最终全量测试 761/761 通过；StaticGate 白名单已加入新的公共 `shared.signal_policy`，同时保留对 `shared.data_service` 等越层 import 的拦截。5Y 完整无副作用 harness `hr_20260714T090518Z_5ebd89a11f5a` 与 7Y `hr_20260714T090543Z_1becdebd10f2` 均通过；发布后 active-only ApiGate 也均通过。scheduler 已通过 `launchctl kickstart -k` 重启，运行 PID 更新为 `91407`，日志确认全部 active 任务重新挂载。浏览器前端验收确认 5Y/7Y 的 `2026-07` 行均显示样本 `2`、预测分布 `0/1/1`、准确率分母 `1`；验证表中 `07/04 -> 07/10` 和 `07/11 -> 07/17` 均显示“平”，结果列为 `-`，后者实际方向为“待验证”，页面控制台无错误。
 
+## 2026-07-13 10Y01 / 5Y01 原脚本 Full-OOS 灰度方案
+
+新增两个独立方案 `liwei_0616_10y01_full_oos_k3_div_k10` 与 `liwei_0616_5y01_full_oos_k3_div_k10`，旧的 10Y01 / 5Y01 active 方案保持不变。新方案只把测试序列改为原脚本的 `2024-01-01..source_end` 单段连续 Full-OOS；baseline、共识、seasonal VT、streak-break fallback 和 core 参数均保留原脚本。StaticGate 要求方案 code hash 自包含，因此两个新目录各保存一份与已验证 source core 字节一致的本地副本，adapter 只负责 Full-OOS 窗口和平台日期语义转换。
+
+两方案均已完成 Static/Input/Unit/DryRun/Compare/Backtest/ApiReadiness 全门禁，最终通过记录分别为 `hr_20260712T160937Z_909ea359ac86` 与 `hr_20260712T160942Z_6ed605b92de5`。CompareGate 的 2026-04 target-month 样本均为 21/21 方向一致、内部 score/sign 0 mismatch；真实 runner 与归档 benchmark 的方向、label 也全部一致，浮点差仅约 `1e-16`。授权持久化回测生成 run_id=`158/159`，各 333 条，feature date `2025-01-02..2026-05-22`、target date `2025-01-09..2026-05-29`；灰度 target month 从 2026-06 起，不与历史回测重叠。
+
+ActivationGate 已将两方案激活，active scheme version 分别为 `fefcef733cad` 与 `db1680bc4741`。灰度 LiveGate 使用 `predict_date=2026-07-10` 写入 run_id=`669/670`，两条记录均为 `feature_date=2026-07-09`、`target_date=2026-07-16`、`prediction_phase=gray_live`，与 7Y 日频 T+5 的“运行日 -> 上一交易日特征 -> 第 5 个交易日目标”口径一致。`/api/schemes`、`/api/backtests/factor-lab` 和两个 composite `/api/metrics` 均已返回新方案；回测摘要分别为 `63.9% (177/277)` 与 `64.3% (169/263)`。
+
+2026-07-13 已按 7Y 日频 T+5 网格补齐两方案的 2026-06/07 灰度观察数据。每个方案现有 33 条 `gray_live`，predict date `2026-05-26..2026-07-10`、target date `2026-06-01..2026-07-16`；另有当天自然调度产生的 1 条 `scheduled_live`，predict date `2026-07-13`、target date `2026-07-17`。两个方案均与 7Y 参考网格的 34 个 target date 完全一致，`missing=[]`、`extra=[]`；其中 6 月 21 行、7 月 13 行。当前 actual 水位可验证到 7 月前 8 行：10Y 六月准确率 `53.3% (8/15)`、七月 `50.0% (4/8)`；5Y 六月 `52.9% (9/17)`、七月 `100.0% (7/7)`。10Y 首次冷建 run_id=`687` 因 3600 秒超时未写预测；重试后完成。10Y `predict_date=2026-07-07` run_id=`749` 模型成功并写入 1 条预测，LiveGate 仅因同期外部 DataBridge 写入 `api_wind_daily +1` 报源表并发 delta，授权方案表增量与预测输出均正确。
+
+业务 cron 均保持 `3 7 * * 1-5`、`Asia/Shanghai`、`timeout_sec=3600`。scheduler 已重启并加载新配置；在当前 `2` 分钟错峰和单并发设置下，业务 cron 仍归属 07:03 组，物理执行槽位为 10Y01 Full-OOS `07:15`、5Y01 Full-OOS `07:19`。截至本次记录，两方案均已有真实时钟自然触发的 `scheduled_live`，达到 **Production Observed**。
+
 ## 2026-07-12 liwei_0616 T+5 日频增量 Phase A 缓存
 
 本轮只修改五个 `liwei_0616` 日频 T+5 方案。实盘 adapter 首次运行会按 baseline 生成 `.pkl` Phase A 缓存，后续日期在锁内读取上一水位，只对 `missing_dates` 执行原始滚动训练，再把完整缓存交给未改动的 Phase B/C、seasonal VT、consensus 和 fallback 路径。历史 backtest/benchmark 默认仍走原路径，不强制使用该实盘缓存。
@@ -217,7 +229,7 @@ source package 回测明细每个期限有 73 行，其中 `effective_week_id=20
 
 ## 总览
 
-当前代码侧保留十八个 active 可调度方案：
+当前 registry 保留二十六个 active 可调度 base 方案：
 
 | 方案 | 频率 | Horizon | Task Type | 目标 | 状态 |
 |------|------|---------|-----------|------|------|
@@ -231,11 +243,19 @@ source package 回测明细每个期限有 73 行，其中 `effective_week_id=20
 | `weekly_avg_10y_lgbm_0529` | `weekly` | 6 | `weekly_average` | `10Y` | `active / source-original weekly average aligned; gray_live rows current` |
 | `daily_5y_2_v28` | `daily` | 5 | `T+5` | `5Y` | `active` |
 | `daily_7y_1_v28` | `daily` | 5 | `T+5` | `7Y` | `active` |
+| `daily_1y_xgb_1y13_0629` | `daily` | 1 | `T+1` | `1Y` | `active / source-original daily aligned` |
+| `daily_5y_lgbm_5y10_0629` | `daily` | 1 | `T+1` | `5Y` | `active / source-original daily aligned` |
+| `daily_10y_lgbm_10y04_0629` | `daily` | 1 | `T+1` | `10Y` | `active / source-original daily aligned` |
 | `liwei_0616_cons_sda_k3_div_k10` | `daily` | 5 | `T+5` | `5Y` | `active / source-original backtest aligned; live-safe rows current` |
 | `liwei_0616_7y01_cons_say_k3_div_k10` | `daily` | 5 | `T+5` | `7Y` | `active / source-original backtest aligned; live-safe rows current` |
 | `liwei_0616_7y03_cons_all_k3_div_k8` | `daily` | 5 | `T+5` | `7Y` | `active / source-original backtest aligned; live-safe rows current` |
 | `liwei_0616_10y01_cons_say_k3_div_k10` | `daily` | 5 | `T+5` | `10Y` | `active / source-original backtest aligned; live-safe rows current` |
+| `liwei_0616_10y01_full_oos_k3_div_k10` | `daily` | 5 | `T+5` | `10Y` | `active / original continuous Full-OOS; gray_live current` |
 | `liwei_0616_10y02_cons_say_k3_div_k5` | `daily` | 5 | `T+5` | `10Y` | `active / source-original backtest aligned; live-safe rows current` |
+| `liwei_0616_5y01_full_oos_k3_div_k10` | `daily` | 5 | `T+5` | `5Y` | `active / original continuous Full-OOS; gray_live current` |
+| `liwei_0616_5y_auc_static_all_k3_div_k10` | `daily` | 5 | `T+5` | `5Y` | `active / ALL consensus gray experiment` |
+| `liwei_0616_5y_auc_yearly_all_k3_div_k10` | `daily` | 5 | `T+5` | `5Y` | `active / ALL consensus gray experiment` |
+| `liwei_0616_5y_ic_yearly_all_k3_div_k10` | `daily` | 5 | `T+5` | `5Y` | `active / ALL consensus gray experiment` |
 | `monthly_1y_rf_top30_0629` | `monthly` | 30 | `monthly` | `1Y` | `active / source-original monthly aligned; gray_live target months current` |
 | `monthly_5y_knn_top20_0629` | `monthly` | 30 | `monthly` | `5Y` | `active / source-original monthly aligned; gray_live target months current` |
 | `monthly_10y_rf_top5_0629` | `monthly` | 30 | `monthly` | `10Y` | `active / source-original monthly aligned; gray_live target months current` |

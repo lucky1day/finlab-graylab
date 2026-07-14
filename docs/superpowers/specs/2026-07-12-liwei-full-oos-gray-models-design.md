@@ -48,10 +48,7 @@ target_date = feature_date 后第 5 个交易日
 - `inference.py`: full-OOS window、增量 Phase A cache 和 source core 调用。
 - `benchmarks/`: source-original/current 对比证据与样本。
 
-新方案不复制大型 core 文件：
-
-- 10Y 新方案复用现有 10Y01 core。
-- 5Y 新方案复用现有 5Y01 core。
+每个新方案在接入时拥有一份与已验证 source core 字节一致的本地副本。平台 StaticGate 禁止独立 scheme 跨方案导入 core，并要求 scheme 的 code hash 和生命周期自包含；因此复制 core 是独立注册的必要边界。复制后的 core 不做行为修改，只有新 adapter 负责选择连续 full-OOS 序列。
 
 新建独立 backtest runner，负责写入新 scheme identity，并采用与 10Y02 已验证实现一致的 target-month full-OOS batching。共享 helper 仅在能保持两个 tenor 返回结构差异清晰时抽取；否则保留小型 adapter，避免改动旧模型。
 
