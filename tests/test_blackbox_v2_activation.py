@@ -345,6 +345,44 @@ class BlackboxActivationTests(unittest.TestCase):
         self.assertEqual((restored.status, restored.version_status), ("paused", "shadow"))
         self.assertEqual((state["db"].version_status, state["db"].registry_status), ("shadow", "paused"))
 
+    def test_activation_rejects_delivery_version_drift_before_database_write(self) -> None:
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.activation import activate_blackbox
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.lifecycle import pending_journals
+
+        token = issue_token(
+            self.cfg.scheme_id,
+            "blackbox_activate",
+            scheme_version=self.cfg.scheme_version,
+            harness_run_id="hr_passed",
+            ttl_seconds=60,
+            issued_by="release-owner",
+        )
+        state = {"db": self._db_state()}
+
+        def mutate_delivery(*_args, **_kwargs):
+            script = self.cfg.path / "delivery" / f"{self.cfg.scheme_id}.py"
+            script.chmod(0o644)
+            script.write_text("import argparse\n# changed after authorization\n", encoding="utf-8")
+
+        with (
+            patch("harness.blackbox_v2.activation._verify_passed_all", return_value=self._passed_run()),
+            patch("harness.blackbox_v2.activation._environment_fingerprint", return_value="e" * 64),
+            patch("harness.blackbox_v2.activation.read_blackbox_lifecycle_state", side_effect=lambda *_: state["db"]),
+            patch("harness.blackbox_v2.activation.mark_token_used", side_effect=mutate_delivery),
+            patch("harness.blackbox_v2.activation.apply_blackbox_lifecycle_state") as apply_state,
+        ):
+            result = activate_blackbox(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        self.assertIn("canonical version changed", "\n".join(result.errors))
+        apply_state.assert_not_called()
+        current = load_scheme_config(self.cfg.path / "config.yaml")
+        self.assertNotEqual(current.scheme_version, self.cfg.scheme_version)
+        self.assertEqual((current.status, current.version_status), ("paused", "shadow"))
+        self.assertEqual(pending_journals(self.root, self.cfg.scheme_id)[0][1].phase, "unresolved")
+
     def test_unresolved_journal_blocks_common_live_gate_before_engine_or_token_use(self) -> None:
         from harness.authorization import issue_token
         from harness.gates.live_gate import LiveGate
@@ -451,6 +489,57 @@ class BlackboxActivationTests(unittest.TestCase):
                 "registry_status": "paused",
             },
         )
+
+    def test_manual_reconcile_rejects_journal_version_drift_without_mutation(self) -> None:
+        from harness.authorization import issue_token, used_tokens_path
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleJournal,
+            LifecycleState,
+            load_journal,
+            pending_journals,
+            write_journal,
+        )
+
+        journal = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id=self.cfg.scheme_id,
+            scheme_version=self.cfg.scheme_version,
+            harness_run_id="hr_passed",
+            previous=LifecycleState("paused", "shadow", "paused"),
+            target=LifecycleState("active", "active", "active"),
+            token_hash="old-token-hash",
+        ).transition("config_written").transition("db_committed").transition(
+            "unresolved",
+            error="forced unresolved state",
+        )
+        journal_path = write_journal(self.root, journal)
+        token = issue_token(
+            self.cfg.scheme_id,
+            "blackbox_reconcile",
+            scheme_version=self.cfg.scheme_version,
+            ttl_seconds=60,
+            issued_by="recovery-owner",
+        )
+        script = self.cfg.path / "delivery" / f"{self.cfg.scheme_id}.py"
+        script.chmod(0o644)
+        script.write_text("import argparse\n# canonical version drift\n", encoding="utf-8")
+
+        with (
+            patch("harness.blackbox_v2.activation.read_blackbox_lifecycle_state") as read_state,
+            patch("harness.blackbox_v2.activation.apply_blackbox_lifecycle_state") as apply_state,
+        ):
+            result = BlackboxLifecycleReconcileGate().run(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        self.assertIn("scheme_version", "\n".join(result.errors))
+        read_state.assert_not_called()
+        apply_state.assert_not_called()
+        preserved = load_journal(journal_path)
+        self.assertEqual(preserved.phase, "unresolved")
+        self.assertIsNone(preserved.reconciled_by)
+        self.assertEqual(pending_journals(self.root, self.cfg.scheme_id)[0][0], journal_path)
+        self.assertFalse(used_tokens_path(self.root).exists())
 
 
 def replace_context(ctx: GateContext, **updates) -> GateContext:

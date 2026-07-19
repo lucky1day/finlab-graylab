@@ -809,12 +809,12 @@ def apply_blackbox_lifecycle_state(
 
 
 def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
-    """将批准时刻统一为 MySQL DATETIME 使用的无时区 UTC。"""
+    """将批准时刻统一为 MySQL DATETIME(0) 使用的无时区 UTC。"""
     if value is None:
         return None
     if value.tzinfo is None:
-        return value
-    return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.replace(microsecond=0)
+    return value.astimezone(timezone.utc).replace(tzinfo=None, microsecond=0)
 
 
 def create_scheme_run(

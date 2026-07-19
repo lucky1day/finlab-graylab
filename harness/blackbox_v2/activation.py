@@ -106,7 +106,7 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
             audit_path = write_authorization_audit(auth, ctx.report_dir / "activation_authorization")
 
         def apply_database(state: LifecycleState) -> None:
-            current = _reload_with_evidence(enriched_cfg)
+            current = _reload_pinned_with_evidence(enriched_cfg, cfg.scheme_version)
             if state.version_status == "active":
                 apply_blackbox_lifecycle_state(
                     engine,
@@ -125,7 +125,7 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
                 )
 
         def read_state() -> LifecycleState:
-            current = _reload_with_evidence(enriched_cfg)
+            current = _reload_pinned_with_evidence(enriched_cfg, cfg.scheme_version)
             current_db = read_blackbox_lifecycle_state(engine, current)
             return LifecycleState(
                 current.status,
@@ -226,12 +226,6 @@ class BlackboxLifecycleReconcileGate(Gate):
                 ["reconciliation authorization requires issued_by"],
                 gate_name=self.name,
             )
-        if auth.scheme_version != cfg.scheme_version:
-            return _blocked(
-                started_at,
-                ["reconciliation authorization scheme_version mismatch"],
-                gate_name=self.name,
-            )
         pending = pending_journals(ctx.project_root, cfg.scheme_id)
         if not pending:
             return _failed(
@@ -246,6 +240,23 @@ class BlackboxLifecycleReconcileGate(Gate):
                 gate_name=self.name,
             )
         path, journal = pending[0]
+        current_cfg = _reload_with_evidence(cfg)
+        if not (
+            journal.scheme_version
+            == current_cfg.scheme_version
+            == auth.scheme_version
+        ):
+            return _blocked(
+                started_at,
+                [
+                    "reconciliation scheme_version mismatch: "
+                    f"journal={journal.scheme_version}, "
+                    f"current={current_cfg.scheme_version}, "
+                    f"authorization={auth.scheme_version}"
+                ],
+                gate_name=self.name,
+            )
+        cfg = current_cfg
         if "active" in {
             journal.previous.config_status,
             str(journal.previous.config_version_status),
@@ -276,7 +287,7 @@ class BlackboxLifecycleReconcileGate(Gate):
         )
 
         def apply_database(state: LifecycleState) -> None:
-            current = _reload_with_evidence(enriched_cfg)
+            current = _reload_pinned_with_evidence(enriched_cfg, journal.scheme_version)
             apply_blackbox_lifecycle_state(
                 engine,
                 current,
@@ -285,7 +296,7 @@ class BlackboxLifecycleReconcileGate(Gate):
             )
 
         def read_state() -> LifecycleState:
-            current = _reload_with_evidence(enriched_cfg)
+            current = _reload_pinned_with_evidence(enriched_cfg, journal.scheme_version)
             current_db = read_blackbox_lifecycle_state(engine, current)
             return LifecycleState(
                 current.status,
@@ -346,11 +357,13 @@ def reconcile_incomplete_before_authorization(ctx: GateContext, cfg: SchemeConfi
             f"multiple incomplete lifecycle journals block {cfg.scheme_id}: {len(pending)}"
         )
     path, journal = pending[0]
-    if journal.scheme_version != cfg.scheme_version:
+    current_cfg = _reload_with_evidence(cfg)
+    if journal.scheme_version != current_cfg.scheme_version:
         raise RuntimeError(
             "incomplete lifecycle journal version mismatch: "
-            f"journal={journal.scheme_version}, config={cfg.scheme_version}"
+            f"journal={journal.scheme_version}, config={current_cfg.scheme_version}"
         )
+    cfg = current_cfg
     if "active" in {
         journal.previous.config_status,
         str(journal.previous.config_version_status),
@@ -368,7 +381,7 @@ def reconcile_incomplete_before_authorization(ctx: GateContext, cfg: SchemeConfi
         )
 
         def apply_database(state: LifecycleState) -> None:
-            current = _reload_with_evidence(enriched)
+            current = _reload_pinned_with_evidence(enriched, journal.scheme_version)
             apply_blackbox_lifecycle_state(
                 engine,
                 current,
@@ -377,7 +390,7 @@ def reconcile_incomplete_before_authorization(ctx: GateContext, cfg: SchemeConfi
             )
 
         def read_state() -> LifecycleState:
-            current = _reload_with_evidence(enriched)
+            current = _reload_pinned_with_evidence(enriched, journal.scheme_version)
             current_db = read_blackbox_lifecycle_state(engine, current)
             return LifecycleState(
                 current.status,
@@ -392,7 +405,7 @@ def reconcile_incomplete_before_authorization(ctx: GateContext, cfg: SchemeConfi
             apply_database=apply_database,
             read_state=read_state,
         )
-        return _reload_with_evidence(enriched)
+        return _reload_pinned_with_evidence(enriched, journal.scheme_version)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"automatic lifecycle reconciliation failed: {exc}") from exc
     finally:
@@ -438,6 +451,19 @@ def _reload_with_evidence(cfg: SchemeConfig) -> SchemeConfig:
         environment_fingerprint=cfg.environment_fingerprint,
         data_snapshot_id=cfg.data_snapshot_id,
     )
+
+
+def _reload_pinned_with_evidence(
+    cfg: SchemeConfig,
+    expected_scheme_version: str,
+) -> SchemeConfig:
+    current = _reload_with_evidence(cfg)
+    if current.scheme_version != expected_scheme_version:
+        raise RuntimeError(
+            "Blackbox canonical version changed during lifecycle operation: "
+            f"expected={expected_scheme_version}, current={current.scheme_version}"
+        )
+    return current
 
 
 def _config(ctx: GateContext) -> SchemeConfig:

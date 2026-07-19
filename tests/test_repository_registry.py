@@ -57,6 +57,11 @@ class _CaptureConnection:
                     "approved_at",
                 )
             }
+            if (
+                self._store.get("truncate_datetime_zero")
+                and isinstance(incoming.get("approved_at"), datetime)
+            ):
+                incoming["approved_at"] = incoming["approved_at"].replace(microsecond=0)
             if current is None:
                 self._store["version_row"] = incoming
             else:
@@ -108,12 +113,14 @@ class _CaptureEngine:
         *,
         version_row: dict | None = None,
         registry_rows: list[dict] | None = None,
+        truncate_datetime_zero: bool = False,
     ) -> None:
         self.store: dict = {
             "version_row": version_row,
             "registry_rows": registry_rows or [],
             "prediction_rows": [],
             "begin_count": 0,
+            "truncate_datetime_zero": truncate_datetime_zero,
         }
 
     def begin(self) -> _CaptureBegin:
@@ -401,6 +408,34 @@ class RegistrySyncTests(unittest.TestCase):
         expected_mysql_value = datetime(2026, 7, 20, 8, 30)
         self.assertEqual(engine.store["version_row"]["approved_at"], expected_mysql_value)
         self.assertIsNone(engine.store["version_row"]["approved_at"].tzinfo)
+        self.assertEqual(state.approved_at, expected_mysql_value)
+
+    def test_trusted_blackbox_activation_accepts_mysql_datetime_zero_readback(self) -> None:
+        from scheduler.repository import apply_blackbox_lifecycle_state
+
+        engine = _CaptureEngine(truncate_datetime_zero=True)
+        approved_at = datetime(
+            2026,
+            7,
+            20,
+            16,
+            30,
+            45,
+            987654,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+
+        state = apply_blackbox_lifecycle_state(
+            engine,
+            _blackbox_config(),
+            version_status="active",
+            registry_status="active",
+            approved_by="release-owner",
+            approved_at=approved_at,
+        )
+
+        expected_mysql_value = datetime(2026, 7, 20, 8, 30, 45)
+        self.assertEqual(engine.store["version_row"]["approved_at"], expected_mysql_value)
         self.assertEqual(state.approved_at, expected_mysql_value)
 
     def test_native_active_sync_behavior_is_unchanged(self) -> None:
