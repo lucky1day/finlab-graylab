@@ -227,6 +227,83 @@ class AuthorizationTest(unittest.TestCase):
                 )
                 self.assertNotIn(candidate, "\n".join(candidate_errors))
 
+    def test_canonical_envelope_and_payload_schema_are_exact(self) -> None:
+        used = self._used_path()
+        token = issue_token("t5_daily", "live_write", predict_date="2025-01-02")
+        auth = parse_token(token)
+        mark_token_used(auth, used)
+
+        padding = "=" * (-len(token) % 4)
+        original = json.loads(
+            base64.urlsafe_b64decode((token + padding).encode("ascii")).decode("utf-8")
+        )
+        variants = {}
+
+        envelope_extra = dict(original)
+        envelope_extra["extra"] = "ignored-by-signature"
+        variants["envelope_extra"] = envelope_extra
+
+        payload_extra = json.loads(json.dumps(original))
+        payload_extra["payload"]["extra"] = "unexpected"
+        variants["payload_extra"] = payload_extra
+
+        payload_missing = json.loads(json.dumps(original))
+        payload_missing["payload"].pop("expires_at")
+        variants["payload_missing"] = payload_missing
+
+        for label, envelope in variants.items():
+            with self.subTest(label=label):
+                raw = json.dumps(
+                    envelope,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                candidate = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+                parsed, errors = verify_authorization(
+                    candidate,
+                    scheme_id="t5_daily",
+                    action="live_write",
+                    predict_date="2025-01-02",
+                    used_store_path=used,
+                )
+
+                self.assertIsNone(parsed)
+                self.assertTrue(
+                    any("invalid authorization token" in error for error in errors),
+                    errors,
+                )
+                self.assertNotIn(candidate, "\n".join(errors))
+
+    def test_legacy_bare_payload_schema_is_exact(self) -> None:
+        token = issue_token("t5_daily", "live_write")
+        padding = "=" * (-len(token) % 4)
+        envelope = json.loads(
+            base64.urlsafe_b64decode((token + padding).encode("ascii")).decode("utf-8")
+        )
+        payload = envelope["payload"]
+
+        for label, mutate in {
+            "extra": lambda value: value.__setitem__("extra", "unexpected"),
+            "missing": lambda value: value.pop("expires_at"),
+        }.items():
+            with self.subTest(label=label):
+                candidate_payload = dict(payload)
+                mutate(candidate_payload)
+                raw = json.dumps(
+                    candidate_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                candidate = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+                with self.assertRaisesRegex(ValueError, "schema is invalid") as caught:
+                    parse_token(candidate)
+
+                self.assertNotIn(candidate, str(caught.exception))
+
     def test_same_token_concurrent_process_consumers_have_exactly_one_winner(self) -> None:
         token = issue_token("t5_daily", "live_write", predict_date="2025-01-02")
         used = self._used_path()

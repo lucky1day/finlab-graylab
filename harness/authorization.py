@@ -17,6 +17,19 @@ from typing import Any
 AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
 BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS = 60
+_AUTHORIZATION_PAYLOAD_FIELDS = frozenset(
+    {
+        "action",
+        "scheme_id",
+        "scheme_version",
+        "predict_date",
+        "harness_run_id",
+        "issued_by",
+        "issued_at",
+        "expires_at",
+        "nonce",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -139,7 +152,29 @@ def _decode_envelope(token: str) -> dict[str, Any]:
         raise ValueError("authorization token payload must be an object")
     if not hmac.compare_digest(_canonical_payload_bytes(decoded), decoded_bytes):
         raise ValueError("authorization token payload encoding is not canonical")
+    _validate_token_schema(decoded)
     return decoded
+
+
+def _validate_token_schema(decoded: dict[str, Any]) -> None:
+    if "payload" in decoded:
+        if frozenset(decoded) not in {
+            frozenset({"payload"}),
+            frozenset({"payload", "sig"}),
+        }:
+            raise ValueError("authorization token schema is invalid")
+        payload = decoded["payload"]
+        if "sig" in decoded and (
+            not isinstance(decoded["sig"], str) or not decoded["sig"]
+        ):
+            raise ValueError("authorization token schema is invalid")
+    else:
+        payload = decoded
+    if (
+        not isinstance(payload, dict)
+        or frozenset(payload) != _AUTHORIZATION_PAYLOAD_FIELDS
+    ):
+        raise ValueError("authorization token schema is invalid")
 
 
 def parse_token(token: str) -> Authorization:

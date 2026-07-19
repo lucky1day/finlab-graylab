@@ -282,6 +282,22 @@ def _perform_lifecycle_transition_unlocked(
     journal_path = write_journal(project_root, journal)
     try:
         consume_authorization()
+    except BaseException as exc:
+        error = f"authorization consumption failed: {exc}"
+        compensated = False
+        try:
+            failed = journal.transition("compensated", error=error)
+            write_journal(project_root, failed)
+            compensated = True
+        except BaseException as journal_exc:
+            error = f"{error}; journal finalization failed: {journal_exc}"
+        raise LifecycleOperationError(
+            f"lifecycle {action} failed: {error}",
+            journal_path=journal_path,
+            compensated=compensated,
+        ) from exc
+
+    try:
         atomic_update_config(config_path, target)
         next_journal = journal.transition("config_written")
         write_journal(project_root, next_journal)
