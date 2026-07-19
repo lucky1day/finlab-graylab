@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import resource
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -44,6 +44,7 @@ _PROFILE_FIELDS = frozenset(
         "max_output_bytes",
         "max_log_bytes",
         "max_run_dir_bytes",
+        "max_run_dir_entries",
         "sandbox_enabled",
         "read_roots",
         "environment_allowlist",
@@ -92,6 +93,7 @@ class RuntimeProfile:
     max_output_bytes: int
     max_log_bytes: int
     max_run_dir_bytes: int
+    max_run_dir_entries: int
     sandbox_enabled: bool
     read_roots: tuple[RuntimeReadRoot, ...]
     environment_allowlist: tuple[str, ...]
@@ -149,6 +151,7 @@ def _load_runtime_profile(path: str | Path) -> RuntimeProfile:
         "max_output_bytes",
         "max_log_bytes",
         "max_run_dir_bytes",
+        "max_run_dir_entries",
     )
     for field in integer_fields:
         if type(raw[field]) is not int:
@@ -213,6 +216,7 @@ def _load_runtime_profile(path: str | Path) -> RuntimeProfile:
         max_output_bytes=raw["max_output_bytes"],
         max_log_bytes=raw["max_log_bytes"],
         max_run_dir_bytes=raw["max_run_dir_bytes"],
+        max_run_dir_entries=raw["max_run_dir_entries"],
         sandbox_enabled=raw["sandbox_enabled"],
         read_roots=tuple(read_roots),
         environment_allowlist=tuple(allowlist_raw),
@@ -234,6 +238,7 @@ def _validate_runtime_profile(profile: RuntimeProfile, *, source: str) -> None:
         "max_output_bytes",
         "max_log_bytes",
         "max_run_dir_bytes",
+        "max_run_dir_entries",
     )
     for field in integer_fields:
         value = getattr(profile, field)
@@ -321,6 +326,8 @@ def probe_blackbox_help(
                 runtime=runtime,
                 resolved_read_roots=read_roots,
             )
+        else:
+            command = _bootstrap_command(command, profile.max_run_dir_bytes)
         completed = _run_process(
             command,
             cwd=writable_dir,
@@ -333,6 +340,7 @@ def probe_blackbox_help(
             memory_limit_bytes=profile.memory_limit_bytes,
             max_capture_bytes=profile.max_log_bytes,
             max_run_dir_bytes=profile.max_run_dir_bytes,
+            max_run_dir_entries=profile.max_run_dir_entries,
         )
 
     if completed.returncode != 0:
@@ -412,6 +420,8 @@ def execute_blackbox_cli(
                 runtime=runtime,
                 resolved_read_roots=read_roots,
             )
+        else:
+            command = _bootstrap_command(command, profile.max_run_dir_bytes)
         env = _runtime_environment(
             profile,
             output.parent,
@@ -428,6 +438,7 @@ def execute_blackbox_cli(
             memory_limit_bytes=profile.memory_limit_bytes,
             max_capture_bytes=profile.max_log_bytes,
             max_run_dir_bytes=profile.max_run_dir_bytes,
+            max_run_dir_entries=profile.max_run_dir_entries,
         )
         if completed.returncode != 0:
             raise BlackboxExecutionError(
@@ -445,11 +456,13 @@ def execute_blackbox_cli(
                 f"Blackbox V2 output exceeds {profile.max_output_bytes} bytes"
             )
         return completed
-    except BaseException:
+    except BaseException as execution_error:
         try:
             _cleanup_run_directory(output.parent)
-        except OSError:
-            pass
+        except Exception as cleanup_error:
+            raise BlackboxExecutionError(
+                f"{execution_error}; cleanup failed for {output.parent}: {cleanup_error}"
+            ) from execution_error
         raise
 
 
@@ -628,28 +641,43 @@ def _path_contains(parent: Path, child: Path) -> bool:
 
 
 def _cleanup_run_directory(run_dir: Path) -> None:
-    if not run_dir.exists() and not run_dir.is_symlink():
+    if not os.path.lexists(run_dir):
         return
+    _clear_user_file_flags(run_dir)
     if not run_dir.is_dir() or run_dir.is_symlink():
         run_dir.unlink(missing_ok=True)
+        if os.path.lexists(run_dir):
+            raise OSError(f"Blackbox V2 cleanup left artifact: {run_dir}")
         return
+    for current, directories, files in os.walk(run_dir, topdown=True, followlinks=False):
+        current_path = Path(current)
+        for name in directories:
+            _clear_user_file_flags(current_path / name)
+        for name in files:
+            _clear_user_file_flags(current_path / name)
     for current, directories, files in os.walk(run_dir, topdown=False, followlinks=False):
         current_path = Path(current)
         for filename in files:
-            try:
-                (current_path / filename).chmod(0o600, follow_symlinks=False)
-            except OSError:
-                pass
+            child = current_path / filename
+            if not child.is_symlink():
+                child.chmod(0o600, follow_symlinks=False)
         for directory in directories:
             child = current_path / directory
             if child.is_symlink():
                 continue
-            try:
-                child.chmod(0o700)
-            except OSError:
-                pass
+            child.chmod(0o700)
     run_dir.chmod(0o700)
     shutil.rmtree(run_dir)
+    if os.path.lexists(run_dir):
+        raise OSError(f"Blackbox V2 cleanup left run directory: {run_dir}")
+
+
+def _clear_user_file_flags(path: Path) -> None:
+    if not hasattr(os, "chflags"):
+        return
+    flags = getattr(os.lstat(path), "st_flags", 0)
+    if flags:
+        os.chflags(path, 0, follow_symlinks=False)
 
 
 def _resolve_runtime_read_roots(profile: RuntimeProfile) -> tuple[_ResolvedReadRoot, ...]:
@@ -776,25 +804,47 @@ def _validate_python_runtime(
 
 _SANDBOX_BOOTSTRAP = r'''
 import ctypes
+import resource
 import runpy
 import sys
 
-policy = sys.argv[1].encode("utf-8")
-script_argv = sys.argv[2:]
-error = ctypes.c_char_p()
-library = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
-library.sandbox_init.argtypes = [
-    ctypes.c_char_p,
-    ctypes.c_uint64,
-    ctypes.POINTER(ctypes.c_char_p),
-]
-library.sandbox_init.restype = ctypes.c_int
-if library.sandbox_init(policy, 0, ctypes.byref(error)) != 0:
-    message = error.value.decode("utf-8", errors="replace") if error.value else "unknown error"
-    raise RuntimeError(f"sandbox_init failed: {message}")
+policy = sys.argv[1]
+max_file_bytes = int(sys.argv[2])
+script_argv = sys.argv[3:]
+if policy:
+    error = ctypes.c_char_p()
+    library = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
+    library.sandbox_init.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_uint64,
+        ctypes.POINTER(ctypes.c_char_p),
+    ]
+    library.sandbox_init.restype = ctypes.c_int
+    if library.sandbox_init(policy.encode("utf-8"), 0, ctypes.byref(error)) != 0:
+        message = error.value.decode("utf-8", errors="replace") if error.value else "unknown error"
+        raise RuntimeError(f"sandbox_init failed: {message}")
+if hasattr(resource, "RLIMIT_FSIZE"):
+    resource.setrlimit(resource.RLIMIT_FSIZE, (max_file_bytes, max_file_bytes))
 sys.argv = script_argv
 runpy.run_path(script_argv[0], run_name="__main__")
 '''
+
+
+def _bootstrap_command(
+    command: list[str],
+    max_file_bytes: int,
+    *,
+    policy: str = "",
+) -> list[str]:
+    return [
+        command[0],
+        "-I",
+        "-c",
+        _SANDBOX_BOOTSTRAP,
+        policy,
+        str(max_file_bytes),
+        *command[1:],
+    ]
 
 
 def _sandbox_command(
@@ -826,14 +876,8 @@ def _sandbox_command(
         input_path=input_path,
         data_dir=data_dir,
     )
-    return [
-        str(selected_runtime.executable),
-        "-I",
-        "-c",
-        _SANDBOX_BOOTSTRAP,
-        policy,
-        *command[1:],
-    ]
+    selected_command = [str(selected_runtime.executable), *command[1:]]
+    return _bootstrap_command(selected_command, profile.max_run_dir_bytes, policy=policy)
 
 
 def _sandbox_policy(
@@ -1034,11 +1078,14 @@ def _run_process(
     memory_limit_bytes: int,
     max_capture_bytes: int,
     max_run_dir_bytes: int,
+    max_run_dir_entries: int,
 ) -> subprocess.CompletedProcess[str]:
     if max_capture_bytes <= 0:
         raise ValueError("max_capture_bytes must be positive")
     if max_run_dir_bytes <= 0:
         raise ValueError("max_run_dir_bytes must be positive")
+    if max_run_dir_entries <= 0:
+        raise ValueError("max_run_dir_entries must be positive")
     with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stdout_file:
         with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stderr_file:
             process = subprocess.Popen(
@@ -1048,7 +1095,6 @@ def _run_process(
                 stdout=stdout_file,
                 stderr=stderr_file,
                 start_new_session=True,
-                preexec_fn=lambda: _set_file_size_limit(max_run_dir_bytes),
             )
             deadline = time.monotonic() + timeout
             failure: str | None = None
@@ -1064,15 +1110,16 @@ def _run_process(
                     )
                     break
                 try:
-                    run_dir_bytes = _run_directory_bytes(cwd)
+                    quota_failure = _run_directory_limit_failure(
+                        cwd,
+                        max_bytes=max_run_dir_bytes,
+                        max_entries=max_run_dir_entries,
+                    )
                 except OSError as exc:
                     failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
                     break
-                if run_dir_bytes >= max_run_dir_bytes:
-                    failure = (
-                        "Blackbox V2 run directory exceeded limit: "
-                        f"bytes={run_dir_bytes}, limit={max_run_dir_bytes}"
-                    )
+                if quota_failure is not None:
+                    failure = quota_failure
                     break
                 rss_bytes = _process_group_rss_bytes(process.pid)
                 if memory_limit_bytes > 0 and rss_bytes > memory_limit_bytes:
@@ -1091,15 +1138,16 @@ def _run_process(
                 )
             if failure is None:
                 try:
-                    run_dir_bytes = _run_directory_bytes(cwd)
+                    quota_failure = _run_directory_limit_failure(
+                        cwd,
+                        max_bytes=max_run_dir_bytes,
+                        max_entries=max_run_dir_entries,
+                    )
                 except OSError as exc:
                     failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
                 else:
-                    if run_dir_bytes >= max_run_dir_bytes:
-                        failure = (
-                            "Blackbox V2 run directory exceeded limit: "
-                            f"bytes={run_dir_bytes}, limit={max_run_dir_bytes}"
-                        )
+                    if quota_failure is not None:
+                        failure = quota_failure
             if failure is not None:
                 _terminate_process_group(process)
             stdout = _read_capture(stdout_file, max_capture_bytes)
@@ -1109,26 +1157,43 @@ def _run_process(
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
-def _set_file_size_limit(max_file_bytes: int) -> None:
-    if not hasattr(resource, "RLIMIT_FSIZE"):
-        return
-    resource.setrlimit(resource.RLIMIT_FSIZE, (max_file_bytes, max_file_bytes))
-
-
-def _run_directory_bytes(root: Path) -> int:
-    total = 0
+def _run_directory_limit_failure(
+    root: Path,
+    *,
+    max_bytes: int,
+    max_entries: int,
+) -> str | None:
+    entry_count = 0
+    allocated_bytes = 0
+    logical_bytes = 0
     pending = [root]
     while pending:
         current = pending.pop()
         with os.scandir(current) as entries:
             for entry in entries:
-                if entry.is_symlink():
-                    continue
-                if entry.is_dir(follow_symlinks=False):
+                entry_count += 1
+                if entry_count > max_entries:
+                    return (
+                        "Blackbox V2 run directory entry limit exceeded: "
+                        f"entries={entry_count}, limit={max_entries}"
+                    )
+                file_stat = entry.stat(follow_symlinks=False)
+                allocated_bytes += max(0, getattr(file_stat, "st_blocks", 0)) * 512
+                logical_bytes += max(0, file_stat.st_size)
+                if allocated_bytes >= max_bytes:
+                    return (
+                        "Blackbox V2 run directory allocated byte limit exceeded: "
+                        f"bytes={allocated_bytes}, limit={max_bytes}"
+                    )
+                if logical_bytes >= max_bytes:
+                    return (
+                        "Blackbox V2 run directory logical byte limit exceeded: "
+                        f"bytes={logical_bytes}, limit={max_bytes}"
+                    )
+                if stat.S_ISDIR(file_stat.st_mode):
+                    # Count before queuing children so traversal memory is capped by the entry quota.
                     pending.append(Path(entry.path))
-                elif entry.is_file(follow_symlinks=False):
-                    total += entry.stat(follow_symlinks=False).st_size
-    return total
+    return None
 
 
 def _capture_size(handle) -> int:

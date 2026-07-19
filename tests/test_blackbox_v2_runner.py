@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -421,6 +423,172 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                     self.assertLess(time.monotonic() - started, 5)
                     self.assertFalse(run_dir.exists())
 
+    def test_run_directory_entry_quota_stops_empty_files_directories_and_symlinks(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            request = write_request(_request("001"), root / "request.json")
+            data_dir = _write_data_dir(root)
+            profile = RuntimeProfile.for_tests(max_run_dir_entries=32)
+            for name, source in (
+                ("empty-files", _MANY_EMPTY_FILES_SCRIPT),
+                ("directories-symlinks", _MANY_DIRECTORIES_AND_SYMLINKS_SCRIPT),
+            ):
+                script = _write_script(root / f"{name}.py", source)
+                run_dir = root / f"run-{name}"
+                run_dir.mkdir()
+                started = time.monotonic()
+                with self.subTest(case=name):
+                    with self.assertRaisesRegex(BlackboxExecutionError, "entry limit"):
+                        execute_blackbox_cli(
+                            script_path=script,
+                            mode="predict",
+                            input_path=request,
+                            data_dir=data_dir,
+                            output_path=run_dir / "prediction.json",
+                            profile=profile,
+                        )
+                    self.assertLess(time.monotonic() - started, 5)
+                    self.assertFalse(run_dir.exists())
+
+    def test_run_directory_quota_counts_allocated_blocks(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "allocated.py", _SMALL_ALLOCATED_FILE_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            run_dir = root / "run"
+            run_dir.mkdir()
+            profile = RuntimeProfile.for_tests(
+                max_output_bytes=512,
+                max_run_dir_bytes=1024,
+            )
+            with self.assertRaisesRegex(BlackboxExecutionError, "allocated byte limit"):
+                execute_blackbox_cli(
+                    script_path=script,
+                    mode="predict",
+                    input_path=request,
+                    data_dir=_write_data_dir(root),
+                    output_path=run_dir / "prediction.json",
+                    profile=profile,
+                )
+            self.assertFalse(run_dir.exists())
+
+    @unittest.skipUnless(
+        hasattr(os, "chflags") and hasattr(stat, "UF_IMMUTABLE"),
+        "requires user immutable file flags",
+    )
+    def test_cleanup_clears_immutable_output_without_residue(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "immutable.py", _IMMUTABLE_FAILURE_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output = run_dir / "prediction.json"
+            try:
+                with self.assertRaisesRegex(BlackboxExecutionError, "exited 2"):
+                    execute_blackbox_cli(
+                        script_path=script,
+                        mode="predict",
+                        input_path=request,
+                        data_dir=_write_data_dir(root),
+                        output_path=output,
+                        profile=RuntimeProfile.for_tests(),
+                    )
+                self.assertFalse(run_dir.exists())
+            finally:
+                if output.exists():
+                    os.chflags(output, 0, follow_symlinks=False)
+                    shutil.rmtree(run_dir)
+
+    def test_cleanup_failure_preserves_execution_context(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "trial.py", _FAIL_AFTER_OUTPUT_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            run_dir = root / "run"
+            run_dir.mkdir()
+            with patch(
+                "scheduler.blackbox_v2_runner._cleanup_run_directory",
+                side_effect=OSError("cleanup-denied"),
+            ):
+                with self.assertRaisesRegex(
+                    BlackboxExecutionError,
+                    "exited 2.*cleanup failed.*cleanup-denied",
+                ):
+                    execute_blackbox_cli(
+                        script_path=script,
+                        mode="predict",
+                        input_path=request,
+                        data_dir=_write_data_dir(root),
+                        output_path=run_dir / "prediction.json",
+                        profile=RuntimeProfile.for_tests(),
+                    )
+
+    def test_process_launcher_uses_bootstrap_without_preexec_or_shell(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "rlimit.py", _RLIMIT_PROBE_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output = run_dir / "result.json"
+            real_popen = subprocess.Popen
+            with patch(
+                "scheduler.blackbox_v2_runner.subprocess.Popen",
+                wraps=real_popen,
+            ) as popen:
+                execute_blackbox_cli(
+                    script_path=script,
+                    mode="predict",
+                    input_path=request,
+                    data_dir=_write_data_dir(root),
+                    output_path=output,
+                    profile=RuntimeProfile.for_tests(
+                        max_output_bytes=32 * 1024,
+                        max_run_dir_bytes=64 * 1024,
+                    ),
+                )
+            launcher_calls = [
+                call
+                for call in popen.call_args_list
+                if call.kwargs.get("start_new_session") is True
+            ]
+            self.assertEqual(len(launcher_calls), 1)
+            self.assertNotIn("preexec_fn", launcher_calls[0].kwargs)
+            self.assertNotIn("shell", launcher_calls[0].kwargs)
+            self.assertEqual(json.loads(output.read_text(encoding="utf-8")), {"rlimit": True})
+
     @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
     def test_macos_sandbox_denies_control_writes_root_listing_hardlinks_and_children(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
@@ -741,6 +909,102 @@ try:
 except OSError:
     pass
 time.sleep(10)
+'''
+
+
+_MANY_EMPTY_FILES_SCRIPT = r'''
+import argparse
+import time
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+root = Path(args.output).parent
+for index in range(3000):
+    (root / f"empty-{index:04d}").touch()
+time.sleep(10)
+'''
+
+
+_MANY_DIRECTORIES_AND_SYMLINKS_SCRIPT = r'''
+import argparse
+import time
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+root = Path(args.output).parent
+for index in range(500):
+    directory = root / f"directory-{index:04d}"
+    directory.mkdir()
+    (root / f"symlink-{index:04d}").symlink_to(directory.name, target_is_directory=True)
+time.sleep(10)
+'''
+
+
+_SMALL_ALLOCATED_FILE_SCRIPT = r'''
+import argparse
+import time
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+(Path(args.output).parent / "allocated.bin").write_bytes(b"x")
+time.sleep(10)
+'''
+
+
+_IMMUTABLE_FAILURE_SCRIPT = r'''
+import argparse
+import os
+import stat
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+output = Path(args.output)
+output.write_text("{}", encoding="utf-8")
+os.chflags(output, stat.UF_IMMUTABLE, follow_symlinks=False)
+raise SystemExit(2)
+'''
+
+
+_RLIMIT_PROBE_SCRIPT = r'''
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+probe = Path(args.output).parent / "rlimit.bin"
+try:
+    probe.write_bytes(b"x" * 1048576)
+    limited = False
+except OSError:
+    limited = True
+finally:
+    probe.unlink(missing_ok=True)
+Path(args.output).write_text(json.dumps({"rlimit": limited}), encoding="utf-8")
 '''
 
 

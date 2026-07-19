@@ -31,6 +31,7 @@ class BlackboxV2RuntimeProfileTests(unittest.TestCase):
             "max_output_bytes",
             "max_log_bytes",
             "max_run_dir_bytes",
+            "max_run_dir_entries",
             "sandbox_enabled",
             "network_access",
             "database_access",
@@ -93,6 +94,10 @@ class BlackboxV2RuntimeProfileTests(unittest.TestCase):
         cases.append(("positive", profile))
 
         profile = copy.deepcopy(base)
+        profile["max_run_dir_entries"] = 0
+        cases.append(("positive", profile))
+
+        profile = copy.deepcopy(base)
         profile["max_output_bytes"] = profile["max_run_dir_bytes"] + 1
         cases.append(("max_output_bytes", profile))
 
@@ -114,6 +119,7 @@ class BlackboxV2RuntimeProfileTests(unittest.TestCase):
         payload = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
         payload["cpu_threads"] = 3
         payload["max_run_dir_bytes"] = payload["max_output_bytes"] + 12345
+        payload["max_run_dir_entries"] = 321
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             path = root / "profile.json"
@@ -126,6 +132,7 @@ class BlackboxV2RuntimeProfileTests(unittest.TestCase):
             )
 
         self.assertEqual(profile.max_run_dir_bytes, payload["max_run_dir_bytes"])
+        self.assertEqual(profile.max_run_dir_entries, 321)
         self.assertEqual(environment["OMP_NUM_THREADS"], "3")
 
     def test_read_root_missing_and_boundary_escape_are_clear_errors(self) -> None:
