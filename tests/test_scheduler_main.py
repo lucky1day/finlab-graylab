@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import io
+import json
 import logging
 import os
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -259,22 +262,25 @@ class SchedulerMainTests(unittest.TestCase):
     def test_run_all_prediction_jobs_retains_mixed_results(self) -> None:
         from scheduler import main as scheduler_main
 
-        schemes = [_cfg("scheme_a"), _cfg("scheme_b")]
+        schemes = [_cfg("scheme_a"), _cfg("scheme_b"), _cfg("paused", status="paused")]
         success = SchemeRunResult("scheme_a", "success", 1, 0.1, run_id=1)
         failed = SchemeRunResult("scheme_b", "failed", 0, 0.2, "stale generation", 2)
         with (
-            patch.object(scheduler_main, "discover_schemes", return_value=schemes),
-            patch.object(scheduler_main, "_sync_registry", return_value=None),
+            patch.object(scheduler_main, "discover_schemes", return_value=schemes) as discover_schemes,
+            patch.object(scheduler_main, "_sync_registry", return_value=None) as sync_registry,
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
             patch.object(
                 scheduler_main,
-                "run_prediction_job",
+                "execute_scheme",
                 side_effect=[success, failed],
-            ) as run_prediction_job,
+            ) as execute_scheme,
         ):
             results = scheduler_main.run_all_prediction_jobs(run_date="2026-06-16")
 
         self.assertEqual(results, [success, failed])
-        self.assertEqual(run_prediction_job.call_count, 2)
+        discover_schemes.assert_called_once_with()
+        sync_registry.assert_called_once_with(schemes)
+        self.assertEqual(execute_scheme.call_count, 2)
 
     def test_main_returns_one_for_failed_run_once_prediction(self) -> None:
         from scheduler import main as scheduler_main
@@ -350,6 +356,56 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(code, 2)
 
+    def test_main_empty_prediction_aggregate_emits_summary_and_returns_zero(self) -> None:
+        from scheduler import main as scheduler_main
+
+        stdout = io.StringIO()
+        with (
+            patch.object(scheduler_main, "run_all_prediction_jobs", return_value=[]),
+            redirect_stdout(stdout),
+        ):
+            code = scheduler_main.main(["--run-once", "predictions"])
+
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            json.loads(lines[0]),
+            {
+                "counts": {"failed": 0, "partial": 0, "skipped": 0, "success": 0},
+                "event": "prediction_run_summary",
+                "exit_code": 0,
+                "total": 0,
+            },
+        )
+
+    def test_main_mixed_prediction_aggregate_emits_summary_and_returns_one(self) -> None:
+        from scheduler import main as scheduler_main
+
+        results = [
+            SchemeRunResult("success", "success", 1, 0.1),
+            SchemeRunResult("failed", "failed", 0, 0.2, "failed"),
+            SchemeRunResult("partial", "partial", 1, 0.3, "partial"),
+            SchemeRunResult("skipped", "skipped", 0, 0.0, "non-trading day"),
+        ]
+        stdout = io.StringIO()
+        with (
+            patch.object(scheduler_main, "run_all_prediction_jobs", return_value=results),
+            redirect_stdout(stdout),
+        ):
+            code = scheduler_main.main(["--run-once", "predictions"])
+
+        lines = stdout.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            json.loads(lines[0]),
+            {
+                "counts": {"failed": 1, "partial": 1, "skipped": 1, "success": 1},
+                "event": "prediction_run_summary",
+                "exit_code": 1,
+                "total": 4,
+            },
+        )
+
     def test_scheduled_prediction_wrapper_raises_for_failed_and_partial_results(self) -> None:
         from scheduler import main as scheduler_main
 
@@ -377,6 +433,20 @@ class SchedulerMainTests(unittest.TestCase):
         finally:
             if scheduler.running:
                 scheduler.shutdown(wait=False)
+
+    def test_scheduled_prediction_wrapper_passes_through_success_and_skipped_results(self) -> None:
+        from scheduler import main as scheduler_main
+
+        results = (
+            SchemeRunResult("scheduled_demo", "success", 1, 0.1),
+            SchemeRunResult("scheduled_demo", "skipped", 0, 0.0, "non-trading day"),
+        )
+        for result in results:
+            with self.subTest(status=result.status):
+                with patch.object(scheduler_main, "run_prediction_job", return_value=result):
+                    actual = scheduler_main.run_scheduled_prediction_job("scheduled_demo")
+
+                self.assertIs(actual, result)
 
     def test_weekly_and_monthly_predictions_run_on_non_trading_day(self) -> None:
         from scheduler import main as scheduler_main
@@ -503,21 +573,63 @@ class SchedulerMainTests(unittest.TestCase):
 
         now = datetime(2026, 7, 9, 7, 6, tzinfo=scheduler_main.ASIA_SHANGHAI)
         schemes = [_cfg("scheme_a"), _cfg("scheme_b")]
+        success = SchemeRunResult("scheme_b", "success", 1, 0.1)
         with (
-            patch.object(scheduler_main, "discover_schemes", return_value=schemes),
-            patch.object(scheduler_main, "_sync_registry", return_value=None),
+            patch.object(scheduler_main, "discover_schemes", return_value=schemes) as discover_schemes,
+            patch.object(scheduler_main, "_sync_registry", return_value=None) as sync_registry,
             patch.object(scheduler_main, "_prediction_run_exists", side_effect=[True, False]) as run_exists,
-            patch.object(scheduler_main, "run_prediction_job") as run_prediction_job,
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
+            patch.object(scheduler_main, "execute_scheme", return_value=success) as execute_scheme,
             patch.object(scheduler_main, "create_engine_from_env") as create_engine,
             self.assertLogs(scheduler_main.logger, level=logging.WARNING),
         ):
             engine = create_engine.return_value
-            scheduler_main.run_startup_prediction_catchup(now=now, algo_env="forecast_env")
+            results = scheduler_main.run_startup_prediction_catchup(now=now, algo_env="forecast_env")
 
         run_exists.assert_any_call(engine, "scheme_a", "2026-07-09")
         run_exists.assert_any_call(engine, "scheme_b", "2026-07-09")
-        run_prediction_job.assert_called_once_with("scheme_b", run_date="2026-07-09", algo_env="forecast_env")
+        discover_schemes.assert_called_once_with()
+        sync_registry.assert_called_once_with(schemes)
+        execute_scheme.assert_called_once_with(schemes[1], "2026-07-09", algo_env="forecast_env")
+        self.assertEqual(
+            results,
+            [
+                SchemeRunResult("scheme_a", "skipped", 0, 0.0, "existing run"),
+                success,
+            ],
+        )
         engine.dispose.assert_called_once()
+
+    def test_startup_prediction_catchup_raises_after_attempting_all_due_jobs(self) -> None:
+        from scheduler import main as scheduler_main
+
+        now = datetime(2026, 7, 9, 7, 10, tzinfo=scheduler_main.ASIA_SHANGHAI)
+        schemes = [_cfg("scheme_a"), _cfg("scheme_b"), _cfg("scheme_c")]
+        failed = SchemeRunResult("scheme_a", "failed", 0, 0.1, "failed")
+        partial = SchemeRunResult("scheme_b", "partial", 1, 0.2, "partial")
+        success = SchemeRunResult("scheme_c", "success", 1, 0.3)
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=schemes) as discover_schemes,
+            patch.object(scheduler_main, "_sync_registry", return_value=None) as sync_registry,
+            patch.object(scheduler_main, "_prediction_run_exists", return_value=False),
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
+            patch.object(
+                scheduler_main,
+                "execute_scheme",
+                side_effect=[failed, partial, success],
+            ) as execute_scheme,
+            patch.object(scheduler_main, "create_engine_from_env"),
+            self.assertLogs(scheduler_main.logger, level=logging.WARNING),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                r"Startup prediction catchup failed.*scheme_a=failed.*scheme_b=partial",
+            ):
+                scheduler_main.run_startup_prediction_catchup(now=now, algo_env="forecast_env")
+
+        discover_schemes.assert_called_once_with()
+        sync_registry.assert_called_once_with(schemes)
+        self.assertEqual(execute_scheme.call_count, 3)
 
 
 if __name__ == "__main__":

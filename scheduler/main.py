@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
+import json
 import logging
 import os
 import threading
@@ -366,7 +367,7 @@ def run_startup_prediction_catchup(
     *,
     now: datetime | None = None,
     algo_env: str = DEFAULT_ALGO_ENV,
-) -> None:
+) -> list[SchemeRunResult]:
     """启动时补跑今天已错过且没有运行记录的预测任务。"""
     run_now = now or datetime.now(ASIA_SHANGHAI)
     if run_now.tzinfo is None:
@@ -381,8 +382,9 @@ def run_startup_prediction_catchup(
     )
     if not due_jobs:
         logger.info("Startup prediction catchup: no due jobs")
-        return
+        return []
 
+    results: list[SchemeRunResult] = []
     engine = create_engine_from_env()
     try:
         for job in due_jobs:
@@ -393,6 +395,9 @@ def run_startup_prediction_catchup(
                     job.cfg.scheme_id,
                     predict_date,
                 )
+                results.append(
+                    SchemeRunResult(job.cfg.scheme_id, "skipped", 0, 0.0, "existing run")
+                )
                 continue
             logger.warning(
                 "Startup prediction catchup running missed job: scheme=%s predict_date=%s scheduled_cron=%s",
@@ -400,9 +405,22 @@ def run_startup_prediction_catchup(
                 predict_date,
                 job.effective_cron,
             )
-            run_prediction_job(job.cfg.scheme_id, run_date=predict_date, algo_env=algo_env)
+            results.append(
+                _run_prediction_config(
+                    job.cfg,
+                    predict_date,
+                    algo_env=algo_env,
+                    force=False,
+                )
+            )
     finally:
         engine.dispose()
+
+    failures = [result for result in results if result.status in {"failed", "partial"}]
+    if failures:
+        summary = ", ".join(f"{result.scheme_id}={result.status}" for result in failures)
+        raise RuntimeError(f"Startup prediction catchup failed: {summary}")
+    return results
 
 
 def run_data_bridge_refresh_job(
@@ -477,6 +495,23 @@ def _skips_non_trading_day(cfg: SchemeConfig) -> bool:
     return cfg.frequency not in {"weekly", "monthly"}
 
 
+def _run_prediction_config(
+    cfg: SchemeConfig,
+    predict_date: str,
+    *,
+    algo_env: str,
+    force: bool,
+) -> SchemeRunResult:
+    """使用已发现的方案配置执行单次预测。"""
+    if not force and _skips_non_trading_day(cfg) and not _is_trading_day(predict_date):
+        logger.info("Skip %s on non-trading day %s", cfg.scheme_id, predict_date)
+        return SchemeRunResult(cfg.scheme_id, "skipped", 0, 0.0, "non-trading day")
+    with _prediction_slot():
+        result = execute_scheme(cfg, predict_date, algo_env=algo_env)
+    logger.info("Scheme run finished: %s", result)
+    return result
+
+
 def run_prediction_job(
     scheme_id: str,
     run_date: str | date | None = None,
@@ -498,13 +533,12 @@ def run_prediction_job(
             0.0,
             f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} scheme not found: {scheme_id}",
         )
-    if not force and _skips_non_trading_day(cfg) and not _is_trading_day(predict_date):
-        logger.info("Skip %s on non-trading day %s", scheme_id, predict_date)
-        return SchemeRunResult(scheme_id, "skipped", 0, 0.0, "non-trading day")
-    with _prediction_slot():
-        result = execute_scheme(cfg, predict_date, algo_env=algo_env)
-    logger.info("Scheme run finished: %s", result)
-    return result
+    return _run_prediction_config(
+        cfg,
+        predict_date,
+        algo_env=algo_env,
+        force=force,
+    )
 
 
 def run_scheduled_prediction_job(
@@ -532,6 +566,7 @@ def run_all_prediction_jobs(
     force: bool = False,
 ) -> list[SchemeRunResult]:
     """执行全部 active 方案调度任务。"""
+    predict_date = _normalize_run_date(run_date)
     schemes = discover_schemes()
     _sync_registry(schemes)
     results: list[SchemeRunResult] = []
@@ -539,9 +574,9 @@ def run_all_prediction_jobs(
         if cfg.status != "active":
             continue
         results.append(
-            run_prediction_job(
-                cfg.scheme_id,
-                run_date=run_date,
+            _run_prediction_config(
+                cfg,
+                predict_date,
                 algo_env=algo_env,
                 force=force,
             )
@@ -559,6 +594,20 @@ def _prediction_exit_code(results: Sequence[SchemeRunResult]) -> int:
     if any(result.status in {"failed", "partial"} for result in results):
         return 1
     return 0
+
+
+def _emit_prediction_summary(results: Sequence[SchemeRunResult], exit_code: int) -> None:
+    counts = Counter(result.status for result in results)
+    summary = {
+        "event": "prediction_run_summary",
+        "counts": {
+            status: counts[status]
+            for status in ("success", "failed", "partial", "skipped")
+        },
+        "exit_code": exit_code,
+        "total": len(results),
+    }
+    print(json.dumps(summary, sort_keys=True))
 
 
 def run_actuals_job(run_date: str | date | None = None, force: bool = False) -> None:
@@ -699,7 +748,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     algo_env=args.algo_env,
                     force=args.force,
                 )
-            return _prediction_exit_code(results)
+            exit_code = _prediction_exit_code(results)
+            _emit_prediction_summary(results, exit_code)
+            return exit_code
         if args.run_once == "actuals":
             run_actuals_job(run_date=args.date, force=args.force)
             return 0
@@ -709,6 +760,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         scheduler = build_scheduler(algo_env=args.algo_env)
     except ValueError as exc:
+        if args.run_once == "predictions":
+            _emit_prediction_summary([], 2)
         logger.error("Scheduler argument or configuration error: %s", exc)
         return 2
 
