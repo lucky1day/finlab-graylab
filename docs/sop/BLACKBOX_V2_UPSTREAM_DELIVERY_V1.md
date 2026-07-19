@@ -1,123 +1,155 @@
-# 上游算法黑盒 V2 交付 SOP（V1 试运行版）
+# Blackbox V2 上游交付 SOP（Contract 1.0）
 
-请依次完成：确认交付物、按契约实现预测与回测、完成交付前验证。
+**文档状态**：`CURRENT`
+**适用运行时**：`blackbox_v2`
+**目标读者**：上游算法工程师
+**最后核验日期**：2026-07-19
+
+本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是三频数据 Schema。运行环境由平台另行发布；算法侧不需要了解平台内部管理和生命周期。
 
 ## 1. 你应该做什么
 
-### 1.1 交付一个算法脚本
+### 1.1 交付两个文件
 
-一个算法方案只交付两个文件：
+一个算法方案只交付：
 
 ```text
 {scheme_id}.py
 {scheme_id}.json
 ```
 
-- `{scheme_id}.py` 是唯一可执行文件。
-- `{scheme_id}.json` 只用于说明方案身份。
-- 两个文件的 `{scheme_id}` 必须完全一致。
+- `{scheme_id}.py` 是唯一可执行文件；`{scheme_id}.json` 只描述方案身份和固定任务口径。
+- 两个文件名以及 Metadata 中的 `scheme_id` 必须完全一致。
+- `scheme_id` 必须匹配 `^[a-z][a-z0-9_]*$`。
 - 一个脚本只对应一个 `target_tenor + task_type + horizon` 组合。
+- `target_tenor` 只允许 `1Y`、`3Y`、`5Y`、`7Y` 或 `10Y`。
+- 不得额外交付依赖文件、模型文件、配置文件、辅助模块或项目目录。
 
-不得额外交付依赖安装文件、模型文件、配置文件、辅助 Python 模块或项目目录。如需训练，必须由脚本在运行时基于当次截止数据完成。
+如算法需要训练，训练逻辑和固定参数必须包含在 `.py` 中，并且只能使用当前 Request 允许的数据。
 
-### 1.2 让脚本完成两类任务
-
-同一个 `.py` 必须支持：
-
-- `predict`：接收一个预测 Request，输出一条预测结果；
-- `backtest`：接收多个回测 Request，逐条计算并输出回测结果。
-
-预测和回测必须复用同一套数据处理、算法逻辑和方向映射。
-
-### 1.3 遵守脚本运行边界
-
-脚本只从平台传入的 CSV 读取数据，只将业务结果写入 `--output`。脚本不得：
-
-- 下载或更新业务数据；
-- 访问网络或绕过 CSV 读取其他数据源；
-- 安装或动态加载新依赖；
-- 自行计算交易日、预测日或目标日；
-- 硬编码本机绝对路径。
-
----
-
-## 2. 你应该怎么做
-
-### 第一步：使用平台指定环境
-
-V1 使用 Python 3.12 和环境标识 `forecast_env`。开始前，平台会提供：
-
-- 冻结后的依赖及版本；
-- CPU、内存和超时限制；
-- 环境自检方式。
-
-你需要在该环境中完成脚本适配，不能要求平台为单个方案增加私有包。
-
-### 第二步：读取平台 CSV
-
-平台通过 `--data-dir` 传入数据目录：
-
-```text
-<data-dir>/daily.csv
-<data-dir>/weekly.csv
-<data-dir>/monthly.csv
-```
-
-- 平台在运行前拉取最新数据并替换旧文件。
-- 三个文件都会存在，你可以只读取方案需要的文件。
-- `--data-dir` 是只读目录，不得向其中写入文件。
-
-CSV 的字段、编码、日期列、空值、重复行和排序规则，以平台发布的《数据桥 CSV 输入契约 V1》和三份脱敏样例为准。这些资料未就绪时，不开始交付验收。
-
-### 第三步：按 `feature_date` 截断数据
-
-每个 Request 都包含独立的 `feature_date`。在执行算法前，你必须：
-
-1. 读取当前方案需要的 CSV；
-2. 按输入契约指定的日期列截断至当前 `feature_date`；
-3. 只使用截断后的数据执行算法。
-
-回测时必须对每行 Request 分别截断。不得按整个批次的最大 `feature_date` 一次截断后复用，也不得使用晚于当前 `feature_date` 的数据。
-
-### 第四步：填写 Metadata
-
-`{scheme_id}.json` 必须为 UTF-8 JSON，且只包含以下字段：
-
-```json
-{
-  "schema_version": "1.0",
-  "scheme_id": "daily_10y_t1_demo",
-  "name": "10年国债收益率日频方向预测",
-  "algorithm_version": "1.0.0",
-  "target_tenor": "10Y",
-  "task_type": "T+1",
-  "horizon": 1,
-  "target_rule": "比较 target_date 与 feature_date 的 10Y 国债收益率"
-}
-```
-
-- `schema_version`：V1 固定为字符串 `1.0`。
-- `scheme_id`：与两个交付文件名一致。
-- `name`：方案名称。
-- `algorithm_version`：算法侧可追溯版本。
-- `target_tenor`：本脚本唯一预测的目标期限。
-- `task_type`：`T+1`、`T+5`、`weekly_point`、`weekly_average` 或 `monthly`。
-- `horizon`：大于 `0` 的整数。
-- `target_rule`：方向比较基准的文字说明。
-
-Metadata 只描述方案身份，不得保存可变阈值、特征列表、模型参数、输入路径或运行开关。
-
-### 第五步：实现两个命令
+### 1.2 让同一个脚本支持两个命令
 
 ```bash
 python {scheme_id}.py predict --request request.json --data-dir <data-dir> --output prediction.json
 python {scheme_id}.py backtest --requests requests.csv --data-dir <data-dir> --output backtest.csv
 ```
 
-- `predict` 使用 `--request` 读取一个 JSON Request，并恰好输出一条结果。
-- `backtest` 使用 `--requests` 读取 CSV Request，每行独立计算。
-- `--data-dir` 指定 CSV 目录，`--output` 指定结果文件。
-- 批量结果顺序必须与 Request 输入顺序一致。
+- `predict`：读取一个 Request，输出一条预测结果。
+- `backtest`：读取平台传入的一批 Request，每个 Request 输出一条结果；Contract 1.0 每批为一至 100 条。
+- 两个命令必须复用相同的数据处理、算法逻辑和方向映射。
+- 单个 Request 的结果不得因批次大小、批次切分或输入顺序改变。
+
+### 1.3 只在指定范围内运行
+
+脚本只使用指定运行环境和 Request，只从 `--data-dir` 读取业务数据，只向 `--output` 写入业务结果。
+
+脚本不得：
+
+- 访问网络、数据库或其他业务数据源；
+- 安装依赖、修改运行环境或动态加载交付包之外的代码；
+- 写入 `--data-dir`，或者硬编码本机绝对路径；
+- 自行计算或修改平台给出的日期和截止键；
+- 将业务结果或调试内容写入 `stdout`。
+
+日志和错误信息统一写入 `stderr`。业务运行期间 `stdout` 必须为空。
+
+---
+
+## 2. 你应该怎么做
+
+### 第一步：确认运行材料
+
+开始实现前，确认已经取得：
+
+1. 冻结运行环境清单、资源限制和环境自检命令；
+2. `daily_output.csv`、`weekly_output.csv`、`monthly_output.csv` 三份脱敏样例；
+3. 合法的单点 Request 和批量 Request 样例。
+
+仓库内的 `data-bridge-v1` Schema 入口和三频脱敏结构样例见 [DataBridge V1 数据契约与样例](../blackbox_v2/data_bridge_v1/README.md)。
+
+Python 和第三方包版本只以冻结运行环境清单为准。不得根据环境名称猜测版本，也不得要求为单个方案临时增加私有包。
+
+### 第二步：选择固定任务组合
+
+Contract 1.0 只允许以下组合：
+
+| `task_type` | `horizon` | `target_rule` | 业务含义 |
+|---|---:|---|---|
+| `T+1` | 1 | `target_date_yield_vs_feature_date_yield` | 第 1 个后续交易日相对 `feature_date` 的收益率方向 |
+| `T+5` | 5 | `target_date_yield_vs_feature_date_yield` | 第 5 个后续交易日相对 `feature_date` 的收益率方向 |
+| `weekly_point` | 1 | `target_week_end_yield_vs_feature_week_end_yield` | 下一周频点相对本周频点的收益率方向 |
+| `weekly_average` | 1 | `target_week_average_yield_vs_feature_week_average_yield` | 下一周平均收益率相对本周平均收益率的方向 |
+| `monthly` | 1 | `target_month_observation_yield_vs_feature_month_observation_yield` | 下一月观测相对本月观测的收益率方向 |
+
+`horizon` 按任务频率计期：日频按后续交易日计数，周频按周频观测计数，月频按月频观测计数。必须整行选择任务组合，不得自由修改 `horizon` 或填写其他 `target_rule`。
+
+### 第三步：填写 Metadata
+
+`{scheme_id}.json` 必须是无 BOM 的 UTF-8 JSON，并且只包含以下八个字段：
+
+```json
+{
+  "schema_version": "1.0",
+  "scheme_id": "weekly_10y_example_v1",
+  "name": "10年国债收益率周频点位方向预测",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "10Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}
+```
+
+- `schema_version` 固定为字符串 `1.0`。
+- `scheme_id` 和 `target_tenor` 必须满足第一节约束。
+- `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
+- `task_type`、`horizon` 和 `target_rule` 必须来自第二步的同一行。
+- 不得增加 `frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
+
+### 第四步：读取三频 CSV
+
+平台通过 `--data-dir` 提供：
+
+```text
+<data-dir>/daily_output.csv
+<data-dir>/weekly_output.csv
+<data-dir>/monthly_output.csv
+```
+
+| 文件 | 时间键 | `data-bridge-v1` 列数 | 时间键规则 |
+|---|---|---:|---|
+| `daily_output.csv` | `date` | 774 | 可解析为日期，唯一且升序 |
+| `weekly_output.csv` | `week_id` | 575 | 六位数字字符串，唯一且升序 |
+| `monthly_output.csv` | `month_id` | 123 | 六位数字字符串，唯一且升序 |
+
+- 同一次运行收到的三份文件属于同一份只读快照，运行期间不会被替换。
+- 平台始终提供三份文件；算法可以只读取当前方案需要的文件。
+- 不得因为未使用的文件存在而失败，也不要求算法主动解析未使用文件。
+- 三份文件的表头名称和顺序按当前数据 Schema 版本冻结；业务列只能是有限数值或空值。
+- 数据行数、起止区间、业务值和空值可以变化；算法不得假定固定行数、固定起点或固定长度窗口。
+- `week_id` 和 `month_id` 必须按字符串读取；不得把 `week_id` 当作 ISO 周，也不得自行换算为日期。
+- 表头增删、改名、重排或时间键格式变化属于 Schema 升级，旧版本脚本不得继续运行。
+
+### 第五步：按截止键截断实际消费的数据
+
+每个 Request 都包含三个截止键：
+
+| 文件 | Request 字段 | 定位规则 |
+|---|---|---|
+| `daily_output.csv` | `daily_cutoff_key` | 将 `date` 规范化为 `YYYY-MM-DD` 后精确定位 |
+| `weekly_output.csv` | `weekly_cutoff_key` | 与 `week_id` 字符串精确匹配 |
+| `monthly_output.csv` | `monthly_cutoff_key` | 与 `month_id` 字符串精确匹配 |
+
+对每个 Request，算法必须：
+
+1. 读取当前方案实际消费的 CSV；
+2. 在每个消费文件中定位对应截止键；
+3. 保留第一行至截止键所在行，包含截止键所在行；
+4. 只使用截断后的数据执行当前 Request。
+
+缺少实际消费的 CSV、消费文件的截止键不存在、时间键不唯一或截断后没有算法所需数据时，本次运行必须失败。算法只需格式校验 Request 中未消费频率的截止键，不需要读取对应文件验证。
+
+不得用文件最后一行代替截止键，也不得根据 `feature_date` 推导周/月截止键。批量回测必须逐行独立截断，不能按批次最大截止键一次截断后复用。Contract 1.0 使用当前快照加截止键隔离后续行，不提供历史时点修订版本回放。
 
 ### 第六步：读取 Request
 
@@ -125,24 +157,33 @@ python {scheme_id}.py backtest --requests requests.csv --data-dir <data-dir> --o
 
 ```json
 {
-  "request_id": "predict-20260716-001",
-  "predict_date": "2026-07-16",
-  "feature_date": "2026-07-15",
-  "target_date": "2026-07-17"
+  "request_id": "predict-20260718-001",
+  "predict_date": "2026-07-18",
+  "feature_date": "2026-07-17",
+  "target_date": "2026-07-24",
+  "daily_cutoff_key": "2026-07-17",
+  "weekly_cutoff_key": "202628",
+  "monthly_cutoff_key": "202607"
 }
 ```
 
 批量 `requests.csv`：
 
 ```csv
-request_id,predict_date,feature_date,target_date
-backtest-001,2026-06-01,2026-06-01,2026-06-02
-backtest-002,2026-06-02,2026-06-02,2026-06-03
+request_id,predict_date,feature_date,target_date,daily_cutoff_key,weekly_cutoff_key,monthly_cutoff_key
+backtest-001,2026-07-17,2026-07-17,2026-07-24,2026-07-17,"202628","202607"
+backtest-002,2026-07-18,2026-07-17,2026-07-24,2026-07-17,"202628","202607"
 ```
 
-- `request_id` 必须非空，且在同一批次内唯一。
-- 三个日期必须为 `YYYY-MM-DD`。
-- 日期均由平台给定；你只校验格式，不得修改、顺延、回退或重新推导。
+Request 规则：
+
+- 必须恰好包含以上七个字段，不接受缺失字段或额外字段。
+- `request_id` 必须是非空字符串；平台每批提供一至 100 行，算法必须完整支持该范围，并且校验批内 ID 唯一。超过 100 条由平台切分，不要求算法自行分批。
+- 三个日期必须是合法的规范 `YYYY-MM-DD`。
+- 日期必须满足 `feature_date <= predict_date <= target_date` 且 `feature_date < target_date`。
+- `daily_cutoff_key` 是规范 `YYYY-MM-DD`；周/月截止键是六位数字字符串。
+- 日期和截止键由平台生成，算法只校验和使用，不得修改、顺延、回退或重新推导。
+- 批量输入顺序就是输出顺序。任一行非法时必须全批失败，不能跳过后继续输出部分结果。
 
 ### 第七步：生成 Result
 
@@ -150,11 +191,11 @@ backtest-002,2026-06-02,2026-06-02,2026-06-03
 
 ```json
 {
-  "request_id": "predict-20260716-001",
-  "predict_date": "2026-07-16",
-  "feature_date": "2026-07-15",
-  "target_date": "2026-07-17",
-  "predicted_direction": -1
+  "request_id": "predict-20260718-001",
+  "predict_date": "2026-07-18",
+  "feature_date": "2026-07-17",
+  "target_date": "2026-07-24",
+  "predicted_direction": 1
 }
 ```
 
@@ -162,89 +203,54 @@ backtest-002,2026-06-02,2026-06-02,2026-06-03
 
 ```csv
 request_id,predict_date,feature_date,target_date,predicted_direction
-backtest-001,2026-06-01,2026-06-01,2026-06-02,1
-backtest-002,2026-06-02,2026-06-02,2026-06-03,-1
+backtest-001,2026-07-17,2026-07-17,2026-07-24,1
+backtest-002,2026-07-18,2026-07-17,2026-07-24,-1
 ```
 
-- V1 Result 只包含以上五个字段，并原样回传 Request 的四个字段。
-- JSON 和 CSV 均使用 UTF-8。
-- 每个 Request 必须恰好对应一条结果。
-- `predicted_direction` 必须是整数 `-1`、`0` 或 `1`。
-- `1` 表示目标收益率高于 `target_rule` 基准；`-1` 表示低于基准；`0` 表示相同或中性。
-- V1 默认每个 Request 都产生方向，运行异常不得转换成方向 `0`。
+- Result 必须恰好包含以上五个字段；三个截止键不写入 Result。
+- 每个 Request 恰好对应一条结果，四个 Request 字段必须原样回传。
+- 批量输出行数和顺序必须与输入一致。
+- JSON 中 `predicted_direction` 必须是整数；CSV 中必须是可解析的 `-1`、`0` 或 `1` 文本。
+- `1` 表示高于 `target_rule` 基准，`-1` 表示低于基准，`0` 表示算法给出的有效持平或中性方向。
+- 二分类算法可以只输出 `-1` 和 `1`；异常、缺数或低置信度不得转换为 `0`。
 
-### 第八步：处理日志和失败
+平台按解析后的字段和值验收，不要求 JSON 键顺序、缩进、末尾换行或 CSV 换行符逐字节一致。
 
-- 全部 Request 成功时退出码为 `0`；任一 Request 失败时整体退出码非 `0`。
-- 业务结果只写入 `--output`；日志和错误信息写入 `stderr`。
-- 缺少输入、字段非法、日期非法、`request_id` 重复或方向非法时必须失败。
-- 失败时不得留下完整或部分结果文件。
-- 应先完成全部计算和校验，再通过临时文件原子替换到 `--output`。
+### 第八步：处理 Output、日志和失败
+
+- 平台提供尚不存在的 `--output` 路径。
+- 全部 Request 成功时退出码为 `0`；任一 Request 失败时整体退出码必须非 `0`。
+- 业务结果只写入 `--output`，日志和错误只写入 `stderr`，`stdout` 保持为空。
+- 成功时先完成全部计算和校验，再通过同目录临时文件原子替换 `--output`。
+- 失败时清理本次临时文件，不得留下完整或部分 Output。
+- 如算法使用随机过程，必须固定随机状态；相同环境、快照和 Request 的结果必须一致。
 
 ---
 
 ## 3. 你应该怎么验证
 
-### 3.1 验证环境和命令
+先执行冻结运行环境清单中的自检命令，再执行：
 
 ```bash
-python --version
 python {scheme_id}.py --help
+python {scheme_id}.py predict --request request.json --data-dir ./sample_data --output prediction.json
+python {scheme_id}.py backtest --requests requests.csv --data-dir ./sample_data --output backtest.csv
 ```
 
-确认 Python 版本为 3.12，`--help` 正常退出并显示 `predict` 和 `backtest`。
+逐项完成：
 
-### 3.2 验证单点预测
+| 验证项 | 操作 | 通过标准 |
+|---|---|---|
+| 交付物 | 检查文件数量、命名、Metadata 八字段和任务组合 | 只有两个文件，身份和任务组合合法 |
+| 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
+| 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |
+| 批量回测 | 使用至少两个不同截止键执行 `backtest` | 每个 Request 恰好一条结果，数量和顺序一致 |
+| 预测/回测一致 | 将同一个 Request 分别交给两个命令 | 五个业务字段完全一致 |
+| 后续行隔离 | 修改或追加实际消费文件中位于截止键之后的合法行 | 当前 Request 的五个业务字段不变 |
+| 分批与顺序 | 改变批次切分和 Request 顺序后运行并按 ID 对齐 | 每个 Request 的结果不变 |
+| 重复执行 | 相同环境、快照和 Request 连续执行两次 | 五个业务字段完全一致 |
+| 失败处理 | 测试空批次、缺字段、额外字段、非法日期、重复 ID、缺少消费文件、截止键不存在和截断后无数据 | 非零退出，stderr 有错误，stdout 为空，不产生 Output |
 
-```bash
-python {scheme_id}.py predict \
-  --request request.json \
-  --data-dir ./sample_data \
-  --output ./prediction.json
-```
+准确率等算法效果门槛由当前方案的业务验收要求单独规定，不在本通用接口 SOP 中统一设定。
 
-确认退出码为 `0`，`prediction.json` 只包含一个对象，且字段和方向均合法。
-
-### 3.3 验证批量回测
-
-```bash
-python {scheme_id}.py backtest \
-  --requests requests.csv \
-  --data-dir ./sample_data \
-  --output ./backtest.csv
-```
-
-确认输入和输出 Request 数量一致、`request_id` 无缺失无重复，且顺序一致。
-
-### 3.4 验证没有使用未来数据
-
-在样例 CSV 中保留晚于某个 `feature_date` 的数据，修改这些未来行后重新运行该 Request。两次的业务结果必须完全一致。
-
-### 3.5 验证重复执行
-
-在相同环境中，使用相同 CSV 和 Request 连续执行两次。`request_id`、三个日期和 `predicted_direction` 必须完全一致。
-
-### 3.6 验证失败场景
-
-分别使用缺失 CSV、缺少字段、非法日期和重复 `request_id` 的输入，确认：
-
-- 进程退出码非 `0`；
-- 错误信息写入 `stderr`；
-- 不产生成功结果文件；
-- 不使用方向 `0` 代替运行失败。
-
-### 3.7 交付前最终确认
-
-- [ ] 交付物只有一个 `.py` 和一个 `.json`
-- [ ] 文件名与 Metadata 中的 `scheme_id` 完全一致
-- [ ] 一个脚本只对应一个 `target_tenor + task_type + horizon`
-- [ ] 脚本能在平台 Python 3.12 环境中直接运行
-- [ ] `--help`、`predict` 和 `backtest` 都可正常执行
-- [ ] 每个 Request 都独立按 `feature_date` 截断
-- [ ] 每个 Request 恰好输出一个 `-1`、`0` 或 `1`
-- [ ] 预测与回测使用同一算法逻辑和方向映射
-- [ ] 结果只写入 `--output`，日志只写入 `stderr`
-- [ ] 失败时非零退出，且不留下结果文件
-- [ ] 相同输入重复执行时结果完全一致
-
-全部验证通过后，再将 `{scheme_id}.py` 和 `{scheme_id}.json` 交付给平台。
+全部验证通过后，只交付 `{scheme_id}.py` 和 `{scheme_id}.json`。

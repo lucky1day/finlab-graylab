@@ -4,7 +4,9 @@
 
 ## 当前状态
 
-截至 2026-07-06，核心与近期入库 active 方案摘要如下（完整清单以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准）：
+截至 2026-07-19，仓库包含 29 个 Native V1 存量方案和 1 个 Blackbox V2 shadow 试验方案。后续新算法、新方案 ID、新目标、新任务和替代版本只允许 Blackbox V2；Native V1 仅做存量维护。具体运行状态以 [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) 为准。
+
+以下是 2026-07-06 的 Native active 摘要，用于说明既有生产覆盖，不是新增方案模板：
 
 | 方案 | 频率 | Horizon | 目标 |
 |------|------|---------|------|
@@ -28,11 +30,13 @@
 ## 文档入口
 
 - [docs/README.md](docs/README.md) — 文档索引与阅读路径
+- [docs/onboarding/README.md](docs/onboarding/README.md) — 所有方案入库和维护场景的唯一导航
 - [docs/CURRENT_STATUS.md](docs/CURRENT_STATUS.md) — 当前状态单一来源
-- [docs/sop/SCHEME_ONBOARDING_T0.md](docs/sop/SCHEME_ONBOARDING_T0.md) — 新增方案前必读 T0 强约束范式
-- [docs/sop/SCHEME_ONBOARDING_SOP.md](docs/sop/SCHEME_ONBOARDING_SOP.md) — 新增方案入库 SOP
+- [docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) — 所有新方案的上游 Contract 1.0
+- [docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) — Blackbox V2 Intake 至 Shadow 平台 SOP
+- [docs/native_v1/README.md](docs/native_v1/README.md) — Native V1 存量维护文档域
 - [docs/SOURCE_ALGORITHM_FIDELITY.md](docs/SOURCE_ALGORITHM_FIDELITY.md) — source-backed 方案源算法保真强约束
-- [docs/SCHEME_CONTRACT.md](docs/SCHEME_CONTRACT.md) — config / predict.py / core 机器契约
+- [docs/SCHEME_CONTRACT.md](docs/SCHEME_CONTRACT.md) — 双运行时共享身份、日期、结果和生命周期契约
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 系统架构
 - [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md) — 代码架构与分层边界
 - [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md) — harness 与安全边界
@@ -41,6 +45,7 @@
 
 - 算法预测：`conda run -n forecast_env ...`
 - 后端/API/调度器：`conda run -n bond_factor_lab_service ...`
+- Blackbox 算法：只按 `blackbox-v2-v1` Runtime Profile 执行，不从文档或环境名称猜测解释器版本
 
 常用只读验证：
 
@@ -66,7 +71,7 @@ conda run -n bond_factor_lab_service python -m scheduler.scheme_runner --scheme-
 ```text
 bond-factor-lab/
 ├── shared/            # 公共数据层、输入 artifact、日历服务、模型
-├── schemes/           # 方案插件目录
+├── schemes/           # 双运行时方案目录；Native 存量 + Blackbox 新增
 │   ├── t1_daily/
 │   ├── t5_daily/
 │   ├── daily_1y_xgb_1y13_0629/

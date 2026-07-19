@@ -1,11 +1,14 @@
 # 代码架构设计（Code Architecture）
 
-**更新日期**: 2026-07-09
-**定位**: 本仓库的**代码架构主蓝图**。定义分层模型、包依赖方向规则、运行时调用图、扩展模型与横切关注点。是所有其它设计文档的总索引。
+**文档状态**：`CURRENT`
+**适用运行时**：`native_adapter`、`blackbox_v2`
+**目标读者**：平台开发和代码审计人员
+**最后核验日期**：2026-07-19
+**定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
 - 本文 = **代码架构**（包/模块/依赖方向/调用图/扩展点）。二者互补，不重叠。
-- [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 方案契约 → [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) 新增方案 T0 范式。本文把它们统一到一张依赖图上。
+- [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 共享方案契约 → [onboarding/README.md](onboarding/README.md) 统一入库导航。本文把它们统一到一张依赖图上。
 - [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 是 source-backed 方案的源算法保真总纲；它约束 L2 core 与 L4 backtest runner 不得借平台适配改变原始算法逻辑。
 
 > 本文为设计文档，不含实现代码。所示"现状违规"基于真实 import 扫描（2026-06-08），是数据层重构与 StaticGate 的目标。
@@ -17,9 +20,9 @@
 **约定式插件 + 分层 + 横切 harness**。
 
 - **分层（Layered）**：自下而上 5 层，依赖只能向下，禁止向上与跨层回指。
-- **插件（Plugin）**：方案（scheme）是约定式插件——放进 `schemes/{scheme_id}/` 即被发现，新增方案零框架改动。
+- **插件（Plugin）**：方案通过 `schemes/{scheme_id}/config.yaml` 被发现，再按显式 `runtime_type` 分派；所有新身份只能由 Blackbox V2 Intake 创建。
 - **横切（Cross-cutting）**：`harness/` 横切所有层，只读探测 + 编排 + 留证，不被任何层依赖；当前已落地 27 个 Python 模块，`python -m harness` 可运行。
-- **环境隔离（Process isolation）**：算法在 `forecast_env`，服务在 `bond_factor_lab_service`，通过 conda 子进程 + JSON stdout 解耦依赖。
+- **环境隔离（Process isolation）**：Native 原生算法在 `forecast_env`，Blackbox V2 只按 `blackbox-v2-v1` Runtime Profile 选择环境和 sandbox，服务在 `bond_factor_lab_service`。运行驱动不同，统一输出均收敛到 `PredictionRecord`。
 
 ---
 
@@ -44,13 +47,13 @@
         ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  L2  算法层  schemes/{scheme_id}/                                      │
-│      predict.py (adapter)   ──静态调用──▶   core/ (纯算法 + legacy)      │
+│      native: predict.py → core/       blackbox: delivery/*.py + *.json │
 └──────────────────────────────────────────────────────────────────────┘
         │ adapter→shared.input_artifacts / calendar_service / models
         ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │  L1  统一公共层  shared/                                                │
-│      data_service / input_artifacts / calendar_service                  │
+│      data_service / input_artifacts / data_bridge / calendar_service    │
 │      models / db_config / artifact_paths                                │
 └──────────────────────────────────────────────────────────────────────┘
         ▼
@@ -61,8 +64,8 @@
 
 | 层 | 包 | 职责 | 对外稳定符号（节选） |
 |----|----|------|----------------------|
-| L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`build_*_output_from_db`、`get_calendar`、`normalize_week_calendar_rows`、`PredictionRecord` |
-| L2 | `schemes/{id}/` | 算法（core）+ 平台适配（predict.py） | `run(predict_date)->list[PredictionRecord]`、`SCHEME_ID` |
+| L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`data_bridge_current` 刷新/快照、`get_calendar`、`PredictionRecord` |
+| L2 | `schemes/{id}/` | 原生 adapter/core 或 Blackbox 原始两文件 | `predict.run()` 或 Blackbox CLI |
 | L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`insert_run_predictions` |
 | L4 | `backend/` `backtests/` `tests/` | 只读 API、历史复现、验证 | `/api/*`、`run_<scheme>_reproduction` |
 | L5 | `harness/` | Gate 检查 / 编排 / 审计 | `python -m harness ...`、`GateResult` |
@@ -144,7 +147,8 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
   ├─ startup catch-up(DateTrigger) → 当天 cron 已过且无终态 run 时补跑
   └─ scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase="scheduled_live")
        ├─ timeout_sec = cfg.schedule.timeout_sec or executor default
-       ├─ run_scheme_subprocess(scheme_id, predict_date, algo_env="forecast_env", timeout_sec=timeout_sec)
+       ├─ run_configured_scheme(cfg, predict_date) 按显式 runtime_type 分派
+       ├─ native_adapter: run_scheme_subprocess(..., algo_env="forecast_env")
        │     └─[conda 子进程]─ python -m scheduler.scheme_runner --scheme-id --predict-date
        │           └─ importlib → schemes.{id}.predict.run(predict_date)        ← 运行时插件边
        │                 ├─ shared.input_artifacts.build_*_input_artifact(...)   ← L1 唯一输入
@@ -152,6 +156,8 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
        │                 ├─ shared.calendar_service.get_calendar()               ← 日历查询
        │                 └─ schemes.{id}.core.*  (纯算法)                        ← 算法
        │           └─ print(JSON list[PredictionRecord])  → stdout
+       ├─ blackbox_v2: build_blackbox_input_snapshot + 七字段 Request
+       │     └─ scheduler.blackbox_v2_runner → sandbox CLI → strict Result → PredictionRecord
        ├─ records = parse(stdout)
        ├─ daily live 日期语义校验（predict/feature/target 与交易日历一致，否则 fail-closed）
        ├─ scheduler.repository.create_scheme_run(...)                → t_scheme_runs
@@ -172,14 +178,15 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 ```
 python -m harness onboard {scheme_id} --stage all
   └─ harness.orchestrator.onboard(ctx, stage)            ← fail-fast + fail-closed
-       ├─ StaticGate   → contracts/* (纯 AST，复用 discovery.load_scheme_config)
+       ├─ StaticGate   → runtime-aware contracts（原生 AST / 黑盒两文件与 Metadata）
        ├─ InputGate    → shared.input_artifacts.build_*  (只读生成 artifact)
        ├─ UnitGate     → unittest（tests/*{scheme_id}*）
        ├─ DryRunGate   → scheduler.executor.run_scheme_subprocess + probes.table_guard(行数不变)
        ├─ CompareGate  → schemes/{id}/benchmarks original/current strict compare
        ├─ BacktestGate → backtests/{id}_reproduction(--no-persist)
        └─ ApiReadinessGate → paused registry row + latest backtest + public API 不泄漏
-  授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
+  Blackbox 首轮授权卡点：ShadowRegisterGate → version=shadow + registry=paused，不写业务表
+  原生授权卡点：BacktestGate(--persist) / LiveGate(execute_scheme) / activate  ← 需 token，否则 BLOCKED
   激活后验收：ApiGate(active-only public API 可见性)
 ```
 
@@ -209,16 +216,17 @@ python -m backtests.{scheme_id}_reproduction [--no-persist]
 
 ---
 
-## 6. 扩展模型（约定式插件）
+## 6. 双运行时扩展模型
 
-新增一个方案，框架代码**零改动**——这是分层 + 约定发现的收益：
+发现层统一扫描 `schemes/*/config.yaml`，执行层按 `runtime_type` 分派：
 
-```
-schemes/{scheme_id}/
-├── __init__.py
-├── config.yaml          # 被 scheduler.discovery 约定发现（glob "*/config.yaml"）
-├── predict.py           # 暴露 SCHEME_ID + run(predict_date)；被 scheme_runner 运行时 importlib 加载
-└── core/                # 纯算法，零本仓库依赖
+```text
+Native V1（仅存量维护）           Blackbox V2（所有后续新增）
+schemes/{id}/                     schemes/{id}/
+├── config.yaml                   ├── config.yaml
+├── predict.py                    └── delivery/
+└── core/                             ├── {id}.py
+                                      └── {id}.json
 ```
 
 发现与加载的约定锚点（全部已存在，无需改框架）：
@@ -227,11 +235,13 @@ schemes/{scheme_id}/
 |------|------|----------|
 | 目录即方案 | `schemes/*/config.yaml` glob 扫描 | `scheduler/discovery.py::discover_schemes` |
 | `scheme_id==目录名` | 加载时强制校验 | `scheduler/discovery.py::load_scheme_config` |
-| 统一入口 | `importlib.import_module("schemes.{id}.predict").run` | `scheduler/scheme_runner.py::run_scheme` |
+| 显式分派 | `runtime_type` 选择 Native import 或 Blackbox CLI | `scheduler/scheme_runner.py::run_configured_scheme` |
+| Native 入口 | `importlib.import_module("schemes.{id}.predict").run` | `scheduler/scheme_runner.py::run_scheme` |
+| Blackbox 入口 | 隔离执行 delivery 脚本的 `predict/backtest` CLI | `shared/blackbox_v2/` 与 runner |
 | 统一输出 | `list[PredictionRecord]` → JSON | `scheduler/scheme_runner.py` |
 | 统一写库 | `create_scheme_run` + `insert_run_predictions` UPSERT | `scheduler/executor.py` + `repository.py` |
 
-因此"用户给方案 → 自动入库"在代码层的落点是：把方案塞进 `schemes/`，再由 harness（L5）按 SOP 驱动 Gate，框架（L1–L3）一行不改。
+因此“用户给新方案”的代码落点是 Blackbox Intake 原样保存两文件并生成平台配置，再由 harness 按运行时驱动 Gate。不得手工创建新的 Native `predict.py + core/` 目录；Native StaticGate 与 ActivationGate 会拒绝政策清单外身份。
 
 ---
 
@@ -240,10 +250,10 @@ schemes/{scheme_id}/
 | 关注点 | 现状 | 目标设计 |
 |--------|------|----------|
 | **DB 引擎生命周期** | 各 adapter/backtest 各自 `create_sqlalchemy_engine()` 再 `engine.dispose()` | 引擎工厂收敛：adapter 经 `calendar_service`/`input_artifacts` 间接用引擎，不再裸取（消除 V3） |
-| **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | 维持；`config.yaml` schema 由 `SCHEME_CONTRACT.md` 形式化 |
+| **配置** | `shared/db_config.py` 读环境变量；`config.yaml` 方案级 | Native 契约与 Blackbox Runtime Profile 分开维护，共享身份由 `SCHEME_CONTRACT.md` 约束 |
 | **执行预算** | executor 有全局默认 timeout，`config.yaml.schedule.timeout_sec` 可按方案覆盖 | 维持；仅控制算法子进程等待时间，不进入 L2 core 语义 |
 | **产物路径** | `shared/artifact_paths.py` 统一 `RUNTIME_INPUT_ROOT`；运行期 `backtest_artifacts/runtime_inputs/{scheme_id}/`，回测 `backtest_artifacts/backtests/{benchmark_id}/` | 维持；harness 报告 `reports/harness/{scheme_id}/{ts}/` |
-| **进程/依赖隔离** | conda：算法 `forecast_env`、服务 `bond_factor_lab_service`；子进程 + JSON stdout | 维持；这是 scheduler 与算法依赖解耦的关键边界 |
+| **进程/依赖隔离** | Native `forecast_env`、Blackbox Runtime Profile、服务 `bond_factor_lab_service`；子进程 + JSON | Runtime Profile 是 Blackbox 环境、资源和权限的唯一配置源 |
 | **错误处理** | executor 捕获子进程失败写 `run_log(status=failed)` | harness Gate 失败安全（异常→`GateResult(FAILED)`），不抛穿 |
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |
 | **写库安全** | UPSERT 幂等；唯一键隔离 scheme | harness `table_guard` 行数保护 + 授权 token |
@@ -261,6 +271,8 @@ schemes/{scheme_id}/
 | `shared/{db_config,artifact_paths}.py` | L1 | 配置/路径 | `RUNTIME_INPUT_ROOT` 等 |
 | `schemes/{id}/predict.py` | L2 | adapter | `SCHEME_ID`、`run` |
 | `schemes/{id}/core/` | L2 | 纯算法 + legacy 归档 | 方案私有 |
+| `schemes/{id}/delivery/` | L2 | Blackbox 原始两文件 | `predict/backtest` CLI、Metadata |
+| `shared/blackbox_v2/` | L1/L3 边界 | Blackbox 合同、快照、执行和结果转换 | Contract 1.0 校验器 |
 | `scheduler/discovery.py` | L3 | 约定发现 + 契约加载 | `discover_schemes`、`load_scheme_config`、`SchemeConfig` |
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
@@ -282,11 +294,12 @@ schemes/{scheme_id}/
 
 | 架构规则 | StaticGate 判定 |
 |----------|-----------------|
-| core 零本仓库依赖（§3.2 ✗ⁱ） | AST 扫 `core/*.py` 命中 `sqlalchemy`/`scheduler`/`shared.input_artifacts`/`read_sql`/`text(` → FAIL |
+| Native 白名单 | `native_adapter` ID 不在 `deploy/onboarding_policy_v1.json` → FAIL，ActivationGate 同样阻断 |
+| Native core 零本仓库依赖（§3.2 ✗ⁱ） | AST 扫 `core/*.py` 命中 `sqlalchemy`/`scheduler`/`shared.input_artifacts`/`read_sql`/`text(` → FAIL |
 | 跨方案禁止（§3.2） | AST 扫 `from schemes.<other>` → FAIL |
 | 写库单点（§3.3） | predict/core 命中 `insert_run_predictions`/`write_run_log`/`execute_scheme`/`INSERT…` → FAIL |
 | 输入单点（§3.3） | predict 必须 import `shared.input_artifacts`；backtest runner 同 → 否则 FAIL |
-| 统一入口（§6） | `SCHEME_ID==目录名` + `def run(predict_date)` 单参 |
+| 运行时入口（§6） | Native 校验 `SCHEME_ID + run`；Blackbox 校验两文件、Metadata 与 CLI |
 | 依赖只向下（§3.3） | 扫描 import 边不在 §3.1 白名单 → FAIL |
 
 → "强约束"不是文档口号，而是一组在 CI 可执行的 import-direction 断言。当前 4 处违规（§4 V1–V4）在数据层重构后清零，StaticGate 持续守护防回潮。

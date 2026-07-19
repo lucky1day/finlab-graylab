@@ -1,10 +1,27 @@
 # 预测日期与实盘阶段语义
 
-**更新日期**: 2026-07-14
+**文档状态**：`CURRENT`
+**适用运行时**：`native_adapter`、`blackbox_v2`
+**目标读者**：算法、平台、回测、API 和前端开发人员
+**最后核验日期**：2026-07-19
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
 Source-backed 方案还必须遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)。日期字段映射是平台适配，不是修改原始算法时间窗口、测试区间或 batch/PIT 口径的许可。
+
+## 0. 运行时期限口径
+
+前端和业务分列只使用 `target_tenor + task_type`，不得用 horizon 猜测任务。Blackbox Contract 1.0 固定组合为：
+
+| `task_type` | `horizon` | `target_rule` |
+|---|---:|---|
+| `T+1` | 1 | `target_date_yield_vs_feature_date_yield` |
+| `T+5` | 5 | `target_date_yield_vs_feature_date_yield` |
+| `weekly_point` | 1 | `target_week_end_yield_vs_feature_week_end_yield` |
+| `weekly_average` | 1 | `target_week_average_yield_vs_feature_week_average_yield` |
+| `monthly` | 1 | `target_month_observation_yield_vs_feature_month_observation_yield` |
+
+Native V1 既有周频 `horizon=6` 和月频 `horizon=30` 是历史平台计日兼容值，只允许保留在政策清单中的存量方案，不得用于新方案或推导 Blackbox Request。Blackbox 的周/月 horizon 按后续周频/月频观测计数。
 
 ## 1. 三个标准日期字段
 
@@ -71,7 +88,7 @@ feature_date = 2026-05-28
 predict_date = 2026-05-28  # 历史回测中 predict_date=feature_date
 ```
 
-这不是新增第四类日期字段；它只是把旧 core 的内部参数语义改名到平台已有的 `target_date`。新增方案入库时，若 legacy 参数名含糊，必须在方案文档和 SOP 验收记录中写明它对应的平台字段。
+这不是新增第四类日期字段；它只是把旧 core 的内部参数语义改名到平台已有的 `target_date`。维护 Native V1 存量方案时，若 legacy 参数名含糊，必须在维护记录中写明它对应的平台字段；Blackbox 新方案不得把内部变量扩展成平台合同字段。
 
 ### 2.3 test-window 敏感算法规则
 
