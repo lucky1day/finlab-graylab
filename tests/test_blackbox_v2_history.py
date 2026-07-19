@@ -199,6 +199,104 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             "next_month_observation_yield_vs_feature_month_observation_yield",
         )
 
+    def test_direct_metadata_must_use_fixed_task_contract(self) -> None:
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(start="2026-01-01", end="2026-03-01")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+            invalid_metadata = (
+                replace(_metadata("weekly_point"), horizon=5),
+                replace(_metadata("weekly_point"), target_rule="free_text_rule"),
+                replace(_metadata("weekly_point"), task_type="unsupported_task"),
+            )
+            for metadata in invalid_metadata:
+                with self.subTest(metadata=metadata):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "Blackbox historical metadata contract",
+                    ):
+                        build_historical_cases(
+                            metadata,
+                            snapshot,
+                            engine,
+                            limit=1,
+                            target_date_before="2026-03-01",
+                            predict_date_from="2026-01-01",
+                        )
+        engine.dispose()
+
+    def test_history_resolves_all_cutoffs_from_one_supplied_snapshot(self) -> None:
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(start="2025-01-01", end="2026-03-01")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+            weekly = pd.read_csv(snapshot.data_dir / "weekly_output.csv", dtype=str)
+            monthly = pd.read_csv(snapshot.data_dir / "monthly_output.csv", dtype=str)
+            weekly_as_of = lambda feature_date: weekly[
+                weekly["week_id"] <= date.fromisoformat(feature_date).strftime("%G%V")
+            ].tail(1)
+            monthly_as_of = lambda feature_date: monthly[
+                monthly["month_id"] <= feature_date[:7].replace("-", "")
+            ].tail(1)
+
+            with patch(
+                "shared.input_artifacts._data_service.build_weekly_output_from_db",
+                side_effect=lambda **kwargs: weekly_as_of(kwargs["as_of_date"]),
+            ), patch(
+                "shared.input_artifacts._data_service.build_monthly_output_from_db",
+                side_effect=lambda **kwargs: monthly_as_of(kwargs["end_date"]),
+            ):
+                for task_type in (
+                    "T+1",
+                    "T+5",
+                    "weekly_point",
+                    "weekly_average",
+                    "monthly",
+                ):
+                    with self.subTest(task_type=task_type):
+                        cases = build_historical_cases(
+                            _metadata(task_type),
+                            snapshot,
+                            engine,
+                            limit=2,
+                            target_date_before="2026-03-01",
+                            predict_date_from="2025-01-01",
+                        )
+                        daily_keys = set(pd.read_csv(
+                            snapshot.data_dir / "daily_output.csv", dtype=str
+                        )["date"])
+                        weekly_keys = set(weekly["week_id"])
+                        monthly_keys = set(monthly["month_id"])
+                        for case in cases:
+                            self.assertIn(case.request.daily_cutoff_key, daily_keys)
+                            self.assertIn(case.request.weekly_cutoff_key, weekly_keys)
+                            self.assertIn(case.request.monthly_cutoff_key, monthly_keys)
+
+                missing_weekly = weekly.iloc[:-8].copy()
+                with patch(
+                    "shared.input_artifacts._data_service.build_weekly_output_from_db",
+                    return_value=weekly.tail(1),
+                ):
+                    missing_weekly.to_csv(
+                        snapshot.data_dir / "weekly_output.csv",
+                        index=False,
+                    )
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "does not exist in weekly_output.csv",
+                    ):
+                        build_historical_cases(
+                            _metadata("T+1"),
+                            snapshot,
+                            engine,
+                            limit=1,
+                            target_date_before="2026-03-01",
+                            predict_date_from="2025-01-01",
+                        )
+        engine.dispose()
+
     def test_cases_have_exact_limit_unique_identity_and_current_snapshot_disclaimer(self) -> None:
         cases = self._cases("T+1", limit=100)
         self.assertEqual(len(cases), 100)

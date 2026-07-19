@@ -12,7 +12,11 @@ from shared.actual_facts import (
     read_week_calendar_rows,
     read_yield_rows,
 )
-from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
+from shared.blackbox_v2.contracts import (
+    TASK_COMBINATIONS,
+    BlackboxMetadata,
+    BlackboxRequest,
+)
 from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import BlackboxSnapshot
 from shared.calendar_service import get_calendar
@@ -58,6 +62,7 @@ def build_historical_cases(
     predict_date_from: str = "2025-01-01",
 ) -> list[HistoricalCase]:
     """按平台日期与 actual 事实生成当前快照 as-of 历史 Request。"""
+    _validate_metadata_contract(metadata)
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         raise ValueError("historical case limit must be a positive integer")
     target_date_before = _iso_date(target_date_before, "target_date_before")
@@ -139,6 +144,29 @@ def validate_historical_cases(cases: Iterable[HistoricalCase], *, expected_count
     if any(item.label not in {-1, 0, 1} for item in materialized):
         raise ValueError("historical labels must be -1, 0 or 1")
     return materialized
+
+
+def _validate_metadata_contract(metadata: BlackboxMetadata) -> None:
+    task_type = metadata.task_type
+    if not isinstance(task_type, str) or task_type not in TASK_COMBINATIONS:
+        raise ValueError(
+            "Blackbox historical metadata contract has unsupported "
+            f"task_type={task_type!r}"
+        )
+    expected_horizon, expected_rule, _ = TASK_COMBINATIONS[task_type]
+    if type(metadata.horizon) is not int or (
+        metadata.horizon,
+        metadata.target_rule,
+    ) != (expected_horizon, expected_rule):
+        raise ValueError(
+            "Blackbox historical metadata contract requires fixed "
+            "task_type/horizon/target_rule combination: "
+            f"task_type={task_type!r}, "
+            f"expected_horizon={expected_horizon!r}, "
+            f"expected_target_rule={expected_rule!r}, "
+            f"got_horizon={metadata.horizon!r}, "
+            f"got_target_rule={metadata.target_rule!r}"
+        )
 
 
 def _daily_candidates(
