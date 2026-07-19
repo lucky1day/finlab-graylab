@@ -199,44 +199,54 @@ def parse_token(token: str) -> Authorization:
 
 
 def verify_authorization(
-    token: str | Authorization | None,
+    token: str | None,
     *,
     scheme_id: str,
     action: str,
     predict_date: str | None = None,
     used_store_path: Path,
 ) -> tuple[Authorization | None, list[str]]:
-    """校验 token 的 HMAC 签名、过期、一次性、作用域绑定。"""
+    """从原始 token 校验信封模式、签名、过期、一次性和作用域。"""
     if token is None:
         return None, ["authorization token is required"]
 
-    # Authorization 实例不携带签名信封，无法重新校验 HMAC；只在传入原始字符串时校验。
-    if isinstance(token, Authorization):
-        auth = token
-        signature_checked = False
-        envelope = None
-    else:
-        try:
-            envelope = _decode_envelope(str(token))
-        except Exception as exc:  # noqa: BLE001
-            return None, [f"invalid authorization token: {exc}"]
-        try:
-            auth = parse_token(str(token))
-        except Exception as exc:  # noqa: BLE001
-            return None, [f"invalid authorization token: {exc}"]
-        signature_checked = True
+    if not isinstance(token, str):
+        return None, ["authorization requires the original raw token string"]
+    try:
+        envelope = _decode_envelope(token)
+    except Exception as exc:  # noqa: BLE001
+        return None, [f"invalid authorization token: {exc}"]
+
+    secret = _auth_secret()
+    signing_enabled = secret is not None
+    expected_envelope_fields = (
+        frozenset({"payload", "sig"})
+        if signing_enabled
+        else frozenset({"payload"})
+    )
+    if frozenset(envelope) != expected_envelope_fields:
+        return None, [
+            "invalid authorization token: authorization token envelope does not match signing mode"
+        ]
+    try:
+        auth = parse_token(token)
+    except Exception as exc:  # noqa: BLE001
+        return None, [f"invalid authorization token: {exc}"]
 
     errors: list[str] = []
 
-    # 软默认：仅当配置了 HARNESS_AUTH_SECRET 时才强制校验 HMAC 签名。
-    # 未配置时跳过签名校验，token 退化为一次性 + 作用域绑定的确认闸。
-    if signature_checked and _auth_secret() is not None:
-        if not isinstance(envelope, dict) or "payload" not in envelope or "sig" not in envelope:
-            errors.append("authorization token is missing HMAC signature")
-        else:
-            expected_sig = _sign(envelope["payload"])
-            if expected_sig is None or not hmac.compare_digest(expected_sig, str(envelope.get("sig", ""))):
-                errors.append("authorization token signature is invalid")
+    if signing_enabled:
+        digest = hmac.new(
+            secret,
+            _canonical_payload_bytes(envelope["payload"]),
+            hashlib.sha256,
+        ).digest()
+        expected_sig = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        if not hmac.compare_digest(
+            expected_sig,
+            str(envelope["sig"]),
+        ):
+            errors.append("authorization token signature is invalid")
 
     if auth.expires_at:
         try:

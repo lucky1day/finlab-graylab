@@ -57,6 +57,23 @@ class AuthorizationTest(unittest.TestCase):
     def _used_path(self) -> Path:
         return self.root / "reports" / "harness" / ".used_authorization_tokens.json"
 
+    @staticmethod
+    def _decode_token(token: str) -> dict:
+        padding = "=" * (-len(token) % 4)
+        return json.loads(
+            base64.urlsafe_b64decode((token + padding).encode("ascii")).decode("utf-8")
+        )
+
+    @staticmethod
+    def _encode_token(value: dict) -> str:
+        raw = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
     def test_authorization_signing_enabled_reflects_secret_configuration(self) -> None:
         self.assertTrue(authorization_signing_enabled())
         os.environ.pop("HARNESS_AUTH_SECRET", None)
@@ -67,6 +84,7 @@ class AuthorizationTest(unittest.TestCase):
         os.environ.pop("HARNESS_AUTH_SECRET", None)
         token = issue_token("t5_daily", "activate", predict_date="2025-01-02")
         self.assertTrue(token)
+        self.assertEqual(set(self._decode_token(token)), {"payload"})
         # 无密钥时校验跳过签名，但一次性 + 作用域绑定仍生效。
         auth, errors = verify_authorization(
             token,
@@ -88,6 +106,7 @@ class AuthorizationTest(unittest.TestCase):
 
     def test_hmac_verify_success(self) -> None:
         token = issue_token("t5_daily", "activate", predict_date="2025-01-02")
+        self.assertEqual(set(self._decode_token(token)), {"payload", "sig"})
         auth, errors = verify_authorization(
             token,
             scheme_id="t5_daily",
@@ -98,6 +117,82 @@ class AuthorizationTest(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertIsNotNone(auth)
         self.assertEqual(auth.scheme_id, "t5_daily")
+
+    def test_unsigned_authorization_rejects_alternate_payload_representations(self) -> None:
+        signed_token = issue_token("t5_daily", "live_write", predict_date="2025-01-02")
+        os.environ.pop("HARNESS_AUTH_SECRET", None)
+        used = self._used_path()
+        token = issue_token("t5_daily", "live_write", predict_date="2025-01-02")
+        envelope = self._decode_token(token)
+        auth, errors = verify_authorization(
+            token,
+            scheme_id="t5_daily",
+            action="live_write",
+            predict_date="2025-01-02",
+            used_store_path=used,
+        )
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(auth)
+        mark_token_used(auth, used)
+
+        variants = {
+            "bare_payload": self._encode_token(envelope["payload"]),
+            "arbitrary_signature": self._encode_token(
+                {"payload": envelope["payload"], "sig": "not-a-signature"}
+            ),
+            "signed_envelope": signed_token,
+        }
+        for label, candidate in variants.items():
+            with self.subTest(label=label):
+                parsed, candidate_errors = verify_authorization(
+                    candidate,
+                    scheme_id="t5_daily",
+                    action="live_write",
+                    predict_date="2025-01-02",
+                    used_store_path=used,
+                )
+                self.assertIsNone(parsed)
+                self.assertTrue(
+                    any("authorization token envelope does not match signing mode" in error
+                        for error in candidate_errors),
+                    candidate_errors,
+                )
+                self.assertNotIn(candidate, "\n".join(candidate_errors))
+
+    def test_signed_authorization_rejects_unsigned_envelope(self) -> None:
+        token = issue_token("t5_daily", "activate")
+        envelope = self._decode_token(token)
+        unsigned = self._encode_token({"payload": envelope["payload"]})
+
+        parsed, errors = verify_authorization(
+            unsigned,
+            scheme_id="t5_daily",
+            action="activate",
+            used_store_path=self._used_path(),
+        )
+
+        self.assertIsNone(parsed)
+        self.assertTrue(
+            any("authorization token envelope does not match signing mode" in error
+                for error in errors),
+            errors,
+        )
+        self.assertNotIn(unsigned, "\n".join(errors))
+
+    def test_authorization_object_cannot_bypass_envelope_verification(self) -> None:
+        token = issue_token("t5_daily", "activate")
+        auth = parse_token(token)
+
+        parsed, errors = verify_authorization(
+            auth,
+            scheme_id="t5_daily",
+            action="activate",
+            used_store_path=self._used_path(),
+        )
+
+        self.assertIsNone(parsed)
+        self.assertEqual(errors, ["authorization requires the original raw token string"])
+        self.assertNotIn(token, "\n".join(errors))
 
     def test_tampered_token_rejected(self) -> None:
         token = issue_token("t5_daily", "activate")
