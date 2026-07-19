@@ -1,0 +1,221 @@
+{
+  "audit_id": "blackbox-v2-full-pipeline-20260719",
+  "recorded_at": "2026-07-19T18:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "branch": "codex/v2-full-pipeline-audit-20260719",
+  "test_schema": "bond_factor_lab_v2_e2e_20260719_1730",
+  "scheme_id": "weekly_10y_lgbm_point_v1",
+  "registry_id": "weekly_10y_lgbm_point_v1__h1__10Y",
+  "verdict": {
+    "shadow_ready": "PASS",
+    "production_ready": "FAIL",
+    "overall": "PRODUCTION_BLOCKED",
+    "statement": "技术入库与 shadow 验收基本稳定；完整生产链路尚未达到可认证状态"
+  },
+  "isolation": {
+    "migrations": "001-016",
+    "source_tables": "read-only views to bond_db",
+    "business_tables": "isolated test schema",
+    "backend": "temporary 127.0.0.1:18100, stopped after test",
+    "forced_active_scope": "test schema and test worktree only"
+  },
+  "delivery": {
+    "script_sha256": "6e3ee104e9db652d0d3a291a13695c616ec605547693307bdfe61aa3fee45c72",
+    "metadata_sha256": "e60e9237f2f02d973033030e52fa8744fc62e841d5f2073ea6f273ee431901be",
+    "algorithm_version": "1.0.0",
+    "task_type": "weekly_point",
+    "target_tenor": "10Y",
+    "horizon": 1
+  },
+  "runtime": {
+    "profile": "blackbox-v2-v1",
+    "conda_env": "forecast_env_blackbox_v1",
+    "environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+    "package_count": 64,
+    "sandbox": "/usr/bin/sandbox-exec",
+    "representative_max_rss_bytes": 578256896
+  },
+  "data_bridge": {
+    "generation_id": "full-20260719-055002-7876ee1e5ec9",
+    "refresh_date": "2026-07-19",
+    "refreshed_at": "2026-07-19T05:50:02+08:00",
+    "business_digest": "7876ee1e5ec975034396e3ff33c96ce294bd2f516e8497b9e54afefd5cf5867b",
+    "snapshot_id": "snapshot-245c54a6363ed5251475e8f5",
+    "files": {
+      "daily_output.csv": {
+        "rows": 3878,
+        "columns": 774,
+        "max_key": "2026-07-17",
+        "sha256": "af432b37153a09f4aa47dd20eaf1d8596abad3e48f3d46b1a7e8fa4494e1f470"
+      },
+      "weekly_output.csv": {
+        "rows": 847,
+        "columns": 575,
+        "max_key": "202628",
+        "sha256": "9dfe8a8cfaae9fd4be1e70b872ff2d89d5839f4c266af3924eb0e0f5d4ebc4d5"
+      },
+      "monthly_output.csv": {
+        "rows": 201,
+        "columns": 123,
+        "max_key": "202701",
+        "sha256": "f29607a79c66860d4c43f369d99cb4fdfbba2cf665d3931f930f496bc21d86b5"
+      }
+    }
+  },
+  "automated_tests": {
+    "baseline_passed": 174,
+    "final_revalidation_passed": 177,
+    "final_revalidation_failed": 0,
+    "scope": "Blackbox V2, DataBridge, API, frontend and SOP policy tests"
+  },
+  "harness_stability": {
+    "runs": 10,
+    "passed": 10,
+    "gates_per_run": 7,
+    "p50_seconds": 26,
+    "p95_seconds": 26,
+    "min_seconds": 25,
+    "max_seconds": 26,
+    "directions": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+    "run_ids": [
+      "hr_20260719T092521Z_19e41c5d72ee",
+      "hr_20260719T092549Z_e36b559366c3",
+      "hr_20260719T092617Z_10af035f7873",
+      "hr_20260719T092645Z_0a6c3bea0700",
+      "hr_20260719T092714Z_50d2f8cf9799",
+      "hr_20260719T092742Z_88cd1ceb0bb9",
+      "hr_20260719T092811Z_1cbcd8227ea9",
+      "hr_20260719T092839Z_d9bd2fa80769",
+      "hr_20260719T092908Z_f209204e20c5",
+      "hr_20260719T092936Z_1ef22491db89"
+    ]
+  },
+  "batch_backtest": [
+    {"requests": 100, "batches": 1, "records": 100, "seconds": 3.718, "invariant": true},
+    {"requests": 101, "batches": 2, "records": 101, "seconds": 3.744, "invariant": true},
+    {"requests": 500, "batches": 5, "records": 500, "seconds": 13.045, "invariant": true},
+    {"requests": 1000, "batches": 10, "records": 1000, "seconds": 26.902, "invariant": true}
+  ],
+  "persist_backtest": {
+    "command_exit_code": 0,
+    "gate_status": "passed",
+    "records_in_memory": 100,
+    "evidence_persist": false,
+    "t_backtest_runs_before": 0,
+    "t_backtest_runs_after": 0,
+    "t_backtest_predictions_before": 0,
+    "t_backtest_predictions_after": 0,
+    "status": "FAIL"
+  },
+  "activation": {
+    "static_scheme_version": "2110193568a9",
+    "common_activation_version": "45638f28d0ea",
+    "formal_gate": "FAIL",
+    "forced_test_version": "3be8c7720410",
+    "forced_test_only": true
+  },
+  "live_runs": [
+    {
+      "run_id": 1,
+      "phase": "gray_live",
+      "predict_date": "2026-07-04",
+      "feature_date": "2026-07-03",
+      "target_date": "2026-07-10",
+      "direction": -1,
+      "snapshot_id": "snapshot-0cf620d3f51f93b696385841",
+      "records_written": 1
+    },
+    {
+      "run_id": 2,
+      "phase": "scheduled_live",
+      "predict_date": "2026-07-11",
+      "feature_date": "2026-07-10",
+      "target_date": "2026-07-17",
+      "direction": -1,
+      "snapshot_id": "snapshot-a9f2b0c15eb39767fd038cda",
+      "records_written": 1
+    }
+  ],
+  "stale_generation": {
+    "predict_date": "2026-07-18",
+    "available_refresh_date": "2026-07-11",
+    "run_status": "failed",
+    "records_written": 0,
+    "scheduler_process_exit_code": 0,
+    "status": "CONDITIONAL_PASS"
+  },
+  "actual_and_metrics": {
+    "rows": [
+      {"target_date": "2026-07-10", "predicted_direction": -1, "actual_direction": -1, "is_correct": true},
+      {"target_date": "2026-07-17", "predicted_direction": -1, "actual_direction": 0, "is_correct": false}
+    ],
+    "samples": 2,
+    "correct": 1,
+    "accuracy": 50.0
+  },
+  "api_frontend": {
+    "active_schemes_status": 200,
+    "active_metrics_status": 200,
+    "active_registry_visible": true,
+    "backtest_registry_visible": false,
+    "frontend_cell": "10Y + weekly_point",
+    "frontend_rows": 2,
+    "frontend_duplicate_rows": 0,
+    "frontend_console_errors": 0,
+    "paused_schemes": [],
+    "paused_metrics_status": 404,
+    "screenshot": "assets/FULL_PIPELINE_STABILITY_AUDIT_20260719.png"
+  },
+  "failure_injection": {
+    "execution_scope": "runtime executor before repository",
+    "missing_csv": {"rejected": true, "output_absent": true, "platform_prediction_absent": true},
+    "timeout": {"rejected": true, "output_absent": true, "platform_prediction_absent": true},
+    "network": {"rejected": true, "output_absent": true, "platform_prediction_absent": true},
+    "data_dir_write": {"rejected": true, "output_absent": true, "platform_prediction_absent": true},
+    "invalid_direction": {"rejected_by_contract": true, "platform_prediction_absent": true},
+    "external_file_read": {"blocked": false, "status": "FAIL"},
+    "inherited_environment_secret": {"blocked": false, "status": "FAIL"},
+    "json_string_direction": {"rejected": false, "parsed_direction": 1, "status": "FAIL"}
+  },
+  "five_task_contracts": {
+    "status": "PASS",
+    "metadata_fields": 8,
+    "request_fields": 7,
+    "result_fields": 5,
+    "tasks": [
+      {"task_type": "T+1", "horizon": 1, "feature_date": "2026-07-10", "target_date": "2026-07-13"},
+      {"task_type": "T+5", "horizon": 5, "feature_date": "2026-07-10", "target_date": "2026-07-17"},
+      {"task_type": "weekly_point", "horizon": 1, "feature_date": "2026-07-10", "target_date": "2026-07-17"},
+      {"task_type": "weekly_average", "horizon": 1, "feature_date": "2026-07-10", "target_date": "2026-07-17"},
+      {"task_type": "monthly", "horizon": 1, "feature_date": "2026-07-15", "target_date": "2026-08-14"}
+    ],
+    "real_delivery_coverage": ["weekly_point"]
+  },
+  "test_database_final": {
+    "registry_status": "paused",
+    "scheme_runs": 3,
+    "successful_live_runs": 2,
+    "failed_runs": 1,
+    "predictions": 2,
+    "backtest_runs": 0,
+    "backtest_predictions": 0
+  },
+  "production_unchanged": {
+    "registry_status": "paused",
+    "version_status": "shadow",
+    "scheme_runs": 0,
+    "predictions": 0,
+    "backtest_runs": 0,
+    "backtest_predictions": 0
+  },
+  "blockers": [
+    {"id": "BBV2-01", "severity": "P0", "title": "Blackbox backtest persistence is not implemented"},
+    {"id": "BBV2-02", "severity": "P0", "title": "ActivationGate version identity is incompatible with Blackbox"},
+    {"id": "BBV2-03", "severity": "P1", "title": "Blackbox-specific activate/live hard-stop is missing"},
+    {"id": "BBV2-04", "severity": "P1", "title": "Sandbox permits arbitrary file reads and inherited environment variables"},
+    {"id": "BBV2-05", "severity": "P1", "title": "JSON Result accepts string direction"},
+    {"id": "BBV2-06", "severity": "P1", "title": "Failed scheduler run-once exits zero"},
+    {"id": "BBV2-07", "severity": "P1", "title": "Shadow state reconciliation is not automated"},
+    {"id": "BBV2-08", "severity": "P1", "title": "Only one real delivery and one task type have been tested"}
+  ]
+}

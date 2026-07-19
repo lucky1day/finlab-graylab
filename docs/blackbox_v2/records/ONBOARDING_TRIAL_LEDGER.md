@@ -212,6 +212,26 @@ Input Gate 三份文件 SHA256 与第 3.2 节 generation 的 current 文件逐�
 
 Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立持续回归的首个效率和稳定性基线，不改变 `shadow + paused` 状态，也不证明算法效果达到业务门槛。
 
+### 4.6 记录 001F：隔离全链路稳定性认证
+
+**执行时间**：2026-07-19 17:25 至 18:00，`Asia/Shanghai`。
+
+**完整报告**：[FULL_PIPELINE_STABILITY_AUDIT_20260719.md](FULL_PIPELINE_STABILITY_AUDIT_20260719.md)。
+
+**机器证据**：[FULL_PIPELINE_STABILITY_AUDIT_20260719.evidence.json](FULL_PIPELINE_STABILITY_AUDIT_20260719.evidence.json)。
+
+| 项目 | 实测结论 |
+|---|---|
+| 隔离环境 | 独立 worktree、独立 MySQL Schema、源表只读 View、临时后端端口 |
+| Harness 稳定性 | 同一真实交付 10/10 轮、每轮 7/7 Gate 通过，P95 26 秒 |
+| 批量回测 | 100/101/500/1000 条结果一致；持久化为确定性失败 |
+| 正式激活 | ActivationGate 版本身份不一致，失败 |
+| 下游兼容 | 仅在隔离库强制 active 后完成 gray_live、scheduler、actual、API 和前端验证 |
+| 故障注入 | timeout、缺 CSV、网络、data-dir 写入正确阻断；任意文件读取和环境变量读取未阻断 |
+| 最终评级 | `SHADOW_READY=PASS`；`PRODUCTION_READY=FAIL`；`PRODUCTION_BLOCKED` |
+
+本轮未修改生产 trial，也未向生产业务表写入任何记录。生产 Registry 仍为 `paused`，version 仍为 `shadow`。强制 active 证据只说明下游技术兼容，不能用于签发生产授权。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

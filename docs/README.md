@@ -66,6 +66,7 @@
 - [文档管理](blackbox_v2/README.md)
 - [DataBridge V1 契约与样例](blackbox_v2/data_bridge_v1/README.md)
 - [追加式试验台账](blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)
+- [2026-07-19 Blackbox V2 全链路稳定性认证](blackbox_v2/records/FULL_PIPELINE_STABILITY_AUDIT_20260719.md)
 - [生产晋级条件](blackbox_v2/PRODUCTION_READINESS.md)
 
 版本名称必须分开理解：Blackbox V2 是运行时代际；`schema_version=1.0` 是接口合同；`data-bridge-v1` 是数据 Schema；`blackbox-v2-v1` 是 Runtime Profile。
@@ -76,6 +77,7 @@
 |---|---|
 | [当前状态](CURRENT_STATUS.md) | 方案数量、状态和生产运行结论的当前事实源 |
 | [Blackbox 试验台账](blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md) | generation、snapshot、run 和整改项的追加记录 |
+| [Blackbox V2 全链路认证](blackbox_v2/records/FULL_PIPELINE_STABILITY_AUDIT_20260719.md) | 2026-07-19 隔离灰度的完整实测结论与生产阻塞项 |
 | [2026-07-06 运维审计](OPS_AUDIT_2026-07-06.md) | 带日期的历史审计证据 |
 | [历史系统检查](check/bond_factor_lab_all_schemes_system_check_20260628.md) | 2026-06-28 历史快照 |
 | [旧 runbook 对照检查](check/bond_factor_lab_system_check_against_old_runbook_20260628.md) | 2026-06-28 历史对照 |
