@@ -73,8 +73,8 @@ class LiveGate(Gate):
                     )
                 else:
                     audit_dir = _audit_dir(ctx)
-                    audit_path = write_authorization_audit(auth, audit_dir)
                     mark_token_used(auth, used_tokens_path(ctx.project_root))
+                    audit_path = write_authorization_audit(auth, audit_dir)
                     cfg_for_run = (
                         cfg
                         if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"

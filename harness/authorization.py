@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -34,6 +35,10 @@ class Authorization:
 
 class AuthorizationSecretError(RuntimeError):
     """保留以兼容既有 import；当前软默认模式下不再主动抛出。"""
+
+
+class AuthorizationTokenAlreadyUsedError(RuntimeError):
+    """授权 token 已被权威消费。"""
 
 
 def _auth_secret() -> bytes | None:
@@ -107,9 +112,34 @@ def issue_token(
 
 
 def _decode_envelope(token: str) -> dict[str, Any]:
+    if not isinstance(token, str) or not token or not token.isascii():
+        raise ValueError("authorization token encoding is not canonical")
+    if "=" in token or any(
+        character not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        for character in token
+    ):
+        raise ValueError("authorization token encoding is not canonical")
     padding = "=" * (-len(token) % 4)
-    decoded = base64.urlsafe_b64decode((token + padding).encode("ascii")).decode("utf-8")
-    return json.loads(decoded)
+    try:
+        decoded_bytes = base64.b64decode(
+            (token + padding).encode("ascii"),
+            altchars=b"-_",
+            validate=True,
+        )
+    except (ValueError, TypeError) as exc:
+        raise ValueError("authorization token encoding is not canonical") from exc
+    canonical_token = base64.urlsafe_b64encode(decoded_bytes).decode("ascii").rstrip("=")
+    if not hmac.compare_digest(canonical_token, token):
+        raise ValueError("authorization token encoding is not canonical")
+    try:
+        decoded = json.loads(decoded_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("authorization token payload is invalid") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("authorization token payload must be an object")
+    if not hmac.compare_digest(_canonical_payload_bytes(decoded), decoded_bytes):
+        raise ValueError("authorization token payload encoding is not canonical")
+    return decoded
 
 
 def parse_token(token: str) -> Authorization:
@@ -189,8 +219,11 @@ def verify_authorization(
         errors.append(f"action mismatch: token={auth.action}, expected={action}")
     if auth.predict_date is not None and predict_date is not None and auth.predict_date != predict_date:
         errors.append(f"predict_date mismatch: token={auth.predict_date}, ctx={predict_date}")
-    if _token_hash(auth.token) in _read_used_tokens(used_store_path):
-        errors.append("authorization token already used")
+    try:
+        if _token_hash(auth.token) in _read_used_tokens(used_store_path):
+            errors.append("authorization token already used")
+    except (OSError, ValueError, json.JSONDecodeError):
+        errors.append("authorization replay store is invalid or unavailable")
     return auth, errors
 
 
@@ -245,9 +278,21 @@ def _parse_required_aware_timestamp(
 
 
 def mark_token_used(auth: Authorization, used_store_path: Path) -> None:
-    used = _read_used_tokens(used_store_path)
-    used.add(_token_hash(auth.token))
-    _atomic_write_json(used_store_path, sorted(used))
+    _decode_envelope(auth.token)
+    token_hash = _token_hash(auth.token)
+    used_store_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = used_store_path.with_name(f"{used_store_path.name}.lock")
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(lock_fd, "a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            used = _read_used_tokens(used_store_path)
+            if token_hash in used:
+                raise AuthorizationTokenAlreadyUsedError("authorization token already used")
+            used.add(token_hash)
+            _atomic_write_json(used_store_path, sorted(used))
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def write_authorization_audit(auth: Authorization, audit_dir: Path) -> Path:
@@ -269,8 +314,17 @@ def _read_used_tokens(path: Path) -> set[str]:
         return set()
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, list):
-        return set()
-    return {str(item) for item in payload}
+        raise ValueError("authorization replay store must contain a JSON array")
+    if any(
+        not isinstance(item, str)
+        or len(item) != 64
+        or any(character not in "0123456789abcdef" for character in item)
+        for item in payload
+    ):
+        raise ValueError("authorization replay store contains an invalid token hash")
+    if len(payload) != len(set(payload)):
+        raise ValueError("authorization replay store contains duplicate token hashes")
+    return set(payload)
 
 
 def _token_hash(token: str) -> str:

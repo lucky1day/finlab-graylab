@@ -140,6 +140,11 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
+        # 消费是首次授权副作用；锁内重检保证并发输家不会修改配置或 Registry。
+        mark_token_used(auth, used_tokens_path(ctx.project_root))
+        audit_dir = ctx.report_dir / "activation_authorization"
+        audit_path = write_authorization_audit(auth, audit_dir)
+
         previous_status = str(raw.get("status"))
         if previous_status == "active":
             new_status = "active"
@@ -180,10 +185,6 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
-        # 授权审计 + 一次性消费
-        audit_dir = ctx.report_dir / "activation_authorization"
-        audit_path = write_authorization_audit(auth, audit_dir)
-        mark_token_used(auth, used_tokens_path(ctx.project_root))
         finished_at = utc_now()
         return GateResult(
             gate_name=self.name,

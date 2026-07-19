@@ -1,18 +1,25 @@
 from __future__ import annotations
 
 import base64
+import concurrent.futures
+import hashlib
 import json
+import multiprocessing
 import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from harness.authorization import (
     AuthorizationSecretError,
+    AuthorizationTokenAlreadyUsedError,
     authorization_signing_enabled,
+    authorization_token_hash,
     issue_token,
     mark_token_used,
+    parse_token,
     required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
@@ -20,6 +27,17 @@ from harness.authorization import (
 
 
 SECRET = "test-secret-value"
+
+
+def _consume_token_in_process(token: str, used_path: str, results) -> None:
+    try:
+        mark_token_used(parse_token(token), Path(used_path))
+    except AuthorizationTokenAlreadyUsedError:
+        results.put("replayed")
+    except Exception as exc:  # noqa: BLE001
+        results.put(f"error:{type(exc).__name__}")
+    else:
+        results.put("consumed")
 
 
 class AuthorizationTest(unittest.TestCase):
@@ -167,6 +185,121 @@ class AuthorizationTest(unittest.TestCase):
             token, scheme_id="t5_daily", action="activate", used_store_path=used
         )
         self.assertTrue(any("already used" in e for e in errors2), errors2)
+
+    def test_noncanonical_token_variants_are_rejected_after_canonical_token_is_used(self) -> None:
+        used = self._used_path()
+        token = issue_token("t5_daily", "live_write", predict_date="2025-01-02")
+        auth, errors = verify_authorization(
+            token,
+            scheme_id="t5_daily",
+            action="live_write",
+            predict_date="2025-01-02",
+            used_store_path=used,
+        )
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(auth)
+        mark_token_used(auth, used)
+
+        padding = "=" * (-len(token) % 4)
+        raw = base64.urlsafe_b64decode((token + padding).encode("ascii"))
+        noncanonical_json = base64.urlsafe_b64encode(b" " + raw).decode("ascii").rstrip("=")
+        variants = {
+            "ignored_suffix": token + "!",
+            "padding": token + "=",
+            "leading_whitespace": " " + token,
+            "embedded_whitespace": token[:8] + " " + token[8:],
+            "trailing_newline": token + "\n",
+            "noncanonical_json": noncanonical_json,
+        }
+
+        for label, candidate in variants.items():
+            with self.subTest(label=label):
+                _, candidate_errors = verify_authorization(
+                    candidate,
+                    scheme_id="t5_daily",
+                    action="live_write",
+                    predict_date="2025-01-02",
+                    used_store_path=used,
+                )
+                self.assertTrue(
+                    any("invalid authorization token" in error for error in candidate_errors),
+                    candidate_errors,
+                )
+                self.assertNotIn(candidate, "\n".join(candidate_errors))
+
+    def test_same_token_concurrent_process_consumers_have_exactly_one_winner(self) -> None:
+        token = issue_token("t5_daily", "live_write", predict_date="2025-01-02")
+        used = self._used_path()
+        context = multiprocessing.get_context("fork")
+        results = context.Queue()
+        processes = [
+            context.Process(
+                target=_consume_token_in_process,
+                args=(token, str(used), results),
+            )
+            for _ in range(8)
+        ]
+
+        for process in processes:
+            process.start()
+        for process in processes:
+            process.join(10)
+            self.assertEqual(process.exitcode, 0)
+
+        outcomes = [results.get(timeout=2) for _ in processes]
+        self.assertEqual(outcomes.count("consumed"), 1, outcomes)
+        self.assertEqual(outcomes.count("replayed"), len(processes) - 1, outcomes)
+        stored = json.loads(used.read_text(encoding="utf-8"))
+        self.assertEqual(stored, [hashlib.sha256(token.encode("utf-8")).hexdigest()])
+        self.assertEqual(stored, [authorization_token_hash(token)])
+
+    def test_distinct_concurrent_tokens_do_not_lose_used_hashes(self) -> None:
+        used = self._used_path()
+        tokens = [issue_token(f"scheme_{index}", "live_write") for index in range(32)]
+        auths = [parse_token(token) for token in tokens]
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
+            futures = [executor.submit(mark_token_used, auth, used) for auth in auths]
+            for future in futures:
+                future.result(timeout=10)
+
+        stored = json.loads(used.read_text(encoding="utf-8"))
+        self.assertEqual(len(stored), len(tokens))
+
+    def test_mark_token_used_rejects_malformed_store_without_overwriting_it(self) -> None:
+        used = self._used_path()
+        used.parent.mkdir(parents=True)
+        original = '{"unexpected": "shape"}\n'
+        used.write_text(original, encoding="utf-8")
+        auth = parse_token(issue_token("t5_daily", "live_write"))
+
+        with self.assertRaises(ValueError):
+            mark_token_used(auth, used)
+
+        self.assertEqual(used.read_text(encoding="utf-8"), original)
+
+    def test_lock_failure_fails_closed_without_exposing_token(self) -> None:
+        used = self._used_path()
+        token = issue_token("t5_daily", "live_write")
+        auth = parse_token(token)
+
+        with patch("harness.authorization.fcntl.flock", side_effect=OSError("lock unavailable")):
+            with self.assertRaises(OSError) as caught:
+                mark_token_used(auth, used)
+
+        self.assertFalse(used.exists())
+        self.assertNotIn(token, str(caught.exception))
+
+    def test_replay_error_does_not_expose_raw_token(self) -> None:
+        used = self._used_path()
+        token = issue_token("t5_daily", "live_write")
+        auth = parse_token(token)
+        mark_token_used(auth, used)
+
+        with self.assertRaises(AuthorizationTokenAlreadyUsedError) as caught:
+            mark_token_used(auth, used)
+
+        self.assertNotIn(token, str(caught.exception))
 
     def test_action_and_scheme_mismatch_rejected(self) -> None:
         token = issue_token("t5_daily", "activate")

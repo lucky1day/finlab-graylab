@@ -222,6 +222,50 @@ class BlackboxLifecycleJournalTests(unittest.TestCase):
 
         self.assertEqual(observed, ["prepared"])
 
+    def test_replay_loser_cannot_mutate_target_config_or_database(self) -> None:
+        from harness.authorization import issue_token, mark_token_used, parse_token
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleOperationError,
+            LifecycleState,
+            perform_lifecycle_transition,
+        )
+
+        config_path = self.root / "schemes" / "trial" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        original = "status: paused\nversion_status: shadow\n"
+        config_path.write_text(original, encoding="utf-8")
+        previous = LifecycleState("paused", "shadow", "paused")
+        target = LifecycleState("active", "active", "active")
+        actual = {"state": previous}
+        database_targets: list[LifecycleState] = []
+        auth = parse_token(issue_token("trial", "blackbox_activate"))
+        used_path = self.root / "reports" / "harness" / ".used_authorization_tokens.json"
+        mark_token_used(auth, used_path)
+
+        def apply_database(state: LifecycleState) -> None:
+            database_targets.append(state)
+            actual["state"] = state
+
+        with self.assertRaises(LifecycleOperationError):
+            perform_lifecycle_transition(
+                project_root=self.root,
+                config_path=config_path,
+                action="blackbox_activate",
+                scheme_id="trial",
+                scheme_version="abc123",
+                harness_run_id="hr_1",
+                previous=previous,
+                target=target,
+                compensation=previous,
+                token_hash="hash",
+                consume_authorization=lambda: mark_token_used(auth, used_path),
+                apply_database=apply_database,
+                read_state=lambda: actual["state"],
+            )
+
+        self.assertNotIn(target, database_targets)
+        self.assertEqual(config_path.read_text(encoding="utf-8"), original)
+
     def test_verification_failure_after_db_commit_is_compensated(self) -> None:
         from shared.blackbox_v2.lifecycle import (
             LifecycleOperationError,
