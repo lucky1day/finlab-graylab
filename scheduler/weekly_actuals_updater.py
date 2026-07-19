@@ -11,6 +11,7 @@ from shared.actual_facts import (
     build_weekly_actual_records_from_rows as build_shared_weekly_actual_records_from_rows,
     read_week_calendar_rows,
 )
+from shared.tenor_mapping import TENOR_TO_INDICATOR
 from shared.models import WeeklyActualRecord
 from shared.prediction_context import WEEKLY_AVERAGE_TARGET_RULE, WEEKLY_TARGET_RULE
 
