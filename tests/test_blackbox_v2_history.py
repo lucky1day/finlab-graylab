@@ -134,6 +134,13 @@ def _cutoffs(snapshot: BlackboxSnapshot, *, feature_date: str, engine) -> Cutoff
     return CutoffKeys(daily_key, weekly_key, monthly_key)
 
 
+def _cutoffs_bulk(snapshot: BlackboxSnapshot, *, feature_dates, engine, **_kwargs):
+    return {
+        feature_date: _cutoffs(snapshot, feature_date=feature_date, engine=engine)
+        for feature_date in feature_dates
+    }
+
+
 class BlackboxV2HistoryTests(unittest.TestCase):
     def _cases(self, task_type: str, *, limit: int = 3, boundary: str = "2026-07-20"):
         from shared.blackbox_v2.history import build_historical_cases
@@ -141,7 +148,10 @@ class BlackboxV2HistoryTests(unittest.TestCase):
         engine = _source_engine()
         tmpdir = tempfile.TemporaryDirectory()
         snapshot = _snapshot(Path(tmpdir.name), engine)
-        patcher = patch("shared.blackbox_v2.history.resolve_blackbox_input_cutoffs", side_effect=_cutoffs)
+        patcher = patch(
+            "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+            side_effect=_cutoffs_bulk,
+        )
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(tmpdir.cleanup)
@@ -234,19 +244,9 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             snapshot = _snapshot(Path(tmpdir), engine)
             weekly = pd.read_csv(snapshot.data_dir / "weekly_output.csv", dtype=str)
             monthly = pd.read_csv(snapshot.data_dir / "monthly_output.csv", dtype=str)
-            weekly_as_of = lambda feature_date: weekly[
-                weekly["week_id"] <= date.fromisoformat(feature_date).strftime("%G%V")
-            ].tail(1)
-            monthly_as_of = lambda feature_date: monthly[
-                monthly["month_id"] <= feature_date[:7].replace("-", "")
-            ].tail(1)
-
             with patch(
-                "shared.input_artifacts._data_service.build_weekly_output_from_db",
-                side_effect=lambda **kwargs: weekly_as_of(kwargs["as_of_date"]),
-            ), patch(
-                "shared.input_artifacts._data_service.build_monthly_output_from_db",
-                side_effect=lambda **kwargs: monthly_as_of(kwargs["end_date"]),
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
             ):
                 for task_type in (
                     "T+1",
@@ -275,26 +275,19 @@ class BlackboxV2HistoryTests(unittest.TestCase):
                             self.assertIn(case.request.monthly_cutoff_key, monthly_keys)
 
                 missing_weekly = weekly.iloc[:-8].copy()
-                with patch(
-                    "shared.input_artifacts._data_service.build_weekly_output_from_db",
-                    return_value=weekly.tail(1),
-                ):
-                    missing_weekly.to_csv(
-                        snapshot.data_dir / "weekly_output.csv",
-                        index=False,
+                missing_weekly.to_csv(
+                    snapshot.data_dir / "weekly_output.csv",
+                    index=False,
+                )
+                with self.assertRaisesRegex(ValueError, "cutoff missing"):
+                    build_historical_cases(
+                        _metadata("T+1"),
+                        snapshot,
+                        engine,
+                        limit=1,
+                        target_date_before="2026-03-01",
+                        predict_date_from="2025-01-01",
                     )
-                    with self.assertRaisesRegex(
-                        ValueError,
-                        "does not exist in weekly_output.csv",
-                    ):
-                        build_historical_cases(
-                            _metadata("T+1"),
-                            snapshot,
-                            engine,
-                            limit=1,
-                            target_date_before="2026-03-01",
-                            predict_date_from="2025-01-01",
-                        )
         engine.dispose()
 
     def test_cases_have_exact_limit_unique_identity_and_current_snapshot_disclaimer(self) -> None:
@@ -308,13 +301,51 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             for case in cases
         ))
 
+    def test_history_resolves_all_selected_feature_dates_in_one_bulk_call(self) -> None:
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+
+            def resolve_once(_snapshot_arg, *, feature_dates, engine, **_kwargs):
+                return {
+                    feature_date: CutoffKeys(
+                        daily_cutoff_key=feature_date,
+                        weekly_cutoff_key="202401",
+                        monthly_cutoff_key="202401",
+                    )
+                    for feature_date in feature_dates
+                }
+
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=resolve_once,
+            ) as resolve_bulk:
+                cases = build_historical_cases(
+                    _metadata("T+1"),
+                    snapshot,
+                    engine,
+                    limit=100,
+                    target_date_before="2026-07-20",
+                    predict_date_from="2024-01-01",
+                )
+
+        engine.dispose()
+        self.assertEqual(len(cases), 100)
+        resolve_bulk.assert_called_once()
+        self.assertEqual(len(resolve_bulk.call_args.kwargs["feature_dates"]), 100)
+
     def test_target_boundary_is_strict_and_insufficient_cases_fail_closed(self) -> None:
         from shared.blackbox_v2.history import build_historical_cases
 
         engine = _source_engine(start="2026-01-01", end="2026-02-01")
         with tempfile.TemporaryDirectory() as tmpdir:
             snapshot = _snapshot(Path(tmpdir), engine)
-            with patch("shared.blackbox_v2.history.resolve_blackbox_input_cutoffs", side_effect=_cutoffs):
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
                 with self.assertRaisesRegex(ValueError, "exactly 100"):
                     build_historical_cases(
                         _metadata("T+1"), snapshot, engine,
@@ -344,7 +375,10 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             )
         with tempfile.TemporaryDirectory() as tmpdir:
             snapshot = _snapshot(Path(tmpdir), engine)
-            with patch("shared.blackbox_v2.history.resolve_blackbox_input_cutoffs", side_effect=_cutoffs):
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
                 with self.assertRaisesRegex(ValueError, "duplicate source actual"):
                     build_historical_cases(
                         _metadata("T+1"), snapshot, engine,
@@ -358,7 +392,7 @@ class BlackboxV2HistoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             snapshot = _snapshot(Path(tmpdir), clean_engine)
             with patch(
-                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs",
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
                 side_effect=ValueError("missing exact cutoff"),
             ):
                 with self.assertRaisesRegex(ValueError, "missing exact cutoff"):
@@ -378,7 +412,10 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             conn.execute(text("DELETE FROM api_wind_daily WHERE rdate IN ('2026-02-18', '2026-02-20')"))
         with tempfile.TemporaryDirectory() as tmpdir:
             snapshot = _snapshot(Path(tmpdir), engine)
-            with patch("shared.blackbox_v2.history.resolve_blackbox_input_cutoffs", side_effect=_cutoffs):
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
                 with self.assertRaisesRegex(ValueError, "source gap violates calendar horizon"):
                     build_historical_cases(
                         _metadata("T+5"), snapshot, engine,
@@ -402,8 +439,8 @@ class BlackboxV2HistoryTests(unittest.TestCase):
                 with tempfile.TemporaryDirectory() as tmpdir:
                     snapshot = _snapshot(Path(tmpdir), engine)
                     with patch(
-                        "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs",
-                        side_effect=_cutoffs,
+                        "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                        side_effect=_cutoffs_bulk,
                     ):
                         with self.assertRaisesRegex(ValueError, "missing platform actual source"):
                             build_historical_cases(

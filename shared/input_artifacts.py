@@ -4,11 +4,12 @@ import hashlib
 import json
 import shutil
 import tempfile
+from bisect import bisect_right
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pandas as pd
 
@@ -189,6 +190,181 @@ def resolve_blackbox_input_cutoffs(
     finally:
         if own_engine:
             engine.dispose()
+
+
+def resolve_blackbox_input_cutoffs_bulk(
+    snapshot: BlackboxSnapshot,
+    *,
+    feature_dates: Iterable[str],
+    engine=None,
+    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
+) -> dict[str, CutoffKeys]:
+    """一次读取平台来源与快照，为多个 feature_date 解析三频截止键。"""
+    normalized_dates = list(dict.fromkeys(
+        _normalize_feature_date(value) for value in feature_dates
+    ))
+    if not normalized_dates:
+        return {}
+
+    _, expected_columns = _load_blackbox_schema(schema_path)
+    snapshot_keys = _load_snapshot_cutoff_keys(snapshot)
+    own_engine = engine is None
+    engine = engine or _data_service.create_sqlalchemy_engine()
+    try:
+        metadata = _data_service.read_factor_metadata_from_db(engine)
+        weekly_codes = expected_columns["weekly_output.csv"][1:]
+        weekly_raw = _data_service.read_weekly_long_from_db(
+            weekly_codes,
+            "api_wind_weekly",
+            engine,
+        )
+        weekly_derivative = _data_service.read_weekly_long_from_db(
+            weekly_codes,
+            "api_wind_derivative_weekly",
+            engine,
+        )
+        monthly_selected = _data_service.select_factor_metadata(metadata, "monthly")
+        monthly_codes = monthly_selected["indicators_code"].astype(str).str.strip().tolist()
+        monthly_raw = _data_service.read_monthly_long_from_db(
+            monthly_codes,
+            "api_wind_monthly",
+            engine,
+        )
+        monthly_derivative = _data_service.read_monthly_long_from_db(
+            monthly_codes,
+            "api_wind_derivative_monthly",
+            engine,
+            include_month_id=True,
+        )
+        max_date = max(normalized_dates)
+        weekly_index = _data_service.build_weekly_cutoff_index_from_frames(
+            expected_columns["weekly_output.csv"],
+            weekly_raw,
+            weekly_derivative,
+            end_date=max_date,
+        )
+        monthly_index = _data_service.build_monthly_cutoff_index_from_frames(
+            metadata,
+            monthly_raw,
+            monthly_derivative,
+            end_date=max_date,
+        )
+    finally:
+        if own_engine:
+            engine.dispose()
+
+    daily_dates = snapshot_keys["date"]
+    weekly_by_date = _resolve_period_cutoffs_bulk(
+        normalized_dates,
+        weekly_index,
+        key_column="week_id",
+        available_keys=snapshot_keys["week_id"],
+        filename="weekly_output.csv",
+    )
+    monthly_by_date = _resolve_period_cutoffs_bulk(
+        normalized_dates,
+        monthly_index,
+        key_column="month_id",
+        available_keys=snapshot_keys["month_id"],
+        filename="monthly_output.csv",
+    )
+    resolved: dict[str, CutoffKeys] = {}
+    for feature_date in normalized_dates:
+        daily_position = bisect_right(daily_dates, feature_date)
+        if daily_position == 0:
+            raise ValueError(f"daily snapshot has no row on or before {feature_date}")
+        resolved[feature_date] = CutoffKeys(
+            daily_cutoff_key=daily_dates[daily_position - 1],
+            weekly_cutoff_key=weekly_by_date[feature_date],
+            monthly_cutoff_key=monthly_by_date[feature_date],
+        )
+    return resolved
+
+
+def _load_snapshot_cutoff_keys(snapshot: BlackboxSnapshot) -> dict[str, Any]:
+    paths = {
+        "date": snapshot.data_dir / "daily_output.csv",
+        "week_id": snapshot.data_dir / "weekly_output.csv",
+        "month_id": snapshot.data_dir / "monthly_output.csv",
+    }
+    loaded: dict[str, Any] = {}
+    for key, path in paths.items():
+        try:
+            frame = pd.read_csv(path, usecols=[key], dtype={key: "string"})
+        except ValueError as exc:
+            raise ValueError(f"{path.name} is missing {key} cutoff column") from exc
+        if key == "date":
+            parsed = pd.to_datetime(frame[key], errors="coerce").dt.date
+            if parsed.isna().any():
+                raise ValueError("daily_output.csv contains an invalid date cutoff key")
+            values = [value.isoformat() for value in parsed]
+            if values != sorted(set(values)):
+                raise ValueError("daily_output.csv date cutoff keys must be unique and ascending")
+            loaded[key] = values
+            continue
+        values = [_normalize_period_key(value, key) for value in frame[key].tolist()]
+        if values != sorted(set(values)):
+            raise ValueError(f"{path.name} {key} cutoff keys must be unique and ascending")
+        loaded[key] = set(values)
+    return loaded
+
+
+def _resolve_period_cutoffs_bulk(
+    feature_dates: list[str],
+    index: pd.DataFrame,
+    *,
+    key_column: str,
+    available_keys: set[str],
+    filename: str,
+) -> dict[str, str]:
+    required = {key_column, "available_date"}
+    if index.empty or not required.issubset(index.columns):
+        raise ValueError(f"platform as-of data has no {key_column}")
+    events = sorted(
+        (
+            _normalize_feature_date(value),
+            _normalize_period_key(key, key_column),
+        )
+        for value, key in zip(index["available_date"], index[key_column])
+    )
+    result: dict[str, str] = {}
+    latest: str | None = None
+    position = 0
+    for feature_date in sorted(feature_dates):
+        while position < len(events) and events[position][0] <= feature_date:
+            key = events[position][1]
+            latest = key if latest is None or key > latest else latest
+            position += 1
+        if latest is None:
+            raise ValueError(f"platform as-of data has no {key_column} for {feature_date}")
+        if latest not in available_keys:
+            raise ValueError(
+                f"platform {key_column} cutoff {latest} does not exist in {filename}"
+            )
+        result[feature_date] = latest
+    return result
+
+
+def _normalize_feature_date(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    try:
+        return date.fromisoformat(str(value)).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ValueError("feature_date must use YYYY-MM-DD") from exc
+
+
+def _normalize_period_key(value: object, field: str) -> str:
+    if pd.isna(value):
+        raise ValueError(f"{field} must not be empty")
+    text = str(value).strip()
+    if text.endswith(".0"):
+        text = text[:-2]
+    if len(text) != 6 or not text.isdigit():
+        raise ValueError(f"{field} must be a six-digit platform key")
+    return text
 
 
 def input_artifact_path(

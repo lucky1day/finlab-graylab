@@ -373,6 +373,47 @@ def build_weekly_output_from_frames(
     return wide.reset_index()[schema]
 
 
+def build_weekly_cutoff_index_from_frames(
+    schema_columns: Sequence[str],
+    raw_weekly: pd.DataFrame,
+    derivative_weekly: Optional[pd.DataFrame] = None,
+    *,
+    end_date: str,
+) -> pd.DataFrame:
+    """构建周频 key 首次可用日期索引，供批量 as-of 截止解析。"""
+    schema = [str(column).strip() for column in schema_columns]
+    if not schema or schema[0] != "week_id":
+        raise ValueError("weekly schema must start with week_id")
+    cutoff = pd.to_datetime(end_date).normalize()
+    prepared = _prepare_weekly_long_frame(
+        [raw_weekly, derivative_weekly if derivative_weekly is not None else pd.DataFrame()]
+    )
+    prepared = prepared[
+        prepared["rdate"].notna()
+        & prepared["rdate"].le(cutoff)
+        & prepared["indicators_code"].isin(schema[1:])
+    ].copy()
+    if prepared.empty:
+        return pd.DataFrame(columns=["week_id", "available_date"])
+
+    index = (
+        prepared.groupby("week_id", as_index=False)["rdate"]
+        .min()
+        .rename(columns={"rdate": "available_date"})
+        .sort_values(["available_date", "week_id"])
+        .reset_index(drop=True)
+    )
+    authoritative = build_weekly_output_from_frames(
+        schema,
+        raw_weekly,
+        derivative_weekly,
+        as_of_date=end_date,
+    )
+    if set(index["week_id"].astype(int)) != set(authoritative["week_id"].astype(int)):
+        raise ValueError("weekly cutoff index does not match authoritative output builder")
+    return index
+
+
 def build_weekly_output_from_metadata(
     metadata: pd.DataFrame,
     raw_weekly: pd.DataFrame,
@@ -512,6 +553,45 @@ def build_monthly_output_from_frames(
     result = pd.concat(parts, axis=1) if parts else pd.DataFrame(index=all_months)
     result.index.name = "month_id"
     return result.reset_index()[["month_id"] + output_columns]
+
+
+def build_monthly_cutoff_index_from_frames(
+    metadata: pd.DataFrame,
+    raw_monthly: pd.DataFrame,
+    derivative_monthly: Optional[pd.DataFrame] = None,
+    *,
+    end_date: str,
+) -> pd.DataFrame:
+    """构建月频 key 首次可用日期索引，保留月中归属与元数据筛选语义。"""
+    selected = select_factor_metadata(metadata, "monthly")
+    output_columns, _ = _metadata_output_columns_and_lags(selected)
+    cutoff = pd.to_datetime(end_date).normalize()
+    prepared = _prepare_monthly_long_frame(
+        [raw_monthly, derivative_monthly if derivative_monthly is not None else pd.DataFrame()]
+    )
+    prepared = prepared[
+        prepared["rdate"].le(cutoff)
+        & prepared["indicators_code"].isin(output_columns)
+    ].copy()
+    if prepared.empty:
+        return pd.DataFrame(columns=["month_id", "available_date"])
+
+    index = (
+        prepared.groupby("month_id", as_index=False)["rdate"]
+        .min()
+        .rename(columns={"rdate": "available_date"})
+        .sort_values(["available_date", "month_id"])
+        .reset_index(drop=True)
+    )
+    authoritative = build_monthly_output_from_frames(
+        metadata,
+        raw_monthly,
+        derivative_monthly,
+        end_date=end_date,
+    )
+    if set(index["month_id"].astype(str)) != set(authoritative["month_id"].astype(str)):
+        raise ValueError("monthly cutoff index does not match authoritative output builder")
+    return index
 
 
 def read_monthly_long_from_db(

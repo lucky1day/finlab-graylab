@@ -424,6 +424,7 @@ class BlackboxBacktestGate(_BlackboxGate):
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         audit_path: Path | None = None
         try:
+            cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest preflight")
             passed_run = _verify_passed_all(engine, cfg)
             if auth.harness_run_id != passed_run.harness_run_id:
                 return _blocked(
@@ -443,6 +444,15 @@ class BlackboxBacktestGate(_BlackboxGate):
                     started_at,
                     ["Blackbox persisted backtest requires DataBridge generation_id evidence"],
                 )
+            provenance_errors = _persisted_backtest_provenance_errors(
+                cfg,
+                passed_run,
+                state,
+                provenance,
+                environment_fingerprint=_environment_fingerprint(ctx.project_root),
+            )
+            if provenance_errors:
+                return _blocked(self.name, started_at, provenance_errors)
             metadata = _metadata(cfg)
             cases = build_historical_cases(
                 metadata,
@@ -468,9 +478,10 @@ class BlackboxBacktestGate(_BlackboxGate):
                 raise ValueError(
                     "Blackbox persisted backtest requires exactly 100 rows and non-empty monthly metrics"
                 )
+            cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest commit")
             before = snapshot_backtest_scope_counts(engine, benchmark_id)
-            mark_token_used(auth, used_tokens_path(ctx.project_root))
             audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
+            mark_token_used(auth, used_tokens_path(ctx.project_root))
             run_id = persist_backtest_output_atomic(engine, output, benchmark_id=benchmark_id)
             after = snapshot_backtest_scope_counts(engine, benchmark_id)
             deltas = diff_snapshots(before, after)
@@ -1017,6 +1028,67 @@ def _persisted_backtest_delta_errors(
     ]
     if expected_metrics <= 0:
         errors.append("persisted Blackbox backtest must produce monthly metrics")
+    return errors
+
+
+def _reload_pinned_blackbox_config(cfg: SchemeConfig, *, phase: str) -> SchemeConfig:
+    current = load_scheme_config(cfg.path / "config.yaml")
+    if current.scheme_version != cfg.scheme_version:
+        raise _CanonicalSchemeVersionChanged(
+            "Blackbox canonical version changed during "
+            f"{phase}: expected={cfg.scheme_version}, current={current.scheme_version}"
+        )
+    if current.runtime_profile != DEFAULT_RUNTIME_PROFILE.name:
+        raise ValueError(
+            "Blackbox runtime_profile changed during "
+            f"{phase}: expected={DEFAULT_RUNTIME_PROFILE.name}, current={current.runtime_profile}"
+        )
+    return current
+
+
+def _persisted_backtest_provenance_errors(
+    cfg: SchemeConfig,
+    passed_run: PassedAllRun,
+    state: InputState,
+    provenance: dict[str, str],
+    *,
+    environment_fingerprint: str,
+) -> list[str]:
+    expected = {
+        "data_snapshot_id": passed_run.data_snapshot_id,
+        "generation_id": passed_run.generation_id,
+        "runtime_profile": passed_run.runtime_profile,
+        "environment_fingerprint": passed_run.environment_fingerprint,
+    }
+    current = {
+        "data_snapshot_id": state.snapshot.snapshot_id,
+        "generation_id": str(provenance.get("generation_id", "")).strip() or None,
+        "runtime_profile": cfg.runtime_profile,
+        "environment_fingerprint": environment_fingerprint,
+    }
+    errors = [
+        "persisted backtest provenance mismatch for "
+        f"{field}: passed_all={expected[field]}, current={current[field]}"
+        for field in expected
+        if not expected[field] or current[field] != expected[field]
+    ]
+    if cfg.runtime_profile != DEFAULT_RUNTIME_PROFILE.name:
+        errors.append(
+            "persisted backtest runtime_profile must match frozen profile: "
+            f"current={cfg.runtime_profile}, frozen={DEFAULT_RUNTIME_PROFILE.name}"
+        )
+    provenance_profile = str(provenance.get("runtime_profile", "")).strip() or None
+    if provenance_profile != cfg.runtime_profile:
+        errors.append(
+            "persisted backtest runtime_profile provenance mismatch: "
+            f"DataBridge={provenance_profile}, config={cfg.runtime_profile}"
+        )
+    provenance_environment = str(provenance.get("environment_fingerprint", "")).strip() or None
+    if provenance_environment != environment_fingerprint:
+        errors.append(
+            "persisted backtest environment_fingerprint provenance mismatch: "
+            f"DataBridge={provenance_environment}, current={environment_fingerprint}"
+        )
     return errors
 
 

@@ -185,7 +185,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             request = _cases(1)[0].request
             state = InputState(snapshot, write_request(request, root / "request.json"), request)
             passed = PassedAllRun(
-                "hr_passed", root / "reports" / "all", "snapshot-validated",
+                "hr_passed", root / "reports" / "all", snapshot.snapshot_id,
                 generation_id="generation-current", runtime_profile="blackbox-v2-v1",
                 environment_fingerprint="e" * 64,
             )
@@ -224,6 +224,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                         "runtime_profile": "blackbox-v2-v1",
                         "environment_fingerprint": "e" * 64,
                     }),
+                    patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
                     patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(100)) as build_cases,
                     patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=_output()) as run_history,
                     patch("harness.blackbox_v2.gates.persist_backtest_output_atomic", return_value=301) as persist,
@@ -325,12 +326,24 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 authorization=token, persist_backtest=True,
                 engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
             )
-            passed = PassedAllRun("hr_passed", root / "all", "snapshot-old", generation_id="generation")
+            passed = PassedAllRun(
+                "hr_passed",
+                root / "all",
+                snapshot.snapshot_id,
+                generation_id="generation",
+                runtime_profile="blackbox-v2-v1",
+                environment_fingerprint="e" * 64,
+            )
             counts = {"t_backtest_runs": 1, "t_backtest_predictions": 100, "t_backtest_monthly_metrics": 3}
             with (
                 patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
                 patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
-                patch("harness.blackbox_v2.gates._data_bridge_provenance", return_value={"generation_id": "generation"}),
+                patch("harness.blackbox_v2.gates._data_bridge_provenance", return_value={
+                    "generation_id": "generation",
+                    "runtime_profile": "blackbox-v2-v1",
+                    "environment_fingerprint": "e" * 64,
+                }),
+                patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
                 patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(100)),
                 patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=_output()),
                 patch("harness.blackbox_v2.gates.persist_backtest_output_atomic", return_value=9),

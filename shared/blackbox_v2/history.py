@@ -20,7 +20,7 @@ from shared.blackbox_v2.contracts import (
 from shared.blackbox_v2.requests import build_request
 from shared.blackbox_v2.snapshot import BlackboxSnapshot
 from shared.calendar_service import get_calendar
-from shared.input_artifacts import resolve_blackbox_input_cutoffs
+from shared.input_artifacts import resolve_blackbox_input_cutoffs_bulk
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -100,13 +100,14 @@ def build_historical_cases(
         )
 
     selected = eligible[-limit:]
+    cutoffs_by_feature_date = resolve_blackbox_input_cutoffs_bulk(
+        snapshot,
+        feature_dates=[candidate.feature_date for candidate in selected],
+        engine=engine,
+    )
     cases: list[HistoricalCase] = []
     for candidate in selected:
-        cutoffs = resolve_blackbox_input_cutoffs(
-            snapshot,
-            feature_date=candidate.feature_date,
-            engine=engine,
-        )
+        cutoffs = cutoffs_by_feature_date[candidate.feature_date]
         request = build_request(
             scheme_id=metadata.scheme_id,
             predict_date=candidate.predict_date,
