@@ -31,8 +31,8 @@ class BlackboxV2HarnessDispatchTests(unittest.TestCase):
         self.assertEqual([gate.name for gate in gates], AUTO_SEQUENCE)
         self.assertTrue(all(type(gate).__module__ == "harness.blackbox_v2.gates" for gate in gates))
 
-    def test_reuses_common_api_and_live_gates_after_blackbox_activation(self) -> None:
-        from harness.gates.api_gate import ApiGate
+    def test_dispatches_blackbox_api_and_reuses_common_live_gate_after_activation(self) -> None:
+        from harness.blackbox_v2.api_gate import BlackboxApiGate
         from harness.gates.live_gate import LiveGate
         from harness.registry import gate_for_name
 
@@ -47,7 +47,7 @@ class BlackboxV2HarnessDispatchTests(unittest.TestCase):
             api_gate = gate_for_name("api", ctx=ctx)
             live_gate = gate_for_name("live", ctx=ctx)
 
-        self.assertIsInstance(api_gate, ApiGate)
+        self.assertIsInstance(api_gate, BlackboxApiGate)
         self.assertIsInstance(live_gate, LiveGate)
 
     def test_rejects_unknown_runtime_type(self) -> None:

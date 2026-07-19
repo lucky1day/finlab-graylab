@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class _MappingResult:
@@ -948,6 +950,52 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 scheme_version="abc123def456",
             )
 
+        self.assertEqual(engine.store["prediction_rows"], [])
+
+    def test_final_blackbox_insert_rejects_disk_config_version_drift(self) -> None:
+        from scheduler.repository import insert_approved_blackbox_predictions
+        from shared.models import PredictionRecord
+
+        cfg = _blackbox_config()
+        cfg.path = Path("/tmp/demo_blackbox")
+        drifted = _blackbox_config(scheme_version="drifted-version")
+        engine = _CaptureEngine(
+            version_row={
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "runtime_type": "blackbox_v2",
+                "status": "active",
+                "approved_by": "release-owner",
+                "approved_at": datetime(2026, 7, 20, 8, 30),
+            },
+            registry_rows=[],
+        )
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+
+        with patch(
+            "scheduler.repository.load_scheme_config",
+            return_value=drifted,
+            create=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "canonical config changed before final write"):
+                insert_approved_blackbox_predictions(
+                    engine,
+                    cfg,
+                    101,
+                    [record],
+                    scheme_version="abc123def456",
+                )
+
+        self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
 
     def test_upsert_scheme_version_writes_version_hashes(self) -> None:

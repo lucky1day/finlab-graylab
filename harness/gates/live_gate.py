@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from harness.authorization import (
+    authorization_signing_enabled,
     mark_token_used,
+    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
@@ -21,6 +23,7 @@ from harness.probes.table_guard import (
     snapshot_table_counts,
 )
 from harness.result import Evidence, GateResult, GateStatus
+from scheduler.repository import read_blackbox_execution_approval
 
 
 class LiveGate(Gate):
@@ -42,6 +45,21 @@ class LiveGate(Gate):
                 started_at=started_at,
                 finished_at=utc_now(),
             )
+        cfg = _load_config_for_execution(ctx)
+        runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+        auth = None
+        passed_run = None
+        preflight_errors: list[str] = []
+        if runtime_type == "blackbox_v2":
+            auth, preflight_errors = _verify_blackbox_live_authorization(ctx, cfg)
+            if preflight_errors:
+                return _blocked_blackbox_live(
+                    ctx,
+                    started_at,
+                    preflight_errors,
+                    scheme_version=cfg.scheme_version,
+                )
+
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         before = snapshot_table_counts(engine, PROTECTED_TABLES)
         scheme_before = _safe_scheme_counts(engine, ctx.scheme_id)
@@ -50,21 +68,39 @@ class LiveGate(Gate):
         errors: list[str] = []
         status = GateStatus.BLOCKED
         try:
-            auth, auth_errors = verify_authorization(
-                ctx.authorization,
-                scheme_id=ctx.scheme_id,
-                action="live_write",
-                predict_date=ctx.predict_date,
-                used_store_path=used_tokens_path(ctx.project_root),
-            )
+            if runtime_type == "blackbox_v2":
+                try:
+                    passed_run = _verify_blackbox_passed_all(engine, cfg)
+                    if auth is None:
+                        auth_errors = ["Blackbox live authorization is unavailable"]
+                    elif auth.harness_run_id != passed_run.harness_run_id:
+                        auth_errors = [
+                            "authorization harness_run_id must match latest passed all-stage run: "
+                            f"token={auth.harness_run_id}, latest={passed_run.harness_run_id}"
+                        ]
+                    else:
+                        approval = read_blackbox_execution_approval(engine, cfg)
+                        auth_errors = [] if approval.executable else [
+                            "Blackbox live requires exact active production approval: "
+                            f"{approval.reason}"
+                        ]
+                except Exception as exc:  # noqa: BLE001
+                    auth_errors = [f"Blackbox live preflight failed: {exc}"]
+            else:
+                auth, auth_errors = verify_authorization(
+                    ctx.authorization,
+                    scheme_id=ctx.scheme_id,
+                    action="live_write",
+                    predict_date=ctx.predict_date,
+                    used_store_path=used_tokens_path(ctx.project_root),
+                )
             if auth_errors:
                 errors.extend(auth_errors)
             elif ctx.prediction_phase not in LIVE_PHASES:
                 errors.append(f"live gate requires explicit prediction_phase in {sorted(LIVE_PHASES)}, got {ctx.prediction_phase}")
             else:
-                cfg = _load_config_for_execution(ctx)
                 if (
-                    getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"
+                    runtime_type == "blackbox_v2"
                     and (cfg.status != "active" or cfg.version_status != "active")
                 ):
                     errors.append(
@@ -115,6 +151,11 @@ class LiveGate(Gate):
             passed=status == GateStatus.PASSED,
             evidence=[
                 Evidence("authorized_scheme", ctx.scheme_id),
+                Evidence("scheme_version", cfg.scheme_version if runtime_type == "blackbox_v2" else None),
+                Evidence(
+                    "harness_run_id",
+                    passed_run.harness_run_id if passed_run is not None else None,
+                ),
                 Evidence("prediction_phase", ctx.prediction_phase),
                 Evidence("authorization_audit_path", str(audit_path) if audit_path else None),
                 Evidence("protected_table_counts_before", before),
@@ -148,6 +189,72 @@ def _load_config_for_execution(ctx: GateContext):
     from scheduler.discovery import load_scheme_config
 
     return load_scheme_config(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
+
+
+def _verify_blackbox_live_authorization(ctx: GateContext, cfg):
+    if not authorization_signing_enabled():
+        return None, ["Blackbox live requires HMAC signing via HARNESS_AUTH_SECRET"]
+    if not isinstance(ctx.authorization, str):
+        return None, ["Blackbox live requires the original signed token string"]
+    auth, errors = verify_authorization(
+        ctx.authorization,
+        scheme_id=ctx.scheme_id,
+        action="live_write",
+        predict_date=ctx.predict_date,
+        used_store_path=used_tokens_path(ctx.project_root),
+    )
+    if auth is None:
+        return None, errors
+    errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
+    if not auth.issued_by.strip():
+        errors.append("Blackbox live authorization requires non-empty issued_by")
+    if auth.scheme_version != cfg.scheme_version:
+        errors.append(
+            "authorization scheme_version must match current canonical version: "
+            f"token={auth.scheme_version}, current={cfg.scheme_version}"
+        )
+    if cfg.status != "active" or cfg.version_status != "active":
+        errors.append(
+            "Blackbox live requires actual config active+active: "
+            f"got={cfg.status}+{cfg.version_status}"
+        )
+    return auth, errors
+
+
+def _verify_blackbox_passed_all(engine, cfg):
+    from harness.blackbox_v2.gates import _verify_passed_all
+
+    return _verify_passed_all(engine, cfg)
+
+
+def _blocked_blackbox_live(
+    ctx: GateContext,
+    started_at: str,
+    errors: list[str],
+    *,
+    scheme_version: str,
+) -> GateResult:
+    return GateResult(
+        gate_name="live",
+        status=GateStatus.BLOCKED,
+        passed=False,
+        evidence=[
+            Evidence("authorized_scheme", ctx.scheme_id),
+            Evidence("scheme_version", scheme_version),
+            Evidence("harness_run_id", None),
+            Evidence("prediction_phase", ctx.prediction_phase),
+            Evidence("protected_table_counts_before", {}),
+            Evidence("protected_table_counts_after", {}),
+            Evidence("protected_table_deltas", {}),
+            Evidence("authorized_scheme_counts_before", {}),
+            Evidence("authorized_scheme_counts_after", {}),
+            Evidence("authorized_scheme_table_deltas", {}),
+            Evidence("run_result", None),
+        ],
+        errors=errors,
+        started_at=started_at,
+        finished_at=utc_now(),
+    )
 
 
 def _blackbox_lifecycle_error(ctx: GateContext) -> str | None:

@@ -231,7 +231,7 @@ def api_backtest_data_checks(
 @app.get("/api/backtests/factor-lab")
 def api_backtest_factor_lab(
     benchmark_id: str | None = None,
-    data_source: str = "framework_db_aligned",
+    data_source: str | None = None,
 ) -> dict:
     return backtest_factor_lab_results(get_engine(), benchmark_id=benchmark_id, data_source=data_source)
 

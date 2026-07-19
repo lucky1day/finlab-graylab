@@ -16,8 +16,17 @@ def fetch_json(url: str, timeout_sec: int = 10) -> tuple[dict[str, Any], int]:
         return payload, int(getattr(response, "status", 200))
 
 
-def factor_lab_url(base_url: str) -> str:
-    return f"{base_url.rstrip('/')}/api/backtests/factor-lab"
+def factor_lab_url(base_url: str, *, data_source: str | None = None) -> str:
+    url = f"{base_url.rstrip('/')}/api/backtests/factor-lab"
+    if data_source is None:
+        return url
+    from urllib.parse import urlencode
+
+    return f"{url}?{urlencode({'data_source': data_source})}"
+
+
+def schemes_url(base_url: str) -> str:
+    return f"{base_url.rstrip('/')}/api/schemes"
 
 
 def metrics_url(base_url: str, registry_scheme_id: str) -> str:

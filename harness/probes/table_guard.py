@@ -5,10 +5,13 @@ from typing import Iterable
 
 
 DRY_RUN_GUARD_TABLES = (
+    "api_wind_date",
     "api_wind_daily",
     "api_wind_derivative_daily",
     "api_wind_weekly",
     "api_wind_derivative_weekly",
+    "api_wind_monthly",
+    "api_wind_derivative_monthly",
     "api_wind_indicators_all",
     "t_trade_calendar",
     "t_pre_market_forecast",
@@ -25,10 +28,13 @@ DRY_RUN_GUARD_TABLES = (
     "t_backtest_reproduction_checks",
 )
 PROTECTED_TABLES = (
+    "api_wind_date",
     "api_wind_daily",
     "api_wind_derivative_daily",
     "api_wind_weekly",
     "api_wind_derivative_weekly",
+    "api_wind_monthly",
+    "api_wind_derivative_monthly",
     "api_wind_indicators_all",
     "t_trade_calendar",
     "t_pre_market_forecast",

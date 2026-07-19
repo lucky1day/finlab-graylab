@@ -91,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
         "api-readiness", "shadow-register", "api", "live",
-        "lifecycle-reconcile",
+        "lifecycle-reconcile", "bootstrap",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -108,6 +108,9 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
+            item.add_argument("--sample-size", type=int, default=100)
+        if gate_name == "bootstrap":
+            item.add_argument("--expected-empty-schema", required=True)
 
     onboard_parser = subparsers.add_parser("onboard")
     onboard_parser.add_argument("scheme_id")
@@ -170,6 +173,8 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
+        backtest_sample_size=int(getattr(args, "sample_size", 100)),
+        expected_empty_schema=getattr(args, "expected_empty_schema", None),
         api_base_url=args.api_base_url,
     )
     return gate_for_name(args.gate_name, ctx=ctx).run(ctx)

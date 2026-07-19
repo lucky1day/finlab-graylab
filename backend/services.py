@@ -42,6 +42,8 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "baseline_original_csv": "原始代码基准CSV回测",
     "framework_original_csv": "框架算法基准CSV回测",
     "framework_db_aligned": "当前DB对齐回测",
+    "blackbox_v2_current_snapshot_as_of": "Blackbox V2 当前快照回测",
+    "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
 
@@ -753,7 +755,7 @@ def _is_weekly_metric(horizon: Any, extra: dict[str, Any]) -> bool:
 def backtest_factor_lab_results(
     engine: Engine,
     benchmark_id: str | None = None,
-    data_source: str = "framework_db_aligned",
+    data_source: str | None = None,
 ) -> dict[str, Any]:
     """返回前端方案矩阵可直接展示的最新历史回测结果。"""
     scheme_meta = _backtest_scheme_meta(engine)
@@ -765,15 +767,43 @@ def backtest_factor_lab_results(
                status, summary, report_path, created_at, updated_at
         FROM v_latest_backtest_run
         WHERE (:benchmark_id IS NULL OR benchmark_id = :benchmark_id)
-          AND data_source = :data_source
+          AND (
+                (:auto_source = 1 AND data_source IN (
+                    'framework_db_aligned',
+                    'blackbox_v2_current_snapshot_as_of'
+                ))
+                OR (:auto_source = 0 AND data_source = :data_source)
+          )
         ORDER BY benchmark_id, scheme_id, updated_at DESC, id DESC
         """
     )
     with engine.connect() as conn:
         run_rows = conn.execute(
             run_sql,
-            {"benchmark_id": benchmark_id, "data_source": data_source},
+            {
+                "benchmark_id": benchmark_id,
+                "data_source": data_source,
+                "auto_source": 1 if data_source is None else 0,
+            },
         ).mappings().all()
+
+    if data_source is None:
+        sources_by_scheme: dict[str, set[str]] = defaultdict(set)
+        for row in run_rows:
+            sources_by_scheme[str(row["scheme_id"])].add(str(row["data_source"]))
+        preferred_by_scheme = {
+            scheme_id: (
+                "blackbox_v2_current_snapshot_as_of"
+                if "blackbox_v2_current_snapshot_as_of" in sources
+                else "framework_db_aligned"
+            )
+            for scheme_id, sources in sources_by_scheme.items()
+        }
+        run_rows = [
+            row
+            for row in run_rows
+            if str(row["data_source"]) == preferred_by_scheme[str(row["scheme_id"])]
+        ]
 
     schemes: list[dict[str, Any]] = []
     for row in run_rows:
@@ -844,11 +874,19 @@ def backtest_factor_lab_results(
                 }
             )
 
+    selected_sources = {str(item["data_source"]) for item in schemes}
+    if len(selected_sources) == 1:
+        resolved_data_source = next(iter(selected_sources))
+    elif selected_sources:
+        resolved_data_source = "runtime_default"
+    else:
+        resolved_data_source = data_source or "framework_db_aligned"
+
     return {
         "benchmark_id": benchmark_id or "all",
         "benchmark_label": _backtest_benchmark_label(benchmark_id),
-        "data_source": data_source,
-        "data_source_label": _backtest_data_source_label(data_source),
+        "data_source": resolved_data_source,
+        "data_source_label": _backtest_data_source_label(resolved_data_source),
         "target_labels": target_labels,
         "schemes": schemes,
     }

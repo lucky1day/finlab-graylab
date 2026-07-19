@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Mapping
@@ -8,7 +9,7 @@ from typing import Iterable, Mapping
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
 
-from scheduler.discovery import SchemeConfig
+from scheduler.discovery import SchemeConfig, load_scheme_config
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
 from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
@@ -28,6 +29,22 @@ BLACKBOX_IMMUTABLE_VERSION_FIELDS = (
     "config_hash",
     "manifest_hash",
 )
+BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
+    "t_scheme_registry",
+    "t_scheme_versions",
+    "t_scheme_runs",
+    "t_scheme_predictions",
+    "t_scheme_run_log",
+    "t_scheme_actuals",
+    "t_scheme_weekly_actuals",
+    "t_scheme_monthly_actuals",
+    "t_backtest_runs",
+    "t_backtest_predictions",
+    "t_backtest_monthly_metrics",
+    "t_harness_runs",
+    "t_harness_gate_results",
+)
+_BLACKBOX_CERTIFICATION_SCHEMA = re.compile(r"^bbv2_cert_[A-Za-z0-9_]+$")
 
 
 @dataclass(frozen=True)
@@ -63,6 +80,18 @@ class BlackboxLifecycleState:
     approved_at: datetime | None
 
 
+@dataclass(frozen=True)
+class BlackboxBootstrapState:
+    """空隔离 Schema 初始化后的只读证据。"""
+
+    schema_name: str
+    scheme_id: str
+    scheme_version: str
+    version_status: str
+    registry_status: str
+    table_counts: dict[str, int]
+
+
 def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> str:
     """生成前端/业务层唯一方案 ID。"""
     return f"{base_scheme_id}__h{int(horizon)}__{target_tenor}"
@@ -81,6 +110,97 @@ def create_engine_from_env() -> Engine:
         query={"charset": cfg.charset},
     )
     return create_engine(url, future=True)
+
+
+def bootstrap_blackbox_control_plane(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    expected_schema: str,
+) -> BlackboxBootstrapState:
+    """仅在全新认证 Schema 中原子建立 Blackbox draft/paused 身份。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError("Blackbox bootstrap requires runtime_type=blackbox_v2")
+    if cfg.status != "paused" or cfg.version_status != "draft":
+        raise ValueError(
+            "Blackbox bootstrap requires config paused+draft: "
+            f"got={cfg.status}+{cfg.version_status}"
+        )
+    if not _BLACKBOX_CERTIFICATION_SCHEMA.fullmatch(str(expected_schema)):
+        raise ValueError(
+            "expected certification Schema must match bbv2_cert_[A-Za-z0-9_]+"
+        )
+    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    effective_statuses = {scheme_id: "paused" for scheme_id in expected_registry_ids}
+
+    with engine.begin() as conn:
+        actual_schema = str(conn.execute(text("SELECT DATABASE()")).scalar_one() or "")
+        if actual_schema != expected_schema:
+            raise RuntimeError(
+                "database Schema mismatch for Blackbox bootstrap: "
+                f"expected={expected_schema}, actual={actual_schema}"
+            )
+        table_counts = {
+            table: int(
+                conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar_one()
+            )
+            for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES
+        }
+        nonempty = {table: count for table, count in table_counts.items() if count != 0}
+        if nonempty:
+            raise RuntimeError(
+                "Blackbox bootstrap test Schema must be empty: "
+                + ", ".join(f"{table}={count}" for table, count in sorted(nonempty.items()))
+            )
+
+        _upsert_scheme_version_conn(
+            conn,
+            cfg,
+            trusted_status="draft",
+            approved_by=None,
+            approved_at=None,
+        )
+        _sync_scheme_registry_conn(
+            conn,
+            [cfg],
+            effective_statuses=effective_statuses,
+        )
+        version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
+        registry_rows = _read_blackbox_registry_rows_conn(
+            conn,
+            cfg,
+            expected_registry_ids,
+            for_update=True,
+        )
+        if version_row is None:
+            raise RuntimeError("Blackbox bootstrap version readback is missing")
+        if (
+            version_row.get("scheme_id") != cfg.scheme_id
+            or version_row.get("scheme_version") != cfg.scheme_version
+            or version_row.get("runtime_type") != "blackbox_v2"
+            or version_row.get("status") != "draft"
+            or version_row.get("approved_by") is not None
+            or version_row.get("approved_at") is not None
+        ):
+            raise RuntimeError("Blackbox bootstrap version readback is not exact draft state")
+        registry_error = _blackbox_registry_identity_error(
+            cfg,
+            expected_tenors,
+            expected_registry_ids,
+            registry_rows,
+            expected_status="paused",
+        )
+        if registry_error is not None:
+            raise RuntimeError(f"Blackbox bootstrap Registry readback mismatch: {registry_error}")
+
+    return BlackboxBootstrapState(
+        schema_name=actual_schema,
+        scheme_id=cfg.scheme_id,
+        scheme_version=cfg.scheme_version,
+        version_status="draft",
+        registry_status="paused",
+        table_counts=table_counts,
+    )
 
 
 def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> None:
@@ -954,6 +1074,20 @@ def insert_approved_blackbox_predictions(
         raise ValueError(
             f"prediction scheme_version={scheme_version} does not match config {cfg.scheme_version}"
         )
+    config_path = getattr(cfg, "path", None)
+    if config_path is not None:
+        current_cfg = load_scheme_config(config_path / "config.yaml")
+        if (
+            current_cfg.scheme_version != cfg.scheme_version
+            or current_cfg.status != "active"
+            or current_cfg.version_status != "active"
+        ):
+            raise RuntimeError(
+                "Blackbox canonical config changed before final write: "
+                f"expected={cfg.scheme_version}/active/active, "
+                f"current={current_cfg.scheme_version}/{current_cfg.status}/{current_cfg.version_status}"
+            )
+        cfg = current_cfg
     exact_scheme_version = cfg.scheme_version
     record_list = list(records)
     mismatched_record_versions = sorted(

@@ -121,6 +121,101 @@ def _create_minimal_factor_lab_backtest_schema(engine) -> None:
 
 
 class BacktestFactorLabReadonlyTests(unittest.TestCase):
+    def test_default_factor_lab_selects_blackbox_data_source_for_active_blackbox(self) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        _create_minimal_factor_lab_backtest_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, name, description, horizon, task_type,
+                         frequency, target_tenor, schedule_cron, schedule_timezone, status,
+                         deployed_at, created_at, updated_at)
+                    VALUES
+                        ('weekly_trial__h1__10Y', 'weekly_trial', 'Weekly Trial',
+                         'Blackbox V2', 1, 'weekly_point', 'weekly', '10Y',
+                         '0 7 * * 1', 'Asia/Shanghai', 'active', '2026-07-20', NULL, NULL)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_runs
+                        (id, benchmark_id, scheme_id, data_source, start_date, end_date,
+                         status, summary, report_path, created_at, updated_at)
+                    VALUES
+                        (901, 'bbv2-weekly', 'weekly_trial',
+                         'blackbox_v2_current_snapshot_as_of', '2024-01-05', '2026-07-10',
+                         'success', '{}', NULL, NULL, '2026-07-20T10:00:00')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_predictions
+                        (run_id, target_tenor, horizon, predict_date, feature_date,
+                         target_date, label, predicted_direction, confidence)
+                    VALUES
+                        (901, '10Y', 1, '2026-07-03', '2026-07-03',
+                         '2026-07-10', 1, 1, NULL)
+                    """
+                )
+            )
+
+        result = backtest_factor_lab_results(engine)
+
+        self.assertEqual(result["data_source"], "blackbox_v2_current_snapshot_as_of")
+        self.assertEqual(len(result["schemes"]), 1)
+        self.assertEqual(result["schemes"][0]["scheme_id"], "weekly_trial__h1__10Y")
+        self.assertEqual(
+            result["schemes"][0]["data_source"],
+            "blackbox_v2_current_snapshot_as_of",
+        )
+
+    def test_explicit_native_data_source_does_not_include_blackbox_runs(self) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        _create_minimal_factor_lab_backtest_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, name, description, horizon, task_type,
+                         frequency, target_tenor, schedule_cron, schedule_timezone, status,
+                         deployed_at, created_at, updated_at)
+                    VALUES
+                        ('weekly_trial__h1__10Y', 'weekly_trial', 'Weekly Trial',
+                         'Blackbox V2', 1, 'weekly_point', 'weekly', '10Y',
+                         '0 7 * * 1', 'Asia/Shanghai', 'active', '2026-07-20', NULL, NULL)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_runs
+                        (id, benchmark_id, scheme_id, data_source, start_date, end_date,
+                         status, summary, report_path, created_at, updated_at)
+                    VALUES
+                        (901, 'bbv2-weekly', 'weekly_trial',
+                         'blackbox_v2_current_snapshot_as_of', '2024-01-05', '2026-07-10',
+                         'success', '{}', NULL, NULL, '2026-07-20T10:00:00')
+                    """
+                )
+            )
+
+        result = backtest_factor_lab_results(engine, data_source="framework_db_aligned")
+
+        self.assertEqual(result["data_source"], "framework_db_aligned")
+        self.assertEqual(result["schemes"], [])
+
     def test_factor_lab_query_reads_canonical_latest_view(self) -> None:
         from backend.services import backtest_factor_lab_results
 

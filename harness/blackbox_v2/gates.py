@@ -354,7 +354,24 @@ class BlackboxBacktestGate(_BlackboxGate):
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         if ctx.persist_backtest:
+            if ctx.backtest_sample_size != 100:
+                return _blocked(
+                    self.name,
+                    started_at,
+                    [
+                        "Blackbox persisted backtest is fixed at 100 Requests: "
+                        f"got sample_size={ctx.backtest_sample_size}"
+                    ],
+                )
             return self._run_persist(ctx, started_at)
+        sample_size = int(ctx.backtest_sample_size)
+        if sample_size < 1 or sample_size > 1000:
+            return _finish(
+                self.name,
+                started_at,
+                [Evidence("sample_size", sample_size), Evidence("persist", False)],
+                [f"Blackbox no-persist sample_size must be between 1 and 1000: got {sample_size}"],
+            )
         cfg = _config(ctx)
         metadata = _metadata(cfg)
         state = _ensure_input_state(ctx)
@@ -362,27 +379,50 @@ class BlackboxBacktestGate(_BlackboxGate):
         requests = [
             replace(
                 templates[index % len(templates)],
-                request_id=f"{state.request.request_id}:batch:{index:03d}",
+                request_id=f"{state.request.request_id}:batch:{index:04d}",
             )
-            for index in range(100)
+            for index in range(sample_size)
         ]
+        profile = _profile(ctx)
         records = run_blackbox_backtest(
             metadata=metadata,
             script_path=_script(cfg),
             requests=requests,
             data_dir=state.snapshot.data_dir,
             data_snapshot_id=state.snapshot.snapshot_id,
-            profile=_profile(ctx),
+            profile=profile,
+        )
+        alternate_batch_size = _alternate_batch_size(profile.max_batch_requests)
+        alternate_records = run_blackbox_backtest(
+            metadata=metadata,
+            script_path=_script(cfg),
+            requests=requests,
+            data_dir=state.snapshot.data_dir,
+            data_snapshot_id=state.snapshot.snapshot_id,
+            profile=replace(profile, max_batch_requests=alternate_batch_size),
         )
         errors: list[str] = []
-        if len(records) != 100:
-            errors.append(f"100-row no-persist backtest returned {len(records)} records")
+        if len(records) != sample_size:
+            errors.append(
+                f"{sample_size}-row no-persist backtest returned {len(records)} records"
+            )
         if [record.extra["request_id"] for record in records] != [item.request_id for item in requests]:
-            errors.append("100-row backtest did not preserve one-to-one Request order")
+            errors.append("no-persist backtest did not preserve one-to-one Request order")
+        batch_split_invariant = _direction_map(records) == _direction_map(alternate_records)
+        if not batch_split_invariant:
+            errors.append("no-persist backtest results changed with platform batch partitioning")
+        if [record.extra["request_id"] for record in alternate_records] != [
+            item.request_id for item in requests
+        ]:
+            errors.append("alternate batch partition did not preserve Request order")
         evidence = [
             Evidence("requests", len(requests)),
             Evidence("records", len(records)),
+            Evidence("sample_size", sample_size),
             Evidence("distinct_cutoff_sets", len(templates)),
+            Evidence("primary_batch_size", profile.max_batch_requests),
+            Evidence("alternate_batch_size", alternate_batch_size),
+            Evidence("batch_split_invariant", batch_split_invariant),
             Evidence("persist", False),
             Evidence("business_tables_written", False),
         ]
@@ -1008,6 +1048,12 @@ def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[Black
 
 def _direction_map(records) -> dict[str, int]:
     return {str(record.extra["request_id"]): int(record.predicted_direction) for record in records}
+
+
+def _alternate_batch_size(primary_batch_size: int) -> int:
+    if primary_batch_size <= 1:
+        raise ValueError("Blackbox batch invariance requires max_batch_requests greater than 1")
+    return min(37, primary_batch_size - 1)
 
 
 def _persisted_backtest_delta_errors(
