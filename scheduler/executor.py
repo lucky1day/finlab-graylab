@@ -300,6 +300,18 @@ def execute_scheme(
     scheme_version = getattr(cfg, "scheme_version", None)
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     if runtime_type == "blackbox_v2":
+        try:
+            from shared.blackbox_v2.lifecycle import assert_lifecycle_clear
+
+            cfg_path = getattr(cfg, "path", None)
+            project_root = Path(cfg_path).parents[1] if cfg_path is not None else Path(__file__).resolve().parents[1]
+            assert_lifecycle_clear(project_root, cfg.scheme_id)
+        except RuntimeError as exc:
+            reason = str(exc)
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
         approval = read_blackbox_execution_approval(engine, cfg)
         if not approval.executable:
             reason = f"Blackbox V2 version is not production-approved: {approval.reason}"

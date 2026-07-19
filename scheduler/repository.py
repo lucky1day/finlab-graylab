@@ -398,6 +398,68 @@ def read_blackbox_execution_approval(engine: Engine, cfg: SchemeConfig) -> Black
         return _read_blackbox_execution_approval_conn(conn, cfg, for_update=False)
 
 
+def read_blackbox_lifecycle_state(engine: Engine, cfg: SchemeConfig) -> BlackboxLifecycleState:
+    """独立读取 Blackbox 精确版本和 composite Registry 生命周期状态。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError("Blackbox lifecycle read requires runtime_type=blackbox_v2")
+    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    with engine.begin() as conn:
+        version_row = _read_scheme_version_conn(conn, cfg, for_update=False)
+        if version_row is None:
+            raise RuntimeError(
+                f"exact version not found: scheme_id={cfg.scheme_id} scheme_version={cfg.scheme_version}"
+            )
+        registry_rows = _read_blackbox_registry_rows_conn(
+            conn,
+            cfg,
+            expected_registry_ids,
+            for_update=False,
+        )
+    statuses = {str(row.get("status")) for row in registry_rows}
+    if len(statuses) != 1:
+        raise RuntimeError(f"Blackbox Registry lifecycle statuses are inconsistent: {sorted(statuses)}")
+    registry_status = next(iter(statuses))
+    registry_error = _blackbox_registry_identity_error(
+        cfg,
+        expected_tenors,
+        expected_registry_ids,
+        registry_rows,
+        expected_status=registry_status,
+    )
+    if registry_error is not None:
+        raise RuntimeError(f"Blackbox lifecycle Registry read failed: {registry_error}")
+    return BlackboxLifecycleState(
+        scheme_id=str(version_row["scheme_id"]),
+        scheme_version=str(version_row["scheme_version"]),
+        runtime_type=str(version_row["runtime_type"]),
+        version_status=str(version_row["status"]),
+        registry_status=registry_status,
+        environment_fingerprint=(
+            str(version_row["environment_fingerprint"])
+            if version_row.get("environment_fingerprint") is not None
+            else None
+        ),
+        data_snapshot_id=(
+            str(version_row["data_snapshot_id"])
+            if version_row.get("data_snapshot_id") is not None
+            else None
+        ),
+        code_hash=str(version_row["code_hash"]),
+        config_hash=(
+            str(version_row["config_hash"]) if version_row.get("config_hash") is not None else None
+        ),
+        manifest_hash=(
+            str(version_row["manifest_hash"]) if version_row.get("manifest_hash") is not None else None
+        ),
+        approved_by=(
+            str(version_row["approved_by"]) if version_row.get("approved_by") is not None else None
+        ),
+        approved_at=(
+            version_row["approved_at"] if isinstance(version_row.get("approved_at"), datetime) else None
+        ),
+    )
+
+
 def _read_blackbox_execution_approval_conn(
     conn: Connection,
     cfg: SchemeConfig,

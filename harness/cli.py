@@ -91,6 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
         "api-readiness", "shadow-register", "api", "live",
+        "lifecycle-reconcile",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -207,12 +208,15 @@ def _load_config_for_dispatch(config_path: Path):
 def _run_activate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
         report_dir=report_dir,
+        config=config,
         authorization=args.authorize,
+        engine_factory=create_engine_from_env,
     )
     return ActivationGate().run(ctx)
 

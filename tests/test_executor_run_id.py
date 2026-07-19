@@ -4,6 +4,7 @@ import unittest
 import inspect
 import signal
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -333,6 +334,7 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
             tenors=["10Y"],
             frequency="weekly",
             schedule=SimpleNamespace(timeout_sec=120),
+            path=Path(__file__).resolve().parents[1] / "schemes" / "approved_blackbox",
         )
 
     @staticmethod
@@ -455,6 +457,40 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
                 insert_predictions.assert_not_called()
                 self.assertEqual(write_run_log.call_args.args[3], "failed")
                 self.assertTrue(engine.disposed)
+
+    def test_blackbox_executor_blocks_incomplete_lifecycle_before_approval_read(self) -> None:
+        from scheduler.executor import execute_scheme
+        from shared.blackbox_v2.lifecycle import LifecycleJournal, LifecycleState, write_journal
+
+        engine = _FakeEngine()
+        cfg = self._config()
+        project_root = cfg.path.parents[1]
+        journal = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id=cfg.scheme_id,
+            scheme_version=cfg.scheme_version,
+            harness_run_id="hr_1",
+            previous=LifecycleState("paused", "shadow", "paused"),
+            target=LifecycleState("active", "active", "active"),
+            token_hash="hash",
+        )
+        path = write_journal(project_root, journal)
+        try:
+            with (
+                patch("scheduler.executor.create_engine_from_env", return_value=engine),
+                patch("scheduler.executor.read_blackbox_execution_approval") as approval_reader,
+                patch("scheduler.executor.write_run_log") as write_run_log,
+            ):
+                result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+        finally:
+            path.unlink(missing_ok=True)
+            (path.parent / ".lock").unlink(missing_ok=True)
+            path.parent.rmdir()
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("lifecycle journal", result.error_msg)
+        approval_reader.assert_not_called()
+        self.assertEqual(write_run_log.call_args.args[3], "failed")
 
     def test_fully_approved_blackbox_version_executes_and_writes_prediction(self) -> None:
         from scheduler.executor import execute_scheme

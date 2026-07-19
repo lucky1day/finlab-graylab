@@ -31,6 +31,17 @@ class LiveGate(Gate):
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
+        lifecycle_error = _blackbox_lifecycle_error(ctx)
+        if lifecycle_error is not None:
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.BLOCKED,
+                passed=False,
+                evidence=[Evidence("lifecycle_clear", False)],
+                errors=[lifecycle_error],
+                started_at=started_at,
+                finished_at=utc_now(),
+            )
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         before = snapshot_table_counts(engine, PROTECTED_TABLES)
         scheme_before = _safe_scheme_counts(engine, ctx.scheme_id)
@@ -124,6 +135,22 @@ def _load_config_for_execution(ctx: GateContext):
     from scheduler.discovery import load_scheme_config
 
     return load_scheme_config(ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml")
+
+
+def _blackbox_lifecycle_error(ctx: GateContext) -> str | None:
+    try:
+        cfg = ctx.config or _load_config_for_execution(ctx)
+    except Exception:
+        return None
+    if getattr(cfg, "runtime_type", "native_adapter") != "blackbox_v2":
+        return None
+    try:
+        from shared.blackbox_v2.lifecycle import assert_lifecycle_clear
+
+        assert_lifecycle_clear(ctx.project_root, ctx.scheme_id)
+    except RuntimeError as exc:
+        return str(exc)
+    return None
 
 
 def _safe_scheme_counts(engine, scheme_id: str) -> dict[str, int]:

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from harness.authorization import (
     AuthorizationSecretError,
+    authorization_signing_enabled,
     issue_token,
     mark_token_used,
     used_tokens_path,
@@ -35,6 +36,11 @@ class AuthorizationTest(unittest.TestCase):
 
     def _used_path(self) -> Path:
         return self.root / "reports" / "harness" / ".used_authorization_tokens.json"
+
+    def test_authorization_signing_enabled_reflects_secret_configuration(self) -> None:
+        self.assertTrue(authorization_signing_enabled())
+        os.environ.pop("HARNESS_AUTH_SECRET", None)
+        self.assertFalse(authorization_signing_enabled())
 
     def test_issue_without_secret_yields_plaintext_token(self) -> None:
         # 软默认：未配置 HARNESS_AUTH_SECRET 时仍可签发 token（明文确认闸），不报错。

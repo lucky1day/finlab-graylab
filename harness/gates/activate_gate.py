@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from harness.authorization import (
@@ -23,6 +24,19 @@ class ActivationGate(Gate):
     requires_authorization = True
 
     def run(self, ctx: GateContext) -> GateResult:
+        config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+        cfg = ctx.config
+        if cfg is None and config_path.is_file():
+            try:
+                from scheduler.discovery import load_scheme_config
+
+                cfg = load_scheme_config(config_path)
+            except (OSError, UnicodeError, ValueError):
+                cfg = None
+        if cfg is not None and getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
+            from harness.blackbox_v2.activation import activate_blackbox
+
+            return activate_blackbox(replace(ctx, config=cfg))
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:

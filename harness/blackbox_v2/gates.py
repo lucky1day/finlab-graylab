@@ -15,6 +15,7 @@ import pandas as pd
 
 from harness.context import GateContext
 from harness.authorization import (
+    authorization_token_hash,
     mark_token_used,
     used_tokens_path,
     verify_authorization,
@@ -37,6 +38,11 @@ from shared.blackbox_v2.requests import build_live_request, write_request
 from shared.blackbox_v2.snapshot import BlackboxSnapshot, SNAPSHOT_FILENAMES
 from shared.calendar_service import get_calendar
 from shared.input_artifacts import build_blackbox_input_snapshot, resolve_blackbox_input_cutoffs
+from shared.blackbox_v2.lifecycle import (
+    LifecycleOperationError,
+    LifecycleState,
+    perform_lifecycle_transition,
+)
 
 if TYPE_CHECKING:
     from scheduler.repository import BlackboxLifecycleState
@@ -73,6 +79,9 @@ class PassedAllRun:
     harness_run_id: str
     report_uri: Path
     data_snapshot_id: str
+    generation_id: str | None = None
+    runtime_profile: str | None = None
+    environment_fingerprint: str | None = None
 
 
 class _BlackboxGate(Gate):
@@ -411,6 +420,12 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
+        try:
+            from harness.blackbox_v2.activation import reconcile_incomplete_before_authorization
+
+            cfg = reconcile_incomplete_before_authorization(ctx, cfg)
+        except RuntimeError as exc:
+            return _blocked(self.name, started_at, [str(exc)])
         auth, auth_errors = verify_authorization(
             ctx.authorization,
             scheme_id=ctx.scheme_id,
@@ -432,7 +447,8 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         config_path = cfg.path / "config.yaml"
-        previous_text = config_path.read_text(encoding="utf-8")
+        audit_path: Path | None = None
+        registered_state = None
         try:
             passed_run = _verify_passed_all(engine, cfg)
             if auth.harness_run_id != passed_run.harness_run_id:
@@ -451,25 +467,75 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 environment_fingerprint=environment_fingerprint,
                 data_snapshot_id=passed_run.data_snapshot_id,
             )
-            _set_config_scalar(config_path, "version_status", "shadow")
-            shadow_cfg = replace(
-                load_scheme_config(config_path),
-                environment_fingerprint=environment_fingerprint,
-                data_snapshot_id=passed_run.data_snapshot_id,
+            db_before = _read_shadow_state(engine, cfg)
+            previous = LifecycleState(cfg.status, db_before.version_status, db_before.registry_status)
+            if previous.config_status != "paused" or previous.registry_status != "paused":
+                raise ValueError(f"shadow registration requires paused safe state, got {previous}")
+            target = LifecycleState("paused", "shadow", "paused")
+
+            def consume() -> None:
+                nonlocal audit_path
+                mark_token_used(auth, used_tokens_path(ctx.project_root))
+                audit_path = write_authorization_audit(auth, ctx.report_dir / "shadow_authorization")
+
+            def enriched_current():
+                return replace(
+                    load_scheme_config(config_path),
+                    environment_fingerprint=environment_fingerprint,
+                    data_snapshot_id=passed_run.data_snapshot_id,
+                )
+
+            def apply_database(state: LifecycleState) -> None:
+                nonlocal registered_state
+                current = enriched_current()
+                if state == target:
+                    registered_state = _register_shadow(engine, validated_cfg, current)
+                    return
+                from scheduler.repository import apply_blackbox_lifecycle_state
+
+                apply_blackbox_lifecycle_state(
+                    engine,
+                    current,
+                    version_status=state.version_status,
+                    registry_status=state.registry_status,
+                )
+
+            def read_state() -> LifecycleState:
+                current = enriched_current()
+                db_state = _read_shadow_state(engine, current)
+                return LifecycleState(current.status, db_state.version_status, db_state.registry_status)
+
+            _, journal_path = perform_lifecycle_transition(
+                project_root=ctx.project_root,
+                config_path=config_path,
+                action="shadow_register",
+                scheme_id=cfg.scheme_id,
+                scheme_version=cfg.scheme_version,
+                harness_run_id=passed_run.harness_run_id,
+                previous=previous,
+                target=target,
+                compensation=previous,
+                token_hash=authorization_token_hash(auth),
+                consume_authorization=consume,
+                apply_database=apply_database,
+                read_state=read_state,
             )
-            if shadow_cfg.status != "paused" or shadow_cfg.version_status != "shadow":
-                raise ValueError("shadow registration must keep config status=paused and set version_status=shadow")
-            try:
-                registered_state = _register_shadow(engine, validated_cfg, shadow_cfg)
-            except Exception:
-                _atomic_write(config_path, previous_text)
-                raise
+        except LifecycleOperationError as exc:
+            return _finish(
+                self.name,
+                started_at,
+                [
+                    Evidence("journal_path", str(exc.journal_path)),
+                    Evidence("compensated", exc.compensated),
+                ],
+                [str(exc)],
+            )
         finally:
             if hasattr(engine, "dispose"):
                 engine.dispose()
 
-        audit_path = write_authorization_audit(auth, ctx.report_dir / "shadow_authorization")
-        mark_token_used(auth, used_tokens_path(ctx.project_root))
+        if registered_state is None:
+            raise RuntimeError("shadow lifecycle completed without database state evidence")
         evidence = [
             Evidence("harness_run_id", passed_run.harness_run_id),
             Evidence("validated_scheme_version", validated_cfg.scheme_version),
@@ -484,6 +550,8 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             Evidence("manifest_hash", registered_state.manifest_hash),
             Evidence("business_tables_written", False),
             Evidence("authorization_audit_path", str(audit_path)),
+            Evidence("journal_path", str(journal_path)),
+            Evidence("journal_phase", "verified"),
         ]
         result = _finish(self.name, started_at, evidence, [])
         return replace(result, report_path=audit_path)
@@ -521,10 +589,13 @@ def _script(cfg: SchemeConfig) -> Path:
 
 
 def _profile(ctx: GateContext) -> RuntimeProfile:
-    conda_env = DEFAULT_RUNTIME_PROFILE.conda_env
-    if ctx.algo_env and ctx.algo_env != "forecast_env":
-        conda_env = ctx.algo_env
-    return replace(DEFAULT_RUNTIME_PROFILE, conda_env=conda_env)
+    allowed_cli_values = {"forecast_env", DEFAULT_RUNTIME_PROFILE.conda_env}
+    if ctx.algo_env and ctx.algo_env not in allowed_cli_values:
+        raise ValueError(
+            "Blackbox V2 runtime environment is fixed by runtime_profile; "
+            f"CLI override is forbidden: {ctx.algo_env}"
+        )
+    return DEFAULT_RUNTIME_PROFILE
 
 
 def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
@@ -559,6 +630,7 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
         if hasattr(engine, "dispose"):
             engine.dispose()
     request_path = write_request(request, root / "request.json")
+    provenance = _data_bridge_provenance(ctx, snapshot)
     payload = {
         "snapshot_id": snapshot.snapshot_id,
         "snapshot_root": str(snapshot.root_dir),
@@ -566,9 +638,45 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
         "manifest_path": str(snapshot.manifest_path),
         "schema_version": snapshot.schema_version,
         "request_path": str(request_path),
+        **provenance,
     }
-    state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+    _atomic_write(state_path, json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
     return InputState(snapshot=snapshot, request_path=request_path, request=request)
+
+
+def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dict[str, str]:
+    state_path = ctx.project_root / "backtest_artifacts" / "data_bridge_refresh" / "state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        manifest = json.loads(snapshot.manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Blackbox all-stage requires readable DataBridge provenance: {exc}") from exc
+    required = ("generation_id", "refresh_date", "refreshed_at", "business_digest")
+    missing = [key for key in required if not isinstance(state.get(key), str) or not state[key].strip()]
+    if missing:
+        raise ValueError(f"DataBridge provenance is missing fields: {missing}")
+    state_files = state.get("files")
+    manifest_files = manifest.get("files")
+    if not isinstance(state_files, dict) or not isinstance(manifest_files, dict):
+        raise ValueError("DataBridge provenance file evidence is missing")
+    mismatches = [
+        name
+        for name in SNAPSHOT_FILENAMES
+        if not isinstance(state_files.get(name), dict)
+        or not isinstance(manifest_files.get(name), dict)
+        or state_files[name].get("sha256") != manifest_files[name].get("sha256")
+    ]
+    if mismatches:
+        raise ValueError(f"DataBridge generation does not match Harness snapshot: {mismatches}")
+    cfg = _config(ctx)
+    return {
+        "generation_id": str(state["generation_id"]),
+        "refresh_date": str(state["refresh_date"]),
+        "refreshed_at": str(state["refreshed_at"]),
+        "business_digest": str(state["business_digest"]),
+        "runtime_profile": str(cfg.runtime_profile),
+        "environment_fingerprint": _environment_fingerprint(ctx.project_root),
+    }
 
 
 def cleanup_runtime_input(ctx: GateContext) -> None:
@@ -776,6 +884,11 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
         harness_run_id=str(row["harness_run_id"]),
         report_uri=report_dir,
         data_snapshot_id=str(state["snapshot_id"]),
+        generation_id=(str(state["generation_id"]) if state.get("generation_id") else None),
+        runtime_profile=(str(state["runtime_profile"]) if state.get("runtime_profile") else None),
+        environment_fingerprint=(
+            str(state["environment_fingerprint"]) if state.get("environment_fingerprint") else None
+        ),
     )
 
 
@@ -808,6 +921,12 @@ def _register_shadow(
     )
 
 
+def _read_shadow_state(engine, cfg: SchemeConfig):
+    from scheduler.repository import read_blackbox_lifecycle_state
+
+    return read_blackbox_lifecycle_state(engine, cfg)
+
+
 def _environment_fingerprint(project_root: Path) -> str:
     path = project_root / "deploy" / "blackbox_v2" / "environment_manifest.json"
     try:
@@ -820,23 +939,16 @@ def _environment_fingerprint(project_root: Path) -> str:
     payload = raw.get("explicit_packages")
     if not isinstance(payload, list):
         raise ValueError("environment manifest must contain explicit_packages")
+    if raw.get("runtime_profile") != DEFAULT_RUNTIME_PROFILE.name:
+        raise ValueError(
+            "environment manifest runtime_profile must match frozen Blackbox runtime profile"
+        )
     computed = hashlib.sha256(
         json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     if computed != fingerprint:
         raise ValueError("environment manifest fingerprint does not match explicit_packages")
     return fingerprint
-
-
-def _set_config_scalar(path: Path, key: str, value: str) -> None:
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    matches = [index for index, line in enumerate(lines) if line.strip().startswith(f"{key}:")]
-    if len(matches) != 1:
-        raise ValueError(f"config must contain exactly one {key} field")
-    index = matches[0]
-    newline = "\n" if lines[index].endswith("\n") else ""
-    lines[index] = f"{key}: {value}{newline}"
-    _atomic_write(path, "".join(lines))
 
 
 def _atomic_write(path: Path, text_value: str) -> None:

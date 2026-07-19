@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import secrets
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,6 +40,17 @@ def _auth_secret() -> bytes | None:
     if not secret:
         return None
     return secret.encode("utf-8")
+
+
+def authorization_signing_enabled() -> bool:
+    """返回当前授权 token 是否启用 HMAC 签名。"""
+    return _auth_secret() is not None
+
+
+def authorization_token_hash(token: str | Authorization) -> str:
+    """返回可安全持久化的授权 token SHA-256。"""
+    raw = token.token if isinstance(token, Authorization) else str(token)
+    return _token_hash(raw)
 
 
 def _canonical_payload_bytes(payload: dict[str, Any]) -> bytes:
@@ -183,8 +195,7 @@ def verify_authorization(
 def mark_token_used(auth: Authorization, used_store_path: Path) -> None:
     used = _read_used_tokens(used_store_path)
     used.add(_token_hash(auth.token))
-    used_store_path.parent.mkdir(parents=True, exist_ok=True)
-    used_store_path.write_text(json.dumps(sorted(used), ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_json(used_store_path, sorted(used))
 
 
 def write_authorization_audit(auth: Authorization, audit_dir: Path) -> Path:
@@ -193,7 +204,7 @@ def write_authorization_audit(auth: Authorization, audit_dir: Path) -> Path:
     payload: dict[str, Any] = asdict(auth)
     payload["token_sha256"] = _token_hash(auth.token)
     payload.pop("token", None)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write_json(path, payload)
     return path
 
 
@@ -212,6 +223,26 @@ def _read_used_tokens(path: Path) -> set[str]:
 
 def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _utc_now() -> str:
