@@ -17,6 +17,7 @@ from scheduler.repository import (
     create_engine_from_env,
     finish_scheme_run,
     insert_run_predictions,
+    read_blackbox_execution_approval,
     sync_scheme_registry,
     write_run_log,
 )
@@ -282,8 +283,8 @@ def execute_scheme(
 
     执行前校验：
     1. config.yaml status == 'active'（本地配置）
-    2. t_scheme_registry.status == 'active'（DB 注册状态）
-    3. t_scheme_versions 中当前版本状态为 'active' 或 'shadow'（激活审核状态）
+    2. Native 维持既有 Registry 与 active/shadow 版本校验
+    3. Blackbox 要求 exact active 版本、批准人与 composite Registry 身份全部一致
     """
     if prediction_phase not in VALID_PREDICTION_PHASES:
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
@@ -296,12 +297,22 @@ def execute_scheme(
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
 
     scheme_version = getattr(cfg, "scheme_version", None)
-    ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
-    if not ok:
-        duration = time.monotonic() - started
-        write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
-        engine.dispose()
-        return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
+    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    if runtime_type == "blackbox_v2":
+        approval = read_blackbox_execution_approval(engine, cfg)
+        if not approval.executable:
+            reason = f"Blackbox V2 version is not production-approved: {approval.reason}"
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
+    else:
+        ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
+        if not ok:
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
     active_targets = _active_registry_targets(engine, cfg.scheme_id)
 
     run_id: int | None = None
@@ -313,7 +324,7 @@ def execute_scheme(
             scheme_id=cfg.scheme_id,
             predict_date=predict_date,
             scheme_version=scheme_version,
-            runtime_type=getattr(cfg, "runtime_type", "native_adapter"),
+            runtime_type=runtime_type,
             run_type="active",
             prediction_phase=prediction_phase,
             records_expected=len(active_targets),

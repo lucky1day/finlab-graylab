@@ -4,14 +4,37 @@ import unittest
 from types import SimpleNamespace
 
 
+class _MappingResult:
+    def __init__(self, rows: list[dict] | None = None) -> None:
+        self._rows = rows or []
+
+    def mappings(self) -> _MappingResult:
+        return self
+
+    def one_or_none(self) -> dict | None:
+        if len(self._rows) > 1:
+            raise AssertionError("expected at most one row")
+        return self._rows[0] if self._rows else None
+
+    def all(self) -> list[dict]:
+        return list(self._rows)
+
+
 class _CaptureConnection:
     def __init__(self, store: dict) -> None:
         self._store = store
 
-    def execute(self, sql, rows) -> None:
-        self._store.setdefault("calls", []).append((str(sql), rows))
-        self._store["sql"] = str(sql)
+    def execute(self, sql, rows=None) -> _MappingResult:
+        sql_text = str(sql)
+        self._store.setdefault("calls", []).append((sql_text, rows))
+        self._store["sql"] = sql_text
         self._store["rows"] = rows
+        if sql_text.lstrip().startswith("SELECT") and "FROM t_scheme_versions" in sql_text:
+            version_row = self._store.get("version_row")
+            return _MappingResult([version_row] if version_row is not None else [])
+        if sql_text.lstrip().startswith("SELECT") and "FROM t_scheme_registry" in sql_text:
+            return _MappingResult(self._store.get("registry_rows", []))
+        return _MappingResult()
 
 
 class _CaptureBegin:
@@ -26,11 +49,53 @@ class _CaptureBegin:
 
 
 class _CaptureEngine:
-    def __init__(self) -> None:
-        self.store: dict = {}
+    def __init__(
+        self,
+        *,
+        version_row: dict | None = None,
+        registry_rows: list[dict] | None = None,
+    ) -> None:
+        self.store: dict = {
+            "version_row": version_row,
+            "registry_rows": registry_rows or [],
+        }
 
     def begin(self) -> _CaptureBegin:
         return _CaptureBegin(self.store)
+
+
+def _blackbox_config(
+    *,
+    status: str = "active",
+    version_status: str = "active",
+    scheme_version: str = "abc123def456",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        scheme_id="demo_blackbox",
+        name="Demo Blackbox",
+        description="blackbox scheme",
+        horizon=1,
+        task_type="T+1",
+        tenors=["10Y"],
+        frequency="daily",
+        schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
+        status=status,
+        scheme_version=scheme_version,
+        code_hash="c" * 64,
+        config_hash="f" * 64,
+        manifest_hash="m" * 64,
+        runtime_type="blackbox_v2",
+        version_status=version_status,
+        algorithm_version="1.2.3",
+        contract_version="1.0",
+        runtime_profile="blackbox-v2-v1",
+        environment_fingerprint="e" * 64,
+        data_snapshot_id="snapshot-1",
+    )
+
+
+def _call_for(store: dict, sql_fragment: str) -> tuple[str, object]:
+    return next(call for call in store["calls"] if sql_fragment in call[0])
 
 
 class RegistrySyncTests(unittest.TestCase):
@@ -67,13 +132,13 @@ class RegistrySyncTests(unittest.TestCase):
 
         sync_scheme_registry(engine, [scheme])
 
-        sql = engine.store["calls"][0][0]
+        sql, rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
         update_clause = sql.split("ON DUPLICATE KEY UPDATE", 1)[1]
         self.assertIn("updated_at = IF(", update_clause)
         self.assertLess(update_clause.index("updated_at = IF("), update_clause.index("name = VALUES(name)"))
         self.assertNotIn("updated_at = CURRENT_TIMESTAMP", update_clause)
         self.assertIn("deployed_at = IF(deployed_at IS NULL AND VALUES(status) = 'active'", update_clause)
-        self.assertEqual(engine.store["calls"][0][1][0]["runtime_type"], "blackbox_v2")
+        self.assertEqual(rows[0]["runtime_type"], "blackbox_v2")
 
     def test_registry_sync_writes_one_registry_row_per_target_tenor(self) -> None:
         from scheduler.repository import sync_scheme_registry
@@ -97,8 +162,7 @@ class RegistrySyncTests(unittest.TestCase):
 
         sync_scheme_registry(engine, [scheme])
 
-        sql = engine.store["calls"][0][0]
-        rows = engine.store["calls"][0][1]
+        sql, rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
         self.assertNotIn("base_scheme_id, frequency, horizon, target_tenor", sql)
         self.assertEqual(
             [row["scheme_id"] for row in rows],
@@ -114,6 +178,219 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertEqual({row["task_type"] for row in rows}, {"T+5"})
         self.assertEqual([row["tenors"] for row in rows], ['["3Y"]', '["5Y"]', '["7Y"]', '["10Y"]'])
         self.assertEqual({row["runtime_type"] for row in rows}, {"native_adapter"})
+
+    def test_unknown_active_blackbox_sync_creates_draft_version_and_paused_registry(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        engine = _CaptureEngine()
+
+        sync_scheme_registry(engine, [_blackbox_config()])
+
+        _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
+        _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
+        self.assertEqual(version_params["status"], "draft")
+        self.assertEqual({row["status"] for row in registry_rows}, {"paused"})
+
+    def test_generic_sync_does_not_downgrade_or_clear_approved_blackbox_version(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        engine = _CaptureEngine(
+            version_row={
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "runtime_type": "blackbox_v2",
+                "status": "active",
+                "approved_by": "release-owner",
+                "approved_at": "2026-07-20 08:30:00",
+            }
+        )
+
+        sync_scheme_registry(engine, [_blackbox_config(version_status="shadow")])
+
+        version_sql, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
+        _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
+        self.assertEqual(version_params["status"], "draft")
+        self.assertTrue(version_params["preserve_lifecycle"])
+        self.assertFalse(version_params["trusted_lifecycle"])
+        self.assertIn("approved_by = IF(:trusted_lifecycle", version_sql)
+        self.assertIn("approved_at = IF(:trusted_lifecycle", version_sql)
+        self.assertEqual({row["status"] for row in registry_rows}, {"active"})
+
+    def test_native_active_sync_behavior_is_unchanged(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        engine = _CaptureEngine()
+        cfg = SimpleNamespace(
+            scheme_id="native_daily",
+            name="Native Daily",
+            description="native scheme",
+            horizon=1,
+            task_type="T+1",
+            tenors=["5Y"],
+            frequency="daily",
+            schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
+            status="active",
+            scheme_version="native-version-1",
+            code_hash="c" * 64,
+            config_hash="f" * 64,
+            manifest_hash=None,
+            runtime_type="native_adapter",
+            version_status="active",
+        )
+
+        sync_scheme_registry(engine, [cfg])
+
+        _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
+        _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
+        self.assertEqual(version_params["status"], "active")
+        self.assertEqual({row["status"] for row in registry_rows}, {"active"})
+
+
+class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
+    def _approved_version_row(self, **updates) -> dict:
+        row = {
+            "scheme_id": "demo_blackbox",
+            "scheme_version": "abc123def456",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+            "approved_by": "release-owner",
+            "approved_at": "2026-07-20 08:30:00",
+        }
+        row.update(updates)
+        return row
+
+    def _active_registry_row(self, **updates) -> dict:
+        row = {
+            "scheme_id": "demo_blackbox__h1__10Y",
+            "base_scheme_id": "demo_blackbox",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+            "task_type": "T+1",
+            "target_tenor": "10Y",
+            "horizon": 1,
+        }
+        row.update(updates)
+        return row
+
+    def test_exact_approved_version_and_registry_identity_are_executable(self) -> None:
+        from dataclasses import FrozenInstanceError
+
+        from scheduler.repository import read_blackbox_execution_approval
+
+        engine = _CaptureEngine(
+            version_row=self._approved_version_row(),
+            registry_rows=[self._active_registry_row()],
+        )
+
+        approval = read_blackbox_execution_approval(engine, _blackbox_config())
+
+        self.assertTrue(approval.executable)
+        self.assertEqual(approval.reason, "approved")
+        self.assertEqual(approval.version_status, "active")
+        self.assertEqual(approval.approved_by, "release-owner")
+        self.assertEqual(approval.approved_at, "2026-07-20 08:30:00")
+        self.assertEqual(approval.base_scheme_id, "demo_blackbox")
+        self.assertEqual(approval.scheme_version, "abc123def456")
+        self.assertEqual(approval.version_runtime_type, "blackbox_v2")
+        self.assertEqual(approval.registry_scheme_ids, ("demo_blackbox__h1__10Y",))
+        with self.assertRaises(FrozenInstanceError):
+            approval.reason = "mutated"
+
+    def test_exact_approval_fails_closed_for_each_missing_or_mismatched_state(self) -> None:
+        from scheduler.repository import read_blackbox_execution_approval
+
+        cases = [
+            (
+                "missing exact version",
+                None,
+                [self._active_registry_row()],
+                "exact version not found: scheme_id=demo_blackbox scheme_version=abc123def456",
+            ),
+            (
+                "version mismatch",
+                self._approved_version_row(scheme_version="different-version"),
+                [self._active_registry_row()],
+                "version identity mismatch: expected demo_blackbox/abc123def456, got demo_blackbox/different-version",
+            ),
+            (
+                "wrong version runtime",
+                self._approved_version_row(runtime_type="native_adapter"),
+                [self._active_registry_row()],
+                "version runtime_type is native_adapter, expected blackbox_v2",
+            ),
+            (
+                "shadow version",
+                self._approved_version_row(status="shadow"),
+                [self._active_registry_row()],
+                "version status is shadow, expected active",
+            ),
+            (
+                "missing approver",
+                self._approved_version_row(approved_by=None),
+                [self._active_registry_row()],
+                "version approved_by is null",
+            ),
+            (
+                "missing approval time",
+                self._approved_version_row(approved_at=None),
+                [self._active_registry_row()],
+                "version approved_at is null",
+            ),
+            (
+                "missing registry",
+                self._approved_version_row(),
+                [],
+                "registry row missing: demo_blackbox__h1__10Y",
+            ),
+            (
+                "registry id mismatch",
+                self._approved_version_row(),
+                [self._active_registry_row(scheme_id="demo_blackbox__h1__5Y")],
+                "registry scheme_id mismatch: expected demo_blackbox__h1__10Y, got demo_blackbox__h1__5Y",
+            ),
+            (
+                "registry base mismatch",
+                self._approved_version_row(),
+                [self._active_registry_row(base_scheme_id="other")],
+                "registry base_scheme_id mismatch for demo_blackbox__h1__10Y: expected demo_blackbox, got other",
+            ),
+            (
+                "registry paused",
+                self._approved_version_row(),
+                [self._active_registry_row(status="paused")],
+                "registry demo_blackbox__h1__10Y status is paused, expected active",
+            ),
+            (
+                "registry runtime mismatch",
+                self._approved_version_row(),
+                [self._active_registry_row(runtime_type="native_adapter")],
+                "registry demo_blackbox__h1__10Y runtime_type is native_adapter, expected blackbox_v2",
+            ),
+            (
+                "registry task mismatch",
+                self._approved_version_row(),
+                [self._active_registry_row(task_type="T+5")],
+                "registry demo_blackbox__h1__10Y task_type is T+5, expected T+1",
+            ),
+            (
+                "registry tenor mismatch",
+                self._approved_version_row(),
+                [self._active_registry_row(target_tenor="5Y")],
+                "registry demo_blackbox__h1__10Y target_tenor is 5Y, expected 10Y",
+            ),
+            (
+                "registry horizon mismatch",
+                self._approved_version_row(),
+                [self._active_registry_row(horizon=5)],
+                "registry demo_blackbox__h1__10Y horizon is 5, expected 1",
+            ),
+        ]
+        for label, version_row, registry_rows, expected_reason in cases:
+            with self.subTest(label=label):
+                engine = _CaptureEngine(version_row=version_row, registry_rows=registry_rows)
+                approval = read_blackbox_execution_approval(engine, _blackbox_config())
+                self.assertFalse(approval.executable)
+                self.assertEqual(approval.reason, expected_reason)
 
 
 class _Result:
@@ -275,7 +552,9 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["code_hash"], "c" * 64)
         self.assertEqual(params["config_hash"], "f" * 64)
         self.assertIsNone(params["manifest_hash"])
-        self.assertEqual(params["status"], "shadow")
+        self.assertEqual(params["status"], "draft")
+        self.assertTrue(params["preserve_lifecycle"])
+        self.assertFalse(params["trusted_lifecycle"])
         self.assertEqual(params["runtime_type"], "blackbox_v2")
         self.assertEqual(params["algorithm_version"], "1.2.3")
         self.assertEqual(params["contract_version"], "1.0")
