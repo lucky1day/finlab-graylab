@@ -15,6 +15,17 @@ from unittest.mock import patch
 from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
 
 
+_UNDECLARED_SYSTEM_READ_PROBES = {
+    "passwd_read_denied": Path("/private/etc/passwd"),
+    "language_assets_read_denied": Path(
+        "/usr/share/com.apple.languageassetd/_CodeSignature/CodeResources"
+    ),
+    "calculator_info_read_denied": Path(
+        "/System/Applications/Calculator.app/Contents/Info.plist"
+    ),
+}
+
+
 class BlackboxV2RunnerTests(unittest.TestCase):
     def test_runtime_environment_does_not_inherit_parent_secrets(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, _runtime_environment
@@ -46,7 +57,27 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             command = _sandbox_command([sys.executable, "-c", "pass"], Path(tmpdir))
 
-        self.assertNotIn("(allow file-read*)", command[2])
+        policy = command[2]
+        self.assertNotIn("(allow file-read*)", policy)
+        self.assertNotIn('(import "system.sb")', policy)
+        self.assertNotIn("(allow process*)", policy)
+        self.assertNotIn("(allow mach-lookup)", policy)
+        self.assertNotIn("(allow signal)", policy)
+        self.assertNotIn("(allow sysctl-read)", policy)
+        self.assertIn('(allow file-read-data file-test-existence (literal "/"))', policy)
+        forbidden_subpaths = {
+            "/",
+            "/Users",
+            str(Path.home()),
+            str(Path(__file__).resolve().parents[1]),
+            "/etc",
+            "/private/etc",
+            "/usr/share",
+            "/System",
+            "/Library",
+        }
+        for path in forbidden_subpaths:
+            self.assertNotIn(f'(subpath "{path}")', policy)
 
     def test_help_probe_requires_both_cli_modes(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, probe_blackbox_help
@@ -321,6 +352,13 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertTrue(result["inherited_secret_absent"])
         self.assertTrue(result["network_denied"])
         self.assertTrue(result["data_write_denied"])
+        for result_key, path in _UNDECLARED_SYSTEM_READ_PROBES.items():
+            with self.subTest(undeclared_read=str(path)):
+                if path.is_file():
+                    self.assertTrue(
+                        result[result_key],
+                        f"sandbox read unexpectedly allowed: {path}",
+                    )
 
     @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
     def test_macos_sandbox_runs_frozen_scientific_environment(self) -> None:
@@ -487,6 +525,22 @@ try:
 except OSError:
     external_secret_read_denied = True
 
+undeclared_system_reads = {}
+for result_key, path in {
+    "passwd_read_denied": "/private/etc/passwd",
+    "language_assets_read_denied": (
+        "/usr/share/com.apple.languageassetd/_CodeSignature/CodeResources"
+    ),
+    "calculator_info_read_denied": (
+        "/System/Applications/Calculator.app/Contents/Info.plist"
+    ),
+}.items():
+    try:
+        Path(path).read_bytes()
+        undeclared_system_reads[result_key] = False
+    except OSError:
+        undeclared_system_reads[result_key] = True
+
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 try:
     sock.bind(("127.0.0.1", 0))
@@ -509,6 +563,7 @@ result = {
     "inherited_secret_absent": "BLACKBOX_TEST_SECRET" not in os.environ,
     "network_denied": network_denied,
     "data_write_denied": data_write_denied,
+    **undeclared_system_reads,
 }
 Path(args.output).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
 '''

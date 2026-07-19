@@ -46,6 +46,10 @@ class BlackboxV2RuntimeProfileTests(unittest.TestCase):
 
         forbidden = {"/", "/Users", "/etc", str(PROJECT_ROOT), str(Path.home())}
         self.assertTrue(forbidden.isdisjoint(DEFAULT_RUNTIME_PROFILE.read_roots))
+        self.assertEqual(
+            DEFAULT_RUNTIME_PROFILE.read_roots,
+            ("/opt/homebrew/opt/libomp/lib",),
+        )
 
     def test_environment_manifest_fingerprint_is_self_consistent(self) -> None:
         manifest = json.loads(

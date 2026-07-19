@@ -37,8 +37,6 @@ class RuntimeProfile:
     max_log_bytes: int = 5 * 1024**2
     sandbox_enabled: bool = True
     read_roots: tuple[str, ...] = (
-        "/System/Library",
-        "/usr/lib",
         "/opt/homebrew/opt/libomp/lib",
     )
     environment_allowlist: tuple[str, ...] = ("LANG", "LC_ALL", "TZ")
@@ -368,14 +366,14 @@ def _sandbox_command(
     if not executable.is_file():
         raise RuntimeError(f"Blackbox V2 Python executable is not a regular file: {executable}")
     python_prefix = executable.parent.parent
-    read_directories = [python_prefix, writable]
+    runtime_directories = [python_prefix]
     read_aliases: list[Path] = []
     for configured_root in profile.read_roots:
         configured = Path(os.path.abspath(configured_root))
         root = configured.resolve(strict=True)
         if not root.is_dir():
             raise RuntimeError(f"Blackbox V2 runtime read root is not a directory: {root}")
-        read_directories.append(root)
+        runtime_directories.append(root)
         if configured != root:
             read_aliases.append(configured)
             read_aliases.extend(
@@ -388,39 +386,81 @@ def _sandbox_command(
         resolved_data_dir = data_dir.resolve(strict=True)
         read_files.extend(resolved_data_dir / filename for filename in SNAPSHOT_FILENAMES)
 
+    read_directories = [*runtime_directories, writable]
     read_filters = _sandbox_path_filters(read_directories, include_children=True)
     read_filters.extend(_sandbox_path_filters(read_files, include_children=False))
     if resolved_data_dir is not None:
         read_filters.extend(_sandbox_path_filters([resolved_data_dir], include_children=False))
 
+    process_filters = _sandbox_path_filters(
+        [Path(os.path.abspath(command[0])), executable],
+        include_children=False,
+    )
+    executable_filters = _sandbox_path_filters(
+        runtime_directories,
+        include_children=True,
+    )
+    metadata_filters = _sandbox_metadata_filters(
+        [*read_directories, *read_files, *read_aliases, executable]
+        + ([resolved_data_dir] if resolved_data_dir is not None else [])
+    )
+    alias_filters = _sandbox_path_filters(read_aliases, include_children=True)
+    device_filters = _sandbox_path_filters(
+        [
+            Path(path)
+            for path in ("/dev/null", "/dev/zero", "/dev/random", "/dev/urandom")
+        ],
+        include_children=False,
+    )
     write_filters = _sandbox_path_filters([writable], include_children=True)
     policy = "\n".join(
         [
             "(version 1)",
             "(deny default)",
-            '(import "system.sb")',
-            "(allow process*)",
+            "(allow process-exec",
+            *(f"  {item}" for item in process_filters),
+            ")",
+            "(allow syscall-unix",
+            "  (syscall-number SYS___mac_syscall)",
+            "  (syscall-number SYS_getfsstat SYS_getfsstat64)",
+            "  (syscall-number SYS_map_with_linking_np)",
+            "  (syscall-number SYS_open SYS_openat)",
+            "  (syscall-number SYS_fstatat SYS_fstatat64)",
+            "  (syscall-number SYS_dup)",
+            ")",
+            "(allow sysctl-read",
+            '  (sysctl-name "kern.ostype" "kern.hostname" "kern.osrelease"',
+            '               "kern.version" "hw.machine" "hw.ncpu")',
+            ")",
+            "(allow system-fcntl",
+            "  (fcntl-command F_ADDFILESIGS_RETURN F_CHECK_LV F_GETPATH)",
+            ")",
+            '(with-filter (mac-policy-name "Sandbox")',
+            "  (allow system-mac-syscall (mac-syscall-number 2))",
+            ")",
+            '(allow file-read-data file-test-existence (literal "/"))',
             "(allow file-read* file-test-existence",
             *(f"  {item}" for item in read_filters),
             ")",
+            "(allow file-map-executable",
+            *(f"  {item}" for item in executable_filters),
+            ")",
+            "(allow file-read-metadata file-test-existence",
+            *(f"  {item}" for item in metadata_filters),
+            *(f"  {item}" for item in alias_filters),
+            ")",
+            "(allow file-read* file-test-existence",
+            *(f"  {item}" for item in device_filters),
+            ")",
+            "(allow file-write-data",
             *(
-                [
-                    "(allow file-read-metadata file-test-existence",
-                    *(
-                        f"  {item}"
-                        for item in _sandbox_path_filters(
-                            read_aliases,
-                            include_children=True,
-                        )
-                    ),
-                    ")",
-                ]
-                if read_aliases
-                else []
+                f"  {item}"
+                for item in _sandbox_path_filters(
+                    [Path("/dev/null"), Path("/dev/zero")],
+                    include_children=False,
+                )
             ),
-            "(allow mach-lookup)",
-            "(allow signal)",
-            "(allow sysctl-read)",
+            ")",
             "(allow file-write*",
             *(f"  {item}" for item in write_filters),
             ")",
@@ -453,6 +493,13 @@ def _sandbox_path_filters(paths: Sequence[Path], *, include_children: bool) -> l
         if include_children:
             filters.append(f'(subpath "{quoted}")')
     return filters
+
+
+def _sandbox_metadata_filters(paths: Sequence[Path]) -> list[str]:
+    metadata_paths: list[Path] = []
+    for path in paths:
+        metadata_paths.extend((path, *path.parents))
+    return _sandbox_path_filters(metadata_paths, include_children=False)
 
 
 def _sandbox_quote(path: Path) -> str:

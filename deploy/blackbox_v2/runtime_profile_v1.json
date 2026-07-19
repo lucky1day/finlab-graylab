@@ -12,8 +12,6 @@
   "max_log_bytes": 5242880,
   "sandbox_enabled": true,
   "read_roots": [
-    "/System/Library",
-    "/usr/lib",
     "/opt/homebrew/opt/libomp/lib"
   ],
   "environment_allowlist": [
