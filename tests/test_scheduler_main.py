@@ -9,6 +9,8 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from scheduler.executor import SchemeRunResult
+
 
 def _cfg(
     scheme_id: str,
@@ -215,11 +217,166 @@ class SchedulerMainTests(unittest.TestCase):
             patch.object(scheduler_main, "execute_scheme") as execute_scheme,
             self.assertLogs(scheduler_main.logger, level=logging.INFO) as logs,
         ):
-            scheduler_main.run_prediction_job("daily_demo", run_date="2026-06-15")
+            result = scheduler_main.run_prediction_job("daily_demo", run_date="2026-06-15")
 
         trading_day.assert_called_once_with("2026-06-15")
         execute_scheme.assert_not_called()
+        self.assertEqual(
+            result,
+            SchemeRunResult("daily_demo", "skipped", 0, 0.0, "non-trading day"),
+        )
         self.assertTrue(any("Skip daily_demo on non-trading day 2026-06-15" in msg for msg in logs.output))
+
+    def test_run_prediction_job_returns_executor_result(self) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = _cfg("daily_demo")
+        expected = SchemeRunResult("daily_demo", "success", 1, 0.1, run_id=7)
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
+            patch.object(scheduler_main, "execute_scheme", return_value=expected),
+        ):
+            result = scheduler_main.run_prediction_job("daily_demo", run_date="2026-06-16")
+
+        self.assertEqual(result, expected)
+
+    def test_run_prediction_job_returns_configuration_failure_for_unknown_scheme(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[]),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+        ):
+            result = scheduler_main.run_prediction_job("missing", run_date="2026-06-16")
+
+        self.assertIsInstance(result, SchemeRunResult)
+        self.assertEqual(result.status, "failed")
+        self.assertIn("platform configuration error", result.error_msg or "")
+        self.assertIn("scheme not found", result.error_msg or "")
+
+    def test_run_all_prediction_jobs_retains_mixed_results(self) -> None:
+        from scheduler import main as scheduler_main
+
+        schemes = [_cfg("scheme_a"), _cfg("scheme_b")]
+        success = SchemeRunResult("scheme_a", "success", 1, 0.1, run_id=1)
+        failed = SchemeRunResult("scheme_b", "failed", 0, 0.2, "stale generation", 2)
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=schemes),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+            patch.object(
+                scheduler_main,
+                "run_prediction_job",
+                side_effect=[success, failed],
+            ) as run_prediction_job,
+        ):
+            results = scheduler_main.run_all_prediction_jobs(run_date="2026-06-16")
+
+        self.assertEqual(results, [success, failed])
+        self.assertEqual(run_prediction_job.call_count, 2)
+
+    def test_main_returns_one_for_failed_run_once_prediction(self) -> None:
+        from scheduler import main as scheduler_main
+
+        failed = SchemeRunResult("demo", "failed", 0, 0.1, "stale generation")
+        with patch.object(scheduler_main, "run_prediction_job", return_value=failed):
+            code = scheduler_main.main(
+                ["--run-once", "predictions", "--scheme-id", "demo", "--force"]
+            )
+
+        self.assertEqual(code, 1)
+
+    def test_main_returns_one_for_partial_run_once_prediction(self) -> None:
+        from scheduler import main as scheduler_main
+
+        partial = SchemeRunResult("demo", "partial", 1, 0.1, "one tenor failed")
+        with patch.object(scheduler_main, "run_prediction_job", return_value=partial):
+            code = scheduler_main.main(
+                ["--run-once", "predictions", "--scheme-id", "demo"]
+            )
+
+        self.assertEqual(code, 1)
+
+    def test_main_returns_zero_for_successful_run_once_prediction(self) -> None:
+        from scheduler import main as scheduler_main
+
+        success = SchemeRunResult("demo", "success", 1, 0.1, run_id=3)
+        with patch.object(scheduler_main, "run_prediction_job", return_value=success):
+            code = scheduler_main.main(
+                ["--run-once", "predictions", "--scheme-id", "demo"]
+            )
+
+        self.assertEqual(code, 0)
+
+    def test_main_returns_zero_for_expected_skipped_prediction(self) -> None:
+        from scheduler import main as scheduler_main
+
+        skipped = SchemeRunResult("demo", "skipped", 0, 0.0, "non-trading day")
+        with patch.object(scheduler_main, "run_prediction_job", return_value=skipped):
+            code = scheduler_main.main(
+                ["--run-once", "predictions", "--scheme-id", "demo"]
+            )
+
+        self.assertEqual(code, 0)
+
+    def test_main_returns_two_for_unknown_explicit_scheme(self) -> None:
+        from scheduler import main as scheduler_main
+
+        unknown = SchemeRunResult(
+            "missing",
+            "failed",
+            0,
+            0.0,
+            "platform configuration error: scheme not found: missing",
+        )
+        with patch.object(scheduler_main, "run_prediction_job", return_value=unknown):
+            code = scheduler_main.main(
+                ["--run-once", "predictions", "--scheme-id", "missing"]
+            )
+
+        self.assertEqual(code, 2)
+
+    def test_main_returns_two_for_argument_or_platform_configuration_error(self) -> None:
+        from scheduler import main as scheduler_main
+
+        self.assertEqual(scheduler_main.main(["--run-once", "invalid"]), 2)
+        with patch.object(
+            scheduler_main,
+            "run_all_prediction_jobs",
+            side_effect=ValueError("invalid scheduler configuration"),
+        ):
+            code = scheduler_main.main(["--run-once", "predictions"])
+
+        self.assertEqual(code, 2)
+
+    def test_scheduled_prediction_wrapper_raises_for_failed_and_partial_results(self) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = _cfg("scheduled_demo")
+        with (
+            patch.dict(os.environ, {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"}),
+            patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            job = scheduler.get_job("predict:scheduled_demo")
+            self.assertIsNotNone(job)
+            self.assertEqual(job.func.__name__, "run_scheduled_prediction_job")
+            results = (
+                SchemeRunResult("scheduled_demo", "failed", 0, 0.1, "failed"),
+                SchemeRunResult("scheduled_demo", "partial", 1, 0.1, "partial"),
+            )
+            for result in results:
+                with self.subTest(status=result.status):
+                    with patch.object(scheduler_main, "run_prediction_job", return_value=result):
+                        with self.assertRaisesRegex(RuntimeError, result.status):
+                            job.func("scheduled_demo")
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
 
     def test_weekly_and_monthly_predictions_run_on_non_trading_day(self) -> None:
         from scheduler import main as scheduler_main
