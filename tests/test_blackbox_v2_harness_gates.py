@@ -155,6 +155,9 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     return_value=RuntimeProfile.for_tests(),
                 ):
                     results = [gate.run(ctx) for gate in gates]
+            unit_root = root / "reports" / "blackbox_v2" / "unit"
+            self.assertTrue((unit_root / "request" / "invalid_request.json").is_file())
+            self.assertFalse((unit_root / "invalid_request.json").exists())
 
         self.assertTrue(all(result.passed for result in results), [result.errors for result in results])
 

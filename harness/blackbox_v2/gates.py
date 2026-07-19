@@ -161,11 +161,15 @@ class BlackboxUnitGate(_BlackboxGate):
         cfg = _config(ctx)
         state = _ensure_input_state(ctx)
         root = _gate_root(ctx) / "unit"
-        root.mkdir(parents=True, exist_ok=True)
-        invalid_request = root / "invalid_request.json"
+        request_dir = root / "request"
+        request_dir.mkdir(parents=True, exist_ok=True)
+        invalid_request = request_dir / "invalid_request.json"
         invalid_request.write_text("{}\n", encoding="utf-8")
-        output = root / "invalid_output.json"
-        output.unlink(missing_ok=True)
+        output_dir = root / "output"
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir()
+        output = output_dir / "invalid_output.json"
         help_output = probe_blackbox_help(_script(cfg), profile=_profile(ctx))
         rejected = False
         try:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import re
+import resource
 import shutil
 import signal
 import subprocess
@@ -24,33 +27,268 @@ from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
 from shared.models import PredictionRecord
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_RUNTIME_PROFILE_PATH = _PROJECT_ROOT / "deploy" / "blackbox_v2" / "runtime_profile_v1.json"
+_SAFE_ENVIRONMENT_KEYS = frozenset({"LANG", "LC_ALL", "TZ"})
+_PROFILE_FIELDS = frozenset(
+    {
+        "profile_name",
+        "conda_env",
+        "data_schema_version",
+        "contract_version",
+        "cpu_threads",
+        "memory_limit_bytes",
+        "predict_timeout_sec",
+        "backtest_timeout_sec",
+        "max_batch_requests",
+        "max_output_bytes",
+        "max_log_bytes",
+        "max_run_dir_bytes",
+        "sandbox_enabled",
+        "read_roots",
+        "environment_allowlist",
+        "environment_defaults",
+        "network_access",
+        "database_access",
+    }
+)
+_UNSAFE_PROFILE_ROOTS = frozenset(
+    {
+        Path("/"),
+        Path("/Users"),
+        Path.home().resolve(),
+        _PROJECT_ROOT,
+        Path("/etc"),
+        Path("/private"),
+        Path("/private/etc"),
+        Path("/usr"),
+        Path("/usr/share"),
+        Path("/System"),
+        Path("/Library"),
+        Path("/opt"),
+        Path("/opt/homebrew"),
+        Path("/opt/homebrew/Cellar"),
+    }
+)
+
+
+@dataclass(frozen=True)
+class RuntimeReadRoot:
+    path: str
+    resolved_boundary: str
+
+
 @dataclass(frozen=True)
 class RuntimeProfile:
-    name: str = "blackbox-v2-v1"
-    conda_env: str | None = "forecast_env_blackbox_v1"
-    predict_timeout_sec: int = 3600
-    backtest_timeout_sec: int = 14400
-    max_batch_requests: int = 100
-    cpu_threads: int = 8
-    memory_limit_bytes: int = 64 * 1024**3
-    max_output_bytes: int = 50 * 1024**2
-    max_log_bytes: int = 5 * 1024**2
-    sandbox_enabled: bool = True
-    read_roots: tuple[str, ...] = (
-        "/opt/homebrew/opt/libomp/lib",
-    )
-    environment_allowlist: tuple[str, ...] = ("LANG", "LC_ALL", "TZ")
-    environment_defaults: tuple[tuple[str, str], ...] = (
-        ("LANG", "C.UTF-8"),
-        ("TZ", "Asia/Shanghai"),
-    )
+    name: str
+    conda_env: str | None
+    data_schema_version: str
+    contract_version: str
+    cpu_threads: int
+    memory_limit_bytes: int
+    predict_timeout_sec: int
+    backtest_timeout_sec: int
+    max_batch_requests: int
+    max_output_bytes: int
+    max_log_bytes: int
+    max_run_dir_bytes: int
+    sandbox_enabled: bool
+    read_roots: tuple[RuntimeReadRoot, ...]
+    environment_allowlist: tuple[str, ...]
+    environment_defaults: tuple[tuple[str, str], ...]
+    network_access: bool
+    database_access: bool
 
     @classmethod
     def for_tests(cls, **overrides) -> RuntimeProfile:
-        return replace(cls(conda_env=None, sandbox_enabled=False), **overrides)
+        changes = {"conda_env": None, "sandbox_enabled": False, **overrides}
+        profile = replace(DEFAULT_RUNTIME_PROFILE, **changes)
+        _validate_runtime_profile(profile, source="test runtime profile")
+        return profile
 
 
-DEFAULT_RUNTIME_PROFILE = RuntimeProfile()
+@dataclass(frozen=True)
+class _ResolvedReadRoot:
+    configured: Path
+    resolved: Path
+    boundary: Path
+
+
+@dataclass(frozen=True)
+class _PythonRuntime:
+    executable: Path
+    prefix: Path
+
+
+def _load_runtime_profile(path: str | Path) -> RuntimeProfile:
+    profile_path = Path(path)
+    try:
+        raw = json.loads(profile_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Blackbox V2 runtime profile is invalid: {profile_path}: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("Blackbox V2 runtime profile must be a JSON object")
+    fields = set(raw)
+    unknown = sorted(fields - _PROFILE_FIELDS)
+    missing = sorted(_PROFILE_FIELDS - fields)
+    if unknown:
+        raise ValueError(f"Blackbox V2 runtime profile has unknown fields: {unknown}")
+    if missing:
+        raise ValueError(f"Blackbox V2 runtime profile has missing fields: {missing}")
+
+    string_fields = ("profile_name", "conda_env", "data_schema_version", "contract_version")
+    for field in string_fields:
+        if not isinstance(raw[field], str) or not raw[field]:
+            raise ValueError(f"Blackbox V2 runtime profile field {field} has wrong type")
+    integer_fields = (
+        "cpu_threads",
+        "memory_limit_bytes",
+        "predict_timeout_sec",
+        "backtest_timeout_sec",
+        "max_batch_requests",
+        "max_output_bytes",
+        "max_log_bytes",
+        "max_run_dir_bytes",
+    )
+    for field in integer_fields:
+        if type(raw[field]) is not int:
+            raise ValueError(f"Blackbox V2 runtime profile field {field} has wrong type")
+        if raw[field] <= 0:
+            raise ValueError(f"Blackbox V2 runtime profile field {field} must be positive")
+    for field in ("sandbox_enabled", "network_access", "database_access"):
+        if type(raw[field]) is not bool:
+            raise ValueError(f"Blackbox V2 runtime profile field {field} has wrong type")
+    if not raw["sandbox_enabled"]:
+        raise ValueError("Blackbox V2 runtime profile must enable sandboxing")
+    if raw["network_access"] or raw["database_access"]:
+        raise ValueError("Blackbox V2 runtime profile must deny network and database access")
+    if raw["max_output_bytes"] > raw["max_run_dir_bytes"]:
+        raise ValueError("Blackbox V2 max_output_bytes must not exceed max_run_dir_bytes")
+
+    read_roots_raw = raw["read_roots"]
+    if not isinstance(read_roots_raw, list) or not read_roots_raw:
+        raise ValueError("Blackbox V2 runtime profile read_roots has wrong type")
+    read_roots: list[RuntimeReadRoot] = []
+    for index, item in enumerate(read_roots_raw):
+        if not isinstance(item, dict) or set(item) != {"path", "resolved_boundary"}:
+            raise ValueError(f"Blackbox V2 runtime profile read_roots[{index}] has wrong type")
+        if any(not isinstance(item[key], str) or not item[key] for key in item):
+            raise ValueError(f"Blackbox V2 runtime profile read_roots[{index}] has wrong type")
+        configured = Path(item["path"])
+        boundary = Path(item["resolved_boundary"])
+        if not configured.is_absolute() or not boundary.is_absolute():
+            raise ValueError(f"Blackbox V2 runtime profile read_roots[{index}] is unsafe")
+        if configured in _UNSAFE_PROFILE_ROOTS or boundary in _UNSAFE_PROFILE_ROOTS:
+            raise ValueError(f"Blackbox V2 runtime profile read_roots[{index}] is unsafe")
+        read_roots.append(RuntimeReadRoot(str(configured), str(boundary)))
+
+    allowlist_raw = raw["environment_allowlist"]
+    if (
+        not isinstance(allowlist_raw, list)
+        or any(not isinstance(key, str) or not key for key in allowlist_raw)
+        or len(allowlist_raw) != len(set(allowlist_raw))
+    ):
+        raise ValueError("Blackbox V2 runtime profile environment_allowlist has wrong type")
+    if not set(allowlist_raw) <= _SAFE_ENVIRONMENT_KEYS:
+        raise ValueError("Blackbox V2 runtime profile environment_allowlist contains unsafe keys")
+    defaults_raw = raw["environment_defaults"]
+    if not isinstance(defaults_raw, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in defaults_raw.items()
+    ):
+        raise ValueError("Blackbox V2 runtime profile environment_defaults has wrong type")
+    if not set(defaults_raw) <= set(allowlist_raw):
+        raise ValueError("Blackbox V2 environment_defaults keys must be explicitly allowlisted")
+
+    profile = RuntimeProfile(
+        name=raw["profile_name"],
+        conda_env=raw["conda_env"],
+        data_schema_version=raw["data_schema_version"],
+        contract_version=raw["contract_version"],
+        cpu_threads=raw["cpu_threads"],
+        memory_limit_bytes=raw["memory_limit_bytes"],
+        predict_timeout_sec=raw["predict_timeout_sec"],
+        backtest_timeout_sec=raw["backtest_timeout_sec"],
+        max_batch_requests=raw["max_batch_requests"],
+        max_output_bytes=raw["max_output_bytes"],
+        max_log_bytes=raw["max_log_bytes"],
+        max_run_dir_bytes=raw["max_run_dir_bytes"],
+        sandbox_enabled=raw["sandbox_enabled"],
+        read_roots=tuple(read_roots),
+        environment_allowlist=tuple(allowlist_raw),
+        environment_defaults=tuple(defaults_raw.items()),
+        network_access=raw["network_access"],
+        database_access=raw["database_access"],
+    )
+    _validate_runtime_profile(profile, source=str(profile_path))
+    return profile
+
+
+def _validate_runtime_profile(profile: RuntimeProfile, *, source: str) -> None:
+    integer_fields = (
+        "cpu_threads",
+        "memory_limit_bytes",
+        "predict_timeout_sec",
+        "backtest_timeout_sec",
+        "max_batch_requests",
+        "max_output_bytes",
+        "max_log_bytes",
+        "max_run_dir_bytes",
+    )
+    for field in integer_fields:
+        value = getattr(profile, field)
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"Blackbox V2 {source} field {field} must be a positive integer")
+    if profile.max_output_bytes > profile.max_run_dir_bytes:
+        raise ValueError(f"Blackbox V2 {source} max_output_bytes exceeds max_run_dir_bytes")
+    if type(profile.network_access) is not bool or type(profile.database_access) is not bool:
+        raise ValueError(f"Blackbox V2 {source} access flags have wrong type")
+    if profile.network_access or profile.database_access:
+        raise ValueError(f"Blackbox V2 {source} must deny network and database access")
+    if type(profile.sandbox_enabled) is not bool:
+        raise ValueError(f"Blackbox V2 {source} sandbox_enabled has wrong type")
+    if profile.conda_env is not None and (
+        not isinstance(profile.conda_env, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.-]+", profile.conda_env)
+    ):
+        raise ValueError(f"Blackbox V2 {source} conda_env is unsafe")
+    if any(
+        not isinstance(value, str) or not value
+        for value in (profile.name, profile.data_schema_version, profile.contract_version)
+    ):
+        raise ValueError(f"Blackbox V2 {source} has an empty version field")
+    if not profile.read_roots or any(not isinstance(item, RuntimeReadRoot) for item in profile.read_roots):
+        raise ValueError(f"Blackbox V2 {source} read_roots has wrong type")
+    for item in profile.read_roots:
+        configured = Path(item.path)
+        boundary = Path(item.resolved_boundary)
+        if (
+            not configured.is_absolute()
+            or not boundary.is_absolute()
+            or configured in _UNSAFE_PROFILE_ROOTS
+            or boundary in _UNSAFE_PROFILE_ROOTS
+            or any(character in item.path + item.resolved_boundary for character in "\n\r\0")
+        ):
+            raise ValueError(f"Blackbox V2 {source} read_roots contains an unsafe path")
+    if (
+        any(not isinstance(key, str) or not key for key in profile.environment_allowlist)
+        or len(profile.environment_allowlist) != len(set(profile.environment_allowlist))
+        or not set(profile.environment_allowlist) <= _SAFE_ENVIRONMENT_KEYS
+    ):
+        raise ValueError(f"Blackbox V2 {source} environment_allowlist contains unsafe keys")
+    if any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in profile.environment_defaults
+    ):
+        raise ValueError(f"Blackbox V2 {source} environment_defaults has wrong type")
+    defaults = dict(profile.environment_defaults)
+    if len(defaults) != len(profile.environment_defaults):
+        raise ValueError(f"Blackbox V2 {source} environment_defaults contains duplicate keys")
+    if not set(defaults) <= set(profile.environment_allowlist):
+        raise ValueError(f"Blackbox V2 {source} environment_defaults is not allowlisted")
+
+
+DEFAULT_RUNTIME_PROFILE = _load_runtime_profile(_RUNTIME_PROFILE_PATH)
 
 
 class BlackboxExecutionError(RuntimeError):
@@ -63,13 +301,16 @@ def probe_blackbox_help(
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
 ) -> str:
     """验证交付脚本公开 predict 和 backtest 两种 CLI 模式。"""
+    _validate_runtime_profile(profile, source="runtime profile")
     script = _resolve_controlled_path(script_path, label="script")
     if not script.is_file() or script.suffix != ".py":
         raise ValueError(f"Blackbox V2 script must be one regular .py file: {script}")
+    runtime = _python_runtime(profile)
+    read_roots = _resolve_runtime_read_roots(profile)
 
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-help-") as tmpdir:
         writable_dir = Path(tmpdir).resolve()
-        python_executable = _python_command(profile)[0]
+        python_executable = str(runtime.executable)
         command = [python_executable, str(script), "--help"]
         if profile.sandbox_enabled:
             command = _sandbox_command(
@@ -77,6 +318,8 @@ def probe_blackbox_help(
                 writable_dir,
                 profile=profile,
                 script_path=script,
+                runtime=runtime,
+                resolved_read_roots=read_roots,
             )
         completed = _run_process(
             command,
@@ -89,6 +332,7 @@ def probe_blackbox_help(
             timeout=min(profile.predict_timeout_sec, 60),
             memory_limit_bytes=profile.memory_limit_bytes,
             max_capture_bytes=profile.max_log_bytes,
+            max_run_dir_bytes=profile.max_run_dir_bytes,
         )
 
     if completed.returncode != 0:
@@ -114,6 +358,7 @@ def execute_blackbox_cli(
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
 ) -> subprocess.CompletedProcess[str]:
     """执行一次 Blackbox V2 CLI；仅进程成功且 Output 合法存在才返回。"""
+    _validate_runtime_profile(profile, source="runtime profile")
     if mode not in {"predict", "backtest"}:
         raise ValueError(f"unsupported Blackbox V2 mode: {mode}")
     script = _resolve_controlled_path(script_path, label="script")
@@ -127,37 +372,54 @@ def execute_blackbox_cli(
     _validate_data_dir(data)
     if output.exists():
         raise ValueError(f"platform must provide a fresh output path: {output}")
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    input_flag = "--request" if mode == "predict" else "--requests"
-    python_executable = _python_command(profile)[0]
-    command = [
-        python_executable,
-        str(script),
-        mode,
-        input_flag,
-        str(input_file),
-        "--data-dir",
-        str(data),
-        "--output",
-        str(output),
-    ]
-    if profile.sandbox_enabled:
-        command = _sandbox_command(
-            command,
-            output.parent,
-            profile=profile,
-            script_path=script,
-            input_path=input_file,
-            data_dir=data,
-        )
-    env = _runtime_environment(
-        profile,
+    runtime = _python_runtime(profile)
+    read_roots = _resolve_runtime_read_roots(profile)
+    data_files = tuple(data / filename for filename in SNAPSHOT_FILENAMES)
+    _prepare_output_directory(
         output.parent,
-        python_executable=python_executable,
+        controls=(
+            ("script", script),
+            ("input", input_file),
+            ("data-dir", data),
+            *((f"data file {path.name}", path) for path in data_files),
+            ("runtime prefix", runtime.prefix),
+            *(("runtime read root", item.resolved) for item in read_roots),
+        ),
     )
-    timeout = profile.predict_timeout_sec if mode == "predict" else profile.backtest_timeout_sec
+
     try:
+        input_flag = "--request" if mode == "predict" else "--requests"
+        python_executable = str(runtime.executable)
+        command = [
+            python_executable,
+            str(script),
+            mode,
+            input_flag,
+            str(input_file),
+            "--data-dir",
+            str(data),
+            "--output",
+            str(output),
+        ]
+        if profile.sandbox_enabled:
+            command = _sandbox_command(
+                command,
+                output.parent,
+                profile=profile,
+                script_path=script,
+                input_path=input_file,
+                data_dir=data,
+                runtime=runtime,
+                resolved_read_roots=read_roots,
+            )
+        env = _runtime_environment(
+            profile,
+            output.parent,
+            python_executable=python_executable,
+        )
+        timeout = (
+            profile.predict_timeout_sec if mode == "predict" else profile.backtest_timeout_sec
+        )
         completed = _run_process(
             command,
             cwd=output.parent,
@@ -165,6 +427,7 @@ def execute_blackbox_cli(
             timeout=timeout,
             memory_limit_bytes=profile.memory_limit_bytes,
             max_capture_bytes=profile.max_log_bytes,
+            max_run_dir_bytes=profile.max_run_dir_bytes,
         )
         if completed.returncode != 0:
             raise BlackboxExecutionError(
@@ -183,7 +446,10 @@ def execute_blackbox_cli(
             )
         return completed
     except BaseException:
-        output.unlink(missing_ok=True)
+        try:
+            _cleanup_run_directory(output.parent)
+        except OSError:
+            pass
         raise
 
 
@@ -317,35 +583,218 @@ def _validate_data_dir(data_dir: Path) -> None:
             raise ValueError(f"Blackbox V2 data file must be regular and not a symlink: {path}")
 
 
+def _prepare_output_directory(
+    output_dir: Path,
+    *,
+    controls: Sequence[tuple[str, Path]],
+) -> None:
+    for label, control in controls:
+        if _paths_overlap(output_dir, control):
+            raise ValueError(
+                f"Blackbox V2 output directory must not overlap {label}: "
+                f"{output_dir} vs {control}"
+            )
+    if output_dir.exists():
+        if not output_dir.is_dir() or output_dir.is_symlink():
+            raise ValueError(f"Blackbox V2 output parent must be a fresh empty directory: {output_dir}")
+        if any(output_dir.iterdir()):
+            raise ValueError(f"Blackbox V2 output parent must be a fresh empty directory: {output_dir}")
+        return
+    if not output_dir.parent.is_dir():
+        raise ValueError(
+            f"Blackbox V2 output parent must have an existing parent directory: {output_dir}"
+        )
+    output_dir.mkdir(mode=0o700)
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    left = left.resolve(strict=False)
+    right = right.resolve(strict=True)
+    if left.exists():
+        try:
+            if os.path.samefile(left, right):
+                return True
+        except OSError:
+            pass
+    return _path_contains(left, right) or _path_contains(right, left)
+
+
+def _path_contains(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _cleanup_run_directory(run_dir: Path) -> None:
+    if not run_dir.exists() and not run_dir.is_symlink():
+        return
+    if not run_dir.is_dir() or run_dir.is_symlink():
+        run_dir.unlink(missing_ok=True)
+        return
+    for current, directories, files in os.walk(run_dir, topdown=False, followlinks=False):
+        current_path = Path(current)
+        for filename in files:
+            try:
+                (current_path / filename).chmod(0o600, follow_symlinks=False)
+            except OSError:
+                pass
+        for directory in directories:
+            child = current_path / directory
+            if child.is_symlink():
+                continue
+            try:
+                child.chmod(0o700)
+            except OSError:
+                pass
+    run_dir.chmod(0o700)
+    shutil.rmtree(run_dir)
+
+
+def _resolve_runtime_read_roots(profile: RuntimeProfile) -> tuple[_ResolvedReadRoot, ...]:
+    resolved_roots: list[_ResolvedReadRoot] = []
+    for item in profile.read_roots:
+        configured = Path(os.path.abspath(item.path))
+        boundary_path = Path(os.path.abspath(item.resolved_boundary))
+        try:
+            boundary = boundary_path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ValueError(
+                f"Blackbox V2 runtime read boundary does not exist: {boundary_path}"
+            ) from exc
+        if not boundary.is_dir():
+            raise ValueError(f"Blackbox V2 runtime read boundary is not a directory: {boundary}")
+        if boundary != boundary_path:
+            raise ValueError(
+                f"Blackbox V2 runtime read boundary must already be resolved: {boundary_path}"
+            )
+        try:
+            resolved = configured.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ValueError(f"Blackbox V2 runtime read root does not exist: {configured}") from exc
+        if not resolved.is_dir():
+            raise ValueError(f"Blackbox V2 runtime read root is not a directory: {resolved}")
+        if not _path_contains(boundary, resolved):
+            raise ValueError(
+                f"Blackbox V2 runtime read root escapes approved boundary: "
+                f"{configured} -> {resolved}, boundary={boundary}"
+            )
+        resolved_roots.append(_ResolvedReadRoot(configured, resolved, boundary))
+    return tuple(resolved_roots)
+
+
 def _python_command(profile: RuntimeProfile) -> list[str]:
-    if profile.conda_env:
-        return [_conda_python(profile.conda_env)]
-    return [sys.executable]
+    return [str(_python_runtime(profile).executable)]
 
 
 @lru_cache(maxsize=8)
-def _conda_python(conda_env: str) -> str:
-    completed = subprocess.run(
-        [
-            "conda",
-            "run",
-            "--no-capture-output",
-            "-n",
-            conda_env,
-            "python",
-            "-c",
-            "import sys; print(sys.executable)",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    executable = completed.stdout.strip().splitlines()[-1]
-    path = Path(executable)
-    if not path.is_file():
-        raise RuntimeError(f"conda environment Python executable not found: {path}")
-    return str(path)
+def _conda_runtime_info(conda_env: str) -> tuple[str, str]:
+    conda_executable = shutil.which("conda")
+    if conda_executable is None:
+        raise ValueError("Blackbox V2 Python runtime requires conda, but it is unavailable")
+    try:
+        with tempfile.TemporaryDirectory(prefix="blackbox-v2-conda-") as tmpdir:
+            conda_bin = str(Path(conda_executable).resolve().parent)
+            completed = subprocess.run(
+                [
+                    conda_executable,
+                    "run",
+                    "--no-capture-output",
+                    "-n",
+                    conda_env,
+                    "python",
+                    "-I",
+                    "-c",
+                    "import json,sys; print(json.dumps([sys.executable, sys.prefix]))",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={
+                    "HOME": tmpdir,
+                    "TMPDIR": tmpdir,
+                    "LANG": "C.UTF-8",
+                    "PATH": f"{conda_bin}:/usr/bin:/bin:/usr/sbin:/sbin",
+                    "PYTHONNOUSERSITE": "1",
+                },
+            )
+        executable, prefix = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Blackbox V2 Python runtime could not resolve conda environment {conda_env}: {exc}"
+        ) from exc
+    if not isinstance(executable, str) or not isinstance(prefix, str):
+        raise ValueError(
+            f"Blackbox V2 Python runtime returned invalid paths for conda environment {conda_env}"
+        )
+    return executable, prefix
+
+
+def _python_runtime(profile: RuntimeProfile) -> _PythonRuntime:
+    if profile.conda_env:
+        executable, prefix = _conda_runtime_info(profile.conda_env)
+        return _validate_python_runtime(executable, prefix, profile.conda_env)
+    return _validate_python_runtime(sys.executable, sys.prefix, None)
+
+
+def _validate_python_runtime(
+    executable: str | Path,
+    prefix: str | Path,
+    requested_env: str | None,
+) -> _PythonRuntime:
+    executable_path = Path(executable)
+    prefix_path = Path(prefix)
+    try:
+        resolved_executable = executable_path.resolve(strict=True)
+        resolved_prefix = prefix_path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Blackbox V2 Python runtime path does not exist: {exc.filename}") from exc
+    if not resolved_executable.is_file() or not os.access(resolved_executable, os.X_OK):
+        raise ValueError(
+            f"Blackbox V2 Python runtime executable is not an executable file: {resolved_executable}"
+        )
+    if not resolved_prefix.is_dir():
+        raise ValueError(f"Blackbox V2 Python runtime prefix is not a directory: {resolved_prefix}")
+    unsafe_prefixes = {Path("/"), Path("/usr"), Path.home().resolve()}
+    if resolved_prefix in unsafe_prefixes:
+        raise ValueError(f"Blackbox V2 Python runtime prefix is unsafe: {resolved_prefix}")
+    if not _path_contains(resolved_prefix, resolved_executable):
+        raise ValueError(
+            f"Blackbox V2 Python runtime executable escapes prefix: "
+            f"{resolved_executable} vs {resolved_prefix}"
+        )
+    if requested_env is not None:
+        if resolved_prefix.parent.name != "envs" or resolved_prefix.name != requested_env:
+            raise ValueError(
+                f"Blackbox V2 Python runtime prefix does not match requested conda env "
+                f"{requested_env}: {resolved_prefix}"
+            )
+    return _PythonRuntime(resolved_executable, resolved_prefix)
+
+
+_SANDBOX_BOOTSTRAP = r'''
+import ctypes
+import runpy
+import sys
+
+policy = sys.argv[1].encode("utf-8")
+script_argv = sys.argv[2:]
+error = ctypes.c_char_p()
+library = ctypes.CDLL("/usr/lib/libsandbox.1.dylib")
+library.sandbox_init.argtypes = [
+    ctypes.c_char_p,
+    ctypes.c_uint64,
+    ctypes.POINTER(ctypes.c_char_p),
+]
+library.sandbox_init.restype = ctypes.c_int
+if library.sandbox_init(policy, 0, ctypes.byref(error)) != 0:
+    message = error.value.decode("utf-8", errors="replace") if error.value else "unknown error"
+    raise RuntimeError(f"sandbox_init failed: {message}")
+sys.argv = script_argv
+runpy.run_path(script_argv[0], run_name="__main__")
+'''
 
 
 def _sandbox_command(
@@ -356,28 +805,53 @@ def _sandbox_command(
     script_path: Path | None = None,
     input_path: Path | None = None,
     data_dir: Path | None = None,
+    runtime: _PythonRuntime | None = None,
+    resolved_read_roots: Sequence[_ResolvedReadRoot] | None = None,
 ) -> list[str]:
-    sandbox_exec = shutil.which("sandbox-exec")
-    if sandbox_exec is None:
+    if shutil.which("sandbox-exec") is None:
         raise RuntimeError("runtime profile requires sandbox-exec, but it is unavailable")
-
     writable = writable_dir.resolve(strict=True)
+    selected_runtime = runtime or _python_runtime(profile)
     executable = Path(command[0]).resolve(strict=True)
-    if not executable.is_file():
-        raise RuntimeError(f"Blackbox V2 Python executable is not a regular file: {executable}")
-    python_prefix = executable.parent.parent
-    runtime_directories = [python_prefix]
+    if executable != selected_runtime.executable:
+        raise ValueError(
+            f"Blackbox V2 command executable does not match selected Python runtime: {executable}"
+        )
+    runtime_roots = tuple(resolved_read_roots or _resolve_runtime_read_roots(profile))
+    policy = _sandbox_policy(
+        writable=writable,
+        runtime=selected_runtime,
+        read_roots=runtime_roots,
+        script_path=script_path,
+        input_path=input_path,
+        data_dir=data_dir,
+    )
+    return [
+        str(selected_runtime.executable),
+        "-I",
+        "-c",
+        _SANDBOX_BOOTSTRAP,
+        policy,
+        *command[1:],
+    ]
+
+
+def _sandbox_policy(
+    *,
+    writable: Path,
+    runtime: _PythonRuntime,
+    read_roots: Sequence[_ResolvedReadRoot],
+    script_path: Path | None,
+    input_path: Path | None,
+    data_dir: Path | None,
+) -> str:
+    runtime_directories = [runtime.prefix, *(item.resolved for item in read_roots)]
     read_aliases: list[Path] = []
-    for configured_root in profile.read_roots:
-        configured = Path(os.path.abspath(configured_root))
-        root = configured.resolve(strict=True)
-        if not root.is_dir():
-            raise RuntimeError(f"Blackbox V2 runtime read root is not a directory: {root}")
-        runtime_directories.append(root)
-        if configured != root:
-            read_aliases.append(configured)
+    for item in read_roots:
+        if item.configured != item.resolved:
+            read_aliases.append(item.configured)
             read_aliases.extend(
-                candidate for candidate in configured.parents if candidate.is_symlink()
+                candidate for candidate in item.configured.parents if candidate.is_symlink()
             )
 
     read_files = [path.resolve(strict=True) for path in (script_path, input_path) if path]
@@ -392,16 +866,12 @@ def _sandbox_command(
     if resolved_data_dir is not None:
         read_filters.extend(_sandbox_path_filters([resolved_data_dir], include_children=False))
 
-    process_filters = _sandbox_path_filters(
-        [Path(os.path.abspath(command[0])), executable],
-        include_children=False,
-    )
     executable_filters = _sandbox_path_filters(
         runtime_directories,
         include_children=True,
     )
     metadata_filters = _sandbox_metadata_filters(
-        [*read_directories, *read_files, *read_aliases, executable]
+        [*read_directories, *read_files, *read_aliases, runtime.executable]
         + ([resolved_data_dir] if resolved_data_dir is not None else [])
     )
     alias_filters = _sandbox_path_filters(read_aliases, include_children=True)
@@ -413,13 +883,14 @@ def _sandbox_command(
         include_children=False,
     )
     write_filters = _sandbox_path_filters([writable], include_children=True)
+    denied_write_files = [path for path in (script_path, input_path) if path is not None]
+    denied_write_directories = [*runtime_directories, *read_aliases]
+    if resolved_data_dir is not None:
+        denied_write_directories.append(resolved_data_dir)
     policy = "\n".join(
         [
             "(version 1)",
             "(deny default)",
-            "(allow process-exec",
-            *(f"  {item}" for item in process_filters),
-            ")",
             "(allow syscall-unix",
             "  (syscall-number SYS___mac_syscall)",
             "  (syscall-number SYS_getfsstat SYS_getfsstat64)",
@@ -438,7 +909,6 @@ def _sandbox_command(
             '(with-filter (mac-policy-name "Sandbox")',
             "  (allow system-mac-syscall (mac-syscall-number 2))",
             ")",
-            '(allow file-read-data file-test-existence (literal "/"))',
             "(allow file-read* file-test-existence",
             *(f"  {item}" for item in read_filters),
             ")",
@@ -464,25 +934,26 @@ def _sandbox_command(
             "(allow file-write*",
             *(f"  {item}" for item in write_filters),
             ")",
+            "(deny file-write*",
             *(
-                [
-                    "(deny file-write*",
-                    *(
-                        f"  {item}"
-                        for item in _sandbox_path_filters(
-                            [resolved_data_dir],
-                            include_children=True,
-                        )
-                    ),
-                    ")",
-                ]
-                if resolved_data_dir is not None
-                else []
+                f"  {item}"
+                for item in _sandbox_path_filters(
+                    denied_write_directories,
+                    include_children=True,
+                )
             ),
+            *(
+                f"  {item}"
+                for item in _sandbox_path_filters(
+                    denied_write_files,
+                    include_children=False,
+                )
+            ),
+            ")",
             "(deny network*)",
         ]
     )
-    return [sandbox_exec, "-p", policy, *command]
+    return policy
 
 
 def _sandbox_path_filters(paths: Sequence[Path], *, include_children: bool) -> list[str]:
@@ -562,9 +1033,12 @@ def _run_process(
     timeout: int,
     memory_limit_bytes: int,
     max_capture_bytes: int,
+    max_run_dir_bytes: int,
 ) -> subprocess.CompletedProcess[str]:
     if max_capture_bytes <= 0:
         raise ValueError("max_capture_bytes must be positive")
+    if max_run_dir_bytes <= 0:
+        raise ValueError("max_run_dir_bytes must be positive")
     with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stdout_file:
         with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stderr_file:
             process = subprocess.Popen(
@@ -574,6 +1048,7 @@ def _run_process(
                 stdout=stdout_file,
                 stderr=stderr_file,
                 start_new_session=True,
+                preexec_fn=lambda: _set_file_size_limit(max_run_dir_bytes),
             )
             deadline = time.monotonic() + timeout
             failure: str | None = None
@@ -586,6 +1061,17 @@ def _run_process(
                     failure = (
                         "Blackbox V2 process log output exceeded limit: "
                         f"captured={captured_bytes}, limit={max_capture_bytes}"
+                    )
+                    break
+                try:
+                    run_dir_bytes = _run_directory_bytes(cwd)
+                except OSError as exc:
+                    failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
+                    break
+                if run_dir_bytes >= max_run_dir_bytes:
+                    failure = (
+                        "Blackbox V2 run directory exceeded limit: "
+                        f"bytes={run_dir_bytes}, limit={max_run_dir_bytes}"
                     )
                     break
                 rss_bytes = _process_group_rss_bytes(process.pid)
@@ -603,6 +1089,17 @@ def _run_process(
                     "Blackbox V2 process log output exceeded limit: "
                     f"captured={captured_bytes}, limit={max_capture_bytes}"
                 )
+            if failure is None:
+                try:
+                    run_dir_bytes = _run_directory_bytes(cwd)
+                except OSError as exc:
+                    failure = f"Blackbox V2 could not inspect run directory quota: {exc}"
+                else:
+                    if run_dir_bytes >= max_run_dir_bytes:
+                        failure = (
+                            "Blackbox V2 run directory exceeded limit: "
+                            f"bytes={run_dir_bytes}, limit={max_run_dir_bytes}"
+                        )
             if failure is not None:
                 _terminate_process_group(process)
             stdout = _read_capture(stdout_file, max_capture_bytes)
@@ -610,6 +1107,28 @@ def _run_process(
             if failure is not None:
                 raise BlackboxExecutionError(f"{failure}: {_bounded(stderr)}")
             return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _set_file_size_limit(max_file_bytes: int) -> None:
+    if not hasattr(resource, "RLIMIT_FSIZE"):
+        return
+    resource.setrlimit(resource.RLIMIT_FSIZE, (max_file_bytes, max_file_bytes))
+
+
+def _run_directory_bytes(root: Path) -> int:
+    total = 0
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        with os.scandir(current) as entries:
+            for entry in entries:
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    total += entry.stat(follow_symlinks=False).st_size
+    return total
 
 
 def _capture_size(handle) -> int:
@@ -627,11 +1146,12 @@ def _process_group_rss_bytes(pid: int) -> int:
     try:
         process_group = os.getpgid(pid)
         completed = subprocess.run(
-            ["ps", "-axo", "pgid=,rss="],
+            ["/bin/ps", "-axo", "pgid=,rss="],
             check=True,
             capture_output=True,
             text=True,
             timeout=2,
+            env={"LANG": "C", "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"},
         )
     except (OSError, ProcessLookupError, subprocess.SubprocessError):
         return 0

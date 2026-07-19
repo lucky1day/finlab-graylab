@@ -10,9 +10,13 @@
   "max_batch_requests": 100,
   "max_output_bytes": 52428800,
   "max_log_bytes": 5242880,
+  "max_run_dir_bytes": 67108864,
   "sandbox_enabled": true,
   "read_roots": [
-    "/opt/homebrew/opt/libomp/lib"
+    {
+      "path": "/opt/homebrew/opt/libomp/lib",
+      "resolved_boundary": "/opt/homebrew/Cellar/libomp"
+    }
   ],
   "environment_allowlist": [
     "LANG",

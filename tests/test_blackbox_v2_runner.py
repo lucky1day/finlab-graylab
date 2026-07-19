@@ -6,6 +6,7 @@ import shutil
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -52,19 +53,23 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(env["TMPDIR"], str(run_dir))
 
     def test_sandbox_policy_has_no_unrestricted_file_read_clause(self) -> None:
-        from scheduler.blackbox_v2_runner import _sandbox_command
+        from scheduler.blackbox_v2_runner import RuntimeProfile, _sandbox_command
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            command = _sandbox_command([sys.executable, "-c", "pass"], Path(tmpdir))
+            command = _sandbox_command(
+                [sys.executable, "-c", "pass"],
+                Path(tmpdir),
+                profile=RuntimeProfile.for_tests(sandbox_enabled=True),
+            )
 
-        policy = command[2]
+        policy = command[4]
         self.assertNotIn("(allow file-read*)", policy)
         self.assertNotIn('(import "system.sb")', policy)
         self.assertNotIn("(allow process*)", policy)
         self.assertNotIn("(allow mach-lookup)", policy)
         self.assertNotIn("(allow signal)", policy)
         self.assertNotIn("(allow sysctl-read)", policy)
-        self.assertIn('(allow file-read-data file-test-existence (literal "/"))', policy)
+        self.assertNotIn('(allow file-read-data file-test-existence (literal "/"))', policy)
         forbidden_subpaths = {
             "/",
             "/Users",
@@ -199,7 +204,9 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             root = Path(tmpdir)
             script = _write_script(root / "trial.py", _FAIL_AFTER_OUTPUT_SCRIPT)
             request_path = write_request(_request("001"), root / "request.json")
-            output_path = root / "prediction.json"
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output_path = run_dir / "prediction.json"
             with self.assertRaises(BlackboxExecutionError):
                 execute_blackbox_cli(
                     script_path=script,
@@ -237,7 +244,9 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
-            output_path = root / "prediction.json"
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output_path = run_dir / "prediction.json"
             output_path.write_text("old", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "fresh output"):
                 execute_blackbox_cli(
@@ -260,7 +269,9 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             script = _write_script(root / "trial.py", _NOISY_SCRIPT)
-            output_path = root / "prediction.json"
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output_path = run_dir / "prediction.json"
             with self.assertRaisesRegex(BlackboxExecutionError, "log output exceeded"):
                 execute_blackbox_cli(
                     script_path=script,
@@ -314,6 +325,161 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "symlink"):
                         execute_blackbox_cli(**kwargs)
 
+    def test_refuses_nonempty_or_control_overlapping_output_directory(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            data_dir = _write_data_dir(root)
+            profile = RuntimeProfile.for_tests()
+
+            with self.assertRaisesRegex(ValueError, "overlap"):
+                execute_blackbox_cli(
+                    script_path=script,
+                    mode="predict",
+                    input_path=request,
+                    data_dir=data_dir,
+                    output_path=root / "prediction.json",
+                    profile=profile,
+                )
+
+            run_dir = root / "run"
+            run_dir.mkdir()
+            (run_dir / "stale.txt").write_text("stale", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "fresh empty"):
+                execute_blackbox_cli(
+                    script_path=script,
+                    mode="predict",
+                    input_path=request,
+                    data_dir=data_dir,
+                    output_path=run_dir / "prediction.json",
+                    profile=profile,
+                )
+
+    def test_invalid_output_directory_does_not_mask_process_error(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "trial.py", _OUTPUT_DIRECTORY_FAILURE_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            run_dir = root / "run"
+            run_dir.mkdir()
+            with self.assertRaisesRegex(BlackboxExecutionError, "exited 2"):
+                execute_blackbox_cli(
+                    script_path=script,
+                    mode="predict",
+                    input_path=request,
+                    data_dir=_write_data_dir(root),
+                    output_path=run_dir / "prediction.json",
+                    profile=RuntimeProfile.for_tests(),
+                )
+            self.assertFalse(run_dir.exists())
+
+    def test_run_directory_quota_stops_sibling_and_oversized_files(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            request = write_request(_request("001"), root / "request.json")
+            data_dir = _write_data_dir(root)
+            profile = RuntimeProfile.for_tests(
+                max_output_bytes=64 * 1024,
+                max_run_dir_bytes=128 * 1024,
+            )
+            for name, source in (
+                ("siblings", _MANY_FILES_SCRIPT),
+                ("oversized", _OVERSIZED_FILE_SCRIPT),
+            ):
+                script = _write_script(root / f"{name}.py", source)
+                run_dir = root / f"run-{name}"
+                run_dir.mkdir()
+                started = time.monotonic()
+                with self.subTest(case=name):
+                    with self.assertRaisesRegex(BlackboxExecutionError, "run directory"):
+                        execute_blackbox_cli(
+                            script_path=script,
+                            mode="predict",
+                            input_path=request,
+                            data_dir=data_dir,
+                            output_path=run_dir / "prediction.json",
+                            profile=profile,
+                        )
+                    self.assertLess(time.monotonic() - started, 5)
+                    self.assertFalse(run_dir.exists())
+
+    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
+    def test_macos_sandbox_denies_control_writes_root_listing_hardlinks_and_children(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "control-probe.py", _CONTROL_PROBE_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            data_dir = _write_data_dir(root)
+            script_before = script.read_bytes()
+            request_before = request.read_bytes()
+            data_before = {
+                path.name: path.read_bytes()
+                for path in data_dir.iterdir()
+            }
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output = run_dir / "result.json"
+            execute_blackbox_cli(
+                script_path=script,
+                mode="predict",
+                input_path=request,
+                data_dir=data_dir,
+                output_path=output,
+                profile=RuntimeProfile.for_tests(
+                    conda_env=None,
+                    sandbox_enabled=True,
+                    cpu_threads=1,
+                ),
+            )
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(
+                result,
+                {
+                    "child_execution_denied": True,
+                    "data_write_denied": True,
+                    "hardlink_denied": True,
+                    "request_write_denied": True,
+                    "root_listing_denied": True,
+                    "script_write_denied": True,
+                },
+            )
+            self.assertEqual(script.read_bytes(), script_before)
+            self.assertEqual(request.read_bytes(), request_before)
+            self.assertEqual(
+                {path.name: path.read_bytes() for path in data_dir.iterdir()},
+                data_before,
+            )
+
+    def test_sandbox_quote_rejects_control_characters_and_escapes_literals(self) -> None:
+        from scheduler.blackbox_v2_runner import _sandbox_quote
+
+        self.assertEqual(_sandbox_quote(Path('/tmp/a"b\\c')), '/tmp/a\\"b\\\\c')
+        for value in ("/tmp/a\nb", "/tmp/a\rb", "/tmp/a\0b"):
+            with self.subTest(value=repr(value)):
+                with self.assertRaisesRegex(ValueError, "control character"):
+                    _sandbox_quote(Path(value))
+
     @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
     def test_macos_sandbox_enforces_runtime_boundaries(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
@@ -341,7 +507,11 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                     input_path=request,
                     data_dir=data_dir,
                     output_path=output,
-                    profile=RuntimeProfile(conda_env=None, cpu_threads=1),
+                    profile=RuntimeProfile.for_tests(
+                        conda_env=None,
+                        sandbox_enabled=True,
+                        cpu_threads=1,
+                    ),
                 )
 
             result = json.loads(output.read_text(encoding="utf-8"))
@@ -380,11 +550,46 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 input_path=request,
                 data_dir=_write_data_dir(root),
                 output_path=output,
-                profile=RuntimeProfile(cpu_threads=1),
+                profile=RuntimeProfile.for_tests(
+                    conda_env="forecast_env_blackbox_v1",
+                    sandbox_enabled=True,
+                    cpu_threads=1,
+                ),
             )
             result = json.loads(output.read_text(encoding="utf-8"))
 
         self.assertEqual(result, {"features": 1, "rows": 1})
+
+    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
+    def test_macos_sandbox_runs_frozen_scientific_backtest(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+        from shared.blackbox_v2.requests import write_requests
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "scientific-backtest.py", _SCIENTIFIC_BACKTEST_SCRIPT)
+            requests = write_requests(
+                [_request("001"), _request("002")],
+                root / "requests.csv",
+            )
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output = run_dir / "backtest.csv"
+            execute_blackbox_cli(
+                script_path=script,
+                mode="backtest",
+                input_path=requests,
+                data_dir=_write_data_dir(root),
+                output_path=output,
+                profile=RuntimeProfile.for_tests(
+                    conda_env="forecast_env_blackbox_v1",
+                    sandbox_enabled=True,
+                    cpu_threads=1,
+                ),
+            )
+            rows = output.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(rows), 3)
 
 
 def _metadata() -> BlackboxMetadata:
@@ -484,6 +689,110 @@ args = parser.parse_args()
 print("x" * 4096)
 with open(args.output, "w", encoding="utf-8") as handle:
     handle.write("{}")
+'''
+
+
+_OUTPUT_DIRECTORY_FAILURE_SCRIPT = r'''
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+Path(args.output).mkdir()
+raise SystemExit(2)
+'''
+
+
+_MANY_FILES_SCRIPT = r'''
+import argparse
+import time
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+root = Path(args.output).parent
+for index in range(32):
+    (root / f"sibling-{index:02d}.bin").write_bytes(b"x" * 16384)
+time.sleep(10)
+'''
+
+
+_OVERSIZED_FILE_SCRIPT = r'''
+import argparse
+import time
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+try:
+    (Path(args.output).parent / "oversized.bin").write_bytes(b"x" * 1048576)
+except OSError:
+    pass
+time.sleep(10)
+'''
+
+
+_CONTROL_PROBE_SCRIPT = r'''
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+args = parser.parse_args()
+
+def write_is_denied(path):
+    try:
+        Path(path).write_text("overwritten", encoding="utf-8")
+        return False
+    except OSError:
+        return True
+
+result = {
+    "script_write_denied": write_is_denied(__file__),
+    "request_write_denied": write_is_denied(args.request),
+    "data_write_denied": write_is_denied(Path(args.data_dir) / "daily_output.csv"),
+}
+try:
+    hardlink = Path(args.output).parent / "request-hardlink"
+    os.link(args.request, hardlink)
+    result["hardlink_denied"] = write_is_denied(hardlink)
+except OSError:
+    result["hardlink_denied"] = True
+try:
+    os.listdir("/")
+    result["root_listing_denied"] = False
+except OSError:
+    result["root_listing_denied"] = True
+try:
+    subprocess.run(
+        [sys.executable, "-c", "print('child')"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result["child_execution_denied"] = False
+except (OSError, subprocess.SubprocessError):
+    result["child_execution_denied"] = True
+Path(args.output).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
 '''
 
 
@@ -594,6 +903,39 @@ dataset = lightgbm.Dataset(
 ).construct()
 result = {"features": dataset.num_feature(), "rows": len(frame)}
 Path(args.output).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+'''
+
+
+_SCIENTIFIC_BACKTEST_SCRIPT = r'''
+import argparse
+from pathlib import Path
+
+import lightgbm
+import numpy
+import pandas
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--requests")
+parser.add_argument("--data-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+requests = pandas.read_csv(args.requests)
+pandas.read_csv(Path(args.data_dir) / "daily_output.csv")
+lightgbm.Dataset(
+    numpy.array([[0.0], [1.0]], dtype=float),
+    label=numpy.array([0, 1]),
+    params={"verbose": -1, "min_data_in_bin": 1, "min_data_in_leaf": 1},
+).construct()
+requests["predicted_direction"] = 1
+requests[[
+    "request_id",
+    "predict_date",
+    "feature_date",
+    "target_date",
+    "predicted_direction",
+]].to_csv(args.output, index=False)
 '''
 
 
