@@ -323,10 +323,15 @@ class ExecutorRunIdTests(unittest.TestCase):
 
 class BlackboxExecutionApprovalTests(unittest.TestCase):
     @staticmethod
-    def _config(*, scheme_version: str = "blackbox-version-1") -> SimpleNamespace:
+    def _config(
+        *,
+        scheme_version: str = "blackbox-version-1",
+        version_status: str = "active",
+    ) -> SimpleNamespace:
         return SimpleNamespace(
             scheme_id="approved_blackbox",
             status="active",
+            version_status=version_status,
             runtime_type="blackbox_v2",
             scheme_version=scheme_version,
             horizon=1,
@@ -491,6 +496,43 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
         self.assertIn("lifecycle journal", result.error_msg)
         approval_reader.assert_not_called()
         self.assertEqual(write_run_log.call_args.args[3], "failed")
+
+    def test_blackbox_executor_rejects_active_config_with_shadow_version_before_algorithm(self) -> None:
+        from scheduler.executor import execute_scheme
+
+        engine = _FakeEngine()
+        cfg = self._config(version_status="shadow")
+        approval = SimpleNamespace(executable=True, reason="approved")
+        with (
+            patch("scheduler.executor.create_engine_from_env", return_value=engine),
+            patch(
+                "scheduler.executor.read_blackbox_execution_approval",
+                return_value=approval,
+            ) as approval_reader,
+            patch(
+                "scheduler.executor._active_registry_targets",
+                side_effect=[{("10Y", 1)}, {("10Y", 1)}],
+            ),
+            patch("scheduler.executor.run_configured_scheme", return_value=[self._record()]) as runner,
+            patch("scheduler.executor.create_scheme_run", return_value=503) as create_run,
+            patch("scheduler.executor.attach_run_data_snapshot"),
+            patch("scheduler.executor.insert_approved_blackbox_predictions", return_value=1),
+            patch("scheduler.executor.finish_scheme_run"),
+            patch("scheduler.executor.write_run_log") as write_run_log,
+        ):
+            result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.records_written, 0)
+        self.assertEqual(
+            result.error_msg,
+            "Blackbox V2 config version_status is shadow, expected active",
+        )
+        approval_reader.assert_not_called()
+        create_run.assert_not_called()
+        runner.assert_not_called()
+        self.assertEqual(write_run_log.call_args.args[3], "failed")
+        self.assertTrue(engine.disposed)
 
     def test_fully_approved_blackbox_version_executes_and_writes_prediction(self) -> None:
         from scheduler.executor import execute_scheme

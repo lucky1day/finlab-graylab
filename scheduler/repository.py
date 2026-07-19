@@ -493,6 +493,11 @@ def _read_blackbox_execution_approval_conn(
         )
     if getattr(cfg, "status", None) != "active":
         return denied(f"config status is {getattr(cfg, 'status', None)}, expected active")
+    if getattr(cfg, "version_status", None) != "active":
+        return denied(
+            "config version_status is "
+            f"{getattr(cfg, 'version_status', None)}, expected active"
+        )
     if not base_scheme_id:
         return denied("config scheme_id is empty")
     if not scheme_version:

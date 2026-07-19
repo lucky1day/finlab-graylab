@@ -518,6 +518,25 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             approval.reason = "mutated"
 
+    def test_exact_approval_rejects_active_config_with_shadow_version(self) -> None:
+        from scheduler.repository import read_blackbox_execution_approval
+
+        engine = _CaptureEngine(
+            version_row=self._approved_version_row(),
+            registry_rows=[self._active_registry_row()],
+        )
+
+        approval = read_blackbox_execution_approval(
+            engine,
+            _blackbox_config(status="active", version_status="shadow"),
+        )
+
+        self.assertFalse(approval.executable)
+        self.assertEqual(
+            approval.reason,
+            "config version_status is shadow, expected active",
+        )
+
     def test_exact_approval_fails_closed_for_each_missing_or_mismatched_state(self) -> None:
         from scheduler.repository import read_blackbox_execution_approval
 
@@ -873,6 +892,57 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             insert_approved_blackbox_predictions(
                 engine,
                 _blackbox_config(),
+                101,
+                [record],
+                scheme_version="abc123def456",
+            )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
+
+    def test_final_blackbox_insert_rejects_shadow_config_version_without_predictions(self) -> None:
+        from scheduler.repository import insert_approved_blackbox_predictions
+        from shared.models import PredictionRecord
+
+        engine = _CaptureEngine(
+            version_row={
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "runtime_type": "blackbox_v2",
+                "status": "active",
+                "approved_by": "release-owner",
+                "approved_at": datetime(2026, 7, 20, 8, 30),
+            },
+            registry_rows=[
+                {
+                    "scheme_id": "demo_blackbox__h1__10Y",
+                    "base_scheme_id": "demo_blackbox",
+                    "runtime_type": "blackbox_v2",
+                    "status": "active",
+                    "task_type": "T+1",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                }
+            ],
+        )
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Blackbox V2 version is not production-approved: "
+            "config version_status is shadow, expected active",
+        ):
+            insert_approved_blackbox_predictions(
+                engine,
+                _blackbox_config(status="active", version_status="shadow"),
                 101,
                 [record],
                 scheme_version="abc123def456",

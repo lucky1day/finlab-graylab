@@ -300,6 +300,16 @@ def execute_scheme(
     scheme_version = getattr(cfg, "scheme_version", None)
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     if runtime_type == "blackbox_v2":
+        config_version_status = getattr(cfg, "version_status", None)
+        if config_version_status != "active":
+            reason = (
+                "Blackbox V2 config version_status is "
+                f"{config_version_status}, expected active"
+            )
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
         try:
             from shared.blackbox_v2.lifecycle import assert_lifecycle_clear
 
