@@ -11,6 +11,7 @@ from harness.authorization import (
 from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.contracts.config_schema import validate_config
+from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 
@@ -72,6 +73,27 @@ class ActivationGate(Gate):
                 passed=False,
                 evidence=[Evidence("config_errors", config_errors)],
                 errors=[f"config validation failed: {len(config_errors)} error(s)"],
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+
+        policy_errors = validate_onboarding_policy(
+            ctx.project_root,
+            ctx.scheme_id,
+            str(raw.get("runtime_type", "native_adapter")),
+        )
+        if policy_errors:
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.FAILED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("onboarding_policy_allowed", False),
+                    Evidence("onboarding_policy_errors", policy_errors),
+                ],
+                errors=policy_errors,
                 started_at=started_at,
                 finished_at=finished_at,
             )

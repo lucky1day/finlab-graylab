@@ -1,4 +1,5 @@
 scheme_id: liwei_0616_7y03_cons_all_k3_div_k8
+runtime_type: native_adapter
 name: "liwei_0616 7Y_03 ALL共识-DIV回退"
 description: "models-liwei-0616 7Y_03_cons_ALL_k_3_DIV_K_8；STD/DIV/ACCWT/CROSS_5Y 四基线 k=3 共识，DIV_K=8 streak-break fallback；日频 T+5，PIT 口径入库。"
 horizon: 5

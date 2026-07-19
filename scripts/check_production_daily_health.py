@@ -7,9 +7,9 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Literal, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
@@ -22,6 +22,11 @@ if str(PROJECT_ROOT) not in sys.path:
 from scheduler.calendar import is_trading_day  # noqa: E402
 from scheduler.repository import create_engine_from_env  # noqa: E402
 from shared.calendar_service import get_calendar  # noqa: E402
+from shared.data_bridge.refresh import (  # noqa: E402
+    DataBridgeRefreshConfig,
+    DataBridgeStore,
+    check_current_dataset,
+)
 from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_for_tenor, normalize_tenor  # noqa: E402
 
 
@@ -71,6 +76,18 @@ class DailyHealthSnapshot:
 
 
 @dataclass(frozen=True)
+class DataBridgeHealthSnapshot:
+    required_refresh_date: str
+    current_refresh_date: str | None
+    generation_id: str | None
+    refreshed_at: str | None
+    business_digest: str | None
+    files: Mapping[str, object]
+    last_attempt: Mapping[str, object] | None
+    validation_error: str | None
+
+
+@dataclass(frozen=True)
 class HealthFinding:
     level: FindingLevel
     code: str
@@ -109,6 +126,65 @@ def status_from_findings(findings: Sequence[HealthFinding]) -> HealthStatus:
     if any(item.level == "warning" for item in findings):
         return "warning"
     return "ok"
+
+
+def evaluate_data_bridge_health(
+    snapshot: DataBridgeHealthSnapshot,
+    *,
+    now: datetime | None = None,
+    deadline: str = "06:45",
+) -> list[HealthFinding]:
+    run_now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
+    if run_now.tzinfo is None:
+        run_now = run_now.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    deadline_clock = datetime.strptime(deadline, "%H:%M").time()
+    deadline_at = datetime.combine(
+        date.fromisoformat(snapshot.required_refresh_date),
+        deadline_clock,
+        tzinfo=ZoneInfo("Asia/Shanghai"),
+    )
+    if (
+        snapshot.validation_error is None
+        and snapshot.current_refresh_date == snapshot.required_refresh_date
+    ):
+        return []
+    level: FindingLevel = "error" if run_now >= deadline_at else "warning"
+    return [
+        HealthFinding(
+            level=level,
+            code="data_bridge_refresh_stale",
+            message="DataBridge current files are stale or invalid",
+            detail=asdict(snapshot),
+        )
+    ]
+
+
+def load_data_bridge_health(refresh_date: str) -> DataBridgeHealthSnapshot:
+    config = DataBridgeRefreshConfig.from_env()
+    store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
+    state: dict[str, object] = {}
+    validation_error: str | None = None
+    try:
+        checked = check_current_dataset(config)
+        state = dict(checked.state)
+    except Exception as exc:
+        validation_error = str(exc)
+        try:
+            state = store.load_state()
+        except Exception:
+            state = {}
+    files = state.get("files")
+    last_attempt = state.get("last_attempt")
+    return DataBridgeHealthSnapshot(
+        required_refresh_date=refresh_date,
+        current_refresh_date=str(state["refresh_date"]) if state.get("refresh_date") else None,
+        generation_id=str(state["generation_id"]) if state.get("generation_id") else None,
+        refreshed_at=str(state["refreshed_at"]) if state.get("refreshed_at") else None,
+        business_digest=str(state["business_digest"]) if state.get("business_digest") else None,
+        files=files if isinstance(files, dict) else {},
+        last_attempt=last_attempt if isinstance(last_attempt, dict) else None,
+        validation_error=validation_error,
+    )
 
 
 def evaluate_daily_health(
@@ -459,10 +535,16 @@ def _default_predict_date() -> str:
     return datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
 
 
-def _payload(snapshot: DailyHealthSnapshot, findings: Sequence[HealthFinding]) -> dict[str, object]:
+def _payload(
+    snapshot: DailyHealthSnapshot,
+    findings: Sequence[HealthFinding],
+    *,
+    data_bridge: DataBridgeHealthSnapshot | None = None,
+) -> dict[str, object]:
     return {
         "status": status_from_findings(findings),
         "snapshot": asdict(snapshot),
+        "data_bridge": asdict(data_bridge) if data_bridge is not None else None,
         "findings": [asdict(item) for item in findings],
     }
 
@@ -484,8 +566,15 @@ def main() -> int:
     finally:
         engine.dispose()
 
+    data_bridge = load_data_bridge_health(args.predict_date)
     findings = evaluate_daily_health(snapshot, strict_runs=args.strict_runs)
-    payload = _payload(snapshot, findings)
+    findings.extend(
+        evaluate_data_bridge_health(
+            data_bridge,
+            deadline=DataBridgeRefreshConfig.from_env().refresh_deadline,
+        )
+    )
+    payload = _payload(snapshot, findings, data_bridge=data_bridge)
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     status = payload["status"]
     if status == "error":

@@ -28,6 +28,7 @@ https://bond.finailab.cn/bond-factor-lab/
 - backend 和 scheduler 均由 launchd 管理，服务端口仍为 `127.0.0.1:8100`。
 - scheduler 调整配置、方案 `config.yaml` 或代码后，必须 `launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler` 重启，并复核日志中 active 日频、周频、周平均、月频方案均已注册。
 - scheduler 的 launchd 配置使用 `RunAtLoad=true` 与 `KeepAlive=true`：Mac 登录该用户会自动拉起，进程退出会被 launchd 重新拉起。若需要无人登录前启动，应另行制作 root `LaunchDaemon`，不能直接复用当前依赖用户 conda 环境的 `LaunchAgent`。
+- scheduler 每天 `05:30` 全量刷新 DataBridge 三频 current；启动补跑先检查/补刷 current，再执行预测补跑。DataBridge 凭据只保存在本机 `.env`，不得写入 plist 或仓库。
 - scheduler 启动后会执行一次 startup catch-up：对当天业务 cron 已过、且 `t_scheme_runs` 尚无终态记录的 active 方案自动补跑，避免系统/服务在早间预测窗口之后恢复时静默缺当天预测。
 - actuals 每天 `08:30/19:00/23:45` 三档刷新；`23:45` 用于承接 BondPrediction `23:25` 左右的 Wind 日频导入。若源表在最后一档之后才补齐，非交易日 actuals job 会补刷上一交易日的 daily/weekly actual，避免前端 T+1 最新验证卡在上一交易日。
 - 慢速 source-backed 方案使用 `config.yaml.schedule.timeout_sec` 配置方案级 executor timeout，例如 10Y02 当前为 `3600` 秒；该配置只影响算法子进程等待预算，不改变业务 cron 或日期语义。

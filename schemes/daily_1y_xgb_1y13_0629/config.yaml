@@ -1,4 +1,5 @@
 scheme_id: daily_1y_xgb_1y13_0629
+runtime_type: native_adapter
 name: "0629日度1Y XGB 1Y13"
 description: "0629 原始日度 D1Y/1Y13 XGBoost active-abstain T+1 方案；平台只做输入、日期、extra、benchmark 和落库适配"
 horizon: 1

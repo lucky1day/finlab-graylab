@@ -6,6 +6,25 @@ from pathlib import Path
 
 
 class SchedulerDiscoveryFailClosedTests(unittest.TestCase):
+    def test_native_config_without_input_source_defaults_to_legacy_db(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        project_root = Path(__file__).resolve().parents[1]
+        config = load_scheme_config(project_root / "schemes" / "t1_daily" / "config.yaml")
+
+        self.assertEqual(config.runtime_type, "native_adapter")
+        self.assertEqual(config.input_source, "legacy_db")
+
+    def test_repository_scheme_configs_declare_runtime_type_explicitly(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        missing = []
+        for config_path in sorted((project_root / "schemes").glob("*/config.yaml")):
+            text = config_path.read_text(encoding="utf-8")
+            if "runtime_type:" not in text:
+                missing.append(config_path.parent.name)
+
+        self.assertEqual(missing, [])
+
     def test_load_scheme_config_rejects_missing_status(self) -> None:
         from scheduler.discovery import load_scheme_config
 

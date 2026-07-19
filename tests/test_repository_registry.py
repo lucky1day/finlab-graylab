@@ -58,6 +58,11 @@ class RegistrySyncTests(unittest.TestCase):
             code_hash="c" * 64,
             config_hash="f" * 64,
             manifest_hash=None,
+            runtime_type="blackbox_v2",
+            version_status="shadow",
+            algorithm_version="1.2.3",
+            contract_version="1.0",
+            runtime_profile="blackbox-v2-v1",
         )
 
         sync_scheme_registry(engine, [scheme])
@@ -68,6 +73,7 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertLess(update_clause.index("updated_at = IF("), update_clause.index("name = VALUES(name)"))
         self.assertNotIn("updated_at = CURRENT_TIMESTAMP", update_clause)
         self.assertIn("deployed_at = IF(deployed_at IS NULL AND VALUES(status) = 'active'", update_clause)
+        self.assertEqual(engine.store["calls"][0][1][0]["runtime_type"], "blackbox_v2")
 
     def test_registry_sync_writes_one_registry_row_per_target_tenor(self) -> None:
         from scheduler.repository import sync_scheme_registry
@@ -107,6 +113,7 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertEqual([row["target_tenor"] for row in rows], ["3Y", "5Y", "7Y", "10Y"])
         self.assertEqual({row["task_type"] for row in rows}, {"T+5"})
         self.assertEqual([row["tenors"] for row in rows], ['["3Y"]', '["5Y"]', '["7Y"]', '["10Y"]'])
+        self.assertEqual({row["runtime_type"] for row in rows}, {"native_adapter"})
 
 
 class _Result:
@@ -144,6 +151,15 @@ class _RunEngine:
 
 
 class ImmutablePredictionRepositoryTests(unittest.TestCase):
+    def test_attach_run_data_snapshot_updates_only_the_run_audit_row(self) -> None:
+        from scheduler.repository import attach_run_data_snapshot
+
+        engine = _RunEngine()
+        attach_run_data_snapshot(engine, run_id=101, data_snapshot_id="snapshot-1")
+
+        self.assertIn("UPDATE t_scheme_runs", engine.store["sql"])
+        self.assertEqual(engine.store["params"], {"run_id": 101, "data_snapshot_id": "snapshot-1"})
+
     def test_create_scheme_run_inserts_running_row_and_returns_run_id(self) -> None:
         from scheduler.repository import create_scheme_run
 
@@ -156,6 +172,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             run_type="active",
             prediction_phase="scheduled_live",
             input_artifact_id="artifact-1",
+            data_snapshot_id="snapshot-1",
         )
 
         self.assertEqual(run_id, 101)
@@ -169,6 +186,8 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["prediction_phase"], "scheduled_live")
         self.assertEqual(params["status"], "running")
         self.assertEqual(params["input_artifact_id"], "artifact-1")
+        self.assertEqual(params["data_snapshot_id"], "snapshot-1")
+        self.assertEqual(params["runtime_type"], "native_adapter")
 
     def test_insert_run_predictions_upserts_prediction_semantics(self) -> None:
         from scheduler.repository import insert_run_predictions
@@ -235,6 +254,13 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             config_hash="f" * 64,
             manifest_hash=None,
             status="active",
+            runtime_type="blackbox_v2",
+            version_status="shadow",
+            algorithm_version="1.2.3",
+            contract_version="1.0",
+            runtime_profile="blackbox-v2-v1",
+            environment_fingerprint="e" * 64,
+            data_snapshot_id="snapshot-1",
         )
 
         version = upsert_scheme_version(engine, cfg)
@@ -249,7 +275,13 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["code_hash"], "c" * 64)
         self.assertEqual(params["config_hash"], "f" * 64)
         self.assertIsNone(params["manifest_hash"])
-        self.assertEqual(params["status"], "active")
+        self.assertEqual(params["status"], "shadow")
+        self.assertEqual(params["runtime_type"], "blackbox_v2")
+        self.assertEqual(params["algorithm_version"], "1.2.3")
+        self.assertEqual(params["contract_version"], "1.0")
+        self.assertEqual(params["runtime_profile"], "blackbox-v2-v1")
+        self.assertEqual(params["environment_fingerprint"], "e" * 64)
+        self.assertEqual(params["data_snapshot_id"], "snapshot-1")
 
 
 if __name__ == "__main__":

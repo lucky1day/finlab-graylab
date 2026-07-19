@@ -1,4 +1,5 @@
 scheme_id: daily_5y_2_v28
+runtime_type: native_adapter
 name: "V28日频5Y方案2"
 description: "models-liwei-0606 V28 5Y config 2；月度更新 LGBM ensemble + policy/term-premium/butterfly signals。实盘 predict_date 为信号日 T+1，feature_date 为上一交易日 T。"
 horizon: 5

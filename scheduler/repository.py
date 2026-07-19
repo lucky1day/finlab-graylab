@@ -42,10 +42,10 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
     sql = text(
         """
         INSERT INTO t_scheme_registry
-            (scheme_id, base_scheme_id, name, description, horizon, task_type, tenors, frequency, target_tenor,
+            (scheme_id, base_scheme_id, name, description, horizon, task_type, runtime_type, tenors, frequency, target_tenor,
              schedule_cron, schedule_timezone, status, deployed_at)
         VALUES
-            (:scheme_id, :base_scheme_id, :name, :description, :horizon, :task_type, CAST(:tenors AS JSON), :frequency,
+            (:scheme_id, :base_scheme_id, :name, :description, :horizon, :task_type, :runtime_type, CAST(:tenors AS JSON), :frequency,
              :target_tenor, :schedule_cron, :schedule_timezone, :status,
              IF(:status = 'active', CURRENT_DATE, NULL))
         ON DUPLICATE KEY UPDATE
@@ -57,6 +57,7 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                     AND description <=> VALUES(description)
                     AND horizon <=> VALUES(horizon)
                     AND task_type <=> VALUES(task_type)
+                    AND runtime_type <=> VALUES(runtime_type)
                     AND CAST(tenors AS CHAR) <=> CAST(VALUES(tenors) AS CHAR)
                     AND frequency <=> VALUES(frequency)
                     AND target_tenor <=> VALUES(target_tenor)
@@ -72,6 +73,7 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
             description = VALUES(description),
             horizon = VALUES(horizon),
             task_type = VALUES(task_type),
+            runtime_type = VALUES(runtime_type),
             tenors = VALUES(tenors),
             frequency = VALUES(frequency),
             target_tenor = VALUES(target_tenor),
@@ -96,6 +98,7 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                     "description": cfg.description,
                     "horizon": cfg.horizon,
                     "task_type": cfg.task_type,
+                    "runtime_type": getattr(cfg, "runtime_type", "native_adapter"),
                     "tenors": json.dumps([target_tenor], ensure_ascii=False),
                     "frequency": cfg.frequency,
                     "target_tenor": target_tenor,
@@ -135,15 +138,26 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
 def upsert_scheme_version(engine: Engine, cfg: SchemeConfig) -> str:
     """将发现到的方案版本写入 t_scheme_versions，保持幂等。"""
     version_statuses = {"draft", "validated", "shadow", "active", "paused", "retired"}
-    status = cfg.status if cfg.status in version_statuses else "draft"
+    configured_status = getattr(cfg, "version_status", cfg.status)
+    status = configured_status if configured_status in version_statuses else "draft"
     sql = text(
         """
         INSERT INTO t_scheme_versions
-            (scheme_id, scheme_version, code_hash, config_hash, manifest_hash, git_commit, status, created_by)
+            (scheme_id, scheme_version, runtime_type, algorithm_version, contract_version, runtime_profile,
+             environment_fingerprint, data_snapshot_id,
+             code_hash, config_hash, manifest_hash, git_commit, status, created_by)
         VALUES
-            (:scheme_id, :scheme_version, :code_hash, :config_hash, :manifest_hash, :git_commit, :status, :created_by)
+            (:scheme_id, :scheme_version, :runtime_type, :algorithm_version, :contract_version, :runtime_profile,
+             :environment_fingerprint, :data_snapshot_id,
+             :code_hash, :config_hash, :manifest_hash, :git_commit, :status, :created_by)
         ON DUPLICATE KEY UPDATE
             code_hash = VALUES(code_hash),
+            runtime_type = VALUES(runtime_type),
+            algorithm_version = VALUES(algorithm_version),
+            contract_version = VALUES(contract_version),
+            runtime_profile = VALUES(runtime_profile),
+            environment_fingerprint = VALUES(environment_fingerprint),
+            data_snapshot_id = VALUES(data_snapshot_id),
             config_hash = VALUES(config_hash),
             manifest_hash = VALUES(manifest_hash),
             git_commit = VALUES(git_commit),
@@ -153,6 +167,12 @@ def upsert_scheme_version(engine: Engine, cfg: SchemeConfig) -> str:
     params = {
         "scheme_id": cfg.scheme_id,
         "scheme_version": cfg.scheme_version,
+        "runtime_type": getattr(cfg, "runtime_type", "native_adapter"),
+        "algorithm_version": getattr(cfg, "algorithm_version", None),
+        "contract_version": getattr(cfg, "contract_version", None),
+        "runtime_profile": getattr(cfg, "runtime_profile", None),
+        "environment_fingerprint": getattr(cfg, "environment_fingerprint", None),
+        "data_snapshot_id": getattr(cfg, "data_snapshot_id", None),
         "code_hash": cfg.code_hash,
         "config_hash": cfg.config_hash,
         "manifest_hash": cfg.manifest_hash,
@@ -171,11 +191,13 @@ def create_scheme_run(
     scheme_id: str,
     predict_date: str,
     scheme_version: str | None = None,
+    runtime_type: str = "native_adapter",
     run_type: str = "active",
     prediction_phase: str | None = None,
     status: str = "running",
     harness_run_id: str | None = None,
     input_artifact_id: str | None = None,
+    data_snapshot_id: str | None = None,
     records_expected: int | None = None,
 ) -> int:
     """创建一次不可变预测运行记录，返回 run_id。"""
@@ -184,22 +206,24 @@ def create_scheme_run(
     sql = text(
         """
         INSERT INTO t_scheme_runs
-            (scheme_id, scheme_version, run_type, prediction_phase, predict_date, status,
-             harness_run_id, input_artifact_id, records_expected)
+            (scheme_id, scheme_version, runtime_type, run_type, prediction_phase, predict_date, status,
+             harness_run_id, input_artifact_id, data_snapshot_id, records_expected)
         VALUES
-            (:scheme_id, :scheme_version, :run_type, :prediction_phase, :predict_date, :status,
-             :harness_run_id, :input_artifact_id, :records_expected)
+            (:scheme_id, :scheme_version, :runtime_type, :run_type, :prediction_phase, :predict_date, :status,
+             :harness_run_id, :input_artifact_id, :data_snapshot_id, :records_expected)
         """
     )
     params = {
         "scheme_id": scheme_id,
         "scheme_version": scheme_version,
+        "runtime_type": runtime_type,
         "run_type": run_type,
         "prediction_phase": prediction_phase,
         "predict_date": predict_date,
         "status": status,
         "harness_run_id": harness_run_id,
         "input_artifact_id": input_artifact_id,
+        "data_snapshot_id": data_snapshot_id,
         "records_expected": records_expected,
     }
     with engine.begin() as conn:
@@ -208,6 +232,23 @@ def create_scheme_run(
         if run_id is None:
             run_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
     return int(run_id)
+
+
+def attach_run_data_snapshot(engine: Engine, *, run_id: int, data_snapshot_id: str) -> None:
+    """将 Blackbox V2 输入快照关联到既有运行审计行。"""
+    if not str(data_snapshot_id).strip():
+        raise ValueError("data_snapshot_id must be non-empty")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET data_snapshot_id = :data_snapshot_id
+                WHERE run_id = :run_id
+                """
+            ),
+            {"run_id": int(run_id), "data_snapshot_id": str(data_snapshot_id)},
+        )
 
 
 def finish_scheme_run(

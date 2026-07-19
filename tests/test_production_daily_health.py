@@ -8,16 +8,43 @@ from sqlalchemy import create_engine, text
 
 from scripts.check_production_daily_health import (
     ActualWatermark,
+    DataBridgeHealthSnapshot,
     DailyHealthSnapshot,
     PredictionDateCheck,
     RunPredictionCount,
     evaluate_daily_health,
+    evaluate_data_bridge_health,
     load_snapshot,
     status_from_findings,
 )
 
 
 class ProductionDailyHealthTests(unittest.TestCase):
+    def test_stale_data_bridge_refresh_is_error_after_deadline(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        snapshot = DataBridgeHealthSnapshot(
+            required_refresh_date="2026-07-19",
+            current_refresh_date="2026-07-18",
+            generation_id="full-old",
+            refreshed_at="2026-07-18T05:45:00+08:00",
+            business_digest="abc",
+            files={},
+            last_attempt={"status": "failed", "error": "source not ready"},
+            validation_error=None,
+        )
+
+        findings = evaluate_data_bridge_health(
+            snapshot,
+            now=datetime(2026, 7, 19, 7, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+            deadline="06:45",
+        )
+
+        self.assertEqual(status_from_findings(findings), "error")
+        self.assertEqual(findings[0].code, "data_bridge_refresh_stale")
+        self.assertEqual(findings[0].detail["last_attempt"]["error"], "source not ready")
+
     def _snapshot(self, **overrides: object) -> DailyHealthSnapshot:
         data = {
             "predict_date": "2026-07-06",

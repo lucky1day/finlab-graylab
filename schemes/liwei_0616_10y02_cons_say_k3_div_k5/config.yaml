@@ -1,4 +1,5 @@
 scheme_id: liwei_0616_10y02_cons_say_k3_div_k5
+runtime_type: native_adapter
 name: "liwei_0616 10Y_02 SAY共识-DIV回退"
 description: "models-liwei-0616 10Y_02_cons_SAY_k_3_DIV_K_5；STD/ACCWT/V55_7Y 三基线 k=3 共识，DIV_K=5 streak-break fallback；日频 T+5，PIT 口径入库。"
 horizon: 5

@@ -1355,6 +1355,7 @@ def _fake_monthly_semantics_calendar() -> SimpleNamespace:
 
 
 def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_lines: list[str] | None = None) -> Path:
+    _write_policy(project_root, scheme_id)
     scheme_dir = project_root / "schemes" / scheme_id
     (scheme_dir / "core").mkdir(parents=True)
     (scheme_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -1392,6 +1393,22 @@ def _write_minimal_scheme(project_root: Path, *, scheme_id: str, extra_config_li
         config_lines.extend(extra_config_lines)
     (scheme_dir / "config.yaml").write_text("\n".join(config_lines), encoding="utf-8")
     return scheme_dir
+
+
+def _write_policy(project_root: Path, scheme_id: str) -> None:
+    path = project_root / "deploy" / "onboarding_policy_v1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "policy_version": "1.0",
+                "new_scheme_runtime_type": "blackbox_v2",
+                "native_v1_mode": "maintenance_only",
+                "legacy_native_scheme_ids": [scheme_id],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_monthly_scheme(project_root: Path, *, scheme_id: str) -> Path:

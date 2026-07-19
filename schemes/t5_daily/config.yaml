@@ -1,4 +1,5 @@
 scheme_id: t5_daily
+runtime_type: native_adapter
 name: "0529原始T5-LGBM投票基准"
 description: "0529 T+5 日频 LightGBM + tenor 独立投票基准方案；adapter 只改输入输出，不改核心算法。"
 horizon: 5

@@ -14,6 +14,9 @@ model-mutitest-0529.zip
 # Generated reproduction outputs; persisted summaries live in MySQL and docs.
 backtest_artifacts/
 
+# Published DataBridge files are runtime data, not source artifacts.
+data/data_bridge/current/
+
 # Clean export tarballs produced by scripts/export_clean_repo.sh.
 dist/
 
