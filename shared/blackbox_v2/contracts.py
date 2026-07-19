@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import csv
+import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -208,7 +209,7 @@ def load_backtest_results(path: str | Path, requests: list[BlackboxRequest]) -> 
             fieldnames = tuple(reader.fieldnames or ())
             if set(fieldnames) != set(RESULT_FIELDS) or len(fieldnames) != len(RESULT_FIELDS):
                 raise ValueError(f"Result fields mismatch: expected={list(RESULT_FIELDS)}, got={list(fieldnames)}")
-            results = [result_from_mapping(dict(row)) for row in reader]
+            results = [_result_from_csv_mapping(dict(row)) for row in reader]
     except (OSError, UnicodeError, csv.Error) as exc:
         raise ValueError(f"invalid Result CSV {result_path}: {exc}") from exc
     if len(results) != len(requests):
@@ -222,17 +223,22 @@ def load_backtest_results(path: str | Path, requests: list[BlackboxRequest]) -> 
 
 
 def result_from_mapping(raw: dict[str, Any]) -> BlackboxResult:
+    return _result_from_mapping(raw, _parse_json_direction)
+
+
+def _result_from_csv_mapping(raw: dict[str, Any]) -> BlackboxResult:
+    return _result_from_mapping(raw, _parse_csv_direction)
+
+
+def _result_from_mapping(
+    raw: dict[str, Any],
+    parse_direction: Callable[[Any], int],
+) -> BlackboxResult:
     if set(raw) != set(RESULT_FIELDS) or len(raw) != len(RESULT_FIELDS):
         missing = sorted(set(RESULT_FIELDS) - set(raw))
         extra = sorted(set(raw) - set(RESULT_FIELDS))
         raise ValueError(f"Result fields mismatch: missing={missing}, extra={extra}")
-    direction = raw["predicted_direction"]
-    if isinstance(direction, str):
-        if not re.fullmatch(r"-?1|0", direction.strip()):
-            raise ValueError("predicted_direction must be integer -1, 0 or 1")
-        direction = int(direction)
-    if isinstance(direction, bool) or not isinstance(direction, int) or direction not in {-1, 0, 1}:
-        raise ValueError("predicted_direction must be integer -1, 0 or 1")
+    direction = parse_direction(raw["predicted_direction"])
     return BlackboxResult(
         request_id=_non_empty_string(raw, "request_id"),
         predict_date=_iso_date(raw, "predict_date"),
@@ -240,6 +246,18 @@ def result_from_mapping(raw: dict[str, Any]) -> BlackboxResult:
         target_date=_iso_date(raw, "target_date"),
         predicted_direction=direction,
     )
+
+
+def _parse_json_direction(value: Any) -> int:
+    if type(value) is not int or value not in {-1, 0, 1}:
+        raise ValueError("predicted_direction must be integer -1, 0 or 1")
+    return value
+
+
+def _parse_csv_direction(value: Any) -> int:
+    if value not in ("-1", "0", "1"):
+        raise ValueError("predicted_direction must be integer -1, 0 or 1")
+    return int(value)
 
 
 def _require_result_echo(result: BlackboxResult, request: BlackboxRequest) -> None:

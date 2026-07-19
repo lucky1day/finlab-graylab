@@ -61,18 +61,77 @@ class BlackboxV2ResultContractTests(unittest.TestCase):
 
         self.assertEqual(result.predicted_direction, -1)
 
-    def test_rejects_boolean_direction(self) -> None:
-        from shared.blackbox_v2.contracts import load_prediction_result, request_from_mapping
+    def test_prediction_json_accepts_integer_directions(self) -> None:
+        for direction in (-1, 0, 1):
+            with self.subTest(direction=direction):
+                result = _load_prediction_direction(direction)
 
-        request = request_from_mapping(_request_payload())
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = Path(tmpdir) / "prediction.json"
-            payload = _result_payload()
-            payload["predicted_direction"] = True
-            path.write_text(json.dumps(payload), encoding="utf-8")
+                self.assertEqual(result.predicted_direction, direction)
+                self.assertIs(type(result.predicted_direction), int)
 
-            with self.assertRaisesRegex(ValueError, "predicted_direction"):
-                load_prediction_result(path, request)
+    def test_prediction_json_rejects_string_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_prediction_direction("1")
+
+    def test_prediction_json_rejects_float_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_prediction_direction(1.0)
+
+    def test_prediction_json_rejects_boolean_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_prediction_direction(True)
+
+    def test_prediction_json_rejects_null_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_prediction_direction(None)
+
+    def test_prediction_json_rejects_out_of_range_integer_direction(self) -> None:
+        for direction in (-2, 2):
+            with self.subTest(direction=direction):
+                with self.assertRaisesRegex(ValueError, "predicted_direction"):
+                    _load_prediction_direction(direction)
+
+    def test_backtest_csv_accepts_exact_direction_tokens(self) -> None:
+        for token, expected in (("-1", -1), ("0", 0), ("1", 1)):
+            with self.subTest(token=token):
+                result = _load_backtest_direction(token)
+
+                self.assertEqual(result.predicted_direction, expected)
+                self.assertIs(type(result.predicted_direction), int)
+
+    def test_backtest_csv_rejects_decimal_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_backtest_direction("1.0")
+
+    def test_backtest_csv_rejects_plus_prefixed_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_backtest_direction("+1")
+
+    def test_backtest_csv_rejects_leading_whitespace_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_backtest_direction(" 1")
+
+    def test_backtest_csv_rejects_trailing_whitespace_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_backtest_direction("1 ")
+
+    def test_backtest_csv_rejects_empty_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_backtest_direction("")
+
+    def test_backtest_csv_rejects_missing_direction_as_null(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_backtest_direction(None)
+
+    def test_backtest_csv_rejects_null_text_direction(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predicted_direction"):
+            _load_backtest_direction("null")
+
+    def test_backtest_csv_rejects_out_of_range_direction(self) -> None:
+        for token in ("-2", "2"):
+            with self.subTest(token=token):
+                with self.assertRaisesRegex(ValueError, "predicted_direction"):
+                    _load_backtest_direction(token)
 
     def test_batch_result_preserves_request_order(self) -> None:
         from shared.blackbox_v2.contracts import load_backtest_results, request_from_mapping
@@ -120,6 +179,34 @@ def _result_payload() -> dict:
         "target_date": "2026-07-17",
         "predicted_direction": -1,
     }
+
+
+def _load_prediction_direction(direction: object):
+    from shared.blackbox_v2.contracts import load_prediction_result, request_from_mapping
+
+    request = request_from_mapping(_request_payload())
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "prediction.json"
+        payload = _result_payload()
+        payload["predicted_direction"] = direction
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return load_prediction_result(path, request)
+
+
+def _load_backtest_direction(direction: str | None):
+    from shared.blackbox_v2.contracts import load_backtest_results, request_from_mapping
+
+    request = request_from_mapping(_request_payload())
+    direction_cell = "" if direction is None else f",{direction}"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "backtest.csv"
+        path.write_text(
+            "request_id,predict_date,feature_date,target_date,predicted_direction\n"
+            "request-001,2026-07-16,2026-07-15,2026-07-17"
+            f"{direction_cell}\n",
+            encoding="utf-8",
+        )
+        return load_backtest_results(path, [request])[0]
 
 
 if __name__ == "__main__":
