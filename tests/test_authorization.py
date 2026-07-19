@@ -104,6 +104,19 @@ class AuthorizationTest(unittest.TestCase):
         )
         self.assertTrue(any("expired" in e for e in errors), errors)
 
+    def test_native_authorization_keeps_existing_long_ttl_behavior(self) -> None:
+        token = issue_token("t5_daily", "activate", ttl_seconds=3600)
+
+        auth, errors = verify_authorization(
+            token,
+            scheme_id="t5_daily",
+            action="activate",
+            used_store_path=self._used_path(),
+        )
+
+        self.assertIsNotNone(auth)
+        self.assertEqual(errors, [])
+
     def test_replayed_token_rejected(self) -> None:
         used = self._used_path()
         token = issue_token("t5_daily", "activate")

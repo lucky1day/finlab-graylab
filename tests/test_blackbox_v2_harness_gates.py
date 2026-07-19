@@ -430,6 +430,88 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual((restored.status, restored.version_status), ("paused", "draft"))
         self.assertEqual(state, {"version": "draft", "registry": "paused"})
 
+    def test_shadow_version_drift_after_db_write_restores_original_exact_version(self) -> None:
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+        from shared.blackbox_v2.lifecycle import load_journal
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
+            config_path = scheme_dir / "config.yaml"
+            config = load_scheme_config(config_path)
+            original_version = config.scheme_version
+            token = issue_token(
+                config.scheme_id,
+                "shadow_register",
+                "2026-07-16",
+                scheme_version=original_version,
+                harness_run_id="hr_passed",
+            )
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=root / "reports" / "shadow",
+                config=config,
+                authorization=token,
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+            )
+            passed = PassedAllRun("hr_passed", root / "reports" / "all", "snapshot-test")
+            states = {original_version: "draft"}
+            registry = {"status": "paused"}
+            compensation_versions: list[str] = []
+
+            def read_state(_engine, current):
+                return SimpleNamespace(
+                    version_status=states.get(current.scheme_version, "draft"),
+                    registry_status=registry["status"],
+                )
+
+            def register(_engine, _validated, current):
+                self.assertEqual(current.scheme_version, original_version)
+                states[original_version] = "shadow"
+                script = scheme_dir / "delivery" / f"{config.scheme_id}.py"
+                script.chmod(0o644)
+                script.write_text(
+                    "import argparse\nimport json\n# changed after target DB write\n",
+                    encoding="utf-8",
+                )
+                return SimpleNamespace(
+                    scheme_version=original_version,
+                    version_status="shadow",
+                    registry_status="paused",
+                )
+
+            def compensate(_engine, current, **kwargs):
+                compensation_versions.append(current.scheme_version)
+                states[current.scheme_version] = kwargs["version_status"]
+                registry["status"] = kwargs["registry_status"]
+
+            with (
+                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
+                patch("harness.blackbox_v2.gates._read_shadow_state", side_effect=read_state),
+                patch("harness.blackbox_v2.gates._register_shadow", side_effect=register),
+                patch("scheduler.repository.apply_blackbox_lifecycle_state", side_effect=compensate),
+            ):
+                result = BlackboxShadowRegisterGate().run(ctx)
+
+            changed = load_scheme_config(config_path)
+            evidence = {item.key: item.value for item in result.evidence}
+            journal = load_journal(Path(evidence["journal_path"]))
+
+        self.assertFalse(result.passed)
+        self.assertIn("canonical version changed", "\n".join(result.errors))
+        self.assertNotEqual(changed.scheme_version, original_version)
+        self.assertEqual((changed.status, changed.version_status), ("paused", "draft"))
+        self.assertEqual(states[original_version], "draft")
+        self.assertNotEqual(states.get(changed.scheme_version), "shadow")
+        self.assertEqual(compensation_versions, [original_version])
+        self.assertEqual(journal.phase, "compensated")
+
     def test_static_gate_accepts_exact_two_file_delivery(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
         from scheduler.discovery import load_scheme_config

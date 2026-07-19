@@ -14,6 +14,7 @@ from typing import Any
 
 
 AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
+BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
 
 
 @dataclass(frozen=True)
@@ -193,7 +194,7 @@ def verify_authorization(
 
 
 def required_future_expiry_errors(expires_at: str | None) -> list[str]:
-    """校验 Blackbox 高权限操作强制要求的明确未来过期时间。"""
+    """校验 Blackbox 高权限操作强制要求的短期未来过期时间。"""
     if not isinstance(expires_at, str) or not expires_at.strip():
         return ["authorization expires_at must be a non-empty future timestamp"]
     try:
@@ -202,8 +203,15 @@ def required_future_expiry_errors(expires_at: str | None) -> list[str]:
         return [f"authorization token has invalid expires_at: {expires_at}"]
     if expires_dt.tzinfo is None:
         expires_dt = expires_dt.replace(tzinfo=timezone.utc)
-    if expires_dt <= datetime.now(timezone.utc):
+    now = datetime.now(timezone.utc)
+    expires_dt = expires_dt.astimezone(timezone.utc)
+    if expires_dt <= now:
         return [f"authorization expires_at must be in the future: {expires_at}"]
+    if (expires_dt - now).total_seconds() > BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS:
+        return [
+            "authorization expires_at must be no more than "
+            f"{BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS} seconds in the future: {expires_at}"
+        ]
     return []
 
 

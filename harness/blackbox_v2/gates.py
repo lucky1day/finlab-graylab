@@ -486,6 +486,12 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                     f"version status draft or validated, got {previous}"
                 )
             target = LifecycleState("paused", "shadow", "paused")
+            original_identity = replace(
+                cfg,
+                environment_fingerprint=environment_fingerprint,
+                data_snapshot_id=passed_run.data_snapshot_id,
+            )
+            compensating = False
 
             def consume() -> None:
                 nonlocal audit_path
@@ -493,18 +499,37 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 audit_path = write_authorization_audit(auth, ctx.report_dir / "shadow_authorization")
 
             def enriched_current():
+                current = load_scheme_config(config_path)
+                if current.scheme_version != cfg.scheme_version:
+                    raise _CanonicalSchemeVersionChanged(
+                        "Blackbox canonical version changed during shadow registration: "
+                        f"expected={cfg.scheme_version}, current={current.scheme_version}"
+                    )
                 return replace(
-                    load_scheme_config(config_path),
+                    current,
                     environment_fingerprint=environment_fingerprint,
                     data_snapshot_id=passed_run.data_snapshot_id,
                 )
 
+            def original_identity_current() -> SchemeConfig:
+                current = load_scheme_config(config_path)
+                return replace(
+                    original_identity,
+                    status=current.status,
+                    version_status=current.version_status,
+                )
+
             def apply_database(state: LifecycleState) -> None:
-                nonlocal registered_state
-                current = enriched_current()
+                nonlocal compensating, registered_state
                 if state == target:
+                    current = enriched_current()
                     registered_state = _register_shadow(engine, validated_cfg, current)
                     return
+                compensating = True
+                try:
+                    current = enriched_current()
+                except _CanonicalSchemeVersionChanged:
+                    current = original_identity_current()
                 from scheduler.repository import apply_blackbox_lifecycle_state
 
                 apply_blackbox_lifecycle_state(
@@ -515,7 +540,13 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 )
 
             def read_state() -> LifecycleState:
-                current = enriched_current()
+                if compensating:
+                    try:
+                        current = enriched_current()
+                    except _CanonicalSchemeVersionChanged:
+                        current = original_identity_current()
+                else:
+                    current = enriched_current()
                 db_state = _read_shadow_state(engine, current)
                 return LifecycleState(
                     current.status,
@@ -938,6 +969,10 @@ def _register_shadow(
         version_status="shadow",
         registry_status="paused",
     )
+
+
+class _CanonicalSchemeVersionChanged(RuntimeError):
+    pass
 
 
 def _read_shadow_state(engine, cfg: SchemeConfig):

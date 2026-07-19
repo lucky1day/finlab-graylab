@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -223,6 +223,42 @@ class BlackboxActivationTests(unittest.TestCase):
                 result = activate_blackbox(self._ctx(token))
                 self.assertFalse(result.passed)
                 self.assertIn("expires_at", "\n".join(result.errors))
+
+    def test_activation_rejects_expiry_beyond_fifteen_minutes(self) -> None:
+        from harness.blackbox_v2.activation import activate_blackbox
+
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=901)).isoformat()
+        token = self._signed_activation_token_with_expiry(expires_at)
+
+        with patch(
+            "harness.blackbox_v2.activation.reconcile_incomplete_before_authorization",
+            return_value=self.cfg,
+        ):
+            result = activate_blackbox(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        self.assertIn("900 seconds", "\n".join(result.errors))
+
+    def test_reconcile_rejects_expiry_beyond_fifteen_minutes_before_engine_use(self) -> None:
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+
+        token = issue_token(
+            self.cfg.scheme_id,
+            "blackbox_reconcile",
+            scheme_version=self.cfg.scheme_version,
+            ttl_seconds=901,
+            issued_by="recovery-owner",
+        )
+        ctx = replace_context(
+            self._ctx(token),
+            engine_factory=lambda: self.fail("overlong authorization must fail before engine use"),
+        )
+
+        result = BlackboxLifecycleReconcileGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("900 seconds", "\n".join(result.errors))
 
     def test_activation_rejects_token_signed_with_another_secret(self) -> None:
         from harness.authorization import issue_token

@@ -7,6 +7,7 @@ import uuid
 import fcntl
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -38,6 +39,12 @@ class LifecycleState:
 
 
 @dataclass(frozen=True)
+class LifecyclePhaseEvent:
+    phase: str
+    at: str
+
+
+@dataclass(frozen=True)
 class LifecycleJournal:
     operation_id: str
     action: str
@@ -51,6 +58,7 @@ class LifecycleJournal:
     error: str | None = None
     reconciliation_of: str | None = None
     reconciled_by: str | None = None
+    phase_events: tuple[LifecyclePhaseEvent, ...] = ()
 
     @classmethod
     def prepare(
@@ -76,12 +84,18 @@ class LifecycleJournal:
             phase="prepared",
             token_hash=token_hash,
             reconciliation_of=reconciliation_of,
+            phase_events=(LifecyclePhaseEvent("prepared", _utc_iso_timestamp()),),
         )
 
     def transition(self, phase: str, *, error: str | None = None) -> "LifecycleJournal":
         if phase not in _TRANSITIONS.get(self.phase, frozenset()):
             raise ValueError(f"invalid lifecycle phase transition: {self.phase} -> {phase}")
-        return replace(self, phase=phase, error=error)
+        return replace(
+            self,
+            phase=phase,
+            error=error,
+            phase_events=self.phase_events + (LifecyclePhaseEvent(phase, _utc_iso_timestamp()),),
+        )
 
 
 class LifecycleOperationError(RuntimeError):
@@ -129,6 +143,10 @@ def load_journal(path: str | Path) -> LifecycleJournal:
         ),
         reconciled_by=(
             str(raw["reconciled_by"]) if raw.get("reconciled_by") is not None else None
+        ),
+        phase_events=tuple(
+            LifecyclePhaseEvent(phase=str(event["phase"]), at=str(event["at"]))
+            for event in raw.get("phase_events", [])
         ),
     )
     if journal.phase not in _TRANSITIONS:
@@ -449,6 +467,10 @@ def _failure_transition(journal: LifecycleJournal, phase: str, error: str) -> Li
     if journal.phase == "unresolved":
         return replace(journal, error=error)
     return journal.transition(phase, error=error)
+
+
+def _utc_iso_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _atomic_write_journal_path(path: Path, journal: LifecycleJournal) -> None:

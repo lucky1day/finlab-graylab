@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -69,6 +70,72 @@ class BlackboxLifecycleJournalTests(unittest.TestCase):
         self.assertEqual(journal.phase, "verified")
         with self.assertRaisesRegex(ValueError, "invalid lifecycle phase transition"):
             journal.transition("prepared")
+
+    def test_each_phase_transition_records_an_immutable_utc_timestamp(self) -> None:
+        from shared.blackbox_v2.lifecycle import LifecycleJournal
+
+        previous, target = self._states()
+        journal = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id="trial",
+            scheme_version="abc123",
+            harness_run_id="hr_1",
+            previous=previous,
+            target=target,
+            token_hash="hash",
+        )
+        journal = journal.transition("config_written")
+        journal = journal.transition("db_committed")
+        journal = journal.transition("verified")
+
+        self.assertIsInstance(getattr(journal, "phase_events", None), tuple)
+        self.assertEqual(
+            [event.phase for event in journal.phase_events],
+            ["prepared", "config_written", "db_committed", "verified"],
+        )
+        for event in journal.phase_events:
+            parsed = datetime.fromisoformat(event.at)
+            self.assertIsNotNone(parsed.tzinfo)
+            self.assertEqual(parsed.utcoffset().total_seconds(), 0)
+        for terminal_phase in ("compensated", "unresolved"):
+            with self.subTest(terminal_phase=terminal_phase):
+                terminal = LifecycleJournal.prepare(
+                    action="activate",
+                    scheme_id="trial",
+                    scheme_version="abc123",
+                    harness_run_id="hr_1",
+                    previous=previous,
+                    target=target,
+                    token_hash="hash",
+                ).transition(terminal_phase, error="injected")
+                self.assertEqual(
+                    [event.phase for event in terminal.phase_events],
+                    ["prepared", terminal_phase],
+                )
+                self.assertIsNotNone(datetime.fromisoformat(terminal.phase_events[-1].at).tzinfo)
+
+    def test_load_journal_accepts_legacy_payload_without_phase_events(self) -> None:
+        from shared.blackbox_v2.lifecycle import LifecycleJournal, load_journal, write_journal
+
+        previous, target = self._states()
+        journal = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id="trial",
+            scheme_version="abc123",
+            harness_run_id="hr_1",
+            previous=previous,
+            target=target,
+            token_hash="hash",
+        )
+        path = write_journal(self.root, journal)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload.pop("phase_events", None)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = load_journal(path)
+
+        self.assertEqual(loaded.phase, "prepared")
+        self.assertEqual(getattr(loaded, "phase_events", None), ())
 
     def test_transition_failure_compensates_to_previous_state(self) -> None:
         from shared.blackbox_v2.lifecycle import (
@@ -317,6 +384,10 @@ class BlackboxLifecycleJournalTests(unittest.TestCase):
         self.assertEqual(linked[0].action, "lifecycle_reconcile")
         self.assertEqual(linked[0].reconciliation_of, original.operation_id)
         self.assertEqual(linked[0].phase, "verified")
+        self.assertEqual(
+            [event.phase for event in getattr(linked[0], "phase_events", ())],
+            ["prepared", "config_written", "db_committed", "verified"],
+        )
         self.assertEqual(preserved.reconciled_by, linked[0].operation_id)
         self.assertEqual(pending_journals(self.root, "trial"), [])
 
