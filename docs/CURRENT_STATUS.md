@@ -11,6 +11,7 @@
 - 29 个 Native V1 方案保持现有 Registry、数据库、scheduler 和历史结果，只允许故障、数据口径、复现性和经批准的保真维护。
 - 后续新算法、新方案 ID、新目标、新任务和替代版本一律通过 Blackbox V2 两文件交付；StaticGate 与 ActivationGate 均阻断清单外 Native ID。
 - 当前 Blackbox 试验方案 `weekly_10y_lgbm_point_v1` 仍为 `shadow + paused`，未激活、未进入生产 scheduler、未写入预测或回测业务表。
+- `weekly_10y_lgbm_point_v1` 已增加文档标记 `GRAY_LAB_READY`：可以安排灰度实验室内的 no-persist 预测、回测和对照实验；该标记不等于 `gray_live`，不改变配置、Registry 或数据库状态。
 - Blackbox V2 生产晋级仍受[生产准备清单](blackbox_v2/PRODUCTION_READINESS.md)阻断；本轮文档和政策门禁整理不改变任何方案运行状态。
 
 所有入库场景从[统一入库导航](onboarding/README.md)进入。下方带日期记录是历史时点事实；其中旧“新增 Native 方案”链接或操作方式不再代表当前政策。

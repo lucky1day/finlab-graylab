@@ -1,13 +1,15 @@
 # Bond Factor Lab Blackbox V2 接入规划与试验记录
 
 **记录时区**：除明确标注 UTC 外，本文时间均为 `Asia/Shanghai`。
-**文档性质**：追加式平台规划和试验台账，不是上游交付契约，也不是平台操作 SOP。  \n**维护规则**：只追加、不覆盖；每条结论必须带执行时间和时区。
+**文档性质**：追加式平台规划和试验台账，不是上游交付契约，也不是平台操作 SOP。
+**维护规则**：只追加、不覆盖；每条结论必须带执行时间和时区。
 
 权威文档：
 
 - [平台 Blackbox V2 入库 SOP](../../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)
 - [上游 Blackbox V2 交付 SOP](../../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
-- [双运行时架构与实现边界](../../BLACKBOX_V2_PLATFORM.md)\n- [Blackbox V2 文档管理](../README.md)
+- [双运行时架构与实现边界](../../BLACKBOX_V2_PLATFORM.md)
+- [Blackbox V2 文档管理](../README.md)
 
 本文只记录具体方案、generation、snapshot、Harness run、数据库核验和待整改事项。通用契约变更必须修改仓库权威 SOP；外发副本由仓库文件生成，不在仓库外独立维护。本文中的历史实测值不得反向改变通用契约。
 
@@ -162,6 +164,20 @@ Input Gate 三份文件 SHA256 与第 3.2 节 generation 的 current 文件逐�
 | `t_backtest_predictions` | 0 |
 
 截至结论时点，方案仍为 `version_status=shadow`、Registry=`paused`，scheduler 不执行，active API/前端不可见。本轮只能表述为“统一输入链路下完成 shadow 技术验收”，不得表述为 active、正式上线或生产预测成功。
+
+### 4.4 记录 001D：灰度实验室候选标记
+
+**标记日期**：2026-07-19，`Asia/Shanghai`。
+
+| 项目 | 标记内容 |
+|---|---|
+| 方案 | `weekly_10y_lgbm_point_v1` |
+| 文档标记 | `GRAY_LAB_READY` |
+| 允许范围 | 使用最新通过完整性校验的 DataBridge generation，执行 no-persist 单点预测、批量回测、重复性和成对对照实验 |
+| 禁止范围 | `activate`、`live`、生产 scheduler、业务表写入、active API 或前端可见性 |
+| 实际平台状态 | `version_status=shadow`、Registry=`paused`，保持不变 |
+
+该标记表示现有技术证据足以安排一次灰度实验室测试，不表示测试已经执行或效果达标，也不等同于平台字段 `prediction_phase=gray_live`。实际测试启动前仍须重新确认当次 generation、Request、Snapshot 和业务表零写入基线。
 
 ## 5. 已确认的通用迭代规则
 
