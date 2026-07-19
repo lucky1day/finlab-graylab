@@ -105,6 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--timeout-sec", type=int, default=600)
         item.add_argument("--authorize", default=None)
         item.add_argument("--api-base-url", default="http://127.0.0.1:8100")
+        item.add_argument("--api-instance-nonce", default=None)
         item.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
@@ -121,6 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--algo-env", default="forecast_env")
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
     onboard_parser.add_argument("--api-base-url", default="http://127.0.0.1:8100")
+    onboard_parser.add_argument("--api-instance-nonce", default=None)
     onboard_parser.add_argument("--authorize", default=None)
     onboard_parser.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
 
@@ -176,6 +178,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         backtest_sample_size=int(getattr(args, "sample_size", 100)),
         expected_empty_schema=getattr(args, "expected_empty_schema", None),
         api_base_url=args.api_base_url,
+        api_instance_nonce=args.api_instance_nonce,
     )
     return gate_for_name(args.gate_name, ctx=ctx).run(ctx)
 
@@ -195,6 +198,7 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
         api_base_url=args.api_base_url,
+        api_instance_nonce=args.api_instance_nonce,
         engine_factory=create_engine_from_env,
     )
     return run_onboard(ctx, stage=args.stage)

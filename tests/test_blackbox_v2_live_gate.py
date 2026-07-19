@@ -209,6 +209,56 @@ class BlackboxLiveGateTests(unittest.TestCase):
         self.assertEqual(evidence["scheme_version"], self.cfg.scheme_version)
         self.assertEqual(evidence["harness_run_id"], "hr_latest")
 
+    def test_blackbox_live_passes_delta_validation_into_atomic_commit(self) -> None:
+        from harness.gates.live_gate import LiveGate
+
+        token = self._token()
+        run_result = SimpleNamespace(status="failed", records_written=0, error_msg="precommit failed")
+        table_snapshots = [
+            {"t_scheme_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0},
+            {"t_scheme_runs": 1, "t_scheme_predictions": 0, "t_scheme_run_log": 1},
+        ]
+        scheme_snapshots = [
+            {"t_scheme_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0},
+            {"t_scheme_runs": 1, "t_scheme_predictions": 0, "t_scheme_run_log": 1},
+        ]
+
+        def execute_with_validator(*_args, **kwargs):
+            validator = kwargs.get("blackbox_precommit_validator")
+            self.assertIsNotNone(validator)
+            with self.assertRaisesRegex(RuntimeError, "t_scheme_predictions"):
+                validator(SimpleNamespace())
+            return run_result
+
+        with (
+            patch(
+                "harness.gates.live_gate._verify_blackbox_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.gates.live_gate.read_blackbox_execution_approval",
+                return_value=self._approval(),
+            ),
+            patch("harness.gates.live_gate.snapshot_table_counts", side_effect=table_snapshots),
+            patch("harness.gates.live_gate.snapshot_scheme_counts", side_effect=scheme_snapshots),
+            patch(
+                "harness.gates.live_gate.snapshot_table_counts_conn",
+                return_value={"t_scheme_runs": 1, "t_scheme_predictions": 0, "t_scheme_run_log": 1},
+                create=True,
+            ),
+            patch(
+                "harness.gates.live_gate.snapshot_scheme_counts_conn",
+                return_value={"t_scheme_runs": 1, "t_scheme_predictions": 0, "t_scheme_run_log": 1},
+                create=True,
+            ),
+            patch("harness.gates.live_gate.execute_scheme", side_effect=execute_with_validator),
+        ):
+            result = LiveGate().run(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["authorized_scheme_table_deltas"]["t_scheme_predictions"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

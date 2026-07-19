@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import uuid
 import fcntl
 from contextlib import contextmanager
@@ -103,6 +104,10 @@ class LifecycleOperationError(RuntimeError):
         super().__init__(message)
         self.journal_path = journal_path
         self.compensated = compensated
+
+
+class LifecycleLockTimeout(RuntimeError):
+    """生命周期互斥锁未在限定时间内取得。"""
 
 
 def lifecycle_root(project_root: str | Path, scheme_id: str) -> Path:
@@ -467,16 +472,41 @@ def _reconcile_unresolved_with_linked_journal(
 
 
 @contextmanager
-def lifecycle_operation_lock(project_root: str | Path, scheme_id: str):
+def lifecycle_operation_lock(
+    project_root: str | Path,
+    scheme_id: str,
+    *,
+    timeout_sec: float = 30.0,
+    poll_interval_sec: float = 0.05,
+):
+    if timeout_sec < 0:
+        raise ValueError("lifecycle lock timeout_sec must be non-negative")
+    if poll_interval_sec <= 0:
+        raise ValueError("lifecycle lock poll_interval_sec must be positive")
     root = lifecycle_root(project_root, scheme_id)
     root.mkdir(parents=True, exist_ok=True)
     lock_path = root / ".lock"
     with lock_path.open("a+b") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        deadline = time.monotonic() + timeout_sec
+        acquired = False
         try:
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except BlockingIOError as exc:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise LifecycleLockTimeout(
+                            "timed out waiting for Blackbox lifecycle lock: "
+                            f"scheme_id={scheme_id} timeout_sec={timeout_sec:g}"
+                        ) from exc
+                    time.sleep(min(poll_interval_sec, remaining))
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if acquired:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _project_root_from_journal_path(path: Path, scheme_id: str) -> Path:

@@ -9,14 +9,16 @@ import time
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.repository import (
     attach_run_data_snapshot,
+    complete_approved_blackbox_run,
     create_scheme_run,
     create_engine_from_env,
+    fail_scheme_run_atomic,
     finish_scheme_run,
-    insert_approved_blackbox_predictions,
     insert_run_predictions,
     read_blackbox_execution_approval,
     sync_scheme_registry,
@@ -279,6 +281,7 @@ def execute_scheme(
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
     prediction_phase: str = "scheduled_live",
+    blackbox_precommit_validator: Callable[[object], None] | None = None,
 ) -> SchemeRunResult:
     """执行单个方案并写入预测表和运行日志。
 
@@ -385,12 +388,30 @@ def execute_scheme(
         _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
         if runtime_type == "blackbox_v2":
-            records_written = insert_approved_blackbox_predictions(
+            expected = len(active_targets)
+            if records_returned != expected:
+                raise ValueError(
+                    f"expected={expected}, returned={records_returned}, written=0"
+                )
+            duration = time.monotonic() - started
+            records_written = complete_approved_blackbox_run(
                 engine,
                 cfg,
-                run_id,
-                records,
+                run_id=run_id,
+                records=records,
                 scheme_version=scheme_version,
+                records_returned=records_returned,
+                run_date=predict_date,
+                duration_sec=duration,
+                precommit_validator=blackbox_precommit_validator,
+            )
+            return SchemeRunResult(
+                cfg.scheme_id,
+                "success",
+                records_written,
+                duration,
+                None,
+                run_id,
             )
         else:
             current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
@@ -431,22 +452,40 @@ def execute_scheme(
         error_msg = str(exc)
         if run_id is not None:
             try:
-                finish_scheme_run(
-                    engine,
-                    run_id=run_id,
-                    status="failed",
-                    records_returned=records_returned,
-                    records_written=records_written,
-                    error_message=error_msg,
-                )
+                if runtime_type == "blackbox_v2":
+                    records_written = 0
+                    fail_scheme_run_atomic(
+                        engine,
+                        run_id=run_id,
+                        scheme_id=cfg.scheme_id,
+                        run_date=predict_date,
+                        duration_sec=duration,
+                        records_returned=records_returned,
+                        error_message=error_msg,
+                    )
+                else:
+                    finish_scheme_run(
+                        engine,
+                        run_id=run_id,
+                        status="failed",
+                        records_returned=records_returned,
+                        records_written=records_written,
+                        error_message=error_msg,
+                    )
             except Exception as audit_exc:
                 logger.exception("failed to finish failed scheme run_id=%s", run_id)
-                error_msg = _append_audit_error(error_msg, "finish_scheme_run", audit_exc)
-        try:
-            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
-        except Exception as audit_exc:
-            logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
-            error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
+                operation = (
+                    "fail_scheme_run_atomic"
+                    if runtime_type == "blackbox_v2"
+                    else "finish_scheme_run"
+                )
+                error_msg = _append_audit_error(error_msg, operation, audit_exc)
+        if runtime_type != "blackbox_v2" or run_id is None:
+            try:
+                write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
+            except Exception as audit_exc:
+                logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
+                error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
         return SchemeRunResult(cfg.scheme_id, "failed", records_written, duration, error_msg, run_id)
     finally:
         engine.dispose()

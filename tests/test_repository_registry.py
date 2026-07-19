@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -11,8 +12,9 @@ from unittest.mock import patch
 
 
 class _MappingResult:
-    def __init__(self, rows: list[dict] | None = None) -> None:
+    def __init__(self, rows: list[dict] | None = None, *, rowcount: int = 1) -> None:
         self._rows = rows or []
+        self.rowcount = rowcount
 
     def mappings(self) -> _MappingResult:
         return self
@@ -131,6 +133,87 @@ class _CaptureEngine:
     def begin(self) -> _CaptureBegin:
         self.store["begin_count"] += 1
         return _CaptureBegin(self.store)
+
+
+class _AtomicConnection(_CaptureConnection):
+    def execute(self, sql, rows=None):
+        sql_text = str(sql)
+        fail_stage = self._store.get("fail_stage")
+        if "INSERT INTO t_scheme_predictions" in sql_text and fail_stage == "prediction":
+            raise RuntimeError("injected prediction failure")
+        result = super().execute(sql, rows)
+        if "UPDATE t_scheme_runs" in sql_text:
+            if fail_stage == "run":
+                raise RuntimeError("injected run failure")
+            if fail_stage == "run_missing":
+                return _MappingResult(rowcount=0)
+            self._store["run_row"].update(
+                {
+                    "status": rows["status"],
+                    "records_returned": rows["records_returned"],
+                    "records_written": rows["records_written"],
+                    "error_message": rows["error_message"],
+                }
+            )
+        if "INSERT INTO t_scheme_run_log" in sql_text:
+            if fail_stage == "log":
+                raise RuntimeError("injected log failure")
+            self._store.setdefault("run_log_rows", []).append(dict(rows))
+        return result
+
+
+class _AtomicBegin:
+    def __init__(self, engine: "_AtomicEngine") -> None:
+        self._engine = engine
+        self._staged = deepcopy(engine.store)
+
+    def __enter__(self) -> _AtomicConnection:
+        self._engine.begin_count += 1
+        return _AtomicConnection(self._staged)
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if exc_type is None:
+            self._engine.store.clear()
+            self._engine.store.update(self._staged)
+
+
+class _AtomicEngine:
+    def __init__(self, *, fail_stage: str | None = None) -> None:
+        self.store = {
+            "version_row": {
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "runtime_type": "blackbox_v2",
+                "status": "active",
+                "approved_by": "release-owner",
+                "approved_at": datetime(2026, 7, 20, 8, 30),
+            },
+            "registry_rows": [
+                {
+                    "scheme_id": "demo_blackbox__h1__10Y",
+                    "base_scheme_id": "demo_blackbox",
+                    "runtime_type": "blackbox_v2",
+                    "status": "active",
+                    "task_type": "T+1",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                }
+            ],
+            "prediction_rows": [],
+            "run_log_rows": [],
+            "run_row": {
+                "run_id": 101,
+                "status": "running",
+                "records_returned": None,
+                "records_written": None,
+                "error_message": None,
+            },
+            "fail_stage": fail_stage,
+        }
+        self.begin_count = 0
+
+    def begin(self) -> _AtomicBegin:
+        return _AtomicBegin(self)
 
 
 def _blackbox_config(
@@ -862,6 +945,95 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             engine.store["prediction_rows"][0]["scheme_version"],
             "abc123def456",
         )
+
+    def test_blackbox_success_completion_commits_prediction_run_and_log_atomically(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+        from shared.models import PredictionRecord
+
+        engine = _AtomicEngine()
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with patch("scheduler.repository.load_scheme_config", return_value=cfg):
+                written = complete_approved_blackbox_run(
+                    engine,
+                    cfg,
+                    run_id=101,
+                    records=[record],
+                    scheme_version=cfg.scheme_version,
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
+                )
+
+        self.assertEqual(written, 1)
+        self.assertEqual(engine.begin_count, 1)
+        self.assertEqual(len(engine.store["prediction_rows"]), 1)
+        self.assertEqual(engine.store["run_row"]["status"], "success")
+        self.assertEqual(engine.store["run_row"]["records_written"], 1)
+        self.assertEqual(len(engine.store["run_log_rows"]), 1)
+        self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
+
+    def test_blackbox_success_completion_rolls_back_every_stage_failure(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+        from shared.models import PredictionRecord
+
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+        cases = {
+            "prediction": "injected prediction failure",
+            "run": "injected run failure",
+            "run_missing": "run update affected 0 rows",
+            "log": "injected log failure",
+            "live_gate_validation": "injected live_gate_validation failure",
+        }
+        for stage, expected_error in cases.items():
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as tmpdir:
+                engine = _AtomicEngine(fail_stage=stage)
+                cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+                with (
+                    patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                    self.assertRaisesRegex(RuntimeError, expected_error),
+                ):
+                    complete_approved_blackbox_run(
+                        engine,
+                        cfg,
+                        run_id=101,
+                        records=[record],
+                        scheme_version=cfg.scheme_version,
+                        records_returned=1,
+                        run_date="2026-07-20",
+                        duration_sec=2.5,
+                        precommit_validator=(
+                            (lambda _conn: (_ for _ in ()).throw(
+                                RuntimeError("injected live_gate_validation failure")
+                            ))
+                            if stage == "live_gate_validation"
+                            else None
+                        ),
+                    )
+
+                self.assertEqual(engine.store["prediction_rows"], [])
+                self.assertEqual(engine.store["run_row"]["status"], "running")
+                self.assertIsNone(engine.store["run_row"]["records_written"])
+                self.assertEqual(engine.store["run_log_rows"], [])
 
     def test_final_blackbox_insert_rejects_missing_canonical_config_path(self) -> None:
         from scheduler.repository import insert_approved_blackbox_predictions

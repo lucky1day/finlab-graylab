@@ -97,11 +97,19 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     [call.kwargs["profile"].max_batch_requests for call in run_backtest.call_args_list],
-                    [100, 37],
+                    [100, 80],
+                )
+                self.assertIs(
+                    run_backtest.call_args_list[0].kwargs["budget"],
+                    run_backtest.call_args_list[1].kwargs["budget"],
                 )
                 evidence = {item.key: item.value for item in result.evidence}
                 self.assertEqual(evidence["sample_size"], sample_size)
                 self.assertTrue(evidence["batch_split_invariant"])
+                self.assertLessEqual(
+                    evidence["subprocesses_started"],
+                    evidence["max_subprocesses"],
+                )
 
     def test_backtest_cli_accepts_sample_size_and_persist_remains_fixed_at_100(self) -> None:
         from harness.cli import _build_parser

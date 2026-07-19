@@ -3,10 +3,12 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
 import tempfile
+import time
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -29,6 +31,7 @@ from harness.gates.base import Gate, guarded_result, utc_now
 from harness.probes.table_guard import diff_snapshots
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
+    BacktestExecutionBudget,
     DEFAULT_RUNTIME_PROFILE,
     BlackboxExecutionError,
     RuntimeProfile,
@@ -384,6 +387,15 @@ class BlackboxBacktestGate(_BlackboxGate):
             for index in range(sample_size)
         ]
         profile = _profile(ctx)
+        alternate_batch_size = _alternate_batch_size(profile.max_batch_requests)
+        max_subprocesses = (
+            math.ceil(sample_size / profile.max_batch_requests)
+            + math.ceil(sample_size / alternate_batch_size)
+        )
+        budget = BacktestExecutionBudget(
+            deadline_monotonic=time.monotonic() + ctx.timeout_sec,
+            max_subprocesses=max_subprocesses,
+        )
         records = run_blackbox_backtest(
             metadata=metadata,
             script_path=_script(cfg),
@@ -391,8 +403,8 @@ class BlackboxBacktestGate(_BlackboxGate):
             data_dir=state.snapshot.data_dir,
             data_snapshot_id=state.snapshot.snapshot_id,
             profile=profile,
+            budget=budget,
         )
-        alternate_batch_size = _alternate_batch_size(profile.max_batch_requests)
         alternate_records = run_blackbox_backtest(
             metadata=metadata,
             script_path=_script(cfg),
@@ -400,6 +412,7 @@ class BlackboxBacktestGate(_BlackboxGate):
             data_dir=state.snapshot.data_dir,
             data_snapshot_id=state.snapshot.snapshot_id,
             profile=replace(profile, max_batch_requests=alternate_batch_size),
+            budget=budget,
         )
         errors: list[str] = []
         if len(records) != sample_size:
@@ -422,6 +435,9 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("distinct_cutoff_sets", len(templates)),
             Evidence("primary_batch_size", profile.max_batch_requests),
             Evidence("alternate_batch_size", alternate_batch_size),
+            Evidence("subprocesses_started", budget.subprocesses_started),
+            Evidence("max_subprocesses", budget.max_subprocesses),
+            Evidence("total_deadline_sec", ctx.timeout_sec),
             Evidence("batch_split_invariant", batch_split_invariant),
             Evidence("persist", False),
             Evidence("business_tables_written", False),
@@ -1053,7 +1069,7 @@ def _direction_map(records) -> dict[str, int]:
 def _alternate_batch_size(primary_batch_size: int) -> int:
     if primary_batch_size <= 1:
         raise ValueError("Blackbox batch invariance requires max_batch_requests greater than 1")
-    return min(37, primary_batch_size - 1)
+    return min(primary_batch_size - 1, max(1, primary_batch_size * 4 // 5))
 
 
 def _persisted_backtest_delta_errors(

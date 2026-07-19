@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import re
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,10 +97,17 @@ class _BootstrapConnection:
             for row in (target_rows if target_rows is not None else _TARGET_REGISTRY_BASELINE)
         ]
         self.calls: list[str] = []
+        self.lock_acquired = False
 
     def execute(self, sql, params=None):
         statement = str(sql)
         self.calls.append(statement)
+        if "GET_LOCK" in statement:
+            self.lock_acquired = True
+            return _ScalarResult(1)
+        if "RELEASE_LOCK" in statement:
+            self.lock_acquired = False
+            return _ScalarResult(1)
         if "SELECT DATABASE()" in statement:
             return _ScalarResult(self.schema)
         if "FROM t_target_registry" in statement:
@@ -126,12 +135,46 @@ class _BootstrapEngine:
         self.disposed = False
 
     @contextmanager
+    def connect(self):
+        yield self.connection
+
+    @contextmanager
     def begin(self):
         self.begin_count += 1
         yield self.connection
 
     def dispose(self) -> None:
         self.disposed = True
+
+
+class _AdvisoryConnection:
+    def __init__(self, lock: threading.Lock) -> None:
+        self._lock = lock
+        self._owned = False
+
+    def execute(self, sql, params=None):
+        statement = str(sql)
+        if "GET_LOCK" in statement:
+            timeout = float((params or {}).get("timeout_sec", 0))
+            self._owned = self._lock.acquire(timeout=timeout)
+            return _ScalarResult(1 if self._owned else 0)
+        if "RELEASE_LOCK" in statement:
+            if self._owned:
+                self._owned = False
+                self._lock.release()
+                return _ScalarResult(1)
+            return _ScalarResult(0)
+        raise AssertionError(f"unexpected advisory SQL: {statement}")
+
+
+class _ConcurrentBootstrapEngine(_BootstrapEngine):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.advisory_lock = threading.Lock()
+
+    @contextmanager
+    def connect(self):
+        yield _AdvisoryConnection(self.advisory_lock)
 
 
 class BlackboxBootstrapTests(unittest.TestCase):
@@ -225,6 +268,104 @@ class BlackboxBootstrapTests(unittest.TestCase):
             set(sync.call_args.kwargs["effective_statuses"].values()),
             {"paused"},
         )
+        self.assertFalse(engine.connection.lock_acquired)
+        self.assertTrue(any("GET_LOCK" in call for call in engine.connection.calls))
+        self.assertTrue(any("RELEASE_LOCK" in call for call in engine.connection.calls))
+
+    def test_concurrent_repository_bootstrap_allows_only_one_initializer(self) -> None:
+        from scheduler.repository import (
+            BLACKBOX_BOOTSTRAP_EMPTY_TABLES,
+            BlackboxBootstrapLockTimeout,
+            bootstrap_blackbox_control_plane,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._scaffold(Path(tmpdir))
+            engine = _ConcurrentBootstrapEngine(
+                schema="bbv2_cert_20260720",
+                counts={table: 0 for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES},
+            )
+            first_inside = threading.Event()
+            release_first = threading.Event()
+            version_row = {
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "runtime_type": "blackbox_v2",
+                "status": "draft",
+                "approved_by": None,
+                "approved_at": None,
+            }
+            registry_rows = [
+                {
+                    "scheme_id": f"{cfg.scheme_id}__h1__10Y",
+                    "base_scheme_id": cfg.scheme_id,
+                    "runtime_type": "blackbox_v2",
+                    "status": "paused",
+                    "task_type": "T+1",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                }
+            ]
+
+            def blocking_upsert(*_args, **_kwargs):
+                first_inside.set()
+                self.assertTrue(release_first.wait(timeout=2))
+
+            with (
+                patch("scheduler.repository._upsert_scheme_version_conn", side_effect=blocking_upsert),
+                patch("scheduler.repository._sync_scheme_registry_conn"),
+                patch("scheduler.repository._read_scheme_version_conn", return_value=version_row),
+                patch(
+                    "scheduler.repository._read_blackbox_registry_rows_conn",
+                    return_value=registry_rows,
+                ),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                first = pool.submit(
+                    bootstrap_blackbox_control_plane,
+                    engine,
+                    cfg,
+                    expected_schema="bbv2_cert_20260720",
+                    lock_timeout_sec=1,
+                )
+                self.assertTrue(first_inside.wait(timeout=1))
+                second = pool.submit(
+                    bootstrap_blackbox_control_plane,
+                    engine,
+                    cfg,
+                    expected_schema="bbv2_cert_20260720",
+                    lock_timeout_sec=0.05,
+                )
+                with self.assertRaises(BlackboxBootstrapLockTimeout):
+                    second.result(timeout=1)
+                release_first.set()
+                self.assertEqual(first.result(timeout=2).version_status, "draft")
+
+        self.assertFalse(engine.advisory_lock.locked())
+
+    def test_bootstrap_releases_advisory_lock_after_preflight_failure(self) -> None:
+        from scheduler.repository import (
+            BLACKBOX_BOOTSTRAP_EMPTY_TABLES,
+            bootstrap_blackbox_control_plane,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = self._scaffold(Path(tmpdir))
+            counts = {table: 0 for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES}
+            counts["t_scheme_runs"] = 1
+            engine = _ConcurrentBootstrapEngine(
+                schema="bbv2_cert_20260720",
+                counts=counts,
+            )
+            with self.assertRaisesRegex(RuntimeError, "t_scheme_runs"):
+                bootstrap_blackbox_control_plane(
+                    engine,
+                    cfg,
+                    expected_schema="bbv2_cert_20260720",
+                    lock_timeout_sec=0.1,
+                )
+
+        self.assertFalse(engine.advisory_lock.locked())
 
     def test_repository_bootstrap_rejects_each_nonempty_writable_table_before_writes(self) -> None:
         from scheduler import repository

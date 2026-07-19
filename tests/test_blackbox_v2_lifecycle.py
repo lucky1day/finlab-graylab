@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -23,6 +25,49 @@ class BlackboxLifecycleJournalTests(unittest.TestCase):
             LifecycleState("paused", "shadow", "paused"),
             LifecycleState("active", "active", "active"),
         )
+
+    def test_lifecycle_lock_times_out_and_can_be_reacquired_after_release(self) -> None:
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleLockTimeout,
+            lifecycle_operation_lock,
+        )
+
+        holder_ready = threading.Event()
+        release_holder = threading.Event()
+
+        def hold_lock() -> None:
+            with lifecycle_operation_lock(self.root, "trial", timeout_sec=1):
+                holder_ready.set()
+                self.assertTrue(release_holder.wait(timeout=2))
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            holder = pool.submit(hold_lock)
+            self.assertTrue(holder_ready.wait(timeout=1))
+            contender = pool.submit(
+                lambda: lifecycle_operation_lock(
+                    self.root,
+                    "trial",
+                    timeout_sec=0.05,
+                    poll_interval_sec=0.005,
+                ).__enter__()
+            )
+            with self.assertRaises(LifecycleLockTimeout):
+                contender.result(timeout=1)
+            release_holder.set()
+            holder.result(timeout=1)
+
+        with lifecycle_operation_lock(self.root, "trial", timeout_sec=0.1):
+            pass
+
+    def test_lifecycle_lock_releases_after_body_exception(self) -> None:
+        from shared.blackbox_v2.lifecycle import lifecycle_operation_lock
+
+        with self.assertRaisesRegex(RuntimeError, "injected body failure"):
+            with lifecycle_operation_lock(self.root, "trial", timeout_sec=0.1):
+                raise RuntimeError("injected body failure")
+
+        with lifecycle_operation_lock(self.root, "trial", timeout_sec=0.1):
+            pass
 
     def test_journal_round_trip_contains_hash_but_no_raw_token(self) -> None:
         from shared.blackbox_v2.lifecycle import LifecycleJournal, load_journal, write_journal

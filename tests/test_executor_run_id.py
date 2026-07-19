@@ -516,7 +516,7 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
             patch("scheduler.executor.run_configured_scheme", return_value=[self._record()]) as runner,
             patch("scheduler.executor.create_scheme_run", return_value=503) as create_run,
             patch("scheduler.executor.attach_run_data_snapshot"),
-            patch("scheduler.executor.insert_approved_blackbox_predictions", return_value=1),
+            patch("scheduler.executor.complete_approved_blackbox_run", return_value=1),
             patch("scheduler.executor.finish_scheme_run"),
             patch("scheduler.executor.write_run_log") as write_run_log,
         ):
@@ -562,10 +562,9 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
             patch("scheduler.executor.run_configured_scheme", return_value=[self._record()]) as runner,
             patch("scheduler.executor.attach_run_data_snapshot") as attach_snapshot,
             patch(
-                "scheduler.executor.insert_approved_blackbox_predictions",
+                "scheduler.executor.complete_approved_blackbox_run",
                 return_value=1,
-                create=True,
-            ) as approved_insert,
+            ) as complete_run,
             patch("scheduler.executor.insert_run_predictions", return_value=1) as native_insert,
             patch("scheduler.executor.finish_scheme_run"),
             patch("scheduler.executor.write_run_log"),
@@ -594,9 +593,11 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
             timeout_sec=120,
         )
         attach_snapshot.assert_called_once_with(engine, run_id=502, data_snapshot_id="snapshot-1")
-        approved_insert.assert_called_once()
-        self.assertEqual(approved_insert.call_args.args[:3], (engine, cfg, 502))
-        self.assertEqual(approved_insert.call_args.kwargs["scheme_version"], "blackbox-version-1")
+        complete_run.assert_called_once()
+        self.assertEqual(complete_run.call_args.args[:2], (engine, cfg))
+        self.assertEqual(complete_run.call_args.kwargs["run_id"], 502)
+        self.assertEqual(complete_run.call_args.kwargs["scheme_version"], "blackbox-version-1")
+        self.assertEqual(complete_run.call_args.kwargs["records_returned"], 1)
         native_insert.assert_not_called()
         self.assertTrue(engine.disposed)
 
@@ -635,12 +636,11 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
                     patch("scheduler.executor.run_configured_scheme", return_value=[self._record()]) as runner,
                     patch("scheduler.executor.attach_run_data_snapshot"),
                     patch(
-                        "scheduler.executor.insert_approved_blackbox_predictions",
+                        "scheduler.executor.complete_approved_blackbox_run",
                         side_effect=final_error,
-                        create=True,
-                    ) as approved_insert,
+                    ) as complete_run,
                     patch("scheduler.executor.insert_run_predictions", return_value=1) as native_insert,
-                    patch("scheduler.executor.finish_scheme_run") as finish_run,
+                    patch("scheduler.executor.fail_scheme_run_atomic") as fail_run,
                     patch("scheduler.executor.write_run_log"),
                 ):
                     result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
@@ -649,11 +649,10 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
                 self.assertEqual(result.records_written, 0)
                 self.assertEqual(result.error_msg, str(final_error))
                 runner.assert_called_once()
-                approved_insert.assert_called_once()
+                complete_run.assert_called_once()
                 native_insert.assert_not_called()
-                self.assertEqual(finish_run.call_args.kwargs["status"], "failed")
-                self.assertEqual(finish_run.call_args.kwargs["records_returned"], 1)
-                self.assertEqual(finish_run.call_args.kwargs["records_written"], 0)
+                fail_run.assert_called_once()
+                self.assertEqual(fail_run.call_args.kwargs["records_returned"], 1)
 
     def test_native_executor_keeps_existing_activation_gate(self) -> None:
         from scheduler.executor import execute_scheme

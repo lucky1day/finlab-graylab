@@ -239,6 +239,67 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(len(records), 205)
         self.assertEqual([record.extra["request_id"] for record in records], [item.request_id for item in requests])
 
+    def test_real_1000_request_backtest_has_bounded_subprocess_count(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BacktestExecutionBudget,
+            RuntimeProfile,
+            run_blackbox_backtest,
+        )
+
+        requests = [_request(f"bounded-{index:04d}") for index in range(1000)]
+        budget = BacktestExecutionBudget(
+            deadline_monotonic=time.monotonic() + 30,
+            max_subprocesses=10,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            records = run_blackbox_backtest(
+                metadata=_metadata(),
+                script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
+                requests=requests,
+                data_dir=_write_data_dir(root),
+                data_snapshot_id="snapshot-test",
+                profile=RuntimeProfile.for_tests(max_batch_requests=100),
+                budget=budget,
+            )
+
+        self.assertEqual(len(records), 1000)
+        self.assertEqual(budget.subprocesses_started, 10)
+        self.assertLessEqual(budget.subprocesses_started, budget.max_subprocesses)
+
+    def test_real_1000_request_backtest_obeys_total_deadline(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BacktestExecutionBudget,
+            BlackboxExecutionError,
+            RuntimeProfile,
+            run_blackbox_backtest,
+        )
+
+        requests = [_request(f"deadline-{index:04d}") for index in range(1000)]
+        budget = BacktestExecutionBudget(
+            deadline_monotonic=time.monotonic() + 0.3,
+            max_subprocesses=10,
+        )
+        started = time.monotonic()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with self.assertRaisesRegex(BlackboxExecutionError, "deadline"):
+                run_blackbox_backtest(
+                    metadata=_metadata(),
+                    script_path=_write_script(root / "slow.py", _SLOW_BACKTEST_SCRIPT),
+                    requests=requests,
+                    data_dir=_write_data_dir(root),
+                    data_snapshot_id="snapshot-test",
+                    profile=RuntimeProfile.for_tests(
+                        max_batch_requests=100,
+                        backtest_timeout_sec=10,
+                    ),
+                    budget=budget,
+                )
+
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertLessEqual(budget.subprocesses_started, 2)
+
     def test_refuses_existing_output_path(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
         from shared.blackbox_v2.requests import write_request
@@ -829,6 +890,20 @@ else:
             result = {field: request[field] for field in fields}
             result["predicted_direction"] = 1
             writer.writerow(result)
+'''
+
+
+_SLOW_BACKTEST_SCRIPT = r'''
+import argparse
+import time
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--requests")
+parser.add_argument("--data-dir")
+parser.add_argument("--output")
+parser.parse_args()
+time.sleep(5)
 '''
 
 

@@ -577,7 +577,8 @@ def scheme_metrics(
 
     sql = text(
         f"""
-        SELECT p.id, p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.feature_date, p.target_date,
+        SELECT p.id, p.run_id, p.scheme_version, p.scheme_id, p.target_tenor, p.horizon,
+               p.predict_date, p.feature_date, p.target_date,
                p.prediction_phase, p.predicted_direction, p.confidence, p.model_version, p.extra,
                a.direction_1d, a.direction_5d, wa.direction_weekly, ma.direction_monthly
         FROM t_scheme_predictions p
@@ -656,6 +657,10 @@ def scheme_metrics(
             "feature_date": _row_feature_date(row, extra),
             "target_date": target_date,
             "prediction_phase": _row_prediction_phase(row, extra),
+            "scheme_version": row["scheme_version"],
+            "request_id": extra.get("request_id"),
+            "data_snapshot_id": extra.get("data_snapshot_id"),
+            "runtime_type": extra.get("runtime_type"),
             "predicted_direction": row["predicted_direction"],
             "actual_direction": actual_direction,
             "is_correct": None if actual_direction is None else row["predicted_direction"] == actual_direction,

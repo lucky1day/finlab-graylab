@@ -79,6 +79,29 @@ class RuntimeReadRoot:
     resolved_boundary: str
 
 
+@dataclass
+class BacktestExecutionBudget:
+    """跨分批调用共享的总 deadline 与子进程数量预算。"""
+
+    deadline_monotonic: float
+    max_subprocesses: int
+    subprocesses_started: int = 0
+
+    def claim_subprocess(self) -> float:
+        if self.max_subprocesses <= 0:
+            raise ValueError("backtest max_subprocesses must be positive")
+        remaining = self.deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise BlackboxExecutionError("Blackbox V2 backtest total deadline exceeded")
+        if self.subprocesses_started >= self.max_subprocesses:
+            raise BlackboxExecutionError(
+                "Blackbox V2 backtest subprocess limit exceeded: "
+                f"limit={self.max_subprocesses}"
+            )
+        self.subprocesses_started += 1
+        return remaining
+
+
 @dataclass(frozen=True)
 class RuntimeProfile:
     name: str
@@ -364,6 +387,7 @@ def execute_blackbox_cli(
     data_dir: str | Path,
     output_path: str | Path,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
+    timeout_sec: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """执行一次 Blackbox V2 CLI；仅进程成功且 Output 合法存在才返回。"""
     _validate_runtime_profile(profile, source="runtime profile")
@@ -427,9 +451,16 @@ def execute_blackbox_cli(
             output.parent,
             python_executable=python_executable,
         )
-        timeout = (
+        profile_timeout = (
             profile.predict_timeout_sec if mode == "predict" else profile.backtest_timeout_sec
         )
+        timeout = (
+            min(float(profile_timeout), float(timeout_sec))
+            if timeout_sec is not None
+            else float(profile_timeout)
+        )
+        if timeout <= 0:
+            raise BlackboxExecutionError(f"Blackbox V2 {mode} deadline expired before process start")
         completed = _run_process(
             command,
             cwd=output.parent,
@@ -499,6 +530,7 @@ def run_blackbox_backtest(
     data_dir: str | Path,
     data_snapshot_id: str,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
+    budget: BacktestExecutionBudget | None = None,
 ) -> list[PredictionRecord]:
     if not requests:
         raise ValueError("Blackbox V2 backtest requires at least one Request")
@@ -515,14 +547,23 @@ def run_blackbox_backtest(
             root = Path(tmpdir)
             requests_path = write_requests(batch, root / "requests.csv")
             output_path = root / "output" / "backtest.csv"
-            execute_blackbox_cli(
-                script_path=script_path,
-                mode="backtest",
-                input_path=requests_path,
-                data_dir=data_dir,
-                output_path=output_path,
-                profile=profile,
-            )
+            remaining_timeout = budget.claim_subprocess() if budget is not None else None
+            try:
+                execute_blackbox_cli(
+                    script_path=script_path,
+                    mode="backtest",
+                    input_path=requests_path,
+                    data_dir=data_dir,
+                    output_path=output_path,
+                    profile=profile,
+                    timeout_sec=remaining_timeout,
+                )
+            except BlackboxExecutionError as exc:
+                if budget is not None and time.monotonic() >= budget.deadline_monotonic:
+                    raise BlackboxExecutionError(
+                        f"Blackbox V2 backtest total deadline exceeded: {exc}"
+                    ) from exc
+                raise
             results = load_backtest_results(output_path, batch)
         records.extend(
             _to_prediction_record(metadata, result, data_snapshot_id, profile)
@@ -1074,7 +1115,7 @@ def _run_process(
     *,
     cwd: Path,
     env: dict[str, str],
-    timeout: int,
+    timeout: float,
     memory_limit_bytes: int,
     max_capture_bytes: int,
     max_run_dir_bytes: int,

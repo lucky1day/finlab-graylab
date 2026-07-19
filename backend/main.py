@@ -9,7 +9,6 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import text
 
 from backend.db import get_engine
 from backend.services import (
@@ -27,6 +26,7 @@ from backend.services import (
 )
 from scheduler.executor import DEFAULT_ALGO_ENV
 from scheduler.main import run_prediction_job
+from shared.service_instance import build_service_instance_identity
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +35,7 @@ DEFAULT_CORS_ORIGINS = ["http://localhost", "http://127.0.0.1"]
 ADMIN_TOKEN_HEADER = "X-Admin-Token"
 FRONTEND_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
 logger = logging.getLogger(__name__)
+_DEFAULT_INSTANCE_NONCE = secrets.token_hex(32)
 
 
 class NoCacheFrontendStaticFiles(StaticFiles):
@@ -103,9 +104,19 @@ class TriggerRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict:
     engine = get_engine()
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1")).scalar_one()
-    return {"status": "ok"}
+    identity = build_service_instance_identity(
+        engine,
+        project_root=PROJECT_ROOT,
+        runtime_profile=os.getenv(
+            "BOND_FACTOR_LAB_RUNTIME_PROFILE",
+            "blackbox-v2-v1",
+        ),
+        instance_nonce=os.getenv(
+            "BOND_FACTOR_LAB_INSTANCE_NONCE",
+            _DEFAULT_INSTANCE_NONCE,
+        ),
+    )
+    return {"status": "ok", "service_instance": identity}
 
 
 @app.get("/api/schemes")

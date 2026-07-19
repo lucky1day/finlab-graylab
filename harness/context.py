@@ -24,3 +24,4 @@ class GateContext:
     expected_empty_schema: str | None = None
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"
+    api_instance_nonce: str | None = None

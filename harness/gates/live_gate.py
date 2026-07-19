@@ -20,7 +20,9 @@ from harness.probes.table_guard import (
     PROTECTED_TABLES,
     diff_snapshots,
     snapshot_scheme_counts,
+    snapshot_scheme_counts_conn,
     snapshot_table_counts,
+    snapshot_table_counts_conn,
 )
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.repository import read_blackbox_execution_approval
@@ -116,12 +118,24 @@ class LiveGate(Gate):
                         if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"
                         else replace(cfg, status="active")
                     )
+                    execute_kwargs = {
+                        "algo_env": ctx.algo_env,
+                        "timeout_sec": ctx.timeout_sec,
+                        "prediction_phase": ctx.prediction_phase,
+                    }
+                    if runtime_type == "blackbox_v2":
+                        execute_kwargs["blackbox_precommit_validator"] = (
+                            lambda conn: _validate_blackbox_precommit_deltas(
+                                conn,
+                                before=before,
+                                scheme_before=scheme_before,
+                                scheme_id=ctx.scheme_id,
+                            )
+                        )
                     run_output = execute_scheme(
                         cfg_for_run,
                         ctx.predict_date,
-                        algo_env=ctx.algo_env,
-                        timeout_sec=ctx.timeout_sec,
-                        prediction_phase=ctx.prediction_phase,
+                        **execute_kwargs,
                     )
                     status = GateStatus.PASSED
         finally:
@@ -292,6 +306,24 @@ def _validate_live_deltas(protected_delta: dict[str, int], scheme_delta: dict[st
         if scheme_delta.get(table, 0) <= 0:
             errors.append(f"{table} authorized scheme delta must be > 0, got {scheme_delta.get(table, 0)}")
     return errors
+
+
+def _validate_blackbox_precommit_deltas(
+    conn,
+    *,
+    before: dict[str, int],
+    scheme_before: dict[str, int],
+    scheme_id: str,
+) -> None:
+    """在成功事务提交前执行 LiveGate 表增量验证。"""
+    after = snapshot_table_counts_conn(conn, PROTECTED_TABLES)
+    scheme_after = snapshot_scheme_counts_conn(conn, scheme_id)
+    errors = _validate_live_deltas(
+        diff_snapshots(before, after),
+        diff_snapshots(scheme_before, scheme_after),
+    )
+    if errors:
+        raise RuntimeError("Blackbox LiveGate precommit validation failed: " + "; ".join(errors))
 
 
 def _audit_dir(ctx: GateContext) -> Path:

@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Callable, Iterable, Iterator, Mapping
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
@@ -86,6 +88,10 @@ class BlackboxTargetRegistryBaselineError(RuntimeError):
         )
 
 
+class BlackboxBootstrapLockTimeout(RuntimeError):
+    """隔离 Schema bootstrap 互斥锁未在限定时间内取得。"""
+
+
 @dataclass(frozen=True)
 class BlackboxExecutionApproval:
     """Blackbox V2 精确版本与 Registry 的执行批准证据。"""
@@ -157,6 +163,7 @@ def bootstrap_blackbox_control_plane(
     cfg: SchemeConfig,
     *,
     expected_schema: str,
+    lock_timeout_sec: float = 5.0,
 ) -> BlackboxBootstrapState:
     """仅在全新认证 Schema 中原子建立 Blackbox draft/paused 身份。"""
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
@@ -173,66 +180,71 @@ def bootstrap_blackbox_control_plane(
     expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
     effective_statuses = {scheme_id: "paused" for scheme_id in expected_registry_ids}
 
-    with engine.begin() as conn:
-        actual_schema = str(conn.execute(text("SELECT DATABASE()")).scalar_one() or "")
-        if actual_schema != expected_schema:
-            raise RuntimeError(
-                "database Schema mismatch for Blackbox bootstrap: "
-                f"expected={expected_schema}, actual={actual_schema}"
-            )
-        table_counts = {
-            table: int(
-                conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar_one()
-            )
-            for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES
-        }
-        nonempty = {table: count for table, count in table_counts.items() if count != 0}
-        if nonempty:
-            raise RuntimeError(
-                "Blackbox bootstrap test Schema must be empty: "
-                + ", ".join(f"{table}={count}" for table, count in sorted(nonempty.items()))
-            )
-        target_registry_baseline = _validate_target_registry_baseline_conn(conn)
+    with _blackbox_bootstrap_advisory_lock(
+        engine,
+        expected_schema=expected_schema,
+        timeout_sec=lock_timeout_sec,
+    ):
+        with engine.begin() as conn:
+            actual_schema = str(conn.execute(text("SELECT DATABASE()")).scalar_one() or "")
+            if actual_schema != expected_schema:
+                raise RuntimeError(
+                    "database Schema mismatch for Blackbox bootstrap: "
+                    f"expected={expected_schema}, actual={actual_schema}"
+                )
+            table_counts = {
+                table: int(
+                    conn.execute(text(f"SELECT COUNT(*) FROM `{table}`")).scalar_one()
+                )
+                for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES
+            }
+            nonempty = {table: count for table, count in table_counts.items() if count != 0}
+            if nonempty:
+                raise RuntimeError(
+                    "Blackbox bootstrap test Schema must be empty: "
+                    + ", ".join(f"{table}={count}" for table, count in sorted(nonempty.items()))
+                )
+            target_registry_baseline = _validate_target_registry_baseline_conn(conn)
 
-        _upsert_scheme_version_conn(
-            conn,
-            cfg,
-            trusted_status="draft",
-            approved_by=None,
-            approved_at=None,
-        )
-        _sync_scheme_registry_conn(
-            conn,
-            [cfg],
-            effective_statuses=effective_statuses,
-        )
-        version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
-        registry_rows = _read_blackbox_registry_rows_conn(
-            conn,
-            cfg,
-            expected_registry_ids,
-            for_update=True,
-        )
-        if version_row is None:
-            raise RuntimeError("Blackbox bootstrap version readback is missing")
-        if (
-            version_row.get("scheme_id") != cfg.scheme_id
-            or version_row.get("scheme_version") != cfg.scheme_version
-            or version_row.get("runtime_type") != "blackbox_v2"
-            or version_row.get("status") != "draft"
-            or version_row.get("approved_by") is not None
-            or version_row.get("approved_at") is not None
-        ):
-            raise RuntimeError("Blackbox bootstrap version readback is not exact draft state")
-        registry_error = _blackbox_registry_identity_error(
-            cfg,
-            expected_tenors,
-            expected_registry_ids,
-            registry_rows,
-            expected_status="paused",
-        )
-        if registry_error is not None:
-            raise RuntimeError(f"Blackbox bootstrap Registry readback mismatch: {registry_error}")
+            _upsert_scheme_version_conn(
+                conn,
+                cfg,
+                trusted_status="draft",
+                approved_by=None,
+                approved_at=None,
+            )
+            _sync_scheme_registry_conn(
+                conn,
+                [cfg],
+                effective_statuses=effective_statuses,
+            )
+            version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
+            registry_rows = _read_blackbox_registry_rows_conn(
+                conn,
+                cfg,
+                expected_registry_ids,
+                for_update=True,
+            )
+            if version_row is None:
+                raise RuntimeError("Blackbox bootstrap version readback is missing")
+            if (
+                version_row.get("scheme_id") != cfg.scheme_id
+                or version_row.get("scheme_version") != cfg.scheme_version
+                or version_row.get("runtime_type") != "blackbox_v2"
+                or version_row.get("status") != "draft"
+                or version_row.get("approved_by") is not None
+                or version_row.get("approved_at") is not None
+            ):
+                raise RuntimeError("Blackbox bootstrap version readback is not exact draft state")
+            registry_error = _blackbox_registry_identity_error(
+                cfg,
+                expected_tenors,
+                expected_registry_ids,
+                registry_rows,
+                expected_status="paused",
+            )
+            if registry_error is not None:
+                raise RuntimeError(f"Blackbox bootstrap Registry readback mismatch: {registry_error}")
 
     return BlackboxBootstrapState(
         schema_name=actual_schema,
@@ -243,6 +255,49 @@ def bootstrap_blackbox_control_plane(
         table_counts=table_counts,
         target_registry_baseline=target_registry_baseline,
     )
+
+
+@contextmanager
+def _blackbox_bootstrap_advisory_lock(
+    engine: Engine,
+    *,
+    expected_schema: str,
+    timeout_sec: float,
+) -> Iterator[None]:
+    """用连接级 MySQL advisory lock 串行化认证 Schema 初始化。"""
+    if timeout_sec < 0:
+        raise ValueError("bootstrap lock_timeout_sec must be non-negative")
+    schema_digest = hashlib.sha256(expected_schema.encode("utf-8")).hexdigest()[:32]
+    lock_name = f"bfl:bbv2-bootstrap:{schema_digest}"
+    with engine.connect() as lock_conn:
+        acquired = lock_conn.execute(
+            text("SELECT GET_LOCK(:lock_name, :timeout_sec)"),
+            {"lock_name": lock_name, "timeout_sec": float(timeout_sec)},
+        ).scalar_one()
+        if int(acquired or 0) != 1:
+            raise BlackboxBootstrapLockTimeout(
+                "timed out waiting for Blackbox bootstrap advisory lock: "
+                f"schema_hash={schema_digest} timeout_sec={timeout_sec:g}"
+            )
+        try:
+            yield
+        finally:
+            active_error = sys.exc_info()[1]
+            try:
+                released = lock_conn.execute(
+                    text("SELECT RELEASE_LOCK(:lock_name)"),
+                    {"lock_name": lock_name},
+                ).scalar_one()
+                if int(released or 0) != 1:
+                    raise RuntimeError(
+                        "failed to release Blackbox bootstrap advisory lock: "
+                        f"schema_hash={schema_digest}"
+                    )
+            except BaseException as release_error:
+                if active_error is None:
+                    raise
+                if hasattr(active_error, "add_note"):
+                    active_error.add_note(f"bootstrap advisory lock release failed: {release_error}")
 
 
 def _validate_target_registry_baseline_conn(conn: Connection) -> dict[str, object]:
@@ -1174,6 +1229,28 @@ def finish_scheme_run(
     error_message: str | None = None,
 ) -> None:
     """标记预测运行结束。"""
+    with engine.begin() as conn:
+        _finish_scheme_run_conn(
+            conn,
+            run_id=run_id,
+            status=status,
+            records_returned=records_returned,
+            records_written=records_written,
+            error_message=error_message,
+        )
+
+
+def _finish_scheme_run_conn(
+    conn: Connection,
+    *,
+    run_id: int,
+    status: str,
+    records_returned: int | None = None,
+    records_written: int | None = None,
+    error_message: str | None = None,
+    require_exact_run: bool = False,
+) -> None:
+    """在调用方事务中标记预测运行结束。"""
     sql = text(
         """
         UPDATE t_scheme_runs
@@ -1185,16 +1262,20 @@ def finish_scheme_run(
         WHERE run_id = :run_id
         """
     )
-    with engine.begin() as conn:
-        conn.execute(
-            sql,
-            {
-                "run_id": run_id,
-                "status": status,
-                "records_returned": records_returned,
-                "records_written": records_written,
-                "error_message": error_message,
-            },
+    result = conn.execute(
+        sql,
+        {
+            "run_id": run_id,
+            "status": status,
+            "records_returned": records_returned,
+            "records_written": records_written,
+            "error_message": error_message,
+        },
+    )
+    if require_exact_run and int(getattr(result, "rowcount", 0) or 0) != 1:
+        raise RuntimeError(
+            "scheme run update affected "
+            f"{int(getattr(result, 'rowcount', 0) or 0)} rows for run_id={run_id}"
         )
 
 
@@ -1224,6 +1305,119 @@ def insert_approved_blackbox_predictions(
     scheme_version: str | None = None,
 ) -> int:
     """锁定并复核 Blackbox 批准状态后，在同一事务写入预测。"""
+    with _approved_blackbox_write_transaction(
+        engine,
+        cfg,
+        records,
+        scheme_version=scheme_version,
+    ) as (conn, record_list, exact_scheme_version):
+        return _insert_run_predictions_conn(
+            conn,
+            run_id,
+            record_list,
+            scheme_version=exact_scheme_version,
+        )
+
+
+def complete_approved_blackbox_run(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    run_id: int,
+    records: Iterable[PredictionRecord],
+    scheme_version: str | None,
+    records_returned: int,
+    run_date: str,
+    duration_sec: float,
+    precommit_validator: Callable[[Connection], None] | None = None,
+) -> int:
+    """原子提交 Blackbox prediction、成功 run 状态与成功日志。"""
+    with _approved_blackbox_write_transaction(
+        engine,
+        cfg,
+        records,
+        scheme_version=scheme_version,
+    ) as (conn, record_list, exact_scheme_version):
+        if records_returned != len(record_list):
+            raise RuntimeError(
+                "Blackbox completion records_returned mismatch: "
+                f"returned={records_returned}, records={len(record_list)}"
+            )
+        records_written = _insert_run_predictions_conn(
+            conn,
+            run_id,
+            record_list,
+            scheme_version=exact_scheme_version,
+        )
+        if records_written != records_returned:
+            raise RuntimeError(
+                "Blackbox completion records_written mismatch: "
+                f"returned={records_returned}, written={records_written}"
+            )
+        _finish_scheme_run_conn(
+            conn,
+            run_id=run_id,
+            status="success",
+            records_returned=records_returned,
+            records_written=records_written,
+            error_message=None,
+            require_exact_run=True,
+        )
+        _write_run_log_conn(
+            conn,
+            cfg.scheme_id,
+            run_date,
+            "success",
+            duration_sec,
+            None,
+            run_id,
+        )
+        if precommit_validator is not None:
+            precommit_validator(conn)
+        return records_written
+
+
+def fail_scheme_run_atomic(
+    engine: Engine,
+    *,
+    run_id: int,
+    scheme_id: str,
+    run_date: str,
+    duration_sec: float,
+    records_returned: int | None,
+    error_message: str,
+) -> None:
+    """以独立事务同时写入 failed run 状态与失败日志。"""
+    with engine.begin() as conn:
+        _finish_scheme_run_conn(
+            conn,
+            run_id=run_id,
+            status="failed",
+            records_returned=records_returned,
+            records_written=0,
+            error_message=error_message,
+            require_exact_run=True,
+        )
+        _write_run_log_conn(
+            conn,
+            scheme_id,
+            run_date,
+            "failed",
+            duration_sec,
+            error_message,
+            run_id,
+        )
+
+
+@contextmanager
+def _approved_blackbox_write_transaction(
+    engine: Engine,
+    cfg: SchemeConfig,
+    records: Iterable[PredictionRecord],
+    *,
+    scheme_version: str | None,
+) -> Iterator[tuple[Connection, list[PredictionRecord], str]]:
+    """统一 Blackbox 最终写入的生命周期锁、配置与 DB 复核边界。"""
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
         raise ValueError("approved Blackbox insert requires runtime_type=blackbox_v2")
     if scheme_version is not None and scheme_version != cfg.scheme_version:
@@ -1276,12 +1470,7 @@ def insert_approved_blackbox_predictions(
                 raise RuntimeError(
                     f"Blackbox V2 version is not production-approved: {approval.reason}"
                 )
-            return _insert_run_predictions_conn(
-                conn,
-                run_id,
-                record_list,
-                scheme_version=exact_scheme_version,
-            )
+            yield conn, record_list, exact_scheme_version
 
 
 def _insert_run_predictions_conn(
@@ -1575,21 +1764,42 @@ def write_run_log(
     run_id: int | None = None,
 ) -> None:
     """写入方案运行日志。"""
+    with engine.begin() as conn:
+        _write_run_log_conn(
+            conn,
+            scheme_id,
+            run_date,
+            status,
+            duration_sec,
+            error_msg,
+            run_id,
+        )
+
+
+def _write_run_log_conn(
+    conn: Connection,
+    scheme_id: str,
+    run_date: str,
+    status: str,
+    duration_sec: float | None = None,
+    error_msg: str | None = None,
+    run_id: int | None = None,
+) -> None:
+    """在调用方事务中写入方案运行日志。"""
     sql = text(
         """
         INSERT INTO t_scheme_run_log (run_id, scheme_id, run_date, status, duration_sec, error_msg)
         VALUES (:run_id, :scheme_id, :run_date, :status, :duration_sec, :error_msg)
         """
     )
-    with engine.begin() as conn:
-        conn.execute(
-            sql,
-            {
-                "run_id": run_id,
-                "scheme_id": scheme_id,
-                "run_date": run_date,
-                "status": status,
-                "duration_sec": duration_sec,
-                "error_msg": error_msg,
-            },
-        )
+    conn.execute(
+        sql,
+        {
+            "run_id": run_id,
+            "scheme_id": scheme_id,
+            "run_date": run_date,
+            "status": status,
+            "duration_sec": duration_sec,
+            "error_msg": error_msg,
+        },
+    )
