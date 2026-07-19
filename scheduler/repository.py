@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, Mapping
 
 from sqlalchemy import create_engine, inspect, text
@@ -708,6 +708,7 @@ def apply_blackbox_lifecycle_state(
     if version_status == "active" and (approved_by is None or approved_at is None):
         raise ValueError("active Blackbox version requires approved_by and approved_at")
 
+    mysql_approved_at = _mysql_utc_datetime(approved_at)
     expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
     effective_statuses = {
         registry_id: registry_status for registry_id in expected_registry_ids
@@ -718,7 +719,7 @@ def apply_blackbox_lifecycle_state(
             cfg,
             trusted_status=version_status,
             approved_by=approved_by,
-            approved_at=approved_at,
+            approved_at=mysql_approved_at,
         )
         _sync_scheme_registry_conn(
             conn,
@@ -730,6 +731,10 @@ def apply_blackbox_lifecycle_state(
             raise RuntimeError(
                 f"trusted lifecycle version readback missing: {cfg.scheme_id}/{cfg.scheme_version}"
             )
+        actual_version_values = dict(version_row)
+        stored_approved_at = actual_version_values.get("approved_at")
+        if isinstance(stored_approved_at, datetime):
+            actual_version_values["approved_at"] = _mysql_utc_datetime(stored_approved_at)
         expected_version_values = {
             "scheme_id": cfg.scheme_id,
             "scheme_version": cfg.scheme_version,
@@ -744,12 +749,12 @@ def apply_blackbox_lifecycle_state(
             "manifest_hash": cfg.manifest_hash,
             "status": version_status,
             "approved_by": approved_by,
-            "approved_at": approved_at,
+            "approved_at": mysql_approved_at,
         }
         mismatches = [
-            f"{field}: expected={expected!r}, got={version_row.get(field)!r}"
+            f"{field}: expected={expected!r}, got={actual_version_values.get(field)!r}"
             for field, expected in expected_version_values.items()
-            if version_row.get(field) != expected
+            if actual_version_values.get(field) != expected
         ]
         if mismatches:
             raise RuntimeError("trusted lifecycle version readback mismatch: " + "; ".join(mismatches))
@@ -796,9 +801,20 @@ def apply_blackbox_lifecycle_state(
             str(version_row["approved_by"]) if version_row.get("approved_by") is not None else None
         ),
         approved_at=(
-            version_row["approved_at"] if isinstance(version_row.get("approved_at"), datetime) else None
+            actual_version_values["approved_at"]
+            if isinstance(actual_version_values.get("approved_at"), datetime)
+            else None
         ),
     )
+
+
+def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
+    """将批准时刻统一为 MySQL DATETIME 使用的无时区 UTC。"""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def create_scheme_run(

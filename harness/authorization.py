@@ -192,6 +192,21 @@ def verify_authorization(
     return auth, errors
 
 
+def required_future_expiry_errors(expires_at: str | None) -> list[str]:
+    """校验 Blackbox 高权限操作强制要求的明确未来过期时间。"""
+    if not isinstance(expires_at, str) or not expires_at.strip():
+        return ["authorization expires_at must be a non-empty future timestamp"]
+    try:
+        expires_dt = datetime.fromisoformat(expires_at)
+    except ValueError:
+        return [f"authorization token has invalid expires_at: {expires_at}"]
+    if expires_dt.tzinfo is None:
+        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+    if expires_dt <= datetime.now(timezone.utc):
+        return [f"authorization expires_at must be in the future: {expires_at}"]
+    return []
+
+
 def mark_token_used(auth: Authorization, used_store_path: Path) -> None:
     used = _read_used_tokens(used_store_path)
     used.add(_token_hash(auth.token))

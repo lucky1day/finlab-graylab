@@ -62,19 +62,32 @@ class LiveGate(Gate):
             elif ctx.prediction_phase not in LIVE_PHASES:
                 errors.append(f"live gate requires explicit prediction_phase in {sorted(LIVE_PHASES)}, got {ctx.prediction_phase}")
             else:
-                audit_dir = _audit_dir(ctx)
-                audit_path = write_authorization_audit(auth, audit_dir)
-                mark_token_used(auth, used_tokens_path(ctx.project_root))
                 cfg = _load_config_for_execution(ctx)
-                cfg_for_run = replace(cfg, status="active")
-                run_output = execute_scheme(
-                    cfg_for_run,
-                    ctx.predict_date,
-                    algo_env=ctx.algo_env,
-                    timeout_sec=ctx.timeout_sec,
-                    prediction_phase=ctx.prediction_phase,
-                )
-                status = GateStatus.PASSED
+                if (
+                    getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"
+                    and (cfg.status != "active" or cfg.version_status != "active")
+                ):
+                    errors.append(
+                        "Blackbox live requires actual config active+active: "
+                        f"got={cfg.status}+{cfg.version_status}"
+                    )
+                else:
+                    audit_dir = _audit_dir(ctx)
+                    audit_path = write_authorization_audit(auth, audit_dir)
+                    mark_token_used(auth, used_tokens_path(ctx.project_root))
+                    cfg_for_run = (
+                        cfg
+                        if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"
+                        else replace(cfg, status="active")
+                    )
+                    run_output = execute_scheme(
+                        cfg_for_run,
+                        ctx.predict_date,
+                        algo_env=ctx.algo_env,
+                        timeout_sec=ctx.timeout_sec,
+                        prediction_phase=ctx.prediction_phase,
+                    )
+                    status = GateStatus.PASSED
         finally:
             after = snapshot_table_counts(engine, PROTECTED_TABLES)
             scheme_after = _safe_scheme_counts(engine, ctx.scheme_id)

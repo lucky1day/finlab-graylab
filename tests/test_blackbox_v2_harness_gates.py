@@ -310,6 +310,126 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertEqual(config_path.read_text(encoding="utf-8"), original)
             self.assertEqual(state, {"version": "draft", "registry": "paused"})
 
+    def test_shadow_register_rejects_prior_active_exact_version(self) -> None:
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            token = issue_token(
+                config.scheme_id,
+                "shadow_register",
+                "2026-07-16",
+                scheme_version=config.scheme_version,
+                harness_run_id="hr_passed",
+            )
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=root / "reports" / "shadow",
+                config=config,
+                authorization=token,
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+            )
+            passed = PassedAllRun("hr_passed", root / "reports" / "all", "snapshot-test")
+            with (
+                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
+                patch(
+                    "harness.blackbox_v2.gates._read_shadow_state",
+                    return_value=SimpleNamespace(version_status="active", registry_status="paused"),
+                ),
+                patch("harness.blackbox_v2.gates._register_shadow") as register,
+            ):
+                result = BlackboxShadowRegisterGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("draft or validated", "\n".join(result.errors))
+        register.assert_not_called()
+
+    def test_shadow_verification_rejects_config_version_status_mismatch(self) -> None:
+        from dataclasses import replace
+
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.gates import BlackboxShadowRegisterGate, PassedAllRun
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
+            config_path = scheme_dir / "config.yaml"
+            config = load_scheme_config(config_path)
+            token = issue_token(
+                config.scheme_id,
+                "shadow_register",
+                "2026-07-16",
+                scheme_version=config.scheme_version,
+                harness_run_id="hr_passed",
+            )
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=root / "reports" / "shadow",
+                config=config,
+                authorization=token,
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+            )
+            state = {"version": "draft", "registry": "paused"}
+            passed = PassedAllRun("hr_passed", root / "reports" / "all", "snapshot-test")
+            real_load = load_scheme_config
+
+            def read_state(_engine, _cfg):
+                return SimpleNamespace(
+                    version_status=state["version"],
+                    registry_status=state["registry"],
+                )
+
+            def register(_engine, _validated, _shadow):
+                state.update(version="shadow", registry="paused")
+                return SimpleNamespace(
+                    scheme_version=config.scheme_version,
+                    version_status="shadow",
+                    registry_status="paused",
+                    runtime_type="blackbox_v2",
+                    data_snapshot_id="snapshot-test",
+                    environment_fingerprint="e" * 64,
+                    code_hash=config.code_hash,
+                    config_hash=config.config_hash,
+                    manifest_hash=config.manifest_hash,
+                )
+
+            def load_with_mismatch(path):
+                current = real_load(path)
+                if current.version_status == "shadow":
+                    return replace(current, version_status="draft")
+                return current
+
+            def compensate(_engine, _cfg, **kwargs):
+                state.update(version=kwargs["version_status"], registry=kwargs["registry_status"])
+
+            with (
+                patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
+                patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
+                patch("harness.blackbox_v2.gates._read_shadow_state", side_effect=read_state),
+                patch("harness.blackbox_v2.gates._register_shadow", side_effect=register),
+                patch("harness.blackbox_v2.gates.load_scheme_config", side_effect=load_with_mismatch),
+                patch("scheduler.repository.apply_blackbox_lifecycle_state", side_effect=compensate),
+            ):
+                result = BlackboxShadowRegisterGate().run(ctx)
+
+            restored = real_load(config_path)
+
+        self.assertFalse(result.passed)
+        self.assertEqual((restored.status, restored.version_status), ("paused", "draft"))
+        self.assertEqual(state, {"version": "draft", "registry": "paused"})
+
     def test_static_gate_accepts_exact_two_file_delivery(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
         from scheduler.discovery import load_scheme_config

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +8,7 @@ from harness.authorization import (
     authorization_signing_enabled,
     authorization_token_hash,
     mark_token_used,
+    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
@@ -53,12 +54,12 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
         predict_date=None,
         used_store_path=used_tokens_path(ctx.project_root),
     )
+    if auth is not None:
+        errors.extend(required_future_expiry_errors(auth.expires_at))
     if auth is None or errors:
         return _blocked(started_at, errors)
     if not auth.issued_by.strip():
         errors.append("Blackbox activation authorization requires non-empty issued_by")
-    if auth.expires_at is None:
-        errors.append("Blackbox activation authorization requires expires_at")
     if auth.scheme_version != cfg.scheme_version:
         errors.append(
             "authorization scheme_version must match current canonical version: "
@@ -126,7 +127,12 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
         def read_state() -> LifecycleState:
             current = _reload_with_evidence(enriched_cfg)
             current_db = read_blackbox_lifecycle_state(engine, current)
-            return LifecycleState(current.status, current_db.version_status, current_db.registry_status)
+            return LifecycleState(
+                current.status,
+                current_db.version_status,
+                current_db.registry_status,
+                config_version_status=current.version_status,
+            )
 
         _, journal_path = perform_lifecycle_transition(
             project_root=ctx.project_root,
@@ -210,12 +216,14 @@ class BlackboxLifecycleReconcileGate(Gate):
             predict_date=None,
             used_store_path=used_tokens_path(ctx.project_root),
         )
+        if auth is not None:
+            errors.extend(required_future_expiry_errors(auth.expires_at))
         if auth is None or errors:
             return _blocked(started_at, errors, gate_name=self.name)
-        if not auth.issued_by.strip() or auth.expires_at is None:
+        if not auth.issued_by.strip():
             return _blocked(
                 started_at,
-                ["reconciliation authorization requires issued_by and expires_at"],
+                ["reconciliation authorization requires issued_by"],
                 gate_name=self.name,
             )
         if auth.scheme_version != cfg.scheme_version:
@@ -240,6 +248,7 @@ class BlackboxLifecycleReconcileGate(Gate):
         path, journal = pending[0]
         if "active" in {
             journal.previous.config_status,
+            str(journal.previous.config_version_status),
             journal.previous.version_status,
             journal.previous.registry_status,
         }:
@@ -278,17 +287,25 @@ class BlackboxLifecycleReconcileGate(Gate):
         def read_state() -> LifecycleState:
             current = _reload_with_evidence(enriched_cfg)
             current_db = read_blackbox_lifecycle_state(engine, current)
-            return LifecycleState(current.status, current_db.version_status, current_db.registry_status)
+            return LifecycleState(
+                current.status,
+                current_db.version_status,
+                current_db.registry_status,
+                config_version_status=current.version_status,
+            )
 
         try:
             mark_token_used(auth, used_tokens_path(ctx.project_root))
             audit_path = write_authorization_audit(auth, ctx.report_dir / "reconcile_authorization")
+            actual_before = read_state()
             restored = reconcile_journal(
                 path,
                 config_path=cfg.path / "config.yaml",
                 apply_database=apply_database,
                 read_state=read_state,
+                token_hash=authorization_token_hash(auth),
             )
+            actual_after = read_state()
         except Exception as exc:  # noqa: BLE001
             return _failed(
                 started_at,
@@ -305,6 +322,8 @@ class BlackboxLifecycleReconcileGate(Gate):
             evidence=[
                 Evidence("journal_path", str(path)),
                 Evidence("restored_state", restored.__dict__),
+                Evidence("actual_state_before", asdict(actual_before)),
+                Evidence("actual_state_after", asdict(actual_after)),
                 Evidence("promoted", False),
                 Evidence("authorization_audit_path", str(audit_path)),
             ],
@@ -334,6 +353,7 @@ def reconcile_incomplete_before_authorization(ctx: GateContext, cfg: SchemeConfi
         )
     if "active" in {
         journal.previous.config_status,
+        str(journal.previous.config_version_status),
         journal.previous.version_status,
         journal.previous.registry_status,
     }:
@@ -359,7 +379,12 @@ def reconcile_incomplete_before_authorization(ctx: GateContext, cfg: SchemeConfi
         def read_state() -> LifecycleState:
             current = _reload_with_evidence(enriched)
             current_db = read_blackbox_lifecycle_state(engine, current)
-            return LifecycleState(current.status, current_db.version_status, current_db.registry_status)
+            return LifecycleState(
+                current.status,
+                current_db.version_status,
+                current_db.registry_status,
+                config_version_status=current.version_status,
+            )
 
         reconcile_journal(
             path,

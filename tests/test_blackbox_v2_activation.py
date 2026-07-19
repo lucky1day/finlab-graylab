@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import tempfile
@@ -92,6 +95,35 @@ class BlackboxActivationTests(unittest.TestCase):
             approved_at=None,
         )
 
+    def _signed_activation_token_with_expiry(self, expires_at) -> str:
+        from harness.authorization import issue_token
+
+        token = issue_token(
+            self.cfg.scheme_id,
+            "blackbox_activate",
+            scheme_version=self.cfg.scheme_version,
+            harness_run_id="hr_passed",
+            ttl_seconds=60,
+            issued_by="release-owner",
+        )
+        padding = "=" * (-len(token) % 4)
+        envelope = json.loads(base64.urlsafe_b64decode((token + padding).encode()).decode())
+        envelope["payload"]["expires_at"] = expires_at
+        canonical = json.dumps(
+            envelope["payload"],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest = hmac.new(
+            os.environ["HARNESS_AUTH_SECRET"].encode("utf-8"),
+            canonical,
+            hashlib.sha256,
+        ).digest()
+        envelope["sig"] = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+        raw = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
     def test_activation_requires_signing(self) -> None:
         from harness.authorization import issue_token
         from harness.blackbox_v2.activation import activate_blackbox
@@ -175,6 +207,23 @@ class BlackboxActivationTests(unittest.TestCase):
             results = [activate_blackbox(self._ctx(token)) for token in cases]
         self.assertTrue(all(not result.passed for result in results))
 
+    def test_activation_requires_nonempty_well_formed_future_expiry(self) -> None:
+        from harness.blackbox_v2.activation import activate_blackbox
+
+        cases = {
+            "missing": None,
+            "empty": "",
+            "whitespace": "   ",
+            "malformed": "not-a-date",
+            "not-future": "2000-01-01T00:00:00+00:00",
+        }
+        for label, expires_at in cases.items():
+            with self.subTest(label=label):
+                token = self._signed_activation_token_with_expiry(expires_at)
+                result = activate_blackbox(self._ctx(token))
+                self.assertFalse(result.passed)
+                self.assertIn("expires_at", "\n".join(result.errors))
+
     def test_activation_rejects_token_signed_with_another_secret(self) -> None:
         from harness.authorization import issue_token
         from harness.blackbox_v2.activation import activate_blackbox
@@ -211,6 +260,90 @@ class BlackboxActivationTests(unittest.TestCase):
             result = ActivationGate().run(self._ctx("token"))
         self.assertIs(result, expected)
         delegated.assert_called_once()
+
+    def test_activation_gate_fails_closed_for_malformed_explicit_blackbox_config(self) -> None:
+        from harness.gates.activate_gate import ActivationGate
+
+        config_path = self.cfg.path / "config.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                "runtime_profile: blackbox-v2-v1",
+                'runtime_profile: ""',
+            ),
+            encoding="utf-8",
+        )
+        ctx = replace_context(self._ctx("token"), config=None)
+
+        with patch.object(ActivationGate, "_run", side_effect=AssertionError("native fallback")):
+            result = ActivationGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("Blackbox", "\n".join(result.errors))
+
+    def test_live_gate_rejects_actual_paused_blackbox_config_without_execution(self) -> None:
+        from harness.authorization import issue_token
+        from harness.gates.live_gate import LiveGate
+
+        token = issue_token(
+            self.cfg.scheme_id,
+            "live_write",
+            "2026-07-20",
+            ttl_seconds=60,
+            issued_by="operator",
+        )
+        ctx = replace_context(self._ctx(token), prediction_phase="gray_live")
+        with (
+            patch("harness.gates.live_gate.snapshot_table_counts", return_value={}),
+            patch("harness.gates.live_gate.snapshot_scheme_counts", return_value={}),
+            patch("harness.gates.live_gate.execute_scheme") as execute,
+        ):
+            result = LiveGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("active+active", "\n".join(result.errors))
+        execute.assert_not_called()
+
+    def test_activation_verification_rejects_config_version_status_mismatch(self) -> None:
+        from dataclasses import replace
+
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.activation import activate_blackbox
+        from scheduler.discovery import load_scheme_config
+
+        token = issue_token(
+            self.cfg.scheme_id,
+            "blackbox_activate",
+            scheme_version=self.cfg.scheme_version,
+            harness_run_id="hr_passed",
+            ttl_seconds=60,
+            issued_by="release-owner",
+        )
+        state = {"db": self._db_state()}
+        real_load = load_scheme_config
+
+        def apply(_engine, _cfg, **kwargs):
+            state["db"] = self._db_state(kwargs["version_status"], kwargs["registry_status"])
+            return state["db"]
+
+        def load_with_mismatch(cfg):
+            current = real_load(cfg.path / "config.yaml")
+            if current.status == "active":
+                return replace(current, version_status="shadow")
+            return current
+
+        with (
+            patch("harness.blackbox_v2.activation._verify_passed_all", return_value=self._passed_run()),
+            patch("harness.blackbox_v2.activation._environment_fingerprint", return_value="e" * 64),
+            patch("harness.blackbox_v2.activation.read_blackbox_lifecycle_state", side_effect=lambda *_: state["db"]),
+            patch("harness.blackbox_v2.activation.apply_blackbox_lifecycle_state", side_effect=apply),
+            patch("harness.blackbox_v2.activation._reload_with_evidence", side_effect=load_with_mismatch),
+        ):
+            result = activate_blackbox(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        restored = real_load(self.cfg.path / "config.yaml")
+        self.assertEqual((restored.status, restored.version_status), ("paused", "shadow"))
+        self.assertEqual((state["db"].version_status, state["db"].registry_status), ("shadow", "paused"))
 
     def test_unresolved_journal_blocks_common_live_gate_before_engine_or_token_use(self) -> None:
         from harness.authorization import issue_token
@@ -300,6 +433,24 @@ class BlackboxActivationTests(unittest.TestCase):
         self.assertEqual(load_journal(journal_path).phase, "compensated")
         evidence = {item.key: item.value for item in result.evidence}
         self.assertFalse(evidence["promoted"])
+        self.assertEqual(
+            evidence["actual_state_before"],
+            {
+                "config_status": "active",
+                "config_version_status": "active",
+                "version_status": "active",
+                "registry_status": "active",
+            },
+        )
+        self.assertEqual(
+            evidence["actual_state_after"],
+            {
+                "config_status": "paused",
+                "config_version_status": "shadow",
+                "version_status": "shadow",
+                "registry_status": "paused",
+            },
+        )
 
 
 def replace_context(ctx: GateContext, **updates) -> GateContext:

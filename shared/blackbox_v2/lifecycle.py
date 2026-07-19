@@ -12,7 +12,7 @@ from typing import Callable
 
 
 INCOMPLETE_PHASES = frozenset({"prepared", "config_written", "db_committed", "unresolved"})
-TERMINAL_PHASES = frozenset({"verified", "compensated"})
+TERMINAL_PHASES = frozenset({"verified", "compensated", "unresolved"})
 _TRANSITIONS = {
     "prepared": frozenset({"config_written", "compensated", "unresolved"}),
     "config_written": frozenset({"db_committed", "compensated", "unresolved"}),
@@ -26,8 +26,15 @@ _TRANSITIONS = {
 @dataclass(frozen=True)
 class LifecycleState:
     config_status: str
+    # version_status is the exact database version state. Keep the separately
+    # persisted config state explicit so independent verification covers both.
     version_status: str
     registry_status: str
+    config_version_status: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.config_version_status is None:
+            object.__setattr__(self, "config_version_status", self.version_status)
 
 
 @dataclass(frozen=True)
@@ -42,6 +49,8 @@ class LifecycleJournal:
     phase: str
     token_hash: str
     error: str | None = None
+    reconciliation_of: str | None = None
+    reconciled_by: str | None = None
 
     @classmethod
     def prepare(
@@ -54,6 +63,7 @@ class LifecycleJournal:
         previous: LifecycleState,
         target: LifecycleState,
         token_hash: str,
+        reconciliation_of: str | None = None,
     ) -> "LifecycleJournal":
         return cls(
             operation_id=f"op_{uuid.uuid4().hex}",
@@ -65,6 +75,7 @@ class LifecycleJournal:
             target=target,
             phase="prepared",
             token_hash=token_hash,
+            reconciliation_of=reconciliation_of,
         )
 
     def transition(self, phase: str, *, error: str | None = None) -> "LifecycleJournal":
@@ -111,6 +122,14 @@ def load_journal(path: str | Path) -> LifecycleJournal:
         phase=str(raw["phase"]),
         token_hash=str(raw["token_hash"]),
         error=str(raw["error"]) if raw.get("error") is not None else None,
+        reconciliation_of=(
+            str(raw["reconciliation_of"])
+            if raw.get("reconciliation_of") is not None
+            else None
+        ),
+        reconciled_by=(
+            str(raw["reconciled_by"]) if raw.get("reconciled_by") is not None else None
+        ),
     )
     if journal.phase not in _TRANSITIONS:
         raise ValueError(f"invalid lifecycle journal phase: {journal.phase}")
@@ -127,7 +146,7 @@ def pending_journals(project_root: str | Path, scheme_id: str) -> list[tuple[Pat
             journal = load_journal(path)
         except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError(f"invalid lifecycle journal blocks {scheme_id}: {path}: {exc}") from exc
-        if journal.phase in INCOMPLETE_PHASES:
+        if journal.phase in INCOMPLETE_PHASES and journal.reconciled_by is None:
             pending.append((path, journal))
     return pending
 
@@ -151,7 +170,11 @@ def atomic_update_config(
     path = Path(config_path)
     text = original_text if original_text is not None else path.read_text(encoding="utf-8")
     text = _replace_top_level_scalar(text, "status", state.config_status)
-    text = _replace_top_level_scalar(text, "version_status", state.version_status)
+    text = _replace_top_level_scalar(
+        text,
+        "version_status",
+        str(state.config_version_status),
+    )
     _atomic_write_bytes(path, text.encode("utf-8"))
 
 
@@ -227,16 +250,19 @@ def _perform_lifecycle_transition_unlocked(
     try:
         consume_authorization()
         atomic_update_config(config_path, target)
-        journal = journal.transition("config_written")
-        write_journal(project_root, journal)
+        next_journal = journal.transition("config_written")
+        write_journal(project_root, next_journal)
+        journal = next_journal
         apply_database(target)
-        journal = journal.transition("db_committed")
-        write_journal(project_root, journal)
+        next_journal = journal.transition("db_committed")
+        write_journal(project_root, next_journal)
+        journal = next_journal
         actual = read_state()
         if actual != target:
             raise RuntimeError(f"lifecycle independent verification mismatch: expected={target}, actual={actual}")
-        journal = journal.transition("verified")
-        write_journal(project_root, journal)
+        next_journal = journal.transition("verified")
+        write_journal(project_root, next_journal)
+        journal = next_journal
         return actual, journal_path
     except BaseException as exc:
         compensation_errors: list[str] = []
@@ -280,6 +306,7 @@ def reconcile_journal(
     config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
+    token_hash: str | None = None,
 ) -> LifecycleState:
     """只回退到 previous 安全状态；绝不把中断操作继续推进到 active。"""
     path = Path(journal_path)
@@ -291,6 +318,7 @@ def reconcile_journal(
             config_path=config_path,
             apply_database=apply_database,
             read_state=read_state,
+            token_hash=token_hash,
         )
 
 
@@ -300,10 +328,20 @@ def _reconcile_journal_unlocked(
     config_path: str | Path,
     apply_database: Callable[[LifecycleState], None],
     read_state: Callable[[], LifecycleState],
+    token_hash: str | None,
 ) -> LifecycleState:
     journal = load_journal(path)
-    if journal.phase in TERMINAL_PHASES:
+    if journal.phase in {"verified", "compensated"}:
         return journal.previous if journal.phase == "compensated" else journal.target
+    if journal.phase == "unresolved":
+        return _reconcile_unresolved_with_linked_journal(
+            path,
+            journal,
+            config_path=config_path,
+            apply_database=apply_database,
+            read_state=read_state,
+            token_hash=token_hash,
+        )
     errors: list[str] = []
     try:
         atomic_update_config(config_path, journal.previous)
@@ -322,12 +360,65 @@ def _reconcile_journal_unlocked(
     except BaseException as exc:
         errors.append(f"reconciliation verification failed: {exc}")
     if errors:
-        updated = replace(journal, phase="unresolved", error="; ".join(errors))
+        updated = journal.transition("unresolved", error="; ".join(errors))
         _atomic_write_journal_path(path, updated)
         raise RuntimeError(updated.error)
-    updated = replace(journal, phase="compensated", error=journal.error)
+    updated = journal.transition("compensated", error=journal.error)
     _atomic_write_journal_path(path, updated)
     return journal.previous
+
+
+def _reconcile_unresolved_with_linked_journal(
+    original_path: Path,
+    original: LifecycleJournal,
+    *,
+    config_path: str | Path,
+    apply_database: Callable[[LifecycleState], None],
+    read_state: Callable[[], LifecycleState],
+    token_hash: str | None,
+) -> LifecycleState:
+    """以新 journal 对账 unresolved，保留原终态及错误证据。"""
+    actual_before = read_state()
+    reconciliation = LifecycleJournal.prepare(
+        action="lifecycle_reconcile",
+        scheme_id=original.scheme_id,
+        scheme_version=original.scheme_version,
+        harness_run_id=original.harness_run_id,
+        previous=actual_before,
+        target=original.previous,
+        token_hash=token_hash or original.token_hash,
+        reconciliation_of=original.operation_id,
+    )
+    project_root = _project_root_from_journal_path(original_path, original.scheme_id)
+    reconciliation_path = write_journal(project_root, reconciliation)
+    try:
+        atomic_update_config(config_path, original.previous)
+        next_journal = reconciliation.transition("config_written")
+        write_journal(project_root, next_journal)
+        reconciliation = next_journal
+        apply_database(original.previous)
+        next_journal = reconciliation.transition("db_committed")
+        write_journal(project_root, next_journal)
+        reconciliation = next_journal
+        actual_after = read_state()
+        if actual_after != original.previous:
+            raise RuntimeError(
+                "reconciliation verification mismatch: "
+                f"expected={original.previous}, actual={actual_after}"
+            )
+        next_journal = reconciliation.transition("verified")
+        write_journal(project_root, next_journal)
+        reconciliation = next_journal
+        _atomic_write_journal_path(
+            original_path,
+            replace(original, reconciled_by=reconciliation.operation_id),
+        )
+        return original.previous
+    except BaseException as exc:
+        if reconciliation.phase not in TERMINAL_PHASES:
+            failed = reconciliation.transition("unresolved", error=str(exc))
+            _atomic_write_journal_path(reconciliation_path, failed)
+        raise RuntimeError(f"unresolved lifecycle reconciliation failed: {exc}") from exc
 
 
 @contextmanager

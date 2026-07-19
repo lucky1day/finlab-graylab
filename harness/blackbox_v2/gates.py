@@ -468,9 +468,23 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
                 data_snapshot_id=passed_run.data_snapshot_id,
             )
             db_before = _read_shadow_state(engine, cfg)
-            previous = LifecycleState(cfg.status, db_before.version_status, db_before.registry_status)
-            if previous.config_status != "paused" or previous.registry_status != "paused":
-                raise ValueError(f"shadow registration requires paused safe state, got {previous}")
+            previous = LifecycleState(
+                cfg.status,
+                db_before.version_status,
+                db_before.registry_status,
+                config_version_status=cfg.version_status,
+            )
+            safe_version_statuses = {"draft", "validated"}
+            if (
+                previous.config_status != "paused"
+                or previous.registry_status != "paused"
+                or previous.config_version_status not in safe_version_statuses
+                or previous.version_status not in safe_version_statuses
+            ):
+                raise ValueError(
+                    "shadow registration requires paused state and both config/DB exact "
+                    f"version status draft or validated, got {previous}"
+                )
             target = LifecycleState("paused", "shadow", "paused")
 
             def consume() -> None:
@@ -503,7 +517,12 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             def read_state() -> LifecycleState:
                 current = enriched_current()
                 db_state = _read_shadow_state(engine, current)
-                return LifecycleState(current.status, db_state.version_status, db_state.registry_status)
+                return LifecycleState(
+                    current.status,
+                    db_state.version_status,
+                    db_state.registry_status,
+                    config_version_status=current.version_status,
+                )
 
             _, journal_path = perform_lifecycle_transition(
                 project_root=ctx.project_root,

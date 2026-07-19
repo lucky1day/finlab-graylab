@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 
@@ -375,6 +375,33 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertEqual(state.registry_status, "paused")
         self.assertEqual(state.environment_fingerprint, "e" * 64)
         self.assertEqual(state.data_snapshot_id, "snapshot-1")
+
+    def test_trusted_blackbox_lifecycle_normalizes_aware_approval_to_mysql_utc(self) -> None:
+        from scheduler.repository import apply_blackbox_lifecycle_state
+
+        engine = _CaptureEngine()
+        approved_at = datetime(
+            2026,
+            7,
+            20,
+            16,
+            30,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+
+        state = apply_blackbox_lifecycle_state(
+            engine,
+            _blackbox_config(),
+            version_status="active",
+            registry_status="active",
+            approved_by="release-owner",
+            approved_at=approved_at,
+        )
+
+        expected_mysql_value = datetime(2026, 7, 20, 8, 30)
+        self.assertEqual(engine.store["version_row"]["approved_at"], expected_mysql_value)
+        self.assertIsNone(engine.store["version_row"]["approved_at"].tzinfo)
+        self.assertEqual(state.approved_at, expected_mysql_value)
 
     def test_native_active_sync_behavior_is_unchanged(self) -> None:
         from scheduler.repository import sync_scheme_registry

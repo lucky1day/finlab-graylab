@@ -26,14 +26,23 @@ class ActivationGate(Gate):
     def run(self, ctx: GateContext) -> GateResult:
         config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
         cfg = ctx.config
-        if cfg is None and config_path.is_file():
+        raw_runtime_type = None
+        if config_path.is_file():
+            try:
+                raw = load_config_raw(config_path)
+                raw_runtime_type = raw.get("runtime_type") if isinstance(raw, dict) else None
+            except (OSError, UnicodeError, ValueError):
+                raw_runtime_type = getattr(cfg, "runtime_type", None)
+        if raw_runtime_type == "blackbox_v2" or getattr(cfg, "runtime_type", None) == "blackbox_v2":
             try:
                 from scheduler.discovery import load_scheme_config
 
                 cfg = load_scheme_config(config_path)
-            except (OSError, UnicodeError, ValueError):
-                cfg = None
-        if cfg is not None and getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
+            except Exception as exc:  # noqa: BLE001
+                return guarded_result(
+                    self.name,
+                    lambda started_at: _blackbox_config_failure(started_at, config_path, exc),
+                )
             from harness.blackbox_v2.activation import activate_blackbox
 
             return activate_blackbox(replace(ctx, config=cfg))
@@ -198,6 +207,21 @@ class ActivationGate(Gate):
             finished_at=finished_at,
             report_path=audit_path,
         )
+
+
+def _blackbox_config_failure(started_at: str, config_path: Path, exc: Exception) -> GateResult:
+    return GateResult(
+        gate_name="activate",
+        status=GateStatus.FAILED,
+        passed=False,
+        evidence=[
+            Evidence("config_path", str(config_path)),
+            Evidence("runtime_type", "blackbox_v2"),
+        ],
+        errors=[f"Blackbox config failed strict loading: {exc}"],
+        started_at=started_at,
+        finished_at=utc_now(),
+    )
 
 
 def _cron_of(raw: dict) -> str | None:

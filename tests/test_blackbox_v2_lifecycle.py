@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class BlackboxLifecycleJournalTests(unittest.TestCase):
@@ -273,6 +274,133 @@ class BlackboxLifecycleJournalTests(unittest.TestCase):
         self.assertEqual(load_journal(path).phase, "compensated")
         self.assertEqual(actual["state"], previous)
         self.assertNotIn("active", config_path.read_text(encoding="utf-8"))
+
+    def test_unresolved_reconcile_preserves_terminal_journal_and_links_new_audit(self) -> None:
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleJournal,
+            load_journal,
+            pending_journals,
+            reconcile_journal,
+            write_journal,
+        )
+
+        previous, target = self._states()
+        config_path = self.root / "schemes" / "trial" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("status: active\nversion_status: active\n", encoding="utf-8")
+        original = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id="trial",
+            scheme_version="abc123",
+            harness_run_id="hr_1",
+            previous=previous,
+            target=target,
+            token_hash="hash",
+        ).transition("unresolved", error="database compensation failed")
+        original_path = write_journal(self.root, original)
+        actual = {"state": target}
+
+        restored = reconcile_journal(
+            original_path,
+            config_path=config_path,
+            apply_database=lambda state: actual.__setitem__("state", state),
+            read_state=lambda: actual["state"],
+        )
+
+        preserved = load_journal(original_path)
+        journals = [load_journal(path) for path in original_path.parent.glob("*.json")]
+        linked = [journal for journal in journals if journal.operation_id != original.operation_id]
+        self.assertEqual(restored, previous)
+        self.assertEqual(preserved.phase, "unresolved")
+        self.assertEqual(preserved.error, "database compensation failed")
+        self.assertEqual(len(linked), 1)
+        self.assertEqual(linked[0].action, "lifecycle_reconcile")
+        self.assertEqual(linked[0].reconciliation_of, original.operation_id)
+        self.assertEqual(linked[0].phase, "verified")
+        self.assertEqual(preserved.reconciled_by, linked[0].operation_id)
+        self.assertEqual(pending_journals(self.root, "trial"), [])
+
+    def test_atomic_config_write_failure_is_compensated_without_active_residue(self) -> None:
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleOperationError,
+            load_journal,
+            perform_lifecycle_transition,
+        )
+
+        previous, target = self._states()
+        config_path = self.root / "schemes" / "trial" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        original_text = "status: paused\nversion_status: shadow\n"
+        config_path.write_text(original_text, encoding="utf-8")
+        actual = {"state": previous}
+
+        with patch(
+            "shared.blackbox_v2.lifecycle.atomic_update_config",
+            side_effect=OSError("injected config replace failure"),
+        ):
+            with self.assertRaises(LifecycleOperationError) as caught:
+                perform_lifecycle_transition(
+                    project_root=self.root,
+                    config_path=config_path,
+                    action="activate",
+                    scheme_id="trial",
+                    scheme_version="abc123",
+                    harness_run_id="hr_1",
+                    previous=previous,
+                    target=target,
+                    compensation=previous,
+                    token_hash="hash",
+                    consume_authorization=lambda: None,
+                    apply_database=lambda state: actual.__setitem__("state", state),
+                    read_state=lambda: actual["state"],
+                )
+
+        self.assertTrue(caught.exception.compensated)
+        self.assertEqual(load_journal(caught.exception.journal_path).phase, "compensated")
+        self.assertEqual(config_path.read_text(encoding="utf-8"), original_text)
+        self.assertEqual(actual["state"], previous)
+
+    def test_final_verified_journal_write_failure_compensates_without_active_residue(self) -> None:
+        from shared.blackbox_v2 import lifecycle
+
+        previous, target = self._states()
+        config_path = self.root / "schemes" / "trial" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        original_text = "status: paused\nversion_status: shadow\n"
+        config_path.write_text(original_text, encoding="utf-8")
+        actual = {"state": previous}
+        real_write = lifecycle.write_journal
+        writes: list[str] = []
+
+        def fail_final_write(project_root, journal):
+            writes.append(journal.phase)
+            if journal.phase == "verified":
+                raise OSError("injected final journal fsync failure")
+            return real_write(project_root, journal)
+
+        with patch("shared.blackbox_v2.lifecycle.write_journal", side_effect=fail_final_write):
+            with self.assertRaises(lifecycle.LifecycleOperationError) as caught:
+                lifecycle.perform_lifecycle_transition(
+                    project_root=self.root,
+                    config_path=config_path,
+                    action="activate",
+                    scheme_id="trial",
+                    scheme_version="abc123",
+                    harness_run_id="hr_1",
+                    previous=previous,
+                    target=target,
+                    compensation=previous,
+                    token_hash="hash",
+                    consume_authorization=lambda: None,
+                    apply_database=lambda state: actual.__setitem__("state", state),
+                    read_state=lambda: actual["state"],
+                )
+
+        self.assertIn("verified", writes)
+        self.assertTrue(caught.exception.compensated)
+        self.assertEqual(lifecycle.load_journal(caught.exception.journal_path).phase, "compensated")
+        self.assertEqual(config_path.read_text(encoding="utf-8"), original_text)
+        self.assertEqual(actual["state"], previous)
 
 
 if __name__ == "__main__":
