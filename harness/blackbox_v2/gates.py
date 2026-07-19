@@ -15,13 +15,18 @@ import pandas as pd
 
 from harness.context import GateContext
 from harness.authorization import (
+    authorization_signing_enabled,
     authorization_token_hash,
     mark_token_used,
+    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
     write_authorization_audit,
 )
+from backtests.blackbox_v2 import run_blackbox_historical_backtest
+from backtests.repository import persist_backtest_output_atomic, snapshot_backtest_scope_counts
 from harness.gates.base import Gate, guarded_result, utc_now
+from harness.probes.table_guard import diff_snapshots
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.blackbox_v2_runner import (
     DEFAULT_RUNTIME_PROFILE,
@@ -34,6 +39,7 @@ from scheduler.blackbox_v2_runner import (
 )
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest, load_metadata, load_request
+from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
 from shared.blackbox_v2.requests import build_live_request, write_request
 from shared.blackbox_v2.snapshot import BlackboxSnapshot, SNAPSHOT_FILENAMES
 from shared.calendar_service import get_calendar
@@ -347,6 +353,8 @@ class BlackboxBacktestGate(_BlackboxGate):
     name = "backtest"
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
+        if ctx.persist_backtest:
+            return self._run_persist(ctx, started_at)
         cfg = _config(ctx)
         metadata = _metadata(cfg)
         state = _ensure_input_state(ctx)
@@ -379,6 +387,121 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("business_tables_written", False),
         ]
         return _finish(self.name, started_at, evidence, errors)
+
+    def _run_persist(self, ctx: GateContext, started_at: str) -> GateResult:
+        cfg = _config(ctx)
+        if not authorization_signing_enabled():
+            return _blocked(
+                self.name,
+                started_at,
+                ["Blackbox backtest persistence requires HMAC signing via HARNESS_AUTH_SECRET"],
+            )
+        if not isinstance(ctx.authorization, str):
+            return _blocked(
+                self.name,
+                started_at,
+                ["Blackbox backtest persistence requires the original signed token string"],
+            )
+        auth, auth_errors = verify_authorization(
+            ctx.authorization,
+            scheme_id=ctx.scheme_id,
+            action="backtest_persist",
+            predict_date=ctx.predict_date,
+            used_store_path=used_tokens_path(ctx.project_root),
+        )
+        if auth is not None:
+            auth_errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
+            if not auth.issued_by.strip():
+                auth_errors.append("Blackbox backtest authorization requires non-empty issued_by")
+            if auth.scheme_version != cfg.scheme_version:
+                auth_errors.append(
+                    "authorization scheme_version must match current canonical version: "
+                    f"token={auth.scheme_version}, current={cfg.scheme_version}"
+                )
+        if auth is None or auth_errors:
+            return _blocked(self.name, started_at, auth_errors)
+
+        engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
+        audit_path: Path | None = None
+        try:
+            passed_run = _verify_passed_all(engine, cfg)
+            if auth.harness_run_id != passed_run.harness_run_id:
+                return _blocked(
+                    self.name,
+                    started_at,
+                    [
+                        "authorization harness_run_id must match latest passed all-stage run: "
+                        f"token={auth.harness_run_id}, latest={passed_run.harness_run_id}"
+                    ],
+                )
+            state = _ensure_input_state(ctx)
+            provenance = _data_bridge_provenance(ctx, state.snapshot)
+            generation_id = str(provenance.get("generation_id", "")).strip()
+            if not generation_id:
+                return _blocked(
+                    self.name,
+                    started_at,
+                    ["Blackbox persisted backtest requires DataBridge generation_id evidence"],
+                )
+            metadata = _metadata(cfg)
+            cases = build_historical_cases(
+                metadata,
+                state.snapshot,
+                engine,
+                limit=100,
+                target_date_before=ctx.predict_date,
+                predict_date_from="2010-01-01",
+            )
+            benchmark_id = f"bbv2-{cfg.scheme_id}-{passed_run.harness_run_id}"
+            output = run_blackbox_historical_backtest(
+                metadata=metadata,
+                script_path=_script(cfg),
+                cases=cases,
+                snapshot=state.snapshot,
+                scheme_version=cfg.scheme_version,
+                generation_id=generation_id,
+                benchmark_id=benchmark_id,
+                run_delivery=run_blackbox_backtest,
+                profile=_profile(ctx),
+            )
+            if len(output.rows) != 100 or not output.monthly_metrics:
+                raise ValueError(
+                    "Blackbox persisted backtest requires exactly 100 rows and non-empty monthly metrics"
+                )
+            before = snapshot_backtest_scope_counts(engine, benchmark_id)
+            mark_token_used(auth, used_tokens_path(ctx.project_root))
+            audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
+            run_id = persist_backtest_output_atomic(engine, output, benchmark_id=benchmark_id)
+            after = snapshot_backtest_scope_counts(engine, benchmark_id)
+            deltas = diff_snapshots(before, after)
+            errors = _persisted_backtest_delta_errors(
+                deltas,
+                expected_predictions=100,
+                expected_metrics=len(output.monthly_metrics),
+            )
+        finally:
+            if hasattr(engine, "dispose"):
+                engine.dispose()
+
+        evidence = [
+            Evidence("persist", True),
+            Evidence("run_id", run_id),
+            Evidence("benchmark_id", benchmark_id),
+            Evidence("scheme_version", cfg.scheme_version),
+            Evidence("harness_run_id", passed_run.harness_run_id),
+            Evidence("generation_id", generation_id),
+            Evidence("data_snapshot_id", state.snapshot.snapshot_id),
+            Evidence("requests", len(cases)),
+            Evidence("records", len(output.rows)),
+            Evidence("monthly_metrics", len(output.monthly_metrics)),
+            Evidence("protected_table_counts_before", before),
+            Evidence("protected_table_counts_after", after),
+            Evidence("protected_table_deltas", deltas),
+            Evidence("authorization_audit_path", str(audit_path)),
+            Evidence("replay_semantics", CURRENT_SNAPSHOT_REPLAY),
+        ]
+        result = _finish(self.name, started_at, evidence, errors)
+        return replace(result, report_path=audit_path)
 
 
 class BlackboxApiReadinessGate(_BlackboxGate):
@@ -874,6 +997,27 @@ def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[Black
 
 def _direction_map(records) -> dict[str, int]:
     return {str(record.extra["request_id"]): int(record.predicted_direction) for record in records}
+
+
+def _persisted_backtest_delta_errors(
+    deltas: dict[str, int],
+    *,
+    expected_predictions: int,
+    expected_metrics: int,
+) -> list[str]:
+    expected = {
+        "t_backtest_runs": 1,
+        "t_backtest_predictions": expected_predictions,
+        "t_backtest_monthly_metrics": expected_metrics,
+    }
+    errors = [
+        f"{table} delta must be {value}, got {deltas.get(table)}"
+        for table, value in expected.items()
+        if deltas.get(table) != value
+    ]
+    if expected_metrics <= 0:
+        errors.append("persisted Blackbox backtest must produce monthly metrics")
+    return errors
 
 
 def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
