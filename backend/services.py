@@ -46,6 +46,10 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
+BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE = {
+    "native_adapter": "framework_db_aligned",
+    "blackbox_v2": "blackbox_v2_current_snapshot_as_of",
+}
 
 
 def _iso(value: Any) -> str | None:
@@ -78,6 +82,19 @@ def _require_task_type(row: Any, *, context: str) -> str:
         f"base_scheme_id={row['base_scheme_id']} "
         f"target_tenor={row['target_tenor']} "
         f"task_type={task_type or None}"
+    )
+
+
+def _require_runtime_type(row: Any, *, context: str) -> str:
+    runtime_type = str(row["runtime_type"] or "").strip()
+    if runtime_type in BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE:
+        return runtime_type
+    raise ValueError(
+        f"{context} invalid runtime_type: "
+        f"scheme_id={row['scheme_id']} "
+        f"base_scheme_id={row['base_scheme_id']} "
+        f"target_tenor={row['target_tenor']} "
+        f"runtime_type={runtime_type or None}"
     )
 
 
@@ -327,7 +344,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
     """只读获取回测矩阵所需方案元数据，不触发 registry 同步。"""
     sql = text(
         """
-        SELECT scheme_id, base_scheme_id, name, description, horizon, task_type, frequency,
+        SELECT scheme_id, base_scheme_id, runtime_type, name, description, horizon, task_type, frequency,
                target_tenor, schedule_cron, schedule_timezone, status,
                deployed_at, created_at, updated_at
         FROM t_scheme_registry
@@ -340,7 +357,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
             rows = conn.execute(sql).mappings().all()
     except SQLAlchemyError as exc:
         message = str(exc)
-        if "t_scheme_registry" not in message and "1146" not in message:
+        if "1146" not in message and "no such table: t_scheme_registry" not in message:
             raise
         rows = []
 
@@ -349,6 +366,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
         meta[key] = {
             "scheme_id": row["scheme_id"],
             "base_scheme_id": row["base_scheme_id"],
+            "runtime_type": _require_runtime_type(row, context="active registry row"),
             "name": row["name"],
             "description": row["description"],
             "horizon": row["horizon"],
@@ -788,21 +806,24 @@ def backtest_factor_lab_results(
         ).mappings().all()
 
     if data_source is None:
-        sources_by_scheme: dict[str, set[str]] = defaultdict(set)
-        for row in run_rows:
-            sources_by_scheme[str(row["scheme_id"])].add(str(row["data_source"]))
+        runtime_types_by_scheme: dict[str, set[str]] = defaultdict(set)
+        for (base_scheme_id, _target_tenor), meta in scheme_meta.items():
+            runtime_types_by_scheme[base_scheme_id].add(str(meta["runtime_type"]))
+        inconsistent = {
+            scheme_id: sorted(runtime_types)
+            for scheme_id, runtime_types in runtime_types_by_scheme.items()
+            if len(runtime_types) != 1
+        }
+        if inconsistent:
+            raise ValueError(f"active Registry runtime_type is inconsistent: {inconsistent}")
         preferred_by_scheme = {
-            scheme_id: (
-                "blackbox_v2_current_snapshot_as_of"
-                if "blackbox_v2_current_snapshot_as_of" in sources
-                else "framework_db_aligned"
-            )
-            for scheme_id, sources in sources_by_scheme.items()
+            scheme_id: BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE[next(iter(runtime_types))]
+            for scheme_id, runtime_types in runtime_types_by_scheme.items()
         }
         run_rows = [
             row
             for row in run_rows
-            if str(row["data_source"]) == preferred_by_scheme[str(row["scheme_id"])]
+            if str(row["data_source"]) == preferred_by_scheme.get(str(row["scheme_id"]))
         ]
 
     schemes: list[dict[str, Any]] = []

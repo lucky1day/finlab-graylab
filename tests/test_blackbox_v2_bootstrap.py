@@ -136,30 +136,51 @@ class BlackboxBootstrapTests(unittest.TestCase):
             {"paused"},
         )
 
-    def test_repository_bootstrap_rejects_nonempty_schema_before_writes(self) -> None:
+    def test_repository_bootstrap_rejects_each_nonempty_writable_table_before_writes(self) -> None:
         from scheduler.repository import (
             BLACKBOX_BOOTSTRAP_EMPTY_TABLES,
             bootstrap_blackbox_control_plane,
         )
 
+        expected_writable_tables = {
+            "t_scheme_registry",
+            "t_scheme_versions",
+            "t_scheme_runs",
+            "t_input_artifacts",
+            "t_scheme_serving_pointer",
+            "t_scheme_predictions",
+            "t_scheme_run_log",
+            "t_scheme_actuals",
+            "t_scheme_weekly_actuals",
+            "t_scheme_monthly_actuals",
+            "t_backtest_runs",
+            "t_backtest_predictions",
+            "t_backtest_monthly_metrics",
+            "t_backtest_reproduction_checks",
+            "t_harness_runs",
+            "t_harness_gate_results",
+        }
+        self.assertEqual(set(BLACKBOX_BOOTSTRAP_EMPTY_TABLES), expected_writable_tables)
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = self._scaffold(Path(tmpdir))
-            counts = {table: 0 for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES}
-            counts["t_scheme_versions"] = 1
-            engine = _BootstrapEngine(schema="bbv2_cert_20260720", counts=counts)
-            with (
-                patch("scheduler.repository._upsert_scheme_version_conn") as upsert,
-                patch("scheduler.repository._sync_scheme_registry_conn") as sync,
-            ):
-                with self.assertRaisesRegex(RuntimeError, "must be empty"):
-                    bootstrap_blackbox_control_plane(
-                        engine,
-                        cfg,
-                        expected_schema="bbv2_cert_20260720",
-                    )
+            for nonempty_table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES:
+                with self.subTest(table=nonempty_table):
+                    counts = {table: 0 for table in BLACKBOX_BOOTSTRAP_EMPTY_TABLES}
+                    counts[nonempty_table] = 1
+                    engine = _BootstrapEngine(schema="bbv2_cert_20260720", counts=counts)
+                    with (
+                        patch("scheduler.repository._upsert_scheme_version_conn") as upsert,
+                        patch("scheduler.repository._sync_scheme_registry_conn") as sync,
+                    ):
+                        with self.assertRaisesRegex(RuntimeError, nonempty_table):
+                            bootstrap_blackbox_control_plane(
+                                engine,
+                                cfg,
+                                expected_schema="bbv2_cert_20260720",
+                            )
 
-        upsert.assert_not_called()
-        sync.assert_not_called()
+                    upsert.assert_not_called()
+                    sync.assert_not_called()
 
     def test_bootstrap_gate_writes_audit_and_exposes_no_activation_control(self) -> None:
         from harness.blackbox_v2.bootstrap import BlackboxBootstrapGate

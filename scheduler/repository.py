@@ -4,12 +4,14 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable, Mapping
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
 
 from scheduler.discovery import SchemeConfig, load_scheme_config
+from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
 from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
@@ -33,6 +35,8 @@ BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
     "t_scheme_registry",
     "t_scheme_versions",
     "t_scheme_runs",
+    "t_input_artifacts",
+    "t_scheme_serving_pointer",
     "t_scheme_predictions",
     "t_scheme_run_log",
     "t_scheme_actuals",
@@ -41,6 +45,7 @@ BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
     "t_backtest_runs",
     "t_backtest_predictions",
     "t_backtest_monthly_metrics",
+    "t_backtest_reproduction_checks",
     "t_harness_runs",
     "t_harness_gate_results",
 )
@@ -1074,20 +1079,17 @@ def insert_approved_blackbox_predictions(
         raise ValueError(
             f"prediction scheme_version={scheme_version} does not match config {cfg.scheme_version}"
         )
-    config_path = getattr(cfg, "path", None)
-    if config_path is not None:
-        current_cfg = load_scheme_config(config_path / "config.yaml")
-        if (
-            current_cfg.scheme_version != cfg.scheme_version
-            or current_cfg.status != "active"
-            or current_cfg.version_status != "active"
-        ):
-            raise RuntimeError(
-                "Blackbox canonical config changed before final write: "
-                f"expected={cfg.scheme_version}/active/active, "
-                f"current={current_cfg.scheme_version}/{current_cfg.status}/{current_cfg.version_status}"
-            )
-        cfg = current_cfg
+    scheme_path_value = getattr(cfg, "path", None)
+    if scheme_path_value is None:
+        raise RuntimeError("Blackbox canonical config path is required for final write")
+    scheme_path = Path(scheme_path_value)
+    if scheme_path.name != cfg.scheme_id or scheme_path.parent.name != "schemes":
+        raise RuntimeError(
+            "Blackbox canonical config path is invalid for final write: "
+            f"scheme_id={cfg.scheme_id} path={scheme_path}"
+        )
+    project_root = scheme_path.parent.parent
+    config_path = scheme_path / "config.yaml"
     exact_scheme_version = cfg.scheme_version
     record_list = list(records)
     mismatched_record_versions = sorted(
@@ -1102,18 +1104,33 @@ def insert_approved_blackbox_predictions(
             "prediction records contain scheme versions that do not match approved config "
             f"{exact_scheme_version}: {mismatched_record_versions}"
         )
-    with engine.begin() as conn:
-        approval = _read_blackbox_execution_approval_conn(conn, cfg, for_update=True)
-        if not approval.executable:
+
+    with lifecycle_operation_lock(project_root, cfg.scheme_id):
+        assert_lifecycle_clear(project_root, cfg.scheme_id)
+        current_cfg = load_scheme_config(config_path)
+        if (
+            current_cfg.scheme_version != cfg.scheme_version
+            or current_cfg.status != "active"
+            or current_cfg.version_status != "active"
+        ):
             raise RuntimeError(
-                f"Blackbox V2 version is not production-approved: {approval.reason}"
+                "Blackbox canonical config changed before final write: "
+                f"expected={cfg.scheme_version}/active/active, "
+                f"current={current_cfg.scheme_version}/{current_cfg.status}/{current_cfg.version_status}"
             )
-        return _insert_run_predictions_conn(
-            conn,
-            run_id,
-            record_list,
-            scheme_version=exact_scheme_version,
-        )
+        cfg = current_cfg
+        with engine.begin() as conn:
+            approval = _read_blackbox_execution_approval_conn(conn, cfg, for_update=True)
+            if not approval.executable:
+                raise RuntimeError(
+                    f"Blackbox V2 version is not production-approved: {approval.reason}"
+                )
+            return _insert_run_predictions_conn(
+                conn,
+                run_id,
+                record_list,
+                scheme_version=exact_scheme_version,
+            )
 
 
 def _insert_run_predictions_conn(

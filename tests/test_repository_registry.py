@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import tempfile
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -162,6 +165,12 @@ def _blackbox_config(
 
 def _call_for(store: dict, sql_fragment: str) -> tuple[str, object]:
     return next(call for call in store["calls"] if sql_fragment in call[0])
+
+
+def _set_canonical_path(cfg: SimpleNamespace, project_root: Path) -> SimpleNamespace:
+    cfg.path = project_root / "schemes" / cfg.scheme_id
+    cfg.path.mkdir(parents=True)
+    return cfg
 
 
 class RegistrySyncTests(unittest.TestCase):
@@ -831,13 +840,16 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             extra={"feature_date": "2026-07-17", "prediction_phase": "scheduled_live"},
         )
 
-        written = insert_approved_blackbox_predictions(
-            engine,
-            _blackbox_config(),
-            101,
-            [record],
-            scheme_version="abc123def456",
-        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with patch("scheduler.repository.load_scheme_config", return_value=cfg):
+                written = insert_approved_blackbox_predictions(
+                    engine,
+                    cfg,
+                    101,
+                    [record],
+                    scheme_version="abc123def456",
+                )
 
         self.assertEqual(written, 1)
         self.assertEqual(engine.store["begin_count"], 1)
@@ -850,6 +862,191 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             engine.store["prediction_rows"][0]["scheme_version"],
             "abc123def456",
         )
+
+    def test_final_blackbox_insert_rejects_missing_canonical_config_path(self) -> None:
+        from scheduler.repository import insert_approved_blackbox_predictions
+        from shared.models import PredictionRecord
+
+        engine = _CaptureEngine()
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "canonical config path is required"):
+            insert_approved_blackbox_predictions(
+                engine,
+                _blackbox_config(),
+                101,
+                [record],
+                scheme_version="abc123def456",
+            )
+
+        self.assertEqual(engine.store["begin_count"], 0)
+        self.assertEqual(engine.store["prediction_rows"], [])
+
+    def test_final_blackbox_insert_holds_lifecycle_lock_through_prediction_insert(self) -> None:
+        from scheduler import repository
+        from shared.blackbox_v2.lifecycle import LifecycleState, perform_lifecycle_transition
+        from shared.models import PredictionRecord
+
+        version_row = {
+            "scheme_id": "demo_blackbox",
+            "scheme_version": "abc123def456",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+            "approved_by": "release-owner",
+            "approved_at": datetime(2026, 7, 20, 8, 30),
+        }
+        registry_row = {
+            "scheme_id": "demo_blackbox__h1__10Y",
+            "base_scheme_id": "demo_blackbox",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+            "task_type": "T+1",
+            "target_tenor": "10Y",
+            "horizon": 1,
+        }
+        engine = _CaptureEngine(version_row=version_row, registry_rows=[registry_row])
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+        insert_entered = threading.Event()
+        allow_insert = threading.Event()
+        transition_started = threading.Event()
+        transition_finished = threading.Event()
+        original_insert = repository._insert_run_predictions_conn
+
+        def blocking_insert(*args, **kwargs):
+            insert_entered.set()
+            if not allow_insert.wait(timeout=2):
+                raise TimeoutError("test did not release prediction insert")
+            return original_insert(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = root / "schemes" / "demo_blackbox"
+            scheme_dir.mkdir(parents=True)
+            config_path = scheme_dir / "config.yaml"
+            config_path.write_text(
+                "status: active\nversion_status: active\n",
+                encoding="utf-8",
+            )
+            cfg = _blackbox_config()
+            cfg.path = scheme_dir
+            lifecycle_state = {
+                "value": LifecycleState("active", "active", "active", "active")
+            }
+            paused = LifecycleState("paused", "paused", "paused", "paused")
+
+            def run_transition():
+                transition_started.set()
+                result = perform_lifecycle_transition(
+                    project_root=root,
+                    config_path=config_path,
+                    action="pause",
+                    scheme_id=cfg.scheme_id,
+                    scheme_version=cfg.scheme_version,
+                    harness_run_id="hr_pause",
+                    previous=lifecycle_state["value"],
+                    target=paused,
+                    compensation=lifecycle_state["value"],
+                    token_hash="a" * 64,
+                    consume_authorization=lambda: None,
+                    apply_database=lambda state: lifecycle_state.__setitem__("value", state),
+                    read_state=lambda: lifecycle_state["value"],
+                )
+                transition_finished.set()
+                return result
+
+            with (
+                patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                patch(
+                    "scheduler.repository._insert_run_predictions_conn",
+                    side_effect=blocking_insert,
+                ),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                writer = pool.submit(
+                    repository.insert_approved_blackbox_predictions,
+                    engine,
+                    cfg,
+                    101,
+                    [record],
+                    scheme_version="abc123def456",
+                )
+                self.assertTrue(insert_entered.wait(timeout=1))
+                transition = pool.submit(run_transition)
+                self.assertTrue(transition_started.wait(timeout=1))
+                self.assertFalse(
+                    transition_finished.wait(timeout=0.2),
+                    "lifecycle transition interleaved between final revalidation and insert",
+                )
+                allow_insert.set()
+                self.assertEqual(writer.result(timeout=2), 1)
+                transition.result(timeout=2)
+
+        self.assertTrue(transition_finished.is_set())
+        self.assertEqual(len(engine.store["prediction_rows"]), 1)
+
+    def test_final_blackbox_insert_rejects_pending_reconciliation_before_db_access(self) -> None:
+        from scheduler.repository import insert_approved_blackbox_predictions
+        from shared.blackbox_v2.lifecycle import LifecycleJournal, LifecycleState, write_journal
+        from shared.models import PredictionRecord
+
+        engine = _CaptureEngine()
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = _set_canonical_path(_blackbox_config(), root)
+            state = LifecycleState("active", "active", "active", "active")
+            pending = LifecycleJournal.prepare(
+                action="pause",
+                scheme_id=cfg.scheme_id,
+                scheme_version=cfg.scheme_version,
+                harness_run_id="hr_pending_reconcile",
+                previous=state,
+                target=LifecycleState("paused", "paused", "paused", "paused"),
+                token_hash="a" * 64,
+            ).transition("config_written")
+            write_journal(root, pending)
+
+            with (
+                patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                self.assertRaisesRegex(RuntimeError, "lifecycle journal"),
+            ):
+                insert_approved_blackbox_predictions(
+                    engine,
+                    cfg,
+                    101,
+                    [record],
+                    scheme_version=cfg.scheme_version,
+                )
+
+        self.assertEqual(engine.store["begin_count"], 0)
+        self.assertEqual(engine.store["prediction_rows"], [])
 
     def test_final_blackbox_insert_rejects_revoked_approval_without_predictions(self) -> None:
         from scheduler.repository import insert_approved_blackbox_predictions
@@ -887,17 +1084,23 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             predicted_direction=1,
         )
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "Blackbox V2 version is not production-approved: version status is shadow, expected active",
-        ):
-            insert_approved_blackbox_predictions(
-                engine,
-                _blackbox_config(),
-                101,
-                [record],
-                scheme_version="abc123def456",
-            )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with (
+                patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "Blackbox V2 version is not production-approved: "
+                    "version status is shadow, expected active",
+                ),
+            ):
+                insert_approved_blackbox_predictions(
+                    engine,
+                    cfg,
+                    101,
+                    [record],
+                    scheme_version="abc123def456",
+                )
 
         self.assertEqual(engine.store["prediction_rows"], [])
 
@@ -937,18 +1140,25 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             predicted_direction=1,
         )
 
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "Blackbox V2 version is not production-approved: "
-            "config version_status is shadow, expected active",
-        ):
-            insert_approved_blackbox_predictions(
-                engine,
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(
                 _blackbox_config(status="active", version_status="shadow"),
-                101,
-                [record],
-                scheme_version="abc123def456",
+                Path(tmpdir),
             )
+            with (
+                patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "canonical config changed before final write.*current=.*active/shadow",
+                ),
+            ):
+                insert_approved_blackbox_predictions(
+                    engine,
+                    cfg,
+                    101,
+                    [record],
+                    scheme_version="abc123def456",
+                )
 
         self.assertEqual(engine.store["prediction_rows"], [])
 
@@ -956,8 +1166,6 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         from scheduler.repository import insert_approved_blackbox_predictions
         from shared.models import PredictionRecord
 
-        cfg = _blackbox_config()
-        cfg.path = Path("/tmp/demo_blackbox")
         drifted = _blackbox_config(scheme_version="drifted-version")
         engine = _CaptureEngine(
             version_row={
@@ -981,12 +1189,16 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             predicted_direction=1,
         )
 
-        with patch(
-            "scheduler.repository.load_scheme_config",
-            return_value=drifted,
-            create=True,
-        ):
-            with self.assertRaisesRegex(RuntimeError, "canonical config changed before final write"):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with (
+                patch(
+                    "scheduler.repository.load_scheme_config",
+                    return_value=drifted,
+                    create=True,
+                ),
+                self.assertRaisesRegex(RuntimeError, "canonical config changed before final write"),
+            ):
                 insert_approved_blackbox_predictions(
                     engine,
                     cfg,
