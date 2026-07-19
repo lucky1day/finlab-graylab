@@ -95,12 +95,18 @@ class BlackboxActivationTests(unittest.TestCase):
             approved_at=None,
         )
 
-    def _signed_activation_token_with_expiry(self, expires_at) -> str:
+    def _signed_activation_token_with_times(
+        self,
+        *,
+        expires_at,
+        issued_at=None,
+        action="blackbox_activate",
+    ) -> str:
         from harness.authorization import issue_token
 
         token = issue_token(
             self.cfg.scheme_id,
-            "blackbox_activate",
+            action,
             scheme_version=self.cfg.scheme_version,
             harness_run_id="hr_passed",
             ttl_seconds=60,
@@ -109,6 +115,8 @@ class BlackboxActivationTests(unittest.TestCase):
         padding = "=" * (-len(token) % 4)
         envelope = json.loads(base64.urlsafe_b64decode((token + padding).encode()).decode())
         envelope["payload"]["expires_at"] = expires_at
+        if issued_at is not None:
+            envelope["payload"]["issued_at"] = issued_at
         canonical = json.dumps(
             envelope["payload"],
             ensure_ascii=False,
@@ -123,6 +131,9 @@ class BlackboxActivationTests(unittest.TestCase):
         envelope["sig"] = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
         raw = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    def _signed_activation_token_with_expiry(self, expires_at) -> str:
+        return self._signed_activation_token_with_times(expires_at=expires_at)
 
     def test_activation_requires_signing(self) -> None:
         from harness.authorization import issue_token
@@ -239,6 +250,24 @@ class BlackboxActivationTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("900 seconds", "\n".join(result.errors))
 
+    def test_activation_rejects_old_long_lived_token_in_its_last_fifteen_minutes(self) -> None:
+        now = datetime.now(timezone.utc)
+        token = self._signed_activation_token_with_times(
+            issued_at=(now - timedelta(hours=2)).isoformat(),
+            expires_at=(now + timedelta(minutes=5)).isoformat(),
+        )
+        ctx = replace_context(
+            self._ctx(token),
+            engine_factory=lambda: self.fail("long-lived authorization must fail before engine use"),
+        )
+
+        result = __import__(
+            "harness.blackbox_v2.activation", fromlist=["activate_blackbox"]
+        ).activate_blackbox(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("900 seconds", "\n".join(result.errors))
+
     def test_reconcile_rejects_expiry_beyond_fifteen_minutes_before_engine_use(self) -> None:
         from harness.authorization import issue_token
         from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
@@ -253,6 +282,25 @@ class BlackboxActivationTests(unittest.TestCase):
         ctx = replace_context(
             self._ctx(token),
             engine_factory=lambda: self.fail("overlong authorization must fail before engine use"),
+        )
+
+        result = BlackboxLifecycleReconcileGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("900 seconds", "\n".join(result.errors))
+
+    def test_reconcile_rejects_old_long_lived_token_near_expiry(self) -> None:
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+
+        now = datetime.now(timezone.utc)
+        token = self._signed_activation_token_with_times(
+            action="blackbox_reconcile",
+            issued_at=(now - timedelta(hours=2)).isoformat(),
+            expires_at=(now + timedelta(minutes=5)).isoformat(),
+        )
+        ctx = replace_context(
+            self._ctx(token),
+            engine_factory=lambda: self.fail("long-lived authorization must fail before engine use"),
         )
 
         result = BlackboxLifecycleReconcileGate().run(ctx)
@@ -525,6 +573,98 @@ class BlackboxActivationTests(unittest.TestCase):
                 "registry_status": "paused",
             },
         )
+
+    def test_signed_manual_reconcile_can_retry_same_root_after_transient_failure(self) -> None:
+        from harness.authorization import issue_token, used_tokens_path
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleJournal,
+            LifecycleState,
+            load_journal,
+            pending_journals,
+            write_journal,
+        )
+
+        config_path = self.cfg.path / "config.yaml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8")
+            .replace("status: paused", "status: active")
+            .replace("version_status: shadow", "version_status: active"),
+            encoding="utf-8",
+        )
+        original = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id=self.cfg.scheme_id,
+            scheme_version=self.cfg.scheme_version,
+            harness_run_id="hr_passed",
+            previous=LifecycleState("paused", "shadow", "paused"),
+            target=LifecycleState("active", "active", "active"),
+            token_hash="old-token-hash",
+        ).transition("unresolved", error="initial compensation failed")
+        original_path = write_journal(self.root, original)
+        original_bytes = original_path.read_bytes()
+        state = {"db": self._db_state("active", "active"), "fail_once": True}
+
+        def apply(_engine, _cfg, **kwargs):
+            if state["fail_once"]:
+                state["fail_once"] = False
+                raise RuntimeError("transient database failure")
+            state["db"] = self._db_state(kwargs["version_status"], kwargs["registry_status"])
+            return state["db"]
+
+        def run_reconcile(token):
+            ctx = replace_context(self._ctx(token), config=load_scheme_config(config_path))
+            with (
+                patch(
+                    "harness.blackbox_v2.activation.read_blackbox_lifecycle_state",
+                    side_effect=lambda *_: state["db"],
+                ),
+                patch(
+                    "harness.blackbox_v2.activation.apply_blackbox_lifecycle_state",
+                    side_effect=apply,
+                ),
+            ):
+                return BlackboxLifecycleReconcileGate().run(ctx)
+
+        first_token = issue_token(
+            self.cfg.scheme_id,
+            "blackbox_reconcile",
+            scheme_version=self.cfg.scheme_version,
+            ttl_seconds=60,
+            issued_by="recovery-owner",
+        )
+        first_result = run_reconcile(first_token)
+        self.assertFalse(first_result.passed)
+        failed_children = [
+            path for path in original_path.parent.glob("*.json") if path != original_path
+        ]
+        self.assertEqual(len(failed_children), 1)
+        failed_child_bytes = failed_children[0].read_bytes()
+        self.assertEqual(load_journal(failed_children[0]).phase, "unresolved")
+        self.assertEqual(pending_journals(self.root, self.cfg.scheme_id)[0][0], original_path)
+
+        second_token = issue_token(
+            self.cfg.scheme_id,
+            "blackbox_reconcile",
+            scheme_version=self.cfg.scheme_version,
+            ttl_seconds=60,
+            issued_by="recovery-owner",
+        )
+        second_result = run_reconcile(second_token)
+
+        self.assertTrue(second_result.passed, second_result.errors)
+        self.assertEqual(original_path.read_bytes(), original_bytes)
+        self.assertEqual(failed_children[0].read_bytes(), failed_child_bytes)
+        self.assertEqual(pending_journals(self.root, self.cfg.scheme_id), [])
+        children = [
+            load_journal(path)
+            for path in original_path.parent.glob("*.json")
+            if path != original_path
+        ]
+        self.assertEqual(sorted(child.phase for child in children), ["unresolved", "verified"])
+        used = json.loads(used_tokens_path(self.root).read_text(encoding="utf-8"))
+        self.assertEqual(len(used), 2)
 
     def test_manual_reconcile_rejects_journal_version_drift_without_mutation(self) -> None:
         from harness.authorization import issue_token, used_tokens_path

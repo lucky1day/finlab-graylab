@@ -55,7 +55,7 @@ def _activate(ctx: GateContext, started_at: str) -> GateResult:
         used_store_path=used_tokens_path(ctx.project_root),
     )
     if auth is not None:
-        errors.extend(required_future_expiry_errors(auth.expires_at))
+        errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
     if auth is None or errors:
         return _blocked(started_at, errors)
     if not auth.issued_by.strip():
@@ -217,7 +217,7 @@ class BlackboxLifecycleReconcileGate(Gate):
             used_store_path=used_tokens_path(ctx.project_root),
         )
         if auth is not None:
-            errors.extend(required_future_expiry_errors(auth.expires_at))
+            errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
         if auth is None or errors:
             return _blocked(started_at, errors, gate_name=self.name)
         if not auth.issued_by.strip():

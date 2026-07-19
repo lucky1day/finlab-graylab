@@ -15,6 +15,7 @@ from typing import Any
 
 AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
+BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -193,26 +194,54 @@ def verify_authorization(
     return auth, errors
 
 
-def required_future_expiry_errors(expires_at: str | None) -> list[str]:
-    """校验 Blackbox 高权限操作强制要求的短期未来过期时间。"""
-    if not isinstance(expires_at, str) or not expires_at.strip():
-        return ["authorization expires_at must be a non-empty future timestamp"]
-    try:
-        expires_dt = datetime.fromisoformat(expires_at)
-    except ValueError:
-        return [f"authorization token has invalid expires_at: {expires_at}"]
-    if expires_dt.tzinfo is None:
-        expires_dt = expires_dt.replace(tzinfo=timezone.utc)
+def required_future_expiry_errors(
+    issued_at: str | None,
+    expires_at: str | None,
+) -> list[str]:
+    """校验 Blackbox Activation/Reconcile 的签发时间与短 TTL。"""
+    errors: list[str] = []
+    issued_dt = _parse_required_aware_timestamp("issued_at", issued_at, errors)
+    expires_dt = _parse_required_aware_timestamp("expires_at", expires_at, errors)
+    if issued_dt is None or expires_dt is None:
+        return errors
+
     now = datetime.now(timezone.utc)
-    expires_dt = expires_dt.astimezone(timezone.utc)
+    if issued_dt > now + timedelta(seconds=BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS):
+        errors.append(
+            "authorization issued_at is materially in the future: "
+            f"{issued_at}"
+        )
     if expires_dt <= now:
-        return [f"authorization expires_at must be in the future: {expires_at}"]
-    if (expires_dt - now).total_seconds() > BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS:
-        return [
-            "authorization expires_at must be no more than "
-            f"{BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS} seconds in the future: {expires_at}"
-        ]
-    return []
+        errors.append(f"authorization expires_at must be in the future: {expires_at}")
+
+    ttl_seconds = (expires_dt - issued_dt).total_seconds()
+    if ttl_seconds <= 0:
+        errors.append("authorization expires_at must be after issued_at")
+    elif ttl_seconds > BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS:
+        errors.append(
+            "authorization lifetime from issued_at to expires_at must be no more than "
+            f"{BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS} seconds"
+        )
+    return errors
+
+
+def _parse_required_aware_timestamp(
+    field: str,
+    value: str | None,
+    errors: list[str],
+) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        errors.append(f"authorization {field} must be a non-empty timezone-aware timestamp")
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        errors.append(f"authorization token has invalid {field}: {value}")
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        errors.append(f"authorization {field} must include a timezone offset: {value}")
+        return None
+    return parsed.astimezone(timezone.utc)
 
 
 def mark_token_used(auth: Authorization, used_store_path: Path) -> None:

@@ -158,15 +158,30 @@ def pending_journals(project_root: str | Path, scheme_id: str) -> list[tuple[Pat
     root = lifecycle_root(project_root, scheme_id)
     if not root.is_dir():
         return []
-    pending: list[tuple[Path, LifecycleJournal]] = []
+    journals: list[tuple[Path, LifecycleJournal]] = []
     for path in sorted(root.glob("*.json")):
         try:
             journal = load_journal(path)
         except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
             raise RuntimeError(f"invalid lifecycle journal blocks {scheme_id}: {path}: {exc}") from exc
-        if journal.phase in INCOMPLETE_PHASES and journal.reconciled_by is None:
-            pending.append((path, journal))
-    return pending
+        journals.append((path, journal))
+
+    return [
+        (path, journal)
+        for path, journal in journals
+        if journal.reconciliation_of is None
+        and journal.phase in INCOMPLETE_PHASES
+        and journal.reconciled_by is None
+        and not any(
+            candidate.action == "lifecycle_reconcile"
+            and candidate.phase == "verified"
+            and candidate.reconciliation_of == journal.operation_id
+            and candidate.scheme_version == journal.scheme_version
+            and candidate.harness_run_id == journal.harness_run_id
+            and candidate.target == journal.previous
+            for _, candidate in journals
+        )
+    ]
 
 
 def assert_lifecycle_clear(project_root: str | Path, scheme_id: str) -> None:
@@ -427,10 +442,6 @@ def _reconcile_unresolved_with_linked_journal(
         next_journal = reconciliation.transition("verified")
         write_journal(project_root, next_journal)
         reconciliation = next_journal
-        _atomic_write_journal_path(
-            original_path,
-            replace(original, reconciled_by=reconciliation.operation_id),
-        )
         return original.previous
     except BaseException as exc:
         if reconciliation.phase not in TERMINAL_PHASES:

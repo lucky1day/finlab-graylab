@@ -380,6 +380,7 @@ class BlackboxLifecycleJournalTests(unittest.TestCase):
         self.assertEqual(restored, previous)
         self.assertEqual(preserved.phase, "unresolved")
         self.assertEqual(preserved.error, "database compensation failed")
+        self.assertIsNone(preserved.reconciled_by)
         self.assertEqual(len(linked), 1)
         self.assertEqual(linked[0].action, "lifecycle_reconcile")
         self.assertEqual(linked[0].reconciliation_of, original.operation_id)
@@ -388,8 +389,106 @@ class BlackboxLifecycleJournalTests(unittest.TestCase):
             [event.phase for event in getattr(linked[0], "phase_events", ())],
             ["prepared", "config_written", "db_committed", "verified"],
         )
-        self.assertEqual(preserved.reconciled_by, linked[0].operation_id)
         self.assertEqual(pending_journals(self.root, "trial"), [])
+
+    def test_failed_reconcile_child_remains_audit_and_root_can_be_retried(self) -> None:
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleJournal,
+            load_journal,
+            pending_journals,
+            reconcile_journal,
+            write_journal,
+        )
+
+        previous, target = self._states()
+        config_path = self.root / "schemes" / "trial" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("status: active\nversion_status: active\n", encoding="utf-8")
+        original = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id="trial",
+            scheme_version="abc123",
+            harness_run_id="hr_1",
+            previous=previous,
+            target=target,
+            token_hash="original-token-hash",
+        ).transition("unresolved", error="database compensation failed")
+        original_path = write_journal(self.root, original)
+        original_bytes = original_path.read_bytes()
+        actual = {"state": target}
+
+        with self.assertRaisesRegex(RuntimeError, "reconciliation failed"):
+            reconcile_journal(
+                original_path,
+                config_path=config_path,
+                apply_database=lambda _state: (_ for _ in ()).throw(
+                    RuntimeError("transient database failure")
+                ),
+                read_state=lambda: actual["state"],
+                token_hash="first-reconcile-token-hash",
+            )
+
+        first_attempt_paths = [
+            path for path in original_path.parent.glob("*.json") if path != original_path
+        ]
+        self.assertEqual(len(first_attempt_paths), 1)
+        first_attempt_bytes = first_attempt_paths[0].read_bytes()
+        first_attempt = load_journal(first_attempt_paths[0])
+        self.assertEqual(first_attempt.phase, "unresolved")
+        self.assertEqual(first_attempt.reconciliation_of, original.operation_id)
+        pending = pending_journals(self.root, "trial")
+        self.assertEqual([(path, journal.operation_id) for path, journal in pending], [
+            (original_path, original.operation_id)
+        ])
+
+        restored = reconcile_journal(
+            pending[0][0],
+            config_path=config_path,
+            apply_database=lambda state: actual.__setitem__("state", state),
+            read_state=lambda: actual["state"],
+            token_hash="second-reconcile-token-hash",
+        )
+
+        all_journals = [load_journal(path) for path in original_path.parent.glob("*.json")]
+        attempts = [journal for journal in all_journals if journal.reconciliation_of == original.operation_id]
+        self.assertEqual(restored, previous)
+        self.assertEqual(actual["state"], previous)
+        self.assertEqual(original_path.read_bytes(), original_bytes)
+        self.assertEqual(first_attempt_paths[0].read_bytes(), first_attempt_bytes)
+        self.assertEqual(sorted(journal.phase for journal in attempts), ["unresolved", "verified"])
+        self.assertEqual(pending_journals(self.root, "trial"), [])
+
+    def test_only_matching_verified_reconcile_child_resolves_pending_root(self) -> None:
+        from shared.blackbox_v2.lifecycle import (
+            LifecycleJournal,
+            pending_journals,
+            write_journal,
+        )
+
+        previous, target = self._states()
+        original = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id="trial",
+            scheme_version="abc123",
+            harness_run_id="hr_1",
+            previous=previous,
+            target=target,
+            token_hash="original",
+        ).transition("unresolved", error="failed")
+        original_path = write_journal(self.root, original)
+        unrelated = LifecycleJournal.prepare(
+            action="activate",
+            scheme_id="trial",
+            scheme_version="different-version",
+            harness_run_id="hr_other",
+            previous=target,
+            target=previous,
+            token_hash="unrelated",
+            reconciliation_of=original.operation_id,
+        ).transition("config_written").transition("db_committed").transition("verified")
+        write_journal(self.root, unrelated)
+
+        self.assertEqual(pending_journals(self.root, "trial")[0][0], original_path)
 
     def test_atomic_config_write_failure_is_compensated_without_active_residue(self) -> None:
         from shared.blackbox_v2.lifecycle import (

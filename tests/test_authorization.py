@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from harness.authorization import (
@@ -12,6 +13,7 @@ from harness.authorization import (
     authorization_signing_enabled,
     issue_token,
     mark_token_used,
+    required_future_expiry_errors,
     used_tokens_path,
     verify_authorization,
 )
@@ -116,6 +118,42 @@ class AuthorizationTest(unittest.TestCase):
 
         self.assertIsNotNone(auth)
         self.assertEqual(errors, [])
+
+    def test_blackbox_privileged_expiry_rejects_long_original_ttl_near_expiry(self) -> None:
+        now = datetime.now(timezone.utc)
+        issued_at = (now - timedelta(hours=2)).isoformat()
+        expires_at = (now + timedelta(minutes=5)).isoformat()
+
+        errors = required_future_expiry_errors(issued_at, expires_at)
+
+        self.assertTrue(any("900 seconds" in error for error in errors), errors)
+
+    def test_blackbox_privileged_expiry_validates_issued_at(self) -> None:
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(minutes=5)).isoformat()
+        cases = {
+            "missing": None,
+            "empty": "",
+            "malformed": "not-a-timestamp",
+            "naive": now.replace(tzinfo=None).isoformat(),
+            "future": (now + timedelta(minutes=2)).isoformat(),
+        }
+
+        for label, issued_at in cases.items():
+            with self.subTest(label=label):
+                errors = required_future_expiry_errors(issued_at, expires_at)
+                self.assertTrue(any("issued_at" in error for error in errors), errors)
+
+    def test_blackbox_privileged_expiry_accepts_short_offset_aware_window(self) -> None:
+        now = datetime.now(timezone.utc)
+        issued_at = (now - timedelta(seconds=10)).astimezone(
+            timezone(timedelta(hours=8))
+        ).isoformat()
+        expires_at = (now + timedelta(minutes=5)).astimezone(
+            timezone(timedelta(hours=8))
+        ).isoformat()
+
+        self.assertEqual(required_future_expiry_errors(issued_at, expires_at), [])
 
     def test_replayed_token_rejected(self) -> None:
         used = self._used_path()
