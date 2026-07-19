@@ -36,6 +36,16 @@ class RuntimeProfile:
     max_output_bytes: int = 50 * 1024**2
     max_log_bytes: int = 5 * 1024**2
     sandbox_enabled: bool = True
+    read_roots: tuple[str, ...] = (
+        "/System/Library",
+        "/usr/lib",
+        "/opt/homebrew/opt/libomp/lib",
+    )
+    environment_allowlist: tuple[str, ...] = ("LANG", "LC_ALL", "TZ")
+    environment_defaults: tuple[tuple[str, str], ...] = (
+        ("LANG", "C.UTF-8"),
+        ("TZ", "Asia/Shanghai"),
+    )
 
     @classmethod
     def for_tests(cls, **overrides) -> RuntimeProfile:
@@ -55,19 +65,29 @@ def probe_blackbox_help(
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
 ) -> str:
     """验证交付脚本公开 predict 和 backtest 两种 CLI 模式。"""
-    script = Path(script_path).resolve()
-    if not script.is_file() or script.is_symlink() or script.suffix != ".py":
+    script = _resolve_controlled_path(script_path, label="script")
+    if not script.is_file() or script.suffix != ".py":
         raise ValueError(f"Blackbox V2 script must be one regular .py file: {script}")
 
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-help-") as tmpdir:
-        writable_dir = Path(tmpdir)
-        command = _python_command(profile) + [str(script), "--help"]
+        writable_dir = Path(tmpdir).resolve()
+        python_executable = _python_command(profile)[0]
+        command = [python_executable, str(script), "--help"]
         if profile.sandbox_enabled:
-            command = _sandbox_command(command, writable_dir)
+            command = _sandbox_command(
+                command,
+                writable_dir,
+                profile=profile,
+                script_path=script,
+            )
         completed = _run_process(
             command,
             cwd=writable_dir,
-            env=_runtime_environment(profile, writable_dir),
+            env=_runtime_environment(
+                profile,
+                writable_dir,
+                python_executable=python_executable,
+            ),
             timeout=min(profile.predict_timeout_sec, 60),
             memory_limit_bytes=profile.memory_limit_bytes,
             max_capture_bytes=profile.max_log_bytes,
@@ -98,13 +118,13 @@ def execute_blackbox_cli(
     """执行一次 Blackbox V2 CLI；仅进程成功且 Output 合法存在才返回。"""
     if mode not in {"predict", "backtest"}:
         raise ValueError(f"unsupported Blackbox V2 mode: {mode}")
-    script = Path(script_path).resolve()
-    input_file = Path(input_path).resolve()
-    data = Path(data_dir).resolve()
-    output = Path(output_path).resolve()
-    if not script.is_file() or script.is_symlink() or script.suffix != ".py":
+    script = _resolve_controlled_path(script_path, label="script")
+    input_file = _resolve_controlled_path(input_path, label="input")
+    data = _resolve_controlled_path(data_dir, label="data-dir")
+    output = _resolve_controlled_path(output_path, label="output", allow_missing=True)
+    if not script.is_file() or script.suffix != ".py":
         raise ValueError(f"Blackbox V2 script must be one regular .py file: {script}")
-    if not input_file.is_file() or input_file.is_symlink():
+    if not input_file.is_file():
         raise ValueError(f"Blackbox V2 input must be one regular file: {input_file}")
     _validate_data_dir(data)
     if output.exists():
@@ -112,7 +132,9 @@ def execute_blackbox_cli(
     output.parent.mkdir(parents=True, exist_ok=True)
 
     input_flag = "--request" if mode == "predict" else "--requests"
-    command = _python_command(profile) + [
+    python_executable = _python_command(profile)[0]
+    command = [
+        python_executable,
         str(script),
         mode,
         input_flag,
@@ -123,8 +145,19 @@ def execute_blackbox_cli(
         str(output),
     ]
     if profile.sandbox_enabled:
-        command = _sandbox_command(command, output.parent)
-    env = _runtime_environment(profile, output.parent)
+        command = _sandbox_command(
+            command,
+            output.parent,
+            profile=profile,
+            script_path=script,
+            input_path=input_file,
+            data_dir=data,
+        )
+    env = _runtime_environment(
+        profile,
+        output.parent,
+        python_executable=python_executable,
+    )
     timeout = profile.predict_timeout_sec if mode == "predict" else profile.backtest_timeout_sec
     try:
         completed = _run_process(
@@ -248,6 +281,32 @@ def _to_prediction_record(
     )
 
 
+_SYSTEM_SYMLINK_ALIASES = {
+    Path("/tmp"): Path("/private/tmp"),
+    Path("/var"): Path("/private/var"),
+}
+
+
+def _resolve_controlled_path(
+    path: str | Path,
+    *,
+    label: str,
+    allow_missing: bool = False,
+) -> Path:
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    for candidate in (absolute, *absolute.parents):
+        if not candidate.is_symlink():
+            continue
+        allowed_target = _SYSTEM_SYMLINK_ALIASES.get(candidate)
+        if allowed_target is not None and candidate.resolve(strict=True) == allowed_target:
+            continue
+        raise ValueError(f"Blackbox V2 {label} path must not traverse a symlink: {candidate}")
+    try:
+        return absolute.resolve(strict=not allow_missing)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Blackbox V2 {label} path does not exist: {absolute}") from exc
+
+
 def _validate_data_dir(data_dir: Path) -> None:
     if not data_dir.is_dir() or data_dir.is_symlink():
         raise ValueError(f"Blackbox V2 data-dir must be one regular directory: {data_dir}")
@@ -291,32 +350,143 @@ def _conda_python(conda_env: str) -> str:
     return str(path)
 
 
-def _sandbox_command(command: list[str], writable_dir: Path) -> list[str]:
+def _sandbox_command(
+    command: list[str],
+    writable_dir: Path,
+    *,
+    profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
+    script_path: Path | None = None,
+    input_path: Path | None = None,
+    data_dir: Path | None = None,
+) -> list[str]:
     sandbox_exec = shutil.which("sandbox-exec")
     if sandbox_exec is None:
         raise RuntimeError("runtime profile requires sandbox-exec, but it is unavailable")
-    quoted = str(writable_dir).replace('"', '\\"')
+
+    writable = writable_dir.resolve(strict=True)
+    executable = Path(command[0]).resolve(strict=True)
+    if not executable.is_file():
+        raise RuntimeError(f"Blackbox V2 Python executable is not a regular file: {executable}")
+    python_prefix = executable.parent.parent
+    read_directories = [python_prefix, writable]
+    read_aliases: list[Path] = []
+    for configured_root in profile.read_roots:
+        configured = Path(os.path.abspath(configured_root))
+        root = configured.resolve(strict=True)
+        if not root.is_dir():
+            raise RuntimeError(f"Blackbox V2 runtime read root is not a directory: {root}")
+        read_directories.append(root)
+        if configured != root:
+            read_aliases.append(configured)
+            read_aliases.extend(
+                candidate for candidate in configured.parents if candidate.is_symlink()
+            )
+
+    read_files = [path.resolve(strict=True) for path in (script_path, input_path) if path]
+    resolved_data_dir: Path | None = None
+    if data_dir is not None:
+        resolved_data_dir = data_dir.resolve(strict=True)
+        read_files.extend(resolved_data_dir / filename for filename in SNAPSHOT_FILENAMES)
+
+    read_filters = _sandbox_path_filters(read_directories, include_children=True)
+    read_filters.extend(_sandbox_path_filters(read_files, include_children=False))
+    if resolved_data_dir is not None:
+        read_filters.extend(_sandbox_path_filters([resolved_data_dir], include_children=False))
+
+    write_filters = _sandbox_path_filters([writable], include_children=True)
     policy = "\n".join(
         [
             "(version 1)",
             "(deny default)",
             '(import "system.sb")',
             "(allow process*)",
-            "(allow file-read*)",
+            "(allow file-read* file-test-existence",
+            *(f"  {item}" for item in read_filters),
+            ")",
+            *(
+                [
+                    "(allow file-read-metadata file-test-existence",
+                    *(
+                        f"  {item}"
+                        for item in _sandbox_path_filters(
+                            read_aliases,
+                            include_children=True,
+                        )
+                    ),
+                    ")",
+                ]
+                if read_aliases
+                else []
+            ),
             "(allow mach-lookup)",
             "(allow signal)",
             "(allow sysctl-read)",
-            f'(allow file-write* (subpath "{quoted}"))',
+            "(allow file-write*",
+            *(f"  {item}" for item in write_filters),
+            ")",
+            *(
+                [
+                    "(deny file-write*",
+                    *(
+                        f"  {item}"
+                        for item in _sandbox_path_filters(
+                            [resolved_data_dir],
+                            include_children=True,
+                        )
+                    ),
+                    ")",
+                ]
+                if resolved_data_dir is not None
+                else []
+            ),
             "(deny network*)",
         ]
     )
     return [sandbox_exec, "-p", policy, *command]
 
 
-def _runtime_environment(profile: RuntimeProfile, writable_dir: Path) -> dict[str, str]:
-    env = os.environ.copy()
+def _sandbox_path_filters(paths: Sequence[Path], *, include_children: bool) -> list[str]:
+    filters: list[str] = []
+    for path in dict.fromkeys(paths):
+        quoted = _sandbox_quote(path)
+        filters.append(f'(literal "{quoted}")')
+        if include_children:
+            filters.append(f'(subpath "{quoted}")')
+    return filters
+
+
+def _sandbox_quote(path: Path) -> str:
+    value = str(path)
+    if any(character in value for character in ("\n", "\r", "\0")):
+        raise ValueError(f"Blackbox V2 sandbox path contains a control character: {path!r}")
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _runtime_environment(
+    profile: RuntimeProfile,
+    writable_dir: Path,
+    *,
+    python_executable: str | Path | None = None,
+) -> dict[str, str]:
+    allowed = set(profile.environment_allowlist)
+    defaults = dict(profile.environment_defaults)
+    unexpected_defaults = defaults.keys() - allowed
+    if unexpected_defaults:
+        raise ValueError(
+            "environment_defaults keys must be explicitly allowlisted: "
+            f"{sorted(unexpected_defaults)}"
+        )
+
+    env = defaults
+    for key in profile.environment_allowlist:
+        if key in os.environ:
+            env[key] = os.environ[key]
+
+    executable = Path(python_executable or _python_command(profile)[0]).resolve(strict=True)
+    run_dir = str(writable_dir)
     env.update(
         {
+            "PATH": str(executable.parent),
             "PYTHONNOUSERSITE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "OMP_NUM_THREADS": str(profile.cpu_threads),
@@ -324,10 +494,14 @@ def _runtime_environment(profile: RuntimeProfile, writable_dir: Path) -> dict[st
             "MKL_NUM_THREADS": str(profile.cpu_threads),
             "NUMEXPR_NUM_THREADS": str(profile.cpu_threads),
             "VECLIB_MAXIMUM_THREADS": str(profile.cpu_threads),
-            "TMPDIR": str(writable_dir),
-            "HOME": str(writable_dir),
+            "TMPDIR": run_dir,
+            "HOME": run_dir,
             "XDG_CACHE_HOME": str(writable_dir / ".cache"),
+            "XDG_CONFIG_HOME": str(writable_dir / ".config"),
+            "XDG_DATA_HOME": str(writable_dir / ".local" / "share"),
             "MPLCONFIGDIR": str(writable_dir / ".matplotlib"),
+            "NUMBA_CACHE_DIR": str(writable_dir / ".cache" / "numba"),
+            "JOBLIB_TEMP_FOLDER": str(writable_dir / ".tmp" / "joblib"),
         }
     )
     return env

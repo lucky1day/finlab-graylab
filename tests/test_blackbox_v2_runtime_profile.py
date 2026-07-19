@@ -31,6 +31,21 @@ class BlackboxV2RuntimeProfileTests(unittest.TestCase):
             "sandbox_enabled",
         ):
             self.assertEqual(profile[field], getattr(DEFAULT_RUNTIME_PROFILE, field))
+        self.assertEqual(tuple(profile["read_roots"]), DEFAULT_RUNTIME_PROFILE.read_roots)
+        self.assertEqual(
+            tuple(profile["environment_allowlist"]),
+            DEFAULT_RUNTIME_PROFILE.environment_allowlist,
+        )
+        self.assertEqual(
+            tuple(profile["environment_defaults"].items()),
+            DEFAULT_RUNTIME_PROFILE.environment_defaults,
+        )
+
+    def test_profile_read_roots_are_narrow(self) -> None:
+        from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE
+
+        forbidden = {"/", "/Users", "/etc", str(PROJECT_ROOT), str(Path.home())}
+        self.assertTrue(forbidden.isdisjoint(DEFAULT_RUNTIME_PROFILE.read_roots))
 
     def test_environment_manifest_fingerprint_is_self_consistent(self) -> None:
         manifest = json.loads(

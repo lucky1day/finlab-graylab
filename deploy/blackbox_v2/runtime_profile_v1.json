@@ -11,6 +11,20 @@
   "max_output_bytes": 52428800,
   "max_log_bytes": 5242880,
   "sandbox_enabled": true,
+  "read_roots": [
+    "/System/Library",
+    "/usr/lib",
+    "/opt/homebrew/opt/libomp/lib"
+  ],
+  "environment_allowlist": [
+    "LANG",
+    "LC_ALL",
+    "TZ"
+  ],
+  "environment_defaults": {
+    "LANG": "C.UTF-8",
+    "TZ": "Asia/Shanghai"
+  },
   "network_access": false,
   "database_access": false
 }

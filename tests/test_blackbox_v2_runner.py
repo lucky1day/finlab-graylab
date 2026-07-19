@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -12,6 +16,38 @@ from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest
 
 
 class BlackboxV2RunnerTests(unittest.TestCase):
+    def test_runtime_environment_does_not_inherit_parent_secrets(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, _runtime_environment
+
+        inherited = {
+            "LANG": "zh_CN.UTF-8",
+            "BOND_DB_PASSWORD": "db-secret",
+            "DATABRIDGE_API_PASSWORD": "bridge-secret",
+            "HARNESS_AUTH_SECRET": "auth-secret",
+            "AWS_SECRET_ACCESS_KEY": "cloud-secret",
+            "HTTPS_PROXY": "http://proxy.invalid",
+            "BLACKBOX_TEST_SECRET": "user-secret",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir)
+            with patch.dict(os.environ, inherited, clear=True):
+                env = _runtime_environment(RuntimeProfile.for_tests(), run_dir)
+
+        for key in inherited.keys() - {"LANG"}:
+            self.assertNotIn(key, env)
+        self.assertEqual(env["LANG"], "zh_CN.UTF-8")
+        self.assertEqual(env["TZ"], "Asia/Shanghai")
+        self.assertEqual(env["HOME"], str(run_dir))
+        self.assertEqual(env["TMPDIR"], str(run_dir))
+
+    def test_sandbox_policy_has_no_unrestricted_file_read_clause(self) -> None:
+        from scheduler.blackbox_v2_runner import _sandbox_command
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            command = _sandbox_command([sys.executable, "-c", "pass"], Path(tmpdir))
+
+        self.assertNotIn("(allow file-read*)", command[2])
+
     def test_help_probe_requires_both_cli_modes(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, probe_blackbox_help
 
@@ -205,6 +241,113 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 )
             self.assertFalse(output_path.exists())
 
+    def test_refuses_symlinked_controlled_paths(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(root / "trial.py", _SUCCESS_SCRIPT)
+            script_link = root / "trial-link.py"
+            script_link.symlink_to(script)
+            request = write_request(_request("001"), root / "request.json")
+            request_link = root / "request-link.json"
+            request_link.symlink_to(request)
+            data_dir = _write_data_dir(root)
+            data_link = root / "data-link"
+            data_link.symlink_to(data_dir, target_is_directory=True)
+            output_dir = root / "real-output"
+            output_dir.mkdir()
+            output_link = root / "output-link"
+            output_link.symlink_to(output_dir, target_is_directory=True)
+
+            cases = {
+                "script": {"script_path": script_link},
+                "request": {"input_path": request_link},
+                "data-dir": {"data_dir": data_link},
+                "output-parent": {"output_path": output_link / "prediction.json"},
+            }
+            base = {
+                "script_path": script,
+                "mode": "predict",
+                "input_path": request,
+                "data_dir": data_dir,
+                "output_path": output_dir / "base.json",
+                "profile": RuntimeProfile.for_tests(),
+            }
+            for index, (label, overrides) in enumerate(cases.items()):
+                kwargs = {**base, **overrides}
+                if "output_path" not in overrides:
+                    kwargs["output_path"] = output_dir / f"{index}.json"
+                with self.subTest(path=label):
+                    with self.assertRaisesRegex(ValueError, "symlink"):
+                        execute_blackbox_cli(**kwargs)
+
+    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
+    def test_macos_sandbox_enforces_runtime_boundaries(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script_dir = root / "delivery"
+            script_dir.mkdir()
+            script = _write_script(script_dir / "probe.py", _SANDBOX_PROBE_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            data_dir = _write_data_dir(root)
+            secret_dir = root / "external"
+            secret_dir.mkdir()
+            secret = secret_dir / "secret.txt"
+            secret.write_text("external-secret", encoding="utf-8")
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output = run_dir / "probe.json"
+
+            with patch.dict(os.environ, {"BLACKBOX_TEST_SECRET": "parent-secret"}):
+                execute_blackbox_cli(
+                    script_path=script,
+                    mode="predict",
+                    input_path=request,
+                    data_dir=data_dir,
+                    output_path=output,
+                    profile=RuntimeProfile(conda_env=None, cpu_threads=1),
+                )
+
+            result = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(result["allowed_csv_read"])
+        self.assertTrue(result["hosts_read_denied"])
+        self.assertTrue(result["external_secret_read_denied"])
+        self.assertTrue(result["inherited_secret_absent"])
+        self.assertTrue(result["network_denied"])
+        self.assertTrue(result["data_write_denied"])
+
+    @unittest.skipUnless(shutil.which("sandbox-exec"), "requires macOS sandbox-exec")
+    def test_macos_sandbox_runs_frozen_scientific_environment(self) -> None:
+        from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli
+        from shared.blackbox_v2.requests import write_request
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script_dir = root / "delivery"
+            script_dir.mkdir()
+            script = _write_script(script_dir / "scientific.py", _SCIENTIFIC_PROBE_SCRIPT)
+            request = write_request(_request("001"), root / "request.json")
+            run_dir = root / "run"
+            run_dir.mkdir()
+            output = run_dir / "scientific.json"
+            execute_blackbox_cli(
+                script_path=script,
+                mode="predict",
+                input_path=request,
+                data_dir=_write_data_dir(root),
+                output_path=output,
+                profile=RuntimeProfile(cpu_threads=1),
+            )
+            result = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, {"features": 1, "rows": 1})
+
 
 def _metadata() -> BlackboxMetadata:
     return BlackboxMetadata(
@@ -303,6 +446,99 @@ args = parser.parse_args()
 print("x" * 4096)
 with open(args.output, "w", encoding="utf-8") as handle:
     handle.write("{}")
+'''
+
+
+_SANDBOX_PROBE_SCRIPT = r'''
+import argparse
+import errno
+import json
+import os
+import socket
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+request = json.loads(Path(args.request).read_text(encoding="utf-8"))
+data_dir = Path(args.data_dir)
+external_secret = data_dir.parent / "external" / "secret.txt"
+
+try:
+    allowed_csv_read = "key,value" in (data_dir / "daily_output.csv").read_text(
+        encoding="utf-8"
+    )
+except OSError:
+    allowed_csv_read = False
+
+try:
+    Path("/etc/hosts").read_text(encoding="utf-8")
+    hosts_read_denied = False
+except OSError:
+    hosts_read_denied = True
+
+try:
+    external_secret.read_text(encoding="utf-8")
+    external_secret_read_denied = False
+except OSError:
+    external_secret_read_denied = True
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+try:
+    sock.bind(("127.0.0.1", 0))
+    network_denied = False
+except OSError as exc:
+    network_denied = exc.errno in {errno.EPERM, errno.EACCES}
+finally:
+    sock.close()
+
+try:
+    (data_dir / "forbidden.txt").write_text("forbidden", encoding="utf-8")
+    data_write_denied = False
+except OSError:
+    data_write_denied = True
+
+result = {
+    "allowed_csv_read": allowed_csv_read and request["request_id"] == "001",
+    "hosts_read_denied": hosts_read_denied,
+    "external_secret_read_denied": external_secret_read_denied,
+    "inherited_secret_absent": "BLACKBOX_TEST_SECRET" not in os.environ,
+    "network_denied": network_denied,
+    "data_write_denied": data_write_denied,
+}
+Path(args.output).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+'''
+
+
+_SCIENTIFIC_PROBE_SCRIPT = r'''
+import argparse
+import json
+from pathlib import Path
+
+import lightgbm
+import numpy
+import pandas
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode")
+parser.add_argument("--request")
+parser.add_argument("--data-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+
+json.loads(Path(args.request).read_text(encoding="utf-8"))
+frame = pandas.read_csv(Path(args.data_dir) / "daily_output.csv")
+dataset = lightgbm.Dataset(
+    numpy.array([[0.0], [1.0]], dtype=float),
+    label=numpy.array([0, 1]),
+    params={"verbose": -1, "min_data_in_bin": 1, "min_data_in_leaf": 1},
+).construct()
+result = {"features": dataset.num_feature(), "rows": len(frame)}
+Path(args.output).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
 '''
 
 
