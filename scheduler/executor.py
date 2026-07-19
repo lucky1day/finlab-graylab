@@ -16,6 +16,7 @@ from scheduler.repository import (
     create_scheme_run,
     create_engine_from_env,
     finish_scheme_run,
+    insert_approved_blackbox_predictions,
     insert_run_predictions,
     read_blackbox_execution_approval,
     sync_scheme_registry,
@@ -361,13 +362,27 @@ def execute_scheme(
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
-        current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
-        if current_active_targets != active_targets:
-            raise ValueError(
-                "active registry targets changed during run: "
-                f"initial={sorted(active_targets)}, current={sorted(current_active_targets)}"
+        if runtime_type == "blackbox_v2":
+            records_written = insert_approved_blackbox_predictions(
+                engine,
+                cfg,
+                run_id,
+                records,
+                scheme_version=scheme_version,
             )
-        records_written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
+        else:
+            current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
+            if current_active_targets != active_targets:
+                raise ValueError(
+                    "active registry targets changed during run: "
+                    f"initial={sorted(active_targets)}, current={sorted(current_active_targets)}"
+                )
+            records_written = insert_run_predictions(
+                engine,
+                run_id,
+                records,
+                scheme_version=scheme_version,
+            )
         duration = time.monotonic() - started
         expected = len(active_targets)
         status = "success" if expected == records_returned == records_written else "partial"

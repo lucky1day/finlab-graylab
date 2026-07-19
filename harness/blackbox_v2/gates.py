@@ -9,7 +9,7 @@ import shutil
 import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
@@ -37,6 +37,9 @@ from shared.blackbox_v2.requests import build_live_request, write_request
 from shared.blackbox_v2.snapshot import BlackboxSnapshot, SNAPSHOT_FILENAMES
 from shared.calendar_service import get_calendar
 from shared.input_artifacts import build_blackbox_input_snapshot, resolve_blackbox_input_cutoffs
+
+if TYPE_CHECKING:
+    from scheduler.repository import BlackboxLifecycleState
 
 
 FORBIDDEN_IMPORT_ROOTS = {
@@ -457,7 +460,7 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
             if shadow_cfg.status != "paused" or shadow_cfg.version_status != "shadow":
                 raise ValueError("shadow registration must keep config status=paused and set version_status=shadow")
             try:
-                _register_shadow(engine, validated_cfg, shadow_cfg)
+                registered_state = _register_shadow(engine, validated_cfg, shadow_cfg)
             except Exception:
                 _atomic_write(config_path, previous_text)
                 raise
@@ -470,12 +473,15 @@ class BlackboxShadowRegisterGate(_BlackboxGate):
         evidence = [
             Evidence("harness_run_id", passed_run.harness_run_id),
             Evidence("validated_scheme_version", validated_cfg.scheme_version),
-            Evidence("shadow_scheme_version", shadow_cfg.scheme_version),
-            Evidence("registry_status", shadow_cfg.status),
-            Evidence("version_status", shadow_cfg.version_status),
-            Evidence("runtime_type", shadow_cfg.runtime_type),
-            Evidence("data_snapshot_id", passed_run.data_snapshot_id),
-            Evidence("environment_fingerprint", environment_fingerprint),
+            Evidence("shadow_scheme_version", registered_state.scheme_version),
+            Evidence("registry_status", registered_state.registry_status),
+            Evidence("version_status", registered_state.version_status),
+            Evidence("runtime_type", registered_state.runtime_type),
+            Evidence("data_snapshot_id", registered_state.data_snapshot_id),
+            Evidence("environment_fingerprint", registered_state.environment_fingerprint),
+            Evidence("code_hash", registered_state.code_hash),
+            Evidence("config_hash", registered_state.config_hash),
+            Evidence("manifest_hash", registered_state.manifest_hash),
             Evidence("business_tables_written", False),
             Evidence("authorization_audit_path", str(audit_path)),
         ]
@@ -773,11 +779,33 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
     )
 
 
-def _register_shadow(engine, validated_cfg: SchemeConfig, shadow_cfg: SchemeConfig) -> None:
-    from scheduler.repository import sync_scheme_registry, upsert_scheme_version
+def _register_shadow(
+    engine,
+    validated_cfg: SchemeConfig,
+    shadow_cfg: SchemeConfig,
+) -> BlackboxLifecycleState:
+    from scheduler.repository import apply_blackbox_lifecycle_state
 
-    upsert_scheme_version(engine, validated_cfg)
-    sync_scheme_registry(engine, [shadow_cfg])
+    canonical_fields = (
+        "scheme_id",
+        "scheme_version",
+        "code_hash",
+        "config_hash",
+        "manifest_hash",
+    )
+    mismatches = [
+        field
+        for field in canonical_fields
+        if getattr(validated_cfg, field) != getattr(shadow_cfg, field)
+    ]
+    if mismatches:
+        raise ValueError(f"shadow registration changed canonical identity: {mismatches}")
+    return apply_blackbox_lifecycle_state(
+        engine,
+        shadow_cfg,
+        version_status="shadow",
+        registry_status="paused",
+    )
 
 
 def _environment_fingerprint(project_root: Path) -> str:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 
 
@@ -34,6 +35,59 @@ class _CaptureConnection:
             return _MappingResult([version_row] if version_row is not None else [])
         if sql_text.lstrip().startswith("SELECT") and "FROM t_scheme_registry" in sql_text:
             return _MappingResult(self._store.get("registry_rows", []))
+        if "INSERT INTO t_scheme_versions" in sql_text:
+            current = self._store.get("version_row")
+            incoming = {
+                key: rows.get(key)
+                for key in (
+                    "scheme_id",
+                    "scheme_version",
+                    "runtime_type",
+                    "algorithm_version",
+                    "contract_version",
+                    "runtime_profile",
+                    "environment_fingerprint",
+                    "data_snapshot_id",
+                    "code_hash",
+                    "config_hash",
+                    "manifest_hash",
+                    "git_commit",
+                    "status",
+                    "approved_by",
+                    "approved_at",
+                )
+            }
+            if current is None:
+                self._store["version_row"] = incoming
+            else:
+                preserve_evidence = bool(rows.get("preserve_blackbox_evidence", False))
+                preserve_lifecycle = bool(rows.get("preserve_lifecycle", False))
+                for key, value in incoming.items():
+                    if preserve_evidence:
+                        continue
+                    if preserve_lifecycle and key in {
+                        "runtime_type",
+                        "status",
+                        "approved_by",
+                        "approved_at",
+                    }:
+                        continue
+                    current[key] = value
+                if rows.get("trusted_lifecycle"):
+                    current.update(incoming)
+            return _MappingResult()
+        if "INSERT INTO t_scheme_registry" in sql_text:
+            registry_by_id = {
+                str(row["scheme_id"]): dict(row)
+                for row in self._store.get("registry_rows", [])
+            }
+            for row in rows:
+                registry_by_id[str(row["scheme_id"])] = dict(row)
+            self._store["registry_rows"] = list(registry_by_id.values())
+            return _MappingResult()
+        if "INSERT INTO t_scheme_predictions" in sql_text:
+            self._store.setdefault("prediction_rows", []).extend(dict(row) for row in rows)
+            return _MappingResult()
         return _MappingResult()
 
 
@@ -58,9 +112,12 @@ class _CaptureEngine:
         self.store: dict = {
             "version_row": version_row,
             "registry_rows": registry_rows or [],
+            "prediction_rows": [],
+            "begin_count": 0,
         }
 
     def begin(self) -> _CaptureBegin:
+        self.store["begin_count"] += 1
         return _CaptureBegin(self.store)
 
 
@@ -201,7 +258,7 @@ class RegistrySyncTests(unittest.TestCase):
                 "runtime_type": "blackbox_v2",
                 "status": "active",
                 "approved_by": "release-owner",
-                "approved_at": "2026-07-20 08:30:00",
+                "approved_at": datetime(2026, 7, 20, 8, 30),
             }
         )
 
@@ -215,6 +272,109 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertIn("approved_by = IF(:trusted_lifecycle", version_sql)
         self.assertIn("approved_at = IF(:trusted_lifecycle", version_sql)
         self.assertEqual({row["status"] for row in registry_rows}, {"active"})
+
+    def test_generic_sync_preserves_all_approval_bound_blackbox_evidence(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        approved_at = datetime(2026, 7, 20, 8, 30)
+        stored = {
+            "scheme_id": "demo_blackbox",
+            "scheme_version": "abc123def456",
+            "runtime_type": "blackbox_v2",
+            "algorithm_version": "1.2.3",
+            "contract_version": "1.0",
+            "runtime_profile": "blackbox-v2-v1",
+            "environment_fingerprint": "e" * 64,
+            "data_snapshot_id": "approved-snapshot",
+            "code_hash": "c" * 64,
+            "config_hash": "f" * 64,
+            "manifest_hash": "m" * 64,
+            "git_commit": "approved-commit",
+            "status": "active",
+            "approved_by": "release-owner",
+            "approved_at": approved_at,
+        }
+        engine = _CaptureEngine(version_row=dict(stored))
+        cfg = _blackbox_config()
+        cfg.environment_fingerprint = None
+        cfg.data_snapshot_id = None
+
+        sync_scheme_registry(engine, [cfg])
+
+        self.assertEqual(engine.store["version_row"], stored)
+        _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
+        self.assertTrue(version_params["preserve_blackbox_evidence"])
+
+    def test_generic_sync_rejects_conflicting_immutable_blackbox_metadata(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        stored = {
+            "scheme_id": "demo_blackbox",
+            "scheme_version": "abc123def456",
+            "runtime_type": "blackbox_v2",
+            "algorithm_version": "1.2.3",
+            "contract_version": "1.0",
+            "runtime_profile": "blackbox-v2-v1",
+            "environment_fingerprint": "e" * 64,
+            "data_snapshot_id": "snapshot-1",
+            "code_hash": "c" * 64,
+            "config_hash": "f" * 64,
+            "manifest_hash": "m" * 64,
+            "git_commit": None,
+            "status": "active",
+            "approved_by": "release-owner",
+            "approved_at": datetime(2026, 7, 20, 8, 30),
+        }
+        conflicts = {
+            "runtime_type": "native_adapter",
+            "algorithm_version": "9.9.9",
+            "contract_version": "2.0",
+            "runtime_profile": "other-profile",
+            "environment_fingerprint": "x" * 64,
+            "data_snapshot_id": "other-snapshot",
+            "code_hash": "x" * 64,
+            "config_hash": "y" * 64,
+            "manifest_hash": "z" * 64,
+        }
+        for field, value in conflicts.items():
+            with self.subTest(field=field):
+                cfg = _blackbox_config()
+                setattr(cfg, field, value)
+                engine = _CaptureEngine(version_row=dict(stored))
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    rf"immutable Blackbox version metadata mismatch.*{field}",
+                ):
+                    sync_scheme_registry(engine, [cfg])
+
+                self.assertEqual(engine.store["version_row"], stored)
+
+    def test_trusted_blackbox_lifecycle_atomically_writes_shadow_and_paused_registry(self) -> None:
+        from scheduler.repository import apply_blackbox_lifecycle_state
+
+        engine = _CaptureEngine()
+        cfg = _blackbox_config(status="paused", version_status="shadow")
+
+        state = apply_blackbox_lifecycle_state(
+            engine,
+            cfg,
+            version_status="shadow",
+            registry_status="paused",
+        )
+
+        self.assertEqual(engine.store["begin_count"], 1)
+        self.assertEqual(engine.store["version_row"]["status"], "shadow")
+        self.assertEqual(engine.store["version_row"]["environment_fingerprint"], "e" * 64)
+        self.assertEqual(engine.store["version_row"]["data_snapshot_id"], "snapshot-1")
+        self.assertEqual(engine.store["version_row"]["code_hash"], "c" * 64)
+        self.assertEqual(engine.store["version_row"]["config_hash"], "f" * 64)
+        self.assertEqual(engine.store["version_row"]["manifest_hash"], "m" * 64)
+        self.assertEqual({row["status"] for row in engine.store["registry_rows"]}, {"paused"})
+        self.assertEqual(state.version_status, "shadow")
+        self.assertEqual(state.registry_status, "paused")
+        self.assertEqual(state.environment_fingerprint, "e" * 64)
+        self.assertEqual(state.data_snapshot_id, "snapshot-1")
 
     def test_native_active_sync_behavior_is_unchanged(self) -> None:
         from scheduler.repository import sync_scheme_registry
@@ -254,7 +414,7 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
             "runtime_type": "blackbox_v2",
             "status": "active",
             "approved_by": "release-owner",
-            "approved_at": "2026-07-20 08:30:00",
+            "approved_at": datetime(2026, 7, 20, 8, 30),
         }
         row.update(updates)
         return row
@@ -288,7 +448,7 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
         self.assertEqual(approval.reason, "approved")
         self.assertEqual(approval.version_status, "active")
         self.assertEqual(approval.approved_by, "release-owner")
-        self.assertEqual(approval.approved_at, "2026-07-20 08:30:00")
+        self.assertEqual(approval.approved_at, datetime(2026, 7, 20, 8, 30))
         self.assertEqual(approval.base_scheme_id, "demo_blackbox")
         self.assertEqual(approval.scheme_version, "abc123def456")
         self.assertEqual(approval.version_runtime_type, "blackbox_v2")
@@ -335,6 +495,18 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
                 self._approved_version_row(approved_at=None),
                 [self._active_registry_row()],
                 "version approved_at is null",
+            ),
+            (
+                "empty approver",
+                self._approved_version_row(approved_by="   "),
+                [self._active_registry_row()],
+                "version approved_by is empty",
+            ),
+            (
+                "non-datetime approval time",
+                self._approved_version_row(approved_at="2026-07-20 08:30:00"),
+                [self._active_registry_row()],
+                "version approved_at must be datetime",
             ),
             (
                 "missing registry",
@@ -392,6 +564,25 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
                 self.assertFalse(approval.executable)
                 self.assertEqual(approval.reason, expected_reason)
 
+    def test_exact_approval_rejects_duplicate_expected_tenors_and_registry_ids(self) -> None:
+        from scheduler.repository import read_blackbox_execution_approval
+
+        cfg = _blackbox_config()
+        cfg.tenors = ["10Y", "10Y"]
+        engine = _CaptureEngine(
+            version_row=self._approved_version_row(),
+            registry_rows=[self._active_registry_row()],
+        )
+
+        approval = read_blackbox_execution_approval(engine, cfg)
+
+        self.assertFalse(approval.executable)
+        self.assertEqual(
+            approval.reason,
+            "duplicate expected tenors/Registry ids: "
+            "tenors=['10Y'], registry_ids=['demo_blackbox__h1__10Y']",
+        )
+
 
 class _Result:
     lastrowid = 101
@@ -401,10 +592,13 @@ class _RunConnection:
     def __init__(self, store: dict) -> None:
         self._store = store
 
-    def execute(self, sql, params=None) -> _Result:
-        self._store.setdefault("calls", []).append((str(sql), params))
-        self._store["sql"] = str(sql)
+    def execute(self, sql, params=None) -> _Result | _MappingResult:
+        sql_text = str(sql)
+        self._store.setdefault("calls", []).append((sql_text, params))
+        self._store["sql"] = sql_text
         self._store["params"] = params
+        if sql_text.lstrip().startswith("SELECT"):
+            return _MappingResult()
         return _Result()
 
 
@@ -519,6 +713,110 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "feature_date"):
             insert_run_predictions(engine, 101, [record], scheme_version="abc123")
+
+    def test_final_blackbox_insert_locks_revalidates_and_writes_in_one_transaction(self) -> None:
+        from scheduler.repository import insert_approved_blackbox_predictions
+        from shared.models import PredictionRecord
+
+        version_row = {
+            "scheme_id": "demo_blackbox",
+            "scheme_version": "abc123def456",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+            "approved_by": "release-owner",
+            "approved_at": datetime(2026, 7, 20, 8, 30),
+        }
+        registry_row = {
+            "scheme_id": "demo_blackbox__h1__10Y",
+            "base_scheme_id": "demo_blackbox",
+            "runtime_type": "blackbox_v2",
+            "status": "active",
+            "task_type": "T+1",
+            "target_tenor": "10Y",
+            "horizon": 1,
+        }
+        engine = _CaptureEngine(version_row=version_row, registry_rows=[registry_row])
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+            extra={"feature_date": "2026-07-17", "prediction_phase": "scheduled_live"},
+        )
+
+        written = insert_approved_blackbox_predictions(
+            engine,
+            _blackbox_config(),
+            101,
+            [record],
+            scheme_version="abc123def456",
+        )
+
+        self.assertEqual(written, 1)
+        self.assertEqual(engine.store["begin_count"], 1)
+        version_select, _ = _call_for(engine.store, "FROM t_scheme_versions")
+        registry_select, _ = _call_for(engine.store, "FROM t_scheme_registry")
+        self.assertIn("FOR UPDATE", version_select)
+        self.assertIn("FOR UPDATE", registry_select)
+        self.assertEqual(len(engine.store["prediction_rows"]), 1)
+        self.assertEqual(
+            engine.store["prediction_rows"][0]["scheme_version"],
+            "abc123def456",
+        )
+
+    def test_final_blackbox_insert_rejects_revoked_approval_without_predictions(self) -> None:
+        from scheduler.repository import insert_approved_blackbox_predictions
+        from shared.models import PredictionRecord
+
+        engine = _CaptureEngine(
+            version_row={
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "runtime_type": "blackbox_v2",
+                "status": "shadow",
+                "approved_by": None,
+                "approved_at": None,
+            },
+            registry_rows=[
+                {
+                    "scheme_id": "demo_blackbox__h1__10Y",
+                    "base_scheme_id": "demo_blackbox",
+                    "runtime_type": "blackbox_v2",
+                    "status": "active",
+                    "task_type": "T+1",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                }
+            ],
+        )
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Blackbox V2 version is not production-approved: version status is shadow, expected active",
+        ):
+            insert_approved_blackbox_predictions(
+                engine,
+                _blackbox_config(),
+                101,
+                [record],
+                scheme_version="abc123def456",
+            )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
 
     def test_upsert_scheme_version_writes_version_hashes(self) -> None:
         from scheduler.repository import upsert_scheme_version

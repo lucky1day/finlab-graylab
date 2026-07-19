@@ -195,6 +195,17 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             with patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed):
                 with patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64):
                     with patch("harness.blackbox_v2.gates._register_shadow") as register:
+                        register.return_value = SimpleNamespace(
+                            scheme_version=config.scheme_version,
+                            version_status="shadow",
+                            registry_status="paused",
+                            runtime_type="blackbox_v2",
+                            data_snapshot_id="db-snapshot",
+                            environment_fingerprint="d" * 64,
+                            code_hash="c" * 64,
+                            config_hash="f" * 64,
+                            manifest_hash="m" * 64,
+                        )
                         result = BlackboxShadowRegisterGate().run(ctx)
 
             updated = load_scheme_config(scheme_dir / "config.yaml")
@@ -207,6 +218,31 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(shadow_cfg.version_status, "shadow")
         self.assertEqual(shadow_cfg.data_snapshot_id, "snapshot-test")
         self.assertEqual(shadow_cfg.environment_fingerprint, "e" * 64)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["version_status"], "shadow")
+        self.assertEqual(evidence["registry_status"], "paused")
+        self.assertEqual(evidence["data_snapshot_id"], "db-snapshot")
+        self.assertEqual(evidence["environment_fingerprint"], "d" * 64)
+        self.assertEqual(evidence["code_hash"], "c" * 64)
+        self.assertEqual(evidence["config_hash"], "f" * 64)
+        self.assertEqual(evidence["manifest_hash"], "m" * 64)
+
+    def test_register_shadow_persists_exact_shadow_db_state(self) -> None:
+        from harness.blackbox_v2.gates import _register_shadow
+        from tests.test_repository_registry import _CaptureEngine, _blackbox_config
+
+        engine = _CaptureEngine()
+        validated_cfg = _blackbox_config(status="paused", version_status="validated")
+        shadow_cfg = _blackbox_config(status="paused", version_status="shadow")
+
+        state = _register_shadow(engine, validated_cfg, shadow_cfg)
+
+        self.assertEqual(engine.store["version_row"]["status"], "shadow")
+        self.assertEqual({row["status"] for row in engine.store["registry_rows"]}, {"paused"})
+        self.assertEqual(engine.store["version_row"]["environment_fingerprint"], "e" * 64)
+        self.assertEqual(engine.store["version_row"]["data_snapshot_id"], "snapshot-1")
+        self.assertEqual(state.version_status, "shadow")
+        self.assertEqual(state.registry_status, "paused")
 
     def test_static_gate_accepts_exact_two_file_delivery(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
