@@ -179,6 +179,39 @@ Input Gate 三份文件 SHA256 与第 3.2 节 generation 的 current 文件逐�
 
 该标记表示现有技术证据足以安排一次灰度实验室测试，不表示测试已经执行或效果达标，也不等同于平台字段 `prediction_phase=gray_live`。实际测试启动前仍须重新确认当次 generation、Request、Snapshot 和业务表零写入基线。
 
+### 4.5 记录 001E：持续回归基线第一轮
+
+**执行时间**：2026-07-19 17:02:40 至 17:03:06，`Asia/Shanghai`。
+
+| 项目 | 实测结果 |
+|---|---|
+| 灰度实验室标记 | `GRAY_LAB_READY` |
+| generation | `full-20260719-055002-7876ee1e5ec9` |
+| environment fingerprint | `720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd` |
+| Snapshot | `snapshot-245c54a6363ed5251475e8f5` |
+| Harness run | `hr_20260719T090240Z_64d1d64d4def` |
+| Scheme version | `2110193568a9` |
+| Request | `predict_date=2026-07-18`、`feature_date=2026-07-17`、`target_date=2026-07-24` |
+| 截止键 | `2026-07-17 / 202628 / 202607` |
+| 单点方向 | `1` |
+| 七个 Gate | 7/7 passed，控制面审计记录 7 条 |
+| Compare | 重复、predict/backtest、分批、顺序和未来行隔离全部通过 |
+| Backtest | 100/100，`persist=false` |
+| Harness 自动段 | 约 26 秒 |
+| 临时 Snapshot | 运行结束后已删除 |
+
+独立前后查询结果保持不变：
+
+| 数据对象 | 运行前 | 运行后 |
+|---|---:|---:|
+| `t_scheme_runs` | 0 | 0 |
+| `t_scheme_predictions` | 0 | 0 |
+| `t_scheme_run_log` | 0 | 0 |
+| `t_backtest_runs` | 0 | 0 |
+| `t_backtest_predictions` | 0 | 0 |
+
+Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立持续回归的首个效率和稳定性基线，不改变 `shadow + paused` 状态，也不证明算法效果达到业务门槛。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。
