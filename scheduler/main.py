@@ -23,6 +23,12 @@ from scheduler.calendar import is_trading_day
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, execute_scheme
 from scheduler.repository import create_engine_from_env, sync_scheme_registry
+from shared.data_bridge.client import DataBridgeClient, DataBridgeClientConfig
+from shared.data_bridge.refresh import (
+    DataBridgeRefreshConfig,
+    check_current_dataset,
+    run_full_refresh,
+)
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -32,6 +38,7 @@ PREDICTION_MAX_CONCURRENCY_ENV = "BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY"
 STARTUP_CATCHUP_ENV = "BOND_SCHEDULER_STARTUP_CATCHUP"
 DEFAULT_STAGGER_MINUTES = 2
 DEFAULT_PREDICTION_MAX_CONCURRENCY = 1
+DEFAULT_DATA_BRIDGE_REFRESH_START = "05:30"
 logger = logging.getLogger(__name__)
 _prediction_semaphore_lock = threading.Lock()
 _prediction_semaphore_limit: int | None = None
@@ -397,6 +404,74 @@ def run_startup_prediction_catchup(
         engine.dispose()
 
 
+def run_data_bridge_refresh_job(
+    run_date: str | date | None = None,
+    *,
+    enforce_deadline: bool = True,
+):
+    """全量重建并发布当天 DataBridge 三频文件。"""
+    refresh_date = _normalize_run_date(run_date)
+    expected_daily_date = _previous_trading_day(refresh_date)
+    client = DataBridgeClient(DataBridgeClientConfig.from_env())
+    config = DataBridgeRefreshConfig.from_env()
+    result = run_full_refresh(
+        client=client,
+        config=config,
+        expected_daily_date=expected_daily_date,
+        refresh_date=refresh_date,
+        publish=True,
+        deadline_at=config.deadline_at(refresh_date) if enforce_deadline else None,
+    )
+    logger.info(
+        "DataBridge refresh finished: date=%s generation=%s rounds=%s duration_sec=%.1f",
+        refresh_date,
+        result.state.get("generation_id"),
+        result.rounds_completed,
+        result.duration_sec,
+    )
+    return result
+
+
+def data_bridge_refresh_is_current(run_date: str | date | None = None) -> bool:
+    refresh_date = _normalize_run_date(run_date)
+    expected_daily_date = _previous_trading_day(refresh_date)
+    check_current_dataset(
+        DataBridgeRefreshConfig.from_env(),
+        required_refresh_date=refresh_date,
+        expected_daily_date=expected_daily_date,
+    )
+    return True
+
+
+def run_startup_tasks(
+    *,
+    now: datetime | None = None,
+    algo_env: str = DEFAULT_ALGO_ENV,
+) -> None:
+    """启动时先补齐三频 current，再补跑已到期预测。"""
+    run_now = now or datetime.now(ASIA_SHANGHAI)
+    if run_now.tzinfo is None:
+        run_now = run_now.replace(tzinfo=ASIA_SHANGHAI)
+    start_text = os.getenv("DATABRIDGE_REFRESH_START", DEFAULT_DATA_BRIDGE_REFRESH_START)
+    try:
+        start_at = time.fromisoformat(start_text)
+    except ValueError as exc:
+        raise ValueError(f"DATABRIDGE_REFRESH_START must use HH:MM, got {start_text!r}") from exc
+    refresh_date = run_now.date().isoformat()
+    if run_now.timetz().replace(tzinfo=None) >= start_at:
+        try:
+            needs_refresh = not data_bridge_refresh_is_current(refresh_date)
+        except Exception as exc:
+            logger.warning("Startup DataBridge current check requires refresh: %s", exc)
+            needs_refresh = True
+        try:
+            if needs_refresh:
+                run_data_bridge_refresh_job(refresh_date)
+        except Exception:
+            logger.exception("Startup DataBridge refresh failed; data_bridge_current schemes remain blocked")
+    run_startup_prediction_catchup(now=run_now, algo_env=algo_env)
+
+
 def _skips_non_trading_day(cfg: SchemeConfig) -> bool:
     return cfg.frequency not in {"weekly", "monthly"}
 
@@ -480,6 +555,24 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     _sync_registry(schemes)
     scheduler = BlockingScheduler(timezone=ASIA_SHANGHAI)
 
+    refresh_start = os.getenv("DATABRIDGE_REFRESH_START", DEFAULT_DATA_BRIDGE_REFRESH_START)
+    try:
+        refresh_hour, refresh_minute = (int(part) for part in refresh_start.split(":"))
+        if not (0 <= refresh_hour <= 23 and 0 <= refresh_minute <= 59):
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"DATABRIDGE_REFRESH_START must use HH:MM, got {refresh_start!r}") from exc
+    scheduler.add_job(
+        run_data_bridge_refresh_job,
+        trigger=CronTrigger(hour=refresh_hour, minute=refresh_minute, timezone=ASIA_SHANGHAI),
+        id="data-bridge-refresh",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=4500,
+    )
+    logger.info("Scheduled DataBridge refresh at %s Asia/Shanghai", refresh_start)
+
     for job in _staggered_prediction_jobs(schemes, stagger_minutes):
         cfg = job.cfg
         scheduler.add_job(
@@ -515,23 +608,23 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     logger.info("Scheduled actuals refresh at %s Asia/Shanghai", _format_actuals_refresh_times())
     if _env_bool(STARTUP_CATCHUP_ENV, True):
         scheduler.add_job(
-            run_startup_prediction_catchup,
+            run_startup_tasks,
             trigger=DateTrigger(run_date=datetime.now(ASIA_SHANGHAI), timezone=ASIA_SHANGHAI),
             kwargs={"algo_env": algo_env},
-            id="startup:prediction-catchup",
+            id="startup:data-refresh-and-prediction-catchup",
             replace_existing=True,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,
         )
-        logger.info("Scheduled startup prediction catchup")
+        logger.info("Scheduled startup DataBridge refresh and prediction catchup")
     return scheduler
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bond Factor Lab scheduler.")
     parser.add_argument("--algo-env", default=os.getenv("BOND_ALGO_CONDA_ENV", DEFAULT_ALGO_ENV))
-    parser.add_argument("--run-once", choices=["predictions", "actuals"], default=None)
+    parser.add_argument("--run-once", choices=["predictions", "actuals", "data-refresh"], default=None)
     parser.add_argument("--date", default=None, help="Run date in YYYY-MM-DD format")
     parser.add_argument("--scheme-id", default=None, help="Limit --run-once predictions to one scheme")
     parser.add_argument("--force", action="store_true", help="Run even when the date is not a trading day")
@@ -546,6 +639,9 @@ def main() -> None:
         return
     if args.run_once == "actuals":
         run_actuals_job(run_date=args.date, force=args.force)
+        return
+    if args.run_once == "data-refresh":
+        run_data_bridge_refresh_job(run_date=args.date, enforce_deadline=False)
         return
 
     scheduler = build_scheduler(algo_env=args.algo_env)

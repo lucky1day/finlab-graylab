@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -9,6 +10,9 @@ ALLOWED_TENORS = {"1Y", "3Y", "5Y", "7Y", "10Y"}
 ALLOWED_FREQUENCIES = {"daily", "weekly", "monthly"}
 ALLOWED_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 ALLOWED_STATUS = {"active", "paused"}
+ALLOWED_RUNTIME_TYPES = {"native_adapter", "blackbox_v2"}
+ALLOWED_INPUT_SOURCES = {"legacy_db", "data_bridge_current"}
+ALLOWED_VERSION_STATUS = {"draft", "validated", "shadow", "active", "paused", "retired"}
 TASK_TYPE_ERROR = "task_type must be one of T+1, T+5, weekly_point, weekly_average, monthly"
 
 
@@ -26,6 +30,14 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
             errors.append("scheme_id must match ^[a-z][a-z0-9_]*$")
         if scheme_id != dirname:
             errors.append("scheme_id must match directory name")
+
+    runtime_type = raw.get("runtime_type", "native_adapter")
+    if runtime_type not in ALLOWED_RUNTIME_TYPES:
+        errors.append("runtime_type must be native_adapter or blackbox_v2")
+
+    if runtime_type == "blackbox_v2":
+        errors.extend(_validate_blackbox_config(raw))
+        return errors
 
     for field in ("name", "description"):
         if not isinstance(raw.get(field), str) or not raw.get(field, "").strip():
@@ -70,6 +82,10 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
 
     if raw.get("status") not in ALLOWED_STATUS:
         errors.append("status must be active or paused")
+
+    input_source = raw.get("input_source", "legacy_db")
+    if input_source not in ALLOWED_INPUT_SOURCES:
+        errors.append("input_source must be legacy_db or data_bridge_current")
 
     input_spec = raw.get("input_spec")
     if not isinstance(input_spec, dict):
@@ -160,6 +176,42 @@ def validate_config(raw: dict, dirname: str) -> list[str]:
                 if backtest.get("start_date") != "2025-01-01":
                     errors.append("backtest.start_date must be 2025-01-01 for daily/monthly backtests")
 
+    return errors
+
+
+def _validate_blackbox_config(raw: dict) -> list[str]:
+    errors: list[str] = []
+    if raw.get("input_source") != "data_bridge_current":
+        errors.append("Blackbox V2 input_source must be data_bridge_current")
+    for field in ("runtime_profile", "data_schema_version"):
+        if not isinstance(raw.get(field), str) or not raw.get(field, "").strip():
+            errors.append(f"{field} must be a non-empty string")
+    if raw.get("status") not in ALLOWED_STATUS:
+        errors.append("status must be active or paused")
+    if raw.get("version_status") not in ALLOWED_VERSION_STATUS:
+        errors.append("version_status must be one of draft, validated, shadow, active, paused, retired")
+
+    schedule = raw.get("schedule")
+    if not isinstance(schedule, dict):
+        errors.append("schedule must be a mapping")
+    else:
+        cron = schedule.get("cron")
+        if not isinstance(cron, str) or len(cron.split()) != 5:
+            errors.append("schedule.cron must be a valid 5-field cron string")
+        timezone = schedule.get("timezone", "Asia/Shanghai")
+        if not isinstance(timezone, str) or not _valid_timezone(timezone):
+            errors.append("schedule.timezone must be a valid timezone")
+
+    delivery = raw.get("delivery")
+    if not isinstance(delivery, dict):
+        errors.append("delivery must be a mapping")
+    else:
+        for field in ("script", "metadata"):
+            value = delivery.get(field)
+            if not isinstance(value, str) or not value.strip():
+                errors.append(f"delivery.{field} must be a non-empty relative path")
+            elif Path(value).is_absolute() or ".." in Path(value).parts:
+                errors.append(f"delivery.{field} must stay inside the scheme directory")
     return errors
 
 

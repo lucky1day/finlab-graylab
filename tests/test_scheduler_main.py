@@ -27,6 +27,78 @@ def _cfg(
 
 
 class SchedulerMainTests(unittest.TestCase):
+    def test_scheduler_registers_daily_data_bridge_refresh_at_0530(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[]),
+            patch.object(scheduler_main, "_sync_registry", return_value=None),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            job = scheduler.get_job("data-bridge-refresh")
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertIsNotNone(job)
+        self.assertIn("hour='5'", str(job.trigger))
+        self.assertIn("minute='30'", str(job.trigger))
+
+    def test_startup_tasks_refresh_before_prediction_catchup(self) -> None:
+        from scheduler import main as scheduler_main
+
+        calls: list[str] = []
+        now = datetime(2026, 7, 19, 7, 30, tzinfo=scheduler_main.ASIA_SHANGHAI)
+        with (
+            patch.object(
+                scheduler_main,
+                "data_bridge_refresh_is_current",
+                side_effect=lambda *_args, **_kwargs: calls.append("check") or False,
+            ),
+            patch.object(
+                scheduler_main,
+                "run_data_bridge_refresh_job",
+                side_effect=lambda *_args, **_kwargs: calls.append("refresh"),
+            ),
+            patch.object(
+                scheduler_main,
+                "run_startup_prediction_catchup",
+                side_effect=lambda *_args, **_kwargs: calls.append("predictions"),
+            ),
+        ):
+            scheduler_main.run_startup_tasks(now=now, algo_env="forecast_env")
+
+        self.assertEqual(calls, ["check", "refresh", "predictions"])
+
+    def test_startup_tasks_refresh_when_current_check_raises(self) -> None:
+        from scheduler import main as scheduler_main
+        from shared.data_bridge.refresh import DataBridgeRefreshError
+
+        calls: list[str] = []
+        now = datetime(2026, 7, 19, 7, 30, tzinfo=scheduler_main.ASIA_SHANGHAI)
+        with (
+            patch.object(
+                scheduler_main,
+                "data_bridge_refresh_is_current",
+                side_effect=DataBridgeRefreshError("stale"),
+            ),
+            patch.object(
+                scheduler_main,
+                "run_data_bridge_refresh_job",
+                side_effect=lambda *_args, **_kwargs: calls.append("refresh"),
+            ),
+            patch.object(
+                scheduler_main,
+                "run_startup_prediction_catchup",
+                side_effect=lambda *_args, **_kwargs: calls.append("predictions"),
+            ),
+        ):
+            scheduler_main.run_startup_tasks(now=now, algo_env="forecast_env")
+
+        self.assertEqual(calls, ["refresh", "predictions"])
+
     def test_scheduler_jobs_are_registered_once_per_base_scheme_not_per_tenor(self) -> None:
         from scheduler import main as scheduler_main
 

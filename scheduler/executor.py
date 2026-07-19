@@ -12,6 +12,7 @@ from pathlib import Path
 
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.repository import (
+    attach_run_data_snapshot,
     create_scheme_run,
     create_engine_from_env,
     finish_scheme_run,
@@ -20,8 +21,15 @@ from scheduler.repository import (
     write_run_log,
 )
 from shared.calendar_service import get_calendar
+from shared.blackbox_v2.contracts import load_metadata
+from shared.blackbox_v2.requests import build_live_request
+from shared.input_artifacts import open_blackbox_input_snapshot, resolve_blackbox_input_cutoffs
 from shared.models import PredictionRecord
-from shared.prediction_context import build_daily_live_context
+from shared.prediction_context import (
+    build_daily_live_context,
+    build_monthly_live_context,
+    build_weekly_live_context,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -94,6 +102,90 @@ def run_scheme_subprocess(
     if not isinstance(payload, list):
         raise ValueError(f"scheme runner returned non-list payload for {scheme_id}")
     return [_record_from_payload(item) for item in payload]
+
+
+def run_configured_scheme(
+    cfg: SchemeConfig,
+    predict_date: str,
+    *,
+    engine,
+    algo_env: str,
+    timeout_sec: int,
+) -> list[PredictionRecord]:
+    """按显式 runtime_type 选择算法执行驱动。"""
+    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    if runtime_type == "native_adapter":
+        return run_scheme_subprocess(
+            cfg.scheme_id,
+            predict_date,
+            algo_env=algo_env,
+            timeout_sec=timeout_sec,
+        )
+    if runtime_type == "blackbox_v2":
+        if getattr(cfg, "input_source", None) != "data_bridge_current":
+            raise ValueError(f"Blackbox V2 input_source must be data_bridge_current: {cfg.scheme_id}")
+        return run_blackbox_scheme_subprocess(
+            cfg,
+            predict_date,
+            engine=engine,
+            algo_env=algo_env,
+            timeout_sec=timeout_sec,
+        )
+    raise ValueError(f"unsupported runtime_type for {cfg.scheme_id}: {runtime_type}")
+
+
+def run_blackbox_scheme_subprocess(
+    cfg: SchemeConfig,
+    predict_date: str,
+    *,
+    engine,
+    algo_env: str,
+    timeout_sec: int,
+) -> list[PredictionRecord]:
+    """生成平台输入并通过 Blackbox V2 CLI 执行一个实盘 Request。"""
+    from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, run_blackbox_predict
+
+    if cfg.delivery_script is None or cfg.delivery_metadata is None:
+        raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
+    metadata = load_metadata(cfg.delivery_metadata)
+    with open_blackbox_input_snapshot(snapshot_date=predict_date, require_fresh=True) as snapshot:
+        calendar = get_calendar(engine)
+        if metadata.frequency == "daily":
+            feature_date = build_daily_live_context(
+                calendar,
+                predict_date,
+                horizon=metadata.horizon,
+            ).feature_date
+        elif metadata.frequency == "weekly":
+            feature_date = build_weekly_live_context(calendar, predict_date).feature_date
+        else:
+            feature_date = build_monthly_live_context(calendar, predict_date).feature_date
+        cutoffs = resolve_blackbox_input_cutoffs(
+            snapshot,
+            feature_date=feature_date,
+            engine=engine,
+        )
+        request = build_live_request(
+            metadata,
+            predict_date=predict_date,
+            calendar=calendar,
+            cutoffs=cutoffs,
+        )
+        blackbox_env = DEFAULT_RUNTIME_PROFILE.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
+        profile = replace(
+            DEFAULT_RUNTIME_PROFILE,
+            conda_env=blackbox_env,
+            predict_timeout_sec=timeout_sec,
+        )
+        record = run_blackbox_predict(
+            metadata=metadata,
+            script_path=cfg.delivery_script,
+            request=request,
+            data_dir=snapshot.data_dir,
+            data_snapshot_id=snapshot.snapshot_id,
+            profile=profile,
+        )
+    return [record]
 
 
 def _run_process_group(
@@ -221,6 +313,7 @@ def execute_scheme(
             scheme_id=cfg.scheme_id,
             predict_date=predict_date,
             scheme_version=scheme_version,
+            runtime_type=getattr(cfg, "runtime_type", "native_adapter"),
             run_type="active",
             prediction_phase=prediction_phase,
             records_expected=len(active_targets),
@@ -231,13 +324,29 @@ def execute_scheme(
                 "missing=[], extra=[], duplicates=[]"
             )
         effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
-        records = run_scheme_subprocess(
-            cfg.scheme_id,
+        records = run_configured_scheme(
+            cfg,
             predict_date,
+            engine=engine,
             algo_env=algo_env,
             timeout_sec=effective_timeout_sec,
         )
         records_returned = len(records)
+        if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
+            snapshot_ids = {
+                str((record.extra or {}).get("data_snapshot_id"))
+                for record in records
+                if (record.extra or {}).get("data_snapshot_id")
+            }
+            if len(snapshot_ids) != 1:
+                raise ValueError(
+                    f"Blackbox V2 run must return exactly one data_snapshot_id, got {sorted(snapshot_ids)}"
+                )
+            attach_run_data_snapshot(
+                engine,
+                run_id=run_id,
+                data_snapshot_id=next(iter(snapshot_ids)),
+            )
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)

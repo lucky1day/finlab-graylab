@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ def _evidence_keys(result) -> set[str]:
 
 
 def _write_minimal_scheme(project_root: Path, *, scheme_id: str = "demo_daily") -> Path:
+    _write_policy(project_root, scheme_id)
     scheme_dir = project_root / "schemes" / scheme_id
     (scheme_dir / "core").mkdir(parents=True)
     (scheme_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -52,6 +54,22 @@ def _write_minimal_scheme(project_root: Path, *, scheme_id: str = "demo_daily") 
         encoding="utf-8",
     )
     return scheme_dir
+
+
+def _write_policy(project_root: Path, scheme_id: str) -> None:
+    path = project_root / "deploy" / "onboarding_policy_v1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "policy_version": "1.0",
+                "new_scheme_runtime_type": "blackbox_v2",
+                "native_v1_mode": "maintenance_only",
+                "legacy_native_scheme_ids": [scheme_id],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _run_gate(project_root: Path, scheme_id: str = "demo_daily"):

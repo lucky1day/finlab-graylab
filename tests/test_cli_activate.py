@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -35,6 +36,19 @@ class CliActivateTest(unittest.TestCase):
         os.environ["HARNESS_AUTH_SECRET"] = "activate-test-secret"
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        policy_path = self.root / "deploy" / "onboarding_policy_v1.json"
+        policy_path.parent.mkdir(parents=True)
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "policy_version": "1.0",
+                    "new_scheme_runtime_type": "blackbox_v2",
+                    "native_v1_mode": "maintenance_only",
+                    "legacy_native_scheme_ids": ["t5_daily"],
+                }
+            ),
+            encoding="utf-8",
+        )
 
     def tearDown(self) -> None:
         if self._prev_secret is None:

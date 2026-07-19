@@ -1,4 +1,5 @@
 scheme_id: weekly_avg_7y_cross_d_overlay_0529
+runtime_type: native_adapter
 name: "0529周平均7Y Cross-D叠加"
 description: "0529 周频7Y方向预测，7Y固定规则投票叠加低利率反弹规则；actual 方向按目标周平均收益率相对当前周平均收益率计算"
 horizon: 6

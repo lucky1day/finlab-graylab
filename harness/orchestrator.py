@@ -18,7 +18,7 @@ from harness.result import Evidence, GateResult, GateStatus, OnboardReport
 
 def onboard(ctx: GateContext, stage: str = "all", gates: Iterable[Gate] | None = None) -> OnboardReport:
     """按 stage 顺序串联 Gate，任一失败或阻塞立即停止。"""
-    selected_gates = list(gates) if gates is not None else gates_for_stage(stage)
+    selected_gates = list(gates) if gates is not None else gates_for_stage(stage, ctx=ctx)
     harness_run_id = new_harness_run_id()
     run_started_at = utc_now()
     persist_harness_run_start(ctx, harness_run_id=harness_run_id, stage=stage, started_at=run_started_at)
@@ -53,6 +53,10 @@ def onboard(ctx: GateContext, stage: str = "all", gates: Iterable[Gate] | None =
         finished_at=utc_now(),
         report_uri=str(report_path),
     )
+    if getattr(ctx.config, "runtime_type", "native_adapter") == "blackbox_v2":
+        from harness.blackbox_v2.gates import cleanup_runtime_input
+
+        cleanup_runtime_input(ctx)
     return report
 
 

@@ -20,8 +20,11 @@ from harness.gates.live_gate import LiveGate
 from harness.gates.static_gate import StaticGate
 from harness.gates.unit_gate import UnitGate
 from harness.orchestrator import onboard as run_onboard
+from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
+from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
+from shared.blackbox_v2.intake import intake_delivery
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +59,25 @@ def main(argv: list[str] | None = None) -> int:
         return _exit_code_for_result(result)
     if args.command == "report":
         return _run_report(args)
+    if args.command == "intake-blackbox":
+        scheme_dir = intake_delivery(
+            args.delivery_dir,
+            schemes_root=args.project_root.resolve() / "schemes",
+            runtime_profile=args.runtime_profile,
+            data_schema_version=args.data_schema_version,
+        )
+        print(
+            json.dumps(
+                {
+                    "scheme_id": scheme_dir.name,
+                    "runtime_type": "blackbox_v2",
+                    "scheme_dir": str(scheme_dir),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
     parser.error("unsupported command")
     return 1
 
@@ -66,7 +88,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     gate_parser = subparsers.add_parser("gate")
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
-    for gate_name in ("static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness", "api", "live"):
+    for gate_name in (
+        "static", "input", "unit", "dry-run", "compare", "backtest",
+        "api-readiness", "shadow-register", "api", "live",
+    ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
         item.add_argument(
@@ -107,6 +132,12 @@ def _build_parser() -> argparse.ArgumentParser:
     report_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     report_parser.add_argument("--latest", action="store_true")
 
+    intake_parser = subparsers.add_parser("intake-blackbox")
+    intake_parser.add_argument("--delivery-dir", type=Path, required=True)
+    intake_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
+    intake_parser.add_argument("--runtime-profile", default="blackbox-v2-v1")
+    intake_parser.add_argument("--data-schema-version", default="data-bridge-v1")
+
     auth_parser = subparsers.add_parser("auth")
     auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
     issue_parser = auth_subparsers.add_parser("issue")
@@ -121,44 +152,38 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run_gate(args: argparse.Namespace) -> GateResult:
-    if args.gate_name in {"input", "dry-run", "live"} and not args.predict_date:
+    if args.gate_name in {"input", "dry-run", "shadow-register", "live"} and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
         report_dir=report_dir,
+        config=config,
         algo_env=args.algo_env,
+        engine_factory=create_engine_from_env,
         timeout_sec=args.timeout_sec,
         authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
         api_base_url=args.api_base_url,
     )
-    gates = {
-        "static": StaticGate(),
-        "input": InputGate(),
-        "unit": UnitGate(),
-        "dry-run": DryRunGate(),
-        "compare": CompareGate(),
-        "backtest": BacktestGate(),
-        "api-readiness": ApiReadinessGate(),
-        "api": ApiGate(),
-        "live": LiveGate(),
-    }
-    return gates[args.gate_name].run(ctx)
+    return gate_for_name(args.gate_name, ctx=ctx).run(ctx)
 
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
         report_dir=report_dir,
+        config=config,
         algo_env=args.algo_env,
         timeout_sec=args.timeout_sec,
         authorization=args.authorize,
@@ -167,6 +192,16 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         engine_factory=create_engine_from_env,
     )
     return run_onboard(ctx, stage=args.stage)
+
+
+def _load_config_for_dispatch(config_path: Path):
+    """配置可用时提前加载；缺失或非法时交由对应 StaticGate 报告。"""
+    if not config_path.is_file():
+        return None
+    try:
+        return load_scheme_config(config_path)
+    except (OSError, UnicodeError, ValueError):
+        return None
 
 
 def _run_activate(args: argparse.Namespace) -> GateResult:

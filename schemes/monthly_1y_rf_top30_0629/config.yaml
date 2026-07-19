@@ -1,4 +1,5 @@
 scheme_id: monthly_1y_rf_top30_0629
+runtime_type: native_adapter
 name: "0629月度1Y RF top30"
 description: "0629 原始月度 M1Y RF top30 binary runner 方案；actual 方向按目标月观测收益率相对当前 feature 月观测收益率计算"
 horizon: 30

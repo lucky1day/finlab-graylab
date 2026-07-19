@@ -1,7 +1,10 @@
 # 架构设计: Bond Factor Lab
 
-**版本**: v1.1
-**日期**: 2026-07-09
+**文档状态**：`CURRENT`
+**适用运行时**：`native_adapter`、`blackbox_v2`
+**目标读者**：平台开发和架构审计人员
+**最后核验日期**：2026-07-19
+**版本**：v1.2
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
 > 预测日期与实盘阶段语义以 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) 为准。
@@ -57,6 +60,8 @@
 └─────────────────────────────┘
 ```
 
+方案执行层有两个显式驱动：Native V1 仅运行政策清单中的存量 adapter；Blackbox V2 接收所有后续新增方案，通过 DataBridge 三频同代快照和隔离 CLI 执行。两者都转换为 `PredictionRecord`，之后共用 Registry、actual join、落库、API 和前端链路。
+
 ---
 
 ## 2. 数据流
@@ -75,28 +80,24 @@
 
 Source-backed 方案必须先声明 source 执行口径：`source_original_reproduction`、`source_strict_pit` 或经批准的 `platform_live_pit_variant`。无论采用哪类口径，算法内部的时间窗口、特征、周/月频对齐、模型参数、投票和内部 score 映射都不得被平台重写。跨灰度边界的 `original_predictions_sample.csv` 必须按 row role 拆分；`TOTAL_BAD=0` 只能说明 live 行结构、版本和 scope 正确，不能替代同口径数值 diff。
 
-### 2.1 预测流程（日度07:03 / 周度11:30）
+### 2.1 预测流程
 
 ```
 Scheduler启动
   → discovery.py 扫描 schemes/ 目录
+  → 按显式 runtime_type 构建统一 SchemeConfig
   → startup catch-up 检查当天已过 cron 且无终态 run 的 active 任务
   → 对每个active方案:
       → executor.py 检查是否交易日
       → 读取方案级 schedule.timeout_sec（如有）作为子进程等待预算
-      → 动态import scheme的predict.py
-      → 调用 run(predict_date=today)
+      → native_adapter: 动态 import predict.py 并调用 run(predict_date=today)
+      → blackbox_v2: 生成三频只读快照和 Request，隔离调用交付脚本 CLI
       → 返回 list[PredictionRecord]
       → 写入 t_scheme_predictions (UPSERT)
       → 写入 t_scheme_run_log
 ```
 
-当前调度口径:
-
-- 日度 `t1_daily` / `t5_daily`: 工作日 `07:03`（`3 7 * * 1-5`）。
-- 周度 `weekly_5y_direct_0529` / `weekly_7y_cross_d_overlay_0529` / `weekly_10y_d_overlay_0529` 以及周平均 `weekly_avg_1y_lgbm_0529` / `weekly_avg_5y_lgbm_0529` / `weekly_avg_10y_lgbm_0529`: 周六 `11:30`（`30 11 * * 6`）。
-- 月度 `monthly_1y_rf_top30_0629` / `monthly_5y_knn_top20_0629` / `monthly_10y_rf_top5_0629`: 自然月 15 号 `18:00`（`0 18 15 * *`）。
-- 旧周度方案 `weekly_10y_d_overlay` / `weekly_5y_direct_production` / `weekly_7y_cross_d_overlay` 已退役。
+具体 active 方案、cron 和运行状态属于时点信息，只在 [CURRENT_STATUS.md](CURRENT_STATUS.md) 维护。Blackbox V2 当前最多为 `shadow + paused`，尚不进入正式 scheduler。
 
 同一业务 cron 下的 active 方案可按稳定顺序错峰启动，并通过 `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY` 限制同时进入算法子进程的数量。慢速 source-backed 方案可以在 `config.yaml` 的 `schedule.timeout_sec` 配置方案级执行 timeout 覆盖 executor 默认预算；这只影响子进程等待时间，不改变 `predict_date` / `feature_date` / `target_date`、业务 cron、并发规则或 source 算法逻辑。生产上修改调度配置后必须重启 launchd scheduler，并复核日志中每个 active 方案的 `Scheduled scheme ...` 注册记录。
 
@@ -134,7 +135,7 @@ Scheduler在每日08:30、19:00和23:45触发 actuals 更新任务；交易日 d
   → 选中方案后调用 GET /api/metrics/{registry_scheme_id}?start_month=2025-01&end_month=2025-05
   → 后端 metric_service:
       → T+1/T+5 JOIN t_scheme_actuals
-      → 周度 horizon=6 JOIN t_scheme_weekly_actuals
+      → Native V1 存量周度 horizon=6 JOIN t_scheme_weekly_actuals
       → 按月分组计算准确率指标
       → 返回结构化JSON
   → 前端渲染表格和图表
@@ -349,12 +350,15 @@ CREATE TABLE t_target_registry (
 
 ---
 
-## 4. 方案接口规范
+## 4. 双运行时接口边界
 
-### 4.1 config.yaml
+共享身份、日期、结果和生命周期以[双运行时共享方案契约](SCHEME_CONTRACT.md)为准。以下 `config + predict + core` 只描述 Native V1 存量兼容；所有后续新增方案使用 Blackbox V2 Contract 1.0。
+
+### 4.1 Native V1 config.yaml
 
 ```yaml
 scheme_id: t5_daily              # 方案实例唯一标识，与目录名一致
+runtime_type: native_adapter      # 仅存量维护
 name: "0529原始T5-LGBM投票基准"    # 显示名称
 description: "..."               # 描述
 horizon: 5                       # 预测跨度
@@ -378,7 +382,7 @@ entry_point: predict.run         # 入口函数
 - 运行期输入 artifact: `backtest_artifacts/runtime_inputs/{scheme_id}/`。
 - 历史回测 artifact: `backtest_artifacts/backtests/{benchmark_id}/`。
 
-### 4.2 predict.py接口
+### 4.2 Native V1 predict.py 接口
 
 ```python
 from shared.models import PredictionRecord
@@ -386,24 +390,28 @@ from shared.models import PredictionRecord
 def run(predict_date: str) -> list[PredictionRecord]:
     """
     执行预测。
-    
+
     Args:
         predict_date: 预测发出日期 (YYYY-MM-DD)
-    
+
     Returns:
         预测记录列表，每个tenor一条
     """
     ...
 ```
 
-### 4.3 PredictionRecord
+### 4.3 Blackbox V2 上游接口
+
+上游只交付 `{scheme_id}.py + {scheme_id}.json`，实现 `predict` 和 `backtest` CLI；平台传入七字段 Request 与三频只读快照，脚本输出五字段 Result。完整合同见[上游交付 SOP](sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。平台校验 Result 后补充 Metadata 和运行上下文，转换为统一 `PredictionRecord`。
+
+### 4.4 PredictionRecord
 
 ```python
 @dataclass
 class PredictionRecord:
     scheme_id: str
     target_tenor: str        # "1Y", "3Y", "5Y", "7Y", "10Y"
-    horizon: int             # daily 1/5, weekly 6
+    horizon: int             # 由运行时合同/存量配置定义；业务分列只认 task_type
     predict_date: str        # 信号发出日 / 调度运行日
     target_date: str         # 验证目标日，用于 actual join 和月度归属
     predicted_direction: int # 1=涨, -1=跌, 0=平
@@ -591,20 +599,15 @@ BOND_DB_NAME=bond_db
 
 ---
 
-## 8. 新增方案流程
+## 8. 方案入库与维护
 
-标准流程见 [SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md)。强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)。
+唯一入口见[方案入库导航](onboarding/README.md)。
 
-核心约定:
-
-1. `scheme_id` 表示具体方案实例，不表示 `Y标的 + task_type` 的任务格子。
-2. 一个 `scheme_id` 固定一个 `horizon`；同一算法若同时覆盖 T+1 和 T+5，应拆成两个方案目录。
-3. 新方案初始 `status: paused`，先通过 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`；只有 ActivationGate 可在授权后翻为 `active` 并同步 registry/version。
-4. `predict.py` 只返回 `PredictionRecord`，不直接写 `t_scheme_predictions`。
-5. 普通新增方案无需修改 scheduler、backend 或 frontend；若要参与当前历史排行，需要通过授权 backtest persist 写入独立 backtest 表。
-6. 新增方案必须遵守 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md)：回测 `predict_date=feature_date=T`；实盘日期按频率规则生成，日频为 `predict_date=T+1/feature_date=T`，周频由调度日反推 feature 周，月频自然 15 号方案保留自然 15 号 `predict_date`；灰度实盘与正式实盘通过 `prediction_phase` 区分。
-7. benchmark 验证必须用原始算法 source T 对齐平台 `feature_date`；跨灰度边界的样本必须按 `target_date` 与 benchmark role 分流，历史/source-original 行对 `t_backtest_predictions`，同执行口径 live 行才对 `t_scheme_predictions`，否则用 live-safe oracle。
-8. source `latest_oos` / batch 文件只作为来源证据；平台 canonical 回测和 live 验证必须按已声明 source 口径生成。若历史回测获批使用 source-original batch reproduction 例外，该例外不得扩散到 gray/live/scheduled live 的 `feature_date` 硬截止规则。
+- 新算法、新方案 ID、新 target、新 task type 和替代版本一律使用 Blackbox V2。
+- Native V1 只能维护 `deploy/onboarding_policy_v1.json` 登记的 29 个既有身份；StaticGate 和 ActivationGate 同时阻断清单外 Native ID。
+- Blackbox Intake 原样保存两文件，生成 `paused/draft` 平台配置，再执行七个自动 Gate。
+- 当前 Blackbox 平台能力止于 `shadow + paused`；生产晋级条件未完成前禁止 activate/live。
+- 两种运行时都遵守三日期、composite Registry 身份、失败不生成业务信号和写库授权边界。
 
 ---
 
@@ -618,8 +621,9 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 |----|-----------|------|----------|
 | 统一公共层 | `shared.data_service` | 唯一底层日/周/月 DB 导出标准 | 普通方案接入时不得修改其业务逻辑 |
 | 输入 artifact 层 | `shared.input_artifacts` | 唯一算法输入文件生成入口，负责导出 CSV、读回 DataFrame 和 metadata | adapter/backtest runner 不得绕过它直接拼输入 |
-| 算法层 | `schemes/{scheme_id}/core/` | 纯算法逻辑、legacy 原始脚本归档、DataFrame 输入函数 | 禁止写库、禁止调 scheduler、禁止生成运行期输入文件 |
-| Adapter 层 | `schemes/{scheme_id}/predict.py` | 解析预测上下文、调用公共输入层、调用 core、返回 `PredictionRecord` | 禁止直接写 `t_scheme_predictions` / `t_scheme_run_log` |
+| Native 算法层 | `schemes/{scheme_id}/core/` | 存量纯算法逻辑、legacy 原始脚本归档、DataFrame 输入函数 | 禁止新增 Native 身份、写库、调 scheduler 或生成运行期输入文件 |
+| Native Adapter 层 | `schemes/{scheme_id}/predict.py` | 存量方案解析上下文、调用公共输入层和 core、返回 `PredictionRecord` | 禁止直接写 `t_scheme_predictions` / `t_scheme_run_log` |
+| Blackbox Delivery 层 | `schemes/{scheme_id}/delivery/` | 保存上游原始 `.py + .json`，以隔离 CLI 执行 | 禁止平台改写脚本、算法访问网络/DB 或写入数据目录 |
 | 预测任务层 | `scheduler.scheme_runner` / `scheduler.executor` | dry-run JSON 输出、正式单方案执行、统一写库 | readiness 检查不得用 broad run-once 代替 |
 | 回测层 | `backtests/{scheme_id}_reproduction.py` | 历史复现、`--no-persist` 验证、受控写 `t_backtest_*` | 禁止把回测结果写入实盘预测表 |
 | 工具脚本层 | `scripts/` | 审计、对比、人工 admin、受控写库 | 禁止新增一次性绕路脚本作为方案运行入口 |
@@ -627,21 +631,13 @@ Bond Factor Lab 后续按“强约束 harness”管理方案入库。Harness 的
 
 ### 9.2 Harness Gate 顺序
 
-未来新增方案统一按以下 gate 推进:
+两种运行时共用 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness` 编排，但 Gate 实现和证据不同：
 
-1. Intake: 明确方案身份、频率、预测语义、输入文件和回测目标。
-2. Normalize: 将原始算法改造成 `schemes/{scheme_id}/core` 中的 DataFrame 输入逻辑。
-3. Input Gate: 确认 live adapter 和 backtest runner 都通过 `shared.input_artifacts` 生成输入。
-4. Static Gate: 静态扫描目录、命名、接口和危险导入。
-5. Unit Gate: 覆盖 core、adapter、公共输入层调用和 `PredictionRecord` 字段。
-6. Dry-run Gate: 通过 `scheduler.scheme_runner` 返回 JSON，且正式 prediction/run_log 行数不变，并校验 live 日期语义。
-7. Compare Gate: 对 source-backed 方案执行 original/current benchmark 严格对比，不能把 `skipped` 当作完成证据。
-8. Backtest Gate: 先 `--no-persist`，授权后才写 `t_backtest_*`，并用 protected table snapshot 阻断越界写库。
-9. API Readiness Gate: 激活前确认 paused registry row、latest backtest 已就绪，且 public API 不泄漏 paused 方案。
-10. Activation: 全部自动 gate 通过后，凭 token 从 `paused` 翻为 `active`，并同步 registry/version。
-11. API Gate: 激活后确认 active registry composite ID 已在 public API 可见。
-12. Live Gate: 激活后授权并显式传入 `prediction_phase`，只写该 `scheme_id` 的 prediction/run/log。
-13. Documentation: 更新状态、测试、回测和 harness 报告路径。
+1. Native maintenance：验证白名单、adapter/core 依赖、输入 artifact、source benchmark 和 `PredictionRecord`。
+2. Blackbox onboarding：验证两文件、Metadata、三频快照、CLI、确定性、分批/顺序一致性、截止隔离和 Result 转换。
+3. 自动段只生成 Harness 报告和控制面审计，不得写预测、回测等业务表。
+4. Native 的既有受控副作用继续沿用授权边界；Blackbox 当前只允许授权登记 `shadow + paused`。
+5. `api-readiness` 只声明其实际探测范围，不得把结构兼容证据写成真实 Registry/API/scheduler 探针。
 
 ### 9.3 CLI 入口
 

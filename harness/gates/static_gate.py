@@ -7,6 +7,7 @@ from typing import Any
 from harness.config_loader import load_config_raw, try_load_scheme_config
 from harness.context import GateContext
 from harness.contracts.config_schema import validate_config
+from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.contracts.import_rules import (
     CORE_DB_CALL_NAMES,
     CORE_FORBIDDEN_QUALIFIED_CALLS,
@@ -72,6 +73,19 @@ class StaticGate(Gate):
             config_errors.append("config.yaml is missing")
         evidence.append(Evidence("config_schema_errors", config_errors))
         errors.extend(f"{_display_path(config_path, project_root)}: {message}" for message in config_errors)
+
+        policy_errors = (
+            validate_onboarding_policy(
+                project_root,
+                ctx.scheme_id,
+                str(config_raw.get("runtime_type", "native_adapter")),
+            )
+            if config_raw
+            else []
+        )
+        evidence.append(Evidence("onboarding_policy_allowed", not policy_errors))
+        evidence.append(Evidence("onboarding_policy_errors", policy_errors))
+        errors.extend(policy_errors)
 
         predict_path = required_files["predict.py"]
         predict_facts = {"scheme_id_const_ok": False, "run_signature_ok": False, "shared_input_imported": False}

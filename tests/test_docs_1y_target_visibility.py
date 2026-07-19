@@ -9,7 +9,7 @@ AUTHORITATIVE_DOCS = [
     PROJECT_ROOT / "docs" / "ARCHITECTURE.md",
     PROJECT_ROOT / "docs" / "CURRENT_STATUS.md",
     PROJECT_ROOT / "docs" / "SCHEME_CONTRACT.md",
-    PROJECT_ROOT / "docs" / "sop" / "SCHEME_ONBOARDING_SOP.md",
+    PROJECT_ROOT / "docs" / "sop" / "BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md",
 ]
 
 

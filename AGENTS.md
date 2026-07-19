@@ -22,7 +22,7 @@
 - **前端**: 原生 HTML/CSS/JS（从 panda_quantflow 提取的因子实验室页面）
 - **数据库**: MySQL 8.0 (bond_db)
 - **部署**: Mac Studio, launchd 管理进程
-- **环境**: conda 双环境 —— 算法 `forecast_env`、后端/调度 `bond_factor_lab_service`
+- **环境**: 后端/调度使用 `bond_factor_lab_service`；Native 算法使用 `forecast_env`；Blackbox 执行环境由 `blackbox-v2-v1` Runtime Profile 唯一指定
 
 ## 目录结构约定
 
@@ -30,11 +30,14 @@
 bond-factor-lab/
 ├── shared/            # L1 统一公共层：data_service(唯一DB导出) / input_artifacts(唯一输入入口)
 │                      #    / calendar_service(唯一日历) / models / db_config / artifact_paths
-├── schemes/           # L2 算法层（约定式发现）
-│   └── {scheme_id}/
+├── schemes/           # L2 算法层（按 runtime_type 显式发现）
+│   ├── {native_id}/   # Native V1，仅维护政策清单中的存量方案
+│   │   ├── config.yaml
+│   │   ├── predict.py
+│   │   └── core/
+│   └── {blackbox_id}/ # Blackbox V2，所有后续新增方案
 │       ├── config.yaml
-│       ├── predict.py  # adapter，暴露 run(predict_date: str) -> list[PredictionRecord]
-│       └── core/       # 纯算法逻辑（零 DB、零写库、零跨方案），legacy_*.py 为归档
+│       └── delivery/{blackbox_id}.py + {blackbox_id}.json
 ├── scheduler/         # L3 预测任务层：discovery / scheme_runner / executor / repository / *_actuals_updater
 ├── backend/           # L4 FastAPI 后端 + 静态前端 serve
 ├── backtests/         # L4 历史复现 runner（写 t_backtest_*，支持 --no-persist）
@@ -54,16 +57,18 @@ bond-factor-lab/
 
 1. **输入单点**：算法输入只能经 `shared.input_artifacts` 产出；adapter / backtest runner 不得自拼 DB 输入。
 2. **写库单点**：只有 `scheduler.repository` / `backtests.repository` / `*_actuals_updater` 能写库；其余层零写库。
-3. **core 纯净**：`schemes/*/core/`（非 legacy）零 DB、零写库、零跨方案 import。
-4. **源算法保真**：source-backed 方案不得修改原始算法逻辑；时间起点、窗口、回测分组键、每组 `source_end/current_start/current_end`、特征、对齐、模型参数、投票/fallback、内部 score 映射都必须按原始脚本复现。平台只做输入/输出/日期/落库适配；若方向或内部模型数值不一致，先查输入 artifact 和 source 口径，不得用调参或改算法贴结果。原始算法能导出的 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence 等内部字段必须进入逐方案 benchmark 和 CompareGate；只做到最终方向一致不得宣称算法逻辑完全一致。若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，该 batch 只能验收 source-original backtest，不能直接当作 gray/scheduled live 逐日内部数值真值；live 必须保持 `feature_date` 硬截止并用同口径 live-safe oracle 验收。跨灰度边界的 `original_predictions_sample.csv` 必须先判定每行 benchmark role；`TOTAL_BAD=0` 只表示 live 行结构、版本和 source-compatible scope 通过，不表示 live 内部数值可与固定 source batch benchmark 混称“完全一致”。
+3. **Native core 纯净**：Native V1 的 `schemes/*/core/`（非 legacy）零 DB、零写库、零跨方案 import；Blackbox 不向平台暴露 core。
+4. **源算法保真**：Native source-backed 存量方案不得修改原始算法逻辑；时间起点、窗口、回测分组键、每组 `source_end/current_start/current_end`、特征、对齐、模型参数、投票/fallback、内部 score 映射都必须按原始脚本复现。平台只做输入/输出/日期/落库适配；若方向或内部模型数值不一致，先查输入 artifact 和 source 口径，不得用调参或改算法贴结果。原始算法能导出的 `vote_score`、baseline `*_score`/`*_vs`、`*_dir`/`*_sign`、probability/confidence 等内部字段必须进入逐方案 benchmark 和 CompareGate；只做到最终方向一致不得宣称算法逻辑完全一致。若 source-original batch 的 `source_end` 或 test window 晚于样本 `feature_date`，该 batch 只能验收 source-original backtest，不能直接当作 gray/scheduled live 逐日内部数值真值；live 必须保持 `feature_date` 硬截止并用同口径 live-safe oracle 验收。跨灰度边界的 `original_predictions_sample.csv` 必须先判定每行 benchmark role；`TOTAL_BAD=0` 只表示 live 行结构、版本和 source-compatible scope 通过，不表示 live 内部数值可与固定 source batch benchmark 混称“完全一致”。Blackbox 的算法内部保真由上游负责，平台只验收接口、确定性、截止隔离和标准结果，不反编译或改写算法脚本。
 
-source-backed 方案入库或修复前必须做算法改动分级：L0 只允许平台 I/O、日期字段、extra、缓存、落库和审计适配；L1 是 source runner 明确暴露的上下文参数传递，必须逐项证明没有移动未 patch 的固定算法锚点；L2 是算法内部改动，默认禁止并 fail-closed。移动 IC screening cutoff、把 source 两段窗口改成单段窗口、把 target-date 月分组改成 feature 月或全局 `source_end`、改变特征列顺序、VT/selector/streak/fallback、内部 score 映射，都属于 L2；除非用户明确批准为新实验方案，不得纳入原始方案修复。
+Native source-backed 存量方案修复前必须做算法改动分级：L0 只允许平台 I/O、日期字段、extra、缓存、落库和审计适配；L1 是 source runner 明确暴露的上下文参数传递，必须逐项证明没有移动未 patch 的固定算法锚点；L2 是算法内部改动，默认禁止并 fail-closed。移动 IC screening cutoff、把 source 两段窗口改成单段窗口、把 target-date 月分组改成 feature 月或全局 `source_end`、改变特征列顺序、VT/selector/streak/fallback、内部 score 映射，都属于 L2；新算法或替代版本必须创建独立 Blackbox V2 trial。
 
 完整依赖方向规则见 [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md)；源算法保真规则见 [docs/SOURCE_ALGORITHM_FIDELITY.md](docs/SOURCE_ALGORITHM_FIDELITY.md)；边界总纲见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
 
 ## 方案接口规范
 
-每个方案在 `predict.py` 暴露：
+运行接口由 `runtime_type` 显式分派，不得根据目录内容猜测。
+
+Native V1 存量方案在 `predict.py` 暴露：
 
 ```python
 SCHEME_ID = "<scheme_id>"   # 必须 == 目录名 == config.scheme_id
@@ -77,7 +82,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     """
 ```
 
-完整契约（config.yaml schema、extra 必填键、core 约束，机器可校验）见 [docs/SCHEME_CONTRACT.md](docs/SCHEME_CONTRACT.md)。
+Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 Contract 1.0 的 `predict/backtest` CLI。共享契约见 [docs/SCHEME_CONTRACT.md](docs/SCHEME_CONTRACT.md)，Native 专属契约见 [docs/native_v1/SCHEME_CONTRACT.md](docs/native_v1/SCHEME_CONTRACT.md)，Blackbox 上游契约见 [docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。
 
 ## 方案身份与 Registry
 
@@ -99,16 +104,24 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 ## 方案入库流程（强约束 harness）
 
-新增方案**不改框架代码**：放进 `schemes/{scheme_id}/`，再由 harness 按 Gate 驱动。
+所有场景必须先读[统一入库导航](docs/onboarding/README.md)：
+
+- 新算法、新方案 ID、新目标、新任务和替代版本：只走 Blackbox V2 两文件 Intake。
+- 现有 Native V1 故障、数据口径或保真修复：只操作 `deploy/onboarding_policy_v1.json` 中的存量 ID。
+- Native StaticGate 与 ActivationGate 都必须拒绝清单外的新 Native 身份。
 
 ```bash
+# Blackbox V2 收包
+python -m harness intake-blackbox --delivery-dir <two-file-dir> --project-root . \
+  --runtime-profile blackbox-v2-v1 --data-schema-version data-bridge-v1
+
+# 两种运行时共用的自动 Gate 编排
 python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # 自动段：static → input → unit → dry-run → compare → backtest → api-readiness（fail-fast，退出码 0/1/2）
-# 副作用段（backtest persist / live 写库 / activate）不在 all 内，必须显式 --authorize <TOKEN>（fail-closed）
-# 激活后再单独运行 active-only `api` gate 验收前端/API 可见性。
+# 副作用段不在 all 内，必须显式授权且 fail-closed
 ```
 
-新增方案前先读 T0 强约束范式 [docs/sop/SCHEME_ONBOARDING_T0.md](docs/sop/SCHEME_ONBOARDING_T0.md)，再按 [docs/sop/SCHEME_ONBOARDING_SOP.md](docs/sop/SCHEME_ONBOARDING_SOP.md) 执行；harness 边界见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
+当前 Blackbox V2 最多登记为 `shadow + paused`，不得宣称 active/live；平台操作见 [docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。Native 存量维护见 [docs/sop/NATIVE_V1_MAINTENANCE_SOP.md](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)。Harness 边界见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
 
 ## 数据库表
 
@@ -135,7 +148,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 
 1. 所有方案预测结果写入同一张 MySQL 表，通过 base `scheme_id + target_tenor + horizon + target_date` 隔离；前端业务身份由 registry composite `scheme_id` 表达。
 2. 准确率指标由后端实时计算（JOIN predictions 和 actuals 表）。
-3. 方案通过约定式目录结构自动发现，新增方案无需改动框架代码。
+3. 方案按显式 `runtime_type` 发现和分派；后续新增方案只允许 Blackbox V2，Native V1 仅维护政策清单中的存量身份。
 4. 前端构建为静态文件，由 FastAPI serve。
 5. 强约束分层 + 横切 harness：依赖只向下，副作用（写库/激活）须授权，StaticGate 机器守护依赖规则。
 6. 算法在 `forecast_env` 子进程运行，与服务环境依赖隔离（JSON stdout 解耦）。

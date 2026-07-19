@@ -1,6 +1,19 @@
 # 当前状态
 
-**更新日期**: 2026-07-14
+**文档状态**：`CURRENT`
+**适用运行时**：`native_adapter`、`blackbox_v2`
+**目标读者**：项目负责人、平台运维和审计人员
+**最后核验日期**：2026-07-19
+
+## 2026-07-19 双运行时入库政策
+
+- 当前仓库共有 29 个 `native_adapter` 方案和 1 个 `blackbox_v2` 试验方案；版本化清单见 `deploy/onboarding_policy_v1.json`。
+- 29 个 Native V1 方案保持现有 Registry、数据库、scheduler 和历史结果，只允许故障、数据口径、复现性和经批准的保真维护。
+- 后续新算法、新方案 ID、新目标、新任务和替代版本一律通过 Blackbox V2 两文件交付；StaticGate 与 ActivationGate 均阻断清单外 Native ID。
+- 当前 Blackbox 试验方案 `weekly_10y_lgbm_point_v1` 仍为 `shadow + paused`，未激活、未进入生产 scheduler、未写入预测或回测业务表。
+- Blackbox V2 生产晋级仍受[生产准备清单](blackbox_v2/PRODUCTION_READINESS.md)阻断；本轮文档和政策门禁整理不改变任何方案运行状态。
+
+所有入库场景从[统一入库导航](onboarding/README.md)进入。下方带日期记录是历史时点事实；其中旧“新增 Native 方案”链接或操作方式不再代表当前政策。
 
 ## 2026-07-14 投票方案无信号转平
 

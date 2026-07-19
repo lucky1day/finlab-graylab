@@ -1,4 +1,5 @@
 scheme_id: liwei_0616_5y01_full_oos_k3_div_k10
+runtime_type: native_adapter
 name: "liwei_0616 5Y_01 原脚本Full-OOS"
 description: "models-liwei-0616 5Y_01_cons_SDA_k_3_DIV_K_10 原脚本；STD/DIV/ACCWT 三基线 k=3 共识，DIV_K=10 streak-break fallback；2024-01-01 起单段连续 Full-OOS；日频 T+5。"
 horizon: 5

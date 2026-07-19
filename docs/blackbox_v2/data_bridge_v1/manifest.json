@@ -1,0 +1,27 @@
+{
+  "schema_version": "data-bridge-v1",
+  "authoritative_schema": "shared/blackbox_v2/data_bridge_v1_schema.json",
+  "authoritative_schema_sha256": "f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc",
+  "sample_type": "synthetic",
+  "generated_on": "2026-07-19",
+  "files": {
+    "daily_output.sample.csv": {
+      "source_filename": "daily_output.csv",
+      "key": "date",
+      "columns": 774,
+      "rows": 2
+    },
+    "weekly_output.sample.csv": {
+      "source_filename": "weekly_output.csv",
+      "key": "week_id",
+      "columns": 575,
+      "rows": 2
+    },
+    "monthly_output.sample.csv": {
+      "source_filename": "monthly_output.csv",
+      "key": "month_id",
+      "columns": 123,
+      "rows": 2
+    }
+  }
+}

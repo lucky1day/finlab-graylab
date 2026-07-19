@@ -1,4 +1,5 @@
 scheme_id: weekly_avg_5y_lgbm_0529
+runtime_type: native_adapter
 name: "0529周平均5Y LGBM"
 description: "0529 原始周平均 W5Y LGBM 方案；actual 方向按目标周平均收益率相对当前周平均收益率计算"
 horizon: 6

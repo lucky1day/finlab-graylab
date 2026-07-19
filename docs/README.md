@@ -1,59 +1,101 @@
-# 文档索引（Bond Factor Lab Docs）
+# Bond Factor Lab 文档索引
 
-**更新日期**: 2026-07-14
+**文档状态**：`CURRENT`
+**适用运行时**：`native_adapter`、`blackbox_v2`
+**目标读者**：所有项目参与者
+**最后核验日期**：2026-07-19
 
-> 当前文档入口以本文为准。历史检查报告只作为带日期的审计证据保留，不是当前状态或现行规则来源；新增或修复方案只读现行规范，不从历史报告推导规则。
+本文是仓库文档总入口；所有方案入库或维护必须从[统一入库导航](onboarding/README.md)开始。
 
-> 发布分支规则：`master` 是生产分支和远程默认分支。验证完成的开发分支只有在用户明确确认后，才能合并或覆盖到 `master` 并推送远程；agent 不得自行决定发布到 `master`。项目不再维护第二生产分支。
+## 1. 当前政策
 
-## 架构
+- Native V1：只维护 `deploy/onboarding_policy_v1.json` 中的 29 个存量方案。
+- Blackbox V2：所有后续新算法、新方案 ID、新目标、新任务和替代版本的唯一入库方式。
+- Blackbox V2 当前最多进入 `shadow + paused`；生产晋级条件尚处于阻塞草案。
+- 具体方案、generation、snapshot 和 Harness run 只写入状态文档或追加式试验台账，不写入通用 SOP。
 
-| 文档 | 内容 |
-|------|------|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 系统架构：部署拓扑、DB schema、API 契约、数据流 |
-| [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md) | 代码架构主蓝图：分层模型、包依赖方向、运行时调用图 |
-| [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) | 强约束 harness 边界总纲：分层边界、DB 安全边界 |
-| [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) | 源算法保真强约束：source-backed 方案不得改变原始算法逻辑 |
-| [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) | 方案契约：config.yaml schema、predict.py 接口、core 约束 |
-| [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) | 预测日期与实盘阶段强制语义：`predict_date` / `feature_date` / `target_date` / `prediction_phase` |
-| [SCHEME_PARADIGM.md](SCHEME_PARADIGM.md) | 方案生命周期目标态提案（DRAFT）：尚未落地的接口、目录和 gate 不构成当前强制契约 |
+## 2. 文档状态
 
-> Registry 方案身份已收敛为单表 per-tenor 语义：前端和业务使用 `t_scheme_registry.scheme_id = {base_scheme_id}__h{horizon}__{target_tenor}`；算法目录、scheduler 和预测记录仍使用 base `scheme_id`。前端任务格子由 registry `target_tenor + task_type` 定义，`task_type ∈ {T+1, T+5, weekly_point, weekly_average, monthly}`，不再由 `frequency/horizon` 隐式推断。细节见 [ARCHITECTURE.md](ARCHITECTURE.md) §3.4 / §5 与 [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md)。
+每份当前治理文档使用以下状态之一：
 
-> 当前入库 `stage all` 固定为 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。`api-readiness` 是激活前 paused registry row 验收；active-only `api` gate、`live` 写库、backtest persist 和 activate 都是显式授权或激活后的步骤。
+| 状态 | 含义 |
+|---|---|
+| `CURRENT` | 当前有效规范或操作手册 |
+| `LEGACY_MAINTENANCE` | 只适用于 Native V1 存量维护 |
+| `BLOCKED_DRAFT` | 尚有实现阻塞，不可作为可执行 SOP |
+| `HISTORICAL` | 仅供审计，不得用于当前验收 |
 
-> Source-backed 方案必须先遵守 [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md)：不得修改原始算法逻辑，时间起点、窗口、特征、对齐、模型参数、投票/fallback 和内部 score 映射都必须按原始脚本复现。外部 `latest_oos` / batch 结果是否作为 source-original reproduction、strict PIT 或平台 live-like PIT 变体，必须先分类并留证；所有改动先分级为 L0/L1/L2，L2 算法内部改动默认禁止。平台变体不得冒充原始 source 输出。跨灰度边界的 benchmark 必须按 row role 拆分，固定 future `source_end` 的 source batch 不能直接当作 live-safe 逐日数值真值。
+历史检查报告、审计报告和实施计划保持原文；日期结论不自动升级为当前规则。
 
-> 月度方案有独立调度语义：每个自然月 15 号预测一次，无论 15 号是否交易日；`predict_date` 保留自然 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。灰度/实盘边界按方案级 `target_date` 判定；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为 `gray_live`，历史回测 latest 截止到 `target_date=2026-05-15`。
+## 3. 入库与维护
 
-> 日度 0629 三方案（`daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629`、`daily_10y_lgbm_10y04_0629`）已完成 SOP 收口。历史回测统一按 `feature_date >= 2025-01-01` 且 `target_date < 2026-06-01` 输出，latest backtest 每方案 337 行；`target_date=2026-06-01..2026-07-01` 的 22 个交易日已作为 `gray_live` 补齐。live 顶层 `model_version` 必须适配 DB `VARCHAR(64)`，完整 source model id 应放入 `extra` 审计字段。
+| 文档 | 状态 | 用途 |
+|---|---|---|
+| [统一入库导航](onboarding/README.md) | CURRENT | 判断使用 Native 维护还是 Blackbox 新增流程 |
+| [Blackbox 上游交付 SOP](sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) | CURRENT | Contract 1.0 两文件交付、CLI、输入输出和自验 |
+| [Blackbox 平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | CURRENT | Contract 1.0 Intake 至 shadow 的平台操作 |
+| [Native V1 文档域](native_v1/README.md) | LEGACY_MAINTENANCE | 29 个存量方案的修复与验证入口 |
+| [Blackbox 生产晋级条件](blackbox_v2/PRODUCTION_READINESS.md) | BLOCKED_DRAFT | 从 shadow 到 active/live 的实现阻塞项，不可执行 |
 
-> 2026-07-06/11 运维复审已完成：07/06 scheduler miss 已受控补跑可产出方案；stale actual tail 已清理；07/07 进一步发现 `t1_daily/t5_daily` 在源水位不足时复用旧 `feature_date=2026-07-03`，其中 `t5_daily` 因业务唯一键覆盖 07/06 明细。已在 executor 增加 daily live 日期语义 fail-closed，在 `scripts/check_production_daily_health.py` 增加 run/prediction 明细一致性与 stale live 检查，并完成生产数据修复。07/09 补齐 scheduler launchd 运行态基线：`RunAtLoad + KeepAlive`、`BOND_SCHEDULER_STARTUP_CATCHUP=1`，启动时会补跑当天已过 cron 且无终态 run 的 active 任务；actual 刷新扩展为 `08:30/19:00/23:45`。07/11 修复周末 actual 补刷缺口：非交易日 daily/weekly actuals 刷新到上一交易日，避免周五源数据晚于 `23:45` 入库后 T+1 最新验证卡住。当前 07/10 T+1 预测与 actual 均已齐。详见 [CURRENT_STATUS.md](CURRENT_STATUS.md) 与 [OPS_AUDIT_2026-07-06.md](OPS_AUDIT_2026-07-06.md)。
+旧 `SCHEME_ONBOARDING_*.md` 和 `SCHEME_POST_ONBOARDING_TEST_SOP.md` 仅保留历史跳转，不是当前正文。
 
-## 操作
-
-| 文档 | 内容 |
-|------|------|
-| [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) | 新增方案前必读 T0 强约束范式（daily / weekly / monthly 通用） |
-| [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md) | 新增方案入库 SOP（含 2026-06-10 修订的数据口径规则） |
-| [sop/SCHEME_POST_ONBOARDING_TEST_SOP.md](sop/SCHEME_POST_ONBOARDING_TEST_SOP.md) | 入库后测试验证 SOP |
-| [CLOUD_ENVIRONMENT.md](CLOUD_ENVIRONMENT.md) | 云服务器第一步：Conda 双环境复刻、依赖快照和只读烟测 |
-
-日常生产巡检：`scripts/check_production_daily_health.py` 是只读健康检查入口，用于发现交易日日频预测整体缺失、active 日频方案缺成功 run、run log 成功数与 prediction 明细不一致、active 日频 prediction 复用旧 feature/target、actual 晚于源表水位等问题；用法见 [deploy/README.md](../deploy/README.md) §监控。
-
-## 状态与参考
+## 4. 共享规范
 
 | 文档 | 内容 |
-|------|------|
-| [CURRENT_STATUS.md](CURRENT_STATUS.md) | 项目当前状态（单一来源） |
-| [OPS_AUDIT_2026-07-06.md](OPS_AUDIT_2026-07-06.md) | 2026-07-06 运维深度审计报告：发现、验证、修复、残余风险和后续处置 |
-| [check/bond_factor_lab_all_schemes_system_check_20260628.md](check/bond_factor_lab_all_schemes_system_check_20260628.md) | 2026-06-28 全方案历史检查快照（非当前状态） |
-| [check/bond_factor_lab_system_check_against_old_runbook_20260628.md](check/bond_factor_lab_system_check_against_old_runbook_20260628.md) | 2026-06-28 旧 runbook 对照检查快照（非当前规范） |
+|---|---|
+| [双运行时共享方案契约](SCHEME_CONTRACT.md) | 身份、任务、日期、结果、生命周期和运行时分派 |
+| [系统架构](ARCHITECTURE.md) | 部署、数据、Registry、API 和双运行时执行流 |
+| [代码架构](CODE_ARCHITECTURE.md) | 分层、依赖方向、输入/写库单点和扩展边界 |
+| [Harness 架构](HARNESS_ARCHITECTURE.md) | Gate、授权、证据和副作用边界 |
+| [预测语义](PREDICTION_SEMANTICS.md) | 三日期、任务组合、灰度和实盘语义 |
+| [源算法保真](SOURCE_ALGORITHM_FIDELITY.md) | Native 与 Blackbox 的不同保真责任 |
+| [Blackbox 平台架构](BLACKBOX_V2_PLATFORM.md) | 两文件执行器、DataBridge 快照和结果转换 |
 
-## 阅读路径
+## 5. 运行时专属文档
 
-- **新人入门** → CODE_ARCHITECTURE → ARCHITECTURE → PREDICTION_SEMANTICS → SOURCE_ALGORITHM_FIDELITY → SCHEME_CONTRACT → CURRENT_STATUS
-- **新增方案** → 先读 [sop/SCHEME_ONBOARDING_T0.md](sop/SCHEME_ONBOARDING_T0.md) → 再读 [PREDICTION_SEMANTICS.md](PREDICTION_SEMANTICS.md) + [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) + [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) + [sop/SCHEME_ONBOARDING_SOP.md](sop/SCHEME_ONBOARDING_SOP.md)，用 `python -m harness onboard {scheme_id} --stage all` 驱动 pre-activation gates
-- **改 harness** → HARNESS_ARCHITECTURE → CODE_ARCHITECTURE → 对应 tests
-- **讨论平台目标态** → SCHEME_PARADIGM；其中未落地条款必须先走独立平台改造评审，不得直接用于拒绝或改写现有方案
-- **了解当前状态** → CURRENT_STATUS
+### Native V1
+
+- [存量维护 T0](sop/NATIVE_V1_MAINTENANCE_T0.md)
+- [存量维护 SOP](sop/NATIVE_V1_MAINTENANCE_SOP.md)
+- [修改后验证 SOP](sop/NATIVE_V1_POST_CHANGE_TEST_SOP.md)
+- [Native 专属契约](native_v1/SCHEME_CONTRACT.md)
+- [历史档案](native_v1/archive/README.md)
+
+### Blackbox V2
+
+- [文档管理](blackbox_v2/README.md)
+- [DataBridge V1 契约与样例](blackbox_v2/data_bridge_v1/README.md)
+- [追加式试验台账](blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)
+- [生产晋级条件](blackbox_v2/PRODUCTION_READINESS.md)
+
+版本名称必须分开理解：Blackbox V2 是运行时代际；`schema_version=1.0` 是接口合同；`data-bridge-v1` 是数据 Schema；`blackbox-v2-v1` 是 Runtime Profile。
+
+## 6. 当前状态与历史证据
+
+| 文档 | 用途 |
+|---|---|
+| [当前状态](CURRENT_STATUS.md) | 方案数量、状态和生产运行结论的当前事实源 |
+| [Blackbox 试验台账](blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md) | generation、snapshot、run 和整改项的追加记录 |
+| [2026-07-06 运维审计](OPS_AUDIT_2026-07-06.md) | 带日期的历史审计证据 |
+| [历史系统检查](check/bond_factor_lab_all_schemes_system_check_20260628.md) | 2026-06-28 历史快照 |
+| [旧 runbook 对照检查](check/bond_factor_lab_system_check_against_old_runbook_20260628.md) | 2026-06-28 历史对照 |
+
+`SCHEME_PARADIGM.md` 已归档为 Native 目标态历史草案，不在当前阅读路径中。
+
+## 7. 阅读路径
+
+- 新算法工程师：只读 [Blackbox 上游交付 SOP](sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。
+- 平台接收新方案：先读[统一入库导航](onboarding/README.md)，再执行 [Blackbox 平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
+- 维护现有 Native：先读 [Native 存量维护 T0](sop/NATIVE_V1_MAINTENANCE_T0.md)，确认在白名单且不是算法升级。
+- 修改 Harness：依次读[共享方案契约](SCHEME_CONTRACT.md)、[Harness 架构](HARNESS_ARCHITECTURE.md)和对应测试。
+- 查看方案状态：读[当前状态](CURRENT_STATUS.md)；Blackbox 单次实验细节读[试验台账](blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)。
+
+## 8. 文档维护规则
+
+1. 通用规则只写在 CURRENT 契约、架构或 SOP 中。
+2. 运行时专属细节不得复制到共享文档形成第二份权威正文。
+3. 具体运行记录只追加，不覆盖历史时点。
+4. 相对链接必须可解析，旧入口只能跳转到当前文档或历史归档。
+5. `AGENTS.md` 与 `CLAUDE.md` 必须保持字节一致。
+6. 机器契约与文档冲突时先记录实现缺口，不得用文字宣称尚未具备的能力。
+7. 发布到 `master` 仍需用户明确确认；文档整理不改变分支发布政策。

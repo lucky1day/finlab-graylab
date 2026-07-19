@@ -1,0 +1,16 @@
+{
+  "profile_name": "blackbox-v2-v1",
+  "conda_env": "forecast_env_blackbox_v1",
+  "data_schema_version": "data-bridge-v1",
+  "contract_version": "1.0",
+  "cpu_threads": 8,
+  "memory_limit_bytes": 68719476736,
+  "predict_timeout_sec": 3600,
+  "backtest_timeout_sec": 14400,
+  "max_batch_requests": 100,
+  "max_output_bytes": 52428800,
+  "max_log_bytes": 5242880,
+  "sandbox_enabled": true,
+  "network_access": false,
+  "database_access": false
+}
