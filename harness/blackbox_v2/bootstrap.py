@@ -9,7 +9,10 @@ from pathlib import Path
 from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
-from scheduler.repository import bootstrap_blackbox_control_plane
+from scheduler.repository import (
+    BlackboxTargetRegistryBaselineError,
+    bootstrap_blackbox_control_plane,
+)
 
 
 class BlackboxBootstrapGate(Gate):
@@ -59,6 +62,30 @@ class BlackboxBootstrapGate(Gate):
                 cfg,
                 expected_schema=expected_schema,
             )
+        except BlackboxTargetRegistryBaselineError as exc:
+            failed_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            failed_payload = {
+                **prepared_payload,
+                "status": "failed",
+                "failed_at": failed_at,
+                "target_registry_baseline": exc.summary,
+            }
+            _atomic_write_json(audit_path, failed_payload)
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.FAILED,
+                passed=False,
+                evidence=[
+                    Evidence("target_registry_baseline", exc.summary),
+                    Evidence("activation_performed", False),
+                    Evidence("business_writes_performed", False),
+                    Evidence("audit_path", str(audit_path)),
+                ],
+                errors=[str(exc)],
+                started_at=started_at,
+                finished_at=utc_now(),
+                report_path=audit_path,
+            )
         finally:
             if hasattr(engine, "dispose"):
                 engine.dispose()
@@ -71,6 +98,7 @@ class BlackboxBootstrapGate(Gate):
             "scheme_id": state.scheme_id,
             "scheme_version": state.scheme_version,
             "preflight_table_counts": state.table_counts,
+            "target_registry_baseline": state.target_registry_baseline,
             "target_state": {
                 "version": state.version_status,
                 "registry": state.registry_status,
@@ -88,6 +116,7 @@ class BlackboxBootstrapGate(Gate):
                 Evidence("version_status", state.version_status),
                 Evidence("registry_status", state.registry_status),
                 Evidence("preflight_table_counts", state.table_counts),
+                Evidence("target_registry_baseline", state.target_registry_baseline),
                 Evidence("activation_performed", False),
                 Evidence("business_writes_performed", False),
                 Evidence("audit_path", str(audit_path)),

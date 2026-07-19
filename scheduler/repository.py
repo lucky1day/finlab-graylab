@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -49,7 +50,40 @@ BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
     "t_harness_runs",
     "t_harness_gate_results",
 )
+BLACKBOX_BOOTSTRAP_BASELINE_TABLES = ("t_target_registry",)
+BLACKBOX_BOOTSTRAP_GUARDED_TABLES = (
+    *BLACKBOX_BOOTSTRAP_EMPTY_TABLES,
+    *BLACKBOX_BOOTSTRAP_BASELINE_TABLES,
+)
+_TARGET_REGISTRY_BASELINE_VERSION = "migrations-003-013"
+_TARGET_REGISTRY_BUSINESS_FIELDS = (
+    "target_code",
+    "display_name",
+    "asset_class",
+    "target_type",
+    "sort_order",
+    "status",
+    "extra",
+)
+_TARGET_REGISTRY_BASELINE = (
+    ("1Y", "1Y国债活跃", "bond", "active_treasury", 10, "active", {"legacy_tenor": "1Y"}),
+    ("3Y", "3Y国债活跃", "bond", "active_treasury", 30, "active", {"legacy_tenor": "3Y"}),
+    ("5Y", "5Y国债活跃", "bond", "active_treasury", 50, "active", {"legacy_tenor": "5Y"}),
+    ("7Y", "7Y国债活跃", "bond", "active_treasury", 70, "active", {"legacy_tenor": "7Y"}),
+    ("10Y", "10Y国债活跃", "bond", "active_treasury", 100, "active", {"legacy_tenor": "10Y"}),
+)
 _BLACKBOX_CERTIFICATION_SCHEMA = re.compile(r"^bbv2_cert_[A-Za-z0-9_]+$")
+
+
+class BlackboxTargetRegistryBaselineError(RuntimeError):
+    """携带 target_registry 失败证据的 bootstrap 阻断。"""
+
+    def __init__(self, summary: dict[str, object]) -> None:
+        self.summary = summary
+        super().__init__(
+            "target_registry baseline mismatch: "
+            + json.dumps(summary, ensure_ascii=False, sort_keys=True)
+        )
 
 
 @dataclass(frozen=True)
@@ -95,6 +129,7 @@ class BlackboxBootstrapState:
     version_status: str
     registry_status: str
     table_counts: dict[str, int]
+    target_registry_baseline: dict[str, object]
 
 
 def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> str:
@@ -157,6 +192,7 @@ def bootstrap_blackbox_control_plane(
                 "Blackbox bootstrap test Schema must be empty: "
                 + ", ".join(f"{table}={count}" for table, count in sorted(nonempty.items()))
             )
+        target_registry_baseline = _validate_target_registry_baseline_conn(conn)
 
         _upsert_scheme_version_conn(
             conn,
@@ -205,7 +241,122 @@ def bootstrap_blackbox_control_plane(
         version_status="draft",
         registry_status="paused",
         table_counts=table_counts,
+        target_registry_baseline=target_registry_baseline,
     )
+
+
+def _validate_target_registry_baseline_conn(conn: Connection) -> dict[str, object]:
+    rows = (
+        conn.execute(
+            text(
+                "SELECT target_code, display_name, asset_class, target_type, "
+                "sort_order, status, extra "
+                "FROM t_target_registry "
+                "ORDER BY sort_order, target_code FOR UPDATE"
+            )
+        )
+        .mappings()
+        .all()
+    )
+    expected = [
+        dict(zip(_TARGET_REGISTRY_BUSINESS_FIELDS, values))
+        for values in _TARGET_REGISTRY_BASELINE
+    ]
+    try:
+        actual = [_normalize_target_registry_row(row) for row in rows]
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise BlackboxTargetRegistryBaselineError(
+            {
+                "status": "failed",
+                "table": "t_target_registry",
+                "baseline_version": _TARGET_REGISTRY_BASELINE_VERSION,
+                "business_fields": list(_TARGET_REGISTRY_BUSINESS_FIELDS),
+                "expected_count": len(expected),
+                "actual_count": len(rows),
+                "error": f"malformed row: {exc}",
+            }
+        ) from exc
+    if actual != expected:
+        raise BlackboxTargetRegistryBaselineError(
+            _target_registry_baseline_diff(expected, actual)
+        )
+    return {
+        "status": "passed",
+        "table": "t_target_registry",
+        "baseline_version": _TARGET_REGISTRY_BASELINE_VERSION,
+        "business_fields": list(_TARGET_REGISTRY_BUSINESS_FIELDS),
+        "row_count": len(actual),
+        "target_codes": [str(row["target_code"]) for row in actual],
+        "sha256": _target_registry_digest(actual),
+    }
+
+
+def _normalize_target_registry_row(row: Mapping[str, object]) -> dict[str, object]:
+    extra = row.get("extra")
+    if isinstance(extra, bytes):
+        extra = extra.decode("utf-8")
+    if isinstance(extra, str):
+        extra = json.loads(extra)
+    if not isinstance(extra, dict):
+        raise TypeError(f"extra must be a JSON object, got {type(extra).__name__}")
+    sort_order = int(row.get("sort_order"))
+    return {
+        "target_code": row.get("target_code"),
+        "display_name": row.get("display_name"),
+        "asset_class": row.get("asset_class"),
+        "target_type": row.get("target_type"),
+        "sort_order": sort_order,
+        "status": row.get("status"),
+        "extra": extra,
+    }
+
+
+def _target_registry_digest(rows: list[dict[str, object]]) -> str:
+    payload = json.dumps(
+        rows,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _target_registry_baseline_diff(
+    expected: list[dict[str, object]],
+    actual: list[dict[str, object]],
+) -> dict[str, object]:
+    expected_by_code = {str(row["target_code"]): row for row in expected}
+    actual_by_code = {str(row["target_code"]): row for row in actual}
+    actual_codes = [str(row["target_code"]) for row in actual]
+    duplicate_codes = sorted(
+        {code for code in actual_codes if actual_codes.count(code) > 1}
+    )
+    shared_codes = sorted(set(expected_by_code) & set(actual_by_code))
+    changed = {
+        code: {
+            field: {
+                "expected": expected_by_code[code][field],
+                "actual": actual_by_code[code][field],
+            }
+            for field in _TARGET_REGISTRY_BUSINESS_FIELDS
+            if expected_by_code[code][field] != actual_by_code[code][field]
+        }
+        for code in shared_codes
+    }
+    return {
+        "status": "failed",
+        "table": "t_target_registry",
+        "baseline_version": _TARGET_REGISTRY_BASELINE_VERSION,
+        "business_fields": list(_TARGET_REGISTRY_BUSINESS_FIELDS),
+        "expected_count": len(expected),
+        "actual_count": len(actual),
+        "expected_sha256": _target_registry_digest(expected),
+        "actual_sha256": _target_registry_digest(actual),
+        "missing_target_codes": sorted(set(expected_by_code) - set(actual_by_code)),
+        "extra_target_codes": sorted(set(actual_by_code) - set(expected_by_code)),
+        "duplicate_target_codes": duplicate_codes,
+        "changed": {code: fields for code, fields in changed.items() if fields},
+    }
 
 
 def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> None:
