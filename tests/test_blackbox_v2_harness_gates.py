@@ -14,6 +14,27 @@ import pandas as pd
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
+    def test_future_row_probe_appends_parseable_daily_date_after_snapshot_max(self) -> None:
+        from harness.blackbox_v2.gates import _append_future_rows
+
+        frames = _snapshot_frames()
+        frames["daily_output.csv"]["date"] = pd.to_datetime(
+            frames["daily_output.csv"]["date"]
+        ).dt.strftime("%Y/%m/%d %H:%M")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            for filename, frame in frames.items():
+                frame.to_csv(data_dir / filename, index=False)
+
+            original_max = pd.to_datetime(frames["daily_output.csv"]["date"]).max()
+            counts = _append_future_rows(data_dir)
+            mutated = pd.read_csv(data_dir / "daily_output.csv")
+            mutated_dates = pd.to_datetime(mutated["date"], errors="raise")
+
+        self.assertEqual(counts["daily_output.csv"], 1)
+        self.assertGreater(mutated_dates.iloc[-1], original_max)
+        self.assertTrue(mutated_dates.is_monotonic_increasing)
+
     def test_no_persist_backtest_supports_explicit_certification_sizes_and_batch_invariance(self) -> None:
         from harness.blackbox_v2.gates import BlackboxBacktestGate, InputState
         from scheduler.blackbox_v2_runner import RuntimeProfile

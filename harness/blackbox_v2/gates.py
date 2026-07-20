@@ -1007,7 +1007,7 @@ def _call_name(node: ast.AST) -> str:
 
 def _append_future_rows(data_dir: Path) -> dict[str, int]:
     key_values = {
-        "daily_output.csv": ("date", "2999-12-31"),
+        "daily_output.csv": ("date", None),
         "weekly_output.csv": ("week_id", "999998"),
         "monthly_output.csv": ("month_id", "999998"),
     }
@@ -1018,6 +1018,14 @@ def _append_future_rows(data_dir: Path) -> dict[str, int]:
         frame = pd.read_csv(path, dtype=str)
         if frame.empty or key not in frame.columns:
             raise ValueError(f"cannot build future-row probe for {filename}")
+        if filename == "daily_output.csv":
+            parsed_dates = pd.to_datetime(frame[key], errors="raise")
+            last_raw_date = str(frame[key].iloc[-1]).strip()
+            date_format = "%Y/%m/%d" if "/" in last_raw_date else "%Y-%m-%d"
+            if " " in last_raw_date:
+                time_text = last_raw_date.rsplit(" ", 1)[1]
+                date_format += " %H:%M:%S" if time_text.count(":") == 2 else " %H:%M"
+            future_value = (parsed_dates.iloc[-1] + pd.Timedelta(days=1)).strftime(date_format)
         row = frame.iloc[-1].copy()
         row[key] = future_value
         for column in frame.columns:
