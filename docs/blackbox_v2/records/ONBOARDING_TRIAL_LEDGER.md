@@ -265,6 +265,28 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 本次只授权当前真实交付方案。平台总体仍为 `PRODUCTION_PATH_READY`，尚未达到面向所有新方案的 `PRODUCTION_READY`。
 
+### 4.8 记录 002A：1Y T+5 四方案 Shadow 技术入库
+
+**执行时间**：2026-07-20 16:39 至 17:19，`Asia/Shanghai`。
+
+**完整记录**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md)。
+
+**机器证据**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json)。
+
+| 项目 | 实测结果 |
+|---|---|
+| 方案范围 | `one_y_t5_liq_excess_a_v1`、`one_y_t5_liq_excess_a_w252_l7_v1`、`one_y_t5_liq_excess_a_w350_l7_v1`、`one_y_t5_liq_excess_b_w252_l7_v1` |
+| 交付 | 从 8 方案 ZIP 中仅拆分并 Intake 指定四组；另外四组未落地 |
+| generation / snapshot | `full-20260720-055026-00e12e3803a8` / `snapshot-fd8a1f8736d3a4d057fbd98e` |
+| 稳定性 | 四方案各 10/10 轮、每轮 7/7 Gate passed；P95 为 28/29/29/29 秒 |
+| 平台整改 | 修复 CompareGate 未来日频行超出 pandas 范围及日期文本格式不一致；未修改交付文件 |
+| Shadow | 四方案 lifecycle journal 均 `verified`；配置和 version 为 shadow，Registry 为 paused |
+| 业务表 | 每方案正式 run、prediction、run log、backtest run 和明细均为 0 |
+| API / scheduler | active API 不可见；scheduler 未重启、未挂载新任务 |
+| 当前状态 | `SHADOW_READY`；尚未激活、持久化回测或写入 gray live |
+
+本批取得的是四个具体方案的 Shadow 技术入库结论。下一检查点是 `one_y_t5_liq_excess_a_w252_l7_v1` Canary 的独立生产 Gate、持久化回测、gray live、API/前端与自然 scheduled-live 验收；在该检查点通过前不批量激活其余三个方案。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

@@ -1,0 +1,194 @@
+{
+  "active_api_visible_selected": 0,
+  "as_of": "2026-07-20T17:19:00+08:00",
+  "business_table_counts_after_shadow_per_scheme": {
+    "t_backtest_predictions": 0,
+    "t_backtest_runs": 0,
+    "t_scheme_predictions": 0,
+    "t_scheme_run_log": 0,
+    "t_scheme_runs": 0
+  },
+  "data_bridge": {
+    "business_digest": "00e12e3803a89e3b06439881059c9f3d9093e8642b7c37f063f4ff6169c54f1b",
+    "files": {
+      "daily_output.csv": {
+        "columns": 774,
+        "max_key": "2026-07-17",
+        "rows": 3878,
+        "sha256": "03bbcc94c11acc58ac5647c2b530e2be3e45b9ed5fd74ff12a5677854e3a50e1"
+      },
+      "monthly_output.csv": {
+        "columns": 123,
+        "max_key": "202701",
+        "rows": 201,
+        "sha256": "f29607a79c66860d4c43f369d99cb4fdfbba2cf665d3931f930f496bc21d86b5"
+      },
+      "weekly_output.csv": {
+        "columns": 575,
+        "max_key": "202628",
+        "rows": 847,
+        "sha256": "9dfe8a8cfaae9fd4be1e70b872ff2d89d5839f4c266af3924eb0e0f5d4ebc4d5"
+      }
+    },
+    "generation_id": "full-20260720-055026-00e12e3803a8",
+    "refresh_date": "2026-07-20",
+    "snapshot_id": "snapshot-fd8a1f8736d3a4d057fbd98e"
+  },
+  "delivery": {
+    "excluded_count": 4,
+    "script_sha256": "689fe3734e3cdae5524a0e6cf8b22d83e96a40686baba77dd2bbd2eb6e08c6c0",
+    "selected_count": 4,
+    "zip_sha256": "3b08ddc0bccc54e7b275d864748058f3ec9bfceb361969049ec34ff011d9de5f"
+  },
+  "delivery_files_unchanged": true,
+  "environment": {
+    "environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+    "runtime_profile": "blackbox-v2-v1",
+    "sandbox_data_dir_write": "denied",
+    "sandbox_network": "denied"
+  },
+  "evidence_schema": "blackbox-v2-four-scheme-gray-v1",
+  "gate_names": [
+    "static",
+    "input",
+    "unit",
+    "dry-run",
+    "compare",
+    "backtest",
+    "api-readiness"
+  ],
+  "phase": "shadow_paused",
+  "platform_probe_failures_before_fix": [
+    {
+      "error": "future probe date 2999-12-31 was outside the frozen pandas timestamp range",
+      "harness_run_id": "hr_20260720T084438Z_cf054b293762"
+    },
+    {
+      "error": "future probe date did not preserve the DataBridge date text format",
+      "harness_run_id": "hr_20260720T084810Z_03c77bfc4680"
+    }
+  ],
+  "scheduler_restarted_after_intake": false,
+  "schemes": {
+    "one_y_t5_liq_excess_a_v1": {
+      "latest_harness_run_id": "hr_20260720T085540Z_2068d5d0eea9",
+      "metadata_sha256": "e1e3bac8c54f8a192b02cc4a1433bad9ebf1552388d90f54cb5db25eb9c287d0",
+      "registry_id": "one_y_t5_liq_excess_a_v1__h5__1Y",
+      "scheme_version": "8d583560c9f1",
+      "shadow": {
+        "config_hash": "ee0e1b27f6f1c9811ed1ddaab672f67515a0df5fba2fbc604de2529e744e9d86",
+        "journal_phase": "verified",
+        "registry_status": "paused",
+        "version_status": "shadow"
+      },
+      "stability": {
+        "durations_sec": [28, 27, 28, 28, 28, 28, 27, 28, 27, 28],
+        "harness_run_ids": [
+          "hr_20260720T085045Z_78de17ce366b",
+          "hr_20260720T085137Z_a2df21a12f59",
+          "hr_20260720T085207Z_935ead8ccb8f",
+          "hr_20260720T085237Z_d0b4e3fbac66",
+          "hr_20260720T085308Z_216468a199e5",
+          "hr_20260720T085338Z_c2643054fcde",
+          "hr_20260720T085409Z_84ef39fbf4b0",
+          "hr_20260720T085439Z_25879bac28ea",
+          "hr_20260720T085510Z_fe4cfffcae24",
+          "hr_20260720T085540Z_2068d5d0eea9"
+        ],
+        "p50_sec": 28.0,
+        "p95_sec": 28.0,
+        "passed_rounds": 10
+      }
+    },
+    "one_y_t5_liq_excess_a_w252_l7_v1": {
+      "latest_harness_run_id": "hr_20260720T090110Z_3de057d3955a",
+      "metadata_sha256": "36c0da6a2b4edb621fff21c82de823be09174aaec813680bc98ce747b3e219b0",
+      "registry_id": "one_y_t5_liq_excess_a_w252_l7_v1__h5__1Y",
+      "scheme_version": "103c93bbc913",
+      "shadow": {
+        "config_hash": "3b5c02f070378e109043562670e666941b5543fb6ded80a6ea18fe5946cc9c3c",
+        "journal_phase": "verified",
+        "registry_status": "paused",
+        "version_status": "shadow"
+      },
+      "stability": {
+        "durations_sec": [29, 28, 28, 28, 28, 28, 28, 28, 28, 29],
+        "harness_run_ids": [
+          "hr_20260720T085632Z_d00bd35fe22f",
+          "hr_20260720T085703Z_9b458a35d1f9",
+          "hr_20260720T085734Z_c12283d00104",
+          "hr_20260720T085805Z_e26de8abef26",
+          "hr_20260720T085836Z_20debb3cae77",
+          "hr_20260720T085907Z_abad66f765fc",
+          "hr_20260720T085937Z_30fc721f8bc0",
+          "hr_20260720T090008Z_b03444fb5f07",
+          "hr_20260720T090039Z_26a6cdb3fdd8",
+          "hr_20260720T090110Z_3de057d3955a"
+        ],
+        "p50_sec": 28.0,
+        "p95_sec": 29.0,
+        "passed_rounds": 10
+      }
+    },
+    "one_y_t5_liq_excess_a_w350_l7_v1": {
+      "latest_harness_run_id": "hr_20260720T090702Z_ea12669b5485",
+      "metadata_sha256": "217d1d64761adbc1a7f1e25207a303b0de8b0b031397c9c9fffc61593c132799",
+      "registry_id": "one_y_t5_liq_excess_a_w350_l7_v1__h5__1Y",
+      "scheme_version": "86b458c568a5",
+      "shadow": {
+        "config_hash": "fb8167d2d36fd88084c4efe1754f2add4ff7364067473f1f0bc42bf77b3c5784",
+        "journal_phase": "verified",
+        "registry_status": "paused",
+        "version_status": "shadow"
+      },
+      "stability": {
+        "durations_sec": [29, 29, 29, 29, 28, 29, 28, 28, 28, 29],
+        "harness_run_ids": [
+          "hr_20260720T090221Z_24d65ae7dd8d",
+          "hr_20260720T090252Z_0c2b197e9d52",
+          "hr_20260720T090323Z_2d8431d99c1b",
+          "hr_20260720T090355Z_bd2a7be6e5dc",
+          "hr_20260720T090427Z_a5a5e579ebe3",
+          "hr_20260720T090457Z_de46006d8609",
+          "hr_20260720T090529Z_c78755900d6c",
+          "hr_20260720T090600Z_b452ff8babf1",
+          "hr_20260720T090631Z_310e646617f4",
+          "hr_20260720T090702Z_ea12669b5485"
+        ],
+        "p50_sec": 29.0,
+        "p95_sec": 29.0,
+        "passed_rounds": 10
+      }
+    },
+    "one_y_t5_liq_excess_b_w252_l7_v1": {
+      "latest_harness_run_id": "hr_20260720T091230Z_3852f6ea92e4",
+      "metadata_sha256": "a30b7a7cf326d70c5c822c6df94cf31d294d997c5d6d858339a6737814c76f25",
+      "registry_id": "one_y_t5_liq_excess_b_w252_l7_v1__h5__1Y",
+      "scheme_version": "ba00891cd179",
+      "shadow": {
+        "config_hash": "0665f3e845ebe4e8d204a0ed945974c7c51e72dd8c9e995c63ef888b622bdf1c",
+        "journal_phase": "verified",
+        "registry_status": "paused",
+        "version_status": "shadow"
+      },
+      "stability": {
+        "durations_sec": [29, 28, 28, 28, 29, 29, 29, 29, 29, 28],
+        "harness_run_ids": [
+          "hr_20260720T090748Z_7648eef6fb59",
+          "hr_20260720T090819Z_c5151b7914b1",
+          "hr_20260720T090850Z_9fd8d3c57c83",
+          "hr_20260720T090921Z_036f7e392737",
+          "hr_20260720T090952Z_bd8e05e6e43c",
+          "hr_20260720T091024Z_8a470dcc7b93",
+          "hr_20260720T091055Z_8e686f709acf",
+          "hr_20260720T091127Z_5df626ed5276",
+          "hr_20260720T091158Z_ac0ab7e5889e",
+          "hr_20260720T091230Z_3852f6ea92e4"
+        ],
+        "p50_sec": 29.0,
+        "p95_sec": 29.0,
+        "passed_rounds": 10
+      }
+    }
+  }
+}
