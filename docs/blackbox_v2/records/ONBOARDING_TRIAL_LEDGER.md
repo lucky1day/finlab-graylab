@@ -22,7 +22,7 @@
 | `native_adapter` | 完整方案目录 | `legacy_db` | import adapter |
 | `blackbox_v2` | 一个 `.py` 和一个 `.json` | `data_bridge_current` | sandbox CLI 子进程 |
 
-首轮 Blackbox 方案使用独立 trial ID，技术终态限定为 `shadow + paused`，不替换、不暂停、不修改现有原生方案。`activate/live` 不属于本轮试验范围。
+Blackbox 方案使用独立 trial ID，不替换、不暂停、不修改现有原生方案。通用入库默认终态仍为 `shadow + paused`；具体方案只有在生产路径认证通过并取得专项授权后，才可进入 `active + gray_live`。专项授权不自动扩展到其他方案。
 
 ## 2. 平台准备状态
 
@@ -232,6 +232,33 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 本轮未修改生产 trial，也未向生产业务表写入任何记录。生产 Registry 仍为 `paused`，version 仍为 `shadow`。强制 active 证据只说明下游技术兼容，不能用于签发生产授权。
 
+### 4.7 记录 001G：真实生产灰度专项激活
+
+**执行时间**：2026-07-20 10:53 至 11:07，`Asia/Shanghai`。
+
+**完整记录**：[PRODUCTION_GRAY_ACTIVATION_20260720.md](PRODUCTION_GRAY_ACTIVATION_20260720.md)。
+
+**机器证据**：[PRODUCTION_GRAY_ACTIVATION_20260720.evidence.json](PRODUCTION_GRAY_ACTIVATION_20260720.evidence.json)。
+
+| 项目 | 生产实测结果 |
+|---|---|
+| 专项授权 | 用户明确批准 `weekly_10y_lgbm_point_v1` 激活为生产灰度测试方案 |
+| scheme version | `0666a6989d6b` |
+| Harness run | `hr_20260720T025353Z_b176dbf5eb3e`，7/7 Gate passed |
+| generation / snapshot | `full-20260720-055026-00e12e3803a8` / `snapshot-fd8a1f8736d3a4d057fbd98e` |
+| Shadow / Activation | 正式签名门禁通过；配置、版本和 Registry 统一为 active |
+| 回测落库 | run `165`；100 predictions；24 monthly metrics；总体准确率 `50.0%` |
+| gray live | run `955`；方向 `1`；精确新增 1 run、1 prediction、1 log |
+| Request | `predict=2026-07-20`、`feature=2026-07-17`、`target=2026-07-24` |
+| API | schemes、metrics、backtest HTTP 200；1 条 live 可见、actual pending |
+| 前端 | 正确进入 `10Y + 周度` 格子，方案版本和灰度日期可见，控制台 0 error |
+| scheduler | 已注册周六 11:32 的错峰任务 |
+| 当前状态 | `PRODUCTION_GRAY_ACTIVE` |
+
+正式 API Gate 的实例 fingerprint、Registry、live 和回测均匹配，但因目标日尚未到达，actual、月度 live 指标和 `metric_samples` 条件暂未通过。必须在 `2026-07-24` actual 刷新后复验；当前不得报告这条 live 的准确率。
+
+本次只授权当前真实交付方案。平台总体仍为 `PRODUCTION_PATH_READY`，尚未达到面向所有新方案的 `PRODUCTION_READY`。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。
@@ -244,17 +271,12 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 ## 6. 平台后续整改台账
 
-| 优先级 | 整改项 | 当前风险 | 完成标准 |
+| 优先级 | 整改项 | 状态 | 后续动作 |
 |---|---|---|---|
-| P0 | Gate 报告自包含 generation/freshness | 当前需人工用三 SHA 关联 state | 报告记录 generation、refresh 时间和三摘要 |
-| P0 | Runtime profile 单一加载源 | JSON 基准与代码默认值可能漂移 | 执行器直接加载冻结 profile，方案覆盖规则可审计 |
-| P0 | Shadow 前置审计持久化检查 | 报告通过但控制面 DB 可能缺记录 | exact run/七 Gate 未持久化时拒绝授权 |
-| P0 | Shadow 原子性或 reconciliation | 多事务失败可能留下部分状态 | 单事务完成，或提供机器化对账与恢复 |
-| P1 | 真实环境指纹进入报告 | Shadow Gate 当前不真正复验环境 | all-stage 与 shadow 绑定同一环境指纹 |
-| P1 | ApiReadiness 增加真实探针 | 当前结构 evidence 容易被误读 | 查询 Registry、scheduler 和 HTTP API |
-| P1 | V1 activate/live hard-stop | 当前仅靠操作政策禁止 | Blackbox V1 未授权时机器拒绝 |
-| P1 | JSON 方向严格类型 | 当前解析器可接受字符串形式 | JSON 只接受整数，CSV 保留文本 token |
-| P2 | sandbox 读取 allowlist与环境清理 | 当前重点限制网络和写路径 | 仅暴露必要文件和环境变量 |
-| P2 | 原始失败证据保留策略 | 临时 Result/stderr 不长期保存 | 明确保留范围、期限和脱敏规则 |
+| P0 | BBV2-01 至 BBV2-07：generation、profile、审计、生命周期、生产门禁、Result 和 sandbox | `CLOSED` | 按回归测试持续守护，不重新描述为待实现能力 |
+| P0 | 当前 gray live 的 actual 与正式 API Gate | `PENDING` | `2026-07-24` actual 刷新后复验并追加记录 |
+| P1 | 真实交付覆盖门槛 | `PENDING` | 再接入至少两个真实包并覆盖日、周、月三种频率 |
+| P1 | 通用生产晋级 SOP | `BLOCKED` | 覆盖门槛完成且业务、平台、运维共同确认后转为 `CURRENT` |
+| P2 | 原始失败证据保留策略 | `OPEN` | 明确保留范围、期限和脱敏规则 |
 
-整改项未完成前，平台 SOP 必须如实写明现有边界，不得把计划能力写成已实现能力。
+平台 SOP 必须区分“当前方案专项生产灰度授权”和“所有新方案通用生产授权”，不得把前者写成后者。

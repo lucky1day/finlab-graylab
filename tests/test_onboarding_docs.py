@@ -92,7 +92,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
         for item in ("PR-01", "PR-02", "PR-03", "PR-04", "PR-05", "PR-06", "PR-07", "PR-08"):
             self.assertIn(item, readiness)
         self.assertIn("shadow + paused", platform)
-        self.assertIn("不得执行 `activate` 或 `live`", platform)
+        self.assertIn("不自动授予生产运行权限", platform)
+        self.assertIn("具体方案专项授权", platform)
+        self.assertIn("不得把某个试验方案的授权外推", platform)
 
     def test_all_markdown_relative_links_resolve(self) -> None:
         broken: list[str] = []

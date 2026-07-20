@@ -3,11 +3,11 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台入库、运行和审计人员
-**最后核验日期**：2026-07-19
+**最后核验日期**：2026-07-20
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)；具体方案的版本、快照、运行结果和当前状态只追加到 [Blackbox V2 入库试验台账](../blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
-Contract 1.0 当前只允许登记为 `shadow + paused`。不得执行 `activate` 或 `live`；这是当前操作政策，平台代码尚未设置专用 hard-stop。生产晋级前置条件见[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)，该清单尚未成为可执行 SOP。
+本文的通用入库流程止于 `shadow + paused`，不自动授予生产运行权限。`activate`、回测落库和 `live` 已有独立签名门禁，但只能在完成[生产准备清单](../blackbox_v2/PRODUCTION_READINESS.md)核验并取得具体方案专项授权后执行；不得把某个试验方案的授权外推为所有新方案的默认权限。具体生产灰度记录只写入平台试验台账。
 
 ## 1. Intake 与身份
 
@@ -109,7 +109,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
   python scripts/probe_blackbox_v2_sandbox.py
 ```
 
-当前执行器仍从 `scheduler.blackbox_v2_runner.RuntimeProfile` 代码默认值构造实际限制，scheduled predict timeout 还可以由方案 schedule 覆盖。执行前必须同时核对 JSON profile、环境 manifest、代码默认值和方案 timeout；任一不一致时停止验收并登记整改，不能只凭 JSON 文件认定实际运行参数。
+执行器从版本化 JSON 加载 Runtime Profile，并在启动时严格校验字段、类型和安全边界。环境 manifest 用于核验实际环境指纹；方案配置不得覆盖 profile 的算法执行资源、读路径、环境变量或网络权限。Profile、manifest 或实际环境任一漂移时停止验收。
 
 记录环境清单摘要和自检时间。环境不一致、资源基准漂移、sandbox 网络拒绝或数据目录写保护失效时，不得继续。CPU、内存、predict/backtest 超时、100 条批量上限、Output 和日志大小上限以核对一致后的实际执行值为准。
 
@@ -149,7 +149,7 @@ DataBridge 校验失败时保留最后成功 current，阻断依赖 `data_bridge
 
 Input 报告必须记录 snapshot ID、Schema、三份文件行列数与 SHA256，以及 Request 的三个日期和三个截止键。
 
-Input 报告当前不包含 `generation_id`。操作人员必须将第二节保存的 current 状态与 Input 报告三份 SHA256 逐一比对；全部相同只能证明 Snapshot 内容与所选 generation 的三份文件一致，不能在两个 generation 内容完全相同时唯一证明 generation 身份。
+`blackbox_v2/input_state.json` 必须记录 `generation_id`、`refresh_date`、business digest、环境指纹和 Snapshot 身份；Input Gate 同时记录三份文件摘要和 Request。授权段必须绑定该 input state，不能只凭三份 SHA256 推断 generation。
 
 正常 `onboard --stage all` 结束后临时快照会删除。`input_state.json` 中的绝对路径只在执行期间有效，不能用于回放；平台不永久保存该次完整输入文件。
 
@@ -220,9 +220,9 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 
 它不得写 `t_scheme_runs`、`t_scheme_predictions`、`t_backtest_*` 业务记录、active Registry 或前端可见状态。
 
-Harness 控制面持久化当前是 best-effort。即使 `onboard_report.json` 为 `overall_passed=true`，也必须确认 exact `harness_run_id` 和七个 Gate 已存在于审计数据库，才能授权 shadow。
+Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和七个 Gate 已存在于审计数据库，才能授权 shadow。
 
-当前 Result 解析器会将 JSON 中的字符串 `"-1" / "0" / "1"` 转成整数，这与上游 SOP 的“JSON 必须输出整数”规范不一致。该兼容行为不改变上游契约；在解析器收紧前，报告只能写“业务值可解析”，不能宣称 JSON 类型已被机器严格拒绝。
+Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`，拒绝字符串、布尔值和浮点数；CSV 继续按合同接受文本 token `-1/0/1`。
 
 临时原始 Request、Result 和 stderr 当前随运行目录清理，不承诺长期留存；持久审计以 Harness 报告、摘要和结构化记录为准。
 
@@ -236,9 +236,9 @@ Harness 控制面持久化当前是 best-effort。即使 `onboard_report.json` �
 2. 使用只读 SQL 确认 exact run 已写入审计 DB；`python -m harness report {scheme_id} --latest` 只读取本地最新报告，不能代替数据库核验；
 3. 再次检查 base/composite Registry 冲突；
 4. 保存业务表和 active Registry 的前置计数；
-5. 确认本轮只允许 `shadow + paused`。
+5. 确认本轮通用入库只允许 `shadow + paused`；生产灰度必须另有具体方案专项授权。
 
-Shadow Gate 当前不会真正复验 conda 环境，也不会自动证明 API/scheduler 不可见，这些必须人工核验。
+Shadow Gate 绑定 all-stage 的环境指纹、generation、Snapshot 和 exact version/run；API/scheduler 不可见性仍需独立探针验证。
 
 审计 DB 至少核对：
 
@@ -304,7 +304,7 @@ Token 必须绑定 exact scheme、action、predict date、version 和 Harness ru
 | shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录 | 完成配置、Registry、版本三方 reconciliation |
 | API/scheduler 意外出现 trial | 保持 Registry paused，不执行 live | 找到来源并移除生产入口 |
 
-Shadow 当前由多个数据库事务和配置更新组成，不能宣称失败时自动原子回滚。命令失败后若发现任一 shadow 版本或 Registry 行：
+Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数据库与配置文件不能组成单一事务，因此命令异常后仍必须执行三方对账。若发现任一 shadow 版本或 Registry 行：
 
 1. 不再次签发 token；
 2. 保存命令、报告和只读查询结果；
@@ -326,6 +326,6 @@ Shadow 当前由多个数据库事务和配置更新组成，不能宣称失败�
 - [ ] 登记后配置、版本、Registry 为 `shadow + paused`
 - [ ] 独立 DB、scheduler 和 API 检查证明 trial 未进入生产链路
 - [ ] 失败按恢复矩阵处理，没有把部分状态当成成功
-- [ ] 未执行 `activate` 或 `live`
+- [ ] 默认入库流程未执行 `activate` 或 `live`；如有专项授权，已转入独立生产灰度记录
 
 具体方案的 generation、snapshot、Harness run、预测结果、数据库计数和当前状态只追加到平台入库规划文档，不回写本通用 SOP。

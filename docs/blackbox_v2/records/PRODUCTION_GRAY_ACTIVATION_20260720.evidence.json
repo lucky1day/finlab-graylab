@@ -1,0 +1,112 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-20T11:07:31+08:00",
+  "status": "PRODUCTION_GRAY_ACTIVE",
+  "overall": "CONDITIONAL_PASS",
+  "scheme": {
+    "base_scheme_id": "weekly_10y_lgbm_point_v1",
+    "registry_id": "weekly_10y_lgbm_point_v1__h1__10Y",
+    "scheme_version": "0666a6989d6b",
+    "runtime_type": "blackbox_v2",
+    "runtime_profile": "blackbox-v2-v1",
+    "task_type": "weekly_point",
+    "target_tenor": "10Y",
+    "horizon": 1,
+    "config_status": "active",
+    "version_status": "active",
+    "registry_status": "active"
+  },
+  "onboarding": {
+    "harness_run_id": "hr_20260720T025353Z_b176dbf5eb3e",
+    "gates_passed": 7,
+    "gates_total": 7,
+    "environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd"
+  },
+  "data": {
+    "generation_id": "full-20260720-055026-00e12e3803a8",
+    "business_digest": "00e12e3803a89e3b06439881059c9f3d9093e8642b7c37f063f4ff6169c54f1b",
+    "data_snapshot_id": "snapshot-fd8a1f8736d3a4d057fbd98e",
+    "files": {
+      "daily_output.csv": {
+        "rows": 3878,
+        "columns": 774,
+        "sha256": "03bbcc94c11acc58ac5647c2b530e2be3e45b9ed5fd74ff12a5677854e3a50e1"
+      },
+      "weekly_output.csv": {
+        "rows": 847,
+        "columns": 575,
+        "sha256": "9dfe8a8cfaae9fd4be1e70b872ff2d89d5839f4c266af3924eb0e0f5d4ebc4d5"
+      },
+      "monthly_output.csv": {
+        "rows": 201,
+        "columns": 123,
+        "sha256": "f29607a79c66860d4c43f369d99cb4fdfbba2cf665d3931f930f496bc21d86b5"
+      }
+    }
+  },
+  "request": {
+    "predict_date": "2026-07-20",
+    "feature_date": "2026-07-17",
+    "target_date": "2026-07-24",
+    "daily_cutoff_key": "2026-07-17",
+    "weekly_cutoff_key": "202628",
+    "monthly_cutoff_key": "202607"
+  },
+  "persisted_backtest": {
+    "status": "PASS",
+    "run_id": 165,
+    "predictions": 100,
+    "monthly_metrics": 24,
+    "correct": 50,
+    "accuracy": 50.0
+  },
+  "gray_live": {
+    "status": "PASS",
+    "run_id": 955,
+    "prediction_id": 1088,
+    "prediction_phase": "gray_live",
+    "predicted_direction": 1,
+    "records_written": 1,
+    "run_delta": 1,
+    "prediction_delta": 1,
+    "run_log_delta": 1,
+    "actual_direction": null,
+    "actual_status": "PENDING_TARGET_DATE"
+  },
+  "downstream": {
+    "schemes_visible": true,
+    "metrics_live_rows": 1,
+    "metrics_pending_actual_rows": 1,
+    "backtest_visible": true,
+    "scheduler_registered": true,
+    "scheduler_effective_cron": "32 11 * * 6",
+    "frontend_visible": true,
+    "frontend_console_errors": 0,
+    "api_service_fingerprint": "66bc4d9ae963e19db442fddd1ae50852f8b3ad7fc29c87ba18e583fae95d2bbe"
+  },
+  "formal_api_gate": {
+    "status": "PENDING_ACTUAL",
+    "health_http_status": 200,
+    "schemes_http_status": 200,
+    "metrics_http_status": 200,
+    "backtest_http_status": 200,
+    "expected_fingerprint_matches": true,
+    "pending_reasons": [
+      "monthly_metrics must be non-empty",
+      "actual contract requires at least one matched actual row",
+      "summary.metric_samples must be positive"
+    ],
+    "retest_on_or_after": "2026-07-24"
+  },
+  "screenshot": {
+    "path": "assets/weekly_10y_lgbm_point_v1-production-gray-20260720.png",
+    "bytes": 230278,
+    "sha256": "ed914a9e4f4c6ca50fe02c0b29b5d7848fdadeb70f64983c88872095015f3a4b"
+  },
+  "platform_wide_production_ready": false,
+  "remaining_coverage": [
+    "actual join for the first production gray prediction after 2026-07-24",
+    "at least two additional independent real upstream deliveries",
+    "real delivery coverage for daily and monthly task frequencies"
+  ]
+}

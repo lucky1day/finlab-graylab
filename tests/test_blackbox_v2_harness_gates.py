@@ -423,25 +423,26 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             root = Path(tmpdir)
             scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
             config = load_scheme_config(scheme_dir / "config.yaml")
-            unsigned = issue_token(
-                config.scheme_id,
-                "backtest_persist",
-                "2026-07-16",
-                scheme_version=config.scheme_version,
-                harness_run_id="hr_passed",
-                ttl_seconds=300,
-            )
-            unsigned_ctx = GateContext(
-                scheme_id=config.scheme_id,
-                predict_date="2026-07-16",
-                project_root=root,
-                report_dir=root / "reports" / "unsigned",
-                config=config,
-                authorization=unsigned,
-                persist_backtest=True,
-            )
-            with patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases:
-                unsigned_result = BlackboxBacktestGate().run(unsigned_ctx)
+            with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": ""}):
+                unsigned = issue_token(
+                    config.scheme_id,
+                    "backtest_persist",
+                    "2026-07-16",
+                    scheme_version=config.scheme_version,
+                    harness_run_id="hr_passed",
+                    ttl_seconds=300,
+                )
+                unsigned_ctx = GateContext(
+                    scheme_id=config.scheme_id,
+                    predict_date="2026-07-16",
+                    project_root=root,
+                    report_dir=root / "reports" / "unsigned",
+                    config=config,
+                    authorization=unsigned,
+                    persist_backtest=True,
+                )
+                with patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases:
+                    unsigned_result = BlackboxBacktestGate().run(unsigned_ctx)
             self.assertFalse(unsigned_result.passed)
             self.assertEqual(unsigned_result.status.value, "blocked")
             build_cases.assert_not_called()

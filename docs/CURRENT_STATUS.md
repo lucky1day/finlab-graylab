@@ -3,18 +3,20 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：项目负责人、平台运维和审计人员
-**最后核验日期**：2026-07-19
+**最后核验日期**：2026-07-20
 
-## 2026-07-19 双运行时入库政策
+## 2026-07-20 双运行时与 Blackbox V2 生产灰度状态
 
 - 当前仓库共有 29 个 `native_adapter` 方案和 1 个 `blackbox_v2` 试验方案；版本化清单见 `deploy/onboarding_policy_v1.json`。
 - 29 个 Native V1 方案保持现有 Registry、数据库、scheduler 和历史结果，只允许故障、数据口径、复现性和经批准的保真维护。
 - 后续新算法、新方案 ID、新目标、新任务和替代版本一律通过 Blackbox V2 两文件交付；StaticGate 与 ActivationGate 均阻断清单外 Native ID。
-- 当前 Blackbox 试验方案 `weekly_10y_lgbm_point_v1` 仍为 `shadow + paused`，未激活、未进入生产 scheduler、未写入预测或回测业务表。
-- `weekly_10y_lgbm_point_v1` 已增加文档标记 `GRAY_LAB_READY`：可以安排灰度实验室内的 no-persist 预测、回测和对照实验；该标记不等于 `gray_live`，不改变配置、Registry 或数据库状态。
-- 首轮持续回归基线 `hr_20260719T090240Z_64d1d64d4def` 已通过七个 Gate，100/100 回测成功，Harness 自动段约 26 秒；独立查询确认该 trial 的预测、运行和回测业务记录仍全部为 0。
-- [2026-07-19 全链路稳定性认证](blackbox_v2/records/FULL_PIPELINE_STABILITY_AUDIT_20260719.md)的时点结论为 `SHADOW_READY=PASS`、`PRODUCTION_READY=FAIL`、`PRODUCTION_BLOCKED`。隔离测试中的强制 active 已证明 live、actual、API 和前端技术兼容，但正式 ActivationGate 失败、回测持久化缺失和 sandbox 读取边界仍阻断生产晋级。
-- Blackbox V2 生产晋级仍受[生产准备清单](blackbox_v2/PRODUCTION_READINESS.md)阻断；本轮文档和政策门禁整理不改变任何方案运行状态。
+- 用户已专项授权 `weekly_10y_lgbm_point_v1` 进入生产灰度。当前 config、scheme version `0666a6989d6b` 和 composite Registry 均为 `active`。
+- 生产 all-stage run `hr_20260720T025353Z_b176dbf5eb3e` 七个 Gate 全部通过，绑定 generation `full-20260720-055026-00e12e3803a8` 和 snapshot `snapshot-fd8a1f8736d3a4d057fbd98e`。
+- 已持久化回测 run `165`：100 条预测、24 条月度指标，整体准确率 `50.0%`。已执行一次 `gray_live` run `955`：方向 `1`、feature `2026-07-17`、target `2026-07-24`，精确新增 1 run、1 prediction、1 log。
+- `/api/schemes`、metrics、回测 API 和前端均已显示该方案；scheduler 已登记周六 `11:32 Asia/Shanghai` 的错峰任务。完整证据见[生产灰度激活记录](blackbox_v2/records/PRODUCTION_GRAY_ACTIVATION_20260720.md)。
+- 首条实际方向要到目标日 `2026-07-24` 后才能关联；正式 API Gate 当前仅因 actual 和 live 月度指标尚未产生而待复验，不得提前报告该条 live 的准确率。
+- [2026-07-19 全链路稳定性认证](blackbox_v2/records/FULL_PIPELINE_STABILITY_AUDIT_20260719.md)保留为隔离测试历史记录。BBV2-01 至 BBV2-07 已关闭，但目前仍只有一个真实周频交付包；平台总体为 `PRODUCTION_PATH_READY`，尚未取得面向所有新方案的 `PRODUCTION_READY`。
+- 后续新算法仍统一使用 Blackbox V2；通用生产晋级继续受[生产准备清单](blackbox_v2/PRODUCTION_READINESS.md)中的真实交付覆盖门槛约束，当前专项授权不得自动复制到其他方案。
 
 所有入库场景从[统一入库导航](onboarding/README.md)进入。下方带日期记录是历史时点事实；其中旧“新增 Native 方案”链接或操作方式不再代表当前政策。
 

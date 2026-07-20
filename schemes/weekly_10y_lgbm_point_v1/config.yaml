@@ -3,8 +3,8 @@ runtime_type: blackbox_v2
 input_source: data_bridge_current
 runtime_profile: blackbox-v2-v1
 data_schema_version: data-bridge-v1
-status: paused
-version_status: shadow
+status: active
+version_status: active
 schedule:
   cron: '30 11 * * 6'
   timezone: Asia/Shanghai
