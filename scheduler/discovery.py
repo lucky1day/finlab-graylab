@@ -151,9 +151,15 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
     code_hash = _hash_file(script_path)
     config_hash = compute_blackbox_config_hash(raw)
     manifest_hash = _hash_file(metadata_path)
+    display_name = raw.get("display_name")
+    resolved_name = (
+        str(display_name).strip()
+        if isinstance(display_name, str) and display_name.strip()
+        else metadata.name
+    )
     return SchemeConfig(
         scheme_id=metadata.scheme_id,
-        name=metadata.name,
+        name=resolved_name,
         description=f"Blackbox V2: {metadata.name}",
         horizon=metadata.horizon,
         task_type=metadata.task_type,

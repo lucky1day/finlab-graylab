@@ -190,6 +190,13 @@ def _validate_blackbox_config(raw: dict) -> list[str]:
         errors.append("status must be active or paused")
     if raw.get("version_status") not in ALLOWED_VERSION_STATUS:
         errors.append("version_status must be one of draft, validated, shadow, active, paused, retired")
+    display_name = raw.get("display_name")
+    if display_name is not None and (
+        not isinstance(display_name, str) or not display_name.strip()
+    ):
+        errors.append(
+            "Blackbox V2 display_name must be a non-empty string when present"
+        )
 
     schedule = raw.get("schedule")
     if not isinstance(schedule, dict):

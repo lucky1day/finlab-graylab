@@ -72,6 +72,46 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(first.config_hash, second.config_hash)
         self.assertEqual(first.scheme_version, second.scheme_version)
 
+    def test_blackbox_display_name_overrides_metadata_without_changing_version(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            config_path = scheme_dir / "config.yaml"
+            original = load_scheme_config(config_path)
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "scheme_id: trial_10y\n",
+                    "scheme_id: trial_10y\ndisplay_name: LIQ_EXCESS_A\n",
+                ),
+                encoding="utf-8",
+            )
+
+            displayed = load_scheme_config(config_path)
+
+        self.assertEqual(original.name, "10Y Trial")
+        self.assertEqual(displayed.name, "LIQ_EXCESS_A")
+        self.assertEqual(displayed.description, "Blackbox V2: 10Y Trial")
+        self.assertEqual(original.config_hash, displayed.config_hash)
+        self.assertEqual(original.scheme_version, displayed.scheme_version)
+
+    def test_blackbox_display_name_must_be_non_empty_when_present(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            config_path = scheme_dir / "config.yaml"
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "scheme_id: trial_10y\n",
+                    "scheme_id: trial_10y\ndisplay_name: '   '\n",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "display_name"):
+                load_scheme_config(config_path)
+
     def test_blackbox_version_changes_when_runtime_profile_changes(self) -> None:
         from scheduler.discovery import load_scheme_config
 
