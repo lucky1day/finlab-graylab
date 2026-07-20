@@ -1,4 +1,5 @@
 scheme_id: one_y_t5_liq_excess_a_w350_l7_v1
+display_name: LIQ_EXCESS_A_W350_L7
 runtime_type: blackbox_v2
 input_source: data_bridge_current
 runtime_profile: blackbox-v2-v1

@@ -59,6 +59,15 @@ class OnboardingDocumentationTests(unittest.TestCase):
         for marker in banned:
             self.assertNotIn(marker, text)
 
+    def test_upstream_metadata_name_is_task_scoped_and_concise(self) -> None:
+        text = UPSTREAM_SOP.read_text(encoding="utf-8")
+
+        self.assertIn('"name": "LIQ_EXCESS_A_W252_L7"', text)
+        self.assertIn("不得重复 `target_tenor`", text)
+        self.assertIn("不得重复 `task_type`", text)
+        self.assertIn("不得追加“方向预测”", text)
+        self.assertNotIn('"name": "10年国债收益率周频点位方向预测"', text)
+
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",

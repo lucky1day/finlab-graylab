@@ -130,15 +130,16 @@ git commit -m "feat: support blackbox display names"
 
 - [ ] **Step 1: Write a failing task-grid name test**
 
-Add a frontend hook test whose backtest payload deliberately contains both a short `scheme_name` and a redundant general `display_name`:
+Add a frontend hook test whose mocked backtest response deliberately contains both a short `scheme_name` and a redundant general `display_name`. Load it through the public `loadFactorLabData` test hook, then select the `1Y|T+5` task:
 
 ```python
-def test_task_grid_prefers_scheme_name_without_target_suffix(self) -> None:
+def test_backtest_task_grid_uses_task_scoped_scheme_name(self) -> None:
     result = _run_factor_lab_hook(
         """
-        const payload = {
-          target_labels: { "1Y": "1Y国债活跃" },
-          schemes: [{
+        const responses = {
+          "/api/backtests/factor-lab": {
+            target_labels: { "1Y": "1Y国债活跃" },
+            schemes: [{
             id: "bb:one_y_t5_liq_excess_a_v1__h5__1Y:source",
             scheme_id: "one_y_t5_liq_excess_a_v1__h5__1Y",
             base_scheme_id: "one_y_t5_liq_excess_a_v1",
@@ -160,10 +161,23 @@ def test_task_grid_prefers_scheme_name_without_target_suffix(self) -> None:
               target_date: "2026-07-17", target_tenor: "1Y", horizon: 5,
               predicted_direction: 1, actual_direction: 1, is_correct: true
             }]
-          }]
+            }]
+          }
         };
-        var tasks = hooks.buildBacktestTaskSchemes(payload);
-        return { name: tasks["1Y:T+5"][0].name };
+        window.fetch = function (url) {
+          if (url instanceof Request) url = url.url;
+          var payload = responses[url];
+          return Promise.resolve({
+            ok: Boolean(payload), status: payload ? 200 : 404,
+            json: function () { return Promise.resolve(payload || {}); }
+          });
+        };
+        globalThis.fetch = window.fetch;
+        context.fetch = window.fetch;
+        await hooks.loadFactorLabData({ force: true });
+        hooks.setFactorLabStateForTest({ selectedTaskKey: "1Y|T+5" });
+        var scheme = hooks.getSelectedScheme();
+        return { name: scheme && scheme.name };
         """
     )
     self.assertEqual(result["name"], "LIQ_EXCESS_A")
@@ -175,7 +189,7 @@ Run:
 
 ```bash
 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python -m unittest \
-  tests.test_frontend_factor_lab.FactorLabRankingTests.test_task_grid_prefers_scheme_name_without_target_suffix -v
+  tests.test_frontend_factor_lab.FactorLabRankingTests.test_backtest_task_grid_uses_task_scoped_scheme_name -v
 ```
 
 Expected: actual name is `LIQ_EXCESS_A · 1Y国债活跃`.

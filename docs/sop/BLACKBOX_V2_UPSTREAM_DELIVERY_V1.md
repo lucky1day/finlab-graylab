@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：上游算法工程师
-**最后核验日期**：2026-07-19
+**最后核验日期**：2026-07-20
 
 本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是三频数据 Schema。运行环境由平台另行发布；算法侧不需要了解平台内部管理和生命周期。
 
@@ -90,18 +90,20 @@ Contract 1.0 只允许以下组合：
 ```json
 {
   "schema_version": "1.0",
-  "scheme_id": "weekly_10y_example_v1",
-  "name": "10年国债收益率周频点位方向预测",
+  "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
+  "name": "LIQ_EXCESS_A_W252_L7",
   "algorithm_version": "1.0.0",
-  "target_tenor": "10Y",
-  "task_type": "weekly_point",
-  "horizon": 1,
-  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+  "target_tenor": "1Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
 }
 ```
 
 - `schema_version` 固定为字符串 `1.0`。
 - `scheme_id` 和 `target_tenor` 必须满足第一节约束。
+- `scheme_id` 是算法执行身份；`name` 是当前任务格子内用于区分候选方案的简洁业务名称，两者不要混用。
+- `name` 不得重复 `target_tenor`、不得重复 `task_type` 或 `horizon`，也不得追加“方向预测”等已经由任务格子表达的说明。
 - `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
 - `task_type`、`horizon` 和 `target_rule` 必须来自第二步的同一行。
 - 不得增加 `frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
