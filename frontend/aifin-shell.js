@@ -1270,17 +1270,6 @@
     return sortRankingSchemes(schemes, factorLabState.rankMetric, factorLabState.rankDirection);
   }
 
-  function latestSchemeVersion(scheme) {
-    if (!scheme || !scheme.dailyRowsByMonth) return "";
-    var latest = "";
-    Object.keys(scheme.dailyRowsByMonth).forEach(function (month) {
-      (scheme.dailyRowsByMonth[month] || []).forEach(function (row) {
-        if (row.schemeVersion) latest = row.schemeVersion;
-      });
-    });
-    return latest;
-  }
-
   function ensureSelectedScheme() {
     var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (!schemes.length) {
@@ -1323,15 +1312,13 @@
 
   function renderSchemeRankingRow(scheme, index, metric) {
     var selectedClass = scheme.id === factorLabState.selectedSchemeId ? " class=\"is-selected\"" : "";
-    var version = latestSchemeVersion(scheme);
-    var versionHtml = version ? '<span class="factor-scheme-version">' + escapeHtml(version) + '</span>' : "";
     var lowSampleHtml = isLowSampleMetric(metric, scheme) ? '<span class="factor-sample-badge">样本不足</span>' : "";
     var barWidth = clampPercent(metric.overall);
     var metricSamples = requireMetricSamples(metric, "ranking metric");
     var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
-      '<td><strong>' + escapeHtml(scheme.name) + '</strong>' + versionHtml + '</td>' +
+      '<td><strong>' + escapeHtml(scheme.name) + '</strong></td>' +
       '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metricSamples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
       '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +

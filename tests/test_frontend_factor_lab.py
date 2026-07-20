@@ -313,6 +313,37 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertNotIn("factor-status-pill", result["weeklyRowHtml"])
         self.assertNotIn("active", result["weeklyRowHtml"])
 
+    def test_scheme_ranking_hides_scheme_version_fingerprint(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const metric = {
+              overall: 80,
+              correct: 8,
+              samples: 10,
+              metricSamples: 10,
+              upPrecision: 75,
+              downPrecision: 70
+            };
+            const rowHtml = hooks.renderSchemeRankingRowForTest(
+              {
+                id: "full-oos-10y",
+                name: "liwei_0616 10Y_01 原脚本Full-OOS · 10Y国债活跃",
+                deploymentDate: "2026/07/13",
+                dailyRowsByMonth: {
+                  "2026-07": [{ schemeVersion: "35e461e60705" }]
+                }
+              },
+              0,
+              metric
+            );
+            return { rowHtml };
+            """
+        )
+
+        self.assertIn("liwei_0616 10Y_01 原脚本Full-OOS", result["rowHtml"])
+        self.assertNotIn("35e461e60705", result["rowHtml"])
+        self.assertNotIn("factor-scheme-version", result["rowHtml"])
+
     def test_sort_ranking_schemes_supports_metric_and_direction(self) -> None:
         result = _run_factor_lab_hook(
             """

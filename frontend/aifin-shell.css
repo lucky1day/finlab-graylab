@@ -829,7 +829,6 @@ button {
   color: var(--text);
 }
 
-.factor-scheme-version,
 .factor-sample-badge {
   display: inline-flex;
   align-items: center;
