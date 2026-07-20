@@ -33,12 +33,13 @@
 - 首条灰度预测目标日为 2026-07-24；实际方向和对应准确率必须在目标数据产生后复验。
 - 当前只有一个真实 `10Y + weekly_point + LightGBM` 交付样本，不能代表所有任务类型和依赖组合稳定。
 
-`one_y_t5_liq_excess_a_w252_l7_v1` 已作为 1Y T+5 四方案批次的代表性 Canary 进入生产灰度：
+1Y T+5 四方案批次已按用户明确授权全部进入生产灰度：
 
-- 配置、方案版本和 composite Registry 为 `active`，其余三个同批方案仍为 `shadow + paused`。
-- 已完成 100 条持久化回测和一次 `gray_live`；本地及公网 API、前端和只读访问矩阵通过。
-- 灰度预测为 `predict_date=2026-07-20`、`feature_date=2026-07-17`、`target_date=2026-07-24`，actual 当前为 pending。
-- scheduler 当天未重启；必须在下一交易日 DataBridge 刷新后、日频任务基准时间前重启并观察自然 `scheduled_live`，通过后才激活其余三个方案。
+- `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 的配置、方案版本和 composite Registry 均为 `active`。
+- 四方案各有 100 条持久化回测和一次 `gray_live`；本地及公网 API、前端和只读访问矩阵通过。
+- 前端在 `1Y国债活跃 × T+5` 格子内只显示上述四个短名称，不再重复任务说明或目标名称。
+- 四条灰度预测均为 `predict_date=2026-07-20`、`feature_date=2026-07-17`、`target_date=2026-07-24`，actual 当前为 pending。
+- scheduler 当天未重启；必须在下一交易日 DataBridge 刷新后、日频任务基准时间前重启并观察四方案自然 `scheduled_live`。
 - 四个日频算法来自同一上游批次，证明了日频 Blackbox 运行路径，但不等于四个独立交付包，也不覆盖月频。
 
 详细证据见[首个生产灰度激活记录](blackbox_v2/records/PRODUCTION_GRAY_ACTIVATION_20260720.md)、[1Y T+5 四方案分阶段记录](blackbox_v2/records/PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md)和[Blackbox V2 试验记录](blackbox_v2/records/README.md)。
@@ -53,8 +54,8 @@
 
 ## 当前观察项
 
-1. 2026-07-21 自然调度后验收 1Y T+5 Canary 的 `scheduled_live`，通过后再激活其余三个同批方案。
-2. 2026-07-24 目标日到达后复验现有 gray live 的 actual join、指标 API 和前端准确率展示。
+1. 2026-07-21 自然调度后验收四个 1Y T+5 方案的 `scheduled_live` 和实际错峰时间。
+2. 2026-07-24 目标日到达后复验四条 gray live 的 actual join、指标 API 和前端准确率展示。
 3. 使用更多独立真实交付继续覆盖周平均和月频任务。
 4. 每个新方案继续执行独立生产准备检查，不复用已有方案授权。
 5. DataBridge 当日刷新失败时继续阻断 `data_bridge_current` 方案，不影响 Native V1 的 `legacy_db` 路径。

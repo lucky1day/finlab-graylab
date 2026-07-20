@@ -312,6 +312,30 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 其余三个选中方案仍为 `shadow + paused` 且业务表零写入；被排除四方案在目录、版本、Registry、业务表和 API 中均为零。只有下一交易日 Canary 自然调度通过后，才进入剩余三方案激活阶段。
 
+### 4.10 记录 002C：1Y T+5 四方案专项全量灰度激活
+
+**执行时间**：2026-07-20 18:41 至 18:52，`Asia/Shanghai`。
+
+**完整记录**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md)。
+
+**机器证据**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json)。
+
+| 项目 | 生产实测结果 |
+|---|---|
+| 时序授权 | 用户明确要求不再等待 Canary 自然调度，直接激活同批全部四方案；scheduler 当天仍不重启 |
+| 名称治理 | 上游 SOP 要求简洁 Metadata name；已有不可变交付由平台 `display_name` 覆盖，scheme version 不变 |
+| 新增 all-stage | A、A_W350_L7、B_W252_L7 各 7/7 Gate passed，绑定当天 generation/snapshot/fingerprint |
+| Activation | 四个 config、exact version、composite Registry 全部 active；Registry 名称为四个业务短名称 |
+| 回测落库 | run `166..169`；每方案 100 predictions、6 monthly metrics；current snapshot as-of replay |
+| gray live | run `956..959`；每方案精确 1 run、1 prediction、1 log，方向均为 `1` |
+| Request | 四方案均为 `predict=2026-07-20`、`feature=2026-07-17`、`target=2026-07-24` |
+| API / 前端 | `1Y + T+5` 恰好四个短名称候选；被排除方案不可见；控制台 0 error |
+| 公网 | 只读/拒绝 200/403 矩阵 14/14 通过 |
+| 进程 | backend 重启为 PID `23395`；scheduler PID `52329` 保持不变，无 startup catchup |
+| 当前状态 | 四方案 `GRAY_ACTIVE`；自然 `scheduled_live` 和 actual 仍待时点复验 |
+
+本次授权只覆盖用户明确列出的四个方案，不改变新 Blackbox 方案必须逐方案通过生产准备与专项授权的通用边界。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

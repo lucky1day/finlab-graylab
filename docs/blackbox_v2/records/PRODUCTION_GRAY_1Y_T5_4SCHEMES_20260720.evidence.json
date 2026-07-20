@@ -1,6 +1,40 @@
 {
-  "active_api_visible_selected": 1,
-  "as_of": "2026-07-20T17:39:17+08:00",
+  "active_api_visible_selected": 4,
+  "as_of": "2026-07-20T18:52:00+08:00",
+  "business_table_counts_after_four_active": {
+    "one_y_t5_liq_excess_a_v1": {
+      "t_backtest_monthly_metrics": 6,
+      "t_backtest_predictions": 100,
+      "t_backtest_runs": 1,
+      "t_scheme_predictions": 1,
+      "t_scheme_run_log": 1,
+      "t_scheme_runs": 1
+    },
+    "one_y_t5_liq_excess_a_w252_l7_v1": {
+      "t_backtest_monthly_metrics": 6,
+      "t_backtest_predictions": 100,
+      "t_backtest_runs": 1,
+      "t_scheme_predictions": 1,
+      "t_scheme_run_log": 1,
+      "t_scheme_runs": 1
+    },
+    "one_y_t5_liq_excess_a_w350_l7_v1": {
+      "t_backtest_monthly_metrics": 6,
+      "t_backtest_predictions": 100,
+      "t_backtest_runs": 1,
+      "t_scheme_predictions": 1,
+      "t_scheme_run_log": 1,
+      "t_scheme_runs": 1
+    },
+    "one_y_t5_liq_excess_b_w252_l7_v1": {
+      "t_backtest_monthly_metrics": 6,
+      "t_backtest_predictions": 100,
+      "t_backtest_runs": 1,
+      "t_scheme_predictions": 1,
+      "t_scheme_run_log": 1,
+      "t_scheme_runs": 1
+    }
+  },
   "business_table_counts_after_canary": {
     "one_y_t5_liq_excess_a_v1": {
       "t_backtest_predictions": 0,
@@ -87,7 +121,91 @@
     "backtest",
     "api-readiness"
   ],
-  "phase": "canary_gray_active_waiting_scheduled_live",
+  "four_active": {
+    "authorization_audit_sha256": {
+      "one_y_t5_liq_excess_a_v1": {
+        "activation": "779fbada9c9eca3751b1fb5b4125d251a34a79a48bbb43c941f32c030d14a26e",
+        "backtest_persist": "6e8a4fb2125ec4b86e75a97704b0b25c743e243dc052afbf8adc7ecf9f6c7782",
+        "live_write": "4abe85dedfb95ed2946ff8f84c9b1b50a53d3911615b35e65deb7f4a26ea8a65"
+      },
+      "one_y_t5_liq_excess_a_w350_l7_v1": {
+        "activation": "f8f0341b73d27fe7bfc484b55bcba054180790ace3ff78a8fd7e39faeb6decd8",
+        "backtest_persist": "9332a32d6a1f7508029e4bb89534e3a0c967da191e3a51dcdaf732597bb88550",
+        "live_write": "dee458cc27d55f10c5fd17b21d9e7b464a9a02efc2a76d27979a800aca6f86e1"
+      },
+      "one_y_t5_liq_excess_b_w252_l7_v1": {
+        "activation": "6d62fba966d6a5c03138c5bb9425df0738aa687b2669a91a35be9e6e1de94f6f",
+        "backtest_persist": "0e985bcc5ea4242202621be23b58310efe0a63ae9923870ed88de8c8512f381d",
+        "live_write": "5765f6f03a59d991ee89f55a520b6669fbca488dc1e4b3a24c29628f3f8d0693"
+      }
+    },
+    "backtests": {
+      "one_y_t5_liq_excess_a_v1": {"accuracy": 0.56, "correct": 56, "monthly_metrics": 6, "prediction_rows": 100, "run_id": 167},
+      "one_y_t5_liq_excess_a_w252_l7_v1": {"accuracy": 0.59, "correct": 59, "monthly_metrics": 6, "prediction_rows": 100, "run_id": 166},
+      "one_y_t5_liq_excess_a_w350_l7_v1": {"accuracy": 0.6, "correct": 60, "monthly_metrics": 6, "prediction_rows": 100, "run_id": 168},
+      "one_y_t5_liq_excess_b_w252_l7_v1": {"accuracy": 0.56, "correct": 56, "monthly_metrics": 6, "prediction_rows": 100, "run_id": 169}
+    },
+    "backtest_date_range": {
+      "feature_equals_predict_rows_per_scheme": 100,
+      "max_predict_date": "2026-07-10",
+      "max_target_date": "2026-07-17",
+      "min_predict_date": "2026-02-06",
+      "min_target_date": "2026-02-13",
+      "replay_semantics": "blackbox_v2_current_snapshot_as_of"
+    },
+    "display": {
+      "console_error_count": 0,
+      "frontend_candidate_count": 4,
+      "names": [
+        "LIQ_EXCESS_A",
+        "LIQ_EXCESS_A_W252_L7",
+        "LIQ_EXCESS_A_W350_L7",
+        "LIQ_EXCESS_B_W252_L7"
+      ],
+      "screenshot": "screenshots/production-gray-1y-t5-20260720-four-active.png",
+      "screenshot_height": 720,
+      "screenshot_sha256": "6d90c4d576c73b0c5c0bd6b82ae45dc88983d8c3749dfb3defe4c8b32e1b2177",
+      "screenshot_width": 1280,
+      "task_cell": "1Y国债活跃 × T+5"
+    },
+    "fresh_all_stage": {
+      "one_y_t5_liq_excess_a_v1": {"gates_passed": 7, "harness_run_id": "hr_20260720T104328Z_c3c808890a19"},
+      "one_y_t5_liq_excess_a_w350_l7_v1": {"gates_passed": 7, "harness_run_id": "hr_20260720T104409Z_f56ec5b92916"},
+      "one_y_t5_liq_excess_b_w252_l7_v1": {"gates_passed": 7, "harness_run_id": "hr_20260720T104452Z_8b5e93112072"}
+    },
+    "gray_live": {
+      "dates": {"feature_date": "2026-07-17", "predict_date": "2026-07-20", "target_date": "2026-07-24"},
+      "one_y_t5_liq_excess_a_v1": {"predicted_direction": 1, "prediction_phase": "gray_live", "run_id": 957},
+      "one_y_t5_liq_excess_a_w252_l7_v1": {"predicted_direction": 1, "prediction_phase": "gray_live", "run_id": 956},
+      "one_y_t5_liq_excess_a_w350_l7_v1": {"predicted_direction": 1, "prediction_phase": "gray_live", "run_id": 958},
+      "one_y_t5_liq_excess_b_w252_l7_v1": {"predicted_direction": 1, "prediction_phase": "gray_live", "run_id": 959}
+    },
+    "lifecycle": {
+      "config_status": "active",
+      "exact_version_status": "active",
+      "registry_status": "active",
+      "selected_active": 4
+    },
+    "name_override": {
+      "delivery_files_unchanged": true,
+      "scheme_versions_unchanged": true,
+      "upstream_sop_requires_task_scoped_concise_name": true
+    },
+    "pending": [
+      "next trading day natural scheduled_live after fresh DataBridge and pre-07:03 scheduler restart",
+      "2026-07-24 actual join and live metrics"
+    ],
+    "regression_tests": {"passed": 1107, "total": 1107},
+    "scheduler_plan": {
+      "one_y_t5_liq_excess_a_v1": "07:33",
+      "one_y_t5_liq_excess_a_w252_l7_v1": "07:35",
+      "one_y_t5_liq_excess_a_w350_l7_v1": "07:37",
+      "one_y_t5_liq_excess_b_w252_l7_v1": "07:39",
+      "t1_daily": "07:41",
+      "t5_daily": "07:43"
+    }
+  },
+  "phase": "four_gray_active_waiting_scheduled_live_and_actual",
   "platform_probe_failures_before_fix": [
     {
       "error": "future probe date 2999-12-31 was outside the frozen pandas timestamp range",
@@ -100,9 +218,11 @@
   ],
   "processes": {
     "backend_restarted_after_canary_activation": true,
-    "backend_launchd_pid_after": 23374,
+    "backend_restarted_after_four_active": true,
+    "backend_launchd_pid_after": 23395,
     "backend_launchd_pid_before": 55205,
     "scheduler_pid_after_backend_restart": 52329,
+    "scheduler_pid_after_four_active": 52329,
     "scheduler_pid_before_backend_restart": 52329,
     "scheduler_restarted_after_intake": false,
     "startup_catchup_triggered": false
@@ -112,14 +232,23 @@
     "excluded_visible": [],
     "matrix_passed": 14,
     "matrix_total": 14,
+    "selected_metrics_http_status": {
+      "one_y_t5_liq_excess_a_v1__h5__1Y": 200,
+      "one_y_t5_liq_excess_a_w252_l7_v1__h5__1Y": 200,
+      "one_y_t5_liq_excess_a_w350_l7_v1__h5__1Y": 200,
+      "one_y_t5_liq_excess_b_w252_l7_v1__h5__1Y": 200
+    },
     "selected_visible": [
-      "one_y_t5_liq_excess_a_w252_l7_v1"
+      "one_y_t5_liq_excess_a_v1",
+      "one_y_t5_liq_excess_a_w252_l7_v1",
+      "one_y_t5_liq_excess_a_w350_l7_v1",
+      "one_y_t5_liq_excess_b_w252_l7_v1"
     ]
   },
   "scheduler_restarted_after_intake": false,
   "schemes": {
     "one_y_t5_liq_excess_a_v1": {
-      "latest_harness_run_id": "hr_20260720T085540Z_2068d5d0eea9",
+      "latest_harness_run_id": "hr_20260720T104328Z_c3c808890a19",
       "metadata_sha256": "e1e3bac8c54f8a192b02cc4a1433bad9ebf1552388d90f54cb5db25eb9c287d0",
       "registry_id": "one_y_t5_liq_excess_a_v1__h5__1Y",
       "scheme_version": "8d583560c9f1",
@@ -261,7 +390,7 @@
       }
     },
     "one_y_t5_liq_excess_a_w350_l7_v1": {
-      "latest_harness_run_id": "hr_20260720T090702Z_ea12669b5485",
+      "latest_harness_run_id": "hr_20260720T104409Z_f56ec5b92916",
       "metadata_sha256": "217d1d64761adbc1a7f1e25207a303b0de8b0b031397c9c9fffc61593c132799",
       "registry_id": "one_y_t5_liq_excess_a_w350_l7_v1__h5__1Y",
       "scheme_version": "86b458c568a5",
@@ -291,7 +420,7 @@
       }
     },
     "one_y_t5_liq_excess_b_w252_l7_v1": {
-      "latest_harness_run_id": "hr_20260720T091230Z_3852f6ea92e4",
+      "latest_harness_run_id": "hr_20260720T104452Z_8b5e93112072",
       "metadata_sha256": "a30b7a7cf326d70c5c822c6df94cf31d294d997c5d6d858339a6737814c76f25",
       "registry_id": "one_y_t5_liq_excess_b_w252_l7_v1__h5__1Y",
       "scheme_version": "ba00891cd179",

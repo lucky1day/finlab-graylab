@@ -4,7 +4,7 @@
 
 **执行日期**：2026-07-20，`Asia/Shanghai`
 
-**当前阶段**：代表性 Canary 已完成激活、100 条持久化回测和单次 `gray_live`；其余三方案保持 `shadow + paused`，等待下一交易日 Canary 自然 `scheduled_live` 验收。
+**当前阶段**：用户明确将本批时序调整为当天全量激活；四方案均已完成 Activation、100 条持久化回测和单次 `gray_live`。scheduler 当天未重启，下一交易日自然 `scheduled_live` 和 2026-07-24 actual 仍待复验。
 
 **机器证据**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json)
 
@@ -45,7 +45,7 @@ Intake 后四个方案均为 `blackbox_v2 + data_bridge_current + paused + draft
 
 | 检查 | 结果 |
 |---|---|
-| 服务回归 | 324/324 `unittest` 通过；冻结服务环境未安装 `pytest`，未临时安装依赖 |
+| 服务回归 | 1107/1107 `unittest` 通过；冻结服务环境未安装 `pytest`，未临时安装依赖 |
 | Runtime Profile | `blackbox-v2-v1` |
 | 环境指纹 | `720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd` |
 | sandbox | 网络拒绝、DataBridge 目录写入拒绝 |
@@ -127,7 +127,7 @@ Intake 后四个方案均为 `blackbox_v2 + data_bridge_current + paused + draft
 | live Request | predict `2026-07-20`、feature `2026-07-17`、target `2026-07-24` |
 | live 结果 | 方向 `1`，`prediction_phase=gray_live`，actual pending |
 
-回测授权和 live 授权分别签发，均绑定 exact version 和最新 all-stage run；任何 token 均未跨动作复用。回测以外的受保护表在 persist 阶段零增量，live 阶段除上述三张允许表外均零增量。其余三个选中方案仍保持业务表零写入。
+回测授权和 live 授权分别签发，均绑定 exact version 和最新 all-stage run；任何 token 均未跨动作复用。回测以外的受保护表在 persist 阶段零增量，live 阶段除上述三张允许表外均零增量。
 
 ### 6.4 API、前端和进程时序
 
@@ -144,6 +144,38 @@ Canary 截图：
 
 ![1Y T+5 Canary 前端验收](screenshots/production-gray-1y-t5-20260720-canary.png)
 
-## 7. 下一检查点
+## 7. 四方案全量激活
 
-当前保持 `IN_PROGRESS`。必须等下一交易日 DataBridge 刷新成功后、`07:03` 前重启 scheduler，并观察当前 Canary 自然产生 `scheduled_live`；只有该检查点通过，才允许对其余三个方案逐个执行新的 all-stage、Activation、100 条 persist 和单次 gray live。`target_date=2026-07-24` 的 actual 到达前，不报告当前 gray live 的准确率，也不人工补写 actual。
+原计划要求先等待 Canary 的下一交易日自然 `scheduled_live`，再激活其余三项。用户于 2026-07-20 明确要求“全部激活、按照 A 展示继续推进”，因此生产编排调整为：当天仍不重启 scheduler，但对其余三个方案逐项重新执行当天 all-stage，并使用互不复用的 Activation、persist 和 live 授权完成灰度写入。该授权只覆盖本批三个明确目标，不外推到其他方案。
+
+### 7.1 名称治理
+
+上游交付 SOP 已明确 Metadata `name` 只表达任务格子内的候选方案名，不重复 `target_tenor`、`task_type`、`horizon`，也不追加“方向预测”。已有四份不可变交付不修改 `.py/.json`，平台通过不参与 canonical version 的 `config.display_name` 覆盖 Registry 展示名；四个 `scheme_version` 与交付摘要保持不变。
+
+| base scheme ID | Registry 短名称 | fresh all-stage | Backtest run | 100 条准确率 | gray live run |
+|---|---|---|---:|---:|---:|
+| `one_y_t5_liq_excess_a_v1` | `LIQ_EXCESS_A` | `hr_20260720T104328Z_c3c808890a19` | 167 | 56.0% | 957 |
+| `one_y_t5_liq_excess_a_w252_l7_v1` | `LIQ_EXCESS_A_W252_L7` | `hr_20260720T092351Z_1b6e76e498c0` | 166 | 59.0% | 956 |
+| `one_y_t5_liq_excess_a_w350_l7_v1` | `LIQ_EXCESS_A_W350_L7` | `hr_20260720T104409Z_f56ec5b92916` | 168 | 60.0% | 958 |
+| `one_y_t5_liq_excess_b_w252_l7_v1` | `LIQ_EXCESS_B_W252_L7` | `hr_20260720T104452Z_8b5e93112072` | 169 | 56.0% | 959 |
+
+三个新增 fresh run 均为 7/7 Gate passed，并绑定当天 generation、snapshot 和冻结环境指纹。三个新增 persist 各自精确新增 1 个 backtest run、100 条 prediction 和 6 条 monthly metric；三个新增 live 各自精确新增 1 个 run、1 条 prediction 和 1 条 run log，其他受保护表零增量。四条 live 均为方向 `1`，日期口径统一为 `predict=2026-07-20`、`feature=2026-07-17`、`target=2026-07-24`、`prediction_phase=gray_live`。
+
+### 7.2 API、前端与进程验收
+
+- 四个配置、exact version 和 composite Registry 均为 active；四个 Registry 名称均为短名称。
+- 本地与公网 `/api/schemes` 恰好包含四个选中方案，被排除的四个方案均不可见。
+- 每个 backtest API 项均为 100 条明细、6 个月度指标；回测语义均为 current snapshot as-of replay。
+- 每个 metrics API 当前有 1 条 `gray_live`；actual 尚未到达，因此 live 月度指标和 `metric_samples` 保持 pending。
+- 前端 `1Y国债活跃 × T+5` 显示四个短名称候选，没有重复“1年期国债收益率T+5日方向预测”或 `· 1Y国债活跃`，浏览器控制台错误数为 0。
+- 公网只读/拒绝矩阵 14/14 通过。
+- backend 单独重启为 PID `23395`；scheduler PID 始终为 `52329`，当天未重启、未触发 startup catchup。
+- 当前 2 分钟错峰计划解析为 A `07:33`、A_W252_L7 `07:35`、A_W350_L7 `07:37`、B_W252_L7 `07:39`，随后 `t1_daily=07:41`、`t5_daily=07:43`；实际时间必须以下一交易日自然运行记录为准。
+
+四方案截图：
+
+![1Y T+5 四方案前端验收](screenshots/production-gray-1y-t5-20260720-four-active.png)
+
+## 8. 下一检查点
+
+当前保持 `IN_PROGRESS`，但四方案已经是 `GRAY_ACTIVE`。必须等下一交易日 DataBridge 刷新成功后、`07:03` 前重启 scheduler，确认 startup catchup 没有意外补跑，并观察四方案自然产生 `scheduled_live`。`target_date=2026-07-24` 的 actual 到达前，不报告当前 gray live 的准确率，也不人工补写 actual。
