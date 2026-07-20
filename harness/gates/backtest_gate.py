@@ -74,8 +74,8 @@ class BacktestGate(Gate):
                         started_at=started_at,
                         finished_at=finished_at,
                     )
-                audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
                 mark_token_used(auth, used_tokens_path(ctx.project_root))
+                audit_path = write_authorization_audit(auth, ctx.report_dir / "backtest_authorization")
                 current = run_backtest_runner(
                     runner,
                     ctx.project_root,

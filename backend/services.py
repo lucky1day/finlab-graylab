@@ -42,7 +42,13 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "baseline_original_csv": "原始代码基准CSV回测",
     "framework_original_csv": "框架算法基准CSV回测",
     "framework_db_aligned": "当前DB对齐回测",
+    "blackbox_v2_current_snapshot_as_of": "Blackbox V2 当前快照回测",
+    "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
+}
+BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE = {
+    "native_adapter": "framework_db_aligned",
+    "blackbox_v2": "blackbox_v2_current_snapshot_as_of",
 }
 
 
@@ -76,6 +82,19 @@ def _require_task_type(row: Any, *, context: str) -> str:
         f"base_scheme_id={row['base_scheme_id']} "
         f"target_tenor={row['target_tenor']} "
         f"task_type={task_type or None}"
+    )
+
+
+def _require_runtime_type(row: Any, *, context: str) -> str:
+    runtime_type = str(row["runtime_type"] or "").strip()
+    if runtime_type in BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE:
+        return runtime_type
+    raise ValueError(
+        f"{context} invalid runtime_type: "
+        f"scheme_id={row['scheme_id']} "
+        f"base_scheme_id={row['base_scheme_id']} "
+        f"target_tenor={row['target_tenor']} "
+        f"runtime_type={runtime_type or None}"
     )
 
 
@@ -325,7 +344,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
     """只读获取回测矩阵所需方案元数据，不触发 registry 同步。"""
     sql = text(
         """
-        SELECT scheme_id, base_scheme_id, name, description, horizon, task_type, frequency,
+        SELECT scheme_id, base_scheme_id, runtime_type, name, description, horizon, task_type, frequency,
                target_tenor, schedule_cron, schedule_timezone, status,
                deployed_at, created_at, updated_at
         FROM t_scheme_registry
@@ -338,7 +357,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
             rows = conn.execute(sql).mappings().all()
     except SQLAlchemyError as exc:
         message = str(exc)
-        if "t_scheme_registry" not in message and "1146" not in message:
+        if "1146" not in message and "no such table: t_scheme_registry" not in message:
             raise
         rows = []
 
@@ -347,6 +366,7 @@ def _backtest_scheme_meta(engine: Engine) -> dict[tuple[str, str], dict[str, Any
         meta[key] = {
             "scheme_id": row["scheme_id"],
             "base_scheme_id": row["base_scheme_id"],
+            "runtime_type": _require_runtime_type(row, context="active registry row"),
             "name": row["name"],
             "description": row["description"],
             "horizon": row["horizon"],
@@ -557,7 +577,8 @@ def scheme_metrics(
 
     sql = text(
         f"""
-        SELECT p.id, p.scheme_id, p.target_tenor, p.horizon, p.predict_date, p.feature_date, p.target_date,
+        SELECT p.id, p.run_id, p.scheme_version, p.scheme_id, p.target_tenor, p.horizon,
+               p.predict_date, p.feature_date, p.target_date,
                p.prediction_phase, p.predicted_direction, p.confidence, p.model_version, p.extra,
                a.direction_1d, a.direction_5d, wa.direction_weekly, ma.direction_monthly
         FROM t_scheme_predictions p
@@ -630,12 +651,17 @@ def scheme_metrics(
         item = {
             "scheme_id": scheme_id,
             "base_scheme_id": base_scheme_id,
+            "run_id": row["run_id"],
             "target_tenor": row["target_tenor"],
             "horizon": row["horizon"],
             "predict_date": predict_date,
             "feature_date": _row_feature_date(row, extra),
             "target_date": target_date,
             "prediction_phase": _row_prediction_phase(row, extra),
+            "scheme_version": row["scheme_version"],
+            "request_id": extra.get("request_id"),
+            "data_snapshot_id": extra.get("data_snapshot_id"),
+            "runtime_type": extra.get("runtime_type"),
             "predicted_direction": row["predicted_direction"],
             "actual_direction": actual_direction,
             "is_correct": None if actual_direction is None else row["predicted_direction"] == actual_direction,
@@ -753,7 +779,7 @@ def _is_weekly_metric(horizon: Any, extra: dict[str, Any]) -> bool:
 def backtest_factor_lab_results(
     engine: Engine,
     benchmark_id: str | None = None,
-    data_source: str = "framework_db_aligned",
+    data_source: str | None = None,
 ) -> dict[str, Any]:
     """返回前端方案矩阵可直接展示的最新历史回测结果。"""
     scheme_meta = _backtest_scheme_meta(engine)
@@ -765,15 +791,46 @@ def backtest_factor_lab_results(
                status, summary, report_path, created_at, updated_at
         FROM v_latest_backtest_run
         WHERE (:benchmark_id IS NULL OR benchmark_id = :benchmark_id)
-          AND data_source = :data_source
+          AND (
+                (:auto_source = 1 AND data_source IN (
+                    'framework_db_aligned',
+                    'blackbox_v2_current_snapshot_as_of'
+                ))
+                OR (:auto_source = 0 AND data_source = :data_source)
+          )
         ORDER BY benchmark_id, scheme_id, updated_at DESC, id DESC
         """
     )
     with engine.connect() as conn:
         run_rows = conn.execute(
             run_sql,
-            {"benchmark_id": benchmark_id, "data_source": data_source},
+            {
+                "benchmark_id": benchmark_id,
+                "data_source": data_source,
+                "auto_source": 1 if data_source is None else 0,
+            },
         ).mappings().all()
+
+    if data_source is None:
+        runtime_types_by_scheme: dict[str, set[str]] = defaultdict(set)
+        for (base_scheme_id, _target_tenor), meta in scheme_meta.items():
+            runtime_types_by_scheme[base_scheme_id].add(str(meta["runtime_type"]))
+        inconsistent = {
+            scheme_id: sorted(runtime_types)
+            for scheme_id, runtime_types in runtime_types_by_scheme.items()
+            if len(runtime_types) != 1
+        }
+        if inconsistent:
+            raise ValueError(f"active Registry runtime_type is inconsistent: {inconsistent}")
+        preferred_by_scheme = {
+            scheme_id: BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE[next(iter(runtime_types))]
+            for scheme_id, runtime_types in runtime_types_by_scheme.items()
+        }
+        run_rows = [
+            row
+            for row in run_rows
+            if str(row["data_source"]) == preferred_by_scheme.get(str(row["scheme_id"]))
+        ]
 
     schemes: list[dict[str, Any]] = []
     for row in run_rows:
@@ -817,6 +874,7 @@ def backtest_factor_lab_results(
                     "benchmark_label": benchmark_label,
                     "scheme_id": registry_id,
                     "base_scheme_id": base_scheme_id,
+                    "runtime_type": meta["runtime_type"],
                     "scheme_name": scheme_name,
                     "data_source": run["data_source"],
                     "data_source_label": data_source_label,
@@ -831,6 +889,10 @@ def backtest_factor_lab_results(
                     "display_name": display_name,
                     "name": display_name,
                     "status": "complete",
+                    "scheme_version": run["summary"].get("scheme_version"),
+                    "data_snapshot_id": run["summary"].get("data_snapshot_id"),
+                    "harness_run_id": run["summary"].get("harness_run_id"),
+                    "generation_id": run["summary"].get("generation_id"),
                     "start_date": run["start_date"],
                     "end_date": run["end_date"],
                     "latest_run": {
@@ -844,11 +906,41 @@ def backtest_factor_lab_results(
                 }
             )
 
+    if benchmark_id is None:
+        latest_by_scope: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        for item in schemes:
+            key = (
+                str(item["runtime_type"]),
+                str(item["base_scheme_id"]),
+                str(item["target_tenor"]),
+                str(item["data_source"]),
+            )
+            current = latest_by_scope.get(key)
+            item_rank = (
+                str(item["latest_run"].get("updated_at") or ""),
+                int(item["run_id"]),
+            )
+            current_rank = (
+                str(current["latest_run"].get("updated_at") or ""),
+                int(current["run_id"]),
+            ) if current is not None else ("", -1)
+            if current is None or item_rank > current_rank:
+                latest_by_scope[key] = item
+        schemes = list(latest_by_scope.values())
+
+    selected_sources = {str(item["data_source"]) for item in schemes}
+    if len(selected_sources) == 1:
+        resolved_data_source = next(iter(selected_sources))
+    elif selected_sources:
+        resolved_data_source = "runtime_default"
+    else:
+        resolved_data_source = data_source or "framework_db_aligned"
+
     return {
         "benchmark_id": benchmark_id or "all",
         "benchmark_label": _backtest_benchmark_label(benchmark_id),
-        "data_source": data_source,
-        "data_source_label": _backtest_data_source_label(data_source),
+        "data_source": resolved_data_source,
+        "data_source_label": _backtest_data_source_label(resolved_data_source),
         "target_labels": target_labels,
         "schemes": schemes,
     }

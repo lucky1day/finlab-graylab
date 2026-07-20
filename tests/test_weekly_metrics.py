@@ -35,6 +35,7 @@ def _create_weekly_schema(engine) -> None:
                 CREATE TABLE t_scheme_predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id INTEGER,
+                    scheme_version TEXT,
                     scheme_id TEXT,
                     target_tenor TEXT,
                     horizon INTEGER,

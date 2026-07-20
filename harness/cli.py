@@ -91,6 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
         "api-readiness", "shadow-register", "api", "live",
+        "lifecycle-reconcile", "bootstrap",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -104,9 +105,13 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--timeout-sec", type=int, default=600)
         item.add_argument("--authorize", default=None)
         item.add_argument("--api-base-url", default="http://127.0.0.1:8100")
+        item.add_argument("--api-instance-nonce", default=None)
         item.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
+            item.add_argument("--sample-size", type=int, default=100)
+        if gate_name == "bootstrap":
+            item.add_argument("--expected-empty-schema", required=True)
 
     onboard_parser = subparsers.add_parser("onboard")
     onboard_parser.add_argument("scheme_id")
@@ -117,6 +122,7 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--algo-env", default="forecast_env")
     onboard_parser.add_argument("--timeout-sec", type=int, default=600)
     onboard_parser.add_argument("--api-base-url", default="http://127.0.0.1:8100")
+    onboard_parser.add_argument("--api-instance-nonce", default=None)
     onboard_parser.add_argument("--authorize", default=None)
     onboard_parser.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
 
@@ -169,9 +175,19 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
+        backtest_sample_size=int(getattr(args, "sample_size", 100)),
+        expected_empty_schema=getattr(args, "expected_empty_schema", None),
         api_base_url=args.api_base_url,
+        api_instance_nonce=args.api_instance_nonce,
     )
-    return gate_for_name(args.gate_name, ctx=ctx).run(ctx)
+    gate = gate_for_name(args.gate_name, ctx=ctx)
+    try:
+        return gate.run(ctx)
+    finally:
+        if getattr(config, "runtime_type", "native_adapter") == "blackbox_v2":
+            from harness.blackbox_v2.gates import cleanup_runtime_input
+
+            cleanup_runtime_input(ctx)
 
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
@@ -189,6 +205,7 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
         api_base_url=args.api_base_url,
+        api_instance_nonce=args.api_instance_nonce,
         engine_factory=create_engine_from_env,
     )
     return run_onboard(ctx, stage=args.stage)
@@ -207,12 +224,15 @@ def _load_config_for_dispatch(config_path: Path):
 def _run_activate(args: argparse.Namespace) -> GateResult:
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
+    config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
     ctx = GateContext(
         scheme_id=args.scheme_id,
         predict_date=args.predict_date,
         project_root=project_root,
         report_dir=report_dir,
+        config=config,
         authorization=args.authorize,
+        engine_factory=create_engine_from_env,
     )
     return ActivationGate().run(ctx)
 

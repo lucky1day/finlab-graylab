@@ -926,6 +926,18 @@ class HarnessRuntimeGateTests(unittest.TestCase):
         self.assertIn("t_scheme_monthly_actuals", table_guard.DRY_RUN_GUARD_TABLES)
         self.assertIn("t_scheme_monthly_actuals", table_guard.PROTECTED_TABLES)
         self.assertIn("t_scheme_runs", table_guard.LIVE_WRITE_ALLOWED_TABLES)
+        for source_table in (
+            "api_wind_date",
+            "api_wind_daily",
+            "api_wind_derivative_daily",
+            "api_wind_weekly",
+            "api_wind_derivative_weekly",
+            "api_wind_monthly",
+            "api_wind_derivative_monthly",
+        ):
+            with self.subTest(source_table=source_table):
+                self.assertIn(source_table, table_guard.DRY_RUN_GUARD_TABLES)
+                self.assertIn(source_table, table_guard.PROTECTED_TABLES)
 
 
 class HarnessLiveGateTests(unittest.TestCase):

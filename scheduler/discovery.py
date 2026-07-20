@@ -11,7 +11,13 @@ except ModuleNotFoundError:  # forecast_env keeps scheduler dry-run lean and may
     yaml = None
 
 from harness.contracts.config_schema import validate_config
-from shared.versioning import compute_code_hash, compute_config_hash, compute_manifest_hash, compute_scheme_version
+from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+from shared.versioning import (
+    compute_code_hash,
+    compute_config_hash,
+    compute_manifest_hash,
+    compute_scheme_version,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -143,7 +149,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
         raise ValueError(f"{config_path}: delivery filenames must match scheme_id")
 
     code_hash = _hash_file(script_path)
-    config_hash = compute_config_hash(config_path)
+    config_hash = compute_blackbox_config_hash(raw)
     manifest_hash = _hash_file(metadata_path)
     return SchemeConfig(
         scheme_id=metadata.scheme_id,

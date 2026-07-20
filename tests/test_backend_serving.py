@@ -36,6 +36,7 @@ def _create_schema(engine) -> None:
                 CREATE TABLE t_scheme_predictions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     run_id INTEGER,
+                    scheme_version TEXT,
                     scheme_id TEXT,
                     target_tenor TEXT,
                     horizon INTEGER,
@@ -281,6 +282,7 @@ class BackendPredictionServingTests(unittest.TestCase):
         self.assertEqual(result["scheme_id"], "demo_daily__h1__10Y")
         self.assertEqual(result["base_scheme_id"], "demo_daily")
         self.assertEqual(result["target_tenor"], "10Y")
+        self.assertEqual({row["run_id"] for row in result["daily_rows"]}, {1, 2})
 
     def test_scheme_metrics_isolates_registry_horizon(self) -> None:
         """同一 base/tenor 下的不同 horizon 不得串入 composite registry 指标。"""

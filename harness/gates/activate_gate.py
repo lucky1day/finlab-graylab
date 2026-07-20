@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from harness.authorization import (
@@ -23,6 +24,28 @@ class ActivationGate(Gate):
     requires_authorization = True
 
     def run(self, ctx: GateContext) -> GateResult:
+        config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+        cfg = ctx.config
+        raw_runtime_type = None
+        if config_path.is_file():
+            try:
+                raw = load_config_raw(config_path)
+                raw_runtime_type = raw.get("runtime_type") if isinstance(raw, dict) else None
+            except (OSError, UnicodeError, ValueError):
+                raw_runtime_type = getattr(cfg, "runtime_type", None)
+        if raw_runtime_type == "blackbox_v2" or getattr(cfg, "runtime_type", None) == "blackbox_v2":
+            try:
+                from scheduler.discovery import load_scheme_config
+
+                cfg = load_scheme_config(config_path)
+            except Exception as exc:  # noqa: BLE001
+                return guarded_result(
+                    self.name,
+                    lambda started_at: _blackbox_config_failure(started_at, config_path, exc),
+                )
+            from harness.blackbox_v2.activation import activate_blackbox
+
+            return activate_blackbox(replace(ctx, config=cfg))
         return guarded_result(self.name, lambda started_at: self._run(ctx, started_at))
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
@@ -117,6 +140,11 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
+        # 消费是首次授权副作用；锁内重检保证并发输家不会修改配置或 Registry。
+        mark_token_used(auth, used_tokens_path(ctx.project_root))
+        audit_dir = ctx.report_dir / "activation_authorization"
+        audit_path = write_authorization_audit(auth, audit_dir)
+
         previous_status = str(raw.get("status"))
         if previous_status == "active":
             new_status = "active"
@@ -157,10 +185,6 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
-        # 授权审计 + 一次性消费
-        audit_dir = ctx.report_dir / "activation_authorization"
-        audit_path = write_authorization_audit(auth, audit_dir)
-        mark_token_used(auth, used_tokens_path(ctx.project_root))
         finished_at = utc_now()
         return GateResult(
             gate_name=self.name,
@@ -184,6 +208,21 @@ class ActivationGate(Gate):
             finished_at=finished_at,
             report_path=audit_path,
         )
+
+
+def _blackbox_config_failure(started_at: str, config_path: Path, exc: Exception) -> GateResult:
+    return GateResult(
+        gate_name="activate",
+        status=GateStatus.FAILED,
+        passed=False,
+        evidence=[
+            Evidence("config_path", str(config_path)),
+            Evidence("runtime_type", "blackbox_v2"),
+        ],
+        errors=[f"Blackbox config failed strict loading: {exc}"],
+        started_at=started_at,
+        finished_at=utc_now(),
+    )
 
 
 def _cron_of(raw: dict) -> str | None:
@@ -281,7 +320,7 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
                       AND scheme_version = :scheme_version
                       AND stage = 'all'
                       AND status = 'passed'
-                    ORDER BY finished_at DESC
+                    ORDER BY finished_at DESC, harness_run_id DESC
                     LIMIT 1
                     """
                 ),

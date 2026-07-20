@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -129,6 +130,163 @@ class BlackboxV2InputArtifactTests(unittest.TestCase):
             end_date="2026-07-15", engine="engine"
         )
 
+    def test_bulk_cutoffs_read_sources_and_snapshot_once_for_100_unique_dates(self) -> None:
+        from shared import data_service
+        from shared.blackbox_v2.snapshot import create_snapshot_from_frames, resolve_cutoffs
+        from shared.input_artifacts import resolve_blackbox_input_cutoffs_bulk
+
+        feature_dates = [
+            (date(2025, 1, 1) + timedelta(days=index)).isoformat()
+            for index in range(100)
+        ]
+        daily_dates = [
+            (date(2024, 12, 20) + timedelta(days=index)).isoformat()
+            for index in range(112)
+        ]
+        weekly_raw = _weekly_source_rows()
+        weekly_derivative = weekly_raw.iloc[0:0].copy()
+        monthly_raw = _monthly_source_rows()
+        monthly_derivative = pd.DataFrame(
+            columns=["rdate", "month_id", "indicators_code", "indicators_value"]
+        )
+        metadata = _factor_metadata()
+        weekly_keys = sorted({str(value) for value in weekly_raw["week_id"]})
+        monthly_all = data_service.build_monthly_output_from_frames(
+            metadata,
+            monthly_raw,
+            monthly_derivative,
+            end_date=max(feature_dates),
+        )
+        frames = {
+            "daily_output.csv": pd.DataFrame(
+                {"date": daily_dates, "daily_factor": range(len(daily_dates))}
+            ),
+            "weekly_output.csv": pd.DataFrame(
+                {"week_id": weekly_keys, "week_factor": range(len(weekly_keys))}
+            ),
+            "monthly_output.csv": pd.DataFrame(
+                {
+                    "month_id": monthly_all["month_id"].astype(str),
+                    "month_factor": range(len(monthly_all)),
+                }
+            ),
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema_path = _write_schema(root, frames)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={name: list(frame.columns) for name, frame in frames.items()},
+                schema_version="data-bridge-v1",
+            )
+            real_read_csv = pd.read_csv
+            with (
+                patch(
+                    "shared.input_artifacts._data_service.read_factor_metadata_from_db",
+                    return_value=metadata,
+                ) as read_metadata,
+                patch(
+                    "shared.input_artifacts._data_service.read_weekly_long_from_db",
+                    side_effect=[weekly_raw, weekly_derivative],
+                ) as read_weekly,
+                patch(
+                    "shared.input_artifacts._data_service.read_monthly_long_from_db",
+                    side_effect=[monthly_raw, monthly_derivative],
+                ) as read_monthly,
+                patch("shared.input_artifacts.pd.read_csv", wraps=real_read_csv) as read_snapshot,
+            ):
+                resolved = resolve_blackbox_input_cutoffs_bulk(
+                    snapshot,
+                    feature_dates=feature_dates,
+                    engine="engine",
+                    schema_path=schema_path,
+                )
+
+            self.assertEqual(len(resolved), 100)
+            self.assertEqual(read_metadata.call_count, 1)
+            self.assertEqual(read_weekly.call_count, 2)
+            self.assertEqual(read_monthly.call_count, 2)
+            self.assertEqual(read_snapshot.call_count, 3)
+
+            for boundary in ("2025-01-14", "2025-01-16", "2025-02-17"):
+                weekly_as_of = data_service.build_weekly_output_from_frames(
+                    ["week_id", "week_factor"],
+                    weekly_raw,
+                    weekly_derivative,
+                    as_of_date=boundary,
+                )
+                monthly_as_of = data_service.build_monthly_output_from_frames(
+                    metadata,
+                    monthly_raw,
+                    monthly_derivative,
+                    end_date=boundary,
+                )
+                expected = resolve_cutoffs(
+                    snapshot,
+                    boundary,
+                    weekly_as_of=weekly_as_of,
+                    monthly_as_of=monthly_as_of,
+                )
+                self.assertEqual(resolved[boundary], expected)
+
+            self.assertEqual(resolved["2025-01-14"].monthly_cutoff_key, "202501")
+            self.assertEqual(resolved["2025-01-16"].monthly_cutoff_key, "202502")
+
+    def test_bulk_cutoffs_cache_duplicate_feature_dates(self) -> None:
+        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+        from shared.input_artifacts import resolve_blackbox_input_cutoffs_bulk
+
+        frames = _frames()
+        metadata = _factor_metadata()
+        weekly = pd.DataFrame(
+            {
+                "rdate": ["2026-07-10", "2026-07-15"],
+                "week_id": ["202627", "202628"],
+                "indicators_code": ["week_factor", "week_factor"],
+                "indicators_value": [10.0, 11.0],
+            }
+        )
+        monthly = pd.DataFrame(
+            {
+                "rdate": ["2026-06-15", "2026-07-15"],
+                "indicators_code": ["month_factor", "month_factor"],
+                "indicators_value": [20.0, 21.0],
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema_path = _write_schema(root, frames)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={name: list(frame.columns) for name, frame in frames.items()},
+                schema_version="data-bridge-v1",
+            )
+            with (
+                patch(
+                    "shared.input_artifacts._data_service.read_factor_metadata_from_db",
+                    return_value=metadata,
+                ),
+                patch(
+                    "shared.input_artifacts._data_service.read_weekly_long_from_db",
+                    side_effect=[weekly, weekly.iloc[0:0]],
+                ),
+                patch(
+                    "shared.input_artifacts._data_service.read_monthly_long_from_db",
+                    side_effect=[monthly, monthly.assign(month_id="").iloc[0:0]],
+                ),
+            ):
+                resolved = resolve_blackbox_input_cutoffs_bulk(
+                    snapshot,
+                    feature_dates=["2026-07-15", "2026-07-15"],
+                    engine="engine",
+                    schema_path=schema_path,
+                )
+
+        self.assertEqual(list(resolved), ["2026-07-15"])
+
 
 def _frames() -> dict[str, pd.DataFrame]:
     return {
@@ -142,6 +300,58 @@ def _frames() -> dict[str, pd.DataFrame]:
             {"month_id": ["202606", "202607"], "month_factor": [20.0, 21.0]}
         ),
     }
+
+
+def _factor_metadata() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "indicators_code": "month_factor",
+                "frequency": "monthly",
+                "status": "1",
+                "pre_forecast_flag": "1",
+                "lag_length": 0,
+                "indicators_source": "raw",
+            }
+        ]
+    )
+
+
+def _weekly_source_rows() -> pd.DataFrame:
+    rows = []
+    cursor = date(2024, 12, 23)
+    while cursor <= date(2025, 4, 14):
+        iso = cursor.isocalendar()
+        rows.append(
+            {
+                "rdate": cursor.isoformat(),
+                "week_id": f"{iso.year}{iso.week:02d}",
+                "indicators_code": "week_factor",
+                "indicators_value": float(len(rows) + 1),
+            }
+        )
+        cursor += timedelta(days=7)
+    return pd.DataFrame(rows)
+
+
+def _monthly_source_rows() -> pd.DataFrame:
+    dates = (
+        "2024-12-10",
+        "2025-01-10",
+        "2025-01-16",
+        "2025-02-14",
+        "2025-02-16",
+        "2025-03-14",
+        "2025-03-16",
+        "2025-04-10",
+    )
+    return pd.DataFrame(
+        {
+            "rdate": dates,
+            "indicators_code": ["month_factor"] * len(dates),
+            "indicators_value": [float(index) for index in range(len(dates))],
+        }
+    )
 
 
 def _write_schema(root: Path, frames: dict[str, pd.DataFrame]) -> Path:

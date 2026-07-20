@@ -20,5 +20,8 @@ class GateContext:
     authorization: Any | None = None
     prediction_phase: str | None = None
     persist_backtest: bool = False
+    backtest_sample_size: int = 100
+    expected_empty_schema: str | None = None
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"
+    api_instance_nonce: str | None = None

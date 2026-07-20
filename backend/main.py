@@ -27,6 +27,11 @@ from backend.services import (
 )
 from scheduler.executor import DEFAULT_ALGO_ENV
 from scheduler.main import run_prediction_job
+from shared.service_instance import (
+    FINGERPRINT_VERSION,
+    build_service_instance_identity,
+    service_fingerprint_secret,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +40,7 @@ DEFAULT_CORS_ORIGINS = ["http://localhost", "http://127.0.0.1"]
 ADMIN_TOKEN_HEADER = "X-Admin-Token"
 FRONTEND_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
 logger = logging.getLogger(__name__)
+_DEFAULT_INSTANCE_NONCE = secrets.token_hex(32)
 
 
 class NoCacheFrontendStaticFiles(StaticFiles):
@@ -103,9 +109,28 @@ class TriggerRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict:
     engine = get_engine()
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1")).scalar_one()
-    return {"status": "ok"}
+    with engine.connect() as connection:
+        value = connection.execute(text("SELECT 1")).scalar_one()
+    if int(value) != 1:
+        raise RuntimeError("database health check returned an unexpected value")
+    fingerprint_secret = service_fingerprint_secret()
+    if fingerprint_secret is None:
+        identity = {"fingerprint_version": FINGERPRINT_VERSION, "fingerprint": None}
+    else:
+        identity = build_service_instance_identity(
+            engine,
+            project_root=PROJECT_ROOT,
+            runtime_profile=os.getenv(
+                "BOND_FACTOR_LAB_RUNTIME_PROFILE",
+                "blackbox-v2-v1",
+            ),
+            instance_nonce=os.getenv(
+                "BOND_FACTOR_LAB_INSTANCE_NONCE",
+                _DEFAULT_INSTANCE_NONCE,
+            ),
+            fingerprint_secret=fingerprint_secret,
+        )
+    return {"status": "ok", "service_instance": identity}
 
 
 @app.get("/api/schemes")
@@ -231,7 +256,7 @@ def api_backtest_data_checks(
 @app.get("/api/backtests/factor-lab")
 def api_backtest_factor_lab(
     benchmark_id: str | None = None,
-    data_source: str = "framework_db_aligned",
+    data_source: str | None = None,
 ) -> dict:
     return backtest_factor_lab_results(get_engine(), benchmark_id=benchmark_id, data_source=data_source)
 

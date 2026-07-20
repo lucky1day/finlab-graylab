@@ -9,14 +9,18 @@ import time
 from collections import Counter
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Callable
 
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.repository import (
     attach_run_data_snapshot,
+    complete_approved_blackbox_run,
     create_scheme_run,
     create_engine_from_env,
+    fail_scheme_run_atomic,
     finish_scheme_run,
     insert_run_predictions,
+    read_blackbox_execution_approval,
     sync_scheme_registry,
     write_run_log,
 )
@@ -277,13 +281,14 @@ def execute_scheme(
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
     prediction_phase: str = "scheduled_live",
+    blackbox_precommit_validator: Callable[[object], None] | None = None,
 ) -> SchemeRunResult:
     """执行单个方案并写入预测表和运行日志。
 
     执行前校验：
     1. config.yaml status == 'active'（本地配置）
-    2. t_scheme_registry.status == 'active'（DB 注册状态）
-    3. t_scheme_versions 中当前版本状态为 'active' 或 'shadow'（激活审核状态）
+    2. Native 维持既有 Registry 与 active/shadow 版本校验
+    3. Blackbox 要求 exact active 版本、批准人与 composite Registry 身份全部一致
     """
     if prediction_phase not in VALID_PREDICTION_PHASES:
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
@@ -296,12 +301,44 @@ def execute_scheme(
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, f"status={cfg.status}")
 
     scheme_version = getattr(cfg, "scheme_version", None)
-    ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
-    if not ok:
-        duration = time.monotonic() - started
-        write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
-        engine.dispose()
-        return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
+    runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    if runtime_type == "blackbox_v2":
+        config_version_status = getattr(cfg, "version_status", None)
+        if config_version_status != "active":
+            reason = (
+                "Blackbox V2 config version_status is "
+                f"{config_version_status}, expected active"
+            )
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
+        try:
+            from shared.blackbox_v2.lifecycle import assert_lifecycle_clear
+
+            cfg_path = getattr(cfg, "path", None)
+            project_root = Path(cfg_path).parents[1] if cfg_path is not None else Path(__file__).resolve().parents[1]
+            assert_lifecycle_clear(project_root, cfg.scheme_id)
+        except RuntimeError as exc:
+            reason = str(exc)
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
+        approval = read_blackbox_execution_approval(engine, cfg)
+        if not approval.executable:
+            reason = f"Blackbox V2 version is not production-approved: {approval.reason}"
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "failed", 0, duration, reason)
+    else:
+        ok, reason = _verify_scheme_activation(engine, cfg.scheme_id, scheme_version)
+        if not ok:
+            duration = time.monotonic() - started
+            write_run_log(engine, cfg.scheme_id, predict_date, "skipped", duration, reason)
+            engine.dispose()
+            return SchemeRunResult(cfg.scheme_id, "skipped", 0, duration, reason)
     active_targets = _active_registry_targets(engine, cfg.scheme_id)
 
     run_id: int | None = None
@@ -313,7 +350,7 @@ def execute_scheme(
             scheme_id=cfg.scheme_id,
             predict_date=predict_date,
             scheme_version=scheme_version,
-            runtime_type=getattr(cfg, "runtime_type", "native_adapter"),
+            runtime_type=runtime_type,
             run_type="active",
             prediction_phase=prediction_phase,
             records_expected=len(active_targets),
@@ -350,13 +387,45 @@ def execute_scheme(
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
-        current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
-        if current_active_targets != active_targets:
-            raise ValueError(
-                "active registry targets changed during run: "
-                f"initial={sorted(active_targets)}, current={sorted(current_active_targets)}"
+        if runtime_type == "blackbox_v2":
+            expected = len(active_targets)
+            if records_returned != expected:
+                raise ValueError(
+                    f"expected={expected}, returned={records_returned}, written=0"
+                )
+            duration = time.monotonic() - started
+            records_written = complete_approved_blackbox_run(
+                engine,
+                cfg,
+                run_id=run_id,
+                records=records,
+                scheme_version=scheme_version,
+                records_returned=records_returned,
+                run_date=predict_date,
+                duration_sec=duration,
+                precommit_validator=blackbox_precommit_validator,
             )
-        records_written = insert_run_predictions(engine, run_id, records, scheme_version=scheme_version)
+            return SchemeRunResult(
+                cfg.scheme_id,
+                "success",
+                records_written,
+                duration,
+                None,
+                run_id,
+            )
+        else:
+            current_active_targets = _active_registry_targets(engine, cfg.scheme_id)
+            if current_active_targets != active_targets:
+                raise ValueError(
+                    "active registry targets changed during run: "
+                    f"initial={sorted(active_targets)}, current={sorted(current_active_targets)}"
+                )
+            records_written = insert_run_predictions(
+                engine,
+                run_id,
+                records,
+                scheme_version=scheme_version,
+            )
         duration = time.monotonic() - started
         expected = len(active_targets)
         status = "success" if expected == records_returned == records_written else "partial"
@@ -383,22 +452,40 @@ def execute_scheme(
         error_msg = str(exc)
         if run_id is not None:
             try:
-                finish_scheme_run(
-                    engine,
-                    run_id=run_id,
-                    status="failed",
-                    records_returned=records_returned,
-                    records_written=records_written,
-                    error_message=error_msg,
-                )
+                if runtime_type == "blackbox_v2":
+                    records_written = 0
+                    fail_scheme_run_atomic(
+                        engine,
+                        run_id=run_id,
+                        scheme_id=cfg.scheme_id,
+                        run_date=predict_date,
+                        duration_sec=duration,
+                        records_returned=records_returned,
+                        error_message=error_msg,
+                    )
+                else:
+                    finish_scheme_run(
+                        engine,
+                        run_id=run_id,
+                        status="failed",
+                        records_returned=records_returned,
+                        records_written=records_written,
+                        error_message=error_msg,
+                    )
             except Exception as audit_exc:
                 logger.exception("failed to finish failed scheme run_id=%s", run_id)
-                error_msg = _append_audit_error(error_msg, "finish_scheme_run", audit_exc)
-        try:
-            write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
-        except Exception as audit_exc:
-            logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
-            error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
+                operation = (
+                    "fail_scheme_run_atomic"
+                    if runtime_type == "blackbox_v2"
+                    else "finish_scheme_run"
+                )
+                error_msg = _append_audit_error(error_msg, operation, audit_exc)
+        if runtime_type != "blackbox_v2" or run_id is None:
+            try:
+                write_run_log(engine, cfg.scheme_id, predict_date, "failed", duration, error_msg, run_id=run_id)
+            except Exception as audit_exc:
+                logger.exception("failed to write run log for failed scheme run_id=%s", run_id)
+                error_msg = _append_audit_error(error_msg, "write_run_log", audit_exc)
         return SchemeRunResult(cfg.scheme_id, "failed", records_written, duration, error_msg, run_id)
     finally:
         engine.dispose()

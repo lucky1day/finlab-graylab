@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 from datetime import date, datetime
-from decimal import Decimal
 from typing import Iterable
 
 from sqlalchemy import bindparam, text
@@ -11,6 +9,10 @@ from sqlalchemy.engine import Engine
 
 from scheduler.discovery import SCHEMES_ROOT, discover_schemes
 from scheduler.repository import create_engine_from_env, delete_actuals_after_source_watermark, upsert_actuals
+from shared.actual_facts import (
+    build_daily_actual_records_from_rows,
+    read_yield_rows as read_shared_yield_rows,
+)
 from shared.models import ActualRecord
 from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, normalize_tenor
 
@@ -40,57 +42,13 @@ def _normalize_date(value: str | date | datetime | None) -> str | None:
     return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
 
 
-def _sign(value: float) -> int:
-    if value > 0:
-        return 1
-    if value < 0:
-        return -1
-    return 0
-
-
-def _to_float(value: object) -> float:
-    if isinstance(value, Decimal):
-        return float(value)
-    return float(value)
-
-
 def read_yield_rows(
     engine: Engine,
     tenors: Iterable[str] | None = None,
     end_date: str | date | datetime | None = None,
 ) -> list[dict]:
     """读取实际收益率序列。"""
-    selected_tenors = [normalize_tenor(tenor) for tenor in (tenors or TENOR_TO_INDICATOR.keys())]
-    code_to_tenor = indicator_map_for_tenors(selected_tenors)
-    if not code_to_tenor:
-        return []
-
-    params = {
-        "codes": list(code_to_tenor.keys()),
-        "end_date": _normalize_date(end_date),
-    }
-    end_filter = "AND rdate <= :end_date" if params["end_date"] else ""
-    sql = text(
-        f"""
-        SELECT rdate, indicators_code, indicators_value
-        FROM api_wind_daily
-        WHERE indicators_code IN :codes
-          AND indicators_value IS NOT NULL
-          {end_filter}
-        ORDER BY indicators_code, rdate
-        """
-    ).bindparams(bindparam("codes", expanding=True))
-
-    with engine.connect() as conn:
-        rows = conn.execute(sql, params).mappings().all()
-    return [
-        {
-            "trade_date": str(row["rdate"]),
-            "tenor": code_to_tenor[str(row["indicators_code"])],
-            "close_yield": _to_float(row["indicators_value"]),
-        }
-        for row in rows
-    ]
+    return read_shared_yield_rows(engine, tenors=tenors, end_date=end_date)
 
 
 def read_source_watermarks(
@@ -136,31 +94,8 @@ def build_actual_records(
     tenors: Iterable[str] | None = None,
 ) -> list[ActualRecord]:
     """构建实际方向记录，方向为目标日相对前 1/5 个交易日的收益率变化。"""
-    start = _normalize_date(start_date)
     rows = read_yield_rows(engine, tenors=tenors, end_date=end_date)
-    grouped: dict[str, list[dict]] = defaultdict(list)
-    for row in rows:
-        grouped[row["tenor"]].append(row)
-
-    records: list[ActualRecord] = []
-    for tenor, items in grouped.items():
-        for idx, item in enumerate(items):
-            trade_date = item["trade_date"]
-            if start and trade_date < start:
-                continue
-            close_yield = item["close_yield"]
-            prev_1 = items[idx - 1]["close_yield"] if idx >= 1 else None
-            prev_5 = items[idx - 5]["close_yield"] if idx >= 5 else None
-            records.append(
-                ActualRecord(
-                    tenor=tenor,
-                    trade_date=trade_date,
-                    close_yield=close_yield,
-                    direction_1d=_sign(close_yield - prev_1) if prev_1 is not None else None,
-                    direction_5d=_sign(close_yield - prev_5) if prev_5 is not None else None,
-                )
-            )
-    return records
+    return build_daily_actual_records_from_rows(rows, start_date=start_date)
 
 
 def update_actuals(

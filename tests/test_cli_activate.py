@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harness.authorization import issue_token
+from harness.authorization import issue_token, mark_token_used, parse_token, used_tokens_path
 from harness.cli import main
 from harness.config_loader import load_config_raw
 from unittest.mock import patch
@@ -106,6 +106,36 @@ class CliActivateTest(unittest.TestCase):
             ]
         )
         self.assertEqual(code, 2)
+
+    def test_stale_verify_replay_loser_is_blocked_before_native_mutation(self) -> None:
+        config_path = _scaffold_scheme(self.root, status="paused")
+        token = issue_token("t5_daily", "activate")
+        auth = parse_token(token)
+        mark_token_used(auth, used_tokens_path(self.root))
+
+        with (
+            patch("harness.gates.activate_gate.verify_authorization", return_value=(auth, [])),
+            patch("harness.gates.activate_gate._verify_gate_history", return_value=[]),
+            patch(
+                "harness.gates.activate_gate._sync_registry_after_activation",
+                return_value="activated-version",
+            ) as sync,
+        ):
+            code = self._run_cli(
+                [
+                    "activate",
+                    "--scheme-id",
+                    "t5_daily",
+                    "--project-root",
+                    str(self.root),
+                    "--authorize",
+                    token,
+                ]
+            )
+
+        self.assertNotEqual(code, 0)
+        sync.assert_not_called()
+        self.assertEqual(load_config_raw(config_path)["status"], "paused")
 
 
 if __name__ == "__main__":

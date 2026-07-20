@@ -217,5 +217,273 @@
     {"id": "BBV2-06", "severity": "P1", "title": "Failed scheduler run-once exits zero"},
     {"id": "BBV2-07", "severity": "P1", "title": "Shadow state reconciliation is not automated"},
     {"id": "BBV2-08", "severity": "P1", "title": "Only one real delivery and one task type have been tested"}
-  ]
+  ],
+  "post_remediation_certification_20260720": {
+    "recorded_at": "2026-07-20T10:15:00+08:00",
+    "timezone": "Asia/Shanghai",
+    "implementation_branch": "codex/blackbox-v2-production-path-20260719",
+    "implementation_head": "334bfa7",
+    "certification_branch": "codex/bbv2-certification-runtime-20260720",
+    "certification_head": "8cdfefea0b3fe79184b0b70cbfe15eeddd82e259",
+    "platform_code_diff_outside_schemes": 0,
+    "certification_scheme_scope": "only weekly_10y_lgbm_point_v1 retained for scheduler isolation",
+    "test_schema": "bbv2_cert_20260720d",
+    "verdict": {
+      "shadow_ready": "PASS",
+      "production_path_ready": "PASS",
+      "production_ready": "NOT_CERTIFIED",
+      "overall": "CONDITIONAL_PASS",
+      "remaining_blocker": "BBV2-08",
+      "statement": "BBV2-01 through BBV2-07 are closed; the production path is certified for the current real weekly delivery, but broad production readiness requires at least three real deliveries covering daily, weekly and monthly tasks"
+    },
+    "isolation": {
+      "migrations": "001-016",
+      "source_tables": "9 read-only SQL SECURITY DEFINER views to production source tables",
+      "business_tables": "isolated test schema",
+      "database_account_scope": "read production source views, write isolated schema only",
+      "backend": "temporary 127.0.0.1:18100, stopped after certification",
+      "production_trial_mutated": false
+    },
+    "delivery": {
+      "scheme_id": "weekly_10y_lgbm_point_v1",
+      "registry_id": "weekly_10y_lgbm_point_v1__h1__10Y",
+      "scheme_version": "0666a6989d6b",
+      "script_sha256": "6e3ee104e9db652d0d3a291a13695c616ec605547693307bdfe61aa3fee45c72",
+      "metadata_sha256": "e60e9237f2f02d973033030e52fa8744fc62e841d5f2073ea6f273ee431901be",
+      "algorithm_version": "1.0.0",
+      "task_type": "weekly_point",
+      "target_tenor": "10Y",
+      "horizon": 1
+    },
+    "runtime": {
+      "profile": "blackbox-v2-v1",
+      "conda_env": "forecast_env_blackbox_v1",
+      "environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+      "service_fingerprint": "9590ab28e0f99fe283ab8d1691556197aca137bb6eb9b59e7798d925e84f3d49",
+      "service_fingerprint_matched": true,
+      "runtime_snapshot_dirs_after_certification": 0
+    },
+    "data_bridge": {
+      "generation_id": "full-20260720-055026-00e12e3803a8",
+      "refresh_date": "2026-07-20",
+      "refreshed_at": "2026-07-20T05:50:26+08:00",
+      "business_digest": "00e12e3803a89e3b06439881059c9f3d9093e8642b7c37f063f4ff6169c54f1b",
+      "snapshot_id": "snapshot-fd8a1f8736d3a4d057fbd98e",
+      "stability_rounds": 2,
+      "files": {
+        "daily_output.csv": {
+          "rows": 3878,
+          "columns": 774,
+          "min_key": "2010-07-27",
+          "max_key": "2026-07-17",
+          "sha256": "03bbcc94c11acc58ac5647c2b530e2be3e45b9ed5fd74ff12a5677854e3a50e1"
+        },
+        "weekly_output.csv": {
+          "rows": 847,
+          "columns": 575,
+          "min_key": "201001",
+          "max_key": "202628",
+          "sha256": "9dfe8a8cfaae9fd4be1e70b872ff2d89d5839f4c266af3924eb0e0f5d4ebc4d5"
+        },
+        "monthly_output.csv": {
+          "rows": 201,
+          "columns": 123,
+          "min_key": "201002",
+          "max_key": "202701",
+          "sha256": "f29607a79c66860d4c43f369d99cb4fdfbba2cf665d3931f930f496bc21d86b5"
+        }
+      }
+    },
+    "automated_tests": {
+      "focused_regression_passed": 120,
+      "focused_regression_failed": 0,
+      "full_suite_passed": 1093,
+      "full_suite_failed": 0,
+      "full_suite_seconds": 28.847,
+      "scope": "runner, contracts, scheduler exit semantics, lifecycle, activation and live authorization"
+    },
+    "harness_stability": {
+      "runs": 10,
+      "passed": 10,
+      "gates": 70,
+      "passed_gates": 70,
+      "scheme_version": "0666a6989d6b",
+      "generation_id": "full-20260720-055026-00e12e3803a8",
+      "snapshot_id": "snapshot-fd8a1f8736d3a4d057fbd98e",
+      "p50_seconds": 31,
+      "p95_seconds": 32,
+      "min_seconds": 30,
+      "max_seconds": 32,
+      "git_commit_column": null,
+      "run_ids": [
+        "hr_20260720T014138Z_f0d9fa876ce6",
+        "hr_20260720T014211Z_15f9ee424680",
+        "hr_20260720T014243Z_d337db8be3f1",
+        "hr_20260720T014316Z_d8eb9692c223",
+        "hr_20260720T014349Z_eb238d3b16d8",
+        "hr_20260720T014421Z_8dfe317bdaa6",
+        "hr_20260720T014454Z_b3d83a180e96",
+        "hr_20260720T014525Z_0acc4f708eaa",
+        "hr_20260720T014557Z_7badd8958dc0",
+        "hr_20260720T014629Z_e0b7080da057"
+      ]
+    },
+    "batch_backtest": [
+      {"requests": 100, "subprocesses": 3, "records": 100, "seconds": 18, "batch_split_invariant": true},
+      {"requests": 101, "subprocesses": 4, "records": 101, "seconds": 20, "batch_split_invariant": true},
+      {"requests": 500, "subprocesses": 12, "records": 500, "seconds": 43, "batch_split_invariant": true},
+      {"requests": 1000, "subprocesses": 23, "records": 1000, "seconds": 71, "batch_split_invariant": true}
+    ],
+    "persist_backtest": {
+      "formal_authorization": true,
+      "gate_status": "passed",
+      "run_id": 1,
+      "benchmark_id": "bbv2-weekly_10y_lgbm_point_v1-hr_20260720T014629Z_e0b7080da057",
+      "harness_run_id": "hr_20260720T014629Z_e0b7080da057",
+      "scheme_version": "0666a6989d6b",
+      "generation_id": "full-20260720-055026-00e12e3803a8",
+      "snapshot_id": "snapshot-fd8a1f8736d3a4d057fbd98e",
+      "date_min": "2024-08-09",
+      "date_max": "2026-07-10",
+      "samples": 100,
+      "correct": 50,
+      "accuracy_pct": 50.0,
+      "table_deltas": {
+        "t_backtest_runs": 1,
+        "t_backtest_predictions": 100,
+        "t_backtest_monthly_metrics": 24
+      },
+      "status": "PASS"
+    },
+    "lifecycle": {
+      "shadow_formal_gate": "PASS",
+      "activation_formal_gate": "PASS",
+      "forced_state_mutation": false,
+      "approved_by": "codex-certification",
+      "activated_version": "0666a6989d6b",
+      "final_test_config_status": "paused",
+      "final_test_version_status": "shadow",
+      "final_test_registry_status": "paused",
+      "pause_action": "certification_pause",
+      "pause_scheduler_status": "skipped",
+      "pause_scheduler_run_created": false
+    },
+    "live_runs": [
+      {
+        "run_id": 1,
+        "phase": "gray_live",
+        "predict_date": "2026-07-04",
+        "feature_date": "2026-07-03",
+        "target_date": "2026-07-10",
+        "direction": -1,
+        "snapshot_id": "snapshot-0cf620d3f51f93b696385841",
+        "records_written": 1,
+        "protected_delta_exact": true
+      },
+      {
+        "run_id": 2,
+        "phase": "scheduled_live",
+        "predict_date": "2026-07-11",
+        "feature_date": "2026-07-10",
+        "target_date": "2026-07-17",
+        "direction": -1,
+        "snapshot_id": "snapshot-a9f2b0c15eb39767fd038cda",
+        "records_written": 1,
+        "protected_delta_exact": true
+      }
+    ],
+    "actual_and_metrics": {
+      "rows": [
+        {"target_date": "2026-07-10", "predicted_direction": -1, "actual_direction": -1, "is_correct": true},
+        {"target_date": "2026-07-17", "predicted_direction": -1, "actual_direction": 0, "is_correct": false}
+      ],
+      "samples": 2,
+      "correct": 1,
+      "accuracy_pct": 50.0,
+      "api_database_match": true
+    },
+    "api_frontend": {
+      "active_health_status": 200,
+      "active_schemes_status": 200,
+      "active_metrics_status": 200,
+      "active_backtest_status": 200,
+      "active_registry_visible": true,
+      "backtest_registry_visible": true,
+      "live_rows": 2,
+      "matched_actual_rows": 2,
+      "pending_actual_rows": 0,
+      "frontend_cell": "10Y + weekly_point",
+      "frontend_accuracy_pct": 50.0,
+      "frontend_rows": 2,
+      "frontend_duplicate_rows": 0,
+      "frontend_console_errors": 0,
+      "paused_registry_visible": false,
+      "paused_metrics_status": 404,
+      "paused_backtest_scheme_count": 0,
+      "screenshots": [
+        "assets/FULL_PIPELINE_STABILITY_AUDIT_20260720.png",
+        "assets/FULL_PIPELINE_STABILITY_AUDIT_20260720_DETAIL.png"
+      ]
+    },
+    "failure_injection": {
+      "missing_csv": {"blocked": true, "business_output_absent": true},
+      "timeout": {"blocked": true, "business_output_absent": true},
+      "network": {"blocked": true, "business_output_absent": true},
+      "data_dir_write": {"blocked": true, "business_output_absent": true},
+      "external_file_read": {"blocked": true, "status": "PASS"},
+      "inherited_environment_secret": {"blocked": true, "status": "PASS"},
+      "json_string_direction": {"rejected": true, "status": "PASS"},
+      "stale_generation": {
+        "predict_date": "2026-07-18",
+        "available_refresh_date": "2026-07-20",
+        "run_id": 3,
+        "run_status": "failed",
+        "records_written": 0,
+        "scheduler_process_exit_code": 1,
+        "prediction_delta": 0,
+        "backtest_delta": 0,
+        "status": "PASS"
+      }
+    },
+    "test_database_final": {
+      "registry_status": "paused",
+      "version_status": "shadow",
+      "harness_runs": 10,
+      "harness_gate_results": 70,
+      "scheme_runs": 3,
+      "successful_live_runs": 2,
+      "failed_runs": 1,
+      "predictions": 2,
+      "run_logs": 4,
+      "backtest_runs": 1,
+      "backtest_predictions": 100,
+      "backtest_monthly_metrics": 24
+    },
+    "production_unchanged": {
+      "config_sha256": "cbe3f7e482de9e42356568069eada2c964eb7c7bb90a7ed1a68556a41f281aea",
+      "script_sha256": "6e3ee104e9db652d0d3a291a13695c616ec605547693307bdfe61aa3fee45c72",
+      "metadata_sha256": "e60e9237f2f02d973033030e52fa8744fc62e841d5f2073ea6f273ee431901be",
+      "config_status": "paused",
+      "version_status": "shadow",
+      "registry_status": "paused",
+      "scheme_runs": 0,
+      "predictions": 0,
+      "backtest_runs": 0,
+      "backtest_predictions": 0
+    },
+    "blocker_status": [
+      {"id": "BBV2-01", "status": "CLOSED", "evidence": "authorized atomic backtest persistence and API visibility"},
+      {"id": "BBV2-02", "status": "CLOSED", "evidence": "canonical version identity across static, all-stage, shadow and activation"},
+      {"id": "BBV2-03", "status": "CLOSED", "evidence": "approved exact-version hard-stop in activation, scheduler and manual live"},
+      {"id": "BBV2-04", "status": "CLOSED", "evidence": "filesystem allowlist and inherited environment isolation"},
+      {"id": "BBV2-05", "status": "CLOSED", "evidence": "strict JSON integer carrier validation"},
+      {"id": "BBV2-06", "status": "CLOSED", "evidence": "failed and partial scheduler run-once return non-zero"},
+      {"id": "BBV2-07", "status": "CLOSED", "evidence": "journaled lifecycle transition, compensation and reconciliation"},
+      {"id": "BBV2-08", "status": "OPEN", "evidence": "only one real weekly delivery has been certified"}
+    ],
+    "non_blocking_observations": [
+      "t_harness_runs.git_commit is null; the API service fingerprint still binds and verifies the actual certification HEAD",
+      "the all-frequency actual updater populates daily and monthly actual history even when only a weekly scheme is active in an empty isolated schema"
+    ]
+  }
 }

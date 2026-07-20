@@ -14,7 +14,7 @@ from harness.context import GateContext
 
 
 AUTO_SEQUENCE = ["static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness"]
-EXPLICIT_SEQUENCE = ["live", "activate"]
+EXPLICIT_SEQUENCE = ["bootstrap", "live", "activate", "lifecycle-reconcile"]
 
 
 def sequence_for_stage(stage: str) -> list[str]:
@@ -30,10 +30,15 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
     runtime_type = _runtime_type(ctx)
     if runtime_type == "blackbox_v2":
         from harness.blackbox_v2.gates import BLACKBOX_GATES
+        from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
+        from harness.blackbox_v2.api_gate import BlackboxApiGate
+        from harness.blackbox_v2.bootstrap import BlackboxBootstrapGate
 
         common_post_activation_gates = {
-            "api": ApiGate,
+            "bootstrap": BlackboxBootstrapGate,
+            "api": BlackboxApiGate,
             "live": LiveGate,
+            "lifecycle-reconcile": BlackboxLifecycleReconcileGate,
         }
         if name in common_post_activation_gates:
             return common_post_activation_gates[name]()
