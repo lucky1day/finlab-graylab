@@ -184,6 +184,61 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertFalse((gate_root / "runtime_snapshot").exists())
             self.assertTrue(state_path.is_file())
 
+    def test_direct_blackbox_gate_cli_cleans_runtime_snapshot(self) -> None:
+        """单 Gate CLI 结束后也必须清理临时三频副本。"""
+        from harness.cli import _build_parser, _run_gate
+        from harness.result import GateResult, GateStatus
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            report_dir = root / "reports" / "direct-gate"
+            args = _build_parser().parse_args(
+                [
+                    "gate",
+                    "backtest",
+                    "--scheme-id",
+                    "trial_10y",
+                    "--predict-date",
+                    "2026-07-16",
+                    "--project-root",
+                    str(root),
+                    "--report-dir",
+                    str(report_dir),
+                ]
+            )
+
+            class _SnapshotGate:
+                def run(self, ctx):
+                    snapshot = (
+                        ctx.report_dir
+                        / "blackbox_v2"
+                        / "runtime_snapshot"
+                        / "snapshot-test"
+                        / "data"
+                    )
+                    snapshot.mkdir(parents=True)
+                    (snapshot / "daily_output.csv").write_text("date\n", encoding="utf-8")
+                    return GateResult(
+                        gate_name="backtest",
+                        status=GateStatus.PASSED,
+                        passed=True,
+                        evidence=[],
+                        errors=[],
+                        started_at="2026-07-16T00:00:00+00:00",
+                        finished_at="2026-07-16T00:00:01+00:00",
+                    )
+
+            with patch("harness.cli.gate_for_name", return_value=_SnapshotGate()):
+                result = _run_gate(args)
+
+            self.assertTrue(result.passed)
+            self.assertFalse((report_dir / "blackbox_v2" / "runtime_snapshot").exists())
+
     def test_comparison_requests_use_distinct_existing_cutoffs(self) -> None:
         from harness.blackbox_v2.gates import _comparison_requests
         from shared.blackbox_v2.contracts import BlackboxRequest

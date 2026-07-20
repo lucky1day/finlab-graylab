@@ -180,7 +180,14 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         api_base_url=args.api_base_url,
         api_instance_nonce=args.api_instance_nonce,
     )
-    return gate_for_name(args.gate_name, ctx=ctx).run(ctx)
+    gate = gate_for_name(args.gate_name, ctx=ctx)
+    try:
+        return gate.run(ctx)
+    finally:
+        if getattr(config, "runtime_type", "native_adapter") == "blackbox_v2":
+            from harness.blackbox_v2.gates import cleanup_runtime_input
+
+            cleanup_runtime_input(ctx)
 
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
