@@ -13,3 +13,4 @@
 - [2026-07-20-hide-frontend-scheme-version.md](2026-07-20-hide-frontend-scheme-version.md)
 - [2026-07-20-blackbox-display-name-and-four-scheme-activation.md](2026-07-20-blackbox-display-name-and-four-scheme-activation.md)
 - [2026-07-20-blackbox-full-range-backtest.md](2026-07-20-blackbox-full-range-backtest.md)
+- [2026-07-20-blackbox-gray-backfill-gate.md](2026-07-20-blackbox-gray-backfill-gate.md)
