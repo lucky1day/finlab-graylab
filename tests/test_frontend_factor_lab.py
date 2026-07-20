@@ -1320,6 +1320,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
             await hooks.loadFactorLabData({ force: true });
             var scheme = hooks.getSelectedScheme();
             var rows = scheme ? scheme.monthlyRows : [];
+            var daily = scheme && scheme.dailyRowsByMonth["2026-05"] || [];
             return {
               rowCount: rows.length,
               sources: rows.map(function (r) { return r._source; }),
@@ -1327,6 +1328,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 .map(function (r) { return r.overall; }),
               liveAccuracy: rows.filter(function (r) { return r._source === "live"; })
                 .map(function (r) { return r.overall; }),
+              backtestDaily: daily.filter(function (r) { return r._source === "backtest"; }).length,
+              liveDaily: daily.filter(function (r) { return r._source === "live"; }).length,
             };
             """
         )
@@ -1337,6 +1340,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         # 月度指标只按明细重算，不读取 monthly_metrics 中的旧汇总数值。
         self.assertAlmostEqual(result["backtestAccuracy"][0], 2 / 3 * 100)
         self.assertEqual(result["liveAccuracy"], [100])
+        self.assertEqual(result["backtestDaily"], 3)
+        self.assertEqual(result["liveDaily"], 1)
 
     def test_monthly_live_target_month_cuts_backtest_target_month(self) -> None:
         """月度实盘按 target 月归属，live target 月起不再算回测。"""

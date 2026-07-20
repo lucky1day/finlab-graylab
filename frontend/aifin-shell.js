@@ -1084,11 +1084,13 @@
               // daily 同理
               (liveScheme.dailyRowsByMonth ? Object.keys(liveScheme.dailyRowsByMonth) : []).forEach(function (m) {
                 if (!mScheme.dailyRowsByMonth) mScheme.dailyRowsByMonth = {};
-                mScheme.dailyRowsByMonth[m] = (liveScheme.dailyRowsByMonth[m] || []).map(function (dr) {
+                var existingRows = mScheme.dailyRowsByMonth[m] || [];
+                var liveRows = (liveScheme.dailyRowsByMonth[m] || []).map(function (dr) {
                   var d = {}; Object.keys(dr).forEach(function (k) { d[k] = dr[k]; });
                   d._source = "live";
                   return d;
                 });
+                mScheme.dailyRowsByMonth[m] = existingRows.concat(liveRows);
               });
               mScheme.liveSinceDate = liveScheme.liveSinceDate || "";
               mScheme.liveMetricSinceDate = liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "";
