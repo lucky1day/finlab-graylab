@@ -1,6 +1,36 @@
 {
-  "active_api_visible_selected": 0,
-  "as_of": "2026-07-20T17:19:00+08:00",
+  "active_api_visible_selected": 1,
+  "as_of": "2026-07-20T17:39:17+08:00",
+  "business_table_counts_after_canary": {
+    "one_y_t5_liq_excess_a_v1": {
+      "t_backtest_predictions": 0,
+      "t_backtest_runs": 0,
+      "t_scheme_predictions": 0,
+      "t_scheme_run_log": 0,
+      "t_scheme_runs": 0
+    },
+    "one_y_t5_liq_excess_a_w252_l7_v1": {
+      "t_backtest_predictions": 100,
+      "t_backtest_runs": 1,
+      "t_scheme_predictions": 1,
+      "t_scheme_run_log": 1,
+      "t_scheme_runs": 1
+    },
+    "one_y_t5_liq_excess_a_w350_l7_v1": {
+      "t_backtest_predictions": 0,
+      "t_backtest_runs": 0,
+      "t_scheme_predictions": 0,
+      "t_scheme_run_log": 0,
+      "t_scheme_runs": 0
+    },
+    "one_y_t5_liq_excess_b_w252_l7_v1": {
+      "t_backtest_predictions": 0,
+      "t_backtest_runs": 0,
+      "t_scheme_predictions": 0,
+      "t_scheme_run_log": 0,
+      "t_scheme_runs": 0
+    }
+  },
   "business_table_counts_after_shadow_per_scheme": {
     "t_backtest_predictions": 0,
     "t_backtest_runs": 0,
@@ -57,7 +87,7 @@
     "backtest",
     "api-readiness"
   ],
-  "phase": "shadow_paused",
+  "phase": "canary_gray_active_waiting_scheduled_live",
   "platform_probe_failures_before_fix": [
     {
       "error": "future probe date 2999-12-31 was outside the frozen pandas timestamp range",
@@ -68,6 +98,24 @@
       "harness_run_id": "hr_20260720T084810Z_03c77bfc4680"
     }
   ],
+  "processes": {
+    "backend_restarted_after_canary_activation": true,
+    "backend_launchd_pid_after": 23374,
+    "backend_launchd_pid_before": 55205,
+    "scheduler_pid_after_backend_restart": 52329,
+    "scheduler_pid_before_backend_restart": 52329,
+    "scheduler_restarted_after_intake": false,
+    "startup_catchup_triggered": false
+  },
+  "public_access": {
+    "canary_metrics_http_status": 200,
+    "excluded_visible": [],
+    "matrix_passed": 14,
+    "matrix_total": 14,
+    "selected_visible": [
+      "one_y_t5_liq_excess_a_w252_l7_v1"
+    ]
+  },
   "scheduler_restarted_after_intake": false,
   "schemes": {
     "one_y_t5_liq_excess_a_v1": {
@@ -101,7 +149,89 @@
       }
     },
     "one_y_t5_liq_excess_a_w252_l7_v1": {
-      "latest_harness_run_id": "hr_20260720T090110Z_3de057d3955a",
+      "canary": {
+        "activation": {
+          "approved_at": "2026-07-20T09:25:01+00:00",
+          "approved_by": "codex-canary-activation-20260720",
+          "authorization_token_sha256": "8e1636d6ee13e9bf38860b57b390b89370f2213959bc5ffd4013705b89a87860",
+          "config_sha256": "b13a03aa95117d677efbbdc9582cb1e93389cf695922170666cb70e62a62c964",
+          "config_status": "active",
+          "registry_status": "active",
+          "version_status": "active"
+        },
+        "api": {
+          "active_api_visible": true,
+          "backtest_daily_rows": 100,
+          "backtest_monthly_metrics": 6,
+          "excluded_scheme_ids_visible": [],
+          "live_daily_rows": 1,
+          "live_metric_samples": 0,
+          "live_status": "pending_actual"
+        },
+        "backtest": {
+          "accuracy": 0.59,
+          "authorization_token_sha256": "79caf329ed6587b1dc6476c78c5ff7fea1a82df2a6b7870cafacf15429da87fa",
+          "benchmark_id": "bbv2-one_y_t5_liq_excess_a_w252_l7_v1-hr_20260720T092351Z_1b6e76e498c0",
+          "correct": 59,
+          "data_source": "blackbox_v2_current_snapshot_as_of",
+          "feature_equals_predict_rows": 100,
+          "max_predict_date": "2026-07-10",
+          "max_target_date": "2026-07-17",
+          "min_predict_date": "2026-02-06",
+          "min_target_date": "2026-02-13",
+          "monthly_metrics": 6,
+          "prediction_rows": 100,
+          "run_id": 166,
+          "run_rows": 1,
+          "unique_predict_dates": 100,
+          "unique_target_dates": 100
+        },
+        "fresh_all_stage": {
+          "data_snapshot_id": "snapshot-fd8a1f8736d3a4d057fbd98e",
+          "environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+          "gates_passed": 7,
+          "generation_id": "full-20260720-055026-00e12e3803a8",
+          "harness_run_id": "hr_20260720T092351Z_1b6e76e498c0"
+        },
+        "frontend": {
+          "candidate_count": 1,
+          "console_error_count": 0,
+          "gray_boundary_visible": true,
+          "pending_display": "--（0/0）",
+          "screenshot": "screenshots/production-gray-1y-t5-20260720-canary.png",
+          "screenshot_height": 2371,
+          "screenshot_sha256": "6b7f910da2c92f542ef314ae45dce680ab14ad5522ebfdb4b2d2fc726209cef6",
+          "screenshot_width": 1280,
+          "scheme_version_hidden": true,
+          "task_cell": "1Y国债活跃 × T+5"
+        },
+        "gray_live": {
+          "authorization_token_sha256": "19f3c631ce9b46d897d037aa53e90a176200b9d03d280d59c6e84e73c64d1255",
+          "feature_date": "2026-07-17",
+          "predicted_direction": 1,
+          "prediction_phase": "gray_live",
+          "prediction_rows_delta": 1,
+          "predict_date": "2026-07-20",
+          "run_id": 956,
+          "run_log_rows_delta": 1,
+          "run_rows_delta": 1,
+          "target_date": "2026-07-24"
+        },
+        "history_coverage_fix": {
+          "commit": "884c4bd",
+          "delivery_files_unchanged": true,
+          "failed_persist_attempts_before_business_write": [
+            "source gap violates calendar horizon: feature_date=2016-02-03, target_date=2016-02-15, horizon=5",
+            "source gap violates calendar horizon: feature_date=2024-02-05, target_date=2024-02-19, horizon=5"
+          ],
+          "related_tests_passed": 54,
+          "selected_window_source_gaps_fail_closed": true,
+          "unselected_old_gaps_ignored": true,
+          "weekend_makeup_days_ignored": true
+        },
+        "next_checkpoint": "next trading day natural scheduled_live after fresh DataBridge and pre-07:03 scheduler restart"
+      },
+      "latest_harness_run_id": "hr_20260720T092351Z_1b6e76e498c0",
       "metadata_sha256": "36c0da6a2b4edb621fff21c82de823be09174aaec813680bc98ce747b3e219b0",
       "registry_id": "one_y_t5_liq_excess_a_w252_l7_v1__h5__1Y",
       "scheme_version": "103c93bbc913",

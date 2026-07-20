@@ -4,7 +4,7 @@
 
 **执行日期**：2026-07-20，`Asia/Shanghai`
 
-**当前阶段**：四方案已完成 `shadow + paused` 技术入库；尚未激活、持久化回测或写入 gray live。
+**当前阶段**：代表性 Canary 已完成激活、100 条持久化回测和单次 `gray_live`；其余三方案保持 `shadow + paused`，等待下一交易日 Canary 自然 `scheduled_live` 验收。
 
 **机器证据**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json)
 
@@ -88,6 +88,62 @@ Intake 后四个方案均为 `blackbox_v2 + data_bridge_current + paused + draft
 - scheduler：未重启，未挂载四方案任务；
 - 每方案业务表：正式 run、prediction、run log、backtest run、backtest prediction 均为 0。
 
-## 6. 下一检查点
+## 6. 代表性 Canary
 
-代表性 Canary 固定为 `one_y_t5_liq_excess_a_w252_l7_v1`。下一步必须使用当日 generation 重新执行 all-stage，再分别签发 `blackbox_activate`、`backtest_persist` 和 `live_write` token；本记录在完成 Canary 的 100 条持久化回测、单次 `gray_live`、API/前端验收及下一交易日自然 `scheduled_live` 前保持 `IN_PROGRESS`。
+代表性 Canary 为 `one_y_t5_liq_excess_a_w252_l7_v1`。Shadow 后使用当天同一 DataBridge generation 重新执行完整 Harness，`hr_20260720T092351Z_1b6e76e498c0` 的七个 Gate 全部通过；该 run、版本 `103c93bbc913`、generation、snapshot 和环境指纹共同绑定后续三种独立授权。
+
+### 6.1 Activation
+
+`blackbox_activate` 使用一次性 900 秒 token，经正式 ActivationGate 后于 `2026-07-20 17:25:01 +08:00` 完成：
+
+- config：`active + active`，config SHA256 为 `b13a03aa95117d677efbbdc9582cb1e93389cf695922170666cb70e62a62c964`；
+- exact version：`active`，`approved_by=codex-canary-activation-20260720`；
+- Registry：`one_y_t5_liq_excess_a_w252_l7_v1__h5__1Y + active`；
+- 激活动作本身未写入预测、run、log 或回测表。
+
+### 6.2 持久化回测前的数据口径修正
+
+首次持久化在业务写入前 fail-closed，暴露 `t_trade_calendar` 的通用工作日口径与 `api_wind_daily` 的债券实际观测日不一致：调休周末被标为工作日，且 `2024-02-09` 虽为周五但无 1Y 债券观测。旧实现从 2010 年全量检查，因此样本窗口以外的历史特殊休市也会阻断最近 100 条回测。
+
+平台以测试先行方式将日频规则收紧为：
+
+1. 调休周末不参与债券 T+N 交易日映射；
+2. 只对最终选中的最近回测窗口执行债券源覆盖校验；
+3. 所选窗口内的工作日缺数继续 fail-closed；
+4. 月频和周频原有校验边界不变。
+
+相关 54 项历史、持久化、Harness 和 provenance 回归全部通过，修复提交为 `884c4bd`。两次失败均未产生业务表写入；交付 `.py/.json` 摘要保持不变。
+
+### 6.3 持久化回测与 gray live
+
+| 项目 | 结果 |
+|---|---|
+| 持久化回测 | `run_id=166`，benchmark `bbv2-one_y_t5_liq_excess_a_w252_l7_v1-hr_20260720T092351Z_1b6e76e498c0` |
+| 回测明细 | 100 条；100 个唯一 predict/target date；`predict_date=feature_date` 100/100 |
+| 回测区间 | predict `2026-02-06..2026-07-10`；target `2026-02-13..2026-07-17` |
+| 月度指标 | 6 个月；总体 59/100，准确率 59.0% |
+| 回测语义 | `blackbox_v2_current_snapshot_as_of`，不声明 historical vintage PIT |
+| gray live | `run_id=956`；精确新增 1 run、1 prediction、1 log |
+| live Request | predict `2026-07-20`、feature `2026-07-17`、target `2026-07-24` |
+| live 结果 | 方向 `1`，`prediction_phase=gray_live`，actual pending |
+
+回测授权和 live 授权分别签发，均绑定 exact version 和最新 all-stage run；任何 token 均未跨动作复用。回测以外的受保护表在 persist 阶段零增量，live 阶段除上述三张允许表外均零增量。其余三个选中方案仍保持业务表零写入。
+
+### 6.4 API、前端和进程时序
+
+backend 完成单独重启，scheduler PID 始终为 `52329`，当天未重启、未触发 startup catchup。验收结果：
+
+- 本地与公网 `/api/schemes` 均只新增当前 Canary；被排除四方案均不可见；
+- Canary metrics 返回 1 条 `gray_live`，actual 未到时为 pending；
+- factor-lab backtest API 返回 100 条明细和 6 个月度指标；
+- 公网只读访问 200/403 矩阵 14/14 通过，Canary metrics 为 HTTP 200；
+- 前端 `1Y国债活跃 × T+5` 显示 1 个候选，灰度分隔线与 `--（0/0）` 正确，未公开内部 scheme version；
+- 浏览器控制台错误数为 0。
+
+Canary 截图：
+
+![1Y T+5 Canary 前端验收](screenshots/production-gray-1y-t5-20260720-canary.png)
+
+## 7. 下一检查点
+
+当前保持 `IN_PROGRESS`。必须等下一交易日 DataBridge 刷新成功后、`07:03` 前重启 scheduler，并观察当前 Canary 自然产生 `scheduled_live`；只有该检查点通过，才允许对其余三个方案逐个执行新的 all-stage、Activation、100 条 persist 和单次 gray live。`target_date=2026-07-24` 的 actual 到达前，不报告当前 gray live 的准确率，也不人工补写 actual。

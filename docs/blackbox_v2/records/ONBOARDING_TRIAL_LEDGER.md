@@ -287,6 +287,31 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 本批取得的是四个具体方案的 Shadow 技术入库结论。下一检查点是 `one_y_t5_liq_excess_a_w252_l7_v1` Canary 的独立生产 Gate、持久化回测、gray live、API/前端与自然 scheduled-live 验收；在该检查点通过前不批量激活其余三个方案。
 
+### 4.9 记录 002B：1Y T+5 代表性 Canary 灰度激活
+
+**执行时间**：2026-07-20 17:23 至 17:39，`Asia/Shanghai`。
+
+**完整记录**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md)。
+
+**机器证据**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json)。
+
+| 项目 | 生产实测结果 |
+|---|---|
+| Canary | `one_y_t5_liq_excess_a_w252_l7_v1`，version `103c93bbc913` |
+| 最新 Harness | `hr_20260720T092351Z_1b6e76e498c0`，7/7 Gate passed |
+| Activation | config、exact version 和 composite Registry 统一 active |
+| 历史口径整改 | 忽略样本窗口外的通用日历/债券观测旧差异；所选窗口缺口仍 fail-closed；54 项回归通过 |
+| 回测落库 | run `166`；100 predictions；6 monthly metrics；总体准确率 `59.0%` |
+| gray live | run `956`；方向 `1`；精确新增 1 run、1 prediction、1 log |
+| Request | `predict=2026-07-20`、`feature=2026-07-17`、`target=2026-07-24` |
+| API | 本地与公网只显示当前 Canary；metrics/backtest HTTP 200；actual pending |
+| 前端 | `1Y + T+5` 格子显示 1 个候选，灰度 `--（0/0）`，控制台 0 error |
+| 公网 | 只读 200/403 矩阵 14/14 通过 |
+| 进程 | 只重启 backend；scheduler PID `52329` 保持不变 |
+| 当前状态 | `CANARY_GRAY_ACTIVE`，等待下一交易日自然 `scheduled_live` |
+
+其余三个选中方案仍为 `shadow + paused` 且业务表零写入；被排除四方案在目录、版本、Registry、业务表和 API 中均为零。只有下一交易日 Canary 自然调度通过后，才进入剩余三方案激活阶段。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。
