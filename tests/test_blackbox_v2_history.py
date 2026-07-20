@@ -234,6 +234,32 @@ class BlackboxV2HistoryTests(unittest.TestCase):
         ))
         engine.dispose()
 
+    def test_old_weekday_gap_outside_selected_weekly_scope_does_not_block(self) -> None:
+        """未进入本次样本的旧周缺口不应阻断最近窗口。"""
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(start="2014-12-01", end="2026-03-01")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM api_wind_daily WHERE rdate='2014-12-31'"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
+                cases = build_historical_cases(
+                    _metadata("weekly_point"),
+                    snapshot,
+                    engine,
+                    limit=2,
+                    target_date_before="2026-03-01",
+                    predict_date_from="2014-12-01",
+                )
+
+        self.assertEqual(len(cases), 2)
+        self.assertTrue(all(case.request.feature_date >= "2026-01-01" for case in cases))
+        engine.dispose()
+
     def test_monthly_keeps_natural_fifteenth_predict_date(self) -> None:
         cases = self._cases("monthly", limit=6)
         weekend_case = next(case for case in cases if case.request.predict_date != case.request.feature_date)

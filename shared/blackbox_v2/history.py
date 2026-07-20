@@ -81,13 +81,13 @@ def build_historical_cases(
         candidates = _monthly_candidates(metadata, yield_rows, trade_calendar_rows, engine)
     else:
         raise ValueError(f"unsupported Blackbox historical task_type: {metadata.task_type}")
-    _require_actual_source_coverage(
-        yield_rows,
-        trade_calendar_rows,
-        task_type=metadata.task_type,
-        predict_date_from=predict_date_from,
-        target_date_before=target_date_before,
-    )
+    if metadata.task_type not in {"weekly_point", "weekly_average"}:
+        _require_actual_source_coverage(
+            yield_rows,
+            trade_calendar_rows,
+            predict_date_from=predict_date_from,
+            target_date_before=target_date_before,
+        )
 
     eligible = [
         item
@@ -102,6 +102,8 @@ def build_historical_cases(
         )
 
     selected = eligible[-limit:]
+    if metadata.task_type in {"weekly_point", "weekly_average"}:
+        _validate_selected_weekly_candidates(selected)
     cutoffs_by_feature_date = resolve_blackbox_input_cutoffs_bulk(
         snapshot,
         feature_dates=[candidate.feature_date for candidate in selected],
@@ -250,31 +252,23 @@ def _weekly_candidates(
     expected_week_ends = _weekday_trading_week_ends(calendar_rows)
     candidates: list[_Candidate] = []
     for fact in facts.values():
-        feature_end = expected_week_ends.get(int(fact.feature_week_id))
-        target_end = expected_week_ends.get(int(fact.target_week_id))
-        if feature_end is None or target_end is None:
-            raise ValueError(
-                "weekly actual week is missing a weekday trading observation: "
-                f"feature_week_id={fact.feature_week_id}, target_week_id={fact.target_week_id}"
-            )
-        if fact.feature_date != feature_end or fact.target_date != target_end:
-            raise ValueError(
-                "weekly actual does not use exact calendar week ends: "
-                f"feature={fact.feature_date}/{feature_end}, target={fact.target_date}/{target_end}"
-            )
+        expected_feature_end = expected_week_ends.get(int(fact.feature_week_id))
+        expected_target_end = expected_week_ends.get(int(fact.target_week_id))
         candidates.append(
             _Candidate(
-                predict_date=feature_end,
-                feature_date=feature_end,
-                target_date=target_end,
+                predict_date=fact.feature_date,
+                feature_date=fact.feature_date,
+                target_date=fact.target_date,
                 label=fact.direction_weekly,
                 actual_extra={
                     "actual_fact_key": [fact.tenor, fact.target_date, fact.target_rule],
                     "platform_actual_rule": platform_rule,
                     "feature_week_id": str(fact.feature_week_id),
                     "target_week_id": str(fact.target_week_id),
-                    "feature_week_end": feature_end,
-                    "target_week_end": target_end,
+                    "feature_week_end": fact.feature_date,
+                    "target_week_end": fact.target_date,
+                    "expected_feature_week_end": expected_feature_end,
+                    "expected_target_week_end": expected_target_end,
                     "feature_yield": fact.feature_yield,
                     "target_yield": fact.target_yield,
                     "actual_extra": dict(fact.extra or {}),
@@ -282,6 +276,25 @@ def _weekly_candidates(
             )
         )
     return candidates
+
+
+def _validate_selected_weekly_candidates(candidates: list[_Candidate]) -> None:
+    """只校验本次实际入选窗口，避免无关旧数据缺口阻断最近样本。"""
+    for candidate in candidates:
+        expected_feature = candidate.actual_extra.get("expected_feature_week_end")
+        expected_target = candidate.actual_extra.get("expected_target_week_end")
+        if expected_feature is None or expected_target is None:
+            raise ValueError(
+                "weekly actual week is missing a weekday trading observation: "
+                f"feature_week_id={candidate.actual_extra.get('feature_week_id')}, "
+                f"target_week_id={candidate.actual_extra.get('target_week_id')}"
+            )
+        if candidate.feature_date != expected_feature or candidate.target_date != expected_target:
+            raise ValueError(
+                "weekly actual does not use exact calendar week ends: "
+                f"feature={candidate.feature_date}/{expected_feature}, "
+                f"target={candidate.target_date}/{expected_target}"
+            )
 
 
 def _weekday_trading_week_ends(calendar_rows: list[dict]) -> dict[int, str]:
@@ -367,7 +380,6 @@ def _require_actual_source_coverage(
     yield_rows: list[dict],
     calendar_rows: list[dict],
     *,
-    task_type: str,
     predict_date_from: str,
     target_date_before: str,
 ) -> None:
@@ -380,10 +392,6 @@ def _require_actual_source_coverage(
         for row in calendar_rows
         if str(row.get("trade_flag", "")).strip() == "1"
         and coverage_start <= str(row["rdate"])[:10] < target_date_before
-        and not (
-            task_type in {"weekly_point", "weekly_average"}
-            and date.fromisoformat(str(row["rdate"])[:10]).weekday() >= 5
-        )
     }
     missing = sorted(expected_dates - source_dates)
     if missing:
