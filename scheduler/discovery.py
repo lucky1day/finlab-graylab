@@ -160,7 +160,7 @@ def _load_blackbox_config(config_path: Path, raw: dict[str, Any], schedule_raw: 
     return SchemeConfig(
         scheme_id=metadata.scheme_id,
         name=resolved_name,
-        description=f"Blackbox V2: {metadata.name}",
+        description=metadata.description or "",
         horizon=metadata.horizon,
         task_type=metadata.task_type,
         tenors=[metadata.target_tenor],

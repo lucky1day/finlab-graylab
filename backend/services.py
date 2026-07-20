@@ -876,6 +876,7 @@ def backtest_factor_lab_results(
                     "base_scheme_id": base_scheme_id,
                     "runtime_type": meta["runtime_type"],
                     "scheme_name": scheme_name,
+                    "description": str(meta.get("description") or ""),
                     "data_source": run["data_source"],
                     "data_source_label": data_source_label,
                     "target_tenor": tenor,

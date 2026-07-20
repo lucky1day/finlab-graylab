@@ -1266,6 +1266,7 @@ class BacktestFactorLabReadonlyTests(unittest.TestCase):
         self.assertEqual(result["benchmark_label"], "0529历史基准")
         self.assertEqual(result["data_source_label"], "当前DB对齐回测")
         self.assertEqual(result["schemes"][0]["scheme_name"], "周度示例")
+        self.assertEqual(result["schemes"][0]["description"], "只读回测方案")
         self.assertEqual(result["schemes"][0]["data_source_label"], "当前DB对齐回测")
         self.assertEqual(result["schemes"][0]["name"], "周度示例 · 10Y国债活跃")
 

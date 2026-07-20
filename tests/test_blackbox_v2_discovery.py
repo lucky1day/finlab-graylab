@@ -19,6 +19,7 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
         self.assertEqual(config.input_source, "data_bridge_current")
         self.assertEqual(config.version_status, "draft")
         self.assertEqual(config.name, "10Y Trial")
+        self.assertEqual(config.description, "")
         self.assertEqual(config.algorithm_version, "1.2.3")
         self.assertEqual(config.contract_version, "1.0")
         self.assertEqual(config.target_rule, "target_date_yield_vs_feature_date_yield")
@@ -91,9 +92,33 @@ class BlackboxV2DiscoveryTests(unittest.TestCase):
 
         self.assertEqual(original.name, "10Y Trial")
         self.assertEqual(displayed.name, "LIQ_EXCESS_A")
-        self.assertEqual(displayed.description, "Blackbox V2: 10Y Trial")
+        self.assertEqual(displayed.description, "")
         self.assertEqual(original.config_hash, displayed.config_hash)
         self.assertEqual(original.scheme_version, displayed.scheme_version)
+
+    def test_blackbox_description_is_mapped_and_version_bound(self) -> None:
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            scheme_dir = _write_blackbox_scheme(Path(tmpdir))
+            config_path = scheme_dir / "config.yaml"
+            metadata_path = scheme_dir / "delivery" / "trial_10y.json"
+            original = load_scheme_config(config_path)
+            raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+            raw["description"] = "使用期限利差和滚动分类模型形成方向信号。"
+            metadata_path.write_text(
+                json.dumps(raw, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            described = load_scheme_config(config_path)
+
+        self.assertEqual(
+            described.description,
+            "使用期限利差和滚动分类模型形成方向信号。",
+        )
+        self.assertNotEqual(original.manifest_hash, described.manifest_hash)
+        self.assertNotEqual(original.scheme_version, described.scheme_version)
 
     def test_blackbox_display_name_must_be_non_empty_when_present(self) -> None:
         from scheduler.discovery import load_scheme_config
