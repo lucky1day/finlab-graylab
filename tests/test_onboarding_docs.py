@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = PROJECT_ROOT / "docs"
 UPSTREAM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md"
 PLATFORM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md"
+SOP_INDEX = DOCS_ROOT / "sop" / "README.md"
 
 
 class OnboardingDocumentationTests(unittest.TestCase):
@@ -70,6 +71,20 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn("HISTORICAL", text)
             self.assertIn("禁止用于新增方案", text)
             self.assertLess(len(text.splitlines()), 30)
+
+    def test_sop_index_covers_the_entire_directory(self) -> None:
+        text = SOP_INDEX.read_text(encoding="utf-8")
+        actual = {
+            path.name
+            for path in SOP_INDEX.parent.glob("*.md")
+            if path.name != SOP_INDEX.name
+        }
+        indexed = set(re.findall(r"\]\(([^)/#]+\.md)(?:#[^)]+)?\)", text))
+
+        self.assertEqual(indexed, actual)
+        self.assertIn("算法侧只需要阅读这一份", text)
+        for status in ("CURRENT", "LEGACY_MAINTENANCE", "HISTORICAL"):
+            self.assertIn(f"`{status}`", text)
 
     def test_current_entry_points_do_not_route_new_schemes_to_native(self) -> None:
         entry_points = (
