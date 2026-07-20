@@ -482,7 +482,9 @@
   }
 
   function getSchemeRemark(scheme) {
-    return String((scheme && (scheme.remark || scheme.note || scheme.notes)) || "").trim();
+    return String((scheme && (
+      scheme.remark || scheme.note || scheme.notes || scheme.description
+    )) || "").trim();
   }
 
   function getTaskKey(target, column) {

@@ -342,6 +342,16 @@ class FactorLabRankingTests(unittest.TestCase):
               0,
               metric
             );
+            const descriptionRowHtml = hooks.renderSchemeRankingRowForTest(
+              {
+                id: "described-scheme",
+                name: "带算法说明方案",
+                description: "<script>alert(1)</script>",
+                deploymentDate: "2026/07/20"
+              },
+              0,
+              metric
+            );
             return {
               missingDeploymentError,
               weeklyRowHtml,
@@ -357,7 +367,13 @@ class FactorLabRankingTests(unittest.TestCase):
                 deploymentDate: "2026/06/01"
               }),
               customDeploymentDate: hooks.getSchemeDeploymentDate({ deployed_at: "2026-06-02" }),
-              remark: hooks.getSchemeRemark({ remark: "人工备注" })
+              remark: hooks.getSchemeRemark({ remark: "人工备注" }),
+              descriptionRemark: hooks.getSchemeRemark({ description: "滚动模型方向信号" }),
+              explicitRemark: hooks.getSchemeRemark({
+                remark: "人工备注",
+                description: "算法说明"
+              }),
+              descriptionRowHtml
             };
             """
         )
@@ -368,6 +384,10 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["weekly10YDeploymentDateFromSchemeId"], "2026/06/01")
         self.assertEqual(result["customDeploymentDate"], "2026/06/02")
         self.assertEqual(result["remark"], "人工备注")
+        self.assertEqual(result["descriptionRemark"], "滚动模型方向信号")
+        self.assertEqual(result["explicitRemark"], "人工备注")
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", result["descriptionRowHtml"])
+        self.assertNotIn("<script>", result["descriptionRowHtml"])
         self.assertIn("2026/06/01", result["weeklyRowHtml"])
         self.assertIn("2026/06/01", result["weekly7YRowHtml"])
         self.assertIn("2026/06/01", result["weekly10YRowHtml"])
