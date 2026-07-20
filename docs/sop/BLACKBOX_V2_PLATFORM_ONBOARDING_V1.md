@@ -290,7 +290,77 @@ Token 必须绑定 exact scheme、action、predict date、version 和 Harness ru
 
 全部通过后才记录为“完成 shadow 技术入库”。不得写成 active、正式上线、进入生产调度或已产生正式预测。
 
-## 6. 失败恢复
+## 6. 专项授权后的完整回测持久化
+
+本节不属于默认 Shadow 入库流程。只有具体方案已经完成生产准备核验并取得 `backtest_persist` 专项授权时才可执行；授权不得跨方案、版本、Harness run、预测截止日或回测起点复用。
+
+### 6.1 日期范围和分批语义
+
+完整持久化回测由日期区间定义，不由单批样本数定义：
+
+- `--backtest-start-date` 默认 `2025-01-01`，也可以显式传入其它规范 ISO 日期；
+- `predict_date` 是 target 日期的 exclusive cutoff，只选择 `target_date < predict_date` 的历史样本；
+- 最早样本是 `predict_date >= backtest_start_date` 的第一个合格站位日，起点本身不要求是交易日；
+- `--sample-size` 只用于自动段的 no-persist 稳定性测试，和 `--persist` 同时使用时拒绝执行；
+- 平台先生成完整 HistoricalCase 序列，再按 Runtime Profile 拆成每批最多 100 条；单批上限不是完整回测总量上限；
+- 全部批次使用同一 scheme version、DataBridge generation、snapshot 和环境指纹，并共享一个总执行超时预算；
+- 当前历史运行是 `current snapshot as-of replay`，不提供历史 vintage PIT，不得写成历史时点原貌复现。
+
+### 6.2 签发范围绑定授权
+
+从最新通过的 all-stage 记录取得 exact `scheme_version + harness_run_id`。签发 token 时必须写入实际回测起点：
+
+```bash
+TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness auth issue \
+    --scheme-id {scheme_id} \
+    --action backtest_persist \
+    --predict-date YYYY-MM-DD \
+    --backtest-start-date 2025-01-01 \
+    --scheme-version {passed_scheme_version} \
+    --harness-run-id {passed_harness_run_id} \
+    --expires-in 900 \
+    --issued-by {operator})
+```
+
+`backtest_persist` token 必须包含 `backtest_start_date`。Gate 参数和 token 中的起点必须完全一致；旧 token、缺失起点、起点不匹配、过期、已消费或签名不正确都必须 fail-closed。
+
+### 6.3 执行完整持久化回测
+
+```bash
+conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness gate backtest \
+    --scheme-id {scheme_id} \
+    --predict-date YYYY-MM-DD \
+    --persist \
+    --backtest-start-date 2025-01-01 \
+    --timeout-sec 1800 \
+    --algo-env forecast_env_blackbox_v1 \
+    --authorize "$TOKEN"
+```
+
+平台必须在全部批次成功后，完成全区间数量、Request/Result 顺序、echo、日期唯一性和非空月度指标校验，再进入授权审计和写库。任一批次失败、超时或结果不合同时，不消费尚未进入提交段的 token，不写 `t_backtest_*` 业务表。
+
+提交段通过单一事务写入一个 immutable run、完整 prediction 明细和完整 monthly metrics，并把该 run 更新为 success。任一写入数量不匹配时整个事务回滚；token 已进入提交段后即视为已消费，数据库失败重试必须重新签发。
+
+### 6.4 持久化后验收
+
+验收不得再写死“100 条”，而应逐项比较动态预期：
+
+| 检查 | 通过条件 |
+|---|---|
+| run 增量 | exact benchmark scope `+1` |
+| prediction 增量 | `+完整 HistoricalCase 数`，且可以大于 100 |
+| monthly metric 增量 | `+完整输出月数` 且非空 |
+| 日期范围 | 最早站位日不早于起点；所有 `target_date < predict_date cutoff` |
+| 分批证据 | 每批不超过 100，总批次数和各批行数完整记录 |
+| 版本与数据 | exact scheme version、Harness run、generation、snapshot 和环境指纹一致 |
+| API | canonical latest success 指向新完整 run |
+| 历史 | 旧 run 保持不可变并可审计，不删除、不覆盖、不原地扩充 |
+
+同一 all-stage run 可以使用新 token 重新执行并追加新 run；默认 API 通过 canonical latest-success 规则选择最后成功记录。不得直接更新旧 run 或手工删除 100 条历史记录来伪造完整回测。
+
+## 7. 失败恢复
 
 | 场景 | 立即动作 | 允许继续的条件 |
 |---|---|---|
@@ -312,7 +382,7 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 4. 三者完整且业务表零新增时，按登记后检查收口；
 5. 三者不一致时保持 paused，登记整改，不手工删除历史版本或覆盖原生方案。
 
-## 7. 最终检查
+## 8. 最终检查
 
 - [ ] 两文件和 Metadata 通过 Intake，摘要已记录
 - [ ] base/composite 身份无冲突，配置为 `blackbox_v2 + paused + draft`
@@ -327,5 +397,6 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 独立 DB、scheduler 和 API 检查证明 trial 未进入生产链路
 - [ ] 失败按恢复矩阵处理，没有把部分状态当成成功
 - [ ] 默认入库流程未执行 `activate` 或 `live`；如有专项授权，已转入独立生产灰度记录
+- [ ] 如执行持久化回测，授权已绑定实际起点，完整区间已分批计算并在单一事务中写入一个 immutable run
 
 具体方案的 generation、snapshot、Harness run、预测结果、数据库计数和当前状态只追加到平台入库规划文档，不回写本通用 SOP。

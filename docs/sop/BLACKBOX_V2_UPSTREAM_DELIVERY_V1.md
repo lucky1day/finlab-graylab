@@ -39,6 +39,8 @@ python {scheme_id}.py backtest --requests requests.csv --data-dir <data-dir> --o
 - 两个命令必须复用相同的数据处理、算法逻辑和方向映射。
 - 单个 Request 的结果不得因批次大小、批次切分或输入顺序改变。
 
+这里的单批上限不是完整回测总量上限。完整历史区间可以超过 100 条；平台会在同一 scheme version、DataBridge snapshot 和 generation 下，把完整 Request 序列拆成多个不超过 100 条的批次并多次调用 `backtest`。上游脚本只处理当前收到的批次，不得保存跨批状态，也不得要求把完整区间一次性传入。任一 Request 在不同批次大小、分区边界或输入顺序下都必须得到相同结果。
+
 ### 1.3 只在指定范围内运行
 
 脚本只使用指定运行环境和 Request，只从 `--data-dir` 读取业务数据，只向 `--output` 写入业务结果。

@@ -68,6 +68,17 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("不得追加“方向预测”", text)
         self.assertNotIn('"name": "10年国债收益率周频点位方向预测"', text)
 
+    def test_blackbox_full_range_backtest_contract(self) -> None:
+        upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        self.assertIn("单批上限不是完整回测总量上限", upstream)
+        self.assertIn("--backtest-start-date", platform)
+        self.assertIn("默认 `2025-01-01`", platform)
+        self.assertIn("全部批次成功后", platform)
+        self.assertIn("单一事务", platform)
+        self.assertIn("current snapshot as-of replay", platform)
+
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",
