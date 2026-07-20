@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from harness.authorization import DEFAULT_BACKTEST_START_DATE
+
 if TYPE_CHECKING:
     from scheduler.discovery import SchemeConfig
 
@@ -20,7 +22,8 @@ class GateContext:
     authorization: Any | None = None
     prediction_phase: str | None = None
     persist_backtest: bool = False
-    backtest_sample_size: int = 100
+    backtest_sample_size: int | None = None
+    backtest_start_date: str = DEFAULT_BACKTEST_START_DATE
     expected_empty_schema: str | None = None
     timeout_sec: int = 600
     api_base_url: str = "http://127.0.0.1:8100"

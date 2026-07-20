@@ -357,17 +357,17 @@ class BlackboxBacktestGate(_BlackboxGate):
 
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         if ctx.persist_backtest:
-            if ctx.backtest_sample_size != 100:
+            if ctx.backtest_sample_size is not None:
                 return _blocked(
                     self.name,
                     started_at,
                     [
-                        "Blackbox persisted backtest is fixed at 100 Requests: "
-                        f"got sample_size={ctx.backtest_sample_size}"
+                        "Blackbox persisted backtest does not accept --sample-size; "
+                        "use --backtest-start-date to define the complete interval"
                     ],
                 )
             return self._run_persist(ctx, started_at)
-        sample_size = int(ctx.backtest_sample_size)
+        sample_size = 100 if ctx.backtest_sample_size is None else int(ctx.backtest_sample_size)
         if sample_size < 1 or sample_size > 1000:
             return _finish(
                 self.name,
@@ -463,6 +463,7 @@ class BlackboxBacktestGate(_BlackboxGate):
             scheme_id=ctx.scheme_id,
             action="backtest_persist",
             predict_date=ctx.predict_date,
+            backtest_start_date=ctx.backtest_start_date,
             used_store_path=used_tokens_path(ctx.project_root),
         )
         if auth is not None:

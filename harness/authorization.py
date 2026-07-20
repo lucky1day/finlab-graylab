@@ -9,15 +9,16 @@ import os
 import secrets
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
 AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
+DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
 BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS = 60
-_AUTHORIZATION_PAYLOAD_FIELDS = frozenset(
+_AUTHORIZATION_BASE_PAYLOAD_FIELDS = frozenset(
     {
         "action",
         "scheme_id",
@@ -44,6 +45,7 @@ class Authorization:
     scheme_version: str | None = None
     harness_run_id: str | None = None
     expires_at: str | None = None
+    backtest_start_date: str | None = None
 
 
 class AuthorizationSecretError(RuntimeError):
@@ -95,6 +97,7 @@ def issue_token(
     harness_run_id: str | None = None,
     ttl_seconds: int | None = None,
     issued_by: str = "harness",
+    backtest_start_date: str | None = None,
 ) -> str:
     """签发一次性授权 token（写库/激活前的确认闸）。
 
@@ -116,6 +119,8 @@ def issue_token(
         "expires_at": expires_at,
         "nonce": secrets.token_urlsafe(16),
     }
+    if action == "backtest_persist":
+        payload["backtest_start_date"] = normalize_backtest_start_date(backtest_start_date)
     signature = _sign(payload)
     envelope: dict[str, Any] = {"payload": payload}
     if signature is not None:
@@ -170,10 +175,12 @@ def _validate_token_schema(decoded: dict[str, Any]) -> None:
             raise ValueError("authorization token schema is invalid")
     else:
         payload = decoded
-    if (
-        not isinstance(payload, dict)
-        or frozenset(payload) != _AUTHORIZATION_PAYLOAD_FIELDS
-    ):
+    if not isinstance(payload, dict):
+        raise ValueError("authorization token schema is invalid")
+    expected_fields = _AUTHORIZATION_BASE_PAYLOAD_FIELDS
+    if payload.get("action") == "backtest_persist":
+        expected_fields = expected_fields | {"backtest_start_date"}
+    if frozenset(payload) != expected_fields:
         raise ValueError("authorization token schema is invalid")
 
 
@@ -195,6 +202,11 @@ def parse_token(token: str) -> Authorization:
         scheme_version=str(payload["scheme_version"]) if payload.get("scheme_version") is not None else None,
         harness_run_id=str(payload["harness_run_id"]) if payload.get("harness_run_id") is not None else None,
         expires_at=str(payload["expires_at"]) if payload.get("expires_at") is not None else None,
+        backtest_start_date=(
+            str(payload["backtest_start_date"])
+            if payload.get("backtest_start_date") is not None
+            else None
+        ),
     )
 
 
@@ -204,6 +216,7 @@ def verify_authorization(
     scheme_id: str,
     action: str,
     predict_date: str | None = None,
+    backtest_start_date: str | None = None,
     used_store_path: Path,
 ) -> tuple[Authorization | None, list[str]]:
     """从原始 token 校验信封模式、签名、过期、一次性和作用域。"""
@@ -264,12 +277,35 @@ def verify_authorization(
         errors.append(f"action mismatch: token={auth.action}, expected={action}")
     if auth.predict_date is not None and predict_date is not None and auth.predict_date != predict_date:
         errors.append(f"predict_date mismatch: token={auth.predict_date}, ctx={predict_date}")
+    if (
+        action == "backtest_persist"
+        and backtest_start_date is not None
+        and auth.backtest_start_date != backtest_start_date
+    ):
+        errors.append(
+            "backtest_start_date mismatch: "
+            f"token={auth.backtest_start_date}, ctx={backtest_start_date}"
+        )
     try:
         if _token_hash(auth.token) in _read_used_tokens(used_store_path):
             errors.append("authorization token already used")
     except (OSError, ValueError, json.JSONDecodeError):
         errors.append("authorization replay store is invalid or unavailable")
     return auth, errors
+
+
+def normalize_backtest_start_date(value: str | None) -> str:
+    """规范化持久化回测起点；缺失时使用平台默认日期。"""
+    resolved = DEFAULT_BACKTEST_START_DATE if value is None else value
+    if not isinstance(resolved, str) or not resolved.strip() or resolved != resolved.strip():
+        raise ValueError("backtest_start_date must be a canonical YYYY-MM-DD date")
+    try:
+        parsed = date.fromisoformat(resolved)
+    except ValueError as exc:
+        raise ValueError("backtest_start_date must be a canonical YYYY-MM-DD date") from exc
+    if parsed.isoformat() != resolved:
+        raise ValueError("backtest_start_date must be a canonical YYYY-MM-DD date")
+    return resolved
 
 
 def required_future_expiry_errors(

@@ -79,6 +79,37 @@ class AuthorizationTest(unittest.TestCase):
         os.environ.pop("HARNESS_AUTH_SECRET", None)
         self.assertFalse(authorization_signing_enabled())
 
+    def test_backtest_persist_token_binds_start_date(self) -> None:
+        token = issue_token(
+            "trial",
+            "backtest_persist",
+            predict_date="2026-07-20",
+            backtest_start_date="2025-02-03",
+        )
+
+        auth = parse_token(token)
+        self.assertEqual(auth.backtest_start_date, "2025-02-03")
+        _, errors = verify_authorization(
+            token,
+            scheme_id="trial",
+            action="backtest_persist",
+            predict_date="2026-07-20",
+            backtest_start_date="2025-01-01",
+            used_store_path=self._used_path(),
+        )
+
+        self.assertIn("backtest_start_date mismatch", "\n".join(errors))
+
+    def test_backtest_persist_token_defaults_start_date(self) -> None:
+        auth = parse_token(issue_token("trial", "backtest_persist"))
+
+        self.assertEqual(auth.backtest_start_date, "2025-01-01")
+
+    def test_non_backtest_token_schema_is_unchanged(self) -> None:
+        envelope = self._decode_token(issue_token("trial", "blackbox_activate"))
+
+        self.assertNotIn("backtest_start_date", envelope["payload"])
+
     def test_issue_without_secret_yields_plaintext_token(self) -> None:
         # 软默认：未配置 HARNESS_AUTH_SECRET 时仍可签发 token（明文确认闸），不报错。
         os.environ.pop("HARNESS_AUTH_SECRET", None)

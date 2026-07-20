@@ -7,7 +7,7 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from harness.authorization import issue_token
+from harness.authorization import DEFAULT_BACKTEST_START_DATE, issue_token
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
 from harness.gates.api_gate import ApiGate
@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
             harness_run_id=args.harness_run_id,
             ttl_seconds=args.expires_in,
             issued_by=args.issued_by,
+            backtest_start_date=args.backtest_start_date,
         )
         print(token)
         return 0
@@ -109,7 +110,11 @@ def _build_parser() -> argparse.ArgumentParser:
         item.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
         if gate_name == "backtest":
             item.add_argument("--persist", action="store_true")
-            item.add_argument("--sample-size", type=int, default=100)
+            item.add_argument("--sample-size", type=int, default=None)
+            item.add_argument(
+                "--backtest-start-date",
+                default=DEFAULT_BACKTEST_START_DATE,
+            )
         if gate_name == "bootstrap":
             item.add_argument("--expected-empty-schema", required=True)
 
@@ -154,6 +159,10 @@ def _build_parser() -> argparse.ArgumentParser:
     issue_parser.add_argument("--expires-in", type=int, default=None, dest="expires_in")
     issue_parser.add_argument("--scheme-version", default=None, dest="scheme_version")
     issue_parser.add_argument("--harness-run-id", default=None, dest="harness_run_id")
+    issue_parser.add_argument(
+        "--backtest-start-date",
+        default=DEFAULT_BACKTEST_START_DATE,
+    )
     return parser
 
 
@@ -175,7 +184,16 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
         authorization=args.authorize,
         prediction_phase=getattr(args, "prediction_phase", None),
         persist_backtest=bool(getattr(args, "persist", False)),
-        backtest_sample_size=int(getattr(args, "sample_size", 100)),
+        backtest_sample_size=(
+            int(args.sample_size)
+            if getattr(args, "sample_size", None) is not None
+            else None
+        ),
+        backtest_start_date=getattr(
+            args,
+            "backtest_start_date",
+            DEFAULT_BACKTEST_START_DATE,
+        ),
         expected_empty_schema=getattr(args, "expected_empty_schema", None),
         api_base_url=args.api_base_url,
         api_instance_nonce=args.api_instance_nonce,

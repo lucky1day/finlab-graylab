@@ -9,6 +9,49 @@ from harness.context import GateContext
 
 
 class BlackboxV2HarnessDispatchTests(unittest.TestCase):
+    def test_backtest_cli_defaults_to_full_range_without_sample_size(self) -> None:
+        from harness.cli import _build_parser
+
+        args = _build_parser().parse_args([
+            "gate",
+            "backtest",
+            "--scheme-id",
+            "blackbox_trial",
+            "--predict-date",
+            "2026-07-20",
+            "--persist",
+        ])
+
+        self.assertEqual(args.backtest_start_date, "2025-01-01")
+        self.assertIsNone(args.sample_size)
+
+    def test_backtest_cli_and_authorization_retain_explicit_start_date(self) -> None:
+        from harness.cli import _build_parser
+
+        parser = _build_parser()
+        gate_args = parser.parse_args([
+            "gate",
+            "backtest",
+            "--scheme-id",
+            "blackbox_trial",
+            "--persist",
+            "--backtest-start-date",
+            "2025-02-03",
+        ])
+        auth_args = parser.parse_args([
+            "auth",
+            "issue",
+            "--scheme-id",
+            "blackbox_trial",
+            "--action",
+            "backtest_persist",
+            "--backtest-start-date",
+            "2025-02-03",
+        ])
+
+        self.assertEqual(gate_args.backtest_start_date, "2025-02-03")
+        self.assertEqual(auth_args.backtest_start_date, "2025-02-03")
+
     def test_defaults_to_native_gates_for_existing_callers(self) -> None:
         from harness.gates.static_gate import StaticGate
         from harness.registry import gate_for_name
