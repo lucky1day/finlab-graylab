@@ -12,3 +12,4 @@
 - [2026-07-19-blackbox-v2-production-path-closure-design.md](2026-07-19-blackbox-v2-production-path-closure-design.md)
 - [2026-07-20-hide-frontend-scheme-version-design.md](2026-07-20-hide-frontend-scheme-version-design.md)
 - [2026-07-20-blackbox-display-name-and-four-scheme-activation-design.md](2026-07-20-blackbox-display-name-and-four-scheme-activation-design.md)
+- [2026-07-20-blackbox-full-range-backtest-design.md](2026-07-20-blackbox-full-range-backtest-design.md)
