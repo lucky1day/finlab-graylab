@@ -36,9 +36,10 @@
 1Y T+5 四方案批次已按用户明确授权全部进入生产灰度：
 
 - `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 的配置、方案版本和 composite Registry 均为 `active`。
-- 四方案的 canonical latest-success 回测为 run `174..177`，均从请求起点 `2025-01-01` 构造完整可用区间，实际各为 367 条、19 个月度指标，并各保留一次 `gray_live`；先前 run `166..173` 作为 immutable 历史记录保留。
-- 完整回测由平台按 `100/100/100/67` 四批调用上游 Contract，范围授权、总预算、单一事务和动态数量核对均已生产实测通过。
-- 本地及公网 API、前端和只读访问矩阵通过；前端同月回测与 pending gray live 均保留，不再退化为 87 条。
+- run `174..177` 证明了完整区间按 `100/100/100/67` 四批调用、范围授权、总预算、单一事务和动态数量核对能力；这些 immutable run 各有 367 条、19 个月度指标。
+- 2026-07-20 复核 Native V1 的平台统一口径后确认：当前灰度 target 起点应为 `2026-06-01`，run `174..177` 仍包含 `target_date >= 2026-06-01` 的回测行，不能作为最终前端 canonical 历史段；必须用新授权追加正确截断的 immutable run，旧 run 全部保留审计。
+- 四方案当前各只有一条 `target_date=2026-07-24` 的 `gray_live`，尚未补齐从 `target_date=2026-06-01` 起的连续灰度实盘观察序列，因此“active”不等于已经达到 Onboarding Complete。
+- 先前“前端同月回测与 pending gray live 并存”的验收结论已撤销。同一 target 同时出现在 backtest/live 属于数据分区失败，前端不得通过追加、覆盖或隐藏收口。
 - 前端在 `1Y国债活跃 × T+5` 格子内只显示上述四个短名称，不再重复任务说明或目标名称。
 - 四条灰度预测均为 `predict_date=2026-07-20`、`feature_date=2026-07-17`、`target_date=2026-07-24`，actual 当前为 pending。
 - scheduler 当天未重启；必须在下一交易日 DataBridge 刷新后、日频任务基准时间前重启并观察四方案自然 `scheduled_live`。
@@ -56,11 +57,12 @@
 
 ## 当前观察项
 
-1. 2026-07-21 自然调度后验收四个 1Y T+5 方案的 `scheduled_live` 和实际错峰时间。
-2. 2026-07-24 目标日到达后复验四条 gray live 的 actual join、指标 API 和前端准确率展示。
-3. 使用更多独立真实交付继续覆盖周平均和月频任务。
-4. 每个新方案继续执行独立生产准备检查，不复用已有方案授权。
-5. DataBridge 当日刷新失败时继续阻断 `data_bridge_current` 方案，不影响 Native V1 的 `legacy_db` 路径。
+1. 为四方案登记 `gray_target_start=2026-06-01`，追加正确截断的完整历史 run，并逐日补齐该 target 起点至部署时点的 `gray_live`。
+2. 重新验收前端部署时间、实盘发出起点、`phase_ranges`、分隔线和三个数据口径，确认 backtest/live target 零重叠。
+3. 2026-07-21 自然调度后验收四个 1Y T+5 方案的 `scheduled_live` 和实际错峰时间。
+4. 2026-07-24 目标日到达后复验四条既有 gray live 的 actual join、指标 API 和前端准确率展示。
+5. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
+6. DataBridge 当日刷新失败时继续阻断 `data_bridge_current` 方案，不影响 Native V1 的 `legacy_db` 路径。
 
 ## 权威入口
 

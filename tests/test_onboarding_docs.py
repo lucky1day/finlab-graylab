@@ -81,6 +81,27 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("CLI 缺少 `--predict-date` 时拒绝签发", platform)
         self.assertIn("durable summary", platform)
 
+    def test_blackbox_platform_sop_defines_live_boundary_and_frontend_acceptance(self) -> None:
+        upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            "gray_target_start",
+            "2026-06-01",
+            "target_date >= gray_target_start",
+            "target_date < gray_target_start",
+            "prediction_phase=gray_live",
+            "prediction_phase=scheduled_live",
+            "实盘发出起点",
+            "phase_ranges",
+            "待验证",
+            "不参与回测截断",
+        ):
+            self.assertIn(marker, platform)
+
+        for platform_only_marker in ("gray_target_start", "phase_ranges", "deployed_at"):
+            self.assertNotIn(platform_only_marker, upstream)
+
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",

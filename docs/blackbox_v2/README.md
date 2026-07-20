@@ -15,7 +15,7 @@ Blackbox V2 是所有后续新算法、新方案 ID、新目标、新任务和�
 | 类型 | 文档 | 作用 | 是否可定义规则 |
 |---|---|---|---|
 | 上游契约 | [上游交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) | 算法工程师交付、运行和自验标准 | 是 |
-| 平台操作 | [平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | 平台收包、Gate、shadow 和失败恢复 | 是 |
+| 平台操作 | [平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | 平台收包、Gate、shadow、专项生产灰度、前端验收和失败恢复 | 是 |
 | 生产准备 | [生产晋级条件](PRODUCTION_READINESS.md) | 管理从 shadow 到 active/live 的代码、真实交付覆盖和授权门槛 | 否，当前为阻塞草案 |
 | 架构边界 | [平台架构说明](../architecture/BLACKBOX_V2_PLATFORM.md) | 双运行时、数据流和实现边界 | 是 |
 | 试验记录 | [入库试验台账](records/ONBOARDING_TRIAL_LEDGER.md) | 记录具体 generation、snapshot、run 和整改项 | 否 |

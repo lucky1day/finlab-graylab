@@ -28,7 +28,7 @@
 | 文档 | 状态 | 运行时 | 用途 | 是否可直接执行 |
 |---|---|---|---|---|
 | [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) | `CURRENT` | `blackbox_v2` | 上游算法交付、运行和自验契约 | 是，上游算法唯一手册 |
-| [BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | `CURRENT` | `blackbox_v2` | 平台收包、Gate、登记和专项授权操作 | 是，按文档权限边界执行 |
+| [BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | `CURRENT` | `blackbox_v2` | 平台收包、Gate、登记、专项生产灰度和前端验收 | 是，按文档权限边界执行 |
 | [NATIVE_V1_MAINTENANCE_T0.md](NATIVE_V1_MAINTENANCE_T0.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 存量维护的身份与改动分级判断 | 仅限既有 Native 方案 |
 | [NATIVE_V1_MAINTENANCE_SOP.md](NATIVE_V1_MAINTENANCE_SOP.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 存量方案维护流程 | 仅限既有 Native 方案 |
 | [NATIVE_V1_POST_CHANGE_TEST_SOP.md](NATIVE_V1_POST_CHANGE_TEST_SOP.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 修改后的 Gate 与回归验证 | 仅限既有 Native 方案 |

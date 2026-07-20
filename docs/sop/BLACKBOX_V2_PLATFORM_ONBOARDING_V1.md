@@ -1,4 +1,4 @@
-# Blackbox V2 平台入库 SOP（Contract 1.0，Intake 至 Shadow）
+# Blackbox V2 平台入库 SOP（Contract 1.0，Intake、生产灰度与前端验收）
 
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
@@ -301,7 +301,8 @@ Token 必须绑定 exact scheme、action、predict date、version 和 Harness ru
 完整持久化回测由日期区间定义，不由单批样本数定义：
 
 - `--backtest-start-date` 默认 `2025-01-01`，也可以显式传入其它规范 ISO 日期；
-- `predict_date` 是 target 日期的 exclusive cutoff，只选择 `target_date < predict_date` 的历史样本；
+- 生产授权前必须先在该方案的生命周期证据中登记 `gray_target_start`；当前生产灰度观察基线为 `2026-06-01`，即 `target_date >= gray_target_start` 全部属于实盘观察区；后续如使用不同起点，必须有方案级专项授权和证据，不得由算法 Metadata、部署日或操作当天自动推导；
+- Backtest Gate 的 `predict_date` 参数承担 target 日期 exclusive cutoff，生产持久化时必须传已批准的 `gray_target_start`，只选择 `target_date < gray_target_start` 的历史样本；不得把激活日、`deployed_at` 或操作当天直接当作回测 cutoff；
 - 最早样本是 `predict_date >= backtest_start_date` 的第一个合格站位日，起点本身不要求是交易日；
 - `--sample-size` 只用于自动段的 no-persist 稳定性测试，和 `--persist` 同时使用时拒绝执行；
 - 平台先生成完整 HistoricalCase 序列，再按 Runtime Profile 拆成每批最多 100 条；单批上限不是完整回测总量上限；
@@ -317,7 +318,7 @@ TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness auth issue \
     --scheme-id {scheme_id} \
     --action backtest_persist \
-    --predict-date YYYY-MM-DD \
+    --predict-date {gray_target_start} \
     --backtest-start-date 2025-01-01 \
     --scheme-version {passed_scheme_version} \
     --harness-run-id {passed_harness_run_id} \
@@ -325,7 +326,7 @@ TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
     --issued-by {operator})
 ```
 
-`backtest_persist` token 必须同时包含规范且非空的 `predict_date` 与 `backtest_start_date`。Gate 参数和 token 中的 exclusive cutoff、起点都必须完全一致；CLI 缺少 `--predict-date` 时拒绝签发，旧 token、任一日期缺失或不匹配、过期、已消费或签名不正确都必须 fail-closed。
+`backtest_persist` token 必须同时包含规范且非空的 `predict_date` 与 `backtest_start_date`。此处 token 的 `predict_date` 必须等于已登记的 `gray_target_start`，不是部署日期。Gate 参数和 token 中的 exclusive cutoff、起点都必须完全一致；CLI 缺少 `--predict-date` 时拒绝签发，旧 token、任一日期缺失或不匹配、过期、已消费或签名不正确都必须 fail-closed。
 
 ### 6.3 执行完整持久化回测
 
@@ -333,7 +334,7 @@ TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
 conda run --no-capture-output -n bond_factor_lab_service \
   python -m harness gate backtest \
     --scheme-id {scheme_id} \
-    --predict-date YYYY-MM-DD \
+    --predict-date {gray_target_start} \
     --persist \
     --backtest-start-date 2025-01-01 \
     --timeout-sec 1800 \
@@ -354,7 +355,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 | run 增量 | exact benchmark scope `+1` |
 | prediction 增量 | `+完整 HistoricalCase 数`，且可以大于 100 |
 | monthly metric 增量 | `+完整输出月数` 且非空 |
-| 日期范围 | 最早站位日不早于起点；所有 `target_date < predict_date cutoff` |
+| 日期范围 | 最早站位日不早于起点；所有 `target_date < gray_target_start`，不得存在 `target_date >= gray_target_start` 的历史行 |
 | 分批证据 | 每批不超过 100，总批次数、各批行数、总 deadline、最大/实际子进程数完整记录 |
 | 版本与数据 | exact scheme version、Harness run、generation、snapshot 和环境指纹一致 |
 | durable summary | 数据库 run summary 含授权起点/cutoff、实际 predict/target 边界、Request 总数、分批/预算和 replay semantics |
@@ -363,7 +364,67 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 同一 all-stage run 可以使用新 token 重新执行并追加新 run；默认 API 通过 canonical latest-success 规则选择最后成功记录。不得直接更新旧 run 或手工删除 100 条历史记录来伪造完整回测。
 
-## 7. 失败恢复
+## 7. 生产激活、灰度补齐与前端验收
+
+本节适用于取得具体方案 `blackbox_activate`、`live_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功、Registry 变为 active 且方案挂载生产任务时，才表示方案部署进入实盘链路。部署上去的那一刻即属于实盘运行状态，不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
+
+### 7.1 灰度起点、部署时间和正式调度起点
+
+三个边界必须分开记录：
+
+| 边界 | 判定源 | 业务用途 |
+|---|---|---|
+| `gray_target_start` | 方案生命周期专项授权；当前生产灰度基线为 `2026-06-01` | 按 `target_date` 切分历史回测与实盘观察区 |
+| `deployed_at` | Activation 后 active composite Registry 的真实部署日期 | 前端“部署时间”和生产挂载审计 |
+| 正式调度起点 | scheduler 自然成功写入的第一条 `prediction_phase=scheduled_live` 的 `predict_date` | 区分灰度实盘和正式 scheduler 实盘 |
+
+强制语义：
+
+- 灰度实盘也属于实盘，使用 `prediction_phase=gray_live`；正式 scheduler 自然发出的实盘使用 `prediction_phase=scheduled_live`；
+- 历史回测只允许 `target_date < gray_target_start`，所有 `target_date >= gray_target_start` 的应有预测必须进入 `t_scheme_predictions`，不得进入 canonical latest backtest；
+- `deployed_at` 表示方案真正激活并挂载生产任务的日期，active Registry 必须非空；它不参与回测截断、灰度补齐范围、月份归属、actual join 或预测唯一键计算；
+- 方案可以在 `gray_target_start` 之后才部署，因此 gray live 的 `predict_date` 可以早于 `deployed_at`；这是按历史应发时点补齐观察序列，不是伪造部署时间；
+- 正式调度起点只能由自然 scheduler 成功记录证明，不能用 Activation 时间、`deployed_at` 或第一条手工 gray live 代替。
+
+### 7.2 激活后强制补齐 gray live
+
+Activation 完成后、前端验收前，必须按时间顺序补齐从 `gray_target_start` 到当前所有应有的实盘目标点。当前生产灰度基线下，从 `target_date=2026-06-01` 起就属于灰度实盘。
+
+补齐必须先枚举 `target_date >= gray_target_start` 的目标点，再按平台日历反推 `feature_date` 和应发 `predict_date`，不能从部署日向后枚举：
+
+- 日频 T+N：`feature_date` 是 `target_date` 前第 N 个交易日，`predict_date` 是 `feature_date` 的下一交易日；例如 T+5 的首个灰度目标 `2026-06-01` 对应 `feature_date=2026-05-25`、`predict_date=2026-05-26`；
+- 周频：先枚举应有目标周末，再反推上一轮调度日；`predict_date` 可能位于 5 月；
+- 月频：按目标月观察点反推自然触发日；若合同规定自然 15 号，不能顺延为交易日。
+
+每个补齐点必须使用独立、范围匹配的一次性 `live_write` token，并显式指定 `prediction_phase=gray_live`。算法输入和三个 cutoff key 必须硬截止在该点的 `feature_date`；当前 DataBridge 已包含后续数据时仍不得读入未来行。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
+
+Activation 当天还必须为当前可运行点执行至少一次受控 `gray_live`，证明部署时刻已经进入实盘链路。后续只有 scheduler 在真实时钟自然触发的成功预测才能标为 `scheduled_live`。
+
+### 7.3 API 与前端展示契约
+
+前端要求属于平台入库验收，不属于上游算法交付契约。平台必须同时核验 `/api/schemes`、`/api/backtests/factor-lab` 和 `/api/metrics/{registry_scheme_id}`：
+
+1. `/api/schemes` 的 active composite row 必须包含真实、非空的 `deployed_at`；前端候选排行的“部署时间”只能来自该字段，不得使用 hardcoded 日期、默认值或 scheme ID 特判。
+2. `/api/backtests/factor-lab` 的 canonical latest-success 明细必须全部满足 `target_date < gray_target_start`；前端不得靠裁剪或覆盖历史行来掩盖错误的回测落库。
+3. `/api/metrics/{registry_scheme_id}` 必须返回全部 gray/scheduled live 明细、标准三日期、`prediction_phase` 和 `phase_ranges`；`phase_ranges` 至少能分别表达灰度实盘区间和正式调度起点。
+4. 前端“实盘发出起点”取 live 明细的最小 `predict_date`；“灰度实盘”与“正式调度起点”取 `phase_ranges`；“部署时间”继续单独显示 `deployed_at`，三者不得混成一个日期。
+5. 回测和 live 统一按 `target_date` 归属月份。“全部”口径必须在第一条 live target 月前插入实盘分隔线；分隔线之前不得包含 `target_date >= gray_target_start` 的回测，之后不得遗漏应有的 gray live。
+6. 同一方案、同一 `target_date` 同时出现在 backtest 与 live 是数据分区失败，必须阻断上线；不得通过前端同月追加、覆盖、去重或隐藏其中一侧宣称验收通过。
+7. actual 尚未到达的 live target 显示“待验证”，计入展示样本数，但不进入准确率分母；不得人工补 actual，也不得把 pending 显示成预测错误。
+8. 任务格子只由 Registry 的 `target_tenor + task_type` 决定；候选名称使用 Metadata 的简短 `name`，不得重复任务说明、目标名称或公开内部 scheme version。
+9. “仅回测”“仅实盘”“全部”三个口径必须与 DB/API 明细逐行一致；候选样本数、月度指标、每日明细、phase 标签和最新运行日期均可追溯。
+10. 浏览器强制刷新后候选数和名称正确，控制台错误为 0；如静态资源有变更，必须同步资源版本，不能把缓存页面当成通过证据。
+
+前端验收失败时先查 Registry、canonical backtest 和 live 明细的真实分区。禁止在前端增加日期常量或方案特判来修饰结果；平台数据修正必须走新的授权 run、正式 reconciliation 或受控 correction 流程。
+
+### 7.4 生产完成状态
+
+- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐、API 和前端验收、scheduler 挂载均通过；不要求已经观察到自然调度。
+- **Production Observed**：在 Onboarding Complete 基础上，scheduler 真实时钟自然产生至少一条成功 `prediction_phase=scheduled_live`，并能从 run、log、prediction、API 和前端追溯。
+
+仅 active 但未补齐灰度实盘、前端仍混入灰度 target 的回测、缺 `deployed_at` 或尚未挂载 scheduler，都不得标记为 Onboarding Complete。
+
+## 8. 失败恢复
 
 | 场景 | 立即动作 | 允许继续的条件 |
 |---|---|---|
@@ -376,6 +437,10 @@ conda run --no-capture-output -n bond_factor_lab_service \
 | shadow 失败且 Registry/版本未变 | 核对 token、审计和前置状态 | 仍为 draft/paused 且身份未占用 |
 | shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录 | 完成配置、Registry、版本三方 reconciliation |
 | API/scheduler 意外出现 trial | 保持 Registry paused，不执行 live | 找到来源并移除生产入口 |
+| canonical backtest 含 gray target | 保留旧 run 审计，停止前端验收 | 用绑定 `gray_target_start` 的新 token 生成新的 immutable run；不得靠前端裁剪收口 |
+| 激活后 gray live 不连续 | 冻结该方案的完成状态，不伪造 `scheduled_live` | 按 target 日历补齐缺口并逐条通过 LiveGate |
+| active Registry 缺 `deployed_at` | API/前端 fail-closed | 通过正式 Registry reconciliation 恢复真实部署日期 |
+| backtest/live 同一 target 重叠 | 阻断上线，保留冲突清单 | 新回测 run 或正式 correction 使 target 分区互斥后重验 |
 
 Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数据库与配置文件不能组成单一事务，因此命令异常后仍必须执行三方对账。若发现任一 shadow 版本或 Registry 行：
 
@@ -385,7 +450,7 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 4. 三者完整且业务表零新增时，按登记后检查收口；
 5. 三者不一致时保持 paused，登记整改，不手工删除历史版本或覆盖原生方案。
 
-## 8. 最终检查
+## 9. 最终检查
 
 - [ ] 两文件和 Metadata 通过 Intake，摘要已记录
 - [ ] base/composite 身份无冲突，配置为 `blackbox_v2 + paused + draft`
@@ -400,6 +465,11 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 独立 DB、scheduler 和 API 检查证明 trial 未进入生产链路
 - [ ] 失败按恢复矩阵处理，没有把部分状态当成成功
 - [ ] 默认入库流程未执行 `activate` 或 `live`；如有专项授权，已转入独立生产灰度记录
-- [ ] 如执行持久化回测，授权已绑定实际起点，完整区间已分批计算并在单一事务中写入一个 immutable run
+- [ ] 如执行持久化回测，授权已绑定实际起点和 `gray_target_start`，完整区间已分批计算并在单一事务中写入一个 immutable run
+- [ ] canonical backtest 全部满足 `target_date < gray_target_start`，与 live target 零重叠
+- [ ] 激活即登记真实 `deployed_at`，并已补齐 `target_date >= gray_target_start` 的连续 `gray_live`
+- [ ] `/api/metrics/{registry_scheme_id}` 返回三日期、`prediction_phase` 和 `phase_ranges`
+- [ ] 前端分别展示部署时间、实盘发出起点、灰度实盘区间和正式调度起点，pending 显示待验证
+- [ ] 前端三个数据口径与 DB/API 一致，任务格子、短名称、样本数、分隔线和控制台均通过
 
 具体方案的 generation、snapshot、Harness run、预测结果、数据库计数和当前状态只追加到平台入库规划文档，不回写本通用 SOP。

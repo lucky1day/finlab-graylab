@@ -240,3 +240,18 @@ Canary 截图：
 - 最终全量 `unittest` 为 1120/1120 通过；包含授权截止日和 durable summary 回归覆盖。
 
 ![1Y T+5 四方案完整历史候选列表](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720_CANDIDATES.jpg)
+
+## 10. 灰度边界与前端验收结论修正
+
+2026-07-20 后续复核 Native V1 基准和共享预测语义后，确认本记录第 9 节把“操作日/部署日”误用为回测 target cutoff。当前生产灰度基线应为方案级 `gray_target_start=2026-06-01`：
+
+- canonical 历史回测必须只含 `target_date < 2026-06-01`；
+- `target_date >= 2026-06-01` 的应有预测属于实盘观察区，部署后必须按应发时点补齐为 `prediction_phase=gray_live`；
+- `deployed_at=2026-07-20` 只表达该方案实际激活和挂载生产任务的日期，不参与回测截断或 gray 回补起点；
+- scheduler 自然成功产生的第一条 `scheduled_live` 才是正式调度起点。
+
+因此，第 9.2 节 run `174..177` 仍作为 immutable 执行与审计证据保留，但它们包含 2026-06/07 的 live target，不能继续作为最终前端历史段；第 9.3 节“同月回测与 gray live 均保留”的验收结论撤销。同一 `target_date` 同时出现在 backtest 和 live 是数据分区失败，前端不能通过同月追加、覆盖、去重或隐藏解决。
+
+截至本次文档修正，四方案虽均 active，但各只有一条 `target_date=2026-07-24` 的 gray live，尚缺从 `target_date=2026-06-01` 起到部署时点的连续 gray live。后续必须通过新的专项授权追加正确截断的 immutable backtest run、按 target 日历逐点补齐 gray live，并重新验收：真实 `deployed_at`、实盘发出起点、`phase_ranges`、回测/live 分隔线、pending“待验证”、三个数据口径和控制台。完成前不得标记为 Onboarding Complete。
+
+本次只修正 V2 平台 SOP 和平台状态/记录，不修改 Blackbox V2 上游算法交付 SOP，也不在本文档动作中修改生产数据库或现有 run。
