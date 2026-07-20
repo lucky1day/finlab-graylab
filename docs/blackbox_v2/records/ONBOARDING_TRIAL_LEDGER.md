@@ -336,6 +336,31 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 本次授权只覆盖用户明确列出的四个方案，不改变新 Blackbox 方案必须逐方案通过生产准备与专项授权的通用边界。
 
+### 4.11 记录 002D：1Y T+5 四方案完整历史刷新
+
+**执行时间**：2026-07-20 19:41 至 20:22，`Asia/Shanghai`。
+
+**完整记录**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md#9-完整历史区间刷新)。
+
+**机器证据**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json)。
+
+| 项目 | 生产实测结果 |
+|---|---|
+| 平台升级 | 完整 persist 由日期区间定义；默认起点 `2025-01-01`；单批 100 不再被解释为完整总量 |
+| 授权 | 四个新 token 分别绑定起点、截止日、exact version 和 latest all-stage run，未跨方案复用；缺失截止日 fail-closed |
+| active recertification | ReadinessGate 区分 pre-shadow 与 active；四个 fresh all-stage 均 7/7 passed |
+| 分批 | 每方案 367 个 HistoricalCase，固定分为 `100/100/100/67` 四批，共享一个总预算 |
+| 原子落库 | canonical run `174..177`；每方案 367 predictions、19 monthly metrics；先前 run `166..173` 不修改不删除 |
+| durable summary | 每个 canonical run 均持久化授权起止、实际 predict/target 范围、请求数、批次、总预算、最大/实际子进程数及 replay 语义 |
+| 日期 | predict/feature `2025-01-02..2026-07-10`；target `2025-01-09..2026-07-17` |
+| 前端 | `1Y + T+5` 四个短名称候选各显示 367；2025-01 有 13 条；同月回测和 gray live 均保留；控制台 0 error |
+| 公网 | 页面、health、schemes、backtests 和四个 metrics 为 200；默认 API、predictions、admin、trigger 为 403 |
+| 回归 | 全量 `unittest` 1120/1120 通过；包含缺失截止日、恶意空截止日 token 和 durable summary 覆盖 |
+| 进程 | 只重启 backend 为 PID `16726`；scheduler PID `52329` 保持不变，无 scheduled-live 增量 |
+| 当前状态 | 四方案继续 `GRAY_ACTIVE`；等待自然 `scheduled_live` 和 2026-07-24 actual |
+
+该记录证明 Contract 单批 100 是调用边界而非完整回测上限。完整历史仍是 current snapshot as-of replay，不得描述为 historical vintage PIT。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

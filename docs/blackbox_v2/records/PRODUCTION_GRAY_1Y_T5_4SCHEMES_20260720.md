@@ -4,7 +4,7 @@
 
 **执行日期**：2026-07-20，`Asia/Shanghai`
 
-**当前阶段**：用户明确将本批时序调整为当天全量激活；四方案均已完成 Activation、100 条持久化回测和单次 `gray_live`。scheduler 当天未重启，下一交易日自然 `scheduled_live` 和 2026-07-24 actual 仍待复验。
+**当前阶段**：用户明确将本批时序调整为当天全量激活；四方案均已完成 Activation、从 `2025-01-01` 起的完整分批持久化回测和单次 `gray_live`。每个 canonical latest-success 回测为 367 条，scheduler 当天未重启，下一交易日自然 `scheduled_live` 和 2026-07-24 actual 仍待复验。
 
 **机器证据**：[PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.evidence.json)
 
@@ -179,3 +179,64 @@ Canary 截图：
 ## 8. 下一检查点
 
 当前保持 `IN_PROGRESS`，但四方案已经是 `GRAY_ACTIVE`。必须等下一交易日 DataBridge 刷新成功后、`07:03` 前重启 scheduler，确认 startup catchup 没有意外补跑，并观察四方案自然产生 `scheduled_live`。`target_date=2026-07-24` 的 actual 到达前，不报告当前 gray live 的准确率，也不人工补写 actual。
+
+## 9. 完整历史区间刷新
+
+用户在发现前端只显示 87 条、持久化 run 只有最近 100 条后，明确授权平台升级为“完整日期区间由平台分批执行”。本轮没有修改四份上游交付 `.py/.json`，而是修正平台回测编排、范围授权和前端同月合并逻辑：
+
+- 完整持久化回测默认起点为 `2025-01-01`，终点仍由灰度边界 fail-closed 为 `target_date < 2026-07-20`；
+- `backtest_persist` token 显式绑定 `backtest_start_date`、exact scheme version 和最新 all-stage run；
+- `--persist` 拒绝 `--sample-size`，避免把单批 100 条误当成完整历史上限；
+- 367 个 HistoricalCase 按 `100/100/100/67` 拆为四批，在一个总预算内运行，并以单一事务写入一个新的 immutable run；
+- 任一批次、数量核对或提交失败时整次回滚；旧的 100 条 run 保留为历史记录，API 只选择新的 canonical latest-success；
+- 前端不再用同月 `gray_live` 覆盖已经存在的回测日明细，同月回测和实盘按 phase 分界并存。
+
+### 9.1 active 方案重新认证
+
+首次对已 active 的 `one_y_t5_liq_excess_a_v1` 重新执行 all-stage 时，前六个 Gate 通过，`api-readiness` 因旧逻辑只接受 `paused + draft/shadow` 而 fail-closed；该失败 run 为 `hr_20260720T114139Z_d2095b44ad05`，没有业务写入。平台随后将 ReadinessGate 改为生命周期感知：pre-shadow 仍要求 scheduler/API 不可见，active recertification 则要求 Registry active、scheduler/API 可见，两种模式都保持零业务写入。
+
+修复后四个 fresh run 均为 7/7 Gate passed，使用同一 generation、snapshot 和冻结环境指纹：
+
+| base scheme ID | scheme version | fresh all-stage |
+|---|---|---|
+| `one_y_t5_liq_excess_a_v1` | `8d583560c9f1` | `hr_20260720T114504Z_cb6bf6eac22c` |
+| `one_y_t5_liq_excess_a_w252_l7_v1` | `103c93bbc913` | `hr_20260720T114556Z_97bf5d06c341` |
+| `one_y_t5_liq_excess_a_w350_l7_v1` | `86b458c568a5` | `hr_20260720T114746Z_fd4320122d72` |
+| `one_y_t5_liq_excess_b_w252_l7_v1` | `ba00891cd179` | `hr_20260720T114824Z_4466dcbf4068` |
+
+### 9.2 canonical latest-success 回测
+
+| 方案 | run | 明细 | 月度指标 | 正确数/样本 | 准确率 |
+|---|---:|---:|---:|---:|---:|
+| `LIQ_EXCESS_A` | 174 | 367 | 19 | 212/367 | 57.8% |
+| `LIQ_EXCESS_A_W252_L7` | 175 | 367 | 19 | 218/367 | 59.4% |
+| `LIQ_EXCESS_A_W350_L7` | 176 | 367 | 19 | 218/367 | 59.4% |
+| `LIQ_EXCESS_B_W252_L7` | 177 | 367 | 19 | 222/367 | 60.5% |
+
+四个 run 的 `predict_date=feature_date` 范围均为 `2025-01-02..2026-07-10`，对应 `target_date=2025-01-09..2026-07-17`。请求起点虽为 `2025-01-01`，首条为 `2025-01-02` 是因为平台只生成满足数据、交易日和 T+5 目标覆盖的 HistoricalCase；终点为 `2026-07-10` 是因为更晚样本的 target 会进入 `2026-07-20` 灰度边界，必须排除。回测语义仍是 `current_snapshot_as_of_not_historical_vintage`，不宣称 historical vintage PIT。
+
+首轮完整历史 run `170..173` 已正确生成 367 条和 19 个月，但代码审查发现其 DB summary 尚未持久化授权日期范围和批次预算等关键审计字段。平台修复后使用四个新的独立 token 重跑，形成 canonical run `174..177`。run `166..173` 均未被更新或删除；每个方案当前累计有 3 个 backtest run、834 条历史明细和 44 条月度指标，canonical API 只返回最新 run 的 367 条和 19 条月度指标。正式 `gray_live` 仍各为 1 条，未新增或改写。
+
+四个 canonical run 的 durable summary 均核验包含：`backtest_start_date=2025-01-01`、`target_date_before=2026-07-20`、367 个请求、实际 predict/target 日期范围、`batch_sizes=[100,100,100,67]`、`total_deadline_sec=1800`、最大/实际子进程数 `4/4` 和 current-snapshot replay 语义。授权层同时收紧为：`backtest_persist` 的 token 和执行上下文都必须携带 canonical `predict_date`，缺失、非法或不一致均 fail-closed。
+
+最终四份授权审计文件 SHA-256：
+
+| 方案 | authorization audit SHA-256 |
+|---|---|
+| `LIQ_EXCESS_A` | `5c4d361f44f11c4386db84a606575c1e5128c6a566a0fe5b89612cc8c034074d` |
+| `LIQ_EXCESS_A_W252_L7` | `aeb68ff82d5ce0be07fc023e21bf09c24bd6b86c980962e1014408c9c37d19d1` |
+| `LIQ_EXCESS_A_W350_L7` | `e5882cb21ee82f27232dad3e7ecb4b90566726bfcedba20c5f35bf4d89ccaf4e` |
+| `LIQ_EXCESS_B_W252_L7` | `1d233bbccd1f9d2ca39b6eebb1900cebaaabe4cddf312b9ce2f14571fb06a4df` |
+
+### 9.3 API、前端和公网复验
+
+- 本地 `/api/schemes` 返回四个 active 短名称；四个 metrics endpoint 均为 HTTP 200，actual 未到达时保持 pending；
+- `/api/backtests/factor-lab` 对四个方案分别返回 367 条明细、19 条回测月度指标、正确 run/version/generation/snapshot；
+- 前端 `1Y国债活跃 × T+5` 显示 4 个短名称候选，每个排行样本数为 367；2025-01 月显示 13 条，每日明细从 01/02 开始；
+- 同一个 2026-07 月的回测与 pending `gray_live` 均被保留，前端不再退化为只剩 87 条；
+- 浏览器控制台错误数为 0；候选列表截图如下；
+- 公网页面、schemes、backtests 和四个 metrics 为 HTTP 200，默认 API、predictions、admin/registry/sync 和 trigger 仍为 HTTP 403；
+- 只重启 backend，PID 更新为 `16726`；scheduler PID 始终为 `52329`，没有 startup catchup 或新增 `scheduled_live`。
+- 最终全量 `unittest` 为 1120/1120 通过；包含授权截止日和 durable summary 回归覆盖。
+
+![1Y T+5 四方案完整历史候选列表](PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720_CANDIDATES.jpg)

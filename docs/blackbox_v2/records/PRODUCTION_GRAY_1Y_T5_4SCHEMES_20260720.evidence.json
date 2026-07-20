@@ -1,6 +1,6 @@
 {
   "active_api_visible_selected": 4,
-  "as_of": "2026-07-20T18:52:00+08:00",
+  "as_of": "2026-07-20T20:28:00+08:00",
   "business_table_counts_after_four_active": {
     "one_y_t5_liq_excess_a_v1": {
       "t_backtest_monthly_metrics": 6,
@@ -205,7 +205,165 @@
       "t5_daily": "07:43"
     }
   },
-  "phase": "four_gray_active_waiting_scheduled_live_and_actual",
+  "full_range_refresh": {
+    "authorization_scope": {
+      "action": "backtest_persist",
+      "backtest_start_date": "2025-01-01",
+      "predict_date": "2026-07-20",
+      "expires_in_seconds": 900,
+      "range_bound": true,
+      "scheme_version_bound": true,
+      "harness_run_id_bound": true,
+      "token_reuse_across_schemes": false
+    },
+    "authorization_audit_sha256": {
+      "one_y_t5_liq_excess_a_v1": "5c4d361f44f11c4386db84a606575c1e5128c6a566a0fe5b89612cc8c034074d",
+      "one_y_t5_liq_excess_a_w252_l7_v1": "aeb68ff82d5ce0be07fc023e21bf09c24bd6b86c980962e1014408c9c37d19d1",
+      "one_y_t5_liq_excess_a_w350_l7_v1": "e5882cb21ee82f27232dad3e7ecb4b90566726bfcedba20c5f35bf4d89ccaf4e",
+      "one_y_t5_liq_excess_b_w252_l7_v1": "1d233bbccd1f9d2ca39b6eebb1900cebaaabe4cddf312b9ce2f14571fb06a4df"
+    },
+    "active_recertification": {
+      "failed_before_fix": {
+        "business_tables_written": false,
+        "failed_gate": "api-readiness",
+        "harness_run_id": "hr_20260720T114139Z_d2095b44ad05",
+        "passed_gates_before_failure": 6,
+        "reason": "pre-shadow-only readiness rejected an already active scheme"
+      },
+      "lifecycle_modes": {
+        "active_recertification": {
+          "api_visible": true,
+          "registry_status": "active",
+          "scheduler_eligible": true
+        },
+        "pre_shadow": {
+          "api_visible": false,
+          "registry_status": "paused",
+          "scheduler_eligible": false
+        }
+      },
+      "successful_all_stage": {
+        "one_y_t5_liq_excess_a_v1": {"gates_passed": 7, "harness_run_id": "hr_20260720T114504Z_cb6bf6eac22c"},
+        "one_y_t5_liq_excess_a_w252_l7_v1": {"gates_passed": 7, "harness_run_id": "hr_20260720T114556Z_97bf5d06c341"},
+        "one_y_t5_liq_excess_a_w350_l7_v1": {"gates_passed": 7, "harness_run_id": "hr_20260720T114746Z_fd4320122d72"},
+        "one_y_t5_liq_excess_b_w252_l7_v1": {"gates_passed": 7, "harness_run_id": "hr_20260720T114824Z_4466dcbf4068"}
+      }
+    },
+    "backtest_range": {
+      "batch_count": 4,
+      "batch_sizes": [100, 100, 100, 67],
+      "feature_equals_predict_rows_per_scheme": 367,
+      "max_batch_requests": 100,
+      "max_predict_date": "2026-07-10",
+      "max_target_date": "2026-07-17",
+      "min_predict_date": "2025-01-02",
+      "min_target_date": "2025-01-09",
+      "replay_semantics": "current_snapshot_as_of_not_historical_vintage",
+      "target_date_before": "2026-07-20"
+    },
+    "canonical_latest_backtests": {
+      "one_y_t5_liq_excess_a_v1": {"accuracy": 0.5776566757493188, "correct": 212, "monthly_metrics": 19, "prediction_rows": 367, "run_id": 174},
+      "one_y_t5_liq_excess_a_w252_l7_v1": {"accuracy": 0.5940054495912807, "correct": 218, "monthly_metrics": 19, "prediction_rows": 367, "run_id": 175},
+      "one_y_t5_liq_excess_a_w350_l7_v1": {"accuracy": 0.5940054495912807, "correct": 218, "monthly_metrics": 19, "prediction_rows": 367, "run_id": 176},
+      "one_y_t5_liq_excess_b_w252_l7_v1": {"accuracy": 0.6049046321525886, "correct": 222, "monthly_metrics": 19, "prediction_rows": 367, "run_id": 177}
+    },
+    "database_counts_after": {
+      "per_scheme": {
+        "t_backtest_monthly_metrics": 44,
+        "t_backtest_predictions": 834,
+        "t_backtest_runs": 3,
+        "t_scheme_predictions": 1,
+        "t_scheme_run_log": 1,
+        "t_scheme_runs": 1
+      },
+      "old_100_row_runs_preserved": [166, 167, 168, 169],
+      "prior_full_range_runs_preserved": [170, 171, 172, 173],
+      "gray_live_unchanged_per_scheme": 1
+    },
+    "durable_run_summary": {
+      "actual_predict_date_max": "2026-07-10",
+      "actual_predict_date_min": "2025-01-02",
+      "actual_target_date_max": "2026-07-17",
+      "actual_target_date_min": "2025-01-09",
+      "backtest_start_date": "2025-01-01",
+      "batch_count": 4,
+      "batch_sizes": [100, 100, 100, 67],
+      "max_subprocesses": 4,
+      "replay_semantics": "current_snapshot_as_of_not_historical_vintage",
+      "request_count": 367,
+      "subprocesses_started": 4,
+      "target_date_before": "2026-07-20",
+      "total_deadline_sec": 1800,
+      "verified_run_ids": [174, 175, 176, 177]
+    },
+    "delivery_files_unchanged": true,
+    "display": {
+      "console_error_count": 0,
+      "frontend_candidate_count": 4,
+      "frontend_rows_per_candidate": 367,
+      "january_2025_rows": 13,
+      "january_2025_first_predict_date": "2025-01-02",
+      "names": [
+        "LIQ_EXCESS_A",
+        "LIQ_EXCESS_A_W252_L7",
+        "LIQ_EXCESS_A_W350_L7",
+        "LIQ_EXCESS_B_W252_L7"
+      ],
+      "same_month_backtest_and_gray_preserved": true,
+      "screenshot": "PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720_CANDIDATES.jpg",
+      "screenshot_height": 372,
+      "screenshot_sha256": "d4c3e5cc2663b1ce363ade3dbc04e40b1c55775bdaf8df38fe2f2ed84033d219",
+      "screenshot_width": 1204,
+      "task_cell": "1Y国债活跃 × T+5"
+    },
+    "processes": {
+      "backend_launchd_pid_after": 16726,
+      "backend_restarted": true,
+      "scheduler_launchd_pid_after": 52329,
+      "scheduler_restarted": false,
+      "scheduled_live_added": false,
+      "startup_catchup_triggered": false
+    },
+    "regression_tests": {
+      "command": "python -m unittest discover -s tests -p 'test_*.py'",
+      "duration_seconds": 29.197,
+      "passed": 1120,
+      "total": 1120
+    },
+    "review_remediation": {
+      "authorization_cutoff_required": true,
+      "authorization_cutoff_tamper_tested": true,
+      "durable_range_and_budget_summary_required": true,
+      "first_full_range_runs_preserved_not_canonical": [170, 171, 172, 173],
+      "screenshot_media_type": "image/jpeg"
+    },
+    "public_access": {
+      "allowed_http_200": [
+        "/",
+        "/api/health",
+        "/api/schemes",
+        "/api/backtests/factor-lab",
+        "/api/metrics/one_y_t5_liq_excess_a_v1__h5__1Y",
+        "/api/metrics/one_y_t5_liq_excess_a_w252_l7_v1__h5__1Y",
+        "/api/metrics/one_y_t5_liq_excess_a_w350_l7_v1__h5__1Y",
+        "/api/metrics/one_y_t5_liq_excess_b_w252_l7_v1__h5__1Y"
+      ],
+      "denied_http_403": [
+        "/api",
+        "/api/predictions",
+        "/api/admin/registry/sync",
+        "/api/schemes/one_y_t5_liq_excess_a_v1__h5__1Y/trigger"
+      ],
+      "focused_matrix_passed": 12,
+      "focused_matrix_total": 12,
+      "public_base_url": "https://bond.finailab.cn/bond-factor-lab/"
+    },
+    "pending": [
+      "next trading day natural scheduled_live after fresh DataBridge and pre-07:03 scheduler restart",
+      "2026-07-24 actual join and live metrics"
+    ]
+  },
+  "phase": "four_gray_active_full_range_waiting_scheduled_live_and_actual",
   "platform_probe_failures_before_fix": [
     {
       "error": "future probe date 2999-12-31 was outside the frozen pandas timestamp range",

@@ -36,7 +36,9 @@
 1Y T+5 四方案批次已按用户明确授权全部进入生产灰度：
 
 - `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 的配置、方案版本和 composite Registry 均为 `active`。
-- 四方案各有 100 条持久化回测和一次 `gray_live`；本地及公网 API、前端和只读访问矩阵通过。
+- 四方案的 canonical latest-success 回测为 run `174..177`，均从请求起点 `2025-01-01` 构造完整可用区间，实际各为 367 条、19 个月度指标，并各保留一次 `gray_live`；先前 run `166..173` 作为 immutable 历史记录保留。
+- 完整回测由平台按 `100/100/100/67` 四批调用上游 Contract，范围授权、总预算、单一事务和动态数量核对均已生产实测通过。
+- 本地及公网 API、前端和只读访问矩阵通过；前端同月回测与 pending gray live 均保留，不再退化为 87 条。
 - 前端在 `1Y国债活跃 × T+5` 格子内只显示上述四个短名称，不再重复任务说明或目标名称。
 - 四条灰度预测均为 `predict_date=2026-07-20`、`feature_date=2026-07-17`、`target_date=2026-07-24`，actual 当前为 pending。
 - scheduler 当天未重启；必须在下一交易日 DataBridge 刷新后、日频任务基准时间前重启并观察四方案自然 `scheduled_live`。

@@ -17,7 +17,7 @@
 - DataBridge 三频同代快照、freshness 证据及 Request 生成。
 - 七个自动 Gate、10 轮重复运行和 100/101/500/1000 条 no-persist 回测。
 - 正式授权的 `shadow + paused` 登记、ActivationGate 和生命周期恢复。
-- 正式授权的 100 条回测事务落库及 API/前端读取。
+- 正式授权的日期区间完整回测：范围绑定 token、单批最多 100 条、跨批总预算、单一事务落库及 API/前端读取；1Y T+5 四方案已各以 367 条生产实测。
 - gray live、scheduler live、actual join、真实 API 探针和前端显示。
 - sandbox 文件读取 allowlist、环境清理及严格 JSON Result 契约。
 - stale generation 非零退出、零预测副作用和暂停后立即隐藏。
@@ -66,3 +66,4 @@
 | 2026-07-20 | 真实交付生产灰度激活 | 生产 ActivationGate、100 条回测落库、1 条 gray live、Registry/API/前端/scheduler 可见 | 首条 actual 待 2026-07-24；仍缺另外 2 个真实交付和日/月频覆盖 | 当前方案 `PRODUCTION_GRAY_ACTIVE`；平台总体仍未 `PRODUCTION_READY` |
 | 2026-07-20 | 1Y T+5 日频批次代表性 Canary | 10 轮稳定性、Activation、100 条回测、gray live、本地/公网 API 和前端；其余三方案保持 shadow | 下一交易日自然 scheduled live、2026-07-24 actual、其余三方案分阶段激活；仍缺月频和第 3 个独立交付批次 | Canary `CANARY_GRAY_ACTIVE`；平台总体仍未 `PRODUCTION_READY` |
 | 2026-07-20 | 1Y T+5 日频批次四方案专项全量激活 | 用户明确调整时序；四方案 active、各 100 条回测、各 1 条 gray live；短名称 API/前端与公网 14/14 通过 | 下一交易日四方案自然 scheduled live、2026-07-24 actual；仍缺月频和第 3 个独立交付批次 | 四方案 `GRAY_ACTIVE`；平台总体仍未 `PRODUCTION_READY` |
+| 2026-07-20 | 1Y T+5 四方案完整历史刷新 | 持久化默认起点 `2025-01-01`；起止范围绑定授权；四方案各 367 条、19 个月、`100/100/100/67` 分批原子写入；授权范围、批次预算和实际日期范围已写入 durable run summary；API、前端同月合并和公网复验通过 | 下一交易日四方案自然 scheduled live、2026-07-24 actual；仍缺月频和第 3 个独立交付批次 | 四方案继续 `GRAY_ACTIVE`；canonical latest-success 已切换为完整 run 174–177，先前 run 均 immutable 保留 |
