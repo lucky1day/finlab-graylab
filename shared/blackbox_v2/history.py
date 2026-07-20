@@ -81,7 +81,7 @@ def build_historical_cases(
         candidates = _monthly_candidates(metadata, yield_rows, trade_calendar_rows, engine)
     else:
         raise ValueError(f"unsupported Blackbox historical task_type: {metadata.task_type}")
-    if metadata.task_type not in {"weekly_point", "weekly_average"}:
+    if metadata.task_type == "monthly":
         _require_actual_source_coverage(
             yield_rows,
             trade_calendar_rows,
@@ -104,6 +104,15 @@ def build_historical_cases(
     selected = eligible[-limit:]
     if metadata.task_type in {"weekly_point", "weekly_average"}:
         _validate_selected_weekly_candidates(selected)
+    elif metadata.task_type in {"T+1", "T+5"}:
+        _require_actual_source_coverage(
+            yield_rows,
+            trade_calendar_rows,
+            predict_date_from=selected[0].feature_date,
+            target_date_before=target_date_before,
+            weekday_only=True,
+            source_gap_is_horizon_violation=True,
+        )
     cutoffs_by_feature_date = resolve_blackbox_input_cutoffs_bulk(
         snapshot,
         feature_dates=[candidate.feature_date for candidate in selected],
@@ -187,6 +196,7 @@ def _daily_candidates(
         str(row["rdate"])[:10]
         for row in calendar_rows
         if str(row.get("trade_flag", "")).strip() == "1"
+        and date.fromisoformat(str(row["rdate"])[:10]).weekday() < 5
     )
     calendar_index = {value: index for index, value in enumerate(trading_days)}
     source_rows = sorted(
@@ -207,12 +217,9 @@ def _daily_candidates(
         if fact is None or getattr(fact, direction_field) is None:
             continue
         if target_date not in source_index or source_index[target_date] < metadata.horizon:
-            raise ValueError(f"source gap violates calendar horizon at target_date={target_date}")
+            continue
         if source_dates[source_index[target_date] - metadata.horizon] != feature_date:
-            raise ValueError(
-                "source gap violates calendar horizon: "
-                f"feature_date={feature_date}, target_date={target_date}, horizon={metadata.horizon}"
-            )
+            continue
         candidates.append(
             _Candidate(
                 predict_date=feature_date,
@@ -382,6 +389,8 @@ def _require_actual_source_coverage(
     *,
     predict_date_from: str,
     target_date_before: str,
+    weekday_only: bool = False,
+    source_gap_is_horizon_violation: bool = False,
 ) -> None:
     source_dates = {str(row["trade_date"])[:10] for row in yield_rows}
     if not source_dates:
@@ -392,11 +401,20 @@ def _require_actual_source_coverage(
         for row in calendar_rows
         if str(row.get("trade_flag", "")).strip() == "1"
         and coverage_start <= str(row["rdate"])[:10] < target_date_before
+        and (
+            not weekday_only
+            or date.fromisoformat(str(row["rdate"])[:10]).weekday() < 5
+        )
     }
     missing = sorted(expected_dates - source_dates)
     if missing:
+        prefix = (
+            "source gap violates calendar horizon: "
+            if source_gap_is_horizon_violation
+            else ""
+        )
         raise ValueError(
-            "missing platform actual source facts for trading dates: "
+            f"{prefix}missing platform actual source facts for trading dates: "
             f"{missing[:10]}"
         )
 

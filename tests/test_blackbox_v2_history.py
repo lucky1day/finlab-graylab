@@ -180,6 +180,66 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             self.assertEqual(case.actual_extra["direction_field"], "direction_5d")
             self.assertEqual(case.actual_extra["calendar_horizon"], 5)
 
+    def test_daily_history_ignores_makeup_weekends_without_bond_observation(self) -> None:
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(start="2025-12-01", end="2026-03-01")
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE t_trade_calendar SET trade_flag='1' "
+                    "WHERE rdate IN ('2026-02-07', '2026-02-14')"
+                )
+            )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
+                cases = build_historical_cases(
+                    _metadata("T+5"),
+                    snapshot,
+                    engine,
+                    limit=5,
+                    target_date_before="2026-03-01",
+                    predict_date_from="2026-01-01",
+                )
+
+        engine.dispose()
+        self.assertEqual(len(cases), 5)
+        self.assertTrue(all(
+            date.fromisoformat(case.request.feature_date).weekday() < 5
+            and date.fromisoformat(case.request.target_date).weekday() < 5
+            for case in cases
+        ))
+
+    def test_old_weekday_gap_outside_selected_daily_scope_does_not_block(self) -> None:
+        """未进入本次样本的旧日频缺口不应阻断最近窗口。"""
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(start="2014-12-01", end="2026-03-01")
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM api_wind_daily WHERE rdate='2014-12-31'"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
+                cases = build_historical_cases(
+                    _metadata("T+5"),
+                    snapshot,
+                    engine,
+                    limit=2,
+                    target_date_before="2026-03-01",
+                    predict_date_from="2014-12-01",
+                )
+
+        self.assertEqual(len(cases), 2)
+        self.assertTrue(all(case.request.feature_date >= "2026-01-01" for case in cases))
+        engine.dispose()
+
     def test_weekly_point_uses_exact_calendar_week_ends(self) -> None:
         cases = self._cases("weekly_point")
         for case in cases:
