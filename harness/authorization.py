@@ -18,6 +18,9 @@ AUTH_SECRET_ENV = "HARNESS_AUTH_SECRET"
 DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
 BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS = 60
+EXACT_PREDICT_DATE_ACTIONS = frozenset(
+    {"backtest_persist", "gray_backfill_write"}
+)
 _AUTHORIZATION_BASE_PAYLOAD_FIELDS = frozenset(
     {
         "action",
@@ -104,8 +107,8 @@ def issue_token(
     配置了 HARNESS_AUTH_SECRET 时附带 HMAC 签名；未配置时退化为明文信封，
     token 仍承担一次性 + 作用域绑定的确认职责（软默认，单用户场景无需配置）。
     """
-    if action == "backtest_persist":
-        predict_date = _normalize_backtest_predict_date(predict_date)
+    if action in EXACT_PREDICT_DATE_ACTIONS:
+        predict_date = _normalize_action_predict_date(action, predict_date)
     issued_at_dt = datetime.now(timezone.utc).replace(microsecond=0)
     expires_at = None
     if ttl_seconds is not None:
@@ -277,15 +280,21 @@ def verify_authorization(
         errors.append(f"scheme_id mismatch: token={auth.scheme_id}, ctx={scheme_id}")
     if auth.action != action:
         errors.append(f"action mismatch: token={auth.action}, expected={action}")
-    if action == "backtest_persist":
+    if action in EXACT_PREDICT_DATE_ACTIONS:
         if auth.predict_date is None:
-            errors.append("backtest_persist authorization predict_date is required")
+            errors.append(f"{action} authorization predict_date is required")
         elif predict_date is None:
-            errors.append("backtest_persist context predict_date is required")
+            errors.append(f"{action} context predict_date is required")
         else:
             try:
-                token_predict_date = _normalize_backtest_predict_date(auth.predict_date)
-                context_predict_date = _normalize_backtest_predict_date(predict_date)
+                token_predict_date = _normalize_action_predict_date(
+                    action,
+                    auth.predict_date,
+                )
+                context_predict_date = _normalize_action_predict_date(
+                    action,
+                    predict_date,
+                )
             except ValueError as exc:
                 errors.append(str(exc))
             else:
@@ -329,16 +338,25 @@ def normalize_backtest_start_date(value: str | None) -> str:
 
 def _normalize_backtest_predict_date(value: str | None) -> str:
     """要求持久化回测 cutoff 为非空、规范 ISO 日期。"""
+    return _normalize_action_predict_date("backtest_persist", value)
+
+
+def _normalize_action_predict_date(action: str, value: str | None) -> str:
+    """要求精确日期授权使用非空、规范 ISO 日期。"""
     if not isinstance(value, str) or not value.strip() or value != value.strip():
-        raise ValueError("backtest_persist predict_date must be a canonical YYYY-MM-DD date")
+        raise ValueError(
+            f"{action} predict_date must be a canonical YYYY-MM-DD date"
+        )
     try:
         parsed = date.fromisoformat(value)
     except ValueError as exc:
         raise ValueError(
-            "backtest_persist predict_date must be a canonical YYYY-MM-DD date"
+            f"{action} predict_date must be a canonical YYYY-MM-DD date"
         ) from exc
     if parsed.isoformat() != value:
-        raise ValueError("backtest_persist predict_date must be a canonical YYYY-MM-DD date")
+        raise ValueError(
+            f"{action} predict_date must be a canonical YYYY-MM-DD date"
+        )
     return value
 
 

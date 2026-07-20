@@ -118,6 +118,20 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         blackbox.assert_called_once()
         native.assert_not_called()
 
+    def test_native_dispatch_rejects_historical_blackbox_snapshot_mode(self) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        cfg = SimpleNamespace(runtime_type="native_adapter", scheme_id="native_trial")
+        with self.assertRaisesRegex(ValueError, "snapshot mode"):
+            run_configured_scheme(
+                cfg,
+                "2026-05-26",
+                engine="engine",
+                algo_env="forecast_env",
+                timeout_sec=600,
+                blackbox_snapshot_mode="historical_as_of_replay",
+            )
+
     def test_scheduled_blackbox_uses_fresh_temporary_current_snapshot(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
         from shared.blackbox_v2.snapshot import BlackboxSnapshot, CutoffKeys
@@ -170,6 +184,118 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         self.assertEqual(result, ["record"])
         self.assertEqual(events, ["opened", "closed"])
+
+    def test_gray_backfill_uses_historical_as_of_snapshot_with_provenance(self) -> None:
+        from scheduler.executor import run_blackbox_scheme_subprocess
+        from shared.blackbox_v2.snapshot import CutoffKeys
+        from shared.models import PredictionRecord
+
+        @contextmanager
+        def open_snapshot(**kwargs):
+            self.assertEqual(kwargs["snapshot_date"], "2026-05-26")
+            self.assertFalse(kwargs["require_fresh"])
+            yield SimpleNamespace(
+                snapshot_id="snapshot-current",
+                data_dir=Path("/tmp/snapshot-current/data"),
+                generation_id="full-20260720-test",
+                refresh_date="2026-07-20",
+            )
+
+        cfg = SimpleNamespace(
+            scheme_id="blackbox_trial",
+            input_source="data_bridge_current",
+            delivery_script=Path("trial.py"),
+            delivery_metadata=Path("trial.json"),
+        )
+        raw_record = PredictionRecord(
+            scheme_id="blackbox_trial",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-05-26",
+            feature_date="2026-05-25",
+            target_date="2026-05-26",
+            predicted_direction=1,
+            extra={"data_snapshot_id": "snapshot-current"},
+        )
+        with (
+            patch("scheduler.executor.load_metadata", return_value=_metadata()),
+            patch("scheduler.executor.open_blackbox_input_snapshot", side_effect=open_snapshot),
+            patch("scheduler.executor.get_calendar", return_value="calendar"),
+            patch(
+                "scheduler.executor.build_daily_live_context",
+                return_value=SimpleNamespace(feature_date="2026-05-25"),
+            ),
+            patch(
+                "scheduler.executor.resolve_blackbox_input_cutoffs",
+                return_value=CutoffKeys("2026-05-25", "202621", "202605"),
+            ),
+            patch("scheduler.executor.build_live_request", return_value=_request("001")),
+            patch(
+                "scheduler.blackbox_v2_runner.run_blackbox_predict",
+                return_value=raw_record,
+            ),
+        ):
+            result = run_blackbox_scheme_subprocess(
+                cfg,
+                "2026-05-26",
+                engine="engine",
+                algo_env="forecast_env_blackbox_v1",
+                timeout_sec=600,
+                snapshot_mode="historical_as_of_replay",
+            )
+
+        extra = result[0].extra
+        self.assertEqual(
+            extra["replay_semantics"],
+            "current_snapshot_as_of_not_historical_vintage",
+        )
+        self.assertEqual(
+            extra["backfill_mode"],
+            "post_deployment_live_safe_replay",
+        )
+        self.assertEqual(extra["data_generation_id"], "full-20260720-test")
+        self.assertEqual(extra["source_refresh_date"], "2026-07-20")
+        self.assertEqual(extra["daily_cutoff_key"], "2026-05-25")
+        self.assertEqual(extra["weekly_cutoff_key"], "202621")
+        self.assertEqual(extra["monthly_cutoff_key"], "202605")
+        self.assertTrue(extra["backfilled_at"].endswith("+00:00"))
+
+    def test_gray_backfill_rejects_changed_current_generation(self) -> None:
+        from scheduler.executor import run_blackbox_scheme_subprocess
+
+        @contextmanager
+        def open_snapshot(**_kwargs):
+            yield SimpleNamespace(
+                snapshot_id="snapshot-current",
+                data_dir=Path("/tmp/snapshot-current/data"),
+                generation_id="full-generation-b",
+                refresh_date="2026-07-20",
+            )
+
+        cfg = SimpleNamespace(
+            scheme_id="blackbox_trial",
+            input_source="data_bridge_current",
+            delivery_script=Path("trial.py"),
+            delivery_metadata=Path("trial.json"),
+        )
+        with (
+            patch("scheduler.executor.load_metadata", return_value=_metadata()),
+            patch(
+                "scheduler.executor.open_blackbox_input_snapshot",
+                side_effect=open_snapshot,
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "generation changed"):
+                run_blackbox_scheme_subprocess(
+                    cfg,
+                    "2026-05-26",
+                    engine="engine",
+                    algo_env="forecast_env_blackbox_v1",
+                    timeout_sec=600,
+                    snapshot_mode="historical_as_of_replay",
+                    expected_generation_id="full-generation-a",
+                    expected_refresh_date="2026-07-20",
+                )
 
     def test_predict_converts_valid_result_to_prediction_record(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, run_blackbox_predict

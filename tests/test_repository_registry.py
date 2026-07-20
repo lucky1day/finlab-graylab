@@ -141,6 +141,30 @@ class _AtomicConnection(_CaptureConnection):
         fail_stage = self._store.get("fail_stage")
         if "INSERT INTO t_scheme_predictions" in sql_text and fail_stage == "prediction":
             raise RuntimeError("injected prediction failure")
+        if (
+            "INSERT INTO t_scheme_predictions" in sql_text
+            and "ON DUPLICATE KEY UPDATE" not in sql_text
+        ):
+            existing_keys = {
+                (
+                    row["scheme_id"],
+                    row["target_tenor"],
+                    row["horizon"],
+                    row["target_date"],
+                )
+                for row in self._store.get("prediction_rows", [])
+            }
+            incoming_keys = {
+                (
+                    row["scheme_id"],
+                    row["target_tenor"],
+                    row["horizon"],
+                    row["target_date"],
+                )
+                for row in rows
+            }
+            if existing_keys & incoming_keys:
+                raise RuntimeError("duplicate prediction target key")
         result = super().execute(sql, rows)
         if "UPDATE t_scheme_runs" in sql_text:
             if fail_stage == "run":
@@ -982,6 +1006,102 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["run_row"]["records_written"], 1)
         self.assertEqual(len(engine.store["run_log_rows"]), 1)
         self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
+
+    def test_gray_backfill_completion_uses_insert_only_prediction_sql(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+        from shared.models import PredictionRecord
+
+        engine = _AtomicEngine()
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-05-26",
+            target_date="2026-06-01",
+            feature_date="2026-05-25",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with patch("scheduler.repository.load_scheme_config", return_value=cfg):
+                written = complete_approved_blackbox_run(
+                    engine,
+                    cfg,
+                    run_id=101,
+                    records=[record],
+                    scheme_version=cfg.scheme_version,
+                    records_returned=1,
+                    run_date="2026-05-26",
+                    duration_sec=2.5,
+                    insert_only_predictions=True,
+                )
+
+        self.assertEqual(written, 1)
+        prediction_sql, _rows = _call_for(
+            engine.store,
+            "INSERT INTO t_scheme_predictions",
+        )
+        self.assertNotIn("ON DUPLICATE KEY UPDATE", prediction_sql)
+
+    def test_competing_gray_backfill_insert_cannot_overwrite_first_prediction(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+        from shared.models import PredictionRecord
+
+        engine = _AtomicEngine()
+        first = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-05-26",
+            target_date="2026-06-01",
+            feature_date="2026-05-25",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+        competing = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-05-27",
+            target_date="2026-06-01",
+            feature_date="2026-05-26",
+            prediction_phase="gray_live",
+            predicted_direction=-1,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with patch("scheduler.repository.load_scheme_config", return_value=cfg):
+                complete_approved_blackbox_run(
+                    engine,
+                    cfg,
+                    run_id=101,
+                    records=[first],
+                    scheme_version=cfg.scheme_version,
+                    records_returned=1,
+                    run_date=first.predict_date,
+                    duration_sec=1.0,
+                    insert_only_predictions=True,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "duplicate prediction target key",
+                ):
+                    complete_approved_blackbox_run(
+                        engine,
+                        cfg,
+                        run_id=102,
+                        records=[competing],
+                        scheme_version=cfg.scheme_version,
+                        records_returned=1,
+                        run_date=competing.predict_date,
+                        duration_sec=1.0,
+                        insert_only_predictions=True,
+                    )
+
+        self.assertEqual(len(engine.store["prediction_rows"]), 1)
+        self.assertEqual(engine.store["prediction_rows"][0]["predicted_direction"], 1)
+        self.assertEqual(engine.store["prediction_rows"][0]["predict_date"], "2026-05-26")
 
     def test_blackbox_success_completion_rolls_back_every_stage_failure(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run

@@ -1330,6 +1330,7 @@ def complete_approved_blackbox_run(
     run_date: str,
     duration_sec: float,
     precommit_validator: Callable[[Connection], None] | None = None,
+    insert_only_predictions: bool = False,
 ) -> int:
     """原子提交 Blackbox prediction、成功 run 状态与成功日志。"""
     with _approved_blackbox_write_transaction(
@@ -1348,6 +1349,7 @@ def complete_approved_blackbox_run(
             run_id,
             record_list,
             scheme_version=exact_scheme_version,
+            insert_only=insert_only_predictions,
         )
         if records_written != records_returned:
             raise RuntimeError(
@@ -1479,16 +1481,19 @@ def _insert_run_predictions_conn(
     records: Iterable[PredictionRecord],
     *,
     scheme_version: str | None,
+    insert_only: bool = False,
 ) -> int:
-    """在调用方事务中 UPSERT 预测记录。"""
-    sql = text(
-        """
+    """在调用方事务中写入预测；历史灰度补齐使用 insert-only。"""
+    statement = """
         INSERT INTO t_scheme_predictions
             (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
              prediction_phase, predicted_direction, confidence, model_version, extra)
         VALUES
             (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
              :prediction_phase, :predicted_direction, :confidence, :model_version, CAST(:extra AS JSON))
+        """
+    if not insert_only:
+        statement += """
         ON DUPLICATE KEY UPDATE
             run_id = VALUES(run_id),
             scheme_version = VALUES(scheme_version),
@@ -1501,7 +1506,7 @@ def _insert_run_predictions_conn(
             extra = VALUES(extra),
             updated_at = CURRENT_TIMESTAMP
         """
-    )
+    sql = text(statement)
     rows = []
     for record in records:
         row = asdict(record)

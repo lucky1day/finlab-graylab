@@ -33,6 +33,8 @@ class BlackboxSnapshot:
     data_dir: Path
     manifest_path: Path
     schema_version: str
+    generation_id: str | None = None
+    refresh_date: str | None = None
 
 
 @dataclass(frozen=True)

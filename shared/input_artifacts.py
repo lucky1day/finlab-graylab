@@ -6,7 +6,7 @@ import shutil
 import tempfile
 from bisect import bisect_right
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -83,18 +83,25 @@ def build_blackbox_input_snapshot(
 ) -> BlackboxSnapshot:
     """从平台当前三频文件生成一份内容寻址的 Blackbox V2 快照。"""
     schema_version, expected_columns = _load_blackbox_schema(schema_path)
-    dataset = _load_current_data_bridge_dataset(
+    current = _load_current_data_bridge_dataset(
         snapshot_date=snapshot_date,
         schema_path=Path(schema_path),
         data_root=Path(data_root),
         refresh_runtime_root=Path(refresh_runtime_root),
         require_fresh=require_fresh,
     )
-    return create_snapshot_from_frames(
-        dataset.frames,
+    snapshot = create_snapshot_from_frames(
+        current.dataset.frames,
         output_root=Path(output_root),
         expected_columns=expected_columns,
         schema_version=schema_version,
+    )
+    generation_id = _required_current_state_text(current.state, "generation_id")
+    refresh_date = _required_current_state_text(current.state, "refresh_date")
+    return replace(
+        snapshot,
+        generation_id=generation_id,
+        refresh_date=refresh_date,
     )
 
 
@@ -127,6 +134,32 @@ def open_blackbox_input_snapshot(
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+def read_blackbox_current_state(
+    *,
+    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
+    data_root: str | Path = DATA_BRIDGE_ROOT,
+    refresh_runtime_root: str | Path = DATA_BRIDGE_REFRESH_RUNTIME_ROOT,
+) -> dict[str, Any]:
+    """完整校验 DataBridge current 后返回灰度补齐所需发布状态。"""
+    current = check_current_dataset(
+        DataBridgeRefreshConfig(
+            data_root=Path(data_root),
+            runtime_root=Path(refresh_runtime_root),
+            schema_path=Path(schema_path),
+        )
+    )
+    return {
+        "generation_id": _required_current_state_text(
+            current.state,
+            "generation_id",
+        ),
+        "refresh_date": _required_current_state_text(
+            current.state,
+            "refresh_date",
+        ),
+    }
+
+
 def _load_current_data_bridge_dataset(
     *,
     snapshot_date: str,
@@ -143,7 +176,14 @@ def _load_current_data_bridge_dataset(
         ),
         required_refresh_date=snapshot_date if require_fresh else None,
     )
-    return current.dataset
+    return current
+
+
+def _required_current_state_text(state: dict | Any, field: str) -> str:
+    value = state.get(field) if hasattr(state, "get") else None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"DataBridge current state {field} must be non-empty")
+    return value
 
 
 def _make_tree_writable(root: Path) -> None:

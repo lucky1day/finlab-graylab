@@ -601,6 +601,55 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
         native_insert.assert_not_called()
         self.assertTrue(engine.disposed)
 
+    def test_blackbox_executor_forwards_historical_snapshot_mode_explicitly(self) -> None:
+        from scheduler.executor import execute_scheme
+
+        engine = _FakeEngine()
+        cfg = self._config()
+        approval = SimpleNamespace(executable=True, reason="approved")
+        with (
+            patch("scheduler.executor.create_engine_from_env", return_value=engine),
+            patch(
+                "scheduler.executor.read_blackbox_execution_approval",
+                return_value=approval,
+            ),
+            patch(
+                "scheduler.executor._active_registry_targets",
+                return_value={("10Y", 1)},
+            ),
+            patch("scheduler.executor.create_scheme_run", return_value=505),
+            patch(
+                "scheduler.executor.run_configured_scheme",
+                return_value=[self._record()],
+            ) as runner,
+            patch("scheduler.executor.attach_run_data_snapshot"),
+            patch(
+                "scheduler.executor.complete_approved_blackbox_run",
+                return_value=1,
+            ) as complete_run,
+            patch("scheduler.executor.write_run_log"),
+        ):
+            result = execute_scheme(
+                cfg,
+                "2026-07-20",
+                algo_env="test_env",
+                prediction_phase="gray_live",
+                blackbox_snapshot_mode="historical_as_of_replay",
+            )
+
+        self.assertEqual(result.status, "success")
+        runner.assert_called_once_with(
+            cfg,
+            "2026-07-20",
+            engine=engine,
+            algo_env="test_env",
+            timeout_sec=120,
+            blackbox_snapshot_mode="historical_as_of_replay",
+            expected_generation_id=None,
+            expected_refresh_date=None,
+        )
+        self.assertTrue(complete_run.call_args.kwargs["insert_only_predictions"])
+
     def test_blackbox_revocation_after_subprocess_fails_with_zero_predictions(self) -> None:
         from scheduler.executor import execute_scheme
 

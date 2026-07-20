@@ -110,6 +110,36 @@ class BlackboxV2HarnessDispatchTests(unittest.TestCase):
         self.assertIsInstance(api_gate, BlackboxApiGate)
         self.assertIsInstance(live_gate, LiveGate)
 
+    def test_dispatches_blackbox_gray_backfill_as_explicit_gate(self) -> None:
+        from harness.gates.gray_backfill_gate import GrayBackfillGate
+        from harness.registry import gate_for_name
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctx = GateContext(
+                scheme_id="blackbox_trial",
+                predict_date="2026-05-26",
+                project_root=Path(tmpdir),
+                report_dir=Path(tmpdir) / "reports",
+                config=SimpleNamespace(runtime_type="blackbox_v2"),
+            )
+            gate = gate_for_name("gray-backfill", ctx=ctx)
+
+        self.assertIsInstance(gate, GrayBackfillGate)
+
+    def test_gray_backfill_cli_requires_predict_date(self) -> None:
+        from harness.cli import _build_parser, _run_gate
+
+        args = _build_parser().parse_args([
+            "gate",
+            "gray-backfill",
+            "--scheme-id",
+            "blackbox_trial",
+            "--prediction-phase",
+            "gray_live",
+        ])
+        with self.assertRaisesRegex(SystemExit, "requires --predict-date"):
+            _run_gate(args)
+
     def test_rejects_unknown_runtime_type(self) -> None:
         from harness.registry import gates_for_stage
 

@@ -122,6 +122,26 @@ class BlackboxLiveGateTests(unittest.TestCase):
         self.assertIn("HMAC signing", "\n".join(result.errors))
         execute.assert_not_called()
 
+    def test_blackbox_live_rejects_gray_backfill_authorization_action(self) -> None:
+        from harness.authorization import issue_token
+        from harness.gates.live_gate import LiveGate
+
+        token = issue_token(
+            self.cfg.scheme_id,
+            "gray_backfill_write",
+            "2026-07-20",
+            scheme_version=self.cfg.scheme_version,
+            harness_run_id="hr_latest",
+            ttl_seconds=60,
+            issued_by="live-operator",
+        )
+        with patch("harness.gates.live_gate.execute_scheme") as execute:
+            result = LiveGate().run(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        self.assertIn("action mismatch", "\n".join(result.errors))
+        execute.assert_not_called()
+
     def test_blackbox_live_rejects_overlong_authorization_before_execution(self) -> None:
         from harness.gates.live_gate import LiveGate
 

@@ -43,6 +43,8 @@ class BlackboxV2InputArtifactTests(unittest.TestCase):
                 )
 
         self.assertTrue(snapshot.snapshot_id.startswith("snapshot-"))
+        self.assertEqual(snapshot.generation_id, "test-2026-07-16")
+        self.assertEqual(snapshot.refresh_date, "2026-07-16")
         data_service.build_daily_output_from_db.assert_not_called()
         data_service.build_weekly_output_from_db.assert_not_called()
         data_service.build_monthly_output_from_db.assert_not_called()

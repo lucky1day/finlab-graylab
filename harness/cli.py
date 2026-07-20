@@ -7,7 +7,11 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from harness.authorization import DEFAULT_BACKTEST_START_DATE, issue_token
+from harness.authorization import (
+    DEFAULT_BACKTEST_START_DATE,
+    EXACT_PREDICT_DATE_ACTIONS,
+    issue_token,
+)
 from harness.context import GateContext
 from harness.gates.activate_gate import ActivationGate
 from harness.gates.api_gate import ApiGate
@@ -34,9 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "auth" and args.auth_command == "issue":
-        if args.action == "backtest_persist" and args.predict_date is None:
+        if args.action in EXACT_PREDICT_DATE_ACTIONS and args.predict_date is None:
             parser.error(
-                "auth issue --action backtest_persist requires --predict-date"
+                f"auth issue --action {args.action} requires --predict-date"
             )
         token = issue_token(
             args.scheme_id,
@@ -95,7 +99,7 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
-        "api-readiness", "shadow-register", "api", "live",
+        "api-readiness", "shadow-register", "api", "live", "gray-backfill",
         "lifecycle-reconcile", "bootstrap",
     ):
         item = gate_subparsers.add_parser(gate_name)
@@ -171,7 +175,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _run_gate(args: argparse.Namespace) -> GateResult:
-    if args.gate_name in {"input", "dry-run", "shadow-register", "live"} and not args.predict_date:
+    if args.gate_name in {
+        "input",
+        "dry-run",
+        "shadow-register",
+        "live",
+        "gray-backfill",
+    } and not args.predict_date:
         raise SystemExit(f"gate {args.gate_name} requires --predict-date")
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()

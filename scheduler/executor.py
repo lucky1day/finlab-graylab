@@ -8,6 +8,7 @@ import subprocess
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -39,6 +40,12 @@ from shared.prediction_context import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
+BLACKBOX_SNAPSHOT_MODE_FRESH = "fresh"
+BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF = "historical_as_of_replay"
+VALID_BLACKBOX_SNAPSHOT_MODES = {
+    BLACKBOX_SNAPSHOT_MODE_FRESH,
+    BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
+}
 TIMEOUT_OUTPUT_DRAIN_SEC = 1
 logger = logging.getLogger(__name__)
 
@@ -115,10 +122,19 @@ def run_configured_scheme(
     engine,
     algo_env: str,
     timeout_sec: int,
+    blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
+    expected_generation_id: str | None = None,
+    expected_refresh_date: str | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
+    if blackbox_snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
+        raise ValueError(f"unsupported Blackbox snapshot mode: {blackbox_snapshot_mode}")
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     if runtime_type == "native_adapter":
+        if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
+            raise ValueError(
+                "historical Blackbox snapshot mode is not valid for native_adapter"
+            )
         return run_scheme_subprocess(
             cfg.scheme_id,
             predict_date,
@@ -128,12 +144,19 @@ def run_configured_scheme(
     if runtime_type == "blackbox_v2":
         if getattr(cfg, "input_source", None) != "data_bridge_current":
             raise ValueError(f"Blackbox V2 input_source must be data_bridge_current: {cfg.scheme_id}")
+        blackbox_kwargs = {
+            "engine": engine,
+            "algo_env": algo_env,
+            "timeout_sec": timeout_sec,
+            "snapshot_mode": blackbox_snapshot_mode,
+        }
+        if blackbox_snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
+            blackbox_kwargs["expected_generation_id"] = expected_generation_id
+            blackbox_kwargs["expected_refresh_date"] = expected_refresh_date
         return run_blackbox_scheme_subprocess(
             cfg,
             predict_date,
-            engine=engine,
-            algo_env=algo_env,
-            timeout_sec=timeout_sec,
+            **blackbox_kwargs,
         )
     raise ValueError(f"unsupported runtime_type for {cfg.scheme_id}: {runtime_type}")
 
@@ -145,14 +168,30 @@ def run_blackbox_scheme_subprocess(
     engine,
     algo_env: str,
     timeout_sec: int,
+    snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
+    expected_generation_id: str | None = None,
+    expected_refresh_date: str | None = None,
 ) -> list[PredictionRecord]:
     """生成平台输入并通过 Blackbox V2 CLI 执行一个实盘 Request。"""
     from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, run_blackbox_predict
 
+    if snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
+        raise ValueError(f"unsupported Blackbox snapshot mode: {snapshot_mode}")
     if cfg.delivery_script is None or cfg.delivery_metadata is None:
         raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
     metadata = load_metadata(cfg.delivery_metadata)
-    with open_blackbox_input_snapshot(snapshot_date=predict_date, require_fresh=True) as snapshot:
+    require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
+    with open_blackbox_input_snapshot(
+        snapshot_date=predict_date,
+        require_fresh=require_fresh,
+    ) as snapshot:
+        if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
+            _validate_historical_snapshot(
+                snapshot,
+                predict_date=predict_date,
+                expected_generation_id=expected_generation_id,
+                expected_refresh_date=expected_refresh_date,
+            )
         calendar = get_calendar(engine)
         if metadata.frequency == "daily":
             feature_date = build_daily_live_context(
@@ -189,7 +228,67 @@ def run_blackbox_scheme_subprocess(
             data_snapshot_id=snapshot.snapshot_id,
             profile=profile,
         )
+        if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
+            extra = dict(record.extra or {})
+            extra.update(
+                {
+                    "replay_semantics": (
+                        "current_snapshot_as_of_not_historical_vintage"
+                    ),
+                    "backfill_mode": "post_deployment_live_safe_replay",
+                    "backfilled_at": datetime.now(timezone.utc).isoformat(
+                        timespec="seconds"
+                    ),
+                    "data_generation_id": snapshot.generation_id,
+                    "source_refresh_date": snapshot.refresh_date,
+                    "daily_cutoff_key": cutoffs.daily_cutoff_key,
+                    "weekly_cutoff_key": cutoffs.weekly_cutoff_key,
+                    "monthly_cutoff_key": cutoffs.monthly_cutoff_key,
+                }
+            )
+            record = replace(record, extra=extra)
     return [record]
+
+
+def _validate_historical_snapshot(
+    snapshot,
+    *,
+    predict_date: str,
+    expected_generation_id: str | None = None,
+    expected_refresh_date: str | None = None,
+) -> None:
+    generation_id = getattr(snapshot, "generation_id", None)
+    refresh_date = getattr(snapshot, "refresh_date", None)
+    if not isinstance(generation_id, str) or not generation_id.strip():
+        raise ValueError("historical Blackbox snapshot generation_id must be non-empty")
+    if not isinstance(refresh_date, str) or not refresh_date.strip():
+        raise ValueError("historical Blackbox snapshot refresh_date must be non-empty")
+    try:
+        canonical_predict_date = date.fromisoformat(predict_date).isoformat()
+        canonical_refresh_date = date.fromisoformat(refresh_date).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "historical Blackbox snapshot dates must use canonical YYYY-MM-DD"
+        ) from exc
+    if canonical_predict_date != predict_date or canonical_refresh_date != refresh_date:
+        raise ValueError(
+            "historical Blackbox snapshot dates must use canonical YYYY-MM-DD"
+        )
+    if predict_date >= refresh_date:
+        raise ValueError(
+            "historical Blackbox snapshot requires predict_date before refresh_date: "
+            f"predict_date={predict_date}, refresh_date={refresh_date}"
+        )
+    if expected_generation_id is not None and generation_id != expected_generation_id:
+        raise ValueError(
+            "DataBridge current generation changed after gray-backfill preflight: "
+            f"expected={expected_generation_id}, actual={generation_id}"
+        )
+    if expected_refresh_date is not None and refresh_date != expected_refresh_date:
+        raise ValueError(
+            "DataBridge current refresh_date changed after gray-backfill preflight: "
+            f"expected={expected_refresh_date}, actual={refresh_date}"
+        )
 
 
 def _run_process_group(
@@ -282,6 +381,10 @@ def execute_scheme(
     timeout_sec: int = 600,
     prediction_phase: str = "scheduled_live",
     blackbox_precommit_validator: Callable[[object], None] | None = None,
+    blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
+    blackbox_expected_generation_id: str | None = None,
+    blackbox_expected_refresh_date: str | None = None,
+    blackbox_record_validator: Callable[[list[PredictionRecord]], None] | None = None,
 ) -> SchemeRunResult:
     """执行单个方案并写入预测表和运行日志。
 
@@ -361,13 +464,16 @@ def execute_scheme(
                 "missing=[], extra=[], duplicates=[]"
             )
         effective_timeout_sec = _effective_timeout_sec(cfg, timeout_sec)
-        records = run_configured_scheme(
-            cfg,
-            predict_date,
-            engine=engine,
-            algo_env=algo_env,
-            timeout_sec=effective_timeout_sec,
-        )
+        run_kwargs = {
+            "engine": engine,
+            "algo_env": algo_env,
+            "timeout_sec": effective_timeout_sec,
+        }
+        if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
+            run_kwargs["blackbox_snapshot_mode"] = blackbox_snapshot_mode
+            run_kwargs["expected_generation_id"] = blackbox_expected_generation_id
+            run_kwargs["expected_refresh_date"] = blackbox_expected_refresh_date
+        records = run_configured_scheme(cfg, predict_date, **run_kwargs)
         records_returned = len(records)
         if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
             snapshot_ids = {
@@ -387,6 +493,8 @@ def execute_scheme(
         records = _normalize_live_records(records, prediction_phase=prediction_phase)
         _validate_live_record_dates(records, cfg=cfg, predict_date=predict_date, engine=engine)
         _validate_records_against_active_registry(records, cfg=cfg, active_targets=active_targets)
+        if blackbox_record_validator is not None:
+            blackbox_record_validator(records)
         if runtime_type == "blackbox_v2":
             expected = len(active_targets)
             if records_returned != expected:
@@ -404,6 +512,10 @@ def execute_scheme(
                 run_date=predict_date,
                 duration_sec=duration,
                 precommit_validator=blackbox_precommit_validator,
+                insert_only_predictions=(
+                    blackbox_snapshot_mode
+                    == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF
+                ),
             )
             return SchemeRunResult(
                 cfg.scheme_id,
