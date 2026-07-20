@@ -208,6 +208,87 @@ class BlackboxLiveGateTests(unittest.TestCase):
         evidence = {item.key: item.value for item in first.evidence}
         self.assertEqual(evidence["scheme_version"], self.cfg.scheme_version)
         self.assertEqual(evidence["harness_run_id"], "hr_latest")
+        self.assertEqual(
+            evidence["authorized_scheme_table_deltas"],
+            {"t_scheme_runs": 1, "t_scheme_predictions": 1, "t_scheme_run_log": 1},
+        )
+
+    def test_blackbox_live_rejects_two_rows_in_each_scheme_table(self) -> None:
+        from harness.gates.live_gate import LiveGate
+
+        token = self._token()
+        run_result = SimpleNamespace(status="success", records_written=1, error_msg=None)
+        before = {"t_scheme_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0}
+        after = {"t_scheme_runs": 2, "t_scheme_predictions": 2, "t_scheme_run_log": 2}
+        with (
+            patch(
+                "harness.gates.live_gate._verify_blackbox_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.gates.live_gate.read_blackbox_execution_approval",
+                return_value=self._approval(),
+            ),
+            patch("harness.gates.live_gate.snapshot_table_counts", side_effect=[before, after]),
+            patch("harness.gates.live_gate.snapshot_scheme_counts", side_effect=[before, after]),
+            patch("harness.gates.live_gate.execute_scheme", return_value=run_result),
+        ):
+            result = LiveGate().run(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        self.assertIn("must be exactly 1", "\n".join(result.errors))
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["authorized_scheme_table_deltas"], after)
+
+    def test_blackbox_live_baseline_count_error_fails_closed_with_evidence(self) -> None:
+        from harness.gates.live_gate import LiveGate
+
+        with (
+            patch("harness.gates.live_gate.snapshot_table_counts", return_value={}),
+            patch(
+                "harness.gates.live_gate.snapshot_scheme_counts",
+                side_effect=RuntimeError("baseline scheme count unavailable"),
+            ),
+            patch("harness.gates.live_gate.execute_scheme") as execute,
+        ):
+            result = LiveGate().run(self._ctx(self._token()))
+
+        self.assertFalse(result.passed)
+        execute.assert_not_called()
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["count_snapshot_stage"], "baseline")
+        self.assertIn("baseline scheme count unavailable", evidence["count_snapshot_error"])
+        self.assertIsNone(evidence["authorized_scheme_counts_before"])
+
+    def test_blackbox_live_after_count_error_fails_closed_with_evidence(self) -> None:
+        from harness.gates.live_gate import LiveGate
+
+        token = self._token()
+        run_result = SimpleNamespace(status="success", records_written=1, error_msg=None)
+        baseline = {"t_scheme_runs": 0, "t_scheme_predictions": 0, "t_scheme_run_log": 0}
+        with (
+            patch(
+                "harness.gates.live_gate._verify_blackbox_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.gates.live_gate.read_blackbox_execution_approval",
+                return_value=self._approval(),
+            ),
+            patch("harness.gates.live_gate.snapshot_table_counts", side_effect=[baseline, baseline]),
+            patch(
+                "harness.gates.live_gate.snapshot_scheme_counts",
+                side_effect=[baseline, RuntimeError("after scheme count unavailable")],
+            ),
+            patch("harness.gates.live_gate.execute_scheme", return_value=run_result),
+        ):
+            result = LiveGate().run(self._ctx(token))
+
+        self.assertFalse(result.passed)
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["count_snapshot_stage"], "after")
+        self.assertIn("after scheme count unavailable", evidence["count_snapshot_error"])
+        self.assertIsNone(evidence["authorized_scheme_counts_after"])
 
     def test_blackbox_live_passes_delta_validation_into_atomic_commit(self) -> None:
         from harness.gates.live_gate import LiveGate

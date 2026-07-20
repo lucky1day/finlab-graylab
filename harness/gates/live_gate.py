@@ -63,12 +63,32 @@ class LiveGate(Gate):
                 )
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
-        before = snapshot_table_counts(engine, PROTECTED_TABLES)
-        scheme_before = _safe_scheme_counts(engine, ctx.scheme_id)
+        if runtime_type == "blackbox_v2":
+            try:
+                before, scheme_before = _snapshot_blackbox_live_counts(
+                    engine,
+                    ctx.scheme_id,
+                    stage="baseline",
+                )
+            except _BlackboxCountSnapshotError as exc:
+                if engine is not None and hasattr(engine, "dispose"):
+                    engine.dispose()
+                return _failed_blackbox_count_snapshot(
+                    ctx,
+                    started_at,
+                    cfg=cfg,
+                    failure=exc,
+                )
+        else:
+            before = snapshot_table_counts(engine, PROTECTED_TABLES)
+            scheme_before = _safe_scheme_counts(engine, ctx.scheme_id)
         audit_path: Path | None = None
         run_output = None
         errors: list[str] = []
         status = GateStatus.BLOCKED
+        count_snapshot_failure: _BlackboxCountSnapshotError | None = None
+        after: dict[str, int] | None = None
+        scheme_after: dict[str, int] | None = None
         try:
             if runtime_type == "blackbox_v2":
                 try:
@@ -139,16 +159,37 @@ class LiveGate(Gate):
                     )
                     status = GateStatus.PASSED
         finally:
-            after = snapshot_table_counts(engine, PROTECTED_TABLES)
-            scheme_after = _safe_scheme_counts(engine, ctx.scheme_id)
-            if engine is not None and hasattr(engine, "dispose"):
-                engine.dispose()
+            try:
+                if runtime_type == "blackbox_v2":
+                    try:
+                        after, scheme_after = _snapshot_blackbox_live_counts(
+                            engine,
+                            ctx.scheme_id,
+                            stage="after",
+                        )
+                    except _BlackboxCountSnapshotError as exc:
+                        count_snapshot_failure = exc
+                else:
+                    after = snapshot_table_counts(engine, PROTECTED_TABLES)
+                    scheme_after = _safe_scheme_counts(engine, ctx.scheme_id)
+            finally:
+                if engine is not None and hasattr(engine, "dispose"):
+                    engine.dispose()
 
-        protected_delta = diff_snapshots(before, after)
-        scheme_delta = diff_snapshots(scheme_before, scheme_after)
+        protected_delta = diff_snapshots(before, after) if after is not None else None
+        scheme_delta = diff_snapshots(scheme_before, scheme_after) if scheme_after is not None else None
 
-        if status != GateStatus.BLOCKED:
-            errors.extend(_validate_live_deltas(protected_delta, scheme_delta))
+        if count_snapshot_failure is not None:
+            errors.append(str(count_snapshot_failure))
+            status = GateStatus.FAILED
+        elif status != GateStatus.BLOCKED:
+            errors.extend(
+                _validate_live_deltas(
+                    protected_delta or {},
+                    scheme_delta or {},
+                    strict_blackbox_scheme=runtime_type == "blackbox_v2",
+                )
+            )
             if run_output is None:
                 errors.append("execute_scheme did not return a result")
             else:
@@ -178,6 +219,14 @@ class LiveGate(Gate):
                 Evidence("authorized_scheme_counts_before", scheme_before),
                 Evidence("authorized_scheme_counts_after", scheme_after),
                 Evidence("authorized_scheme_table_deltas", scheme_delta),
+                Evidence(
+                    "count_snapshot_stage",
+                    count_snapshot_failure.stage if count_snapshot_failure is not None else None,
+                ),
+                Evidence(
+                    "count_snapshot_error",
+                    str(count_snapshot_failure) if count_snapshot_failure is not None else None,
+                ),
                 Evidence("run_result", _run_result_payload(run_output)),
             ],
             errors=errors,
@@ -294,7 +343,80 @@ def _safe_scheme_counts(engine, scheme_id: str) -> dict[str, int]:
         return {table: 0 for table in LIVE_WRITE_ALLOWED_TABLES}
 
 
-def _validate_live_deltas(protected_delta: dict[str, int], scheme_delta: dict[str, int]) -> list[str]:
+class _BlackboxCountSnapshotError(RuntimeError):
+    def __init__(self, *, stage: str, scope: str, cause: Exception) -> None:
+        self.stage = stage
+        self.scope = scope
+        super().__init__(
+            f"Blackbox LiveGate {stage} {scope} count snapshot failed: "
+            f"{type(cause).__name__}: {cause}"
+        )
+
+
+def _snapshot_blackbox_live_counts(
+    engine,
+    scheme_id: str,
+    *,
+    stage: str,
+) -> tuple[dict[str, int], dict[str, int]]:
+    try:
+        protected = snapshot_table_counts(engine, PROTECTED_TABLES)
+    except Exception as exc:  # noqa: BLE001
+        raise _BlackboxCountSnapshotError(
+            stage=stage,
+            scope="protected-table",
+            cause=exc,
+        ) from exc
+    try:
+        scheme = snapshot_scheme_counts(engine, scheme_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _BlackboxCountSnapshotError(
+            stage=stage,
+            scope="scheme-table",
+            cause=exc,
+        ) from exc
+    return protected, scheme
+
+
+def _failed_blackbox_count_snapshot(
+    ctx: GateContext,
+    started_at: str,
+    *,
+    cfg,
+    failure: _BlackboxCountSnapshotError,
+) -> GateResult:
+    return GateResult(
+        gate_name="live",
+        status=GateStatus.FAILED,
+        passed=False,
+        evidence=[
+            Evidence("authorized_scheme", ctx.scheme_id),
+            Evidence("scheme_version", cfg.scheme_version),
+            Evidence("harness_run_id", None),
+            Evidence("prediction_phase", ctx.prediction_phase),
+            Evidence("authorization_audit_path", None),
+            Evidence("protected_table_counts_before", None),
+            Evidence("protected_table_counts_after", None),
+            Evidence("protected_table_deltas", None),
+            Evidence("authorized_scheme_counts_before", None),
+            Evidence("authorized_scheme_counts_after", None),
+            Evidence("authorized_scheme_table_deltas", None),
+            Evidence("count_snapshot_stage", failure.stage),
+            Evidence("count_snapshot_error", str(failure)),
+            Evidence("run_result", None),
+        ],
+        errors=[str(failure)],
+        started_at=started_at,
+        finished_at=utc_now(),
+    )
+
+
+def _validate_live_deltas(
+    protected_delta: dict[str, int],
+    scheme_delta: dict[str, int],
+    *,
+    strict_blackbox_scheme: bool = False,
+) -> list[str]:
     errors: list[str] = []
     for table, delta in protected_delta.items():
         if table in LIVE_WRITE_ALLOWED_TABLES:
@@ -303,8 +425,12 @@ def _validate_live_deltas(protected_delta: dict[str, int], scheme_delta: dict[st
         elif delta != 0:
             errors.append(f"{table} delta must remain 0, got {delta}")
     for table in LIVE_WRITE_ALLOWED_TABLES:
-        if scheme_delta.get(table, 0) <= 0:
-            errors.append(f"{table} authorized scheme delta must be > 0, got {scheme_delta.get(table, 0)}")
+        delta = scheme_delta.get(table, 0)
+        if strict_blackbox_scheme:
+            if delta != 1:
+                errors.append(f"{table} authorized scheme delta must be exactly 1, got {delta}")
+        elif delta <= 0:
+            errors.append(f"{table} authorized scheme delta must be > 0, got {delta}")
     return errors
 
 
@@ -321,6 +447,7 @@ def _validate_blackbox_precommit_deltas(
     errors = _validate_live_deltas(
         diff_snapshots(before, after),
         diff_snapshots(scheme_before, scheme_after),
+        strict_blackbox_scheme=True,
     )
     if errors:
         raise RuntimeError("Blackbox LiveGate precommit validation failed: " + "; ".join(errors))
