@@ -13,6 +13,15 @@ SCHEDULES = {
     "weekly": "30 11 * * 6",
     "monthly": "0 18 15 * *",
 }
+DESCRIPTION_RECOMMENDATION = (
+    "Blackbox V2 Metadata 未提供 description；"
+    "建议上游补充简短算法逻辑说明。"
+)
+
+
+def intake_warnings(metadata: BlackboxMetadata) -> list[str]:
+    """返回不阻断 Intake 的交付质量建议。"""
+    return [] if metadata.description else [DESCRIPTION_RECOMMENDATION]
 
 
 def intake_delivery(

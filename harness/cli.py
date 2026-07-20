@@ -28,7 +28,8 @@ from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
-from shared.blackbox_v2.intake import intake_delivery
+from shared.blackbox_v2.contracts import load_metadata
+from shared.blackbox_v2.intake import intake_delivery, intake_warnings
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -75,12 +76,16 @@ def main(argv: list[str] | None = None) -> int:
             runtime_profile=args.runtime_profile,
             data_schema_version=args.data_schema_version,
         )
+        metadata = load_metadata(
+            scheme_dir / "delivery" / f"{scheme_dir.name}.json"
+        )
         print(
             json.dumps(
                 {
                     "scheme_id": scheme_dir.name,
                     "runtime_type": "blackbox_v2",
                     "scheme_dir": str(scheme_dir),
+                    "warnings": intake_warnings(metadata),
                 },
                 ensure_ascii=False,
                 indent=2,

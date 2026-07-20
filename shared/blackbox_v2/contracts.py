@@ -19,7 +19,7 @@ TASK_COMBINATIONS = {
     "weekly_average": (1, "target_week_average_yield_vs_feature_week_average_yield", "weekly"),
     "monthly": (1, "target_month_observation_yield_vs_feature_month_observation_yield", "monthly"),
 }
-METADATA_FIELDS = {
+REQUIRED_METADATA_FIELDS = {
     "schema_version",
     "scheme_id",
     "name",
@@ -29,6 +29,8 @@ METADATA_FIELDS = {
     "horizon",
     "target_rule",
 }
+OPTIONAL_METADATA_FIELDS = {"description"}
+MAX_DESCRIPTION_LENGTH = 300
 REQUEST_FIELDS = (
     "request_id",
     "predict_date",
@@ -58,6 +60,7 @@ class BlackboxMetadata:
     horizon: int
     target_rule: str
     frequency: str
+    description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -89,9 +92,10 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
         raise ValueError(f"invalid Blackbox V2 metadata {metadata_path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ValueError("Blackbox V2 metadata must be a JSON object")
-    if set(raw) != METADATA_FIELDS:
-        missing = sorted(METADATA_FIELDS - set(raw))
-        extra = sorted(set(raw) - METADATA_FIELDS)
+    allowed_fields = REQUIRED_METADATA_FIELDS | OPTIONAL_METADATA_FIELDS
+    if not REQUIRED_METADATA_FIELDS.issubset(raw) or not set(raw).issubset(allowed_fields):
+        missing = sorted(REQUIRED_METADATA_FIELDS - set(raw))
+        extra = sorted(set(raw) - allowed_fields)
         raise ValueError(f"Blackbox V2 metadata fields mismatch: missing={missing}, extra={extra}")
 
     schema_version = _non_empty_string(raw, "schema_version")
@@ -113,6 +117,7 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
     if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon <= 0:
         raise ValueError("horizon must be a positive integer")
     target_rule = _non_empty_string(raw, "target_rule")
+    description = _optional_description(raw)
     expected_horizon, expected_rule, frequency = combination
     if (horizon, target_rule) != (expected_horizon, expected_rule):
         raise ValueError(
@@ -129,7 +134,21 @@ def load_metadata(path: str | Path) -> BlackboxMetadata:
         horizon=horizon,
         target_rule=target_rule,
         frequency=frequency,
+        description=description,
     )
+
+
+def _optional_description(raw: dict[str, Any]) -> str | None:
+    if "description" not in raw:
+        return None
+    description = _non_empty_string(raw, "description")
+    if len(description) > MAX_DESCRIPTION_LENGTH:
+        raise ValueError(
+            f"description must not exceed {MAX_DESCRIPTION_LENGTH} characters"
+        )
+    if any(marker in description for marker in ("\n", "\r", "<", ">")):
+        raise ValueError("description must be single-paragraph plain text")
+    return description
 
 
 def load_request(path: str | Path) -> BlackboxRequest:
