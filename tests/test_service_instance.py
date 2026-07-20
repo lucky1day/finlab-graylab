@@ -17,16 +17,30 @@ class _Scalar:
 
 
 class _Connection:
-    def __init__(self, schema: str) -> None:
-        self._schema = schema
+    def __init__(self, engine: "_Engine") -> None:
+        self._engine = engine
 
-    def execute(self, _sql):
-        return _Scalar(self._schema)
+    def execute(self, sql):
+        statement = str(sql).strip()
+        self._engine.queries.append(statement)
+        if self._engine.fail_health_check and statement.upper() == "SELECT 1":
+            raise RuntimeError("database unavailable")
+        if statement.upper() == "SELECT 1":
+            return _Scalar(1)
+        return _Scalar(self._engine._schema)
 
 
 class _Engine:
-    def __init__(self, *, schema: str, host: str = "127.0.0.1") -> None:
+    def __init__(
+        self,
+        *,
+        schema: str,
+        host: str = "127.0.0.1",
+        fail_health_check: bool = False,
+    ) -> None:
         self._schema = schema
+        self.fail_health_check = fail_health_check
+        self.queries: list[str] = []
         self.url = SimpleNamespace(
             get_backend_name=lambda: "mysql",
             host=host,
@@ -38,7 +52,7 @@ class _Engine:
 
     @contextmanager
     def connect(self):
-        yield _Connection(self._schema)
+        yield _Connection(self)
 
 
 class ServiceInstanceIdentityTests(unittest.TestCase):
@@ -126,12 +140,13 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
     def test_health_returns_safe_service_identity(self) -> None:
         from backend import main
 
+        engine = _Engine(schema="bbv2_cert_one")
         identity = {
             "fingerprint_version": "2",
             "fingerprint": "f" * 64,
         }
         with (
-            patch.object(main, "get_engine", return_value="engine"),
+            patch.object(main, "get_engine", return_value=engine),
             patch.object(main, "build_service_instance_identity", return_value=identity) as build,
             patch.dict(
                 "os.environ",
@@ -145,6 +160,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             result = main.health()
 
         self.assertEqual(result, {"status": "ok", "service_instance": identity})
+        self.assertEqual(engine.queries[0].upper(), "SELECT 1")
         self.assertEqual(build.call_args.kwargs["instance_nonce"], "explicit-instance")
         self.assertEqual(
             build.call_args.kwargs["fingerprint_secret"],
@@ -154,8 +170,9 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
     def test_health_without_fingerprint_secret_exposes_no_enumerable_components(self) -> None:
         from backend import main
 
+        engine = _Engine(schema="native_service")
         with (
-            patch.object(main, "get_engine", return_value="engine"),
+            patch.object(main, "get_engine", return_value=engine),
             patch.dict("os.environ", {}, clear=True),
         ):
             result = main.health()
@@ -170,3 +187,17 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
         serialized = json.dumps(result, sort_keys=True)
         self.assertNotIn("database_identity_sha256", serialized)
         self.assertNotIn("nonce_sha256", serialized)
+        self.assertEqual(engine.queries, ["SELECT 1"])
+
+    def test_health_without_fingerprint_secret_still_fails_when_database_is_unavailable(self) -> None:
+        from backend import main
+
+        engine = _Engine(schema="native_service", fail_health_check=True)
+        with (
+            patch.object(main, "get_engine", return_value=engine),
+            patch.dict("os.environ", {}, clear=True),
+            self.assertRaisesRegex(RuntimeError, "database unavailable"),
+        ):
+            main.health()
+
+        self.assertEqual(engine.queries, ["SELECT 1"])

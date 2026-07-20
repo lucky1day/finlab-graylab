@@ -18,6 +18,65 @@ class BlackboxApiGateTests(unittest.TestCase):
         "fingerprint": "f" * 64,
     }
 
+    def test_blackbox_passed_all_uses_harness_id_tiebreaker_for_same_finished_second(self) -> None:
+        from harness.blackbox_v2.gates import _verify_passed_all
+
+        required = (
+            "static",
+            "input",
+            "unit",
+            "dry-run",
+            "compare",
+            "backtest",
+            "api-readiness",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+            reports = {}
+            for harness_run_id in ("hr_a", "hr_z"):
+                report_dir = root / harness_run_id
+                state_dir = report_dir / "blackbox_v2"
+                state_dir.mkdir(parents=True)
+                (state_dir / "input_state.json").write_text(
+                    json.dumps(
+                        {
+                            "snapshot_id": f"snapshot-{harness_run_id}",
+                            "generation_id": f"generation-{harness_run_id}",
+                            "runtime_profile": "blackbox-v2-v1",
+                            "environment_fingerprint": "e" * 64,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                reports[harness_run_id] = report_dir
+            with engine.begin() as connection:
+                connection.execute(text("CREATE TABLE t_harness_runs (harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, stage TEXT, status TEXT, finished_at TEXT, report_uri TEXT)"))
+                connection.execute(text("CREATE TABLE t_harness_gate_results (harness_run_id TEXT, gate_name TEXT, status TEXT)"))
+                for harness_run_id in ("hr_a", "hr_z"):
+                    connection.execute(
+                        text("INSERT INTO t_harness_runs VALUES (:run_id, :scheme, :version, 'all', 'passed', '2026-07-20T10:00:00', :report_uri)"),
+                        {
+                            "run_id": harness_run_id,
+                            "scheme": cfg.scheme_id,
+                            "version": cfg.scheme_version,
+                            "report_uri": str(reports[harness_run_id]),
+                        },
+                    )
+                    connection.execute(
+                        text("INSERT INTO t_harness_gate_results VALUES (:run_id, :gate_name, 'passed')"),
+                        [
+                            {"run_id": harness_run_id, "gate_name": gate_name}
+                            for gate_name in required
+                        ],
+                    )
+
+            passed = _verify_passed_all(engine, cfg)
+
+        self.assertEqual(passed.harness_run_id, "hr_z")
+        self.assertEqual(passed.data_snapshot_id, "snapshot-hr_z")
+
     def test_certification_evidence_selects_exact_latest_harness_backtest_and_live_run(self) -> None:
         from harness.blackbox_v2.api_gate import (
             _read_expected_backtest_evidence,
@@ -31,15 +90,15 @@ class BlackboxApiGateTests(unittest.TestCase):
             with engine.begin() as connection:
                 connection.execute(text("CREATE TABLE t_harness_runs (harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, stage TEXT, status TEXT, finished_at TEXT)"))
                 connection.execute(text("CREATE TABLE t_backtest_runs (id INTEGER, benchmark_id TEXT, scheme_id TEXT, data_source TEXT, status TEXT, summary TEXT, updated_at TEXT)"))
-                connection.execute(text("CREATE TABLE t_scheme_runs (run_id INTEGER, scheme_id TEXT, scheme_version TEXT, runtime_type TEXT, prediction_phase TEXT, status TEXT)"))
+                connection.execute(text("CREATE TABLE t_scheme_runs (run_id INTEGER, scheme_id TEXT, scheme_version TEXT, runtime_type TEXT, prediction_phase TEXT, status TEXT, data_snapshot_id TEXT, finished_at TEXT)"))
                 connection.execute(text("CREATE TABLE t_scheme_predictions (id INTEGER, run_id INTEGER, scheme_id TEXT, target_tenor TEXT, horizon INTEGER, scheme_version TEXT, prediction_phase TEXT, predict_date TEXT, feature_date TEXT, target_date TEXT, extra TEXT)"))
                 connection.execute(
-                    text("INSERT INTO t_harness_runs VALUES ('hr_old', :scheme, :version, 'all', 'passed', '2026-07-20T09:00:00'), ('hr_current', :scheme, :version, 'all', 'passed', '2026-07-20T10:00:00')"),
+                    text("INSERT INTO t_harness_runs VALUES ('hr_a', :scheme, :version, 'all', 'passed', '2026-07-20T10:00:00'), ('hr_z', :scheme, :version, 'all', 'passed', '2026-07-20T10:00:00')"),
                     {"scheme": cfg.scheme_id, "version": cfg.scheme_version},
                 )
                 for run_id, harness_id, snapshot_id, updated_at in (
-                    (100, "hr_old", "snapshot-old", "2026-07-20T09:01:00"),
-                    (101, "hr_current", "snapshot-current", "2026-07-20T10:01:00"),
+                    (100, "hr_a", "snapshot-old", "2026-07-20T09:01:00"),
+                    (101, "hr_z", "snapshot-current", "2026-07-20T10:01:00"),
                 ):
                     connection.execute(
                         text("INSERT INTO t_backtest_runs VALUES (:id, :benchmark, :scheme, 'blackbox_v2_current_snapshot_as_of', 'success', :summary, :updated_at)"),
@@ -58,15 +117,21 @@ class BlackboxApiGateTests(unittest.TestCase):
                         },
                     )
                 connection.execute(
-                    text("INSERT INTO t_scheme_runs VALUES (201, :scheme, :version, 'blackbox_v2', 'scheduled_live', 'success')"),
+                    text("INSERT INTO t_scheme_runs VALUES (201, :scheme, :version, 'blackbox_v2', 'scheduled_live', 'success', 'snapshot-live-old', '2026-07-20T10:00:00'), (202, :scheme, :version, 'blackbox_v2', 'scheduled_live', 'success', 'snapshot-live-current', '2026-07-20T11:00:00')"),
                     {"scheme": cfg.scheme_id, "version": cfg.scheme_version},
                 )
                 connection.execute(
-                    text("INSERT INTO t_scheme_predictions VALUES (301, 201, :scheme, '10Y', 1, :version, 'scheduled_live', '2026-07-20', '2026-07-17', '2026-07-24', :extra)"),
+                    text("INSERT INTO t_scheme_predictions VALUES (999, 201, :scheme, '10Y', 1, :version, 'scheduled_live', '2026-07-13', '2026-07-10', '2026-07-17', :old_extra), (301, 202, :scheme, '10Y', 1, :version, 'scheduled_live', '2026-07-20', '2026-07-17', '2026-07-24', :current_extra)"),
                     {
                         "scheme": cfg.scheme_id,
                         "version": cfg.scheme_version,
-                        "extra": json.dumps(
+                        "old_extra": json.dumps(
+                            {
+                                "request_id": f"{cfg.scheme_id}:2026-07-13:2026-07-10:2026-07-17",
+                                "data_snapshot_id": "snapshot-live-old",
+                            }
+                        ),
+                        "current_extra": json.dumps(
                             {
                                 "request_id": f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24",
                                 "data_snapshot_id": "snapshot-live-current",
@@ -85,10 +150,48 @@ class BlackboxApiGateTests(unittest.TestCase):
             )
 
         self.assertEqual(backtest["run_id"], 101)
-        self.assertEqual(backtest["benchmark_id"], f"bbv2-{cfg.scheme_id}-hr_current")
+        self.assertEqual(backtest["benchmark_id"], f"bbv2-{cfg.scheme_id}-hr_z")
         self.assertEqual(backtest["data_snapshot_id"], "snapshot-current")
         self.assertEqual(live["request_id"], f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24")
         self.assertEqual(live["data_snapshot_id"], "snapshot-live-current")
+        self.assertEqual(live["run_id"], 202)
+
+    def test_live_evidence_rejects_run_and_prediction_snapshot_mismatch(self) -> None:
+        from harness.blackbox_v2.api_gate import _read_expected_live_evidence
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+            with engine.begin() as connection:
+                connection.execute(text("CREATE TABLE t_scheme_runs (run_id INTEGER, scheme_id TEXT, scheme_version TEXT, runtime_type TEXT, prediction_phase TEXT, status TEXT, data_snapshot_id TEXT, finished_at TEXT)"))
+                connection.execute(text("CREATE TABLE t_scheme_predictions (id INTEGER, run_id INTEGER, scheme_id TEXT, target_tenor TEXT, horizon INTEGER, scheme_version TEXT, prediction_phase TEXT, predict_date TEXT, feature_date TEXT, target_date TEXT, extra TEXT)"))
+                connection.execute(
+                    text("INSERT INTO t_scheme_runs VALUES (202, :scheme, :version, 'blackbox_v2', 'scheduled_live', 'success', 'snapshot-run', '2026-07-20T11:00:00')"),
+                    {"scheme": cfg.scheme_id, "version": cfg.scheme_version},
+                )
+                connection.execute(
+                    text("INSERT INTO t_scheme_predictions VALUES (301, 202, :scheme, '10Y', 1, :version, 'scheduled_live', '2026-07-20', '2026-07-17', '2026-07-24', :extra)"),
+                    {
+                        "scheme": cfg.scheme_id,
+                        "version": cfg.scheme_version,
+                        "extra": json.dumps(
+                            {
+                                "request_id": f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24",
+                                "data_snapshot_id": "snapshot-prediction",
+                            }
+                        ),
+                    },
+                )
+
+            with self.assertRaisesRegex(ValueError, "snapshot"):
+                _read_expected_live_evidence(
+                    engine,
+                    cfg,
+                    target_tenor="10Y",
+                    horizon=1,
+                    prediction_phase="scheduled_live",
+                )
 
     def test_metrics_contract_allows_mixed_history_but_requires_exact_current_live_row(self) -> None:
         from harness.blackbox_v2.api_gate import _metrics_contract_errors
@@ -111,6 +214,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                     "feature_date": "2026-06-12",
                     "target_date": "2026-06-19",
                     "prediction_phase": "gray_live",
+                    "run_id": 11,
                     "scheme_version": "old-version",
                     "request_id": "weekly_trial:2026-06-15:2026-06-12:2026-06-19",
                     "data_snapshot_id": "snapshot-old",
@@ -127,6 +231,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                     "feature_date": "2026-07-17",
                     "target_date": "2026-07-24",
                     "prediction_phase": "scheduled_live",
+                    "run_id": 22,
                     "scheme_version": "current-version",
                     "request_id": "weekly_trial:2026-07-20:2026-07-17:2026-07-24",
                     "data_snapshot_id": "snapshot-current",
@@ -152,6 +257,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                 "target_date": "2026-07-24",
                 "request_id": "weekly_trial:2026-07-20:2026-07-17:2026-07-24",
                 "data_snapshot_id": "snapshot-current",
+                "run_id": 22,
             },
         )
 
@@ -181,6 +287,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                     "feature_date": "2026-06-12",
                     "target_date": "2026-06-19",
                     "prediction_phase": "gray_live",
+                    "run_id": 11,
                     "scheme_version": "old-version",
                     "request_id": "weekly_trial:2026-06-15:2026-06-12:2026-06-19",
                     "data_snapshot_id": "snapshot-old",
@@ -205,6 +312,62 @@ class BlackboxApiGateTests(unittest.TestCase):
                 "feature_date": "2026-07-17",
                 "target_date": "2026-07-24",
                 "request_id": "weekly_trial:2026-07-20:2026-07-17:2026-07-24",
+                "data_snapshot_id": "snapshot-current",
+                "run_id": 22,
+            },
+        )
+
+        self.assertEqual(counts["exact_current_live_rows"], 0)
+        self.assertTrue(any("exact current live row" in error for error in errors), errors)
+
+    def test_metrics_contract_rejects_current_provenance_from_wrong_run(self) -> None:
+        from harness.blackbox_v2.api_gate import _metrics_contract_errors
+
+        registry_id = "weekly_trial__h1__10Y"
+        request_id = "weekly_trial:2026-07-20:2026-07-17:2026-07-24"
+        payload = {
+            "scheme_id": registry_id,
+            "base_scheme_id": "weekly_trial",
+            "target_tenor": "10Y",
+            "task_type": "weekly_point",
+            "summary": {"metric_samples": 1},
+            "monthly_metrics": [{"month": "2026-07", "metric_samples": 1}],
+            "daily_rows": [
+                {
+                    "scheme_id": registry_id,
+                    "base_scheme_id": "weekly_trial",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "run_id": 21,
+                    "predict_date": "2026-07-20",
+                    "feature_date": "2026-07-17",
+                    "target_date": "2026-07-24",
+                    "prediction_phase": "scheduled_live",
+                    "scheme_version": "current-version",
+                    "request_id": request_id,
+                    "data_snapshot_id": "snapshot-current",
+                    "predicted_direction": 1,
+                    "actual_direction": 1,
+                    "is_correct": True,
+                }
+            ],
+        }
+
+        errors, counts = _metrics_contract_errors(
+            payload,
+            registry_id=registry_id,
+            base_scheme_id="weekly_trial",
+            target_tenor="10Y",
+            task_type="weekly_point",
+            horizon=1,
+            scheme_version="current-version",
+            expected_phase="scheduled_live",
+            expected_live={
+                "run_id": 22,
+                "predict_date": "2026-07-20",
+                "feature_date": "2026-07-17",
+                "target_date": "2026-07-24",
+                "request_id": request_id,
                 "data_snapshot_id": "snapshot-current",
             },
         )
@@ -369,6 +532,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                         "base_scheme_id": cfg.scheme_id,
                         "target_tenor": "10Y",
                         "horizon": 1,
+                        "run_id": 401,
                         "predict_date": "2026-07-20",
                         "feature_date": "2026-07-17",
                         "target_date": "2026-07-24",
@@ -435,6 +599,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                 patch(
                     "harness.blackbox_v2.api_gate._read_expected_live_evidence",
                     return_value={
+                        "run_id": 401,
                         "predict_date": "2026-07-20",
                         "feature_date": "2026-07-17",
                         "target_date": "2026-07-24",
@@ -476,6 +641,7 @@ class BlackboxApiGateTests(unittest.TestCase):
         self.assertEqual(evidence["actual_service_fingerprint"], "f" * 64)
         self.assertEqual(evidence["live_rows"], 1)
         self.assertEqual(evidence["matched_actual_rows"], 1)
+        self.assertEqual(evidence["expected_live_run_id"], 401)
 
     def test_blackbox_api_gate_fails_closed_when_any_probe_is_missing(self) -> None:
         from harness.blackbox_v2.api_gate import BlackboxApiGate
@@ -522,6 +688,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                 patch(
                     "harness.blackbox_v2.api_gate._read_expected_live_evidence",
                     return_value={
+                        "run_id": 401,
                         "predict_date": "2026-07-20",
                         "feature_date": "2026-07-17",
                         "target_date": "2026-07-24",
@@ -627,6 +794,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                 patch(
                     "harness.blackbox_v2.api_gate._read_expected_live_evidence",
                     return_value={
+                        "run_id": 401,
                         "predict_date": "2026-07-20",
                         "feature_date": "2026-07-17",
                         "target_date": "2026-07-24",

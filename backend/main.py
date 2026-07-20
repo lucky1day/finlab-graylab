@@ -9,6 +9,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 
 from backend.db import get_engine
 from backend.services import (
@@ -108,6 +109,10 @@ class TriggerRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict:
     engine = get_engine()
+    with engine.connect() as connection:
+        value = connection.execute(text("SELECT 1")).scalar_one()
+    if int(value) != 1:
+        raise RuntimeError("database health check returned an unexpected value")
     fingerprint_secret = service_fingerprint_secret()
     if fingerprint_secret is None:
         identity = {"fingerprint_version": FINGERPRINT_VERSION, "fingerprint": None}

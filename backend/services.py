@@ -651,6 +651,7 @@ def scheme_metrics(
         item = {
             "scheme_id": scheme_id,
             "base_scheme_id": base_scheme_id,
+            "run_id": row["run_id"],
             "target_tenor": row["target_tenor"],
             "horizon": row["horizon"],
             "predict_date": predict_date,

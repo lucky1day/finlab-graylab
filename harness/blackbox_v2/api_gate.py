@@ -236,6 +236,7 @@ class BlackboxApiGate(Gate):
                 Evidence("expected_benchmark_id", (expected_backtest or {}).get("benchmark_id")),
                 Evidence("expected_harness_run_id", (expected_backtest or {}).get("harness_run_id")),
                 Evidence("expected_data_snapshot_id", (expected_backtest or {}).get("data_snapshot_id")),
+                Evidence("expected_live_run_id", (expected_live or {}).get("run_id")),
                 Evidence("expected_live_request_id", (expected_live or {}).get("request_id")),
                 Evidence("expected_live_snapshot_id", (expected_live or {}).get("data_snapshot_id")),
                 Evidence("health_http_status", health_status),
@@ -283,7 +284,7 @@ def _read_expected_backtest_evidence(engine, cfg) -> dict[str, Any]:
                   AND scheme_version = :scheme_version
                   AND stage = 'all'
                   AND status = 'passed'
-                ORDER BY finished_at DESC
+                ORDER BY finished_at DESC, harness_run_id DESC
                 LIMIT 1
                 """
             ),
@@ -358,7 +359,8 @@ def _read_expected_live_evidence(
         row = connection.execute(
             text(
                 """
-                SELECT p.predict_date, p.feature_date, p.target_date, p.extra
+                SELECT r.run_id, r.data_snapshot_id AS run_data_snapshot_id,
+                       p.predict_date, p.feature_date, p.target_date, p.extra
                 FROM t_scheme_predictions p
                 INNER JOIN t_scheme_runs r ON r.run_id = p.run_id
                 WHERE p.scheme_id = :scheme_id
@@ -371,7 +373,7 @@ def _read_expected_live_evidence(
                   AND r.runtime_type = 'blackbox_v2'
                   AND r.prediction_phase = :prediction_phase
                   AND r.status = 'success'
-                ORDER BY p.id DESC
+                ORDER BY r.finished_at DESC, r.run_id DESC, p.id DESC
                 LIMIT 1
                 """
             ),
@@ -386,12 +388,20 @@ def _read_expected_live_evidence(
     if row is None:
         raise ValueError("exact successful live prediction is missing")
     extra = _json_object(row["extra"])
+    run_snapshot_id = str(row["run_data_snapshot_id"] or "").strip()
+    prediction_snapshot_id = str(extra.get("data_snapshot_id") or "").strip()
+    if not run_snapshot_id or prediction_snapshot_id != run_snapshot_id:
+        raise ValueError(
+            "successful live run/prediction data_snapshot_id provenance mismatch: "
+            f"run={run_snapshot_id or None}, prediction={prediction_snapshot_id or None}"
+        )
     evidence = {
+        "run_id": int(row["run_id"]),
         "predict_date": str(row["predict_date"]),
         "feature_date": str(row["feature_date"]),
         "target_date": str(row["target_date"]),
         "request_id": str(extra.get("request_id") or "").strip(),
-        "data_snapshot_id": str(extra.get("data_snapshot_id") or "").strip(),
+        "data_snapshot_id": prediction_snapshot_id,
     }
     canonical_request_id = (
         f"{cfg.scheme_id}:{evidence['predict_date']}:{evidence['feature_date']}:"
@@ -551,6 +561,7 @@ def _metrics_contract_errors(
             and all(
                 str(row.get(key) or "") == str(expected_live.get(key) or "")
                 for key in (
+                    "run_id",
                     "predict_date",
                     "feature_date",
                     "target_date",

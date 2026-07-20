@@ -320,7 +320,7 @@ def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:
                       AND scheme_version = :scheme_version
                       AND stage = 'all'
                       AND status = 'passed'
-                    ORDER BY finished_at DESC
+                    ORDER BY finished_at DESC, harness_run_id DESC
                     LIMIT 1
                     """
                 ),
