@@ -515,9 +515,18 @@ class BlackboxBacktestGate(_BlackboxGate):
                 metadata,
                 state.snapshot,
                 engine,
-                limit=100,
+                limit=None,
                 target_date_before=ctx.predict_date,
-                predict_date_from="2010-01-01",
+                predict_date_from=ctx.backtest_start_date,
+            )
+            profile = _profile(ctx)
+            batch_sizes = [
+                min(profile.max_batch_requests, len(cases) - start)
+                for start in range(0, len(cases), profile.max_batch_requests)
+            ]
+            budget = BacktestExecutionBudget(
+                deadline_monotonic=time.monotonic() + ctx.timeout_sec,
+                max_subprocesses=len(batch_sizes),
             )
             benchmark_id = f"bbv2-{cfg.scheme_id}-{passed_run.harness_run_id}"
             output = run_blackbox_historical_backtest(
@@ -530,11 +539,15 @@ class BlackboxBacktestGate(_BlackboxGate):
                 benchmark_id=benchmark_id,
                 harness_run_id=passed_run.harness_run_id,
                 run_delivery=run_blackbox_backtest,
-                profile=_profile(ctx),
+                profile=profile,
+                budget=budget,
             )
-            if len(output.rows) != 100 or not output.monthly_metrics:
+            if len(output.rows) != len(cases) or not output.monthly_metrics:
                 raise ValueError(
-                    "Blackbox persisted backtest requires exactly 100 rows and non-empty monthly metrics"
+                    "Blackbox persisted backtest requires one Result per historical Request "
+                    "and non-empty monthly metrics: "
+                    f"requests={len(cases)}, records={len(output.rows)}, "
+                    f"monthly_metrics={len(output.monthly_metrics)}"
                 )
             cfg = _reload_pinned_blackbox_config(cfg, phase="persisted backtest commit")
             before = snapshot_backtest_scope_counts(engine, benchmark_id)
@@ -545,7 +558,7 @@ class BlackboxBacktestGate(_BlackboxGate):
             deltas = diff_snapshots(before, after)
             errors = _persisted_backtest_delta_errors(
                 deltas,
-                expected_predictions=100,
+                expected_predictions=len(cases),
                 expected_metrics=len(output.monthly_metrics),
             )
         finally:
@@ -560,9 +573,17 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("harness_run_id", passed_run.harness_run_id),
             Evidence("generation_id", generation_id),
             Evidence("data_snapshot_id", state.snapshot.snapshot_id),
+            Evidence("backtest_start_date", ctx.backtest_start_date),
+            Evidence("target_date_before", ctx.predict_date),
             Evidence("requests", len(cases)),
             Evidence("records", len(output.rows)),
             Evidence("monthly_metrics", len(output.monthly_metrics)),
+            Evidence("max_batch_requests", profile.max_batch_requests),
+            Evidence("batch_count", len(batch_sizes)),
+            Evidence("batch_sizes", batch_sizes),
+            Evidence("subprocesses_started", budget.subprocesses_started),
+            Evidence("max_subprocesses", budget.max_subprocesses),
+            Evidence("total_deadline_sec", ctx.timeout_sec),
             Evidence("protected_table_counts_before", before),
             Evidence("protected_table_counts_after", after),
             Evidence("protected_table_deltas", deltas),

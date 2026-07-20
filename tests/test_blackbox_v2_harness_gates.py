@@ -132,8 +132,9 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     evidence["max_subprocesses"],
                 )
 
-    def test_backtest_cli_accepts_sample_size_and_persist_remains_fixed_at_100(self) -> None:
+    def test_backtest_sample_size_is_no_persist_only(self) -> None:
         from harness.cli import _build_parser
+        from harness.blackbox_v2.gates import BlackboxBacktestGate
 
         args = _build_parser().parse_args(
             [
@@ -146,6 +147,20 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             ]
         )
         self.assertEqual(args.sample_size, 500)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ctx = GateContext(
+                scheme_id="trial_10y",
+                predict_date="2026-07-20",
+                project_root=Path(tmpdir),
+                report_dir=Path(tmpdir) / "reports",
+                persist_backtest=True,
+                backtest_sample_size=100,
+            )
+            result = BlackboxBacktestGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("--sample-size", "\n".join(result.errors))
 
     def test_comparison_requests_normalize_databridge_daily_timestamps(self) -> None:
         from harness.blackbox_v2.gates import _comparison_requests
@@ -397,9 +412,15 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     persist_backtest=True,
                     engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
                 )
+                output = _output(205)
+                metric_count = len(output.monthly_metrics)
                 snapshots = [
                     {"t_backtest_runs": 10, "t_backtest_predictions": 1000, "t_backtest_monthly_metrics": 20},
-                    {"t_backtest_runs": 11, "t_backtest_predictions": 1100, "t_backtest_monthly_metrics": 24},
+                    {
+                        "t_backtest_runs": 11,
+                        "t_backtest_predictions": 1205,
+                        "t_backtest_monthly_metrics": 20 + metric_count,
+                    },
                 ]
                 with (
                     patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
@@ -413,8 +434,8 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                         "environment_fingerprint": "e" * 64,
                     }),
                     patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
-                    patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(100)) as build_cases,
-                    patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=_output()) as run_history,
+                    patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(205)) as build_cases,
+                    patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=output) as run_history,
                     patch("harness.blackbox_v2.gates.persist_backtest_output_atomic", return_value=301) as persist,
                     patch("harness.blackbox_v2.gates.snapshot_backtest_scope_counts", side_effect=snapshots),
                 ):
@@ -422,17 +443,68 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
         build_cases.assert_called_once()
-        self.assertEqual(build_cases.call_args.kwargs["limit"], 100)
+        self.assertIsNone(build_cases.call_args.kwargs["limit"])
         self.assertEqual(build_cases.call_args.kwargs["target_date_before"], "2026-07-16")
+        self.assertEqual(build_cases.call_args.kwargs["predict_date_from"], "2025-01-01")
         run_history.assert_called_once()
+        budget = run_history.call_args.kwargs["budget"]
+        self.assertEqual(budget.max_subprocesses, 3)
         persist.assert_called_once()
         evidence = {item.key: item.value for item in result.evidence}
         self.assertTrue(evidence["persist"])
         self.assertEqual(evidence["run_id"], 301)
         self.assertEqual(evidence["protected_table_deltas"]["t_backtest_runs"], 1)
-        self.assertEqual(evidence["protected_table_deltas"]["t_backtest_predictions"], 100)
-        self.assertEqual(evidence["protected_table_deltas"]["t_backtest_monthly_metrics"], 4)
+        self.assertEqual(evidence["protected_table_deltas"]["t_backtest_predictions"], 205)
+        self.assertEqual(
+            evidence["protected_table_deltas"]["t_backtest_monthly_metrics"],
+            metric_count,
+        )
+        self.assertEqual(evidence["backtest_start_date"], "2025-01-01")
+        self.assertEqual(evidence["batch_count"], 3)
+        self.assertEqual(evidence["batch_sizes"], [100, 100, 5])
         self.assertEqual(evidence["replay_semantics"], "current_snapshot_as_of_not_historical_vintage")
+
+    def test_persist_backtest_token_start_date_must_match_context(self) -> None:
+        from harness.authorization import issue_token
+        from harness.blackbox_v2.gates import BlackboxBacktestGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"HARNESS_AUTH_SECRET": "test-secret"},
+        ):
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            token = issue_token(
+                config.scheme_id,
+                "backtest_persist",
+                "2026-07-20",
+                scheme_version=config.scheme_version,
+                harness_run_id="hr_passed",
+                ttl_seconds=300,
+                backtest_start_date="2025-01-01",
+            )
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-20",
+                project_root=root,
+                report_dir=root / "reports",
+                config=config,
+                authorization=token,
+                persist_backtest=True,
+                backtest_start_date="2025-02-01",
+            )
+            with patch("harness.blackbox_v2.gates.build_historical_cases") as build_cases:
+                result = BlackboxBacktestGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("backtest_start_date mismatch", "\n".join(result.errors))
+        build_cases.assert_not_called()
 
     def test_persist_backtest_blocks_unsigned_or_mismatched_token_before_business_work(self) -> None:
         from harness.authorization import issue_token
