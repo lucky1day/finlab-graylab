@@ -201,6 +201,67 @@ class FactorLabRankingTests(unittest.TestCase):
             result["matrixHtml"].index("3Y国债活跃"),
         )
 
+    def test_backtest_task_grid_uses_task_scoped_scheme_name(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const responses = {
+              "/api/backtests/factor-lab": {
+                target_labels: { "1Y": "1Y国债活跃" },
+                schemes: [
+                  {
+                    id: "bt:one_y_t5_liq_excess_a_v1:1Y",
+                    scheme_id: "one_y_t5_liq_excess_a_v1__h5__1Y",
+                    base_scheme_id: "one_y_t5_liq_excess_a_v1",
+                    scheme_name: "LIQ_EXCESS_A",
+                    display_name: "LIQ_EXCESS_A · 1Y国债活跃",
+                    name: "LIQ_EXCESS_A · 1Y国债活跃",
+                    target_tenor: "1Y",
+                    target_label: "1Y国债活跃",
+                    horizon: 5,
+                    task_type: "T+5",
+                    frequency: "daily",
+                    status: "complete",
+                    deployed_at: "2026-07-20",
+                    benchmark_label: "bb",
+                    data_source_label: "source",
+                    monthly_metrics: [],
+                    daily_rows: [
+                      {
+                        predict_date: "2026-07-10",
+                        feature_date: "2026-07-10",
+                        target_date: "2026-07-17",
+                        target_tenor: "1Y",
+                        horizon: 5,
+                        predicted_direction: 1,
+                        actual_direction: 1,
+                        is_correct: true
+                      }
+                    ]
+                  }
+                ]
+              }
+            };
+            window.fetch = function (url) {
+              if (url instanceof Request) url = url.url;
+              var payload = responses[url];
+              return Promise.resolve({
+                ok: Boolean(payload),
+                status: payload ? 200 : 404,
+                json: function () { return Promise.resolve(payload || {}); }
+              });
+            };
+            globalThis.fetch = window.fetch;
+            context.fetch = window.fetch;
+
+            await hooks.loadFactorLabData({ force: true });
+            hooks.setFactorLabStateForTest({ selectedTaskKey: "1Y|T+5" });
+            var scheme = hooks.getSelectedScheme();
+            return { name: scheme && scheme.name };
+            """
+        )
+
+        self.assertEqual(result["name"], "LIQ_EXCESS_A")
+
     def test_initial_render_does_not_show_mock_candidates_before_api_returns(self) -> None:
         result = _run_factor_lab_hook(
             """

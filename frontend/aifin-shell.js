@@ -838,7 +838,7 @@
       tasks[taskKey].push({
         id: scheme.id,
         taskKey: taskKey,
-        name: getSchemeDisplayName(scheme),
+        name: String(scheme.scheme_name || getSchemeDisplayName(scheme)),
         schemeId: scheme.scheme_id || "",
         schemeName: scheme.base_scheme_id || scheme.scheme_name || scheme.name || scheme.scheme_id || "",
         benchmarkLabel: scheme.benchmark_label || scheme.benchmark_id || "",
