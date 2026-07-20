@@ -78,6 +78,8 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("全部批次成功后", platform)
         self.assertIn("单一事务", platform)
         self.assertIn("current snapshot as-of replay", platform)
+        self.assertIn("CLI 缺少 `--predict-date` 时拒绝签发", platform)
+        self.assertIn("durable summary", platform)
 
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (

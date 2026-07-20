@@ -24,6 +24,9 @@ class BlackboxV2PersistedGateProvenanceTests(unittest.TestCase):
         self.assertEqual(attempt["build_calls"], 1)
         self.assertEqual(attempt["run_calls"], 1)
         self.assertEqual(attempt["persist_calls"], 1)
+        self.assertIsNone(attempt["build_kwargs"]["limit"])
+        self.assertEqual(attempt["build_kwargs"]["predict_date_from"], "2025-01-01")
+        self.assertEqual(attempt["budget_max_subprocesses"], 3)
 
     def test_snapshot_mismatch_blocks_before_algorithm_and_does_not_consume_token(self) -> None:
         attempt = _run_attempt(passed_updates={"data_snapshot_id": "snapshot-other"})
@@ -204,9 +207,15 @@ def _run_attempt(
                 raise RuntimeError("injected database failure")
             return 301
 
+        case_count = 205
+        output = _output(case_count)
         counts = [
             {"t_backtest_runs": 10, "t_backtest_predictions": 1000, "t_backtest_monthly_metrics": 20},
-            {"t_backtest_runs": 11, "t_backtest_predictions": 1100, "t_backtest_monthly_metrics": 24},
+            {
+                "t_backtest_runs": 11,
+                "t_backtest_predictions": 1000 + case_count,
+                "t_backtest_monthly_metrics": 20 + len(output.monthly_metrics),
+            },
         ]
         with (
             patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
@@ -214,8 +223,8 @@ def _run_attempt(
             patch("harness.blackbox_v2.gates._data_bridge_provenance", return_value=provenance),
             patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
             patch("harness.blackbox_v2.gates.load_scheme_config", side_effect=reload_config),
-            patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(100)) as build_cases,
-            patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=_output()) as run_history,
+            patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(case_count)) as build_cases,
+            patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=output) as run_history,
             patch("harness.blackbox_v2.gates.write_authorization_audit", side_effect=write_audit),
             patch("harness.blackbox_v2.gates.mark_token_used", side_effect=consume),
             patch("harness.blackbox_v2.gates.persist_backtest_output_atomic", side_effect=persist) as persist_call,
@@ -241,6 +250,14 @@ def _run_attempt(
             "build_calls": build_cases.call_count,
             "run_calls": run_history.call_count,
             "persist_calls": persist_call.call_count,
+            "build_kwargs": (
+                build_cases.call_args.kwargs if build_cases.called else {}
+            ),
+            "budget_max_subprocesses": (
+                run_history.call_args.kwargs["budget"].max_subprocesses
+                if run_history.called
+                else None
+            ),
         }
 
 

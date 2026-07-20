@@ -6,7 +6,11 @@ from typing import Any, Callable, Sequence
 
 from backtests._base_runner import RunOutput, make_run_output
 from shared.blackbox_v2.contracts import BlackboxMetadata
-from shared.blackbox_v2.history import HistoricalCase, validate_historical_cases
+from shared.blackbox_v2.history import (
+    CURRENT_SNAPSHOT_REPLAY,
+    HistoricalCase,
+    validate_historical_cases,
+)
 from shared.blackbox_v2.snapshot import BlackboxSnapshot
 
 
@@ -26,6 +30,9 @@ def run_blackbox_historical_backtest(
     run_delivery: Callable[..., Sequence[Any]],
     profile: Any,
     budget: Any | None = None,
+    backtest_start_date: str | None = None,
+    target_date_before: str | None = None,
+    total_deadline_sec: int | None = None,
 ) -> RunOutput:
     """用原始交付脚本执行真实历史 Request，并转换为平台标准输出。"""
     materialized = validate_historical_cases(cases, expected_count=len(cases))
@@ -100,7 +107,7 @@ def run_blackbox_historical_backtest(
                     "scheme_version": scheme_version,
                     "generation_id": generation_id,
                     "data_snapshot_id": snapshot.snapshot_id,
-                    "replay_semantics": "current_snapshot_as_of_not_historical_vintage",
+                    "replay_semantics": CURRENT_SNAPSHOT_REPLAY,
                 },
             }
         )
@@ -119,6 +126,21 @@ def run_blackbox_historical_backtest(
             "generation_id": generation_id,
             "data_snapshot_id": snapshot.snapshot_id,
             "harness_run_id": harness_run_id,
+            "request_count": len(materialized),
+            "backtest_start_date": backtest_start_date,
+            "target_date_before": target_date_before,
+            "actual_predict_date_min": min(
+                case.request.predict_date for case in materialized
+            ),
+            "actual_predict_date_max": max(
+                case.request.predict_date for case in materialized
+            ),
+            "actual_target_date_min": min(
+                case.request.target_date for case in materialized
+            ),
+            "actual_target_date_max": max(
+                case.request.target_date for case in materialized
+            ),
             "batch_count": (
                 len(materialized) + profile.max_batch_requests - 1
             ) // profile.max_batch_requests,
@@ -127,6 +149,10 @@ def run_blackbox_historical_backtest(
                 for start in range(0, len(materialized), profile.max_batch_requests)
             ],
             "max_batch_requests": profile.max_batch_requests,
+            "total_deadline_sec": total_deadline_sec,
+            "max_subprocesses": getattr(budget, "max_subprocesses", None),
+            "subprocesses_started": getattr(budget, "subprocesses_started", None),
+            "replay_semantics": CURRENT_SNAPSHOT_REPLAY,
         }
     )
     return output

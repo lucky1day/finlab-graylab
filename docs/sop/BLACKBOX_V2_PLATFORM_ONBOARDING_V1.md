@@ -325,7 +325,7 @@ TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
     --issued-by {operator})
 ```
 
-`backtest_persist` token 必须包含 `backtest_start_date`。Gate 参数和 token 中的起点必须完全一致；旧 token、缺失起点、起点不匹配、过期、已消费或签名不正确都必须 fail-closed。
+`backtest_persist` token 必须同时包含规范且非空的 `predict_date` 与 `backtest_start_date`。Gate 参数和 token 中的 exclusive cutoff、起点都必须完全一致；CLI 缺少 `--predict-date` 时拒绝签发，旧 token、任一日期缺失或不匹配、过期、已消费或签名不正确都必须 fail-closed。
 
 ### 6.3 执行完整持久化回测
 
@@ -355,8 +355,9 @@ conda run --no-capture-output -n bond_factor_lab_service \
 | prediction 增量 | `+完整 HistoricalCase 数`，且可以大于 100 |
 | monthly metric 增量 | `+完整输出月数` 且非空 |
 | 日期范围 | 最早站位日不早于起点；所有 `target_date < predict_date cutoff` |
-| 分批证据 | 每批不超过 100，总批次数和各批行数完整记录 |
+| 分批证据 | 每批不超过 100，总批次数、各批行数、总 deadline、最大/实际子进程数完整记录 |
 | 版本与数据 | exact scheme version、Harness run、generation、snapshot 和环境指纹一致 |
+| durable summary | 数据库 run summary 含授权起点/cutoff、实际 predict/target 边界、Request 总数、分批/预算和 replay semantics |
 | API | canonical latest success 指向新完整 run |
 | 历史 | 旧 run 保持不可变并可审计，不删除、不覆盖、不原地扩充 |
 

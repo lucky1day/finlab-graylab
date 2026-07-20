@@ -6,6 +6,7 @@ import unittest
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from sqlalchemy import create_engine, event, text
 
@@ -272,7 +273,7 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
         from backtests.blackbox_v2 import run_blackbox_historical_backtest
 
         cases = _cases(205)
-        budget = object()
+        budget = SimpleNamespace(max_subprocesses=3, subprocesses_started=3)
         observed: dict[str, object] = {}
 
         def run_delivery(**kwargs):
@@ -293,12 +294,29 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
                 run_delivery=run_delivery,
                 profile=RuntimeProfile.for_tests(max_batch_requests=100),
                 budget=budget,
+                backtest_start_date="2025-01-01",
+                target_date_before="2026-07-20",
+                total_deadline_sec=1800,
             )
 
         self.assertIs(observed["budget"], budget)
         self.assertEqual(output.summary["batch_count"], 3)
         self.assertEqual(output.summary["batch_sizes"], [100, 100, 5])
         self.assertEqual(output.summary["max_batch_requests"], 100)
+        self.assertEqual(output.summary["request_count"], 205)
+        self.assertEqual(output.summary["backtest_start_date"], "2025-01-01")
+        self.assertEqual(output.summary["target_date_before"], "2026-07-20")
+        self.assertEqual(output.summary["actual_predict_date_min"], "2025-01-01")
+        self.assertEqual(output.summary["actual_predict_date_max"], "2026-02-13")
+        self.assertEqual(output.summary["actual_target_date_min"], "2025-01-02")
+        self.assertEqual(output.summary["actual_target_date_max"], "2026-02-14")
+        self.assertEqual(output.summary["total_deadline_sec"], 1800)
+        self.assertEqual(output.summary["max_subprocesses"], 3)
+        self.assertEqual(output.summary["subprocesses_started"], 3)
+        self.assertEqual(
+            output.summary["replay_semantics"],
+            "current_snapshot_as_of_not_historical_vintage",
+        )
 
     def test_result_order_echo_and_unique_predict_date_fail_closed(self) -> None:
         from backtests.blackbox_v2 import run_blackbox_historical_backtest

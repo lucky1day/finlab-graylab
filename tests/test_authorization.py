@@ -101,9 +101,36 @@ class AuthorizationTest(unittest.TestCase):
         self.assertIn("backtest_start_date mismatch", "\n".join(errors))
 
     def test_backtest_persist_token_defaults_start_date(self) -> None:
-        auth = parse_token(issue_token("trial", "backtest_persist"))
+        auth = parse_token(
+            issue_token("trial", "backtest_persist", predict_date="2026-07-20")
+        )
 
         self.assertEqual(auth.backtest_start_date, "2025-01-01")
+
+    def test_backtest_persist_token_requires_predict_date(self) -> None:
+        with self.assertRaisesRegex(ValueError, "predict_date"):
+            issue_token("trial", "backtest_persist")
+
+    def test_backtest_persist_verification_rejects_null_predict_date(self) -> None:
+        from harness.authorization import _sign
+
+        envelope = self._decode_token(
+            issue_token("trial", "backtest_persist", predict_date="2026-07-20")
+        )
+        envelope["payload"]["predict_date"] = None
+        envelope["sig"] = _sign(envelope["payload"])
+        token = self._encode_token(envelope)
+
+        _, errors = verify_authorization(
+            token,
+            scheme_id="trial",
+            action="backtest_persist",
+            predict_date="2026-07-20",
+            backtest_start_date="2025-01-01",
+            used_store_path=self._used_path(),
+        )
+
+        self.assertIn("predict_date is required", "\n".join(errors))
 
     def test_non_backtest_token_schema_is_unchanged(self) -> None:
         envelope = self._decode_token(issue_token("trial", "blackbox_activate"))

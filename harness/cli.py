@@ -34,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.command == "auth" and args.auth_command == "issue":
+        if args.action == "backtest_persist" and args.predict_date is None:
+            parser.error(
+                "auth issue --action backtest_persist requires --predict-date"
+            )
         token = issue_token(
             args.scheme_id,
             args.action,

@@ -541,6 +541,9 @@ class BlackboxBacktestGate(_BlackboxGate):
                 run_delivery=run_blackbox_backtest,
                 profile=profile,
                 budget=budget,
+                backtest_start_date=ctx.backtest_start_date,
+                target_date_before=ctx.predict_date,
+                total_deadline_sec=ctx.timeout_sec,
             )
             if len(output.rows) != len(cases) or not output.monthly_metrics:
                 raise ValueError(

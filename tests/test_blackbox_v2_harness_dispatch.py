@@ -45,12 +45,29 @@ class BlackboxV2HarnessDispatchTests(unittest.TestCase):
             "blackbox_trial",
             "--action",
             "backtest_persist",
+            "--predict-date",
+            "2026-07-20",
             "--backtest-start-date",
             "2025-02-03",
         ])
 
         self.assertEqual(gate_args.backtest_start_date, "2025-02-03")
         self.assertEqual(auth_args.backtest_start_date, "2025-02-03")
+
+    def test_backtest_persist_auth_cli_requires_predict_date(self) -> None:
+        from harness.cli import main
+
+        with self.assertRaises(SystemExit) as raised:
+            main([
+                "auth",
+                "issue",
+                "--scheme-id",
+                "blackbox_trial",
+                "--action",
+                "backtest_persist",
+            ])
+
+        self.assertEqual(raised.exception.code, 2)
 
     def test_defaults_to_native_gates_for_existing_callers(self) -> None:
         from harness.gates.static_gate import StaticGate
