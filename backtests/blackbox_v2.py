@@ -25,6 +25,7 @@ def run_blackbox_historical_backtest(
     harness_run_id: str,
     run_delivery: Callable[..., Sequence[Any]],
     profile: Any,
+    budget: Any | None = None,
 ) -> RunOutput:
     """用原始交付脚本执行真实历史 Request，并转换为平台标准输出。"""
     materialized = validate_historical_cases(cases, expected_count=len(cases))
@@ -37,6 +38,7 @@ def run_blackbox_historical_backtest(
         data_dir=snapshot.data_dir,
         data_snapshot_id=snapshot.snapshot_id,
         profile=profile,
+        budget=budget,
     )
     if len(records) != len(materialized):
         raise ValueError(
@@ -117,6 +119,14 @@ def run_blackbox_historical_backtest(
             "generation_id": generation_id,
             "data_snapshot_id": snapshot.snapshot_id,
             "harness_run_id": harness_run_id,
+            "batch_count": (
+                len(materialized) + profile.max_batch_requests - 1
+            ) // profile.max_batch_requests,
+            "batch_sizes": [
+                min(profile.max_batch_requests, len(materialized) - start)
+                for start in range(0, len(materialized), profile.max_batch_requests)
+            ],
+            "max_batch_requests": profile.max_batch_requests,
         }
     )
     return output

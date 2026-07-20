@@ -58,13 +58,15 @@ def build_historical_cases(
     snapshot: BlackboxSnapshot,
     engine,
     *,
-    limit: int,
+    limit: int | None,
     target_date_before: str,
     predict_date_from: str = "2025-01-01",
 ) -> list[HistoricalCase]:
     """按平台日期与 actual 事实生成当前快照 as-of 历史 Request。"""
     _validate_metadata_contract(metadata)
-    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+    if limit is not None and (
+        isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0
+    ):
         raise ValueError("historical case limit must be a positive integer")
     target_date_before = _iso_date(target_date_before, "target_date_before")
     predict_date_from = _iso_date(predict_date_from, "predict_date_from")
@@ -95,13 +97,18 @@ def build_historical_cases(
         if item.predict_date >= predict_date_from and item.target_date < target_date_before
     ]
     eligible.sort(key=lambda item: (item.predict_date, item.target_date))
-    if len(eligible) < limit:
+    if limit is not None and len(eligible) < limit:
         raise ValueError(
             f"historical backtest requires exactly {limit} unique cases before "
             f"{target_date_before}, found {len(eligible)}"
         )
 
-    selected = eligible[-limit:]
+    selected = eligible if limit is None else eligible[-limit:]
+    if not selected:
+        raise ValueError(
+            "historical backtest requires at least one unique case in interval "
+            f"[{predict_date_from}, {target_date_before})"
+        )
     if metadata.task_type in {"weekly_point", "weekly_average"}:
         _validate_selected_weekly_candidates(selected)
     elif metadata.task_type in {"T+1", "T+5"}:
@@ -139,7 +146,7 @@ def build_historical_cases(
                 },
             )
         )
-    validate_historical_cases(cases, expected_count=limit)
+    validate_historical_cases(cases, expected_count=len(selected))
     return cases
 
 

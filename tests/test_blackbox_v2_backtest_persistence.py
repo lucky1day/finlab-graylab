@@ -268,6 +268,38 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
                 case.request.request_id for case in cases
             ])
 
+    def test_converter_forwards_one_budget_and_records_batch_evidence(self) -> None:
+        from backtests.blackbox_v2 import run_blackbox_historical_backtest
+
+        cases = _cases(205)
+        budget = object()
+        observed: dict[str, object] = {}
+
+        def run_delivery(**kwargs):
+            observed["budget"] = kwargs.get("budget")
+            return _records(cases)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir))
+            output = run_blackbox_historical_backtest(
+                metadata=_metadata(),
+                script_path=Path(tmpdir) / "delivery.py",
+                cases=cases,
+                snapshot=snapshot,
+                scheme_version="version-test",
+                generation_id="generation-test",
+                benchmark_id="benchmark-205",
+                harness_run_id="hr-205",
+                run_delivery=run_delivery,
+                profile=RuntimeProfile.for_tests(max_batch_requests=100),
+                budget=budget,
+            )
+
+        self.assertIs(observed["budget"], budget)
+        self.assertEqual(output.summary["batch_count"], 3)
+        self.assertEqual(output.summary["batch_sizes"], [100, 100, 5])
+        self.assertEqual(output.summary["max_batch_requests"], 100)
+
     def test_result_order_echo_and_unique_predict_date_fail_closed(self) -> None:
         from backtests.blackbox_v2 import run_blackbox_historical_backtest
 

@@ -180,6 +180,46 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             self.assertEqual(case.actual_extra["direction_field"], "direction_5d")
             self.assertEqual(case.actual_extra["calendar_horizon"], 5)
 
+    def test_unlimited_daily_history_returns_complete_eligible_interval(self) -> None:
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(start="2025-01-01", end="2026-03-01")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+
+            def resolve_all(_snapshot_arg, *, feature_dates, **_kwargs):
+                return {
+                    feature_date: CutoffKeys(feature_date, "202501", "202501")
+                    for feature_date in feature_dates
+                }
+
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=resolve_all,
+            ):
+                cases = build_historical_cases(
+                    _metadata("T+5"),
+                    snapshot,
+                    engine,
+                    limit=None,
+                    target_date_before="2026-03-01",
+                    predict_date_from="2025-01-01",
+                )
+                with self.assertRaisesRegex(ValueError, "at least one"):
+                    build_historical_cases(
+                        _metadata("T+5"),
+                        snapshot,
+                        engine,
+                        limit=None,
+                        target_date_before="2025-01-02",
+                        predict_date_from="2025-01-01",
+                    )
+
+        engine.dispose()
+        self.assertGreater(len(cases), 100)
+        self.assertGreaterEqual(cases[0].request.predict_date, "2025-01-01")
+        self.assertTrue(all(case.request.target_date < "2026-03-01" for case in cases))
+
     def test_daily_history_ignores_makeup_weekends_without_bond_observation(self) -> None:
         from shared.blackbox_v2.history import build_historical_cases
 
