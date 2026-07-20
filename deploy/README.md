@@ -1,6 +1,6 @@
 # 部署：本地灰度实验室外网只读访问
 
-落地 PRD [`docs/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md`](../docs/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md)。
+落地 PRD [`docs/product/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md`](../docs/product/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md)。
 本目录是**配置 + 脚本**交付物，**不改任何业务代码**（backend / frontend / schemes / scheduler）。
 
 ## 链路

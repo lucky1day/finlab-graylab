@@ -16,15 +16,15 @@
 **更新日期**：2026-07-06
 **适用范围**：任何新增预测方案（daily / weekly；未来 monthly 也按同一范式扩展）。
 
-> 这是新增方案前的 **T0 必读文档**。它只定义不可破坏的范式和 gate 顺序，不替代详细 SOP。执行细节继续看 [PREDICTION_SEMANTICS.md](../../PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../../SOURCE_ALGORITHM_FIDELITY.md)、[SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) 和 [SCHEME_ONBOARDING_SOP.md](../../sop/SCHEME_ONBOARDING_SOP.md)。
+> 这是新增方案前的 **T0 必读文档**。它只定义不可破坏的范式和 gate 顺序，不替代详细 SOP。执行细节继续看 [PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md)、[SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md) 和 [SCHEME_ONBOARDING_SOP.md](../../sop/SCHEME_ONBOARDING_SOP.md)。
 
 ## 0. 必读顺序
 
 新增方案开工前，按顺序读：
 
 1. 本文：确认新增方案的不可破坏边界。
-2. [PREDICTION_SEMANTICS.md](../../PREDICTION_SEMANTICS.md)：确认 `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的唯一语义。
-3. [SOURCE_ALGORITHM_FIDELITY.md](../../SOURCE_ALGORITHM_FIDELITY.md)：确认 source-backed 方案不得修改原始算法逻辑。
+2. [PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md)：确认 `predict_date` / `feature_date` / `target_date` / `prediction_phase` 的唯一语义。
+3. [SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md)：确认 source-backed 方案不得修改原始算法逻辑。
 4. [SCHEME_CONTRACT.md](../SCHEME_CONTRACT.md)：确认 config / predict.py / core 的机器契约。
 5. [SCHEME_ONBOARDING_SOP.md](../../sop/SCHEME_ONBOARDING_SOP.md)：按 gate 执行完整入库。
 
@@ -145,7 +145,7 @@
 
 Source `latest_oos` / batch 结果不自动等于平台 canonical benchmark。若 batch 是一次性事后窗口生成，它可能包含 later test window、selector/streak 状态或标签可见性，与 live-like strict PIT 不一致。平台 current/backtest/live 结果必须先声明 source 执行口径：`source_original_reproduction` 按原始 batch/window 完整复现，`source_strict_pit` 按原始 PIT 入口复现，`platform_live_pit_variant` 则必须获批并记录与 source-original 的差异。不得为了让 CompareGate 通过而复制 batch 输出，也不得手工补预测结果。
 
-同时，source batch 与 strict PIT 的差异不能成为修改算法内部逻辑的理由。必须先按 [SOURCE_ALGORITHM_FIDELITY.md](../../SOURCE_ALGORITHM_FIDELITY.md) 声明 source 执行口径：复现 source-original 就按原始 batch/window 完整复现；构造平台 live-like PIT 变体则必须获批并单独命名，且只能改变外层传入的可见数据截止/上下文，不能改特征、模型、投票或 fallback。
+同时，source batch 与 strict PIT 的差异不能成为修改算法内部逻辑的理由。必须先按 [SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md) 声明 source 执行口径：复现 source-original 就按原始 batch/window 完整复现；构造平台 live-like PIT 变体则必须获批并单独命名，且只能改变外层传入的可见数据截止/上下文，不能改特征、模型、投票或 fallback。
 
 source-original benchmark 跨到 gray/live 区间时，不得自动要求 live 逐日内部 score 与 source batch 相等。若 source batch 固定 `source_end` 晚于样本 `feature_date`，它只能验收 source-original backtest；gray_live/scheduled_live 必须保持 `feature_date` 硬截止，并用同一 live-safe 截止生成的 oracle 验收。任何文档、报告或口头状态都必须写清楚这是 source-original backtest、source strict PIT，还是 platform live PIT variant。若同一份 `original_predictions_sample.csv` 同时包含 historical 与 gray/live target，必须在状态文档或 summary 中把每行拆成 `historical/source-original`、`live-same-context` 或 `source-evidence-only`；只有同执行口径行能被宣称与 DB/API 完全一致。
 

@@ -6,9 +6,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AUTHORITATIVE_DOCS = [
-    PROJECT_ROOT / "docs" / "ARCHITECTURE.md",
+    PROJECT_ROOT / "docs" / "architecture" / "ARCHITECTURE.md",
     PROJECT_ROOT / "docs" / "CURRENT_STATUS.md",
-    PROJECT_ROOT / "docs" / "SCHEME_CONTRACT.md",
+    PROJECT_ROOT / "docs" / "architecture" / "SCHEME_CONTRACT.md",
     PROJECT_ROOT / "docs" / "sop" / "BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md",
 ]
 
@@ -24,7 +24,9 @@ class OneYearTargetDocsTests(unittest.TestCase):
                 self.assertNotIn("当前展示 `3Y/5Y/7Y/10Y` 四个国债活跃目标", text)
 
     def test_scheme_contract_tenor_set_includes_1y(self) -> None:
-        text = (PROJECT_ROOT / "docs" / "SCHEME_CONTRACT.md").read_text(encoding="utf-8")
+        text = (
+            PROJECT_ROOT / "docs" / "architecture" / "SCHEME_CONTRACT.md"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("`1Y/3Y/5Y/7Y/10Y`", text)
         self.assertNotIn("`3Y/5Y/7Y/10Y` ...", text)

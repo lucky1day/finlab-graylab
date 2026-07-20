@@ -16,13 +16,13 @@
 **更新日期**: 2026-07-17
 **适用范围**: 在 `bond-factor-lab` 中新增一个可调度、可写库、可在前端方案矩阵中对比的预测方案。
 
-> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../../HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../../PREDICTION_SEMANTICS.md)。Source-backed 方案的原始算法保真见 [SOURCE_ALGORITHM_FIDELITY.md](../../SOURCE_ALGORITHM_FIDELITY.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
+> 强约束 harness 总纲见 [HARNESS_ARCHITECTURE.md](../../architecture/HARNESS_ARCHITECTURE.md)。预测日期和实盘阶段语义见 [PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md)。Source-backed 方案的原始算法保真见 [SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md)。本 SOP 是执行入口；任何新增方案都必须按 harness gate 推进，不能临时绕过公共输入层、回测层或调度写库边界。
 >
 > 新增方案入口先读 [SCHEME_ONBOARDING_T0.md](../../sop/SCHEME_ONBOARDING_T0.md)，再按本文执行。本文是「改造进系统」段的人类执行手册。
 >
 > **新增方案开工前必须先读 [SCHEME_ONBOARDING_T0.md](../../sop/SCHEME_ONBOARDING_T0.md)**。T0 是 daily / weekly 通用的硬约束范式；本文负责展开具体步骤和命令。
 
-> 本文主体是 `runtime_type: native_adapter` 的完整工程式入库流程。收到“一个 `.py` + 一个 `.json`”的 Blackbox V2 交付时，不执行 Normalize/core/predict.py 改造，改按 [BLACKBOX_V2_PLATFORM.md](../../BLACKBOX_V2_PLATFORM.md) intake；两类方案仍使用同一个 `harness onboard {scheme_id} --stage all`，由显式 `runtime_type` 选择 Gate。
+> 本文主体是 `runtime_type: native_adapter` 的完整工程式入库流程。收到“一个 `.py` + 一个 `.json`”的 Blackbox V2 交付时，不执行 Normalize/core/predict.py 改造，改按 [BLACKBOX_V2_PLATFORM.md](../../architecture/BLACKBOX_V2_PLATFORM.md) intake；两类方案仍使用同一个 `harness onboard {scheme_id} --stage all`，由显式 `runtime_type` 选择 Gate。
 
 ## 1. 核心原则
 
@@ -329,7 +329,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
 
 后续所有新方案都按以下 gate 顺序推进。旧的手动命令仍可作为每个 gate 的实现方式，但不能跳过 gate。
 
-> 可执行 harness 的统一入口为 `python -m harness onboard {scheme_id} --stage all`；边界总纲见 [HARNESS_ARCHITECTURE.md](../../HARNESS_ARCHITECTURE.md)。下表每个 Gate 落地后对应一条 `python -m harness gate <name>` 命令；本节裸 conda 命令是该 Gate 的底层实现。
+> 可执行 harness 的统一入口为 `python -m harness onboard {scheme_id} --stage all`；边界总纲见 [HARNESS_ARCHITECTURE.md](../../architecture/HARNESS_ARCHITECTURE.md)。下表每个 Gate 落地后对应一条 `python -m harness gate <name>` 命令；本节裸 conda 命令是该 Gate 的底层实现。
 
 | Gate | 目标 | 通过证据 |
 |------|------|----------|
@@ -438,7 +438,7 @@ CompareGate 需要四份逐方案 benchmark 文件来验证平台改造后的输
 
 `confidence` 字段含义必须与原始算法一致：原始脚本如果输出概率/score，应映射到同一个数值；原始脚本没有置信度时，original/current 必须使用同一确定性代理值。benchmark 对齐的第一主语义是 source T 对齐平台 `feature_date`，不是对齐实盘 `predict_date`；月度指标、前端展示、回测/live 分区仍一律按 `target_date`。
 
-`current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与已声明 source 执行口径一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则该 PIT 必须按 [SOURCE_ALGORITHM_FIDELITY.md](../../SOURCE_ALGORITHM_FIDELITY.md) 明确标为 `platform_live_pit_variant`，CompareGate 或方案 benchmark summary 必须暴露差异，不能为了通过 gate 把 current 写成 source batch，也不能为了贴合 source batch 去改算法内部逻辑。
+`current_predictions_sample.csv` 不能靠复制 original 文件或 source `latest_oos` 结果生成。它必须由入库后的平台推理入口生成，并且使用与已声明 source 执行口径一致的输入历史起点、weekly/monthly as-of、`require_labels`/未来 label 处理和窗口。若原始 source batch 是事后批量口径，而平台确认采用 PIT 口径，则该 PIT 必须按 [SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md) 明确标为 `platform_live_pit_variant`，CompareGate 或方案 benchmark summary 必须暴露差异，不能为了通过 gate 把 current 写成 source batch，也不能为了贴合 source batch 去改算法内部逻辑。
 
 Source `latest_oos` / batch 文件只是一种 source evidence。进入平台前必须先判断它属于 `source_original_reproduction`、`source_strict_pit` 还是需要另行批准的 `platform_live_pit_variant`。如果一次性 batch 使用了更晚 test window、streak 状态、selector 状态或标签可见性，它可能和严格 PIT 结果不同。差异应记录在 `original_backtest_summary.json` / `current_backtest_summary.json` 的审计字段或方案 README 中，包括差异日期、source batch 方向、strict PIT 方向、基线票数或 fallback/streak 状态。不得手工补预测结果，也不得把 source batch 当作平台 live 口径真值；同样不得把平台 live-like PIT 口径包装成“已复现原始 source 输出”。如果 source-original batch 固定 `source_end` 晚于样本 `feature_date`，该 batch 的内部 score 只验收 source-original backtest；gray_live/scheduled_live 必须另用 `feature_date` 硬截止的 live-safe oracle 验收。
 

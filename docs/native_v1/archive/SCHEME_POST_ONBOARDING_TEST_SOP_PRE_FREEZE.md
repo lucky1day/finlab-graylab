@@ -21,7 +21,7 @@
 >
 > 新增方案入口先读 [SCHEME_ONBOARDING_T0.md](../../sop/SCHEME_ONBOARDING_T0.md)，再按 [SCHEME_ONBOARDING_SOP.md](../../sop/SCHEME_ONBOARDING_SOP.md) 和本文执行。本文是其「验证 + 落库 + 挂载」段的人类执行手册。
 >
-> Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](../../SOURCE_ALGORITHM_FIDELITY.md) 为准。本文的“版本一致”不得解释为只看最终方向；原始算法暴露的内部模型分数也必须纳入证据。
+> Source-backed 方案的原始算法保真以 [SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md) 为准。本文的“版本一致”不得解释为只看最终方向；原始算法暴露的内部模型分数也必须纳入证据。
 
 ---
 

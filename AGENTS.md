@@ -62,7 +62,7 @@ bond-factor-lab/
 
 Native source-backed 存量方案修复前必须做算法改动分级：L0 只允许平台 I/O、日期字段、extra、缓存、落库和审计适配；L1 是 source runner 明确暴露的上下文参数传递，必须逐项证明没有移动未 patch 的固定算法锚点；L2 是算法内部改动，默认禁止并 fail-closed。移动 IC screening cutoff、把 source 两段窗口改成单段窗口、把 target-date 月分组改成 feature 月或全局 `source_end`、改变特征列顺序、VT/selector/streak/fallback、内部 score 映射，都属于 L2；新算法或替代版本必须创建独立 Blackbox V2 trial。
 
-完整依赖方向规则见 [docs/CODE_ARCHITECTURE.md](docs/CODE_ARCHITECTURE.md)；源算法保真规则见 [docs/SOURCE_ALGORITHM_FIDELITY.md](docs/SOURCE_ALGORITHM_FIDELITY.md)；边界总纲见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
+完整依赖方向规则见 [docs/architecture/CODE_ARCHITECTURE.md](docs/architecture/CODE_ARCHITECTURE.md)；源算法保真规则见 [docs/architecture/SOURCE_ALGORITHM_FIDELITY.md](docs/architecture/SOURCE_ALGORITHM_FIDELITY.md)；边界总纲见 [docs/architecture/HARNESS_ARCHITECTURE.md](docs/architecture/HARNESS_ARCHITECTURE.md)。
 
 ## 方案接口规范
 
@@ -82,7 +82,7 @@ def run(predict_date: str) -> list[PredictionRecord]:
     """
 ```
 
-Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 Contract 1.0 的 `predict/backtest` CLI。共享契约见 [docs/SCHEME_CONTRACT.md](docs/SCHEME_CONTRACT.md)，Native 专属契约见 [docs/native_v1/SCHEME_CONTRACT.md](docs/native_v1/SCHEME_CONTRACT.md)，Blackbox 上游契约见 [docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。
+Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 Contract 1.0 的 `predict/backtest` CLI。共享契约见 [docs/architecture/SCHEME_CONTRACT.md](docs/architecture/SCHEME_CONTRACT.md)，Native 专属契约见 [docs/native_v1/SCHEME_CONTRACT.md](docs/native_v1/SCHEME_CONTRACT.md)，Blackbox 上游契约见 [docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](docs/sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)。
 
 ## 方案身份与 Registry
 
@@ -100,7 +100,7 @@ Blackbox V2 新方案只交付 `{scheme_id}.py + {scheme_id}.json`，并实现 C
 - `feature_date` — 数据截止日 / 预测站位日
 - `target_date` — 验证目标日，用于展示、去重、actual join 和月度统计归属
 
-`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘）；日频实盘满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`，周频实盘先由 `predict_date` 反推上一交易日 `feature_date` 再映射周，月频 source-backed 方案若声明自然 15 号触发则 `predict_date` 保留自然月 15 号、`feature_date/target_date` 分别取当前月/目标月 15 号及以前最近交易日。历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`，但已有灰度观察区时必须按方案级 `target_date` 起点截断；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为灰度实盘，不得留在 latest backtest。原始算法 benchmark 里的 `T/date/predict_date` 表达 source T / 预测站位日，进入平台后必须对齐 DB 明细的 `feature_date`，不是对齐 live `predict_date`；跨灰度边界的样本必须先按 `target_date` 和 benchmark role 分流，同执行口径才可对实盘表断言数值一致，否则用 live-safe oracle 核验。完整规则见 [docs/PREDICTION_SEMANTICS.md](docs/PREDICTION_SEMANTICS.md)。
+`feature_date` 是唯一标准数据截止字段；`anchor_date` 只允许作为方案内部算法变量或审计 extra，前端和业务规则不得依赖它。实盘分为 `gray_live`（灰度实盘）和 `scheduled_live`（正式 scheduler 实盘）；日频实盘满足 `predict_date=T+1`、`feature_date=T`、`target_date=T+horizon`，周频实盘先由 `predict_date` 反推上一交易日 `feature_date` 再映射周，月频 source-backed 方案若声明自然 15 号触发则 `predict_date` 保留自然月 15 号、`feature_date/target_date` 分别取当前月/目标月 15 号及以前最近交易日。历史回测必须满足 `predict_date=feature_date=T`、`target_date=T+horizon`，但已有灰度观察区时必须按方案级 `target_date` 起点截断；当前 0629 月度三方案中 `target_date >= 2026-06-01` 均为灰度实盘，不得留在 latest backtest。原始算法 benchmark 里的 `T/date/predict_date` 表达 source T / 预测站位日，进入平台后必须对齐 DB 明细的 `feature_date`，不是对齐 live `predict_date`；跨灰度边界的样本必须先按 `target_date` 和 benchmark role 分流，同执行口径才可对实盘表断言数值一致，否则用 live-safe oracle 核验。完整规则见 [docs/architecture/PREDICTION_SEMANTICS.md](docs/architecture/PREDICTION_SEMANTICS.md)。
 
 ## 方案入库流程（强约束 harness）
 
@@ -121,7 +121,7 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 # 副作用段不在 all 内，必须显式授权且 fail-closed
 ```
 
-当前 Blackbox V2 最多登记为 `shadow + paused`，不得宣称 active/live；平台操作见 [docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。Native 存量维护见 [docs/sop/NATIVE_V1_MAINTENANCE_SOP.md](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)。Harness 边界见 [docs/HARNESS_ARCHITECTURE.md](docs/HARNESS_ARCHITECTURE.md)。
+Blackbox V2 自动 Gate 不自动授予生产运行权限；具体方案必须完成生产准备核验并取得专项授权后，才可执行 activate、持久化回测或 live，且授权不得外推到其他方案。平台操作见 [docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](docs/sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)，生产条件见 [docs/blackbox_v2/PRODUCTION_READINESS.md](docs/blackbox_v2/PRODUCTION_READINESS.md)。Native 存量维护见 [docs/sop/NATIVE_V1_MAINTENANCE_SOP.md](docs/sop/NATIVE_V1_MAINTENANCE_SOP.md)。Harness 边界见 [docs/architecture/HARNESS_ARCHITECTURE.md](docs/architecture/HARNESS_ARCHITECTURE.md)。
 
 ## 数据库表
 

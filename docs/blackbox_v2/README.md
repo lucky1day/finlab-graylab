@@ -17,12 +17,18 @@ Blackbox V2 是所有后续新算法、新方案 ID、新目标、新任务和�
 | 上游契约 | [上游交付 SOP](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) | 算法工程师交付、运行和自验标准 | 是 |
 | 平台操作 | [平台入库 SOP](../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | 平台收包、Gate、shadow 和失败恢复 | 是 |
 | 生产准备 | [生产晋级条件](PRODUCTION_READINESS.md) | 管理从 shadow 到 active/live 的代码、真实交付覆盖和授权门槛 | 否，当前为阻塞草案 |
-| 架构边界 | [平台架构说明](../BLACKBOX_V2_PLATFORM.md) | 双运行时、数据流和实现边界 | 是 |
+| 架构边界 | [平台架构说明](../architecture/BLACKBOX_V2_PLATFORM.md) | 双运行时、数据流和实现边界 | 是 |
 | 试验记录 | [入库试验台账](records/ONBOARDING_TRIAL_LEDGER.md) | 记录具体 generation、snapshot、run 和整改项 | 否 |
 | 稳定性审计 | [2026-07-19 全链路认证](records/FULL_PIPELINE_STABILITY_AUDIT_20260719.md) | 隔离验证入库、回测、live、actual、API 和前端，并给出时点结论 | 否 |
 | 生产灰度记录 | [2026-07-20 专项激活](records/PRODUCTION_GRAY_ACTIVATION_20260720.md) | 记录真实方案的生产 Activation、回测、gray live 和下游证据 | 否 |
 | 数据契约 | [DataBridge V1 数据说明](data_bridge_v1/README.md) | 指向机器 Schema，提供脱敏结构样例 | 否，机器 Schema 优先 |
 | 历史档案 | [旧 Excel 工程包 SOP](archive/UPSTREAM_DELIVERY_SOP_EXCEL_DRAFT.md) | 保留决策演进和原始讨论背景 | 否 |
+
+本目录的分层入口：
+
+- [DataBridge V1](data_bridge_v1/README.md)
+- [试验记录](records/README.md)
+- [历史档案](archive/README.md)
 
 规则冲突时，按以下优先级处理：
 

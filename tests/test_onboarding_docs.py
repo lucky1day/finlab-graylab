@@ -64,7 +64,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_SOP.md",
             DOCS_ROOT / "sop" / "SCHEME_POST_ONBOARDING_TEST_SOP.md",
-            DOCS_ROOT / "SCHEME_PARADIGM.md",
+            DOCS_ROOT / "archive" / "SCHEME_PARADIGM.md",
         )
         for path in redirects:
             text = path.read_text(encoding="utf-8")
@@ -86,6 +86,104 @@ class OnboardingDocumentationTests(unittest.TestCase):
         for status in ("CURRENT", "LEGACY_MAINTENANCE", "HISTORICAL"):
             self.assertIn(f"`{status}`", text)
 
+    def test_docs_root_contains_only_navigation_and_current_status(self) -> None:
+        self.assertEqual(
+            {path.name for path in DOCS_ROOT.glob("*.md")},
+            {"README.md", "CURRENT_STATUS.md"},
+        )
+
+    def test_each_document_directory_has_a_complete_index(self) -> None:
+        missing_indexes: list[str] = []
+        incomplete_indexes: list[str] = []
+
+        directories = {DOCS_ROOT}
+        directories.update(path.parent for path in DOCS_ROOT.rglob("*.md"))
+        for directory in sorted(directories):
+            markdown_files = {
+                path.name
+                for path in directory.glob("*.md")
+                if path.name != "README.md"
+            }
+            child_doc_dirs = {
+                child.name
+                for child in directory.iterdir()
+                if child.is_dir() and any(child.rglob("*.md"))
+            }
+            index = directory / "README.md"
+            if not index.exists():
+                missing_indexes.append(str(directory.relative_to(PROJECT_ROOT)))
+                continue
+
+            text = index.read_text(encoding="utf-8")
+            for marker in ("**文档状态**", "**目标读者**", "**最后核验日期**"):
+                if marker not in text:
+                    incomplete_indexes.append(
+                        f"{index.relative_to(PROJECT_ROOT)} missing metadata {marker}"
+                    )
+
+            targets = {
+                raw.split("#", 1)[0].strip("<>")
+                for raw in re.findall(r"\[[^\]]*\]\(([^)]+)\)", text)
+            }
+            for filename in sorted(markdown_files):
+                if filename not in targets:
+                    incomplete_indexes.append(
+                        f"{index.relative_to(PROJECT_ROOT)} missing {filename}"
+                    )
+            for child in sorted(child_doc_dirs):
+                if f"{child}/README.md" not in targets:
+                    incomplete_indexes.append(
+                        f"{index.relative_to(PROJECT_ROOT)} missing {child}/README.md"
+                    )
+
+        self.assertEqual(missing_indexes, [])
+        self.assertEqual(incomplete_indexes, [])
+
+    def test_current_status_is_a_concise_snapshot(self) -> None:
+        text = (DOCS_ROOT / "CURRENT_STATUS.md").read_text(encoding="utf-8")
+        self.assertLessEqual(len(text.splitlines()), 120)
+        self.assertIn("历史状态记录", text)
+
+    def test_navigation_does_not_duplicate_dynamic_runtime_state(self) -> None:
+        navigation = (
+            (DOCS_ROOT / "README.md").read_text(encoding="utf-8")
+            + (DOCS_ROOT / "onboarding" / "README.md").read_text(encoding="utf-8")
+        )
+        for marker in (
+            "当前数量",
+            "29 个",
+            "1 个 shadow",
+            "最多进入 `shadow + paused`",
+            "当前生命周期上限",
+            "hr_",
+            "snapshot-",
+        ):
+            self.assertNotIn(marker, navigation)
+
+    def test_current_docs_use_the_specific_authorization_boundary(self) -> None:
+        current_docs = (
+            DOCS_ROOT / "architecture" / "ARCHITECTURE.md",
+            DOCS_ROOT / "architecture" / "SCHEME_CONTRACT.md",
+            DOCS_ROOT / "architecture" / "HARNESS_ARCHITECTURE.md",
+            DOCS_ROOT / "architecture" / "BLACKBOX_V2_PLATFORM.md",
+            DOCS_ROOT / "product" / "GRAY_LAB_USER_MANUAL.md",
+        )
+        banned = (
+            "当前 Blackbox V2 正式能力止于 `shadow + paused`",
+            "当前禁止 activate/live",
+            "JSON Result 解析器当前接受字符串方向",
+            "Contract 1.0 禁止 activate/live 目前是操作政策",
+            "Blackbox V2 当前最多进入 `shadow + paused`",
+            "Blackbox V2 当前最多为 `shadow + paused`",
+            "当前 Blackbox 平台能力止于 `shadow + paused`",
+        )
+        for path in current_docs:
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                for marker in banned:
+                    self.assertNotIn(marker, text)
+                self.assertIn("专项授权", text)
+
     def test_current_entry_points_do_not_route_new_schemes_to_native(self) -> None:
         entry_points = (
             PROJECT_ROOT / "README.md",
@@ -98,7 +196,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             self.assertIn("Blackbox V2", text)
             self.assertNotRegex(text, r"新增(?:原生|Native).*SCHEME_ONBOARDING")
-        self.assertIn("所有后续新增", (DOCS_ROOT / "onboarding" / "README.md").read_text(encoding="utf-8"))
+        self.assertIn("后续新增方案唯一入口", (DOCS_ROOT / "onboarding" / "README.md").read_text(encoding="utf-8"))
 
     def test_blackbox_production_boundary_is_explicit(self) -> None:
         readiness = (DOCS_ROOT / "blackbox_v2" / "PRODUCTION_READINESS.md").read_text(encoding="utf-8")

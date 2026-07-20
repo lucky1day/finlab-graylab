@@ -5,7 +5,7 @@
 **目标读者**：维护既有 Native V1 方案的平台工程师
 **最后核验日期**：2026-07-19
 
-> 本契约只适用于 `deploy/onboarding_policy_v1.json` 登记的存量方案，禁止用于新增方案。共享身份、日期和结果语义以[共享方案契约](../SCHEME_CONTRACT.md)为准。
+> 本契约只适用于 `deploy/onboarding_policy_v1.json` 登记的存量方案，禁止用于新增方案。共享身份、日期和结果语义以[共享方案契约](../architecture/SCHEME_CONTRACT.md)为准。
 
 ## 1. 目录契约
 
@@ -69,11 +69,11 @@ Adapter 只负责平台输入、日期上下文、算法调用和结果映射：
 - source-backed 算法保持时间起点、窗口、特征顺序、模型参数、投票/fallback 和内部 score 映射。
 - `legacy_*.py` 只可作为证据归档，活跃模块不得依赖。
 
-改动分级遵循[源算法保真规范](../SOURCE_ALGORITHM_FIDELITY.md)：L0 可维护；L1 必须逐项举证；L2 默认禁止并应改走独立 Blackbox V2 trial。
+改动分级遵循[源算法保真规范](../architecture/SOURCE_ALGORITHM_FIDELITY.md)：L0 可维护；L1 必须逐项举证；L2 默认禁止并应改走独立 Blackbox V2 trial。
 
 ## 5. 结果与副作用
 
-`PredictionRecord`、三日期、`prediction_phase` 和 composite Registry 身份遵循[共享方案契约](../SCHEME_CONTRACT.md)与[预测语义](../PREDICTION_SEMANTICS.md)。
+`PredictionRecord`、三日期、`prediction_phase` 和 composite Registry 身份遵循[共享方案契约](../architecture/SCHEME_CONTRACT.md)与[预测语义](../architecture/PREDICTION_SEMANTICS.md)。
 
 只有 `scheduler.repository`、`backtests.repository` 和 actual updater 可以写库。自动 Gate 不得写预测、回测等业务表；任何 persist、live 或状态变化仍需受控授权。
 

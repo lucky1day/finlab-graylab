@@ -16,15 +16,15 @@
 **更新日期**: 2026-07-14
 **状态**: 目标态设计提案，非现行强制规范。
 **定位**: 描述方案从「取数 → 消费 → 保存 → 输出」的候选目标范式，供后续平台能力改造评审。本文不会自动改变现有方案接口、目录结构、source benchmark 或 harness gate。
-**现行契约优先级**: [SCHEME_CONTRACT.md](../../SCHEME_CONTRACT.md)、[PREDICTION_SEMANTICS.md](../../PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../../SOURCE_ALGORITHM_FIDELITY.md)、[CODE_ARCHITECTURE.md](../../CODE_ARCHITECTURE.md) 与 [HARNESS_ARCHITECTURE.md](../../HARNESS_ARCHITECTURE.md) 共同构成当前可执行规则；与本文冲突时，以这些现行文档和机器 gate 为准。
+**现行契约优先级**: [SCHEME_CONTRACT.md](../../architecture/SCHEME_CONTRACT.md)、[PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md)、[CODE_ARCHITECTURE.md](../../architecture/CODE_ARCHITECTURE.md) 与 [HARNESS_ARCHITECTURE.md](../../architecture/HARNESS_ARCHITECTURE.md) 共同构成当前可执行规则；与本文冲突时，以这些现行文档和机器 gate 为准。
 
 > 本文中的 **必须 / 禁止 / 应当** 只描述目标态验收标准。只有对应接口、迁移、gate、测试和现行契约同步落地后，条款才可转为 fail-closed 规则。不得使用本文尚未落地的 `train/predict`、`SnapshotGate`、`DeterminismGate` 或目录要求拒绝当前方案。
 >
 > source-backed 方案迁移仍受算法保真分级约束：L0 平台 I/O 适配可以评审，L1 必须证明未移动算法锚点，L2 算法内部改动默认禁止。本文不得被用来重写原始训练、窗口、投票、fallback、阈值或内部 score 映射。
 > 业务语义前置依赖：
-> - 日期语义（`predict_date` / `feature_date` / `target_date` / `prediction_phase`）以 [PREDICTION_SEMANTICS.md](../../PREDICTION_SEMANTICS.md) 为准。
-> - 分层边界（输入单点 / 写库单点 / core 纯净）以 [CODE_ARCHITECTURE.md](../../CODE_ARCHITECTURE.md) 与 [HARNESS_ARCHITECTURE.md](../../HARNESS_ARCHITECTURE.md) 为准。
-> - 方案身份（`base_scheme_id` vs registry composite `scheme_id`）以 [SCHEME_CONTRACT.md](../../SCHEME_CONTRACT.md) 为准。
+> - 日期语义（`predict_date` / `feature_date` / `target_date` / `prediction_phase`）以 [PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md) 为准。
+> - 分层边界（输入单点 / 写库单点 / core 纯净）以 [CODE_ARCHITECTURE.md](../../architecture/CODE_ARCHITECTURE.md) 与 [HARNESS_ARCHITECTURE.md](../../architecture/HARNESS_ARCHITECTURE.md) 为准。
+> - 方案身份（`base_scheme_id` vs registry composite `scheme_id`）以 [SCHEME_CONTRACT.md](../../architecture/SCHEME_CONTRACT.md) 为准。
 
 ---
 
@@ -72,9 +72,9 @@
 
 ## 1. ①取数
 
-**1.1** 当前与目标态都必须保持 `shared.input_artifacts` 为算法输入唯一入口；它内部调用 `shared.data_service` 从 DB 导出并生成 `InputArtifact`。adapter（`predict.py`）和 backtest runner **禁止**绕过 `input_artifacts` 自拼 SQL、自连 DB、自读源表。此即「输入单点」不变量（[CODE_ARCHITECTURE.md](../../CODE_ARCHITECTURE.md)）。
+**1.1** 当前与目标态都必须保持 `shared.input_artifacts` 为算法输入唯一入口；它内部调用 `shared.data_service` 从 DB 导出并生成 `InputArtifact`。adapter（`predict.py`）和 backtest runner **禁止**绕过 `input_artifacts` 自拼 SQL、自连 DB、自读源表。此即「输入单点」不变量（[CODE_ARCHITECTURE.md](../../architecture/CODE_ARCHITECTURE.md)）。
 
-**1.2** 方案**必须**在 `config.yaml` 的 `input_spec` 声明取数口径（`data_version` / `required_columns` / 频率 / 必要的 `weekly_variant` / `auxiliary_inputs`），使 harness 无需读算法即可校验输入（字段级契约见 [SCHEME_CONTRACT.md](../../SCHEME_CONTRACT.md) §1）。
+**1.2** 方案**必须**在 `config.yaml` 的 `input_spec` 声明取数口径（`data_version` / `required_columns` / 频率 / 必要的 `weekly_variant` / `auxiliary_inputs`），使 harness 无需读算法即可校验输入（字段级契约见 [SCHEME_CONTRACT.md](../../architecture/SCHEME_CONTRACT.md) §1）。
 
 **1.3** 取数的时间截止**必须**是点时的 `feature_date`，由 `shared.calendar_service` 按 `predict_date` 与 run_mode 解析；**禁止**算法层自行做「当前日 −1 天」之类的临时位移。
 
@@ -105,7 +105,7 @@ inject(df_norm) → core.train / core.predict # 直接内存注入，禁止读�
 
 **2.5** 目标态可把方案级 `check_data/` 作为实盘输入快照视图。当前权威运行期位置仍是 `backtest_artifacts/runtime_inputs/{scheme_id}/`，路径由 `shared.artifact_paths` 管理；未完成仓库级迁移前不得另建第二套权威输入来源。
 
-**2.6 core 零 DB、零文件 IO**：core 只吃传入的 `DataFrame`，**禁止**自己读写任何文件或连库（[CODE_ARCHITECTURE.md](../../CODE_ARCHITECTURE.md) core 纯净不变量）。
+**2.6 core 零 DB、零文件 IO**：core 只吃传入的 `DataFrame`，**禁止**自己读写任何文件或连库（[CODE_ARCHITECTURE.md](../../architecture/CODE_ARCHITECTURE.md) core 纯净不变量）。
 
 **2.7** harness **必须**提供一条快照无损断言（设计名 `SnapshotGate`）：`read_back(check_data_csv).equals(df_norm)`，只在测试/CI 跑，不进实盘热路径，用以守住 2.4 不被改坏。
 
@@ -314,8 +314,8 @@ schemes/{scheme_id}/
 ## 9. 与现有文档的关系
 
 - 本文是**生命周期与数据流的目标态提案**，不是新增方案前置强制读物。新增方案仍以 [sop/SCHEME_ONBOARDING_T0.md](../../sop/SCHEME_ONBOARDING_T0.md) 和现行契约为准。
-- [SCHEME_CONTRACT.md](../../SCHEME_CONTRACT.md) 是 config / predict.py / core 的当前字段级机器契约；本文 §3 的 `train` 钩子与 §4 的富化字段只有在 SCHEME_CONTRACT、schema、gate 和迁移同步完成后才生效。
-- [PREDICTION_SEMANTICS.md](../../PREDICTION_SEMANTICS.md) 定义本文反复引用的日期语义。
-- [HARNESS_ARCHITECTURE.md](../../HARNESS_ARCHITECTURE.md) / [CODE_ARCHITECTURE.md](../../CODE_ARCHITECTURE.md) 定义本文依赖的分层与 gate 边界；§8 中的 SnapshotGate / DeterminismGate 为本文新增的设计性 gate，须按这两份文档的 harness 边界落地。
+- [SCHEME_CONTRACT.md](../../architecture/SCHEME_CONTRACT.md) 是 config / predict.py / core 的当前字段级机器契约；本文 §3 的 `train` 钩子与 §4 的富化字段只有在 SCHEME_CONTRACT、schema、gate 和迁移同步完成后才生效。
+- [PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md) 定义本文反复引用的日期语义。
+- [HARNESS_ARCHITECTURE.md](../../architecture/HARNESS_ARCHITECTURE.md) / [CODE_ARCHITECTURE.md](../../architecture/CODE_ARCHITECTURE.md) 定义本文依赖的分层与 gate 边界；§8 中的 SnapshotGate / DeterminismGate 为本文新增的设计性 gate，须按这两份文档的 harness 边界落地。
 
 > 本文描述候选目标范式。具体 gate 实现、目录迁移与现有 `run(predict_date)` 单钩子契约的迁移，必须按平台能力改造流程单独设计、验证和授权；在此之前不得改变现有方案验收结论。

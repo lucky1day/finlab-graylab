@@ -1,5 +1,11 @@
 # Bond Factor Lab Blackbox V2 接入规划与试验记录
 
+**文档状态**：`HISTORICAL`
+
+**目标读者**：平台入库、审计和复盘人员
+
+**最后核验日期**：2026-07-20
+
 **记录时区**：除明确标注 UTC 外，本文时间均为 `Asia/Shanghai`。
 **文档性质**：追加式平台规划和试验台账，不是上游交付契约，也不是平台操作 SOP。
 **维护规则**：只追加、不覆盖；每条结论必须带执行时间和时区。
@@ -8,7 +14,7 @@
 
 - [平台 Blackbox V2 入库 SOP](../../sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)
 - [上游 Blackbox V2 交付 SOP](../../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
-- [双运行时架构与实现边界](../../BLACKBOX_V2_PLATFORM.md)
+- [双运行时架构与实现边界](../../architecture/BLACKBOX_V2_PLATFORM.md)
 - [Blackbox V2 文档管理](../README.md)
 
 本文只记录具体方案、generation、snapshot、Harness run、数据库核验和待整改事项。通用契约变更必须修改仓库权威 SOP；外发副本由仓库文件生成，不在仓库外独立维护。本文中的历史实测值不得反向改变通用契约。
