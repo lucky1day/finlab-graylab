@@ -366,6 +366,64 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(all(result.passed for result in results), [result.errors for result in results])
 
+    def test_api_readiness_allows_active_scheme_recertification(self) -> None:
+        from harness.blackbox_v2.gates import BlackboxApiReadinessGate, InputState
+        from scheduler.blackbox_v2_runner import RuntimeProfile
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.contracts import BlackboxRequest
+        from shared.blackbox_v2.intake import intake_delivery
+        from shared.blackbox_v2.requests import write_request
+        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+        from tests.test_blackbox_v2_runner import _SUCCESS_SCRIPT
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming", script=_SUCCESS_SCRIPT),
+                schemes_root=root / "schemes",
+            )
+            config = replace(
+                load_scheme_config(scheme_dir / "config.yaml"),
+                status="active",
+                version_status="active",
+            )
+            frames = _snapshot_frames()
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={name: list(frame.columns) for name, frame in frames.items()},
+                schema_version="data-bridge-v1",
+            )
+            request = BlackboxRequest(
+                request_id="trial-request",
+                predict_date="2026-07-20",
+                feature_date="2026-07-17",
+                target_date="2026-07-24",
+                daily_cutoff_key="2026-07-15",
+                weekly_cutoff_key="202627",
+                monthly_cutoff_key="202606",
+            )
+            state = InputState(
+                snapshot=snapshot,
+                request_path=write_request(request, root / "request.json"),
+                request=request,
+            )
+            ctx = _context(root, config)
+            with (
+                patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
+                patch(
+                    "harness.blackbox_v2.gates._profile",
+                    return_value=RuntimeProfile.for_tests(),
+                ),
+            ):
+                result = BlackboxApiReadinessGate().run(ctx)
+
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertTrue(result.passed, result.errors)
+        self.assertEqual(evidence["lifecycle_mode"], "active_recertification")
+        self.assertTrue(evidence["scheduler_eligible"])
+        self.assertTrue(evidence["api_visible"])
+
     def test_persist_backtest_requires_signed_exact_authorization_and_verifies_deltas(self) -> None:
         from harness.authorization import issue_token
         from harness.blackbox_v2.gates import BlackboxBacktestGate, InputState, PassedAllRun

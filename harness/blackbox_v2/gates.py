@@ -615,14 +615,32 @@ class BlackboxApiReadinessGate(_BlackboxGate):
             errors.append("PredictionRecord scheme_id does not match base scheme identity")
         if record.target_tenor != metadata.target_tenor or record.horizon != metadata.horizon:
             errors.append("PredictionRecord target identity does not match Metadata")
-        if cfg.status != "paused":
-            errors.append("Blackbox V2 trial config must remain paused before shadow registration")
+        if cfg.status == "paused":
+            lifecycle_mode = "pre_shadow"
+            scheduler_eligible = False
+            api_visible = False
+        elif cfg.status == "active":
+            lifecycle_mode = "active_recertification"
+            scheduler_eligible = True
+            api_visible = True
+            if cfg.version_status != "active":
+                errors.append(
+                    "active Blackbox V2 recertification requires version_status=active"
+                )
+        else:
+            lifecycle_mode = "invalid"
+            scheduler_eligible = False
+            api_visible = False
+            errors.append(
+                "Blackbox V2 api-readiness requires paused onboarding or active recertification"
+            )
         evidence = [
             Evidence("prediction_record", asdict(record)),
             Evidence("registry_id", registry_id),
             Evidence("registry_status", cfg.status),
-            Evidence("scheduler_eligible", False),
-            Evidence("api_visible", False),
+            Evidence("lifecycle_mode", lifecycle_mode),
+            Evidence("scheduler_eligible", scheduler_eligible),
+            Evidence("api_visible", api_visible),
         ]
         return _finish(self.name, started_at, evidence, errors)
 

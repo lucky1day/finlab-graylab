@@ -211,6 +211,8 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 
 报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。`api-readiness` 中的 scheduler/API 状态也是结构预期，不能单独证明生产不可见。
 
+`api-readiness` 按生命周期区分两种结构模式：首次入库的 `paused` 方案使用 `pre_shadow`，预期 scheduler/API 不可见；已经专项激活的方案重新执行 all-stage 时使用 `active_recertification`，要求 `status=active + version_status=active`，并把 scheduler/API 可见性记录为 active 预期。两种模式都只做内存结构验证，不在自动段写业务表，也不能替代正式 HTTP、Registry 或 scheduler 探针。
+
 ### 4.3 自动段副作用
 
 `--stage all` 可以写：
