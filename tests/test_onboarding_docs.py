@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import unittest
 from pathlib import Path
@@ -101,6 +102,27 @@ class OnboardingDocumentationTests(unittest.TestCase):
 
         for platform_only_marker in ("gray_target_start", "phase_ranges", "deployed_at"):
             self.assertNotIn(platform_only_marker, upstream)
+
+    def test_blackbox_platform_sop_defines_authorized_gray_backfill(self) -> None:
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+        for marker in (
+            "gray-backfill",
+            "gray_backfill_write",
+            "historical_as_of_replay",
+            "current_snapshot_as_of_not_historical_vintage",
+            "普通 `live` Gate",
+            "fresh-only",
+            "insert-only",
+            "重复 target",
+            "灰度实盘（目标期）",
+        ):
+            self.assertIn(marker, platform)
+
+        upstream_hash = hashlib.sha256(UPSTREAM_SOP.read_bytes()).hexdigest()
+        self.assertEqual(
+            upstream_hash,
+            "b393bb37bd9e8b404fe1af73716e8ddb8951933159b22040243c1b7376598cae",
+        )
 
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (

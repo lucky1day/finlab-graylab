@@ -1223,8 +1223,15 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["phaseRanges"][0]["prediction_phase"], "gray_live")
         self.assertEqual(result["months"], ["2026-04:backtest", "2026-06:live"])
         self.assertIn("实盘发出起点 2026-05-26", result["detailMeta"])
-        self.assertIn("灰度实盘 2026-05-26 至 2026-06-11", result["detailMeta"])
-        self.assertIn("正式调度起点 2026-06-12", result["detailMeta"])
+        self.assertIn(
+            "灰度实盘（目标期）2026-06-01 至 2026-06-17"
+            "（信号发出 2026-05-26 至 2026-06-11）",
+            result["detailMeta"],
+        )
+        self.assertIn(
+            "正式调度发出起点 2026-06-12（目标期起点 2026-06-18）",
+            result["detailMeta"],
+        )
 
     def test_same_month_backtest_and_live_split_into_two_rows(self) -> None:
         """同月既有回测又有实盘时，应展示两行（回测行 + 实盘行），不覆盖。"""

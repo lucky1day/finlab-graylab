@@ -366,7 +366,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 ## 7. 生产激活、灰度补齐与前端验收
 
-本节适用于取得具体方案 `blackbox_activate`、`live_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功、Registry 变为 active 且方案挂载生产任务时，才表示方案部署进入实盘链路。部署上去的那一刻即属于实盘运行状态，不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
+本节适用于取得具体方案 `blackbox_activate`、`live_write`、`gray_backfill_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功、Registry 变为 active 且方案挂载生产任务时，才表示方案部署进入实盘链路。部署上去的那一刻即属于实盘运行状态，不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
 
 ### 7.1 灰度起点、部署时间和正式调度起点
 
@@ -396,7 +396,33 @@ Activation 完成后、前端验收前，必须按时间顺序补齐从 `gray_ta
 - 周频：先枚举应有目标周末，再反推上一轮调度日；`predict_date` 可能位于 5 月；
 - 月频：按目标月观察点反推自然触发日；若合同规定自然 15 号，不能顺延为交易日。
 
-每个补齐点必须使用独立、范围匹配的一次性 `live_write` token，并显式指定 `prediction_phase=gray_live`。算法输入和三个 cutoff key 必须硬截止在该点的 `feature_date`；当前 DataBridge 已包含后续数据时仍不得读入未来行。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
+普通 `live` Gate 仍是 fresh-only：它只接受 `live_write` token，并要求 DataBridge `refresh_date` 等于本次运行日。历史 gray 缺口只能使用显式 `gray-backfill` Gate；不得放宽普通 LiveGate、伪造 DataBridge freshness 或直接调用 repository 绕过授权。
+
+每个补齐点必须使用独立、范围匹配的一次性 `gray_backfill_write` token，并显式指定 `prediction_phase=gray_live`。token 必须绑定 canonical exact `predict_date`、scheme、version 和最新通过的 all-stage run，TTL 不超过 900 秒；缺失日期、日期不匹配、跨 Gate 使用、过期或重放全部拒绝。
+
+```bash
+TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness auth issue \
+    --scheme-id {scheme_id} \
+    --action gray_backfill_write \
+    --predict-date {historical_signal_date} \
+    --scheme-version {passed_scheme_version} \
+    --harness-run-id {passed_harness_run_id} \
+    --expires-in 900 \
+    --issued-by {operator})
+
+conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness gate gray-backfill \
+    --scheme-id {scheme_id} \
+    --predict-date {historical_signal_date} \
+    --prediction-phase gray_live \
+    --algo-env forecast_env_blackbox_v1 \
+    --authorize "$TOKEN"
+```
+
+`gray-backfill` 使用 `historical_as_of_replay` 输入模式：完整校验当前 DataBridge 后，允许历史 `predict_date` 读取当前同代快照，但 Request 的三个 cutoff key 仍硬截止在该点的 `feature_date`。该结果必须标记 `current_snapshot_as_of_not_historical_vintage`，只能解释为当前快照上的 live-safe as-of replay，不能宣称历史 vintage PIT。Gate 在预检与实际快照之间 pin `generation_id + refresh_date`；切代即失败。prediction `extra` 必须持久化 snapshot、generation、refresh、三频 cutoff、replay semantics 和 backfill 时间。
+
+历史 gray 写入采用 insert-only，并依赖 `uk_scheme_tenor_target` 原子拒绝重复 target；不得进入 `ON DUPLICATE KEY UPDATE`。预检已存在、竞争事务冲突、算法失败、provenance 缺失或 Gate 表增量不是 run/prediction/log 精确各 `+1` 时，事务失败且不能覆盖首条预测。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
 
 Activation 当天还必须为当前可运行点执行至少一次受控 `gray_live`，证明部署时刻已经进入实盘链路。后续只有 scheduler 在真实时钟自然触发的成功预测才能标为 `scheduled_live`。
 
@@ -407,7 +433,7 @@ Activation 当天还必须为当前可运行点执行至少一次受控 `gray_li
 1. `/api/schemes` 的 active composite row 必须包含真实、非空的 `deployed_at`；前端候选排行的“部署时间”只能来自该字段，不得使用 hardcoded 日期、默认值或 scheme ID 特判。
 2. `/api/backtests/factor-lab` 的 canonical latest-success 明细必须全部满足 `target_date < gray_target_start`；前端不得靠裁剪或覆盖历史行来掩盖错误的回测落库。
 3. `/api/metrics/{registry_scheme_id}` 必须返回全部 gray/scheduled live 明细、标准三日期、`prediction_phase` 和 `phase_ranges`；`phase_ranges` 至少能分别表达灰度实盘区间和正式调度起点。
-4. 前端“实盘发出起点”取 live 明细的最小 `predict_date`；“灰度实盘”与“正式调度起点”取 `phase_ranges`；“部署时间”继续单独显示 `deployed_at`，三者不得混成一个日期。
+4. 前端“实盘发出起点”取 live 明细的最小 `predict_date`；“灰度实盘（目标期）”必须优先显示 `phase_ranges.start_target_date/end_target_date`，并在括号中另列信号发出区间；“正式调度发出起点”取 scheduled phase 的 `start_predict_date`，可另列目标期起点；“部署时间”继续单独显示 `deployed_at`，这些日期不得混成一个边界。
 5. 回测和 live 统一按 `target_date` 归属月份。“全部”口径必须在第一条 live target 月前插入实盘分隔线；分隔线之前不得包含 `target_date >= gray_target_start` 的回测，之后不得遗漏应有的 gray live。
 6. 同一方案、同一 `target_date` 同时出现在 backtest 与 live 是数据分区失败，必须阻断上线；不得通过前端同月追加、覆盖、去重或隐藏其中一侧宣称验收通过。
 7. actual 尚未到达的 live target 显示“待验证”，计入展示样本数，但不进入准确率分母；不得人工补 actual，也不得把 pending 显示成预测错误。
@@ -438,7 +464,7 @@ Activation 当天还必须为当前可运行点执行至少一次受控 `gray_li
 | shadow 失败但 Registry/版本已变 | 禁止自动重试或删除记录 | 完成配置、Registry、版本三方 reconciliation |
 | API/scheduler 意外出现 trial | 保持 Registry paused，不执行 live | 找到来源并移除生产入口 |
 | canonical backtest 含 gray target | 保留旧 run 审计，停止前端验收 | 用绑定 `gray_target_start` 的新 token 生成新的 immutable run；不得靠前端裁剪收口 |
-| 激活后 gray live 不连续 | 冻结该方案的完成状态，不伪造 `scheduled_live` | 按 target 日历补齐缺口并逐条通过 LiveGate |
+| 激活后 gray live 不连续 | 冻结该方案的完成状态，不伪造 `scheduled_live` | 按 target 日历补齐缺口并逐条通过 `gray-backfill`；普通 `live` Gate 保持 fresh-only |
 | active Registry 缺 `deployed_at` | API/前端 fail-closed | 通过正式 Registry reconciliation 恢复真实部署日期 |
 | backtest/live 同一 target 重叠 | 阻断上线，保留冲突清单 | 新回测 run 或正式 correction 使 target 分区互斥后重验 |
 
@@ -469,7 +495,7 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] canonical backtest 全部满足 `target_date < gray_target_start`，与 live target 零重叠
 - [ ] 激活即登记真实 `deployed_at`，并已补齐 `target_date >= gray_target_start` 的连续 `gray_live`
 - [ ] `/api/metrics/{registry_scheme_id}` 返回三日期、`prediction_phase` 和 `phase_ranges`
-- [ ] 前端分别展示部署时间、实盘发出起点、灰度实盘区间和正式调度起点，pending 显示待验证
+- [ ] 前端分别展示部署时间、实盘发出起点、灰度实盘（目标期）区间和正式调度发出起点，pending 显示待验证
 - [ ] 前端三个数据口径与 DB/API 一致，任务格子、短名称、样本数、分隔线和控制台均通过
 
 具体方案的 generation、snapshot、Harness run、预测结果、数据库计数和当前状态只追加到平台入库规划文档，不回写本通用 SOP。

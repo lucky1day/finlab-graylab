@@ -17,7 +17,7 @@
 - DataBridge 三频同代快照、freshness 证据及 Request 生成。
 - 七个自动 Gate、10 轮重复运行和 100/101/500/1000 条 no-persist 回测。
 - 正式授权的 `shadow + paused` 登记、ActivationGate 和生命周期恢复。
-- 正式授权的日期区间完整回测：范围绑定 token、单批最多 100 条、跨批总预算、单一事务落库及 API/前端读取；1Y T+5 四方案已各以 367 条生产实测分批能力，但该批 run 尚需按 `gray_target_start=2026-06-01` 重新截断后才能作为最终前端历史段。
+- 正式授权的日期区间完整回测：范围绑定 token、单批最多 100 条、跨批总预算、单一事务落库及 API/前端读取；1Y T+5 四方案的 canonical latest 已切换为 run `178..181`，各 333 条 / 17 个月且全部 `target_date < 2026-06-01`。
 - gray live、scheduler live、actual join、真实 API 探针和前端显示。
 - sandbox 文件读取 allowlist、环境清理及严格 JSON Result 契约。
 - stale generation 非零退出、零预测副作用和暂停后立即隐藏。
@@ -28,7 +28,7 @@
 - 尚未用独立真实交付覆盖月频和周平均，真实交付总批次数仍少于 3。
 - 当前 `weekly_10y_lgbm_point_v1` 与四个 1Y T+5 指定方案获得专项生产灰度授权；首条 gray live actual 均要到目标日 `2026-07-24` 后才能验证。
 - 四个日频方案均已 active，尚待下一交易日自然 `scheduled_live`；用户明确授权的当天全量激活不等于自然 scheduler 验收已完成。
-- 四个日频方案尚未补齐 `target_date >= 2026-06-01` 的连续 `gray_live`，当前 canonical run `174..177` 仍包含该实盘 target 区间；因此 active 状态不等于 Onboarding Complete，前端阶段分界尚未最终验收。
+- 四个日频方案已通过专用 `gray-backfill` Gate 补齐 `target_date >= 2026-06-01` 的连续 `gray_live`：每方案 39 条 gray、0 条 scheduled，历史/live target overlap 为 0；API 和前端阶段分界已验收，达到 `Onboarding Complete`，仍待自然 scheduler 才能成为 `Production Observed`。
 - 这些专项激活不代表 Blackbox V2 已获得面向任意新交付的通用生产授权。
 
 ## 2. 必须完成的阻塞项
@@ -69,3 +69,4 @@
 | 2026-07-20 | 1Y T+5 日频批次四方案专项全量激活 | 用户明确调整时序；四方案 active、各 100 条回测、各 1 条 gray live；短名称 API/前端与公网 14/14 通过 | 下一交易日四方案自然 scheduled live、2026-07-24 actual；仍缺月频和第 3 个独立交付批次 | 四方案 `GRAY_ACTIVE`；平台总体仍未 `PRODUCTION_READY` |
 | 2026-07-20 | 1Y T+5 四方案完整历史刷新 | 持久化默认起点 `2025-01-01`；起止范围绑定授权；四方案各 367 条、19 个月、`100/100/100/67` 分批原子写入；授权范围、批次预算和实际日期范围已写入 durable run summary；API、前端同月合并和公网复验通过 | 下一交易日四方案自然 scheduled live、2026-07-24 actual；仍缺月频和第 3 个独立交付批次 | 四方案继续 `GRAY_ACTIVE`；canonical latest-success 已切换为完整 run 174–177，先前 run 均 immutable 保留 |
 | 2026-07-20 | 1Y T+5 灰度/前端口径复核 | 对照 Native V1 和共享预测语义，将 `gray_target_start=2026-06-01`、部署即进入实盘、gray 回补和前端 phase 展示写入 V2 平台 SOP | run 174–177 含 gray target，四方案仅各 1 条 gray live，需追加正确历史 run 并补齐连续 gray live 后重验前端 | 撤销此前同月 backtest/live 并存的验收结论；四方案 active，但尚未 Onboarding Complete |
+| 2026-07-20 | 1Y T+5 历史/灰度分区最终收口 | canonical run 178–181 各 333 条/17 月；专用 exact-date HMAC `gray-backfill` 以 insert-only 补齐每方案 38 个历史缺口；最终每方案 39 gray、0 scheduled、target overlap=0；API/前端显示 4 个短名称且 2026-06 为灰度目标期起点 | 下一交易日自然 `scheduled_live`、持续 actual 观察；仍缺月频和第 3 个独立交付批次 | 四方案 `ONBOARDING_COMPLETE`；尚未 `PRODUCTION_OBSERVED`，平台总体仍未 `PRODUCTION_READY` |

@@ -255,3 +255,30 @@ Canary 截图：
 截至本次文档修正，四方案虽均 active，但各只有一条 `target_date=2026-07-24` 的 gray live，尚缺从 `target_date=2026-06-01` 起到部署时点的连续 gray live。后续必须通过新的专项授权追加正确截断的 immutable backtest run、按 target 日历逐点补齐 gray live，并重新验收：真实 `deployed_at`、实盘发出起点、`phase_ranges`、回测/live 分隔线、pending“待验证”、三个数据口径和控制台。完成前不得标记为 Onboarding Complete。
 
 本次只修正 V2 平台 SOP 和平台状态/记录，不修改 Blackbox V2 上游算法交付 SOP，也不在本文档动作中修改生产数据库或现有 run。
+
+## 11. 历史/灰度分区最终收口
+
+用户批准专项修正后，平台先追加 canonical 历史 run `178..181`，再实现并启用独立 `gray-backfill` Gate。该 Gate 使用 action `gray_backfill_write`、canonical exact `predict_date`、900 秒以内 HMAC token、`historical_as_of_replay` 当前快照模式和 insert-only 预测写入；普通 `live` Gate 与 scheduler 继续保持 fresh-only。实现提交为 `6d297dd`，第二轮只读代码评审无 Critical/Important 阻断项。
+
+生产 Canary 为 `one_y_t5_liq_excess_a_v1 + predict_date=2026-05-26`，成功 run `961`，只产生 `t_scheme_runs/t_scheme_predictions/t_scheme_run_log` 各 `+1`。落库日期为 `feature_date=2026-05-25`、`target_date=2026-06-01`，绑定 generation `full-20260720-055026-00e12e3803a8` 和 snapshot `snapshot-fd8a1f8736d3a4d057fbd98e`，三频 cutoff、`current_snapshot_as_of_not_historical_vintage` 与 backfill provenance 全部非空。
+
+Canary 通过后串行补齐剩余 151 个缺口，每个日期独立签发并消费 token，零失败、零重试。成功 run 范围为 `961..1112`；先前普通 LiveGate freshness 拒绝产生的失败 run `960` 原样保留审计，未产生 prediction。
+
+| base scheme ID | canonical backtest run | 历史明细 / 月数 | gray live | scheduled live | gray target range |
+|---|---:|---:|---:|---:|---|
+| `one_y_t5_liq_excess_a_v1` | 178 | 333 / 17 | 39 | 0 | `2026-06-01..2026-07-24` |
+| `one_y_t5_liq_excess_a_w252_l7_v1` | 179 | 333 / 17 | 39 | 0 | `2026-06-01..2026-07-24` |
+| `one_y_t5_liq_excess_a_w350_l7_v1` | 180 | 333 / 17 | 39 | 0 | `2026-06-01..2026-07-24` |
+| `one_y_t5_liq_excess_b_w252_l7_v1` | 181 | 333 / 17 | 39 | 0 | `2026-06-01..2026-07-24` |
+
+四个历史 run 均为 `predict_date=feature_date=2025-01-02..2026-05-22`、`target_date=2025-01-09..2026-05-29`；每方案 history/live target overlap 为 0。四组 gray 均为 `predict_date=2026-05-26..2026-07-20`、`feature_date=2026-05-25..2026-07-17`，其中 38 条历史补齐记录的 generation、snapshot、replay semantics 和 daily cutoff 全部一致。批次前后全局计数为：scheme run `960→1112`、prediction `872→1024`、run log `982→1134`，即精确各 `+152`；backtest 和源数据表零增量。
+
+API 返回四个 active composite 方案和短名称；四个 metrics endpoint 的 `phase_ranges` 均为 39 条 gray，backtest endpoint 均读取 run `178..181` 的 333 条明细。前端 `1Y国债活跃 × T+5` 显示 4 个候选，名称不重复任务说明；月度表在 2026-05 历史末月与 2026-06 gray 目标期首月之间插入分隔线。展示文案区分 `predict_date` 的“实盘发出起点”和 `target_date` 的“灰度实盘（目标期）”，不再把 2026-05-26 误写成灰度目标月份起点；强制刷新后的浏览器控制台 error/warning 均为 0。
+
+截图证据保存于忽略目录：
+
+- `reports/production-gray-20260720/frontend-1y-t5-candidate-ranking-20260720.png`
+- `reports/production-gray-20260720/frontend-1y-t5-four-schemes-20260720.png`
+- `reports/production-gray-20260720/frontend-1y-t5-may-june-divider-20260720.png`
+
+scheduler PID 始终为 `52329/52404`，当天没有重启，也没有新增 `scheduled_live`。四方案现为 `Onboarding Complete`；必须等下一交易日自然 scheduler 成功后才能标记为 `Production Observed`。上游算法交付 SOP 未修改，SHA-256 仍为 `b393bb37bd9e8b404fe1af73716e8ddb8951933159b22040243c1b7376598cae`。

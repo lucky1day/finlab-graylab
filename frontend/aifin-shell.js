@@ -439,14 +439,25 @@
   function phaseRangeTexts(phaseRanges) {
     return (phaseRanges || []).map(function (range) {
       var phase = String(range.prediction_phase || "");
-      var start = normalizeIsoDate(range.start_predict_date);
-      var end = normalizeIsoDate(range.end_predict_date);
-      if (!start) return "";
+      var predictStart = normalizeIsoDate(range.start_predict_date);
+      var predictEnd = normalizeIsoDate(range.end_predict_date);
+      var targetStart = normalizeIsoDate(range.start_target_date);
+      var targetEnd = normalizeIsoDate(range.end_target_date);
       if (phase === "gray_live") {
-        return "灰度实盘 " + start + (end && end !== start ? " 至 " + end : "");
+        if (!targetStart && !predictStart) return "";
+        var grayText = targetStart
+          ? "灰度实盘（目标期）" + targetStart + (targetEnd && targetEnd !== targetStart ? " 至 " + targetEnd : "")
+          : "灰度实盘 " + predictStart + (predictEnd && predictEnd !== predictStart ? " 至 " + predictEnd : "");
+        if (targetStart && predictStart) {
+          grayText += "（信号发出 " + predictStart + (predictEnd && predictEnd !== predictStart ? " 至 " + predictEnd : "") + "）";
+        }
+        return grayText;
       }
       if (phase === "scheduled_live") {
-        return "正式调度起点 " + start;
+        if (!predictStart && !targetStart) return "";
+        var scheduledText = predictStart ? "正式调度发出起点 " + predictStart : "正式调度";
+        if (targetStart) scheduledText += "（目标期起点 " + targetStart + "）";
+        return scheduledText;
       }
       return "";
     }).filter(Boolean);
