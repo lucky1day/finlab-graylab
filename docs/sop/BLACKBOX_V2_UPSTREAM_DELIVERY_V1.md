@@ -87,13 +87,14 @@ Contract 1.0 只允许以下组合：
 
 ### 第三步：填写 Metadata
 
-`{scheme_id}.json` 必须是无 BOM 的 UTF-8 JSON，并且只包含以下八个字段：
+`{scheme_id}.json` 必须是无 BOM 的 UTF-8 JSON。Contract 1.0 包含以下八个必填字段，并可选提供推荐字段 `description`：
 
 ```json
 {
   "schema_version": "1.0",
   "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
   "name": "LIQ_EXCESS_A_W252_L7",
+  "description": "使用流动性指标和滚动窗口构建特征，通过分类模型判断未来5个交易日1Y国债收益率方向。",
   "algorithm_version": "1.0.0",
   "target_tenor": "1Y",
   "task_type": "T+5",
@@ -107,8 +108,11 @@ Contract 1.0 只允许以下组合：
 - `scheme_id` 是算法执行身份；`name` 是当前任务格子内用于区分候选方案的简洁业务名称，两者不要混用。
 - `name` 不得重复 `target_tenor`、不得重复 `task_type` 或 `horizon`，也不得追加“方向预测”等已经由任务格子表达的说明。
 - `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
+- `description` 是可选的算法逻辑摘要，缺失不阻断 Contract 1.0 交付和自验；但强烈建议提供，方便后续按算法版本回溯。
+- `description` 建议简述主要输入、窗口或规则、模型类型以及最终方向形成方式；平台不会根据脚本或名称代写算法逻辑。
+- `description` 存在时必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
 - `task_type`、`horizon` 和 `target_rule` 必须来自第二步的同一行。
-- 不得增加 `frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
+- 除可选 `description` 外，不得增加 `frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
 
 ### 第四步：读取三频 CSV
 
@@ -245,7 +249,7 @@ python {scheme_id}.py backtest --requests requests.csv --data-dir ./sample_data 
 
 | 验证项 | 操作 | 通过标准 |
 |---|---|---|
-| 交付物 | 检查文件数量、命名、Metadata 八字段和任务组合 | 只有两个文件，身份和任务组合合法 |
+| 交付物 | 检查文件数量、命名、Metadata 八个必填字段、可选说明和任务组合 | 只有两个文件，身份和任务组合合法；缺少说明不阻断 |
 | 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
 | 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |
 | 批量回测 | 使用至少两个不同截止键执行 `backtest` | 每个 Request 恰好一条结果，数量和顺序一致 |

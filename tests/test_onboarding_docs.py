@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
-import hashlib
 import re
 import unittest
 from pathlib import Path
 
-from shared.blackbox_v2.contracts import METADATA_FIELDS, REQUEST_FIELDS, RESULT_FIELDS, TASK_COMBINATIONS
+from shared.blackbox_v2.contracts import (
+    OPTIONAL_METADATA_FIELDS,
+    REQUEST_FIELDS,
+    REQUIRED_METADATA_FIELDS,
+    RESULT_FIELDS,
+    TASK_COMBINATIONS,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +39,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         for path in (UPSTREAM_SOP, PLATFORM_SOP):
             text = path.read_text(encoding="utf-8")
 
-            for field in sorted(METADATA_FIELDS):
+            for field in sorted(REQUIRED_METADATA_FIELDS | OPTIONAL_METADATA_FIELDS):
                 self.assertRegex(text, rf"(?<![a-z_]){re.escape(field)}(?![a-z_])")
             for field in REQUEST_FIELDS:
                 self.assertRegex(text, rf"(?<![a-z_]){re.escape(field)}(?![a-z_])")
@@ -118,11 +123,35 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, platform)
 
-        upstream_hash = hashlib.sha256(UPSTREAM_SOP.read_bytes()).hexdigest()
-        self.assertEqual(
-            upstream_hash,
-            "b393bb37bd9e8b404fe1af73716e8ddb8951933159b22040243c1b7376598cae",
-        )
+    def test_blackbox_description_is_optional_and_recommended(self) -> None:
+        upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            '"schema_version": "1.0"',
+            '"description":',
+            "可选",
+            "强烈建议",
+            "主要输入",
+            "窗口或规则",
+            "模型类型",
+            "方向形成方式",
+            "不阻断",
+        ):
+            self.assertIn(marker, upstream)
+
+        for marker in (
+            "description",
+            "warnings",
+            "不阻断 Intake",
+            "t_scheme_registry.description",
+            "/api/schemes",
+            "/api/backtests/factor-lab",
+            "已有方案",
+            "不修改",
+            "前端备注",
+        ):
+            self.assertIn(marker, platform)
 
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (

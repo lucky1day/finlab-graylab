@@ -23,7 +23,7 @@
 执行 Intake 前确认：
 
 - 两个条目均为普通文件，不是目录或符号链接；
-- 文件名与 Metadata 中的 `scheme_id` 一致，Metadata 恰好八字段；
+- 文件名与 Metadata 中的 `scheme_id` 一致；Metadata 有八个必填字段，可选包含 `description`；
 - `.py` 是唯一可执行内容，不存在模型、配置、依赖或辅助模块；
 - trial 的 base `scheme_id` 和 composite Registry ID 均未占用；
 - 同一算法已有原生实现时使用独立 trial ID，不覆盖原方案。
@@ -68,11 +68,15 @@ version_status: draft
 
 名称、算法版本、期限、任务类型、horizon 和 target rule 只能来自 Metadata。`blackbox-v2-v1` 是运行 profile；`forecast_env_blackbox_v1` 是该 profile 当前引用的 conda 环境，两者不得混称。
 
+`description` 是推荐而非必填的算法逻辑摘要。缺失不阻断 Intake：命令仍以退出码 `0` 成功，并在机器 JSON 的 `warnings` 数组返回“建议上游补充简短算法逻辑说明”；该 warning 不进入 Gate 失败计数，也不授予任何生产权限。提供时必须是单段非空纯文本、最多 300 个字符，换行、`<`、`>`、空字符串或错误类型均拒绝。
+
+已有方案缺少 `description` 时继续正常发现、Gate 和运行；已有方案不修改只读 Metadata，不推测算法逻辑，也不制造新版本。缺失说明在平台配置中映射为空字符串。
+
 ### 1.3 对照 Contract 1.0
 
 机器契约 `shared.blackbox_v2.contracts` 是字段和组合的判定源：
 
-- Metadata 恰好八字段：`schema_version`、`scheme_id`、`name`、`algorithm_version`、`target_tenor`、`task_type`、`horizon`、`target_rule`。
+- Metadata 必须包含八字段：`schema_version`、`scheme_id`、`name`、`algorithm_version`、`target_tenor`、`task_type`、`horizon`、`target_rule`；可选增加 `description`，其他额外字段继续 fail-closed。
 - Request 恰好七字段：`request_id`、`predict_date`、`feature_date`、`target_date`、`daily_cutoff_key`、`weekly_cutoff_key`、`monthly_cutoff_key`。
 - Result 恰好五字段：`request_id`、`predict_date`、`feature_date`、`target_date`、`predicted_direction`。
 
@@ -85,6 +89,20 @@ version_status: draft
 | `monthly` | 1 | `target_month_observation_yield_vs_feature_month_observation_yield` |
 
 字段数、名称或固定组合不一致时 Intake 必须失败，不得在平台配置中纠正上游 Metadata。
+
+### 1.4 算法说明的展示链路
+
+显式 `description` 必须按以下单向链路传播：
+
+```text
+{scheme_id}.json.description
+→ SchemeConfig.description
+→ t_scheme_registry.description
+→ /api/schemes 与 /api/backtests/factor-lab
+→ 灰度实验室前端备注
+```
+
+平台复用现有 `t_scheme_registry.description`，不新增备注表或算法 Request 字段。前端只展示经过文本转义的说明；不得把它当作 HTML，也不得用方案名、任务格子、部署状态或平台运营意见填充空说明。Metadata 中的说明发生变化时，其文件摘要和 canonical `scheme_version` 必须随之变化。
 
 ## 2. 环境与数据 Preflight
 
