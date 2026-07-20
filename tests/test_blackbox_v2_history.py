@@ -199,6 +199,41 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             for case in cases
         ))
 
+    def test_weekly_history_ignores_makeup_weekend_without_bond_observation(self) -> None:
+        """通用工作日历的调休周末不能伪造债券周末观测。"""
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(start="2025-12-01", end="2026-03-01")
+        with engine.begin() as conn:
+            conn.execute(
+                text("UPDATE t_trade_calendar SET trade_flag='1' WHERE rdate='2026-02-08'")
+            )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+            with patch(
+                "shared.blackbox_v2.history.resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
+                cases = build_historical_cases(
+                    _metadata("weekly_point"),
+                    snapshot,
+                    engine,
+                    limit=2,
+                    target_date_before="2026-03-01",
+                    predict_date_from="2026-01-01",
+                )
+
+        self.assertEqual(len(cases), 2)
+        self.assertTrue(all(
+            date.fromisoformat(case.request.feature_date).weekday() < 5
+            for case in cases
+        ))
+        self.assertTrue(all(
+            date.fromisoformat(case.request.target_date).weekday() < 5
+            for case in cases
+        ))
+        engine.dispose()
+
     def test_monthly_keeps_natural_fifteenth_predict_date(self) -> None:
         cases = self._cases("monthly", limit=6)
         weekend_case = next(case for case in cases if case.request.predict_date != case.request.feature_date)

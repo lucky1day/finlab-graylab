@@ -26,6 +26,7 @@ from shared.prediction_context import (
     WEEKLY_AVERAGE_TARGET_RULE,
     WEEKLY_TARGET_RULE,
 )
+from shared.week_calendar_normalizer import normalize_week_calendar_rows
 
 
 CURRENT_SNAPSHOT_REPLAY = "current_snapshot_as_of_not_historical_vintage"
@@ -75,7 +76,7 @@ def build_historical_cases(
     if metadata.task_type in {"T+1", "T+5"}:
         candidates = _daily_candidates(metadata, yield_rows, trade_calendar_rows)
     elif metadata.task_type in {"weekly_point", "weekly_average"}:
-        candidates = _weekly_candidates(metadata, yield_rows, read_week_calendar_rows(engine), engine)
+        candidates = _weekly_candidates(metadata, yield_rows, read_week_calendar_rows(engine))
     elif metadata.task_type == "monthly":
         candidates = _monthly_candidates(metadata, yield_rows, trade_calendar_rows, engine)
     else:
@@ -83,6 +84,7 @@ def build_historical_cases(
     _require_actual_source_coverage(
         yield_rows,
         trade_calendar_rows,
+        task_type=metadata.task_type,
         predict_date_from=predict_date_from,
         target_date_before=target_date_before,
     )
@@ -231,7 +233,6 @@ def _weekly_candidates(
     metadata: BlackboxMetadata,
     yield_rows: list[dict],
     calendar_rows: list[dict],
-    engine,
 ) -> list[_Candidate]:
     platform_rule = PLATFORM_ACTUAL_RULE_BY_TASK[metadata.task_type]
     records = [
@@ -246,11 +247,16 @@ def _weekly_candidates(
     facts = _unique_facts(
         ((record.tenor, record.target_date, record.target_rule), record) for record in records
     )
-    calendar = get_calendar(engine)
+    expected_week_ends = _weekday_trading_week_ends(calendar_rows)
     candidates: list[_Candidate] = []
     for fact in facts.values():
-        feature_end = calendar.week_id_to_last_trading_day(fact.feature_week_id)
-        target_end = calendar.week_id_to_last_trading_day(fact.target_week_id)
+        feature_end = expected_week_ends.get(int(fact.feature_week_id))
+        target_end = expected_week_ends.get(int(fact.target_week_id))
+        if feature_end is None or target_end is None:
+            raise ValueError(
+                "weekly actual week is missing a weekday trading observation: "
+                f"feature_week_id={fact.feature_week_id}, target_week_id={fact.target_week_id}"
+            )
         if fact.feature_date != feature_end or fact.target_date != target_end:
             raise ValueError(
                 "weekly actual does not use exact calendar week ends: "
@@ -276,6 +282,21 @@ def _weekly_candidates(
             )
         )
     return candidates
+
+
+def _weekday_trading_week_ends(calendar_rows: list[dict]) -> dict[int, str]:
+    """返回每周最后一个工作日债券观测日，忽略通用日历中的调休周末。"""
+    result: dict[int, str] = {}
+    for row in normalize_week_calendar_rows(calendar_rows):
+        if str(row.get("trade_flag", "")).strip() != "1" or row.get("week_id") is None:
+            continue
+        rdate = str(row["rdate"])[:10]
+        if date.fromisoformat(rdate).weekday() >= 5:
+            continue
+        week_id = int(str(row["week_id"]).replace(".0", ""))
+        if week_id not in result or rdate > result[week_id]:
+            result[week_id] = rdate
+    return result
 
 
 def _monthly_candidates(
@@ -346,6 +367,7 @@ def _require_actual_source_coverage(
     yield_rows: list[dict],
     calendar_rows: list[dict],
     *,
+    task_type: str,
     predict_date_from: str,
     target_date_before: str,
 ) -> None:
@@ -358,6 +380,10 @@ def _require_actual_source_coverage(
         for row in calendar_rows
         if str(row.get("trade_flag", "")).strip() == "1"
         and coverage_start <= str(row["rdate"])[:10] < target_date_before
+        and not (
+            task_type in {"weekly_point", "weekly_average"}
+            and date.fromisoformat(str(row["rdate"])[:10]).weekday() >= 5
+        )
     }
     missing = sorted(expected_dates - source_dates)
     if missing:
