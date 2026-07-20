@@ -46,30 +46,35 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
         from shared.service_instance import build_service_instance_identity
 
         root = Path("/tmp/test-project")
+        fingerprint_secret = "service-fingerprint-secret-for-tests"
         with patch("shared.service_instance._git_commit", return_value="a" * 40):
             baseline = build_service_instance_identity(
                 _Engine(schema="bbv2_cert_one"),
                 project_root=root,
                 runtime_profile="blackbox-v2-v1",
                 instance_nonce="instance-secret-one",
+                fingerprint_secret=fingerprint_secret,
             )
             wrong_db = build_service_instance_identity(
                 _Engine(schema="bbv2_cert_two"),
                 project_root=root,
                 runtime_profile="blackbox-v2-v1",
                 instance_nonce="instance-secret-one",
+                fingerprint_secret=fingerprint_secret,
             )
             wrong_profile = build_service_instance_identity(
                 _Engine(schema="bbv2_cert_one"),
                 project_root=root,
                 runtime_profile="other-profile",
                 instance_nonce="instance-secret-one",
+                fingerprint_secret=fingerprint_secret,
             )
             wrong_nonce = build_service_instance_identity(
                 _Engine(schema="bbv2_cert_one"),
                 project_root=root,
                 runtime_profile="blackbox-v2-v1",
                 instance_nonce="instance-secret-two",
+                fingerprint_secret=fingerprint_secret,
             )
         with patch("shared.service_instance._git_commit", return_value="b" * 40):
             wrong_commit = build_service_instance_identity(
@@ -77,6 +82,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
                 project_root=root,
                 runtime_profile="blackbox-v2-v1",
                 instance_nonce="instance-secret-one",
+                fingerprint_secret=fingerprint_secret,
             )
 
         fingerprints = {
@@ -84,25 +90,45 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             for item in (baseline, wrong_db, wrong_profile, wrong_nonce, wrong_commit)
         }
         self.assertEqual(len(fingerprints), 5)
+        self.assertEqual(set(baseline), {"fingerprint_version", "fingerprint"})
+        self.assertEqual(baseline["fingerprint_version"], "2")
         serialized = json.dumps(baseline, sort_keys=True)
         for secret in (
             "bbv2_cert_one",
             "instance-secret-one",
+            fingerprint_secret,
             "secret-user",
             "secret-password",
         ):
             self.assertNotIn(secret, serialized)
 
+    def test_fingerprint_is_authenticated_and_changes_with_service_secret(self) -> None:
+        from shared.service_instance import build_service_instance_identity
+
+        with patch("shared.service_instance._git_commit", return_value="a" * 40):
+            first = build_service_instance_identity(
+                _Engine(schema="bbv2_cert_one"),
+                project_root=Path("/tmp/test-project"),
+                runtime_profile="blackbox-v2-v1",
+                instance_nonce="instance-secret-one",
+                fingerprint_secret="first-service-secret-for-tests",
+            )
+            second = build_service_instance_identity(
+                _Engine(schema="bbv2_cert_one"),
+                project_root=Path("/tmp/test-project"),
+                runtime_profile="blackbox-v2-v1",
+                instance_nonce="instance-secret-one",
+                fingerprint_secret="second-service-secret-for-tests",
+            )
+
+        self.assertNotEqual(first["fingerprint"], second["fingerprint"])
+
     def test_health_returns_safe_service_identity(self) -> None:
         from backend import main
 
         identity = {
-            "fingerprint_version": "1",
+            "fingerprint_version": "2",
             "fingerprint": "f" * 64,
-            "database_identity_sha256": "d" * 64,
-            "code_commit": "a" * 40,
-            "runtime_profile": "blackbox-v2-v1",
-            "instance_nonce_sha256": "n" * 64,
         }
         with (
             patch.object(main, "get_engine", return_value="engine"),
@@ -112,6 +138,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
                 {
                     "BOND_FACTOR_LAB_RUNTIME_PROFILE": "blackbox-v2-v1",
                     "BOND_FACTOR_LAB_INSTANCE_NONCE": "explicit-instance",
+                    "HARNESS_AUTH_SECRET": "shared-formal-gate-secret-for-tests",
                 },
             ),
         ):
@@ -119,3 +146,27 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
 
         self.assertEqual(result, {"status": "ok", "service_instance": identity})
         self.assertEqual(build.call_args.kwargs["instance_nonce"], "explicit-instance")
+        self.assertEqual(
+            build.call_args.kwargs["fingerprint_secret"],
+            "shared-formal-gate-secret-for-tests",
+        )
+
+    def test_health_without_fingerprint_secret_exposes_no_enumerable_components(self) -> None:
+        from backend import main
+
+        with (
+            patch.object(main, "get_engine", return_value="engine"),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            result = main.health()
+
+        self.assertEqual(
+            result,
+            {
+                "status": "ok",
+                "service_instance": {"fingerprint_version": "2", "fingerprint": None},
+            },
+        )
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("database_identity_sha256", serialized)
+        self.assertNotIn("nonce_sha256", serialized)

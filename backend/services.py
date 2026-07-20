@@ -873,6 +873,7 @@ def backtest_factor_lab_results(
                     "benchmark_label": benchmark_label,
                     "scheme_id": registry_id,
                     "base_scheme_id": base_scheme_id,
+                    "runtime_type": meta["runtime_type"],
                     "scheme_name": scheme_name,
                     "data_source": run["data_source"],
                     "data_source_label": data_source_label,
@@ -887,6 +888,10 @@ def backtest_factor_lab_results(
                     "display_name": display_name,
                     "name": display_name,
                     "status": "complete",
+                    "scheme_version": run["summary"].get("scheme_version"),
+                    "data_snapshot_id": run["summary"].get("data_snapshot_id"),
+                    "harness_run_id": run["summary"].get("harness_run_id"),
+                    "generation_id": run["summary"].get("generation_id"),
                     "start_date": run["start_date"],
                     "end_date": run["end_date"],
                     "latest_run": {
@@ -899,6 +904,28 @@ def backtest_factor_lab_results(
                     "summary": _metric_block(daily_rows.get(tenor, [])),
                 }
             )
+
+    if benchmark_id is None:
+        latest_by_scope: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+        for item in schemes:
+            key = (
+                str(item["runtime_type"]),
+                str(item["base_scheme_id"]),
+                str(item["target_tenor"]),
+                str(item["data_source"]),
+            )
+            current = latest_by_scope.get(key)
+            item_rank = (
+                str(item["latest_run"].get("updated_at") or ""),
+                int(item["run_id"]),
+            )
+            current_rank = (
+                str(current["latest_run"].get("updated_at") or ""),
+                int(current["run_id"]),
+            ) if current is not None else ("", -1)
+            if current is None or item_rank > current_rank:
+                latest_by_scope[key] = item
+        schemes = list(latest_by_scope.values())
 
     selected_sources = {str(item["data_source"]) for item in schemes}
     if len(selected_sources) == 1:

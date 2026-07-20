@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import re
 import subprocess
 from functools import lru_cache
@@ -12,6 +14,9 @@ from sqlalchemy import text
 
 
 _GIT_COMMIT = re.compile(r"^[0-9a-f]{40,64}$")
+FINGERPRINT_VERSION = "2"
+SERVICE_FINGERPRINT_SECRET_ENV = "BOND_FACTOR_LAB_SERVICE_FINGERPRINT_SECRET"
+FALLBACK_FINGERPRINT_SECRET_ENV = "HARNESS_AUTH_SECRET"
 
 
 def build_service_instance_identity(
@@ -20,35 +25,48 @@ def build_service_instance_identity(
     project_root: str | Path,
     runtime_profile: str,
     instance_nonce: str,
+    fingerprint_secret: str,
 ) -> dict[str, str]:
-    """生成不泄露数据库名、凭据或 nonce 原文的服务实例指纹。"""
+    """生成由共享密钥认证、且不公开可枚举组成部分的服务实例指纹。"""
     profile = str(runtime_profile).strip()
     nonce = str(instance_nonce).strip()
+    secret = str(fingerprint_secret)
     if not profile:
         raise ValueError("service runtime_profile must be non-empty")
     if not nonce:
         raise ValueError("service instance_nonce must be non-empty")
+    if not secret:
+        raise ValueError("service fingerprint secret must be non-empty")
     database_identity = _effective_database_identity(engine)
     code_commit = _git_commit(Path(project_root).resolve())
-    database_hash = _sha256(database_identity)
-    nonce_hash = _sha256(nonce)
     fingerprint_payload = {
-        "fingerprint_version": "1",
-        "database_identity_sha256": database_hash,
+        "fingerprint_version": FINGERPRINT_VERSION,
+        "database_identity": database_identity,
         "code_commit": code_commit,
         "runtime_profile": profile,
-        "instance_nonce_sha256": nonce_hash,
+        "instance_nonce": nonce,
     }
     return {
-        **fingerprint_payload,
-        "fingerprint": _sha256(
+        "fingerprint_version": FINGERPRINT_VERSION,
+        "fingerprint": hmac.new(
+            secret.encode("utf-8"),
             json.dumps(
                 fingerprint_payload,
                 sort_keys=True,
                 separators=(",", ":"),
-            )
-        ),
+            ).encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest(),
     }
+
+
+def service_fingerprint_secret() -> str | None:
+    """返回服务与 formal Harness 共享的指纹密钥，专用密钥优先。"""
+    for name in (SERVICE_FINGERPRINT_SECRET_ENV, FALLBACK_FINGERPRINT_SECRET_ENV):
+        value = str(os.getenv(name) or "").strip()
+        if value:
+            return value
+    return None
 
 
 def _effective_database_identity(engine) -> str:
@@ -89,7 +107,3 @@ def _git_commit(project_root: Path) -> str:
     if completed.returncode != 0 or not _GIT_COMMIT.fullmatch(commit):
         raise RuntimeError("service code commit is unavailable")
     return commit
-
-
-def _sha256(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()

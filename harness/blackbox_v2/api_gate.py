@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from harness.context import GateContext
@@ -9,7 +10,6 @@ from harness.probes.api_probe import (
     DEFAULT_MAX_RESPONSE_BYTES,
     factor_lab_url,
     fetch_json,
-    find_factor_lab_cell,
     health_url,
     metrics_url,
     schemes_url,
@@ -17,7 +17,10 @@ from harness.probes.api_probe import (
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.repository import registry_scheme_id
 from shared.blackbox_v2.contracts import load_metadata
-from shared.service_instance import build_service_instance_identity
+from shared.service_instance import (
+    build_service_instance_identity,
+    service_fingerprint_secret,
+)
 
 
 BLACKBOX_BACKTEST_DATA_SOURCE = "blackbox_v2_current_snapshot_as_of"
@@ -45,6 +48,14 @@ class BlackboxApiGate(Gate):
         if not base_url:
             raise ValueError("Blackbox API gate requires non-empty api_base_url")
         errors: list[str] = []
+        if ctx.prediction_phase not in LIVE_PHASES:
+            errors.append("Blackbox API gate requires explicit gray_live or scheduled_live phase")
+        fingerprint_secret = service_fingerprint_secret()
+        if fingerprint_secret is None:
+            errors.append(
+                "formal Blackbox API gate requires HARNESS_AUTH_SECRET or "
+                "BOND_FACTOR_LAB_SERVICE_FINGERPRINT_SECRET"
+            )
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         try:
@@ -54,11 +65,30 @@ class BlackboxApiGate(Gate):
                 registry_row = None
                 errors.append(f"active Registry probe failed: {_error_summary(exc)}")
             try:
+                expected_backtest = _read_expected_backtest_evidence(engine, cfg)
+            except Exception as exc:  # noqa: BLE001
+                expected_backtest = None
+                errors.append(f"persisted backtest evidence probe failed: {_error_summary(exc)}")
+            try:
+                expected_live = _read_expected_live_evidence(
+                    engine,
+                    cfg,
+                    target_tenor=metadata.target_tenor,
+                    horizon=metadata.horizon,
+                    prediction_phase=ctx.prediction_phase,
+                )
+            except Exception as exc:  # noqa: BLE001
+                expected_live = None
+                errors.append(f"live prediction evidence probe failed: {_error_summary(exc)}")
+            try:
+                if fingerprint_secret is None:
+                    raise ValueError("service fingerprint authentication secret is unavailable")
                 expected_instance = build_service_instance_identity(
                     engine,
                     project_root=ctx.project_root,
                     runtime_profile=str(cfg.runtime_profile or ""),
                     instance_nonce=str(ctx.api_instance_nonce),
+                    fingerprint_secret=fingerprint_secret,
                 )
             except Exception as exc:  # noqa: BLE001
                 expected_instance = None
@@ -147,6 +177,7 @@ class BlackboxApiGate(Gate):
             horizon=metadata.horizon,
             scheme_version=cfg.scheme_version,
             expected_phase=ctx.prediction_phase,
+            expected_live=expected_live,
         )
         errors.extend(f"metrics: {error}" for error in metrics_errors)
 
@@ -158,16 +189,22 @@ class BlackboxApiGate(Gate):
             errors.append(f"backtest probe failed: {backtest_error}")
         if backtest_status != 200:
             errors.append(f"backtest returned HTTP {backtest_status}")
-        backtest_row = find_factor_lab_cell(
+        backtest_row, backtest_card_errors = _find_unique_factor_lab_cell(
             backtest_payload if isinstance(backtest_payload, dict) else {},
-            [registry_id],
+            registry_id,
         )
+        errors.extend(f"backtest: {error}" for error in backtest_card_errors)
         backtest_errors = _backtest_contract_errors(
             backtest_row,
             base_scheme_id=cfg.scheme_id,
             target_tenor=metadata.target_tenor,
             task_type=metadata.task_type,
             horizon=metadata.horizon,
+            expected_run_id=(expected_backtest or {}).get("run_id"),
+            expected_benchmark_id=(expected_backtest or {}).get("benchmark_id"),
+            expected_scheme_version=cfg.scheme_version,
+            expected_snapshot_id=(expected_backtest or {}).get("data_snapshot_id"),
+            expected_harness_run_id=(expected_backtest or {}).get("harness_run_id"),
         )
         errors.extend(f"backtest: {error}" for error in backtest_errors)
 
@@ -193,7 +230,14 @@ class BlackboxApiGate(Gate):
                 Evidence("live_rows", metrics_counts["live_rows"]),
                 Evidence("matched_actual_rows", metrics_counts["matched_actual_rows"]),
                 Evidence("pending_actual_rows", metrics_counts["pending_actual_rows"]),
+                Evidence("exact_current_live_rows", metrics_counts["exact_current_live_rows"]),
                 Evidence("monthly_metric_rows", metrics_counts["monthly_metric_rows"]),
+                Evidence("expected_backtest_run_id", (expected_backtest or {}).get("run_id")),
+                Evidence("expected_benchmark_id", (expected_backtest or {}).get("benchmark_id")),
+                Evidence("expected_harness_run_id", (expected_backtest or {}).get("harness_run_id")),
+                Evidence("expected_data_snapshot_id", (expected_backtest or {}).get("data_snapshot_id")),
+                Evidence("expected_live_request_id", (expected_live or {}).get("request_id")),
+                Evidence("expected_live_snapshot_id", (expected_live or {}).get("data_snapshot_id")),
                 Evidence("health_http_status", health_status),
                 Evidence("schemes_http_status", schemes_status),
                 Evidence("metrics_http_status", metrics_status),
@@ -223,6 +267,151 @@ def _read_active_registry(engine, registry_id: str) -> dict[str, Any] | None:
             {"scheme_id": registry_id},
         ).mappings().one_or_none()
     return dict(row) if row is not None else None
+
+
+def _read_expected_backtest_evidence(engine, cfg) -> dict[str, Any]:
+    """读取本次 formal 认证唯一允许的 persisted backtest 身份。"""
+    from sqlalchemy import text
+
+    with engine.begin() as connection:
+        harness_row = connection.execute(
+            text(
+                """
+                SELECT harness_run_id
+                FROM t_harness_runs
+                WHERE scheme_id = :scheme_id
+                  AND scheme_version = :scheme_version
+                  AND stage = 'all'
+                  AND status = 'passed'
+                ORDER BY finished_at DESC
+                LIMIT 1
+                """
+            ),
+            {"scheme_id": cfg.scheme_id, "scheme_version": cfg.scheme_version},
+        ).mappings().one_or_none()
+        if harness_row is None:
+            raise ValueError("latest passed all-stage harness run is missing")
+        harness_run_id = str(harness_row["harness_run_id"])
+        benchmark_id = f"bbv2-{cfg.scheme_id}-{harness_run_id}"
+        rows = connection.execute(
+            text(
+                """
+                SELECT id, benchmark_id, summary
+                FROM t_backtest_runs
+                WHERE benchmark_id = :benchmark_id
+                  AND scheme_id = :scheme_id
+                  AND data_source = :data_source
+                  AND status = 'success'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 2
+                """
+            ),
+            {
+                "benchmark_id": benchmark_id,
+                "scheme_id": cfg.scheme_id,
+                "data_source": BLACKBOX_BACKTEST_DATA_SOURCE,
+            },
+        ).mappings().all()
+    if len(rows) != 1:
+        raise ValueError(
+            "exact persisted backtest run must exist exactly once: "
+            f"benchmark_id={benchmark_id}, count={len(rows)}"
+        )
+    row = rows[0]
+    summary = _json_object(row["summary"])
+    expected_summary = {
+        "scheme_version": cfg.scheme_version,
+        "harness_run_id": harness_run_id,
+    }
+    for key, expected in expected_summary.items():
+        if str(summary.get(key) or "") != str(expected):
+            raise ValueError(
+                f"persisted backtest {key} mismatch: "
+                f"expected={expected!r}, got={summary.get(key)!r}"
+            )
+    snapshot_id = str(summary.get("data_snapshot_id") or "").strip()
+    if not snapshot_id:
+        raise ValueError("persisted backtest data_snapshot_id provenance is missing")
+    return {
+        "run_id": int(row["id"]),
+        "benchmark_id": benchmark_id,
+        "scheme_version": cfg.scheme_version,
+        "harness_run_id": harness_run_id,
+        "data_snapshot_id": snapshot_id,
+    }
+
+
+def _read_expected_live_evidence(
+    engine,
+    cfg,
+    *,
+    target_tenor: str,
+    horizon: int,
+    prediction_phase: str | None,
+) -> dict[str, Any]:
+    """读取当前成功 live run 的精确 Request 与 snapshot provenance。"""
+    from sqlalchemy import text
+
+    if prediction_phase not in LIVE_PHASES:
+        raise ValueError("live evidence requires explicit prediction_phase")
+    with engine.begin() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT p.predict_date, p.feature_date, p.target_date, p.extra
+                FROM t_scheme_predictions p
+                INNER JOIN t_scheme_runs r ON r.run_id = p.run_id
+                WHERE p.scheme_id = :scheme_id
+                  AND p.target_tenor = :target_tenor
+                  AND p.horizon = :horizon
+                  AND p.scheme_version = :scheme_version
+                  AND p.prediction_phase = :prediction_phase
+                  AND r.scheme_id = :scheme_id
+                  AND r.scheme_version = :scheme_version
+                  AND r.runtime_type = 'blackbox_v2'
+                  AND r.prediction_phase = :prediction_phase
+                  AND r.status = 'success'
+                ORDER BY p.id DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "scheme_id": cfg.scheme_id,
+                "target_tenor": target_tenor,
+                "horizon": int(horizon),
+                "scheme_version": cfg.scheme_version,
+                "prediction_phase": prediction_phase,
+            },
+        ).mappings().one_or_none()
+    if row is None:
+        raise ValueError("exact successful live prediction is missing")
+    extra = _json_object(row["extra"])
+    evidence = {
+        "predict_date": str(row["predict_date"]),
+        "feature_date": str(row["feature_date"]),
+        "target_date": str(row["target_date"]),
+        "request_id": str(extra.get("request_id") or "").strip(),
+        "data_snapshot_id": str(extra.get("data_snapshot_id") or "").strip(),
+    }
+    canonical_request_id = (
+        f"{cfg.scheme_id}:{evidence['predict_date']}:{evidence['feature_date']}:"
+        f"{evidence['target_date']}"
+    )
+    if evidence["request_id"] != canonical_request_id:
+        raise ValueError("successful live prediction request_id provenance is not canonical")
+    if not evidence["data_snapshot_id"]:
+        raise ValueError("successful live prediction data_snapshot_id provenance is missing")
+    return evidence
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        parsed = json.loads(value)
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError("persisted backtest summary must be a JSON object")
 
 
 def _identity_errors(
@@ -270,12 +459,14 @@ def _metrics_contract_errors(
     horizon: int,
     scheme_version: str,
     expected_phase: str | None,
+    expected_live: dict[str, Any] | None,
 ) -> tuple[list[str], dict[str, int]]:
     errors: list[str] = []
     counts = {
         "live_rows": 0,
         "matched_actual_rows": 0,
         "pending_actual_rows": 0,
+        "exact_current_live_rows": 0,
         "monthly_metric_rows": 0,
     }
     if not isinstance(payload, dict):
@@ -299,6 +490,11 @@ def _metrics_contract_errors(
     counts["live_rows"] = len(daily_rows)
     counts["monthly_metric_rows"] = len(monthly_metrics)
     required_phase = expected_phase if expected_phase in LIVE_PHASES else None
+    if required_phase is None:
+        errors.append("expected live phase must be explicit")
+    if not isinstance(expected_live, dict):
+        errors.append("expected live Request/snapshot provenance must be present")
+        expected_live = {}
     for index, row in enumerate(daily_rows):
         if not isinstance(row, dict):
             errors.append(f"daily_rows[{index}] must be an object")
@@ -308,7 +504,6 @@ def _metrics_contract_errors(
             "base_scheme_id": base_scheme_id,
             "target_tenor": target_tenor,
             "horizon": int(horizon),
-            "scheme_version": scheme_version,
         }
         for key, expected_value in expected_fields.items():
             actual = row.get(key)
@@ -322,11 +517,22 @@ def _metrics_contract_errors(
                     f"daily_rows[{index}].{key}: expected={expected_value!r}, got={actual!r}"
                 )
         phase = str(row.get("prediction_phase") or "")
-        if phase not in LIVE_PHASES or (required_phase and phase != required_phase):
-            errors.append(f"daily_rows[{index}].prediction_phase is not the expected live phase")
+        if phase not in LIVE_PHASES:
+            errors.append(f"daily_rows[{index}].prediction_phase is not a live phase")
+        if not str(row.get("scheme_version") or "").strip():
+            errors.append(f"daily_rows[{index}].scheme_version must be non-empty")
+        for key in ("predict_date", "feature_date", "target_date"):
+            if not str(row.get(key) or "").strip():
+                errors.append(f"daily_rows[{index}].{key} must be non-empty")
         for key in ("request_id", "data_snapshot_id"):
             if not str(row.get(key) or "").strip():
                 errors.append(f"daily_rows[{index}].{key} must be non-empty")
+        canonical_request_id = (
+            f"{base_scheme_id}:{row.get('predict_date')}:{row.get('feature_date')}:"
+            f"{row.get('target_date')}"
+        )
+        if str(row.get("request_id") or "") != canonical_request_id:
+            errors.append(f"daily_rows[{index}].request_id is not canonical")
         if type(row.get("predicted_direction")) is not int or row.get("predicted_direction") not in {-1, 0, 1}:
             errors.append(f"daily_rows[{index}].predicted_direction is invalid")
         actual = row.get("actual_direction")
@@ -338,6 +544,28 @@ def _metrics_contract_errors(
                 errors.append(f"daily_rows[{index}].is_correct must be boolean when actual exists")
         else:
             errors.append(f"daily_rows[{index}].actual_direction is invalid")
+        if (
+            row.get("scheme_version") == scheme_version
+            and required_phase is not None
+            and phase == required_phase
+            and all(
+                str(row.get(key) or "") == str(expected_live.get(key) or "")
+                for key in (
+                    "predict_date",
+                    "feature_date",
+                    "target_date",
+                    "request_id",
+                    "data_snapshot_id",
+                )
+            )
+            and str(row.get("request_id") or "") == canonical_request_id
+        ):
+            counts["exact_current_live_rows"] += 1
+    if counts["exact_current_live_rows"] == 0:
+        errors.append(
+            "daily_rows requires at least one exact current live row matching canonical "
+            "scheme_version, prediction_phase, target, Request and snapshot provenance"
+        )
     if counts["matched_actual_rows"] == 0:
         errors.append("actual contract requires at least one matched actual row")
     summary = payload.get("summary")
@@ -352,20 +580,19 @@ def _metrics_contract_errors(
 def _service_instance_identity_errors(expected: Any, actual: Any) -> list[str]:
     if not isinstance(expected, dict) or not isinstance(actual, dict):
         return ["service instance identity must be present in expected and actual probes"]
-    fields = (
-        "fingerprint_version",
-        "fingerprint",
-        "database_identity_sha256",
-        "code_commit",
-        "runtime_profile",
-        "instance_nonce_sha256",
-    )
-    return [
+    fields = ("fingerprint_version", "fingerprint")
+    errors = [
         "service instance identity mismatch: "
         f"{field} expected={expected.get(field)!r}, actual={actual.get(field)!r}"
         for field in fields
         if actual.get(field) != expected.get(field)
     ]
+    allowed = set(fields)
+    if set(actual) != allowed:
+        errors.append(
+            "service instance health payload must expose only fingerprint_version and fingerprint"
+        )
+    return errors
 
 
 def _backtest_contract_errors(
@@ -375,6 +602,11 @@ def _backtest_contract_errors(
     target_tenor: str,
     task_type: str,
     horizon: int,
+    expected_run_id: int | None,
+    expected_benchmark_id: str | None,
+    expected_scheme_version: str,
+    expected_snapshot_id: str | None,
+    expected_harness_run_id: str | None,
 ) -> list[str]:
     if row is None:
         return ["payload does not contain the exact active Blackbox result"]
@@ -385,12 +617,19 @@ def _backtest_contract_errors(
         "task_type": task_type,
         "horizon": int(horizon),
         "data_source": BLACKBOX_BACKTEST_DATA_SOURCE,
+        "runtime_type": "blackbox_v2",
+        "run_id": expected_run_id,
+        "benchmark_id": expected_benchmark_id,
+        "scheme_version": expected_scheme_version,
+        "data_snapshot_id": expected_snapshot_id,
+        "harness_run_id": expected_harness_run_id,
     }
     for key, value in expected.items():
         actual = row.get(key)
-        if key == "horizon":
+        if key in {"horizon", "run_id"}:
             try:
                 actual = int(actual)
+                value = int(value) if value is not None else None
             except (TypeError, ValueError):
                 pass
         if actual != value:
@@ -399,6 +638,26 @@ def _backtest_contract_errors(
         if not isinstance(row.get(key), list) or not row[key]:
             errors.append(f"{key} must be non-empty")
     return errors
+
+
+def _find_unique_factor_lab_cell(
+    payload: dict[str, Any],
+    registry_id: str,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    rows = payload.get("schemes")
+    if not isinstance(rows, list):
+        return None, ["factor-lab schemes must be a list"]
+    matches = [
+        row
+        for row in rows
+        if isinstance(row, dict) and str(row.get("scheme_id") or "") == registry_id
+    ]
+    if len(matches) != 1:
+        return None, [
+            "factor-lab must expose exactly one latest successful card for "
+            f"{registry_id}: got {len(matches)}"
+        ]
+    return matches[0], []
 
 
 def _find_scheme(payload: Any, registry_id: str) -> dict[str, Any] | None:

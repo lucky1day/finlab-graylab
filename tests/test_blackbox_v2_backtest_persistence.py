@@ -230,6 +230,7 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
                 scheme_version="version-test",
                 generation_id="generation-test",
                 benchmark_id="bbv2-history",
+                harness_run_id="hr-history-current",
                 run_delivery=lambda **_kwargs: _records(cases),
                 profile=RuntimeProfile.for_tests(),
             )
@@ -242,6 +243,9 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
         self.assertEqual(row["extra"]["scheme_version"], "version-test")
         self.assertEqual(row["extra"]["generation_id"], "generation-test")
         self.assertEqual(row["extra"]["data_snapshot_id"], "snapshot-test")
+        self.assertEqual(output.summary["scheme_version"], "version-test")
+        self.assertEqual(output.summary["data_snapshot_id"], "snapshot-test")
+        self.assertEqual(output.summary["harness_run_id"], "hr-history-current")
         self.assertEqual(output.data_source, "blackbox_v2_current_snapshot_as_of")
 
     def test_batch_sizes_are_conversion_invariant(self) -> None:
@@ -255,6 +259,7 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
                     metadata=_metadata(), script_path=Path(tmpdir) / "delivery.py",
                     cases=cases, snapshot=snapshot, scheme_version="version-test",
                     generation_id="generation-test", benchmark_id=f"benchmark-{count}",
+                    harness_run_id=f"hr-{count}",
                     run_delivery=lambda **_kwargs: _records(cases),
                     profile=RuntimeProfile.for_tests(),
                 )
@@ -275,6 +280,7 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
                     metadata=_metadata(), script_path=Path(tmpdir) / "delivery.py",
                     cases=cases, snapshot=snapshot, scheme_version="v",
                     generation_id="g", benchmark_id="b",
+                    harness_run_id="hr-b",
                     run_delivery=lambda **_kwargs: bad_records,
                     profile=RuntimeProfile.for_tests(),
                 )
@@ -286,6 +292,7 @@ class BlackboxV2BacktestConversionTests(unittest.TestCase):
                     metadata=_metadata(), script_path=Path(tmpdir) / "delivery.py",
                     cases=duplicate, snapshot=snapshot, scheme_version="v",
                     generation_id="g", benchmark_id="b",
+                    harness_run_id="hr-b",
                     run_delivery=lambda **_kwargs: _records(duplicate),
                     profile=RuntimeProfile.for_tests(),
                 )

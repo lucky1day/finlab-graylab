@@ -22,6 +22,7 @@ def run_blackbox_historical_backtest(
     scheme_version: str,
     generation_id: str,
     benchmark_id: str,
+    harness_run_id: str,
     run_delivery: Callable[..., Sequence[Any]],
     profile: Any,
 ) -> RunOutput:
@@ -102,7 +103,7 @@ def run_blackbox_historical_backtest(
             }
         )
     _require_unique_persisted_dates(rows)
-    return make_run_output(
+    output = make_run_output(
         scheme_id=metadata.scheme_id,
         data_source=DATA_SOURCE,
         start_date=min(row["predict_date"] for row in rows),
@@ -110,6 +111,15 @@ def run_blackbox_historical_backtest(
         rows=rows,
         benchmark_id=benchmark_id,
     )
+    output.summary.update(
+        {
+            "scheme_version": scheme_version,
+            "generation_id": generation_id,
+            "data_snapshot_id": snapshot.snapshot_id,
+            "harness_run_id": harness_run_id,
+        }
+    )
+    return output
 
 
 def _require_unique_persisted_dates(rows: list[dict]) -> None:

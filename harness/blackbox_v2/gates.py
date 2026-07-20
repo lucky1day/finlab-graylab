@@ -527,6 +527,7 @@ class BlackboxBacktestGate(_BlackboxGate):
                 scheme_version=cfg.scheme_version,
                 generation_id=generation_id,
                 benchmark_id=benchmark_id,
+                harness_run_id=passed_run.harness_run_id,
                 run_delivery=run_blackbox_backtest,
                 profile=_profile(ctx),
             )

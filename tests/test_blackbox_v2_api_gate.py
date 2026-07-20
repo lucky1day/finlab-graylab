@@ -9,17 +9,262 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from harness.context import GateContext
+from sqlalchemy import create_engine, text
 
 
 class BlackboxApiGateTests(unittest.TestCase):
     _INSTANCE = {
-        "fingerprint_version": "1",
+        "fingerprint_version": "2",
         "fingerprint": "f" * 64,
-        "database_identity_sha256": "d" * 64,
-        "code_commit": "a" * 40,
-        "runtime_profile": "blackbox-v2-v1",
-        "instance_nonce_sha256": "n" * 64,
     }
+
+    def test_certification_evidence_selects_exact_latest_harness_backtest_and_live_run(self) -> None:
+        from harness.blackbox_v2.api_gate import (
+            _read_expected_backtest_evidence,
+            _read_expected_live_evidence,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+            with engine.begin() as connection:
+                connection.execute(text("CREATE TABLE t_harness_runs (harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, stage TEXT, status TEXT, finished_at TEXT)"))
+                connection.execute(text("CREATE TABLE t_backtest_runs (id INTEGER, benchmark_id TEXT, scheme_id TEXT, data_source TEXT, status TEXT, summary TEXT, updated_at TEXT)"))
+                connection.execute(text("CREATE TABLE t_scheme_runs (run_id INTEGER, scheme_id TEXT, scheme_version TEXT, runtime_type TEXT, prediction_phase TEXT, status TEXT)"))
+                connection.execute(text("CREATE TABLE t_scheme_predictions (id INTEGER, run_id INTEGER, scheme_id TEXT, target_tenor TEXT, horizon INTEGER, scheme_version TEXT, prediction_phase TEXT, predict_date TEXT, feature_date TEXT, target_date TEXT, extra TEXT)"))
+                connection.execute(
+                    text("INSERT INTO t_harness_runs VALUES ('hr_old', :scheme, :version, 'all', 'passed', '2026-07-20T09:00:00'), ('hr_current', :scheme, :version, 'all', 'passed', '2026-07-20T10:00:00')"),
+                    {"scheme": cfg.scheme_id, "version": cfg.scheme_version},
+                )
+                for run_id, harness_id, snapshot_id, updated_at in (
+                    (100, "hr_old", "snapshot-old", "2026-07-20T09:01:00"),
+                    (101, "hr_current", "snapshot-current", "2026-07-20T10:01:00"),
+                ):
+                    connection.execute(
+                        text("INSERT INTO t_backtest_runs VALUES (:id, :benchmark, :scheme, 'blackbox_v2_current_snapshot_as_of', 'success', :summary, :updated_at)"),
+                        {
+                            "id": run_id,
+                            "benchmark": f"bbv2-{cfg.scheme_id}-{harness_id}",
+                            "scheme": cfg.scheme_id,
+                            "summary": json.dumps(
+                                {
+                                    "scheme_version": cfg.scheme_version,
+                                    "harness_run_id": harness_id,
+                                    "data_snapshot_id": snapshot_id,
+                                }
+                            ),
+                            "updated_at": updated_at,
+                        },
+                    )
+                connection.execute(
+                    text("INSERT INTO t_scheme_runs VALUES (201, :scheme, :version, 'blackbox_v2', 'scheduled_live', 'success')"),
+                    {"scheme": cfg.scheme_id, "version": cfg.scheme_version},
+                )
+                connection.execute(
+                    text("INSERT INTO t_scheme_predictions VALUES (301, 201, :scheme, '10Y', 1, :version, 'scheduled_live', '2026-07-20', '2026-07-17', '2026-07-24', :extra)"),
+                    {
+                        "scheme": cfg.scheme_id,
+                        "version": cfg.scheme_version,
+                        "extra": json.dumps(
+                            {
+                                "request_id": f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24",
+                                "data_snapshot_id": "snapshot-live-current",
+                            }
+                        ),
+                    },
+                )
+
+            backtest = _read_expected_backtest_evidence(engine, cfg)
+            live = _read_expected_live_evidence(
+                engine,
+                cfg,
+                target_tenor="10Y",
+                horizon=1,
+                prediction_phase="scheduled_live",
+            )
+
+        self.assertEqual(backtest["run_id"], 101)
+        self.assertEqual(backtest["benchmark_id"], f"bbv2-{cfg.scheme_id}-hr_current")
+        self.assertEqual(backtest["data_snapshot_id"], "snapshot-current")
+        self.assertEqual(live["request_id"], f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24")
+        self.assertEqual(live["data_snapshot_id"], "snapshot-live-current")
+
+    def test_metrics_contract_allows_mixed_history_but_requires_exact_current_live_row(self) -> None:
+        from harness.blackbox_v2.api_gate import _metrics_contract_errors
+
+        registry_id = "weekly_trial__h1__10Y"
+        payload = {
+            "scheme_id": registry_id,
+            "base_scheme_id": "weekly_trial",
+            "target_tenor": "10Y",
+            "task_type": "weekly_point",
+            "summary": {"metric_samples": 1},
+            "monthly_metrics": [{"month": "2026-06", "metric_samples": 1}],
+            "daily_rows": [
+                {
+                    "scheme_id": registry_id,
+                    "base_scheme_id": "weekly_trial",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "predict_date": "2026-06-15",
+                    "feature_date": "2026-06-12",
+                    "target_date": "2026-06-19",
+                    "prediction_phase": "gray_live",
+                    "scheme_version": "old-version",
+                    "request_id": "weekly_trial:2026-06-15:2026-06-12:2026-06-19",
+                    "data_snapshot_id": "snapshot-old",
+                    "predicted_direction": -1,
+                    "actual_direction": -1,
+                    "is_correct": True,
+                },
+                {
+                    "scheme_id": registry_id,
+                    "base_scheme_id": "weekly_trial",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "predict_date": "2026-07-20",
+                    "feature_date": "2026-07-17",
+                    "target_date": "2026-07-24",
+                    "prediction_phase": "scheduled_live",
+                    "scheme_version": "current-version",
+                    "request_id": "weekly_trial:2026-07-20:2026-07-17:2026-07-24",
+                    "data_snapshot_id": "snapshot-current",
+                    "predicted_direction": 1,
+                    "actual_direction": None,
+                    "is_correct": None,
+                },
+            ],
+        }
+
+        errors, counts = _metrics_contract_errors(
+            payload,
+            registry_id=registry_id,
+            base_scheme_id="weekly_trial",
+            target_tenor="10Y",
+            task_type="weekly_point",
+            horizon=1,
+            scheme_version="current-version",
+            expected_phase="scheduled_live",
+            expected_live={
+                "predict_date": "2026-07-20",
+                "feature_date": "2026-07-17",
+                "target_date": "2026-07-24",
+                "request_id": "weekly_trial:2026-07-20:2026-07-17:2026-07-24",
+                "data_snapshot_id": "snapshot-current",
+            },
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(counts["exact_current_live_rows"], 1)
+        self.assertEqual(counts["matched_actual_rows"], 1)
+        self.assertEqual(counts["pending_actual_rows"], 1)
+
+    def test_metrics_contract_rejects_payload_with_only_old_live_rows(self) -> None:
+        from harness.blackbox_v2.api_gate import _metrics_contract_errors
+
+        registry_id = "weekly_trial__h1__10Y"
+        payload = {
+            "scheme_id": registry_id,
+            "base_scheme_id": "weekly_trial",
+            "target_tenor": "10Y",
+            "task_type": "weekly_point",
+            "summary": {"metric_samples": 1},
+            "monthly_metrics": [{"month": "2026-06", "metric_samples": 1}],
+            "daily_rows": [
+                {
+                    "scheme_id": registry_id,
+                    "base_scheme_id": "weekly_trial",
+                    "target_tenor": "10Y",
+                    "horizon": 1,
+                    "predict_date": "2026-06-15",
+                    "feature_date": "2026-06-12",
+                    "target_date": "2026-06-19",
+                    "prediction_phase": "gray_live",
+                    "scheme_version": "old-version",
+                    "request_id": "weekly_trial:2026-06-15:2026-06-12:2026-06-19",
+                    "data_snapshot_id": "snapshot-old",
+                    "predicted_direction": -1,
+                    "actual_direction": -1,
+                    "is_correct": True,
+                }
+            ],
+        }
+
+        errors, counts = _metrics_contract_errors(
+            payload,
+            registry_id=registry_id,
+            base_scheme_id="weekly_trial",
+            target_tenor="10Y",
+            task_type="weekly_point",
+            horizon=1,
+            scheme_version="current-version",
+            expected_phase="scheduled_live",
+            expected_live={
+                "predict_date": "2026-07-20",
+                "feature_date": "2026-07-17",
+                "target_date": "2026-07-24",
+                "request_id": "weekly_trial:2026-07-20:2026-07-17:2026-07-24",
+                "data_snapshot_id": "snapshot-current",
+            },
+        )
+
+        self.assertEqual(counts["exact_current_live_rows"], 0)
+        self.assertTrue(any("exact current live row" in error for error in errors), errors)
+
+    def test_backtest_contract_rejects_old_run_impersonating_current_certification(self) -> None:
+        from harness.blackbox_v2.api_gate import _backtest_contract_errors
+
+        errors = _backtest_contract_errors(
+            {
+                "run_id": 99,
+                "benchmark_id": "bbv2-weekly_trial-hr_old",
+                "base_scheme_id": "weekly_trial",
+                "target_tenor": "10Y",
+                "task_type": "weekly_point",
+                "horizon": 1,
+                "data_source": "blackbox_v2_current_snapshot_as_of",
+                "runtime_type": "blackbox_v2",
+                "scheme_version": "old-version",
+                "data_snapshot_id": "snapshot-old",
+                "harness_run_id": "hr_old",
+                "daily_rows": [{"predicted_direction": 1, "actual_direction": 1}],
+                "monthly_metrics": [{"metric_samples": 1}],
+            },
+            base_scheme_id="weekly_trial",
+            target_tenor="10Y",
+            task_type="weekly_point",
+            horizon=1,
+            expected_run_id=101,
+            expected_benchmark_id="bbv2-weekly_trial-hr_current",
+            expected_scheme_version="current-version",
+            expected_snapshot_id="snapshot-current",
+            expected_harness_run_id="hr_current",
+        )
+
+        joined = "\n".join(errors)
+        self.assertIn("run_id", joined)
+        self.assertIn("benchmark_id", joined)
+        self.assertIn("scheme_version", joined)
+        self.assertIn("data_snapshot_id", joined)
+        self.assertIn("harness_run_id", joined)
+
+    def test_backtest_payload_rejects_duplicate_cards_for_same_registry(self) -> None:
+        from harness.blackbox_v2.api_gate import _find_unique_factor_lab_cell
+
+        registry_id = "weekly_trial__h1__10Y"
+        row, errors = _find_unique_factor_lab_cell(
+            {
+                "schemes": [
+                    {"scheme_id": registry_id, "run_id": 101},
+                    {"scheme_id": registry_id, "run_id": 100},
+                ]
+            },
+            registry_id,
+        )
+
+        self.assertIsNone(row)
+        self.assertTrue(any("exactly one latest" in error for error in errors), errors)
 
     def _scaffold(self, root: Path):
         from scheduler.discovery import load_scheme_config
@@ -88,7 +333,15 @@ class BlackboxApiGateTests(unittest.TestCase):
                 engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
                 api_base_url="http://127.0.0.1:18100",
                 api_instance_nonce="cert-instance-1",
+                prediction_phase="gray_live",
             )
+            expected_backtest = {
+                "run_id": 301,
+                "benchmark_id": f"bbv2-{cfg.scheme_id}-hr_current",
+                "scheme_version": cfg.scheme_version,
+                "harness_run_id": "hr_current",
+                "data_snapshot_id": "snapshot-live-1",
+            }
             registry_row = {
                 "scheme_id": registry_id,
                 "base_scheme_id": cfg.scheme_id,
@@ -116,9 +369,12 @@ class BlackboxApiGateTests(unittest.TestCase):
                         "base_scheme_id": cfg.scheme_id,
                         "target_tenor": "10Y",
                         "horizon": 1,
+                        "predict_date": "2026-07-20",
+                        "feature_date": "2026-07-17",
+                        "target_date": "2026-07-24",
                         "prediction_phase": "gray_live",
                         "scheme_version": cfg.scheme_version,
-                        "request_id": "req-live-1",
+                        "request_id": f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24",
                         "data_snapshot_id": "snapshot-live-1",
                         "predicted_direction": 1,
                         "actual_direction": 1,
@@ -136,6 +392,12 @@ class BlackboxApiGateTests(unittest.TestCase):
                         "task_type": "weekly_point",
                         "horizon": 1,
                         "data_source": "blackbox_v2_current_snapshot_as_of",
+                        "runtime_type": "blackbox_v2",
+                        "run_id": 301,
+                        "benchmark_id": f"bbv2-{cfg.scheme_id}-hr_current",
+                        "scheme_version": cfg.scheme_version,
+                        "data_snapshot_id": "snapshot-live-1",
+                        "harness_run_id": "hr_current",
                         "monthly_metrics": [
                             {"month": "2026-07", "samples": 1, "metric_samples": 1, "accuracy": 100.0}
                         ],
@@ -165,6 +427,24 @@ class BlackboxApiGateTests(unittest.TestCase):
                 patch(
                     "harness.blackbox_v2.api_gate._read_active_registry",
                     return_value=registry_row,
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate._read_expected_backtest_evidence",
+                    return_value=expected_backtest,
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate._read_expected_live_evidence",
+                    return_value={
+                        "predict_date": "2026-07-20",
+                        "feature_date": "2026-07-17",
+                        "target_date": "2026-07-24",
+                        "request_id": f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24",
+                        "data_snapshot_id": "snapshot-live-1",
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate.service_fingerprint_secret",
+                    return_value="formal-shared-secret-for-tests",
                 ),
                 patch(
                     "harness.blackbox_v2.api_gate.build_service_instance_identity",
@@ -212,6 +492,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                 config=cfg,
                 engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
                 api_instance_nonce="cert-instance-1",
+                prediction_phase="gray_live",
             )
             registry_row = {
                 "scheme_id": registry_id,
@@ -227,6 +508,30 @@ class BlackboxApiGateTests(unittest.TestCase):
                 patch(
                     "harness.blackbox_v2.api_gate._read_active_registry",
                     return_value=registry_row,
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate._read_expected_backtest_evidence",
+                    return_value={
+                        "run_id": 301,
+                        "benchmark_id": f"bbv2-{cfg.scheme_id}-hr_current",
+                        "scheme_version": cfg.scheme_version,
+                        "harness_run_id": "hr_current",
+                        "data_snapshot_id": "snapshot-live-1",
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate._read_expected_live_evidence",
+                    return_value={
+                        "predict_date": "2026-07-20",
+                        "feature_date": "2026-07-17",
+                        "target_date": "2026-07-24",
+                        "request_id": f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24",
+                        "data_snapshot_id": "snapshot-live-1",
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate.service_fingerprint_secret",
+                    return_value="formal-shared-secret-for-tests",
                 ),
                 patch(
                     "harness.blackbox_v2.api_gate.fetch_json",
@@ -266,6 +571,7 @@ class BlackboxApiGateTests(unittest.TestCase):
                 config=cfg,
                 engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
                 api_instance_nonce="cert-instance-1",
+                prediction_phase="gray_live",
             )
             registry_row = {
                 "scheme_id": registry_id,
@@ -309,6 +615,30 @@ class BlackboxApiGateTests(unittest.TestCase):
             with (
                 patch("harness.blackbox_v2.api_gate._read_active_registry", return_value=registry_row),
                 patch(
+                    "harness.blackbox_v2.api_gate._read_expected_backtest_evidence",
+                    return_value={
+                        "run_id": 301,
+                        "benchmark_id": f"bbv2-{cfg.scheme_id}-hr_current",
+                        "scheme_version": cfg.scheme_version,
+                        "harness_run_id": "hr_current",
+                        "data_snapshot_id": "snapshot-live-1",
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate._read_expected_live_evidence",
+                    return_value={
+                        "predict_date": "2026-07-20",
+                        "feature_date": "2026-07-17",
+                        "target_date": "2026-07-24",
+                        "request_id": f"{cfg.scheme_id}:2026-07-20:2026-07-17:2026-07-24",
+                        "data_snapshot_id": "snapshot-live-1",
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate.service_fingerprint_secret",
+                    return_value="formal-shared-secret-for-tests",
+                ),
+                patch(
                     "harness.blackbox_v2.api_gate.build_service_instance_identity",
                     return_value=self._INSTANCE,
                     create=True,
@@ -327,10 +657,52 @@ class BlackboxApiGateTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         errors = "\n".join(result.errors)
-        self.assertIn("service instance identity", errors)
+        self.assertIn("service instance health payload", errors)
         self.assertIn("request_id", errors)
         self.assertIn("data_snapshot_id", errors)
         self.assertIn("actual", errors)
+
+    def test_blackbox_api_gate_fails_closed_without_authenticated_fingerprint_secret(self) -> None:
+        from harness.blackbox_v2.api_gate import BlackboxApiGate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            cfg = self._scaffold(root)
+            ctx = GateContext(
+                cfg.scheme_id,
+                "api",
+                root,
+                root / "reports",
+                config=cfg,
+                engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
+                api_instance_nonce="cert-instance-1",
+                prediction_phase="gray_live",
+            )
+            with (
+                patch("harness.blackbox_v2.api_gate.service_fingerprint_secret", return_value=None),
+                patch("harness.blackbox_v2.api_gate._read_active_registry", return_value=None),
+                patch(
+                    "harness.blackbox_v2.api_gate._read_expected_backtest_evidence",
+                    side_effect=ValueError("no persisted run"),
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate._read_expected_live_evidence",
+                    side_effect=ValueError("no live row"),
+                ),
+                patch(
+                    "harness.blackbox_v2.api_gate.fetch_json",
+                    side_effect=[
+                        ({"status": "ok", "service_instance": {"fingerprint_version": "2", "fingerprint": None}}, 200),
+                        ({"schemes": []}, 200),
+                        ({"daily_rows": [], "monthly_metrics": []}, 200),
+                        ({"schemes": []}, 200),
+                    ],
+                ),
+            ):
+                result = BlackboxApiGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn("HARNESS_AUTH_SECRET", "\n".join(result.errors))
 
     def test_fetch_json_rejects_response_larger_than_limit(self) -> None:
         from harness.probes.api_probe import ApiProbeError, fetch_json

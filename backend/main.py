@@ -26,7 +26,11 @@ from backend.services import (
 )
 from scheduler.executor import DEFAULT_ALGO_ENV
 from scheduler.main import run_prediction_job
-from shared.service_instance import build_service_instance_identity
+from shared.service_instance import (
+    FINGERPRINT_VERSION,
+    build_service_instance_identity,
+    service_fingerprint_secret,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -104,18 +108,23 @@ class TriggerRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict:
     engine = get_engine()
-    identity = build_service_instance_identity(
-        engine,
-        project_root=PROJECT_ROOT,
-        runtime_profile=os.getenv(
-            "BOND_FACTOR_LAB_RUNTIME_PROFILE",
-            "blackbox-v2-v1",
-        ),
-        instance_nonce=os.getenv(
-            "BOND_FACTOR_LAB_INSTANCE_NONCE",
-            _DEFAULT_INSTANCE_NONCE,
-        ),
-    )
+    fingerprint_secret = service_fingerprint_secret()
+    if fingerprint_secret is None:
+        identity = {"fingerprint_version": FINGERPRINT_VERSION, "fingerprint": None}
+    else:
+        identity = build_service_instance_identity(
+            engine,
+            project_root=PROJECT_ROOT,
+            runtime_profile=os.getenv(
+                "BOND_FACTOR_LAB_RUNTIME_PROFILE",
+                "blackbox-v2-v1",
+            ),
+            instance_nonce=os.getenv(
+                "BOND_FACTOR_LAB_INSTANCE_NONCE",
+                _DEFAULT_INSTANCE_NONCE,
+            ),
+            fingerprint_secret=fingerprint_secret,
+        )
     return {"status": "ok", "service_instance": identity}
 
 
