@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import re
 import unittest
 from pathlib import Path
@@ -152,6 +153,51 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "前端备注",
         ):
             self.assertIn(marker, platform)
+
+    def test_v2_preflight_launchd_owns_four_daily_time_points(self) -> None:
+        preflight_path = (
+            PROJECT_ROOT
+            / "deploy"
+            / "launchd"
+            / "com.bond-factor-lab.v2-preflight.plist"
+        )
+        with preflight_path.open("rb") as handle:
+            preflight = plistlib.load(handle)
+
+        self.assertEqual(preflight["Label"], "com.bond-factor-lab.v2-preflight")
+        self.assertNotIn("KeepAlive", preflight)
+        self.assertNotIn("RunAtLoad", preflight)
+        self.assertEqual(
+            {
+                (item["Hour"], item["Minute"])
+                for item in preflight["StartCalendarInterval"]
+            },
+            {(6, 0), (6, 30), (6, 35), (7, 0)},
+        )
+        self.assertIn(
+            "scheduler.v2_daily_preflight",
+            preflight["ProgramArguments"],
+        )
+        self.assertEqual(
+            preflight["EnvironmentVariables"]["DATABRIDGE_REFRESH_START"],
+            "06:00",
+        )
+        self.assertEqual(
+            preflight["EnvironmentVariables"]["DATABRIDGE_REFRESH_DEADLINE"],
+            "07:00",
+        )
+
+        scheduler_path = (
+            PROJECT_ROOT
+            / "deploy"
+            / "launchd"
+            / "com.bond-factor-lab.scheduler.plist"
+        )
+        with scheduler_path.open("rb") as handle:
+            scheduler = plistlib.load(handle)
+        scheduler_env = scheduler["EnvironmentVariables"]
+        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_START"], "06:00")
+        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_DEADLINE"], "07:00")
 
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (
