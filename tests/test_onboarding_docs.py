@@ -62,9 +62,40 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "weekly_10y_lgbm_point_v1",
             "hr_",
             "snapshot-",
+            "t_scheme_registry",
+            "gray_backfill_write",
+            "phase_ranges",
+            "launchctl",
         )
         for marker in banned:
             self.assertNotIn(marker, text)
+
+    def test_upstream_sop_is_self_contained_and_explains_databridge_download(self) -> None:
+        text = UPSTREAM_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            "唯一需要阅读的人类文档",
+            "DATABRIDGE_API_BASE_URL",
+            "DATABRIDGE_API_USERNAME",
+            "DATABRIDGE_API_PASSWORD",
+            "export/csv/",
+            "frequency=日",
+            "frequency=周",
+            "frequency=月",
+            "sample_data/daily_output.csv",
+            "sample_data/weekly_output.csv",
+            "sample_data/monthly_output.csv",
+            "data_bridge_v1_schema.json",
+            "f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc",
+            "真实 DataBridge 数据",
+            "接口烟雾测试",
+        ):
+            self.assertIn(marker, text)
+
+        self.assertNotRegex(
+            text,
+            r"\[[^\]]+\]\([^)]*\.md(?:#[^)]*)?\)",
+        )
 
     def test_upstream_metadata_name_is_task_scoped_and_concise(self) -> None:
         text = UPSTREAM_SOP.read_text(encoding="utf-8")
@@ -218,7 +249,18 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn(marker, platform)
 
         upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
-        self.assertNotIn("06:35", upstream)
+        for marker in (
+            "06:00",
+            "06:30",
+            "06:35",
+            "07:00",
+            "上一交易日",
+            "连续两轮",
+            "同一个 generation",
+            "整体原子发布",
+            "当天不运行、不自动补跑",
+        ):
+            self.assertIn(marker, upstream)
         self.assertNotIn("v2-scheduler-gate-v1", upstream)
 
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
