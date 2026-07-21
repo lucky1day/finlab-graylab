@@ -470,7 +470,7 @@ Activation 当天还必须为当前可运行点执行至少一次受控 `gray_li
 1. `/api/schemes` 的 active composite row 必须包含真实、非空的 `deployed_at`；前端候选排行的“部署时间”只能来自该字段，不得使用 hardcoded 日期、默认值或 scheme ID 特判。
 2. `/api/backtests/factor-lab` 的 canonical latest-success 明细必须全部满足 `target_date < gray_target_start`；前端不得靠裁剪或覆盖历史行来掩盖错误的回测落库。
 3. `/api/metrics/{registry_scheme_id}` 必须返回全部 gray/scheduled live 明细、标准三日期、`prediction_phase` 和 `phase_ranges`；`phase_ranges` 至少能分别表达灰度实盘区间和正式调度起点。
-4. 前端“实盘发出起点”取 live 明细的最小 `predict_date`；“灰度实盘（目标期）”必须优先显示 `phase_ranges.start_target_date/end_target_date`，并在括号中另列信号发出区间；“正式调度发出起点”取 scheduled phase 的 `start_predict_date`，可另列目标期起点；“部署时间”继续单独显示 `deployed_at`，这些日期不得混成一个边界。
+4. 前端详情的阶段分隔文案统一只表达正式实盘的目标日期起点。存在 `scheduled_live` 时显示 `▼ 实盘预测目标区间：{scheduled_live.start_target_date}开始`，日期取 `phase_ranges` 中 scheduled 行的 `start_target_date`；尚不存在 `scheduled_live` 时显示 `▼ 实盘预测目标区间：待产生`。不得使用 `predict_date`、`feature_date`、gray 端点或 `deployed_at` 替代该目标起点；“部署时间”继续单独显示 Registry 的 `deployed_at`。
 5. 回测和 live 统一按 `target_date` 归属月份。“全部”口径必须在第一条 live target 月前插入实盘分隔线；分隔线之前不得包含 `target_date >= gray_target_start` 的回测，之后不得遗漏应有的 gray live。
 6. 同一方案、同一 `target_date` 同时出现在 backtest 与 live 是数据分区失败，必须阻断上线；不得通过前端同月追加、覆盖、去重或隐藏其中一侧宣称验收通过。
 7. actual 尚未到达的 live target 显示“待验证”，计入展示样本数，但不进入准确率分母；不得人工补 actual，也不得把 pending 显示成预测错误。
@@ -534,7 +534,7 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] canonical backtest 全部满足 `target_date < gray_target_start`，与 live target 零重叠
 - [ ] 激活即登记真实 `deployed_at`，并已补齐 `target_date >= gray_target_start` 的连续 `gray_live`
 - [ ] `/api/metrics/{registry_scheme_id}` 返回三日期、`prediction_phase` 和 `phase_ranges`
-- [ ] 前端分别展示部署时间、实盘发出起点、灰度实盘（目标期）区间和正式调度发出起点，pending 显示待验证
+- [ ] 前端单独展示部署时间；详情分隔文案为 `实盘预测目标区间`，有 scheduled target 时显示 `{scheduled_live.start_target_date}开始`，否则显示“待产生”；actual pending 继续显示“待验证”
 - [ ] 前端三个数据口径与 DB/API 一致，任务格子、短名称、样本数、分隔线和控制台均通过
 
 具体方案的 generation、snapshot、Harness run、预测结果、数据库计数和当前状态只追加到平台入库规划文档，不回写本通用 SOP。

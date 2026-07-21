@@ -99,12 +99,15 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "target_date < gray_target_start",
             "prediction_phase=gray_live",
             "prediction_phase=scheduled_live",
-            "实盘发出起点",
+            "实盘预测目标区间",
             "phase_ranges",
             "待验证",
             "不参与回测截断",
         ):
             self.assertIn(marker, platform)
+
+        self.assertIn("scheduled_live.start_target_date", platform)
+        self.assertNotIn("实盘预测目标区间", upstream)
 
         for platform_only_marker in ("gray_target_start", "phase_ranges", "deployed_at"):
             self.assertNotIn(platform_only_marker, upstream)
@@ -120,7 +123,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "fresh-only",
             "insert-only",
             "重复 target",
-            "灰度实盘（目标期）",
+            "gray_target_start",
         ):
             self.assertIn(marker, platform)
 
