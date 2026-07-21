@@ -28,6 +28,19 @@ from experiments.t5_no_foreign_lgbm.policy import (
     patch_core_feature_builders,
 )
 from experiments.t5_no_foreign_lgbm.report import render_report
+from experiments.t5_no_foreign_lgbm.runner import (
+    ACTIVE_SCHEME_IDS,
+    SCHEME_SPECS,
+    checkpoint_key,
+    domestic_one_year_factors,
+    ensure_output_root,
+    hash_files,
+    load_or_run_checkpoint,
+    merge_phase_caches,
+    select_recompute_feature_dates,
+    verify_hashes,
+    v28_month_windows,
+)
 
 
 APPROVED_SCHEME_IDS = (
@@ -463,6 +476,130 @@ class MetricAndReportTests(unittest.TestCase):
             f"### {APPROVED_SCHEME_IDS[-1]}", 1
         )[1]
         self.assertNotIn("synthetic failure |", failed_section)
+
+
+class RunnerContractTests(unittest.TestCase):
+    def test_manifest_is_the_frozen_twenty_config_scope(self) -> None:
+        self.assertEqual(APPROVED_SCHEME_IDS, ACTIVE_SCHEME_IDS)
+        self.assertEqual(20, len(SCHEME_SPECS))
+        self.assertEqual(APPROVED_SCHEME_IDS, tuple(spec.composite_id for spec in SCHEME_SPECS))
+        by_id = {spec.composite_id: spec for spec in SCHEME_SPECS}
+        self.assertEqual(
+            "rule_only",
+            by_id["one_y_t5_liq_excess_a_v1__h5__1Y"].model_kind,
+        )
+        for scheme_id in APPROVED_SCHEME_IDS[-4:]:
+            self.assertEqual("zero_foreign", by_id[scheme_id].model_kind)
+
+    def test_output_root_is_confined_to_isolated_experiment_directory(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            project_root = Path(raw_root)
+            allowed = (
+                project_root
+                / "backtest_artifacts"
+                / "experiments"
+                / "t5_no_foreign_lgbm"
+                / "run-1"
+            )
+            self.assertEqual(allowed.resolve(), ensure_output_root(project_root, allowed))
+            with self.assertRaisesRegex(ValueError, "experiment output root"):
+                ensure_output_root(project_root, project_root / "data")
+            with self.assertRaisesRegex(ValueError, "experiment output root"):
+                ensure_output_root(project_root, allowed / ".." / ".." / "escape")
+
+    def test_source_hash_guard_detects_any_mutation(self) -> None:
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            first = root / "daily.csv"
+            second = root / "phase.pkl"
+            first.write_bytes(b"before")
+            second.write_bytes(b"cache")
+            before = hash_files((first, second))
+            self.assertTrue(verify_hashes(before))
+            first.write_bytes(b"after")
+            self.assertFalse(verify_hashes(before))
+
+    def test_checkpoints_separate_branches_and_resume_without_execution(self) -> None:
+        self.assertNotEqual(
+            checkpoint_key("baseline", "7y_v31"),
+            checkpoint_key("ablation", "7y_v31"),
+        )
+        with TemporaryDirectory() as raw_root:
+            root = Path(raw_root)
+            checkpoint = root / "complete.pkl"
+            checkpoint.write_bytes(__import__("pickle").dumps({"complete": True}))
+            calls = []
+
+            def should_not_run():
+                calls.append(True)
+                return {"complete": False}
+
+            self.assertEqual(
+                {"complete": True},
+                load_or_run_checkpoint(checkpoint, should_not_run, resume=True),
+            )
+            self.assertEqual([], calls)
+
+    def test_recompute_dates_follow_target_month_not_feature_month(self) -> None:
+        mapping = {
+            "2026-03-24": "2026-03-31",
+            "2026-03-25": "2026-04-01",
+            "2026-04-24": "2026-05-06",
+            "2026-06-23": "2026-06-30",
+            "2026-06-24": "2026-07-01",
+        }
+        selected = select_recompute_feature_dates(mapping)
+        self.assertEqual(
+            ("2026-03-25", "2026-04-24", "2026-06-23"),
+            selected,
+        )
+        self.assertEqual(
+            (("2026-03-01", "2026-03-25"), ("2026-04-01", "2026-04-24"), ("2026-06-01", "2026-06-23")),
+            v28_month_windows(selected),
+        )
+
+    def test_one_year_filter_removes_only_foreign_market_sources(self) -> None:
+        factors = (
+            "DR007IBC",
+            "USDCNH0C",
+            "SH000300",
+            "IFCFE00C",
+            "S0031525",
+            "AUSHF00C",
+        )
+        self.assertEqual(
+            ("DR007IBC", "SH000300", "IFCFE00C", "AUSHF00C"),
+            domestic_one_year_factors(factors),
+        )
+
+    def test_phase_cache_extension_preserves_source_and_fills_missing_dates(self) -> None:
+        baseline = {
+            "test_dates": ["2026-03-24", "2026-03-25"],
+            "results": [
+                {
+                    "config": {"window": 200},
+                    "preds": np.array([1, -1]),
+                    "probs": np.array([0.7, 0.3]),
+                }
+            ],
+        }
+        extension = {
+            "test_dates": ["2026-03-26"],
+            "results": [
+                {
+                    "config": {"window": 200},
+                    "preds": np.array([1]),
+                    "probs": np.array([0.8]),
+                }
+            ],
+        }
+        merged = merge_phase_caches(baseline, extension)
+        self.assertEqual(
+            ["2026-03-24", "2026-03-25", "2026-03-26"],
+            merged["test_dates"],
+        )
+        np.testing.assert_array_equal([1, -1, 1], merged["results"][0]["preds"])
+        self.assertEqual(["2026-03-24", "2026-03-25"], baseline["test_dates"])
 
 
 if __name__ == "__main__":
