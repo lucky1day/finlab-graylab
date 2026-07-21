@@ -69,7 +69,7 @@ Run:
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest tests/test_v2_daily_gate.py -q
+  python -m unittest tests.test_v2_daily_gate -q
 ```
 
 Expected: collection fails because `scheduler.v2_daily_gate` does not exist.
@@ -214,7 +214,7 @@ Run:
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest tests/test_v2_daily_preflight.py -q
+  python -m unittest tests.test_v2_daily_preflight -q
 ```
 
 Expected: collection fails because `scheduler.v2_daily_preflight` does not exist.
@@ -305,7 +305,7 @@ Run:
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest tests/test_scheduler_main.py -q
+  python -m unittest tests.test_scheduler_main -q
 ```
 
 Expected: new assertions fail because all schemes currently share the same path, `run_prediction_job` syncs Registry, and the scheduler still registers the 05:30 refresh job.
@@ -346,11 +346,11 @@ Run:
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest \
-    tests/test_scheduler_main.py \
-    tests/test_scheduler_discovery.py \
-    tests/test_executor_run_id.py \
-    tests/test_backend_api.py -q
+  python -m unittest \
+    tests.test_scheduler_main \
+    tests.test_scheduler_discovery \
+    tests.test_executor_run_id \
+    tests.test_backend_api -q
 ```
 
 Expected: all tests pass.
@@ -392,7 +392,7 @@ Run:
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest tests/test_onboarding_docs.py -q
+  python -m unittest tests.test_onboarding_docs -q
 ```
 
 Expected: failure because the preflight plist does not exist and scheduler env values are absent.
@@ -418,7 +418,7 @@ Run:
 plutil -lint deploy/launchd/com.bond-factor-lab.scheduler.plist
 plutil -lint deploy/launchd/com.bond-factor-lab.v2-preflight.plist
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest tests/test_onboarding_docs.py -q
+  python -m unittest tests.test_onboarding_docs -q
 ```
 
 Expected: both plists are OK and all tests pass.
@@ -477,7 +477,7 @@ Run:
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest tests/test_production_daily_health.py tests/test_onboarding_docs.py -q
+  python -m unittest tests.test_production_daily_health tests.test_onboarding_docs -q
 ```
 
 Expected: failures for the missing V2 snapshot and missing authoritative SOP language.
@@ -558,15 +558,7 @@ Run:
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python -m pytest \
-    tests/test_v2_daily_gate.py \
-    tests/test_v2_daily_preflight.py \
-    tests/test_scheduler_main.py \
-    tests/test_blackbox_v2_*.py \
-    tests/test_backend_api.py \
-    tests/test_frontend_factor_lab.py \
-    tests/test_production_daily_health.py \
-    tests/test_onboarding_docs.py -q
+  python -m unittest discover -s tests -p 'test_*.py' -q
 ```
 
 Expected: zero failures.
