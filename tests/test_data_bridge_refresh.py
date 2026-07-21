@@ -14,6 +14,15 @@ import pandas as pd
 
 
 class DataBridgeRefreshTests(unittest.TestCase):
+    def test_refresh_config_defaults_to_v2_preflight_timeline(self) -> None:
+        from shared.data_bridge.refresh import DataBridgeRefreshConfig
+
+        with patch.dict("os.environ", {}, clear=True):
+            config = DataBridgeRefreshConfig.from_env()
+
+        self.assertEqual(config.refresh_start, "06:00")
+        self.assertEqual(config.refresh_deadline, "07:00")
+
     def test_exclusive_publish_waits_for_snapshot_shared_lock(self) -> None:
         from shared.data_bridge.refresh import DataBridgeStore
 

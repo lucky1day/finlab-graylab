@@ -199,6 +199,25 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_START"], "06:00")
         self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_DEADLINE"], "07:00")
 
+    def test_platform_sop_defines_v2_preflight_timeline_and_isolation(self) -> None:
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+        for marker in (
+            "06:00",
+            "06:30",
+            "06:35",
+            "07:00",
+            "V1 不读取",
+            "校验成功后重启",
+            "不重启、不补跑",
+            "单个预测任务不得回写 Registry",
+            "v2-scheduler-gate-v1",
+        ):
+            self.assertIn(marker, platform)
+
+        upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
+        self.assertNotIn("06:35", upstream)
+        self.assertNotIn("v2-scheduler-gate-v1", upstream)
+
     def test_old_native_entry_paths_are_redirect_only(self) -> None:
         redirects = (
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",

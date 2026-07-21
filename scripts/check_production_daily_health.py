@@ -21,6 +21,10 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from scheduler.calendar import is_trading_day  # noqa: E402
 from scheduler.repository import create_engine_from_env  # noqa: E402
+from scheduler.v2_daily_gate import (  # noqa: E402
+    V2DailyGateBlocked,
+    load_gate_record,
+)
 from shared.calendar_service import get_calendar  # noqa: E402
 from shared.data_bridge.refresh import (  # noqa: E402
     DataBridgeRefreshConfig,
@@ -88,6 +92,16 @@ class DataBridgeHealthSnapshot:
 
 
 @dataclass(frozen=True)
+class V2SchedulerGateSnapshot:
+    run_date: str
+    status: str | None
+    generation_id: str | None
+    current_generation_id: str | None
+    restart_verified: bool
+    error: str | None
+
+
+@dataclass(frozen=True)
 class HealthFinding:
     level: FindingLevel
     code: str
@@ -132,7 +146,7 @@ def evaluate_data_bridge_health(
     snapshot: DataBridgeHealthSnapshot,
     *,
     now: datetime | None = None,
-    deadline: str = "06:45",
+    deadline: str = "07:00",
 ) -> list[HealthFinding]:
     run_now = now or datetime.now(ZoneInfo("Asia/Shanghai"))
     if run_now.tzinfo is None:
@@ -154,6 +168,30 @@ def evaluate_data_bridge_health(
             level=level,
             code="data_bridge_refresh_stale",
             message="DataBridge current files are stale or invalid",
+            detail=asdict(snapshot),
+        )
+    ]
+
+
+def evaluate_v2_scheduler_gate(
+    snapshot: V2SchedulerGateSnapshot,
+) -> list[HealthFinding]:
+    """独立评估 Blackbox V2 日级凭证，不改变 Native V1 健康口径。"""
+    if snapshot.status is None:
+        code = "v2_daily_gate_missing"
+    elif snapshot.status != "ready":
+        code = "v2_daily_gate_blocked"
+    elif snapshot.generation_id != snapshot.current_generation_id:
+        code = "v2_daily_gate_generation_mismatch"
+    elif not snapshot.restart_verified:
+        code = "v2_scheduler_restart_unverified"
+    else:
+        return []
+    return [
+        HealthFinding(
+            level="error",
+            code=code,
+            message=f"Blackbox V2 scheduler gate failed for {snapshot.run_date}",
             detail=asdict(snapshot),
         )
     ]
@@ -185,6 +223,50 @@ def load_data_bridge_health(refresh_date: str) -> DataBridgeHealthSnapshot:
         last_attempt=last_attempt if isinstance(last_attempt, dict) else None,
         validation_error=validation_error,
     )
+
+
+def load_v2_scheduler_gate(
+    run_date: str,
+    *,
+    data_bridge: DataBridgeHealthSnapshot,
+) -> V2SchedulerGateSnapshot:
+    """读取 V2 日级凭证，并与当前 DataBridge generation 对照。"""
+    config = DataBridgeRefreshConfig.from_env()
+    try:
+        record = load_gate_record(config, run_date)
+    except V2DailyGateBlocked as exc:
+        return V2SchedulerGateSnapshot(
+            run_date=run_date,
+            status=None,
+            generation_id=None,
+            current_generation_id=data_bridge.generation_id,
+            restart_verified=False,
+            error=str(exc),
+        )
+    restart = record.get("restart")
+    restart_mapping = restart if isinstance(restart, dict) else {}
+    return V2SchedulerGateSnapshot(
+        run_date=run_date,
+        status=str(record["status"]) if record.get("status") else None,
+        generation_id=(
+            str(record["generation_id"]) if record.get("generation_id") else None
+        ),
+        current_generation_id=data_bridge.generation_id,
+        restart_verified=restart_mapping.get("verified") is True,
+        error=_gate_record_error(record),
+    )
+
+
+def _gate_record_error(record: Mapping[str, object]) -> str | None:
+    restart = record.get("restart")
+    if isinstance(restart, dict) and restart.get("error"):
+        return str(restart["error"])
+    checks = record.get("checks")
+    if isinstance(checks, list):
+        for check in reversed(checks):
+            if isinstance(check, dict) and check.get("error"):
+                return str(check["error"])
+    return None
 
 
 def evaluate_daily_health(
@@ -537,15 +619,34 @@ def _default_predict_date() -> str:
 
 def _payload(
     snapshot: DailyHealthSnapshot,
-    findings: Sequence[HealthFinding],
+    daily_findings: Sequence[HealthFinding],
     *,
     data_bridge: DataBridgeHealthSnapshot | None = None,
+    data_bridge_findings: Sequence[HealthFinding] = (),
+    v2_scheduler_gate: V2SchedulerGateSnapshot | None = None,
+    v2_gate_findings: Sequence[HealthFinding] = (),
 ) -> dict[str, object]:
+    findings = [*daily_findings, *data_bridge_findings, *v2_gate_findings]
     return {
         "status": status_from_findings(findings),
         "snapshot": asdict(snapshot),
         "data_bridge": asdict(data_bridge) if data_bridge is not None else None,
         "findings": [asdict(item) for item in findings],
+        "daily_health": {
+            "status": status_from_findings(daily_findings),
+            "snapshot": asdict(snapshot),
+            "findings": [asdict(item) for item in daily_findings],
+        },
+        "v2_scheduler_gate": {
+            "status": status_from_findings([*data_bridge_findings, *v2_gate_findings]),
+            "snapshot": (
+                asdict(v2_scheduler_gate) if v2_scheduler_gate is not None else None
+            ),
+            "data_bridge": asdict(data_bridge) if data_bridge is not None else None,
+            "findings": [
+                asdict(item) for item in [*data_bridge_findings, *v2_gate_findings]
+            ],
+        },
     }
 
 
@@ -567,14 +668,24 @@ def main() -> int:
         engine.dispose()
 
     data_bridge = load_data_bridge_health(args.predict_date)
-    findings = evaluate_daily_health(snapshot, strict_runs=args.strict_runs)
-    findings.extend(
-        evaluate_data_bridge_health(
-            data_bridge,
-            deadline=DataBridgeRefreshConfig.from_env().refresh_deadline,
-        )
+    v2_scheduler_gate = load_v2_scheduler_gate(
+        args.predict_date,
+        data_bridge=data_bridge,
     )
-    payload = _payload(snapshot, findings, data_bridge=data_bridge)
+    daily_findings = evaluate_daily_health(snapshot, strict_runs=args.strict_runs)
+    data_bridge_findings = evaluate_data_bridge_health(
+        data_bridge,
+        deadline=DataBridgeRefreshConfig.from_env().refresh_deadline,
+    )
+    v2_gate_findings = evaluate_v2_scheduler_gate(v2_scheduler_gate)
+    payload = _payload(
+        snapshot,
+        daily_findings,
+        data_bridge=data_bridge,
+        data_bridge_findings=data_bridge_findings,
+        v2_scheduler_gate=v2_scheduler_gate,
+        v2_gate_findings=v2_gate_findings,
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
     status = payload["status"]
     if status == "error":

@@ -60,8 +60,8 @@ class DataBridgeRefreshConfig:
     download_concurrency: int = 4
     max_rounds: int = 3
     round_timeout_sec: int = 900
-    refresh_start: str = "05:30"
-    refresh_deadline: str = "06:45"
+    refresh_start: str = "06:00"
+    refresh_deadline: str = "07:00"
 
     @classmethod
     def from_env(cls) -> "DataBridgeRefreshConfig":
@@ -72,8 +72,8 @@ class DataBridgeRefreshConfig:
             schema_path=project_root / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json",
             daily_chunk_months=int(os.getenv("DATABRIDGE_DAILY_CHUNK_MONTHS", "3")),
             download_concurrency=int(os.getenv("DATABRIDGE_DOWNLOAD_CONCURRENCY", "4")),
-            refresh_start=os.getenv("DATABRIDGE_REFRESH_START", "05:30"),
-            refresh_deadline=os.getenv("DATABRIDGE_REFRESH_DEADLINE", "06:45"),
+            refresh_start=os.getenv("DATABRIDGE_REFRESH_START", "06:00"),
+            refresh_deadline=os.getenv("DATABRIDGE_REFRESH_DEADLINE", "07:00"),
         )
         if config.daily_chunk_months <= 0 or config.download_concurrency <= 0:
             raise ValueError("DataBridge chunk months and download concurrency must be positive")

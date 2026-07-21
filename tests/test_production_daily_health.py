@@ -12,8 +12,10 @@ from scripts.check_production_daily_health import (
     DailyHealthSnapshot,
     PredictionDateCheck,
     RunPredictionCount,
+    V2SchedulerGateSnapshot,
     evaluate_daily_health,
     evaluate_data_bridge_health,
+    evaluate_v2_scheduler_gate,
     load_snapshot,
     status_from_findings,
 )
@@ -44,6 +46,71 @@ class ProductionDailyHealthTests(unittest.TestCase):
         self.assertEqual(status_from_findings(findings), "error")
         self.assertEqual(findings[0].code, "data_bridge_refresh_stale")
         self.assertEqual(findings[0].detail["last_attempt"]["error"], "source not ready")
+
+    def test_blocked_v2_gate_is_reported_without_changing_v1_health(self) -> None:
+        snapshot = V2SchedulerGateSnapshot(
+            run_date="2026-07-22",
+            status="blocked",
+            generation_id="full-old",
+            current_generation_id="full-current",
+            restart_verified=False,
+            error="current dataset is stale",
+        )
+
+        findings = evaluate_v2_scheduler_gate(snapshot)
+
+        self.assertEqual([item.code for item in findings], ["v2_daily_gate_blocked"])
+        self.assertEqual(status_from_findings(findings), "error")
+        self.assertEqual(
+            status_from_findings(evaluate_daily_health(self._snapshot())),
+            "ok",
+        )
+
+    def test_ready_v2_gate_requires_matching_generation(self) -> None:
+        snapshot = V2SchedulerGateSnapshot(
+            run_date="2026-07-22",
+            status="ready",
+            generation_id="full-old",
+            current_generation_id="full-current",
+            restart_verified=True,
+            error=None,
+        )
+
+        findings = evaluate_v2_scheduler_gate(snapshot)
+
+        self.assertEqual(
+            [item.code for item in findings],
+            ["v2_daily_gate_generation_mismatch"],
+        )
+
+    def test_ready_v2_gate_requires_verified_restart(self) -> None:
+        snapshot = V2SchedulerGateSnapshot(
+            run_date="2026-07-22",
+            status="ready",
+            generation_id="full-current",
+            current_generation_id="full-current",
+            restart_verified=False,
+            error=None,
+        )
+
+        findings = evaluate_v2_scheduler_gate(snapshot)
+
+        self.assertEqual(
+            [item.code for item in findings],
+            ["v2_scheduler_restart_unverified"],
+        )
+
+    def test_verified_v2_gate_is_healthy(self) -> None:
+        snapshot = V2SchedulerGateSnapshot(
+            run_date="2026-07-22",
+            status="ready",
+            generation_id="full-current",
+            current_generation_id="full-current",
+            restart_verified=True,
+            error=None,
+        )
+
+        self.assertEqual(evaluate_v2_scheduler_gate(snapshot), [])
 
     def _snapshot(self, **overrides: object) -> DailyHealthSnapshot:
         data = {

@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台入库、运行和审计人员
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-21
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)；具体方案的版本、快照、运行结果和当前状态只追加到 [Blackbox V2 入库试验台账](../blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
@@ -153,6 +153,25 @@ conda run --no-capture-output -n bond_factor_lab_service \
 Input Gate 当前使用 `require_fresh=False`，只证明快照结构和内容可用，不独立证明它是当天 generation；scheduled-live 执行器才强制当天 freshness。两者不得混称。
 
 DataBridge 校验失败时保留最后成功 current，阻断依赖 `data_bridge_current` 的运行，不用旧摘要冒充新 generation。
+
+### 2.3 每日刷新、V2 Gate 与 scheduler 重启时序
+
+DataBridge 只服务 `runtime_type=blackbox_v2 + input_source=data_bridge_current`。Native V1 使用原有平台输入路径，V1 不读取 V2 日级凭证，DataBridge 失败不得暂停、跳过或延后 V1 任务。
+
+平台通过 `com.bond-factor-lab.v2-preflight` 固定执行以下四个时间点，时区均为 `Asia/Shanghai`：
+
+| 时间 | 平台动作 | 通过条件与后续动作 |
+|---|---|---|
+| `06:00` | 首次全量刷新 DataBridge | 原子发布当天 generation；失败时保留上一成功 current |
+| `06:30` | 第一次完整校验 | 校验 `refresh_date`、generation、三频摘要和日频上一交易日水位；只检查，不提前重启 |
+| `06:35` | 条件重试 | 06:30 未通过时再刷新一次；已通过或同一 preflight 仍占锁时不并发刷新 |
+| `07:00` | 最终完整校验 | 校验成功后重启 scheduler；失败则写告警并且不重启、不补跑 |
+
+最终通过时生成 schema 为 `v2-scheduler-gate-v1` 的日级 ready 凭证。凭证绑定运行日、`expected_daily_date`、`generation_id`、`refresh_date` 和 `business_digest`；任一字段与 current state 不一致即失效。正常 cron 和 startup catchup 在调用 V2 算法前都必须验证当天凭证；缺失、blocked、损坏或 generation 不一致时返回受控 skipped，不创建 V2 实盘预测。
+
+07:00 校验失败时不得停止共享 scheduler：V1 和 actual 刷新继续运行，只有 V2 被日级 Gate 阻断。DataBridge 在 07:00 后恢复也不能把当天凭证自动改为 ready；当天 V2 不得自然补跑，补偿必须重新进入明确授权流程。
+
+scheduler 重启只允许操作固定 launchd label `com.bond-factor-lab.scheduler`，并验证 PID 已切换。由于首个 V1 日频任务为 07:03，安全重启只能在 07:00 分钟窗口完成；迟到触发不得取得重启授权。单个预测任务不得回写 Registry；Registry 自动同步只允许在 scheduler/backend 启动、正式生命周期操作和受保护 admin sync 中发生，防止旧进程用过时代码覆盖名称或 description。
 
 ## 3. 快照与 Request
 
@@ -500,6 +519,8 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] base/composite 身份无冲突，配置为 `blackbox_v2 + paused + draft`
 - [ ] 冻结环境和 sandbox 自检通过
 - [ ] DataBridge generation 状态和三 SHA 已保存
+- [ ] 已观察 06:00/06:30/06:35/07:00 preflight；当天 `v2-scheduler-gate-v1` 凭证与 current generation 一致
+- [ ] 07:00 成功时 scheduler PID 已切换并挂载方案；失败时 V2 blocked、V1 继续运行且没有自动补跑
 - [ ] Input 报告三 SHA 与选定 generation 完全一致
 - [ ] 七个 Gate 通过，并理解各 Gate 没有证明什么
 - [ ] exact Harness run 和七个结果已进入审计 DB

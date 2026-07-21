@@ -3,7 +3,7 @@
 **文档状态**：`BLOCKED_DRAFT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台开发、运维、风险控制和授权人员
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-21
 
 本文不是可执行的生产 SOP。它只列出 Blackbox V2 从 `shadow + paused` 晋级为 `active/live` 前必须完成并验证的阻塞项。
 
@@ -28,6 +28,7 @@
 - 尚未用独立真实交付覆盖月频和周平均，真实交付总批次数仍少于 3。
 - 当前 `weekly_10y_lgbm_point_v1` 与四个 1Y T+5 指定方案获得专项生产灰度授权；首条 gray live actual 均要到目标日 `2026-07-24` 后才能验证。
 - 四个日频方案均已 active，尚待下一交易日自然 `scheduled_live`；用户明确授权的当天全量激活不等于自然 scheduler 验收已完成。
+- 日频 V2 上线必须经过独立日级 DataBridge Gate：06:00 首刷、06:30 检查、06:35 条件重刷、07:00 最终检查。最终通过才允许在 07:03 前重启并生成当天 ready 凭证；失败只阻断 V2，不影响 Native V1，也不得自动补跑。
 - 四个日频方案已通过专用 `gray-backfill` Gate 补齐 `target_date >= 2026-06-01` 的连续 `gray_live`：每方案 39 条 gray、0 条 scheduled，历史/live target overlap 为 0；API 和前端阶段分界已验收，达到 `Onboarding Complete`，仍待自然 scheduler 才能成为 `Production Observed`。
 - 这些专项激活不代表 Blackbox V2 已获得面向任意新交付的通用生产授权。
 
@@ -53,6 +54,7 @@
 3. 确认不同依赖栈在冻结 Runtime Profile 中可运行，或以版本化 Profile 显式管理，不临时安装依赖。
 4. 由业务、平台和运维审核认证证据并明确通用生产激活、暂停和回退责任人。
 5. 将平台生产晋级操作文档标记为 `CURRENT` 后，才允许把生产授权作为后续新方案的标准流程；现有专项灰度授权不得作为自动放行依据。
+6. 每个生产日保存 `v2-scheduler-gate-v1` 凭证、四阶段日志、DataBridge generation/digest、scheduler PID 切换和 V1 零影响证据；单个预测任务不得承担 Registry 同步。
 
 本文件在此之前保持 `BLOCKED_DRAFT`。这里的阻塞来自真实方案覆盖和上线授权，不再来自 BBV2-01 至 BBV2-07 的代码能力缺失。
 
