@@ -1,0 +1,13 @@
+{
+  "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
+  "action": "gray_backfill_write",
+  "predict_date": "2026-06-02",
+  "issued_by": "codex-gray-boundary-repair-20260720",
+  "issued_at": "2026-07-20T14:17:48+00:00",
+  "nonce": "GWx16vhAX4rN0IItttCtgw",
+  "scheme_version": "103c93bbc913",
+  "harness_run_id": "hr_20260720T114556Z_97bf5d06c341",
+  "expires_at": "2026-07-20T14:32:48+00:00",
+  "backtest_start_date": null,
+  "token_sha256": "00ea1e918db66726d0d493842b520d75a70c7e1489cb8b880c75bcd19f2e46c9"
+}

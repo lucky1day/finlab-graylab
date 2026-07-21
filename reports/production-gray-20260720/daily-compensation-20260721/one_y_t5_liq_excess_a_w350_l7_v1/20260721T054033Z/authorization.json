@@ -1,0 +1,13 @@
+{
+  "scheme_id": "one_y_t5_liq_excess_a_w350_l7_v1",
+  "action": "live_write",
+  "predict_date": "2026-07-21",
+  "issued_by": "codex-v2-daily-compensation-20260721",
+  "issued_at": "2026-07-21T05:40:32+00:00",
+  "nonce": "0myL2UjmuJcz14cfDG6mPw",
+  "scheme_version": "86b458c568a5",
+  "harness_run_id": "hr_20260721T053800Z_51fd9b61c1cd",
+  "expires_at": "2026-07-21T05:55:32+00:00",
+  "backtest_start_date": null,
+  "token_sha256": "56b6d6496ffa530680f832e6ea3977718ee3d8d9933c8490398619deb6c897c6"
+}

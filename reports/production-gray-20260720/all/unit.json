@@ -1,0 +1,29 @@
+{
+  "gate_name": "unit",
+  "status": "passed",
+  "passed": true,
+  "evidence": [
+    {
+      "key": "help_exposes_modes",
+      "value": {
+        "predict": true,
+        "backtest": true
+      },
+      "detail": null
+    },
+    {
+      "key": "invalid_request_rejected",
+      "value": true,
+      "detail": null
+    },
+    {
+      "key": "failed_output_absent",
+      "value": true,
+      "detail": null
+    }
+  ],
+  "errors": [],
+  "started_at": "2026-07-20T02:54:01+00:00",
+  "finished_at": "2026-07-20T02:54:03+00:00",
+  "report_path": null
+}

@@ -1,0 +1,12 @@
+{
+  "scheme_id": "weekly_10y_lgbm_point_v1",
+  "action": "shadow_register",
+  "predict_date": "2026-07-20",
+  "issued_by": "production-gray-approval",
+  "issued_at": "2026-07-20T02:58:21+00:00",
+  "nonce": "WEAc2vQPpE3K9upOjP5WqQ",
+  "scheme_version": "0666a6989d6b",
+  "harness_run_id": "hr_20260720T025353Z_b176dbf5eb3e",
+  "expires_at": "2026-07-20T03:13:21+00:00",
+  "token_sha256": "1420d5c86b6b245710dc07df386e593c4f5d90b37ba54b33fbcefd3c50b7b663"
+}

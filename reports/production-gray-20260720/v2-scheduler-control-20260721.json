@@ -1,0 +1,109 @@
+{
+  "schema_version": "v2-scheduler-control-evidence-v1",
+  "captured_at": "2026-07-21T12:28:00+08:00",
+  "branch": "codex/audit-bugfixes-20260613",
+  "head_commit": "92b8472",
+  "implementation_commits": [
+    "1794a46",
+    "c72af7f",
+    "bd6a8d8",
+    "91b2818",
+    "3a3db3f",
+    "5f7f036",
+    "92b8472"
+  ],
+  "tests": {
+    "command": "conda run --no-capture-output -n bond_factor_lab_service python -m unittest discover -s tests -p 'test_*.py' -q",
+    "tests_run": 1174,
+    "failures": 0,
+    "result": "passed"
+  },
+  "preflight_launchd": {
+    "label": "com.bond-factor-lab.v2-preflight",
+    "installed": true,
+    "keep_alive": false,
+    "run_at_load": false,
+    "runs_at_capture": 0,
+    "calendar_intervals": [
+      "06:00",
+      "06:30",
+      "06:35",
+      "07:00"
+    ],
+    "refresh_start": "06:00",
+    "refresh_deadline": "07:00"
+  },
+  "deployment_restart": {
+    "performed_after_safe_window": true,
+    "old_scheduler_launchd_pid": 52329,
+    "new_scheduler_launchd_pid": 3554,
+    "new_scheduler_worker_pid": 3577,
+    "old_backend_pid": 16726,
+    "new_backend_pid": 4476,
+    "scheduler_state": "running",
+    "backend_state": "running",
+    "bootstrap_note": "The first scheduler bootstrap immediately after bootout returned launchctl error 5; the service was absent, a single recovery bootstrap succeeded, and the new process reached running state before validation."
+  },
+  "deployment_day_gate": {
+    "run_date": "2026-07-21",
+    "status": "blocked",
+    "reason": "07:00 safe window already passed; block V2 startup catchup",
+    "generation_id": "full-20260721-054945-fc2c07d245d6",
+    "refresh_date": "2026-07-21",
+    "expected_daily_date": "2026-07-20",
+    "business_digest": "fc2c07d245d62f2c992e0249c56f5c11743c178760daa8617a24c1246368b519",
+    "scheduled_live_rows_before_restart": 0,
+    "scheduled_live_rows_after_restart": 0,
+    "startup_catchup_v2_algorithm_calls": 0
+  },
+  "v1_isolation": {
+    "active_native_daily_base_count": 17,
+    "successful_native_daily_base_count": 17,
+    "daily_health_status": "ok",
+    "daily_health_findings": []
+  },
+  "mounted_v2_jobs": [
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_v1",
+      "effective_time": "07:33"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
+      "effective_time": "07:35"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w350_l7_v1",
+      "effective_time": "07:37"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_b_w252_l7_v1",
+      "effective_time": "07:39"
+    }
+  ],
+  "shifted_native_jobs": {
+    "t1_daily": "07:41",
+    "t5_daily": "07:43"
+  },
+  "registry_and_api": {
+    "registry_updated_at": "2026-07-21T12:22:47+08:00",
+    "local_api_status": "ok",
+    "public_page_http_status": 200,
+    "public_api_count": 4,
+    "names": [
+      "LIQ_EXCESS_A",
+      "LIQ_EXCESS_A_W252_L7",
+      "LIQ_EXCESS_A_W350_L7",
+      "LIQ_EXCESS_B_W252_L7"
+    ],
+    "descriptions": [
+      "",
+      "",
+      "",
+      ""
+    ]
+  },
+  "remaining_observation": {
+    "status": "pending",
+    "requirement": "Observe the next trading day's natural 06:00/06:30/06:35/07:00 preflight, verified scheduler restart, V1 continuity, and four scheduled_live rows before declaring Production Observed."
+  }
+}

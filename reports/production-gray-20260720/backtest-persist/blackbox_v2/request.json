@@ -1,0 +1,9 @@
+{
+  "request_id": "weekly_10y_lgbm_point_v1:2026-07-20:2026-07-17:2026-07-24",
+  "predict_date": "2026-07-20",
+  "feature_date": "2026-07-17",
+  "target_date": "2026-07-24",
+  "daily_cutoff_key": "2026-07-17",
+  "weekly_cutoff_key": "202628",
+  "monthly_cutoff_key": "202607"
+}

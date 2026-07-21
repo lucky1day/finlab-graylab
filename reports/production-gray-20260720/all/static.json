@@ -1,0 +1,54 @@
+{
+  "gate_name": "static",
+  "status": "passed",
+  "passed": true,
+  "evidence": [
+    {
+      "key": "runtime_type",
+      "value": "blackbox_v2",
+      "detail": null
+    },
+    {
+      "key": "scheme_version",
+      "value": "0666a6989d6b",
+      "detail": null
+    },
+    {
+      "key": "algorithm_version",
+      "value": "1.0.0",
+      "detail": null
+    },
+    {
+      "key": "delivery_entries",
+      "value": [
+        "weekly_10y_lgbm_point_v1.json",
+        "weekly_10y_lgbm_point_v1.py"
+      ],
+      "detail": null
+    },
+    {
+      "key": "script_violations",
+      "value": [],
+      "detail": null
+    },
+    {
+      "key": "metadata",
+      "value": {
+        "schema_version": "1.0",
+        "scheme_id": "weekly_10y_lgbm_point_v1",
+        "name": "10年国债收益率周频点位方向预测",
+        "algorithm_version": "1.0.0",
+        "target_tenor": "10Y",
+        "task_type": "weekly_point",
+        "horizon": 1,
+        "target_rule": "target_week_end_yield_vs_feature_week_end_yield",
+        "frequency": "weekly"
+      },
+      "detail": null
+    }
+  ],
+  "errors": [],
+  "started_at": "2026-07-20T02:53:53+00:00",
+  "finished_at": "2026-07-20T02:53:53+00:00",
+  "report_path": null
+}

@@ -1,0 +1,14 @@
+{
+  "snapshot_id": "snapshot-fd8a1f8736d3a4d057fbd98e",
+  "snapshot_root": "reports/production-gray-20260720/backtest-persist/blackbox_v2/runtime_snapshot/snapshot-fd8a1f8736d3a4d057fbd98e",
+  "data_dir": "reports/production-gray-20260720/backtest-persist/blackbox_v2/runtime_snapshot/snapshot-fd8a1f8736d3a4d057fbd98e/data",
+  "manifest_path": "reports/production-gray-20260720/backtest-persist/blackbox_v2/runtime_snapshot/snapshot-fd8a1f8736d3a4d057fbd98e/manifest.json",
+  "schema_version": "data-bridge-v1",
+  "request_path": "reports/production-gray-20260720/backtest-persist/blackbox_v2/request.json",
+  "generation_id": "full-20260720-055026-00e12e3803a8",
+  "refresh_date": "2026-07-20",
+  "refreshed_at": "2026-07-20T05:50:26+08:00",
+  "business_digest": "00e12e3803a89e3b06439881059c9f3d9093e8642b7c37f063f4ff6169c54f1b",
+  "runtime_profile": "blackbox-v2-v1",
+  "environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd"
+}

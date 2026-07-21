@@ -1,0 +1,122 @@
+{
+  "schema_version": "v2-daily-compensation-evidence-v1",
+  "captured_at": "2026-07-21T13:42:21+08:00",
+  "predict_date": "2026-07-21",
+  "reason": "User-authorized compensation for the four V2 signals missing after the 07:00 safe restart window was missed.",
+  "semantics": {
+    "prediction_phase": "gray_live",
+    "scheduled_live_written": false,
+    "explanation": "A manual compensated signal is gray_live. Only a successful natural scheduler clock run may be labeled scheduled_live."
+  },
+  "data_bridge": {
+    "status": "ok",
+    "generation_id": "full-20260721-054945-fc2c07d245d6",
+    "refresh_date": "2026-07-21",
+    "expected_daily_date": "2026-07-20",
+    "business_digest": "fc2c07d245d62f2c992e0249c56f5c11743c178760daa8617a24c1246368b519"
+  },
+  "certifications": [
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_v1",
+      "scheme_version": "8d583560c9f1",
+      "harness_run_id": "hr_20260721T053643Z_64d115035d10",
+      "all_stage_gates_passed": 7
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
+      "scheme_version": "103c93bbc913",
+      "harness_run_id": "hr_20260721T053723Z_68f0af6321c4",
+      "all_stage_gates_passed": 7
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w350_l7_v1",
+      "scheme_version": "86b458c568a5",
+      "harness_run_id": "hr_20260721T053800Z_51fd9b61c1cd",
+      "all_stage_gates_passed": 7
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_b_w252_l7_v1",
+      "scheme_version": "ba00891cd179",
+      "harness_run_id": "hr_20260721T053840Z_2d65d6136c61",
+      "all_stage_gates_passed": 7
+    }
+  ],
+  "authorized_writes": [
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_v1",
+      "run_id": 1130,
+      "prediction_id": 1266,
+      "predict_date": "2026-07-21",
+      "feature_date": "2026-07-20",
+      "target_date": "2026-07-27",
+      "prediction_phase": "gray_live",
+      "predicted_direction": 1,
+      "run_status": "success",
+      "log_status": "success"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
+      "run_id": 1131,
+      "prediction_id": 1267,
+      "predict_date": "2026-07-21",
+      "feature_date": "2026-07-20",
+      "target_date": "2026-07-27",
+      "prediction_phase": "gray_live",
+      "predicted_direction": -1,
+      "run_status": "success",
+      "log_status": "success"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w350_l7_v1",
+      "run_id": 1132,
+      "prediction_id": 1268,
+      "predict_date": "2026-07-21",
+      "feature_date": "2026-07-20",
+      "target_date": "2026-07-27",
+      "prediction_phase": "gray_live",
+      "predicted_direction": -1,
+      "run_status": "success",
+      "log_status": "success"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_b_w252_l7_v1",
+      "run_id": 1133,
+      "prediction_id": 1269,
+      "predict_date": "2026-07-21",
+      "feature_date": "2026-07-20",
+      "target_date": "2026-07-27",
+      "prediction_phase": "gray_live",
+      "predicted_direction": -1,
+      "run_status": "success",
+      "log_status": "success"
+    }
+  ],
+  "database_summary": {
+    "v2_prediction_rows": 4,
+    "v2_distinct_base_schemes": 4,
+    "v2_gray_live_rows": 4,
+    "v2_scheduled_live_rows": 0,
+    "v2_successful_runs": 4,
+    "v2_successful_logs": 4
+  },
+  "v1_isolation": {
+    "native_active_base_schemes": 17,
+    "native_prediction_rows": 21,
+    "daily_health_status": "ok",
+    "daily_health_findings": []
+  },
+  "runtime": {
+    "scheduler_pid": 3554,
+    "scheduler_state": "running",
+    "scheduler_restarted_for_compensation": false,
+    "v2_day_gate_status": "blocked",
+    "v2_day_gate_changed": false
+  },
+  "api_verification": {
+    "local_metrics_rows": 4,
+    "public_metrics_rows": 4,
+    "all_dates_and_phases_match_database": true
+  },
+  "authorization_evidence_root": "reports/production-gray-20260720/daily-compensation-20260721",
+  "authorization_tokens_recorded": false
+}

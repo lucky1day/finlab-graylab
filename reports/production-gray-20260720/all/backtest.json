@@ -1,0 +1,71 @@
+{
+  "gate_name": "backtest",
+  "status": "passed",
+  "passed": true,
+  "evidence": [
+    {
+      "key": "requests",
+      "value": 100,
+      "detail": null
+    },
+    {
+      "key": "records",
+      "value": 100,
+      "detail": null
+    },
+    {
+      "key": "sample_size",
+      "value": 100,
+      "detail": null
+    },
+    {
+      "key": "distinct_cutoff_sets",
+      "value": 2,
+      "detail": null
+    },
+    {
+      "key": "primary_batch_size",
+      "value": 100,
+      "detail": null
+    },
+    {
+      "key": "alternate_batch_size",
+      "value": 80,
+      "detail": null
+    },
+    {
+      "key": "subprocesses_started",
+      "value": 3,
+      "detail": null
+    },
+    {
+      "key": "max_subprocesses",
+      "value": 3,
+      "detail": null
+    },
+    {
+      "key": "total_deadline_sec",
+      "value": 600,
+      "detail": null
+    },
+    {
+      "key": "batch_split_invariant",
+      "value": true,
+      "detail": null
+    },
+    {
+      "key": "persist",
+      "value": false,
+      "detail": null
+    },
+    {
+      "key": "business_tables_written",
+      "value": false,
+      "detail": null
+    }
+  ],
+  "errors": [],
+  "started_at": "2026-07-20T02:54:14+00:00",
+  "finished_at": "2026-07-20T02:54:21+00:00",
+  "report_path": null
+}

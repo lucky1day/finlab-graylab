@@ -1,0 +1,55 @@
+{
+  "gate_name": "input",
+  "status": "passed",
+  "passed": true,
+  "evidence": [
+    {
+      "key": "data_snapshot_id",
+      "value": "snapshot-fd8a1f8736d3a4d057fbd98e",
+      "detail": null
+    },
+    {
+      "key": "data_schema_version",
+      "value": "data-bridge-v1",
+      "detail": null
+    },
+    {
+      "key": "files",
+      "value": {
+        "daily_output.csv": {
+          "row_count": 3878,
+          "column_count": 774,
+          "sha256": "03bbcc94c11acc58ac5647c2b530e2be3e45b9ed5fd74ff12a5677854e3a50e1"
+        },
+        "weekly_output.csv": {
+          "row_count": 847,
+          "column_count": 575,
+          "sha256": "9dfe8a8cfaae9fd4be1e70b872ff2d89d5839f4c266af3924eb0e0f5d4ebc4d5"
+        },
+        "monthly_output.csv": {
+          "row_count": 201,
+          "column_count": 123,
+          "sha256": "f29607a79c66860d4c43f369d99cb4fdfbba2cf665d3931f930f496bc21d86b5"
+        }
+      },
+      "detail": null
+    },
+    {
+      "key": "request",
+      "value": {
+        "request_id": "weekly_10y_lgbm_point_v1:2026-07-20:2026-07-17:2026-07-24",
+        "predict_date": "2026-07-20",
+        "feature_date": "2026-07-17",
+        "target_date": "2026-07-24",
+        "daily_cutoff_key": "2026-07-17",
+        "weekly_cutoff_key": "202628",
+        "monthly_cutoff_key": "202607"
+      },
+      "detail": null
+    }
+  ],
+  "errors": [],
+  "started_at": "2026-07-20T02:53:53+00:00",
+  "finished_at": "2026-07-20T02:54:01+00:00",
+  "report_path": null
+}
