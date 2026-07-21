@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ TIME_KEY_BY_FILE = {
 
 
 class DataBridgeValidationError(ValueError):
-    """A candidate DataBridge dataset violates the frozen contract."""
+    """A candidate DataBridge dataset violates the compatibility contract."""
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,44 @@ class ValidatedDataBridgeDataset:
     business_digest: str
 
 
+def validate_baseline_compatible_columns(
+    filename: str,
+    actual_columns: list[str],
+    baseline_columns: list[str],
+) -> None:
+    """校验实际表头兼容最低字段基线，同时允许新增业务列。"""
+    key_column = TIME_KEY_BY_FILE.get(filename)
+    if key_column is None:
+        raise DataBridgeValidationError(f"unsupported DataBridge filename: {filename}")
+    validate_unique_csv_header(filename, actual_columns)
+    if not actual_columns or actual_columns[0] != key_column:
+        raise DataBridgeValidationError(f"{filename} must start with {key_column}")
+    if not baseline_columns or baseline_columns[0] != key_column:
+        raise DataBridgeValidationError(
+            f"{filename} baseline must start with {key_column}"
+        )
+    if len(baseline_columns) != len(set(baseline_columns)):
+        raise DataBridgeValidationError(f"{filename} baseline contains duplicate columns")
+    missing = [column for column in baseline_columns if column not in actual_columns]
+    if missing:
+        raise DataBridgeValidationError(
+            f"{filename} missing baseline columns: {missing[:10]}"
+        )
+    positions = [actual_columns.index(column) for column in baseline_columns]
+    if any(left >= right for left, right in zip(positions, positions[1:])):
+        raise DataBridgeValidationError(
+            f"{filename} baseline column order changed"
+        )
+
+
+def validate_unique_csv_header(filename: str, columns: list[str]) -> None:
+    """在 pandas 自动改写重复字段前校验原始 CSV 表头。"""
+    if not columns:
+        raise DataBridgeValidationError(f"{filename} header must not be empty")
+    if len(columns) != len(set(columns)):
+        raise DataBridgeValidationError(f"{filename} contains duplicate columns")
+
+
 def validate_dataset(
     frames: Mapping[str, pd.DataFrame],
     *,
@@ -67,11 +106,12 @@ def validate_dataset(
     for filename in EXPECTED_FILENAMES:
         frame = frames[filename].copy()
         columns = list(frame.columns)
-        expected_columns = list(expected_files[filename].get("columns", []))
-        if columns != expected_columns:
-            raise DataBridgeValidationError(
-                f"{filename} columns do not match frozen schema: actual={columns!r}"
-            )
+        baseline_columns = list(expected_files[filename].get("columns", []))
+        validate_baseline_compatible_columns(
+            filename,
+            columns,
+            baseline_columns,
+        )
         if frame.empty:
             raise DataBridgeValidationError(f"{filename} must not be empty")
         key_column = TIME_KEY_BY_FILE[filename]
@@ -154,10 +194,23 @@ def read_dataset_directory(directory: str | Path) -> dict[str, pd.DataFrame]:
         raise DataBridgeValidationError(
             f"DataBridge directory files must be exactly {list(EXPECTED_FILENAMES)}"
         )
-    return {
-        filename: pd.read_csv(root / filename, dtype="string", keep_default_na=False)
-        for filename in EXPECTED_FILENAMES
-    }
+    frames: dict[str, pd.DataFrame] = {}
+    for filename in EXPECTED_FILENAMES:
+        path = root / filename
+        try:
+            with path.open("r", encoding="utf-8-sig", newline="") as handle:
+                header = next(csv.reader(handle))
+        except StopIteration as exc:
+            raise DataBridgeValidationError(f"{filename} header must not be empty") from exc
+        except (OSError, UnicodeError, csv.Error) as exc:
+            raise DataBridgeValidationError(f"{filename} header is invalid") from exc
+        validate_unique_csv_header(filename, header)
+        frames[filename] = pd.read_csv(
+            path,
+            dtype="string",
+            keep_default_na=False,
+        )
+    return frames
 
 
 def _normalize_key(filename: str, value: object) -> str:

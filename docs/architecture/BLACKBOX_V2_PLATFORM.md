@@ -77,6 +77,8 @@ data/data_bridge/current/
 
 DataBridge 刷新组件负责全量构建、连续两轮稳定性比较、Schema 校验、共享锁和整体发布。current 只保留最新成功版本，不按天保存历史文件；历史因子修订轨迹仍由数据库承担。
 
+`data-bridge-v1` 的机器字段列表是最低兼容基线，不是永久完整表头。DataBridge 可以增加业务列；时间键必须保持第一列，基线字段必须继续存在且相对顺序稳定。校验、business digest 和 Snapshot identity 使用当次文件的全部实际列，因此新增列不会被丢弃，也不会因为总列数变化被拒绝。
+
 `native_adapter` 未声明 `input_source` 时按 `legacy_db` 处理，不受 DataBridge current 失败影响。`blackbox_v2` 必须显式使用 `data_bridge_current`。
 
 ### 3.2 一次性运行快照

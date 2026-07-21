@@ -70,10 +70,10 @@ Blackbox V2 是所有后续新算法、新方案 ID、新目标、新任务和�
 
 ### 2.3 修改 DataBridge Schema
 
-1. 不覆盖已有 Schema 版本；创建新的 `data_schema_version`。
-2. 更新机器 Schema、校验器和测试。
-3. 新增对应版本的数据说明和脱敏样例。
-4. 更新上游 SOP 与平台 SOP 的版本引用。
+1. `data-bridge-v1` 机器 Schema 是最低兼容字段基线；当前导出增加业务列不修改该基线，也不创建新版本。
+2. 新增列必须保留时间键首列和已有基线字段相对顺序，并由校验器纳入数值检查、摘要和 Snapshot identity。
+3. 删除、改名或重排基线字段，改变时间键，或把新增字段提升为必需基线时，不覆盖已有版本；创建新的 `data_schema_version`。
+4. 新版本同步更新机器 Schema、校验器、测试、数据说明、脱敏样例以及上下游 SOP 引用。
 5. 全量业务 CSV 继续只存在于运行期目录，不进入 Git。
 
 ### 2.4 归档废弃文档
@@ -87,13 +87,13 @@ Blackbox V2 是所有后续新算法、新方案 ID、新目标、新任务和�
 
 | 内容 | 仓库位置 | Git 管理 |
 |---|---|---|
-| 冻结 Schema | `shared/blackbox_v2/data_bridge_v1_schema.json` | 是 |
+| 最低兼容字段基线 | `shared/blackbox_v2/data_bridge_v1_schema.json` | 是 |
 | 脱敏结构样例 | `docs/blackbox_v2/data_bridge_v1/samples/` | 是 |
 | 当前全量三频数据 | `data/data_bridge/current/` | 否 |
 | 刷新状态与 staging | `backtest_artifacts/data_bridge_refresh/` | 否 |
 | 算法单次只读 Snapshot | 运行期临时目录 | 否 |
 
-`data/data_bridge/current/` 的运行约定见 [`data/data_bridge/README.md`](../../data/data_bridge/README.md)。样例只用于理解文件名、表头、时间键和读取方式，不能用于效果验证、数据水位检查或生产运行。
+`data/data_bridge/current/` 的运行约定见 [`data/data_bridge/README.md`](../../data/data_bridge/README.md)。样例只用于理解文件名、制作时点的字段基线、时间键和读取方式，不能用于效果验证、数据水位检查、推断永久列数或生产运行。
 
 ## 4. 桌面目录迁移映射
 

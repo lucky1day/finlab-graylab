@@ -145,6 +145,8 @@ conda run --no-capture-output -n bond_factor_lab_service \
 - `schema_version`、`business_digest`；
 - 三份文件的行列数、起止键、SHA256 和业务摘要。
 
+`data-bridge-v1` 机器 Schema 的字段列表是最低兼容字段基线，不是完整固定表头。实际三频文件允许随指标接入增加业务列，不设置总列数常量；校验器必须确保时间键位于第一列、基线字段全部存在且相对顺序不变，并对全部实际业务列执行有限数值或空值检查。新增业务列必须进入 business digest、文件 SHA256 和后续 Snapshot identity。报告中的实际列数只记录本次 generation 的事实，不能作为下一次刷新或其它 generation 的固定门槛。
+
 | 场景 | freshness 要求 |
 |---|---|
 | 技术 Onboarding | 选择最新一个通过完整性校验的 generation；将其 `refresh_date` 显式传给 `--date`，允许与执行日不同 |
@@ -181,7 +183,7 @@ scheduler 重启只允许操作固定 launchd label `com.bond-factor-lab.schedul
 
 1. 在共享锁内校验 `data/data_bridge/current` 与 state；
 2. 复制 `daily_output.csv`、`weekly_output.csv`、`monthly_output.csv`；
-3. 按冻结 Schema 生成内容寻址的 `data_snapshot_id`；
+3. 按最低兼容字段基线校验实际表头，并用三份实际文件的完整列集合和内容生成内容寻址的 `data_snapshot_id`；
 4. 将目录和文件设为只读，释放锁后启动算法。
 
 Input 报告必须记录 snapshot ID、Schema、三份文件行列数与 SHA256，以及 Request 的三个日期和三个截止键。

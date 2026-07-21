@@ -22,11 +22,10 @@
 
 开始实现前，需要取得：
 
-1. 冻结运行环境清单、资源限制和环境自检命令；
-2. DataBridge 地址、用户名和密码；
-3. `data_bridge_v1_schema.json`；
-4. 合法的单点 `request.json` 和批量 `requests.csv` 样例；
-5. 离线兜底用的三份脱敏 sample：
+1. DataBridge 地址、用户名和密码；
+2. `data_bridge_v1_schema.json`；
+3. 合法的单点 `request.json` 和批量 `requests.csv` 样例；
+4. 离线兜底用的三份脱敏 sample：
 
 ```text
 samples/daily_output.sample.csv
@@ -34,9 +33,61 @@ samples/weekly_output.sample.csv
 samples/monthly_output.sample.csv
 ```
 
-Python 和第三方包版本只以冻结运行环境清单为准。不得根据环境名称猜测版本，也不得要求为单个方案临时增加私有包。
+平台运行环境、关键包和资源限制直接列在下一节。不得要求为单个方案临时增加私有包。
 
-### 1.2 明确最终只交付两个文件
+### 1.2 平台运行环境与资源限制
+
+Blackbox V2 Contract 1.0 当前固定运行环境：
+
+| 项目 | 平台值 |
+|---|---|
+| Runtime Profile | `blackbox-v2-v1` |
+| Conda 环境 | `forecast_env_blackbox_v1` |
+| 平台 | `osx-arm64` |
+| Python | Python 3.13.12 |
+| 数值与数据 | numpy 2.3.5、pandas 2.3.3、scipy 1.16.3 |
+| 机器学习 | scikit-learn 1.8.0、lightgbm 4.6.0、xgboost 3.1.3、catboost 1.2.8 |
+| 其他关键包 | joblib 1.5.3、pyarrow 23.0.0、openpyxl 3.1.5 |
+
+环境指纹为：
+
+```text
+720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd
+```
+
+在装有该 Conda 环境的机器上，可以直接执行以下自检：
+
+```bash
+conda run --no-capture-output -n forecast_env_blackbox_v1 python - <<'PY'
+import platform
+from importlib.metadata import version
+
+packages = (
+    "numpy", "pandas", "scipy", "scikit-learn", "lightgbm",
+    "xgboost", "catboost", "joblib", "pyarrow", "openpyxl",
+)
+print("python", platform.python_version())
+for package in packages:
+    print(package, version(package))
+PY
+```
+
+资源边界：
+
+| 项目 | 限制 |
+|---|---:|
+| CPU 线程 | 8 |
+| 内存 | 64 GiB |
+| `predict` 超时 | 3600 秒 |
+| `backtest` 超时 | 14400 秒 |
+| 单批 Request | 1 至 100 条 |
+| Output 上限 | 50 MiB |
+| 日志上限 | 5 MiB |
+| 单次运行目录 | 64 MiB、最多 10000 个目录项 |
+
+算法在 sandbox 中运行，不能访问网络或数据库。需要的训练逻辑、模型结构和固定参数必须全部包含在单一 `.py` 文件中。
+
+### 1.3 明确最终只交付两个文件
 
 一个算法方案最终只交付：
 
@@ -71,13 +122,13 @@ Python 和第三方包版本只以冻结运行环境清单为准。不得根据�
 
 ### 2.2 三份 CSV
 
-DataBridge 固定提供：
+DataBridge 固定提供三种文件名和时间键：
 
-| 文件 | 时间键 | `data-bridge-v1` 固定列数 | 时间键规则 |
-|---|---|---:|---|
-| `daily_output.csv` | `date` | 774 | 可解析为日期，非空、唯一、升序 |
-| `weekly_output.csv` | `week_id` | 575 | 六位数字字符串，非空、唯一、升序 |
-| `monthly_output.csv` | `month_id` | 123 | 六位数字字符串，非空、唯一、升序 |
+| 文件 | 第一列时间键 | 时间键规则 |
+|---|---|---|
+| `daily_output.csv` | `date` | 可解析为日期，非空、唯一、升序 |
+| `weekly_output.csv` | `week_id` | 六位数字字符串，非空、唯一、升序 |
+| `monthly_output.csv` | `month_id` | 六位数字字符串，非空、唯一、升序 |
 
 这三份文件是 CSV，不是 `.xlsx` 工作簿；可以用 Excel 打开查看，但算法必须按 CSV 读取。周、月时间键必须按字符串读取；不得把 `week_id` 当作 ISO 周，也不得自行把 `week_id` 或 `month_id` 换算为日期。
 
@@ -87,30 +138,15 @@ DataBridge 固定提供：
 f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc
 ```
 
-机器 Schema 冻结三份文件的完整字段名和字段顺序。表头增删、改名、重排或时间键格式变化属于 Schema 升级，旧版本脚本不得继续运行。
+机器 Schema 中的字段列表是 `data-bridge-v1` 的最低兼容字段基线，不是永久完整表头。DataBridge 会随着新的指标接入而增加业务列，所以三份文件没有固定列数。兼容规则是：时间键始终位于第一列；基线字段必须继续存在且相对顺序不变；新增业务列允许出现，并参与当次数据摘要和快照身份。
+
+上游算法必须按字段名选择自己实际消费的列，启动时明确检查这些列是否存在，并忽略未使用的新增业务列。不得按列位置切片、假定最后一列、要求实际表头与 sample 完全相等，或因为出现未使用的新列而失败。基线字段被删除、改名或改变相对顺序，以及时间键变化，才是不兼容的 Schema 变更。
 
 ### 2.3 每天如何更新
 
-平台每天使用同一 DataBridge 导出逻辑全量构建三频数据。日频从 `2010-01-01` 起分段下载后合并，周频和月频下载完整周期数据。
+平台每天使用统一 DataBridge 导出逻辑全量构建三频数据：日频按日期分段导出后合并，周频和月频导出完整周期数据。平台完成数据校验后，把同一批次的三份文件作为一个 generation 整体原子发布；算法运行只会看到该 generation 的只读副本，不会混用不同批次。
 
-| 时间（Asia/Shanghai） | 动作 | 算法工程师需要知道的结果 |
-|---|---|---|
-| 06:00 | 第一次全量导出 | 构建日、周、月三份候选数据 |
-| 06:30 | 第一次完整检查 | 通过则等待最终校验；未通过则等待重试 |
-| 06:35 | 条件全量重导 | 仅在 06:30 未通过时执行 |
-| 07:00 | 最终完整校验 | 通过才允许当天 V2 使用；失败则当天不运行、不自动补跑 |
-
-完整检查保证：
-
-1. 数据目录恰好包含三份规定 CSV，Schema 版本、字段名、字段顺序和列数完全一致；
-2. 日频最大 `date` 覆盖当天上一交易日，不允许仍停在更早日期；
-3. 三种时间键非空、唯一并按键升序，上一成功版本已有的历史键不能消失；
-4. 除时间键外，所有值只能是有限数值或空值；
-5. 全量导出至少连续两轮业务摘要一致；
-6. 三份文件属于同一个 generation，并作为一个整体原子发布，不能混用不同下载批次；
-7. 刷新失败时保留上一份完整成功数据，但不会把旧数据标成当天数据，也不会用于当天 V2 正式运行。
-
-算法工程师本地下载用于开发验证，不代表取得了生产 generation。正式运行时以平台通过最终完整校验后提供的只读三频数据为准。
+新增指标会在后续导出中形成新增业务列，因此不同日期下载的数据列数可能不同。算法工程师本地下载用于开发验证；正式运行直接读取平台通过 `--data-dir` 提供的当次数据，不需要了解或实现平台内部刷新时间与检查流程。
 
 ---
 
@@ -189,6 +225,7 @@ unset DATABRIDGE_API_PASSWORD
 
 ```bash
 python - <<'PY'
+import csv
 import json
 from pathlib import Path
 
@@ -207,14 +244,25 @@ keys = {
 
 for filename, key in keys.items():
     path = root / filename
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        raw_header = next(csv.reader(handle), [])
+    if not raw_header:
+        raise ValueError(f"{filename} header is empty")
+    if len(raw_header) != len(set(raw_header)):
+        raise ValueError(f"{filename} contains duplicate columns")
     frame = pd.read_csv(path, dtype="string", keep_default_na=False)
-    expected = schema["files"][filename]["columns"]
+    actual = list(frame.columns)
+    baseline = schema["files"][filename]["columns"]
     if frame.empty:
         raise ValueError(f"{filename} is empty")
-    if list(frame.columns) != expected:
-        raise ValueError(
-            f"{filename} header does not match data-bridge-v1"
-        )
+    if not actual or actual[0] != key:
+        raise ValueError(f"{filename} must start with {key}")
+    missing = [column for column in baseline if column not in actual]
+    if missing:
+        raise ValueError(f"{filename} missing baseline columns: {missing[:10]}")
+    positions = [actual.index(column) for column in baseline]
+    if positions != sorted(positions):
+        raise ValueError(f"{filename} baseline column order changed")
     if frame[key].str.strip().eq("").any() or frame[key].duplicated().any():
         raise ValueError(
             f"{filename} {key} must be non-empty and unique"
@@ -228,11 +276,11 @@ for filename, key in keys.items():
 PY
 ```
 
-预期三个文件分别报告 `columns=774`、`columns=575`、`columns=123`。表头不一致、文件为空或时间键重复时，先重新下载；不得修改文件表头来绕过检查。
+输出中的 `columns` 是本次真实文件的实测值，不是验收常量，后续下载可能增加。算法还必须把自己实际消费的字段列成显式清单并逐项检查；未使用的新增业务列直接忽略。缺少基线字段、基线相对顺序变化、文件为空或时间键重复时，先重新下载；不得修改文件表头来绕过检查。
 
 ### 3.6 脱敏 sample 何时使用
 
-随包 sample 保留完整 `data-bridge-v1` 表头，每份只有两行合成数据。它们只适合：
+随包 sample 保留制作时点的 `data-bridge-v1` 基线表头，每份只有两行合成数据。真实 DataBridge 后续可能增加业务列，sample 不代表未来文件的永久完整表头。它们只适合：
 
 - 验证 CSV 能否读取；
 - 验证字段选择和 dtype；
@@ -342,7 +390,8 @@ python {scheme_id}.py backtest \
 - 平台始终提供三份文件；算法可以只读取当前方案实际需要的文件。
 - 不得因为未使用的文件存在而失败，也不要求主动解析未使用文件。
 - 三份文件的业务列只能是有限数值或空值。
-- 数据行数、起止区间、业务值和空值可以变化；不得假定固定行数、固定终点或“文件最后一行就是当前 Request 截止点”。
+- 数据行数、列数、起止区间、业务值和空值都可以变化；算法必须按字段名选择实际消费列，并忽略未使用的新增列。
+- 不得假定固定行数、固定列数、固定终点或“文件最后一行就是当前 Request 截止点”。
 
 推荐按字符串读取时间键：
 
@@ -472,7 +521,7 @@ backtest-002,2026-07-18,2026-07-17,2026-07-24,-1
 
 ## 9. 上游自验
 
-先执行冻结运行环境清单中的自检命令，再用第 3 节真实下载并校验通过的 `sample_data/` 执行：
+先执行第 1.2 节环境自检命令，再用第 3 节真实下载并校验通过的 `sample_data/` 执行：
 
 ```bash
 python {scheme_id}.py --help
@@ -493,7 +542,7 @@ python {scheme_id}.py backtest \
 | 验证项 | 操作 | 通过标准 |
 |---|---|---|
 | DataBridge 下载 | 分别下载日、周、月三份真实 CSV | HTTP 成功，文件名固定，文件非空 |
-| Schema 校验 | 执行第 3.5 节校验命令 | 三份表头和时间键合法，列数为 774/575/123 |
+| Schema 校验 | 执行第 3.5 节校验命令，并检查算法消费字段 | 基线字段和相对顺序兼容，时间键合法；不限制总列数 |
 | 交付物 | 检查文件数量、命名、Metadata 八个必填字段、可选说明和任务组合 | 只有两个交付文件，身份和任务组合合法；缺少说明不阻断 |
 | 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
 | 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |

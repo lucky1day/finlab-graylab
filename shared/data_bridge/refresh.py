@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import fcntl
 import io
 import json
@@ -18,10 +19,12 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from shared.data_bridge.validation import (
+    DataBridgeValidationError,
     EXPECTED_FILENAMES,
     ValidatedDataBridgeDataset,
     read_dataset_directory,
     validate_dataset,
+    validate_unique_csv_header,
     write_validated_dataset,
 )
 
@@ -423,29 +426,36 @@ def _merge_daily_payloads(payloads: list[bytes]) -> pd.DataFrame:
         normalized = pd.to_datetime(combined["date"], errors="raise").dt.date.astype(str)
     except (KeyError, TypeError, ValueError) as exc:
         raise DataBridgeRefreshError("daily export contains an invalid date") from exc
-    combined = combined.assign(__normalized_date=normalized)
-    for normalized_date, group in combined.groupby("__normalized_date", sort=False):
+    normalized_column = object()
+    combined[normalized_column] = normalized
+    for normalized_date, group in combined.groupby(normalized_column, sort=False):
         if len(group) <= 1:
             continue
-        values = group.drop(columns=["date", "__normalized_date"])
+        values = group.drop(columns=["date", normalized_column])
         if any(values[column].nunique(dropna=False) > 1 for column in values.columns):
             raise DataBridgeRefreshError(
                 f"daily export has conflicting duplicate boundary row for {normalized_date}"
             )
-    combined = combined.drop_duplicates("__normalized_date", keep="last")
-    combined = combined.sort_values("__normalized_date").drop(columns="__normalized_date")
+    combined = combined.drop_duplicates(normalized_column, keep="last")
+    combined = combined.sort_values(normalized_column).drop(columns=normalized_column)
     return combined.reset_index(drop=True)
 
 
 def _read_csv(payload: bytes, filename: str) -> pd.DataFrame:
     try:
+        text = payload.decode("utf-8-sig")
+        header = next(csv.reader(io.StringIO(text)))
+        validate_unique_csv_header(filename, header)
         frame = pd.read_csv(
-            io.BytesIO(payload),
-            encoding="utf-8-sig",
+            io.StringIO(text),
             dtype="string",
             keep_default_na=False,
         )
-    except (UnicodeError, pd.errors.ParserError) as exc:
+    except StopIteration as exc:
+        raise DataBridgeRefreshError(f"{filename} header must not be empty") from exc
+    except DataBridgeValidationError as exc:
+        raise DataBridgeRefreshError(str(exc)) from exc
+    except (UnicodeError, csv.Error, pd.errors.ParserError) as exc:
         raise DataBridgeRefreshError(f"{filename} is not a valid UTF-8 CSV") from exc
     if frame.empty:
         raise DataBridgeRefreshError(f"{filename} is empty")

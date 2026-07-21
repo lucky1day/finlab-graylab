@@ -13,6 +13,8 @@ from typing import Mapping
 
 import pandas as pd
 
+from shared.data_bridge.validation import validate_baseline_compatible_columns
+
 
 SNAPSHOT_FILENAMES = (
     "daily_output.csv",
@@ -144,11 +146,11 @@ def _validate_frame_set(
         if frame.empty:
             raise ValueError(f"{filename} must not be empty")
         actual = list(frame.columns)
-        if actual != list(expected_columns[filename]):
-            raise ValueError(
-                f"{filename} column order does not match {actual!r} != "
-                f"{list(expected_columns[filename])!r}"
-            )
+        validate_baseline_compatible_columns(
+            filename,
+            actual,
+            list(expected_columns[filename]),
+        )
         _validate_frame_content(filename, frame)
 
 

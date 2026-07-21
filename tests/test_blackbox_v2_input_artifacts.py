@@ -11,18 +11,21 @@ import pandas as pd
 
 
 class BlackboxV2InputArtifactTests(unittest.TestCase):
-    def test_default_data_bridge_schema_matches_received_samples(self) -> None:
+    def test_default_data_bridge_schema_defines_required_baseline_columns(self) -> None:
         from shared.input_artifacts import BLACKBOX_SCHEMA_PATH, _load_blackbox_schema
 
         version, columns = _load_blackbox_schema(BLACKBOX_SCHEMA_PATH)
 
         self.assertEqual(version, "data-bridge-v1")
-        self.assertEqual(len(columns["daily_output.csv"]), 774)
-        self.assertEqual(len(columns["weekly_output.csv"]), 575)
-        self.assertEqual(len(columns["monthly_output.csv"]), 123)
-        self.assertEqual(columns["daily_output.csv"][0], "date")
-        self.assertEqual(columns["weekly_output.csv"][0], "week_id")
-        self.assertEqual(columns["monthly_output.csv"][0], "month_id")
+        expected_keys = {
+            "daily_output.csv": "date",
+            "weekly_output.csv": "week_id",
+            "monthly_output.csv": "month_id",
+        }
+        for filename, key in expected_keys.items():
+            self.assertTrue(columns[filename])
+            self.assertEqual(columns[filename][0], key)
+            self.assertEqual(len(columns[filename]), len(set(columns[filename])))
 
     def test_builds_three_frequency_snapshot_from_current_files_without_db_export(self) -> None:
         from shared.input_artifacts import build_blackbox_input_snapshot

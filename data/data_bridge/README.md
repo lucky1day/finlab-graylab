@@ -13,6 +13,8 @@ current/
 
 平台只保留当前版本。刷新失败时继续保留上一份完整 current，历史修订轨迹由数据库承担。
 
+`data-bridge-v1` 不固定三份文件的总列数。机器 Schema 维护最低兼容字段基线；后续新增业务列允许进入 current，但时间键必须位于第一列，已有基线字段必须保留且相对顺序不变。全部实际列都会参与内容校验、摘要和 Blackbox V2 Snapshot identity。
+
 版本化资产：
 
 - 机器 Schema：[`shared/blackbox_v2/data_bridge_v1_schema.json`](../../shared/blackbox_v2/data_bridge_v1_schema.json)

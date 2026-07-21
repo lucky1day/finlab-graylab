@@ -1,5 +1,7 @@
 # Blackbox V2 Upstream SOP Self-Contained Rewrite Implementation Plan
 
+> **2026-07-21 复审更正：** 本计划记录首版实施过程，其中“固定列数、完整表头、上游生产刷新时间表”要求已被 [DataBridge V1 增量列兼容实施计划](2026-07-21-databridge-v1-additive-columns.md) 取代，不得再按本计划中的旧步骤执行。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rewrite the Blackbox V2 upstream delivery SOP into the only human document an algorithm engineer needs, including direct DataBridge download and verification instructions for the three real CSV files.

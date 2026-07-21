@@ -266,6 +266,31 @@ class DataBridgeRefreshTests(unittest.TestCase):
                     previous_keys=None,
                 )
 
+    def test_download_reader_rejects_duplicate_raw_csv_headers(self) -> None:
+        from shared.data_bridge.refresh import DataBridgeRefreshError, _read_csv
+
+        with self.assertRaisesRegex(DataBridgeRefreshError, "duplicate columns"):
+            _read_csv(
+                b"date,factor,factor\n2026-07-18,1,2\n",
+                "daily_output.csv",
+            )
+
+    def test_daily_merge_preserves_business_column_named_like_internal_key(self) -> None:
+        from shared.data_bridge.refresh import _merge_daily_payloads
+
+        merged = _merge_daily_payloads(
+            [
+                b"date,__normalized_date,factor\n2026-07-17,11,1\n",
+                b"date,__normalized_date,factor\n2026-07-18,12,2\n",
+            ]
+        )
+
+        self.assertEqual(
+            list(merged.columns),
+            ["date", "__normalized_date", "factor"],
+        )
+        self.assertEqual(merged["__normalized_date"].tolist(), ["11", "12"])
+
     def test_dry_run_builds_two_rounds_without_publishing_current(self) -> None:
         from shared.data_bridge.refresh import (
             DataBridgeRefreshConfig,

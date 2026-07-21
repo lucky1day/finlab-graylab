@@ -42,20 +42,54 @@ class BlackboxV2SnapshotTests(unittest.TestCase):
                 all(not path.stat().st_mode & stat.S_IWUSR for path in first.data_dir.iterdir())
             )
 
-    def test_snapshot_rejects_schema_order_change(self) -> None:
+    def test_snapshot_rejects_schema_that_does_not_start_with_time_key(self) -> None:
         from shared.blackbox_v2.snapshot import create_snapshot_from_frames
 
         frames = _frames()
         expected = {name: list(frame.columns) for name, frame in frames.items()}
         expected["weekly_output.csv"] = ["week_factor", "week_id"]
         with tempfile.TemporaryDirectory() as tmpdir:
-            with self.assertRaisesRegex(ValueError, "column order"):
+            with self.assertRaisesRegex(ValueError, "baseline must start with week_id"):
                 create_snapshot_from_frames(
                     frames,
                     output_root=Path(tmpdir),
                     expected_columns=expected,
                     schema_version="data-bridge-v1",
                 )
+
+    def test_snapshot_accepts_added_columns_and_tracks_them_in_identity(self) -> None:
+        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+
+        baseline_frames = _frames()
+        baseline_columns = {
+            name: list(frame.columns)
+            for name, frame in baseline_frames.items()
+        }
+        added_frames = {
+            name: frame.assign(new_factor=range(1, len(frame) + 1))
+            for name, frame in baseline_frames.items()
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_root = Path(tmpdir)
+            baseline = create_snapshot_from_frames(
+                baseline_frames,
+                output_root=output_root,
+                expected_columns=baseline_columns,
+                schema_version="data-bridge-v1",
+            )
+            added = create_snapshot_from_frames(
+                added_frames,
+                output_root=output_root,
+                expected_columns=baseline_columns,
+                schema_version="data-bridge-v1",
+            )
+            manifest = json.loads(added.manifest_path.read_text(encoding="utf-8"))
+
+        self.assertNotEqual(baseline.snapshot_id, added.snapshot_id)
+        self.assertEqual(
+            manifest["files"]["daily_output.csv"]["columns"],
+            ["date", "daily_factor", "new_factor"],
+        )
 
     def test_snapshot_rejects_duplicate_or_unsorted_time_keys(self) -> None:
         from shared.blackbox_v2.snapshot import create_snapshot_from_frames

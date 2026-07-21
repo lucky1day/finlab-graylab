@@ -89,13 +89,67 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc",
             "真实 DataBridge 数据",
             "接口烟雾测试",
+            "最低兼容字段基线",
+            "新增业务列",
+            "按字段名",
+            "忽略未使用",
+            "forecast_env_blackbox_v1",
+            "Python 3.13.12",
+            "numpy 2.3.5",
+            "pandas 2.3.3",
+            "scikit-learn 1.8.0",
+            "lightgbm 4.6.0",
+            "xgboost 3.1.3",
+            "catboost 1.2.8",
+            "conda run --no-capture-output",
+            "import csv",
+            "csv.reader",
+            'encoding="utf-8-sig"',
         ):
             self.assertIn(marker, text)
+
+        for marker in (
+            "`data-bridge-v1` 固定列数",
+            "columns=774",
+            "columns=575",
+            "columns=123",
+            "完整检查保证",
+        ):
+            self.assertNotIn(marker, text)
 
         self.assertNotRegex(
             text,
             r"\[[^\]]+\]\([^)]*\.md(?:#[^)]*)?\)",
         )
+
+    def test_databridge_sample_docs_do_not_freeze_point_in_time_column_counts(self) -> None:
+        readme = (
+            DOCS_ROOT / "blackbox_v2" / "data_bridge_v1" / "README.md"
+        ).read_text(encoding="utf-8")
+        manifest = json.loads(
+            (
+                DOCS_ROOT / "blackbox_v2" / "data_bridge_v1" / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertIn("最低兼容字段基线", readme)
+        self.assertIn("新增业务列", readme)
+        self.assertNotIn("V1 列数", readme)
+        for item in manifest["files"].values():
+            self.assertNotIn("columns", item)
+
+    def test_platform_sop_treats_databridge_schema_as_additive_baseline(self) -> None:
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            "最低兼容字段基线",
+            "新增业务列",
+            "相对顺序",
+            "实际列数",
+            "Snapshot identity",
+        ):
+            self.assertIn(marker, platform)
+        self.assertNotIn("按冻结 Schema 生成", platform)
 
     def test_upstream_metadata_name_is_task_scoped_and_concise(self) -> None:
         text = UPSTREAM_SOP.read_text(encoding="utf-8")
@@ -254,13 +308,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "06:30",
             "06:35",
             "07:00",
-            "上一交易日",
-            "连续两轮",
-            "同一个 generation",
-            "整体原子发布",
-            "当天不运行、不自动补跑",
         ):
-            self.assertIn(marker, upstream)
+            self.assertNotIn(marker, upstream)
+        self.assertIn("统一 DataBridge 导出逻辑", upstream)
+        self.assertIn("整体原子发布", upstream)
         self.assertNotIn("v2-scheduler-gate-v1", upstream)
 
     def test_old_native_entry_paths_are_redirect_only(self) -> None:

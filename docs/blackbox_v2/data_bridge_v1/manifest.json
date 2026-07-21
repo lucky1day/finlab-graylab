@@ -8,19 +8,16 @@
     "daily_output.sample.csv": {
       "source_filename": "daily_output.csv",
       "key": "date",
-      "columns": 774,
       "rows": 2
     },
     "weekly_output.sample.csv": {
       "source_filename": "weekly_output.csv",
       "key": "week_id",
-      "columns": 575,
       "rows": 2
     },
     "monthly_output.sample.csv": {
       "source_filename": "monthly_output.csv",
       "key": "month_id",
-      "columns": 123,
       "rows": 2
     }
   }
