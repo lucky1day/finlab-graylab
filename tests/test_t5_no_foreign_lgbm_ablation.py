@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+import subprocess
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -479,6 +481,20 @@ class MetricAndReportTests(unittest.TestCase):
 
 
 class RunnerContractTests(unittest.TestCase):
+    def test_cli_can_be_executed_directly_outside_project_cwd(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        script = project_root / "scripts/run_t5_no_foreign_lgbm_ablation.py"
+        with TemporaryDirectory() as raw_cwd:
+            completed = subprocess.run(
+                [sys.executable, str(script), "--help"],
+                cwd=raw_cwd,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("--source-data-root", completed.stdout)
+
     def test_manifest_is_the_frozen_twenty_config_scope(self) -> None:
         self.assertEqual(APPROVED_SCHEME_IDS, ACTIVE_SCHEME_IDS)
         self.assertEqual(20, len(SCHEME_SPECS))
