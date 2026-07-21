@@ -8,6 +8,11 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+from experiments.t5_no_foreign_lgbm.metrics import (
+    MetricCounts,
+    align_branches,
+    monthly_comparison,
+)
 from experiments.t5_no_foreign_lgbm.phase_cache import (
     splice_phase_cache,
     target_map,
@@ -21,6 +26,31 @@ from experiments.t5_no_foreign_lgbm.policy import (
     feature_source,
     is_us_treasury_name,
     patch_core_feature_builders,
+)
+from experiments.t5_no_foreign_lgbm.report import render_report
+
+
+APPROVED_SCHEME_IDS = (
+    "daily_5y_2_v28__h5__5Y",
+    "daily_7y_1_v28__h5__7Y",
+    "liwei_0616_10y01_cons_say_k3_div_k10__h5__10Y",
+    "liwei_0616_10y01_full_oos_k3_div_k10__h5__10Y",
+    "liwei_0616_10y02_cons_say_k3_div_k5__h5__10Y",
+    "liwei_0616_5y_auc_static_all_k3_div_k10__h5__5Y",
+    "liwei_0616_5y_auc_yearly_all_k3_div_k10__h5__5Y",
+    "liwei_0616_5y_ic_yearly_all_k3_div_k10__h5__5Y",
+    "liwei_0616_5y01_full_oos_k3_div_k10__h5__5Y",
+    "liwei_0616_7y01_cons_say_k3_div_k10__h5__7Y",
+    "liwei_0616_7y03_cons_all_k3_div_k8__h5__7Y",
+    "liwei_0616_cons_sda_k3_div_k10__h5__5Y",
+    "one_y_t5_liq_excess_a_v1__h5__1Y",
+    "one_y_t5_liq_excess_a_w252_l7_v1__h5__1Y",
+    "one_y_t5_liq_excess_a_w350_l7_v1__h5__1Y",
+    "one_y_t5_liq_excess_b_w252_l7_v1__h5__1Y",
+    "t5_daily__h5__10Y",
+    "t5_daily__h5__3Y",
+    "t5_daily__h5__5Y",
+    "t5_daily__h5__7Y",
 )
 
 
@@ -309,6 +339,130 @@ class PhaseCacheTests(unittest.TestCase):
             self.assertTrue(pickle_path.is_file())
             with self.assertRaisesRegex(ValueError, "outside experiment root"):
                 write_json_checkpoint(root, "../escape.json", {"ok": False})
+
+
+class MetricAndReportTests(unittest.TestCase):
+    def _rows(self, directions: list[int]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "scheme_id": ["demo__h5__5Y"] * 5,
+                "target_tenor": ["5Y"] * 5,
+                "feature_date": [
+                    "2026-03-25",
+                    "2026-03-26",
+                    "2026-04-24",
+                    "2026-04-27",
+                    "2026-05-25",
+                ],
+                "target_date": [
+                    "2026-04-01",
+                    "2026-04-02",
+                    "2026-05-06",
+                    "2026-05-07",
+                    "2026-06-01",
+                ],
+                "label": [1, -1, -1, -1, 1],
+                "direction": directions,
+            }
+        )
+
+    def test_align_branches_rejects_sample_or_label_mismatch(self) -> None:
+        baseline = self._rows([1, 0, 1, -1, 0])
+        changed_label = self._rows([1, 0, 1, -1, 0])
+        changed_label.loc[0, "label"] = -1
+        with self.assertRaisesRegex(RuntimeError, "sample keys or labels"):
+            align_branches(baseline, changed_label)
+        changed_date = self._rows([1, 0, 1, -1, 0])
+        changed_date.loc[0, "target_date"] = "2026-04-03"
+        with self.assertRaisesRegex(RuntimeError, "sample keys or labels"):
+            align_branches(baseline, changed_date)
+
+    def test_monthly_and_aggregate_metrics_use_counts(self) -> None:
+        baseline = self._rows([1, 0, 1, -1, 0])
+        ablation = self._rows([1, -1, 0, -1, 1])
+        rows = monthly_comparison(baseline, ablation)
+        by_period = {row["period"]: row for row in rows}
+        self.assertEqual(
+            MetricCounts(eligible=2, trades=1, correct=1),
+            by_period["2026-04"]["baseline"],
+        )
+        self.assertEqual(
+            MetricCounts(eligible=1, trades=0, correct=0),
+            by_period["2026-06"]["baseline"],
+        )
+        self.assertIsNone(by_period["2026-06"]["baseline"].accuracy)
+        aggregate = by_period["2026-04..06"]
+        self.assertEqual(
+            MetricCounts(eligible=5, trades=3, correct=2),
+            aggregate["baseline"],
+        )
+        self.assertAlmostEqual(2 / 3, aggregate["baseline"].accuracy)
+        self.assertAlmostEqual(3 / 5, aggregate["baseline"].trade_rate)
+        self.assertEqual(
+            MetricCounts(eligible=5, trades=4, correct=4),
+            aggregate["ablation"],
+        )
+        self.assertAlmostEqual(1 / 3, aggregate["accuracy_delta"])
+        self.assertAlmostEqual(1 / 5, aggregate["trade_rate_delta"])
+
+    def test_report_renders_twenty_configs_counts_audits_and_failures(self) -> None:
+        comparison = monthly_comparison(
+            self._rows([1, 0, 1, -1, 0]),
+            self._rows([1, -1, 0, -1, 1]),
+        )
+        schemes = []
+        for index, scheme_id in enumerate(APPROVED_SCHEME_IDS):
+            status = "success"
+            if index == 12:
+                status = "not_applicable"
+            if index == 19:
+                status = "failed"
+            schemes.append(
+                {
+                    "scheme_id": scheme_id,
+                    "status": status,
+                    "reason": "synthetic failure" if status == "failed" else "",
+                    "comparisons": comparison if status != "failed" else [],
+                    "factor_audit": {
+                        "removed_sources": ["USDCNH0C", "S0031525"],
+                        "removed_columns": ["mf_USDCNH0C_r1"],
+                        "retained_count": 10,
+                        "candidate_count": 11,
+                        "ust_sources_used": [],
+                    },
+                    "changed_target_dates": ["2026-04-02"],
+                }
+            )
+        bundle = {
+            "metadata": {
+                "code_commit": "abc123",
+                "python_version": "3.12",
+                "lightgbm_version": "4.6.0",
+                "source_hashes": {"daily_output.csv": "deadbeef"},
+                "source_unchanged": True,
+            },
+            "manifest_order": list(APPROVED_SCHEME_IDS),
+            "schemes": schemes,
+        }
+        rendered = render_report(bundle)
+        self.assertIn("未修改灰度实验室", rendered)
+        self.assertIn("正确/出手/有效", rendered)
+        self.assertIn("准确率变化", rendered)
+        self.assertIn("出手率变化", rendered)
+        self.assertIn("USDCNH0C", rendered)
+        self.assertIn("美国国债收益率实际使用数：0", rendered)
+        self.assertIn("2026-04-02", rendered)
+        self.assertIn("deadbeef", rendered)
+        self.assertIn("LightGBM 4.6.0", rendered)
+        self.assertIn("N/A", rendered)
+        self.assertIn("synthetic failure", rendered)
+        overview = rendered.split("## 配置明细", 1)[0]
+        for scheme_id in APPROVED_SCHEME_IDS:
+            self.assertEqual(1, overview.count(scheme_id))
+        failed_section = rendered.split(
+            f"### {APPROVED_SCHEME_IDS[-1]}", 1
+        )[1]
+        self.assertNotIn("synthetic failure |", failed_section)
 
 
 if __name__ == "__main__":
