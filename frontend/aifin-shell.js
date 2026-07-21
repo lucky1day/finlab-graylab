@@ -416,51 +416,18 @@
     updateBacktestMonthRange(scheme);
   }
 
-  function liveDividerLabels(scheme, task) {
-    var dividerLabel = normalizeIsoDate(scheme && scheme.liveSinceDate);
-    var metricSinceLabel = normalizeIsoDate(scheme && scheme.liveMetricSinceDate);
-    if (isWeeklyTask(task)) {
-      metricSinceLabel = metricSinceLabel || dividerLabel;
-    }
-    return {
-      dividerLabel: dividerLabel,
-      metricSinceLabel: metricSinceLabel
-    };
+  function scheduledLiveTargetStart(phaseRanges) {
+    var scheduled = (phaseRanges || []).find(function (range) {
+      return String(range.prediction_phase || "") === "scheduled_live";
+    });
+    return normalizeIsoDate(scheduled && scheduled.start_target_date);
   }
 
-  function liveDividerText(scheme, task) {
-    var labels = liveDividerLabels(scheme, task);
-    var dividerText = labels.dividerLabel ? "实盘发出起点 " + labels.dividerLabel : "实盘起点";
-    var phaseParts = phaseRangeTexts(scheme && scheme.phaseRanges);
-    if (phaseParts.length) dividerText += " · " + phaseParts.join(" · ");
-    return dividerText;
-  }
-
-  function phaseRangeTexts(phaseRanges) {
-    return (phaseRanges || []).map(function (range) {
-      var phase = String(range.prediction_phase || "");
-      var predictStart = normalizeIsoDate(range.start_predict_date);
-      var predictEnd = normalizeIsoDate(range.end_predict_date);
-      var targetStart = normalizeIsoDate(range.start_target_date);
-      var targetEnd = normalizeIsoDate(range.end_target_date);
-      if (phase === "gray_live") {
-        if (!targetStart && !predictStart) return "";
-        var grayText = targetStart
-          ? "灰度实盘（目标期）" + targetStart + (targetEnd && targetEnd !== targetStart ? " 至 " + targetEnd : "")
-          : "灰度实盘 " + predictStart + (predictEnd && predictEnd !== predictStart ? " 至 " + predictEnd : "");
-        if (targetStart && predictStart) {
-          grayText += "（信号发出 " + predictStart + (predictEnd && predictEnd !== predictStart ? " 至 " + predictEnd : "") + "）";
-        }
-        return grayText;
-      }
-      if (phase === "scheduled_live") {
-        if (!predictStart && !targetStart) return "";
-        var scheduledText = predictStart ? "正式调度发出起点 " + predictStart : "正式调度";
-        if (targetStart) scheduledText += "（目标期起点 " + targetStart + "）";
-        return scheduledText;
-      }
-      return "";
-    }).filter(Boolean);
+  function liveDividerText(scheme) {
+    var targetStart = scheduledLiveTargetStart(scheme && scheme.phaseRanges);
+    return targetStart
+      ? "实盘预测目标区间：" + targetStart + "开始"
+      : "实盘预测目标区间：待产生";
   }
 
   function getSchemeDeploymentDate(scheme) {

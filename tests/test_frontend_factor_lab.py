@@ -1122,7 +1122,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertIn("/api/backtests/factor-lab", result["calls"])
 
     def test_daily_v28_backtest_and_live_start_are_visible_together(self) -> None:
-        """V28 新 benchmark 的回测月度行应与实盘发出起点一起展示。"""
+        """V28 新 benchmark 的回测月度行应与正式实盘目标起点一起展示。"""
         result = _run_factor_lab_hook(
             """
             const responses = {
@@ -1242,16 +1242,14 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["liveSinceDate"], "2026-05-26")
         self.assertEqual(result["phaseRanges"][0]["prediction_phase"], "gray_live")
         self.assertEqual(result["months"], ["2026-04:backtest", "2026-06:live"])
-        self.assertIn("实盘发出起点 2026-05-26", result["detailMeta"])
-        self.assertIn(
-            "灰度实盘（目标期）2026-06-01 至 2026-06-17"
-            "（信号发出 2026-05-26 至 2026-06-11）",
-            result["detailMeta"],
-        )
-        self.assertIn(
-            "正式调度发出起点 2026-06-12（目标期起点 2026-06-18）",
-            result["detailMeta"],
-        )
+        self.assertIn("实盘预测目标区间：2026-06-18开始", result["detailMeta"])
+        for removed in (
+            "实盘发出起点",
+            "灰度实盘（目标期）",
+            "信号发出",
+            "正式调度发出起点",
+        ):
+            self.assertNotIn(removed, result["detailMeta"])
 
     def test_same_month_backtest_and_live_split_into_two_rows(self) -> None:
         """同月既有回测又有实盘时，应展示两行（回测行 + 实盘行），不覆盖。"""
@@ -1475,7 +1473,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["aggregate"]["correct"], 1)
 
     def test_weekly_live_uses_single_predict_date_start_semantics(self) -> None:
-        """周度和日度统一用第一条 predict_date 作为实盘发出起点。"""
+        """没有 scheduled_live 时，周度和日度统一显示目标区间待产生。"""
         result = _run_factor_lab_hook(
             """
             const responses = {
@@ -1556,7 +1554,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["dataMode"], "live")
         self.assertEqual(result["liveSinceDate"], "2026-06-11")
         self.assertEqual(result["liveMetricSinceDate"], "2026-06-11")
-        self.assertEqual(result["dividerText"], "实盘发出起点 2026-06-11")
+        self.assertEqual(result["dividerText"], "实盘预测目标区间：待产生")
         self.assertEqual(result["months"], ["2026-06"])
         self.assertEqual(result["dailyMonths"], ["2026-06"])
 

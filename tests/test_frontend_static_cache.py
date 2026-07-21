@@ -36,4 +36,4 @@ class FrontendStaticCacheTests(unittest.TestCase):
         html = FRONTEND_INDEX.read_text(encoding="utf-8")
 
         self.assertIn('href="aifin-shell.css?v=20260705a"', html)
-        self.assertIn('src="aifin-shell.js?v=20260705a"', html)
+        self.assertIn('src="aifin-shell.js?v=20260721a"', html)
