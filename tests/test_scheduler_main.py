@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scheduler.executor import SchemeRunResult
+from scheduler.v2_daily_gate import V2DailyGateBlocked
 
 
 def _cfg(
@@ -21,18 +22,22 @@ def _cfg(
     frequency: str = "daily",
     cron: str = "3 7 * * 1-5",
     status: str = "active",
+    runtime_type: str = "native_adapter",
+    input_source: str | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         scheme_id=scheme_id,
         status=status,
         frequency=frequency,
+        runtime_type=runtime_type,
+        input_source=input_source,
         tenors=["5Y"],
         schedule=SimpleNamespace(cron=cron, timezone="Asia/Shanghai"),
     )
 
 
 class SchedulerMainTests(unittest.TestCase):
-    def test_scheduler_registers_daily_data_bridge_refresh_at_0530(self) -> None:
+    def test_scheduler_does_not_own_daily_data_bridge_refresh(self) -> None:
         from scheduler import main as scheduler_main
 
         with (
@@ -47,9 +52,7 @@ class SchedulerMainTests(unittest.TestCase):
             if scheduler.running:
                 scheduler.shutdown(wait=False)
 
-        self.assertIsNotNone(job)
-        self.assertIn("hour='5'", str(job.trigger))
-        self.assertIn("minute='30'", str(job.trigger))
+        self.assertIsNone(job)
 
     def test_startup_tasks_refresh_before_prediction_catchup(self) -> None:
         from scheduler import main as scheduler_main
@@ -245,6 +248,74 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(result, expected)
 
+    def test_v2_scheduled_job_requires_daily_ready_gate(self) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = _cfg(
+            "blackbox_demo",
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+        )
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
+            patch.object(scheduler_main, "_previous_trading_day", return_value="2026-07-21"),
+            patch.object(
+                scheduler_main,
+                "require_v2_daily_ready",
+                side_effect=V2DailyGateBlocked("blocked"),
+            ) as gate,
+            patch.object(scheduler_main, "execute_scheme") as execute_scheme,
+            self.assertLogs(scheduler_main.logger, level=logging.ERROR),
+        ):
+            result = scheduler_main.run_prediction_job(
+                "blackbox_demo",
+                run_date="2026-07-22",
+            )
+
+        self.assertEqual(result.status, "skipped")
+        self.assertEqual(result.error_msg, "blocked")
+        execute_scheme.assert_not_called()
+        gate.assert_called_once()
+
+    def test_native_v1_does_not_read_v2_daily_gate(self) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = _cfg("native_demo", runtime_type="native_adapter")
+        expected = SchemeRunResult("native_demo", "success", 1, 0.1, run_id=8)
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
+            patch.object(scheduler_main, "require_v2_daily_ready") as gate,
+            patch.object(scheduler_main, "execute_scheme", return_value=expected),
+        ):
+            result = scheduler_main.run_prediction_job(
+                "native_demo",
+                run_date="2026-07-22",
+            )
+
+        self.assertEqual(result, expected)
+        gate.assert_not_called()
+
+    def test_single_prediction_job_does_not_sync_registry(self) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = _cfg("daily_demo")
+        expected = SchemeRunResult("daily_demo", "success", 1, 0.1, run_id=9)
+        with (
+            patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
+            patch.object(scheduler_main, "_sync_registry") as sync_registry,
+            patch.object(scheduler_main, "_is_trading_day", return_value=True),
+            patch.object(scheduler_main, "execute_scheme", return_value=expected),
+        ):
+            result = scheduler_main.run_prediction_job(
+                "daily_demo",
+                run_date="2026-07-22",
+            )
+
+        self.assertEqual(result, expected)
+        sync_registry.assert_not_called()
+
     def test_run_prediction_job_returns_configuration_failure_for_unknown_scheme(self) -> None:
         from scheduler import main as scheduler_main
 
@@ -279,7 +350,7 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(results, [success, failed])
         discover_schemes.assert_called_once_with()
-        sync_registry.assert_called_once_with(schemes)
+        sync_registry.assert_not_called()
         self.assertEqual(execute_scheme.call_count, 2)
 
     def test_main_returns_one_for_failed_run_once_prediction(self) -> None:

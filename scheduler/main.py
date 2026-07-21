@@ -24,6 +24,7 @@ from scheduler.calendar import is_trading_day
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, SchemeRunResult, execute_scheme
 from scheduler.repository import create_engine_from_env, sync_scheme_registry
+from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.data_bridge.client import DataBridgeClient, DataBridgeClientConfig
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
@@ -39,7 +40,7 @@ PREDICTION_MAX_CONCURRENCY_ENV = "BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY"
 STARTUP_CATCHUP_ENV = "BOND_SCHEDULER_STARTUP_CATCHUP"
 DEFAULT_STAGGER_MINUTES = 2
 DEFAULT_PREDICTION_MAX_CONCURRENCY = 1
-DEFAULT_DATA_BRIDGE_REFRESH_START = "05:30"
+DEFAULT_DATA_BRIDGE_REFRESH_START = "06:00"
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
 logger = logging.getLogger(__name__)
 _prediction_semaphore_lock = threading.Lock()
@@ -506,6 +507,24 @@ def _run_prediction_config(
     if not force and _skips_non_trading_day(cfg) and not _is_trading_day(predict_date):
         logger.info("Skip %s on non-trading day %s", cfg.scheme_id, predict_date)
         return SchemeRunResult(cfg.scheme_id, "skipped", 0, 0.0, "non-trading day")
+    if (
+        getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2"
+        and getattr(cfg, "input_source", None) == "data_bridge_current"
+    ):
+        try:
+            require_v2_daily_ready(
+                DataBridgeRefreshConfig.from_env(),
+                predict_date,
+                _previous_trading_day(predict_date),
+            )
+        except V2DailyGateBlocked as exc:
+            logger.error(
+                "V2 scheduled prediction blocked: scheme=%s date=%s error=%s",
+                cfg.scheme_id,
+                predict_date,
+                exc,
+            )
+            return SchemeRunResult(cfg.scheme_id, "skipped", 0, 0.0, str(exc))
     with _prediction_slot():
         result = execute_scheme(cfg, predict_date, algo_env=algo_env)
     logger.info("Scheme run finished: %s", result)
@@ -521,7 +540,6 @@ def run_prediction_job(
     """执行单个方案调度任务。"""
     predict_date = _normalize_run_date(run_date)
     schemes = discover_schemes()
-    _sync_registry(schemes)
     configs = {cfg.scheme_id: cfg for cfg in schemes}
     cfg = configs.get(scheme_id)
     if cfg is None:
@@ -568,7 +586,6 @@ def run_all_prediction_jobs(
     """执行全部 active 方案调度任务。"""
     predict_date = _normalize_run_date(run_date)
     schemes = discover_schemes()
-    _sync_registry(schemes)
     results: list[SchemeRunResult] = []
     for cfg in schemes:
         if cfg.status != "active":
@@ -651,24 +668,6 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     schemes = discover_schemes()
     _sync_registry(schemes)
     scheduler = BlockingScheduler(timezone=ASIA_SHANGHAI)
-
-    refresh_start = os.getenv("DATABRIDGE_REFRESH_START", DEFAULT_DATA_BRIDGE_REFRESH_START)
-    try:
-        refresh_hour, refresh_minute = (int(part) for part in refresh_start.split(":"))
-        if not (0 <= refresh_hour <= 23 and 0 <= refresh_minute <= 59):
-            raise ValueError
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"DATABRIDGE_REFRESH_START must use HH:MM, got {refresh_start!r}") from exc
-    scheduler.add_job(
-        run_data_bridge_refresh_job,
-        trigger=CronTrigger(hour=refresh_hour, minute=refresh_minute, timezone=ASIA_SHANGHAI),
-        id="data-bridge-refresh",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-        misfire_grace_time=4500,
-    )
-    logger.info("Scheduled DataBridge refresh at %s Asia/Shanghai", refresh_start)
 
     for job in _staggered_prediction_jobs(schemes, stagger_minutes):
         cfg = job.cfg
