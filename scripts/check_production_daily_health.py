@@ -449,6 +449,7 @@ def load_snapshot(
                 WHERE status = 'active'
                   AND frequency = 'daily'
                   AND task_type IN ('T+1', 'T+5')
+                  AND runtime_type <> 'blackbox_v2'
                 ORDER BY base_scheme_id
                 """
             )
@@ -472,14 +473,8 @@ def load_snapshot(
         else:
             successful_rows = []
 
-        run_prediction_counts = tuple(
-            RunPredictionCount(
-                run_id=int(row.run_id),
-                scheme_id=str(row.scheme_id),
-                records_written=int(row.records_written) if row.records_written is not None else None,
-                prediction_rows=int(row.prediction_rows),
-            )
-            for row in conn.execute(
+        if active_schemes:
+            run_prediction_rows = conn.execute(
                 text(
                     """
                     SELECT
@@ -492,13 +487,28 @@ def load_snapshot(
                       ON p.run_id = r.run_id
                     WHERE r.predict_date = :predict_date
                       AND r.status = 'success'
+                      AND r.scheme_id IN :scheme_ids
                     GROUP BY r.run_id, r.scheme_id, r.records_written
                     ORDER BY r.run_id
                     """
-                ),
-                {"predict_date": predict_date},
+                ).bindparams(bindparam("scheme_ids", expanding=True)),
+                {"predict_date": predict_date, "scheme_ids": list(active_schemes)},
             )
-        )
+            run_prediction_counts = tuple(
+                RunPredictionCount(
+                    run_id=int(row.run_id),
+                    scheme_id=str(row.scheme_id),
+                    records_written=(
+                        int(row.records_written)
+                        if row.records_written is not None
+                        else None
+                    ),
+                    prediction_rows=int(row.prediction_rows),
+                )
+                for row in run_prediction_rows
+            )
+        else:
+            run_prediction_counts = ()
 
         prediction_rows = conn.execute(
             text(
@@ -519,6 +529,7 @@ def load_snapshot(
                  AND r.status = 'active'
                  AND r.frequency = 'daily'
                  AND r.task_type IN ('T+1', 'T+5')
+                 AND r.runtime_type <> 'blackbox_v2'
                 WHERE p.predict_date = :predict_date
                 ORDER BY p.id
                 """

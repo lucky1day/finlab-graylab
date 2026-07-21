@@ -324,7 +324,8 @@ class ProductionDailyHealthTests(unittest.TestCase):
                     horizon INTEGER,
                     status TEXT,
                     frequency TEXT,
-                    task_type TEXT
+                    task_type TEXT,
+                    runtime_type TEXT
                 )
                 """,
                 """
@@ -373,9 +374,10 @@ class ProductionDailyHealthTests(unittest.TestCase):
                 text(
                     """
                     INSERT INTO t_scheme_registry
-                        (scheme_id, base_scheme_id, target_tenor, horizon, status, frequency, task_type)
+                        (scheme_id, base_scheme_id, target_tenor, horizon, status, frequency, task_type, runtime_type)
                     VALUES
-                        ('t1_daily__h1__5Y', 't1_daily', '5Y', 1, 'active', 'daily', 'T+1')
+                        ('t1_daily__h1__5Y', 't1_daily', '5Y', 1, 'active', 'daily', 'T+1', 'native_adapter'),
+                        ('blackbox_demo__h5__1Y', 'blackbox_demo', '1Y', 5, 'active', 'daily', 'T+5', 'blackbox_v2')
                     """
                 )
             )
@@ -385,7 +387,8 @@ class ProductionDailyHealthTests(unittest.TestCase):
                     INSERT INTO t_scheme_predictions
                         (id, run_id, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date)
                     VALUES
-                        (1, 900, 'monthly_demo', '10Y', 30, '2026-07-07', '2026-07-07', '2026-08-07')
+                        (1, 900, 'monthly_demo', '10Y', 30, '2026-07-07', '2026-07-07', '2026-08-07'),
+                        (2, 901, 'blackbox_demo', '1Y', 5, '2026-07-07', '2026-07-06', '2026-07-13')
                     """
                 )
             )
@@ -402,6 +405,7 @@ class ProductionDailyHealthTests(unittest.TestCase):
 
         self.assertEqual(snapshot.predictions_count, 0)
         self.assertEqual(snapshot.prediction_date_checks, ())
+        self.assertEqual(snapshot.active_daily_base_schemes, ("t1_daily",))
 
 
 if __name__ == "__main__":
