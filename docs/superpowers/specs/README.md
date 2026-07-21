@@ -7,3 +7,4 @@
 **最后核验日期**：2026-07-21
 
 - [Blackbox V2 日级数据 Gate 与 Scheduler 重启管理设计](2026-07-21-v2-daily-gate-scheduler-restart-design.md)
+- [前端实盘预测目标区间文案设计](2026-07-21-live-target-range-label-design.md)
