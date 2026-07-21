@@ -33,44 +33,18 @@ samples/weekly_output.sample.csv
 samples/monthly_output.sample.csv
 ```
 
-平台运行环境、关键包和资源限制直接列在下一节。不得要求为单个方案临时增加私有包。
+Python、关键包和资源限制直接列在下一节。不得要求为单个方案临时增加私有包。
 
-### 1.2 平台运行环境与资源限制
+### 1.2 Python、关键包与资源限制
 
-Blackbox V2 Contract 1.0 当前固定运行环境：
+Blackbox V2 Contract 1.0 当前使用的 Python 和关键包版本：
 
-| 项目 | 平台值 |
+| 项目 | 版本 |
 |---|---|
-| Runtime Profile | `blackbox-v2-v1` |
-| Conda 环境 | `forecast_env_blackbox_v1` |
-| 平台 | `osx-arm64` |
 | Python | Python 3.13.12 |
 | 数值与数据 | numpy 2.3.5、pandas 2.3.3、scipy 1.16.3 |
 | 机器学习 | scikit-learn 1.8.0、lightgbm 4.6.0、xgboost 3.1.3、catboost 1.2.8 |
 | 其他关键包 | joblib 1.5.3、pyarrow 23.0.0、openpyxl 3.1.5 |
-
-环境指纹为：
-
-```text
-720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd
-```
-
-在装有该 Conda 环境的机器上，可以直接执行以下自检：
-
-```bash
-conda run --no-capture-output -n forecast_env_blackbox_v1 python - <<'PY'
-import platform
-from importlib.metadata import version
-
-packages = (
-    "numpy", "pandas", "scipy", "scikit-learn", "lightgbm",
-    "xgboost", "catboost", "joblib", "pyarrow", "openpyxl",
-)
-print("python", platform.python_version())
-for package in packages:
-    print(package, version(package))
-PY
-```
 
 资源边界：
 
@@ -521,7 +495,7 @@ backtest-002,2026-07-18,2026-07-17,2026-07-24,-1
 
 ## 9. 上游自验
 
-先执行第 1.2 节环境自检命令，再用第 3 节真实下载并校验通过的 `sample_data/` 执行：
+先确认实现只使用第 1.2 节列出的 Python 和关键包，再用第 3 节真实下载并校验通过的 `sample_data/` 执行：
 
 ```bash
 python {scheme_id}.py --help

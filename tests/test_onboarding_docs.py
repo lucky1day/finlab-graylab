@@ -93,7 +93,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "新增业务列",
             "按字段名",
             "忽略未使用",
-            "forecast_env_blackbox_v1",
             "Python 3.13.12",
             "numpy 2.3.5",
             "pandas 2.3.3",
@@ -101,7 +100,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "lightgbm 4.6.0",
             "xgboost 3.1.3",
             "catboost 1.2.8",
-            "conda run --no-capture-output",
             "import csv",
             "csv.reader",
             'encoding="utf-8-sig"',
@@ -114,6 +112,12 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "columns=575",
             "columns=123",
             "完整检查保证",
+            "Runtime Profile |",
+            "Conda 环境 |",
+            "`osx-arm64`",
+            "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+            "conda run --no-capture-output",
+            "from importlib.metadata import version",
         ):
             self.assertNotIn(marker, text)
 

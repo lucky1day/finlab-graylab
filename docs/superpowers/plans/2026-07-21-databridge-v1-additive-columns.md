@@ -85,7 +85,7 @@ Run the Task 1 command again. Expected: all focused tests pass.
 
 - [ ] **Step 1: Write failing documentation assertions**
 
-Require the upstream SOP to state that columns can increase, algorithms select fields by name, unused added columns are ignored, and the machine Schema is a minimum compatibility baseline. Require direct platform runtime facts: `forecast_env_blackbox_v1`, Python `3.13.12`, key package versions, resource limits, and the environment self-check command. Reject the old fixed-count table heading, the three historical counts, the four production refresh times, and `完整检查保证` in the upstream SOP; keep the explicit rule that total column count is not fixed.
+Require the upstream SOP to state that columns can increase, algorithms select fields by name, unused added columns are ignored, and the machine Schema is a minimum compatibility baseline. Require Python `3.13.12`, key package versions and resource limits. Reject Runtime Profile、Conda 环境名、操作系统平台、环境指纹、平台环境自检命令、the old fixed-count table heading, the three historical counts, the four production refresh times, and `完整检查保证` in the upstream SOP; keep the explicit rule that total column count is not fixed.
 
 - [ ] **Step 2: Simplify the DataBridge update explanation**
 
@@ -95,9 +95,9 @@ Keep only how data is updated: the unified DataBridge performs a full three-freq
 
 Update the copyable Python command to check file existence, non-empty data, first time key, unique columns, non-empty unique keys, baseline-field presence, and baseline relative order. Do not check a total column count. State that algorithms must explicitly verify their consumed fields and ignore unused added fields.
 
-- [ ] **Step 4: Publish runtime facts directly**
+- [ ] **Step 4: Publish Python package and resource facts directly**
 
-List the `osx-arm64` runtime, `forecast_env_blackbox_v1`, Python and key package versions from `deploy/blackbox_v2/environment_manifest.json`, plus the resource limits from `deploy/blackbox_v2/runtime_profile_v1.json`. Include a copyable `conda run` self-check command.
+List Python and key package versions from `deploy/blackbox_v2/environment_manifest.json`, plus the resource limits from `deploy/blackbox_v2/runtime_profile_v1.json`. Do not publish Runtime Profile、Conda 环境名、操作系统平台、环境指纹 or a platform environment self-check command in the upstream SOP.
 
 - [ ] **Step 5: Update sample documentation semantics**
 
