@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from backend.factor_lab_dashboard_semantics import choose_live_prediction_rows
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
 from shared.metrics import direction_metric_block
@@ -604,22 +605,8 @@ def scheme_metrics(
     with engine.connect() as conn:
         raw_rows = conn.execute(sql, params).mappings().all()
 
-    latest_by_point: dict[tuple[Any, Any, Any, Any], Any] = {}
-    for row in raw_rows:
-        point_date = _prediction_point_date(row)
-        key = (row["scheme_id"], row["target_tenor"], row["horizon"], point_date)
-        current = latest_by_point.get(key)
-        if current is None or _is_better_prediction_for_point(row, _json_value(row["extra"], {}), current):
-            latest_by_point[key] = row
-    raw_rows = sorted(
-        latest_by_point.values(),
-        key=lambda row: (
-            _prediction_point_date(row),
-            row["predict_date"],
-            row["target_tenor"],
-        ),
-    )
     display_until = _today_iso()
+    raw_rows = choose_live_prediction_rows(raw_rows, display_until=display_until)
 
     daily_rows: list[dict[str, Any]] = []
     matched_rows: list[dict[str, Any]] = []
@@ -627,9 +614,6 @@ def scheme_metrics(
         extra = _json_value(row["extra"], {})
         predict_date = _iso(row["predict_date"])
         target_date = _require_target_date(row["target_date"], context="scheme metrics", row=row)
-        point_date = _prediction_point_date(row)
-        if predict_date and display_until and predict_date > display_until:
-            continue
         metric_month = _scheme_metric_month(
             row["horizon"],
             predict_date,
@@ -700,36 +684,6 @@ def _scheme_metric_month(horizon: Any, predict_date: str, target_date: str, extr
     return _require_target_date(target_date, context="scheme metric month")[:7]
 
 
-def _prediction_point_date(row: Any) -> str:
-    return _require_target_date(row["target_date"], context="prediction point", row=row)
-
-
-def _is_better_prediction_for_point(candidate: Any, candidate_extra: dict[str, Any], current: Any) -> bool:
-    if _is_weekly_metric(candidate["horizon"], candidate_extra):
-        return _is_better_weekly_prediction(candidate, current)
-    return int(candidate["id"] or 0) > int(current["id"] or 0)
-
-
-def _is_better_weekly_prediction(candidate: Any, current: Any) -> bool:
-    """同一预测周多次 approved 时，优先保留特征窗口更新的一条。"""
-    candidate_feature = _prediction_feature_date(candidate)
-    current_feature = _prediction_feature_date(current)
-    if candidate_feature != current_feature:
-        return candidate_feature > current_feature
-
-    candidate_predict = _iso(candidate["predict_date"]) or ""
-    current_predict = _iso(current["predict_date"]) or ""
-    if candidate_predict != current_predict:
-        return candidate_predict < current_predict
-
-    return int(candidate["id"] or 0) > int(current["id"] or 0)
-
-
-def _prediction_feature_date(row: Any) -> str:
-    extra = _json_value(row["extra"], {})
-    return _row_feature_date(row, extra) or _iso(row["predict_date"]) or ""
-
-
 def _row_feature_date(row: Any, extra: dict[str, Any] | None = None) -> str:
     extra = extra if extra is not None else _json_value(row["extra"], {})
     return _iso(row["feature_date"]) or _iso(extra.get("feature_date")) or ""
@@ -765,15 +719,6 @@ def _phase_ranges(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _today_iso() -> str:
     return os.getenv("BOND_FACTOR_LAB_TODAY") or date.today().isoformat()
-
-
-def _is_weekly_metric(horizon: Any, extra: dict[str, Any]) -> bool:
-    frequency = str(extra.get("frequency") or "").lower()
-    try:
-        is_weekly = int(horizon) == 6
-    except (TypeError, ValueError):
-        is_weekly = False
-    return is_weekly or frequency == "weekly"
 
 
 def backtest_factor_lab_results(
