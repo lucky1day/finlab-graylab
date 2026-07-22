@@ -402,6 +402,40 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["events"][-1], "raf-2")
         self.assertEqual(result["aborted"], {"resolved": False, "name": "AbortError"})
 
+    def test_node_vm_interval_waits_repeats_on_cadence_and_cancels(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const firedAt = [];
+            const intervalId = window.setInterval(function () {
+              firedAt.push(window.performance.now());
+            }, 100);
+            host.advanceNow(99);
+            const early = host.runDueTimers();
+            host.advanceNow(1);
+            const first = host.runDueTimers();
+            host.advanceNow(99);
+            const between = host.runDueTimers();
+            host.advanceNow(1);
+            const second = host.runDueTimers();
+            window.clearInterval(intervalId);
+            host.advanceNow(100);
+            const afterCancel = host.runDueTimers();
+            return { early, first, between, second, afterCancel, firedAt };
+            """
+        )
+
+        self.assertEqual(
+            result,
+            {
+                "early": 0,
+                "first": 1,
+                "between": 0,
+                "second": 1,
+                "afterCancel": 0,
+                "firedAt": [1100, 1200],
+            },
+        )
+
     def test_dashboard_decoder_matches_shared_backend_v1_conformance_corpus(self) -> None:
         samples = dashboard_v1_conformance_samples()
         wire_samples = json.dumps(samples, ensure_ascii=False)
@@ -1385,6 +1419,102 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn("0 个方案", result["matrixHtml"])
         self.assertIn("--", result["rankingHtml"])
         self.assertIn("当前方案暂无月度数据", result["detailHtml"])
+
+    def test_dashboard_refresh_keeps_sparse_schemes_outside_pinned_metric_range(
+        self,
+    ) -> None:
+        january = _dashboard_scheme(
+            scheme_id="a_demo__h1__5Y",
+            base_scheme_id="a_demo",
+            name="一月方案",
+            target_label="稀疏数据标签",
+            live_rows=[
+                [
+                    "2026-01-05",
+                    "2026-01-02",
+                    "2026-01-06",
+                    "scheduled_live",
+                    1,
+                    1,
+                ]
+            ],
+        )
+        february = _dashboard_scheme(
+            scheme_id="b_demo__h1__5Y",
+            base_scheme_id="b_demo",
+            name="二月方案",
+            target_label="稀疏数据标签",
+            live_rows=[
+                [
+                    "2026-02-05",
+                    "2026-02-04",
+                    "2026-02-06",
+                    "scheduled_live",
+                    -1,
+                    -1,
+                ]
+            ],
+        )
+        payload = _dashboard_payload(
+            schemes=[january, february],
+            target_labels={"5Y": "稀疏数据标签"},
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            hooks.setFactorLabStateForTest({{
+              startMonth: "2026-01",
+              endMonth: "2026-01",
+              endMonthPinned: true,
+              selectedTaskKey: "5Y|T+1",
+              dataSource: "all"
+            }});
+            host.setFetchHandler(function () {{
+              return {{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve({json.dumps(payload)}); }}
+              }};
+            }});
+            const loaded = await hooks.loadFactorLabData({{ force: true }});
+            const schemes = hooks.getTaskSchemesForTest()["5Y|T+1"];
+            const metrics = (schemes || []).map(function (scheme) {{
+              return {{ id: scheme.schemeId, metric: hooks.aggregateScheme(scheme) }};
+            }});
+            hooks.renderTaskOverviewForTest();
+            return {{
+              loaded,
+              state: hooks.getFactorLabState(),
+              schemeNames: (schemes || []).map(function (scheme) {{ return scheme.name; }}),
+              metrics,
+              matrixHtml: document.getElementById("factorTaskMatrixBody").innerHTML,
+              rankingHtml: document.getElementById("factorSchemeRankingBody").innerHTML
+            }};
+            """
+        )
+
+        self.assertTrue(result["loaded"])
+        self.assertEqual(result["state"]["dataMode"], "dashboard")
+        self.assertEqual(result["state"]["apiError"], "")
+        self.assertEqual(result["state"]["startMonth"], "2026-01")
+        self.assertEqual(result["state"]["endMonth"], "2026-01")
+        self.assertEqual(result["schemeNames"], ["一月方案", "二月方案"])
+        self.assertEqual(result["metrics"][0]["metric"]["samples"], 1)
+        self.assertEqual(
+            result["metrics"][1]["metric"],
+            {
+                "samples": 0,
+                "metricSamples": 0,
+                "correct": 0,
+                "overall": None,
+                "upPrecision": None,
+                "upRecall": None,
+                "downPrecision": None,
+                "downRecall": None,
+            },
+        )
+        self.assertIn("稀疏数据标签", result["matrixHtml"])
+        self.assertIn("一月方案", result["rankingHtml"])
+        self.assertIn("二月方案", result["rankingHtml"])
 
     def test_corrupt_dashboard_load_sets_error_without_partial_commit(self) -> None:
         payload = _dashboard_payload(

@@ -1723,8 +1723,14 @@
   function aggregateScheme(scheme) {
     var rawRows = getVisibleRawDailyRowsForScheme(scheme);
     if (!rawRows.length) {
-      if (!(scheme.monthlyRows || []).length) return metricFromSampleRows([]);
-      throw new Error("scheme " + ((scheme && scheme.schemeId) || scheme.id || "") + " has no detail rows for selected metric range");
+      var hasAnyDetailRows = Object.keys(scheme.dailyRowsByMonth || {}).some(function (month) {
+        return (scheme.dailyRowsByMonth[month] || []).length > 0;
+      });
+      if (!hasAnyDetailRows && (scheme.monthlyRows || []).length) {
+        throw new Error("scheme " + ((scheme && scheme.schemeId) || scheme.id || "") +
+          " has monthly metrics but no detail rows");
+      }
+      return metricFromSampleRows([]);
     }
     var dailyRows = getVisibleDailyRowsForScheme(scheme);
     return metricFromSampleRows(dailyRows);
