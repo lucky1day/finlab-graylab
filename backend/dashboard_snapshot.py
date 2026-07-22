@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from threading import Condition
+from threading import Condition, local
 from typing import Any, Callable, Literal, NoReturn
 
 
@@ -46,6 +46,8 @@ class _FlightOutcome:
     """一次 flight 的不可变 terminal 结果。"""
 
     error: BaseException | None
+    attempt_status: Literal["success", "failed"]
+    attempt_seconds: float | None
 
 
 @dataclass
@@ -96,11 +98,30 @@ class DashboardSnapshotStore:
         self._condition = Condition()
         self._snapshot: tuple[dict, float] | None = None
         self._flight: _Flight | None = None
+        self._request_local = local()
+        self._observation_revision = 0
+        self._snapshot_generation = 0
+        self._snapshot_origin_waiter_count = 0
+        self._snapshot_origin_build_seconds: float | None = None
+        self._active_waiter_count = 0
         self._last_waiter_count = 0
         self._last_build_seconds: float | None = None
+        self._last_attempt_status: Literal[
+            "success", "failed", "timeout"
+        ] | None = None
+        self._last_attempt_seconds: float | None = None
 
     def get(self) -> SnapshotResult:
         """返回新鲜快照，或参与唯一构建并显式降级到 stale LKG。"""
+        self._request_local.diagnostics = {
+            "observation_revision": None,
+            "request_waited": False,
+            "build_waiter_count": 0,
+            "snapshot_generation": None,
+            "cache_status": None,
+            "attempt_status": None,
+            "attempt_seconds": None,
+        }
         with self._condition:
             flight_at_entry = self._flight
             joined_active_flight = (
@@ -116,6 +137,8 @@ class DashboardSnapshotStore:
                     raise RuntimeError("snapshot flight capture is inconsistent")
                 flight.waiter_count += 1
                 flight.active_waiter_count += 1
+                self._active_waiter_count += 1
+                self._request_local.diagnostics["request_waited"] = True
                 try:
                     wait_started_at = _sample_wait_monotonic()
                     wait_deadline = (
@@ -140,12 +163,22 @@ class DashboardSnapshotStore:
                         return self._stale_or_raise(
                             observed_at=observed_at,
                             message="dashboard snapshot build timed out",
+                            flight=flight,
+                            attempt_status="timeout",
+                            attempt_seconds=max(
+                                0.0,
+                                resumed_at - wait_started_at,
+                            ),
                         )
 
                     # 恢复时先看全局缓存：旧失败 flight 的 waiter 可能已经错过一次
                     # 后续成功 rebuild，不能把那个新鲜 payload 错标为 STALE。
                     if self._is_fresh(observed_at):
-                        return self._cached_result("HIT", observed_at)
+                        return self._cached_result(
+                            "HIT",
+                            observed_at,
+                            flight=flight,
+                        )
                     return self._stale_or_raise(
                         observed_at=observed_at,
                         message=(
@@ -157,9 +190,11 @@ class DashboardSnapshotStore:
                             )
                         ),
                         cause=flight.error,
+                        flight=flight,
                     )
                 finally:
                     flight.active_waiter_count -= 1
+                    self._active_waiter_count -= 1
 
             flight = _Flight()
             self._flight = flight
@@ -212,18 +247,24 @@ class DashboardSnapshotStore:
         """按与请求相同的规则预构建或复用快照。"""
         return self.get()
 
-    def diagnostics(self) -> dict[str, int | float | None]:
+    def diagnostics(self) -> dict[str, Any]:
         """返回 single-flight 的只读计数和最近一次构建耗时。"""
         with self._condition:
-            flight = self._flight
-            active_waiter_count = (
-                0 if flight is None else flight.active_waiter_count
-            )
             return {
-                "active_waiter_count": active_waiter_count,
+                "active_waiter_count": self._active_waiter_count,
                 "last_waiter_count": self._last_waiter_count,
                 "last_build_seconds": self._last_build_seconds,
+                "snapshot_origin_build_seconds": (
+                    self._snapshot_origin_build_seconds
+                ),
+                "last_attempt_status": self._last_attempt_status,
+                "last_attempt_seconds": self._last_attempt_seconds,
             }
+
+    def request_diagnostics(self) -> dict[str, Any]:
+        """返回当前线程最近一次 get/prewarm 的观察诊断副本。"""
+        diagnostics = getattr(self._request_local, "diagnostics", None)
+        return {} if diagnostics is None else dict(diagnostics)
 
     def _is_fresh(self, observed_at: float) -> bool:
         snapshot = self._snapshot
@@ -257,11 +298,23 @@ class DashboardSnapshotStore:
         self,
         cache_status: Literal["HIT", "STALE"],
         observed_at: float,
+        *,
+        flight: _Flight | None = None,
+        attempt_status: Literal[
+            "success", "failed", "timeout"
+        ] | None = None,
+        attempt_seconds: float | None = None,
     ) -> SnapshotResult:
         snapshot = self._snapshot
         if snapshot is None:
             raise SnapshotUnavailable("dashboard snapshot is unavailable")
         payload, built_at = snapshot
+        self._record_observation(
+            cache_status,
+            flight=flight,
+            attempt_status=attempt_status,
+            attempt_seconds=attempt_seconds,
+        )
         return SnapshotResult(
             payload=payload,
             cache_status=cache_status,
@@ -275,9 +328,26 @@ class DashboardSnapshotStore:
         observed_at: float,
         message: str,
         cause: BaseException | None = None,
+        flight: _Flight | None = None,
+        attempt_status: Literal[
+            "success", "failed", "timeout"
+        ] | None = None,
+        attempt_seconds: float | None = None,
     ) -> SnapshotResult:
         if self._snapshot is not None:
-            return self._cached_result("STALE", observed_at)
+            return self._cached_result(
+                "STALE",
+                observed_at,
+                flight=flight,
+                attempt_status=attempt_status,
+                attempt_seconds=attempt_seconds,
+            )
+        self._record_observation(
+            "UNAVAILABLE",
+            flight=flight,
+            attempt_status=attempt_status,
+            attempt_seconds=attempt_seconds,
+        )
         if cause is None:
             raise SnapshotUnavailable(message)
         raise SnapshotUnavailable(message) from cause
@@ -295,21 +365,43 @@ class DashboardSnapshotStore:
             if self._flight is not flight or flight.done:
                 return False
             previous_snapshot = self._snapshot
+            previous_snapshot_generation = self._snapshot_generation
+            previous_snapshot_origin_waiter_count = (
+                self._snapshot_origin_waiter_count
+            )
+            previous_snapshot_origin_build_seconds = (
+                self._snapshot_origin_build_seconds
+            )
             previous_waiter_count = self._last_waiter_count
             previous_build_seconds = self._last_build_seconds
             try:
                 self._snapshot = snapshot
+                self._snapshot_generation += 1
+                self._snapshot_origin_waiter_count = flight.waiter_count
+                self._snapshot_origin_build_seconds = build_seconds
                 self._last_waiter_count = flight.waiter_count
                 self._last_build_seconds = build_seconds
                 terminal_error = _publish_flight_outcome(
                     flight,
-                    _FlightOutcome(error=None),
+                    _FlightOutcome(
+                        error=None,
+                        attempt_status="success",
+                        attempt_seconds=build_seconds,
+                    ),
                 )
                 self._flight = None
+                self._record_observation("MISS", flight=flight)
                 self._condition.notify_all()
             except BaseException:  # noqa: BLE001 - 回滚半完成发布
                 if flight.outcome is None:
                     self._snapshot = previous_snapshot
+                    self._snapshot_generation = previous_snapshot_generation
+                    self._snapshot_origin_waiter_count = (
+                        previous_snapshot_origin_waiter_count
+                    )
+                    self._snapshot_origin_build_seconds = (
+                        previous_snapshot_origin_build_seconds
+                    )
                     self._last_waiter_count = previous_waiter_count
                     self._last_build_seconds = previous_build_seconds
                     self._flight = flight
@@ -330,7 +422,23 @@ class DashboardSnapshotStore:
         error: BaseException,
         build_started_at: float,
     ) -> SnapshotResult:
-        cleanup_error = self._finalize_failed_flight(flight, error=error)
+        try:
+            failed_at = self._sample_monotonic()
+        except BaseException as timing_error:  # noqa: BLE001 - 先释放 flight
+            cleanup_error = self._finalize_failed_flight(
+                flight,
+                error=error,
+                attempt_seconds=None,
+            )
+            if not isinstance(timing_error, Exception):
+                raise timing_error
+            failed_at = build_started_at
+        else:
+            cleanup_error = self._finalize_failed_flight(
+                flight,
+                error=error,
+                attempt_seconds=_elapsed(failed_at, build_started_at),
+            )
 
         # SystemExit/KeyboardInterrupt 等进程控制信号只在 owner 原样传播；
         # waiter 通过 flight.error 仍转换为 STALE/SnapshotUnavailable。
@@ -339,27 +447,69 @@ class DashboardSnapshotStore:
         if cleanup_error is not None and not isinstance(cleanup_error, Exception):
             raise cleanup_error
 
-        try:
-            failed_at = self._sample_monotonic()
-        except Exception:
-            failed_at = build_started_at
         with self._condition:
             return self._stale_or_raise(
                 observed_at=failed_at,
                 message="dashboard snapshot build failed",
                 cause=error,
+                flight=flight,
             )
+
+    def _record_observation(
+        self,
+        cache_status: Literal["HIT", "MISS", "STALE", "UNAVAILABLE"],
+        *,
+        flight: _Flight | None,
+        attempt_status: Literal[
+            "success", "failed", "timeout"
+        ] | None = None,
+        attempt_seconds: float | None = None,
+    ) -> None:
+        """在结果已确定的 condition 临界区发布单调观察序号。"""
+        if attempt_status is None and flight is not None:
+            outcome = flight.outcome
+            if outcome is not None:
+                attempt_status = outcome.attempt_status
+                attempt_seconds = outcome.attempt_seconds
+        self._observation_revision += 1
+        current = getattr(self._request_local, "diagnostics", {})
+        build_waiter_count = (
+            flight.waiter_count
+            if flight is not None
+            else self._snapshot_origin_waiter_count
+        )
+        self._request_local.diagnostics = {
+            **current,
+            "observation_revision": self._observation_revision,
+            "build_waiter_count": build_waiter_count,
+            "snapshot_generation": (
+                self._snapshot_generation
+                if self._snapshot is not None
+                else None
+            ),
+            "cache_status": cache_status,
+            "attempt_status": attempt_status,
+            "attempt_seconds": attempt_seconds,
+        }
+        if attempt_status is not None:
+            self._last_attempt_status = attempt_status
+            self._last_attempt_seconds = attempt_seconds
 
     def _finalize_failed_flight(
         self,
         flight: _Flight,
         *,
         error: BaseException,
+        attempt_seconds: float | None,
     ) -> BaseException | None:
         """先发布 terminal 事实，再尽力 detach 并唤醒同批 waiter。"""
         first_cleanup_error = _publish_flight_outcome(
             flight,
-            _FlightOutcome(error=error),
+            _FlightOutcome(
+                error=error,
+                attempt_status="failed",
+                attempt_seconds=attempt_seconds,
+            ),
         )
         for attempt in range(2):
             try:

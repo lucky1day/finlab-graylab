@@ -19,6 +19,7 @@ from backend.dashboard_snapshot import (
     SnapshotResult,
     SnapshotUnavailable,
 )
+from backend import dashboard_snapshot as snapshot_module
 from backend.factor_lab_dashboard import (
     MAX_GZIP_JSON_BYTES,
     MAX_RAW_JSON_BYTES,
@@ -89,6 +90,22 @@ class _FixedStore:
 
     def diagnostics(self) -> dict[str, Any]:
         return dict(self._diagnostics)
+
+    def request_diagnostics(self) -> dict[str, Any]:
+        return {
+            "observation_revision": self.get_calls,
+            "request_waited": False,
+            "build_waiter_count": self._diagnostics.get(
+                "last_waiter_count",
+                0,
+            ),
+            "snapshot_generation": 1,
+            "cache_status": (
+                None if self.result is None else self.result.cache_status
+            ),
+            "attempt_status": None,
+            "attempt_seconds": None,
+        }
 
 
 async def _asgi_request(
@@ -240,8 +257,16 @@ def test_dashboard_get_returns_schema_no_store_vary_and_observability_headers(
     assert headers["x-dashboard-snapshot-id"] == "snapshot-test"
     assert headers["x-dashboard-cache"] == "MISS"
     assert headers["x-dashboard-snapshot-age"] == "12"
-    assert "serialization;dur=" in headers["server-timing"]
-    assert "route;dur=" in headers["server-timing"]
+    assert "request_compact_json_budget_gzip;dur=" in headers["server-timing"]
+    assert "request_route;dur=" in headers["server-timing"]
+    assert "snapshot_origin_db;dur=" in headers["server-timing"]
+    assert "snapshot_origin_build;dur=" in headers["server-timing"]
+    timing_names = {
+        item.split(";", 1)[0]
+        for item in headers["server-timing"].split(", ")
+    }
+    assert "db" not in timing_names
+    assert "build" not in timing_names
     assert "x-dashboard-warning" not in headers
 
 
@@ -471,19 +496,25 @@ def test_structured_request_log_uses_build_diagnostics_without_payload_scan(
     event = json.loads(message.split(" ", 1)[1])
     assert record.dashboard_event == event
     assert status == 200
-    assert event["db_read_ms"] == pytest.approx(12.0)
-    assert event["canonical_build_ms"] == pytest.approx(23.0)
-    assert event["canonical_serialization_ms"] == pytest.approx(4.0)
-    assert event["build_ms"] == pytest.approx(82.0)
+    assert event["snapshot_origin_db_ms"] == pytest.approx(12.0)
+    assert event["snapshot_origin_canonical_ms"] == pytest.approx(23.0)
+    assert event["snapshot_origin_serialization_ms"] == pytest.approx(4.0)
+    assert event["snapshot_origin_build_ms"] == pytest.approx(82.0)
     assert event["request_id"] == "request-observe"
     assert event["snapshot_id"] == "snapshot-test"
     assert event["cache"] == "HIT"
-    assert event["waiter_count"] == 4
+    assert event["active_waiter_count"] == 0
+    assert event["request_waited"] is False
+    assert event["build_waiter_count"] == 4
     assert event["scheme_count"] == 1
     assert event["live_row_count"] == 2
     assert event["backtest_row_count"] == 3
-    assert event["raw_bytes"] == int(headers["content-length"])
-    assert event["gzip_bytes"] > 0
+    assert event["response_raw_bytes"] == int(headers["content-length"])
+    assert event["response_budget_gzip_bytes"] > 0
+    assert event["request_compact_json_budget_gzip_ms"] >= 0.0
+    assert "db_read_ms" not in event
+    assert "build_ms" not in event
+    assert "waiter_count" not in event
     assert "secret-scheme-must-not-be-logged" not in message
     assert "SELECT " not in message
     assert "connection" not in message.casefold()
@@ -602,6 +633,212 @@ def test_snapshot_store_diagnostics_report_real_waiter_counts() -> None:
     assert len(results) == 2
 
 
+def test_active_waiter_count_survives_flight_detach_until_waiter_resumes() -> None:
+    rebuild_started = threading.Event()
+    release_rebuild = threading.Event()
+    call_count = 0
+
+    class _ResumeGateCondition(threading.Condition):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wait_started = threading.Event()
+            self.resume_entered = threading.Event()
+            self.resume_release = threading.Event()
+
+        def wait(self, timeout: float | None = None) -> bool:
+            self.wait_started.set()
+            notified = super().wait(timeout)
+            self.release()
+            try:
+                self.resume_entered.set()
+                assert self.resume_release.wait(timeout=3.0)
+            finally:
+                self.acquire()
+            return notified
+
+    def builder() -> dict[str, Any]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _payload(snapshot_id="old")
+        rebuild_started.set()
+        assert release_rebuild.wait(timeout=3.0)
+        return _payload(snapshot_id="new")
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = _Clock()
+    store = DashboardSnapshotStore(builder, monotonic=clock)
+    condition = _ResumeGateCondition()
+    store._condition = condition
+    store.get()
+    clock.value = 2.0
+    results: dict[str, SnapshotResult] = {}
+    owner = threading.Thread(
+        target=lambda: results.setdefault("owner", store.get()),
+        name="owner",
+    )
+    waiter = threading.Thread(
+        target=lambda: results.setdefault("waiter", store.get()),
+        name="waiter",
+    )
+    owner.start()
+    assert rebuild_started.wait(timeout=3.0)
+    waiter.start()
+    assert condition.wait_started.wait(timeout=3.0)
+    release_rebuild.set()
+    assert condition.resume_entered.wait(timeout=3.0)
+    owner.join(timeout=3.0)
+
+    try:
+        assert store._flight is None
+        assert store.diagnostics()["active_waiter_count"] == 1
+    finally:
+        condition.resume_release.set()
+        waiter.join(timeout=3.0)
+
+    assert not owner.is_alive()
+    assert not waiter.is_alive()
+    assert store.diagnostics()["active_waiter_count"] == 0
+
+
+def test_request_diagnostics_distinguish_hit_from_snapshot_origin_build() -> None:
+    store = DashboardSnapshotStore(lambda: _payload())
+
+    store.get()
+    miss_diagnostics = store.request_diagnostics()
+    hit = store.get()
+    hit_diagnostics = store.request_diagnostics()
+
+    assert miss_diagnostics["request_waited"] is False
+    assert miss_diagnostics["attempt_status"] == "success"
+    assert hit.cache_status == "HIT"
+    assert hit_diagnostics["request_waited"] is False
+    assert hit_diagnostics["build_waiter_count"] == 0
+    assert hit_diagnostics["attempt_status"] is None
+    assert hit_diagnostics["attempt_seconds"] is None
+    assert hit_diagnostics["snapshot_generation"] == 1
+
+
+def test_failed_refresh_reports_real_attempt_instead_of_last_success() -> None:
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = _Clock()
+    call_count = 0
+
+    def builder() -> dict[str, Any]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _payload(snapshot_id="old")
+        clock.value += 0.125
+        raise RuntimeError("refresh failed")
+
+    store = DashboardSnapshotStore(builder, monotonic=clock)
+    store.get()
+    clock.value = 2.0
+
+    result = store.get()
+    request_diagnostics = store.request_diagnostics()
+    diagnostics = store.diagnostics()
+
+    assert result.cache_status == "STALE"
+    assert request_diagnostics["attempt_status"] == "failed"
+    assert request_diagnostics["attempt_seconds"] == pytest.approx(0.125)
+    assert diagnostics["last_attempt_status"] == "failed"
+    assert diagnostics["last_attempt_seconds"] == pytest.approx(0.125)
+    assert diagnostics["snapshot_origin_build_seconds"] == pytest.approx(0.0)
+
+
+def test_waiter_timeout_reports_real_attempt_duration(
+    monkeypatch,
+) -> None:
+    rebuild_started = threading.Event()
+    release_rebuild = threading.Event()
+    call_count = 0
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    def builder() -> dict[str, Any]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _payload(snapshot_id="old")
+        rebuild_started.set()
+        assert release_rebuild.wait(timeout=3.0)
+        return _payload(snapshot_id="new")
+
+    samples = iter([10.0, 10.0, 10.25])
+    monkeypatch.setattr(
+        snapshot_module,
+        "_sample_wait_monotonic",
+        lambda: next(samples),
+    )
+    clock = _Clock()
+    store = DashboardSnapshotStore(
+        builder,
+        monotonic=clock,
+        wait_timeout_seconds=0.0,
+    )
+    store.get()
+    clock.value = 2.0
+    owner = threading.Thread(target=store.get)
+    owner.start()
+    assert rebuild_started.wait(timeout=3.0)
+
+    try:
+        result = store.get()
+        diagnostics = store.request_diagnostics()
+    finally:
+        release_rebuild.set()
+        owner.join(timeout=3.0)
+
+    assert result.cache_status == "STALE"
+    assert diagnostics["attempt_status"] == "timeout"
+    assert diagnostics["attempt_seconds"] == pytest.approx(0.25)
+
+
+def test_error_response_measures_json_encoding_time(
+    main_module,
+    monkeypatch,
+    caplog,
+) -> None:
+    samples = iter([1.001, 1.004, 1.006])
+    monkeypatch.setattr(main_module.time, "perf_counter", lambda: next(samples))
+
+    with caplog.at_level(logging.INFO, logger="backend.main"):
+        response = main_module._dashboard_error_response(
+            request_id="error-timing",
+            error_code="dashboard_snapshot_unavailable",
+            status_code=503,
+            route_started_at=1.0,
+        )
+
+    event = next(
+        record.dashboard_event
+        for record in caplog.records
+        if record.getMessage().startswith("factor_lab_dashboard_request ")
+    )
+    assert response.status_code == 503
+    assert event["request_json_encoding_ms"] == pytest.approx(3.0)
+    assert event["request_route_ms"] == pytest.approx(6.0)
+    assert "request_json_encoding;dur=3.000" in response.headers[
+        "server-timing"
+    ]
+
+
 def test_failure_timing_cancellation_still_releases_snapshot_flight() -> None:
     class _FailureTimingCancellationStore(DashboardSnapshotStore):
         def __init__(self) -> None:
@@ -621,3 +858,240 @@ def test_failure_timing_cancellation_still_releases_snapshot_flight() -> None:
 
     assert store._flight is None
     assert store.diagnostics()["active_waiter_count"] == 0
+
+
+class _ThreadRevisionStore:
+    def __init__(self, outcomes: dict[str, tuple[Any, int]]) -> None:
+        self._outcomes = outcomes
+        self._local = threading.local()
+
+    def get(self) -> SnapshotResult:
+        outcome, revision = self._outcomes[threading.current_thread().name]
+        self._local.diagnostics = {
+            "observation_revision": revision,
+            "request_waited": False,
+            "build_waiter_count": 0,
+            "snapshot_generation": revision,
+            "cache_status": (
+                "UNAVAILABLE"
+                if isinstance(outcome, BaseException)
+                else outcome.cache_status
+            ),
+        }
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    def request_diagnostics(self) -> dict[str, Any]:
+        return dict(self._local.diagnostics)
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "active_waiter_count": 0,
+            "last_waiter_count": 0,
+            "last_build_seconds": None,
+        }
+
+
+def _direct_request() -> Any:
+    from starlette.requests import Request
+
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": DASHBOARD_PATH,
+            "query_string": b"",
+            "headers": [],
+        }
+    )
+
+
+def _run_dashboard_in_thread(
+    main_module,
+    *,
+    name: str,
+    responses: dict[str, Any],
+    errors: dict[str, BaseException],
+) -> threading.Thread:
+    def target() -> None:
+        try:
+            responses[name] = main_module._factor_lab_dashboard_response(
+                _direct_request()
+            )
+        except BaseException as error:
+            errors[name] = error
+
+    thread = threading.Thread(target=target, name=name)
+    thread.start()
+    return thread
+
+
+def test_older_stale_response_cannot_overwrite_newer_ready_health(
+    main_module,
+    monkeypatch,
+) -> None:
+    stale_encoding_started = threading.Event()
+    release_stale_encoding = threading.Event()
+    original_encode = main_module.encode_canonical_snapshot
+    store = _ThreadRevisionStore(
+        {
+            "old-stale": (
+                SnapshotResult(_payload(snapshot_id="old"), "STALE", 2.0, None),
+                1,
+            ),
+            "new-fresh": (
+                SnapshotResult(_payload(snapshot_id="new"), "HIT", 0.0, None),
+                2,
+            ),
+        }
+    )
+
+    def controlled_encode(payload: dict[str, Any]):
+        if payload["snapshot_id"] == "old":
+            stale_encoding_started.set()
+            assert release_stale_encoding.wait(timeout=3.0)
+        return original_encode(payload)
+
+    monkeypatch.setattr(main_module, "dashboard_snapshot_store", store)
+    monkeypatch.setattr(main_module, "encode_canonical_snapshot", controlled_encode)
+    main_module._set_dashboard_health("degraded", "dashboard_snapshot_stale")
+    responses: dict[str, Any] = {}
+    errors: dict[str, BaseException] = {}
+
+    old_thread = _run_dashboard_in_thread(
+        main_module,
+        name="old-stale",
+        responses=responses,
+        errors=errors,
+    )
+    assert stale_encoding_started.wait(timeout=3.0)
+    new_thread = _run_dashboard_in_thread(
+        main_module,
+        name="new-fresh",
+        responses=responses,
+        errors=errors,
+    )
+    new_thread.join(timeout=3.0)
+    assert not new_thread.is_alive()
+    release_stale_encoding.set()
+    old_thread.join(timeout=3.0)
+
+    assert not old_thread.is_alive()
+    assert errors == {}
+    assert set(responses) == {"old-stale", "new-fresh"}
+    assert main_module._dashboard_health_snapshot() == {
+        "status": "ready",
+        "error_code": None,
+    }
+
+
+def test_older_fresh_response_cannot_overwrite_newer_failed_health(
+    main_module,
+    monkeypatch,
+) -> None:
+    fresh_encoding_started = threading.Event()
+    release_fresh_encoding = threading.Event()
+    original_encode = main_module.encode_canonical_snapshot
+    store = _ThreadRevisionStore(
+        {
+            "old-fresh": (
+                SnapshotResult(_payload(snapshot_id="old"), "HIT", 0.0, None),
+                1,
+            ),
+            "new-failed": (
+                SnapshotUnavailable("do not leak"),
+                2,
+            ),
+        }
+    )
+
+    def controlled_encode(payload: dict[str, Any]):
+        if payload["snapshot_id"] == "old":
+            fresh_encoding_started.set()
+            assert release_fresh_encoding.wait(timeout=3.0)
+        return original_encode(payload)
+
+    monkeypatch.setattr(main_module, "dashboard_snapshot_store", store)
+    monkeypatch.setattr(main_module, "encode_canonical_snapshot", controlled_encode)
+    main_module._set_dashboard_health("ready", None)
+    responses: dict[str, Any] = {}
+    errors: dict[str, BaseException] = {}
+
+    old_thread = _run_dashboard_in_thread(
+        main_module,
+        name="old-fresh",
+        responses=responses,
+        errors=errors,
+    )
+    assert fresh_encoding_started.wait(timeout=3.0)
+    new_thread = _run_dashboard_in_thread(
+        main_module,
+        name="new-failed",
+        responses=responses,
+        errors=errors,
+    )
+    new_thread.join(timeout=3.0)
+    assert not new_thread.is_alive()
+    release_fresh_encoding.set()
+    old_thread.join(timeout=3.0)
+
+    assert not old_thread.is_alive()
+    assert errors == {}
+    assert set(responses) == {"old-fresh", "new-failed"}
+    assert main_module._dashboard_health_snapshot() == {
+        "status": "degraded",
+        "error_code": "dashboard_snapshot_unavailable",
+    }
+
+
+def test_owner_publish_observation_is_newer_than_earlier_waiter_timeout() -> None:
+    class _Clock:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = _Clock()
+    rebuild_started = threading.Event()
+    release_rebuild = threading.Event()
+    call_count = 0
+
+    def builder() -> dict[str, Any]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _payload(snapshot_id="old")
+        rebuild_started.set()
+        assert release_rebuild.wait(timeout=3.0)
+        return _payload(snapshot_id="new")
+
+    store = DashboardSnapshotStore(
+        builder,
+        monotonic=clock,
+        wait_timeout_seconds=0.0,
+    )
+    store.get()
+    assert hasattr(store, "request_diagnostics")
+    clock.value = 2.0
+    owner_observation: dict[str, Any] = {}
+
+    def owner() -> None:
+        store.get()
+        owner_observation.update(store.request_diagnostics())
+
+    owner_thread = threading.Thread(target=owner)
+    owner_thread.start()
+    assert rebuild_started.wait(timeout=3.0)
+    stale_result = store.get()
+    stale_observation = store.request_diagnostics()
+    release_rebuild.set()
+    owner_thread.join(timeout=3.0)
+
+    assert stale_result.cache_status == "STALE"
+    assert owner_observation["cache_status"] == "MISS"
+    assert (
+        owner_observation["observation_revision"]
+        > stale_observation["observation_revision"]
+    )

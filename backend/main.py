@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -27,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from backend.db import get_engine
 from backend.dashboard_snapshot import (
@@ -85,6 +87,7 @@ _dashboard_health: dict[str, str | None] = {
     "status": "degraded",
     "error_code": _DASHBOARD_ERROR_NOT_PREWARMED,
 }
+_dashboard_health_revision = 0
 
 
 class _FrontendAssetReferenceParser(HTMLParser):
@@ -92,7 +95,7 @@ class _FrontendAssetReferenceParser(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
-        self.references: dict[str, str] = {}
+        self.references: dict[str, set[tuple[str, str]]] = {}
 
     def handle_starttag(
         self,
@@ -111,16 +114,33 @@ class _FrontendAssetReferenceParser(HTMLParser):
         normalized_path = parsed.path.removeprefix("./").lstrip("/")
         if Path(normalized_path).suffix.casefold() not in {".css", ".js"}:
             return
-        if not _has_nonempty_version_token(parsed.query):
+        version_token = _single_unambiguous_version_token(parsed.query)
+        if version_token is None:
             return
-        self.references[normalized_path] = parsed.query
+        self.references.setdefault(normalized_path, set()).add(version_token)
 
 
-def _has_nonempty_version_token(query: str) -> bool:
-    return any(
-        key.casefold() in {"v", "version"} and bool(value)
+def _single_unambiguous_version_token(
+    query: str,
+) -> tuple[str, str] | None:
+    """仅接受一个未编码、非空的 v/version 参数。"""
+    if not query or "%" in query:
+        return None
+    version_tokens = [
+        (key.casefold(), value)
         for key, value in parse_qsl(query, keep_blank_values=True)
-    )
+        if key.casefold() in {"v", "version"}
+    ]
+    if len(version_tokens) != 1 or not version_tokens[0][1]:
+        return None
+    return version_tokens[0]
+
+
+def _apply_revalidation_headers(headers: Any, cache_control: str) -> None:
+    """统一给所有非 immutable 静态结果设置显式重验证头。"""
+    headers["Cache-Control"] = cache_control
+    headers["Pragma"] = "no-cache"
+    headers["Expires"] = "0"
 
 
 class NoCacheFrontendStaticFiles(StaticFiles):
@@ -130,7 +150,9 @@ class NoCacheFrontendStaticFiles(StaticFiles):
         super().__init__(*args, **kwargs)
         self._versioned_asset_queries = self._load_versioned_asset_queries()
 
-    def _load_versioned_asset_queries(self) -> dict[str, str]:
+    def _load_versioned_asset_queries(
+        self,
+    ) -> dict[str, set[tuple[str, str]]]:
         directory = getattr(self, "directory", None)
         if directory is None:
             return {}
@@ -144,31 +166,46 @@ class NoCacheFrontendStaticFiles(StaticFiles):
         return parser.references
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
-        response = await super().get_response(path, scope)
         normalized_path = path.removeprefix("./").lstrip("/")
         query_string = scope.get("query_string", b"").decode(
             "latin-1",
             errors="strict",
         )
-        is_versioned_asset = (
+        version_token = _single_unambiguous_version_token(query_string)
+        has_current_version_token = (
             Path(normalized_path).suffix.casefold() in {".css", ".js"}
-            and bool(query_string)
-            and self._versioned_asset_queries.get(normalized_path)
-            == query_string
+            and version_token is not None
+            and version_token
+            in self._versioned_asset_queries.get(normalized_path, set())
         )
-        if is_versioned_asset:
+        try:
+            response = await super().get_response(path, scope)
+        except StarletteHTTPException as error:
+            error.headers = dict(error.headers or {})
+            _apply_revalidation_headers(
+                error.headers,
+                UNVERSIONED_ASSET_CACHE_CONTROL,
+            )
+            raise
+
+        content_type = response.headers.get("Content-Type", "").casefold()
+        is_immutable_asset = (
+            has_current_version_token
+            and response.status_code in {200, 206, 304}
+            and not content_type.startswith("text/html")
+        )
+        if is_immutable_asset:
             response.headers["Cache-Control"] = VERSIONED_ASSET_CACHE_CONTROL
             for header_name in ("Pragma", "Expires"):
                 if header_name in response.headers:
                     del response.headers[header_name]
         else:
-            response.headers["Cache-Control"] = (
+            cache_control = (
                 INDEX_CACHE_CONTROL
                 if normalized_path in {"", ".", "index.html"}
                 else UNVERSIONED_ASSET_CACHE_CONTROL
             )
-            response.headers["Pragma"] = "no-cache"
-            response.headers["Expires"] = "0"
+            _apply_revalidation_headers(response.headers, cache_control)
         return response
 
 
@@ -183,13 +220,24 @@ dashboard_snapshot_store = DashboardSnapshotStore(_build_dashboard_snapshot)
 def _set_dashboard_health(
     status: Literal["ready", "degraded"],
     error_code: str | None,
-) -> None:
+    *,
+    observation_revision: int | None = None,
+) -> bool:
     """原子更新 health 中不含内部异常文本的 dashboard 子状态。"""
+    global _dashboard_health_revision
     if status == "ready":
         error_code = None
     with _dashboard_health_lock:
+        if observation_revision is None:
+            # 仅供初始化/测试直接设置；真实 get/prewarm 一律携带 store revision。
+            _dashboard_health_revision = 0
+        elif observation_revision < _dashboard_health_revision:
+            return False
+        else:
+            _dashboard_health_revision = observation_revision
         _dashboard_health["status"] = status
         _dashboard_health["error_code"] = error_code
+        return True
 
 
 def _dashboard_health_snapshot() -> dict[str, str | None]:
@@ -198,9 +246,15 @@ def _dashboard_health_snapshot() -> dict[str, str | None]:
         return dict(_dashboard_health)
 
 
-def _record_dashboard_prewarm_failure() -> None:
+def _record_dashboard_prewarm_failure(
+    observation_revision: int | None,
+) -> None:
     """记录不含内部异常文本的稳定预热失败状态。"""
-    _set_dashboard_health("degraded", _DASHBOARD_ERROR_UNAVAILABLE)
+    _set_dashboard_health(
+        "degraded",
+        _DASHBOARD_ERROR_UNAVAILABLE,
+        observation_revision=observation_revision,
+    )
     event = {
         "status": "degraded",
         "error_code": _DASHBOARD_ERROR_UNAVAILABLE,
@@ -259,14 +313,30 @@ def _sync_registry_on_startup() -> None:
     try:
         result = dashboard_snapshot_store.prewarm()
     except (SnapshotUnavailable, DashboardDataError):
-        _record_dashboard_prewarm_failure()
+        request_diagnostics = _safe_request_diagnostics()
+        _record_dashboard_prewarm_failure(
+            _observation_revision(request_diagnostics)
+        )
     except Exception:
-        _record_dashboard_prewarm_failure()
+        request_diagnostics = _safe_request_diagnostics()
+        _record_dashboard_prewarm_failure(
+            _observation_revision(request_diagnostics)
+        )
     else:
+        request_diagnostics = _safe_request_diagnostics()
+        observation_revision = _observation_revision(request_diagnostics)
         if result.cache_status == "STALE":
-            _set_dashboard_health("degraded", _DASHBOARD_ERROR_STALE)
+            _set_dashboard_health(
+                "degraded",
+                _DASHBOARD_ERROR_STALE,
+                observation_revision=observation_revision,
+            )
         else:
-            _set_dashboard_health("ready", None)
+            _set_dashboard_health(
+                "ready",
+                None,
+                observation_revision=observation_revision,
+            )
 
 
 class TriggerRequest(BaseModel):
@@ -327,6 +397,17 @@ def _safe_store_diagnostics() -> dict[str, Any]:
         return {}
 
 
+def _safe_request_diagnostics() -> dict[str, Any]:
+    try:
+        return dict(dashboard_snapshot_store.request_diagnostics())
+    except Exception:
+        return {}
+
+
+def _observation_revision(diagnostics: dict[str, Any]) -> int | None:
+    return _integer_metric(diagnostics.get("observation_revision"))
+
+
 def _safe_build_diagnostics(snapshot_id: str) -> dict[str, Any]:
     try:
         return dict(dashboard_build_diagnostics(snapshot_id) or {})
@@ -335,15 +416,24 @@ def _safe_build_diagnostics(snapshot_id: str) -> dict[str, Any]:
 
 
 def _duration_ms(value: Any) -> float | None:
+    seconds = _numeric_seconds(value)
+    return None if seconds is None else round(seconds * 1_000, 3)
+
+
+def _numeric_seconds(value: Any) -> float | None:
+    """将诊断值收窄为非负有限秒数。"""
     if isinstance(value, bool) or value is None:
         return None
     try:
-        duration = float(value) * 1_000
+        seconds = float(value)
     except (TypeError, ValueError):
         return None
-    if duration < 0:
-        return None
-    return round(duration, 3)
+    return seconds if math.isfinite(seconds) and seconds >= 0.0 else None
+
+
+def _attempt_status(value: Any) -> str | None:
+    """仅记录稳定的刷新尝试状态枚举。"""
+    return value if value in {"success", "failed", "timeout"} else None
 
 
 def _integer_metric(value: Any) -> int | None:
@@ -359,33 +449,42 @@ def _integer_metric(value: Any) -> int | None:
 def _server_timing(
     *,
     build_diagnostics: dict[str, Any],
-    build_seconds: float | None,
-    response_serialization_seconds: float,
+    snapshot_origin_build_seconds: float | None,
+    request_attempt_seconds: float | None,
+    response_encoding_name: str,
+    response_encoding_seconds: float,
     route_seconds: float,
 ) -> str:
     timings: list[tuple[str, float | None]] = [
         (
-            "db",
+            "snapshot_origin_db",
             _duration_ms(build_diagnostics.get("db_read_seconds")),
         ),
         (
-            "canonical",
+            "snapshot_origin_canonical",
             _duration_ms(
                 build_diagnostics.get("canonical_build_seconds")
             ),
         ),
         (
-            "canonical_serialization",
+            "snapshot_origin_serialization",
             _duration_ms(
                 build_diagnostics.get("canonical_serialization_seconds")
             ),
         ),
-        ("build", _duration_ms(build_seconds)),
         (
-            "serialization",
-            round(response_serialization_seconds * 1_000, 3),
+            "snapshot_origin_build",
+            _duration_ms(snapshot_origin_build_seconds),
         ),
-        ("route", round(route_seconds * 1_000, 3)),
+        (
+            "request_refresh_attempt",
+            _duration_ms(request_attempt_seconds),
+        ),
+        (
+            response_encoding_name,
+            round(response_encoding_seconds * 1_000, 3),
+        ),
+        ("request_route", round(route_seconds * 1_000, 3)),
     ]
     return ", ".join(
         f"{name};dur={duration:.3f}"
@@ -436,12 +535,27 @@ def _dashboard_error_response(
     error_code: str,
     status_code: int,
     route_started_at: float,
+    request_diagnostics: dict[str, Any] | None = None,
+    store_diagnostics: dict[str, Any] | None = None,
 ) -> Response:
-    route_seconds = time.perf_counter() - route_started_at
+    encoding_started_at = time.perf_counter()
     raw_body = json.dumps(
         {"error_code": error_code},
         separators=(",", ":"),
     ).encode("utf-8")
+    response_encoding_seconds = time.perf_counter() - encoding_started_at
+    route_seconds = time.perf_counter() - route_started_at
+    request_diagnostics = request_diagnostics or {}
+    store_diagnostics = store_diagnostics or {}
+    active_waiter_count = _integer_metric(
+        store_diagnostics.get("active_waiter_count")
+    )
+    build_waiter_count = _integer_metric(
+        request_diagnostics.get("build_waiter_count")
+    )
+    request_attempt_seconds = _numeric_seconds(
+        request_diagnostics.get("attempt_seconds")
+    )
     headers = _dashboard_response_headers(
         request_id=request_id,
         snapshot_id="unavailable",
@@ -449,8 +563,10 @@ def _dashboard_error_response(
         age_ms=0,
         server_timing=_server_timing(
             build_diagnostics={},
-            build_seconds=None,
-            response_serialization_seconds=0.0,
+            snapshot_origin_build_seconds=None,
+            request_attempt_seconds=request_attempt_seconds,
+            response_encoding_name="request_json_encoding",
+            response_encoding_seconds=response_encoding_seconds,
             route_seconds=route_seconds,
         ),
         stale=False,
@@ -461,18 +577,33 @@ def _dashboard_error_response(
             "snapshot_id": "unavailable",
             "cache": "UNAVAILABLE",
             "snapshot_age_ms": 0,
-            "waiter_count": 0,
-            "db_read_ms": None,
-            "canonical_build_ms": None,
-            "canonical_serialization_ms": None,
-            "response_serialization_ms": 0.0,
-            "build_ms": None,
-            "route_ms": round(route_seconds * 1_000, 3),
+            "active_waiter_count": (
+                0 if active_waiter_count is None else active_waiter_count
+            ),
+            "request_waited": (
+                request_diagnostics.get("request_waited") is True
+            ),
+            "build_waiter_count": (
+                0 if build_waiter_count is None else build_waiter_count
+            ),
+            "request_attempt_status": _attempt_status(
+                request_diagnostics.get("attempt_status")
+            ),
+            "request_attempt_ms": _duration_ms(request_attempt_seconds),
+            "snapshot_origin_db_ms": None,
+            "snapshot_origin_canonical_ms": None,
+            "snapshot_origin_serialization_ms": None,
+            "snapshot_origin_build_ms": None,
+            "request_json_encoding_ms": round(
+                response_encoding_seconds * 1_000,
+                3,
+            ),
+            "request_route_ms": round(route_seconds * 1_000, 3),
             "scheme_count": None,
             "live_row_count": None,
             "backtest_row_count": None,
-            "raw_bytes": len(raw_body),
-            "gzip_bytes": None,
+            "response_raw_bytes": len(raw_body),
+            "response_budget_gzip_bytes": None,
             "status": status_code,
             "error_code": error_code,
         }
@@ -499,6 +630,7 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
 
     try:
         result = dashboard_snapshot_store.get()
+        request_diagnostics = _safe_request_diagnostics()
         age_ms = _dashboard_age_ms(result)
         response_payload = dict(result.payload)
         is_stale = result.cache_status == "STALE"
@@ -510,36 +642,51 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             time.perf_counter() - serialization_started_at
         )
     except (SnapshotUnavailable, DashboardDataError):
-        _set_dashboard_health("degraded", _DASHBOARD_ERROR_UNAVAILABLE)
+        request_diagnostics = _safe_request_diagnostics()
+        _set_dashboard_health(
+            "degraded",
+            _DASHBOARD_ERROR_UNAVAILABLE,
+            observation_revision=_observation_revision(
+                request_diagnostics
+            ),
+        )
         return _dashboard_error_response(
             request_id=request_id,
             error_code=_DASHBOARD_ERROR_UNAVAILABLE,
             status_code=503,
             route_started_at=route_started_at,
+            request_diagnostics=request_diagnostics,
+            store_diagnostics=_safe_store_diagnostics(),
         )
 
     snapshot_id = str(response_payload["snapshot_id"])
     build_diagnostics = _safe_build_diagnostics(snapshot_id)
     store_diagnostics = _safe_store_diagnostics()
-    build_seconds = result.build_seconds
-    if build_seconds is None:
-        last_build_seconds = store_diagnostics.get("last_build_seconds")
-        build_seconds = (
-            float(last_build_seconds)
-            if isinstance(last_build_seconds, (int, float))
-            and not isinstance(last_build_seconds, bool)
-            else None
+    snapshot_origin_build_seconds = result.build_seconds
+    if snapshot_origin_build_seconds is None:
+        snapshot_origin_build_seconds = _numeric_seconds(
+            store_diagnostics.get("snapshot_origin_build_seconds")
         )
-    active_waiters = _integer_metric(
+    if snapshot_origin_build_seconds is None:
+        snapshot_origin_build_seconds = _numeric_seconds(
+            store_diagnostics.get("last_build_seconds")
+        )
+    active_waiter_count = _integer_metric(
         store_diagnostics.get("active_waiter_count")
     )
-    last_waiters = _integer_metric(store_diagnostics.get("last_waiter_count"))
-    waiter_count = active_waiters if active_waiters else (last_waiters or 0)
+    build_waiter_count = _integer_metric(
+        request_diagnostics.get("build_waiter_count")
+    )
+    request_attempt_seconds = _numeric_seconds(
+        request_diagnostics.get("attempt_seconds")
+    )
     route_seconds = time.perf_counter() - route_started_at
     server_timing = _server_timing(
         build_diagnostics=build_diagnostics,
-        build_seconds=build_seconds,
-        response_serialization_seconds=response_serialization_seconds,
+        snapshot_origin_build_seconds=snapshot_origin_build_seconds,
+        request_attempt_seconds=request_attempt_seconds,
+        response_encoding_name="request_compact_json_budget_gzip",
+        response_encoding_seconds=response_serialization_seconds,
         route_seconds=route_seconds,
     )
     headers = _dashboard_response_headers(
@@ -551,31 +698,57 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
         stale=is_stale,
     )
     if is_stale:
-        _set_dashboard_health("degraded", _DASHBOARD_ERROR_STALE)
+        _set_dashboard_health(
+            "degraded",
+            _DASHBOARD_ERROR_STALE,
+            observation_revision=_observation_revision(
+                request_diagnostics
+            ),
+        )
     else:
-        _set_dashboard_health("ready", None)
+        _set_dashboard_health(
+            "ready",
+            None,
+            observation_revision=_observation_revision(
+                request_diagnostics
+            ),
+        )
     _log_dashboard_request(
         {
             "request_id": request_id,
             "snapshot_id": snapshot_id,
             "cache": result.cache_status,
             "snapshot_age_ms": age_ms,
-            "waiter_count": waiter_count,
-            "db_read_ms": _duration_ms(
+            "active_waiter_count": (
+                0 if active_waiter_count is None else active_waiter_count
+            ),
+            "request_waited": (
+                request_diagnostics.get("request_waited") is True
+            ),
+            "build_waiter_count": (
+                0 if build_waiter_count is None else build_waiter_count
+            ),
+            "request_attempt_status": _attempt_status(
+                request_diagnostics.get("attempt_status")
+            ),
+            "request_attempt_ms": _duration_ms(request_attempt_seconds),
+            "snapshot_origin_db_ms": _duration_ms(
                 build_diagnostics.get("db_read_seconds")
             ),
-            "canonical_build_ms": _duration_ms(
+            "snapshot_origin_canonical_ms": _duration_ms(
                 build_diagnostics.get("canonical_build_seconds")
             ),
-            "canonical_serialization_ms": _duration_ms(
+            "snapshot_origin_serialization_ms": _duration_ms(
                 build_diagnostics.get("canonical_serialization_seconds")
             ),
-            "response_serialization_ms": round(
+            "request_compact_json_budget_gzip_ms": round(
                 response_serialization_seconds * 1_000,
                 3,
             ),
-            "build_ms": _duration_ms(build_seconds),
-            "route_ms": round(route_seconds * 1_000, 3),
+            "snapshot_origin_build_ms": _duration_ms(
+                snapshot_origin_build_seconds
+            ),
+            "request_route_ms": round(route_seconds * 1_000, 3),
             "scheme_count": _integer_metric(
                 build_diagnostics.get("scheme_count")
             ),
@@ -585,8 +758,14 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             "backtest_row_count": _integer_metric(
                 build_diagnostics.get("backtest_row_count")
             ),
-            "raw_bytes": encoding.raw_size,
-            "gzip_bytes": encoding.gzip_size,
+            "snapshot_origin_raw_bytes": _integer_metric(
+                build_diagnostics.get("raw_bytes")
+            ),
+            "snapshot_origin_budget_gzip_bytes": _integer_metric(
+                build_diagnostics.get("gzip_bytes")
+            ),
+            "response_raw_bytes": encoding.raw_size,
+            "response_budget_gzip_bytes": encoding.gzip_size,
             "status": 200,
             "error_code": (
                 _DASHBOARD_ERROR_STALE if is_stale else None
