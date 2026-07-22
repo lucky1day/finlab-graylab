@@ -803,6 +803,8 @@
   ];
   var DASHBOARD_TASK_TYPES = ["T+1", "T+5", "weekly_point", "weekly_average", "monthly"];
   var DASHBOARD_LIVE_PHASES = ["gray_live", "scheduled_live"];
+  var DASHBOARD_SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+  var DASHBOARD_GENERATED_AT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
 
   function dashboardDataError(message) {
     return new Error("dashboard schema error: " + message);
@@ -826,14 +828,38 @@
   }
 
   function requireDashboardString(value, context, allowEmpty) {
-    if (typeof value !== "string" || (!allowEmpty && !value) || value !== value.trim()) {
+    if (typeof value !== "string" || (!allowEmpty && !value) ||
+        (value && (isDashboardBoundaryCharacter(value.charCodeAt(0)) ||
+          isDashboardBoundaryCharacter(value.charCodeAt(value.length - 1))))) {
       throw dashboardDataError(context + " must be a canonical string");
     }
     return value;
   }
 
+  function isDashboardBoundaryCharacter(codepoint) {
+    return codepoint <= 0x20 ||
+      (codepoint >= 0x7f && codepoint <= 0x9f) ||
+      codepoint === 0x85 || codepoint === 0xa0 || codepoint === 0x1680 ||
+      (codepoint >= 0x2000 && codepoint <= 0x200a) ||
+      codepoint === 0x2028 || codepoint === 0x2029 || codepoint === 0x202f ||
+      codepoint === 0x205f || codepoint === 0x3000 || codepoint === 0xfeff;
+  }
+
+  function compareUnicodeCodePoints(left, right) {
+    var leftPoints = Array.from(String(left));
+    var rightPoints = Array.from(String(right));
+    var length = Math.min(leftPoints.length, rightPoints.length);
+    for (var index = 0; index < length; index += 1) {
+      var leftPoint = leftPoints[index].codePointAt(0);
+      var rightPoint = rightPoints[index].codePointAt(0);
+      if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+    }
+    if (leftPoints.length === rightPoints.length) return 0;
+    return leftPoints.length < rightPoints.length ? -1 : 1;
+  }
+
   function requireDashboardInteger(value, context, minimum) {
-    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) {
       throw dashboardDataError(context + " must be an integer >= " + minimum);
     }
     return value;
@@ -857,9 +883,7 @@
 
   function requireDashboardAwareDateTime(value, context) {
     requireDashboardString(value, context, false);
-    var match = value.match(
-      /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/
-    );
+    var match = value.match(DASHBOARD_GENERATED_AT_PATTERN);
     if (!match) throw dashboardDataError(context + " must be an aware ISO datetime");
     requireDashboardIsoDate(match[1], context);
     if (Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4]) > 59) {
@@ -942,7 +966,7 @@
       throw dashboardDataError("row_fields must match v1 exactly");
     }
     var snapshotId = requireDashboardString(payload.snapshot_id, "snapshot_id", false);
-    if (snapshotId.indexOf("/") !== -1 || snapshotId.indexOf("\\") !== -1) {
+    if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
       throw dashboardDataError("snapshot_id must be canonical");
     }
     var generatedAt = requireDashboardAwareDateTime(payload.generated_at, "generated_at");
@@ -953,8 +977,8 @@
     if (!isDashboardObject(payload.target_labels)) {
       throw dashboardDataError("target_labels must be an object");
     }
-    var targetLabels = {};
-    Object.keys(payload.target_labels).sort().forEach(function (target) {
+    var targetLabels = Object.create(null);
+    Object.keys(payload.target_labels).sort(compareUnicodeCodePoints).forEach(function (target) {
       var canonicalTarget = requireDashboardString(target, "target_labels target", false);
       targetLabels[canonicalTarget] = requireDashboardString(
         payload.target_labels[target], "target_labels label", false
@@ -977,7 +1001,7 @@
         throw dashboardDataError(context + " composite identity is invalid");
       }
       if (seenSchemeIds[schemeId]) throw dashboardDataError("duplicate scheme_id " + schemeId);
-      if (previousSchemeId && schemeId < previousSchemeId) {
+      if (previousSchemeId && compareUnicodeCodePoints(schemeId, previousSchemeId) < 0) {
         throw dashboardDataError("schemes must be sorted by scheme_id");
       }
       seenSchemeIds[schemeId] = true;
@@ -1186,7 +1210,9 @@
       });
     });
     Object.keys(tasks).forEach(function (taskKey) {
-      tasks[taskKey].sort(function (a, b) { return a.schemeId.localeCompare(b.schemeId); });
+      tasks[taskKey].sort(function (a, b) {
+        return compareUnicodeCodePoints(a.schemeId, b.schemeId);
+      });
     });
     return {
       snapshotId: decoded.snapshotId,
@@ -1216,7 +1242,12 @@
   }
 
   function finishFactorLabDataLoad(tasks, mode, targetLabels) {
-    if (targetLabels) mergeTargetLabels(targetLabels);
+    validateFactorLabTasksForCommit(tasks);
+    var nextTargetLabels = Object.assign(Object.create(null), factorTargetLabels);
+    Object.keys(targetLabels || {}).forEach(function (target) {
+      if (targetLabels[target]) nextTargetLabels[target] = String(targetLabels[target]);
+    });
+    factorTargetLabels = nextTargetLabels;
     factorTaskSchemes = tasks;
     factorLabRemoteLoaded = true;
     factorLabRemoteLoading = false;
@@ -1237,6 +1268,22 @@
       factorLabState.endMonth = months[months.length - 1];
     }
     renderFactorLab();
+  }
+
+  function validateFactorLabTasksForCommit(tasks) {
+    Object.keys(tasks || {}).forEach(function (taskKey) {
+      (tasks[taskKey] || []).forEach(function (scheme) {
+        requireSchemeDeploymentDate(scheme, "dashboard scheme");
+        var detailRows = 0;
+        Object.keys(scheme.dailyRowsByMonth || {}).forEach(function (month) {
+          detailRows += (scheme.dailyRowsByMonth[month] || []).length;
+        });
+        if ((scheme.monthlyRows || []).length && detailRows === 0) {
+          throw new Error("scheme " + (scheme.schemeId || scheme.id || "") +
+            " has monthly metrics but no detail rows");
+        }
+      });
+    });
   }
 
   function buildBacktestTaskSchemes(payload) {
@@ -1676,6 +1723,7 @@
   function aggregateScheme(scheme) {
     var rawRows = getVisibleRawDailyRowsForScheme(scheme);
     if (!rawRows.length) {
+      if (!(scheme.monthlyRows || []).length) return metricFromSampleRows([]);
       throw new Error("scheme " + ((scheme && scheme.schemeId) || scheme.id || "") + " has no detail rows for selected metric range");
     }
     var dailyRows = getVisibleDailyRowsForScheme(scheme);

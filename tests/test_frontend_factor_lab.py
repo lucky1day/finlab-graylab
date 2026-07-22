@@ -7,6 +7,10 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from tests.factor_lab_dashboard_conformance import (
+    dashboard_v1_conformance_samples,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_SCRIPT = PROJECT_ROOT / "frontend" / "aifin-shell.js"
@@ -68,7 +72,14 @@ def _run_factor_lab_hook(script: str, *, pathname: str = "/factor-lab") -> dict:
 
         function enqueue(kind, callback, delay) {{
           const id = nextQueueId++;
-          queues[kind].set(id, {{ id, callback, delay: Number(delay) || 0 }});
+          const normalizedDelay = Math.max(0, Number(delay) || 0);
+          const dueAt = kind === "raf" ? fakeNow + 16 : fakeNow + normalizedDelay;
+          queues[kind].set(id, {{
+            id,
+            callback,
+            delay: kind === "interval" ? Math.max(1, normalizedDelay) : normalizedDelay,
+            dueAt
+          }});
           queueOrder.push({{ kind, id }});
           return id;
         }}
@@ -77,14 +88,52 @@ def _run_factor_lab_hook(script: str, *, pathname: str = "/factor-lab") -> dict:
           queues[kind].delete(id);
         }}
 
-        function drain(kind) {{
-          const pending = Array.from(queues[kind].values());
-          if (kind !== "interval") queues[kind].clear();
-          pending.forEach(function (item) {{
-            if (kind === "interval" && !queues.interval.has(item.id)) return;
-            item.callback(fakeNow);
+        function runDueTimers() {{
+          const pending = Array.from(queues.timeout.values())
+            .map(function (item) {{ return {{ kind: "timeout", item }}; }})
+            .concat(Array.from(queues.interval.values()).map(function (item) {{
+              return {{ kind: "interval", item }};
+            }}))
+            .filter(function (entry) {{ return entry.item.dueAt <= fakeNow; }})
+            .sort(function (left, right) {{
+              return left.item.dueAt - right.item.dueAt || left.item.id - right.item.id;
+            }});
+          let executed = 0;
+          pending.forEach(function (entry) {{
+            const current = queues[entry.kind].get(entry.item.id);
+            if (!current || current !== entry.item || current.dueAt > fakeNow) return;
+            if (entry.kind === "timeout") queues.timeout.delete(current.id);
+            else current.dueAt += current.delay;
+            current.callback(fakeNow);
+            executed += 1;
           }});
-          return pending.length;
+          return executed;
+        }}
+
+        function advanceFrame(milliseconds) {{
+          fakeNow += milliseconds === undefined ? 16 : Math.max(0, Number(milliseconds) || 0);
+          const pending = Array.from(queues.raf.values())
+            .filter(function (item) {{ return item.dueAt <= fakeNow; }})
+            .sort(function (left, right) {{ return left.id - right.id; }});
+          let executed = 0;
+          pending.forEach(function (item) {{
+            const current = queues.raf.get(item.id);
+            if (!current || current !== item || current.dueAt > fakeNow) return;
+            queues.raf.delete(current.id);
+            current.callback(fakeNow);
+            executed += 1;
+          }});
+          return executed;
+        }}
+
+        function createDeferred() {{
+          let resolve;
+          let reject;
+          const promise = new Promise(function (resolvePromise, rejectPromise) {{
+            resolve = resolvePromise;
+            reject = rejectPromise;
+          }});
+          return {{ promise, resolve, reject }};
         }}
 
         function FakeAbortController() {{
@@ -113,6 +162,11 @@ def _run_factor_lab_hook(script: str, *, pathname: str = "/factor-lab") -> dict:
         let fetchHandler = function (url) {{
           return Promise.reject(new Error("unhandled fetch " + url));
         }};
+        function makeAbortError() {{
+          const error = new Error("The operation was aborted");
+          error.name = "AbortError";
+          return error;
+        }}
         function fakeFetch(input, init) {{
           const url = input && typeof input === "object" && typeof input.url === "string"
             ? input.url
@@ -125,7 +179,28 @@ def _run_factor_lab_hook(script: str, *, pathname: str = "/factor-lab") -> dict:
           }};
           fetchCalls.push(call);
           queueOrder.push({{ kind: "fetch", id: fetchCalls.length }});
-          return Promise.resolve().then(function () {{ return fetchHandler(url, options, call); }});
+          const signal = options.signal || null;
+          if (signal && signal.aborted) return Promise.reject(makeAbortError());
+          return new Promise(function (resolve, reject) {{
+            let settled = false;
+            function cleanup() {{
+              if (signal && signal.removeEventListener) signal.removeEventListener("abort", onAbort);
+            }}
+            function settle(callback, value) {{
+              if (settled) return;
+              settled = true;
+              cleanup();
+              callback(value);
+            }}
+            function onAbort() {{ settle(reject, makeAbortError()); }}
+            if (signal && signal.addEventListener) signal.addEventListener("abort", onAbort);
+            Promise.resolve().then(function () {{
+              return fetchHandler(url, options, call);
+            }}).then(
+              function (value) {{ settle(resolve, value); }},
+              function (error) {{ settle(reject, error); }}
+            );
+          }});
         }}
 
         const document = {{
@@ -169,9 +244,12 @@ def _run_factor_lab_hook(script: str, *, pathname: str = "/factor-lab") -> dict:
             context.fetch = fakeFetch;
           }},
           advanceNow: function (milliseconds) {{ fakeNow += Number(milliseconds) || 0; }},
-          drainRafs: function () {{ return drain("raf"); }},
-          drainTimeouts: function () {{ return drain("timeout"); }},
-          tickIntervals: function () {{ return drain("interval"); }},
+          runDueTimers,
+          advanceFrame,
+          createDeferred,
+          drainRafs: function () {{ return advanceFrame(); }},
+          drainTimeouts: runDueTimers,
+          tickIntervals: runDueTimers,
           pending: function (kind) {{ return queues[kind].size; }}
         }};
         const context = {{
@@ -269,6 +347,144 @@ def _dashboard_payload(*, schemes: list[dict] | None = None, **overrides: object
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_node_vm_scheduler_and_abort_host_contract(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const events = [];
+            window.setTimeout(function () { events.push("late"); }, 50);
+            host.advanceNow(49);
+            const earlyCount = host.runDueTimers();
+            host.advanceNow(1);
+            const dueCount = host.runDueTimers();
+
+            let cancelledId = 0;
+            window.setTimeout(function () {
+              events.push("canceller");
+              window.clearTimeout(cancelledId);
+            }, 0);
+            cancelledId = window.setTimeout(function () { events.push("cancelled"); }, 0);
+            host.runDueTimers();
+
+            window.requestAnimationFrame(function () {
+              events.push("raf-1");
+              window.requestAnimationFrame(function () { events.push("raf-2"); });
+            });
+            host.advanceFrame();
+            const afterFirstFrame = events.slice();
+            host.advanceFrame();
+
+            const deferred = host.createDeferred();
+            host.setFetchHandler(function () { return deferred.promise; });
+            const controller = new window.AbortController();
+            const fetchResult = window.fetch("/slow", { signal: controller.signal })
+              .then(function () { return { resolved: true, name: "" }; })
+              .catch(function (error) {
+                return { resolved: false, name: error && error.name || "" };
+              });
+            controller.abort();
+            const aborted = await fetchResult;
+
+            return {
+              earlyCount,
+              dueCount,
+              events,
+              afterFirstFrame,
+              aborted
+            };
+            """
+        )
+
+        self.assertEqual(result["earlyCount"], 0)
+        self.assertEqual(result["dueCount"], 1)
+        self.assertNotIn("cancelled", result["events"])
+        self.assertIn("raf-1", result["afterFirstFrame"])
+        self.assertNotIn("raf-2", result["afterFirstFrame"])
+        self.assertEqual(result["events"][-1], "raf-2")
+        self.assertEqual(result["aborted"], {"resolved": False, "name": "AbortError"})
+
+    def test_dashboard_decoder_matches_shared_backend_v1_conformance_corpus(self) -> None:
+        samples = dashboard_v1_conformance_samples()
+        wire_samples = json.dumps(samples, ensure_ascii=False)
+        result = _run_factor_lab_hook(
+            f"""
+            const samples = JSON.parse({json.dumps(wire_samples)});
+            return samples.map(function (sample) {{
+              try {{
+                const decoded = hooks.decodeDashboardPayload(sample.payload);
+                return {{
+                  name: sample.name,
+                  valid: true,
+                  protoLabel: decoded.targetLabels["__proto__"] || null
+                }};
+              }} catch (error) {{
+                return {{ name: sample.name, valid: false, protoLabel: null }};
+              }}
+            }});
+            """
+        )
+
+        self.assertEqual(
+            [(row["name"], row["valid"]) for row in result],
+            [(sample["name"], sample["valid"]) for sample in samples],
+        )
+        reserved = next(
+            row for row in result if row["name"] == "reserved_target_label_keys_are_data"
+        )
+        self.assertEqual(reserved["protoLabel"], "proto label")
+
+    def test_dashboard_decode_and_view_model_stay_linear_at_twenty_thousand_rows(
+        self,
+    ) -> None:
+        payload = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    backtest={
+                        "benchmark_id": "benchmark-1",
+                        "benchmark_label": "Benchmark 1",
+                        "data_source": "framework_db_aligned",
+                        "data_source_label": "当前DB对齐回测",
+                        "latest_run_date": "2020-01-01",
+                        "rows": [],
+                    }
+                )
+            ]
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            const payload = {json.dumps(payload)};
+            function isoDay(index) {{
+              return new Date(Date.UTC(1990, 0, 1 + index)).toISOString().slice(0, 10);
+            }}
+            for (let index = 0; index < 10000; index += 1) {{
+              const date = isoDay(index);
+              payload.schemes[0].live_rows.push([
+                date, date, date, "scheduled_live", index % 3 - 1, null
+              ]);
+              payload.schemes[0].backtest.rows.push([
+                date, date, date, null, index % 3 - 1, index % 2 ? 1 : -1
+              ]);
+            }}
+            const startedAt = process.hrtime.bigint();
+            const decoded = hooks.decodeDashboardPayload(payload);
+            const decodedAt = process.hrtime.bigint();
+            const viewModel = hooks.buildFactorLabViewModel(decoded);
+            const finishedAt = process.hrtime.bigint();
+            const scheme = viewModel.tasks["5Y|T+1"][0];
+            const detailRows = Object.keys(scheme.dailyRowsByMonth).reduce(function (count, month) {{
+              return count + scheme.dailyRowsByMonth[month].length;
+            }}, 0);
+            return {{
+              detailRows,
+              decodeMs: Number(decodedAt - startedAt) / 1000000,
+              buildMs: Number(finishedAt - decodedAt) / 1000000,
+              totalMs: Number(finishedAt - startedAt) / 1000000
+            }};
+            """
+        )
+
+        self.assertEqual(result["detailRows"], 20_000)
+        self.assertLess(result["totalMs"], 1_000, result)
+
     def test_dashboard_decoder_decodes_compact_rows_without_coercion(self) -> None:
         payload = _dashboard_payload(
             schemes=[
@@ -1108,6 +1324,67 @@ class FactorLabRankingTests(unittest.TestCase):
                 )
                 self.assertEqual(result["taskCount"], 1)
                 self.assertEqual(result["pendingIntervals"], 1)
+
+    def test_dashboard_load_accepts_scheme_with_zero_detail_rows(self) -> None:
+        payload = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    name="零明细方案",
+                    target_label="合法空数据标签",
+                    live_rows=[],
+                    backtest=None,
+                )
+            ],
+            target_labels={"5Y": "合法空数据标签"},
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            host.setFetchHandler(function () {{
+              return {{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve({json.dumps(payload)}); }}
+              }};
+            }});
+            const loaded = await hooks.loadFactorLabData({{ force: true }});
+            const scheme = hooks.getTaskSchemesForTest()["5Y|T+1"][0];
+            const metric = scheme ? hooks.aggregateScheme(scheme) : null;
+            hooks.renderTaskOverviewForTest();
+            return {{
+              loaded,
+              state: hooks.getFactorLabState(),
+              taskCount: hooks.getTaskSchemesForTest()["5Y|T+1"].length,
+              latestRun: scheme && scheme.latestRun,
+              metric,
+              matrixHtml: document.getElementById("factorTaskMatrixBody").innerHTML,
+              rankingHtml: document.getElementById("factorSchemeRankingBody").innerHTML,
+              detailHtml: document.getElementById("factorMonthlyTableBody").innerHTML
+            }};
+            """
+        )
+
+        self.assertTrue(result["loaded"])
+        self.assertEqual(result["state"]["dataMode"], "dashboard")
+        self.assertEqual(result["state"]["apiError"], "")
+        self.assertEqual(result["taskCount"], 1)
+        self.assertEqual(result["latestRun"], "--")
+        self.assertEqual(
+            result["metric"],
+            {
+                "samples": 0,
+                "metricSamples": 0,
+                "correct": 0,
+                "overall": None,
+                "upPrecision": None,
+                "upRecall": None,
+                "downPrecision": None,
+                "downRecall": None,
+            },
+        )
+        self.assertIn("合法空数据标签", result["matrixHtml"])
+        self.assertIn("0 个方案", result["matrixHtml"])
+        self.assertIn("--", result["rankingHtml"])
+        self.assertIn("当前方案暂无月度数据", result["detailHtml"])
 
     def test_corrupt_dashboard_load_sets_error_without_partial_commit(self) -> None:
         payload = _dashboard_payload(

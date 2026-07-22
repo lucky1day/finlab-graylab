@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -47,6 +49,26 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
+SNAPSHOT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+GENERATED_AT_PATTERN = re.compile(
+    r"^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})"
+    r"(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$"
+)
+STRUCTURED_BOUNDARY_CODEPOINTS = frozenset(
+    {
+        0x0085,
+        0x00A0,
+        0x1680,
+        *range(0x2000, 0x200B),
+        0x2028,
+        0x2029,
+        0x202F,
+        0x205F,
+        0x3000,
+        0xFEFF,
+    }
+)
 TOP_LEVEL_FIELDS = {
     "schema_version",
     "snapshot_id",
@@ -297,16 +319,7 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
     if payload.get("row_fields") != list(ROW_FIELDS):
         raise DashboardDataError("dashboard row_fields do not match ROW_FIELDS")
 
-    snapshot_id = payload.get("snapshot_id")
-    if (
-        not isinstance(snapshot_id, str)
-        or not snapshot_id.strip()
-        or snapshot_id != snapshot_id.strip()
-        or any(character in snapshot_id for character in ("/", "\\"))
-    ):
-        raise DashboardDataError(
-            f"dashboard snapshot_id is invalid: {snapshot_id!r}"
-        )
+    _required_snapshot_id(payload.get("snapshot_id"))
     _required_aware_iso_datetime(
         payload.get("generated_at"), field="generated_at"
     )
@@ -317,12 +330,11 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         raise DashboardDataError(
             f"dashboard stale is invalid: {payload.get('stale')!r}"
         )
-    snapshot_age_ms = payload.get("snapshot_age_ms")
-    if type(snapshot_age_ms) is not int or snapshot_age_ms < 0:
-        raise DashboardDataError(
-            "dashboard snapshot_age_ms is invalid: "
-            f"{snapshot_age_ms!r}"
-        )
+    _required_json_integer(
+        payload.get("snapshot_age_ms"),
+        field="snapshot_age_ms",
+        minimum=0,
+    )
     target_labels = payload.get("target_labels")
     if not isinstance(target_labels, Mapping):
         raise DashboardDataError("dashboard target_labels must be an object")
@@ -361,8 +373,10 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
             scheme.get("target_tenor"),
             field=f"scheme[{scheme_index}] target_tenor",
         )
-        horizon = _required_int(
-            scheme.get("horizon"), field=f"scheme[{scheme_index}] horizon"
+        horizon = _required_json_integer(
+            scheme.get("horizon"),
+            field=f"scheme[{scheme_index}] horizon",
+            minimum=1,
         )
         expected_scheme_id = f"{base_scheme_id}__h{horizon}__{target_tenor}"
         if scheme_id != expected_scheme_id:
@@ -613,21 +627,52 @@ def _required_text(value: Any, *, field: str) -> str:
 def _required_string(value: Any, *, field: str) -> str:
     if (
         not isinstance(value, str)
-        or not value.strip()
-        or value != value.strip()
+        or not value
+        or _is_structured_boundary_character(value[0])
+        or _is_structured_boundary_character(value[-1])
     ):
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
     return value
 
 
-def _required_int(value: Any, *, field: str) -> int:
-    if type(value) is not int:
-        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+def _required_snapshot_id(value: Any) -> str:
+    if not isinstance(value, str) or SNAPSHOT_ID_PATTERN.fullmatch(value) is None:
+        raise DashboardDataError(f"dashboard snapshot_id is invalid: {value!r}")
     return value
 
 
+def _is_structured_boundary_character(value: str) -> bool:
+    codepoint = ord(value)
+    return (
+        codepoint <= 0x20
+        or 0x7F <= codepoint <= 0x9F
+        or codepoint in STRUCTURED_BOUNDARY_CODEPOINTS
+    )
+
+
+def _required_json_integer(
+    value: Any,
+    *,
+    field: str,
+    minimum: int | None = None,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    if isinstance(value, int):
+        result = value
+    elif not math.isfinite(value) or not value.is_integer():
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    else:
+        result = int(value)
+    if abs(result) > MAX_SAFE_JSON_INTEGER:
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    if minimum is not None and result < minimum:
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    return result
+
+
 def _required_aware_iso_datetime(value: Any, *, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or GENERATED_AT_PATTERN.fullmatch(value) is None:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
     try:
         parsed = datetime.fromisoformat(value)
@@ -681,6 +726,12 @@ def _required_iso_date(value: Any, *, field: str) -> str:
 def _direction(value: Any, *, allow_none: bool) -> int | None:
     if value is None and allow_none:
         return None
-    if type(value) is int and value in {-1, 0, 1}:
-        return value
+    if (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and float(value).is_integer()
+        and int(value) in {-1, 0, 1}
+    ):
+        return int(value)
     raise DashboardDataError(f"dashboard direction is invalid: {value!r}")

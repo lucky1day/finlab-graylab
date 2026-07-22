@@ -17,6 +17,9 @@ from backend.factor_lab_dashboard_semantics import (
     compact_detail_row,
     validate_dashboard_payload,
 )
+from tests.factor_lab_dashboard_conformance import (
+    dashboard_v1_conformance_samples,
+)
 
 
 def _live_row(**overrides: object) -> dict[str, object]:
@@ -87,6 +90,22 @@ def _detail_row(**overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
+
+
+@pytest.mark.parametrize(
+    "sample",
+    dashboard_v1_conformance_samples(),
+    ids=lambda sample: sample["name"],
+)
+def test_payload_validator_matches_shared_v1_conformance_corpus(
+    sample: dict[str, object],
+) -> None:
+    if sample["valid"]:
+        assert validate_dashboard_payload(sample["payload"]) is None  # type: ignore[arg-type]
+        return
+
+    with pytest.raises(DashboardDataError):
+        validate_dashboard_payload(sample["payload"])  # type: ignore[arg-type]
 
 
 def test_weekly_h1_prefers_latest_predict_date_then_latest_id() -> None:
@@ -375,6 +394,14 @@ def test_payload_rejects_unknown_task_type_or_row_width() -> None:
     wrong_width["schemes"][0]["live_rows"][0] = ["2026-07-02"]  # type: ignore[index]
     with pytest.raises(DashboardDataError, match="width"):
         validate_dashboard_payload(wrong_width)
+
+
+def test_payload_rejects_unbounded_python_integer_as_contract_error() -> None:
+    payload = _minimal_payload()
+    payload["snapshot_age_ms"] = 10**1000
+
+    with pytest.raises(DashboardDataError, match="snapshot_age_ms"):
+        validate_dashboard_payload(payload)
 
 
 @pytest.mark.parametrize(
