@@ -16,10 +16,13 @@ from pathlib import Path
 
 import pytest
 
+from scripts import benchmark_factor_lab_browser as browser_probe
+from scripts import benchmark_factor_lab_dashboard as api_probe
 from scripts.benchmark_factor_lab_browser import (
     BrowserAttempt,
     CDPClient,
     CDPCommandError,
+    browser_exit_code,
     classify_factor_lab_request,
     parse_arguments as parse_browser_arguments,
     select_ready_context,
@@ -353,6 +356,21 @@ def test_api_probe_throttles_from_attempt_start_but_excludes_wait_from_latency(
     assert attempts[1].total_ms < elapsed * 1000
 
 
+def test_api_probe_propagates_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
+    def interrupted(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(api_probe.socket, "getaddrinfo", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        run_benchmark(
+            url="http://127.0.0.1:18101/api/factor-lab/dashboard",
+            attempt_count=1,
+            timeout_seconds=1,
+            disable_keepalive=True,
+            minimum_attempt_period_seconds=0,
+        )
+
+
 def test_request_classifier_is_path_strict_and_redacts_query() -> None:
     assert classify_factor_lab_request(
         "https://host/bond-factor-lab/api/factor-lab/dashboard?token=secret"
@@ -429,6 +447,79 @@ def test_cdp_client_exposes_transient_destroyed_context_error_code() -> None:
         client.call("Runtime.evaluate", {"expression": "1"}, timeout=1)
     assert caught.value.code == -32000
     assert "Runtime.evaluate" in str(caught.value)
+
+    known = CDPCommandError(
+        "Runtime.evaluate", -32000, "Cannot find context with specified id"
+    )
+    unrelated = CDPCommandError("Runtime.evaluate", -32000, "Permission denied")
+    other_method = CDPCommandError(
+        "Page.navigate", -32000, "Cannot find context with specified id"
+    )
+    assert known.is_navigation_context_loss() is True
+    assert unrelated.is_navigation_context_loss() is False
+    assert other_method.is_navigation_context_loss() is False
+
+
+def test_cdp_client_routes_flattened_session_commands() -> None:
+    socket = _FakeWebSocket([{"id": 1, "sessionId": "child", "result": {"ok": True}}])
+    client = CDPClient(socket)
+    assert client.call(
+        "Runtime.evaluate",
+        {"expression": "1"},
+        session_id="child",
+        timeout=1,
+    ) == {"ok": True}
+    assert socket.sent == [
+        {
+            "id": 1,
+            "method": "Runtime.evaluate",
+            "params": {"expression": "1"},
+            "sessionId": "child",
+        }
+    ]
+
+
+def test_each_flattened_session_enables_recursive_autoattach_and_observation() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict, str | None]] = []
+
+        def call(
+            self,
+            method: str,
+            params: dict | None = None,
+            *,
+            timeout: float,
+            session_id: str | None = None,
+        ) -> dict:
+            del timeout
+            self.calls.append((method, params or {}, session_id))
+            return {}
+
+    client = FakeClient()
+    browser_probe._enable_cdp_session(client, "oopif-child")  # type: ignore[arg-type]
+    assert client.calls[0] == (
+        "Target.setAutoAttach",
+        {
+            "autoAttach": True,
+            "waitForDebuggerOnStart": True,
+            "flatten": True,
+        },
+        "oopif-child",
+    )
+    methods = [method for method, _params, session in client.calls if session == "oopif-child"]
+    for required in (
+        "Runtime.enable",
+        "Network.enable",
+        "Page.enable",
+        "Log.enable",
+        "Inspector.enable",
+        "Network.setCacheDisabled",
+        "Network.setBypassServiceWorker",
+        "Network.setUserAgentOverride",
+        "Runtime.runIfWaitingForDebugger",
+    ):
+        assert required in methods
 
 
 def test_browser_summary_retains_failures_and_requires_200_formal_samples() -> None:
@@ -513,6 +604,97 @@ def test_browser_formal_gate_requires_expected_ready_counts() -> None:
     assert "expected_counts_not_configured" in summary["gate_failures"]
 
 
+def test_browser_exit_code_distinguishes_enforced_199_from_smoke() -> None:
+    attempts = [_browser_attempt(index, total_ms=500) for index in range(1, 200)]
+    summary = summarize_browser_attempts(
+        attempts,
+        browser_product="Chrome/140.0.0.0",
+        allow_edge_acceptance=False,
+        edge_approval_reference=None,
+        metadata_complete=True,
+    )
+    assert browser_exit_code(summary, mode="attempts", enforce_slo=True) == 2
+    assert browser_exit_code(summary, mode="attempts", enforce_slo=False) == 0
+
+
+def test_browser_exit_code_automatically_enforces_200_sample_gate() -> None:
+    attempts = [_browser_attempt(index, total_ms=500) for index in range(1, 201)]
+    summary = summarize_browser_attempts(
+        attempts,
+        browser_product="Chrome/140.0.0.0",
+        allow_edge_acceptance=False,
+        edge_approval_reference=None,
+        metadata_complete=True,
+    )
+    assert browser_exit_code(summary, mode="attempts", enforce_slo=False) == 0
+    failed = dict(summary, acceptance=False)
+    assert browser_exit_code(failed, mode="attempts", enforce_slo=False) == 1
+
+
+def test_browser_main_enforce_slo_exits_two_for_successful_199(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    browser = browser_probe.OwnedBrowser(
+        process=object(),  # type: ignore[arg-type]
+        profile_directory=tmp_path / "profile",
+        debug_port=1,
+        browser_websocket_url="ws://127.0.0.1/devtools/browser/test",
+        product="Chrome/140.0.0.0",
+        user_agent="Chrome test",
+        protocol_version="1.3",
+    )
+    attempts = [_browser_attempt(index, total_ms=500) for index in range(1, 200)]
+    monkeypatch.setattr(browser_probe, "start_owned_browser", lambda _binary: browser)
+    monkeypatch.setattr(browser_probe, "stop_owned_browser", lambda _browser: None)
+    monkeypatch.setattr(browser_probe, "_run_sequential", lambda _browser, _args: attempts)
+    common = [
+        "--url", "http://127.0.0.1/",
+        "--browser-binary", "/bin/false",
+        "--attempts", "199",
+        "--probe-location", "local",
+        "--device", "test",
+        "--network", "loopback",
+        "--connection-condition", "fresh-page",
+        "--expected-scheme-count", "35",
+        "--expected-live-row-count", "1000",
+        "--expected-backtest-row-count", "8000",
+    ]
+    assert browser_probe.main(
+        [*common, "--enforce-slo", "--output-json", str(tmp_path / "enforced.json")]
+    ) == 2
+    assert browser_probe.main(
+        [*common, "--output-json", str(tmp_path / "smoke.json")]
+    ) == 0
+
+
+def test_browser_attempt_propagates_keyboard_interrupt_and_keeps_cleanup_in_finally(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    browser = browser_probe.OwnedBrowser(
+        process=object(),  # type: ignore[arg-type]
+        profile_directory=tmp_path,
+        debug_port=1,
+        browser_websocket_url="ws://127.0.0.1/devtools/browser/test",
+        product="Chrome/140.0.0.0",
+        user_agent="Chrome test",
+        protocol_version="1.3",
+    )
+    monkeypatch.setattr(
+        browser_probe,
+        "_connect_websocket",
+        lambda _url: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        browser_probe.run_browser_attempt(
+            browser=browser,
+            url="http://127.0.0.1/",
+            index=1,
+            timeout_seconds=1,
+            wait_before_seconds=0,
+            ready_frame_url_substring=None,
+        )
+
+
 def test_browser_cli_rejects_mixed_or_incomplete_soak_modes() -> None:
     with pytest.raises(SystemExit):
         parse_browser_arguments(
@@ -520,6 +702,26 @@ def test_browser_cli_rejects_mixed_or_incomplete_soak_modes() -> None:
                 "--url", "http://127.0.0.1/", "--browser-binary", "/bin/false",
                 "--attempts", "5", "--concurrency", "2", "--duration-seconds", "1",
                 "--refresh-interval-seconds", "0.1",
+            ]
+        )
+
+    for invalid_attempts in ("0", "-1"):
+        with pytest.raises(SystemExit):
+            parse_browser_arguments(
+                [
+                    "--url", "http://127.0.0.1/",
+                    "--browser-binary", "/bin/false",
+                    "--attempts", invalid_attempts,
+                    "--output-json", "/tmp/report.json",
+                ]
+            )
+    with pytest.raises(SystemExit):
+        parse_browser_arguments(
+            [
+                "--url", "http://127.0.0.1/", "--browser-binary", "/bin/false",
+                "--concurrency", "2", "--duration-seconds", "1",
+                "--refresh-interval-seconds", "0.1", "--enforce-slo",
+                "--output-json", "/tmp/report.json",
             ]
         )
 
@@ -642,6 +844,26 @@ class _FrontendSmokeHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
 
+class _ParentIframeSmokeHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    child_url = ""
+
+    def log_message(self, _format: str, *args: object) -> None:
+        return
+
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        body = (
+            "<!doctype html><html><body>"
+            f'<iframe id="lab" src="{type(self).child_url}"></iframe>'
+            "</body></html>"
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 @pytest.mark.skipif(
     os.environ.get("FACTOR_LAB_RUN_EDGE_SMOKE") != "1",
     reason="真实 Edge smoke 仅在显式本地工具验收时运行",
@@ -705,3 +927,64 @@ def test_real_edge_smoke_and_short_soak_use_actual_frontend(tmp_path: Path) -> N
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
+
+
+@pytest.mark.skipif(
+    os.environ.get("FACTOR_LAB_RUN_EDGE_SMOKE") != "1",
+    reason="真实 Edge OOPIF smoke 仅在显式本地工具验收时运行",
+)
+def test_real_edge_cross_origin_iframe_uses_child_ready_and_requests(
+    tmp_path: Path,
+) -> None:
+    """父 localhost + 子 127.0.0.1 强制 OOPIF，父页面不能伪造 ready。"""
+
+    edge = Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+    if not edge.is_file():
+        pytest.skip("Microsoft Edge is not installed")
+    child_server = ThreadingHTTPServer(("127.0.0.1", 0), _FrontendSmokeHandler)
+    child_thread = threading.Thread(target=child_server.serve_forever, daemon=True)
+    child_thread.start()
+    child_host, child_port = child_server.server_address
+    child_url = f"http://{child_host}:{child_port}/"
+    _ParentIframeSmokeHandler.child_url = child_url
+    parent_server = ThreadingHTTPServer(("127.0.0.1", 0), _ParentIframeSmokeHandler)
+    parent_thread = threading.Thread(target=parent_server.serve_forever, daemon=True)
+    parent_thread.start()
+    _, parent_port = parent_server.server_address
+    try:
+        result = subprocess.run(
+            [
+                str(PYTHON),
+                str(PROJECT_ROOT / "scripts/benchmark_factor_lab_browser.py"),
+                "--url", f"http://localhost:{parent_port}/",
+                "--ready-frame-url-substring", child_url,
+                "--attempts", "1",
+                "--timeout-seconds", "5",
+                "--browser-binary", str(edge),
+                "--output-json", str(tmp_path / "oopif.json"),
+            ],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        report = json.loads((tmp_path / "oopif.json").read_text(encoding="utf-8"))
+        assert report["summary"]["success_count"] == 1
+        attempt = report["attempts"][0]
+        assert attempt["ready"]["source"] == "dashboard"
+        assert attempt["ready"]["stale"] is False
+        assert attempt["dashboard_request_urls"] == [
+            f"http://{child_host}:{child_port}/api/factor-lab/dashboard"
+        ]
+        assert attempt["legacy_request_urls"] == []
+        assert attempt["console_errors"] == []
+        assert attempt["page_errors"] == []
+    finally:
+        parent_server.shutdown()
+        parent_server.server_close()
+        parent_thread.join(timeout=3)
+        child_server.shutdown()
+        child_server.server_close()
+        child_thread.join(timeout=3)

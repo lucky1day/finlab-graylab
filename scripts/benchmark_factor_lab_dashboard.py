@@ -507,7 +507,7 @@ def _single_attempt(
             raise ValueError(f"unexpected HTTP status {status}")
         if stale or stale_header:
             raise ValueError("dashboard response is stale")
-    except BaseException as error:  # 每个失败都转为 attempt，不丢样本。
+    except Exception as error:  # 业务失败转为 attempt；进程中断必须向上传播。
         error_message = f"{type(error).__name__}: {error}"
     total_ms = (time.perf_counter() - attempt_started) * 1000
     assert isinstance(connection, _TimedConnectionMixin)

@@ -120,6 +120,7 @@ python scripts/benchmark_factor_lab_dashboard.py \
 python scripts/benchmark_factor_lab_browser.py \
   --url https://bond.finailab.cn/bond-factor-lab/ \
   --attempts 200 --timeout-seconds 5 \
+  --enforce-slo \
   --minimum-attempt-period-seconds 0.5 \
   --browser-binary '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
   --expected-scheme-count '<canonical active数量>' \
@@ -134,16 +135,24 @@ python scripts/benchmark_factor_lab_browser.py \
 Edge 替代口径时，才同时传入 `--allow-edge-acceptance` 和可审计的
 `--edge-approval-reference`；批准只作用于该份报告。
 
+浏览器探针显式传 `--enforce-slo` 而样本少于 200 时，即使所有尝试成功也以退出码 2
+拒绝正式验收；不传该 flag 的少量样本是 smoke，成功时可退出 0，但报告仍保持
+`formal_acceptance=false`。达到 200 次后无论是否传 flag 都自动按正式门槛退出 0/1。
+
 ### 3.3 panda_quantflow iframe
 
 URL 使用真实 Shell 页面；`--ready-frame-url-substring` 应唯一匹配 Bond Factor Lab
-iframe URL。探针订阅 frame 和 execution-context 事件，父页面的同名 ready 不会通过：
+iframe URL。探针使用 browser websocket 的 flattened Target session，递归 auto-attach
+OOPIF/后代 target，并在每个 session 启用 Runtime、Network、Page、Log 与 Inspector；
+ready evaluate、dashboard/legacy request 和错误都按 owning session 汇总。父页面的同名
+ready 不会通过：
 
 ```bash
 python scripts/benchmark_factor_lab_browser.py \
   --url '<panda_quantflow真实Shell URL>' \
   --ready-frame-url-substring '/bond-factor-lab/' \
   --attempts 200 --timeout-seconds 5 \
+  --enforce-slo \
   --minimum-attempt-period-seconds 0.5 \
   --browser-binary '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' \
   --expected-scheme-count '<canonical active数量>' \

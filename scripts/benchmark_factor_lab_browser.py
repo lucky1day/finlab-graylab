@@ -19,7 +19,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import Request, urlopen
 
 
 USER_AGENT = "bond-factor-lab-browser-benchmark/1.0"
@@ -61,10 +60,25 @@ class BrowserAttempt:
 class CDPCommandError(RuntimeError):
     """保留稳定 CDP error code，同时不把可能敏感的原消息写入报告。"""
 
-    def __init__(self, method: str, code: int | str) -> None:
+    def __init__(self, method: str, code: int | str, message: str = "") -> None:
         self.method = method
         self.code = code
+        self.cdp_message = message
         super().__init__(f"CDP {method} failed with code {code}")
+
+    def is_navigation_context_loss(self) -> bool:
+        """只识别导航切换期间已知的 evaluate context 消失错误。"""
+
+        folded = self.cdp_message.casefold()
+        return (
+            self.method == "Runtime.evaluate"
+            and self.code == -32000
+            and (
+                "cannot find context with specified id" in folded
+                or "execution context was destroyed" in folded
+                or "cannot find context" in folded
+            )
+        )
 
 
 def _nearest_rank(values: list[float], percentile: float) -> float:
@@ -129,11 +143,11 @@ def validate_ready_value(value: object) -> str | None:
 
 
 def select_ready_context(
-    contexts: dict[int, str],
+    contexts: dict[Any, str],
     frame_urls: dict[str, str],
     main_frame_id: str,
     ready_frame_url_substring: str | None,
-) -> int | None:
+) -> Any | None:
     """选择 ready 所在 execution context；iframe 模式永不回退到父 frame。"""
 
     target_frames: set[str]
@@ -181,14 +195,19 @@ class CDPClient:
         params: dict[str, Any] | None = None,
         *,
         timeout: float = 5.0,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         message_id = self._next_id
         self._next_id += 1
+        command: dict[str, Any] = {
+            "id": message_id,
+            "method": method,
+            "params": params or {},
+        }
+        if session_id is not None:
+            command["sessionId"] = session_id
         self.websocket.send(
-            json.dumps(
-                {"id": message_id, "method": method, "params": params or {}},
-                separators=(",", ":"),
-            )
+            json.dumps(command, separators=(",", ":"))
         )
         deadline = time.monotonic() + timeout
         while message_id not in self._responses:
@@ -200,7 +219,8 @@ class CDPClient:
         if "error" in response:
             error = response["error"]
             code = error.get("code") if isinstance(error, dict) else "unknown"
-            raise CDPCommandError(method, code)
+            message = str(error.get("message", "")) if isinstance(error, dict) else ""
+            raise CDPCommandError(method, code, message)
         result = response.get("result", {})
         if not isinstance(result, dict):
             raise RuntimeError(f"CDP {method} returned a non-object result")
@@ -386,34 +406,10 @@ def _browser_call(browser: OwnedBrowser, method: str, params: dict[str, Any]) ->
         client.close()
 
 
-def _json_debug_endpoint(port: int, path: str) -> Any:
-    request = Request(f"http://127.0.0.1:{port}{path}", headers={"User-Agent": USER_AGENT})
-    with urlopen(request, timeout=3) as response:
-        return json.loads(response.read().decode("utf-8"))
-
-
-def _create_page(
-    browser: OwnedBrowser, browser_context_id: str | None = None
-) -> tuple[str, str]:
-    params: dict[str, Any] = {"url": "about:blank"}
-    if browser_context_id is not None:
-        params["browserContextId"] = browser_context_id
-    target_id = str(_browser_call(browser, "Target.createTarget", params)["targetId"])
-    deadline = time.monotonic() + 3
-    while time.monotonic() < deadline:
-        targets = _json_debug_endpoint(browser.debug_port, "/json/list")
-        for target in targets:
-            if target.get("id") == target_id and target.get("webSocketDebuggerUrl"):
-                return target_id, str(target["webSocketDebuggerUrl"])
-        time.sleep(0.01)
-    _browser_call(browser, "Target.closeTarget", {"targetId": target_id})
-    raise TimeoutError("page websocket endpoint was not published")
-
-
 def _close_page(browser: OwnedBrowser, target_id: str) -> None:
     try:
         _browser_call(browser, "Target.closeTarget", {"targetId": target_id})
-    except BaseException:
+    except Exception:
         pass
 
 
@@ -429,8 +425,9 @@ def _drain_events(client: CDPClient) -> list[dict[str, Any]]:
 def _record_event(
     event: dict[str, Any],
     *,
-    contexts: dict[int, str],
+    contexts: dict[tuple[str, int], str],
     frame_urls: dict[str, str],
+    frame_sessions: dict[str, str],
     dashboard_requests: dict[str, str],
     legacy_requests: dict[str, str],
     console_errors: list[str],
@@ -438,31 +435,46 @@ def _record_event(
 ) -> bool:
     method = event.get("method")
     params = event.get("params", {})
+    event_session = str(event.get("sessionId", ""))
     if method == "Runtime.executionContextCreated":
         context = params.get("context", {})
         context_id = context.get("id")
         aux = context.get("auxData", {})
         frame_id = aux.get("frameId") if isinstance(aux, dict) else None
         if isinstance(context_id, int) and isinstance(frame_id, str) and aux.get("isDefault"):
-            contexts[context_id] = frame_id
+            contexts[(event_session, context_id)] = frame_id
+            frame_sessions[frame_id] = event_session
     elif method == "Runtime.executionContextDestroyed":
         context_id = params.get("executionContextId")
         if isinstance(context_id, int):
-            contexts.pop(context_id, None)
+            contexts.pop((event_session, context_id), None)
     elif method == "Runtime.executionContextsCleared":
-        contexts.clear()
+        for key in [key for key in contexts if key[0] == event_session]:
+            contexts.pop(key, None)
     elif method == "Page.frameNavigated":
         frame = params.get("frame", {})
         if isinstance(frame.get("id"), str) and isinstance(frame.get("url"), str):
             frame_urls[frame["id"]] = frame["url"]
+            frame_sessions[frame["id"]] = event_session
     elif method == "Page.frameDetached":
         frame_id = params.get("frameId")
         if isinstance(frame_id, str):
             frame_urls.pop(frame_id, None)
+            frame_sessions.pop(frame_id, None)
+            for key, context_frame in list(contexts.items()):
+                if context_frame == frame_id:
+                    contexts.pop(key, None)
     elif method == "Network.requestWillBeSent":
         request = params.get("request", {})
-        request_id = str(params.get("requestId", "unknown"))
-        kind, redacted = classify_factor_lab_request(str(request.get("url", "")))
+        request_id = f"{event_session}:{params.get('requestId', 'unknown')}"
+        request_url = str(request.get("url", ""))
+        frame_id = params.get("frameId")
+        if params.get("type") == "Document" and isinstance(frame_id, str):
+            redacted_document_url = _safe_url_without_query(request_url)
+            if redacted_document_url is not None:
+                frame_urls[frame_id] = redacted_document_url
+                frame_sessions[frame_id] = event_session
+        kind, redacted = classify_factor_lab_request(request_url)
         if kind == "dashboard" and redacted:
             dashboard_requests[request_id] = redacted
         elif kind == "legacy" and redacted:
@@ -479,6 +491,135 @@ def _record_event(
         page_errors.append(str(method))
         return True
     return False
+
+
+def _enable_cdp_session(client: CDPClient, session_id: str) -> None:
+    """在 flattened target session 内启用采集，并递归 auto-attach 后代。"""
+
+    client.call(
+        "Target.setAutoAttach",
+        {
+            "autoAttach": True,
+            "waitForDebuggerOnStart": True,
+            "flatten": True,
+        },
+        timeout=3,
+        session_id=session_id,
+    )
+    for method in (
+        "Page.enable",
+        "Runtime.enable",
+        "Network.enable",
+        "Log.enable",
+        "Inspector.enable",
+    ):
+        client.call(method, timeout=3, session_id=session_id)
+    client.call(
+        "Network.setCacheDisabled",
+        {"cacheDisabled": True},
+        timeout=3,
+        session_id=session_id,
+    )
+    client.call(
+        "Network.setBypassServiceWorker",
+        {"bypass": True},
+        timeout=3,
+        session_id=session_id,
+    )
+    client.call(
+        "Network.clearBrowserCache",
+        timeout=3,
+        session_id=session_id,
+    )
+    client.call(
+        "Network.setUserAgentOverride",
+        {"userAgent": USER_AGENT},
+        timeout=3,
+        session_id=session_id,
+    )
+    client.call(
+        "Runtime.runIfWaitingForDebugger",
+        timeout=3,
+        session_id=session_id,
+    )
+
+
+def _record_frame_tree(
+    frame_tree: object,
+    frame_urls: dict[str, str],
+) -> None:
+    if not isinstance(frame_tree, dict):
+        return
+    frame = frame_tree.get("frame", {})
+    if isinstance(frame, dict):
+        frame_id = frame.get("id")
+        frame_url = frame.get("url")
+        if isinstance(frame_id, str) and isinstance(frame_url, str) and frame_url:
+            frame_urls[frame_id] = frame_url
+    children = frame_tree.get("childFrames", [])
+    if isinstance(children, list):
+        for child in children:
+            _record_frame_tree(child, frame_urls)
+
+
+def _consume_cdp_events(
+    client: CDPClient,
+    *,
+    configured_sessions: set[str],
+    session_targets: dict[str, str],
+    contexts: dict[tuple[str, int], str],
+    frame_urls: dict[str, str],
+    frame_sessions: dict[str, str],
+    dashboard_requests: dict[str, str],
+    legacy_requests: dict[str, str],
+    console_errors: list[str],
+    page_errors: list[str],
+) -> bool:
+    """消费 browser websocket 上所有 root/OOPIF flattened session 事件。"""
+
+    crashed = False
+    pending = deque(_drain_events(client))
+    while pending:
+        event = pending.popleft()
+        method = event.get("method")
+        params = event.get("params", {})
+        if method == "Target.attachedToTarget":
+            child_session = params.get("sessionId")
+            target_info = params.get("targetInfo", {})
+            target_id = target_info.get("targetId")
+            target_url = target_info.get("url")
+            if isinstance(child_session, str) and isinstance(target_id, str):
+                session_targets[child_session] = target_id
+                frame_sessions[target_id] = child_session
+                if isinstance(target_url, str) and target_url:
+                    frame_urls[target_id] = target_url
+                if child_session not in configured_sessions:
+                    _enable_cdp_session(client, child_session)
+                    configured_sessions.add(child_session)
+                    pending.extend(_drain_events(client))
+            continue
+        if method == "Target.detachedFromTarget":
+            detached_session = params.get("sessionId")
+            if isinstance(detached_session, str):
+                configured_sessions.discard(detached_session)
+                detached_target = session_targets.pop(detached_session, None)
+                if detached_target is not None:
+                    frame_urls.pop(detached_target, None)
+                    frame_sessions.pop(detached_target, None)
+                for key in [key for key in contexts if key[0] == detached_session]:
+                    contexts.pop(key, None)
+            continue
+        crashed = _record_event(
+            event,
+            contexts=contexts,
+            frame_urls=frame_urls,
+            frame_sessions=frame_sessions,
+            dashboard_requests=dashboard_requests,
+            legacy_requests=legacy_requests,
+            console_errors=console_errors,
+            page_errors=page_errors,
+        ) or crashed
+    return crashed
 
 
 def run_browser_attempt(
@@ -505,62 +646,124 @@ def run_browser_attempt(
     ready: dict[str, Any] | None = None
     error_message: str | None = None
     try:
-        target_id, page_websocket_url = _create_page(browser, browser_context_id)
-        client = CDPClient(_connect_websocket(page_websocket_url))
-        for method in (
-            "Page.enable",
-            "Runtime.enable",
-            "Network.enable",
-            "Log.enable",
-            "Inspector.enable",
-        ):
-            client.call(method, timeout=3)
-        client.call("Network.setCacheDisabled", {"cacheDisabled": True}, timeout=3)
-        client.call("Network.setBypassServiceWorker", {"bypass": True}, timeout=3)
-        client.call("Network.clearBrowserCache", timeout=3)
-        client.call(
-            "Network.setUserAgentOverride",
-            {"userAgent": USER_AGENT},
-            timeout=3,
+        client = CDPClient(_connect_websocket(browser.browser_websocket_url))
+        client.call("Target.setDiscoverTargets", {"discover": True}, timeout=3)
+        target_params: dict[str, Any] = {"url": "about:blank"}
+        if browser_context_id is not None:
+            target_params["browserContextId"] = browser_context_id
+        target_id = str(client.call("Target.createTarget", target_params, timeout=3)["targetId"])
+        root_session = str(
+            client.call(
+                "Target.attachToTarget",
+                {"targetId": target_id, "flatten": True},
+                timeout=3,
+            )["sessionId"]
         )
-        contexts: dict[int, str] = {}
+        configured_sessions = {root_session}
+        session_targets = {root_session: target_id}
+        _enable_cdp_session(client, root_session)
+        contexts: dict[tuple[str, int], str] = {}
         frame_urls: dict[str, str] = {}
-        for event in _drain_events(client):
-            _record_event(
-                event,
-                contexts=contexts,
-                frame_urls=frame_urls,
-                dashboard_requests=dashboard_requests,
-                legacy_requests=legacy_requests,
-                console_errors=console_errors,
-                page_errors=page_errors,
-            )
+        frame_sessions: dict[str, str] = {target_id: root_session}
+        _consume_cdp_events(
+            client,
+            configured_sessions=configured_sessions,
+            session_targets=session_targets,
+            contexts=contexts,
+            frame_urls=frame_urls,
+            frame_sessions=frame_sessions,
+            dashboard_requests=dashboard_requests,
+            legacy_requests=legacy_requests,
+            console_errors=console_errors,
+            page_errors=page_errors,
+        )
 
         navigation_started = time.monotonic()
-        navigation = client.call("Page.navigate", {"url": url}, timeout=timeout_seconds)
+        navigation = client.call(
+            "Page.navigate",
+            {"url": url},
+            timeout=timeout_seconds,
+            session_id=root_session,
+        )
         main_frame_id = str(navigation.get("frameId", ""))
         if not main_frame_id:
             raise RuntimeError("Page.navigate did not return a frameId")
         deadline = navigation_started + timeout_seconds
+        next_frame_tree_refresh = navigation_started
+        checked_context_urls: set[tuple[str, int]] = set()
         crashed = False
         while time.monotonic() < deadline and not crashed:
-            for event in _drain_events(client):
-                crashed = _record_event(
-                    event,
-                    contexts=contexts,
-                    frame_urls=frame_urls,
-                    dashboard_requests=dashboard_requests,
-                    legacy_requests=legacy_requests,
-                    console_errors=console_errors,
-                    page_errors=page_errors,
-                ) or crashed
-            context_id = select_ready_context(
+            crashed = _consume_cdp_events(
+                client,
+                configured_sessions=configured_sessions,
+                session_targets=session_targets,
+                contexts=contexts,
+                frame_urls=frame_urls,
+                frame_sessions=frame_sessions,
+                dashboard_requests=dashboard_requests,
+                legacy_requests=legacy_requests,
+                console_errors=console_errors,
+                page_errors=page_errors,
+            ) or crashed
+            if (
+                ready_frame_url_substring
+                and time.monotonic() >= next_frame_tree_refresh
+                and not any(
+                    ready_frame_url_substring in frame_url
+                    for frame_url in frame_urls.values()
+                )
+            ):
+                tree_result = client.call(
+                    "Page.getFrameTree",
+                    timeout=max(0.05, min(1.0, deadline - time.monotonic())),
+                    session_id=root_session,
+                )
+                _record_frame_tree(tree_result.get("frameTree"), frame_urls)
+                next_frame_tree_refresh = time.monotonic() + 0.05
+            if ready_frame_url_substring:
+                for context_key, context_frame_id in list(contexts.items()):
+                    if context_key in checked_context_urls:
+                        continue
+                    owner_session, context_id = context_key
+                    try:
+                        location_result = client.call(
+                            "Runtime.evaluate",
+                            {
+                                "expression": "window.location.href",
+                                "contextId": context_id,
+                                "returnByValue": True,
+                                "awaitPromise": False,
+                            },
+                            timeout=max(
+                                0.05,
+                                min(1.0, deadline - time.monotonic()),
+                            ),
+                            session_id=owner_session,
+                        )
+                    except CDPCommandError as error:
+                        if not error.is_navigation_context_loss():
+                            raise
+                        contexts.pop(context_key, None)
+                        continue
+                    remote_location = location_result.get("result", {})
+                    context_url = (
+                        remote_location.get("value")
+                        if isinstance(remote_location, dict)
+                        else None
+                    )
+                    if isinstance(context_url, str):
+                        safe_context_url = _safe_url_without_query(context_url)
+                        if safe_context_url is not None:
+                            frame_urls[context_frame_id] = safe_context_url
+                    checked_context_urls.add(context_key)
+            context_key = select_ready_context(
                 contexts,
                 frame_urls,
                 main_frame_id,
                 ready_frame_url_substring,
             )
-            if context_id is not None:
+            if context_key is not None:
+                owner_session, context_id = context_key
                 try:
                     result = client.call(
                         "Runtime.evaluate",
@@ -571,11 +774,12 @@ def run_browser_attempt(
                             "awaitPromise": False,
                         },
                         timeout=max(0.05, min(1.0, deadline - time.monotonic())),
+                        session_id=owner_session,
                     )
                 except CDPCommandError as error:
-                    if error.code != -32000:
+                    if not error.is_navigation_context_loss():
                         raise
-                    contexts.pop(context_id, None)
+                    contexts.pop(context_key, None)
                     continue
                 remote = result.get("result", {})
                 value = remote.get("value") if isinstance(remote, dict) else None
@@ -583,20 +787,31 @@ def run_browser_attempt(
                     ready = value
                     break
             time.sleep(0.01)
-        for event in _drain_events(client):
-            _record_event(
-                event,
-                contexts=contexts,
-                frame_urls=frame_urls,
-                dashboard_requests=dashboard_requests,
-                legacy_requests=legacy_requests,
-                console_errors=console_errors,
-                page_errors=page_errors,
-            )
+        crashed = _consume_cdp_events(
+            client,
+            configured_sessions=configured_sessions,
+            session_targets=session_targets,
+            contexts=contexts,
+            frame_urls=frame_urls,
+            frame_sessions=frame_sessions,
+            dashboard_requests=dashboard_requests,
+            legacy_requests=legacy_requests,
+            console_errors=console_errors,
+            page_errors=page_errors,
+        ) or crashed
         if crashed:
             raise RuntimeError("browser target crashed")
         if ready is None:
-            raise TimeoutError("factor lab readiness timed out")
+            matching_frames = sum(
+                ready_frame_url_substring is not None
+                and ready_frame_url_substring in frame_url
+                for frame_url in frame_urls.values()
+            )
+            raise TimeoutError(
+                "factor lab readiness timed out "
+                f"sessions={len(configured_sessions)} frames={len(frame_urls)} "
+                f"contexts={len(contexts)} matching_frames={matching_frames}"
+            )
         ready_error = validate_ready_value(ready)
         if ready_error:
             raise ValueError(ready_error)
@@ -614,16 +829,23 @@ def run_browser_attempt(
             raise ValueError("console_error_detected")
         if page_errors:
             raise ValueError("page_error_detected")
-    except BaseException as error:
+    except Exception as error:
         error_message = f"{type(error).__name__}: {error}"
     finally:
         total_ms = (time.monotonic() - navigation_started) * 1000
+        target_closed = False
+        if client is not None and target_id:
+            try:
+                client.call("Target.closeTarget", {"targetId": target_id}, timeout=2)
+                target_closed = True
+            except Exception:
+                pass
         if client is not None:
             try:
                 client.close()
-            except BaseException:
+            except Exception:
                 pass
-        if target_id:
+        if target_id and not target_closed:
             _close_page(browser, target_id)
     return BrowserAttempt(
         index=index,
@@ -729,6 +951,23 @@ def summarize_browser_attempts(
     }
 
 
+def browser_exit_code(
+    summary: dict[str, Any],
+    *,
+    mode: str,
+    enforce_slo: bool,
+) -> int:
+    """区分显式正式验收、自动 200 样本验收和短 smoke。"""
+
+    if mode == "soak":
+        return 0 if summary.get("failure_count") == 0 else 1
+    if enforce_slo and not summary.get("formal_acceptance"):
+        return 2
+    if summary.get("formal_acceptance"):
+        return 0 if summary.get("acceptance") else 1
+    return 0 if summary.get("failure_count") == 0 else 1
+
+
 def _metadata_complete(arguments: argparse.Namespace) -> bool:
     return all(
         isinstance(value, str) and value.strip() and value.casefold() != "unknown"
@@ -810,7 +1049,7 @@ def _run_soak(browser: OwnedBrowser, arguments: argparse.Namespace) -> list[Brow
                 )
                 if wait_seconds:
                     time.sleep(wait_seconds)
-        except BaseException as error:
+        except Exception as error:
             with lock:
                 index = next_index
                 next_index += 1
@@ -837,7 +1076,7 @@ def _run_soak(browser: OwnedBrowser, arguments: argparse.Namespace) -> list[Brow
                         "Target.disposeBrowserContext",
                         {"browserContextId": context_id},
                     )
-                except BaseException:
+                except Exception:
                     pass
 
     threads = [threading.Thread(target=worker) for _ in range(arguments.concurrency)]
@@ -886,6 +1125,7 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--duration-seconds", type=float)
     parser.add_argument("--refresh-interval-seconds", type=float)
     parser.add_argument("--allow-edge-acceptance", action="store_true")
+    parser.add_argument("--enforce-slo", action="store_true")
     parser.add_argument("--edge-approval-reference")
     parser.add_argument("--probe-location", default="unknown")
     parser.add_argument("--device", default="unknown")
@@ -903,6 +1143,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     if any(value is not None for value in soak_values):
         if arguments.attempts is not None:
             parser.error("--attempts and soak mode are mutually exclusive")
+        if arguments.enforce_slo:
+            parser.error("--enforce-slo is only valid with sequential attempts")
         if any(value is None for value in soak_values):
             parser.error("soak mode requires concurrency, duration and refresh interval")
         if arguments.concurrency < 1:
@@ -912,7 +1154,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         arguments.mode = "soak"
     else:
         arguments.mode = "attempts"
-        arguments.attempts = arguments.attempts or 200
+        if arguments.attempts is None:
+            arguments.attempts = 200
         if arguments.attempts < 1:
             parser.error("--attempts must be positive")
     if arguments.timeout_seconds <= 0:
@@ -1007,6 +1250,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "minimum_attempt_period_seconds": arguments.minimum_attempt_period_seconds,
                 "ready_frame_url_substring": arguments.ready_frame_url_substring,
                 "edge_acceptance_approved": arguments.allow_edge_acceptance,
+                "enforce_slo": arguments.enforce_slo,
                 "edge_approval_reference": arguments.edge_approval_reference,
                 "output_parent_policy": "parent_must_exist; atomic_replace",
                 "soak_concurrency": arguments.concurrency,
@@ -1021,11 +1265,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         write_json_atomic(arguments.output_json, report)
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-        if arguments.mode == "soak":
-            return 0 if summary["failure_count"] == 0 else 1
-        if summary["formal_acceptance"]:
-            return 0 if summary["acceptance"] else 1
-        return 0 if summary["failure_count"] == 0 else 1
+        return browser_exit_code(
+            summary,
+            mode=arguments.mode,
+            enforce_slo=arguments.enforce_slo,
+        )
     finally:
         stop_owned_browser(browser)
 
