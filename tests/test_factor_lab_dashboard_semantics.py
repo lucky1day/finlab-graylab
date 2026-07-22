@@ -4,6 +4,8 @@ from copy import deepcopy
 from datetime import date
 
 import pytest
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import RowMapping
 
 from backend.factor_lab_dashboard_semantics import (
     DASHBOARD_SCHEMA_VERSION,
@@ -57,6 +59,19 @@ def _minimal_payload() -> dict[str, object]:
     }
 
 
+def _detail_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "predict_date": "2026-07-02",
+        "feature_date": "2026-07-01",
+        "target_date": "2026-07-03",
+        "prediction_phase": "scheduled_live",
+        "predicted_direction": 1,
+        "actual_direction": 1,
+    }
+    row.update(overrides)
+    return row
+
+
 def test_weekly_h1_prefers_latest_predict_date_then_latest_id() -> None:
     rows = [
         _live_row(id=1, feature_date="2026-07-01", predict_date="2026-07-02"),
@@ -69,6 +84,40 @@ def test_weekly_h1_prefers_latest_predict_date_then_latest_id() -> None:
 
     # 名称由计划固定；legacy 规则在 feature 相同时优先更早获批日，再取较大 ID。
     assert [row["id"] for row in selected] == [4]
+
+
+def test_canonical_accepts_row_mappings_and_isolates_four_dimensional_key() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    statement = text(
+        """
+        SELECT :id AS id, :scheme_id AS scheme_id,
+               :target_tenor AS target_tenor, :horizon AS horizon,
+               :predict_date AS predict_date, :feature_date AS feature_date,
+               :target_date AS target_date, :extra AS extra
+        """
+    )
+    candidates = [
+        _live_row(id=1, extra='{"frequency":"weekly"}'),
+        _live_row(
+            id=6,
+            predict_date="2026-07-03",
+            extra='{"frequency":"weekly"}',
+        ),
+        _live_row(id=2, scheme_id="weekly_blackbox_v2", extra="{}"),
+        _live_row(id=3, target_tenor="CDB5Y", extra="{}"),
+        _live_row(id=4, horizon=2, extra="{}"),
+        _live_row(id=5, target_date="2026-07-17", extra="{}"),
+    ]
+    with engine.connect() as conn:
+        rows = [
+            conn.execute(statement, candidate).mappings().one()
+            for candidate in candidates
+        ]
+
+    selected = choose_live_prediction_rows(rows, display_until="2026-07-31")
+
+    assert {row["id"] for row in selected} == {1, 2, 3, 4, 5}
+    assert all(isinstance(row, RowMapping) for row in selected)
 
 
 def test_future_predict_date_is_filtered_after_canonical_choice() -> None:
@@ -153,6 +202,45 @@ def test_compact_detail_preserves_feature_date_and_pending_actual() -> None:
         None,
     ]
     assert len(compact) == 6
+
+
+@pytest.mark.parametrize(
+    ("source", "overrides"),
+    [
+        pytest.param("live", {"prediction_phase": ""}, id="empty-live-phase"),
+        pytest.param(
+            "live",
+            {"prediction_phase": "preview_live"},
+            id="invalid-live-phase",
+        ),
+        pytest.param(
+            "backtest",
+            {"prediction_phase": "scheduled_live"},
+            id="nonempty-backtest-phase",
+        ),
+        pytest.param(
+            "live",
+            {"predicted_direction": 2},
+            id="invalid-predicted-direction",
+        ),
+        pytest.param(
+            "live",
+            {"actual_direction": 2},
+            id="invalid-live-actual-direction",
+        ),
+        pytest.param(
+            "backtest",
+            {"prediction_phase": None, "actual_direction": None},
+            id="pending-backtest-actual",
+        ),
+    ],
+)
+def test_compact_detail_rejects_invalid_phase_or_direction(
+    source: str,
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(DashboardDataError):
+        compact_detail_row(_detail_row(**overrides), source=source)
 
 
 def test_payload_rejects_unknown_task_type_or_row_width() -> None:
