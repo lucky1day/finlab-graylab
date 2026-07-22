@@ -35,6 +35,21 @@ Intake
 
 这样不会把任务输入、生成 benchmark 或参考交付物放入现有 `schemes/`、`outputs/` 或灰度实验室运行链路。
 
+### 1.1 独立任务的强隔离要求
+
+本任务不是 Bond Factor Lab 仓库中的新模块、方案或测试目录。除本设计文档外，任务实现不得在仓库内新增或修改任何文件。任务包必须满足：
+
+- 任务根目录位于 `/Users/macstudio0/Downloads/blackbox-v2-weekly-lgbm-3tenor-task/`，不位于项目 workspace；
+- 输入脚本、输入数据、Contract Schema、样例、benchmark、参考解和 verifier 均复制为任务包内的普通文件，不使用指向仓库或原始 Downloads 文件的软链接；
+- Docker build context 只能是独立任务根目录，不能把 Bond Factor Lab 仓库作为 build context 或 volume；
+- `Dockerfile`、`task.toml`、`solve.sh`、verifier 和六个参考产物不得包含 Bond Factor Lab 仓库的绝对路径；
+- verifier 不导入 `shared`、`harness`、`scheduler`、`backtests`、`backend` 或其他仓库模块；Contract、Gate 和 shadow 行为由任务包内的独立最小实现模拟；
+- `docker-compose.yaml` 不挂载仓库、MySQL socket、DataBridge current、生产配置、用户 conda 环境或现有报告目录；
+- 任务构建和测试不得读取真实 Registry、数据库、scheduler、launchd、API、前端或灰度记录；
+- 完整任务目录复制到另一台没有 Bond Factor Lab 仓库的机器后，仍可独立构建、运行 agent、执行 oracle solution 和完成评分。
+
+实现验收必须对任务目录执行路径和软链接扫描，并在暂时不可见的仓库路径条件下完成一次端到端验证。任何运行时仓库依赖都属于阻断失败。
+
 ## 2. 已知输入事实
 
 源脚本 SHA-256：
@@ -201,7 +216,7 @@ predicted_direction
 
 ## 6. 模拟技术入库
 
-Verifier 只在临时目录构造 synthetic platform state，不读取或修改真实项目状态。
+Verifier 是任务包自带的独立程序，只在临时目录构造 synthetic platform state，不导入仓库代码，不读取或修改真实项目状态。
 
 | 阶段 | 模拟检查 | 明确不做 |
 |---|---|---|
@@ -264,6 +279,8 @@ Shadow 模拟完成后，三个 trial 必须在 synthetic active API 和 schedul
 6. Docker image 构建；
 7. 容器内 agent workspace、verifier 权限和联网配置检查；
 8. `tests/test.sh` 端到端试运行；
-9. 确认现有仓库 `schemes/`、Registry 配置、数据库和灰度相关文件没有变化。
+9. 扫描任务包不存在指向仓库或原始输入位置的软链接、绝对路径和运行时导入；
+10. 在不挂载、不可访问 Bond Factor Lab 仓库的条件下完成一次独立端到端运行；
+11. 确认除本设计文档外，现有仓库没有任务实现文件，`schemes/`、Registry 配置、数据库和灰度相关文件没有变化。
 
-完成标准是：任务包结构完整、六个参考产物可执行、150 条 rubric 可逐项产生证据、oracle run 通过，且现有 Bond Factor Lab 运行状态零变化。
+完成标准是：任务包结构完整、六个参考产物可执行、150 条 rubric 可逐项产生证据、oracle run 通过、离开 Bond Factor Lab 仓库后仍可独立运行，且现有 Bond Factor Lab 运行状态零变化。
