@@ -117,7 +117,7 @@ def _create_dashboard_schema(engine: Engine) -> None:
                     tenor TEXT NOT NULL,
                     target_date TEXT NOT NULL,
                     direction_monthly INTEGER,
-                    target_rule TEXT NOT NULL
+                    target_rule TEXT
                 )
                 """
             )
@@ -532,6 +532,10 @@ def test_unconsumed_actual_scope_conflict_does_not_fail_snapshot(
                     ('5Y', '2026-07-15', 1,
                      'next_month_observation_yield_vs_feature_month_observation_yield'),
                     ('5Y', '2026-07-15', -1,
+                     'next_month_observation_yield_vs_feature_month_observation_yield'),
+                    ('5Y', '2026-07-16', 1, ''),
+                    ('5Y', '2026-07-17', 1, NULL),
+                    ('5Y', '2026-07-18', 7,
                      'next_month_observation_yield_vs_feature_month_observation_yield')
                 """
             )
@@ -549,6 +553,34 @@ def test_unconsumed_actual_scope_conflict_does_not_fail_snapshot(
     assert schemes["monthly__h1__10Y"]["live_rows"] == [
         ["2026-06-15", "2026-06-15", "2026-07-15", "gray_live", 1, 1]
     ]
+    assert len(trace.checkouts) == 1
+    assert len(trace.checkins) == 1
+
+
+def test_invalid_direction_in_active_actual_scope_fails_snapshot(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import DashboardDataError
+
+    engine, trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_monthly_actuals
+                    (tenor, target_date, direction_monthly, target_rule)
+                VALUES
+                    ('10Y', '2026-07-16', 7,
+                     'next_month_observation_yield_vs_feature_month_observation_yield')
+                """
+            )
+        )
+    trace.reset()
+
+    with pytest.raises(DashboardDataError, match="direction is invalid: 7"):
+        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
     assert len(trace.checkouts) == 1
     assert len(trace.checkins) == 1
 

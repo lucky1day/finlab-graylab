@@ -274,13 +274,17 @@ def _collapse_actual_rows(
 ) -> dict[tuple[str, str], dict[tuple[str, str, str], int | None]]:
     grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for row in actual_rows:
-        target_tenor = _required_text(
-            row.get("target_tenor"), field="target_tenor"
+        candidate_scope = (
+            row.get("target_tenor"),
+            row.get("actual_kind"),
+            row.get("target_rule"),
         )
+        if candidate_scope not in active_actual_scopes:
+            continue
+
+        _required_text(row.get("target_tenor"), field="target_tenor")
         actual_kind = _required_text(row.get("actual_kind"), field="actual_kind")
         target_rule = _required_text(row.get("target_rule"), field="target_rule")
-        if (target_tenor, actual_kind, target_rule) not in active_actual_scopes:
-            continue
         grouped[(actual_kind, target_rule)].append(row)
 
     return {
