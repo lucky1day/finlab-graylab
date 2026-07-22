@@ -1,7 +1,10 @@
 # 部署：本地灰度实验室外网只读访问
 
-落地 PRD [`docs/product/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md`](../docs/product/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md)。
-本目录是**配置 + 脚本**交付物，**不改任何业务代码**（backend / frontend / schemes / scheduler）。
+当前公网性能与访问控制规范以
+[`docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md`](../docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md)
+为准。Task 10 将把可执行性能验收手册落到
+`docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md`，并同步 `docs/operations/README.md`
+入口；该文件落地前不创建失效链接。历史公网 PRD 只作决策记录，不能覆盖当前规范。
 
 ## 链路
 
@@ -17,7 +20,7 @@ https://bond.finailab.cn/bond-factor-lab/
 
 | 机器 | 组件 | 交付物 |
 |------|------|--------|
-| 公网入口机 | Nginx 443 入口 + 访问控制 | `deploy/nginx/bond-factor-lab.conf`、`deploy/nginx/snippets/bond-proxy-headers.conf` |
+| 公网入口机 | Nginx 443 入口 + 访问控制 | `deploy/nginx/bond-factor-lab.conf`、`deploy/nginx/snippets/bond-proxy-headers.conf`（部署为版本化片段） |
 | 本地 Mac | 后端、scheduler、SSH 反向隧道 | `deploy/launchd/*.plist` |
 | 任意可联公网点 | 验收 / 监控 | `scripts/check_public_access.sh`、`scripts/healthcheck_alert.sh` |
 
@@ -33,12 +36,15 @@ https://bond.finailab.cn/bond-factor-lab/
 - actuals 每天 `08:30/19:00/23:45` 三档刷新；`23:45` 用于承接 BondPrediction `23:25` 左右的 Wind 日频导入。若源表在最后一档之后才补齐，非交易日 actuals job 会补刷上一交易日的 daily/weekly actual，避免前端 T+1 最新验证卡在上一交易日。
 - 慢速 source-backed 方案使用 `config.yaml.schedule.timeout_sec` 配置方案级 executor timeout，例如 10Y02 当前为 `3600` 秒；该配置只影响算法子进程等待预算，不改变业务 cron 或日期语义。
 
-## 访问控制（默认拒绝 + 展示白名单）
+## 访问控制（默认拒绝 + 精确展示白名单）
 
-由 Nginx 入口实现（PRD §6），后端不参与：
+Nginx 负责公网精确白名单、原始 URI guard、限流和短超时；后端负责一致性
+dashboard、健康状态、`Vary` 和隧道前 gzip。两层合同必须同时验收。
 
-- **放行（GET）**：`/bond-factor-lab/`、静态资源、`/api/health`、`/api/schemes`、`/api/metrics/{id}`、`/api/backtests/factor-lab`。
-- **403**：其余所有 `/api/*`（`predictions`/`actuals`/`targets`/`backtests/runs*`/`data-checks` 原始数据导出，`schemes/{id}/trigger`、`admin/registry/sync` 写入接口），以及任何非 GET 方法。
+- **始终放行（GET/HEAD）**：`/bond-factor-lab/`、必要的精确 HTML/CSS/JS/两个 SVG、`/api/health`、`/api/factor-lab/dashboard`。
+- **rollout 临时放行（GET/HEAD）**：旧 `/api/schemes`、`/api/metrics/{id}`、`/api/backtests/factor-lab`，供新旧前端兼容。
+- **final 拒绝**：上述三个旧展示 API 与其它所有页面/API。FastAPI 本机旧路由仍保留用于 harness 和回滚。
+- 双斜杠、明文/编码 dot segment、编码 slash/backslash、大小写和尾斜杠变体均 fail closed；写接口始终拒绝。
 
 > Nginx location 优先级细节见 `deploy/nginx/bond-factor-lab.conf` 顶部注释。
 
@@ -47,14 +53,45 @@ https://bond.finailab.cn/bond-factor-lab/
 ### 1) 公网入口机：Nginx
 
 ```bash
-# 复制配置与公共片段
-sudo cp deploy/nginx/bond-factor-lab.conf       /etc/nginx/sites-available/bond-factor-lab
-sudo cp deploy/nginx/snippets/bond-proxy-headers.conf /etc/nginx/snippets/
-sudo ln -sf /etc/nginx/sites-available/bond-factor-lab /etc/nginx/sites-enabled/bond-factor-lab
+# 安装版本化公共片段；旧 site 的片段不被覆盖，回滚仍是完整旧策略。
+sudo install -m 0644 deploy/nginx/snippets/bond-proxy-headers.conf \
+  /etc/nginx/snippets/bond-proxy-headers-20260722a.conf
 
-# 按入口机实际情况确认：TLS 证书路径、80->443 跳转是否已有（见 conf 注释，二选一）
-sudo nginx -t && sudo systemctl reload nginx
+# 构造不可由请求参数控制的版本化候选；首阶段固定 rollout。
+release_stage=rollout
+policy_version=20260722a
+candidate_file="$(mktemp)"
+trap 'rm -f -- "$candidate_file"' EXIT
+sed "s/^    default rollout;$/    default ${release_stage};/" \
+  deploy/nginx/bond-factor-lab.conf >"$candidate_file"
+test "$(grep -Ec '^    default (rollout|final);$' "$candidate_file")" -eq 1
+grep -Fxq "    default ${release_stage};" "$candidate_file"
+target="/etc/nginx/sites-available/bond-factor-lab-${policy_version}-${release_stage}"
+active="/etc/nginx/sites-enabled/bond-factor-lab"
+sudo install -m 0644 "$candidate_file" "$target"
+
+# 原子切换 symlink；运行中的 Nginx 在 reload 前继续使用旧内存配置。
+previous_target="$(readlink -f "$active" 2>/dev/null || true)"
+sudo ln -sfn "$target" "${active}.next"
+sudo mv -Tf "${active}.next" "$active"
+if sudo nginx -t; then
+  sudo systemctl reload nginx
+else
+  if [[ -n "$previous_target" ]]; then
+    sudo ln -sfn "$previous_target" "${active}.rollback"
+    sudo mv -Tf "${active}.rollback" "$active"
+  else
+    sudo rm -f -- "$active"
+  fi
+  sudo nginx -t
+  exit 1
+fi
 ```
+
+切换 final 使用完全相同的命令块，只把 `release_stage=final`；候选由同一
+`20260722a` 模板生成，`nginx -t` 成功后才 reload。不得现场删除或注释 legacy
+location。仓库 site 文件不包含 `events {}` / `http {}`，因此不能执行
+`nginx -t -c deploy/nginx/bond-factor-lab.conf`；Task 12 必须在入口机真实完整配置中验证。
 
 ### 2) 本地 Mac：SSH 反向隧道（launchd 常驻）
 
@@ -113,11 +150,14 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler
 ## 验收
 
 ```bash
-# 200/403 矩阵（在能访问公网的机器上运行；覆盖 R3/R4/R5/R6/R8）
-bash scripts/check_public_access.sh
-# -> 退出码 0；逐项 PASS
+# rollout：dashboard + 旧三类展示 API 均可达
+scripts/check_public_access.sh --mode rollout https://bond.finailab.cn
 
-# 前端回归（本地，PRD §8.3）
+# final：旧三类展示 API 已拒绝；其余协议/安全矩阵不变
+scripts/check_public_access.sh --mode final https://bond.finailab.cn
+# -> 退出码 0；每项输出 code/size/time
+
+# 前端回归（本地）
 conda run -n bond_factor_lab_service python -m unittest tests.test_frontend_factor_lab
 
 # 本地不受影响（仅公网被收口）
@@ -148,9 +188,9 @@ conda run -n bond_factor_lab_service python scripts/check_production_daily_healt
 ## 回滚
 
 ```bash
-# 入口机：摘掉 Nginx 站点
-sudo rm -f /etc/nginx/sites-enabled/bond-factor-lab
-sudo nginx -t && sudo systemctl reload nginx
+# 入口机：先把同版本策略切回 rollout，恢复旧前端依赖 API
+# （复用上文原子切换块，release_stage=rollout）
+scripts/check_public_access.sh --mode rollout https://bond.finailab.cn
 
 # 本地 Mac：停隧道
 launchctl bootout gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
@@ -163,4 +203,4 @@ launchctl bootout gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
 
 - 真实 `BOND_ADMIN_TOKEN`、SSH 私钥**不入库**（仓库内只放占位符）。
 - 隧道远端绑 `127.0.0.1:18100`，公网无法直连裸后端，只有入口机本地 Nginx 可达。
-- 展示接口的 JSON 在浏览器天然可见（客户端渲染）；用户能取得的不超过页面已展示内容（PRD §6.3）。
+- 展示接口的 JSON 在浏览器天然可见（客户端渲染）；精确白名单只允许当前页面所需的数据面。
