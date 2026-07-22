@@ -158,6 +158,43 @@ class CountingWaitCondition(threading.Condition):
         return super().wait(timeout)
 
 
+class CancelNextEnterCondition(threading.Condition):
+    """让指定线程下一次进入 Condition 临界区时取消一次。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cancel_lock = threading.Lock()
+        self._cancel_thread_name: str | None = None
+        self._cancel_error: BaseException | None = None
+        self.notified = threading.Event()
+
+    def cancel_next_enter(
+        self,
+        thread_name: str,
+        error: BaseException,
+    ) -> None:
+        with self._cancel_lock:
+            if self._cancel_thread_name is not None:
+                raise RuntimeError("a Condition enter cancellation is already armed")
+            self._cancel_thread_name = thread_name
+            self._cancel_error = error
+
+    def __enter__(self) -> Any:
+        error: BaseException | None = None
+        with self._cancel_lock:
+            if threading.current_thread().name == self._cancel_thread_name:
+                error = self._cancel_error
+                self._cancel_thread_name = None
+                self._cancel_error = None
+        if error is not None:
+            raise error
+        return super().__enter__()
+
+    def notify_all(self) -> None:
+        self.notified.set()
+        super().notify_all()
+
+
 class MutableMonotonic:
     """可在测试中切换为任意（含非法）返回值的时钟。"""
 
@@ -700,6 +737,116 @@ def test_baseexception_owner_reraises_but_waiter_gets_safe_error() -> None:
     assert errors["owner"] is signal
     assert isinstance(errors["waiter"], SnapshotUnavailable)
     assert errors["waiter"].__cause__ is signal
+    assert store._flight is None
+
+    retry = store.get()
+    assert retry.cache_status == "MISS"
+    assert retry.payload["snapshot_id"] == "retry"
+    assert builder.calls == 2
+
+
+def test_success_publication_cancellation_finalizes_flight_and_allows_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publication_cancel = KeyboardInterrupt("publish acquire cancelled")
+    condition = CancelNextEnterCondition()
+    monkeypatch.setattr(snapshot_module, "Condition", lambda: condition)
+    clock = ManualMonotonic()
+    builder = ControlledBuilder(
+        {"snapshot_id": "discarded"},
+        {"snapshot_id": "retry"},
+        blocked_call=1,
+    )
+    store = DashboardSnapshotStore(
+        builder,
+        wait_timeout_seconds=1.0,
+        monotonic=clock,
+    )
+    results: dict[str, SnapshotResult] = {}
+    errors: dict[str, BaseException] = {}
+    owner_thread = _start_get(
+        store,
+        name="publication-owner",
+        results=results,
+        errors=errors,
+    )
+    assert builder.started.wait(timeout=3.0)
+    waiter_entered, waiter_release = clock.gate_next_call("publication-waiter")
+    waiter_thread = _start_get(
+        store,
+        name="publication-waiter",
+        results=results,
+        errors=errors,
+    )
+    try:
+        assert waiter_entered.wait(timeout=3.0)
+        condition.cancel_next_enter("publication-owner", publication_cancel)
+    finally:
+        waiter_release.set()
+        builder.release.set()
+        _join_all([owner_thread, waiter_thread])
+
+    assert errors["publication-owner"] is publication_cancel
+    assert isinstance(errors["publication-waiter"], SnapshotUnavailable)
+    assert errors["publication-waiter"].__cause__ is publication_cancel
+    assert condition.notified.is_set()
+    assert store._building is False
+    assert store._flight is None
+    assert store._payload is None
+
+    retry = store.get()
+    assert retry.cache_status == "MISS"
+    assert retry.payload["snapshot_id"] == "retry"
+    assert builder.calls == 2
+
+
+def test_failure_cleanup_retries_one_cancellation_and_preserves_original_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_signal = SystemExit("builder stopped")
+    cleanup_cancel = KeyboardInterrupt("cleanup acquire cancelled")
+    condition = CancelNextEnterCondition()
+    monkeypatch.setattr(snapshot_module, "Condition", lambda: condition)
+    clock = ManualMonotonic()
+    builder = ControlledBuilder(
+        original_signal,
+        {"snapshot_id": "retry"},
+        blocked_call=1,
+    )
+    store = DashboardSnapshotStore(
+        builder,
+        wait_timeout_seconds=1.0,
+        monotonic=clock,
+    )
+    results: dict[str, SnapshotResult] = {}
+    errors: dict[str, BaseException] = {}
+    owner_thread = _start_get(
+        store,
+        name="failure-owner",
+        results=results,
+        errors=errors,
+    )
+    assert builder.started.wait(timeout=3.0)
+    waiter_entered, waiter_release = clock.gate_next_call("failure-waiter")
+    waiter_thread = _start_get(
+        store,
+        name="failure-waiter",
+        results=results,
+        errors=errors,
+    )
+    try:
+        assert waiter_entered.wait(timeout=3.0)
+        condition.cancel_next_enter("failure-owner", cleanup_cancel)
+    finally:
+        waiter_release.set()
+        builder.release.set()
+        _join_all([owner_thread, waiter_thread])
+
+    assert errors["failure-owner"] is original_signal
+    assert isinstance(errors["failure-waiter"], SnapshotUnavailable)
+    assert errors["failure-waiter"].__cause__ is original_signal
+    assert condition.notified.is_set()
+    assert store._building is False
     assert store._flight is None
 
     retry = store.get()

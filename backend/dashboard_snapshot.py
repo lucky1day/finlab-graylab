@@ -77,8 +77,7 @@ class DashboardSnapshotStore:
         self._builder = builder
         self._monotonic = monotonic
         self._condition = Condition()
-        self._payload: dict | None = None
-        self._built_at: float | None = None
+        self._snapshot: tuple[dict, float] | None = None
         self._building = False
         self._flight: _Flight | None = None
 
@@ -138,56 +137,52 @@ class DashboardSnapshotStore:
             frozen_payload = _freeze(payload)
             build_finished_at = self._sample_monotonic()
             build_seconds = _elapsed(build_finished_at, build_started_at)
-        except BaseException as error:  # noqa: BLE001 - 必须释放所有 flight
-            with self._condition:
-                flight.error = error
-                flight.done = True
-                self._building = False
-                if self._flight is flight:
-                    self._flight = None
-                self._condition.notify_all()
-
-            # SystemExit/KeyboardInterrupt 等进程控制信号只在 owner 原样传播；
-            # waiter 通过 flight.error 仍转换为 STALE/SnapshotUnavailable。
-            if not isinstance(error, Exception):
-                raise
-
-            try:
-                failed_at = self._sample_monotonic()
-            except Exception:
-                failed_at = build_started_at
-            with self._condition:
-                return self._stale_or_raise(
-                    observed_at=failed_at,
-                    message="dashboard snapshot build failed",
-                    cause=error,
-                )
-
-        with self._condition:
-            self._payload = frozen_payload
-            self._built_at = build_finished_at
-            flight.done = True
-            self._building = False
-            if self._flight is flight:
-                self._flight = None
-            self._condition.notify_all()
-            return SnapshotResult(
+            result = SnapshotResult(
                 payload=frozen_payload,
                 cache_status="MISS",
                 age_seconds=0.0,
                 build_seconds=build_seconds,
             )
+        except BaseException as error:  # noqa: BLE001 - 必须释放所有 flight
+            return self._finish_owner_failure(
+                flight,
+                error=error,
+                build_started_at=build_started_at,
+            )
+
+        try:
+            self._publish_success(
+                flight,
+                snapshot=(frozen_payload, build_finished_at),
+            )
+        except BaseException as error:  # noqa: BLE001 - 发布取消也必须完成 flight
+            return self._finish_owner_failure(
+                flight,
+                error=error,
+                build_started_at=build_started_at,
+            )
+        return result
 
     def prewarm(self) -> SnapshotResult:
         """按与请求相同的规则预构建或复用快照。"""
         return self.get()
 
     def _is_fresh(self, observed_at: float) -> bool:
-        return (
-            self._payload is not None
-            and self._built_at is not None
-            and _elapsed(observed_at, self._built_at) < self._ttl_seconds
-        )
+        snapshot = self._snapshot
+        return snapshot is not None and _elapsed(
+            observed_at,
+            snapshot[1],
+        ) < self._ttl_seconds
+
+    @property
+    def _payload(self) -> dict | None:
+        snapshot = self._snapshot
+        return None if snapshot is None else snapshot[0]
+
+    @property
+    def _built_at(self) -> float | None:
+        snapshot = self._snapshot
+        return None if snapshot is None else snapshot[1]
 
     def _sample_monotonic(self) -> float:
         return _finite_monotonic_sample(
@@ -200,12 +195,14 @@ class DashboardSnapshotStore:
         cache_status: Literal["HIT", "STALE"],
         observed_at: float,
     ) -> SnapshotResult:
-        if self._payload is None or self._built_at is None:
+        snapshot = self._snapshot
+        if snapshot is None:
             raise SnapshotUnavailable("dashboard snapshot is unavailable")
+        payload, built_at = snapshot
         return SnapshotResult(
-            payload=self._payload,
+            payload=payload,
             cache_status=cache_status,
-            age_seconds=_elapsed(observed_at, self._built_at),
+            age_seconds=_elapsed(observed_at, built_at),
             build_seconds=None,
         )
 
@@ -216,11 +213,89 @@ class DashboardSnapshotStore:
         message: str,
         cause: BaseException | None = None,
     ) -> SnapshotResult:
-        if self._payload is not None:
+        if self._snapshot is not None:
             return self._cached_result("STALE", observed_at)
         if cause is None:
             raise SnapshotUnavailable(message)
         raise SnapshotUnavailable(message) from cause
+
+    def _publish_success(
+        self,
+        flight: _Flight,
+        *,
+        snapshot: tuple[dict, float],
+    ) -> None:
+        """原子发布成功快照；临界区取消时回滚为原 LKG。"""
+        with self._condition:
+            previous_snapshot = self._snapshot
+            try:
+                self._snapshot = snapshot
+                flight.done = True
+                self._building = False
+                if self._flight is flight:
+                    self._flight = None
+                self._condition.notify_all()
+            except BaseException:  # noqa: BLE001 - 回滚半完成发布
+                self._snapshot = previous_snapshot
+                flight.error = None
+                flight.done = False
+                self._building = True
+                self._flight = flight
+                raise
+
+    def _finish_owner_failure(
+        self,
+        flight: _Flight,
+        *,
+        error: BaseException,
+        build_started_at: float,
+    ) -> SnapshotResult:
+        cleanup_error = self._finalize_failed_flight(flight, error=error)
+
+        # SystemExit/KeyboardInterrupt 等进程控制信号只在 owner 原样传播；
+        # waiter 通过 flight.error 仍转换为 STALE/SnapshotUnavailable。
+        if not isinstance(error, Exception):
+            raise error
+        if cleanup_error is not None and not isinstance(cleanup_error, Exception):
+            raise cleanup_error
+
+        try:
+            failed_at = self._sample_monotonic()
+        except Exception:
+            failed_at = build_started_at
+        with self._condition:
+            return self._stale_or_raise(
+                observed_at=failed_at,
+                message="dashboard snapshot build failed",
+                cause=error,
+            )
+
+    def _finalize_failed_flight(
+        self,
+        flight: _Flight,
+        *,
+        error: BaseException,
+    ) -> BaseException | None:
+        """失败清理最多容忍一次获取锁取消，避免永久 building。"""
+        first_cleanup_error: BaseException | None = None
+        for attempt in range(2):
+            try:
+                with self._condition:
+                    flight.error = error
+                    flight.done = True
+                    self._building = False
+                    if self._flight is flight:
+                        self._flight = None
+                    self._condition.notify_all()
+                return first_cleanup_error
+            except BaseException as cleanup_error:  # noqa: BLE001 - 有限清理重试
+                if first_cleanup_error is None:
+                    first_cleanup_error = cleanup_error
+                if attempt == 1:
+                    if not isinstance(error, Exception):
+                        raise error
+                    raise cleanup_error
+        raise RuntimeError("unreachable failed-flight finalization state")
 
 
 def _validated_duration(
