@@ -182,6 +182,26 @@ def _seed_predictions(engine) -> None:
         )
 
 
+class DashboardServingRegistrationTests(unittest.TestCase):
+    def test_dashboard_get_head_and_q_aware_gzip_are_registered(self) -> None:
+        from backend import main
+        from backend.http_compression import QAwareGZipMiddleware
+
+        route_methods = [
+            route.methods
+            for route in main.app.routes
+            if getattr(route, "path", None) == "/api/factor-lab/dashboard"
+        ]
+        self.assertIn({"GET"}, route_methods)
+        self.assertIn({"HEAD"}, route_methods)
+        self.assertTrue(
+            any(
+                middleware.cls is QAwareGZipMiddleware
+                for middleware in main.app.user_middleware
+            )
+        )
+
+
 class BackendPredictionServingTests(unittest.TestCase):
     def test_list_schemes_returns_active_registry_rows_only(self) -> None:
         from backend.services import list_schemes

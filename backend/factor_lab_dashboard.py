@@ -3,10 +3,12 @@ from __future__ import annotations
 import gzip
 import json
 import logging
-from collections import defaultdict
+import time
+from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
+from threading import Lock
 from typing import Any, Iterator, Mapping
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -45,6 +47,9 @@ MAX_ACTUAL_SOURCE_ROWS = 80_000
 MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
 MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
 logger = logging.getLogger(__name__)
+_DIAGNOSTICS_LIMIT = 8
+_diagnostics_lock = Lock()
+_diagnostics_by_snapshot_id: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,12 +93,14 @@ def build_factor_lab_dashboard(
     captured_at: datetime | None = None,
 ) -> dict[str, Any]:
     """在一个一致性事务内批量读取并构建因子实验室 live 快照。"""
+    build_started_at = time.perf_counter()
     captured = captured_at or datetime.now(SHANGHAI_TIMEZONE)
     if not isinstance(captured, _DATETIME_TYPE) or captured.tzinfo is None:
         raise DashboardDataError("dashboard captured_at must be timezone-aware")
     captured = captured.astimezone(SHANGHAI_TIMEZONE)
     display_until = captured.date().isoformat()
 
+    db_read_started_at = time.perf_counter()
     with dashboard_read_connection(engine) as connection:
         registry_rows = _read_active_registry(connection)
         target_rows = _read_active_targets(connection)
@@ -110,7 +117,9 @@ def build_factor_lab_dashboard(
                 {int(row["id"]) for row in selected_backtest_runs.values()}
             ),
         )
+    db_read_seconds = time.perf_counter() - db_read_started_at
 
+    canonical_started_at = time.perf_counter()
     registry = [_registry_dto(row) for row in registry_rows]
     targets = [_target_dto(row) for row in target_rows]
     target_labels = {
@@ -165,6 +174,8 @@ def build_factor_lab_dashboard(
         ].append(row)
 
     schemes: list[dict[str, Any]] = []
+    live_row_count = 0
+    backtest_row_count = 0
     for scheme in registry:
         selector = live_actual_selector(scheme["task_type"])
         live_rows: list[list[Any]] = []
@@ -187,6 +198,7 @@ def build_factor_lab_dashboard(
             detail = dict(prediction)
             detail["actual_direction"] = actual_direction
             live_rows.append(compact_detail_row(detail, source="live"))
+            live_row_count += 1
 
         selected_run = selected_backtest_runs.get(scheme["scheme_id"])
         backtest = None
@@ -221,6 +233,7 @@ def build_factor_lab_dashboard(
                 compact_backtest_rows.append(
                     compact_detail_row(detail, source="backtest")
                 )
+                backtest_row_count += 1
             compact_backtest_rows.sort(key=_compact_row_sort_key)
             benchmark_id = _required_text(
                 selected_run.get("benchmark_id"),
@@ -265,11 +278,54 @@ def build_factor_lab_dashboard(
         "schemes": schemes,
     }
     validate_dashboard_payload(payload)
+    canonical_build_seconds = time.perf_counter() - canonical_started_at
     # This checks the canonical builder snapshot only. Task 6 must encode the
     # final stale/snapshot_age_ms body and verify actual identity/gzip ASGI wire
     # bytes after the route and middleware are integrated.
-    _validate_canonical_snapshot_budgets(payload)
+    serialization_started_at = time.perf_counter()
+    encoding = _validate_canonical_snapshot_budgets(
+        payload,
+        detail_rows=live_row_count + backtest_row_count,
+    )
+    canonical_serialization_seconds = (
+        time.perf_counter() - serialization_started_at
+    )
+    _record_build_diagnostics(
+        payload["snapshot_id"],
+        {
+            "snapshot_id": payload["snapshot_id"],
+            "db_read_seconds": db_read_seconds,
+            "canonical_build_seconds": canonical_build_seconds,
+            "canonical_serialization_seconds": canonical_serialization_seconds,
+            "build_seconds": time.perf_counter() - build_started_at,
+            "scheme_count": len(schemes),
+            "live_row_count": live_row_count,
+            "backtest_row_count": backtest_row_count,
+            "detail_row_count": live_row_count + backtest_row_count,
+            "raw_bytes": encoding.raw_size,
+            "gzip_bytes": encoding.gzip_size,
+        },
+    )
     return payload
+
+
+def dashboard_build_diagnostics(snapshot_id: str) -> dict[str, Any] | None:
+    """返回指定成功快照的有界构建诊断副本。"""
+    with _diagnostics_lock:
+        diagnostics = _diagnostics_by_snapshot_id.get(snapshot_id)
+        return None if diagnostics is None else dict(diagnostics)
+
+
+def _record_build_diagnostics(
+    snapshot_id: str,
+    diagnostics: Mapping[str, Any],
+) -> None:
+    """线程安全保存最近少量成功快照的构建诊断。"""
+    with _diagnostics_lock:
+        _diagnostics_by_snapshot_id[snapshot_id] = dict(diagnostics)
+        _diagnostics_by_snapshot_id.move_to_end(snapshot_id)
+        while len(_diagnostics_by_snapshot_id) > _DIAGNOSTICS_LIMIT:
+            _diagnostics_by_snapshot_id.popitem(last=False)
 
 
 def _read_active_registry(connection: Connection) -> list[Mapping[str, Any]]:
@@ -596,13 +652,16 @@ def encode_canonical_snapshot(payload: Mapping[str, Any]) -> SnapshotEncoding:
 
 def _validate_canonical_snapshot_budgets(
     payload: Mapping[str, Any],
+    *,
+    detail_rows: int | None = None,
 ) -> SnapshotEncoding:
-    detail_rows = 0
-    for scheme in payload["schemes"]:
-        detail_rows += len(scheme["live_rows"])
-        backtest = scheme["backtest"]
-        if backtest is not None:
-            detail_rows += len(backtest["rows"])
+    if detail_rows is None:
+        detail_rows = 0
+        for scheme in payload["schemes"]:
+            detail_rows += len(scheme["live_rows"])
+            backtest = scheme["backtest"]
+            if backtest is not None:
+                detail_rows += len(backtest["rows"])
     if detail_rows > MAX_DETAIL_ROWS:
         raise DashboardDataError(
             "dashboard detail rows exceed budget: "

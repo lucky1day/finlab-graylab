@@ -53,6 +53,8 @@ class _Flight:
     """一次构建状态；单一 outcome 引用是唯一 terminal 事实。"""
 
     outcome: _FlightOutcome | None = None
+    waiter_count: int = 0
+    active_waiter_count: int = 0
 
     @property
     def done(self) -> bool:
@@ -94,6 +96,8 @@ class DashboardSnapshotStore:
         self._condition = Condition()
         self._snapshot: tuple[dict, float] | None = None
         self._flight: _Flight | None = None
+        self._last_waiter_count = 0
+        self._last_build_seconds: float | None = None
 
     def get(self) -> SnapshotResult:
         """返回新鲜快照，或参与唯一构建并显式降级到 stale LKG。"""
@@ -110,38 +114,52 @@ class DashboardSnapshotStore:
                 flight = flight_at_entry
                 if flight is None:  # pragma: no cover - narrowed above
                     raise RuntimeError("snapshot flight capture is inconsistent")
-                wait_started_at = _sample_wait_monotonic()
-                wait_deadline = wait_started_at + self._wait_timeout_seconds
-                if not math.isfinite(wait_deadline):
-                    raise ValueError("wait monotonic deadline must be finite")
-                while not flight.done:
-                    remaining = wait_deadline - _sample_wait_monotonic()
-                    if remaining <= 0.0:
-                        break
-                    self._condition.wait(timeout=remaining)
+                flight.waiter_count += 1
+                flight.active_waiter_count += 1
+                try:
+                    wait_started_at = _sample_wait_monotonic()
+                    wait_deadline = (
+                        wait_started_at + self._wait_timeout_seconds
+                    )
+                    if not math.isfinite(wait_deadline):
+                        raise ValueError(
+                            "wait monotonic deadline must be finite"
+                        )
+                    while not flight.done:
+                        remaining = wait_deadline - _sample_wait_monotonic()
+                        if remaining <= 0.0:
+                            break
+                        self._condition.wait(timeout=remaining)
 
-                resumed_at = _sample_wait_monotonic()
-                observed_at = self._sample_monotonic()
-                completed_in_time = flight.done and resumed_at <= wait_deadline
-                if not completed_in_time:
+                    resumed_at = _sample_wait_monotonic()
+                    observed_at = self._sample_monotonic()
+                    completed_in_time = (
+                        flight.done and resumed_at <= wait_deadline
+                    )
+                    if not completed_in_time:
+                        return self._stale_or_raise(
+                            observed_at=observed_at,
+                            message="dashboard snapshot build timed out",
+                        )
+
+                    # 恢复时先看全局缓存：旧失败 flight 的 waiter 可能已经错过一次
+                    # 后续成功 rebuild，不能把那个新鲜 payload 错标为 STALE。
+                    if self._is_fresh(observed_at):
+                        return self._cached_result("HIT", observed_at)
                     return self._stale_or_raise(
                         observed_at=observed_at,
-                        message="dashboard snapshot build timed out",
+                        message=(
+                            "dashboard snapshot build failed"
+                            if flight.error is not None
+                            else (
+                                "dashboard snapshot expired before waiter "
+                                "resumed"
+                            )
+                        ),
+                        cause=flight.error,
                     )
-
-                # 恢复时先看全局缓存：旧失败 flight 的 waiter 可能已经错过一次
-                # 后续成功 rebuild，不能把那个新鲜 payload 错标为 STALE。
-                if self._is_fresh(observed_at):
-                    return self._cached_result("HIT", observed_at)
-                return self._stale_or_raise(
-                    observed_at=observed_at,
-                    message=(
-                        "dashboard snapshot build failed"
-                        if flight.error is not None
-                        else "dashboard snapshot expired before waiter resumed"
-                    ),
-                    cause=flight.error,
-                )
+                finally:
+                    flight.active_waiter_count -= 1
 
             flight = _Flight()
             self._flight = flight
@@ -171,6 +189,7 @@ class DashboardSnapshotStore:
             published = self._publish_success(
                 flight,
                 snapshot=(frozen_payload, build_finished_at),
+                build_seconds=build_seconds,
             )
         except BaseException as error:  # noqa: BLE001 - 发布取消也必须完成 flight
             return self._finish_owner_failure(
@@ -192,6 +211,19 @@ class DashboardSnapshotStore:
     def prewarm(self) -> SnapshotResult:
         """按与请求相同的规则预构建或复用快照。"""
         return self.get()
+
+    def diagnostics(self) -> dict[str, int | float | None]:
+        """返回 single-flight 的只读计数和最近一次构建耗时。"""
+        with self._condition:
+            flight = self._flight
+            active_waiter_count = (
+                0 if flight is None else flight.active_waiter_count
+            )
+            return {
+                "active_waiter_count": active_waiter_count,
+                "last_waiter_count": self._last_waiter_count,
+                "last_build_seconds": self._last_build_seconds,
+            }
 
     def _is_fresh(self, observed_at: float) -> bool:
         snapshot = self._snapshot
@@ -255,6 +287,7 @@ class DashboardSnapshotStore:
         flight: _Flight,
         *,
         snapshot: tuple[dict, float],
+        build_seconds: float = 0.0,
     ) -> bool:
         """原子发布成功快照；临界区取消时回滚为原 LKG。"""
         terminal_error: BaseException | None = None
@@ -262,8 +295,12 @@ class DashboardSnapshotStore:
             if self._flight is not flight or flight.done:
                 return False
             previous_snapshot = self._snapshot
+            previous_waiter_count = self._last_waiter_count
+            previous_build_seconds = self._last_build_seconds
             try:
                 self._snapshot = snapshot
+                self._last_waiter_count = flight.waiter_count
+                self._last_build_seconds = build_seconds
                 terminal_error = _publish_flight_outcome(
                     flight,
                     _FlightOutcome(error=None),
@@ -273,6 +310,8 @@ class DashboardSnapshotStore:
             except BaseException:  # noqa: BLE001 - 回滚半完成发布
                 if flight.outcome is None:
                     self._snapshot = previous_snapshot
+                    self._last_waiter_count = previous_waiter_count
+                    self._last_build_seconds = previous_build_seconds
                     self._flight = flight
                 else:
                     # outcome 已 terminal 时绝不能回退为 active；snapshot tuple
@@ -327,6 +366,7 @@ class DashboardSnapshotStore:
                 with self._condition:
                     if self._flight is not flight:
                         return first_cleanup_error
+                    self._last_waiter_count = flight.waiter_count
                     self._flight = None
                     self._condition.notify_all()
                 return first_cleanup_error

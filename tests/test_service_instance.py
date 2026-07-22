@@ -145,21 +145,42 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             "fingerprint_version": "2",
             "fingerprint": "f" * 64,
         }
-        with (
-            patch.object(main, "get_engine", return_value=engine),
-            patch.object(main, "build_service_instance_identity", return_value=identity) as build,
-            patch.dict(
-                "os.environ",
-                {
-                    "BOND_FACTOR_LAB_RUNTIME_PROFILE": "blackbox-v2-v1",
-                    "BOND_FACTOR_LAB_INSTANCE_NONCE": "explicit-instance",
-                    "HARNESS_AUTH_SECRET": "shared-formal-gate-secret-for-tests",
-                },
-            ),
-        ):
-            result = main.health()
+        original_dashboard_health = main._dashboard_health_snapshot()
+        main._set_dashboard_health("ready", None)
+        try:
+            with (
+                patch.object(main, "get_engine", return_value=engine),
+                patch.object(
+                    main,
+                    "build_service_instance_identity",
+                    return_value=identity,
+                ) as build,
+                patch.dict(
+                    "os.environ",
+                    {
+                        "BOND_FACTOR_LAB_RUNTIME_PROFILE": "blackbox-v2-v1",
+                        "BOND_FACTOR_LAB_INSTANCE_NONCE": "explicit-instance",
+                        "HARNESS_AUTH_SECRET": (
+                            "shared-formal-gate-secret-for-tests"
+                        ),
+                    },
+                ),
+            ):
+                result = main.health()
+        finally:
+            main._set_dashboard_health(
+                original_dashboard_health["status"],
+                original_dashboard_health["error_code"],
+            )
 
-        self.assertEqual(result, {"status": "ok", "service_instance": identity})
+        self.assertEqual(
+            result,
+            {
+                "status": "ok",
+                "service_instance": identity,
+                "dashboard_snapshot": {"status": "ready", "error_code": None},
+            },
+        )
         self.assertEqual(engine.queries[0].upper(), "SELECT 1")
         self.assertEqual(build.call_args.kwargs["instance_nonce"], "explicit-instance")
         self.assertEqual(
@@ -171,23 +192,64 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
         from backend import main
 
         engine = _Engine(schema="native_service")
-        with (
-            patch.object(main, "get_engine", return_value=engine),
-            patch.dict("os.environ", {}, clear=True),
-        ):
-            result = main.health()
+        original_dashboard_health = main._dashboard_health_snapshot()
+        main._set_dashboard_health("ready", None)
+        try:
+            with (
+                patch.object(main, "get_engine", return_value=engine),
+                patch.dict("os.environ", {}, clear=True),
+            ):
+                result = main.health()
+        finally:
+            main._set_dashboard_health(
+                original_dashboard_health["status"],
+                original_dashboard_health["error_code"],
+            )
 
         self.assertEqual(
             result,
             {
                 "status": "ok",
                 "service_instance": {"fingerprint_version": "2", "fingerprint": None},
+                "dashboard_snapshot": {"status": "ready", "error_code": None},
             },
         )
         serialized = json.dumps(result, sort_keys=True)
         self.assertNotIn("database_identity_sha256", serialized)
         self.assertNotIn("nonce_sha256", serialized)
         self.assertEqual(engine.queries, ["SELECT 1"])
+
+    def test_health_dashboard_degraded_uses_stable_code_without_internal_error(self) -> None:
+        from backend import main
+
+        engine = _Engine(schema="native_service")
+        original_dashboard_health = main._dashboard_health_snapshot()
+        main._set_dashboard_health(
+            "degraded",
+            "dashboard_snapshot_unavailable",
+        )
+        try:
+            with (
+                patch.object(main, "get_engine", return_value=engine),
+                patch.dict("os.environ", {}, clear=True),
+            ):
+                result = main.health()
+        finally:
+            main._set_dashboard_health(
+                original_dashboard_health["status"],
+                original_dashboard_health["error_code"],
+            )
+
+        self.assertEqual(
+            result["dashboard_snapshot"],
+            {
+                "status": "degraded",
+                "error_code": "dashboard_snapshot_unavailable",
+            },
+        )
+        serialized = json.dumps(result, sort_keys=True)
+        self.assertNotIn("mysql", serialized.casefold())
+        self.assertNotIn("traceback", serialized.casefold())
 
     def test_health_without_fingerprint_secret_still_fails_when_database_is_unavailable(self) -> None:
         from backend import main

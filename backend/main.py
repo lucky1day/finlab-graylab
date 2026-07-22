@@ -1,17 +1,46 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import secrets
+import time
+from html.parser import HTMLParser
 from pathlib import Path
+from threading import Lock
+from typing import Any, Literal
+from urllib.parse import parse_qsl, urlsplit
+from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from backend.db import get_engine
+from backend.dashboard_snapshot import (
+    DashboardSnapshotStore,
+    SnapshotResult,
+    SnapshotUnavailable,
+)
+from backend.factor_lab_dashboard import (
+    build_factor_lab_dashboard,
+    dashboard_build_diagnostics,
+    encode_canonical_snapshot,
+)
+from backend.factor_lab_dashboard_semantics import DashboardDataError
+from backend.http_compression import QAwareGZipMiddleware
 from backend.services import (
     backtest_diffs,
     backtest_factor_lab_results,
@@ -38,20 +67,149 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = PROJECT_ROOT / "frontend"
 DEFAULT_CORS_ORIGINS = ["http://localhost", "http://127.0.0.1"]
 ADMIN_TOKEN_HEADER = "X-Admin-Token"
-FRONTEND_CACHE_CONTROL = "no-store, no-cache, must-revalidate, max-age=0"
+INDEX_CACHE_CONTROL = "no-cache, must-revalidate"
+VERSIONED_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
+UNVERSIONED_ASSET_CACHE_CONTROL = "no-cache, must-revalidate"
+# Backward-compatible name for older tests/importers. Static serving now uses
+# the three explicit policies above.
+FRONTEND_CACHE_CONTROL = UNVERSIONED_ASSET_CACHE_CONTROL
 logger = logging.getLogger(__name__)
 _DEFAULT_INSTANCE_NONCE = secrets.token_hex(32)
+_REQUEST_ID_PATTERN = re.compile(r"[!-~]{1,128}\Z", flags=re.ASCII)
+_DASHBOARD_ERROR_UNAVAILABLE = "dashboard_snapshot_unavailable"
+_DASHBOARD_ERROR_STALE = "dashboard_snapshot_stale"
+_DASHBOARD_ERROR_NOT_PREWARMED = "dashboard_snapshot_not_prewarmed"
+_DASHBOARD_QUERY_ERROR = "dashboard_query_not_allowed"
+_dashboard_health_lock = Lock()
+_dashboard_health: dict[str, str | None] = {
+    "status": "degraded",
+    "error_code": _DASHBOARD_ERROR_NOT_PREWARMED,
+}
+
+
+class _FrontendAssetReferenceParser(HTMLParser):
+    """提取 index 中带非空版本 token 的本地 CSS/JS 精确引用。"""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.references: dict[str, str] = {}
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attribute_name = "href" if tag.casefold() == "link" else "src"
+        if tag.casefold() not in {"link", "script"}:
+            return
+        raw_url = dict(attrs).get(attribute_name)
+        if not raw_url:
+            return
+        parsed = urlsplit(raw_url)
+        if parsed.scheme or parsed.netloc:
+            return
+        normalized_path = parsed.path.removeprefix("./").lstrip("/")
+        if Path(normalized_path).suffix.casefold() not in {".css", ".js"}:
+            return
+        if not _has_nonempty_version_token(parsed.query):
+            return
+        self.references[normalized_path] = parsed.query
+
+
+def _has_nonempty_version_token(query: str) -> bool:
+    return any(
+        key.casefold() in {"v", "version"} and bool(value)
+        for key, value in parse_qsl(query, keep_blank_values=True)
+    )
 
 
 class NoCacheFrontendStaticFiles(StaticFiles):
-    """前端静态资源统一禁用浏览器缓存，避免 iframe 内继续展示旧资源。"""
+    """按 index 当前精确引用为前端资源设置安全缓存策略。"""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._versioned_asset_queries = self._load_versioned_asset_queries()
+
+    def _load_versioned_asset_queries(self) -> dict[str, str]:
+        directory = getattr(self, "directory", None)
+        if directory is None:
+            return {}
+        index_path = Path(directory) / "index.html"
+        try:
+            html = index_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return {}
+        parser = _FrontendAssetReferenceParser()
+        parser.feed(html)
+        return parser.references
 
     async def get_response(self, path: str, scope):  # type: ignore[override]
         response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = FRONTEND_CACHE_CONTROL
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
+        normalized_path = path.removeprefix("./").lstrip("/")
+        query_string = scope.get("query_string", b"").decode(
+            "latin-1",
+            errors="strict",
+        )
+        is_versioned_asset = (
+            Path(normalized_path).suffix.casefold() in {".css", ".js"}
+            and bool(query_string)
+            and self._versioned_asset_queries.get(normalized_path)
+            == query_string
+        )
+        if is_versioned_asset:
+            response.headers["Cache-Control"] = VERSIONED_ASSET_CACHE_CONTROL
+            for header_name in ("Pragma", "Expires"):
+                if header_name in response.headers:
+                    del response.headers[header_name]
+        else:
+            response.headers["Cache-Control"] = (
+                INDEX_CACHE_CONTROL
+                if normalized_path in {"", ".", "index.html"}
+                else UNVERSIONED_ASSET_CACHE_CONTROL
+            )
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
+
+
+def _build_dashboard_snapshot() -> dict[str, Any]:
+    """延迟取得 DB engine；模块 import 不连接数据库。"""
+    return build_factor_lab_dashboard(get_engine())
+
+
+dashboard_snapshot_store = DashboardSnapshotStore(_build_dashboard_snapshot)
+
+
+def _set_dashboard_health(
+    status: Literal["ready", "degraded"],
+    error_code: str | None,
+) -> None:
+    """原子更新 health 中不含内部异常文本的 dashboard 子状态。"""
+    if status == "ready":
+        error_code = None
+    with _dashboard_health_lock:
+        _dashboard_health["status"] = status
+        _dashboard_health["error_code"] = error_code
+
+
+def _dashboard_health_snapshot() -> dict[str, str | None]:
+    """返回 dashboard health 状态副本。"""
+    with _dashboard_health_lock:
+        return dict(_dashboard_health)
+
+
+def _record_dashboard_prewarm_failure() -> None:
+    """记录不含内部异常文本的稳定预热失败状态。"""
+    _set_dashboard_health("degraded", _DASHBOARD_ERROR_UNAVAILABLE)
+    event = {
+        "status": "degraded",
+        "error_code": _DASHBOARD_ERROR_UNAVAILABLE,
+    }
+    logger.error(
+        "factor_lab_dashboard_prewarm %s",
+        json.dumps(event, separators=(",", ":"), sort_keys=True),
+        extra={"dashboard_event": dict(event)},
+    )
 
 
 def _cors_origins() -> list[str]:
@@ -87,15 +245,28 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", ADMIN_TOKEN_HEADER],
 )
+app.add_middleware(QAwareGZipMiddleware)
 
 
 @app.on_event("startup")
 def _sync_registry_on_startup() -> None:
-    """启动时同步一次 registry（写库），使读路径可纯读。"""
+    """启动时先尝试同步 registry，再预热 dashboard 快照。"""
     try:
         sync_registry_from_configs(get_engine())
     except Exception:
-        logger.exception("Registry sync on startup failed")
+        logger.error("Registry sync on startup failed")
+
+    try:
+        result = dashboard_snapshot_store.prewarm()
+    except (SnapshotUnavailable, DashboardDataError):
+        _record_dashboard_prewarm_failure()
+    except Exception:
+        _record_dashboard_prewarm_failure()
+    else:
+        if result.cache_status == "STALE":
+            _set_dashboard_health("degraded", _DASHBOARD_ERROR_STALE)
+        else:
+            _set_dashboard_health("ready", None)
 
 
 class TriggerRequest(BaseModel):
@@ -130,7 +301,313 @@ def health() -> dict:
             ),
             fingerprint_secret=fingerprint_secret,
         )
-    return {"status": "ok", "service_instance": identity}
+    return {
+        "status": "ok",
+        "service_instance": identity,
+        "dashboard_snapshot": _dashboard_health_snapshot(),
+    }
+
+
+def _request_id(request: Request) -> str:
+    """复用合法 edge request ID；缺失或不安全时生成本地 UUID。"""
+    candidate = request.headers.get("x-request-id")
+    if candidate is not None and _REQUEST_ID_PATTERN.fullmatch(candidate):
+        return candidate
+    return uuid4().hex
+
+
+def _dashboard_age_ms(result: SnapshotResult) -> int:
+    return max(0, int(result.age_seconds * 1_000))
+
+
+def _safe_store_diagnostics() -> dict[str, Any]:
+    try:
+        return dict(dashboard_snapshot_store.diagnostics())
+    except Exception:
+        return {}
+
+
+def _safe_build_diagnostics(snapshot_id: str) -> dict[str, Any]:
+    try:
+        return dict(dashboard_build_diagnostics(snapshot_id) or {})
+    except Exception:
+        return {}
+
+
+def _duration_ms(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        duration = float(value) * 1_000
+    except (TypeError, ValueError):
+        return None
+    if duration < 0:
+        return None
+    return round(duration, 3)
+
+
+def _integer_metric(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result >= 0 else None
+
+
+def _server_timing(
+    *,
+    build_diagnostics: dict[str, Any],
+    build_seconds: float | None,
+    response_serialization_seconds: float,
+    route_seconds: float,
+) -> str:
+    timings: list[tuple[str, float | None]] = [
+        (
+            "db",
+            _duration_ms(build_diagnostics.get("db_read_seconds")),
+        ),
+        (
+            "canonical",
+            _duration_ms(
+                build_diagnostics.get("canonical_build_seconds")
+            ),
+        ),
+        (
+            "canonical_serialization",
+            _duration_ms(
+                build_diagnostics.get("canonical_serialization_seconds")
+            ),
+        ),
+        ("build", _duration_ms(build_seconds)),
+        (
+            "serialization",
+            round(response_serialization_seconds * 1_000, 3),
+        ),
+        ("route", round(route_seconds * 1_000, 3)),
+    ]
+    return ", ".join(
+        f"{name};dur={duration:.3f}"
+        for name, duration in timings
+        if duration is not None
+    )
+
+
+def _dashboard_response_headers(
+    *,
+    request_id: str,
+    snapshot_id: str,
+    cache_status: str,
+    age_ms: int,
+    server_timing: str,
+    stale: bool,
+) -> dict[str, str]:
+    headers = {
+        "Cache-Control": "no-store",
+        "X-Request-ID": request_id,
+        "X-Dashboard-Snapshot-ID": snapshot_id,
+        "X-Dashboard-Cache": cache_status,
+        "X-Dashboard-Snapshot-Age": str(age_ms),
+        "Server-Timing": server_timing,
+    }
+    if stale:
+        headers["X-Dashboard-Warning"] = "stale-last-known-good"
+    return headers
+
+
+def _log_dashboard_request(event: dict[str, Any]) -> None:
+    structured_event = dict(event)
+    logger.info(
+        "factor_lab_dashboard_request %s",
+        json.dumps(
+            structured_event,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        extra={"dashboard_event": structured_event},
+    )
+
+
+def _dashboard_error_response(
+    *,
+    request_id: str,
+    error_code: str,
+    status_code: int,
+    route_started_at: float,
+) -> Response:
+    route_seconds = time.perf_counter() - route_started_at
+    raw_body = json.dumps(
+        {"error_code": error_code},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = _dashboard_response_headers(
+        request_id=request_id,
+        snapshot_id="unavailable",
+        cache_status="UNAVAILABLE",
+        age_ms=0,
+        server_timing=_server_timing(
+            build_diagnostics={},
+            build_seconds=None,
+            response_serialization_seconds=0.0,
+            route_seconds=route_seconds,
+        ),
+        stale=False,
+    )
+    _log_dashboard_request(
+        {
+            "request_id": request_id,
+            "snapshot_id": "unavailable",
+            "cache": "UNAVAILABLE",
+            "snapshot_age_ms": 0,
+            "waiter_count": 0,
+            "db_read_ms": None,
+            "canonical_build_ms": None,
+            "canonical_serialization_ms": None,
+            "response_serialization_ms": 0.0,
+            "build_ms": None,
+            "route_ms": round(route_seconds * 1_000, 3),
+            "scheme_count": None,
+            "live_row_count": None,
+            "backtest_row_count": None,
+            "raw_bytes": len(raw_body),
+            "gzip_bytes": None,
+            "status": status_code,
+            "error_code": error_code,
+        }
+    )
+    return Response(
+        content=raw_body,
+        status_code=status_code,
+        media_type="application/json",
+        headers=headers,
+    )
+
+
+def _factor_lab_dashboard_response(request: Request) -> Response:
+    """构造 GET/HEAD 共用的精确 dashboard 表示。"""
+    route_started_at = time.perf_counter()
+    request_id = _request_id(request)
+    if request.scope.get("query_string", b""):
+        return _dashboard_error_response(
+            request_id=request_id,
+            error_code=_DASHBOARD_QUERY_ERROR,
+            status_code=400,
+            route_started_at=route_started_at,
+        )
+
+    try:
+        result = dashboard_snapshot_store.get()
+        age_ms = _dashboard_age_ms(result)
+        response_payload = dict(result.payload)
+        is_stale = result.cache_status == "STALE"
+        response_payload["stale"] = is_stale
+        response_payload["snapshot_age_ms"] = age_ms
+        serialization_started_at = time.perf_counter()
+        encoding = encode_canonical_snapshot(response_payload)
+        response_serialization_seconds = (
+            time.perf_counter() - serialization_started_at
+        )
+    except (SnapshotUnavailable, DashboardDataError):
+        _set_dashboard_health("degraded", _DASHBOARD_ERROR_UNAVAILABLE)
+        return _dashboard_error_response(
+            request_id=request_id,
+            error_code=_DASHBOARD_ERROR_UNAVAILABLE,
+            status_code=503,
+            route_started_at=route_started_at,
+        )
+
+    snapshot_id = str(response_payload["snapshot_id"])
+    build_diagnostics = _safe_build_diagnostics(snapshot_id)
+    store_diagnostics = _safe_store_diagnostics()
+    build_seconds = result.build_seconds
+    if build_seconds is None:
+        last_build_seconds = store_diagnostics.get("last_build_seconds")
+        build_seconds = (
+            float(last_build_seconds)
+            if isinstance(last_build_seconds, (int, float))
+            and not isinstance(last_build_seconds, bool)
+            else None
+        )
+    active_waiters = _integer_metric(
+        store_diagnostics.get("active_waiter_count")
+    )
+    last_waiters = _integer_metric(store_diagnostics.get("last_waiter_count"))
+    waiter_count = active_waiters if active_waiters else (last_waiters or 0)
+    route_seconds = time.perf_counter() - route_started_at
+    server_timing = _server_timing(
+        build_diagnostics=build_diagnostics,
+        build_seconds=build_seconds,
+        response_serialization_seconds=response_serialization_seconds,
+        route_seconds=route_seconds,
+    )
+    headers = _dashboard_response_headers(
+        request_id=request_id,
+        snapshot_id=snapshot_id,
+        cache_status=result.cache_status,
+        age_ms=age_ms,
+        server_timing=server_timing,
+        stale=is_stale,
+    )
+    if is_stale:
+        _set_dashboard_health("degraded", _DASHBOARD_ERROR_STALE)
+    else:
+        _set_dashboard_health("ready", None)
+    _log_dashboard_request(
+        {
+            "request_id": request_id,
+            "snapshot_id": snapshot_id,
+            "cache": result.cache_status,
+            "snapshot_age_ms": age_ms,
+            "waiter_count": waiter_count,
+            "db_read_ms": _duration_ms(
+                build_diagnostics.get("db_read_seconds")
+            ),
+            "canonical_build_ms": _duration_ms(
+                build_diagnostics.get("canonical_build_seconds")
+            ),
+            "canonical_serialization_ms": _duration_ms(
+                build_diagnostics.get("canonical_serialization_seconds")
+            ),
+            "response_serialization_ms": round(
+                response_serialization_seconds * 1_000,
+                3,
+            ),
+            "build_ms": _duration_ms(build_seconds),
+            "route_ms": round(route_seconds * 1_000, 3),
+            "scheme_count": _integer_metric(
+                build_diagnostics.get("scheme_count")
+            ),
+            "live_row_count": _integer_metric(
+                build_diagnostics.get("live_row_count")
+            ),
+            "backtest_row_count": _integer_metric(
+                build_diagnostics.get("backtest_row_count")
+            ),
+            "raw_bytes": encoding.raw_size,
+            "gzip_bytes": encoding.gzip_size,
+            "status": 200,
+            "error_code": (
+                _DASHBOARD_ERROR_STALE if is_stale else None
+            ),
+        }
+    )
+    return Response(
+        content=encoding.raw_body,
+        media_type="application/json",
+        headers=headers,
+    )
+
+
+@app.get("/api/factor-lab/dashboard")
+def api_factor_lab_dashboard(request: Request) -> Response:
+    return _factor_lab_dashboard_response(request)
+
+
+@app.head("/api/factor-lab/dashboard")
+def api_factor_lab_dashboard_head(request: Request) -> Response:
+    return _factor_lab_dashboard_response(request)
 
 
 @app.get("/api/schemes")
