@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import gzip
+import http.client
 import json
+import os
 import re
+import shutil
+import socket
 import subprocess
 import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import quote
+
+import pytest
 
 from tests.factor_lab_dashboard_conformance import (
     dashboard_v1_conformance_samples,
@@ -78,6 +88,23 @@ def _http_server(text: str) -> str:
     raise AssertionError("missing HTTP server")
 
 
+def _unused_tcp_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _http_status(port: int, path: str) -> int:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+    try:
+        connection.request("GET", path, headers={"Host": "bond.finailab.cn"})
+        response = connection.getresponse()
+        response.read()
+        return response.status
+    finally:
+        connection.close()
+
+
 def test_public_paths_use_an_exact_allowlist_and_default_deny() -> None:
     config = _without_comments(NGINX_PATH.read_text(encoding="utf-8"))
     https_server = _https_server(config)
@@ -126,23 +153,147 @@ def test_public_paths_use_an_exact_allowlist_and_default_deny() -> None:
 
 def test_raw_request_uri_guard_precedes_location_matching() -> None:
     config = _without_comments(NGINX_PATH.read_text(encoding="utf-8"))
+    unsafe_map = _extract_balanced_block(
+        config,
+        r"(?m)^\s*map\s+\$request_uri\s+\$bond_factor_unsafe_raw_path\s*\{",
+    )
+    assert r"%[0-9a-f][0-9a-f]" in unsafe_map.lower()
+    assert "^[^?]*" in unsafe_map
+    assert r"(?:\.|\.\.)" in unsafe_map
+    assert "//" in unsafe_map
+
     https_server = _https_server(config)
     guard = _extract_balanced_block(
         https_server,
-        r'(?m)^\s*if\s*\(\s*\$request_uri\s+~\*\s+"[^\n]+"\s*\)\s*\{',
+        r"(?m)^\s*if\s*\(\s*\$bond_factor_unsafe_raw_path\s*\)\s*\{",
     )
 
     assert https_server.index(guard) < https_server.index("location")
     assert re.search(r"(?m)^\s*return\s+403\s*;", guard)
-    for unsafe_token in ("//", "%2f", "%5c", "%2e", r"\.\."):
-        assert unsafe_token in guard.lower()
 
     http_server = _http_server(config)
     http_guard = _extract_balanced_block(
         http_server,
-        r'(?m)^\s*if\s*\(\s*\$request_uri\s+~\*\s+"[^\n]+"\s*\)\s*\{',
+        r"(?m)^\s*if\s*\(\s*\$bond_factor_unsafe_raw_path\s*\)\s*\{",
     )
     assert re.search(r"(?m)^\s*return\s+403\s*;", http_guard)
+
+
+def test_real_nginx_rejects_normalization_bypasses_but_allows_version_query(
+    tmp_path: Path,
+) -> None:
+    nginx = shutil.which("nginx")
+    if nginx is None:
+        pytest.skip("nginx is not installed; Task 12 must run the real entry config")
+
+    class BackendHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            body = b"ok"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            return
+
+    backend = ThreadingHTTPServer(("127.0.0.1", 0), BackendHandler)
+    backend_thread = threading.Thread(target=backend.serve_forever, daemon=True)
+    backend_thread.start()
+    public_port = _unused_tcp_port()
+    redirect_port = _unused_tcp_port()
+    prefix = tmp_path / "nginx"
+    snippets = prefix / "snippets"
+    snippets.mkdir(parents=True)
+
+    site = NGINX_PATH.read_text(encoding="utf-8")
+    snippet_match = re.search(r"include snippets/([^;]+);", site)
+    assert snippet_match is not None
+    (snippets / snippet_match.group(1)).write_text(
+        PROXY_SNIPPET_PATH.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    site = site.replace(
+        "server 127.0.0.1:18100;",
+        f"server 127.0.0.1:{backend.server_port};",
+    )
+    site = site.replace("listen 80;", f"listen 127.0.0.1:{redirect_port};")
+    site = site.replace("listen 443 ssl;", f"listen 127.0.0.1:{public_port};")
+    site = re.sub(r"(?m)^\s*listen \[::\]:(?:80|443)(?: ssl)?;\n", "", site)
+    site = re.sub(r"(?m)^\s*ssl_certificate(?:_key)?\s+[^;]+;\n", "", site)
+    site = re.sub(
+        r"(?m)^\s*access_log\s+[^;]+;",
+        "    access_log off;",
+        site,
+    )
+    config_path = prefix / "nginx.conf"
+    config_path.write_text(
+        f"pid {prefix / 'nginx.pid'};\n"
+        f"error_log {prefix / 'error.log'} notice;\n"
+        "events {}\n"
+        f"http {{\n{site}\n}}\n",
+        encoding="utf-8",
+    )
+
+    syntax = subprocess.run(
+        [nginx, "-p", f"{prefix}/", "-c", str(config_path), "-t"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+    process = subprocess.Popen(
+        [nginx, "-p", f"{prefix}/", "-c", str(config_path), "-g", "daemon off;"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                if _http_status(public_port, "/bond-factor-lab/") == 200:
+                    break
+            except OSError:
+                time.sleep(0.02)
+        else:
+            stderr = process.stderr.read() if process.stderr is not None else ""
+            raise AssertionError(f"nginx did not start: {stderr}")
+
+        assert (
+            _http_status(
+                public_port,
+                "/bond-factor-lab/aifin-shell.css?v=20260722a",
+            )
+            == 200
+        )
+        assert (
+            _http_status(
+                public_port,
+                "/bond-factor-lab/aifin-shell.css?q=%61",
+            )
+            == 200
+        )
+        bypasses = (
+            "/bond-factor-lab/api/he%61lth",
+            "/bond-factor-lab/api/factor-lab/dashbo%61rd",
+            "/bond-factor-lab/%61ifin-shell.js",
+            "/bond-factor-lab/./",
+            "/bond-factor-lab/api/./health",
+            "/bond-factor-lab//api/health",
+        )
+        for path in bypasses:
+            assert _http_status(public_port, path) == 403, path
+        assert _http_status(redirect_port, "/%62ond-factor-lab/") == 403
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        backend.shutdown()
+        backend.server_close()
 
 
 def test_redirects_are_fixed_to_the_canonical_host() -> None:
@@ -172,7 +323,7 @@ def test_release_stage_is_server_controlled_and_legacy_routes_are_guarded() -> N
     assert re.search(r"(?m)^\s*default\s+rollout\s*;", release_map)
     assert "$arg_" not in release_map
     assert "$http_" not in release_map
-    assert "BOND_FACTOR_PUBLIC_POLICY_VERSION: 20260722a" in NGINX_PATH.read_text(
+    assert "BOND_FACTOR_PUBLIC_RELEASE_ID: 20260722b" in NGINX_PATH.read_text(
         encoding="utf-8"
     )
 
@@ -258,16 +409,39 @@ def test_dashboard_has_timing_limits_and_single_layer_compression() -> None:
     assert re.search(r"proxy_pass_header\s+Vary\s*;", snippet)
 
 
+def test_timing_log_uses_bounded_traffic_classes_instead_of_raw_user_agent() -> None:
+    config = _without_comments(NGINX_PATH.read_text(encoding="utf-8"))
+    traffic_map = _extract_balanced_block(
+        config,
+        r"(?m)^\s*map\s+\$http_user_agent\s+\$bond_factor_traffic_class\s*\{",
+    )
+    assert re.search(r"(?m)^\s*default\s+user\s*;", traffic_map)
+    assert '"bond-factor-lab-access-check/1.0" access_check;' in traffic_map
+    assert '"bond-factor-lab-api-benchmark/1.0" api_benchmark;' in traffic_map
+    assert (
+        '"bond-factor-lab-browser-benchmark/1.0" browser_benchmark;'
+        in traffic_map
+    )
+    timing_log = re.search(
+        r"log_format\s+bond_factor_timing\s+(?P<body>.*?);",
+        config,
+        flags=re.DOTALL,
+    )
+    assert timing_log is not None
+    assert "$bond_factor_traffic_class" in timing_log.group("body")
+    assert "$http_user_agent" not in timing_log.group("body")
+
+
 def test_proxy_snippet_is_deployed_as_part_of_the_versioned_policy() -> None:
     config = _without_comments(NGINX_PATH.read_text(encoding="utf-8"))
     readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
 
     assert "include snippets/bond-proxy-headers.conf;" not in config
     assert config.count(
-        "include snippets/bond-proxy-headers-20260722a.conf;"
+        "include snippets/bond-proxy-headers-20260722b.conf;"
     ) == 11
     assert (
-        "/etc/nginx/snippets/bond-proxy-headers-20260722a.conf"
+        "/etc/nginx/snippets/bond-proxy-headers-20260722b.conf"
         in readme
     )
 
@@ -294,15 +468,20 @@ def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
         "versioned-css",
         "versioned-css-gzip",
         "versioned-css-vary",
+        "versioned-css-body",
         "versioned-js",
         "versioned-js-gzip",
         "versioned-js-vary",
+        "versioned-js-body",
         "asset-icon",
         "asset-logo",
         "dashboard-get-gzip",
+        "dashboard-get-gzip-json",
         "dashboard-head-gzip",
         "dashboard-get-identity",
+        "dashboard-get-identity-json",
         "dashboard-get-gzip-q0",
+        "dashboard-get-gzip-q0-json",
         "health-ready",
         "deny-docs",
         "deny-redoc",
@@ -313,6 +492,12 @@ def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
         "deny-encoded-slash",
         "deny-encoded-backslash",
         "deny-encoded-dot",
+        "deny-encoded-health",
+        "deny-encoded-prefix",
+        "deny-encoded-dashboard",
+        "deny-encoded-static",
+        "deny-single-dot",
+        "deny-api-single-dot",
         "legacy-schemes",
         "legacy-metrics",
         "legacy-backtest",
@@ -324,6 +509,7 @@ def test_public_check_script_covers_protocol_and_bypass_matrix() -> None:
     assert "json.load" in script
     assert "gzip;q=0" in script
     assert "Vary" in script
+    assert "--compressed" not in script
 
 
 def test_public_check_script_is_bash3_safe_and_head_is_snapshot_independent() -> None:
@@ -372,6 +558,172 @@ def test_public_check_script_extracts_a_real_composite_id_from_v1_payload(
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == quote(expected_scheme_id, safe="")
     assert '"$APP_URL/api/metrics/$SCHEME_ID_ENCODED"' in script
+
+
+def test_public_check_body_validator_rejects_corrupt_and_double_gzip(
+    tmp_path: Path,
+) -> None:
+    script = CHECK_SCRIPT_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"# BODY_VALIDATOR_BEGIN\n"
+        r"(?P<validator>.*?)\n"
+        r"# BODY_VALIDATOR_END",
+        script,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    validator = match.group("validator")
+    canonical = next(
+        sample["payload"]
+        for sample in dashboard_v1_conformance_samples()
+        if sample["name"] == "canonical"
+    )
+    raw_dashboard = json.dumps(canonical, ensure_ascii=False).encode("utf-8")
+    cases = {
+        "dashboard.json": raw_dashboard,
+        "dashboard.json.gz": gzip.compress(raw_dashboard),
+        "dashboard.double.gz": gzip.compress(gzip.compress(raw_dashboard)),
+        "dashboard.corrupt.gz": b"\x1f\x8bnot-a-valid-stream",
+        "dashboard.array.json": b"[]",
+        "style.css.gz": gzip.compress(b"body { --surface-token: #fff; }"),
+        "style.double.gz": gzip.compress(
+            gzip.compress(b"body { --surface-token: #fff; }")
+        ),
+    }
+    paths: dict[str, Path] = {}
+    for name, body in cases.items():
+        path = tmp_path / name
+        path.write_bytes(body)
+        paths[name] = path
+
+    def validate(
+        kind: str,
+        encoding: str,
+        name: str,
+        token: str = "",
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                validator,
+                kind,
+                encoding,
+                str(paths[name]),
+                token,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    assert validate("dashboard", "identity", "dashboard.json").returncode == 0
+    assert validate("dashboard", "gzip", "dashboard.json.gz").returncode == 0
+    assert validate("dashboard", "gzip", "dashboard.double.gz").returncode != 0
+    assert validate("dashboard", "gzip", "dashboard.corrupt.gz").returncode != 0
+    invalid_shape = validate("dashboard", "identity", "dashboard.array.json")
+    assert invalid_shape.returncode != 0
+    assert invalid_shape.stderr == ""
+    assert (
+        validate("text", "gzip", "style.css.gz", "--surface-token").returncode
+        == 0
+    )
+    assert (
+        validate("text", "gzip", "style.double.gz", "--surface-token").returncode
+        != 0
+    )
+
+
+def test_public_check_curl_failure_reaches_summary_without_reusing_body(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text("#!/bin/sh\nexit 7\n", encoding="utf-8")
+    fake_curl.chmod(0o755)
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+
+    completed = subprocess.run(
+        [
+            str(CHECK_SCRIPT_PATH),
+            "--mode",
+            "rollout",
+            "https://bond.finailab.cn",
+        ],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 1
+    assert "curl_exit=7" in completed.stdout
+    assert "Summary:" in completed.stdout
+    assert "[PASS] dashboard-scheme-id" not in completed.stdout
+
+
+def test_header_parser_uses_final_block_and_exact_tokens(tmp_path: Path) -> None:
+    script = CHECK_SCRIPT_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"# FINAL_HEADER_PARSER_BEGIN\n"
+        r"(?P<parser>.*?)\n"
+        r"# FINAL_HEADER_PARSER_END",
+        script,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    parser = match.group("parser")
+
+    final_headers = tmp_path / "final.headers"
+    final_headers.write_bytes(
+        b"HTTP/1.1 100 Continue\r\n"
+        b"Content-Encoding: br\r\n\r\n"
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Encoding: gzip\r\n"
+        b"Vary: X-Accept-Encoding-Foo, User-Agent\r\n"
+        b"Vary: Accept-Encoding\r\n\r\n"
+    )
+    duplicate_headers = tmp_path / "duplicate.headers"
+    duplicate_headers.write_bytes(
+        b"HTTP/1.1 200 OK\r\n"
+        b"Content-Encoding: gzip\r\n"
+        b"Content-Encoding: br\r\n\r\n"
+    )
+    spoof_headers = tmp_path / "spoof.headers"
+    spoof_headers.write_bytes(
+        b"HTTP/1.1 200 OK\r\n"
+        b"Vary: X-Accept-Encoding-Foo, User-Agent\r\n\r\n"
+    )
+
+    def parse(
+        path: Path,
+        name: str,
+        mode: str,
+        token: str = "",
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, "-c", parser, str(path), name, mode, token],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    final_encoding = parse(final_headers, "Content-Encoding", "values")
+    assert final_encoding.returncode == 0
+    assert final_encoding.stdout.strip() == "gzip"
+    duplicate_encoding = parse(duplicate_headers, "Content-Encoding", "values")
+    assert duplicate_encoding.stdout.splitlines() == ["gzip", "br"]
+    assert (
+        parse(duplicate_headers, "Content-Encoding", "single-token", "gzip")
+        .returncode
+        != 0
+    )
+    assert parse(final_headers, "Vary", "token", "Accept-Encoding").returncode == 0
+    assert parse(spoof_headers, "Vary", "token", "Accept-Encoding").returncode != 0
 
 
 def test_deploy_readme_points_to_current_performance_work() -> None:
@@ -424,3 +776,139 @@ def test_nginx_reload_failure_restores_the_previous_live_policy() -> None:
     assert deployment.count("sudo systemctl reload nginx") == 2
     assert 'sudo rm -f -- "$active"' in deployment
     assert "reload 失败也必须以非零状态结束" in deployment
+
+
+def test_deploy_requires_supported_nginx_and_real_entry_validation() -> None:
+    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
+
+    assert "Nginx 1.18+" in readme
+    assert "Task 12 必须记录入口机实际 `nginx -v`" in readme
+    assert "真实完整配置执行 `nginx -t`" in readme
+    assert "本地 wrapper 不能替代生产入口验证" in readme
+
+
+def test_versioned_nginx_publish_is_immutable_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"<!-- NGINX_RELEASE_SCRIPT_BEGIN -->\n"
+        r"```bash\n(?P<script>.*?)\n```\n"
+        r"<!-- NGINX_RELEASE_SCRIPT_END -->",
+        readme,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+    release_script = match.group("script")
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    (fake_bin / "sudo").write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+    (fake_bin / "nginx").write_text(
+        "#!/bin/sh\nprintf 'nginx %s\\n' \"$*\" >>\"$BOND_RELEASE_TEST_LOG\"\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "systemctl").write_text(
+        "#!/bin/sh\nprintf 'systemctl %s\\n' \"$*\" >>\"$BOND_RELEASE_TEST_LOG\"\n",
+        encoding="utf-8",
+    )
+    for command in fake_bin.iterdir():
+        command.chmod(0o755)
+
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+    environment["BOND_FACTOR_RELEASE_STAGE"] = "rollout"
+    environment["BOND_RELEASE_TEST_LOG"] = str(tmp_path / "release.log")
+
+    def prepare_root(name: str) -> Path:
+        root = tmp_path / name
+        for directory in ("snippets", "sites-available", "sites-enabled"):
+            (root / directory).mkdir(parents=True)
+        return root
+
+    def publish(root: Path) -> subprocess.CompletedProcess[str]:
+        run_environment = dict(environment)
+        run_environment["BOND_NGINX_ROOT"] = str(root)
+        return subprocess.run(
+            ["bash", "-c", release_script],
+            cwd=PROJECT_ROOT,
+            env=run_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    root = prepare_root("idempotent")
+    first = publish(root)
+    assert first.returncode == 0, first.stderr
+    active = root / "sites-enabled/bond-factor-lab"
+    assert active.is_symlink()
+    target = active.resolve()
+    assert target.name == "bond-factor-lab-20260722b-rollout"
+    first_log = Path(environment["BOND_RELEASE_TEST_LOG"]).read_text(
+        encoding="utf-8"
+    )
+    assert first_log.count("systemctl reload nginx") == 1
+
+    repeated = publish(root)
+    assert repeated.returncode == 0, repeated.stderr
+    repeated_log = Path(environment["BOND_RELEASE_TEST_LOG"]).read_text(
+        encoding="utf-8"
+    )
+    assert repeated_log.count("systemctl reload nginx") == 1
+
+    target.write_text("same release id, different site content\n", encoding="utf-8")
+    conflict = publish(root)
+    assert conflict.returncode != 0
+    assert target.read_text(encoding="utf-8") == (
+        "same release id, different site content\n"
+    )
+
+    ordinary_root = prepare_root("ordinary-active")
+    ordinary_active = ordinary_root / "sites-enabled/bond-factor-lab"
+    ordinary_active.write_text("legacy ordinary file\n", encoding="utf-8")
+    ordinary = publish(ordinary_root)
+    assert ordinary.returncode != 0
+    assert ordinary_active.read_text(encoding="utf-8") == "legacy ordinary file\n"
+    assert "migrate" in ordinary.stderr.lower()
+
+    snippet_root = prepare_root("snippet-conflict")
+    snippet_target = (
+        snippet_root / "snippets/bond-proxy-headers-20260722b.conf"
+    )
+    snippet_target.write_text("different snippet\n", encoding="utf-8")
+    snippet_conflict = publish(snippet_root)
+    assert snippet_conflict.returncode != 0
+    assert snippet_target.read_text(encoding="utf-8") == "different snippet\n"
+
+    (fake_bin / "systemctl").write_text(
+        "#!/bin/sh\n"
+        "count=0\n"
+        "test ! -f \"$BOND_SYSTEMCTL_COUNT\" || count=$(cat \"$BOND_SYSTEMCTL_COUNT\")\n"
+        "count=$((count + 1))\n"
+        "printf '%s\\n' \"$count\" >\"$BOND_SYSTEMCTL_COUNT\"\n"
+        "test \"$count\" -ne 1\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "systemctl").chmod(0o755)
+    environment["BOND_SYSTEMCTL_COUNT"] = str(tmp_path / "systemctl.count")
+    recovery_root = prepare_root("reload-recovery")
+    old_snippet = recovery_root / "snippets/bond-proxy-headers-old.conf"
+    old_snippet.write_text("old immutable snippet\n", encoding="utf-8")
+    old_site = recovery_root / "sites-available/bond-factor-lab-old-rollout"
+    old_site.write_text(
+        "include snippets/bond-proxy-headers-old.conf;\n",
+        encoding="utf-8",
+    )
+    recovery_active = recovery_root / "sites-enabled/bond-factor-lab"
+    recovery_active.symlink_to(old_site)
+    reload_failure = publish(recovery_root)
+    assert reload_failure.returncode != 0
+    assert recovery_active.resolve() == old_site
+    assert old_site.read_text(encoding="utf-8").endswith(
+        "bond-proxy-headers-old.conf;\n"
+    )
+    assert old_snippet.read_text(encoding="utf-8") == "old immutable snippet\n"
+    assert Path(environment["BOND_SYSTEMCTL_COUNT"]).read_text(
+        encoding="utf-8"
+    ).strip() == "2"

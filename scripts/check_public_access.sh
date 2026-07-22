@@ -47,6 +47,7 @@ LAST_SIZE="0"
 LAST_TIME="0"
 LAST_HEADERS=""
 LAST_BODY=""
+LAST_REQUEST_SUCCEEDED=0
 
 print_result() {
   local outcome="$1" label="$2" detail="${3:-}"
@@ -74,6 +75,8 @@ run_request() {
   LAST_HEADERS="$CHECK_TMP_DIR/${REQUEST_NUMBER}-${label}.headers"
   LAST_BODY="$CHECK_TMP_DIR/${REQUEST_NUMBER}-${label}.body"
   local error_file="$CHECK_TMP_DIR/${REQUEST_NUMBER}-${label}.error"
+  touch -- "$LAST_HEADERS" "$LAST_BODY" "$error_file"
+  LAST_REQUEST_SUCCEEDED=0
   local metrics curl_status
   local -a method_args
   if [[ "$method" == "HEAD" ]]; then
@@ -109,33 +112,68 @@ run_request() {
       || ! "$LAST_TIME" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     record_failure "$label" " malformed_curl_metrics"
   elif [[ "$LAST_CODE" == "$expected_code" ]]; then
+    LAST_REQUEST_SUCCEEDED=1
     record_pass "$label"
   else
     record_failure "$label" " expected=$expected_code"
   fi
 }
 
-header_value() {
-  local wanted="$1"
-  awk -v wanted="$wanted" '
-    {
-      sub(/\r$/, "", $0)
-      separator = index($0, ":")
-      if (separator > 0) {
-        name = substr($0, 1, separator - 1)
-        if (tolower(name) == tolower(wanted)) {
-          value = substr($0, separator + 1)
-          sub(/^[[:space:]]+/, "", value)
-          found = value
-        }
-      }
+header_query() {
+  local name="$1" mode="$2" token="${3:-}"
+  python3 - "$LAST_HEADERS" "$name" "$mode" "$token" <<'PY'
+# FINAL_HEADER_PARSER_BEGIN
+import re
+import sys
+from pathlib import Path
+
+header_path, wanted_name, mode, wanted_token = sys.argv[1:]
+final_headers = []
+seen_status = False
+for raw_line in Path(header_path).read_text(
+    encoding="iso-8859-1", errors="strict"
+).splitlines():
+    if re.match(r"^HTTP/\S+\s+\d{3}(?:\s|$)", raw_line):
+        final_headers = []
+        seen_status = True
+        continue
+    if not seen_status or not raw_line or ":" not in raw_line:
+        continue
+    name, value = raw_line.split(":", 1)
+    final_headers.append((name.strip(), value.strip()))
+
+values = [
+    value
+    for name, value in final_headers
+    if name.casefold() == wanted_name.casefold()
+]
+if mode == "values":
+    print("\n".join(values))
+elif mode == "token":
+    tokens = {
+        token.strip().casefold()
+        for value in values
+        for token in value.split(",")
+        if token.strip()
     }
-    END { print found }
-  ' "$LAST_HEADERS"
+    if wanted_token.casefold() not in tokens:
+        raise SystemExit(1)
+elif mode == "single-token":
+    if len(values) != 1 or values[0].casefold() != wanted_token.casefold():
+        raise SystemExit(1)
+elif mode == "optional-token":
+    if len(values) > 1:
+        raise SystemExit(1)
+    if values and values[0].casefold() != wanted_token.casefold():
+        raise SystemExit(1)
+else:
+    raise SystemExit(1)
+# FINAL_HEADER_PARSER_END
+PY
 }
 
-to_lower() {
-  LC_ALL=C tr '[:upper:]' '[:lower:]' <<<"$1"
+header_value() {
+  header_query "$1" values
 }
 
 assert_last_header_exact() {
@@ -148,26 +186,30 @@ assert_last_header_exact() {
   fi
 }
 
-assert_last_header_contains() {
-  local label="$1" name="$2" expected_token="$3" actual actual_lower token_lower
-  actual="$(header_value "$name")"
-  actual_lower="$(to_lower "$actual")"
-  token_lower="$(to_lower "$expected_token")"
-  if [[ "$actual_lower" == *"$token_lower"* ]]; then
+assert_last_vary_token() {
+  local label="$1" expected_token="$2"
+  if header_query Vary token "$expected_token"; then
     record_pass "$label"
   else
-    record_failure "$label" " ${name}=missing_token"
+    record_failure "$label" " Vary=missing_exact_token"
+  fi
+}
+
+assert_last_content_encoding() {
+  local label="$1" expected="$2"
+  if header_query Content-Encoding single-token "$expected"; then
+    record_pass "$label"
+  else
+    record_failure "$label" " Content-Encoding=unexpected_or_repeated"
   fi
 }
 
 assert_last_not_gzip() {
-  local label="$1" actual actual_lower
-  actual="$(header_value Content-Encoding)"
-  actual_lower="$(to_lower "$actual")"
-  if [[ -z "$actual" || "$actual_lower" == "identity" ]]; then
+  local label="$1"
+  if header_query Content-Encoding optional-token identity; then
     record_pass "$label"
   else
-    record_failure "$label" " content_encoding=unexpected"
+    record_failure "$label" " Content-Encoding=unexpected_or_repeated"
   fi
 }
 
@@ -190,6 +232,82 @@ assert_last_head_contract() {
   fi
 }
 
+body_is_valid() {
+  local kind="$1" encoding="$2" body_path="$3" expected_token="${4:-}"
+  python3 - "$kind" "$encoding" "$body_path" "$expected_token" <<'PY'
+# BODY_VALIDATOR_BEGIN
+import gzip
+import json
+import sys
+from pathlib import Path
+
+kind, encoding, body_path, expected_token = sys.argv[1:]
+wire = Path(body_path).read_bytes()
+if encoding == "gzip":
+    try:
+        decoded = gzip.decompress(wire)
+    except (EOFError, OSError) as exc:
+        raise SystemExit(1) from exc
+elif encoding == "identity":
+    decoded = wire
+else:
+    raise SystemExit(1)
+
+# 一次解压后必须直接是应用内容；第二层 gzip 明确拒绝。
+if decoded.startswith(b"\x1f\x8b"):
+    raise SystemExit(1)
+try:
+    text = decoded.decode("utf-8")
+except UnicodeDecodeError as exc:
+    raise SystemExit(1) from exc
+
+if kind == "dashboard":
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(1) from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(1)
+    if payload.get("schema_version") != "factor-lab-dashboard-v1":
+        raise SystemExit(1)
+    if payload.get("row_fields") != [
+        "predict_date",
+        "feature_date",
+        "target_date",
+        "prediction_phase",
+        "predicted_direction",
+        "actual_direction",
+    ]:
+        raise SystemExit(1)
+    schemes = payload.get("schemes")
+    if not isinstance(schemes, list):
+        raise SystemExit(1)
+    if any(
+        not isinstance(scheme, dict)
+        or not isinstance(scheme.get("scheme_id"), str)
+        or not scheme["scheme_id"]
+        for scheme in schemes
+    ):
+        raise SystemExit(1)
+elif kind == "text":
+    if not expected_token or expected_token not in text:
+        raise SystemExit(1)
+else:
+    raise SystemExit(1)
+# BODY_VALIDATOR_END
+PY
+}
+
+assert_body_valid() {
+  local label="$1"
+  shift
+  if body_is_valid "$@"; then
+    record_pass "$label"
+  else
+    record_failure "$label" " body_validation=failed"
+  fi
+}
+
 printf 'Bond Factor Lab public access check: mode=%s policy=%s\n' \
   "$MODE" "$POLICY_VERSION"
 
@@ -208,13 +326,16 @@ assert_last_body_contains page-js-version "aifin-shell.js?v=$POLICY_VERSION"
 run_request versioned-css GET \
   "$APP_URL/aifin-shell.css?v=$POLICY_VERSION" 200 \
   --header 'Accept-Encoding: gzip'
-assert_last_header_exact versioned-css-gzip Content-Encoding gzip
-assert_last_header_contains versioned-css-vary Vary Accept-Encoding
+assert_last_content_encoding versioned-css-gzip gzip
+assert_last_vary_token versioned-css-vary Accept-Encoding
+assert_body_valid versioned-css-body text gzip "$LAST_BODY" ':root'
 run_request versioned-js GET \
   "$APP_URL/aifin-shell.js?v=$POLICY_VERSION" 200 \
   --header 'Accept-Encoding: gzip'
-assert_last_header_exact versioned-js-gzip Content-Encoding gzip
-assert_last_header_contains versioned-js-vary Vary Accept-Encoding
+assert_last_content_encoding versioned-js-gzip gzip
+assert_last_vary_token versioned-js-vary Accept-Encoding
+assert_body_valid \
+  versioned-js-body text gzip "$LAST_BODY" 'factor-lab-dashboard-v1'
 run_request asset-icon GET "$APP_URL/assets/aifin-lab-icon.svg" 200
 run_request asset-logo GET "$APP_URL/assets/aifin-lab-logo.svg" 200
 
@@ -222,8 +343,8 @@ run_request asset-logo GET "$APP_URL/assets/aifin-lab-logo.svg" 200
 run_request dashboard-get-gzip GET \
   "$APP_URL/api/factor-lab/dashboard" 200 \
   --header 'Accept-Encoding: gzip'
-assert_last_header_exact dashboard-get-gzip-encoding Content-Encoding gzip
-assert_last_header_contains dashboard-get-gzip-vary Vary Accept-Encoding
+assert_last_content_encoding dashboard-get-gzip-encoding gzip
+assert_last_vary_token dashboard-get-gzip-vary Accept-Encoding
 GZIP_CONTENT_LENGTH="$(header_value Content-Length)"
 if [[ "$GZIP_CONTENT_LENGTH" =~ ^[1-9][0-9]*$ \
     && "$GZIP_CONTENT_LENGTH" == "$LAST_SIZE" ]]; then
@@ -231,26 +352,34 @@ if [[ "$GZIP_CONTENT_LENGTH" =~ ^[1-9][0-9]*$ \
 else
   record_failure dashboard-get-gzip-length " content_length=unexpected"
 fi
+assert_body_valid dashboard-get-gzip-json dashboard gzip "$LAST_BODY"
 
 run_request dashboard-head-gzip HEAD \
   "$APP_URL/api/factor-lab/dashboard" 200 \
   --header 'Accept-Encoding: gzip'
-assert_last_header_exact dashboard-head-gzip-encoding Content-Encoding gzip
-assert_last_header_contains dashboard-head-gzip-vary Vary Accept-Encoding
+assert_last_content_encoding dashboard-head-gzip-encoding gzip
+assert_last_vary_token dashboard-head-gzip-vary Accept-Encoding
 assert_last_head_contract dashboard-head-gzip-length
 
 run_request dashboard-get-identity GET \
   "$APP_URL/api/factor-lab/dashboard" 200 \
   --header 'Accept-Encoding: identity'
 assert_last_not_gzip dashboard-get-identity-encoding
-assert_last_header_contains dashboard-get-identity-vary Vary Accept-Encoding
-cp "$LAST_BODY" "$CHECK_TMP_DIR/dashboard.json"
+assert_last_vary_token dashboard-get-identity-vary Accept-Encoding
+if [[ "$LAST_REQUEST_SUCCEEDED" -eq 1 ]] \
+    && body_is_valid dashboard identity "$LAST_BODY"; then
+  record_pass dashboard-get-identity-json
+  cp "$LAST_BODY" "$CHECK_TMP_DIR/dashboard.json"
+else
+  record_failure dashboard-get-identity-json " body_validation=failed"
+fi
 
 run_request dashboard-get-gzip-q0 GET \
   "$APP_URL/api/factor-lab/dashboard" 200 \
   --header 'Accept-Encoding: gzip;q=0, identity;q=1'
 assert_last_not_gzip dashboard-get-gzip-q0-encoding
-assert_last_header_contains dashboard-get-gzip-q0-vary Vary Accept-Encoding
+assert_last_vary_token dashboard-get-gzip-q0-vary Accept-Encoding
+assert_body_valid dashboard-get-gzip-q0-json dashboard identity "$LAST_BODY"
 
 # Health 必须明确报告已预热 ready；用 JSON parser，不用易误判的 grep。
 run_request health-ready GET "$APP_URL/api/health" 200 \
@@ -272,7 +401,8 @@ fi
 
 # 从 dashboard 严格取一个真实 composite scheme ID，供 rollout/final metrics 验收。
 SCHEME_ID_ENCODED=""
-if SCHEME_ID_ENCODED="$(python3 - "$CHECK_TMP_DIR/dashboard.json" <<'PY'
+if [[ -f "$CHECK_TMP_DIR/dashboard.json" ]] \
+    && SCHEME_ID_ENCODED="$(python3 - "$CHECK_TMP_DIR/dashboard.json" <<'PY'
 # DASHBOARD_SCHEME_EXTRACTOR_BEGIN
 import json
 import sys
@@ -314,6 +444,13 @@ run_request deny-dot-segment GET \
 run_request deny-encoded-slash GET "$APP_URL/api%2fhealth" 403
 run_request deny-encoded-backslash GET "$APP_URL/api%5chealth" 403
 run_request deny-encoded-dot GET "$APP_URL/%2e%2e/api/health" 403
+run_request deny-encoded-health GET "$APP_URL/api/he%61lth" 403
+run_request deny-encoded-prefix GET "$BASE_ORIGIN/%62ond-factor-lab/" 403
+run_request deny-encoded-dashboard GET \
+  "$APP_URL/api/factor-lab/dashbo%61rd" 403
+run_request deny-encoded-static GET "$APP_URL/%61ifin-shell.js" 403
+run_request deny-single-dot GET "$APP_URL/./" 403
+run_request deny-api-single-dot GET "$APP_URL/api/./health" 403
 run_request deny-double-encoded-slash GET "$APP_URL/api%252fhealth" 403
 run_request deny-trigger POST "$APP_URL/api/schemes/probe/trigger" 403
 run_request deny-admin POST "$APP_URL/api/admin/registry/sync" 403

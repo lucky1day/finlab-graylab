@@ -45,7 +45,7 @@ dashboard、健康状态、`Vary` 和隧道前 gzip。两层合同必须同时�
 - **始终放行（GET/HEAD）**：`/bond-factor-lab/`、必要的精确 HTML/CSS/JS/两个 SVG、`/api/health`、`/api/factor-lab/dashboard`。
 - **rollout 临时放行（GET/HEAD）**：旧 `/api/schemes`、`/api/metrics/{id}`、`/api/backtests/factor-lab`，供新旧前端兼容。
 - **final 拒绝**：上述三个旧展示 API 与其它所有页面/API。FastAPI 本机旧路由仍保留用于 harness 和回滚。
-- 双斜杠、明文/编码 dot segment、编码 slash/backslash、大小写和尾斜杠变体均 fail closed；写接口始终拒绝。
+- 原始 path 中任何 `%HH`、双斜杠、明文单/双 dot segment、大小写和尾斜杠变体均 fail closed；query 不由 path guard 误杀，而由各只读 API 自身契约校验；写接口始终拒绝。
 
 > Nginx location 优先级细节见 `deploy/nginx/bond-factor-lab.conf` 顶部注释。
 
@@ -53,67 +53,148 @@ dashboard、健康状态、`Vary` 和隧道前 gzip。两层合同必须同时�
 
 ### 1) 公网入口机：Nginx
 
+<!-- NGINX_RELEASE_SCRIPT_BEGIN -->
 ```bash
-set -euo pipefail
+publish_bond_factor_nginx() (
+  set -euo pipefail
 
-# 安装版本化公共片段；旧 site 的片段不被覆盖，回滚仍是完整旧策略。
-sudo install -m 0644 deploy/nginx/snippets/bond-proxy-headers.conf \
-  /etc/nginx/snippets/bond-proxy-headers-20260722a.conf
+  release_stage="${BOND_FACTOR_RELEASE_STAGE:-rollout}"
+  release_id="20260722b"
+  nginx_root="${BOND_NGINX_ROOT:-/etc/nginx}"
+  case "$release_stage" in
+    rollout|final) ;;
+    *) printf 'invalid BOND_FACTOR_RELEASE_STAGE\n' >&2; return 2 ;;
+  esac
 
-# 构造不可由请求参数控制的版本化候选；首阶段固定 rollout。
-release_stage=rollout
-policy_version=20260722a
-candidate_file="$(mktemp)"
-trap 'rm -f -- "$candidate_file"' EXIT
-sed "s/^    default rollout;$/    default ${release_stage};/" \
-  deploy/nginx/bond-factor-lab.conf >"$candidate_file"
-test "$(grep -Ec '^    default (rollout|final);$' "$candidate_file")" -eq 1
-grep -Fxq "    default ${release_stage};" "$candidate_file"
-target="/etc/nginx/sites-available/bond-factor-lab-${policy_version}-${release_stage}"
-active="/etc/nginx/sites-enabled/bond-factor-lab"
-sudo install -m 0644 "$candidate_file" "$target"
+  site_source="deploy/nginx/bond-factor-lab.conf"
+  snippet_source="deploy/nginx/snippets/bond-proxy-headers.conf"
+  snippet_target="${nginx_root}/snippets/bond-proxy-headers-${release_id}.conf"
+  target="${nginx_root}/sites-available/bond-factor-lab-${release_id}-${release_stage}"
+  active="${nginx_root}/sites-enabled/bond-factor-lab"
+  # 生产默认 snippet_target：
+  # /etc/nginx/snippets/bond-proxy-headers-20260722b.conf
 
-# 原子切换 symlink；运行中的 Nginx 在 reload 前继续使用旧内存配置。
-previous_target="$(readlink -f "$active" 2>/dev/null || true)"
-restore_previous_link() {
-  if [[ -n "$previous_target" ]]; then
-    sudo ln -sfn "$previous_target" "${active}.rollback"
-    sudo mv -Tf "${active}.rollback" "$active"
-  else
-    sudo rm -f -- "$active"
+  candidate_file="$(mktemp)"
+  trap 'rm -f -- "$candidate_file"' EXIT
+  sed "s/^    default rollout;$/    default ${release_stage};/" \
+    "$site_source" >"$candidate_file"
+  test "$(grep -Ec '^    default (rollout|final);$' "$candidate_file")" -eq 1
+  grep -Fxq "    default ${release_stage};" "$candidate_file"
+
+  install_immutable() {
+    source_file="$1"
+    immutable_target="$2"
+    staged_target="${immutable_target}.stage.$$"
+    if sudo test -L "$immutable_target"; then
+      printf 'immutable release path must not be a symlink: %s\n' \
+        "$immutable_target" >&2
+      return 1
+    fi
+    if sudo test -e "$immutable_target"; then
+      if sudo test -f "$immutable_target" \
+          && sudo cmp -s "$source_file" "$immutable_target"; then
+        return 0
+      fi
+      printf 'immutable release id collision: %s\n' "$immutable_target" >&2
+      return 1
+    fi
+
+    sudo install -m 0644 "$source_file" "$staged_target"
+    if sudo ln "$staged_target" "$immutable_target" 2>/dev/null; then
+      sudo rm -f -- "$staged_target"
+      return 0
+    fi
+    sudo rm -f -- "$staged_target"
+    if sudo test ! -L "$immutable_target" \
+        && sudo test -f "$immutable_target" \
+        && sudo cmp -s "$source_file" "$immutable_target"; then
+      return 0
+    fi
+    printf 'immutable release id collision: %s\n' "$immutable_target" >&2
+    return 1
+  }
+
+  previous_target=""
+  already_active=0
+  if sudo test -L "$active"; then
+    current_target="$(readlink -f "$active" 2>/dev/null || true)"
+    if [[ -z "$current_target" ]] || ! sudo test -f "$current_target" \
+        || ! sudo test -r "$current_target"; then
+      printf 'active symlink target is missing or unreadable: %s\n' "$active" >&2
+      return 1
+    fi
+    if [[ "$current_target" == "$target" ]]; then
+      already_active=1
+    else
+      previous_target="$current_target"
+    fi
+  elif sudo test -e "$active"; then
+    printf '%s: %s\n' \
+      'active path is a regular file; migrate it to an immutable release' \
+      "$active" >&2
+    return 1
   fi
-}
 
-sudo ln -sfn "$target" "${active}.next"
-sudo mv -Tf "${active}.next" "$active"
+  install_immutable "$snippet_source" "$snippet_target"
+  install_immutable "$candidate_file" "$target"
 
-if ! sudo nginx -t; then
-  restore_previous_link
-  sudo nginx -t
-  exit 1
-fi
-
-if ! sudo systemctl reload nginx; then
-  restore_previous_link
-  if [[ -n "$previous_target" ]]; then
-    # 候选可能已被进程部分读取；重新 test 并 reload previous policy。
-    sudo nginx -t && sudo systemctl reload nginx
-  else
-    # 首次启用没有 previous policy：删除候选后只 test，绝不能把“无站点”
-    # reload 成一次成功发布。
+  if [[ "$already_active" -eq 1 ]]; then
     sudo nginx -t
+    printf 'release already active: %s\n' "$target"
+    return 0
   fi
-  printf 'candidate reload failed; previous policy restored\n' >&2
-  exit 1
-fi
-```
+  if [[ -n "$previous_target" && "$previous_target" == "$target" ]]; then
+    printf 'previous target must differ from candidate\n' >&2
+    return 1
+  fi
 
-切换 final 使用完全相同的命令块，只把 `release_stage=final`；候选由同一
-`20260722a` 模板生成，`nginx -t` 成功后才 reload。不得现场删除或注释 legacy
+  restore_previous_link() {
+    if [[ -n "$previous_target" ]]; then
+      rollback_link="${active}.rollback.$$"
+      sudo ln -s "$previous_target" "$rollback_link"
+      sudo mv -f "$rollback_link" "$active"
+    else
+      sudo rm -f -- "$active"
+    fi
+  }
+
+  next_link="${active}.next.$$"
+  sudo ln -s "$target" "$next_link"
+  sudo mv -f "$next_link" "$active"
+
+  if ! sudo nginx -t; then
+    restore_previous_link
+    sudo nginx -t
+    return 1
+  fi
+  if ! sudo systemctl reload nginx; then
+    restore_previous_link
+    if [[ -n "$previous_target" ]]; then
+      # previous site 引用其自身不可变 snippet；test 后恢复完整旧策略。
+      sudo nginx -t && sudo systemctl reload nginx
+    else
+      # 首次启用无 previous：删除 active 后只 test，绝不 reload “无站点”。
+      sudo nginx -t
+    fi
+    printf 'candidate reload failed; previous policy restored\n' >&2
+    return 1
+  fi
+)
+
+publish_bond_factor_nginx
+```
+<!-- NGINX_RELEASE_SCRIPT_END -->
+
+切换 final 使用完全相同的命令块，并设置 `BOND_FACTOR_RELEASE_STAGE=final`；候选由同一
+`20260722b` release 模板生成，`nginx -t` 成功后才 reload。不得现场删除或注释 legacy
 location。仓库 site 文件不包含 `events {}` / `http {}`，因此不能执行
 `nginx -t -c deploy/nginx/bond-factor-lab.conf`；Task 12 必须在入口机真实完整配置中验证。
 候选 `nginx -t` 或 reload 失败也必须以非零状态结束，不能因 previous policy 恢复
 成功而把失败发布报告为成功。
+
+入口最低支持版本为 Nginx 1.18+。Task 12 必须记录入口机实际 `nginx -v`，并在
+真实完整配置执行 `nginx -t` 后才允许 reload。本地 wrapper 不能替代生产入口验证；
+它只验证仓库模板在本机 Nginx 上的语法和 location/normalize 行为。
 
 ### 2) 本地 Mac：SSH 反向隧道（launchd 常驻）
 
