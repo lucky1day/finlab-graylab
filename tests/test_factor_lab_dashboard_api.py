@@ -1461,3 +1461,423 @@ def test_waiter_registration_cancellation_is_idempotently_removed(
     assert results["owner"].cache_status == "MISS"
     assert builder_calls == 1
     assert store.diagnostics()["active_waiter_count"] == 0
+
+
+@pytest.mark.parametrize("pop_stage", ["before_pop", "after_pop"])
+def test_deregistration_cancellation_preserves_inflight_process_signal(
+    pop_stage: str,
+    monkeypatch,
+) -> None:
+    cleanup_signal = KeyboardInterrupt(pop_stage)
+    wait_signal = SystemExit("wait sampling cancelled")
+    build_started = threading.Event()
+    release_build = threading.Event()
+    calls = 0
+
+    class _InterruptingPopRegistry(dict):
+        def __init__(self) -> None:
+            super().__init__()
+            self._cancelled = False
+
+        def pop(self, key: object, default: Any = None) -> Any:
+            if (
+                threading.current_thread().name == "signal-waiter"
+                and not self._cancelled
+            ):
+                self._cancelled = True
+                if pop_stage == "before_pop":
+                    raise cleanup_signal
+                super().pop(key, default)
+                raise cleanup_signal
+            return super().pop(key, default)
+
+    def builder() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _payload(snapshot_id="seed")
+        build_started.set()
+        assert release_build.wait(timeout=3.0)
+        return _payload(snapshot_id="new")
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = _Clock()
+    store = DashboardSnapshotStore(builder, monotonic=clock)
+    store.get()
+    clock.value = 2.0
+    registry = _InterruptingPopRegistry()
+    store._waiter_registrations = registry
+    errors: dict[str, BaseException] = {}
+
+    owner = threading.Thread(target=store.get, name="signal-owner")
+    owner.start()
+    assert build_started.wait(timeout=3.0)
+    original_wait_monotonic = snapshot_module._sample_wait_monotonic
+
+    def cancel_wait_sample() -> float:
+        if threading.current_thread().name == "signal-waiter":
+            raise wait_signal
+        return original_wait_monotonic()
+
+    monkeypatch.setattr(
+        snapshot_module,
+        "_sample_wait_monotonic",
+        cancel_wait_sample,
+    )
+
+    def waiter_target() -> None:
+        try:
+            store.get()
+        except BaseException as error:
+            errors["waiter"] = error
+
+    waiter = threading.Thread(target=waiter_target, name="signal-waiter")
+    waiter.start()
+    waiter.join(timeout=3.0)
+
+    try:
+        assert not waiter.is_alive()
+        assert errors.get("waiter") is wait_signal
+        assert store.diagnostics()["active_waiter_count"] == 0
+        assert dict(registry) == {}
+    finally:
+        release_build.set()
+        owner.join(timeout=3.0)
+
+    assert not owner.is_alive()
+    assert calls == 2
+
+
+@pytest.mark.parametrize("pop_stage", ["before_pop", "after_pop"])
+def test_deregistration_cancellation_after_normal_result_is_propagated(
+    pop_stage: str,
+) -> None:
+    cleanup_signal = KeyboardInterrupt(pop_stage)
+    build_started = threading.Event()
+    release_build = threading.Event()
+    calls = 0
+
+    class _InterruptingPopRegistry(dict):
+        def __init__(self) -> None:
+            super().__init__()
+            self._cancelled = False
+
+        def pop(self, key: object, default: Any = None) -> Any:
+            if (
+                threading.current_thread().name == "normal-waiter"
+                and not self._cancelled
+            ):
+                self._cancelled = True
+                if pop_stage == "before_pop":
+                    raise cleanup_signal
+                super().pop(key, default)
+                raise cleanup_signal
+            return super().pop(key, default)
+
+    def builder() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _payload(snapshot_id="seed")
+        build_started.set()
+        assert release_build.wait(timeout=3.0)
+        return _payload(snapshot_id="new")
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = _Clock()
+    store = DashboardSnapshotStore(
+        builder,
+        monotonic=clock,
+        wait_timeout_seconds=0.0,
+    )
+    store.get()
+    clock.value = 2.0
+    registry = _InterruptingPopRegistry()
+    store._waiter_registrations = registry
+    errors: dict[str, BaseException] = {}
+
+    owner = threading.Thread(target=store.get, name="normal-owner")
+    owner.start()
+    assert build_started.wait(timeout=3.0)
+
+    def waiter_target() -> None:
+        try:
+            store.get()
+        except BaseException as error:
+            errors["waiter"] = error
+
+    waiter = threading.Thread(target=waiter_target, name="normal-waiter")
+    waiter.start()
+    waiter.join(timeout=3.0)
+
+    try:
+        assert not waiter.is_alive()
+        assert errors.get("waiter") is cleanup_signal
+        assert store.diagnostics()["active_waiter_count"] == 0
+        assert dict(registry) == {}
+    finally:
+        release_build.set()
+        owner.join(timeout=3.0)
+
+    assert not owner.is_alive()
+    assert calls == 2
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["_record_terminal_attempt", "_record_observation"],
+)
+def test_success_terminal_notifies_waiter_before_diagnostics_cancellation(
+    failure_point: str,
+    main_module,
+    monkeypatch,
+) -> None:
+    signal = KeyboardInterrupt(failure_point)
+    rebuild_started = threading.Event()
+    release_rebuild = threading.Event()
+    waiter_done = threading.Event()
+    calls = 0
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _NotifyTrackingCondition(threading.Condition):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wait_started = threading.Event()
+            self.owner_notified = threading.Event()
+
+        def wait(self, timeout: float | None = None) -> bool:
+            if threading.current_thread().name == "diagnostic-waiter":
+                self.wait_started.set()
+            return super().wait(timeout)
+
+        def notify_all(self) -> None:
+            if (
+                threading.current_thread().name == "diagnostic-owner"
+                and self.wait_started.is_set()
+            ):
+                self.owner_notified.set()
+            super().notify_all()
+
+    def builder() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _payload(snapshot_id="seed")
+        rebuild_started.set()
+        assert release_rebuild.wait(timeout=3.0)
+        return _payload(snapshot_id="fresh")
+
+    clock = _Clock()
+    condition = _NotifyTrackingCondition()
+    store = DashboardSnapshotStore(
+        builder,
+        monotonic=clock,
+        wait_timeout_seconds=1.0,
+    )
+    store._condition = condition
+    store.get()
+    clock.value = 2.0
+    original_diagnostic = getattr(store, failure_point)
+    cancellation_injected = False
+
+    def cancel_diagnostic(*args: Any, **kwargs: Any) -> Any:
+        nonlocal cancellation_injected
+        if (
+            threading.current_thread().name == "diagnostic-owner"
+            and not cancellation_injected
+        ):
+            cancellation_injected = True
+            raise signal
+        return original_diagnostic(*args, **kwargs)
+
+    monkeypatch.setattr(store, failure_point, cancel_diagnostic)
+    monkeypatch.setattr(main_module, "dashboard_snapshot_store", store)
+    main_module._reset_dashboard_health_for_tests(
+        "degraded",
+        "dashboard_snapshot_stale",
+    )
+    responses: dict[str, Any] = {}
+    diagnostics: dict[str, dict[str, Any]] = {}
+    errors: dict[str, BaseException] = {}
+
+    def route_target(name: str) -> None:
+        try:
+            responses[name] = main_module._factor_lab_dashboard_response(
+                _direct_request()
+            )
+            diagnostics[name] = store.request_diagnostics()
+        except BaseException as error:
+            errors[name] = error
+        finally:
+            if name == "waiter":
+                waiter_done.set()
+
+    owner = threading.Thread(
+        target=route_target,
+        args=("owner",),
+        name="diagnostic-owner",
+    )
+    waiter = threading.Thread(
+        target=route_target,
+        args=("waiter",),
+        name="diagnostic-waiter",
+    )
+    owner.start()
+    assert rebuild_started.wait(timeout=3.0)
+    waiter.start()
+    assert condition.wait_started.wait(timeout=3.0)
+    release_rebuild.set()
+    completed_before_manual_notify = waiter_done.wait(timeout=0.3)
+    if not completed_before_manual_notify:
+        with condition:
+            condition.notify_all()
+    owner.join(timeout=3.0)
+    waiter.join(timeout=3.0)
+
+    assert not owner.is_alive()
+    assert not waiter.is_alive()
+    assert completed_before_manual_notify is True
+    assert condition.owner_notified.is_set()
+    assert errors.get("owner") is signal
+    assert "waiter" not in errors
+    assert responses["waiter"].headers["x-dashboard-cache"] == "HIT"
+    assert json.loads(responses["waiter"].body)["snapshot_id"] == "fresh"
+    assert diagnostics["waiter"]["attempt_status"] == "success"
+    assert main_module._dashboard_health_snapshot() == {
+        "status": "ready",
+        "error_code": None,
+    }
+
+
+def test_late_waiter_prefers_fresh_global_snapshot_over_timeout_stale(
+    main_module,
+    monkeypatch,
+) -> None:
+    rebuild_started = threading.Event()
+    release_rebuild = threading.Event()
+    calls = 0
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    class _LateResumeCondition(threading.Condition):
+        def __init__(self) -> None:
+            super().__init__()
+            self.wait_started = threading.Event()
+            self.resume_entered = threading.Event()
+            self.resume_release = threading.Event()
+
+        def wait(self, timeout: float | None = None) -> bool:
+            is_waiter = threading.current_thread().name == "late-waiter"
+            if is_waiter:
+                self.wait_started.set()
+            notified = super().wait(timeout)
+            if is_waiter:
+                self.release()
+                try:
+                    self.resume_entered.set()
+                    assert self.resume_release.wait(timeout=3.0)
+                finally:
+                    self.acquire()
+            return notified
+
+    def builder() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _payload(snapshot_id="seed")
+        rebuild_started.set()
+        assert release_rebuild.wait(timeout=3.0)
+        return _payload(snapshot_id="fresh")
+
+    waiter_samples = iter([0.0, 0.0, 2.0])
+    original_wait_monotonic = snapshot_module._sample_wait_monotonic
+
+    def sample_wait_monotonic() -> float:
+        if threading.current_thread().name == "late-waiter":
+            return next(waiter_samples)
+        return original_wait_monotonic()
+
+    monkeypatch.setattr(
+        snapshot_module,
+        "_sample_wait_monotonic",
+        sample_wait_monotonic,
+    )
+    clock = _Clock()
+    condition = _LateResumeCondition()
+    store = DashboardSnapshotStore(
+        builder,
+        monotonic=clock,
+        wait_timeout_seconds=1.0,
+    )
+    store._condition = condition
+    store.get()
+    clock.value = 2.0
+    monkeypatch.setattr(main_module, "dashboard_snapshot_store", store)
+    main_module._reset_dashboard_health_for_tests(
+        "degraded",
+        "dashboard_snapshot_stale",
+    )
+    responses: dict[str, Any] = {}
+    diagnostics: dict[str, dict[str, Any]] = {}
+    errors: dict[str, BaseException] = {}
+
+    def route_target(name: str) -> None:
+        try:
+            responses[name] = main_module._factor_lab_dashboard_response(
+                _direct_request()
+            )
+            diagnostics[name] = store.request_diagnostics()
+        except BaseException as error:
+            errors[name] = error
+
+    owner = threading.Thread(
+        target=route_target,
+        args=("owner",),
+        name="late-owner",
+    )
+    waiter = threading.Thread(
+        target=route_target,
+        args=("waiter",),
+        name="late-waiter",
+    )
+    owner.start()
+    assert rebuild_started.wait(timeout=3.0)
+    waiter.start()
+    assert condition.wait_started.wait(timeout=3.0)
+    release_rebuild.set()
+    assert condition.resume_entered.wait(timeout=3.0)
+    owner.join(timeout=3.0)
+    condition.resume_release.set()
+    waiter.join(timeout=3.0)
+
+    assert not owner.is_alive()
+    assert not waiter.is_alive()
+    assert errors == {}
+    assert responses["waiter"].headers["x-dashboard-cache"] == "HIT"
+    assert json.loads(responses["waiter"].body)["snapshot_id"] == "fresh"
+    assert diagnostics["waiter"]["request_waited"] is True
+    assert diagnostics["waiter"]["attempt_id"] == 2
+    assert diagnostics["waiter"]["attempt_status"] == "success"
+    assert main_module._dashboard_health_snapshot() == {
+        "status": "ready",
+        "error_code": None,
+    }

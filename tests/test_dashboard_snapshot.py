@@ -561,7 +561,7 @@ def test_waiter_sees_stale_when_new_snapshot_expires_before_resume(
     assert results["waiter"].age_seconds == pytest.approx(1.25)
 
 
-def test_waiter_past_real_deadline_cannot_return_hit(
+def test_waiter_past_real_deadline_returns_newly_published_fresh_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     condition = ResumeGateCondition()
@@ -608,7 +608,7 @@ def test_waiter_past_real_deadline_cannot_return_hit(
         _join_all([build_thread, waiter_thread])
 
     assert errors == {}
-    assert results["waiter"].cache_status == "STALE"
+    assert results["waiter"].cache_status == "HIT"
     assert results["waiter"].payload["snapshot_id"] == "new"
     assert store.get().cache_status == "HIT"
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import time
 from dataclasses import dataclass
 from threading import Condition, local
@@ -164,6 +165,14 @@ class DashboardSnapshotStore:
                         flight.done and resumed_at <= wait_deadline
                     )
                     if not completed_in_time:
+                        # 超时只描述等待窗口，不能覆盖全局缓存事实：owner
+                        # 可能已发布新鲜快照，但 waiter 在调度恢复时已越过 deadline。
+                        if self._is_fresh(observed_at):
+                            return self._cached_result(
+                                "HIT",
+                                observed_at,
+                                flight=flight,
+                            )
                         return self._stale_or_raise(
                             observed_at=observed_at,
                             message="dashboard snapshot build timed out",
@@ -197,7 +206,9 @@ class DashboardSnapshotStore:
                         flight=flight,
                     )
                 finally:
-                    self._waiter_registrations.pop(registration, None)
+                    self._remove_waiter_registration_recoverably(
+                        registration
+                    )
 
             self._next_attempt_id += 1
             flight = _Flight()
@@ -396,10 +407,10 @@ class DashboardSnapshotStore:
                         attempt_seconds=build_seconds,
                     ),
                 )
-                self._record_terminal_attempt(flight.outcome)
                 self._flight = None
-                self._record_observation("MISS", flight=flight)
                 self._condition.notify_all()
+                self._record_terminal_attempt(flight.outcome)
+                self._record_observation("MISS", flight=flight)
             except BaseException:  # noqa: BLE001 - 回滚半完成发布
                 if flight.outcome is None:
                     self._snapshot = previous_snapshot
@@ -532,6 +543,35 @@ class DashboardSnapshotStore:
         self._last_attempt_status = outcome.attempt_status
         self._last_attempt_seconds = outcome.attempt_seconds
 
+    def _remove_waiter_registration_recoverably(
+        self,
+        registration: object,
+    ) -> None:
+        """有限重试注销 token，并避免 cleanup 覆盖正在传播的异常。"""
+        inflight_error = sys.exception()
+        first_cleanup_error: BaseException | None = None
+        registry = self._waiter_registrations
+        for _ in range(2):
+            try:
+                registry.pop(registration, None)
+            except BaseException as cleanup_error:  # noqa: BLE001
+                if first_cleanup_error is None:
+                    first_cleanup_error = cleanup_error
+                if not dict.__contains__(registry, registration):
+                    break
+            else:
+                break
+
+        if dict.__contains__(registry, registration):
+            try:
+                dict.pop(registry, registration, None)
+            except BaseException as cleanup_error:  # pragma: no cover
+                if first_cleanup_error is None:
+                    first_cleanup_error = cleanup_error
+
+        if first_cleanup_error is not None and inflight_error is None:
+            raise first_cleanup_error
+
     def _finalize_failed_flight(
         self,
         flight: _Flight,
@@ -554,6 +594,7 @@ class DashboardSnapshotStore:
                 with self._condition:
                     self._record_terminal_attempt(flight.outcome)
                     if self._flight is not flight:
+                        self._condition.notify_all()
                         return first_cleanup_error
                     self._last_waiter_count = flight.waiter_count
                     self._flight = None
