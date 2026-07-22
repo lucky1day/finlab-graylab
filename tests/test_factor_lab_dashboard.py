@@ -507,6 +507,52 @@ def test_conflicting_actual_fails_whole_snapshot_with_one_checkout(
     assert len(set(trace.connection_ids)) == 1
 
 
+def test_unconsumed_actual_scope_conflict_does_not_fail_snapshot(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+
+    engine, trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                UPDATE t_scheme_registry
+                SET status = 'paused'
+                WHERE scheme_id = 'daily_t5__h1__5Y'
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_monthly_actuals
+                    (tenor, target_date, direction_monthly, target_rule)
+                VALUES
+                    ('5Y', '2026-07-15', 1,
+                     'next_month_observation_yield_vs_feature_month_observation_yield'),
+                    ('5Y', '2026-07-15', -1,
+                     'next_month_observation_yield_vs_feature_month_observation_yield')
+                """
+            )
+        )
+    trace.reset()
+
+    payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    schemes = _schemes_by_id(payload)
+    assert "daily_t5__h1__5Y" not in schemes
+    assert schemes["daily_t1__h5__5Y"]["live_rows"] == [
+        ["2026-07-20", "2026-07-17", "2026-07-21", "scheduled_live", 1, 1],
+        ["2026-07-21", "2026-07-20", "2026-08-01", "scheduled_live", -1, None],
+    ]
+    assert schemes["monthly__h1__10Y"]["live_rows"] == [
+        ["2026-06-15", "2026-06-15", "2026-07-15", "gray_live", 1, 1]
+    ]
+    assert len(trace.checkouts) == 1
+    assert len(trace.checkins) == 1
+
+
 @pytest.mark.parametrize(
     ("assignment", "message"),
     [
@@ -575,15 +621,20 @@ class _MySqlDialect:
 class _MySqlConnectionStub:
     dialect = _MySqlDialect()
 
-    def __init__(self, events: list[Any]) -> None:
+    def __init__(self, events: list[Any], *, fail_on: str | None = None) -> None:
         self.events = events
+        self.fail_on = fail_on
 
     def execution_options(self, **options: Any) -> _MySqlConnectionStub:
         self.events.append(("execution_options", options))
+        if self.fail_on == "execution_options":
+            raise RuntimeError("isolation setup failed")
         return self
 
     def exec_driver_sql(self, statement: str) -> None:
         self.events.append(("driver_sql", statement))
+        if self.fail_on == "start_transaction":
+            raise RuntimeError("snapshot start failed")
 
     def execute(self, statement: Any) -> None:
         self.events.append(("business_sql", str(statement)))
@@ -598,9 +649,9 @@ class _MySqlConnectionStub:
 class _MySqlEngineStub:
     dialect = _MySqlDialect()
 
-    def __init__(self) -> None:
+    def __init__(self, *, fail_on: str | None = None) -> None:
         self.events: list[Any] = []
-        self.connection = _MySqlConnectionStub(self.events)
+        self.connection = _MySqlConnectionStub(self.events, fail_on=fail_on)
 
     def connect(self) -> _MySqlConnectionStub:
         self.events.append("connect")
@@ -636,6 +687,29 @@ def test_mysql_snapshot_rolls_back_and_closes_on_error() -> None:
     with pytest.raises(RuntimeError, match="query failed"):
         with dashboard_read_connection(engine):
             raise RuntimeError("query failed")
+
+    assert engine.events[-2:] == ["rollback", "close"]
+    assert engine.events.count("connect") == 1
+
+
+@pytest.mark.parametrize(
+    ("fail_on", "message"),
+    [
+        ("execution_options", "isolation setup failed"),
+        ("start_transaction", "snapshot start failed"),
+    ],
+)
+def test_mysql_snapshot_cleans_up_when_transaction_setup_fails(
+    fail_on: str,
+    message: str,
+) -> None:
+    from backend.factor_lab_dashboard import dashboard_read_connection
+
+    engine = _MySqlEngineStub(fail_on=fail_on)
+
+    with pytest.raises(RuntimeError, match=message):
+        with dashboard_read_connection(engine):
+            pytest.fail("snapshot context must not yield after setup failure")
 
     assert engine.events[-2:] == ["rollback", "close"]
     assert engine.events.count("connect") == 1

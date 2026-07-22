@@ -83,7 +83,14 @@ def build_factor_lab_dashboard(
                 f"target_tenor={scheme['target_tenor']}"
             )
 
-    actual_facts = _collapse_actual_rows(actual_rows)
+    active_actual_scopes = {
+        (scheme["target_tenor"], *live_actual_selector(scheme["task_type"]))
+        for scheme in registry
+    }
+    actual_facts = _collapse_actual_rows(
+        actual_rows,
+        active_actual_scopes=active_actual_scopes,
+    )
     canonical_predictions = choose_live_prediction_rows(
         prediction_rows,
         display_until=display_until,
@@ -262,11 +269,18 @@ def _read_live_actuals(
 
 def _collapse_actual_rows(
     actual_rows: list[Mapping[str, Any]],
+    *,
+    active_actual_scopes: set[tuple[str, str, str]],
 ) -> dict[tuple[str, str], dict[tuple[str, str, str], int | None]]:
     grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for row in actual_rows:
+        target_tenor = _required_text(
+            row.get("target_tenor"), field="target_tenor"
+        )
         actual_kind = _required_text(row.get("actual_kind"), field="actual_kind")
         target_rule = _required_text(row.get("target_rule"), field="target_rule")
+        if (target_tenor, actual_kind, target_rule) not in active_actual_scopes:
+            continue
         grouped[(actual_kind, target_rule)].append(row)
 
     return {
