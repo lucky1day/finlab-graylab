@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-22
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -207,10 +207,24 @@ python -m backtests.{scheme_id}_reproduction [--no-persist]
 ### 5.4 查询路径
 
 ```
-前端 → backend.main GET /api/metrics/{scheme_id}
+前端 → backend.main GET /api/factor-lab/dashboard
+  └─ backend.dashboard_snapshot.DashboardSnapshotStore
+       ├─ TTL 1 秒 + single-flight + 显式 stale LKG（进程内只读展示缓存）
+       └─ backend.factor_lab_dashboard.build_factor_lab_dashboard_snapshot(engine)
+            ├─ 同一 connection / repeatable-read readonly transaction
+            ├─ active registry + live predictions + scoped actuals + latest backtest 批量 SELECT
+            └─ canonical 选择 → compact V1 snapshot → gzip/identity 表示
+
+本机兼容/回滚路径：
+前端 legacy fallback → backend.main GET /api/metrics/{scheme_id}
   └─ backend.services.scheme_metrics(engine, ...)
        └─ JOIN t_scheme_predictions × t_scheme_actuals|t_scheme_weekly_actuals → 月度准确率
 ```
+
+dashboard snapshot 是 L4 只读展示优化：不提供算法输入、不写库、不修改任何方案 core，
+因此不改变 §3.3 的输入单点、写库单点、Native core 纯净和源算法保真四条不变量。
+公网正常路径只允许一个 dashboard GET；legacy 路由保留在本机用于 rollout 和回滚，
+是否公网放行由精确 Nginx 策略控制。
 
 指标查询路径必须保留两层分母语义：`samples` 是月度样本总数，包含预测为“平”的样本；`metric_samples` 是准确率、precision、recall 的真实分母，只包含预测为“涨/跌”的有方向样本。前端每日/周度验证表中预测为“平”的行只显示 `-`，不得显示 `×` 或 `✓`。
 
