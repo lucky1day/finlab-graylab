@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import gzip
 import json
+import logging
 from collections import defaultdict
 from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Any, Iterator, Mapping
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Connection, Engine
 
 from backend.factor_lab_dashboard_semantics import (
+    BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
     DASHBOARD_SCHEMA_VERSION,
     ROW_FIELDS,
     DashboardDataError,
+    backtest_benchmark_label,
+    backtest_data_source_label,
+    choose_latest_backtest_runs,
     choose_live_prediction_rows,
     collapse_actual_facts,
     compact_detail_row,
@@ -25,6 +32,10 @@ from backend.factor_lab_dashboard_semantics import (
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MYSQL_SNAPSHOT_SQL = "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
 _DATETIME_TYPE = datetime
+MAX_DETAIL_ROWS = 20_000
+MAX_RAW_JSON_BYTES = 1_500_000
+MAX_GZIP_JSON_BYTES = 100_000
+logger = logging.getLogger(__name__)
 
 
 @contextmanager
@@ -69,6 +80,17 @@ def build_factor_lab_dashboard(
         target_rows = _read_active_targets(connection)
         prediction_rows = _read_live_predictions(connection, registry_rows)
         actual_rows = _read_live_actuals(connection, registry_rows)
+        backtest_run_rows = _read_backtest_runs(connection, registry_rows)
+        selected_backtest_runs = choose_latest_backtest_runs(
+            backtest_run_rows,
+            registry_rows,
+        )
+        backtest_detail_rows = _read_backtest_details(
+            connection,
+            selected_run_ids=sorted(
+                {int(row["id"]) for row in selected_backtest_runs.values()}
+            ),
+        )
 
     registry = [_registry_dto(row) for row in registry_rows]
     targets = [_target_dto(row) for row in target_rows]
@@ -109,6 +131,20 @@ def build_factor_lab_dashboard(
             )
         ].append(row)
 
+    backtest_details_by_scope: dict[
+        tuple[int, str], list[Mapping[str, Any]]
+    ] = defaultdict(list)
+    for row in backtest_detail_rows:
+        backtest_details_by_scope[
+            (
+                _required_int(row.get("run_id"), field="backtest detail run_id"),
+                _required_text(
+                    row.get("target_tenor"),
+                    field="backtest detail target_tenor",
+                ),
+            )
+        ].append(row)
+
     schemes: list[dict[str, Any]] = []
     for scheme in registry:
         selector = live_actual_selector(scheme["task_type"])
@@ -133,31 +169,91 @@ def build_factor_lab_dashboard(
             detail["actual_direction"] = actual_direction
             live_rows.append(compact_detail_row(detail, source="live"))
 
+        selected_run = selected_backtest_runs.get(scheme["scheme_id"])
+        backtest = None
+        if selected_run is not None:
+            run_id = _required_int(
+                selected_run.get("id"), field="selected backtest run id"
+            )
+            selected_details = backtest_details_by_scope.get(
+                (run_id, scheme["target_tenor"]),
+                [],
+            )
+            if not selected_details:
+                raise DashboardDataError(
+                    f"base_scheme_id={scheme['base_scheme_id']} "
+                    f"target_tenor={scheme['target_tenor']} has no detail "
+                    f"for selected backtest run_id={run_id}"
+                )
+            compact_backtest_rows: list[list[Any]] = []
+            for detail_row in selected_details:
+                detail_horizon = _required_int(
+                    detail_row.get("horizon"), field="backtest detail horizon"
+                )
+                if detail_horizon != scheme["horizon"]:
+                    raise DashboardDataError(
+                        "backtest detail horizon does not match Registry scheme "
+                        f"{scheme['scheme_id']}: "
+                        f"detail={detail_horizon} registry={scheme['horizon']}"
+                    )
+                detail = dict(detail_row)
+                detail["prediction_phase"] = None
+                detail["actual_direction"] = detail.get("label")
+                compact_backtest_rows.append(
+                    compact_detail_row(detail, source="backtest")
+                )
+            compact_backtest_rows.sort(key=_compact_row_sort_key)
+            benchmark_id = _required_text(
+                selected_run.get("benchmark_id"),
+                field="selected backtest benchmark_id",
+            )
+            data_source = _required_text(
+                selected_run.get("data_source"),
+                field="selected backtest data_source",
+            )
+            backtest = {
+                "benchmark_id": benchmark_id,
+                "benchmark_label": backtest_benchmark_label(benchmark_id),
+                "data_source": data_source,
+                "data_source_label": backtest_data_source_label(data_source),
+                "latest_run_date": _iso_date(
+                    selected_run.get("end_date"),
+                    field="selected backtest end_date",
+                ),
+                "rows": compact_backtest_rows,
+            }
+
+        live_rows.sort(key=_compact_row_sort_key)
         schemes.append(
             {
                 **scheme,
                 "target_label": target_labels[scheme["target_tenor"]],
                 "live_rows": live_rows,
-                "backtest": None,
+                "backtest": backtest,
             }
         )
 
+    schemes.sort(key=lambda item: item["scheme_id"])
     payload = {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "snapshot_id": uuid4().hex,
         "generated_at": captured.isoformat(timespec="seconds"),
         "display_until": display_until,
+        "stale": False,
+        "snapshot_age_ms": 0,
         "row_fields": list(ROW_FIELDS),
         "target_labels": target_labels,
         "schemes": schemes,
     }
     validate_dashboard_payload(payload)
+    _validate_response_budgets(payload)
     return payload
 
 
 def _read_active_registry(connection: Connection) -> list[Mapping[str, Any]]:
     statement = text(
         """
-        SELECT scheme_id, base_scheme_id, name, description, horizon,
+        SELECT scheme_id, base_scheme_id, runtime_type, name, description, horizon,
                task_type, frequency, target_tenor, status, deployed_at
         FROM t_scheme_registry
         WHERE status = :active_status
@@ -166,6 +262,64 @@ def _read_active_registry(connection: Connection) -> list[Mapping[str, Any]]:
     )
     return list(
         connection.execute(statement, {"active_status": "active"}).mappings().all()
+    )
+
+
+def _read_backtest_runs(
+    connection: Connection,
+    registry_rows: list[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    base_scheme_ids = sorted(
+        {str(row["base_scheme_id"]) for row in registry_rows}
+    )
+    if not base_scheme_ids:
+        return []
+    data_sources = sorted(set(BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE.values()))
+    statement = text(
+        """
+        SELECT id, benchmark_id, scheme_id, data_source, start_date, end_date,
+               status, created_at, updated_at
+        FROM t_backtest_runs
+        WHERE status = :success_status
+          AND scheme_id IN :base_scheme_ids
+          AND data_source IN :data_sources
+        """
+    ).bindparams(
+        bindparam("base_scheme_ids", expanding=True),
+        bindparam("data_sources", expanding=True),
+    )
+    return list(
+        connection.execute(
+            statement,
+            {
+                "success_status": "success",
+                "base_scheme_ids": base_scheme_ids,
+                "data_sources": data_sources,
+            },
+        ).mappings().all()
+    )
+
+
+def _read_backtest_details(
+    connection: Connection,
+    *,
+    selected_run_ids: list[int],
+) -> list[Mapping[str, Any]]:
+    if not selected_run_ids:
+        return []
+    statement = text(
+        """
+        SELECT run_id, target_tenor, horizon, predict_date, feature_date,
+               target_date, label, predicted_direction
+        FROM t_backtest_predictions
+        WHERE run_id IN :run_ids
+        """
+    ).bindparams(bindparam("run_ids", expanding=True))
+    return list(
+        connection.execute(
+            statement,
+            {"run_ids": selected_run_ids},
+        ).mappings().all()
     )
 
 
@@ -341,6 +495,49 @@ def _target_dto(row: Mapping[str, Any]) -> dict[str, Any]:
         "status": _required_text(row.get("status"), field="target status"),
         "extra": _json_object(row.get("extra")),
     }
+
+
+def _compact_row_sort_key(row: list[Any]) -> tuple[str, str]:
+    return str(row[2]), str(row[0])
+
+
+def _validate_response_budgets(payload: Mapping[str, Any]) -> None:
+    detail_rows = 0
+    for scheme in payload["schemes"]:
+        detail_rows += len(scheme["live_rows"])
+        backtest = scheme["backtest"]
+        if backtest is not None:
+            detail_rows += len(backtest["rows"])
+    if detail_rows > MAX_DETAIL_ROWS:
+        raise DashboardDataError(
+            "dashboard detail rows exceed budget: "
+            f"rows={detail_rows} limit={MAX_DETAIL_ROWS}"
+        )
+
+    raw_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(raw_json) > MAX_RAW_JSON_BYTES:
+        raise DashboardDataError(
+            "dashboard raw JSON exceeds budget: "
+            f"bytes={len(raw_json)} limit={MAX_RAW_JSON_BYTES}"
+        )
+
+    gzip_json = gzip.compress(raw_json, compresslevel=6)
+    if len(gzip_json) > MAX_GZIP_JSON_BYTES:
+        raise DashboardDataError(
+            "dashboard gzip JSON exceeds budget: "
+            f"bytes={len(gzip_json)} limit={MAX_GZIP_JSON_BYTES}"
+        )
+    logger.info(
+        "Built factor lab dashboard snapshot_id=%s detail_rows=%s raw_bytes=%s gzip_bytes=%s",
+        payload["snapshot_id"],
+        detail_rows,
+        len(raw_json),
+        len(gzip_json),
+    )
 
 
 def _json_object(value: Any) -> dict[str, Any]:

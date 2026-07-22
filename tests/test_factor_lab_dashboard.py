@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Iterator
@@ -41,14 +42,19 @@ def _create_dashboard_schema(engine: Engine) -> None:
                 CREATE TABLE t_scheme_registry (
                     scheme_id TEXT PRIMARY KEY,
                     base_scheme_id TEXT NOT NULL,
+                    runtime_type TEXT,
                     name TEXT NOT NULL,
                     description TEXT,
                     horizon INTEGER NOT NULL,
                     task_type TEXT,
                     frequency TEXT,
                     target_tenor TEXT NOT NULL,
+                    schedule_cron TEXT,
+                    schedule_timezone TEXT,
                     status TEXT NOT NULL,
-                    deployed_at TEXT
+                    deployed_at TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
                 )
                 """
             )
@@ -63,7 +69,66 @@ def _create_dashboard_schema(engine: Engine) -> None:
                     target_type TEXT,
                     sort_order INTEGER,
                     status TEXT NOT NULL,
-                    extra TEXT
+                    extra TEXT,
+                    created_at TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE t_backtest_runs (
+                    id INTEGER PRIMARY KEY,
+                    benchmark_id TEXT NOT NULL,
+                    scheme_id TEXT NOT NULL,
+                    data_source TEXT NOT NULL,
+                    start_date TEXT NOT NULL,
+                    end_date TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT,
+                    report_path TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE VIEW v_latest_backtest_run AS
+                SELECT *
+                FROM (
+                    SELECT r.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY benchmark_id, scheme_id, data_source
+                               ORDER BY updated_at DESC, id DESC
+                           ) AS latest_rank
+                    FROM t_backtest_runs r
+                    WHERE status = 'success'
+                ) ranked
+                WHERE latest_rank = 1
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                CREATE TABLE t_backtest_predictions (
+                    id INTEGER PRIMARY KEY,
+                    run_id INTEGER NOT NULL,
+                    benchmark_id TEXT NOT NULL,
+                    scheme_id TEXT NOT NULL,
+                    target_tenor TEXT NOT NULL,
+                    horizon INTEGER NOT NULL,
+                    predict_date TEXT NOT NULL,
+                    feature_date TEXT,
+                    target_date TEXT,
+                    label INTEGER,
+                    predicted_direction INTEGER,
+                    confidence REAL
                 )
                 """
             )
@@ -129,6 +194,7 @@ def _seed_dashboard_rows(engine: Engine) -> None:
         {
             "scheme_id": "daily_t1__h5__5Y",
             "base_scheme_id": "daily_t1",
+            "runtime_type": "native_adapter",
             "name": "日频 T+1",
             "horizon": 5,
             "task_type": "T+1",
@@ -139,6 +205,7 @@ def _seed_dashboard_rows(engine: Engine) -> None:
         {
             "scheme_id": "daily_t5__h1__5Y",
             "base_scheme_id": "daily_t5",
+            "runtime_type": "native_adapter",
             "name": "日频 T+5",
             "horizon": 1,
             "task_type": "T+5",
@@ -149,6 +216,7 @@ def _seed_dashboard_rows(engine: Engine) -> None:
         {
             "scheme_id": "weekly_point__h1__10Y",
             "base_scheme_id": "weekly_point",
+            "runtime_type": "blackbox_v2",
             "name": "周度单点",
             "horizon": 1,
             "task_type": "weekly_point",
@@ -159,6 +227,7 @@ def _seed_dashboard_rows(engine: Engine) -> None:
         {
             "scheme_id": "weekly_average__h1__10Y",
             "base_scheme_id": "weekly_average",
+            "runtime_type": "native_adapter",
             "name": "周度均值",
             "horizon": 1,
             "task_type": "weekly_average",
@@ -169,6 +238,7 @@ def _seed_dashboard_rows(engine: Engine) -> None:
         {
             "scheme_id": "monthly__h1__10Y",
             "base_scheme_id": "monthly",
+            "runtime_type": "native_adapter",
             "name": "月频",
             "horizon": 1,
             "task_type": "monthly",
@@ -179,6 +249,7 @@ def _seed_dashboard_rows(engine: Engine) -> None:
         {
             "scheme_id": "paused__h1__5Y",
             "base_scheme_id": "paused",
+            "runtime_type": "native_adapter",
             "name": "暂停方案",
             "horizon": 1,
             "task_type": "T+1",
@@ -190,6 +261,10 @@ def _seed_dashboard_rows(engine: Engine) -> None:
     for row in registry_rows:
         row["description"] = ""
         row["deployed_at"] = "2026-06-09"
+        row["schedule_cron"] = "0 7 * * 1-5"
+        row["schedule_timezone"] = "Asia/Shanghai"
+        row["created_at"] = "2026-06-01T09:00:00"
+        row["updated_at"] = "2026-06-09T09:00:00"
 
     predictions = [
         (10, "daily_t1", "5Y", 5, "2026-07-20", "2026-07-17", "2026-07-21", "gray_live", -1, "{}"),
@@ -233,10 +308,12 @@ def _seed_dashboard_rows(engine: Engine) -> None:
                 """
                 INSERT INTO t_target_registry
                     (target_code, display_name, asset_class, target_type,
-                     sort_order, status, extra)
+                     sort_order, status, extra, created_at, updated_at)
                 VALUES
-                    ('5Y', '5Y国债活跃', 'bond', 'active_treasury', 1, 'active', '{}'),
-                    ('10Y', '10Y国债活跃', 'bond', 'active_treasury', 2, 'active', '{}')
+                    ('5Y', '5Y国债活跃', 'bond', 'active_treasury', 1,
+                     'active', '{}', NULL, NULL),
+                    ('10Y', '10Y国债活跃', 'bond', 'active_treasury', 2,
+                     'active', '{}', NULL, NULL)
                 """
             )
         )
@@ -244,11 +321,14 @@ def _seed_dashboard_rows(engine: Engine) -> None:
             text(
                 """
                 INSERT INTO t_scheme_registry
-                    (scheme_id, base_scheme_id, name, description, horizon,
-                     task_type, frequency, target_tenor, status, deployed_at)
+                    (scheme_id, base_scheme_id, runtime_type, name, description,
+                     horizon, task_type, frequency, target_tenor, schedule_cron,
+                     schedule_timezone, status, deployed_at, created_at, updated_at)
                 VALUES
-                    (:scheme_id, :base_scheme_id, :name, :description, :horizon,
-                     :task_type, :frequency, :target_tenor, :status, :deployed_at)
+                    (:scheme_id, :base_scheme_id, :runtime_type, :name,
+                     :description, :horizon, :task_type, :frequency,
+                     :target_tenor, :schedule_cron, :schedule_timezone,
+                     :status, :deployed_at, :created_at, :updated_at)
                 """
             ),
             registry_rows,
@@ -319,6 +399,99 @@ def _seed_dashboard_rows(engine: Engine) -> None:
                 """
             )
         )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_runs
+                    (id, benchmark_id, scheme_id, data_source, start_date,
+                     end_date, status, summary, report_path, created_at,
+                     updated_at)
+                VALUES
+                    (100, 'native-old', 'daily_t1', 'framework_db_aligned',
+                     '2025-01-01', '2026-05-30', 'success', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T12:00:00'),
+                    (101, 'native-old', 'daily_t1', 'framework_db_aligned',
+                     '2025-01-01', '2026-05-31', 'success', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T12:00:00'),
+                    (102, 'native-old', 'daily_t1', 'framework_db_aligned',
+                     '2025-01-01', '2026-06-01', 'failed', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T12:00:00'),
+                    (103, 'native-new', 'daily_t1', 'framework_db_aligned',
+                     '2025-01-01', '2026-05-31', 'success', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T11:00:00'),
+                    (104, 'native-new', 'daily_t1', 'framework_db_aligned',
+                     '2025-01-01', '2026-06-02', 'partial', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T13:00:00'),
+                    (105, 'native-new', 'daily_t1',
+                     'blackbox_v2_current_snapshot_as_of', '2025-01-01',
+                     '2026-06-03', 'success', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T14:00:00'),
+                    (200, 'blackbox-old', 'weekly_point',
+                     'blackbox_v2_current_snapshot_as_of', '2025-01-01',
+                     '2026-05-30', 'success', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T11:00:00'),
+                    (201, 'blackbox-new', 'weekly_point',
+                     'blackbox_v2_current_snapshot_as_of', '2025-01-01',
+                     '2026-05-31', 'success', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T11:00:00'),
+                    (202, 'blackbox-new', 'weekly_point',
+                     'framework_db_aligned', '2025-01-01', '2026-06-01',
+                     'success', '{}', NULL, '2026-07-20T09:00:00',
+                     '2026-07-20T12:00:00'),
+                    (203, 'blackbox-new', 'weekly_point',
+                     'blackbox_v2_current_snapshot_as_of', '2025-01-01',
+                     '2026-06-02', 'failed', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T13:00:00'),
+                    (300, 'weekly-average', 'weekly_average',
+                     'framework_db_aligned', '2025-01-01', '2026-05-31',
+                     'success', '{}', NULL, '2026-07-20T09:00:00',
+                     '2026-07-20T10:00:00'),
+                    (400, 'monthly-current', 'monthly',
+                     'framework_db_aligned', '2025-01-01', '2026-05-31',
+                     'success', '{}', NULL, '2026-07-20T09:00:00',
+                     '2026-07-20T10:00:00'),
+                    (500, 'daily-t5-failed', 'daily_t5',
+                     'framework_db_aligned', '2025-01-01', '2026-05-31',
+                     'failed', '{}', NULL, '2026-07-20T09:00:00',
+                     '2026-07-20T15:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (1001, 100, 'native-old', 'daily_t1', '5Y', 5,
+                     '2026-05-20', '2026-05-20', '2026-05-27', 1, -1, NULL),
+                    (1011, 101, 'native-old', 'daily_t1', '5Y', 5,
+                     '2026-05-21', '2026-05-21', '2026-05-28', 1, 1, NULL),
+                    (1012, 101, 'native-old', 'daily_t1', '5Y', 5,
+                     '2026-05-22', '2026-05-22', '2026-05-29', -1, -1, NULL),
+                    (1031, 103, 'native-new', 'daily_t1', '5Y', 5,
+                     '2026-05-22', '2026-05-22', '2026-05-29', -1, -1, NULL),
+                    (1033, 103, 'native-new', 'daily_t1', '5Y', 5,
+                     '2026-05-21', '2026-05-21', '2026-05-28', 1, -1, NULL),
+                    (1032, 101, 'native-old', 'daily_t1', '30Y', 5,
+                     '2026-05-22', '2026-05-22', '2026-05-29', 1, 1, NULL),
+                    (1051, 105, 'native-new', 'daily_t1', '5Y', 5,
+                     '2026-05-23', '2026-05-23', '2026-05-30', 1, 1, NULL),
+                    (2001, 200, 'blackbox-old', 'weekly_point', '10Y', 1,
+                     '2026-05-20', '2026-05-20', '2026-05-27', -1, -1, NULL),
+                    (2011, 201, 'blackbox-new', 'weekly_point', '10Y', 1,
+                     '2026-05-21', '2026-05-21', '2026-05-28', 1, 1, NULL),
+                    (2021, 202, 'blackbox-new', 'weekly_point', '10Y', 1,
+                     '2026-05-22', '2026-05-22', '2026-05-29', -1, -1, NULL),
+                    (3001, 300, 'weekly-average', 'weekly_average', '10Y', 1,
+                     '2026-05-21', '2026-05-21', '2026-05-28', -1, 1, NULL),
+                    (4001, 400, 'monthly-current', 'monthly', '10Y', 1,
+                     '2026-04-15', '2026-04-15', '2026-05-15', 0, 0, NULL)
+                """
+            )
+        )
 
 
 def _attach_trace(engine: Engine) -> SqlTrace:
@@ -372,8 +545,12 @@ def test_builds_live_snapshot_from_active_registry_task_types(
 
     payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
+    assert payload["schema_version"] == "factor-lab-dashboard-v1"
+    assert isinstance(payload["snapshot_id"], str) and payload["snapshot_id"]
     assert payload["generated_at"] == "2026-07-22T12:34:56+08:00"
     assert payload["display_until"] == "2026-07-22"
+    assert payload["stale"] is False
+    assert payload["snapshot_age_ms"] == 0
     assert payload["target_labels"] == {
         "5Y": "5Y国债活跃",
         "10Y": "10Y国债活跃",
@@ -406,7 +583,36 @@ def test_builds_live_snapshot_from_active_registry_task_types(
     assert schemes["monthly__h1__10Y"]["live_rows"] == [
         ["2026-06-15", "2026-06-15", "2026-07-15", "gray_live", 1, 1]
     ]
-    assert all(item["backtest"] is None for item in schemes.values())
+    assert schemes["daily_t5__h1__5Y"]["backtest"] is None
+    assert schemes["daily_t1__h5__5Y"]["backtest"] == {
+        "benchmark_id": "native-old",
+        "benchmark_label": "native-old",
+        "data_source": "framework_db_aligned",
+        "data_source_label": "当前DB对齐回测",
+        "latest_run_date": "2026-05-31",
+        "rows": [
+            ["2026-05-21", "2026-05-21", "2026-05-28", None, 1, 1],
+            ["2026-05-22", "2026-05-22", "2026-05-29", None, -1, -1],
+        ],
+    }
+    assert schemes["weekly_point__h1__10Y"]["backtest"]["benchmark_id"] == (
+        "blackbox-new"
+    )
+    assert schemes["monthly__h1__10Y"]["backtest"]["rows"] == [
+        ["2026-04-15", "2026-04-15", "2026-05-15", None, 0, 0]
+    ]
+    for scheme in schemes.values():
+        backtest = scheme["backtest"]
+        if backtest is not None:
+            assert set(backtest) == {
+                "benchmark_id",
+                "benchmark_label",
+                "data_source",
+                "data_source_label",
+                "latest_run_date",
+                "rows",
+            }
+    assert [scheme["scheme_id"] for scheme in payload["schemes"]] == sorted(schemes)
 
     # 未来 target 保留、未来 predict 过滤；月份按 target_date，不按 predict 月裁切。
     assert all(
@@ -426,7 +632,11 @@ def test_builds_live_snapshot_from_active_registry_task_types(
     assert len(trace.checkins) == 1
     assert len(set(trace.connection_ids)) == 1
     assert trace.transaction_flags and all(trace.transaction_flags)
-    assert len(trace.statements) == 4
+    assert len(trace.statements) == 6
+    assert sum(
+        statement.lstrip().upper().startswith("SELECT")
+        for statement in trace.statements
+    ) <= 6
     assert all(statement.lstrip().upper().startswith("SELECT") for statement in trace.statements)
     assert not any(
         re.match(r"\s*(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE)\b", statement, re.I)
@@ -438,6 +648,305 @@ def test_builds_live_snapshot_from_active_registry_task_types(
     )
     assert not any("daily_t1" in statement for statement in trace.statements)
     assert any("daily_t1" in str(parameters) for parameters in trace.parameters)
+
+
+def test_choose_latest_backtest_runs_applies_two_stage_runtime_selection(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    import backend.factor_lab_dashboard_semantics as semantics
+
+    assert hasattr(semantics, "choose_latest_backtest_runs")
+    chooser = semantics.choose_latest_backtest_runs
+    engine, _trace = dashboard_db
+    with engine.connect() as connection:
+        registry_rows = connection.execute(
+            text(
+                """
+                SELECT scheme_id, base_scheme_id, runtime_type, target_tenor,
+                       horizon, status
+                FROM t_scheme_registry
+                WHERE status = 'active'
+                """
+            )
+        ).mappings().all()
+        run_rows = connection.execute(
+            text("SELECT * FROM t_backtest_runs")
+        ).mappings().all()
+
+    selected = chooser(run_rows, registry_rows)
+
+    assert {scheme_id: int(row["id"]) for scheme_id, row in selected.items()} == {
+        "daily_t1__h5__5Y": 101,
+        "weekly_point__h1__10Y": 201,
+        "weekly_average__h1__10Y": 300,
+        "monthly__h1__10Y": 400,
+    }
+    assert "daily_t5__h1__5Y" not in selected
+
+
+def test_successful_rebuild_gets_new_snapshot_id_and_preserves_empty_sources(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+
+    engine, _trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM t_scheme_predictions WHERE scheme_id = 'daily_t5'")
+        )
+
+    first = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+    second = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert first["snapshot_id"] != second["snapshot_id"]
+    scheme = _schemes_by_id(first)["daily_t5__h1__5Y"]
+    assert scheme["live_rows"] == []
+    assert scheme["backtest"] is None
+
+
+def test_choose_latest_backtest_runs_rejects_inconsistent_runtime_for_base() -> None:
+    import backend.factor_lab_dashboard_semantics as semantics
+
+    assert hasattr(semantics, "choose_latest_backtest_runs")
+    registry_rows = [
+        {
+            "scheme_id": "multi__h1__5Y",
+            "base_scheme_id": "multi",
+            "runtime_type": "native_adapter",
+            "target_tenor": "5Y",
+            "horizon": 1,
+        },
+        {
+            "scheme_id": "multi__h1__10Y",
+            "base_scheme_id": "multi",
+            "runtime_type": "blackbox_v2",
+            "target_tenor": "10Y",
+            "horizon": 1,
+        },
+    ]
+
+    with pytest.raises(
+        semantics.DashboardDataError,
+        match="runtime_type is inconsistent",
+    ):
+        semantics.choose_latest_backtest_runs([], registry_rows)
+
+
+def test_dashboard_and_legacy_default_backtest_projections_are_equal(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.services import backtest_factor_lab_results
+
+    engine, trace = dashboard_db
+    dashboard = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+    dashboard_selects = sum(
+        statement.lstrip().upper().startswith("SELECT")
+        for statement in trace.statements
+    )
+    legacy = backtest_factor_lab_results(engine)
+
+    legacy_projection = {
+        (
+            scheme["scheme_id"],
+            row["target_date"],
+            row["predicted_direction"],
+            row["actual_direction"],
+        )
+        for scheme in legacy["schemes"]
+        for row in scheme["daily_rows"]
+    }
+    row_index = {
+        field: index for index, field in enumerate(dashboard["row_fields"])
+    }
+    dashboard_projection = {
+        (
+            scheme["scheme_id"],
+            row[row_index["target_date"]],
+            row[row_index["predicted_direction"]],
+            row[row_index["actual_direction"]],
+        )
+        for scheme in dashboard["schemes"]
+        if scheme["backtest"] is not None
+        for row in scheme["backtest"]["rows"]
+    }
+
+    assert dashboard_projection == legacy_projection
+    assert len(dashboard["schemes"]) == 5
+    assert len(legacy["schemes"]) == sum(
+        scheme["backtest"] is not None for scheme in dashboard["schemes"]
+    ) == 4
+    assert sum(len(scheme["live_rows"]) for scheme in dashboard["schemes"]) == 6
+    assert sum(
+        len(scheme["backtest"]["rows"])
+        for scheme in dashboard["schemes"]
+        if scheme["backtest"] is not None
+    ) == len(legacy_projection) == 5
+    assert dashboard_selects <= 6
+
+
+def test_selected_backtest_run_without_any_detail_fails_closed(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import DashboardDataError
+
+    engine, trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_runs
+                    (id, benchmark_id, scheme_id, data_source, start_date,
+                     end_date, status, summary, report_path, created_at,
+                     updated_at)
+                VALUES
+                    (600, 'native-corrupt', 'daily_t1',
+                     'framework_db_aligned', '2025-01-01', '2026-06-01',
+                     'success', '{}', NULL, '2026-07-20T09:00:00',
+                     '2026-07-20T16:00:00')
+                """
+            )
+        )
+    trace.reset()
+
+    with pytest.raises(DashboardDataError, match="daily_t1.*5Y.*no detail"):
+        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert len(trace.checkouts) == 1
+    assert len(trace.checkins) == 1
+    assert sum(
+        statement.lstrip().upper().startswith("SELECT")
+        for statement in trace.statements
+    ) <= 6
+
+
+def test_selected_multi_target_run_missing_one_active_target_fails_closed(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import DashboardDataError
+
+    engine, trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_registry
+                    (scheme_id, base_scheme_id, runtime_type, name, description,
+                     horizon, task_type, frequency, target_tenor, schedule_cron,
+                     schedule_timezone, status, deployed_at, created_at, updated_at)
+                VALUES
+                    ('multi__h1__5Y', 'multi', 'native_adapter', 'Multi 5Y',
+                     '', 1, 'T+1', 'daily', '5Y', '0 7 * * 1-5',
+                     'Asia/Shanghai', 'active', '2026-06-09', NULL, NULL),
+                    ('multi__h1__10Y', 'multi', 'native_adapter', 'Multi 10Y',
+                     '', 1, 'T+1', 'daily', '10Y', '0 7 * * 1-5',
+                     'Asia/Shanghai', 'active', '2026-06-09', NULL, NULL)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_runs
+                    (id, benchmark_id, scheme_id, data_source, start_date,
+                     end_date, status, summary, report_path, created_at,
+                     updated_at)
+                VALUES
+                    (700, 'multi-current', 'multi', 'framework_db_aligned',
+                     '2025-01-01', '2026-05-31', 'success', '{}', NULL,
+                     '2026-07-20T09:00:00', '2026-07-20T10:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (7001, 700, 'multi-current', 'multi', '5Y', 1,
+                     '2026-05-20', '2026-05-20', '2026-05-21', 1, 1, NULL)
+                """
+            )
+        )
+    trace.reset()
+
+    with pytest.raises(DashboardDataError, match="multi.*10Y.*no detail"):
+        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert len(trace.checkouts) == 1
+    assert len(trace.checkins) == 1
+
+
+def test_selected_backtest_detail_horizon_must_match_registry(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import DashboardDataError
+
+    engine, _trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_runs
+                    (id, benchmark_id, scheme_id, data_source, start_date,
+                     end_date, status, summary, report_path, created_at,
+                     updated_at)
+                VALUES
+                    (601, 'native-wrong-horizon', 'daily_t1',
+                     'framework_db_aligned', '2025-01-01', '2026-06-01',
+                     'success', '{}', NULL, '2026-07-20T09:00:00',
+                     '2026-07-20T16:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (6011, 601, 'native-wrong-horizon', 'daily_t1', '5Y', 1,
+                     '2026-05-20', '2026-05-20', '2026-05-21', 1, 1, NULL)
+                """
+            )
+        )
+
+    with pytest.raises(DashboardDataError, match="horizon.*daily_t1__h5__5Y"):
+        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+
+def test_duplicate_backtest_prediction_point_fails_closed(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import DashboardDataError
+
+    engine, _trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (1034, 101, 'native-old', 'daily_t1', '5Y', 5,
+                     '2026-05-20', '2026-05-20', '2026-05-28', 1, 1, NULL)
+                """
+            )
+        )
+
+    with pytest.raises(DashboardDataError, match="duplicate.*backtest"):
+        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
 
 def test_canonical_and_dto_work_happens_after_snapshot_connection_closes(
@@ -476,6 +985,150 @@ def test_canonical_and_dto_work_happens_after_snapshot_connection_closes(
     dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
     assert {"collapse", "canonical", "compact"}.issubset(called)
+
+
+def test_payload_validator_rejects_identity_top_level_and_uniqueness_damage(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import (
+        DashboardDataError,
+        validate_dashboard_payload,
+    )
+
+    engine, _trace = dashboard_db
+    payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+    required_top = {
+        "schema_version",
+        "snapshot_id",
+        "generated_at",
+        "display_until",
+        "stale",
+        "snapshot_age_ms",
+        "row_fields",
+        "target_labels",
+        "schemes",
+    }
+    assert required_top <= set(payload)
+    assert validate_dashboard_payload(payload) is None
+
+    invalid_payloads: list[tuple[str, dict[str, Any]]] = []
+    missing_complete_top_contract = deepcopy(payload)
+    for field in (
+        "snapshot_id",
+        "generated_at",
+        "display_until",
+        "stale",
+        "snapshot_age_ms",
+        "target_labels",
+    ):
+        missing_complete_top_contract.pop(field)
+    invalid_payloads.append(("snapshot_id", missing_complete_top_contract))
+
+    invalid_snapshot_id = deepcopy(payload)
+    invalid_snapshot_id["snapshot_id"] = ""
+    invalid_payloads.append(("snapshot_id", invalid_snapshot_id))
+
+    invalid_generated_at = deepcopy(payload)
+    invalid_generated_at["generated_at"] = "2026-07-22T12:34:56"
+    invalid_payloads.append(("generated_at", invalid_generated_at))
+
+    invalid_display_until = deepcopy(payload)
+    invalid_display_until["display_until"] = "2026-7-22"
+    invalid_payloads.append(("display_until", invalid_display_until))
+
+    invalid_stale = deepcopy(payload)
+    invalid_stale["stale"] = 0
+    invalid_payloads.append(("stale", invalid_stale))
+
+    invalid_age = deepcopy(payload)
+    invalid_age["snapshot_age_ms"] = -1
+    invalid_payloads.append(("snapshot_age_ms", invalid_age))
+
+    invalid_composite = deepcopy(payload)
+    invalid_composite["schemes"][0]["scheme_id"] = "wrong"
+    invalid_payloads.append(("composite", invalid_composite))
+
+    invalid_deployed_at = deepcopy(payload)
+    invalid_deployed_at["schemes"][0]["deployed_at"] = ""
+    invalid_payloads.append(("deployed_at", invalid_deployed_at))
+
+    duplicate_scheme = deepcopy(payload)
+    duplicate_scheme["schemes"].append(deepcopy(duplicate_scheme["schemes"][0]))
+    invalid_payloads.append(("duplicate scheme_id", duplicate_scheme))
+
+    invalid_target_label = deepcopy(payload)
+    invalid_target_label["schemes"][0]["target_label"] = "wrong label"
+    invalid_payloads.append(("target_label", invalid_target_label))
+
+    duplicate_live = deepcopy(payload)
+    live_scheme = next(
+        scheme for scheme in duplicate_live["schemes"] if scheme["live_rows"]
+    )
+    live_scheme["live_rows"].append(deepcopy(live_scheme["live_rows"][0]))
+    invalid_payloads.append(("duplicate.*live", duplicate_live))
+
+    for message, candidate in invalid_payloads:
+        with pytest.raises(DashboardDataError, match=message):
+            validate_dashboard_payload(candidate)
+
+
+def test_json_serialization_and_gzip_run_once_after_connection_closes(
+    dashboard_db: tuple[Engine, SqlTrace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gzip as stdlib_gzip
+
+    import backend.factor_lab_dashboard as dashboard
+
+    engine, trace = dashboard_db
+    real_dumps = dashboard.json.dumps
+    real_compress = stdlib_gzip.compress
+    calls = {"dumps": 0, "compress": 0}
+
+    def tracking_dumps(*args: Any, **kwargs: Any) -> str:
+        assert len(trace.checkins) == 1
+        calls["dumps"] += 1
+        return real_dumps(*args, **kwargs)
+
+    class TrackingGzip:
+        @staticmethod
+        def compress(data: bytes, *, compresslevel: int) -> bytes:
+            assert len(trace.checkins) == 1
+            calls["compress"] += 1
+            assert compresslevel == 6
+            return real_compress(data, compresslevel=compresslevel)
+
+    monkeypatch.setattr(dashboard.json, "dumps", tracking_dumps)
+    monkeypatch.setattr(dashboard, "gzip", TrackingGzip, raising=False)
+
+    dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert calls == {"dumps": 1, "compress": 1}
+
+
+@pytest.mark.parametrize(
+    ("constant", "limit", "message"),
+    [
+        ("MAX_DETAIL_ROWS", 0, "detail rows"),
+        ("MAX_RAW_JSON_BYTES", 1, "raw JSON"),
+        ("MAX_GZIP_JSON_BYTES", 1, "gzip JSON"),
+    ],
+)
+def test_dashboard_response_budgets_fail_closed_without_truncation(
+    dashboard_db: tuple[Engine, SqlTrace],
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    limit: int,
+    message: str,
+) -> None:
+    import backend.factor_lab_dashboard as dashboard
+
+    engine, _trace = dashboard_db
+    monkeypatch.setattr(dashboard, constant, limit, raising=False)
+
+    with pytest.raises(dashboard.DashboardDataError, match=message):
+        dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
 
 def test_conflicting_actual_fails_whole_snapshot_with_one_checkout(
@@ -591,6 +1244,8 @@ def test_invalid_direction_in_active_actual_scope_fails_snapshot(
         ("task_type = NULL", "task_type"),
         ("task_type = 'weekly'", "task_type"),
         ("deployed_at = NULL", "deployed_at"),
+        ("runtime_type = NULL", "runtime_type"),
+        ("runtime_type = 'native_v2'", "runtime_type"),
     ],
 )
 def test_incomplete_active_registry_fails_closed(
