@@ -991,11 +991,14 @@
           targetLabels[targetTenor] !== targetLabel) {
         throw dashboardDataError(context + " target identity is invalid");
       }
+      if (typeof scheme.description !== "string") {
+        throw dashboardDataError(context + ".description must be a string");
+      }
       var decodedScheme = {
         schemeId: schemeId,
         baseSchemeId: baseSchemeId,
         name: requireDashboardString(scheme.name, context + ".name", false),
-        description: requireDashboardString(scheme.description, context + ".description", true),
+        description: scheme.description,
         horizon: horizon,
         taskType: scheme.task_type,
         frequency: requireDashboardString(scheme.frequency, context + ".frequency", false),
@@ -1116,17 +1119,26 @@
 
       var liveRows = scheme.liveRows.slice();
       var backtestRows = scheme.backtest ? scheme.backtest.rows.slice() : [];
-      if (scheme.taskType === "monthly" && liveRows.length) {
-        var cutoffMonth = liveRows.map(function (row) {
-          return row.targetDate.slice(0, 7);
-        }).sort()[0];
+      var liveGrouped = groupDashboardDetails(liveRows);
+      var livePredictDates = liveRows.map(function (row) { return row.predictDate; }).sort();
+      var phaseRanges = deriveDashboardPhaseRanges(liveRows);
+      var cutoffMonth = monthlyLiveBacktestCutoffMonth(
+        {
+          monthlyRows: [],
+          dailyRowsByMonth: liveGrouped,
+          phaseRanges: phaseRanges,
+          liveSinceDate: livePredictDates.length ? livePredictDates[0] : "",
+          liveMetricSinceDate: livePredictDates.length ? livePredictDates[0] : ""
+        },
+        { frequency: scheme.frequency, taskType: scheme.taskType }
+      );
+      if (cutoffMonth) {
         backtestRows = backtestRows.filter(function (row) {
           return row.targetDate.slice(0, 7) < cutoffMonth;
         });
       }
 
       var backtestGrouped = groupDashboardDetails(backtestRows);
-      var liveGrouped = groupDashboardDetails(liveRows);
       var dailyRowsByMonth = {};
       appendDashboardGroupedRows(dailyRowsByMonth, backtestGrouped);
       appendDashboardGroupedRows(dailyRowsByMonth, liveGrouped);
@@ -1145,7 +1157,6 @@
         var sourceRank = { backtest: 0, live: 1 };
         return a.month.localeCompare(b.month) || sourceRank[a._source] - sourceRank[b._source];
       });
-      var livePredictDates = liveRows.map(function (row) { return row.predictDate; }).sort();
       var backtestMonths = Object.keys(backtestGrouped).sort();
       tasks[taskKey].push({
         id: scheme.schemeId,
@@ -1166,7 +1177,7 @@
         dailyRowsByMonth: dailyRowsByMonth,
         liveSinceDate: livePredictDates.length ? livePredictDates[0] : "",
         liveMetricSinceDate: livePredictDates.length ? livePredictDates[0] : "",
-        phaseRanges: deriveDashboardPhaseRanges(liveRows),
+        phaseRanges: phaseRanges,
         benchmarkLabel: scheme.backtest ? scheme.backtest.benchmarkLabel : "",
         dataSourceLabel: scheme.backtest ? scheme.backtest.dataSourceLabel : "",
         backtestLatestRunDate: scheme.backtest ? scheme.backtest.latestRunDate : "",

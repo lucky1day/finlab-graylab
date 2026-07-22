@@ -310,6 +310,38 @@ class FactorLabRankingTests(unittest.TestCase):
             },
         )
 
+    def test_dashboard_description_acceptance_matches_backend_v1_validator(self) -> None:
+        from backend.factor_lab_dashboard_semantics import validate_dashboard_payload
+
+        description = "  free text  "
+        payload = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    description=description,
+                    live_rows=[
+                        [
+                            "2026-07-20",
+                            "2026-07-17",
+                            "2026-07-21",
+                            "scheduled_live",
+                            1,
+                            None,
+                        ]
+                    ],
+                )
+            ]
+        )
+
+        validate_dashboard_payload(payload)
+        result = _run_factor_lab_hook(
+            f"""
+            const decoded = hooks.decodeDashboardPayload({json.dumps(payload)});
+            return {{ description: decoded.schemes[0].description }};
+            """
+        )
+
+        self.assertEqual(result["description"], description)
+
     def test_dashboard_decoder_rejects_corruption_table(self) -> None:
         base = _dashboard_payload(
             schemes=[
@@ -569,6 +601,14 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(monthly_result["backtestEndMonth"], "2026-05")
         self.assertEqual(sorted(monthly_result["dailyRows"]), ["2026-05", "2026-06", "2026-07"])
 
+    def test_dashboard_builder_reuses_shared_monthly_live_cutoff_helper(self) -> None:
+        source = FRONTEND_SCRIPT.read_text(encoding="utf-8")
+        builder = source.split("function buildFactorLabViewModel(decoded) {", 1)[1].split(
+            "\n  function fetchJson", 1
+        )[0]
+
+        self.assertIn("monthlyLiveBacktestCutoffMonth(", builder)
+
     def test_dashboard_and_legacy_fixture_builders_are_view_model_equivalent(self) -> None:
         dashboard = _dashboard_payload(
             schemes=[
@@ -613,6 +653,34 @@ class FactorLabRankingTests(unittest.TestCase):
                         ],
                     },
                 ),
+                _dashboard_scheme(
+                    scheme_id="weekly_demo__h6__5Y",
+                    base_scheme_id="weekly_demo",
+                    name="Weekly Demo",
+                    horizon=6,
+                    task_type="weekly_point",
+                    frequency="weekly",
+                    live_rows=[
+                        [
+                            "2026-06-01",
+                            "2026-05-29",
+                            "2026-06-05",
+                            "scheduled_live",
+                            1,
+                            -1,
+                        ],
+                    ],
+                    backtest={
+                        "benchmark_id": "weekly-benchmark",
+                        "benchmark_label": "Weekly benchmark",
+                        "data_source": "framework_db_aligned",
+                        "data_source_label": "当前DB对齐回测",
+                        "latest_run_date": "2026-05-31",
+                        "rows": [
+                            ["2026-05-29", "2026-05-29", "2026-06-05", None, -1, -1],
+                        ],
+                    },
+                ),
             ]
         )
         legacy_responses = {
@@ -640,6 +708,18 @@ class FactorLabRankingTests(unittest.TestCase):
                         "horizon": 30,
                         "task_type": "monthly",
                         "frequency": "monthly",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                    },
+                    {
+                        "scheme_id": "weekly_demo__h6__5Y",
+                        "base_scheme_id": "weekly_demo",
+                        "name": "Weekly Demo",
+                        "description": "",
+                        "target_tenor": "5Y",
+                        "horizon": 6,
+                        "task_type": "weekly_point",
+                        "frequency": "weekly",
                         "status": "active",
                         "deployed_at": "2026-06-04",
                     },
@@ -733,6 +813,30 @@ class FactorLabRankingTests(unittest.TestCase):
                     },
                 ],
             },
+            "/api/metrics/weekly_demo__h6__5Y": {
+                "target_label": "5Y国债活跃",
+                "phase_ranges": [
+                    {
+                        "prediction_phase": "scheduled_live",
+                        "start_predict_date": "2026-06-01",
+                        "end_predict_date": "2026-06-01",
+                        "start_target_date": "2026-06-05",
+                        "end_target_date": "2026-06-05",
+                        "rows": 1,
+                    },
+                ],
+                "monthly_metrics": [],
+                "daily_rows": [
+                    {
+                        "predict_date": "2026-06-01",
+                        "feature_date": "2026-05-29",
+                        "target_date": "2026-06-05",
+                        "prediction_phase": "scheduled_live",
+                        "predicted_direction": 1,
+                        "actual_direction": -1,
+                    },
+                ],
+            },
             "/api/backtests/factor-lab": {
                 "target_labels": {"5Y": "5Y国债活跃"},
                 "schemes": [
@@ -800,6 +904,31 @@ class FactorLabRankingTests(unittest.TestCase):
                             },
                         ],
                     },
+                    {
+                        "id": "bt:weekly-demo",
+                        "scheme_id": "weekly_demo__h6__5Y",
+                        "base_scheme_id": "weekly_demo",
+                        "scheme_name": "Weekly Demo",
+                        "target_tenor": "5Y",
+                        "horizon": 6,
+                        "task_type": "weekly_point",
+                        "frequency": "weekly",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                        "benchmark_label": "Weekly benchmark",
+                        "data_source_label": "当前DB对齐回测",
+                        "end_date": "2026-05-31",
+                        "monthly_metrics": [],
+                        "daily_rows": [
+                            {
+                                "predict_date": "2026-05-29",
+                                "feature_date": "2026-05-29",
+                                "target_date": "2026-06-05",
+                                "predicted_direction": -1,
+                                "actual_direction": -1,
+                            },
+                        ],
+                    },
                 ],
             },
         }
@@ -811,6 +940,11 @@ class FactorLabRankingTests(unittest.TestCase):
             const legacy = hooks.buildLegacyFactorLabViewModelForTest(
               {json.dumps(legacy_responses)}
             ).tasks;
+            hooks.setFactorLabStateForTest({{
+              startMonth: "2026-01",
+              endMonth: "2026-12",
+              dataSource: "all"
+            }});
             function normalize(tasks) {{
               return Object.keys(tasks).filter(function (taskKey) {{
                 return tasks[taskKey].length;
@@ -828,6 +962,7 @@ class FactorLabRankingTests(unittest.TestCase):
                       liveSinceDate: scheme.liveSinceDate,
                       backtestStartMonth: scheme.backtestStartMonth,
                       backtestEndMonth: scheme.backtestEndMonth,
+                      cumulativeAggregate: hooks.aggregateScheme(scheme),
                       months: scheme.monthlyRows.map(function (row) {{
                         return {{
                           month: row.month,
@@ -835,7 +970,11 @@ class FactorLabRankingTests(unittest.TestCase):
                           samples: row.samples,
                           metricSamples: row.metricSamples,
                           correct: row.correct,
-                          accuracy: row.overall
+                          accuracy: row.overall,
+                          actualCounts: row.actualCounts,
+                          predictedCounts: row.predictedCounts,
+                          metricActualCounts: row.metricActualCounts,
+                          metricPredictedCounts: row.metricPredictedCounts
                         }};
                       }}),
                       pending: Object.keys(scheme.dailyRowsByMonth).reduce(function (count, month) {{
@@ -867,6 +1006,51 @@ class FactorLabRankingTests(unittest.TestCase):
         )
 
         self.assertEqual(result["modern"], result["legacy"])
+        modern_by_task = {item["taskKey"]: item["schemes"] for item in result["modern"]}
+
+        weekly = modern_by_task["5Y|weekly_point"][0]
+        self.assertEqual(
+            [(row["month"], row["source"]) for row in weekly["months"]],
+            [("2026-06", "backtest"), ("2026-06", "live")],
+        )
+        self.assertEqual(
+            [
+                (row["samples"], row["metricSamples"], row["correct"], row["accuracy"])
+                for row in weekly["months"]
+            ],
+            [(1, 1, 1, 100), (1, 1, 0, 0)],
+        )
+        self.assertEqual(
+            [row["source"] for row in weekly["drawerRows"]],
+            ["backtest", "live"],
+        )
+        self.assertEqual(
+            {row["targetDate"] for row in weekly["drawerRows"]},
+            {"2026-06-05"},
+        )
+        self.assertEqual(
+            weekly["cumulativeAggregate"],
+            {
+                "samples": 2,
+                "metricSamples": 2,
+                "correct": 1,
+                "overall": 50,
+                "upPrecision": 0,
+                "upRecall": None,
+                "downPrecision": 100,
+                "downRecall": 50,
+            },
+        )
+        self.assertEqual(weekly["months"][0]["predictedCounts"], {"up": 0, "down": 1, "flat": 0})
+        self.assertEqual(weekly["months"][1]["predictedCounts"], {"up": 1, "down": 0, "flat": 0})
+        self.assertEqual(weekly["months"][0]["actualCounts"], {"up": 0, "down": 1, "flat": 0})
+        self.assertEqual(weekly["months"][1]["actualCounts"], {"up": 0, "down": 1, "flat": 0})
+
+        monthly = modern_by_task["5Y|monthly"][0]
+        self.assertEqual(
+            [(row["month"], row["source"]) for row in monthly["months"]],
+            [("2026-05", "backtest"), ("2026-06", "live"), ("2026-07", "live")],
+        )
 
     def test_load_dashboard_uses_one_path_derived_get_and_commits_after_build(self) -> None:
         payload = _dashboard_payload(
