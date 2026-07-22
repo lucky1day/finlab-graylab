@@ -39,10 +39,26 @@ def _live_row(**overrides: object) -> dict[str, object]:
 def _minimal_payload() -> dict[str, object]:
     return {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "snapshot_id": "snapshot-test-1",
+        "generated_at": "2026-07-22T12:00:00+08:00",
+        "display_until": "2026-07-22",
+        "stale": False,
+        "snapshot_age_ms": 0,
         "row_fields": list(ROW_FIELDS),
+        "target_labels": {"5Y": "5Y国债活跃"},
         "schemes": [
             {
+                "scheme_id": "base__h1__5Y",
+                "base_scheme_id": "base",
+                "name": "完整方案",
+                "description": "",
+                "horizon": 1,
                 "task_type": "T+1",
+                "frequency": "daily",
+                "target_tenor": "5Y",
+                "target_label": "5Y国债活跃",
+                "status": "active",
+                "deployed_at": "2026-06-09",
                 "live_rows": [
                     [
                         "2026-07-02",
@@ -256,3 +272,93 @@ def test_payload_rejects_unknown_task_type_or_row_width() -> None:
     wrong_width["schemes"][0]["live_rows"][0] = ["2026-07-02"]  # type: ignore[index]
     with pytest.raises(DashboardDataError, match="width"):
         validate_dashboard_payload(wrong_width)
+
+
+def test_payload_rejects_task1_minimal_shape_without_v1_top_level() -> None:
+    payload = {
+        "schema_version": DASHBOARD_SCHEMA_VERSION,
+        "row_fields": list(ROW_FIELDS),
+        "schemes": [
+            {
+                "task_type": "T+1",
+                "live_rows": [],
+                "backtest": None,
+            }
+        ],
+    }
+
+    with pytest.raises(DashboardDataError, match="snapshot_id"):
+        validate_dashboard_payload(payload)
+
+
+def test_payload_requires_explicit_backtest_key_for_every_scheme() -> None:
+    payload = _minimal_payload()
+    del payload["schemes"][0]["backtest"]  # type: ignore[index]
+
+    with pytest.raises(DashboardDataError, match="backtest"):
+        validate_dashboard_payload(payload)
+
+
+@pytest.mark.parametrize("source", ["live", "backtest"])
+def test_payload_detail_dates_must_be_iso_strings(source: str) -> None:
+    payload = _minimal_payload()
+    scheme = payload["schemes"][0]  # type: ignore[index]
+    if source == "live":
+        scheme["live_rows"][0][0] = date(2026, 7, 2)
+    else:
+        scheme["backtest"] = {
+            "benchmark_id": "benchmark",
+            "benchmark_label": "benchmark",
+            "data_source": "framework_db_aligned",
+            "data_source_label": "当前DB对齐回测",
+            "latest_run_date": "2026-05-31",
+            "rows": [
+                [
+                    date(2026, 5, 20),
+                    "2026-05-20",
+                    "2026-05-27",
+                    None,
+                    1,
+                    1,
+                ]
+            ],
+        }
+
+    with pytest.raises(DashboardDataError, match="ISO date string"):
+        validate_dashboard_payload(payload)
+
+
+@pytest.mark.parametrize("unknown_field", ["internal_metrics", "artifact_uri"])
+def test_payload_backtest_rejects_unknown_fields(unknown_field: str) -> None:
+    payload = _minimal_payload()
+    scheme = payload["schemes"][0]  # type: ignore[index]
+    scheme["backtest"] = {
+        "benchmark_id": "benchmark",
+        "benchmark_label": "benchmark",
+        "data_source": "framework_db_aligned",
+        "data_source_label": "当前DB对齐回测",
+        "latest_run_date": "2026-05-31",
+        "rows": [],
+        unknown_field: {},
+    }
+
+    with pytest.raises(DashboardDataError, match="unknown fields"):
+        validate_dashboard_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("scope", "unknown_field"),
+    [("top", "runtime_metrics"), ("scheme", "runtime_type")],
+)
+def test_payload_public_objects_reject_unknown_fields(
+    scope: str,
+    unknown_field: str,
+) -> None:
+    payload = _minimal_payload()
+    if scope == "top":
+        payload[unknown_field] = {}
+    else:
+        payload["schemes"][0][unknown_field] = "internal"  # type: ignore[index]
+
+    with pytest.raises(DashboardDataError, match="unknown fields"):
+        validate_dashboard_payload(payload)

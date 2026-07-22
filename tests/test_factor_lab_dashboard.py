@@ -826,6 +826,7 @@ def test_selected_multi_target_run_missing_one_active_target_fails_closed(
 ) -> None:
     from backend.factor_lab_dashboard import build_factor_lab_dashboard
     from backend.factor_lab_dashboard_semantics import DashboardDataError
+    from backend.services import backtest_factor_lab_results
 
     engine, trace = dashboard_db
     with engine.begin() as connection:
@@ -881,12 +882,24 @@ def test_selected_multi_target_run_missing_one_active_target_fails_closed(
     assert len(trace.checkouts) == 1
     assert len(trace.checkins) == 1
 
+    with pytest.raises(ValueError, match="multi.*10Y.*no detail"):
+        backtest_factor_lab_results(engine)
+
+    explicit = backtest_factor_lab_results(
+        engine,
+        benchmark_id="multi-current",
+    )
+    assert [scheme["scheme_id"] for scheme in explicit["schemes"]] == [
+        "multi__h1__5Y"
+    ]
+
 
 def test_selected_backtest_detail_horizon_must_match_registry(
     dashboard_db: tuple[Engine, SqlTrace],
 ) -> None:
     from backend.factor_lab_dashboard import build_factor_lab_dashboard
     from backend.factor_lab_dashboard_semantics import DashboardDataError
+    from backend.services import backtest_factor_lab_results
 
     engine, _trace = dashboard_db
     with engine.begin() as connection:
@@ -921,6 +934,15 @@ def test_selected_backtest_detail_horizon_must_match_registry(
 
     with pytest.raises(DashboardDataError, match="horizon.*daily_t1__h5__5Y"):
         build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    with pytest.raises(ValueError, match="horizon.*daily_t1__h5__5Y"):
+        backtest_factor_lab_results(engine)
+
+    explicit = backtest_factor_lab_results(
+        engine,
+        benchmark_id="native-wrong-horizon",
+    )
+    assert explicit["schemes"][0]["horizon"] == 1
 
 
 def test_duplicate_backtest_prediction_point_fails_closed(

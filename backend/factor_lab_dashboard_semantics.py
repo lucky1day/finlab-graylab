@@ -45,6 +45,40 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
+TOP_LEVEL_FIELDS = {
+    "schema_version",
+    "snapshot_id",
+    "generated_at",
+    "display_until",
+    "stale",
+    "snapshot_age_ms",
+    "row_fields",
+    "target_labels",
+    "schemes",
+}
+SCHEME_FIELDS = {
+    "scheme_id",
+    "base_scheme_id",
+    "name",
+    "description",
+    "horizon",
+    "task_type",
+    "frequency",
+    "target_tenor",
+    "target_label",
+    "status",
+    "deployed_at",
+    "live_rows",
+    "backtest",
+}
+BACKTEST_FIELDS = {
+    "benchmark_id",
+    "benchmark_label",
+    "data_source",
+    "data_source_label",
+    "latest_run_date",
+    "rows",
+}
 
 
 class DashboardDataError(RuntimeError):
@@ -253,66 +287,47 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
         raise DashboardDataError(
             f"dashboard schema_version must be {DASHBOARD_SCHEMA_VERSION!r}"
         )
+    _validate_exact_fields(
+        payload,
+        expected=TOP_LEVEL_FIELDS,
+        context="dashboard payload",
+    )
     if payload.get("row_fields") != list(ROW_FIELDS):
         raise DashboardDataError("dashboard row_fields do not match ROW_FIELDS")
 
-    candidate_schemes = payload.get("schemes")
-    has_registry_identity = isinstance(candidate_schemes, list) and any(
-        isinstance(scheme, Mapping)
-        and any(
-            field in scheme
-            for field in ("scheme_id", "base_scheme_id", "target_tenor", "horizon")
+    snapshot_id = payload.get("snapshot_id")
+    if (
+        not isinstance(snapshot_id, str)
+        or not snapshot_id.strip()
+        or any(character in snapshot_id for character in ("/", "\\"))
+    ):
+        raise DashboardDataError(
+            f"dashboard snapshot_id is invalid: {snapshot_id!r}"
         )
-        for scheme in candidate_schemes
+    _required_aware_iso_datetime(
+        payload.get("generated_at"), field="generated_at"
     )
-    strict_contract = has_registry_identity or any(
-        field in payload
-        for field in (
-            "snapshot_id",
-            "generated_at",
-            "display_until",
-            "stale",
-            "snapshot_age_ms",
-            "target_labels",
-        )
+    _required_payload_iso_date(
+        payload.get("display_until"), field="display_until"
     )
-    target_labels: Mapping[str, Any] = {}
-    if strict_contract:
-        snapshot_id = payload.get("snapshot_id")
-        if (
-            not isinstance(snapshot_id, str)
-            or not snapshot_id.strip()
-            or any(character in snapshot_id for character in ("/", "\\"))
-        ):
-            raise DashboardDataError(
-                f"dashboard snapshot_id is invalid: {snapshot_id!r}"
-            )
-        _required_aware_iso_datetime(
-            payload.get("generated_at"), field="generated_at"
+    if type(payload.get("stale")) is not bool:
+        raise DashboardDataError(
+            f"dashboard stale is invalid: {payload.get('stale')!r}"
         )
-        _required_iso_date(payload.get("display_until"), field="display_until")
-        if type(payload.get("stale")) is not bool:
-            raise DashboardDataError(
-                f"dashboard stale is invalid: {payload.get('stale')!r}"
-            )
-        snapshot_age_ms = payload.get("snapshot_age_ms")
-        if (
-            type(snapshot_age_ms) is not int
-            or snapshot_age_ms < 0
-        ):
-            raise DashboardDataError(
-                "dashboard snapshot_age_ms is invalid: "
-                f"{snapshot_age_ms!r}"
-            )
-        candidate_target_labels = payload.get("target_labels")
-        if not isinstance(candidate_target_labels, Mapping):
-            raise DashboardDataError("dashboard target_labels must be an object")
-        for target, label in candidate_target_labels.items():
-            _required_text(target, field="target_labels target")
-            _required_text(label, field="target_labels label")
-        target_labels = candidate_target_labels
+    snapshot_age_ms = payload.get("snapshot_age_ms")
+    if type(snapshot_age_ms) is not int or snapshot_age_ms < 0:
+        raise DashboardDataError(
+            "dashboard snapshot_age_ms is invalid: "
+            f"{snapshot_age_ms!r}"
+        )
+    target_labels = payload.get("target_labels")
+    if not isinstance(target_labels, Mapping):
+        raise DashboardDataError("dashboard target_labels must be an object")
+    for target, label in target_labels.items():
+        _required_string(target, field="target_labels target")
+        _required_string(label, field="target_labels label")
 
-    schemes = candidate_schemes
+    schemes = payload.get("schemes")
     if not isinstance(schemes, list):
         raise DashboardDataError("dashboard schemes must be a list")
     scheme_ids: set[str] = set()
@@ -322,127 +337,115 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
             raise DashboardDataError(
                 f"dashboard scheme[{scheme_index}] must be an object"
             )
+        _validate_exact_fields(
+            scheme,
+            expected=SCHEME_FIELDS,
+            context=f"dashboard scheme[{scheme_index}]",
+        )
         task_type = scheme.get("task_type")
         if task_type not in VALID_TASK_TYPES:
             raise DashboardDataError(
                 f"dashboard scheme[{scheme_index}] has invalid task_type: {task_type!r}"
             )
-        if strict_contract:
-            scheme_id = _required_text(
-                scheme.get("scheme_id"), field=f"scheme[{scheme_index}] scheme_id"
+        scheme_id = _required_string(
+            scheme.get("scheme_id"), field=f"scheme[{scheme_index}] scheme_id"
+        )
+        base_scheme_id = _required_string(
+            scheme.get("base_scheme_id"),
+            field=f"scheme[{scheme_index}] base_scheme_id",
+        )
+        target_tenor = _required_string(
+            scheme.get("target_tenor"),
+            field=f"scheme[{scheme_index}] target_tenor",
+        )
+        horizon = _required_int(
+            scheme.get("horizon"), field=f"scheme[{scheme_index}] horizon"
+        )
+        expected_scheme_id = f"{base_scheme_id}__h{horizon}__{target_tenor}"
+        if scheme_id != expected_scheme_id:
+            raise DashboardDataError(
+                "dashboard composite scheme identity is invalid: "
+                f"scheme_id={scheme_id!r} expected={expected_scheme_id!r}"
             )
-            base_scheme_id = _required_text(
-                scheme.get("base_scheme_id"),
-                field=f"scheme[{scheme_index}] base_scheme_id",
+        if scheme_id in scheme_ids:
+            raise DashboardDataError(
+                f"dashboard has duplicate scheme_id: {scheme_id}"
             )
-            target_tenor = _required_text(
-                scheme.get("target_tenor"),
-                field=f"scheme[{scheme_index}] target_tenor",
+        scheme_ids.add(scheme_id)
+        ordered_scheme_ids.append(scheme_id)
+        _required_payload_iso_date(
+            scheme.get("deployed_at"),
+            field=f"scheme[{scheme_index}] deployed_at",
+        )
+        if scheme.get("status") != "active":
+            raise DashboardDataError(
+                f"dashboard scheme[{scheme_index}] status must be active"
             )
-            horizon = _required_int(
-                scheme.get("horizon"), field=f"scheme[{scheme_index}] horizon"
+        _required_string(
+            scheme.get("name"), field=f"scheme[{scheme_index}] name"
+        )
+        description = scheme.get("description")
+        if not isinstance(description, str):
+            raise DashboardDataError(
+                f"dashboard scheme[{scheme_index}] description must be a string"
             )
-            expected_scheme_id = (
-                f"{base_scheme_id}__h{horizon}__{target_tenor}"
+        _required_string(
+            scheme.get("frequency"),
+            field=f"scheme[{scheme_index}] frequency",
+        )
+        target_label = _required_string(
+            scheme.get("target_label"),
+            field=f"scheme[{scheme_index}] target_label",
+        )
+        if target_tenor not in target_labels:
+            raise DashboardDataError(
+                "dashboard target identity is invalid: "
+                f"target_tenor={target_tenor!r}"
             )
-            if scheme_id != expected_scheme_id:
-                raise DashboardDataError(
-                    "dashboard composite scheme identity is invalid: "
-                    f"scheme_id={scheme_id!r} expected={expected_scheme_id!r}"
-                )
-            if scheme_id in scheme_ids:
-                raise DashboardDataError(
-                    f"dashboard has duplicate scheme_id: {scheme_id}"
-                )
-            scheme_ids.add(scheme_id)
-            ordered_scheme_ids.append(scheme_id)
-            _required_iso_date(
-                scheme.get("deployed_at"),
-                field=f"scheme[{scheme_index}] deployed_at",
+        if target_label != target_labels[target_tenor]:
+            raise DashboardDataError(
+                "dashboard target_label does not match target_labels: "
+                f"target_tenor={target_tenor!r} "
+                f"target_label={target_label!r}"
             )
-            if scheme.get("status") != "active":
-                raise DashboardDataError(
-                    f"dashboard scheme[{scheme_index}] status must be active"
-                )
-            _required_text(
-                scheme.get("name"), field=f"scheme[{scheme_index}] name"
-            )
-            _required_text(
-                scheme.get("frequency"),
-                field=f"scheme[{scheme_index}] frequency",
-            )
-            target_label = _required_text(
-                scheme.get("target_label"),
-                field=f"scheme[{scheme_index}] target_label",
-            )
-            if target_tenor not in target_labels:
-                raise DashboardDataError(
-                    "dashboard target identity is invalid: "
-                    f"target_tenor={target_tenor!r}"
-                )
-            if target_label != target_labels[target_tenor]:
-                raise DashboardDataError(
-                    "dashboard target_label does not match target_labels: "
-                    f"target_tenor={target_tenor!r} "
-                    f"target_label={target_label!r}"
-                )
         _validate_compact_rows(
             scheme.get("live_rows"),
             source="live",
             context=f"dashboard scheme[{scheme_index}].live_rows",
         )
 
-        backtest = scheme.get("backtest")
+        backtest = scheme["backtest"]
         if backtest is None:
             continue
         if not isinstance(backtest, Mapping):
             raise DashboardDataError(
                 f"dashboard scheme[{scheme_index}].backtest must be an object or None"
             )
-        if strict_contract:
-            for field in (
-                "benchmark_id",
-                "benchmark_label",
-                "data_source",
-                "data_source_label",
-            ):
-                _required_text(
-                    backtest.get(field),
-                    field=f"scheme[{scheme_index}].backtest.{field}",
-                )
-            _required_iso_date(
-                backtest.get("latest_run_date"),
-                field=f"scheme[{scheme_index}].backtest.latest_run_date",
+        _validate_exact_fields(
+            backtest,
+            expected=BACKTEST_FIELDS,
+            context=f"dashboard scheme[{scheme_index}].backtest",
+        )
+        for field in (
+            "benchmark_id",
+            "benchmark_label",
+            "data_source",
+            "data_source_label",
+        ):
+            _required_string(
+                backtest.get(field),
+                field=f"scheme[{scheme_index}].backtest.{field}",
             )
-            forbidden = {
-                "run_id",
-                "backtest_run_id",
-                "summary",
-                "scheme_version",
-                "model_version",
-                "data_snapshot_id",
-                "harness_run_id",
-                "generation_id",
-                "report_path",
-                "run_mode",
-                "code_hash",
-                "config_hash",
-                "input_artifact_hash",
-                "path",
-                "hash",
-            }
-            leaked = sorted(forbidden.intersection(backtest))
-            if leaked:
-                raise DashboardDataError(
-                    "dashboard backtest exposes internal fields: "
-                    f"{','.join(leaked)}"
-                )
+        _required_payload_iso_date(
+            backtest.get("latest_run_date"),
+            field=f"scheme[{scheme_index}].backtest.latest_run_date",
+        )
         _validate_compact_rows(
             backtest.get("rows"),
             source="backtest",
             context=f"dashboard scheme[{scheme_index}].backtest.rows",
         )
-    if strict_contract and ordered_scheme_ids != sorted(ordered_scheme_ids):
+    if ordered_scheme_ids != sorted(ordered_scheme_ids):
         raise DashboardDataError("dashboard schemes are not sorted by scheme_id")
 
 
@@ -457,6 +460,13 @@ def _validate_compact_rows(rows: Any, *, source: str, context: str) -> None:
             raise DashboardDataError(
                 f"{context}[{row_index}] has invalid row width: {width}"
             )
+        for field_index, field in enumerate(ROW_FIELDS[:3]):
+            value = row[field_index]
+            if not isinstance(value, str) or not value:
+                raise DashboardDataError(
+                    f"{context}[{row_index}].{field} must be an ISO date string"
+                )
+            _required_iso_date(value, field=f"{context}[{row_index}].{field}")
         detail = dict(zip(ROW_FIELDS, row, strict=True))
         compact_detail_row(detail, source=source)
         target_date = str(detail["target_date"])
@@ -468,6 +478,25 @@ def _validate_compact_rows(rows: Any, *, source: str, context: str) -> None:
         sort_keys.append((target_date, str(detail["predict_date"])))
     if sort_keys != sorted(sort_keys):
         raise DashboardDataError(f"{context} is not canonically sorted")
+
+
+def _validate_exact_fields(
+    value: Mapping[str, Any],
+    *,
+    expected: set[str],
+    context: str,
+) -> None:
+    actual = set(value)
+    missing = sorted(expected - actual)
+    if missing:
+        raise DashboardDataError(
+            f"{context} missing required fields: {','.join(missing)}"
+        )
+    unknown = sorted(actual - expected)
+    if unknown:
+        raise DashboardDataError(
+            f"{context} has unknown fields: {','.join(unknown)}"
+        )
 
 
 def _is_better_prediction_for_point(
@@ -563,6 +592,12 @@ def _required_text(value: Any, *, field: str) -> str:
     return result
 
 
+def _required_string(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
+    return value.strip()
+
+
 def _required_int(value: Any, *, field: str) -> int:
     if type(value) is not int:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
@@ -581,6 +616,14 @@ def _required_aware_iso_datetime(value: Any, *, field: str) -> str:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
     return value
+
+
+def _required_payload_iso_date(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise DashboardDataError(
+            f"dashboard {field} must be an ISO date string"
+        )
+    return _required_iso_date(value, field=field)
 
 
 def _optional_iso_date(value: Any) -> str | None:

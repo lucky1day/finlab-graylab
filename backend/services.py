@@ -742,6 +742,38 @@ def _backtest_run_candidates(
         )
 
 
+def _validate_default_backtest_registry_scopes(
+    schemes: list[dict[str, Any]],
+    *,
+    selected_by_registry: dict[str, Any],
+    registry_rows: list[dict[str, Any]],
+) -> None:
+    schemes_by_scope = {
+        (str(item["scheme_id"]), int(item["run_id"])): item
+        for item in schemes
+    }
+    for registry_row in registry_rows:
+        registry_scheme_id = str(registry_row["scheme_id"])
+        selected_run = selected_by_registry.get(registry_scheme_id)
+        if selected_run is None:
+            continue
+        run_id = int(selected_run["id"])
+        item = schemes_by_scope.get((registry_scheme_id, run_id))
+        if item is None:
+            raise ValueError(
+                f"base_scheme_id={registry_row['base_scheme_id']} "
+                f"target_tenor={registry_row['target_tenor']} has no detail "
+                f"for selected backtest run_id={run_id}"
+            )
+        registry_horizon = int(registry_row["horizon"])
+        if item.get("horizon") != registry_horizon:
+            raise ValueError(
+                "backtest detail horizon does not match Registry scheme "
+                f"{registry_scheme_id}: "
+                f"detail={item.get('horizon')} registry={registry_horizon}"
+            )
+
+
 def backtest_factor_lab_results(
     engine: Engine,
     benchmark_id: str | None = None,
@@ -768,6 +800,8 @@ def backtest_factor_lab_results(
         """
     )
     use_default_selector = benchmark_id is None and data_source is None
+    registry_rows: list[dict[str, Any]] = []
+    selected_by_registry: dict[str, Any] = {}
     if use_default_selector:
         registry_rows = list(scheme_meta.values())
         candidate_rows = _backtest_run_candidates(
@@ -912,6 +946,13 @@ def backtest_factor_lab_results(
             if current is None or item_rank > current_rank:
                 latest_by_scope[key] = item
         schemes = list(latest_by_scope.values())
+
+    if use_default_selector:
+        _validate_default_backtest_registry_scopes(
+            schemes,
+            selected_by_registry=selected_by_registry,
+            registry_rows=registry_rows,
+        )
 
     selected_sources = {str(item["data_source"]) for item in schemes}
     if len(selected_sources) == 1:
