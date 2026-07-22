@@ -4,6 +4,12 @@ import json
 from datetime import date, datetime
 from typing import Any, Iterable, Mapping
 
+from shared.prediction_context import (
+    MONTHLY_TARGET_RULE,
+    WEEKLY_AVERAGE_TARGET_RULE,
+    WEEKLY_TARGET_RULE,
+)
+
 
 DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v1"
 ROW_FIELDS = (
@@ -16,10 +22,28 @@ ROW_FIELDS = (
 )
 VALID_TASK_TYPES = {"T+1", "T+5", "weekly_point", "weekly_average", "monthly"}
 VALID_LIVE_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
+DAILY_TARGET_RULE = "target_date_yield_vs_feature_date_yield"
+LIVE_ACTUAL_SELECTORS = {
+    "T+1": ("daily_1d", DAILY_TARGET_RULE),
+    "T+5": ("daily_5d", DAILY_TARGET_RULE),
+    "weekly_point": ("weekly", WEEKLY_TARGET_RULE),
+    "weekly_average": ("weekly", WEEKLY_AVERAGE_TARGET_RULE),
+    "monthly": ("monthly", MONTHLY_TARGET_RULE),
+}
 
 
 class DashboardDataError(RuntimeError):
     """展示快照存在冲突或结构错误。"""
+
+
+def live_actual_selector(task_type: Any) -> tuple[str, str]:
+    """按 Registry task_type 返回 actual 事实类型与规则，不推断 horizon。"""
+    try:
+        return LIVE_ACTUAL_SELECTORS[task_type]
+    except (KeyError, TypeError) as exc:
+        raise DashboardDataError(
+            f"dashboard scheme has invalid task_type: {task_type!r}"
+        ) from exc
 
 
 def choose_live_prediction_rows(
