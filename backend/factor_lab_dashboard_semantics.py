@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Iterable, Mapping
+from zoneinfo import ZoneInfo
 
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
@@ -45,6 +46,7 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 TOP_LEVEL_FIELDS = {
     "schema_version",
     "snapshot_id",
@@ -299,6 +301,7 @@ def validate_dashboard_payload(payload: Mapping[str, Any]) -> None:
     if (
         not isinstance(snapshot_id, str)
         or not snapshot_id.strip()
+        or snapshot_id != snapshot_id.strip()
         or any(character in snapshot_id for character in ("/", "\\"))
     ):
         raise DashboardDataError(
@@ -564,18 +567,33 @@ def _row_id(row: Mapping[str, Any]) -> int:
         ) from exc
 
 
-def _backtest_run_rank(row: Mapping[str, Any]) -> tuple[str, int]:
-    updated_at = row.get("updated_at")
-    if isinstance(updated_at, datetime):
-        updated_rank = updated_at.isoformat()
-    elif isinstance(updated_at, date):
-        updated_rank = updated_at.isoformat()
+def _backtest_updated_at_rank(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time())
+    elif (
+        isinstance(value, str)
+        and value
+        and value == value.strip()
+    ):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise DashboardDataError(
+                f"backtest run updated_at is invalid: {value!r}"
+            ) from exc
     else:
-        updated_rank = str(updated_at or "").strip().replace(" ", "T")
-    if not updated_rank:
         raise DashboardDataError(
-            f"backtest run updated_at is invalid: {updated_at!r}"
+            f"backtest run updated_at is invalid: {value!r}"
         )
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=SHANGHAI_TIMEZONE)
+    return parsed.astimezone(timezone.utc)
+
+
+def _backtest_run_rank(row: Mapping[str, Any]) -> tuple[datetime, int]:
+    updated_rank = _backtest_updated_at_rank(row.get("updated_at"))
     try:
         run_id = int(row.get("id"))
     except (TypeError, ValueError) as exc:
@@ -593,9 +611,13 @@ def _required_text(value: Any, *, field: str) -> str:
 
 
 def _required_string(value: Any, *, field: str) -> str:
-    if not isinstance(value, str) or not value.strip():
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+    ):
         raise DashboardDataError(f"dashboard {field} is invalid: {value!r}")
-    return value.strip()
+    return value
 
 
 def _required_int(value: Any, *, field: str) -> int:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -11,6 +11,7 @@ from backend.factor_lab_dashboard_semantics import (
     DASHBOARD_SCHEMA_VERSION,
     ROW_FIELDS,
     DashboardDataError,
+    choose_latest_backtest_runs,
     choose_live_prediction_rows,
     collapse_actual_facts,
     compact_detail_row,
@@ -147,6 +148,108 @@ def test_future_predict_date_is_filtered_after_canonical_choice() -> None:
     assert selected == []
 
 
+def _registry_for_backtest_rank() -> list[dict[str, object]]:
+    return [
+        {
+            "scheme_id": "base__h1__5Y",
+            "base_scheme_id": "base",
+            "runtime_type": "native_adapter",
+            "target_tenor": "5Y",
+            "horizon": 1,
+            "status": "active",
+        }
+    ]
+
+
+def _backtest_run_for_rank(
+    *,
+    run_id: int,
+    updated_at: object,
+) -> dict[str, object]:
+    return {
+        "id": run_id,
+        "benchmark_id": "benchmark",
+        "scheme_id": "base",
+        "data_source": "framework_db_aligned",
+        "status": "success",
+        "updated_at": updated_at,
+    }
+
+
+@pytest.mark.parametrize(
+    "naive_updated_at",
+    [
+        datetime(2026, 7, 22, 10, 0, 0),
+        "2026-07-22 10:00:00",
+    ],
+    ids=["naive-datetime", "sql-naive-string"],
+)
+def test_backtest_rank_interprets_naive_timestamp_as_shanghai(
+    naive_updated_at: object,
+) -> None:
+    runs = [
+        _backtest_run_for_rank(run_id=1, updated_at=naive_updated_at),
+        _backtest_run_for_rank(
+            run_id=2,
+            updated_at="2026-07-22T02:30:00+00:00",
+        ),
+    ]
+
+    selected = choose_latest_backtest_runs(runs, _registry_for_backtest_rank())
+
+    assert selected["base__h1__5Y"]["id"] == 2
+
+
+def test_backtest_rank_normalizes_aware_timestamps_to_utc_before_id_tie_break() -> None:
+    runs = [
+        _backtest_run_for_rank(
+            run_id=1,
+            updated_at="2026-07-22T10:00:00+08:00",
+        ),
+        _backtest_run_for_rank(
+            run_id=2,
+            updated_at="2026-07-22T02:00:00+00:00",
+        ),
+    ]
+
+    selected = choose_latest_backtest_runs(runs, _registry_for_backtest_rank())
+
+    assert selected["base__h1__5Y"]["id"] == 2
+
+
+def test_backtest_rank_uses_real_instant_for_mixed_timezones() -> None:
+    runs = [
+        _backtest_run_for_rank(
+            run_id=1,
+            updated_at="2026-07-22T10:00:00+08:00",
+        ),
+        _backtest_run_for_rank(
+            run_id=2,
+            updated_at="2026-07-22T03:00:00+00:00",
+        ),
+    ]
+
+    selected = choose_latest_backtest_runs(runs, _registry_for_backtest_rank())
+
+    assert selected["base__h1__5Y"]["id"] == 2
+
+
+@pytest.mark.parametrize(
+    "invalid_updated_at",
+    ["not-a-timestamp", " 2026-07-22 10:00:00 "],
+    ids=["unparseable", "padded"],
+)
+def test_backtest_rank_rejects_invalid_nonempty_timestamp(
+    invalid_updated_at: str,
+) -> None:
+    runs = [
+        _backtest_run_for_rank(run_id=1, updated_at=invalid_updated_at),
+    ]
+
+    with pytest.raises(DashboardDataError, match="updated_at is invalid"):
+        choose_latest_backtest_runs(runs, _registry_for_backtest_rank())
+
+
 def test_duplicate_actuals_with_same_direction_collapse() -> None:
     same = [
         {
@@ -272,6 +375,61 @@ def test_payload_rejects_unknown_task_type_or_row_width() -> None:
     wrong_width["schemes"][0]["live_rows"][0] = ["2026-07-02"]  # type: ignore[index]
     with pytest.raises(DashboardDataError, match="width"):
         validate_dashboard_payload(wrong_width)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "snapshot_id",
+        "scheme_id",
+        "base_scheme_id",
+        "name",
+        "task_type",
+        "frequency",
+        "target_tenor",
+        "target_label",
+        "benchmark_id",
+        "benchmark_label",
+        "data_source",
+        "data_source_label",
+    ],
+)
+def test_payload_rejects_noncanonical_padded_structured_strings(field: str) -> None:
+    payload = _minimal_payload()
+    scheme = payload["schemes"][0]  # type: ignore[index]
+    if field == "snapshot_id":
+        payload[field] = " snapshot-test-1 "
+    elif field in {
+        "scheme_id",
+        "base_scheme_id",
+        "name",
+        "task_type",
+        "frequency",
+        "target_tenor",
+        "target_label",
+    }:
+        scheme[field] = f" {scheme[field]} "
+    else:
+        scheme["backtest"] = {
+            "benchmark_id": "benchmark",
+            "benchmark_label": "benchmark label",
+            "data_source": "framework_db_aligned",
+            "data_source_label": "当前DB对齐回测",
+            "latest_run_date": "2026-05-31",
+            "rows": [],
+        }
+        backtest = scheme["backtest"]
+        backtest[field] = f" {backtest[field]} "
+
+    with pytest.raises(DashboardDataError, match=field):
+        validate_dashboard_payload(payload)
+
+
+def test_payload_description_remains_free_text() -> None:
+    payload = _minimal_payload()
+    payload["schemes"][0]["description"] = "  deliberate spacing  "  # type: ignore[index]
+
+    assert validate_dashboard_payload(payload) is None
 
 
 def test_payload_rejects_task1_minimal_shape_without_v1_top_level() -> None:

@@ -5,6 +5,7 @@ import json
 import logging
 from collections import defaultdict
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Iterator, Mapping
 from uuid import uuid4
@@ -35,7 +36,25 @@ _DATETIME_TYPE = datetime
 MAX_DETAIL_ROWS = 20_000
 MAX_RAW_JSON_BYTES = 1_500_000
 MAX_GZIP_JSON_BYTES = 100_000
+# These source-row caps are corruption/resource guards, not business pagination.
+# Every query reads at most cap + 1 rows and fails instead of truncating.
+MAX_REGISTRY_SOURCE_ROWS = 1_000
+MAX_TARGET_SOURCE_ROWS = 1_000
+MAX_LIVE_PREDICTION_SOURCE_ROWS = 20_000
+MAX_ACTUAL_SOURCE_ROWS = 80_000
+MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
+MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class SnapshotEncoding:
+    """Canonical snapshot 的 identity/gzip 编码及其精确字节数。"""
+
+    raw_body: bytes
+    gzip_body: bytes
+    raw_size: int
+    gzip_size: int
 
 
 @contextmanager
@@ -246,7 +265,10 @@ def build_factor_lab_dashboard(
         "schemes": schemes,
     }
     validate_dashboard_payload(payload)
-    _validate_response_budgets(payload)
+    # This checks the canonical builder snapshot only. Task 6 must encode the
+    # final stale/snapshot_age_ms body and verify actual identity/gzip ASGI wire
+    # bytes after the route and middleware are integrated.
+    _validate_canonical_snapshot_budgets(payload)
     return payload
 
 
@@ -258,10 +280,15 @@ def _read_active_registry(connection: Connection) -> list[Mapping[str, Any]]:
         FROM t_scheme_registry
         WHERE status = :active_status
         ORDER BY target_tenor, task_type, scheme_id
+        LIMIT :dashboard_source_limit
         """
     )
-    return list(
-        connection.execute(statement, {"active_status": "active"}).mappings().all()
+    return _read_bounded_source_rows(
+        connection,
+        statement,
+        {"active_status": "active"},
+        dataset="active_registry",
+        cap=MAX_REGISTRY_SOURCE_ROWS,
     )
 
 
@@ -283,20 +310,22 @@ def _read_backtest_runs(
         WHERE status = :success_status
           AND scheme_id IN :base_scheme_ids
           AND data_source IN :data_sources
+        LIMIT :dashboard_source_limit
         """
     ).bindparams(
         bindparam("base_scheme_ids", expanding=True),
         bindparam("data_sources", expanding=True),
     )
-    return list(
-        connection.execute(
-            statement,
-            {
-                "success_status": "success",
-                "base_scheme_ids": base_scheme_ids,
-                "data_sources": data_sources,
-            },
-        ).mappings().all()
+    return _read_bounded_source_rows(
+        connection,
+        statement,
+        {
+            "success_status": "success",
+            "base_scheme_ids": base_scheme_ids,
+            "data_sources": data_sources,
+        },
+        dataset="backtest_run_candidates",
+        cap=MAX_BACKTEST_RUN_SOURCE_ROWS,
     )
 
 
@@ -313,13 +342,15 @@ def _read_backtest_details(
                target_date, label, predicted_direction
         FROM t_backtest_predictions
         WHERE run_id IN :run_ids
+        LIMIT :dashboard_source_limit
         """
     ).bindparams(bindparam("run_ids", expanding=True))
-    return list(
-        connection.execute(
-            statement,
-            {"run_ids": selected_run_ids},
-        ).mappings().all()
+    return _read_bounded_source_rows(
+        connection,
+        statement,
+        {"run_ids": selected_run_ids},
+        dataset="selected_backtest_details",
+        cap=MAX_BACKTEST_DETAIL_SOURCE_ROWS,
     )
 
 
@@ -331,10 +362,15 @@ def _read_active_targets(connection: Connection) -> list[Mapping[str, Any]]:
         FROM t_target_registry
         WHERE status = :active_status
         ORDER BY sort_order, target_code
+        LIMIT :dashboard_source_limit
         """
     )
-    return list(
-        connection.execute(statement, {"active_status": "active"}).mappings().all()
+    return _read_bounded_source_rows(
+        connection,
+        statement,
+        {"active_status": "active"},
+        dataset="active_targets",
+        cap=MAX_TARGET_SOURCE_ROWS,
     )
 
 
@@ -366,9 +402,16 @@ def _read_live_predictions(
         FROM t_scheme_predictions
         WHERE {where_clause}
         ORDER BY target_date, predict_date, id
+        LIMIT :dashboard_source_limit
         """
     )
-    return list(connection.execute(statement, params).mappings().all())
+    return _read_bounded_source_rows(
+        connection,
+        statement,
+        params,
+        dataset="live_predictions",
+        cap=MAX_LIVE_PREDICTION_SOURCE_ROWS,
+    )
 
 
 def _read_live_actuals(
@@ -376,6 +419,8 @@ def _read_live_actuals(
     registry_rows: list[Mapping[str, Any]],
 ) -> list[Mapping[str, Any]]:
     target_tenors = sorted({str(row["target_tenor"]) for row in registry_rows})
+    if not target_tenors:
+        return []
     statement = text(
         """
         SELECT 'daily_1d' AS actual_kind,
@@ -409,16 +454,37 @@ def _read_live_actuals(
                direction_monthly AS actual_direction
         FROM t_scheme_monthly_actuals
         WHERE tenor IN :target_tenors
+        LIMIT :dashboard_source_limit
         """
     ).bindparams(bindparam("target_tenors", expanding=True))
-    return list(
-        connection.execute(
-            statement,
-            {"target_tenors": target_tenors},
-        )
-        .mappings()
-        .all()
+    return _read_bounded_source_rows(
+        connection,
+        statement,
+        {"target_tenors": target_tenors},
+        dataset="live_actuals",
+        cap=MAX_ACTUAL_SOURCE_ROWS,
     )
+
+
+def _read_bounded_source_rows(
+    connection: Connection,
+    statement: Any,
+    params: Mapping[str, Any],
+    *,
+    dataset: str,
+    cap: int,
+) -> list[Mapping[str, Any]]:
+    execution_params = dict(params)
+    execution_params["dashboard_source_limit"] = cap + 1
+    rows = list(
+        connection.execute(statement, execution_params).mappings().all()
+    )
+    if len(rows) > cap:
+        raise DashboardDataError(
+            "dashboard source row limit exceeded: "
+            f"dataset={dataset} limit={cap}"
+        )
+    return rows
 
 
 def _collapse_actual_rows(
@@ -501,7 +567,36 @@ def _compact_row_sort_key(row: list[Any]) -> tuple[str, str]:
     return str(row[2]), str(row[0])
 
 
-def _validate_response_budgets(payload: Mapping[str, Any]) -> None:
+def encode_canonical_snapshot(payload: Mapping[str, Any]) -> SnapshotEncoding:
+    """按未来 route 的固定参数编码 canonical snapshot 并校验字节预算。"""
+    raw_body = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    if len(raw_body) > MAX_RAW_JSON_BYTES:
+        raise DashboardDataError(
+            "dashboard raw JSON exceeds budget: "
+            f"bytes={len(raw_body)} limit={MAX_RAW_JSON_BYTES}"
+        )
+
+    gzip_body = gzip.compress(raw_body, compresslevel=6)
+    if len(gzip_body) > MAX_GZIP_JSON_BYTES:
+        raise DashboardDataError(
+            "dashboard gzip JSON exceeds budget: "
+            f"bytes={len(gzip_body)} limit={MAX_GZIP_JSON_BYTES}"
+        )
+    return SnapshotEncoding(
+        raw_body=raw_body,
+        gzip_body=gzip_body,
+        raw_size=len(raw_body),
+        gzip_size=len(gzip_body),
+    )
+
+
+def _validate_canonical_snapshot_budgets(
+    payload: Mapping[str, Any],
+) -> SnapshotEncoding:
     detail_rows = 0
     for scheme in payload["schemes"]:
         detail_rows += len(scheme["live_rows"])
@@ -514,30 +609,15 @@ def _validate_response_budgets(payload: Mapping[str, Any]) -> None:
             f"rows={detail_rows} limit={MAX_DETAIL_ROWS}"
         )
 
-    raw_json = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    if len(raw_json) > MAX_RAW_JSON_BYTES:
-        raise DashboardDataError(
-            "dashboard raw JSON exceeds budget: "
-            f"bytes={len(raw_json)} limit={MAX_RAW_JSON_BYTES}"
-        )
-
-    gzip_json = gzip.compress(raw_json, compresslevel=6)
-    if len(gzip_json) > MAX_GZIP_JSON_BYTES:
-        raise DashboardDataError(
-            "dashboard gzip JSON exceeds budget: "
-            f"bytes={len(gzip_json)} limit={MAX_GZIP_JSON_BYTES}"
-        )
+    encoding = encode_canonical_snapshot(payload)
     logger.info(
         "Built factor lab dashboard snapshot_id=%s detail_rows=%s raw_bytes=%s gzip_bytes=%s",
         payload["snapshot_id"],
         detail_rows,
-        len(raw_json),
-        len(gzip_json),
+        encoding.raw_size,
+        encoding.gzip_size,
     )
+    return encoding
 
 
 def _json_object(value: Any) -> dict[str, Any]:

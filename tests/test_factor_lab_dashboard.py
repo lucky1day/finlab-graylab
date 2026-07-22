@@ -785,6 +785,59 @@ def test_dashboard_and_legacy_default_backtest_projections_are_equal(
     assert dashboard_selects <= 6
 
 
+def test_legacy_default_backtest_order_is_stable_for_shuffled_inputs(
+    dashboard_db: tuple[Engine, SqlTrace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.services as services
+
+    engine, _trace = dashboard_db
+    explicit_before = services.backtest_factor_lab_results(
+        engine,
+        data_source="framework_db_aligned",
+    )
+    benchmark_before = services.backtest_factor_lab_results(
+        engine,
+        benchmark_id="native-old",
+    )
+    scheme_meta = services._backtest_scheme_meta(engine)
+    candidate_rows = services._backtest_run_candidates(
+        engine,
+        base_scheme_ids=sorted(
+            {str(row["base_scheme_id"]) for row in scheme_meta.values()}
+        ),
+    )
+    monkeypatch.setattr(
+        services,
+        "_backtest_scheme_meta",
+        lambda _engine: dict(reversed(list(scheme_meta.items()))),
+    )
+    monkeypatch.setattr(
+        services,
+        "_backtest_run_candidates",
+        lambda _engine, *, base_scheme_ids: list(reversed(candidate_rows)),
+    )
+
+    default = services.backtest_factor_lab_results(engine)
+    explicit_after = services.backtest_factor_lab_results(
+        engine,
+        data_source="framework_db_aligned",
+    )
+    benchmark_after = services.backtest_factor_lab_results(
+        engine,
+        benchmark_id="native-old",
+    )
+
+    default_scheme_ids = [item["scheme_id"] for item in default["schemes"]]
+    assert default_scheme_ids == sorted(default_scheme_ids)
+    assert [item["scheme_id"] for item in explicit_after["schemes"]] == [
+        item["scheme_id"] for item in explicit_before["schemes"]
+    ]
+    assert [item["scheme_id"] for item in benchmark_after["schemes"]] == [
+        item["scheme_id"] for item in benchmark_before["schemes"]
+    ]
+
+
 def test_selected_backtest_run_without_any_detail_fails_closed(
     dashboard_db: tuple[Engine, SqlTrace],
 ) -> None:
@@ -1151,38 +1204,154 @@ def test_payload_validator_rejects_identity_top_level_and_uniqueness_damage(
             validate_dashboard_payload(candidate)
 
 
-def test_json_serialization_and_gzip_run_once_after_connection_closes(
+def test_canonical_snapshot_encoder_is_single_budget_source_after_connection_closes(
     dashboard_db: tuple[Engine, SqlTrace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import backend.factor_lab_dashboard as dashboard
+
+    engine, trace = dashboard_db
+    real_encode = dashboard.encode_canonical_snapshot
+    encodings: list[dashboard.SnapshotEncoding] = []
+
+    def tracking_encode(payload: dict[str, Any]) -> dashboard.SnapshotEncoding:
+        assert len(trace.checkins) == 1
+        encoding = real_encode(payload)
+        encodings.append(encoding)
+        return encoding
+
+    monkeypatch.setattr(dashboard, "encode_canonical_snapshot", tracking_encode)
+
+    dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert len(encodings) == 1
+    assert encodings[0].raw_size == len(encodings[0].raw_body)
+    assert encodings[0].gzip_size == len(encodings[0].gzip_body)
+
+
+def test_canonical_snapshot_encoder_uses_route_json_and_gzip_parameters(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import gzip as stdlib_gzip
 
     import backend.factor_lab_dashboard as dashboard
 
-    engine, trace = dashboard_db
     real_dumps = dashboard.json.dumps
     real_compress = stdlib_gzip.compress
-    calls = {"dumps": 0, "compress": 0}
+    calls: list[tuple[str, Any]] = []
 
     def tracking_dumps(*args: Any, **kwargs: Any) -> str:
-        assert len(trace.checkins) == 1
-        calls["dumps"] += 1
+        calls.append(("json", kwargs))
         return real_dumps(*args, **kwargs)
 
     class TrackingGzip:
         @staticmethod
         def compress(data: bytes, *, compresslevel: int) -> bytes:
-            assert len(trace.checkins) == 1
-            calls["compress"] += 1
-            assert compresslevel == 6
+            calls.append(("gzip", compresslevel))
             return real_compress(data, compresslevel=compresslevel)
 
     monkeypatch.setattr(dashboard.json, "dumps", tracking_dumps)
     monkeypatch.setattr(dashboard, "gzip", TrackingGzip, raising=False)
 
+    encoding = dashboard.encode_canonical_snapshot({"label": "国债"})
+
+    assert encoding.raw_body == '{"label":"国债"}'.encode()
+    assert stdlib_gzip.decompress(encoding.gzip_body) == encoding.raw_body
+    assert encoding.raw_size == len(encoding.raw_body)
+    assert encoding.gzip_size == len(encoding.gzip_body)
+    assert calls == [
+        ("json", {"ensure_ascii": False, "separators": (",", ":")}),
+        ("gzip", 6),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("constant", "dataset", "select_count"),
+    [
+        ("MAX_REGISTRY_SOURCE_ROWS", "active_registry", 1),
+        ("MAX_TARGET_SOURCE_ROWS", "active_targets", 2),
+        ("MAX_LIVE_PREDICTION_SOURCE_ROWS", "live_predictions", 3),
+        ("MAX_ACTUAL_SOURCE_ROWS", "live_actuals", 4),
+        ("MAX_BACKTEST_RUN_SOURCE_ROWS", "backtest_run_candidates", 5),
+        ("MAX_BACKTEST_DETAIL_SOURCE_ROWS", "selected_backtest_details", 6),
+    ],
+)
+def test_dashboard_source_row_caps_fail_closed_before_dto(
+    dashboard_db: tuple[Engine, SqlTrace],
+    monkeypatch: pytest.MonkeyPatch,
+    constant: str,
+    dataset: str,
+    select_count: int,
+) -> None:
+    import backend.factor_lab_dashboard as dashboard
+
+    engine, trace = dashboard_db
+    monkeypatch.setattr(dashboard, constant, 0, raising=False)
+
+    with pytest.raises(
+        dashboard.DashboardDataError,
+        match=rf"source row limit.*{dataset}",
+    ):
+        dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert len(trace.statements) == select_count
+    assert len(trace.checkouts) == 1
+    assert len(trace.checkins) == 1
+
+
+def test_dashboard_source_queries_use_cap_plus_one_limits(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    import backend.factor_lab_dashboard as dashboard
+
+    engine, trace = dashboard_db
+
     dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
-    assert calls == {"dumps": 1, "compress": 1}
+    expected_limits = {
+        "FROM t_scheme_registry": dashboard.MAX_REGISTRY_SOURCE_ROWS + 1,
+        "FROM t_target_registry": dashboard.MAX_TARGET_SOURCE_ROWS + 1,
+        "FROM t_scheme_predictions": (
+            dashboard.MAX_LIVE_PREDICTION_SOURCE_ROWS + 1
+        ),
+        "FROM t_scheme_actuals": dashboard.MAX_ACTUAL_SOURCE_ROWS + 1,
+        "FROM t_backtest_runs": dashboard.MAX_BACKTEST_RUN_SOURCE_ROWS + 1,
+        "FROM t_backtest_predictions": (
+            dashboard.MAX_BACKTEST_DETAIL_SOURCE_ROWS + 1
+        ),
+    }
+    assert len(trace.statements) == len(expected_limits)
+    for marker, expected_limit in expected_limits.items():
+        matches = [
+            (statement, parameters)
+            for statement, parameters in zip(
+                trace.statements,
+                trace.parameters,
+                strict=True,
+            )
+            if marker in statement
+        ]
+        assert len(matches) == 1
+        statement, parameters = matches[0]
+        assert "LIMIT" in statement.upper()
+        assert parameters[-1] == expected_limit
+
+
+def test_empty_registry_avoids_empty_in_clause(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+
+    engine, trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE t_scheme_registry SET status = 'paused'"))
+    trace.reset()
+
+    payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    assert payload["schemes"] == []
+    assert len(trace.statements) <= 6
+    assert not any("IN ()" in statement.upper() for statement in trace.statements)
 
 
 @pytest.mark.parametrize(

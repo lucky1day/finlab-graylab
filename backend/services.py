@@ -966,6 +966,14 @@ def backtest_factor_lab_results(
             selected_by_registry=selected_by_registry,
             registry_rows=registry_rows,
         )
+        schemes.sort(
+            key=lambda item: (
+                str(item["scheme_id"]),
+                int(item["run_id"]),
+                str(item["target_tenor"]),
+                str(item["data_source"]),
+            )
+        )
 
     selected_sources = {str(item["data_source"]) for item in schemes}
     if len(selected_sources) == 1:
