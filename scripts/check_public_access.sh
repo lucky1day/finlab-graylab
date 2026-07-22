@@ -273,21 +273,23 @@ fi
 # 从 dashboard 严格取一个真实 composite scheme ID，供 rollout/final metrics 验收。
 SCHEME_ID_ENCODED=""
 if SCHEME_ID_ENCODED="$(python3 - "$CHECK_TMP_DIR/dashboard.json" <<'PY'
+# DASHBOARD_SCHEME_EXTRACTOR_BEGIN
 import json
 import sys
 from urllib.parse import quote
 
 with open(sys.argv[1], encoding="utf-8") as handle:
     payload = json.load(handle)
-if payload.get("schema") != "factor-lab-dashboard-v1":
+if payload.get("schema_version") != "factor-lab-dashboard-v1":
     raise SystemExit(1)
 schemes = payload.get("schemes")
 if not isinstance(schemes, list) or not schemes:
     raise SystemExit(1)
-scheme_id = schemes[0].get("id")
+scheme_id = schemes[0].get("scheme_id")
 if not isinstance(scheme_id, str) or not scheme_id:
     raise SystemExit(1)
 print(quote(scheme_id, safe=""))
+# DASHBOARD_SCHEME_EXTRACTOR_END
 PY
 )"; then
   record_pass dashboard-scheme-id

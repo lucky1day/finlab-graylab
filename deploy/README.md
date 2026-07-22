@@ -3,8 +3,9 @@
 当前公网性能与访问控制规范以
 [`docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md`](../docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md)
 为准。Task 10 将把可执行性能验收手册落到
-`docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md`，并同步 `docs/operations/README.md`
-入口；该文件落地前不创建失效链接。历史公网 PRD 只作决策记录，不能覆盖当前规范。
+[公网性能运行手册](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)，并同步
+`docs/operations/README.md` 入口。这是实施计划中的有意顺序依赖：Task 10 手册落地前禁止执行本次发布。
+历史公网 PRD 只作决策记录，不能覆盖当前规范。
 
 ## 链路
 
@@ -53,6 +54,8 @@ dashboard、健康状态、`Vary` 和隧道前 gzip。两层合同必须同时�
 ### 1) 公网入口机：Nginx
 
 ```bash
+set -euo pipefail
+
 # 安装版本化公共片段；旧 site 的片段不被覆盖，回滚仍是完整旧策略。
 sudo install -m 0644 deploy/nginx/snippets/bond-proxy-headers.conf \
   /etc/nginx/snippets/bond-proxy-headers-20260722a.conf
@@ -72,18 +75,35 @@ sudo install -m 0644 "$candidate_file" "$target"
 
 # 原子切换 symlink；运行中的 Nginx 在 reload 前继续使用旧内存配置。
 previous_target="$(readlink -f "$active" 2>/dev/null || true)"
-sudo ln -sfn "$target" "${active}.next"
-sudo mv -Tf "${active}.next" "$active"
-if sudo nginx -t; then
-  sudo systemctl reload nginx
-else
+restore_previous_link() {
   if [[ -n "$previous_target" ]]; then
     sudo ln -sfn "$previous_target" "${active}.rollback"
     sudo mv -Tf "${active}.rollback" "$active"
   else
     sudo rm -f -- "$active"
   fi
+}
+
+sudo ln -sfn "$target" "${active}.next"
+sudo mv -Tf "${active}.next" "$active"
+
+if ! sudo nginx -t; then
+  restore_previous_link
   sudo nginx -t
+  exit 1
+fi
+
+if ! sudo systemctl reload nginx; then
+  restore_previous_link
+  if [[ -n "$previous_target" ]]; then
+    # 候选可能已被进程部分读取；重新 test 并 reload previous policy。
+    sudo nginx -t && sudo systemctl reload nginx
+  else
+    # 首次启用没有 previous policy：删除候选后只 test，绝不能把“无站点”
+    # reload 成一次成功发布。
+    sudo nginx -t
+  fi
+  printf 'candidate reload failed; previous policy restored\n' >&2
   exit 1
 fi
 ```
@@ -92,6 +112,8 @@ fi
 `20260722a` 模板生成，`nginx -t` 成功后才 reload。不得现场删除或注释 legacy
 location。仓库 site 文件不包含 `events {}` / `http {}`，因此不能执行
 `nginx -t -c deploy/nginx/bond-factor-lab.conf`；Task 12 必须在入口机真实完整配置中验证。
+候选 `nginx -t` 或 reload 失败也必须以非零状态结束，不能因 previous policy 恢复
+成功而把失败发布报告为成功。
 
 ### 2) 本地 Mac：SSH 反向隧道（launchd 常驻）
 
@@ -187,16 +209,29 @@ conda run -n bond_factor_lab_service python scripts/check_production_daily_healt
 
 ## 回滚
 
+常规版本回滚必须保持公网可用：SSH 反向隧道和服务必须保持在线，不得用停隧道
+代替版本回滚。
+
 ```bash
-# 入口机：先把同版本策略切回 rollout，恢复旧前端依赖 API
-# （复用上文原子切换块，release_stage=rollout）
+# 1. 入口机先复用上文原子切换块，release_stage=rollout，恢复旧前端依赖 API；
+#    nginx -t 和 reload 成功后验证 rollout 矩阵。
 scripts/check_public_access.sh --mode rollout https://bond.finailab.cn
 
-# 本地 Mac：停隧道
-launchctl bootout gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
+# 2. 再按版本化发布流程恢复上一份前端/后端 commit；仅在应用代码需要时
+#    kickstart backend，不能 bootout SSH tunnel。
+# 3. 最后复核 direct URL、iframe、health、旧展示 API 和写接口拒绝矩阵。
+```
 
-# 本地 Mac：如需回滚 token 值，替换 plist 里的 BOND_ADMIN_TOKEN 后 kickstart -k 重载；
-# 不要删除 BOND_ADMIN_TOKEN，未配置时 admin/trigger 写接口会 fail-closed 返回 503。
+不要把 admin token 删除当作版本回滚；未配置 token 时 admin/trigger 写接口会
+fail-closed 返回 503。
+
+## 全站紧急下线（造成中断，需专项授权）
+
+只有明确要求全站中断并取得专项授权后，才允许停止 SSH 反向隧道。该操作不属于
+本次性能发布的常规回滚：
+
+```bash
+launchctl bootout gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
 ```
 
 ## 安全约束

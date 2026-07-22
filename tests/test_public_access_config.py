@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
+from urllib.parse import quote
+
+from tests.factor_lab_dashboard_conformance import (
+    dashboard_v1_conformance_samples,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -329,13 +337,90 @@ def test_public_check_script_is_bash3_safe_and_head_is_snapshot_independent() ->
     assert '"$actual_length" == "$expected_length"' not in script
 
 
+def test_public_check_script_extracts_a_real_composite_id_from_v1_payload(
+    tmp_path: Path,
+) -> None:
+    script = CHECK_SCRIPT_PATH.read_text(encoding="utf-8")
+    match = re.search(
+        r"# DASHBOARD_SCHEME_EXTRACTOR_BEGIN\n"
+        r"(?P<extractor>.*?)\n"
+        r"# DASHBOARD_SCHEME_EXTRACTOR_END",
+        script,
+        flags=re.DOTALL,
+    )
+    assert match is not None
+
+    canonical = next(
+        sample
+        for sample in dashboard_v1_conformance_samples()
+        if sample["name"] == "canonical"
+    )
+    payload = canonical["payload"]
+    payload_path = tmp_path / "dashboard.json"
+    payload_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", match.group("extractor"), str(payload_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    expected_scheme_id = payload["schemes"][0]["scheme_id"]
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == quote(expected_scheme_id, safe="")
+    assert '"$APP_URL/api/metrics/$SCHEME_ID_ENCODED"' in script
+
+
 def test_deploy_readme_points_to_current_performance_work() -> None:
     readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
 
     assert "docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md" in readme
-    assert "docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md" in readme
+    assert (
+        "[公网性能运行手册]"
+        "(../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)"
+        in readme
+    )
+    assert "Task 10 手册落地前禁止执行本次发布" in readme
+    assert "该文件落地前不创建失效链接" not in readme
     assert "不改任何业务代码" not in readme
     assert "后端不参与" not in readme
     assert 'grep -Fxq "    default ${release_stage};"' in readme
     assert 'if [[ -n "$previous_target" ]]; then' in readme
     assert 'sudo rm -f -- "$active"' in readme
+
+
+def test_regular_rollback_keeps_the_public_service_online() -> None:
+    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
+    assert "## 回滚" in readme
+    assert "## 全站紧急下线" in readme
+    rollback = readme.split("## 回滚", maxsplit=1)[1].split(
+        "## 全站紧急下线",
+        maxsplit=1,
+    )[0]
+    emergency = readme.split("## 全站紧急下线", maxsplit=1)[1]
+
+    assert "launchctl bootout" not in rollback
+    assert "SSH 反向隧道和服务必须保持在线" in rollback
+    assert "launchctl bootout" in emergency
+    assert "专项授权" in emergency
+
+
+def test_nginx_reload_failure_restores_the_previous_live_policy() -> None:
+    readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
+    deployment = readme.split("### 1) 公网入口机：Nginx", maxsplit=1)[1].split(
+        "### 2) 本地 Mac",
+        maxsplit=1,
+    )[0]
+
+    assert "restore_previous_link() {" in deployment
+    assert "if ! sudo nginx -t; then" in deployment
+    assert "if ! sudo systemctl reload nginx; then" in deployment
+    assert deployment.count("restore_previous_link") >= 3
+    assert "sudo nginx -t && sudo systemctl reload nginx" in deployment
+    # 一次是候选 reload，一次是 previous policy 恢复；无 previous 的分支不得 reload。
+    assert deployment.count("sudo systemctl reload nginx") == 2
+    assert 'sudo rm -f -- "$active"' in deployment
+    assert "reload 失败也必须以非零状态结束" in deployment
