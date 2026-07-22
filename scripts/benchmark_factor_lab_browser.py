@@ -493,55 +493,84 @@ def _record_event(
     return False
 
 
-def _enable_cdp_session(client: CDPClient, session_id: str) -> None:
-    """在 flattened target session 内启用采集，并递归 auto-attach 后代。"""
+_TARGET_SESSION_DOMAINS: dict[str, tuple[str, ...]] = {
+    "page": ("Page", "Runtime", "Network", "Log", "Inspector"),
+    "iframe": ("Page", "Runtime", "Network", "Log", "Inspector"),
+    "worker": ("Runtime", "Network", "Log"),
+    "shared_worker": ("Runtime", "Network", "Log"),
+    "service_worker": ("Runtime", "Network", "Log"),
+}
+_PAGE_TARGET_TYPES = frozenset({"page", "iframe"})
 
-    client.call(
-        "Target.setAutoAttach",
-        {
-            "autoAttach": True,
-            "waitForDebuggerOnStart": True,
-            "flatten": True,
-        },
-        timeout=3,
-        session_id=session_id,
-    )
-    for method in (
-        "Page.enable",
-        "Runtime.enable",
-        "Network.enable",
-        "Log.enable",
-        "Inspector.enable",
-    ):
-        client.call(method, timeout=3, session_id=session_id)
-    client.call(
-        "Network.setCacheDisabled",
-        {"cacheDisabled": True},
-        timeout=3,
-        session_id=session_id,
-    )
-    client.call(
-        "Network.setBypassServiceWorker",
-        {"bypass": True},
-        timeout=3,
-        session_id=session_id,
-    )
-    client.call(
-        "Network.clearBrowserCache",
-        timeout=3,
-        session_id=session_id,
-    )
-    client.call(
-        "Network.setUserAgentOverride",
-        {"userAgent": USER_AGENT},
-        timeout=3,
-        session_id=session_id,
-    )
+
+def _enable_cdp_session(
+    client: CDPClient,
+    session_id: str,
+    target_type: str,
+) -> bool:
+    """按 target type 启用 flattened session；任何配置失败前先恢复执行。"""
+
+    domains = _TARGET_SESSION_DOMAINS.get(target_type)
+    if domains is None:
+        client.call(
+            "Runtime.runIfWaitingForDebugger",
+            timeout=3,
+            session_id=session_id,
+        )
+        return False
+    try:
+        client.call(
+            "Target.setAutoAttach",
+            {
+                "autoAttach": True,
+                "waitForDebuggerOnStart": True,
+                "flatten": True,
+            },
+            timeout=3,
+            session_id=session_id,
+        )
+        for domain in domains:
+            client.call(f"{domain}.enable", timeout=3, session_id=session_id)
+        if target_type in _PAGE_TARGET_TYPES:
+            client.call(
+                "Network.setCacheDisabled",
+                {"cacheDisabled": True},
+                timeout=3,
+                session_id=session_id,
+            )
+            client.call(
+                "Network.setBypassServiceWorker",
+                {"bypass": True},
+                timeout=3,
+                session_id=session_id,
+            )
+            client.call(
+                "Network.clearBrowserCache",
+                timeout=3,
+                session_id=session_id,
+            )
+            client.call(
+                "Network.setUserAgentOverride",
+                {"userAgent": USER_AGENT},
+                timeout=3,
+                session_id=session_id,
+            )
+    except BaseException:
+        try:
+            client.call(
+                "Runtime.runIfWaitingForDebugger",
+                timeout=3,
+                session_id=session_id,
+            )
+        except Exception:
+            pass
+        raise
     client.call(
         "Runtime.runIfWaitingForDebugger",
         timeout=3,
         session_id=session_id,
     )
+    return True
 
 
 def _record_frame_tree(
@@ -562,11 +591,49 @@ def _record_frame_tree(
             _record_frame_tree(child, frame_urls)
 
 
+def _drop_cdp_session_state(
+    session_id: str,
+    *,
+    configured_sessions: set[str],
+    session_targets: dict[str, str],
+    session_target_types: dict[str, str],
+    contexts: dict[tuple[str, int], str],
+    frame_urls: dict[str, str],
+    frame_sessions: dict[str, str],
+) -> None:
+    """幂等移除 detached/ignored session 的全部归属状态。"""
+
+    configured_sessions.discard(session_id)
+    session_target_types.pop(session_id, None)
+    target_id = session_targets.pop(session_id, None)
+    if target_id is not None:
+        frame_urls.pop(target_id, None)
+        frame_sessions.pop(target_id, None)
+    for context_key in [key for key in contexts if key[0] == session_id]:
+        contexts.pop(context_key, None)
+    for frame_id in [
+        frame_id
+        for frame_id, owner_session in frame_sessions.items()
+        if owner_session == session_id
+    ]:
+        frame_sessions.pop(frame_id, None)
+        frame_urls.pop(frame_id, None)
+
+
+def _detach_cdp_session(client: CDPClient, session_id: str) -> None:
+    client.call(
+        "Target.detachFromTarget",
+        {"sessionId": session_id},
+        timeout=3,
+    )
+
+
 def _consume_cdp_events(
     client: CDPClient,
     *,
     configured_sessions: set[str],
     session_targets: dict[str, str],
+    session_target_types: dict[str, str],
     contexts: dict[tuple[str, int], str],
     frame_urls: dict[str, str],
     frame_sessions: dict[str, str],
@@ -586,28 +653,86 @@ def _consume_cdp_events(
         if method == "Target.attachedToTarget":
             child_session = params.get("sessionId")
             target_info = params.get("targetInfo", {})
-            target_id = target_info.get("targetId")
-            target_url = target_info.get("url")
-            if isinstance(child_session, str) and isinstance(target_id, str):
-                session_targets[child_session] = target_id
-                frame_sessions[target_id] = child_session
-                if isinstance(target_url, str) and target_url:
-                    frame_urls[target_id] = target_url
+            target_id = (
+                target_info.get("targetId") if isinstance(target_info, dict) else None
+            )
+            target_url = (
+                target_info.get("url") if isinstance(target_info, dict) else None
+            )
+            target_type = (
+                target_info.get("type") if isinstance(target_info, dict) else None
+            )
+            if isinstance(child_session, str):
+                if isinstance(target_id, str):
+                    session_targets[child_session] = target_id
+                    frame_sessions[target_id] = child_session
+                    if isinstance(target_url, str) and target_url:
+                        frame_urls[target_id] = target_url
+                normalized_target_type = (
+                    target_type if isinstance(target_type, str) else ""
+                )
+                session_target_types[child_session] = normalized_target_type
+                known_target_type = normalized_target_type in _TARGET_SESSION_DOMAINS
                 if child_session not in configured_sessions:
-                    _enable_cdp_session(client, child_session)
-                    configured_sessions.add(child_session)
+                    try:
+                        supported = _enable_cdp_session(
+                            client,
+                            child_session,
+                            session_target_types[child_session],
+                        )
+                    except BaseException as error:
+                        detached = False
+                        try:
+                            _detach_cdp_session(client, child_session)
+                            detached = True
+                        except Exception:
+                            pass
+                        _drop_cdp_session_state(
+                            child_session,
+                            configured_sessions=configured_sessions,
+                            session_targets=session_targets,
+                            session_target_types=session_target_types,
+                            contexts=contexts,
+                            frame_urls=frame_urls,
+                            frame_sessions=frame_sessions,
+                        )
+                        if (
+                            isinstance(error, Exception)
+                            and not known_target_type
+                            and detached
+                        ):
+                            pending.extend(_drain_events(client))
+                            continue
+                        raise
+                    if supported:
+                        configured_sessions.add(child_session)
+                    else:
+                        try:
+                            _detach_cdp_session(client, child_session)
+                        finally:
+                            _drop_cdp_session_state(
+                                child_session,
+                                configured_sessions=configured_sessions,
+                                session_targets=session_targets,
+                                session_target_types=session_target_types,
+                                contexts=contexts,
+                                frame_urls=frame_urls,
+                                frame_sessions=frame_sessions,
+                            )
                     pending.extend(_drain_events(client))
             continue
         if method == "Target.detachedFromTarget":
             detached_session = params.get("sessionId")
             if isinstance(detached_session, str):
-                configured_sessions.discard(detached_session)
-                detached_target = session_targets.pop(detached_session, None)
-                if detached_target is not None:
-                    frame_urls.pop(detached_target, None)
-                    frame_sessions.pop(detached_target, None)
-                for key in [key for key in contexts if key[0] == detached_session]:
-                    contexts.pop(key, None)
+                _drop_cdp_session_state(
+                    detached_session,
+                    configured_sessions=configured_sessions,
+                    session_targets=session_targets,
+                    session_target_types=session_target_types,
+                    contexts=contexts,
+                    frame_urls=frame_urls,
+                    frame_sessions=frame_sessions,
+                )
             continue
         crashed = _record_event(
             event,
@@ -661,7 +786,8 @@ def run_browser_attempt(
         )
         configured_sessions = {root_session}
         session_targets = {root_session: target_id}
-        _enable_cdp_session(client, root_session)
+        session_target_types = {root_session: "page"}
+        _enable_cdp_session(client, root_session, "page")
         contexts: dict[tuple[str, int], str] = {}
         frame_urls: dict[str, str] = {}
         frame_sessions: dict[str, str] = {target_id: root_session}
@@ -669,6 +795,7 @@ def run_browser_attempt(
             client,
             configured_sessions=configured_sessions,
             session_targets=session_targets,
+            session_target_types=session_target_types,
             contexts=contexts,
             frame_urls=frame_urls,
             frame_sessions=frame_sessions,
@@ -697,6 +824,7 @@ def run_browser_attempt(
                 client,
                 configured_sessions=configured_sessions,
                 session_targets=session_targets,
+                session_target_types=session_target_types,
                 contexts=contexts,
                 frame_urls=frame_urls,
                 frame_sessions=frame_sessions,
@@ -791,6 +919,7 @@ def run_browser_attempt(
             client,
             configured_sessions=configured_sessions,
             session_targets=session_targets,
+            session_target_types=session_target_types,
             contexts=contexts,
             frame_urls=frame_urls,
             frame_sessions=frame_sessions,

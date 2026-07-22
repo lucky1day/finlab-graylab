@@ -143,9 +143,11 @@ Edge 替代口径时，才同时传入 `--allow-edge-acceptance` 和可审计的
 
 URL 使用真实 Shell 页面；`--ready-frame-url-substring` 应唯一匹配 Bond Factor Lab
 iframe URL。探针使用 browser websocket 的 flattened Target session，递归 auto-attach
-OOPIF/后代 target，并在每个 session 启用 Runtime、Network、Page、Log 与 Inspector；
-ready evaluate、dashboard/legacy request 和错误都按 owning session 汇总。父页面的同名
-ready 不会通过：
+OOPIF/后代 target，并严格按 `targetInfo.type` 启用域：page/iframe 使用 Page、Runtime、
+Network、Log、Inspector 及禁缓存/绕过 Service Worker/UA 设置；worker、shared_worker、
+service_worker 只启用其支持的 Runtime、Network、Log，绝不调用 Page/Inspector。未知
+target 会先恢复执行再 detach，避免 `waitForDebuggerOnStart` 冻结。ready evaluate、
+dashboard/legacy request 和错误都按 owning session 汇总；父页面的同名 ready 不会通过：
 
 ```bash
 python scripts/benchmark_factor_lab_browser.py \

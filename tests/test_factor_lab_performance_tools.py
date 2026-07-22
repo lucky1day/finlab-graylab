@@ -479,7 +479,7 @@ def test_cdp_client_routes_flattened_session_commands() -> None:
     ]
 
 
-def test_each_flattened_session_enables_recursive_autoattach_and_observation() -> None:
+def test_page_and_worker_sessions_use_target_specific_cdp_domains() -> None:
     class FakeClient:
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict, str | None]] = []
@@ -496,9 +496,11 @@ def test_each_flattened_session_enables_recursive_autoattach_and_observation() -
             self.calls.append((method, params or {}, session_id))
             return {}
 
-    client = FakeClient()
-    browser_probe._enable_cdp_session(client, "oopif-child")  # type: ignore[arg-type]
-    assert client.calls[0] == (
+    page_client = FakeClient()
+    assert browser_probe._enable_cdp_session(  # type: ignore[arg-type]
+        page_client, "oopif-child", "iframe"
+    ) is True
+    assert page_client.calls[0] == (
         "Target.setAutoAttach",
         {
             "autoAttach": True,
@@ -507,7 +509,11 @@ def test_each_flattened_session_enables_recursive_autoattach_and_observation() -
         },
         "oopif-child",
     )
-    methods = [method for method, _params, session in client.calls if session == "oopif-child"]
+    page_methods = [
+        method
+        for method, _params, session in page_client.calls
+        if session == "oopif-child"
+    ]
     for required in (
         "Runtime.enable",
         "Network.enable",
@@ -519,7 +525,296 @@ def test_each_flattened_session_enables_recursive_autoattach_and_observation() -
         "Network.setUserAgentOverride",
         "Runtime.runIfWaitingForDebugger",
     ):
-        assert required in methods
+        assert required in page_methods
+
+    for target_type in ("worker", "shared_worker", "service_worker"):
+        worker_client = FakeClient()
+        session_id = f"{target_type}-session"
+        assert browser_probe._enable_cdp_session(  # type: ignore[arg-type]
+            worker_client, session_id, target_type
+        ) is True
+        worker_methods = [
+            method
+            for method, _params, session in worker_client.calls
+            if session == session_id
+        ]
+        assert "Page.enable" not in worker_methods
+        assert "Inspector.enable" not in worker_methods
+        assert "Network.clearBrowserCache" not in worker_methods
+        for required in (
+            "Target.setAutoAttach",
+            "Runtime.enable",
+            "Network.enable",
+            "Log.enable",
+            "Runtime.runIfWaitingForDebugger",
+        ):
+            assert required in worker_methods
+
+
+def test_session_configuration_failure_still_resumes_before_raising() -> None:
+    class FailingPageClient:
+        def __init__(self) -> None:
+            self.methods: list[str] = []
+
+        def call(
+            self,
+            method: str,
+            params: dict | None = None,
+            *,
+            timeout: float,
+            session_id: str | None = None,
+        ) -> dict:
+            del params, timeout, session_id
+            self.methods.append(method)
+            if method == "Page.enable":
+                raise CDPCommandError(method, -32601, "method not found")
+            return {}
+
+    client = FailingPageClient()
+    with pytest.raises(CDPCommandError) as caught:
+        browser_probe._enable_cdp_session(  # type: ignore[arg-type]
+            client, "bad-page", "page"
+        )
+    assert caught.value.method == "Page.enable"
+    assert client.methods[-1] == "Runtime.runIfWaitingForDebugger"
+
+
+def test_unknown_attached_target_is_resumed_detached_and_not_recorded() -> None:
+    class EventClient:
+        def __init__(self) -> None:
+            self.events = deque(
+                [
+                    {
+                        "method": "Target.attachedToTarget",
+                        "params": {
+                            "sessionId": "unknown-session",
+                            "targetInfo": {
+                                "targetId": "unknown-target",
+                                "type": "auction_worklet",
+                                "url": "https://example.test/worklet",
+                            },
+                        },
+                    }
+                ]
+            )
+            self.calls: list[tuple[str, dict, str | None]] = []
+
+        def next_event(self, *, timeout: float) -> dict:
+            del timeout
+            if not self.events:
+                raise TimeoutError
+            return self.events.popleft()
+
+        def call(
+            self,
+            method: str,
+            params: dict | None = None,
+            *,
+            timeout: float,
+            session_id: str | None = None,
+        ) -> dict:
+            del timeout
+            self.calls.append((method, params or {}, session_id))
+            return {}
+
+    client = EventClient()
+    configured_sessions: set[str] = set()
+    session_targets: dict[str, str] = {}
+    session_target_types: dict[str, str] = {}
+    assert browser_probe._consume_cdp_events(  # type: ignore[arg-type]
+        client,
+        configured_sessions=configured_sessions,
+        session_targets=session_targets,
+        session_target_types=session_target_types,
+        contexts={},
+        frame_urls={},
+        frame_sessions={},
+        dashboard_requests={},
+        legacy_requests={},
+        console_errors=[],
+        page_errors=[],
+    ) is False
+    assert client.calls == [
+        ("Runtime.runIfWaitingForDebugger", {}, "unknown-session"),
+        ("Target.detachFromTarget", {"sessionId": "unknown-session"}, None),
+    ]
+    assert configured_sessions == set()
+    assert session_targets == {}
+    assert session_target_types == {}
+
+
+def test_unknown_target_fails_closed_when_resume_and_detach_both_fail() -> None:
+    class StuckUnknownClient:
+        def __init__(self) -> None:
+            self.events = deque(
+                [
+                    {
+                        "method": "Target.attachedToTarget",
+                        "params": {
+                            "sessionId": "stuck-session",
+                            "targetInfo": {
+                                "targetId": "stuck-target",
+                                "type": "auction_worklet",
+                            },
+                        },
+                    }
+                ]
+            )
+
+        def next_event(self, *, timeout: float) -> dict:
+            del timeout
+            if not self.events:
+                raise TimeoutError
+            return self.events.popleft()
+
+        def call(
+            self,
+            method: str,
+            params: dict | None = None,
+            *,
+            timeout: float,
+            session_id: str | None = None,
+        ) -> dict:
+            del params, timeout, session_id
+            if method == "Runtime.runIfWaitingForDebugger":
+                raise CDPCommandError(method, -32601, "method not found")
+            if method == "Target.detachFromTarget":
+                raise CDPCommandError(method, -32000, "detach failed")
+            return {}
+
+    with pytest.raises(CDPCommandError) as caught:
+        browser_probe._consume_cdp_events(  # type: ignore[arg-type]
+            StuckUnknownClient(),
+            configured_sessions=set(),
+            session_targets={},
+            session_target_types={},
+            contexts={},
+            frame_urls={},
+            frame_sessions={},
+            dashboard_requests={},
+            legacy_requests={},
+            console_errors=[],
+            page_errors=[],
+        )
+    assert caught.value.method == "Runtime.runIfWaitingForDebugger"
+
+
+def test_attached_session_without_target_info_is_resumed_and_detached() -> None:
+    class MalformedAttachClient:
+        def __init__(self) -> None:
+            self.events = deque(
+                [
+                    {
+                        "method": "Target.attachedToTarget",
+                        "params": {"sessionId": "orphan-session", "targetInfo": {}},
+                    }
+                ]
+            )
+            self.calls: list[tuple[str, dict, str | None]] = []
+
+        def next_event(self, *, timeout: float) -> dict:
+            del timeout
+            if not self.events:
+                raise TimeoutError
+            return self.events.popleft()
+
+        def call(
+            self,
+            method: str,
+            params: dict | None = None,
+            *,
+            timeout: float,
+            session_id: str | None = None,
+        ) -> dict:
+            del timeout
+            self.calls.append((method, params or {}, session_id))
+            return {}
+
+    client = MalformedAttachClient()
+    assert browser_probe._consume_cdp_events(  # type: ignore[arg-type]
+        client,
+        configured_sessions=set(),
+        session_targets={},
+        session_target_types={},
+        contexts={},
+        frame_urls={},
+        frame_sessions={},
+        dashboard_requests={},
+        legacy_requests={},
+        console_errors=[],
+        page_errors=[],
+    ) is False
+    assert client.calls == [
+        ("Runtime.runIfWaitingForDebugger", {}, "orphan-session"),
+        ("Target.detachFromTarget", {"sessionId": "orphan-session"}, None),
+    ]
+
+
+def test_attached_page_configuration_error_detaches_and_preserves_error() -> None:
+    class FailingEventClient:
+        def __init__(self) -> None:
+            self.events = deque(
+                [
+                    {
+                        "method": "Target.attachedToTarget",
+                        "params": {
+                            "sessionId": "bad-session",
+                            "targetInfo": {
+                                "targetId": "bad-target",
+                                "type": "page",
+                                "url": "https://example.test/",
+                            },
+                        },
+                    }
+                ]
+            )
+            self.calls: list[tuple[str, dict, str | None]] = []
+
+        def next_event(self, *, timeout: float) -> dict:
+            del timeout
+            if not self.events:
+                raise TimeoutError
+            return self.events.popleft()
+
+        def call(
+            self,
+            method: str,
+            params: dict | None = None,
+            *,
+            timeout: float,
+            session_id: str | None = None,
+        ) -> dict:
+            del timeout
+            self.calls.append((method, params or {}, session_id))
+            if method == "Page.enable":
+                raise CDPCommandError(method, -32601, "method not found")
+            return {}
+
+    client = FailingEventClient()
+    session_targets: dict[str, str] = {}
+    session_target_types: dict[str, str] = {}
+    with pytest.raises(CDPCommandError) as caught:
+        browser_probe._consume_cdp_events(  # type: ignore[arg-type]
+            client,
+            configured_sessions=set(),
+            session_targets=session_targets,
+            session_target_types=session_target_types,
+            contexts={},
+            frame_urls={},
+            frame_sessions={},
+            dashboard_requests={},
+            legacy_requests={},
+            console_errors=[],
+            page_errors=[],
+        )
+    assert caught.value.method == "Page.enable"
+    methods = [method for method, _params, _session_id in client.calls]
+    assert methods[-2:] == [
+        "Runtime.runIfWaitingForDebugger",
+        "Target.detachFromTarget",
+    ]
+    assert session_targets == {}
+    assert session_target_types == {}
 
 
 def test_browser_summary_retains_failures_and_requires_200_formal_samples() -> None:
@@ -864,6 +1159,43 @@ class _ParentIframeSmokeHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class _WorkerFrontendSmokeHandler(_FrontendSmokeHandler):
+    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+        path = self.path.split("?", 1)[0]
+        if path == "/worker-page.html":
+            body = (
+                "<!doctype html><html><head>"
+                "<link rel='icon' href='data:,'>"
+                "</head><body><script>"
+                "window.workerSmoke = new Worker('/worker-smoke.js');"
+                "window.workerSmoke.onmessage = event => {"
+                "window.__factorLabReady = event.data;};"
+                "</script></body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if path == "/worker-smoke.js":
+            body = (
+                "fetch('/api/factor-lab/dashboard').then(response => response.json())"
+                ".then(payload => self.postMessage({seq:1,"
+                "snapshotId:payload.snapshot_id,committedAt:performance.now(),"
+                "stale:payload.stale,source:'dashboard',"
+                "schemeCount:payload.schemes.length,liveRowCount:0,"
+                "backtestRowCount:0}));"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/javascript; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        super().do_GET()
+
+
 @pytest.mark.skipif(
     os.environ.get("FACTOR_LAB_RUN_EDGE_SMOKE") != "1",
     reason="真实 Edge smoke 仅在显式本地工具验收时运行",
@@ -923,6 +1255,57 @@ def test_real_edge_smoke_and_short_soak_use_actual_frontend(tmp_path: Path) -> N
         assert soak_report["mode"] == "soak"
         assert soak_report["summary"]["success_count"] >= 2
         assert soak_report["summary"]["formal_acceptance"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)
+
+
+@pytest.mark.skipif(
+    os.environ.get("FACTOR_LAB_RUN_EDGE_SMOKE") != "1",
+    reason="真实 Edge worker smoke 仅在显式本地工具验收时运行",
+)
+def test_real_edge_worker_target_collects_dashboard_and_fresh_ready(
+    tmp_path: Path,
+) -> None:
+    """dedicated Worker 必须按 worker 域启用并保留其 dashboard 请求。"""
+
+    edge = Path("/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge")
+    if not edge.is_file():
+        pytest.skip("Microsoft Edge is not installed")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _WorkerFrontendSmokeHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        result = subprocess.run(
+            [
+                str(PYTHON),
+                str(PROJECT_ROOT / "scripts/benchmark_factor_lab_browser.py"),
+                "--url", f"http://{host}:{port}/worker-page.html",
+                "--attempts", "1",
+                "--timeout-seconds", "5",
+                "--browser-binary", str(edge),
+                "--output-json", str(tmp_path / "worker.json"),
+            ],
+            cwd=PROJECT_ROOT,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr + result.stdout
+        report = json.loads((tmp_path / "worker.json").read_text(encoding="utf-8"))
+        assert report["summary"]["success_count"] == 1
+        attempt = report["attempts"][0]
+        assert attempt["ready"]["source"] == "dashboard"
+        assert attempt["ready"]["stale"] is False
+        assert attempt["dashboard_request_urls"] == [
+            f"http://{host}:{port}/api/factor-lab/dashboard"
+        ]
+        assert attempt["legacy_request_urls"] == []
+        assert attempt["console_errors"] == []
+        assert attempt["page_errors"] == []
     finally:
         server.shutdown()
         server.server_close()
