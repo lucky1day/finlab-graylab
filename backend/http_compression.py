@@ -28,29 +28,19 @@ def _positive_quality(value: str) -> bool | None:
 
 def _coding_preference(member: str) -> tuple[str, bool | None] | None:
     """解析一个与 gzip 选择有关的 Accept-Encoding 成员。"""
-    parts = member.split(";")
+    parts = _strip_ows(member).split(";")
     coding = _strip_ows(parts[0]).casefold()
     if coding not in {"gzip", "*"}:
         return None
     if len(parts) == 1:
         return coding, True
 
-    quality: bool | None = None
-    quality_seen = False
-    for parameter in parts[1:]:
-        name, separator, value = parameter.partition("=")
-        if (
-            not separator
-            or _strip_ows(name).casefold() != "q"
-            or quality_seen
-        ):
-            return coding, None
-        quality_seen = True
-        quality = _positive_quality(_strip_ows(value))
-        if quality is None:
-            return coding, None
-
-    return coding, quality if quality_seen else None
+    if len(parts) != 2:
+        return coding, None
+    parameter = parts[1].lstrip(" \t")
+    if parameter[:2].casefold() != "q=":
+        return coding, None
+    return coding, _positive_quality(parameter[2:])
 
 
 def accepts_gzip(header_value: str | None) -> bool:
@@ -63,6 +53,7 @@ def accepts_gzip(header_value: str | None) -> bool:
     for member in header_value.split(","):
         preference = _coding_preference(member)
         if preference is None:
+            # 能力判断只由 gzip / wildcard 成员决定；其它 coding 不授予 gzip。
             continue
         coding, quality = preference
         if coding == "gzip":
@@ -159,12 +150,38 @@ class QAwareGZipMiddleware:
             for key, value in scope.get("headers", ())
             if key.lower() == b"accept-encoding"
         ]
+        # 下游 HEAD handler 仍须生成 GET 等价表示；这里只在 gzip 完成头计算后
+        # 抑制最终 wire body，并保留每条消息的 more_body。
+        is_head = scope.get("method", "").upper() == "HEAD"
 
         async def send_with_vary(message: Message) -> None:
-            await send(_copy_response_start_with_vary(message))
+            outbound = _copy_response_start_with_vary(message)
+            if is_head and outbound["type"] == "http.response.body":
+                outbound = dict(outbound)
+                outbound["body"] = b""
+            await send(outbound)
 
         if not accepts_gzip(",".join(header_values)):
-            await self.app(scope, receive, send_with_vary)
+            buffered_start: Message | None = None
+
+            async def send_after_start_is_safe(message: Message) -> None:
+                nonlocal buffered_start
+                if message["type"] == "http.response.start":
+                    buffered_start = _copy_response_start_with_vary(message)
+                    return
+                if (
+                    buffered_start is not None
+                    and message["type"]
+                    in {"http.response.body", "http.response.pathsend"}
+                ):
+                    start = buffered_start
+                    buffered_start = None
+                    await send_with_vary(start)
+                await send_with_vary(message)
+
+            await self.app(scope, receive, send_after_start_is_safe)
+            if buffered_start is not None:
+                await send_with_vary(buffered_start)
             return
 
         gzip_scope = dict(scope)

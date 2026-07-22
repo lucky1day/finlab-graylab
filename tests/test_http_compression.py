@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import gzip
 import importlib
+import zlib
 from collections.abc import Awaitable, Callable, Sequence
 from types import ModuleType
 from typing import Any
@@ -29,6 +30,8 @@ def _compression_module() -> ModuleType:
 
 def _http_scope(
     accept_encoding: str | Sequence[str] | None = None,
+    *,
+    method: str = "GET",
 ) -> Scope:
     headers: list[tuple[bytes, bytes]] = []
     if isinstance(accept_encoding, str):
@@ -42,7 +45,7 @@ def _http_scope(
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
-        "method": "GET",
+        "method": method,
         "scheme": "http",
         "path": "/",
         "raw_path": b"/",
@@ -72,8 +75,12 @@ async def _run_asgi(app: ASGIApp, scope: Scope) -> list[Message]:
 def _run_http(
     app: ASGIApp,
     accept_encoding: str | Sequence[str] | None = None,
+    *,
+    method: str = "GET",
 ) -> list[Message]:
-    return asyncio.run(_run_asgi(app, _http_scope(accept_encoding)))
+    return asyncio.run(
+        _run_asgi(app, _http_scope(accept_encoding, method=method))
+    )
 
 
 def _response_app(
@@ -134,7 +141,9 @@ def _vary_tokens(messages: Sequence[Message]) -> list[str]:
         "gzip",
         "br, gzip;q=0.8",
         "*;q=0.5",
-        " GZiP ; Q = 0.800 ",
+        " GZiP ; Q=0.800 ",
+        "gzip ; q=0.5",
+        "gzip;\tQ=0.500",
         "gzip;q=1.000",
         "gzip;q=0.001",
         "br;q=not-a-qvalue, gzip",
@@ -171,6 +180,9 @@ def test_accepts_gzip_for_positive_explicit_or_wildcard_weight(
         "gzip;q=00.5",
         "gzip;q=\"0.5\"",
         "gzip;q=",
+        "gzip;q =0.5",
+        "gzip;q= 0.5",
+        "gzip; q = 0.5",
         "gzip;q=\n0.5",
         "gzip;\N{NO-BREAK SPACE}q=0.5",
         "gzip;q=0.5;q=0.4",
@@ -209,7 +221,7 @@ def test_duplicate_explicit_gzip_tokens_fail_closed(header_value: str) -> None:
         ("gzip", True),
         ("br, gzip;q=0.8", True),
         ("*;q=0.5", True),
-        (" GZiP ; Q = 1.000 ", True),
+        (" GZiP ; Q=1.000 ", True),
         ("gzip;q=0", False),
         ("gzip;q=0, *;q=1", False),
         ("identity", False),
@@ -278,7 +290,139 @@ def test_small_response_stays_identity_but_has_vary() -> None:
     ]
 
 
-@pytest.mark.parametrize("content_encoding", ["br", "gzip"])
+@pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
+def test_head_uses_get_equivalent_headers_without_sending_body(
+    accept_encoding: str,
+) -> None:
+    module = _compression_module()
+    raw_body = b'{"rows":[' + b'{"direction":1},' * 80 + b"]}"
+    generated: list[tuple[str, bytes]] = []
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive
+        generated.append((scope["method"], raw_body))
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 206,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(raw_body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": raw_body})
+
+    middleware = module.QAwareGZipMiddleware(app)
+
+    get_messages = _run_http(middleware, accept_encoding, method="GET")
+    head_messages = _run_http(middleware, accept_encoding, method="HEAD")
+
+    assert generated == [("GET", raw_body), ("HEAD", raw_body)]
+    assert _start_message(head_messages)["status"] == _start_message(get_messages)[
+        "status"
+    ]
+    for header_name in (
+        "content-type",
+        "content-encoding",
+        "content-length",
+        "vary",
+    ):
+        assert _header_values(head_messages, header_name) == _header_values(
+            get_messages,
+            header_name,
+        )
+    assert _body_bytes(head_messages) == b""
+    if accept_encoding == "gzip":
+        assert gzip.decompress(_body_bytes(get_messages)) == raw_body
+    else:
+        assert _body_bytes(get_messages) == raw_body
+
+
+def test_small_head_keeps_get_content_length_and_suppresses_body() -> None:
+    module = _compression_module()
+    raw_body = b'{"ok":true}'
+    middleware = module.QAwareGZipMiddleware(
+        _response_app(
+            raw_body,
+            headers=[(b"content-type", b"application/json")],
+        )
+    )
+
+    get_messages = _run_http(middleware, "gzip", method="GET")
+    head_messages = _run_http(middleware, "gzip", method="HEAD")
+
+    assert _start_message(head_messages) == _start_message(get_messages)
+    assert _body_bytes(get_messages) == raw_body
+    assert _body_bytes(head_messages) == b""
+
+
+@pytest.mark.parametrize("accept_encoding", ["gzip", "identity"])
+def test_streaming_head_preserves_get_headers_and_suppresses_every_chunk(
+    accept_encoding: str,
+) -> None:
+    module = _compression_module()
+    chunks = [b"", b'{"rows":[', b'{"direction":1},' * 50, b"]}"]
+    raw_body = b"".join(chunks)
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(raw_body)).encode("ascii")),
+                ],
+            }
+        )
+        for index, chunk in enumerate(chunks):
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": chunk,
+                    "more_body": index < len(chunks) - 1,
+                }
+            )
+
+    middleware = module.QAwareGZipMiddleware(app)
+
+    get_messages = _run_http(middleware, accept_encoding, method="GET")
+    head_messages = _run_http(middleware, accept_encoding, method="HEAD")
+
+    assert _start_message(head_messages) == _start_message(get_messages)
+    get_body_messages = [
+        message
+        for message in get_messages
+        if message["type"] == "http.response.body"
+    ]
+    head_body_messages = [
+        message
+        for message in head_messages
+        if message["type"] == "http.response.body"
+    ]
+    assert [message.get("more_body", False) for message in head_body_messages] == [
+        message.get("more_body", False) for message in get_body_messages
+    ]
+    assert all(message.get("body", b"") == b"" for message in head_body_messages)
+
+    wire_body = _body_bytes(get_messages)
+    if accept_encoding == "gzip":
+        assert _header_values(get_messages, "content-encoding") == ["gzip"]
+        assert _header_values(get_messages, "content-length") == []
+        assert gzip.decompress(wire_body) == raw_body
+        assert int.from_bytes(wire_body[-8:-4], "little") == zlib.crc32(raw_body)
+        assert int.from_bytes(wire_body[-4:], "little") == len(raw_body)
+    else:
+        assert _header_values(get_messages, "content-encoding") == []
+        assert _header_values(get_messages, "content-length") == [
+            str(len(raw_body))
+        ]
+        assert wire_body == raw_body
+
+
+@pytest.mark.parametrize("content_encoding", ["br", "gzip", "identity"])
 def test_existing_content_encoding_is_never_compressed_again(
     content_encoding: str,
 ) -> None:
@@ -299,6 +443,67 @@ def test_existing_content_encoding_is_never_compressed_again(
     assert [token.casefold() for token in _vary_tokens(messages)].count(
         "accept-encoding"
     ) == 1
+
+
+def test_multiple_existing_content_encoding_fields_are_preserved() -> None:
+    module = _compression_module()
+    encoded_body = b"already encoded" * 100
+    middleware = module.QAwareGZipMiddleware(
+        _response_app(
+            encoded_body,
+            headers=[
+                (b"content-encoding", b"identity"),
+                (b"content-encoding", b"br"),
+            ],
+        )
+    )
+
+    messages = _run_http(middleware, "gzip")
+
+    assert _header_values(messages, "content-encoding") == ["identity", "br"]
+    assert _body_bytes(messages) == encoded_body
+    assert _header_values(messages, "content-length") == [str(len(encoded_body))]
+
+
+@pytest.mark.parametrize("accept_encoding", ["identity", "gzip"])
+def test_vary_star_is_preserved_and_accept_encoding_is_added_once(
+    accept_encoding: str,
+) -> None:
+    module = _compression_module()
+    middleware = module.QAwareGZipMiddleware(
+        _response_app(b"response" * 100, headers=[(b"vary", b"*")])
+    )
+
+    messages = _run_http(middleware, accept_encoding)
+
+    assert len(_header_values(messages, "vary")) == 1
+    assert [token.casefold() for token in _vary_tokens(messages)] == [
+        "*",
+        "accept-encoding",
+    ]
+
+
+@pytest.mark.parametrize("status", [204, 304])
+def test_bodyless_statuses_keep_starlette_gzip_behavior(status: int) -> None:
+    module = _compression_module()
+    raw_body = b"starlette behavior" * 100
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status,
+                "headers": [(b"content-length", str(len(raw_body)).encode("ascii"))],
+            }
+        )
+        await send({"type": "http.response.body", "body": raw_body})
+
+    messages = _run_http(module.QAwareGZipMiddleware(app), "gzip")
+
+    assert _start_message(messages)["status"] == status
+    assert _header_values(messages, "content-encoding") == ["gzip"]
+    assert gzip.decompress(_body_bytes(messages)) == raw_body
 
 
 @pytest.mark.parametrize("accept_encoding", ["identity", "gzip"])
@@ -366,7 +571,7 @@ def test_reused_response_start_is_not_mutated_or_accumulated() -> None:
 def test_http_app_observes_the_original_request_scope() -> None:
     module = _compression_module()
     raw_body = b"x" * 1000
-    original_scope = _http_scope(" GZIP ; Q = 1 ")
+    original_scope = _http_scope(" GZIP ; Q=1 ")
     seen_scopes: list[Scope] = []
 
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
@@ -387,7 +592,7 @@ def test_http_app_observes_the_original_request_scope() -> None:
 
     assert seen_scopes == [original_scope]
     assert seen_scopes[0] is original_scope
-    assert original_scope["headers"] == [(b"accept-encoding", b" GZIP ; Q = 1 ")]
+    assert original_scope["headers"] == [(b"accept-encoding", b" GZIP ; Q=1 ")]
     assert gzip.decompress(_body_bytes(messages)) == raw_body
 
 
@@ -414,11 +619,14 @@ def test_non_http_scope_is_passed_through_without_response_header_changes() -> N
     ]
 
 
-def test_started_identity_response_preserves_vary_when_app_raises() -> None:
+@pytest.mark.parametrize("accept_encoding", ["identity", "gzip"])
+def test_response_start_is_not_leaked_when_app_raises_before_first_body(
+    accept_encoding: str,
+) -> None:
     module = _compression_module()
     shared_start: Message = {
         "type": "http.response.start",
-        "status": 500,
+        "status": 200,
         "headers": [(b"vary", b"Origin")],
     }
     captured: list[Message] = []
@@ -437,18 +645,76 @@ def test_started_identity_response_preserves_vary_when_app_raises() -> None:
         async def send(message: Message) -> None:
             captured.append(dict(message))
 
-        await middleware(_http_scope("identity"), receive, send)
+        await middleware(_http_scope(accept_encoding), receive, send)
 
     with pytest.raises(RuntimeError, match="boom after response start"):
         asyncio.run(execute())
 
     assert shared_start["headers"] == [(b"vary", b"Origin")]
-    assert [
-        token.strip().casefold()
-        for value in _header_values(captured, "vary")
-        for token in value.split(",")
-        if token.strip()
-    ] == ["origin", "accept-encoding"]
+    assert captured == []
+
+
+def test_identity_response_that_ends_after_start_is_flushed_normally() -> None:
+    module = _compression_module()
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 204,
+                "headers": [(b"vary", b"Origin")],
+            }
+        )
+
+    messages = _run_http(
+        module.QAwareGZipMiddleware(app),
+        "identity",
+    )
+
+    assert [message["type"] for message in messages] == ["http.response.start"]
+    assert _start_message(messages)["status"] == 204
+    assert [token.casefold() for token in _vary_tokens(messages)] == [
+        "origin",
+        "accept-encoding",
+    ]
+
+
+def test_one_middleware_instance_handles_one_hundred_concurrent_requests() -> None:
+    module = _compression_module()
+    raw_body = b"concurrent response" * 100
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-length", str(len(raw_body)).encode("ascii"))],
+            }
+        )
+        await asyncio.sleep(0)
+        await send({"type": "http.response.body", "body": raw_body})
+
+    middleware = module.QAwareGZipMiddleware(app)
+
+    async def run_all() -> list[list[Message]]:
+        return await asyncio.gather(
+            *(
+                _run_asgi(middleware, _http_scope("gzip"))
+                for _ in range(100)
+            )
+        )
+
+    responses = asyncio.run(run_all())
+
+    assert len(responses) == 100
+    for messages in responses:
+        assert _header_values(messages, "content-encoding") == ["gzip"]
+        assert gzip.decompress(_body_bytes(messages)) == raw_body
+        assert [token.casefold() for token in _vary_tokens(messages)] == [
+            "accept-encoding"
+        ]
 
 
 def test_starlette_gzip_is_configured_once_and_called_only_when_accepted(
