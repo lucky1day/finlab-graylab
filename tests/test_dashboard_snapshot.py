@@ -283,6 +283,42 @@ class MutableMonotonic:
         return self.value
 
 
+def _install_outcome_cancelling_flight(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode: str,
+    cancellation_count: int,
+) -> tuple[type[Any], KeyboardInterrupt, list[Any]]:
+    """在 terminal outcome 写入前/后注入有限次进程级取消。"""
+    original_flight_class = snapshot_module._Flight
+    cancellation = KeyboardInterrupt(f"outcome-{mode}-cancelled")
+    instances: list[Any] = []
+
+    class OutcomeCancellingFlight(original_flight_class):
+        def __init__(self) -> None:
+            self._remaining_outcome_cancellations = cancellation_count
+            super().__init__()
+            instances.append(self)
+
+        def __setattr__(self, name: str, value: Any) -> None:
+            if (
+                name == "outcome"
+                and value is not None
+                and getattr(self, "_remaining_outcome_cancellations", 0) > 0
+            ):
+                if mode == "after":
+                    super().__setattr__(name, value)
+                super().__setattr__(
+                    "_remaining_outcome_cancellations",
+                    self._remaining_outcome_cancellations - 1,
+                )
+                raise cancellation
+            super().__setattr__(name, value)
+
+    monkeypatch.setattr(snapshot_module, "_Flight", OutcomeCancellingFlight)
+    return original_flight_class, cancellation, instances
+
+
 def _start_get(
     store: DashboardSnapshotStore,
     *,
@@ -1069,6 +1105,83 @@ def test_multiple_cleanup_acquire_cancellations_do_not_leave_zombie_blocking(
     assert retry.cache_status == "MISS"
     assert retry.payload["snapshot_id"] == "retry"
     assert builder.calls == 2
+
+
+@pytest.mark.parametrize(
+    ("mode", "cancellation_count"),
+    [("before", 1), ("before", 3), ("after", 1)],
+)
+def test_failure_terminal_outcome_survives_cancellation_and_allows_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    cancellation_count: int,
+) -> None:
+    original_flight_class, _, instances = _install_outcome_cancelling_flight(
+        monkeypatch,
+        mode=mode,
+        cancellation_count=cancellation_count,
+    )
+    original_signal = SystemExit("builder terminal failure")
+    builder = ControlledBuilder(
+        original_signal,
+        {"snapshot_id": "retry"},
+    )
+    store = DashboardSnapshotStore(
+        builder,
+        wait_timeout_seconds=0.0,
+        monotonic=ManualMonotonic(),
+    )
+
+    with pytest.raises(BaseException) as caught:
+        store.get()
+
+    assert caught.value is original_signal
+    assert len(instances) == 1
+    terminal_flight = instances[0]
+    assert terminal_flight.outcome is not None
+    assert terminal_flight.outcome.error is original_signal
+    assert terminal_flight.done is True
+    assert terminal_flight.error is original_signal
+    assert store._building is False
+
+    monkeypatch.setattr(snapshot_module, "_Flight", original_flight_class)
+    retry = store.get()
+    assert retry.cache_status == "MISS"
+    assert retry.payload["snapshot_id"] == "retry"
+    assert builder.calls == 2
+
+
+def test_success_terminal_outcome_survives_cancellation_without_half_publish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, terminal_cancel, instances = _install_outcome_cancelling_flight(
+        monkeypatch,
+        mode="after",
+        cancellation_count=1,
+    )
+    calls = 0
+
+    def builder() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return {"snapshot_id": "success"}
+
+    store = DashboardSnapshotStore(builder, monotonic=ManualMonotonic())
+
+    with pytest.raises(BaseException) as caught:
+        store.get()
+
+    assert caught.value is terminal_cancel
+    assert len(instances) == 1
+    terminal_flight = instances[0]
+    assert terminal_flight.outcome is not None
+    assert terminal_flight.outcome.error is None
+    assert terminal_flight.done is True
+    assert terminal_flight.error is None
+    assert store._building is False
+    assert store.get().cache_status == "HIT"
+    assert store.get().payload["snapshot_id"] == "success"
+    assert calls == 1
 
 
 def test_success_owner_that_lost_flight_cannot_publish() -> None:

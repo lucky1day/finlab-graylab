@@ -41,12 +41,27 @@ class SnapshotUnavailable(RuntimeError):
     """首份 dashboard 快照不可用。"""
 
 
+@dataclass(frozen=True)
+class _FlightOutcome:
+    """一次 flight 的不可变 terminal 结果。"""
+
+    error: BaseException | None
+
+
 @dataclass
 class _Flight:
-    """一次构建的完成状态，供同批 waiter 稳定观察。"""
+    """一次构建状态；单一 outcome 引用是唯一 terminal 事实。"""
 
-    done: bool = False
-    error: BaseException | None = None
+    outcome: _FlightOutcome | None = None
+
+    @property
+    def done(self) -> bool:
+        return self.outcome is not None
+
+    @property
+    def error(self) -> BaseException | None:
+        outcome = self.outcome
+        return None if outcome is None else outcome.error
 
 
 class DashboardSnapshotStore:
@@ -242,21 +257,31 @@ class DashboardSnapshotStore:
         snapshot: tuple[dict, float],
     ) -> bool:
         """原子发布成功快照；临界区取消时回滚为原 LKG。"""
+        terminal_error: BaseException | None = None
         with self._condition:
             if self._flight is not flight or flight.done:
                 return False
             previous_snapshot = self._snapshot
             try:
                 self._snapshot = snapshot
-                flight.done = True
+                terminal_error = _publish_flight_outcome(
+                    flight,
+                    _FlightOutcome(error=None),
+                )
                 self._flight = None
                 self._condition.notify_all()
             except BaseException:  # noqa: BLE001 - 回滚半完成发布
-                self._snapshot = previous_snapshot
-                flight.error = None
-                flight.done = False
-                self._flight = flight
+                if flight.outcome is None:
+                    self._snapshot = previous_snapshot
+                    self._flight = flight
+                else:
+                    # outcome 已 terminal 时绝不能回退为 active；snapshot tuple
+                    # 已单次发布，可安全保留并仅做 identity-guarded detach。
+                    if self._flight is flight:
+                        self._flight = None
                 raise
+        if terminal_error is not None:
+            raise terminal_error
         return True
 
     def _finish_owner_failure(
@@ -293,11 +318,10 @@ class DashboardSnapshotStore:
         error: BaseException,
     ) -> BaseException | None:
         """先发布 terminal 事实，再尽力 detach 并唤醒同批 waiter。"""
-        # error 先写、done 后写：waiter 和后续请求只要观察到 terminal，
-        # 就一定能看到完整错误，且不再被 zombie flight 阻塞。
-        flight.error = error
-        flight.done = True
-        first_cleanup_error: BaseException | None = None
+        first_cleanup_error = _publish_flight_outcome(
+            flight,
+            _FlightOutcome(error=error),
+        )
         for attempt in range(2):
             try:
                 with self._condition:
@@ -314,6 +338,28 @@ class DashboardSnapshotStore:
                         raise error
                     raise cleanup_error
         raise RuntimeError("unreachable failed-flight finalization state")
+
+
+def _publish_flight_outcome(
+    flight: _Flight,
+    outcome: _FlightOutcome,
+) -> BaseException | None:
+    """以一次引用写发布 terminal；有限取消前后均可恢复。"""
+    first_cancellation: BaseException | None = None
+    for _ in range(8):
+        if flight.outcome is not None:
+            break
+        try:
+            flight.outcome = outcome
+        except BaseException as cancellation:  # noqa: BLE001 - terminal 必须可恢复
+            if first_cancellation is None:
+                first_cancellation = cancellation
+            # 赋值后取消时 outcome 已可见，循环自然结束；赋值前取消则重试。
+    if flight.outcome is None:
+        # 避开自定义 __setattr__ 的持续取消钩子，做最后一次内建引用写；
+        # 真实异步异常若连此处也持续打断则向上传播，绝不无限吞取消。
+        object.__setattr__(flight, "outcome", outcome)
+    return first_cancellation
 
 
 def _validated_duration(
