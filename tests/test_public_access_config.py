@@ -838,7 +838,10 @@ def test_versioned_nginx_publish_is_immutable_and_idempotent(
             text=True,
         )
 
-    root = prepare_root("idempotent")
+    physical_root = prepare_root("idempotent-physical")
+    root = tmp_path / "idempotent-alias"
+    root.symlink_to(physical_root, target_is_directory=True)
+    assert root.absolute() != root.resolve()
     first = publish(root)
     assert first.returncode == 0, first.stderr
     active = root / "sites-enabled/bond-factor-lab"

@@ -66,11 +66,36 @@ publish_bond_factor_nginx() (
     *) printf 'invalid BOND_FACTOR_RELEASE_STAGE\n' >&2; return 2 ;;
   esac
 
+  canonical_existing_directory() {
+    local input_directory="$1" resolved_directory
+    resolved_directory="$(
+      sudo readlink -f -- "$input_directory" 2>/dev/null || true
+    )"
+    if [[ -z "$resolved_directory" ]] \
+        || ! sudo test -d "$resolved_directory"; then
+      printf 'required nginx directory is missing: %s\n' \
+        "$input_directory" >&2
+      return 1
+    fi
+    printf '%s\n' "$resolved_directory"
+  }
+
+  snippets_directory="$(
+    canonical_existing_directory "${nginx_root}/snippets"
+  )"
+  sites_available_directory="$(
+    canonical_existing_directory "${nginx_root}/sites-available"
+  )"
+  sites_enabled_directory="$(
+    canonical_existing_directory "${nginx_root}/sites-enabled"
+  )"
+
   site_source="deploy/nginx/bond-factor-lab.conf"
   snippet_source="deploy/nginx/snippets/bond-proxy-headers.conf"
-  snippet_target="${nginx_root}/snippets/bond-proxy-headers-${release_id}.conf"
-  target="${nginx_root}/sites-available/bond-factor-lab-${release_id}-${release_stage}"
-  active="${nginx_root}/sites-enabled/bond-factor-lab"
+  # 候选文件可能尚不存在：先 canonicalize 已存在的父目录，再拼接 basename。
+  snippet_target="${snippets_directory}/bond-proxy-headers-${release_id}.conf"
+  target="${sites_available_directory}/bond-factor-lab-${release_id}-${release_stage}"
+  active="${sites_enabled_directory}/bond-factor-lab"
   # 生产默认 snippet_target：
   # /etc/nginx/snippets/bond-proxy-headers-20260722b.conf
 
@@ -117,7 +142,7 @@ publish_bond_factor_nginx() (
   previous_target=""
   already_active=0
   if sudo test -L "$active"; then
-    current_target="$(readlink -f "$active" 2>/dev/null || true)"
+    current_target="$(sudo readlink -f -- "$active" 2>/dev/null || true)"
     if [[ -z "$current_target" ]] || ! sudo test -f "$current_target" \
         || ! sudo test -r "$current_target"; then
       printf 'active symlink target is missing or unreadable: %s\n' "$active" >&2
