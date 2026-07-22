@@ -78,20 +78,23 @@ class DashboardSnapshotStore:
         self._monotonic = monotonic
         self._condition = Condition()
         self._snapshot: tuple[dict, float] | None = None
-        self._building = False
         self._flight: _Flight | None = None
 
     def get(self) -> SnapshotResult:
         """返回新鲜快照，或参与唯一构建并显式降级到 stale LKG。"""
         with self._condition:
+            flight_at_entry = self._flight
+            joined_active_flight = (
+                flight_at_entry is not None and not flight_at_entry.done
+            )
             observed_at = self._sample_monotonic()
             if self._is_fresh(observed_at):
                 return self._cached_result("HIT", observed_at)
 
-            if self._building:
-                flight = self._flight
-                if flight is None:
-                    raise RuntimeError("snapshot build state is inconsistent")
+            if joined_active_flight:
+                flight = flight_at_entry
+                if flight is None:  # pragma: no cover - narrowed above
+                    raise RuntimeError("snapshot flight capture is inconsistent")
                 wait_started_at = _sample_wait_monotonic()
                 wait_deadline = wait_started_at + self._wait_timeout_seconds
                 if not math.isfinite(wait_deadline):
@@ -127,7 +130,6 @@ class DashboardSnapshotStore:
 
             flight = _Flight()
             self._flight = flight
-            self._building = True
             build_started_at = observed_at
 
         try:
@@ -151,7 +153,7 @@ class DashboardSnapshotStore:
             )
 
         try:
-            self._publish_success(
+            published = self._publish_success(
                 flight,
                 snapshot=(frozen_payload, build_finished_at),
             )
@@ -161,6 +163,15 @@ class DashboardSnapshotStore:
                 error=error,
                 build_started_at=build_started_at,
             )
+        if not published:
+            observed_at = self._sample_monotonic()
+            with self._condition:
+                if self._is_fresh(observed_at):
+                    return self._cached_result("HIT", observed_at)
+                return self._stale_or_raise(
+                    observed_at=observed_at,
+                    message="dashboard snapshot owner lost its flight",
+                )
         return result
 
     def prewarm(self) -> SnapshotResult:
@@ -183,6 +194,11 @@ class DashboardSnapshotStore:
     def _built_at(self) -> float | None:
         snapshot = self._snapshot
         return None if snapshot is None else snapshot[1]
+
+    @property
+    def _building(self) -> bool:
+        flight = self._flight
+        return flight is not None and not flight.done
 
     def _sample_monotonic(self) -> float:
         return _finite_monotonic_sample(
@@ -224,24 +240,24 @@ class DashboardSnapshotStore:
         flight: _Flight,
         *,
         snapshot: tuple[dict, float],
-    ) -> None:
+    ) -> bool:
         """原子发布成功快照；临界区取消时回滚为原 LKG。"""
         with self._condition:
+            if self._flight is not flight or flight.done:
+                return False
             previous_snapshot = self._snapshot
             try:
                 self._snapshot = snapshot
                 flight.done = True
-                self._building = False
-                if self._flight is flight:
-                    self._flight = None
+                self._flight = None
                 self._condition.notify_all()
             except BaseException:  # noqa: BLE001 - 回滚半完成发布
                 self._snapshot = previous_snapshot
                 flight.error = None
                 flight.done = False
-                self._building = True
                 self._flight = flight
                 raise
+        return True
 
     def _finish_owner_failure(
         self,
@@ -276,16 +292,18 @@ class DashboardSnapshotStore:
         *,
         error: BaseException,
     ) -> BaseException | None:
-        """失败清理最多容忍一次获取锁取消，避免永久 building。"""
+        """先发布 terminal 事实，再尽力 detach 并唤醒同批 waiter。"""
+        # error 先写、done 后写：waiter 和后续请求只要观察到 terminal，
+        # 就一定能看到完整错误，且不再被 zombie flight 阻塞。
+        flight.error = error
+        flight.done = True
         first_cleanup_error: BaseException | None = None
         for attempt in range(2):
             try:
                 with self._condition:
-                    flight.error = error
-                    flight.done = True
-                    self._building = False
-                    if self._flight is flight:
-                        self._flight = None
+                    if self._flight is not flight:
+                        return first_cleanup_error
+                    self._flight = None
                     self._condition.notify_all()
                 return first_cleanup_error
             except BaseException as cleanup_error:  # noqa: BLE001 - 有限清理重试

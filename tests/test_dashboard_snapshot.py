@@ -195,6 +195,84 @@ class CancelNextEnterCondition(threading.Condition):
         super().notify_all()
 
 
+class CancelManyEnterCondition(threading.Condition):
+    """连续取消指定线程后续若干次 Condition enter。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._cancel_lock = threading.Lock()
+        self._cancel_thread_name: str | None = None
+        self._cancel_errors: list[BaseException] = []
+
+    def cancel_enters(
+        self,
+        thread_name: str,
+        errors: list[BaseException],
+    ) -> None:
+        with self._cancel_lock:
+            self._cancel_thread_name = thread_name
+            self._cancel_errors = list(errors)
+
+    def __enter__(self) -> Any:
+        error: BaseException | None = None
+        with self._cancel_lock:
+            if (
+                threading.current_thread().name == self._cancel_thread_name
+                and self._cancel_errors
+            ):
+                error = self._cancel_errors.pop(0)
+        if error is not None:
+            raise error
+        return super().__enter__()
+
+
+class NotifyCancelRaceCondition(threading.Condition):
+    """取消旧 owner 的首次 notify，并在其重试前放行新 flight。"""
+
+    def __init__(
+        self,
+        *,
+        owner_name: str,
+        cancel_error: BaseException,
+    ) -> None:
+        super().__init__()
+        self._owner_name = owner_name
+        self._cancel_error = cancel_error
+        self._notify_cancelled = False
+        self._retry_gated = False
+        self.notify_cancelled = threading.Event()
+        self.retry_entered = threading.Event()
+        self.retry_release = threading.Event()
+        self.observer_waiting = threading.Event()
+
+    def __enter__(self) -> Any:
+        if (
+            threading.current_thread().name == self._owner_name
+            and self._notify_cancelled
+            and not self._retry_gated
+        ):
+            self._retry_gated = True
+            self.retry_entered.set()
+            if not self.retry_release.wait(timeout=3.0):
+                raise RuntimeError("old cleanup retry gate was not released")
+        return super().__enter__()
+
+    def notify_all(self) -> None:
+        if (
+            threading.current_thread().name == self._owner_name
+            and not self._notify_cancelled
+        ):
+            self._notify_cancelled = True
+            self.notify_cancelled.set()
+            raise self._cancel_error
+        super().notify_all()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        if threading.current_thread().name == "race-observer":
+            self.observer_waiting.set()
+        return super().wait(timeout)
+
+
 class MutableMonotonic:
     """可在测试中切换为任意（含非法）返回值的时钟。"""
 
@@ -853,6 +931,167 @@ def test_failure_cleanup_retries_one_cancellation_and_preserves_original_signal(
     assert retry.cache_status == "MISS"
     assert retry.payload["snapshot_id"] == "retry"
     assert builder.calls == 2
+
+
+def test_old_cleanup_retry_cannot_detach_or_overlap_new_flight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_name = "zombie-owner"
+    original_signal = SystemExit("old builder stopped")
+    cleanup_cancel = KeyboardInterrupt("old notify cancelled")
+    condition = NotifyCancelRaceCondition(
+        owner_name=owner_name,
+        cancel_error=cleanup_cancel,
+    )
+    monkeypatch.setattr(snapshot_module, "Condition", lambda: condition)
+
+    class RaceBuilder:
+        def __init__(self) -> None:
+            self._lock = threading.Lock()
+            self.calls = 0
+            self.old_started = threading.Event()
+            self.old_release = threading.Event()
+            self.new_started = threading.Event()
+            self.new_release = threading.Event()
+            self.third_started = threading.Event()
+
+        def __call__(self) -> dict[str, Any]:
+            with self._lock:
+                self.calls += 1
+                call_number = self.calls
+            if call_number == 1:
+                self.old_started.set()
+                if not self.old_release.wait(timeout=3.0):
+                    raise RuntimeError("old builder was not released")
+                raise original_signal
+            if call_number == 2:
+                self.new_started.set()
+                if not self.new_release.wait(timeout=3.0):
+                    raise RuntimeError("new builder was not released")
+                return {"snapshot_id": "new-flight"}
+            self.third_started.set()
+            return {"snapshot_id": "overlapping-third-flight"}
+
+    builder = RaceBuilder()
+    store = DashboardSnapshotStore(
+        builder,
+        wait_timeout_seconds=1.0,
+        monotonic=ManualMonotonic(),
+    )
+    results: dict[str, SnapshotResult] = {}
+    errors: dict[str, BaseException] = {}
+    old_thread = _start_get(
+        store,
+        name=owner_name,
+        results=results,
+        errors=errors,
+    )
+    assert builder.old_started.wait(timeout=3.0)
+    builder.old_release.set()
+    assert condition.notify_cancelled.wait(timeout=3.0)
+    assert condition.retry_entered.wait(timeout=3.0)
+
+    new_thread = _start_get(
+        store,
+        name="new-owner",
+        results=results,
+        errors=errors,
+    )
+    assert builder.new_started.wait(timeout=3.0)
+    condition.retry_release.set()
+    _join_all([old_thread])
+    assert errors[owner_name] is original_signal
+
+    observer_thread = _start_get(
+        store,
+        name="race-observer",
+        results=results,
+        errors=errors,
+    )
+    try:
+        assert condition.observer_waiting.wait(timeout=1.0)
+        assert not builder.third_started.is_set()
+        assert builder.calls == 2
+    finally:
+        builder.new_release.set()
+        _join_all([new_thread, observer_thread])
+
+    assert errors == {owner_name: original_signal}
+    assert results["new-owner"].cache_status == "MISS"
+    assert results["race-observer"].cache_status == "HIT"
+    assert {
+        results["new-owner"].payload["snapshot_id"],
+        results["race-observer"].payload["snapshot_id"],
+    } == {"new-flight"}
+    assert store.get().payload["snapshot_id"] == "new-flight"
+
+
+def test_multiple_cleanup_acquire_cancellations_do_not_leave_zombie_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_signal = SystemExit("builder stopped")
+    condition = CancelManyEnterCondition()
+    monkeypatch.setattr(snapshot_module, "Condition", lambda: condition)
+    builder = ControlledBuilder(
+        original_signal,
+        {"snapshot_id": "retry"},
+        blocked_call=1,
+    )
+    store = DashboardSnapshotStore(
+        builder,
+        wait_timeout_seconds=0.0,
+        monotonic=ManualMonotonic(),
+    )
+    results: dict[str, SnapshotResult] = {}
+    errors: dict[str, BaseException] = {}
+    owner_thread = _start_get(
+        store,
+        name="multiply-cancelled-owner",
+        results=results,
+        errors=errors,
+    )
+    assert builder.started.wait(timeout=3.0)
+    failed_flight = store._flight
+    assert failed_flight is not None
+    condition.cancel_enters(
+        "multiply-cancelled-owner",
+        [KeyboardInterrupt("cancel-1"), KeyboardInterrupt("cancel-2")],
+    )
+    builder.release.set()
+    _join_all([owner_thread])
+
+    assert errors["multiply-cancelled-owner"] is original_signal
+    assert failed_flight.done is True
+    assert failed_flight.error is original_signal
+    assert store._building is False
+
+    retry = store.get()
+    assert retry.cache_status == "MISS"
+    assert retry.payload["snapshot_id"] == "retry"
+    assert builder.calls == 2
+
+
+def test_success_owner_that_lost_flight_cannot_publish() -> None:
+    store = DashboardSnapshotStore(
+        lambda: {"snapshot_id": "base"},
+        monotonic=ManualMonotonic(),
+    )
+    assert store.prewarm().payload["snapshot_id"] == "base"
+    lost_flight = snapshot_module._Flight()
+    active_flight = snapshot_module._Flight()
+    with store._condition:
+        store._flight = active_flight
+
+    published = store._publish_success(
+        lost_flight,
+        snapshot=({"snapshot_id": "lost-owner"}, 99.0),
+    )
+
+    assert published is False
+    assert store._flight is active_flight
+    assert store._building is True
+    assert store._payload["snapshot_id"] == "base"
+    assert lost_flight.done is False
 
 
 @pytest.mark.parametrize("failure_point", ["freeze", "finish_clock"])
