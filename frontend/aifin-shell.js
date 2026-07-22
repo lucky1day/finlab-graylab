@@ -210,13 +210,14 @@
   };
 
   var factorTargets = ["1Y", "3Y", "5Y", "7Y", "10Y"];
-  var factorTargetLabels = {
+  var factorDefaultTargetLabels = {
     "1Y": "1Y国债活跃",
     "3Y": "3Y国债活跃",
     "5Y": "5Y国债活跃",
     "7Y": "7Y国债活跃",
     "10Y": "10Y国债活跃"
   };
+  var factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
   var factorTaskColumns = [
     { id: "dailyT1", label: "T+1", taskType: "T+1", frequency: "daily", horizon: "T+1" },
     { id: "dailyT5", label: "T+5", taskType: "T+5", frequency: "daily", horizon: "T+5" },
@@ -294,9 +295,25 @@
   var factorLabBound = false;
   var factorLabRemoteLoaded = false;
   var factorLabRemoteLoading = false;
-  var factorLabRefreshTimer = null;
   var factorLabApiError = "";
   var factorLabDataMode = "loading";
+  var factorLabDrawerSelection = null;
+  var FACTOR_LAB_HEALTHY_REFRESH_MS = 60000;
+  var FACTOR_LAB_RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+  var factorLabRuntimeState = {
+    loadSeq: 0,
+    controller: null,
+    capability: "unknown",
+    committedViewModel: null,
+    stale: false,
+    consecutiveFailures: 0,
+    nextRefreshAt: 0,
+    refreshTimer: null,
+    visibilityBound: false,
+    aggregateCache: new Map(),
+    committedAt: 0
+  };
+  window.__factorLabReady = null;
 
   function clampPercent(value) {
     return Math.max(0, Math.min(100, Number(value) || 0));
@@ -1225,13 +1242,26 @@
     };
   }
 
-  function fetchJson(url) {
+  function fetchJson(url, options) {
     var requestUrl = apiUrl(url);
-    return fetch(requestUrl, { cache: "no-store", headers: { Accept: "application/json" } }).then(function (response) {
-      if (!response.ok) {
-        throw new Error("HTTP " + response.status + " " + requestUrl);
-      }
-      return response.json();
+    var requestOptions = {
+      cache: "no-store",
+      headers: { Accept: "application/json" }
+    };
+    if (options && options.signal) requestOptions.signal = options.signal;
+    return fetch(requestUrl, requestOptions).then(function (response) {
+      if (response.ok) return response.json();
+      var bodyPromise = typeof response.json === "function"
+        ? response.json().catch(function () { return null; })
+        : Promise.resolve(null);
+      return bodyPromise.then(function (body) {
+        var error = new Error("HTTP " + response.status + " " + requestUrl);
+        error.name = "FactorLabHttpError";
+        error.status = response.status;
+        error.body = body;
+        error.requestUrl = requestUrl;
+        throw error;
+      });
     });
   }
 
@@ -1243,7 +1273,7 @@
 
   function finishFactorLabDataLoad(tasks, mode, targetLabels) {
     validateFactorLabTasksForCommit(tasks);
-    var nextTargetLabels = Object.assign(Object.create(null), factorTargetLabels);
+    var nextTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
     Object.keys(targetLabels || {}).forEach(function (target) {
       if (targetLabels[target]) nextTargetLabels[target] = String(targetLabels[target]);
     });
@@ -1253,6 +1283,7 @@
     factorLabRemoteLoading = false;
     factorLabApiError = "";
     factorLabDataMode = mode;
+    factorLabRuntimeState.aggregateCache.clear();
     var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
       return factorTaskSchemes[key].length > 0;
     });
@@ -1415,27 +1446,324 @@
     });
   }
 
-  function failFactorLabDataLoad(error) {
-    factorTaskSchemes = initEmptyTaskSchemes();
-    factorLabApiError = error.message || "API unavailable";
+  function factorLabNow() {
+    return window.performance && typeof window.performance.now === "function"
+      ? window.performance.now()
+      : Date.now();
+  }
+
+  function clearFactorLabRefreshTimer() {
+    if (factorLabRuntimeState.refreshTimer !== null && window.clearTimeout) {
+      window.clearTimeout(factorLabRuntimeState.refreshTimer);
+    }
+    factorLabRuntimeState.refreshTimer = null;
+    factorLabRuntimeState.nextRefreshAt = 0;
+  }
+
+  function scheduleFactorLabRefresh(delayMs) {
+    clearFactorLabRefreshTimer();
+    factorLabRuntimeState.nextRefreshAt = factorLabNow() + delayMs;
+    if (!window.setTimeout || document.visibilityState === "hidden") return;
+    factorLabRuntimeState.refreshTimer = window.setTimeout(function () {
+      factorLabRuntimeState.refreshTimer = null;
+      factorLabRuntimeState.nextRefreshAt = 0;
+      if (document.visibilityState === "hidden" || getActiveView() !== "factor-lab") return;
+      loadFactorLabData({ force: true });
+    }, delayMs);
+  }
+
+  function isDashboardUnsupported(error) {
+    if (!error || error.name !== "FactorLabHttpError") return false;
+    if (error.status === 404) return true;
+    return error.status === 501 && error.body && error.body.detail &&
+      error.body.detail.code === "dashboard_not_supported";
+  }
+
+  function wrapLegacyAttempt(promise) {
+    return promise.then(
+      function (value) { return { ok: true, value: value }; },
+      function (error) { return { ok: false, error: error }; }
+    );
+  }
+
+  function fetchLegacyFactorLabCandidate(signal, seq) {
+    var responses = Object.create(null);
+    var liveAttempt = wrapLegacyAttempt(
+      fetchJson("/api/schemes", { signal: signal }).then(function (schemesPayload) {
+        var schemes = Array.isArray(schemesPayload)
+          ? schemesPayload
+          : ((schemesPayload && schemesPayload.schemes) || []);
+        var metricRequests = schemes.map(function (scheme) {
+          columnForScheme(scheme);
+          if (!scheme.scheme_id || !scheme.target_tenor) return Promise.resolve(null);
+          var metricsPath = "/api/metrics/" + encodeURIComponent(scheme.scheme_id);
+          return fetchJson(metricsPath, { signal: signal }).then(function (metrics) {
+            return { path: metricsPath, payload: metrics };
+          });
+        });
+        return Promise.all(metricRequests).then(function (metrics) {
+          return { schemes: schemesPayload, metrics: metrics.filter(Boolean) };
+        });
+      })
+    );
+    var backtestAttempt = wrapLegacyAttempt(
+      fetchJson("/api/backtests/factor-lab", { signal: signal })
+    );
+
+    return Promise.all([liveAttempt, backtestAttempt]).then(function (attempts) {
+      if (seq !== factorLabRuntimeState.loadSeq) return null;
+      var live = attempts[0];
+      var backtest = attempts[1];
+      if (live.ok) {
+        responses["/api/schemes"] = live.value.schemes;
+        live.value.metrics.forEach(function (metric) {
+          responses[metric.path] = metric.payload;
+        });
+      }
+      if (backtest.ok) responses["/api/backtests/factor-lab"] = backtest.value;
+      if (!live.ok && !backtest.ok) throw live.error || backtest.error;
+      if (!live.ok && isFailClosedDataError(live.error)) throw live.error;
+      if (!backtest.ok && isFailClosedDataError(backtest.error)) throw backtest.error;
+      var viewModel = buildLegacyFactorLabViewModelForTest(responses);
+      return {
+        tasks: viewModel.tasks,
+        targetLabels: viewModel.targetLabels,
+        snapshotId: "legacy-" + seq,
+        snapshotAgeMs: 0,
+        stale: false,
+        source: "legacy",
+        mode: viewModel.mode
+      };
+    });
+  }
+
+  function dashboardFactorLabCandidate(payload) {
+    var decoded = decodeDashboardPayload(payload);
+    var viewModel = buildFactorLabViewModel(decoded);
+    return {
+      tasks: viewModel.tasks,
+      targetLabels: viewModel.targetLabels,
+      snapshotId: viewModel.snapshotId,
+      snapshotAgeMs: viewModel.snapshotAgeMs,
+      stale: viewModel.stale,
+      source: "dashboard",
+      mode: "dashboard"
+    };
+  }
+
+  function cloneFactorLabUiState() {
+    var clone = {};
+    Object.keys(factorLabState).forEach(function (key) {
+      clone[key] = key === "chartMetrics"
+        ? Object.assign({}, factorLabState.chartMetrics)
+        : factorLabState[key];
+    });
+    return clone;
+  }
+
+  function restoreFactorLabUiState(snapshot) {
+    Object.keys(factorLabState).forEach(function (key) { delete factorLabState[key]; });
+    Object.keys(snapshot).forEach(function (key) { factorLabState[key] = snapshot[key]; });
+  }
+
+  function hasDrawerSelection(selection) {
+    if (!selection) return false;
+    var schemes = factorTaskSchemes[selection.taskKey] || [];
+    return schemes.some(function (scheme) {
+      return scheme.id === selection.schemeId && scheme.dailyRowsByMonth &&
+        (scheme.dailyRowsByMonth[selection.month] || []).length > 0;
+    });
+  }
+
+  function countFactorLabRows(tasks) {
+    var counts = { schemes: 0, liveRows: 0, backtestRows: 0 };
+    Object.keys(tasks || {}).forEach(function (taskKey) {
+      (tasks[taskKey] || []).forEach(function (scheme) {
+        counts.schemes += 1;
+        Object.keys(scheme.dailyRowsByMonth || {}).forEach(function (month) {
+          (scheme.dailyRowsByMonth[month] || []).forEach(function (row) {
+            if (row._source === "live") counts.liveRows += 1;
+            else if (row._source === "backtest") counts.backtestRows += 1;
+          });
+        });
+      });
+    });
+    return counts;
+  }
+
+  function commitFactorLabCandidate(candidate, seq, loadStartedAt) {
+    if (!candidate || seq !== factorLabRuntimeState.loadSeq) return false;
+    validateFactorLabTasksForCommit(candidate.tasks);
+    var nextTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
+    Object.keys(candidate.targetLabels || {}).forEach(function (target) {
+      if (candidate.targetLabels[target]) nextTargetLabels[target] = String(candidate.targetLabels[target]);
+    });
+
+    var previous = {
+      tasks: factorTaskSchemes,
+      labels: factorTargetLabels,
+      remoteLoaded: factorLabRemoteLoaded,
+      remoteLoading: factorLabRemoteLoading,
+      apiError: factorLabApiError,
+      dataMode: factorLabDataMode,
+      committed: factorLabRuntimeState.committedViewModel,
+      stale: factorLabRuntimeState.stale,
+      committedAt: factorLabRuntimeState.committedAt,
+      aggregateCache: factorLabRuntimeState.aggregateCache,
+      ui: cloneFactorLabUiState(),
+      drawer: factorLabDrawerSelection
+    };
+    var nextCache = previous.committed && previous.committed.snapshotId === candidate.snapshotId
+      ? previous.aggregateCache
+      : new Map();
+    try {
+      factorTaskSchemes = candidate.tasks;
+      factorTargetLabels = nextTargetLabels;
+      factorLabRemoteLoaded = true;
+      factorLabRemoteLoading = false;
+      factorLabApiError = "";
+      factorLabDataMode = candidate.mode;
+      factorLabRuntimeState.committedViewModel = candidate;
+      factorLabRuntimeState.stale = Boolean(candidate.stale);
+      factorLabRuntimeState.committedAt = factorLabNow();
+      factorLabRuntimeState.aggregateCache = nextCache;
+
+      var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
+        return factorTaskSchemes[key].length > 0;
+      });
+      if (availableTasks.length &&
+          (!factorTaskSchemes[factorLabState.selectedTaskKey] ||
+            !factorTaskSchemes[factorLabState.selectedTaskKey].length)) {
+        factorLabState.selectedTaskKey = availableTasks[0];
+      }
+      syncFactorMonthRange();
+      var months = getFactorAvailableMonths();
+      if (months.length && !factorLabState.endMonthPinned) {
+        factorLabState.endMonth = months[months.length - 1];
+      }
+      renderFactorLab();
+      if (hasDrawerSelection(previous.drawer)) {
+        factorLabState.selectedTaskKey = previous.drawer.taskKey;
+        factorLabState.selectedSchemeId = previous.drawer.schemeId;
+        openFactorCalendar(previous.drawer.month, null);
+      } else if (previous.drawer) {
+        closeFactorCalendar();
+      }
+    } catch (error) {
+      factorTaskSchemes = previous.tasks;
+      factorTargetLabels = previous.labels;
+      factorLabRemoteLoaded = previous.remoteLoaded;
+      factorLabRemoteLoading = previous.remoteLoading;
+      factorLabApiError = previous.apiError;
+      factorLabDataMode = previous.dataMode;
+      factorLabRuntimeState.committedViewModel = previous.committed;
+      factorLabRuntimeState.stale = previous.stale;
+      factorLabRuntimeState.committedAt = previous.committedAt;
+      factorLabRuntimeState.aggregateCache = previous.aggregateCache;
+      factorLabDrawerSelection = previous.drawer;
+      restoreFactorLabUiState(previous.ui);
+      throw error;
+    }
+
+    factorLabRuntimeState.consecutiveFailures = 0;
+    scheduleFactorLabRefresh(FACTOR_LAB_HEALTHY_REFRESH_MS);
+    var rowCounts = countFactorLabRows(candidate.tasks);
+    var readyFrame = window.requestAnimationFrame || function (callback) {
+      return window.setTimeout(callback, 0);
+    };
+    readyFrame(function () {
+      if (seq !== factorLabRuntimeState.loadSeq ||
+          factorLabRuntimeState.committedViewModel !== candidate) return;
+      window.__factorLabReady = {
+        seq: seq,
+        snapshotId: candidate.snapshotId,
+        committedAt: factorLabNow(),
+        stale: Boolean(candidate.stale),
+        source: candidate.source,
+        mode: candidate.source,
+        schemeCount: rowCounts.schemes,
+        liveRowCount: rowCounts.liveRows,
+        backtestRowCount: rowCounts.backtestRows,
+        navigationToReadyMs: Math.max(0, factorLabNow() - loadStartedAt)
+      };
+    });
+    return true;
+  }
+
+  function failFactorLabDataLoad(error, seq) {
+    if (seq !== undefined && seq !== factorLabRuntimeState.loadSeq) return false;
+    factorLabApiError = (error && error.message) || "API unavailable";
     factorLabRemoteLoaded = true;
     factorLabRemoteLoading = false;
-    factorLabDataMode = "live-error";
+    factorLabRuntimeState.controller = null;
+    factorLabRuntimeState.consecutiveFailures += 1;
+    var hasLkg = Boolean(factorLabRuntimeState.committedViewModel);
+    factorLabRuntimeState.stale = hasLkg;
+    factorLabDataMode = hasLkg ? "stale" : "error";
+    if (!hasLkg) factorTaskSchemes = initEmptyTaskSchemes();
     renderFactorLab();
+    var delayIndex = Math.min(
+      factorLabRuntimeState.consecutiveFailures - 1,
+      FACTOR_LAB_RETRY_DELAYS_MS.length - 1
+    );
+    scheduleFactorLabRefresh(FACTOR_LAB_RETRY_DELAYS_MS[delayIndex]);
     return false;
   }
 
   function loadFactorLabData(options) {
     var force = options && options.force === true;
-    if ((!force && factorLabRemoteLoaded) || factorLabRemoteLoading || !window.fetch) return;
+    if (!window.fetch) return Promise.resolve(false);
+    if (!force && (factorLabRemoteLoaded || factorLabRemoteLoading)) {
+      return Promise.resolve(false);
+    }
+
+    clearFactorLabRefreshTimer();
+    var seq = factorLabRuntimeState.loadSeq + 1;
+    factorLabRuntimeState.loadSeq = seq;
+    window.__factorLabReady = null;
+    if (factorLabRuntimeState.controller &&
+        typeof factorLabRuntimeState.controller.abort === "function") {
+      factorLabRuntimeState.controller.abort("superseded");
+    }
+    var controller = window.AbortController ? new window.AbortController() : null;
+    factorLabRuntimeState.controller = controller;
     factorLabRemoteLoading = true;
-    return fetchJson("/api/factor-lab/dashboard").then(function (payload) {
-      var decoded = decodeDashboardPayload(payload);
-      var viewModel = buildFactorLabViewModel(decoded);
-      finishFactorLabDataLoad(viewModel.tasks, "dashboard", viewModel.targetLabels);
-      return true;
+    var loadStartedAt = factorLabNow();
+    renderFactorLabDataStatus();
+    var signal = controller ? controller.signal : null;
+
+    var candidatePromise;
+    if (factorLabRuntimeState.capability === "legacy") {
+      candidatePromise = fetchLegacyFactorLabCandidate(signal, seq);
+    } else {
+      candidatePromise = fetchJson("/api/factor-lab/dashboard", { signal: signal })
+        .then(function (payload) {
+          if (seq !== factorLabRuntimeState.loadSeq) return null;
+          var candidate = dashboardFactorLabCandidate(payload);
+          if (seq === factorLabRuntimeState.loadSeq) {
+            factorLabRuntimeState.capability = "dashboard";
+          }
+          return candidate;
+        })
+        .catch(function (error) {
+          if (seq !== factorLabRuntimeState.loadSeq) throw error;
+          if (factorLabRuntimeState.capability === "unknown" && isDashboardUnsupported(error)) {
+            factorLabRuntimeState.capability = "legacy";
+            return fetchLegacyFactorLabCandidate(signal, seq);
+          }
+          throw error;
+        });
+    }
+
+    return candidatePromise.then(function (candidate) {
+      if (seq !== factorLabRuntimeState.loadSeq || !candidate) return false;
+      var committed = commitFactorLabCandidate(candidate, seq, loadStartedAt);
+      if (seq === factorLabRuntimeState.loadSeq) factorLabRuntimeState.controller = null;
+      return committed;
     }).catch(function (error) {
-      return failFactorLabDataLoad(error);
+      if (seq !== factorLabRuntimeState.loadSeq) return false;
+      factorLabRuntimeState.controller = null;
+      return failFactorLabDataLoad(error, seq);
     });
   }
 
@@ -1561,6 +1889,15 @@
               row._source = "live";
               return row;
             });
+            var lrOnlyDaily = {};
+            Object.keys(liveScheme.dailyRowsByMonth || {}).forEach(function (month) {
+              lrOnlyDaily[month] = (liveScheme.dailyRowsByMonth[month] || []).map(function (dr) {
+                var dailyRow = {};
+                Object.keys(dr).forEach(function (key) { dailyRow[key] = dr[key]; });
+                dailyRow._source = "live";
+                return dailyRow;
+              });
+            });
             merged[taskKey].push({
               id: liveSchemaId,
               schemeId: liveSchemaId,
@@ -1571,7 +1908,7 @@
               deploymentDate: requireSchemeDeploymentDate(liveScheme, "live scheme"),
               remark: liveScheme.remark || "",
               monthlyRows: lrOnlyRows,
-              dailyRowsByMonth: liveScheme.dailyRowsByMonth || {},
+              dailyRowsByMonth: lrOnlyDaily,
               liveSinceDate: liveScheme.liveSinceDate || "",
               liveMetricSinceDate: liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "",
               phaseRanges: liveScheme.phaseRanges || [],
@@ -1637,11 +1974,16 @@
   }
 
   function startFactorLabAutoRefresh() {
-    if (factorLabRefreshTimer || !window.setInterval) return;
-    factorLabRefreshTimer = window.setInterval(function () {
-      if (getActiveView() !== "factor-lab") return;
-      loadFactorLabData({ force: true });
-    }, 60000);
+    if (factorLabRuntimeState.visibilityBound) return;
+    factorLabRuntimeState.visibilityBound = true;
+    if (!document.addEventListener) return;
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") {
+        clearFactorLabRefreshTimer();
+        return;
+      }
+      if (getActiveView() === "factor-lab") loadFactorLabData({ force: true });
+    });
   }
 
   function getSchemesForTask(taskKey) {
@@ -1721,6 +2063,16 @@
   }
 
   function aggregateScheme(scheme) {
+    var committed = factorLabRuntimeState.committedViewModel;
+    var cacheKey = [
+      committed ? committed.snapshotId : "uncommitted",
+      (scheme && (scheme.schemeId || scheme.id)) || "",
+      factorLabState.startMonth + ":" + factorLabState.endMonth,
+      factorLabState.dataSource
+    ].join("\u0000");
+    if (factorLabRuntimeState.aggregateCache.has(cacheKey)) {
+      return factorLabRuntimeState.aggregateCache.get(cacheKey);
+    }
     var rawRows = getVisibleRawDailyRowsForScheme(scheme);
     if (!rawRows.length) {
       var hasAnyDetailRows = Object.keys(scheme.dailyRowsByMonth || {}).some(function (month) {
@@ -1730,10 +2082,14 @@
         throw new Error("scheme " + ((scheme && scheme.schemeId) || scheme.id || "") +
           " has monthly metrics but no detail rows");
       }
-      return metricFromSampleRows([]);
+      var emptyMetric = metricFromSampleRows([]);
+      factorLabRuntimeState.aggregateCache.set(cacheKey, emptyMetric);
+      return emptyMetric;
     }
     var dailyRows = getVisibleDailyRowsForScheme(scheme);
-    return metricFromSampleRows(dailyRows);
+    var metric = metricFromSampleRows(dailyRows);
+    factorLabRuntimeState.aggregateCache.set(cacheKey, metric);
+    return metric;
   }
 
   function rankingMetricValue(scheme, metricId) {
@@ -1792,6 +2148,50 @@
     }
   }
 
+  function factorLabSnapshotAgeText() {
+    var committed = factorLabRuntimeState.committedViewModel;
+    if (!committed) return "";
+    var elapsed = factorLabRuntimeState.committedAt
+      ? Math.max(0, factorLabNow() - factorLabRuntimeState.committedAt)
+      : 0;
+    var ageMs = Math.max(0, Number(committed.snapshotAgeMs) || 0) + elapsed;
+    if (ageMs < 1000) return "刚刚";
+    if (ageMs < 60000) return Math.floor(ageMs / 1000) + "秒前";
+    return Math.floor(ageMs / 60000) + "分钟前";
+  }
+
+  function renderFactorLabDataStatus() {
+    var status = document.getElementById("factorDataStatus");
+    var text = document.getElementById("factorDataStatusText");
+    if (!status || !text) return;
+    ["is-loading", "is-fresh", "is-stale", "is-error"].forEach(function (className) {
+      status.classList.remove(className);
+    });
+    var hasLkg = Boolean(factorLabRuntimeState.committedViewModel);
+    var age = factorLabSnapshotAgeText();
+    if (factorLabRemoteLoading) {
+      status.classList.add("is-loading");
+      text.textContent = hasLkg ? "数据刷新中 · " + age : "Loading";
+    } else if (factorLabApiError && hasLkg) {
+      status.classList.add("is-stale");
+      text.textContent = "刷新失败 · 已显示旧数据 · " + age;
+    } else if (factorLabApiError) {
+      status.classList.add("is-error");
+      text.textContent = "数据不可用";
+    } else if (factorLabRuntimeState.stale) {
+      status.classList.add("is-stale");
+      text.textContent = "数据已过期 · " + age;
+    } else if (hasLkg) {
+      status.classList.add("is-fresh");
+      text.textContent = "数据已就绪 · " + age;
+    } else {
+      status.classList.add("is-loading");
+      text.textContent = "Loading";
+    }
+    status.setAttribute("data-data-state", factorLabDataMode);
+    status.setAttribute("title", factorLabApiError || text.textContent);
+  }
+
   function renderTaskOverview() {
     var body = document.getElementById("factorTaskMatrixBody");
     var range = document.getElementById("factorOverviewRange");
@@ -1846,10 +2246,14 @@
     var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (title) title.textContent = task.label + " 候选方案排行";
     if (meta) {
-      if (factorLabRemoteLoading) {
-        meta.textContent = "正在读取本机方案数据。";
+      if (factorLabRemoteLoading && factorLabRuntimeState.committedViewModel) {
+        meta.textContent = "正在刷新数据，当前继续显示上次成功快照。";
+      } else if (factorLabRemoteLoading) {
+        meta.textContent = "正在加载因子实验数据。";
+      } else if (factorLabApiError && factorLabRuntimeState.committedViewModel) {
+        meta.textContent = "刷新失败，当前显示 " + factorLabSnapshotAgeText() + " 的旧数据。";
       } else if (factorLabApiError) {
-        meta.textContent = "实时API暂不可用，请检查服务或迁移状态。";
+        meta.textContent = "数据暂不可用，系统将自动重试。";
       } else if (factorLabDataMode === "backtest") {
         meta.textContent = "该任务格子下共有 " + schemes.length + " 个历史回测方案。";
       } else if (factorLabDataMode === "merged") {
@@ -2159,6 +2563,7 @@
   function renderFactorLab() {
     bindFactorLabEvents();
     loadFactorLabData();
+    renderFactorLabDataStatus();
     updateFactorFilterUi();
     ensureSelectedScheme();
     renderTaskOverview();
@@ -2235,6 +2640,12 @@
   function openFactorCalendar(month, trigger) {
     var drawer = document.getElementById("factorCalendarDrawer");
     if (!drawer) return;
+    var scheme = getSelectedScheme();
+    factorLabDrawerSelection = scheme ? {
+      taskKey: factorLabState.selectedTaskKey,
+      schemeId: scheme.id,
+      month: month
+    } : null;
     renderFactorDailyRows(month);
     drawer.classList.add("is-open");
     drawer.setAttribute("aria-hidden", "false");
@@ -2298,6 +2709,7 @@
     if (!drawer) return;
     drawer.classList.remove("is-open");
     drawer.setAttribute("aria-hidden", "true");
+    factorLabDrawerSelection = null;
     Array.prototype.slice.call(document.querySelectorAll(".factor-calendar-link.is-active")).forEach(function (button) {
       button.classList.remove("is-active");
     });
@@ -2455,6 +2867,24 @@
         startMonth: factorLabState.startMonth
       };
     },
+    getFactorLabRuntimeStateForTest: function () {
+      return {
+        loadSeq: factorLabRuntimeState.loadSeq,
+        capability: factorLabRuntimeState.capability,
+        stale: factorLabRuntimeState.stale,
+        consecutiveFailures: factorLabRuntimeState.consecutiveFailures,
+        nextRefreshAt: factorLabRuntimeState.nextRefreshAt,
+        snapshotId: factorLabRuntimeState.committedViewModel
+          ? factorLabRuntimeState.committedViewModel.snapshotId
+          : null,
+        source: factorLabRuntimeState.committedViewModel
+          ? factorLabRuntimeState.committedViewModel.source
+          : null,
+        aggregateCacheSize: factorLabRuntimeState.aggregateCache.size,
+        hasController: Boolean(factorLabRuntimeState.controller),
+        drawerSelection: factorLabDrawerSelection
+      };
+    },
     setFactorLabStateForTest: function (patch) {
       Object.keys(patch || {}).forEach(function (key) {
         if (Object.prototype.hasOwnProperty.call(factorLabState, key)) {
@@ -2478,6 +2908,8 @@
     routeUrlForTest: routeUrl,
     renderDailyResultForTest: renderDailyResult,
     renderFactorDailyRowsForTest: renderFactorDailyRows,
+    openFactorCalendarForTest: openFactorCalendar,
+    closeFactorCalendarForTest: closeFactorCalendar,
     renderTaskOverviewForTest: renderTaskOverview,
     trendChartLayoutForTest: buildTrendChartLayout,
     trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,

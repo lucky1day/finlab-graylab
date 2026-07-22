@@ -1,5 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700;800&family=Sora:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
-
 :root {
   color-scheme: light;
 
@@ -35,10 +33,10 @@
   --shadow-md: 0 8px 28px rgba(32, 36, 42, 0.055);
   --shadow-lg: 0 24px 64px rgba(32, 36, 42, 0.075);
 
-  --font-display: 'Playfair Display', 'Noto Serif SC', Georgia, serif;
+  --font-display: "Iowan Old Style", "Songti SC", "STSong", Georgia, serif;
   --font-heading: "Avenir Next", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
-  --font-body: 'Sora', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  --font-mono: 'JetBrains Mono', 'Menlo', monospace;
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
 }
 
 * {
@@ -202,6 +200,42 @@ button {
   border-radius: 50%;
   background: var(--accent-light);
   box-shadow: 0 0 10px rgba(45, 155, 110, 0.4);
+}
+
+.status-strip.is-loading {
+  color: var(--info);
+  border-color: rgba(63, 111, 143, 0.28);
+}
+
+.status-strip.is-loading .status-dot {
+  background: var(--info);
+  box-shadow: 0 0 10px rgba(63, 111, 143, 0.32);
+}
+
+.status-strip.is-fresh {
+  color: var(--accent);
+}
+
+.status-strip.is-stale {
+  color: #8a5a12;
+  border-color: rgba(185, 135, 40, 0.34);
+  background: rgba(185, 135, 40, 0.07);
+}
+
+.status-strip.is-stale .status-dot {
+  background: var(--gold);
+  box-shadow: 0 0 10px rgba(185, 135, 40, 0.34);
+}
+
+.status-strip.is-error {
+  color: var(--negative);
+  border-color: rgba(220, 38, 38, 0.32);
+  background: rgba(220, 38, 38, 0.06);
+}
+
+.status-strip.is-error .status-dot {
+  background: var(--negative);
+  box-shadow: 0 0 10px rgba(220, 38, 38, 0.28);
 }
 
 /* ─── Stage ─── */
