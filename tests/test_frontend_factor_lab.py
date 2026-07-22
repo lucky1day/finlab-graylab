@@ -1513,6 +1513,73 @@ class FactorLabRankingTests(unittest.TestCase):
         )
         self.assertIsInstance(result["ready"]["committedAt"], (int, float))
 
+    def test_superseded_ready_frame_cannot_publish_previous_snapshot(self) -> None:
+        first_payload = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="First committed")],
+            snapshot_id="ready-first",
+        )
+        second_payload = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="Second committed")],
+            snapshot_id="ready-second",
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            const secondRequest = host.createDeferred();
+            let call = 0;
+            host.setFetchHandler(function () {{
+              call += 1;
+              if (call === 1) {{
+                return {{
+                  ok: true,
+                  status: 200,
+                  json: function () {{ return Promise.resolve({json.dumps(first_payload)}); }}
+                }};
+              }}
+              return secondRequest.promise;
+            }});
+            const firstLoaded = await hooks.loadFactorLabData({{ force: true }});
+            const afterFirstCommit = {{
+              ready: window.__factorLabReady,
+              pendingRafs: host.pending("raf"),
+              snapshotId: hooks.getFactorLabRuntimeStateForTest().snapshotId
+            }};
+            const secondLoad = hooks.loadFactorLabData({{ force: true }});
+            const afterSecondStart = window.__factorLabReady;
+            host.advanceFrame();
+            const afterOldFrame = window.__factorLabReady;
+            secondRequest.resolve({{
+              ok: true,
+              status: 200,
+              json: function () {{ return Promise.resolve({json.dumps(second_payload)}); }}
+            }});
+            const secondLoaded = await secondLoad;
+            const beforeNewFrame = window.__factorLabReady;
+            host.advanceFrame();
+            return {{
+              firstLoaded,
+              secondLoaded,
+              afterFirstCommit,
+              afterSecondStart,
+              afterOldFrame,
+              beforeNewFrame,
+              afterNewFrame: window.__factorLabReady,
+              snapshotId: hooks.getFactorLabRuntimeStateForTest().snapshotId
+            }};
+            """
+        )
+
+        self.assertTrue(result["firstLoaded"])
+        self.assertIsNone(result["afterFirstCommit"]["ready"])
+        self.assertGreater(result["afterFirstCommit"]["pendingRafs"], 0)
+        self.assertEqual(result["afterFirstCommit"]["snapshotId"], "ready-first")
+        self.assertIsNone(result["afterSecondStart"])
+        self.assertIsNone(result["afterOldFrame"])
+        self.assertTrue(result["secondLoaded"])
+        self.assertIsNone(result["beforeNewFrame"])
+        self.assertEqual(result["snapshotId"], "ready-second")
+        self.assertEqual(result["afterNewFrame"]["snapshotId"], "ready-second")
+        self.assertEqual(result["afterNewFrame"]["seq"], 2)
+
     def test_rollout_fallback_is_capability_locked_for_404_and_explicit_501(self) -> None:
         legacy = _minimal_legacy_responses()
         for unsupported in (
@@ -1576,6 +1643,75 @@ class FactorLabRankingTests(unittest.TestCase):
                 self.assertEqual(len(dashboard_calls), 1)
                 self.assertEqual(len(result["callsAfterFirst"]), 4)
                 self.assertEqual(len(result["allCalls"]), 7)
+
+    def test_dashboard_capability_lock_never_falls_back_after_later_404(self) -> None:
+        dashboard = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="Dashboard LKG")],
+            snapshot_id="dashboard-locked",
+        )
+        legacy = _minimal_legacy_responses()
+        result = _run_factor_lab_hook(
+            f"""
+            const legacy = {json.dumps(legacy)};
+            let dashboardCalls = 0;
+            host.setFetchHandler(function (url) {{
+              const path = new URL(url, "http://localhost").pathname;
+              const suffix = path.indexOf("/bond-factor-lab") === 0
+                ? path.slice("/bond-factor-lab".length)
+                : path;
+              if (suffix === "/api/factor-lab/dashboard") {{
+                dashboardCalls += 1;
+                if (dashboardCalls === 1) {{
+                  return {{
+                    ok: true,
+                    status: 200,
+                    json: function () {{ return Promise.resolve({json.dumps(dashboard)}); }}
+                  }};
+                }}
+                return {{
+                  ok: false,
+                  status: 404,
+                  json: function () {{ return Promise.resolve({{ detail: "temporarily missing" }}); }}
+                }};
+              }}
+              if (!Object.prototype.hasOwnProperty.call(legacy, suffix)) {{
+                throw new Error("unexpected URL " + suffix);
+              }}
+              return {{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve(legacy[suffix]); }}
+              }};
+            }});
+            const firstLoaded = await hooks.loadFactorLabData({{ force: true }});
+            host.advanceFrame();
+            const secondLoaded = await hooks.loadFactorLabData({{ force: true }});
+            return {{
+              firstLoaded,
+              secondLoaded,
+              calls: host.fetchCalls.map(function (call) {{ return call.url; }}),
+              runtime: hooks.getFactorLabRuntimeStateForTest(),
+              ui: hooks.getFactorLabState(),
+              schemeName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
+              ready: window.__factorLabReady
+            }};
+            """
+        )
+
+        self.assertTrue(result["firstLoaded"])
+        self.assertFalse(result["secondLoaded"])
+        self.assertEqual(len(result["calls"]), 2)
+        self.assertTrue(
+            all(url.endswith("/api/factor-lab/dashboard") for url in result["calls"])
+        )
+        self.assertEqual(result["runtime"]["capability"], "dashboard")
+        self.assertEqual(result["runtime"]["snapshotId"], "dashboard-locked")
+        self.assertTrue(result["runtime"]["stale"])
+        self.assertEqual(result["runtime"]["consecutiveFailures"], 1)
+        self.assertEqual(result["ui"]["dataMode"], "stale")
+        self.assertIn("HTTP 404", result["ui"]["apiError"])
+        self.assertEqual(result["schemeName"], "Dashboard LKG")
+        self.assertIsNone(result["ready"])
 
     def test_dashboard_failures_never_fan_out_to_legacy(self) -> None:
         bad_schema = _dashboard_payload(schema_version="factor-lab-dashboard-v0")
@@ -1884,13 +2020,43 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["snapshotId"], "cache-2")
 
     def test_render_failure_rolls_back_candidate_and_marks_existing_view_stale(self) -> None:
+        first_row = [
+            "2026-07-20",
+            "2026-07-17",
+            "2026-07-21",
+            "scheduled_live",
+            1,
+            1,
+        ]
+        second_row = [
+            "2026-07-20",
+            "2026-07-17",
+            "2026-07-21",
+            "scheduled_live",
+            -1,
+            1,
+        ]
         first = _dashboard_payload(
-            schemes=[_dashboard_scheme(name="Committed")],
+            schemes=[
+                _dashboard_scheme(
+                    name="Committed",
+                    target_label="Original Label",
+                    live_rows=[first_row],
+                )
+            ],
             snapshot_id="render-good",
+            target_labels={"5Y": "Original Label"},
         )
         second = _dashboard_payload(
-            schemes=[_dashboard_scheme(name="Must Roll Back")],
+            schemes=[
+                _dashboard_scheme(
+                    name="Must Roll Back",
+                    target_label="Candidate Label",
+                    live_rows=[second_row],
+                )
+            ],
             snapshot_id="render-bad",
+            target_labels={"5Y": "Candidate Label"},
         )
         result = _run_factor_lab_hook(
             f"""
@@ -1902,11 +2068,46 @@ class FactorLabRankingTests(unittest.TestCase):
             }});
             const firstLoaded = await hooks.loadFactorLabData({{ force: true }});
             host.advanceFrame();
+            hooks.setFactorLabStateForTest({{
+              selectedTaskKey: "5Y|T+1",
+              selectedSchemeId: "demo__h1__5Y",
+              startMonth: "2026-07",
+              endMonth: "2026-07",
+              dataSource: "all"
+            }});
+            hooks.openFactorCalendarForTest("2026-07", null);
+            function dataDomSnapshot() {{
+              return {{
+                taskMatrix: document.getElementById("factorTaskMatrixBody").innerHTML,
+                ranking: document.getElementById("factorSchemeRankingBody").innerHTML,
+                monthly: document.getElementById("factorMonthlyTableBody").innerHTML,
+                trend: document.getElementById("factorTrendChart").innerHTML,
+                daily: document.getElementById("factorDailyTableBody").innerHTML,
+                drawerHidden: document.getElementById("factorCalendarDrawer").getAttribute("aria-hidden"),
+                drawerSelection: hooks.getFactorLabRuntimeStateForTest().drawerSelection
+              }};
+            }}
+            const before = {{
+              dom: dataDomSnapshot(),
+              tasks: JSON.stringify(hooks.getTaskSchemesForTest()),
+              labels: hooks.getFactorTargetLabelsForTest(),
+              statusText: document.getElementById("factorDataStatusText").textContent,
+              statusClasses: document.getElementById("factorDataStatus").classList.values(),
+              snapshotId: hooks.getFactorLabRuntimeStateForTest().snapshotId
+            }};
             host.failNextInnerHtml("factorSchemeRankingBody");
             const secondLoaded = await hooks.loadFactorLabData({{ force: true }});
             return {{
               firstLoaded,
               secondLoaded,
+              before,
+              after: {{
+                dom: dataDomSnapshot(),
+                tasks: JSON.stringify(hooks.getTaskSchemesForTest()),
+                labels: hooks.getFactorTargetLabelsForTest(),
+                statusText: document.getElementById("factorDataStatusText").textContent,
+                statusClasses: document.getElementById("factorDataStatus").classList.values()
+              }},
               runtime: hooks.getFactorLabRuntimeStateForTest(),
               ui: hooks.getFactorLabState(),
               schemeName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
@@ -1917,6 +2118,13 @@ class FactorLabRankingTests(unittest.TestCase):
 
         self.assertTrue(result["firstLoaded"])
         self.assertFalse(result["secondLoaded"])
+        self.assertEqual(result["before"]["snapshotId"], "render-good")
+        self.assertEqual(result["after"]["dom"], result["before"]["dom"])
+        self.assertEqual(result["after"]["tasks"], result["before"]["tasks"])
+        self.assertEqual(result["after"]["labels"], result["before"]["labels"])
+        self.assertIn("is-fresh", result["before"]["statusClasses"])
+        self.assertIn("is-stale", result["after"]["statusClasses"])
+        self.assertIn("刷新失败", result["after"]["statusText"])
         self.assertEqual(result["runtime"]["snapshotId"], "render-good")
         self.assertEqual(result["runtime"]["consecutiveFailures"], 1)
         self.assertTrue(result["runtime"]["stale"])

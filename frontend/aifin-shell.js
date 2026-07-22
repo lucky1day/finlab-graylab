@@ -2918,6 +2918,9 @@
     getTaskSchemesForTest: function () {
       return factorTaskSchemes;
     },
+    getFactorTargetLabelsForTest: function () {
+      return Object.assign({}, factorTargetLabels);
+    },
     getTaskSchemeCountsForTest: function () {
       var counts = {};
       Object.keys(factorTaskSchemes || {}).forEach(function (key) {
