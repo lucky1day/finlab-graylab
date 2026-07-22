@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import subprocess
 import textwrap
@@ -22,7 +23,7 @@ def _css_rule(selector: str) -> str:
     return css[start:end]
 
 
-def _run_factor_lab_hook(script: str) -> dict:
+def _run_factor_lab_hook(script: str, *, pathname: str = "/factor-lab") -> dict:
     """在 Node VM 中加载前端 IIFE，并返回测试钩子的执行结果。"""
     node_script = textwrap.dedent(
         f"""
@@ -58,35 +59,134 @@ def _run_factor_lab_hook(script: str) -> dict:
         }}
 
         const elements = new Map();
+        const documentHandlers = Object.create(null);
+        const windowHandlers = Object.create(null);
+        const queues = {{ raf: new Map(), timeout: new Map(), interval: new Map() }};
+        const queueOrder = [];
+        let nextQueueId = 1;
+        let fakeNow = 1000;
+
+        function enqueue(kind, callback, delay) {{
+          const id = nextQueueId++;
+          queues[kind].set(id, {{ id, callback, delay: Number(delay) || 0 }});
+          queueOrder.push({{ kind, id }});
+          return id;
+        }}
+
+        function cancel(kind, id) {{
+          queues[kind].delete(id);
+        }}
+
+        function drain(kind) {{
+          const pending = Array.from(queues[kind].values());
+          if (kind !== "interval") queues[kind].clear();
+          pending.forEach(function (item) {{
+            if (kind === "interval" && !queues.interval.has(item.id)) return;
+            item.callback(fakeNow);
+          }});
+          return pending.length;
+        }}
+
+        function FakeAbortController() {{
+          const listeners = [];
+          this.signal = {{
+            aborted: false,
+            reason: undefined,
+            addEventListener: function (name, handler) {{
+              if (name === "abort" && typeof handler === "function") listeners.push(handler);
+            }},
+            removeEventListener: function (name, handler) {{
+              if (name !== "abort") return;
+              const index = listeners.indexOf(handler);
+              if (index >= 0) listeners.splice(index, 1);
+            }}
+          }};
+          this.abort = function (reason) {{
+            if (this.signal.aborted) return;
+            this.signal.aborted = true;
+            this.signal.reason = reason;
+            listeners.slice().forEach(function (handler) {{ handler(); }});
+          }};
+        }}
+
+        const fetchCalls = [];
+        let fetchHandler = function (url) {{
+          return Promise.reject(new Error("unhandled fetch " + url));
+        }};
+        function fakeFetch(input, init) {{
+          const url = input && typeof input === "object" && typeof input.url === "string"
+            ? input.url
+            : String(input);
+          const options = init || {{}};
+          const call = {{
+            url,
+            signal: options.signal || null,
+            order: queueOrder.length + fetchCalls.length
+          }};
+          fetchCalls.push(call);
+          queueOrder.push({{ kind: "fetch", id: fetchCalls.length }});
+          return Promise.resolve().then(function () {{ return fetchHandler(url, options, call); }});
+        }}
+
         const document = {{
-          documentElement: {{ clientWidth: 1200, clientHeight: 800 }},
+          documentElement: {{ clientWidth: 1200, clientHeight: 800, dataset: {{}} }},
+          visibilityState: "visible",
           getElementById: function (id) {{
             if (!elements.has(id)) elements.set(id, makeElement(id));
             return elements.get(id);
           }},
           querySelector: function () {{ return null; }},
           querySelectorAll: function () {{ return []; }},
-          createElement: makeElement
+          createElement: makeElement,
+          addEventListener: function (name, handler) {{ documentHandlers[name] = handler; }}
         }};
         const window = {{
           document,
-          location: {{ origin: "http://localhost", pathname: "/factor-lab" }},
+          location: {{ origin: "http://localhost", pathname: {json.dumps(pathname)} }},
           history: {{ pushState: function () {{}} }},
-          addEventListener: function () {{}},
-          setInterval: function () {{ return 1; }},
-          setTimeout: function (callback) {{ if (typeof callback === "function") callback(); }},
-          requestAnimationFrame: function (callback) {{ callback(); }},
+          addEventListener: function (name, handler) {{ windowHandlers[name] = handler; }},
+          AbortController: FakeAbortController,
+          performance: {{ now: function () {{ return fakeNow; }} }},
+          setInterval: function (callback, delay) {{ return enqueue("interval", callback, delay); }},
+          clearInterval: function (id) {{ cancel("interval", id); }},
+          setTimeout: function (callback, delay) {{ return enqueue("timeout", callback, delay); }},
+          clearTimeout: function (id) {{ cancel("timeout", id); }},
+          requestAnimationFrame: function (callback) {{ return enqueue("raf", callback, 0); }},
+          cancelAnimationFrame: function (id) {{ cancel("raf", id); }},
           innerWidth: 1200,
           innerHeight: 800,
           fetch: null,
           matchMedia: null
         }};
+        const host = {{
+          fetchCalls,
+          queueOrder,
+          documentHandlers,
+          windowHandlers,
+          setFetchHandler: function (handler) {{
+            fetchHandler = handler;
+            window.fetch = fakeFetch;
+            context.fetch = fakeFetch;
+          }},
+          advanceNow: function (milliseconds) {{ fakeNow += Number(milliseconds) || 0; }},
+          drainRafs: function () {{ return drain("raf"); }},
+          drainTimeouts: function () {{ return drain("timeout"); }},
+          tickIntervals: function () {{ return drain("interval"); }},
+          pending: function (kind) {{ return queues[kind].size; }}
+        }};
         const context = {{
           window,
           document,
           console,
+          AbortController: FakeAbortController,
+          performance: window.performance,
+          fetch: null,
           setInterval: window.setInterval,
-          setTimeout: window.setTimeout
+          clearInterval: window.clearInterval,
+          setTimeout: window.setTimeout,
+          clearTimeout: window.clearTimeout,
+          requestAnimationFrame: window.requestAnimationFrame,
+          cancelAnimationFrame: window.cancelAnimationFrame
         }};
         context.globalThis = context;
         vm.createContext(context);
@@ -120,7 +220,743 @@ def _run_factor_lab_hook(script: str) -> dict:
     return json.loads(completed.stdout)
 
 
+ROW_FIELDS = [
+    "predict_date",
+    "feature_date",
+    "target_date",
+    "prediction_phase",
+    "predicted_direction",
+    "actual_direction",
+]
+
+
+def _dashboard_scheme(**overrides: object) -> dict:
+    """构造通过 dashboard v1 严格合同的最小方案 fixture。"""
+    scheme = {
+        "scheme_id": "demo__h1__5Y",
+        "base_scheme_id": "demo",
+        "name": "Demo",
+        "description": "",
+        "horizon": 1,
+        "task_type": "T+1",
+        "frequency": "daily",
+        "target_tenor": "5Y",
+        "target_label": "5Y国债活跃",
+        "status": "active",
+        "deployed_at": "2026-06-04",
+        "live_rows": [],
+        "backtest": None,
+    }
+    scheme.update(overrides)
+    return scheme
+
+
+def _dashboard_payload(*, schemes: list[dict] | None = None, **overrides: object) -> dict:
+    """构造通过 dashboard v1 严格合同的最小顶层 fixture。"""
+    payload = {
+        "schema_version": "factor-lab-dashboard-v1",
+        "snapshot_id": "snapshot-1",
+        "generated_at": "2026-07-22T12:00:00+08:00",
+        "display_until": "2026-07-22",
+        "stale": False,
+        "snapshot_age_ms": 0,
+        "row_fields": ROW_FIELDS,
+        "target_labels": {"5Y": "5Y国债活跃"},
+        "schemes": schemes or [],
+    }
+    payload.update(overrides)
+    return payload
+
+
 class FactorLabRankingTests(unittest.TestCase):
+    def test_dashboard_decoder_decodes_compact_rows_without_coercion(self) -> None:
+        payload = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    live_rows=[
+                        [
+                            "2026-07-20",
+                            "2026-07-17",
+                            "2026-07-21",
+                            "scheduled_live",
+                            0,
+                            None,
+                        ]
+                    ]
+                )
+            ]
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            const decoded = hooks.decodeDashboardPayload({json.dumps(payload)});
+            return {{
+              snapshotId: decoded.snapshotId,
+              row: decoded.schemes[0].liveRows[0]
+            }};
+            """
+        )
+
+        self.assertEqual(result["snapshotId"], "snapshot-1")
+        self.assertEqual(
+            result["row"],
+            {
+                "predictDate": "2026-07-20",
+                "featureDate": "2026-07-17",
+                "targetDate": "2026-07-21",
+                "predictionPhase": "scheduled_live",
+                "predictedDirection": 0,
+                "actualDirection": None,
+                "source": "live",
+            },
+        )
+
+    def test_dashboard_decoder_rejects_corruption_table(self) -> None:
+        base = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    live_rows=[
+                        [
+                            "2026-07-20",
+                            "2026-07-17",
+                            "2026-07-21",
+                            "scheduled_live",
+                            1,
+                            None,
+                        ]
+                    ],
+                    backtest={
+                        "benchmark_id": "benchmark-1",
+                        "benchmark_label": "Benchmark 1",
+                        "data_source": "framework_db_aligned",
+                        "data_source_label": "当前DB对齐回测",
+                        "latest_run_date": "2026-05-31",
+                        "rows": [
+                            ["2026-05-20", "2026-05-20", "2026-05-21", None, 1, 1]
+                        ],
+                    },
+                )
+            ]
+        )
+
+        corruptions: dict[str, dict] = {}
+
+        def corrupted(name: str) -> dict:
+            value = copy.deepcopy(base)
+            corruptions[name] = value
+            return value
+
+        corrupted("schema")["schema_version"] = "factor-lab-dashboard-v2"
+        corrupted("row order")["row_fields"] = [*ROW_FIELDS[1:], ROW_FIELDS[0]]
+        corrupted("duplicate row field")["row_fields"][-1] = ROW_FIELDS[-2]
+        corrupted("row width")["schemes"][0]["live_rows"][0].append(1)
+        corrupted("task type")["schemes"][0]["task_type"] = "daily"
+        corrupted("invalid date")["schemes"][0]["live_rows"][0][0] = "2026-02-30"
+        corrupted("invalid predicted direction")["schemes"][0]["live_rows"][0][4] = 2
+        corrupted("bool direction")["schemes"][0]["live_rows"][0][4] = True
+        corrupted("duplicate scheme")["schemes"].append(copy.deepcopy(base["schemes"][0]))
+        corrupted("composite identity")["schemes"][0]["scheme_id"] = "demo__h5__5Y"
+        corrupted("padded identity")["schemes"][0]["base_scheme_id"] = " demo"
+        del corrupted("missing deployed at")["schemes"][0]["deployed_at"]
+        corrupted("missing target identity")["schemes"][0]["target_tenor"] = ""
+        corrupted("inactive status")["schemes"][0]["status"] = "paused"
+        corrupted("unknown live phase")["schemes"][0]["live_rows"][0][3] = "live"
+        corrupted("backtest phase")["schemes"][0]["backtest"]["rows"][0][3] = "gray_live"
+        corrupted("backtest null actual")["schemes"][0]["backtest"]["rows"][0][5] = None
+        duplicate_live = corrupted("duplicate live canonical")
+        duplicate_live["schemes"][0]["live_rows"].append(
+            ["2026-07-21", "2026-07-20", "2026-07-21", "gray_live", -1, 1]
+        )
+        duplicate_backtest = corrupted("duplicate backtest canonical")
+        duplicate_backtest["schemes"][0]["backtest"]["rows"].append(
+            ["2026-05-21", "2026-05-21", "2026-05-21", None, -1, -1]
+        )
+        corrupted("unknown top field")["extra"] = 1
+        corrupted("unknown scheme field")["schemes"][0]["runtime_type"] = "native_adapter"
+        corrupted("unknown backtest field")["schemes"][0]["backtest"]["run_id"] = 1
+        corrupted("naive generated at")["generated_at"] = "2026-07-22T12:00:00"
+        corrupted("padded snapshot")["snapshot_id"] = " snapshot-1"
+        corrupted("negative age")["snapshot_age_ms"] = -1
+        corrupted("bool age")["snapshot_age_ms"] = False
+        corrupted("target label mismatch")["schemes"][0]["target_label"] = "错误标签"
+        unsorted = corrupted("unsorted schemes")
+        unsorted["target_labels"]["3Y"] = "3Y国债活跃"
+        unsorted["schemes"].insert(
+            0,
+            _dashboard_scheme(
+                scheme_id="z_demo__h1__3Y",
+                base_scheme_id="z_demo",
+                target_tenor="3Y",
+                target_label="3Y国债活跃",
+            ),
+        )
+
+        for name, payload in corruptions.items():
+            with self.subTest(name=name):
+                result = _run_factor_lab_hook(
+                    f"""
+                    try {{
+                      hooks.decodeDashboardPayload({json.dumps(payload)});
+                      return {{ ok: true, message: "" }};
+                    }} catch (error) {{
+                      return {{ ok: false, message: String(error && error.message || error) }};
+                    }}
+                    """
+                )
+                self.assertFalse(result["ok"], result)
+                self.assertTrue(result["message"])
+
+        nan_result = _run_factor_lab_hook(
+            f"""
+            const agePayload = {json.dumps(base)};
+            agePayload.snapshot_age_ms = NaN;
+            const horizonPayload = {json.dumps(base)};
+            horizonPayload.schemes[0].horizon = NaN;
+            function rejected(payload) {{
+              try {{ hooks.decodeDashboardPayload(payload); return false; }}
+              catch (error) {{ return true; }}
+            }}
+            return {{ age: rejected(agePayload), horizon: rejected(horizonPayload) }};
+            """
+        )
+        self.assertEqual(nan_result, {"age": True, "horizon": True})
+
+    def test_dashboard_view_model_groups_sources_and_applies_monthly_cutoff(self) -> None:
+        daily = _dashboard_scheme(
+            live_rows=[
+                ["2026-05-27", "2026-05-26", "2026-05-28", "gray_live", 1, 1],
+                ["2026-05-28", "2026-05-27", "2026-05-29", "scheduled_live", 0, 0],
+                ["2026-05-29", "2026-05-28", "2026-06-01", "scheduled_live", -1, None],
+            ],
+            backtest={
+                "benchmark_id": "daily-benchmark",
+                "benchmark_label": "Daily benchmark",
+                "data_source": "framework_db_aligned",
+                "data_source_label": "当前DB对齐回测",
+                "latest_run_date": "2026-05-31",
+                "rows": [
+                    ["2026-05-26", "2026-05-26", "2026-05-28", None, -1, -1],
+                    ["2026-05-27", "2026-05-27", "2026-05-29", None, 1, -1],
+                ],
+            },
+        )
+        monthly = _dashboard_scheme(
+            scheme_id="monthly_demo__h30__5Y",
+            base_scheme_id="monthly_demo",
+            name="Monthly Demo",
+            horizon=30,
+            task_type="monthly",
+            frequency="monthly",
+            live_rows=[
+                ["2026-05-15", "2026-05-15", "2026-06-15", "gray_live", 1, -1],
+                ["2026-06-15", "2026-06-15", "2026-07-15", "scheduled_live", 1, None],
+            ],
+            backtest={
+                "benchmark_id": "monthly-benchmark",
+                "benchmark_label": "Monthly benchmark",
+                "data_source": "framework_db_aligned",
+                "data_source_label": "当前DB对齐回测",
+                "latest_run_date": "2026-05-31",
+                "rows": [
+                    ["2026-04-15", "2026-04-15", "2026-05-15", None, -1, -1],
+                    ["2026-05-15", "2026-05-15", "2026-06-15", None, 1, 1],
+                ],
+            },
+        )
+        payload = _dashboard_payload(schemes=[daily, monthly])
+        result = _run_factor_lab_hook(
+            f"""
+            const viewModel = hooks.buildFactorLabViewModel(
+              hooks.decodeDashboardPayload({json.dumps(payload)})
+            );
+            function summarize(scheme) {{
+              return {{
+                latestRun: scheme.latestRun,
+                liveSinceDate: scheme.liveSinceDate,
+                phaseRanges: scheme.phaseRanges,
+                benchmarkLabel: scheme.benchmarkLabel,
+                dataSourceLabel: scheme.dataSourceLabel,
+                backtestLatestRunDate: scheme.backtestLatestRunDate,
+                backtestEndMonth: scheme.backtestEndMonth,
+                monthlyRows: scheme.monthlyRows.map(function (row) {{
+                  return {{
+                    month: row.month,
+                    source: row._source,
+                    samples: row.samples,
+                    metricSamples: row.metricSamples,
+                    correct: row.correct,
+                    overall: row.overall
+                  }};
+                }}),
+                dailyRows: Object.keys(scheme.dailyRowsByMonth).sort().reduce(function (result, month) {{
+                  result[month] = scheme.dailyRowsByMonth[month].map(function (row) {{
+                    return {{
+                      source: row._source,
+                      predictDate: row.predictDate,
+                      featureDate: row.featureDate,
+                      targetDate: row.targetDate,
+                      predictedDirection: row.predictedDirection,
+                      actualDirection: row.actualDirection,
+                      correct: row.correct
+                    }};
+                  }});
+                  return result;
+                }}, {{}})
+              }};
+            }}
+            return {{
+              taskKeys: Object.keys(viewModel.tasks).filter(function (key) {{
+                return viewModel.tasks[key].length;
+              }}),
+              daily: summarize(viewModel.tasks["5Y|T+1"][0]),
+              monthly: summarize(viewModel.tasks["5Y|monthly"][0])
+            }};
+            """
+        )
+
+        self.assertEqual(result["taskKeys"], ["5Y|T+1", "5Y|monthly"])
+        daily_result = result["daily"]
+        self.assertEqual(daily_result["latestRun"], "05-29")
+        self.assertEqual(daily_result["liveSinceDate"], "2026-05-27")
+        self.assertEqual(
+            [row["prediction_phase"] for row in daily_result["phaseRanges"]],
+            ["gray_live", "scheduled_live"],
+        )
+        self.assertEqual(daily_result["benchmarkLabel"], "Daily benchmark")
+        self.assertEqual(daily_result["dataSourceLabel"], "当前DB对齐回测")
+        self.assertEqual(daily_result["backtestLatestRunDate"], "2026-05-31")
+        self.assertEqual(
+            daily_result["monthlyRows"],
+            [
+                {
+                    "month": "2026-05",
+                    "source": "backtest",
+                    "samples": 2,
+                    "metricSamples": 2,
+                    "correct": 1,
+                    "overall": 50,
+                },
+                {
+                    "month": "2026-05",
+                    "source": "live",
+                    "samples": 2,
+                    "metricSamples": 1,
+                    "correct": 1,
+                    "overall": 100,
+                },
+                {
+                    "month": "2026-06",
+                    "source": "live",
+                    "samples": 0,
+                    "metricSamples": 0,
+                    "correct": 0,
+                    "overall": None,
+                },
+            ],
+        )
+        may_daily = daily_result["dailyRows"]["2026-05"]
+        self.assertEqual([row["source"] for row in may_daily], ["backtest", "backtest", "live", "live"])
+        self.assertEqual(may_daily[-1]["predictedDirection"], 0)
+        self.assertEqual(may_daily[-1]["actualDirection"], 0)
+        pending = daily_result["dailyRows"]["2026-06"][0]
+        self.assertIsNone(pending["actualDirection"])
+        self.assertIsNone(pending["correct"])
+
+        monthly_result = result["monthly"]
+        self.assertEqual(
+            [(row["month"], row["source"]) for row in monthly_result["monthlyRows"]],
+            [("2026-05", "backtest"), ("2026-06", "live"), ("2026-07", "live")],
+        )
+        self.assertEqual(monthly_result["backtestEndMonth"], "2026-05")
+        self.assertEqual(sorted(monthly_result["dailyRows"]), ["2026-05", "2026-06", "2026-07"])
+
+    def test_dashboard_and_legacy_fixture_builders_are_view_model_equivalent(self) -> None:
+        dashboard = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    live_rows=[
+                        ["2026-05-27", "2026-05-26", "2026-05-28", "gray_live", 1, 1],
+                        ["2026-05-28", "2026-05-27", "2026-05-29", "scheduled_live", 0, 0],
+                        ["2026-05-29", "2026-05-28", "2026-06-01", "scheduled_live", -1, None],
+                    ],
+                    backtest={
+                        "benchmark_id": "daily-benchmark",
+                        "benchmark_label": "Daily benchmark",
+                        "data_source": "framework_db_aligned",
+                        "data_source_label": "当前DB对齐回测",
+                        "latest_run_date": "2026-05-31",
+                        "rows": [
+                            ["2026-05-26", "2026-05-26", "2026-05-28", None, -1, -1],
+                            ["2026-05-27", "2026-05-27", "2026-05-29", None, 1, -1],
+                        ],
+                    },
+                ),
+                _dashboard_scheme(
+                    scheme_id="monthly_demo__h30__5Y",
+                    base_scheme_id="monthly_demo",
+                    name="Monthly Demo",
+                    horizon=30,
+                    task_type="monthly",
+                    frequency="monthly",
+                    live_rows=[
+                        ["2026-05-15", "2026-05-15", "2026-06-15", "gray_live", 1, -1],
+                        ["2026-06-15", "2026-06-15", "2026-07-15", "scheduled_live", 1, None],
+                    ],
+                    backtest={
+                        "benchmark_id": "monthly-benchmark",
+                        "benchmark_label": "Monthly benchmark",
+                        "data_source": "framework_db_aligned",
+                        "data_source_label": "当前DB对齐回测",
+                        "latest_run_date": "2026-05-31",
+                        "rows": [
+                            ["2026-04-15", "2026-04-15", "2026-05-15", None, -1, -1],
+                            ["2026-05-15", "2026-05-15", "2026-06-15", None, 1, 1],
+                        ],
+                    },
+                ),
+            ]
+        )
+        legacy_responses = {
+            "/api/schemes": {
+                "target_labels": {"5Y": "5Y国债活跃"},
+                "schemes": [
+                    {
+                        "scheme_id": "demo__h1__5Y",
+                        "base_scheme_id": "demo",
+                        "name": "Demo",
+                        "description": "",
+                        "target_tenor": "5Y",
+                        "horizon": 1,
+                        "task_type": "T+1",
+                        "frequency": "daily",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                    },
+                    {
+                        "scheme_id": "monthly_demo__h30__5Y",
+                        "base_scheme_id": "monthly_demo",
+                        "name": "Monthly Demo",
+                        "description": "",
+                        "target_tenor": "5Y",
+                        "horizon": 30,
+                        "task_type": "monthly",
+                        "frequency": "monthly",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                    },
+                ],
+            },
+            "/api/metrics/demo__h1__5Y": {
+                "target_label": "5Y国债活跃",
+                "phase_ranges": [
+                    {
+                        "prediction_phase": "gray_live",
+                        "start_predict_date": "2026-05-27",
+                        "end_predict_date": "2026-05-27",
+                        "start_target_date": "2026-05-28",
+                        "end_target_date": "2026-05-28",
+                        "rows": 1,
+                    },
+                    {
+                        "prediction_phase": "scheduled_live",
+                        "start_predict_date": "2026-05-28",
+                        "end_predict_date": "2026-05-29",
+                        "start_target_date": "2026-05-29",
+                        "end_target_date": "2026-06-01",
+                        "rows": 2,
+                    },
+                ],
+                "monthly_metrics": [],
+                "daily_rows": [
+                    {
+                        "predict_date": "2026-05-27",
+                        "feature_date": "2026-05-26",
+                        "target_date": "2026-05-28",
+                        "prediction_phase": "gray_live",
+                        "predicted_direction": 1,
+                        "actual_direction": 1,
+                    },
+                    {
+                        "predict_date": "2026-05-28",
+                        "feature_date": "2026-05-27",
+                        "target_date": "2026-05-29",
+                        "prediction_phase": "scheduled_live",
+                        "predicted_direction": 0,
+                        "actual_direction": 0,
+                    },
+                    {
+                        "predict_date": "2026-05-29",
+                        "feature_date": "2026-05-28",
+                        "target_date": "2026-06-01",
+                        "prediction_phase": "scheduled_live",
+                        "predicted_direction": -1,
+                        "actual_direction": None,
+                    },
+                ],
+            },
+            "/api/metrics/monthly_demo__h30__5Y": {
+                "target_label": "5Y国债活跃",
+                "phase_ranges": [
+                    {
+                        "prediction_phase": "gray_live",
+                        "start_predict_date": "2026-05-15",
+                        "end_predict_date": "2026-05-15",
+                        "start_target_date": "2026-06-15",
+                        "end_target_date": "2026-06-15",
+                        "rows": 1,
+                    },
+                    {
+                        "prediction_phase": "scheduled_live",
+                        "start_predict_date": "2026-06-15",
+                        "end_predict_date": "2026-06-15",
+                        "start_target_date": "2026-07-15",
+                        "end_target_date": "2026-07-15",
+                        "rows": 1,
+                    },
+                ],
+                "monthly_metrics": [],
+                "daily_rows": [
+                    {
+                        "predict_date": "2026-05-15",
+                        "feature_date": "2026-05-15",
+                        "target_date": "2026-06-15",
+                        "prediction_phase": "gray_live",
+                        "predicted_direction": 1,
+                        "actual_direction": -1,
+                    },
+                    {
+                        "predict_date": "2026-06-15",
+                        "feature_date": "2026-06-15",
+                        "target_date": "2026-07-15",
+                        "prediction_phase": "scheduled_live",
+                        "predicted_direction": 1,
+                        "actual_direction": None,
+                    },
+                ],
+            },
+            "/api/backtests/factor-lab": {
+                "target_labels": {"5Y": "5Y国债活跃"},
+                "schemes": [
+                    {
+                        "id": "bt:demo",
+                        "scheme_id": "demo__h1__5Y",
+                        "base_scheme_id": "demo",
+                        "scheme_name": "Demo",
+                        "target_tenor": "5Y",
+                        "horizon": 1,
+                        "task_type": "T+1",
+                        "frequency": "daily",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                        "benchmark_label": "Daily benchmark",
+                        "data_source_label": "当前DB对齐回测",
+                        "end_date": "2026-05-31",
+                        "monthly_metrics": [],
+                        "daily_rows": [
+                            {
+                                "predict_date": "2026-05-26",
+                                "feature_date": "2026-05-26",
+                                "target_date": "2026-05-28",
+                                "predicted_direction": -1,
+                                "actual_direction": -1,
+                            },
+                            {
+                                "predict_date": "2026-05-27",
+                                "feature_date": "2026-05-27",
+                                "target_date": "2026-05-29",
+                                "predicted_direction": 1,
+                                "actual_direction": -1,
+                            },
+                        ],
+                    },
+                    {
+                        "id": "bt:monthly-demo",
+                        "scheme_id": "monthly_demo__h30__5Y",
+                        "base_scheme_id": "monthly_demo",
+                        "scheme_name": "Monthly Demo",
+                        "target_tenor": "5Y",
+                        "horizon": 30,
+                        "task_type": "monthly",
+                        "frequency": "monthly",
+                        "status": "active",
+                        "deployed_at": "2026-06-04",
+                        "benchmark_label": "Monthly benchmark",
+                        "data_source_label": "当前DB对齐回测",
+                        "end_date": "2026-05-31",
+                        "monthly_metrics": [],
+                        "daily_rows": [
+                            {
+                                "predict_date": "2026-04-15",
+                                "feature_date": "2026-04-15",
+                                "target_date": "2026-05-15",
+                                "predicted_direction": -1,
+                                "actual_direction": -1,
+                            },
+                            {
+                                "predict_date": "2026-05-15",
+                                "feature_date": "2026-05-15",
+                                "target_date": "2026-06-15",
+                                "predicted_direction": 1,
+                                "actual_direction": 1,
+                            },
+                        ],
+                    },
+                ],
+            },
+        }
+        result = _run_factor_lab_hook(
+            f"""
+            const modern = hooks.buildFactorLabViewModel(
+              hooks.decodeDashboardPayload({json.dumps(dashboard)})
+            ).tasks;
+            const legacy = hooks.buildLegacyFactorLabViewModelForTest(
+              {json.dumps(legacy_responses)}
+            ).tasks;
+            function normalize(tasks) {{
+              return Object.keys(tasks).filter(function (taskKey) {{
+                return tasks[taskKey].length;
+              }}).sort().map(function (taskKey) {{
+                return {{
+                  taskKey,
+                  schemes: tasks[taskKey].slice().sort(function (a, b) {{
+                    return a.schemeId.localeCompare(b.schemeId);
+                  }}).map(function (scheme) {{
+                    return {{
+                      schemeId: scheme.schemeId,
+                      name: scheme.name,
+                      deploymentDate: scheme.deploymentDate,
+                      latestRun: scheme.latestRun,
+                      liveSinceDate: scheme.liveSinceDate,
+                      backtestStartMonth: scheme.backtestStartMonth,
+                      backtestEndMonth: scheme.backtestEndMonth,
+                      months: scheme.monthlyRows.map(function (row) {{
+                        return {{
+                          month: row.month,
+                          source: row._source,
+                          samples: row.samples,
+                          metricSamples: row.metricSamples,
+                          correct: row.correct,
+                          accuracy: row.overall
+                        }};
+                      }}),
+                      pending: Object.keys(scheme.dailyRowsByMonth).reduce(function (count, month) {{
+                        return count + scheme.dailyRowsByMonth[month].filter(function (row) {{
+                          return row.actualDirection === null;
+                        }}).length;
+                      }}, 0),
+                      drawerRows: Object.keys(scheme.dailyRowsByMonth).sort().reduce(function (rows, month) {{
+                        return rows.concat(scheme.dailyRowsByMonth[month].map(function (row) {{
+                          return {{
+                            month,
+                            source: row._source,
+                            predictDate: row.predictDate,
+                            featureDate: row.featureDate,
+                            targetDate: row.targetDate,
+                            predictedDirection: row.predictedDirection,
+                            actualDirection: row.actualDirection,
+                            correct: row.correct
+                          }};
+                        }}));
+                      }}, [])
+                    }};
+                  }})
+                }};
+              }});
+            }}
+            return {{ modern: normalize(modern), legacy: normalize(legacy) }};
+            """
+        )
+
+        self.assertEqual(result["modern"], result["legacy"])
+
+    def test_load_dashboard_uses_one_path_derived_get_and_commits_after_build(self) -> None:
+        payload = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    live_rows=[
+                        [
+                            "2026-07-20",
+                            "2026-07-17",
+                            "2026-07-21",
+                            "scheduled_live",
+                            1,
+                            None,
+                        ]
+                    ]
+                )
+            ]
+        )
+        for pathname, expected_url in (
+            ("/bond-factor-lab/", "/bond-factor-lab/api/factor-lab/dashboard"),
+            ("/", "/api/factor-lab/dashboard"),
+        ):
+            with self.subTest(pathname=pathname):
+                result = _run_factor_lab_hook(
+                    f"""
+                    host.setFetchHandler(function (url, options) {{
+                      return {{
+                        ok: true,
+                        status: 200,
+                        json: function () {{ return Promise.resolve({json.dumps(payload)}); }}
+                      }};
+                    }});
+                    const loaded = await hooks.loadFactorLabData({{ force: true }});
+                    return {{
+                      loaded,
+                      mode: hooks.getFactorLabState().dataMode,
+                      calls: host.fetchCalls.map(function (call) {{
+                        return {{ url: call.url, hasSignal: call.signal !== null, order: call.order }};
+                      }}),
+                      taskCount: hooks.getTaskSchemesForTest()["5Y|T+1"].length,
+                      pendingIntervals: host.pending("interval")
+                    }};
+                    """,
+                    pathname=pathname,
+                )
+                self.assertTrue(result["loaded"])
+                self.assertEqual(result["mode"], "dashboard")
+                self.assertEqual([call["url"] for call in result["calls"]], [expected_url])
+                self.assertFalse(
+                    any(
+                        old_path in call["url"]
+                        for call in result["calls"]
+                        for old_path in ("/api/schemes", "/api/metrics/", "/api/backtests/factor-lab")
+                    )
+                )
+                self.assertEqual(result["taskCount"], 1)
+                self.assertEqual(result["pendingIntervals"], 1)
+
+    def test_corrupt_dashboard_load_sets_error_without_partial_commit(self) -> None:
+        payload = _dashboard_payload(
+            schemes=[_dashboard_scheme(target_label="错误标签")],
+            target_labels={"5Y": "污染标签"},
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            host.setFetchHandler(function () {{
+              return {{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve({json.dumps(payload)}); }}
+              }};
+            }});
+            const loaded = await hooks.loadFactorLabData({{ force: true }});
+            hooks.renderTaskOverviewForTest();
+            return {{
+              loaded,
+              state: hooks.getFactorLabState(),
+              taskCount: hooks.getTaskSchemesForTest()["5Y|T+1"].length,
+              matrixHtml: document.getElementById("factorTaskMatrixBody").innerHTML
+            }};
+            """
+        )
+
+        self.assertFalse(result["loaded"])
+        self.assertEqual(result["state"]["dataMode"], "live-error")
+        self.assertTrue(result["state"]["apiError"])
+        self.assertEqual(result["taskCount"], 0)
+        self.assertIn("5Y国债活跃", result["matrixHtml"])
+        self.assertNotIn("污染标签", result["matrixHtml"])
+
     def test_topbar_status_label_displays_online(self) -> None:
         html = FRONTEND_INDEX.read_text(encoding="utf-8")
 
@@ -141,36 +977,26 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn("word-break: keep-all;", heading_rule)
 
     def test_api_urls_and_routes_use_public_base_path_when_served_under_prefix(self) -> None:
+        payload = _dashboard_payload()
         result = _run_factor_lab_hook(
-            """
-            window.location.pathname = "/bond-factor-lab/";
-            const calls = [];
-            const responses = {
-              "/bond-factor-lab/api/schemes": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] },
-              "/bond-factor-lab/api/backtests/factor-lab": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] }
-            };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              calls.push(url);
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
-            return {
+            f"""
+            host.setFetchHandler(function () {{
+              return {{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve({json.dumps(payload)}); }}
+              }};
+            }});
+            await hooks.loadFactorLabData({{ force: true }});
+            return {{
               apiHealthUrl: hooks.apiUrlForTest("/api/health"),
               normalizedRoot: hooks.normalizeRouteForTest("/bond-factor-lab/"),
               normalizedFactorLab: hooks.normalizeRouteForTest("/bond-factor-lab/factor-lab"),
               publicRoute: hooks.routeUrlForTest("/"),
-              calls
-            };
-            """
+              calls: host.fetchCalls.map(function (call) {{ return call.url; }})
+            }};
+            """,
+            pathname="/bond-factor-lab/",
         )
 
         self.assertEqual(result["apiHealthUrl"], "/bond-factor-lab/api/health")
@@ -179,7 +1005,7 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["publicRoute"], "/bond-factor-lab/")
         self.assertEqual(
             result["calls"],
-            ["/bond-factor-lab/api/schemes", "/bond-factor-lab/api/backtests/factor-lab"],
+            ["/bond-factor-lab/api/factor-lab/dashboard"],
         )
 
     def test_task_matrix_default_targets_include_1y_active_treasury(self) -> None:
@@ -241,19 +1067,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 ]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             hooks.setFactorLabStateForTest({ selectedTaskKey: "1Y|T+5" });
             var scheme = hooks.getSelectedScheme();
             return { name: scheme && scheme.name };
@@ -599,19 +1413,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 }]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             return {
               dataMode: hooks.getFactorLabState().dataMode,
               selectedScheme: hooks.getSelectedScheme()
@@ -667,19 +1469,7 @@ class FactorLabRankingTests(unittest.TestCase):
                 }]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             var aggregate = hooks.aggregateScheme(scheme);
             return {
@@ -979,19 +1769,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             return {
               dataMode: hooks.getFactorLabState().dataMode,
@@ -1080,20 +1858,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 ]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              calls.push(url);
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var state = hooks.getFactorLabState();
             var scheme = hooks.getSelectedScheme();
             return {
@@ -1117,9 +1882,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         # 5月和6月都应存在（回测5月 + 实盘6月）
         self.assertIn("2026-05", result["months"])
         self.assertIn("2026-06", result["months"])
-        # 两者接口都调了
-        self.assertIn("/api/schemes", result["calls"])
-        self.assertIn("/api/backtests/factor-lab", result["calls"])
+        # fixture 等价 hook 只比较旧聚合语义，不发出网络请求。
+        self.assertEqual(result["calls"], [])
 
     def test_daily_v28_backtest_and_live_start_are_visible_together(self) -> None:
         """V28 新 benchmark 的回测月度行应与正式实盘目标起点一起展示。"""
@@ -1212,19 +1976,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 ]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             return {
               dataMode: hooks.getFactorLabState().dataMode,
@@ -1329,20 +2081,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 ]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              calls.push(url);
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             var rows = scheme ? scheme.monthlyRows : [];
             var daily = scheme && scheme.dailyRowsByMonth["2026-05"] || [];
@@ -1439,19 +2178,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 ]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             return {
               dataMode: hooks.getFactorLabState().dataMode,
@@ -1526,19 +2253,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             return {
               dataMode: hooks.getFactorLabState().dataMode,
@@ -1558,8 +2273,8 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["months"], ["2026-06"])
         self.assertEqual(result["dailyMonths"], ["2026-06"])
 
-    def test_live_registry_rows_use_target_tenor_and_composite_metrics_url(self) -> None:
-        """新版 registry row 只有 target_tenor；前端不得再拼 ?tenor=。"""
+    def test_legacy_fixture_preserves_target_tenor_and_composite_identity(self) -> None:
+        """旧 fixture 聚合仍按 composite ID 和 target_tenor 分离格子。"""
         result = _run_factor_lab_hook(
             """
             const requests = [];
@@ -1617,20 +2332,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              requests.push(url);
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             return {
               dataMode: hooks.getFactorLabState().dataMode,
@@ -1642,9 +2344,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         )
 
         self.assertEqual(result["dataMode"], "live")
-        self.assertIn("/api/metrics/t5_daily__h5__3Y", result["requests"])
-        self.assertIn("/api/metrics/t5_daily__h5__5Y", result["requests"])
-        self.assertFalse(any("?tenor=" in url for url in result["requests"]))
+        self.assertEqual(result["requests"], [])
         self.assertIn(result["selectedSchemeId"], {"t5_daily__h5__3Y", "t5_daily__h5__5Y"})
         self.assertEqual(result["deploymentDate"], "2026/06/04")
 
@@ -1677,19 +2377,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
               },
               "/api/backtests/factor-lab": { target_labels: { "5Y": "5Y国债活跃" }, schemes: [] }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            var loaded = await hooks.loadFactorLabData({ force: true });
+            var loaded = hooks.loadLegacyFixtureForTest(responses);
             return {
               loaded,
               dataMode: hooks.getFactorLabState().dataMode,
@@ -1748,19 +2436,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             var row = scheme.dailyRowsByMonth["2026-06"][0];
             return {
@@ -1827,19 +2503,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var scheme = hooks.getSelectedScheme();
             hooks.renderFactorDailyRowsForTest("2026-06");
             var row = scheme.dailyRowsByMonth["2026-06"][0];
@@ -1915,19 +2579,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             hooks.setFactorLabStateForTest({
               selectedTaskKey: "10Y|weekly_point",
               selectedSchemeId: "weekly_10y_d_overlay_0529__h6__10Y",
@@ -2005,19 +2657,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             hooks.setFactorLabStateForTest({
               selectedTaskKey: "10Y|weekly_average",
               selectedSchemeId: "weekly_avg__h6__10Y",
@@ -2085,19 +2725,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 schemes: []
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}) }
-              });
-            };
-            globalThis.fetch = window.fetch;
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             hooks.setFactorLabStateForTest({
               selectedTaskKey: "5Y|T+1",
               selectedSchemeId: "t1_daily__h1__5Y",
@@ -2153,19 +2781,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 ]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              calls.push(url);
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var state = hooks.getFactorLabState();
             var scheme = hooks.getSelectedScheme();
             return {
@@ -2182,7 +2798,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
         self.assertEqual(result["selectedSchemeName"], "Backtest Demo")
         self.assertFalse(result["hasLiveSince"])  # 纯回测无实盘起点
         self.assertEqual(result["months"], ["2026-05"])
-        self.assertIn("/api/backtests/factor-lab", result["calls"])
+        self.assertEqual(result["calls"], [])
 
     def test_backtest_scheme_missing_deployed_at_fails_closed(self) -> None:
         result = _run_factor_lab_hook(
@@ -2212,18 +2828,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
                 ]
               }
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              var payload = responses[url];
-              return Promise.resolve({
-                ok: Boolean(payload),
-                status: payload ? 200 : 404,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            context.fetch = window.fetch;
-
-            var loaded = await hooks.loadFactorLabData({ force: true });
+            var loaded = hooks.loadLegacyFixtureForTest(responses);
             return {
               loaded,
               dataMode: hooks.getFactorLabState().dataMode,
@@ -2278,20 +2883,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
               },
               "/api/backtests/factor-lab": null  // 回测接口500
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              calls.push(url);
-              var payload = responses[url];
-              var ok = payload !== undefined;
-              return Promise.resolve({
-                ok: ok,
-                status: payload ? 200 : 500,
-                json: function () { return Promise.resolve(payload || {}); }
-              });
-            };
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var state = hooks.getFactorLabState();
             var scheme = hooks.getSelectedScheme();
             return {
@@ -2321,18 +2913,7 @@ class FactorLabRealtimeDataTests(unittest.TestCase):
               "/api/schemes": null,
               "/api/backtests/factor-lab": null
             };
-            window.fetch = function (url) {
-              if (url instanceof Request) url = url.url;
-              calls.push(url);
-              return Promise.resolve({
-                ok: false,
-                status: 500,
-                json: function () { return Promise.resolve({}); }
-              });
-            };
-            context.fetch = window.fetch;
-
-            await hooks.loadFactorLabData({ force: true });
+            hooks.loadLegacyFixtureForTest(responses);
             var state = hooks.getFactorLabState();
             var scheme = hooks.getSelectedScheme();
             return {
