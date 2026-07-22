@@ -766,12 +766,25 @@ def _validate_default_backtest_registry_scopes(
                 f"for selected backtest run_id={run_id}"
             )
         registry_horizon = int(registry_row["horizon"])
-        if item.get("horizon") != registry_horizon:
+        daily_rows = item.get("daily_rows")
+        if not isinstance(daily_rows, list) or not daily_rows:
             raise ValueError(
                 "backtest detail horizon does not match Registry scheme "
-                f"{registry_scheme_id}: "
-                f"detail={item.get('horizon')} registry={registry_horizon}"
+                f"{registry_scheme_id}: detail=None "
+                f"registry={registry_horizon}"
             )
+        for detail_row in daily_rows:
+            detail_horizon = (
+                detail_row.get("horizon")
+                if isinstance(detail_row, dict)
+                else None
+            )
+            if type(detail_horizon) is not int or detail_horizon != registry_horizon:
+                raise ValueError(
+                    "backtest detail horizon does not match Registry scheme "
+                    f"{registry_scheme_id}: detail={detail_horizon} "
+                    f"registry={registry_horizon}"
+                )
 
 
 def backtest_factor_lab_results(

@@ -945,6 +945,62 @@ def test_selected_backtest_detail_horizon_must_match_registry(
     assert explicit["schemes"][0]["horizon"] == 1
 
 
+def test_all_selected_backtest_detail_horizons_must_match_registry(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import DashboardDataError
+    from backend.services import backtest_factor_lab_results
+
+    engine, _trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_runs
+                    (id, benchmark_id, scheme_id, data_source, start_date,
+                     end_date, status, summary, report_path, created_at,
+                     updated_at)
+                VALUES
+                    (602, 'native-mixed-horizon', 'daily_t1',
+                     'framework_db_aligned', '2025-01-01', '2026-06-01',
+                     'success', '{}', NULL, '2026-07-20T09:00:00',
+                     '2026-07-20T17:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (6021, 602, 'native-mixed-horizon', 'daily_t1', '5Y', 5,
+                     '2026-05-20', '2026-05-20', '2026-05-21', 1, 1, NULL),
+                    (6022, 602, 'native-mixed-horizon', 'daily_t1', '5Y', 1,
+                     '2026-05-21', '2026-05-21', '2026-05-22', -1, -1, NULL)
+                """
+            )
+        )
+
+    with pytest.raises(DashboardDataError, match="horizon.*daily_t1__h5__5Y"):
+        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    with pytest.raises(ValueError, match="horizon.*daily_t1__h5__5Y"):
+        backtest_factor_lab_results(engine)
+
+    explicit = backtest_factor_lab_results(
+        engine,
+        benchmark_id="native-mixed-horizon",
+    )
+    assert explicit["schemes"][0]["horizon"] == 5
+    assert [
+        row["horizon"] for row in explicit["schemes"][0]["daily_rows"]
+    ] == [5, 1]
+
+
 def test_duplicate_backtest_prediction_point_fails_closed(
     dashboard_db: tuple[Engine, SqlTrace],
 ) -> None:
