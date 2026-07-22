@@ -146,7 +146,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             "fingerprint": "f" * 64,
         }
         original_dashboard_health = main._dashboard_health_snapshot()
-        main._set_dashboard_health("ready", None)
+        main._reset_dashboard_health_for_tests("ready", None)
         try:
             with (
                 patch.object(main, "get_engine", return_value=engine),
@@ -168,7 +168,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             ):
                 result = main.health()
         finally:
-            main._set_dashboard_health(
+            main._reset_dashboard_health_for_tests(
                 original_dashboard_health["status"],
                 original_dashboard_health["error_code"],
             )
@@ -193,7 +193,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
 
         engine = _Engine(schema="native_service")
         original_dashboard_health = main._dashboard_health_snapshot()
-        main._set_dashboard_health("ready", None)
+        main._reset_dashboard_health_for_tests("ready", None)
         try:
             with (
                 patch.object(main, "get_engine", return_value=engine),
@@ -201,7 +201,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             ):
                 result = main.health()
         finally:
-            main._set_dashboard_health(
+            main._reset_dashboard_health_for_tests(
                 original_dashboard_health["status"],
                 original_dashboard_health["error_code"],
             )
@@ -224,7 +224,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
 
         engine = _Engine(schema="native_service")
         original_dashboard_health = main._dashboard_health_snapshot()
-        main._set_dashboard_health(
+        main._reset_dashboard_health_for_tests(
             "degraded",
             "dashboard_snapshot_unavailable",
         )
@@ -235,7 +235,7 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             ):
                 result = main.health()
         finally:
-            main._set_dashboard_health(
+            main._reset_dashboard_health_for_tests(
                 original_dashboard_health["status"],
                 original_dashboard_health["error_code"],
             )

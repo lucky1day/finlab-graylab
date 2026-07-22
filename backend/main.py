@@ -229,15 +229,29 @@ def _set_dashboard_health(
         error_code = None
     with _dashboard_health_lock:
         if observation_revision is None:
-            # 仅供初始化/测试直接设置；真实 get/prewarm 一律携带 store revision。
-            _dashboard_health_revision = 0
-        elif observation_revision < _dashboard_health_revision:
             return False
-        else:
-            _dashboard_health_revision = observation_revision
+        if observation_revision < _dashboard_health_revision:
+            return False
+        _dashboard_health_revision = observation_revision
         _dashboard_health["status"] = status
         _dashboard_health["error_code"] = error_code
         return True
+
+
+def _reset_dashboard_health_for_tests(
+    status: Literal["ready", "degraded"],
+    error_code: str | None,
+    *,
+    observation_revision: int = 0,
+) -> None:
+    """测试专用：显式重置 health 状态及其观察序号。"""
+    global _dashboard_health_revision
+    if status == "ready":
+        error_code = None
+    with _dashboard_health_lock:
+        _dashboard_health_revision = observation_revision
+        _dashboard_health["status"] = status
+        _dashboard_health["error_code"] = error_code
 
 
 def _dashboard_health_snapshot() -> dict[str, str | None]:
@@ -450,7 +464,7 @@ def _server_timing(
     *,
     build_diagnostics: dict[str, Any],
     snapshot_origin_build_seconds: float | None,
-    request_attempt_seconds: float | None,
+    associated_attempt_seconds: float | None,
     response_encoding_name: str,
     response_encoding_seconds: float,
     route_seconds: float,
@@ -477,8 +491,8 @@ def _server_timing(
             _duration_ms(snapshot_origin_build_seconds),
         ),
         (
-            "request_refresh_attempt",
-            _duration_ms(request_attempt_seconds),
+            "associated_refresh_attempt",
+            _duration_ms(associated_attempt_seconds),
         ),
         (
             response_encoding_name,
@@ -553,7 +567,10 @@ def _dashboard_error_response(
     build_waiter_count = _integer_metric(
         request_diagnostics.get("build_waiter_count")
     )
-    request_attempt_seconds = _numeric_seconds(
+    associated_attempt_id = _integer_metric(
+        request_diagnostics.get("attempt_id")
+    )
+    associated_attempt_seconds = _numeric_seconds(
         request_diagnostics.get("attempt_seconds")
     )
     headers = _dashboard_response_headers(
@@ -564,7 +581,7 @@ def _dashboard_error_response(
         server_timing=_server_timing(
             build_diagnostics={},
             snapshot_origin_build_seconds=None,
-            request_attempt_seconds=request_attempt_seconds,
+            associated_attempt_seconds=associated_attempt_seconds,
             response_encoding_name="request_json_encoding",
             response_encoding_seconds=response_encoding_seconds,
             route_seconds=route_seconds,
@@ -586,10 +603,13 @@ def _dashboard_error_response(
             "build_waiter_count": (
                 0 if build_waiter_count is None else build_waiter_count
             ),
-            "request_attempt_status": _attempt_status(
+            "associated_refresh_attempt_id": associated_attempt_id,
+            "associated_refresh_attempt_status": _attempt_status(
                 request_diagnostics.get("attempt_status")
             ),
-            "request_attempt_ms": _duration_ms(request_attempt_seconds),
+            "associated_refresh_attempt_ms": _duration_ms(
+                associated_attempt_seconds
+            ),
             "snapshot_origin_db_ms": None,
             "snapshot_origin_canonical_ms": None,
             "snapshot_origin_serialization_ms": None,
@@ -677,14 +697,17 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
     build_waiter_count = _integer_metric(
         request_diagnostics.get("build_waiter_count")
     )
-    request_attempt_seconds = _numeric_seconds(
+    associated_attempt_id = _integer_metric(
+        request_diagnostics.get("attempt_id")
+    )
+    associated_attempt_seconds = _numeric_seconds(
         request_diagnostics.get("attempt_seconds")
     )
     route_seconds = time.perf_counter() - route_started_at
     server_timing = _server_timing(
         build_diagnostics=build_diagnostics,
         snapshot_origin_build_seconds=snapshot_origin_build_seconds,
-        request_attempt_seconds=request_attempt_seconds,
+        associated_attempt_seconds=associated_attempt_seconds,
         response_encoding_name="request_compact_json_budget_gzip",
         response_encoding_seconds=response_serialization_seconds,
         route_seconds=route_seconds,
@@ -728,10 +751,13 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             "build_waiter_count": (
                 0 if build_waiter_count is None else build_waiter_count
             ),
-            "request_attempt_status": _attempt_status(
+            "associated_refresh_attempt_id": associated_attempt_id,
+            "associated_refresh_attempt_status": _attempt_status(
                 request_diagnostics.get("attempt_status")
             ),
-            "request_attempt_ms": _duration_ms(request_attempt_seconds),
+            "associated_refresh_attempt_ms": _duration_ms(
+                associated_attempt_seconds
+            ),
             "snapshot_origin_db_ms": _duration_ms(
                 build_diagnostics.get("db_read_seconds")
             ),
