@@ -5,6 +5,7 @@ import json
 import subprocess
 import textwrap
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 from tests.factor_lab_dashboard_conformance import (
@@ -16,6 +17,38 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_SCRIPT = PROJECT_ROOT / "frontend" / "aifin-shell.js"
 FRONTEND_INDEX = PROJECT_ROOT / "frontend" / "index.html"
 FRONTEND_CSS = PROJECT_ROOT / "frontend" / "aifin-shell.css"
+
+
+class _FrontendIndexContractParser(HTMLParser):
+    """解析真实 index.html 中状态机依赖的节点与版本资源。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.nodes_by_id: dict[str, tuple[str, dict[str, str]]] = {}
+        self.stylesheets: list[str] = []
+        self.scripts: list[str] = []
+        self.text_by_id: dict[str, str] = {}
+        self._capture: tuple[str, str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {key: value or "" for key, value in attrs}
+        node_id = attributes.get("id")
+        if node_id:
+            self.nodes_by_id[node_id] = (tag, attributes)
+            self._capture = (tag, node_id)
+        if tag == "link" and attributes.get("rel") == "stylesheet":
+            self.stylesheets.append(attributes.get("href", ""))
+        if tag == "script" and attributes.get("src"):
+            self.scripts.append(attributes["src"])
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._capture and self._capture[0] == tag:
+            self._capture = None
+
+    def handle_data(self, data: str) -> None:
+        if self._capture:
+            node_id = self._capture[1]
+            self.text_by_id[node_id] = self.text_by_id.get(node_id, "") + data
 
 
 def _css_rule(selector: str) -> str:
@@ -550,6 +583,7 @@ class FactorLabRankingTests(unittest.TestCase):
     def test_dashboard_decode_and_view_model_stay_linear_at_twenty_thousand_rows(
         self,
     ) -> None:
+        """仅守护 decode/build 的 20k 线性预算，不代表完整 DOM render benchmark。"""
         payload = _dashboard_payload(
             schemes=[
                 _dashboard_scheme(
@@ -1512,6 +1546,7 @@ class FactorLabRankingTests(unittest.TestCase):
             },
         )
         self.assertIsInstance(result["ready"]["committedAt"], (int, float))
+        self.assertNotIn("navigationToReadyMs", result["ready"])
 
     def test_superseded_ready_frame_cannot_publish_previous_snapshot(self) -> None:
         first_payload = _dashboard_payload(
@@ -1713,6 +1748,224 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["schemeName"], "Dashboard LKG")
         self.assertIsNone(result["ready"])
 
+    def test_legacy_metric_failure_aborts_siblings_and_preserves_root_error(self) -> None:
+        initial_legacy = _minimal_legacy_responses()
+        failing_schemes = {
+            "target_labels": {"5Y": "5Y国债活跃"},
+            "schemes": [
+                {
+                    "scheme_id": "bad__h1__5Y",
+                    "base_scheme_id": "bad",
+                    "name": "Bad metric",
+                    "description": "",
+                    "target_tenor": "5Y",
+                    "horizon": 1,
+                    "task_type": "T+1",
+                    "frequency": "daily",
+                    "status": "active",
+                    "deployed_at": "2026-06-04",
+                },
+                {
+                    "scheme_id": "slow__h1__5Y",
+                    "base_scheme_id": "slow",
+                    "name": "Slow sibling",
+                    "description": "",
+                    "target_tenor": "5Y",
+                    "horizon": 1,
+                    "task_type": "T+1",
+                    "frequency": "daily",
+                    "status": "active",
+                    "deployed_at": "2026-06-04",
+                },
+            ],
+        }
+        empty_backtest = {
+            "target_labels": {"5Y": "5Y国债活跃"},
+            "schemes": [],
+        }
+        empty_metrics = {
+            "target_label": "5Y国债活跃",
+            "phase_ranges": [],
+            "monthly_metrics": [],
+            "daily_rows": [],
+        }
+        result = _run_factor_lab_hook(
+            f"""
+            const initial = {json.dumps(initial_legacy)};
+            const failingSchemes = {json.dumps(failing_schemes)};
+            const emptyBacktest = {json.dumps(empty_backtest)};
+            const emptyMetrics = {json.dumps(empty_metrics)};
+            let round = 1;
+            let dashboardCalls = 0;
+            let slowMetric = null;
+            let slowBacktest = null;
+            host.setFetchHandler(function (url) {{
+              const path = new URL(url, "http://localhost").pathname;
+              const suffix = path.indexOf("/bond-factor-lab") === 0
+                ? path.slice("/bond-factor-lab".length)
+                : path;
+              if (suffix === "/api/factor-lab/dashboard") {{
+                dashboardCalls += 1;
+                return {{
+                  ok: false,
+                  status: 404,
+                  json: function () {{ return Promise.resolve({{ detail: "not deployed" }}); }}
+                }};
+              }}
+              if (round === 1) {{
+                return {{
+                  ok: true,
+                  status: 200,
+                  json: function () {{ return Promise.resolve(initial[suffix]); }}
+                }};
+              }}
+              if (suffix === "/api/schemes") {{
+                return {{
+                  ok: true,
+                  status: 200,
+                  json: function () {{ return Promise.resolve(failingSchemes); }}
+                }};
+              }}
+              if (suffix === "/api/metrics/bad__h1__5Y") {{
+                return Promise.reject(new Error("metric root failure " + round));
+              }}
+              if (suffix === "/api/metrics/slow__h1__5Y") return slowMetric.promise;
+              if (suffix === "/api/backtests/factor-lab") return slowBacktest.promise;
+              throw new Error("unexpected URL " + suffix);
+            }});
+
+            await hooks.loadFactorLabData({{ force: true }});
+            host.advanceFrame();
+            const lkgName = hooks.getTaskSchemesForTest()["5Y|T+1"][0].name;
+
+            async function failingRound(number) {{
+              round = number;
+              slowMetric = host.createDeferred();
+              slowBacktest = host.createDeferred();
+              const callStart = host.fetchCalls.length;
+              const load = hooks.loadFactorLabData({{ force: true }});
+              let siblingCalls = [];
+              for (let wait = 0; wait < 64; wait += 1) {{
+                await Promise.resolve();
+                siblingCalls = host.fetchCalls.slice(callStart).filter(function (call) {{
+                  return call.url.indexOf("/metrics/slow__h1__5Y") !== -1 ||
+                    call.url.indexOf("/backtests/factor-lab") !== -1;
+                }});
+                if (siblingCalls.length === 2 && siblingCalls.every(function (call) {{
+                  return call.signal && call.signal.aborted;
+                }})) break;
+              }}
+              const siblingStates = siblingCalls.map(function (call) {{
+                return {{ url: call.url, aborted: call.signal && call.signal.aborted }};
+              }});
+              slowMetric.resolve({{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve(emptyMetrics); }}
+              }});
+              slowBacktest.resolve({{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve(emptyBacktest); }}
+              }});
+              const loaded = await load;
+              return {{
+                loaded,
+                siblingStates,
+                runtime: hooks.getFactorLabRuntimeStateForTest(),
+                ui: hooks.getFactorLabState()
+              }};
+            }}
+
+            const second = await failingRound(2);
+            const third = await failingRound(3);
+            return {{
+              lkgName,
+              dashboardCalls,
+              second,
+              third,
+              finalName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
+              activeLegacySignals: host.fetchCalls.slice(4).filter(function (call) {{
+                return call.signal && !call.signal.aborted;
+              }}).length,
+              pendingTimeouts: host.pending("timeout")
+            }};
+            """
+        )
+
+        self.assertEqual(result["lkgName"], "Legacy Demo")
+        self.assertEqual(result["dashboardCalls"], 1)
+        for number, round_result in ((2, result["second"]), (3, result["third"])):
+            self.assertFalse(round_result["loaded"])
+            self.assertEqual(len(round_result["siblingStates"]), 2)
+            self.assertTrue(
+                all(item["aborted"] for item in round_result["siblingStates"]),
+                round_result,
+            )
+            self.assertIn(f"metric root failure {number}", round_result["ui"]["apiError"])
+            self.assertTrue(round_result["runtime"]["stale"])
+        self.assertEqual(result["second"]["runtime"]["consecutiveFailures"], 1)
+        self.assertEqual(result["third"]["runtime"]["consecutiveFailures"], 2)
+        self.assertEqual(result["third"]["runtime"]["nextRefreshAt"], 3016)
+        self.assertEqual(result["finalName"], "Legacy Demo")
+        self.assertEqual(result["activeLegacySignals"], 0)
+        self.assertEqual(result["pendingTimeouts"], 1)
+
+    def test_superseding_legacy_generation_aborts_child_group_without_failure(self) -> None:
+        legacy = _minimal_legacy_responses()
+        result = _run_factor_lab_hook(
+            f"""
+            const legacy = {json.dumps(legacy)};
+            let round = 1;
+            host.setFetchHandler(function (url) {{
+              const path = new URL(url, "http://localhost").pathname;
+              const suffix = path.indexOf("/bond-factor-lab") === 0
+                ? path.slice("/bond-factor-lab".length)
+                : path;
+              if (suffix === "/api/factor-lab/dashboard") {{
+                return {{
+                  ok: false,
+                  status: 404,
+                  json: function () {{ return Promise.resolve({{ detail: "not deployed" }}); }}
+                }};
+              }}
+              if (round === 2) return host.createDeferred().promise;
+              return {{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve(legacy[suffix]); }}
+              }};
+            }});
+            await hooks.loadFactorLabData({{ force: true }});
+            round = 2;
+            const callStart = host.fetchCalls.length;
+            const superseded = hooks.loadFactorLabData({{ force: true }});
+            const childCalls = host.fetchCalls.slice(callStart);
+            round = 3;
+            const replacement = hooks.loadFactorLabData({{ force: true }});
+            const supersededLoaded = await superseded;
+            const replacementLoaded = await replacement;
+            host.advanceFrame();
+            return {{
+              supersededLoaded,
+              replacementLoaded,
+              childSignals: childCalls.map(function (call) {{
+                return call.signal && call.signal.aborted;
+              }}),
+              runtime: hooks.getFactorLabRuntimeStateForTest(),
+              ready: window.__factorLabReady
+            }};
+            """
+        )
+
+        self.assertFalse(result["supersededLoaded"])
+        self.assertTrue(result["replacementLoaded"])
+        self.assertEqual(result["childSignals"], [True, True])
+        self.assertEqual(result["runtime"]["consecutiveFailures"], 0)
+        self.assertFalse(result["runtime"]["stale"])
+        self.assertEqual(result["runtime"]["loadSeq"], 3)
+        self.assertEqual(result["ready"]["source"], "legacy")
+
     def test_dashboard_failures_never_fan_out_to_legacy(self) -> None:
         bad_schema = _dashboard_payload(schema_version="factor-lab-dashboard-v0")
         cases = (
@@ -1833,6 +2086,175 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(result["schemeName"], "Recovered")
         self.assertEqual(result["calls"], 3)
         self.assertEqual(result["ready"]["snapshotId"], "snapshot-recovered")
+        self.assertEqual(result["pending"], 1)
+
+    def test_server_stale_snapshots_retry_with_backoff_until_fresh_reset(self) -> None:
+        stale_one = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="Server stale one")],
+            snapshot_id="server-stale-1",
+            stale=True,
+            snapshot_age_ms=3500,
+        )
+        stale_two = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="Server stale two")],
+            snapshot_id="server-stale-2",
+            stale=True,
+            snapshot_age_ms=8000,
+        )
+        fresh = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="Fresh recovered")],
+            snapshot_id="server-fresh",
+            stale=False,
+            snapshot_age_ms=0,
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            const payloads = [
+              {json.dumps(stale_one)},
+              {json.dumps(stale_two)},
+              {json.dumps(fresh)}
+            ];
+            let index = 0;
+            host.setFetchHandler(function () {{
+              const payload = payloads[index++];
+              return {{
+                ok: true,
+                status: 200,
+                json: function () {{ return Promise.resolve(payload); }}
+              }};
+            }});
+            await hooks.loadFactorLabData({{ force: true }});
+            const firstStale = {{
+              runtime: hooks.getFactorLabRuntimeStateForTest(),
+              statusText: document.getElementById("factorDataStatusText").textContent,
+              pending: host.pending("timeout")
+            }};
+            host.advanceNow(1000);
+            host.runDueTimers();
+            for (let wait = 0; wait < 12; wait += 1) await Promise.resolve();
+            const secondStale = {{
+              runtime: hooks.getFactorLabRuntimeStateForTest(),
+              statusText: document.getElementById("factorDataStatusText").textContent,
+              pending: host.pending("timeout"),
+              calls: host.fetchCalls.length
+            }};
+            host.setVisibility("hidden");
+            const hidden = {{
+              runtime: hooks.getFactorLabRuntimeStateForTest(),
+              pending: host.pending("timeout")
+            }};
+            host.advanceNow(5000);
+            host.runDueTimers();
+            const callsWhileHidden = host.fetchCalls.length;
+            host.setVisibility("visible");
+            for (let wait = 0; wait < 12; wait += 1) await Promise.resolve();
+            host.advanceFrame();
+            return {{
+              firstStale,
+              secondStale,
+              hidden,
+              callsWhileHidden,
+              fresh: hooks.getFactorLabRuntimeStateForTest(),
+              freshStatus: document.getElementById("factorDataStatusText").textContent,
+              calls: host.fetchCalls.length,
+              ready: window.__factorLabReady,
+              pending: host.pending("timeout")
+            }};
+            """
+        )
+
+        self.assertTrue(result["firstStale"]["runtime"]["stale"])
+        self.assertEqual(result["firstStale"]["runtime"]["consecutiveFailures"], 1)
+        self.assertEqual(result["firstStale"]["runtime"]["nextRefreshAt"], 2000)
+        self.assertEqual(result["firstStale"]["pending"], 1)
+        self.assertIn("数据已过期", result["firstStale"]["statusText"])
+        self.assertIn("3秒前", result["firstStale"]["statusText"])
+        self.assertTrue(result["secondStale"]["runtime"]["stale"])
+        self.assertEqual(result["secondStale"]["runtime"]["consecutiveFailures"], 2)
+        self.assertEqual(result["secondStale"]["runtime"]["nextRefreshAt"], 4000)
+        self.assertEqual(result["secondStale"]["pending"], 1)
+        self.assertEqual(result["secondStale"]["calls"], 2)
+        self.assertEqual(result["hidden"]["runtime"]["nextRefreshAt"], 0)
+        self.assertEqual(result["hidden"]["pending"], 0)
+        self.assertEqual(result["callsWhileHidden"], 2)
+        self.assertFalse(result["fresh"]["stale"])
+        self.assertEqual(result["fresh"]["consecutiveFailures"], 0)
+        self.assertEqual(result["fresh"]["nextRefreshAt"], 67000)
+        self.assertIn("数据已就绪", result["freshStatus"])
+        self.assertEqual(result["calls"], 3)
+        self.assertEqual(result["ready"]["snapshotId"], "server-fresh")
+        self.assertEqual(result["pending"], 1)
+
+    def test_repeated_visible_events_coalesce_current_refresh(self) -> None:
+        initial = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="Initial")],
+            snapshot_id="visible-initial",
+        )
+        refreshed = _dashboard_payload(
+            schemes=[_dashboard_scheme(name="Refreshed")],
+            snapshot_id="visible-refreshed",
+        )
+        result = _run_factor_lab_hook(
+            f"""
+            const refreshRequest = host.createDeferred();
+            let calls = 0;
+            host.setFetchHandler(function () {{
+              calls += 1;
+              if (calls === 1) {{
+                return {{
+                  ok: true,
+                  status: 200,
+                  json: function () {{ return Promise.resolve({json.dumps(initial)}); }}
+                }};
+              }}
+              return refreshRequest.promise;
+            }});
+            await hooks.loadFactorLabData({{ force: true }});
+            host.advanceFrame();
+            host.setVisibility("hidden");
+            const hidden = {{
+              runtime: hooks.getFactorLabRuntimeStateForTest(),
+              pending: host.pending("timeout")
+            }};
+            host.setVisibility("visible");
+            host.setVisibility("visible");
+            const during = {{
+              calls: host.fetchCalls.length,
+              seq: hooks.getFactorLabRuntimeStateForTest().loadSeq,
+              ready: window.__factorLabReady,
+              signals: host.fetchCalls.slice(1).map(function (call) {{
+                return call.signal && call.signal.aborted;
+              }})
+            }};
+            refreshRequest.resolve({{
+              ok: true,
+              status: 200,
+              json: function () {{ return Promise.resolve({json.dumps(refreshed)}); }}
+            }});
+            for (let wait = 0; wait < 12; wait += 1) await Promise.resolve();
+            host.advanceFrame();
+            return {{
+              hidden,
+              during,
+              after: hooks.getFactorLabRuntimeStateForTest(),
+              ready: window.__factorLabReady,
+              schemeName: hooks.getTaskSchemesForTest()["5Y|T+1"][0].name,
+              pending: host.pending("timeout")
+            }};
+            """
+        )
+
+        self.assertEqual(result["hidden"]["runtime"]["nextRefreshAt"], 0)
+        self.assertEqual(result["hidden"]["pending"], 0)
+        self.assertEqual(result["during"]["calls"], 2)
+        self.assertEqual(result["during"]["seq"], 2)
+        self.assertIsNone(result["during"]["ready"])
+        self.assertEqual(result["during"]["signals"], [False])
+        self.assertEqual(result["after"]["snapshotId"], "visible-refreshed")
+        self.assertEqual(result["after"]["loadSeq"], 2)
+        self.assertEqual(result["after"]["consecutiveFailures"], 0)
+        self.assertEqual(result["ready"]["snapshotId"], "visible-refreshed")
+        self.assertEqual(result["schemeName"], "Refreshed")
         self.assertEqual(result["pending"], 1)
 
     def test_backoff_sequence_is_bounded_and_first_failure_is_error_empty_state(self) -> None:
@@ -2329,6 +2751,33 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn('role="status"', html)
         self.assertIn('aria-live="polite"', html)
         self.assertNotIn("OnLine", html)
+
+    def test_real_index_exposes_state_machine_dom_contract(self) -> None:
+        parser = _FrontendIndexContractParser()
+        parser.feed(FRONTEND_INDEX.read_text(encoding="utf-8"))
+
+        required_ids = {
+            "factorDataStatus",
+            "factorDataStatusText",
+            "factorCalendarDrawer",
+            "factorTaskMatrixBody",
+            "factorSchemeRankingBody",
+            "factorMonthlyTableBody",
+            "factorDailyTableBody",
+        }
+        self.assertTrue(required_ids.issubset(parser.nodes_by_id))
+        status_tag, status = parser.nodes_by_id["factorDataStatus"]
+        self.assertEqual(status_tag, "div")
+        self.assertEqual(status["role"], "status")
+        self.assertEqual(status["aria-live"], "polite")
+        self.assertEqual(status["aria-label"], "数据状态")
+        self.assertTrue({"status-strip", "is-loading"}.issubset(status["class"].split()))
+        self.assertEqual(parser.text_by_id["factorDataStatusText"].strip(), "Loading")
+        drawer_tag, drawer = parser.nodes_by_id["factorCalendarDrawer"]
+        self.assertEqual(drawer_tag, "div")
+        self.assertEqual(drawer["aria-hidden"], "true")
+        self.assertIn("aifin-shell.css?v=20260722a", parser.stylesheets)
+        self.assertIn("aifin-shell.js?v=20260722a", parser.scripts)
 
     def test_frontend_uses_only_system_fonts_without_external_imports(self) -> None:
         css = FRONTEND_CSS.read_text(encoding="utf-8")

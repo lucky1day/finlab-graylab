@@ -1462,8 +1462,8 @@
 
   function scheduleFactorLabRefresh(delayMs) {
     clearFactorLabRefreshTimer();
-    factorLabRuntimeState.nextRefreshAt = factorLabNow() + delayMs;
     if (!window.setTimeout || document.visibilityState === "hidden") return;
+    factorLabRuntimeState.nextRefreshAt = factorLabNow() + delayMs;
     factorLabRuntimeState.refreshTimer = window.setTimeout(function () {
       factorLabRuntimeState.refreshTimer = null;
       factorLabRuntimeState.nextRefreshAt = 0;
@@ -1486,10 +1486,44 @@
     );
   }
 
+  function isFactorLabAbortError(error) {
+    return Boolean(error && error.name === "AbortError");
+  }
+
+  function createLegacyRequestGroup(parentSignal) {
+    var childController = window.AbortController ? new window.AbortController() : null;
+    var firstError = null;
+    var onParentAbort = function () {
+      if (childController && !childController.signal.aborted) {
+        childController.abort();
+      }
+    };
+    if (childController && parentSignal) {
+      if (parentSignal.aborted) onParentAbort();
+      else if (parentSignal.addEventListener) parentSignal.addEventListener("abort", onParentAbort);
+    }
+    return {
+      signal: childController ? childController.signal : parentSignal,
+      fail: function (error) {
+        if (isFactorLabAbortError(error) || firstError) return;
+        firstError = error;
+        if (childController && !childController.signal.aborted) childController.abort();
+      },
+      firstError: function () { return firstError; },
+      cleanup: function () {
+        if (childController && parentSignal && parentSignal.removeEventListener) {
+          parentSignal.removeEventListener("abort", onParentAbort);
+        }
+      }
+    };
+  }
+
   function fetchLegacyFactorLabCandidate(signal, seq) {
     var responses = Object.create(null);
+    var requestGroup = createLegacyRequestGroup(signal);
+    var groupSignal = requestGroup.signal;
     var liveAttempt = wrapLegacyAttempt(
-      fetchJson("/api/schemes", { signal: signal }).then(function (schemesPayload) {
+      fetchJson("/api/schemes", { signal: groupSignal }).then(function (schemesPayload) {
         var schemes = Array.isArray(schemesPayload)
           ? schemesPayload
           : ((schemesPayload && schemesPayload.schemes) || []);
@@ -1497,23 +1531,30 @@
           columnForScheme(scheme);
           if (!scheme.scheme_id || !scheme.target_tenor) return Promise.resolve(null);
           var metricsPath = "/api/metrics/" + encodeURIComponent(scheme.scheme_id);
-          return fetchJson(metricsPath, { signal: signal }).then(function (metrics) {
+          return fetchJson(metricsPath, { signal: groupSignal }).then(function (metrics) {
             return { path: metricsPath, payload: metrics };
           });
         });
         return Promise.all(metricRequests).then(function (metrics) {
           return { schemes: schemesPayload, metrics: metrics.filter(Boolean) };
         });
+      }).catch(function (error) {
+        requestGroup.fail(error);
+        throw error;
       })
     );
     var backtestAttempt = wrapLegacyAttempt(
-      fetchJson("/api/backtests/factor-lab", { signal: signal })
+      fetchJson("/api/backtests/factor-lab", { signal: groupSignal }).catch(function (error) {
+        requestGroup.fail(error);
+        throw error;
+      })
     );
 
-    return Promise.all([liveAttempt, backtestAttempt]).then(function (attempts) {
+    var result = Promise.all([liveAttempt, backtestAttempt]).then(function (attempts) {
       if (seq !== factorLabRuntimeState.loadSeq) return null;
       var live = attempts[0];
       var backtest = attempts[1];
+      if (requestGroup.firstError()) throw requestGroup.firstError();
       if (live.ok) {
         responses["/api/schemes"] = live.value.schemes;
         live.value.metrics.forEach(function (metric) {
@@ -1535,6 +1576,16 @@
         mode: viewModel.mode
       };
     });
+    return result.then(
+      function (candidate) {
+        requestGroup.cleanup();
+        return candidate;
+      },
+      function (error) {
+        requestGroup.cleanup();
+        throw error;
+      }
+    );
   }
 
   function dashboardFactorLabCandidate(payload) {
@@ -1591,7 +1642,7 @@
     return counts;
   }
 
-  function commitFactorLabCandidate(candidate, seq, loadStartedAt) {
+  function commitFactorLabCandidate(candidate, seq) {
     if (!candidate || seq !== factorLabRuntimeState.loadSeq) return false;
     validateFactorLabTasksForCommit(candidate.tasks);
     var nextTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
@@ -1665,8 +1716,17 @@
       throw error;
     }
 
-    factorLabRuntimeState.consecutiveFailures = 0;
-    scheduleFactorLabRefresh(FACTOR_LAB_HEALTHY_REFRESH_MS);
+    if (candidate.stale) {
+      factorLabRuntimeState.consecutiveFailures += 1;
+      var staleDelayIndex = Math.min(
+        factorLabRuntimeState.consecutiveFailures - 1,
+        FACTOR_LAB_RETRY_DELAYS_MS.length - 1
+      );
+      scheduleFactorLabRefresh(FACTOR_LAB_RETRY_DELAYS_MS[staleDelayIndex]);
+    } else {
+      factorLabRuntimeState.consecutiveFailures = 0;
+      scheduleFactorLabRefresh(FACTOR_LAB_HEALTHY_REFRESH_MS);
+    }
     var rowCounts = countFactorLabRows(candidate.tasks);
     var readyFrame = window.requestAnimationFrame || function (callback) {
       return window.setTimeout(callback, 0);
@@ -1683,8 +1743,7 @@
         mode: candidate.source,
         schemeCount: rowCounts.schemes,
         liveRowCount: rowCounts.liveRows,
-        backtestRowCount: rowCounts.backtestRows,
-        navigationToReadyMs: Math.max(0, factorLabNow() - loadStartedAt)
+        backtestRowCount: rowCounts.backtestRows
       };
     });
     return true;
@@ -1728,7 +1787,6 @@
     var controller = window.AbortController ? new window.AbortController() : null;
     factorLabRuntimeState.controller = controller;
     factorLabRemoteLoading = true;
-    var loadStartedAt = factorLabNow();
     renderFactorLabDataStatus();
     var signal = controller ? controller.signal : null;
 
@@ -1757,7 +1815,7 @@
 
     return candidatePromise.then(function (candidate) {
       if (seq !== factorLabRuntimeState.loadSeq || !candidate) return false;
-      var committed = commitFactorLabCandidate(candidate, seq, loadStartedAt);
+      var committed = commitFactorLabCandidate(candidate, seq);
       if (seq === factorLabRuntimeState.loadSeq) factorLabRuntimeState.controller = null;
       return committed;
     }).catch(function (error) {
@@ -1982,7 +2040,9 @@
         clearFactorLabRefreshTimer();
         return;
       }
-      if (getActiveView() === "factor-lab") loadFactorLabData({ force: true });
+      if (getActiveView() === "factor-lab" && !factorLabRemoteLoading) {
+        loadFactorLabData({ force: true });
+      }
     });
   }
 
