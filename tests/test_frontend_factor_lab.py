@@ -515,6 +515,66 @@ class FactorLabRankingTests(unittest.TestCase):
             with self.subTest(asset=path.name):
                 self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected_hash)
 
+    def test_equivalent_cleanup_removes_only_audited_dead_css(self) -> None:
+        css = FRONTEND_CSS.read_text(encoding="utf-8")
+
+        dead_selectors = (
+            ".eyebrow {",
+            ".module-view .eyebrow {",
+            ".factor-stack {",
+            ".factor-stack span {",
+            ".factor-matrix {",
+            ".factor-filter-group.is-hidden {",
+            ".factor-refresh-btn {",
+            ".factor-accuracy-panel {",
+            ".factor-scheme-badge {",
+            ".factor-live-since-badge {",
+            ".factor-accuracy-wrap {",
+            ".factor-accuracy-table {",
+            ".factor-accuracy-score {",
+            ".factor-accuracy-value {",
+            ".factor-accuracy-track {",
+            ".factor-status-pill {",
+            ".route-scanline {",
+            "@keyframes scanline-sweep {",
+            "@keyframes scanline-glow {",
+        )
+        for selector in dead_selectors:
+            self.assertNotIn(selector, css)
+
+        dead_variables = (
+            "--bg-elevated:",
+            "--surface-dark:",
+            "--accent-soft:",
+            "--gold-light:",
+            "--positive:",
+            "--shadow-md:",
+            "--font-display:",
+        )
+        for variable in dead_variables:
+            self.assertNotIn(variable, css)
+
+        protected_selectors = (
+            ".aifin-shell {",
+            ".aifin-topbar {",
+            ".brand-button {",
+            ".main-nav {",
+            ".status-strip {",
+            ".shell-stage {",
+            ".module-view {",
+            ".factor-lab-hero {",
+            ".factor-accuracy-meta {",
+            ".factor-matrix-panel {",
+            ".factor-live-divider td {",
+            ".factor-trend-divider {",
+            ".factor-calendar-drawer {",
+            "@media (max-width: 980px) {",
+            "@media (max-width: 620px) {",
+            "@media (prefers-reduced-motion: reduce) {",
+        )
+        for selector in protected_selectors:
+            self.assertIn(selector, css)
+
     def test_node_vm_scheduler_and_abort_host_contract(self) -> None:
         result = _run_factor_lab_hook(
             """

@@ -6,10 +6,8 @@
 
   /* Palette */
   --bg: #F8F7F2;
-  --bg-elevated: #FFFFFF;
   --bg-subtle: #F1F0EA;
   --bg-warm: #FBFAF6;
-  --surface-dark: #1A1F2E;
 
   --text: #171A20;
   --text-secondary: #5A626B;
@@ -17,11 +15,8 @@
 
   --accent: #155C3E;
   --accent-light: #1E704E;
-  --accent-soft: rgba(21, 92, 62, 0.08);
   --gold: #B8862E;
-  --gold-light: #D8AD58;
 
-  --positive: #16A34A;
   --negative: #DC2626;
   --info: #3F6F8F;
 
@@ -30,10 +25,8 @@
   --border-strong: rgba(24, 30, 38, 0.12);
 
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.04);
-  --shadow-md: 0 8px 28px rgba(32, 36, 42, 0.055);
   --shadow-lg: 0 24px 64px rgba(32, 36, 42, 0.075);
 
-  --font-display: "Iowan Old Style", "Songti SC", "STSong", Georgia, serif;
   --font-heading: "Avenir Next", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --font-mono: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
@@ -269,62 +262,12 @@ button {
   }
 }
 
-.eyebrow {
-  margin: 0 0 14px;
-  color: var(--accent);
-  font-size: 12px;
-  font-family: var(--font-mono);
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
 /* ─── Module Views ─── */
 .module-view {
   padding: clamp(26px, 5vw, 56px);
   background:
     radial-gradient(ellipse 62% 48% at 50% 0%, rgba(255, 255, 255, 0.52), transparent 64%),
     linear-gradient(180deg, var(--bg-warm) 0%, var(--bg) 100%);
-}
-
-.module-view .eyebrow {
-  color: var(--accent);
-}
-
-.factor-stack {
-  display: grid;
-  gap: 8px;
-}
-
-.factor-stack span {
-  display: grid;
-  place-items: center;
-  height: 72px;
-  border: 1px solid rgba(27, 107, 74, 0.18);
-  border-radius: 8px;
-  color: var(--accent);
-  background: rgba(27, 107, 74, 0.04);
-  font-size: 12px;
-  font-family: var(--font-mono);
-  font-weight: 500;
-  letter-spacing: 0.03em;
-  transition: background 180ms ease, border-color 180ms ease;
-}
-
-.factor-stack span:hover {
-  background: rgba(27, 107, 74, 0.08);
-  border-color: rgba(27, 107, 74, 0.3);
-}
-
-.factor-matrix {
-  min-height: 100%;
-  border-radius: 8px;
-  background:
-    linear-gradient(135deg, transparent 0 48%, rgba(200, 150, 62, 0.06) 50%, transparent 52%),
-    linear-gradient(45deg, transparent 0 48%, rgba(27, 107, 74, 0.05) 50%, transparent 52%),
-    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.03) 0 1px, transparent 1px 48px),
-    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.025) 0 1px, transparent 1px 48px);
-  border: 1px solid var(--line);
 }
 
 /* ─── Factor Lab Scoreboard ─── */
@@ -343,7 +286,6 @@ button {
 .factor-lab-hero,
 .factor-filter-bar,
 .factor-matrix-panel,
-.factor-accuracy-panel,
 .factor-task-panel,
 .factor-ranking-panel {
   min-width: 0;
@@ -483,12 +425,7 @@ button {
   gap: 8px;
 }
 
-.factor-filter-group.is-hidden {
-  display: none;
-}
-
 .factor-filter-group button,
-.factor-refresh-btn,
 .factor-pagination button,
 .factor-calendar-head button,
 .factor-calendar-link {
@@ -525,27 +462,9 @@ button {
   background: rgba(21, 92, 62, 0.08);
 }
 
-.factor-refresh-btn {
-  height: 38px;
-  margin-left: auto;
-  padding: 0 20px;
-  border-color: var(--accent);
-  color: #fff;
-  background: var(--accent);
-}
-
-.factor-refresh-btn:hover {
-  background: var(--accent-light);
-  transform: translateY(-1px);
-}
-
 .factor-matrix-panel {
   min-height: 560px;
   padding: 24px 28px 18px;
-}
-
-.factor-accuracy-panel {
-  padding: 22px 28px 24px;
 }
 
 .factor-task-panel,
@@ -581,8 +500,7 @@ button {
   gap: 8px;
 }
 
-.factor-range-badge,
-.factor-scheme-badge {
+.factor-range-badge {
   display: inline-flex;
   align-items: center;
   min-height: 32px;
@@ -594,12 +512,6 @@ button {
   font-size: 12px;
   font-weight: 760;
   white-space: nowrap;
-}
-
-.factor-scheme-badge {
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .factor-pagination {
@@ -878,33 +790,6 @@ button {
   white-space: nowrap;
 }
 
-.factor-sample-badge {
-  color: var(--text-tertiary);
-}
-
-/* ─── 实盘起点 / 回测标注 ─── */
-.factor-live-since-badge {
-  display: inline-flex;
-  align-items: center;
-  min-height: 18px;
-  margin-top: 2px;
-  margin-right: 4px;
-  padding: 0 6px;
-  border: 1px solid rgba(21, 92, 62, 0.3);
-  border-radius: 999px;
-  color: var(--accent);
-  background: rgba(21, 92, 62, 0.07);
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.factor-live-since-badge.is-backtest-only {
-  border-color: rgba(93, 101, 111, 0.2);
-  color: var(--text-tertiary);
-  background: rgba(93, 101, 111, 0.06);
-}
-
 /* ─── 口径选择 ─── */
 .factor-source-select select {
   padding: 6px 10px;
@@ -1095,160 +980,6 @@ button {
   font-weight: 700;
 }
 
-.factor-accuracy-wrap {
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.82);
-}
-
-.factor-accuracy-table {
-  width: 100%;
-  min-width: 760px;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-
-.factor-accuracy-table th,
-.factor-accuracy-table td {
-  height: 68px;
-  padding: 0 22px;
-  border-bottom: 1px solid var(--line);
-  border-right: 1px solid rgba(31, 41, 35, 0.06);
-  text-align: center;
-  vertical-align: middle;
-}
-
-.factor-accuracy-table th {
-  height: 44px;
-  color: var(--text-tertiary);
-  background: var(--bg-subtle);
-  font-size: 16px;
-  font-weight: 800;
-}
-
-.factor-accuracy-table th:first-child,
-.factor-accuracy-table td:first-child {
-  width: 120px;
-}
-
-.factor-accuracy-table td:first-child {
-  color: var(--text);
-  font-size: 22px;
-  font-weight: 840;
-}
-
-.factor-accuracy-table tr:last-child td {
-  border-bottom: 0;
-}
-
-.factor-accuracy-table th:last-child,
-.factor-accuracy-table td:last-child {
-  border-right: 0;
-}
-
-.factor-accuracy-score {
-  color: var(--text-secondary);
-}
-
-.factor-accuracy-value {
-  margin-bottom: 8px;
-  font-family: var(--font-heading);
-  font-size: 22px;
-  font-weight: 820;
-  line-height: 1;
-}
-
-.factor-accuracy-track {
-  width: 100%;
-  height: 7px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: rgba(31, 41, 35, 0.08);
-}
-
-.factor-accuracy-track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: currentColor;
-}
-
-.factor-accuracy-score.metric-good {
-  color: var(--accent);
-}
-
-.factor-accuracy-score.metric-warn {
-  color: var(--gold);
-}
-
-.factor-accuracy-score.metric-bad {
-  color: var(--negative);
-}
-
-.factor-status-pill {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 64px;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 760;
-}
-
-.factor-status-pill.is-running {
-  color: var(--accent);
-  background: rgba(21, 92, 62, 0.09);
-  border: 1px solid rgba(21, 92, 62, 0.22);
-}
-
-.factor-status-pill.is-active {
-  color: var(--accent);
-  background: rgba(21, 92, 62, 0.09);
-  border: 1px solid rgba(21, 92, 62, 0.22);
-}
-
-.factor-status-pill.is-paused {
-  color: var(--gold);
-  background: rgba(185, 135, 40, 0.10);
-  border: 1px solid rgba(185, 135, 40, 0.24);
-}
-
-.factor-status-pill.is-draft,
-.factor-status-pill.is-validated,
-.factor-status-pill.is-shadow {
-  color: var(--info);
-  background: rgba(63, 111, 143, 0.09);
-  border: 1px solid rgba(63, 111, 143, 0.22);
-}
-
-.factor-status-pill.is-complete {
-  color: var(--info);
-  background: rgba(63, 111, 143, 0.09);
-  border: 1px solid rgba(63, 111, 143, 0.22);
-}
-
-.factor-status-pill.is-weak {
-  color: var(--negative);
-  background: rgba(220, 38, 38, 0.07);
-  border: 1px solid rgba(220, 38, 38, 0.20);
-}
-
-.factor-status-pill.is-archived {
-  color: var(--text-tertiary);
-  background: rgba(93, 101, 111, 0.08);
-  border: 1px solid rgba(93, 101, 111, 0.20);
-}
-
-.factor-status-pill.is-retired,
-.factor-status-pill.is-failed {
-  color: var(--negative);
-  background: rgba(220, 38, 38, 0.07);
-  border: 1px solid rgba(220, 38, 38, 0.20);
-}
-
 .factor-calendar-link {
   display: inline-flex;
   align-items: center;
@@ -1410,48 +1141,6 @@ button {
   font-size: 12px;
 }
 
-/* ─── Route Transition ─── */
-.route-scanline {
-  position: fixed;
-  top: 56px;
-  left: 0;
-  right: 0;
-  z-index: 900;
-  height: 100%;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.route-scanline::before {
-  position: absolute;
-  top: 0;
-  left: -100%;
-  width: 100%;
-  height: 2px;
-  content: "";
-  background: linear-gradient(90deg, transparent, var(--accent), var(--gold), transparent);
-  animation: scanline-sweep 380ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
-}
-
-.route-scanline::after {
-  position: absolute;
-  inset: 0;
-  content: "";
-  background: linear-gradient(180deg, rgba(27, 107, 74, 0.03), transparent 20%);
-  animation: scanline-glow 380ms ease forwards;
-}
-
-@keyframes scanline-sweep {
-  from { left: -100%; }
-  to { left: 100%; }
-}
-
-@keyframes scanline-glow {
-  0% { opacity: 1; }
-  70% { opacity: 0.8; }
-  100% { opacity: 0; }
-}
-
 /* ─── Responsive ─── */
 @media (max-width: 980px) {
   .aifin-topbar {
@@ -1514,10 +1203,6 @@ button {
     justify-content: flex-start;
     overflow-x: auto;
     padding-bottom: 2px;
-  }
-
-  .factor-refresh-btn {
-    margin-left: 0;
   }
 }
 
@@ -1583,7 +1268,6 @@ button {
   .factor-lab-hero,
   .factor-filter-bar,
   .factor-matrix-panel,
-  .factor-accuracy-panel,
   .factor-task-panel,
   .factor-ranking-panel {
     padding: 18px;
@@ -1606,8 +1290,7 @@ button {
   }
 
   .factor-filter-bar select,
-  .factor-month-input select,
-  .factor-refresh-btn {
+  .factor-month-input select {
     width: 100%;
   }
 
