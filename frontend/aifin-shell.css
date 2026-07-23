@@ -316,7 +316,7 @@ button {
   overflow-wrap: normal;
 }
 
-.factor-lab-hero p:not(.eyebrow) {
+.factor-lab-hero p {
   max-width: 880px;
   margin: 12px 0 0;
   color: var(--text-secondary);

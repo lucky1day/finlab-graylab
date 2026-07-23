@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import subprocess
 import textwrap
 import unittest
@@ -542,8 +543,10 @@ class FactorLabRankingTests(unittest.TestCase):
         for selector in dead_selectors:
             self.assertNotIn(selector, css)
 
-        dead_tokens = (
+        dead_class_tokens = (
+            ".eyebrow",
             ".factor-stack",
+            ".factor-matrix",
             ".factor-filter-group.is-hidden",
             ".factor-refresh-btn",
             ".factor-accuracy-panel",
@@ -556,10 +559,16 @@ class FactorLabRankingTests(unittest.TestCase):
             ".factor-accuracy-track",
             ".factor-status-pill",
             ".route-scanline",
+        )
+        for token in dead_class_tokens:
+            boundary_aware_pattern = re.escape(token) + r"(?![\w-])"
+            self.assertIsNone(re.search(boundary_aware_pattern, css))
+
+        dead_animation_tokens = (
             "scanline-sweep",
             "scanline-glow",
         )
-        for token in dead_tokens:
+        for token in dead_animation_tokens:
             self.assertNotIn(token, css)
 
         self.assertEqual(css.count(".factor-sample-badge {"), 1)
