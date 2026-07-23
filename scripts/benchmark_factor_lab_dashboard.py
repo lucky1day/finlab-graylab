@@ -23,6 +23,11 @@ from urllib.parse import SplitResult, urlsplit
 
 USER_AGENT = "bond-factor-lab-api-benchmark/1.0"
 SCHEMA_VERSION = "factor-lab-dashboard-v1"
+MAX_RAW_JSON_BYTES = 1_500_000
+MAX_GZIP_JSON_BYTES = 100_000
+MAX_FRESH_SNAPSHOT_AGE_MS = 1_000
+CACHE_STATUSES = {"HIT", "MISS", "STALE", "UNAVAILABLE"}
+FRESH_CACHE_STATUSES = {"HIT", "MISS"}
 ROW_FIELDS = [
     "predict_date",
     "feature_date",
@@ -100,6 +105,14 @@ class Attempt:
     reconnected: bool
     success: bool
     error: str | None
+    content_type: str | None = None
+    content_length: int | None = None
+    cache_control: str | None = None
+    vary: str | None = None
+    snapshot_id_header: str | None = None
+    snapshot_age_ms_header: int | None = None
+    snapshot_id_body: str | None = None
+    snapshot_age_ms_body: int | None = None
 
 
 def nearest_rank(values: list[float], percentile: float) -> float:
@@ -129,17 +142,32 @@ def summarize_attempts(attempts: list[Attempt]) -> dict[str, Any]:
     """汇总全部尝试；任何失败、stale 或 schema 错误都会阻断验收。"""
 
     latency = _latency_summary(attempts)
-    failures = [
-        {"index": attempt.index, "error": attempt.error or "probe_failed"}
+    contract_errors = {
+        attempt.index: _attempt_contract_violations(attempt)
         for attempt in attempts
-        if not attempt.success
-    ]
+    }
+    failures: list[dict[str, int | str]] = []
+    for attempt in attempts:
+        violations = contract_errors[attempt.index]
+        if not attempt.success:
+            failures.append(
+                {"index": attempt.index, "error": attempt.error or "probe_failed"}
+            )
+        elif violations:
+            failures.append(
+                {
+                    "index": attempt.index,
+                    "error": "response_contract_invalid:" + ",".join(violations),
+                }
+            )
     formal = len(attempts) >= 200
     gate_failures: list[str] = []
     if not formal:
         gate_failures.append("insufficient_attempts")
     if failures:
         gate_failures.append("attempt_failures")
+    if any(contract_errors.values()):
+        gate_failures.append("response_contract_invalid")
     if any(attempt.stale is True for attempt in attempts):
         gate_failures.append("stale_response")
     if any(not attempt.schema_valid for attempt in attempts):
@@ -151,11 +179,14 @@ def summarize_attempts(attempts: list[Attempt]) -> dict[str, Any]:
         "formal_acceptance": formal,
         "acceptance": formal and not gate_failures,
         "latency_ms": latency,
-        "success_count": sum(attempt.success for attempt in attempts),
+        "success_count": len(attempts) - len(failures),
         "failure_count": len(failures),
         "failures": failures,
         "stale_count": sum(attempt.stale is True for attempt in attempts),
         "schema_invalid_count": sum(not attempt.schema_valid for attempt in attempts),
+        "response_contract_invalid_count": sum(
+            bool(violations) for violations in contract_errors.values()
+        ),
         "gate_failures": gate_failures,
     }
 
@@ -274,6 +305,90 @@ def _is_integer(value: object) -> bool:
         and float(value).is_integer()
         and abs(float(value)) <= MAX_SAFE_INTEGER
     )
+
+
+def _attempt_contract_violations(attempt: Attempt) -> list[str]:
+    """仅根据报告字段重验响应合同，不能信任采集阶段的 success 标志。"""
+
+    violations: list[str] = []
+    content_type = (
+        attempt.content_type if isinstance(attempt.content_type, str) else ""
+    )
+    media_type = content_type.split(";", 1)[0]
+    if media_type.strip().casefold() != "application/json":
+        violations.append("content_type")
+    content_encoding = (
+        attempt.content_encoding
+        if isinstance(attempt.content_encoding, str)
+        else ""
+    )
+    if content_encoding.strip().casefold() != "gzip":
+        violations.append("content_encoding")
+    if (
+        not _is_integer(attempt.content_length)
+        or int(attempt.content_length) != attempt.wire_bytes
+    ):
+        violations.append("content_length")
+    cache_control = (
+        attempt.cache_control if isinstance(attempt.cache_control, str) else ""
+    )
+    if cache_control.strip().casefold() != "no-store":
+        violations.append("cache_control")
+    vary = attempt.vary if isinstance(attempt.vary, str) else ""
+    vary_tokens = {
+        token.strip().casefold()
+        for token in vary.split(",")
+        if token.strip()
+    }
+    if "accept-encoding" not in vary_tokens:
+        violations.append("vary_accept_encoding")
+    cache_status = (
+        attempt.cache_status if isinstance(attempt.cache_status, str) else ""
+    )
+    if cache_status.strip().upper() not in FRESH_CACHE_STATUSES:
+        violations.append("cache_status")
+    if attempt.stale is not False or attempt.stale_header is not None:
+        violations.append("stale")
+    if attempt.status != 200:
+        violations.append("status")
+    if not attempt.schema_valid:
+        violations.append("schema")
+    if (
+        not _is_integer(attempt.wire_bytes)
+        or int(attempt.wire_bytes) < 0
+        or int(attempt.wire_bytes) > MAX_GZIP_JSON_BYTES
+    ):
+        violations.append("wire_budget")
+    if (
+        not _is_integer(attempt.raw_bytes)
+        or int(attempt.raw_bytes) < 0
+        or int(attempt.raw_bytes) > MAX_RAW_JSON_BYTES
+    ):
+        violations.append("raw_budget")
+    if (
+        not isinstance(attempt.snapshot_id_body, str)
+        or SNAPSHOT_ID_PATTERN.fullmatch(attempt.snapshot_id_body) is None
+        or attempt.snapshot_id_header != attempt.snapshot_id_body
+    ):
+        violations.append("snapshot_id")
+    if (
+        not _is_integer(attempt.snapshot_age_ms_header)
+        or not _is_integer(attempt.snapshot_age_ms_body)
+        or int(attempt.snapshot_age_ms_header) != int(attempt.snapshot_age_ms_body)
+        or int(attempt.snapshot_age_ms_header) < 0
+        or int(attempt.snapshot_age_ms_header) > MAX_FRESH_SNAPSHOT_AGE_MS
+    ):
+        violations.append("snapshot_age")
+    return violations
+
+
+def _nonnegative_integer_header(value: str | None, *, name: str) -> int:
+    if value is None or re.fullmatch(r"0|[1-9][0-9]*", value) is None:
+        raise ValueError(f"{name} must be a canonical non-negative integer")
+    parsed = int(value)
+    if parsed > MAX_SAFE_INTEGER:
+        raise ValueError(f"{name} exceeds the safe integer range")
+    return parsed
 
 
 def _canonical_string(value: object, *, allow_empty: bool = False) -> str:
@@ -450,6 +565,16 @@ def _single_attempt(
     cache_status: str | None = None
     stale_header: str | None = None
     server_timing: str | None = None
+    content_type: str | None = None
+    content_length_header: str | None = None
+    content_length: int | None = None
+    cache_control: str | None = None
+    vary: str | None = None
+    snapshot_id_header: str | None = None
+    snapshot_age_header: str | None = None
+    snapshot_age_ms_header: int | None = None
+    snapshot_id_body: str | None = None
+    snapshot_age_ms_body: int | None = None
     schema_valid = False
     stale: bool | None = None
     error_message: str | None = None
@@ -477,11 +602,25 @@ def _single_attempt(
                 response = connection.getresponse()
                 ttfb_ms = (time.perf_counter() - request_started) * 1000
                 status = response.status
+                content_type = response.getheader("Content-Type")
+                content_length_header = response.getheader("Content-Length")
                 encoding = response.getheader("Content-Encoding")
+                cache_control = response.getheader("Cache-Control")
+                vary = response.getheader("Vary")
                 cache_status = response.getheader("X-Dashboard-Cache")
+                snapshot_id_header = response.getheader(
+                    "X-Dashboard-Snapshot-ID"
+                )
+                snapshot_age_header = response.getheader(
+                    "X-Dashboard-Snapshot-Age"
+                )
                 stale_header = response.getheader("X-Dashboard-Warning")
                 server_timing = response.getheader("Server-Timing")
-                wire = response.read()
+                try:
+                    wire = response.read()
+                except http.client.IncompleteRead as error:
+                    # 保留实际收到的 wire bytes，让 Content-Length 合同给出稳定失败。
+                    wire = error.partial
                 break
             except _RECONNECTABLE:
                 if request_number:
@@ -490,6 +629,30 @@ def _single_attempt(
                 connection = _new_connection(parsed, timeout_seconds)
                 existing_socket = False
                 reconnected = True
+        content_length = _nonnegative_integer_header(
+            content_length_header,
+            name="Content-Length",
+        )
+        if content_length != len(wire):
+            raise ValueError(
+                "Content-Length does not match actual wire bytes: "
+                f"header={content_length} wire={len(wire)}"
+            )
+        if (
+            content_type is None
+            or content_type.split(";", 1)[0].strip().casefold()
+            != "application/json"
+        ):
+            raise ValueError("Content-Type must be application/json")
+        if cache_control is None or cache_control.strip().casefold() != "no-store":
+            raise ValueError("Cache-Control must be no-store")
+        vary_tokens = {
+            token.strip().casefold()
+            for token in (vary or "").split(",")
+            if token.strip()
+        }
+        if "accept-encoding" not in vary_tokens:
+            raise ValueError("Vary must contain Accept-Encoding")
         normalized_encoding = encoding.casefold().strip() if encoding else None
         if normalized_encoding is None:
             raw = wire
@@ -501,10 +664,49 @@ def _single_attempt(
         validate_dashboard_schema(payload)
         schema_valid = True
         stale = payload["stale"]
+        snapshot_id_body = payload["snapshot_id"]
+        snapshot_age_ms_body = int(payload["snapshot_age_ms"])
         if normalized_encoding != "gzip":
             raise ValueError("gzip content-encoding is required for this probe")
+        if len(wire) > MAX_GZIP_JSON_BYTES:
+            raise ValueError(
+                "dashboard wire bytes exceed gzip budget: "
+                f"bytes={len(wire)} limit={MAX_GZIP_JSON_BYTES}"
+            )
+        if len(raw) > MAX_RAW_JSON_BYTES:
+            raise ValueError(
+                "dashboard raw bytes exceed budget: "
+                f"bytes={len(raw)} limit={MAX_RAW_JSON_BYTES}"
+            )
         if status != 200:
             raise ValueError(f"unexpected HTTP status {status}")
+        normalized_cache_status = (cache_status or "").strip().upper()
+        if normalized_cache_status not in CACHE_STATUSES:
+            raise ValueError("X-Dashboard-Cache is missing or invalid")
+        if normalized_cache_status not in FRESH_CACHE_STATUSES:
+            raise ValueError(
+                "X-Dashboard-Cache must be HIT or MISS for acceptance"
+            )
+        if (
+            snapshot_id_header is None
+            or snapshot_id_header.strip() != snapshot_id_body
+        ):
+            raise ValueError(
+                "X-Dashboard-Snapshot-ID does not match body snapshot_id"
+            )
+        snapshot_age_ms_header = _nonnegative_integer_header(
+            snapshot_age_header,
+            name="X-Dashboard-Snapshot-Age",
+        )
+        if snapshot_age_ms_header != snapshot_age_ms_body:
+            raise ValueError(
+                "X-Dashboard-Snapshot-Age does not match body snapshot_age_ms"
+            )
+        if snapshot_age_ms_header > MAX_FRESH_SNAPSHOT_AGE_MS:
+            raise ValueError(
+                "fresh snapshot age exceeds one-second contract: "
+                f"age_ms={snapshot_age_ms_header}"
+            )
         if stale or stale_header:
             raise ValueError("dashboard response is stale")
     except Exception as error:  # 业务失败转为 attempt；进程中断必须向上传播。
@@ -533,6 +735,14 @@ def _single_attempt(
         reconnected=reconnected,
         success=error_message is None,
         error=error_message,
+        content_type=content_type,
+        content_length=content_length,
+        cache_control=cache_control,
+        vary=vary,
+        snapshot_id_header=snapshot_id_header,
+        snapshot_age_ms_header=snapshot_age_ms_header,
+        snapshot_id_body=snapshot_id_body,
+        snapshot_age_ms_body=snapshot_age_ms_body,
     )
     if error_message is not None:
         connection.close()

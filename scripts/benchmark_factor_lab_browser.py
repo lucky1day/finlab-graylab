@@ -51,6 +51,7 @@ class BrowserAttempt:
     success: bool
     error: str | None
     dashboard_request_urls: list[str]
+    dashboard_response_evidence: list[dict[str, Any]]
     legacy_request_urls: list[str]
     console_errors: list[str]
     page_errors: list[str]
@@ -152,17 +153,31 @@ def select_ready_context(
 
     target_frames: set[str]
     if ready_frame_url_substring:
-        target_frames = {
-            frame_id
-            for frame_id, url in frame_urls.items()
-            if ready_frame_url_substring in url
-        }
+        target_frames = _matching_ready_frame_ids(
+            frame_urls,
+            main_frame_id,
+            ready_frame_url_substring,
+        )
+        if len(target_frames) > 1:
+            raise ValueError(f"ready_frame_match_count={len(target_frames)}")
     else:
         target_frames = {main_frame_id}
     return next(
         (context_id for context_id, frame_id in contexts.items() if frame_id in target_frames),
         None,
     )
+
+
+def _matching_ready_frame_ids(
+    frame_urls: dict[str, str],
+    main_frame_id: str,
+    ready_frame_url_substring: str,
+) -> set[str]:
+    return {
+        frame_id
+        for frame_id, url in frame_urls.items()
+        if frame_id != main_frame_id and ready_frame_url_substring in url
+    }
 
 
 class CDPClient:
@@ -406,11 +421,32 @@ def _browser_call(browser: OwnedBrowser, method: str, params: dict[str, Any]) ->
         client.close()
 
 
-def _close_page(browser: OwnedBrowser, target_id: str) -> None:
+def _close_page(browser: OwnedBrowser, target_id: str) -> bool:
     try:
-        _browser_call(browser, "Target.closeTarget", {"targetId": target_id})
+        result = _browser_call(browser, "Target.closeTarget", {"targetId": target_id})
+    except Exception:
+        return False
+    return result.get("success") is True
+
+
+def _close_target_with_fallback(
+    client: CDPClient,
+    browser: OwnedBrowser,
+    target_id: str,
+) -> bool:
+    """仅接受显式 success=true；否则通过独立 browser websocket 二次关闭。"""
+
+    try:
+        result = client.call(
+            "Target.closeTarget",
+            {"targetId": target_id},
+            timeout=2,
+        )
+        if result.get("success") is True:
+            return True
     except Exception:
         pass
+    return _close_page(browser, target_id)
 
 
 def _drain_events(client: CDPClient) -> list[dict[str, Any]]:
@@ -428,8 +464,10 @@ def _record_event(
     contexts: dict[tuple[str, int], str],
     frame_urls: dict[str, str],
     frame_sessions: dict[str, str],
-    dashboard_requests: dict[str, str],
-    legacy_requests: dict[str, str],
+    dashboard_requests: list[str],
+    legacy_requests: list[str],
+    dashboard_response_evidence: list[dict[str, Any]],
+    dashboard_request_indices: dict[tuple[str, str], int],
     console_errors: list[str],
     page_errors: list[str],
 ) -> bool:
@@ -466,7 +504,26 @@ def _record_event(
                     contexts.pop(key, None)
     elif method == "Network.requestWillBeSent":
         request = params.get("request", {})
-        request_id = f"{event_session}:{params.get('requestId', 'unknown')}"
+        request_key = (event_session, str(params.get("requestId", "unknown")))
+        previous_index = dashboard_request_indices.get(request_key)
+        redirect_response = params.get("redirectResponse")
+        if previous_index is not None and isinstance(redirect_response, dict):
+            previous = dashboard_response_evidence[previous_index]
+            previous["response_received"] = True
+            previous["redirected"] = True
+            previous["status"] = redirect_response.get("status")
+            previous["from_disk_cache"] = (
+                previous.get("from_disk_cache") is True
+                or redirect_response.get("fromDiskCache") is True
+            )
+            previous["from_service_worker"] = (
+                previous.get("from_service_worker") is True
+                or redirect_response.get("fromServiceWorker") is True
+            )
+            previous["from_prefetch_cache"] = (
+                previous.get("from_prefetch_cache") is True
+                or redirect_response.get("fromPrefetchCache") is True
+            )
         request_url = str(request.get("url", ""))
         frame_id = params.get("frameId")
         if params.get("type") == "Document" and isinstance(frame_id, str):
@@ -476,9 +533,55 @@ def _record_event(
                 frame_sessions[frame_id] = event_session
         kind, redacted = classify_factor_lab_request(request_url)
         if kind == "dashboard" and redacted:
-            dashboard_requests[request_id] = redacted
+            dashboard_requests.append(redacted)
+            dashboard_response_evidence.append(
+                {
+                    "url": redacted,
+                    "response_received": False,
+                    "redirected": False,
+                    "status": None,
+                    "from_disk_cache": False,
+                    "from_service_worker": False,
+                    "from_prefetch_cache": False,
+                }
+            )
+            dashboard_request_indices[request_key] = (
+                len(dashboard_response_evidence) - 1
+            )
         elif kind == "legacy" and redacted:
-            legacy_requests[request_id] = redacted
+            legacy_requests.append(redacted)
+            dashboard_request_indices.pop(request_key, None)
+        else:
+            dashboard_request_indices.pop(request_key, None)
+    elif method == "Network.requestServedFromCache":
+        request_key = (event_session, str(params.get("requestId", "unknown")))
+        evidence_index = dashboard_request_indices.get(request_key)
+        if evidence_index is not None:
+            dashboard_response_evidence[evidence_index]["from_disk_cache"] = True
+    elif method == "Network.responseReceived":
+        response = params.get("response", {})
+        if isinstance(response, dict):
+            request_key = (
+                event_session,
+                str(params.get("requestId", "unknown")),
+            )
+            evidence_index = dashboard_request_indices.get(request_key)
+            if evidence_index is not None:
+                evidence = dashboard_response_evidence[evidence_index]
+                evidence["response_received"] = True
+                evidence["status"] = response.get("status")
+                evidence["from_disk_cache"] = (
+                    evidence.get("from_disk_cache") is True
+                    or response.get("fromDiskCache") is True
+                )
+                evidence["from_service_worker"] = (
+                    evidence.get("from_service_worker") is True
+                    or response.get("fromServiceWorker") is True
+                )
+                evidence["from_prefetch_cache"] = (
+                    evidence.get("from_prefetch_cache") is True
+                    or response.get("fromPrefetchCache") is True
+                )
     elif method == "Runtime.consoleAPICalled" and params.get("type") == "error":
         console_errors.append("Runtime.consoleAPICalled:error")
     elif method == "Log.entryAdded":
@@ -531,27 +634,27 @@ def _enable_cdp_session(
         )
         for domain in domains:
             client.call(f"{domain}.enable", timeout=3, session_id=session_id)
+        client.call(
+            "Network.setCacheDisabled",
+            {"cacheDisabled": True},
+            timeout=3,
+            session_id=session_id,
+        )
+        client.call(
+            "Network.setBypassServiceWorker",
+            {"bypass": True},
+            timeout=3,
+            session_id=session_id,
+        )
+        client.call(
+            "Network.setUserAgentOverride",
+            {"userAgent": USER_AGENT},
+            timeout=3,
+            session_id=session_id,
+        )
         if target_type in _PAGE_TARGET_TYPES:
             client.call(
-                "Network.setCacheDisabled",
-                {"cacheDisabled": True},
-                timeout=3,
-                session_id=session_id,
-            )
-            client.call(
-                "Network.setBypassServiceWorker",
-                {"bypass": True},
-                timeout=3,
-                session_id=session_id,
-            )
-            client.call(
                 "Network.clearBrowserCache",
-                timeout=3,
-                session_id=session_id,
-            )
-            client.call(
-                "Network.setUserAgentOverride",
-                {"userAgent": USER_AGENT},
                 timeout=3,
                 session_id=session_id,
             )
@@ -637,8 +740,10 @@ def _consume_cdp_events(
     contexts: dict[tuple[str, int], str],
     frame_urls: dict[str, str],
     frame_sessions: dict[str, str],
-    dashboard_requests: dict[str, str],
-    legacy_requests: dict[str, str],
+    dashboard_requests: list[str],
+    legacy_requests: list[str],
+    dashboard_response_evidence: list[dict[str, Any]],
+    dashboard_request_indices: dict[tuple[str, str], int],
     console_errors: list[str],
     page_errors: list[str],
 ) -> bool:
@@ -663,14 +768,18 @@ def _consume_cdp_events(
                 target_info.get("type") if isinstance(target_info, dict) else None
             )
             if isinstance(child_session, str):
-                if isinstance(target_id, str):
-                    session_targets[child_session] = target_id
-                    frame_sessions[target_id] = child_session
-                    if isinstance(target_url, str) and target_url:
-                        frame_urls[target_id] = target_url
                 normalized_target_type = (
                     target_type if isinstance(target_type, str) else ""
                 )
+                if isinstance(target_id, str):
+                    session_targets[child_session] = target_id
+                    frame_sessions[target_id] = child_session
+                    if (
+                        normalized_target_type in _PAGE_TARGET_TYPES
+                        and isinstance(target_url, str)
+                        and target_url
+                    ):
+                        frame_urls[target_id] = target_url
                 session_target_types[child_session] = normalized_target_type
                 known_target_type = normalized_target_type in _TARGET_SESSION_DOMAINS
                 if child_session not in configured_sessions:
@@ -741,10 +850,85 @@ def _consume_cdp_events(
             frame_sessions=frame_sessions,
             dashboard_requests=dashboard_requests,
             legacy_requests=legacy_requests,
+            dashboard_response_evidence=dashboard_response_evidence,
+            dashboard_request_indices=dashboard_request_indices,
             console_errors=console_errors,
             page_errors=page_errors,
         ) or crashed
     return crashed
+
+
+def validate_dashboard_response_evidence(
+    dashboard_request_urls: list[str],
+    evidence: list[object],
+) -> str | None:
+    """只接受与请求逐项对应、HTTP 200、无跳转且未命中缓存的响应。"""
+
+    if len(evidence) != len(dashboard_request_urls):
+        return "dashboard_response_count_invalid"
+    required_fields = {
+        "url",
+        "response_received",
+        "redirected",
+        "status",
+        "from_disk_cache",
+        "from_service_worker",
+        "from_prefetch_cache",
+    }
+    cache_fields = (
+        "from_disk_cache",
+        "from_service_worker",
+        "from_prefetch_cache",
+    )
+    typed_evidence: list[dict[str, Any]] = []
+    for request_url, item in zip(dashboard_request_urls, evidence, strict=True):
+        if not isinstance(item, dict):
+            return "dashboard_response_evidence_invalid"
+        if set(item) - required_fields:
+            return "dashboard_response_evidence_invalid"
+        if not {
+            "url",
+            "response_received",
+            "redirected",
+        }.issubset(item):
+            return "dashboard_response_evidence_invalid"
+        item_url = item["url"]
+        if (
+            not isinstance(item_url, str)
+            or not isinstance(request_url, str)
+            or _safe_url_without_query(item_url) != item_url
+            or _safe_url_without_query(request_url) != request_url
+            or item_url != request_url
+        ):
+            return "dashboard_response_evidence_invalid"
+        if (
+            item["response_received"] is not False
+            and item["response_received"] is not True
+        ):
+            return "dashboard_response_evidence_invalid"
+        if item["redirected"] is not False and item["redirected"] is not True:
+            return "dashboard_response_evidence_invalid"
+        if any(
+            item.get(field) is not False and item.get(field) is not True
+            for field in cache_fields
+        ):
+            return "dashboard_cache_evidence_invalid"
+        typed_evidence.append(item)
+
+    if any(item["response_received"] is False for item in typed_evidence):
+        return "dashboard_response_count_invalid"
+    if any(
+        type(item.get("status")) is not int
+        for item in typed_evidence
+    ):
+        return "dashboard_response_status_invalid"
+    if any(item["redirected"] is True for item in typed_evidence):
+        return "dashboard_redirect_detected"
+    if any(item["status"] != 200 for item in typed_evidence):
+        return "dashboard_response_status_invalid"
+    if any(item[field] is True for item in typed_evidence for field in cache_fields):
+        return "dashboard_cache_or_service_worker"
+    return None
 
 
 def run_browser_attempt(
@@ -764,8 +948,10 @@ def run_browser_attempt(
     client: CDPClient | None = None
     started_at = datetime.now(timezone.utc).isoformat()
     navigation_started = time.monotonic()
-    dashboard_requests: dict[str, str] = {}
-    legacy_requests: dict[str, str] = {}
+    dashboard_requests: list[str] = []
+    legacy_requests: list[str] = []
+    dashboard_response_evidence: list[dict[str, Any]] = []
+    dashboard_request_indices: dict[tuple[str, str], int] = {}
     console_errors: list[str] = []
     page_errors: list[str] = []
     ready: dict[str, Any] | None = None
@@ -801,6 +987,8 @@ def run_browser_attempt(
             frame_sessions=frame_sessions,
             dashboard_requests=dashboard_requests,
             legacy_requests=legacy_requests,
+            dashboard_response_evidence=dashboard_response_evidence,
+            dashboard_request_indices=dashboard_request_indices,
             console_errors=console_errors,
             page_errors=page_errors,
         )
@@ -830,15 +1018,18 @@ def run_browser_attempt(
                 frame_sessions=frame_sessions,
                 dashboard_requests=dashboard_requests,
                 legacy_requests=legacy_requests,
+                dashboard_response_evidence=dashboard_response_evidence,
+                dashboard_request_indices=dashboard_request_indices,
                 console_errors=console_errors,
                 page_errors=page_errors,
             ) or crashed
             if (
                 ready_frame_url_substring
                 and time.monotonic() >= next_frame_tree_refresh
-                and not any(
-                    ready_frame_url_substring in frame_url
-                    for frame_url in frame_urls.values()
+                and not _matching_ready_frame_ids(
+                    frame_urls,
+                    main_frame_id,
+                    ready_frame_url_substring,
                 )
             ):
                 tree_result = client.call(
@@ -925,16 +1116,22 @@ def run_browser_attempt(
             frame_sessions=frame_sessions,
             dashboard_requests=dashboard_requests,
             legacy_requests=legacy_requests,
+            dashboard_response_evidence=dashboard_response_evidence,
+            dashboard_request_indices=dashboard_request_indices,
             console_errors=console_errors,
             page_errors=page_errors,
         ) or crashed
         if crashed:
             raise RuntimeError("browser target crashed")
         if ready is None:
-            matching_frames = sum(
-                ready_frame_url_substring is not None
-                and ready_frame_url_substring in frame_url
-                for frame_url in frame_urls.values()
+            matching_frames = len(
+                _matching_ready_frame_ids(
+                    frame_urls,
+                    main_frame_id,
+                    ready_frame_url_substring,
+                )
+                if ready_frame_url_substring is not None
+                else set()
             )
             raise TimeoutError(
                 "factor lab readiness timed out "
@@ -952,6 +1149,12 @@ def run_browser_attempt(
                     )
         if len(dashboard_requests) != 1:
             raise ValueError(f"dashboard_request_count={len(dashboard_requests)}")
+        dashboard_response_error = validate_dashboard_response_evidence(
+            dashboard_requests,
+            dashboard_response_evidence,
+        )
+        if dashboard_response_error:
+            raise ValueError(dashboard_response_error)
         if legacy_requests:
             raise ValueError("legacy_request_detected")
         if console_errors:
@@ -962,20 +1165,21 @@ def run_browser_attempt(
         error_message = f"{type(error).__name__}: {error}"
     finally:
         total_ms = (time.monotonic() - navigation_started) * 1000
-        target_closed = False
+        target_closed = not target_id
         if client is not None and target_id:
-            try:
-                client.call("Target.closeTarget", {"targetId": target_id}, timeout=2)
-                target_closed = True
-            except Exception:
-                pass
+            target_closed = _close_target_with_fallback(client, browser, target_id)
         if client is not None:
             try:
                 client.close()
             except Exception:
                 pass
         if target_id and not target_closed:
-            _close_page(browser, target_id)
+            cleanup_error = "target_cleanup_failed"
+            error_message = (
+                f"{error_message}; {cleanup_error}"
+                if error_message
+                else f"RuntimeError: {cleanup_error}"
+            )
     return BrowserAttempt(
         index=index,
         started_at=started_at,
@@ -983,8 +1187,9 @@ def run_browser_attempt(
         total_ms=total_ms,
         success=error_message is None,
         error=error_message,
-        dashboard_request_urls=list(dashboard_requests.values()),
-        legacy_request_urls=list(legacy_requests.values()),
+        dashboard_request_urls=list(dashboard_requests),
+        dashboard_response_evidence=list(dashboard_response_evidence),
+        legacy_request_urls=list(legacy_requests),
         console_errors=console_errors,
         page_errors=page_errors,
         ready=ready,
@@ -1001,10 +1206,27 @@ def _is_edge(product: str) -> bool:
     return "edg/" in folded or "edge/" in folded
 
 
+def _browser_family(identity: str) -> str:
+    if _is_edge(identity):
+        return "edge"
+    if _is_chrome(identity):
+        return "chrome"
+    return "unknown"
+
+
+def _approval_reference_complete(reference: str | None) -> bool:
+    return (
+        isinstance(reference, str)
+        and bool(reference.strip())
+        and reference.strip().casefold() != "unknown"
+    )
+
+
 def summarize_browser_attempts(
     attempts: list[BrowserAttempt],
     *,
     browser_product: str,
+    browser_user_agent: str,
     allow_edge_acceptance: bool,
     edge_approval_reference: str | None,
     metadata_complete: bool,
@@ -1025,11 +1247,19 @@ def summarize_browser_attempts(
         if not attempt.success
     ]
     formal = len(attempts) >= 200
-    approved_browser = _is_chrome(browser_product) or (
-        _is_edge(browser_product)
-        and allow_edge_acceptance
-        and bool(edge_approval_reference)
-        and edge_approval_reference != "unknown"
+    product_family = _browser_family(browser_product)
+    user_agent_family = _browser_family(browser_user_agent)
+    identity_matches = (
+        product_family == user_agent_family
+        and product_family in {"chrome", "edge"}
+    )
+    approved_browser = identity_matches and (
+        product_family == "chrome"
+        or (
+            product_family == "edge"
+            and allow_edge_acceptance
+            and _approval_reference_complete(edge_approval_reference)
+        )
     )
     gate_failures: list[str] = []
     if not formal:
@@ -1049,10 +1279,66 @@ def summarize_browser_attempts(
         gate_failures.append("ready_invalid")
     if any(len(attempt.dashboard_request_urls) != 1 for attempt in attempts):
         gate_failures.append("dashboard_request_count_invalid")
+    if any(
+        validate_dashboard_response_evidence(
+            attempt.dashboard_request_urls,
+            attempt.dashboard_response_evidence,
+        )
+        == "dashboard_response_count_invalid"
+        for attempt in attempts
+    ):
+        gate_failures.append("dashboard_response_count_invalid")
+    if any(
+        validate_dashboard_response_evidence(
+            attempt.dashboard_request_urls,
+            attempt.dashboard_response_evidence,
+        )
+        == "dashboard_redirect_detected"
+        for attempt in attempts
+    ):
+        gate_failures.append("dashboard_redirect_detected")
+    if any(
+        validate_dashboard_response_evidence(
+            attempt.dashboard_request_urls,
+            attempt.dashboard_response_evidence,
+        )
+        == "dashboard_response_status_invalid"
+        for attempt in attempts
+    ):
+        gate_failures.append("dashboard_response_status_invalid")
+    if any(
+        validate_dashboard_response_evidence(
+            attempt.dashboard_request_urls,
+            attempt.dashboard_response_evidence,
+        )
+        == "dashboard_response_evidence_invalid"
+        for attempt in attempts
+    ):
+        gate_failures.append("dashboard_response_evidence_invalid")
+    if any(
+        validate_dashboard_response_evidence(
+            attempt.dashboard_request_urls,
+            attempt.dashboard_response_evidence,
+        )
+        == "dashboard_cache_evidence_invalid"
+        for attempt in attempts
+    ):
+        gate_failures.append("dashboard_cache_evidence_invalid")
+    if any(
+        validate_dashboard_response_evidence(
+            attempt.dashboard_request_urls,
+            attempt.dashboard_response_evidence,
+        )
+        == "dashboard_cache_or_service_worker"
+        for attempt in attempts
+    ):
+        gate_failures.append("dashboard_cache_or_service_worker")
     if any(attempt.console_errors for attempt in attempts):
         gate_failures.append("console_errors")
     if any(attempt.page_errors for attempt in attempts):
         gate_failures.append("page_errors")
+    if not identity_matches:
+        gate_failures.append("browser_identity_mismatch")
     if not approved_browser:
         gate_failures.append("browser_not_approved")
     if not metadata_complete:
@@ -1068,12 +1354,38 @@ def summarize_browser_attempts(
         "failure_count": len(failures),
         "failures": failures,
         "legacy_request_count": sum(len(attempt.legacy_request_urls) for attempt in attempts),
+        "dashboard_cache_violation_count": sum(
+            validate_dashboard_response_evidence(
+                attempt.dashboard_request_urls,
+                attempt.dashboard_response_evidence,
+            )
+            == "dashboard_cache_or_service_worker"
+            for attempt in attempts
+        ),
+        "dashboard_cache_evidence_invalid_count": sum(
+            validate_dashboard_response_evidence(
+                attempt.dashboard_request_urls,
+                attempt.dashboard_response_evidence,
+            )
+            == "dashboard_cache_evidence_invalid"
+            for attempt in attempts
+        ),
+        "dashboard_redirect_violation_count": sum(
+            validate_dashboard_response_evidence(
+                attempt.dashboard_request_urls,
+                attempt.dashboard_response_evidence,
+            )
+            == "dashboard_redirect_detected"
+            for attempt in attempts
+        ),
         "stale_count": sum(
             bool(attempt.ready and attempt.ready.get("stale")) for attempt in attempts
         ),
         "console_error_count": sum(len(attempt.console_errors) for attempt in attempts),
         "page_error_count": sum(len(attempt.page_errors) for attempt in attempts),
         "browser_approved": approved_browser,
+        "browser_product_family": product_family,
+        "browser_user_agent_family": user_agent_family,
         "metadata_complete": metadata_complete,
         "expected_counts_configured": expected_counts_configured,
         "gate_failures": gate_failures,
@@ -1191,6 +1503,7 @@ def _run_soak(browser: OwnedBrowser, arguments: argparse.Namespace) -> list[Brow
                         success=False,
                         error=f"{type(error).__name__}: soak_worker_failed",
                         dashboard_request_urls=[],
+                        dashboard_response_evidence=[],
                         legacy_request_urls=[],
                         console_errors=[],
                         page_errors=[],
@@ -1291,7 +1604,9 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--timeout-seconds must be positive")
     if arguments.minimum_attempt_period_seconds < 0:
         parser.error("--minimum-attempt-period-seconds must be non-negative")
-    if arguments.allow_edge_acceptance and not arguments.edge_approval_reference:
+    if arguments.allow_edge_acceptance and not _approval_reference_complete(
+        arguments.edge_approval_reference
+    ):
         parser.error("--allow-edge-acceptance requires --edge-approval-reference")
     for field in (
         "expected_scheme_count",
@@ -1344,6 +1659,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         summary = summarize_browser_attempts(
             attempts,
             browser_product=browser.product,
+            browser_user_agent=browser.user_agent,
             allow_edge_acceptance=arguments.allow_edge_acceptance,
             edge_approval_reference=arguments.edge_approval_reference,
             metadata_complete=_metadata_complete(arguments),

@@ -112,6 +112,15 @@ python scripts/benchmark_factor_lab_dashboard.py \
   --output-json /tmp/factor-lab-api-cold-50.json
 ```
 
+API 探针把每次响应的协议合同和容量预算都作为门禁，而不只是记录 latency。每个 attempt
+都会记录 `Content-Type`、`Content-Encoding`、声明的 `Content-Length`、实际 wire/raw
+bytes、`Cache-Control`、`Vary`、cache 状态以及 snapshot ID/age header。成功样本必须同时
+满足：JSON media type；单层 gzip；`Content-Length` 等于实际 wire bytes；
+`Cache-Control: no-store`；`Vary` token 含 `Accept-Encoding`；cache 为 fresh `HIT/MISS`；
+snapshot ID/age header 与 body 一致且 fresh age `<= 1000ms`；raw `<= 1,500,000` bytes、
+gzip wire `<= 100,000` bytes。缺失、格式错误、header/body 漂移、`STALE/UNAVAILABLE` 或
+超预算都会保留该次 attempt 并使验收失败；报告不保存响应 body 或敏感请求头。
+
 ### 3.2 Rollout 后 direct Chrome
 
 先按 `deploy/README.md` 完成 rollout 访问矩阵；必须使用 Google Chrome 做正式验收：
