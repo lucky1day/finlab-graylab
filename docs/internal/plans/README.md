@@ -11,4 +11,3 @@
 - [2026-07-12-liwei-full-oos-gray-models.md](2026-07-12-liwei-full-oos-gray-models.md)
 - [2026-07-19-blackbox-v2-production-path-closure.md](2026-07-19-blackbox-v2-production-path-closure.md)
 - [2026-07-20-blackbox-display-name-and-four-scheme-activation.md](2026-07-20-blackbox-display-name-and-four-scheme-activation.md)
-- [2026-07-20-blackbox-gray-backfill-gate.md](2026-07-20-blackbox-gray-backfill-gate.md)
