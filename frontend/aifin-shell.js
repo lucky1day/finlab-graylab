@@ -210,13 +210,14 @@
   };
 
   var factorTargets = ["1Y", "3Y", "5Y", "7Y", "10Y"];
-  var factorTargetLabels = {
+  var factorDefaultTargetLabels = {
     "1Y": "1Y国债活跃",
     "3Y": "3Y国债活跃",
     "5Y": "5Y国债活跃",
     "7Y": "7Y国债活跃",
     "10Y": "10Y国债活跃"
   };
+  var factorTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
   var factorTaskColumns = [
     { id: "dailyT1", label: "T+1", taskType: "T+1", frequency: "daily", horizon: "T+1" },
     { id: "dailyT5", label: "T+5", taskType: "T+5", frequency: "daily", horizon: "T+5" },
@@ -294,9 +295,25 @@
   var factorLabBound = false;
   var factorLabRemoteLoaded = false;
   var factorLabRemoteLoading = false;
-  var factorLabRefreshTimer = null;
   var factorLabApiError = "";
   var factorLabDataMode = "loading";
+  var factorLabDrawerSelection = null;
+  var FACTOR_LAB_HEALTHY_REFRESH_MS = 60000;
+  var FACTOR_LAB_RETRY_DELAYS_MS = [1000, 2000, 5000, 10000, 30000];
+  var factorLabRuntimeState = {
+    loadSeq: 0,
+    controller: null,
+    capability: "unknown",
+    committedViewModel: null,
+    stale: false,
+    consecutiveFailures: 0,
+    nextRefreshAt: 0,
+    refreshTimer: null,
+    visibilityBound: false,
+    aggregateCache: new Map(),
+    committedAt: 0
+  };
+  window.__factorLabReady = null;
 
   function clampPercent(value) {
     return Math.max(0, Math.min(100, Number(value) || 0));
@@ -758,13 +775,493 @@
     return status || "complete";
   }
 
-  function fetchJson(url) {
-    var requestUrl = apiUrl(url);
-    return fetch(requestUrl, { cache: "no-store", headers: { Accept: "application/json" } }).then(function (response) {
-      if (!response.ok) {
-        throw new Error("HTTP " + response.status + " " + requestUrl);
+  var DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v1";
+  var DASHBOARD_ROW_FIELDS = [
+    "predict_date",
+    "feature_date",
+    "target_date",
+    "prediction_phase",
+    "predicted_direction",
+    "actual_direction"
+  ];
+  var DASHBOARD_TOP_FIELDS = [
+    "schema_version",
+    "snapshot_id",
+    "generated_at",
+    "display_until",
+    "stale",
+    "snapshot_age_ms",
+    "row_fields",
+    "target_labels",
+    "schemes"
+  ];
+  var DASHBOARD_SCHEME_FIELDS = [
+    "scheme_id",
+    "base_scheme_id",
+    "name",
+    "description",
+    "horizon",
+    "task_type",
+    "frequency",
+    "target_tenor",
+    "target_label",
+    "status",
+    "deployed_at",
+    "live_rows",
+    "backtest"
+  ];
+  var DASHBOARD_BACKTEST_FIELDS = [
+    "benchmark_id",
+    "benchmark_label",
+    "data_source",
+    "data_source_label",
+    "latest_run_date",
+    "rows"
+  ];
+  var DASHBOARD_TASK_TYPES = ["T+1", "T+5", "weekly_point", "weekly_average", "monthly"];
+  var DASHBOARD_LIVE_PHASES = ["gray_live", "scheduled_live"];
+  var DASHBOARD_SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+  var DASHBOARD_GENERATED_AT_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,6})?(Z|[+-]\d{2}:\d{2})$/;
+
+  function dashboardDataError(message) {
+    return new Error("dashboard schema error: " + message);
+  }
+
+  function isDashboardObject(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
+  function requireExactDashboardFields(value, expected, context) {
+    if (!isDashboardObject(value)) {
+      throw dashboardDataError(context + " must be an object");
+    }
+    var actual = Object.keys(value).sort();
+    var required = expected.slice().sort();
+    if (actual.length !== required.length || actual.some(function (field, index) {
+      return field !== required[index];
+    })) {
+      throw dashboardDataError(context + " fields must match v1 exactly");
+    }
+  }
+
+  function requireDashboardString(value, context, allowEmpty) {
+    if (typeof value !== "string" || (!allowEmpty && !value) ||
+        (value && (isDashboardBoundaryCharacter(value.charCodeAt(0)) ||
+          isDashboardBoundaryCharacter(value.charCodeAt(value.length - 1))))) {
+      throw dashboardDataError(context + " must be a canonical string");
+    }
+    return value;
+  }
+
+  function isDashboardBoundaryCharacter(codepoint) {
+    return codepoint <= 0x20 ||
+      (codepoint >= 0x7f && codepoint <= 0x9f) ||
+      codepoint === 0x85 || codepoint === 0xa0 || codepoint === 0x1680 ||
+      (codepoint >= 0x2000 && codepoint <= 0x200a) ||
+      codepoint === 0x2028 || codepoint === 0x2029 || codepoint === 0x202f ||
+      codepoint === 0x205f || codepoint === 0x3000 || codepoint === 0xfeff;
+  }
+
+  function compareUnicodeCodePoints(left, right) {
+    var leftPoints = Array.from(String(left));
+    var rightPoints = Array.from(String(right));
+    var length = Math.min(leftPoints.length, rightPoints.length);
+    for (var index = 0; index < length; index += 1) {
+      var leftPoint = leftPoints[index].codePointAt(0);
+      var rightPoint = rightPoints[index].codePointAt(0);
+      if (leftPoint !== rightPoint) return leftPoint < rightPoint ? -1 : 1;
+    }
+    if (leftPoints.length === rightPoints.length) return 0;
+    return leftPoints.length < rightPoints.length ? -1 : 1;
+  }
+
+  function requireDashboardInteger(value, context, minimum) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) {
+      throw dashboardDataError(context + " must be an integer >= " + minimum);
+    }
+    return value;
+  }
+
+  function requireDashboardIsoDate(value, context) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw dashboardDataError(context + " must be an ISO date");
+    }
+    var year = Number(value.slice(0, 4));
+    var month = Number(value.slice(5, 7));
+    var day = Number(value.slice(8, 10));
+    var daysInMonth = month >= 1 && month <= 12
+      ? new Date(Date.UTC(year, month, 0)).getUTCDate()
+      : 0;
+    if (year < 1 || day < 1 || day > daysInMonth) {
+      throw dashboardDataError(context + " must be an ISO date");
+    }
+    return value;
+  }
+
+  function requireDashboardAwareDateTime(value, context) {
+    requireDashboardString(value, context, false);
+    var match = value.match(DASHBOARD_GENERATED_AT_PATTERN);
+    if (!match) throw dashboardDataError(context + " must be an aware ISO datetime");
+    requireDashboardIsoDate(match[1], context);
+    if (Number(match[2]) > 23 || Number(match[3]) > 59 || Number(match[4]) > 59) {
+      throw dashboardDataError(context + " must be an aware ISO datetime");
+    }
+    if (match[5] !== "Z") {
+      var offset = match[5].slice(1).split(":");
+      if (Number(offset[0]) > 23 || Number(offset[1]) > 59) {
+        throw dashboardDataError(context + " must be an aware ISO datetime");
       }
-      return response.json();
+    }
+    return value;
+  }
+
+  function requireDashboardDirection(value, context, allowNull) {
+    if (allowNull && value === null) return null;
+    if (typeof value !== "number" || !Number.isInteger(value) || (value !== -1 && value !== 0 && value !== 1)) {
+      throw dashboardDataError(context + " has invalid direction");
+    }
+    return value;
+  }
+
+  function decodeDashboardRows(rows, source, context) {
+    if (!Array.isArray(rows)) throw dashboardDataError(context + " must be an array");
+    var seenPoints = Object.create(null);
+    var lastSortKey = "";
+    return rows.map(function (row, index) {
+      var rowContext = context + "[" + index + "]";
+      if (!Array.isArray(row) || row.length !== DASHBOARD_ROW_FIELDS.length) {
+        throw dashboardDataError(rowContext + " must have width " + DASHBOARD_ROW_FIELDS.length);
+      }
+      var predictDate = requireDashboardIsoDate(row[0], rowContext + ".predict_date");
+      var featureDate = requireDashboardIsoDate(row[1], rowContext + ".feature_date");
+      var targetDate = requireDashboardIsoDate(row[2], rowContext + ".target_date");
+      var predictionPhase = row[3];
+      if (source === "live") {
+        if (DASHBOARD_LIVE_PHASES.indexOf(predictionPhase) === -1) {
+          throw dashboardDataError(rowContext + " has invalid live prediction_phase");
+        }
+      } else if (predictionPhase !== null) {
+        throw dashboardDataError(rowContext + " backtest prediction_phase must be null");
+      }
+      var predictedDirection = requireDashboardDirection(
+        row[4], rowContext + ".predicted_direction", false
+      );
+      var actualDirection = requireDashboardDirection(
+        row[5], rowContext + ".actual_direction", source === "live"
+      );
+      if (seenPoints[targetDate]) {
+        throw dashboardDataError(context + " has duplicate canonical target_date " + targetDate);
+      }
+      seenPoints[targetDate] = true;
+      var sortKey = targetDate + "\u0000" + predictDate;
+      if (lastSortKey && sortKey < lastSortKey) {
+        throw dashboardDataError(context + " is not canonically sorted");
+      }
+      lastSortKey = sortKey;
+      return {
+        predictDate: predictDate,
+        featureDate: featureDate,
+        targetDate: targetDate,
+        predictionPhase: predictionPhase,
+        predictedDirection: predictedDirection,
+        actualDirection: actualDirection,
+        source: source
+      };
+    });
+  }
+
+  function decodeDashboardPayload(payload) {
+    requireExactDashboardFields(payload, DASHBOARD_TOP_FIELDS, "payload");
+    if (payload.schema_version !== DASHBOARD_SCHEMA_VERSION) {
+      throw dashboardDataError("unsupported schema_version");
+    }
+    if (!Array.isArray(payload.row_fields) ||
+        payload.row_fields.length !== DASHBOARD_ROW_FIELDS.length ||
+        payload.row_fields.some(function (field, index) {
+          return field !== DASHBOARD_ROW_FIELDS[index];
+        }) || new Set(payload.row_fields).size !== payload.row_fields.length) {
+      throw dashboardDataError("row_fields must match v1 exactly");
+    }
+    var snapshotId = requireDashboardString(payload.snapshot_id, "snapshot_id", false);
+    if (!DASHBOARD_SNAPSHOT_ID_PATTERN.test(snapshotId)) {
+      throw dashboardDataError("snapshot_id must be canonical");
+    }
+    var generatedAt = requireDashboardAwareDateTime(payload.generated_at, "generated_at");
+    var displayUntil = requireDashboardIsoDate(payload.display_until, "display_until");
+    if (typeof payload.stale !== "boolean") throw dashboardDataError("stale must be boolean");
+    var snapshotAgeMs = requireDashboardInteger(payload.snapshot_age_ms, "snapshot_age_ms", 0);
+
+    if (!isDashboardObject(payload.target_labels)) {
+      throw dashboardDataError("target_labels must be an object");
+    }
+    var targetLabels = Object.create(null);
+    Object.keys(payload.target_labels).sort(compareUnicodeCodePoints).forEach(function (target) {
+      var canonicalTarget = requireDashboardString(target, "target_labels target", false);
+      targetLabels[canonicalTarget] = requireDashboardString(
+        payload.target_labels[target], "target_labels label", false
+      );
+    });
+
+    if (!Array.isArray(payload.schemes)) throw dashboardDataError("schemes must be an array");
+    var previousSchemeId = "";
+    var seenSchemeIds = Object.create(null);
+    var schemes = payload.schemes.map(function (scheme, index) {
+      var context = "schemes[" + index + "]";
+      requireExactDashboardFields(scheme, DASHBOARD_SCHEME_FIELDS, context);
+      var schemeId = requireDashboardString(scheme.scheme_id, context + ".scheme_id", false);
+      var baseSchemeId = requireDashboardString(
+        scheme.base_scheme_id, context + ".base_scheme_id", false
+      );
+      var targetTenor = requireDashboardString(scheme.target_tenor, context + ".target_tenor", false);
+      var horizon = requireDashboardInteger(scheme.horizon, context + ".horizon", 1);
+      if (schemeId !== baseSchemeId + "__h" + horizon + "__" + targetTenor) {
+        throw dashboardDataError(context + " composite identity is invalid");
+      }
+      if (seenSchemeIds[schemeId]) throw dashboardDataError("duplicate scheme_id " + schemeId);
+      if (previousSchemeId && compareUnicodeCodePoints(schemeId, previousSchemeId) < 0) {
+        throw dashboardDataError("schemes must be sorted by scheme_id");
+      }
+      seenSchemeIds[schemeId] = true;
+      previousSchemeId = schemeId;
+      if (DASHBOARD_TASK_TYPES.indexOf(scheme.task_type) === -1) {
+        throw dashboardDataError(context + ".task_type is invalid");
+      }
+      if (scheme.status !== "active") throw dashboardDataError(context + ".status must be active");
+      var targetLabel = requireDashboardString(scheme.target_label, context + ".target_label", false);
+      if (!Object.prototype.hasOwnProperty.call(targetLabels, targetTenor) ||
+          targetLabels[targetTenor] !== targetLabel) {
+        throw dashboardDataError(context + " target identity is invalid");
+      }
+      if (typeof scheme.description !== "string") {
+        throw dashboardDataError(context + ".description must be a string");
+      }
+      var decodedScheme = {
+        schemeId: schemeId,
+        baseSchemeId: baseSchemeId,
+        name: requireDashboardString(scheme.name, context + ".name", false),
+        description: scheme.description,
+        horizon: horizon,
+        taskType: scheme.task_type,
+        frequency: requireDashboardString(scheme.frequency, context + ".frequency", false),
+        targetTenor: targetTenor,
+        targetLabel: targetLabel,
+        status: scheme.status,
+        deployedAt: requireDashboardIsoDate(scheme.deployed_at, context + ".deployed_at"),
+        liveRows: decodeDashboardRows(scheme.live_rows, "live", context + ".live_rows"),
+        backtest: null
+      };
+      if (scheme.backtest !== null) {
+        requireExactDashboardFields(scheme.backtest, DASHBOARD_BACKTEST_FIELDS, context + ".backtest");
+        decodedScheme.backtest = {
+          benchmarkId: requireDashboardString(
+            scheme.backtest.benchmark_id, context + ".backtest.benchmark_id", false
+          ),
+          benchmarkLabel: requireDashboardString(
+            scheme.backtest.benchmark_label, context + ".backtest.benchmark_label", false
+          ),
+          dataSource: requireDashboardString(
+            scheme.backtest.data_source, context + ".backtest.data_source", false
+          ),
+          dataSourceLabel: requireDashboardString(
+            scheme.backtest.data_source_label, context + ".backtest.data_source_label", false
+          ),
+          latestRunDate: requireDashboardIsoDate(
+            scheme.backtest.latest_run_date, context + ".backtest.latest_run_date"
+          ),
+          rows: decodeDashboardRows(
+            scheme.backtest.rows, "backtest", context + ".backtest.rows"
+          )
+        };
+      }
+      return decodedScheme;
+    });
+
+    return {
+      schemaVersion: payload.schema_version,
+      snapshotId: snapshotId,
+      generatedAt: generatedAt,
+      displayUntil: displayUntil,
+      stale: payload.stale,
+      snapshotAgeMs: snapshotAgeMs,
+      targetLabels: targetLabels,
+      schemes: schemes
+    };
+  }
+
+  function dashboardDetailRow(row) {
+    var actualDirection = row.actualDirection;
+    return {
+      day: String(row.targetDate).slice(5).replace("-", "/"),
+      predictDate: row.predictDate,
+      featureDate: row.featureDate,
+      targetDate: row.targetDate,
+      predictionPhase: row.predictionPhase || "",
+      runId: null,
+      schemeVersion: "",
+      inputArtifactHash: "",
+      confidence: null,
+      predicted: directionText(row.predictedDirection),
+      actual: directionText(actualDirection),
+      predictedDirection: row.predictedDirection,
+      actualDirection: actualDirection,
+      correct: actualDirection === null ? null : row.predictedDirection === actualDirection,
+      _source: row.source
+    };
+  }
+
+  function groupDashboardDetails(rows) {
+    var grouped = {};
+    rows.forEach(function (row) {
+      var month = row.targetDate.slice(0, 7);
+      if (!grouped[month]) grouped[month] = [];
+      grouped[month].push(dashboardDetailRow(row));
+    });
+    return grouped;
+  }
+
+  function dashboardMonthlyRows(grouped, source) {
+    return monthlyRowsFromGroupedDetails(grouped).map(function (row) {
+      row._source = source;
+      return row;
+    });
+  }
+
+  function deriveDashboardPhaseRanges(rows) {
+    return DASHBOARD_LIVE_PHASES.map(function (phase) {
+      var phaseRows = rows.filter(function (row) { return row.predictionPhase === phase; });
+      if (!phaseRows.length) return null;
+      var predictDates = phaseRows.map(function (row) { return row.predictDate; }).sort();
+      var targetDates = phaseRows.map(function (row) { return row.targetDate; }).sort();
+      return {
+        prediction_phase: phase,
+        start_predict_date: predictDates[0],
+        end_predict_date: predictDates[predictDates.length - 1],
+        start_target_date: targetDates[0],
+        end_target_date: targetDates[targetDates.length - 1],
+        rows: phaseRows.length
+      };
+    }).filter(Boolean);
+  }
+
+  function appendDashboardGroupedRows(destination, grouped) {
+    Object.keys(grouped).sort().forEach(function (month) {
+      if (!destination[month]) destination[month] = [];
+      destination[month] = destination[month].concat(grouped[month]);
+    });
+  }
+
+  function buildFactorLabViewModel(decoded) {
+    var tasks = initEmptyTaskSchemes();
+    decoded.schemes.forEach(function (scheme) {
+      var column = columnForTaskType(scheme.taskType);
+      if (!column) throw dashboardDataError("decoded task_type is invalid");
+      var taskKey = getTaskKey(scheme.targetTenor, column);
+      if (!tasks[taskKey]) tasks[taskKey] = [];
+
+      var liveRows = scheme.liveRows.slice();
+      var backtestRows = scheme.backtest ? scheme.backtest.rows.slice() : [];
+      var liveGrouped = groupDashboardDetails(liveRows);
+      var livePredictDates = liveRows.map(function (row) { return row.predictDate; }).sort();
+      var phaseRanges = deriveDashboardPhaseRanges(liveRows);
+      var cutoffMonth = monthlyLiveBacktestCutoffMonth(
+        {
+          monthlyRows: [],
+          dailyRowsByMonth: liveGrouped,
+          phaseRanges: phaseRanges,
+          liveSinceDate: livePredictDates.length ? livePredictDates[0] : "",
+          liveMetricSinceDate: livePredictDates.length ? livePredictDates[0] : ""
+        },
+        { frequency: scheme.frequency, taskType: scheme.taskType }
+      );
+      if (cutoffMonth) {
+        backtestRows = backtestRows.filter(function (row) {
+          return row.targetDate.slice(0, 7) < cutoffMonth;
+        });
+      }
+
+      var backtestGrouped = groupDashboardDetails(backtestRows);
+      var dailyRowsByMonth = {};
+      appendDashboardGroupedRows(dailyRowsByMonth, backtestGrouped);
+      appendDashboardGroupedRows(dailyRowsByMonth, liveGrouped);
+      Object.keys(dailyRowsByMonth).forEach(function (month) {
+        dailyRowsByMonth[month].sort(function (a, b) {
+          var sourceRank = { backtest: 0, live: 1 };
+          return sourceRank[a._source] - sourceRank[b._source] ||
+            a.targetDate.localeCompare(b.targetDate) ||
+            a.predictDate.localeCompare(b.predictDate);
+        });
+      });
+
+      var monthlyRows = dashboardMonthlyRows(backtestGrouped, "backtest")
+        .concat(dashboardMonthlyRows(liveGrouped, "live"));
+      monthlyRows.sort(function (a, b) {
+        var sourceRank = { backtest: 0, live: 1 };
+        return a.month.localeCompare(b.month) || sourceRank[a._source] - sourceRank[b._source];
+      });
+      var backtestMonths = Object.keys(backtestGrouped).sort();
+      tasks[taskKey].push({
+        id: scheme.schemeId,
+        schemeId: scheme.schemeId,
+        schemeName: scheme.baseSchemeId,
+        taskKey: taskKey,
+        targetTenor: scheme.targetTenor,
+        column: column.id,
+        name: scheme.name,
+        description: scheme.description,
+        status: scheme.status,
+        latestRun: livePredictDates.length
+          ? livePredictDates[livePredictDates.length - 1].slice(5)
+          : (scheme.backtest ? scheme.backtest.latestRunDate.slice(5) : "--"),
+        deploymentDate: formatDeploymentDate(scheme.deployedAt),
+        remark: scheme.description,
+        monthlyRows: monthlyRows,
+        dailyRowsByMonth: dailyRowsByMonth,
+        liveSinceDate: livePredictDates.length ? livePredictDates[0] : "",
+        liveMetricSinceDate: livePredictDates.length ? livePredictDates[0] : "",
+        phaseRanges: phaseRanges,
+        benchmarkLabel: scheme.backtest ? scheme.backtest.benchmarkLabel : "",
+        dataSourceLabel: scheme.backtest ? scheme.backtest.dataSourceLabel : "",
+        backtestLatestRunDate: scheme.backtest ? scheme.backtest.latestRunDate : "",
+        backtestStartMonth: backtestMonths.length ? backtestMonths[0] : "",
+        backtestEndMonth: backtestMonths.length ? backtestMonths[backtestMonths.length - 1] : ""
+      });
+    });
+    Object.keys(tasks).forEach(function (taskKey) {
+      tasks[taskKey].sort(function (a, b) {
+        return compareUnicodeCodePoints(a.schemeId, b.schemeId);
+      });
+    });
+    return {
+      snapshotId: decoded.snapshotId,
+      generatedAt: decoded.generatedAt,
+      displayUntil: decoded.displayUntil,
+      stale: decoded.stale,
+      snapshotAgeMs: decoded.snapshotAgeMs,
+      targetLabels: decoded.targetLabels,
+      tasks: tasks
+    };
+  }
+
+  function fetchJson(url, options) {
+    var requestUrl = apiUrl(url);
+    var requestOptions = {
+      cache: "no-store",
+      headers: { Accept: "application/json" }
+    };
+    if (options && options.signal) requestOptions.signal = options.signal;
+    return fetch(requestUrl, requestOptions).then(function (response) {
+      if (response.ok) return response.json();
+      var bodyPromise = typeof response.json === "function"
+        ? response.json().catch(function () { return null; })
+        : Promise.resolve(null);
+      return bodyPromise.then(function (body) {
+        var error = new Error("HTTP " + response.status + " " + requestUrl);
+        error.name = "FactorLabHttpError";
+        error.status = response.status;
+        error.body = body;
+        error.requestUrl = requestUrl;
+        throw error;
+      });
     });
   }
 
@@ -774,12 +1271,19 @@
     });
   }
 
-  function finishFactorLabDataLoad(tasks, mode) {
+  function finishFactorLabDataLoad(tasks, mode, targetLabels) {
+    validateFactorLabTasksForCommit(tasks);
+    var nextTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
+    Object.keys(targetLabels || {}).forEach(function (target) {
+      if (targetLabels[target]) nextTargetLabels[target] = String(targetLabels[target]);
+    });
+    factorTargetLabels = nextTargetLabels;
     factorTaskSchemes = tasks;
     factorLabRemoteLoaded = true;
     factorLabRemoteLoading = false;
     factorLabApiError = "";
     factorLabDataMode = mode;
+    factorLabRuntimeState.aggregateCache.clear();
     var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
       return factorTaskSchemes[key].length > 0;
     });
@@ -795,6 +1299,22 @@
       factorLabState.endMonth = months[months.length - 1];
     }
     renderFactorLab();
+  }
+
+  function validateFactorLabTasksForCommit(tasks) {
+    Object.keys(tasks || {}).forEach(function (taskKey) {
+      (tasks[taskKey] || []).forEach(function (scheme) {
+        requireSchemeDeploymentDate(scheme, "dashboard scheme");
+        var detailRows = 0;
+        Object.keys(scheme.dailyRowsByMonth || {}).forEach(function (month) {
+          detailRows += (scheme.dailyRowsByMonth[month] || []).length;
+        });
+        if ((scheme.monthlyRows || []).length && detailRows === 0) {
+          throw new Error("scheme " + (scheme.schemeId || scheme.id || "") +
+            " has monthly metrics but no detail rows");
+        }
+      });
+    });
   }
 
   function buildBacktestTaskSchemes(payload) {
@@ -926,47 +1446,382 @@
     });
   }
 
-  function failFactorLabDataLoad(error) {
-    factorTaskSchemes = initEmptyTaskSchemes();
-    factorLabApiError = error.message || "API unavailable";
+  function factorLabNow() {
+    return window.performance && typeof window.performance.now === "function"
+      ? window.performance.now()
+      : Date.now();
+  }
+
+  function clearFactorLabRefreshTimer() {
+    if (factorLabRuntimeState.refreshTimer !== null && window.clearTimeout) {
+      window.clearTimeout(factorLabRuntimeState.refreshTimer);
+    }
+    factorLabRuntimeState.refreshTimer = null;
+    factorLabRuntimeState.nextRefreshAt = 0;
+  }
+
+  function scheduleFactorLabRefresh(delayMs) {
+    clearFactorLabRefreshTimer();
+    if (!window.setTimeout || document.visibilityState === "hidden") return;
+    factorLabRuntimeState.nextRefreshAt = factorLabNow() + delayMs;
+    factorLabRuntimeState.refreshTimer = window.setTimeout(function () {
+      factorLabRuntimeState.refreshTimer = null;
+      factorLabRuntimeState.nextRefreshAt = 0;
+      if (document.visibilityState === "hidden" || getActiveView() !== "factor-lab") return;
+      loadFactorLabData({ force: true });
+    }, delayMs);
+  }
+
+  function isDashboardUnsupported(error) {
+    if (!error || error.name !== "FactorLabHttpError") return false;
+    if (error.status === 404) return true;
+    return error.status === 501 && error.body && error.body.detail &&
+      error.body.detail.code === "dashboard_not_supported";
+  }
+
+  function wrapLegacyAttempt(promise) {
+    return promise.then(
+      function (value) { return { ok: true, value: value }; },
+      function (error) { return { ok: false, error: error }; }
+    );
+  }
+
+  function isFactorLabAbortError(error) {
+    return Boolean(error && error.name === "AbortError");
+  }
+
+  function createLegacyRequestGroup(parentSignal) {
+    var childController = window.AbortController ? new window.AbortController() : null;
+    var firstError = null;
+    var onParentAbort = function () {
+      if (childController && !childController.signal.aborted) {
+        childController.abort();
+      }
+    };
+    if (childController && parentSignal) {
+      if (parentSignal.aborted) onParentAbort();
+      else if (parentSignal.addEventListener) parentSignal.addEventListener("abort", onParentAbort);
+    }
+    return {
+      signal: childController ? childController.signal : parentSignal,
+      fail: function (error) {
+        if (isFactorLabAbortError(error) || firstError) return;
+        firstError = error;
+        if (childController && !childController.signal.aborted) childController.abort();
+      },
+      firstError: function () { return firstError; },
+      cleanup: function () {
+        if (childController && parentSignal && parentSignal.removeEventListener) {
+          parentSignal.removeEventListener("abort", onParentAbort);
+        }
+      }
+    };
+  }
+
+  function fetchLegacyFactorLabCandidate(signal, seq) {
+    var responses = Object.create(null);
+    var requestGroup = createLegacyRequestGroup(signal);
+    var groupSignal = requestGroup.signal;
+    var liveAttempt = wrapLegacyAttempt(
+      fetchJson("/api/schemes", { signal: groupSignal }).then(function (schemesPayload) {
+        var schemes = Array.isArray(schemesPayload)
+          ? schemesPayload
+          : ((schemesPayload && schemesPayload.schemes) || []);
+        var metricRequests = schemes.map(function (scheme) {
+          columnForScheme(scheme);
+          if (!scheme.scheme_id || !scheme.target_tenor) return Promise.resolve(null);
+          var metricsPath = "/api/metrics/" + encodeURIComponent(scheme.scheme_id);
+          return fetchJson(metricsPath, { signal: groupSignal }).then(function (metrics) {
+            return { path: metricsPath, payload: metrics };
+          });
+        });
+        return Promise.all(metricRequests).then(function (metrics) {
+          return { schemes: schemesPayload, metrics: metrics.filter(Boolean) };
+        });
+      }).catch(function (error) {
+        requestGroup.fail(error);
+        throw error;
+      })
+    );
+    var backtestAttempt = wrapLegacyAttempt(
+      fetchJson("/api/backtests/factor-lab", { signal: groupSignal }).catch(function (error) {
+        requestGroup.fail(error);
+        throw error;
+      })
+    );
+
+    var result = Promise.all([liveAttempt, backtestAttempt]).then(function (attempts) {
+      if (seq !== factorLabRuntimeState.loadSeq) return null;
+      var live = attempts[0];
+      var backtest = attempts[1];
+      if (requestGroup.firstError()) throw requestGroup.firstError();
+      if (live.ok) {
+        responses["/api/schemes"] = live.value.schemes;
+        live.value.metrics.forEach(function (metric) {
+          responses[metric.path] = metric.payload;
+        });
+      }
+      if (backtest.ok) responses["/api/backtests/factor-lab"] = backtest.value;
+      if (!live.ok && !backtest.ok) throw live.error || backtest.error;
+      if (!live.ok && isFailClosedDataError(live.error)) throw live.error;
+      if (!backtest.ok && isFailClosedDataError(backtest.error)) throw backtest.error;
+      var viewModel = buildLegacyFactorLabViewModelForTest(responses);
+      return {
+        tasks: viewModel.tasks,
+        targetLabels: viewModel.targetLabels,
+        snapshotId: "legacy-" + seq,
+        snapshotAgeMs: 0,
+        stale: false,
+        source: "legacy",
+        mode: viewModel.mode
+      };
+    });
+    return result.then(
+      function (candidate) {
+        requestGroup.cleanup();
+        return candidate;
+      },
+      function (error) {
+        requestGroup.cleanup();
+        throw error;
+      }
+    );
+  }
+
+  function dashboardFactorLabCandidate(payload) {
+    var decoded = decodeDashboardPayload(payload);
+    var viewModel = buildFactorLabViewModel(decoded);
+    return {
+      tasks: viewModel.tasks,
+      targetLabels: viewModel.targetLabels,
+      snapshotId: viewModel.snapshotId,
+      snapshotAgeMs: viewModel.snapshotAgeMs,
+      stale: viewModel.stale,
+      source: "dashboard",
+      mode: "dashboard"
+    };
+  }
+
+  function cloneFactorLabUiState() {
+    var clone = {};
+    Object.keys(factorLabState).forEach(function (key) {
+      clone[key] = key === "chartMetrics"
+        ? Object.assign({}, factorLabState.chartMetrics)
+        : factorLabState[key];
+    });
+    return clone;
+  }
+
+  function restoreFactorLabUiState(snapshot) {
+    Object.keys(factorLabState).forEach(function (key) { delete factorLabState[key]; });
+    Object.keys(snapshot).forEach(function (key) { factorLabState[key] = snapshot[key]; });
+  }
+
+  function hasDrawerSelection(selection) {
+    if (!selection) return false;
+    var schemes = factorTaskSchemes[selection.taskKey] || [];
+    return schemes.some(function (scheme) {
+      return scheme.id === selection.schemeId && scheme.dailyRowsByMonth &&
+        (scheme.dailyRowsByMonth[selection.month] || []).length > 0;
+    });
+  }
+
+  function countFactorLabRows(tasks) {
+    var counts = { schemes: 0, liveRows: 0, backtestRows: 0 };
+    Object.keys(tasks || {}).forEach(function (taskKey) {
+      (tasks[taskKey] || []).forEach(function (scheme) {
+        counts.schemes += 1;
+        Object.keys(scheme.dailyRowsByMonth || {}).forEach(function (month) {
+          (scheme.dailyRowsByMonth[month] || []).forEach(function (row) {
+            if (row._source === "live") counts.liveRows += 1;
+            else if (row._source === "backtest") counts.backtestRows += 1;
+          });
+        });
+      });
+    });
+    return counts;
+  }
+
+  function commitFactorLabCandidate(candidate, seq) {
+    if (!candidate || seq !== factorLabRuntimeState.loadSeq) return false;
+    validateFactorLabTasksForCommit(candidate.tasks);
+    var nextTargetLabels = Object.assign(Object.create(null), factorDefaultTargetLabels);
+    Object.keys(candidate.targetLabels || {}).forEach(function (target) {
+      if (candidate.targetLabels[target]) nextTargetLabels[target] = String(candidate.targetLabels[target]);
+    });
+
+    var previous = {
+      tasks: factorTaskSchemes,
+      labels: factorTargetLabels,
+      remoteLoaded: factorLabRemoteLoaded,
+      remoteLoading: factorLabRemoteLoading,
+      apiError: factorLabApiError,
+      dataMode: factorLabDataMode,
+      committed: factorLabRuntimeState.committedViewModel,
+      stale: factorLabRuntimeState.stale,
+      committedAt: factorLabRuntimeState.committedAt,
+      aggregateCache: factorLabRuntimeState.aggregateCache,
+      ui: cloneFactorLabUiState(),
+      drawer: factorLabDrawerSelection
+    };
+    var nextCache = previous.committed && previous.committed.snapshotId === candidate.snapshotId
+      ? previous.aggregateCache
+      : new Map();
+    try {
+      factorTaskSchemes = candidate.tasks;
+      factorTargetLabels = nextTargetLabels;
+      factorLabRemoteLoaded = true;
+      factorLabRemoteLoading = false;
+      factorLabApiError = "";
+      factorLabDataMode = candidate.mode;
+      factorLabRuntimeState.committedViewModel = candidate;
+      factorLabRuntimeState.stale = Boolean(candidate.stale);
+      factorLabRuntimeState.committedAt = factorLabNow();
+      factorLabRuntimeState.aggregateCache = nextCache;
+
+      var availableTasks = Object.keys(factorTaskSchemes).filter(function (key) {
+        return factorTaskSchemes[key].length > 0;
+      });
+      if (availableTasks.length &&
+          (!factorTaskSchemes[factorLabState.selectedTaskKey] ||
+            !factorTaskSchemes[factorLabState.selectedTaskKey].length)) {
+        factorLabState.selectedTaskKey = availableTasks[0];
+      }
+      syncFactorMonthRange();
+      var months = getFactorAvailableMonths();
+      if (months.length && !factorLabState.endMonthPinned) {
+        factorLabState.endMonth = months[months.length - 1];
+      }
+      renderFactorLab();
+      if (hasDrawerSelection(previous.drawer)) {
+        factorLabState.selectedTaskKey = previous.drawer.taskKey;
+        factorLabState.selectedSchemeId = previous.drawer.schemeId;
+        openFactorCalendar(previous.drawer.month, null);
+      } else if (previous.drawer) {
+        closeFactorCalendar();
+      }
+    } catch (error) {
+      factorTaskSchemes = previous.tasks;
+      factorTargetLabels = previous.labels;
+      factorLabRemoteLoaded = previous.remoteLoaded;
+      factorLabRemoteLoading = previous.remoteLoading;
+      factorLabApiError = previous.apiError;
+      factorLabDataMode = previous.dataMode;
+      factorLabRuntimeState.committedViewModel = previous.committed;
+      factorLabRuntimeState.stale = previous.stale;
+      factorLabRuntimeState.committedAt = previous.committedAt;
+      factorLabRuntimeState.aggregateCache = previous.aggregateCache;
+      factorLabDrawerSelection = previous.drawer;
+      restoreFactorLabUiState(previous.ui);
+      throw error;
+    }
+
+    if (candidate.stale) {
+      factorLabRuntimeState.consecutiveFailures += 1;
+      var staleDelayIndex = Math.min(
+        factorLabRuntimeState.consecutiveFailures - 1,
+        FACTOR_LAB_RETRY_DELAYS_MS.length - 1
+      );
+      scheduleFactorLabRefresh(FACTOR_LAB_RETRY_DELAYS_MS[staleDelayIndex]);
+    } else {
+      factorLabRuntimeState.consecutiveFailures = 0;
+      scheduleFactorLabRefresh(FACTOR_LAB_HEALTHY_REFRESH_MS);
+    }
+    var rowCounts = countFactorLabRows(candidate.tasks);
+    var readyFrame = window.requestAnimationFrame || function (callback) {
+      return window.setTimeout(callback, 0);
+    };
+    readyFrame(function () {
+      if (seq !== factorLabRuntimeState.loadSeq ||
+          factorLabRuntimeState.committedViewModel !== candidate) return;
+      window.__factorLabReady = {
+        seq: seq,
+        snapshotId: candidate.snapshotId,
+        committedAt: factorLabNow(),
+        stale: Boolean(candidate.stale),
+        source: candidate.source,
+        mode: candidate.source,
+        schemeCount: rowCounts.schemes,
+        liveRowCount: rowCounts.liveRows,
+        backtestRowCount: rowCounts.backtestRows
+      };
+    });
+    return true;
+  }
+
+  function failFactorLabDataLoad(error, seq) {
+    if (seq !== undefined && seq !== factorLabRuntimeState.loadSeq) return false;
+    factorLabApiError = (error && error.message) || "API unavailable";
     factorLabRemoteLoaded = true;
     factorLabRemoteLoading = false;
-    factorLabDataMode = "live-error";
+    factorLabRuntimeState.controller = null;
+    factorLabRuntimeState.consecutiveFailures += 1;
+    var hasLkg = Boolean(factorLabRuntimeState.committedViewModel);
+    factorLabRuntimeState.stale = hasLkg;
+    factorLabDataMode = hasLkg ? "stale" : "error";
+    if (!hasLkg) factorTaskSchemes = initEmptyTaskSchemes();
     renderFactorLab();
+    var delayIndex = Math.min(
+      factorLabRuntimeState.consecutiveFailures - 1,
+      FACTOR_LAB_RETRY_DELAYS_MS.length - 1
+    );
+    scheduleFactorLabRefresh(FACTOR_LAB_RETRY_DELAYS_MS[delayIndex]);
     return false;
   }
 
   function loadFactorLabData(options) {
     var force = options && options.force === true;
-    if ((!force && factorLabRemoteLoaded) || factorLabRemoteLoading || !window.fetch) return;
+    if (!window.fetch) return Promise.resolve(false);
+    if (!force && (factorLabRemoteLoaded || factorLabRemoteLoading)) {
+      return Promise.resolve(false);
+    }
+
+    clearFactorLabRefreshTimer();
+    var seq = factorLabRuntimeState.loadSeq + 1;
+    factorLabRuntimeState.loadSeq = seq;
+    window.__factorLabReady = null;
+    if (factorLabRuntimeState.controller &&
+        typeof factorLabRuntimeState.controller.abort === "function") {
+      factorLabRuntimeState.controller.abort("superseded");
+    }
+    var controller = window.AbortController ? new window.AbortController() : null;
+    factorLabRuntimeState.controller = controller;
     factorLabRemoteLoading = true;
-    // 同时拉取实时和回测，合并展示
-    return Promise.all([
-      fetchLiveFactorLabTasks().catch(function (error) {
-        if (isFailClosedDataError(error)) throw error;
-        return null;
-      }),
-      loadBacktestFactorLabDataSilent().catch(function (error) {
-        if (isFailClosedDataError(error)) throw error;
-        return null;
-      })
-    ]).then(function (results) {
-      var liveTasks = results[0];
-      var backtestTasks = results[1];
-      var hasLive = liveTasks && hasPopulatedTasks(liveTasks);
-      var hasBacktest = backtestTasks && hasPopulatedTasks(backtestTasks);
-      if (!hasLive && !hasBacktest) {
-        return failFactorLabDataLoad({ message: "实时和回测接口均暂不可用" });
-      }
-      var mergedTasks = mergeFactorLabTasks(backtestTasks, liveTasks);
-      var mode = "";
-      if (hasLive && hasBacktest) mode = "merged";
-      else if (hasLive) mode = "live";
-      else mode = "backtest";
-      finishFactorLabDataLoad(mergedTasks, mode);
-      return true;
+    renderFactorLabDataStatus();
+    var signal = controller ? controller.signal : null;
+
+    var candidatePromise;
+    if (factorLabRuntimeState.capability === "legacy") {
+      candidatePromise = fetchLegacyFactorLabCandidate(signal, seq);
+    } else {
+      candidatePromise = fetchJson("/api/factor-lab/dashboard", { signal: signal })
+        .then(function (payload) {
+          if (seq !== factorLabRuntimeState.loadSeq) return null;
+          var candidate = dashboardFactorLabCandidate(payload);
+          if (seq === factorLabRuntimeState.loadSeq) {
+            factorLabRuntimeState.capability = "dashboard";
+          }
+          return candidate;
+        })
+        .catch(function (error) {
+          if (seq !== factorLabRuntimeState.loadSeq) throw error;
+          if (factorLabRuntimeState.capability === "unknown" && isDashboardUnsupported(error)) {
+            factorLabRuntimeState.capability = "legacy";
+            return fetchLegacyFactorLabCandidate(signal, seq);
+          }
+          throw error;
+        });
+    }
+
+    return candidatePromise.then(function (candidate) {
+      if (seq !== factorLabRuntimeState.loadSeq || !candidate) return false;
+      var committed = commitFactorLabCandidate(candidate, seq);
+      if (seq === factorLabRuntimeState.loadSeq) factorLabRuntimeState.controller = null;
+      return committed;
     }).catch(function (error) {
-      return failFactorLabDataLoad(error);
+      if (seq !== factorLabRuntimeState.loadSeq) return false;
+      factorLabRuntimeState.controller = null;
+      return failFactorLabDataLoad(error, seq);
     });
   }
 
@@ -1092,6 +1947,15 @@
               row._source = "live";
               return row;
             });
+            var lrOnlyDaily = {};
+            Object.keys(liveScheme.dailyRowsByMonth || {}).forEach(function (month) {
+              lrOnlyDaily[month] = (liveScheme.dailyRowsByMonth[month] || []).map(function (dr) {
+                var dailyRow = {};
+                Object.keys(dr).forEach(function (key) { dailyRow[key] = dr[key]; });
+                dailyRow._source = "live";
+                return dailyRow;
+              });
+            });
             merged[taskKey].push({
               id: liveSchemaId,
               schemeId: liveSchemaId,
@@ -1102,7 +1966,7 @@
               deploymentDate: requireSchemeDeploymentDate(liveScheme, "live scheme"),
               remark: liveScheme.remark || "",
               monthlyRows: lrOnlyRows,
-              dailyRowsByMonth: liveScheme.dailyRowsByMonth || {},
+              dailyRowsByMonth: lrOnlyDaily,
               liveSinceDate: liveScheme.liveSinceDate || "",
               liveMetricSinceDate: liveScheme.liveMetricSinceDate || liveScheme.liveSinceDate || "",
               phaseRanges: liveScheme.phaseRanges || [],
@@ -1117,12 +1981,69 @@
     return merged;
   }
 
+  function buildLegacyFactorLabViewModelForTest(responses) {
+    responses = responses || {};
+    var originalLabels = factorTargetLabels;
+    factorTargetLabels = Object.assign({}, originalLabels);
+    try {
+      var liveTasks = null;
+      var schemesPayload = responses["/api/schemes"];
+      if (schemesPayload) {
+        var schemes = Array.isArray(schemesPayload)
+          ? schemesPayload
+          : (schemesPayload.schemes || []);
+        var metricsByKey = {};
+        schemes.forEach(function (scheme) {
+          if (!scheme.scheme_id) return;
+          var metricsPath = "/api/metrics/" + encodeURIComponent(scheme.scheme_id);
+          if (responses[metricsPath]) metricsByKey[scheme.scheme_id] = responses[metricsPath];
+        });
+        liveTasks = buildLiveTaskSchemes(schemesPayload, metricsByKey);
+      }
+
+      var backtestTasks = null;
+      var backtestPayload = responses["/api/backtests/factor-lab"];
+      if (backtestPayload && backtestPayload.schemes && backtestPayload.schemes.length) {
+        backtestTasks = buildBacktestTaskSchemes(backtestPayload);
+      }
+      var hasLive = liveTasks && hasPopulatedTasks(liveTasks);
+      var hasBacktest = backtestTasks && hasPopulatedTasks(backtestTasks);
+      if (!hasLive && !hasBacktest) {
+        throw new Error("实时和回测接口均暂不可用");
+      }
+      return {
+        tasks: mergeFactorLabTasks(backtestTasks, liveTasks),
+        mode: hasLive && hasBacktest ? "merged" : (hasLive ? "live" : "backtest"),
+        targetLabels: Object.assign({}, factorTargetLabels)
+      };
+    } finally {
+      factorTargetLabels = originalLabels;
+    }
+  }
+
+  function loadLegacyFixtureForTest(responses) {
+    try {
+      var viewModel = buildLegacyFactorLabViewModelForTest(responses);
+      finishFactorLabDataLoad(viewModel.tasks, viewModel.mode, viewModel.targetLabels);
+      return true;
+    } catch (error) {
+      return failFactorLabDataLoad(error);
+    }
+  }
+
   function startFactorLabAutoRefresh() {
-    if (factorLabRefreshTimer || !window.setInterval) return;
-    factorLabRefreshTimer = window.setInterval(function () {
-      if (getActiveView() !== "factor-lab") return;
-      loadFactorLabData({ force: true });
-    }, 60000);
+    if (factorLabRuntimeState.visibilityBound) return;
+    factorLabRuntimeState.visibilityBound = true;
+    if (!document.addEventListener) return;
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") {
+        clearFactorLabRefreshTimer();
+        return;
+      }
+      if (getActiveView() === "factor-lab" && !factorLabRemoteLoading) {
+        loadFactorLabData({ force: true });
+      }
+    });
   }
 
   function getSchemesForTask(taskKey) {
@@ -1202,12 +2123,33 @@
   }
 
   function aggregateScheme(scheme) {
+    var committed = factorLabRuntimeState.committedViewModel;
+    var cacheKey = [
+      committed ? committed.snapshotId : "uncommitted",
+      (scheme && (scheme.schemeId || scheme.id)) || "",
+      factorLabState.startMonth + ":" + factorLabState.endMonth,
+      factorLabState.dataSource
+    ].join("\u0000");
+    if (factorLabRuntimeState.aggregateCache.has(cacheKey)) {
+      return factorLabRuntimeState.aggregateCache.get(cacheKey);
+    }
     var rawRows = getVisibleRawDailyRowsForScheme(scheme);
     if (!rawRows.length) {
-      throw new Error("scheme " + ((scheme && scheme.schemeId) || scheme.id || "") + " has no detail rows for selected metric range");
+      var hasAnyDetailRows = Object.keys(scheme.dailyRowsByMonth || {}).some(function (month) {
+        return (scheme.dailyRowsByMonth[month] || []).length > 0;
+      });
+      if (!hasAnyDetailRows && (scheme.monthlyRows || []).length) {
+        throw new Error("scheme " + ((scheme && scheme.schemeId) || scheme.id || "") +
+          " has monthly metrics but no detail rows");
+      }
+      var emptyMetric = metricFromSampleRows([]);
+      factorLabRuntimeState.aggregateCache.set(cacheKey, emptyMetric);
+      return emptyMetric;
     }
     var dailyRows = getVisibleDailyRowsForScheme(scheme);
-    return metricFromSampleRows(dailyRows);
+    var metric = metricFromSampleRows(dailyRows);
+    factorLabRuntimeState.aggregateCache.set(cacheKey, metric);
+    return metric;
   }
 
   function rankingMetricValue(scheme, metricId) {
@@ -1266,6 +2208,50 @@
     }
   }
 
+  function factorLabSnapshotAgeText() {
+    var committed = factorLabRuntimeState.committedViewModel;
+    if (!committed) return "";
+    var elapsed = factorLabRuntimeState.committedAt
+      ? Math.max(0, factorLabNow() - factorLabRuntimeState.committedAt)
+      : 0;
+    var ageMs = Math.max(0, Number(committed.snapshotAgeMs) || 0) + elapsed;
+    if (ageMs < 1000) return "刚刚";
+    if (ageMs < 60000) return Math.floor(ageMs / 1000) + "秒前";
+    return Math.floor(ageMs / 60000) + "分钟前";
+  }
+
+  function renderFactorLabDataStatus() {
+    var status = document.getElementById("factorDataStatus");
+    var text = document.getElementById("factorDataStatusText");
+    if (!status || !text) return;
+    ["is-loading", "is-fresh", "is-stale", "is-error"].forEach(function (className) {
+      status.classList.remove(className);
+    });
+    var hasLkg = Boolean(factorLabRuntimeState.committedViewModel);
+    var age = factorLabSnapshotAgeText();
+    if (factorLabRemoteLoading) {
+      status.classList.add("is-loading");
+      text.textContent = hasLkg ? "数据刷新中 · " + age : "Loading";
+    } else if (factorLabApiError && hasLkg) {
+      status.classList.add("is-stale");
+      text.textContent = "刷新失败 · 已显示旧数据 · " + age;
+    } else if (factorLabApiError) {
+      status.classList.add("is-error");
+      text.textContent = "数据不可用";
+    } else if (factorLabRuntimeState.stale) {
+      status.classList.add("is-stale");
+      text.textContent = "数据已过期 · " + age;
+    } else if (hasLkg) {
+      status.classList.add("is-fresh");
+      text.textContent = "数据已就绪 · " + age;
+    } else {
+      status.classList.add("is-loading");
+      text.textContent = "Loading";
+    }
+    status.setAttribute("data-data-state", factorLabDataMode);
+    status.setAttribute("title", factorLabApiError || text.textContent);
+  }
+
   function renderTaskOverview() {
     var body = document.getElementById("factorTaskMatrixBody");
     var range = document.getElementById("factorOverviewRange");
@@ -1320,10 +2306,14 @@
     var schemes = sortSchemesByMetric(getSelectedTaskSchemes());
     if (title) title.textContent = task.label + " 候选方案排行";
     if (meta) {
-      if (factorLabRemoteLoading) {
-        meta.textContent = "正在读取本机方案数据。";
+      if (factorLabRemoteLoading && factorLabRuntimeState.committedViewModel) {
+        meta.textContent = "正在刷新数据，当前继续显示上次成功快照。";
+      } else if (factorLabRemoteLoading) {
+        meta.textContent = "正在加载因子实验数据。";
+      } else if (factorLabApiError && factorLabRuntimeState.committedViewModel) {
+        meta.textContent = "刷新失败，当前显示 " + factorLabSnapshotAgeText() + " 的旧数据。";
       } else if (factorLabApiError) {
-        meta.textContent = "实时API暂不可用，请检查服务或迁移状态。";
+        meta.textContent = "数据暂不可用，系统将自动重试。";
       } else if (factorLabDataMode === "backtest") {
         meta.textContent = "该任务格子下共有 " + schemes.length + " 个历史回测方案。";
       } else if (factorLabDataMode === "merged") {
@@ -1633,6 +2623,7 @@
   function renderFactorLab() {
     bindFactorLabEvents();
     loadFactorLabData();
+    renderFactorLabDataStatus();
     updateFactorFilterUi();
     ensureSelectedScheme();
     renderTaskOverview();
@@ -1709,6 +2700,12 @@
   function openFactorCalendar(month, trigger) {
     var drawer = document.getElementById("factorCalendarDrawer");
     if (!drawer) return;
+    var scheme = getSelectedScheme();
+    factorLabDrawerSelection = scheme ? {
+      taskKey: factorLabState.selectedTaskKey,
+      schemeId: scheme.id,
+      month: month
+    } : null;
     renderFactorDailyRows(month);
     drawer.classList.add("is-open");
     drawer.setAttribute("aria-hidden", "false");
@@ -1772,6 +2769,7 @@
     if (!drawer) return;
     drawer.classList.remove("is-open");
     drawer.setAttribute("aria-hidden", "true");
+    factorLabDrawerSelection = null;
     Array.prototype.slice.call(document.querySelectorAll(".factor-calendar-link.is-active")).forEach(function (button) {
       button.classList.remove("is-active");
     });
@@ -1929,6 +2927,24 @@
         startMonth: factorLabState.startMonth
       };
     },
+    getFactorLabRuntimeStateForTest: function () {
+      return {
+        loadSeq: factorLabRuntimeState.loadSeq,
+        capability: factorLabRuntimeState.capability,
+        stale: factorLabRuntimeState.stale,
+        consecutiveFailures: factorLabRuntimeState.consecutiveFailures,
+        nextRefreshAt: factorLabRuntimeState.nextRefreshAt,
+        snapshotId: factorLabRuntimeState.committedViewModel
+          ? factorLabRuntimeState.committedViewModel.snapshotId
+          : null,
+        source: factorLabRuntimeState.committedViewModel
+          ? factorLabRuntimeState.committedViewModel.source
+          : null,
+        aggregateCacheSize: factorLabRuntimeState.aggregateCache.size,
+        hasController: Boolean(factorLabRuntimeState.controller),
+        drawerSelection: factorLabDrawerSelection
+      };
+    },
     setFactorLabStateForTest: function (patch) {
       Object.keys(patch || {}).forEach(function (key) {
         if (Object.prototype.hasOwnProperty.call(factorLabState, key)) {
@@ -1943,11 +2959,17 @@
     isLowSampleMetric: isLowSampleMetric,
     liveDividerTextForTest: liveDividerText,
     loadFactorLabData: loadFactorLabData,
+    decodeDashboardPayload: decodeDashboardPayload,
+    buildFactorLabViewModel: buildFactorLabViewModel,
+    buildLegacyFactorLabViewModelForTest: buildLegacyFactorLabViewModelForTest,
+    loadLegacyFixtureForTest: loadLegacyFixtureForTest,
     apiUrlForTest: apiUrl,
     normalizeRouteForTest: normalizeRoute,
     routeUrlForTest: routeUrl,
     renderDailyResultForTest: renderDailyResult,
     renderFactorDailyRowsForTest: renderFactorDailyRows,
+    openFactorCalendarForTest: openFactorCalendar,
+    closeFactorCalendarForTest: closeFactorCalendar,
     renderTaskOverviewForTest: renderTaskOverview,
     trendChartLayoutForTest: buildTrendChartLayout,
     trendMonthLabelVisibleForTest: shouldShowTrendMonthLabel,
@@ -1955,6 +2977,9 @@
     sortRankingSchemes: sortRankingSchemes,
     getTaskSchemesForTest: function () {
       return factorTaskSchemes;
+    },
+    getFactorTargetLabelsForTest: function () {
+      return Object.assign({}, factorTargetLabels);
     },
     getTaskSchemeCountsForTest: function () {
       var counts = {};
