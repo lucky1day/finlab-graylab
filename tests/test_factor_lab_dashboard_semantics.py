@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from datetime import date, datetime
 
@@ -290,6 +291,34 @@ def test_duplicate_actuals_with_same_direction_collapse() -> None:
     assert collapsed == {("CDB10Y", "2026-07-01", "close"): 1}
 
 
+def test_actual_collapse_reports_same_direction_duplicates_in_one_pass() -> None:
+    import backend.factor_lab_dashboard_semantics as semantics
+
+    same = [
+        {
+            "target_date": "2026-07-01",
+            "target_tenor": "CDB10Y",
+            "target_rule": "close",
+            "actual_direction": 1,
+        },
+        {
+            "target_date": "2026-07-01",
+            "target_tenor": "CDB10Y",
+            "target_rule": "close",
+            "actual_direction": 1,
+        },
+    ]
+
+    result = semantics.collapse_actual_facts_with_diagnostics(
+        iter(same),
+        fact_name="monthly actuals",
+    )
+
+    assert result.facts == {("CDB10Y", "2026-07-01", "close"): 1}
+    assert result.same_direction_duplicates_folded == 1
+    assert result.direction_conflicts == 0
+
+
 def test_conflicting_actuals_fail_closed() -> None:
     same = [
         {
@@ -316,6 +345,63 @@ def test_conflicting_actuals_fail_closed() -> None:
 
     with pytest.raises(DashboardDataError, match="monthly actuals"):
         collapse_actual_facts(conflict, fact_name="monthly actuals")
+
+
+def test_actual_conflict_exception_exposes_counts_without_swallowing_error() -> None:
+    import backend.factor_lab_dashboard_semantics as semantics
+
+    conflict = [
+        {
+            "target_date": "2026-07-01",
+            "target_tenor": "CDB10Y",
+            "target_rule": "close",
+            "actual_direction": 1,
+        },
+        {
+            "target_date": "2026-07-01",
+            "target_tenor": "CDB10Y",
+            "target_rule": "close",
+            "actual_direction": -1,
+        },
+    ]
+
+    with pytest.raises(DashboardDataError) as captured:
+        semantics.collapse_actual_facts_with_diagnostics(
+            conflict,
+            fact_name="monthly actuals",
+            frequency="monthly",
+        )
+
+    assert str(captured.value) == "monthly actuals has conflicting directions"
+    assert captured.value.diagnostics == {
+        "same_direction_duplicates_folded": 0,
+        "direction_conflicts": 1,
+        "actual_conflict_locator": {
+            "frequency": "monthly",
+            "target_tenor": "CDB10Y",
+            "target_date": "2026-07-01",
+            "target_rule": "close",
+        },
+    }
+
+
+def test_actual_conflict_locator_hashes_noncanonical_date() -> None:
+    import backend.factor_lab_dashboard_semantics as semantics
+
+    unsafe_date = "2026-7-1\nsecret-date"
+
+    locator = semantics._actual_conflict_locator(
+        frequency="monthly",
+        target_tenor="10Y",
+        target_date=unsafe_date,
+        target_rule="monthly_close",
+    )
+
+    assert re.fullmatch(
+        r"redacted-sha256:[0-9a-f]{16}",
+        locator["target_date"],
+    )
+    assert unsafe_date not in locator["target_date"]
 
 
 def test_compact_detail_preserves_feature_date_and_pending_actual() -> None:

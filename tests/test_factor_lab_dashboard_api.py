@@ -181,6 +181,32 @@ def _request(
     )
 
 
+def _actual_conflict_store() -> DashboardSnapshotStore:
+    import backend.factor_lab_dashboard as dashboard
+
+    rows = [
+        {
+            "actual_kind": "monthly",
+            "target_tenor": "10Y",
+            "target_date": "2026-07-15",
+            "target_rule": "monthly_close",
+            "actual_direction": direction,
+        }
+        for direction in (1, -1)
+    ]
+
+    def build() -> dict[str, Any]:
+        dashboard._collapse_actual_rows(
+            rows,
+            active_actual_scopes={
+                ("10Y", "monthly", "monthly_close")
+            },
+        )
+        raise AssertionError("conflict must fail closed")
+
+    return DashboardSnapshotStore(build)
+
+
 @pytest.fixture
 def main_module(monkeypatch):
     from backend import main
@@ -204,6 +230,18 @@ def main_module(monkeypatch):
             "detail_row_count": 5,
             "raw_bytes": 1_234,
             "gzip_bytes": 456,
+            "actual_same_direction_duplicates_folded": {
+                "daily": 1,
+                "weekly": 2,
+                "monthly": 3,
+                "secret-fact-key": 999,
+            },
+            "actual_direction_conflicts": {
+                "daily": 0,
+                "weekly": 0,
+                "monthly": 0,
+                "secret-fact-key": 999,
+            },
         },
         raising=False,
     )
@@ -365,6 +403,113 @@ def test_dashboard_without_lkg_returns_stable_503_without_exception_text(
         "status": "degraded",
         "error_code": "dashboard_snapshot_unavailable",
     }
+
+
+def test_dashboard_conflict_503_has_one_safe_independent_conflict_event(
+    main_module,
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(
+        main_module,
+        "dashboard_snapshot_store",
+        _actual_conflict_store(),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        status, _, _, _ = _request(main_module.app)
+
+    conflict_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith(
+            "factor_lab_dashboard_actual_conflict "
+        )
+    ]
+    assert status == 503
+    assert len(conflict_records) == 1
+    assert conflict_records[0].dashboard_event[
+        "actual_conflict_locator"
+    ]["frequency"] == "monthly"
+
+
+def test_dashboard_refresh_conflict_returns_stale_and_logs_current_conflict(
+    main_module,
+    monkeypatch,
+    caplog,
+) -> None:
+    import backend.factor_lab_dashboard as dashboard
+
+    class _Clock:
+        value = 0.0
+
+        def __call__(self) -> float:
+            return self.value
+
+    clock = _Clock()
+    calls = 0
+
+    def build() -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _payload(snapshot_id="old-success")
+        dashboard._collapse_actual_rows(
+            [
+                {
+                    "actual_kind": "monthly",
+                    "target_tenor": "10Y",
+                    "target_date": "2026-07-15",
+                    "target_rule": "monthly_close",
+                    "actual_direction": direction,
+                }
+                for direction in (1, -1)
+            ],
+            active_actual_scopes={
+                ("10Y", "monthly", "monthly_close")
+            },
+        )
+        raise AssertionError("conflict must fail closed")
+
+    store = DashboardSnapshotStore(
+        build,
+        ttl_seconds=1.0,
+        monotonic=clock,
+    )
+    monkeypatch.setattr(main_module, "dashboard_snapshot_store", store)
+
+    with caplog.at_level(logging.INFO):
+        first_status, _, first_body, _ = _request(main_module.app)
+        clock.value = 2.0
+        stale_status, _, stale_body, _ = _request(main_module.app)
+
+    assert first_status == stale_status == 200
+    assert json.loads(first_body)["stale"] is False
+    assert json.loads(stale_body)["stale"] is True
+    conflict_events = [
+        record.dashboard_event
+        for record in caplog.records
+        if record.getMessage().startswith(
+            "factor_lab_dashboard_actual_conflict "
+        )
+    ]
+    assert len(conflict_events) == 1
+    assert conflict_events[0]["actual_direction_conflicts"] == {
+        "daily": 0,
+        "weekly": 0,
+        "monthly": 1,
+    }
+    request_events = [
+        record.dashboard_event
+        for record in caplog.records
+        if record.getMessage().startswith("factor_lab_dashboard_request ")
+    ]
+    assert len(request_events) == 2
+    assert all(
+        event["actual_direction_conflicts"]
+        == {"daily": 0, "weekly": 0, "monthly": 0}
+        for event in request_events
+    )
 
 
 def test_stale_lkg_is_visible_in_body_headers_and_health(
@@ -532,6 +677,16 @@ def test_structured_request_log_uses_build_diagnostics_without_payload_scan(
     assert event["scheme_count"] == 1
     assert event["live_row_count"] == 2
     assert event["backtest_row_count"] == 3
+    assert event["actual_same_direction_duplicates_folded"] == {
+        "daily": 1,
+        "weekly": 2,
+        "monthly": 3,
+    }
+    assert event["actual_direction_conflicts"] == {
+        "daily": 0,
+        "weekly": 0,
+        "monthly": 0,
+    }
     assert event["response_raw_bytes"] == int(headers["content-length"])
     assert event["response_budget_gzip_bytes"] > 0
     assert event["request_compact_json_budget_gzip_ms"] >= 0.0
@@ -602,6 +757,87 @@ def test_startup_prewarm_failure_is_degraded_stable_and_does_not_leak(
         "error_code": "dashboard_snapshot_unavailable",
     }
     assert "mysql://secret@host" not in caplog.text
+    assert "factor_lab_dashboard_actual_conflict " not in caplog.text
+
+
+def test_startup_prewarm_conflict_logs_one_safe_independent_event(
+    main_module,
+    monkeypatch,
+    caplog,
+) -> None:
+    monkeypatch.setattr(main_module, "get_engine", lambda: object())
+    monkeypatch.setattr(
+        main_module,
+        "sync_registry_from_configs",
+        lambda engine: None,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "dashboard_snapshot_store",
+        _actual_conflict_store(),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        main_module._sync_registry_on_startup()
+
+    conflict_records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith(
+            "factor_lab_dashboard_actual_conflict "
+        )
+    ]
+    assert len(conflict_records) == 1
+    assert conflict_records[0].dashboard_event[
+        "actual_direction_conflicts"
+    ] == {"daily": 0, "weekly": 0, "monthly": 1}
+
+
+def test_dashboard_db_timeout_finishes_flight_and_next_request_rebuilds(
+    main_module,
+    monkeypatch,
+) -> None:
+    dashboard_engine = object()
+    timeout = TimeoutError("simulated bounded PyMySQL read timeout")
+    calls = 0
+
+    monkeypatch.setattr(
+        main_module,
+        "get_dashboard_engine",
+        lambda: dashboard_engine,
+        raising=False,
+    )
+
+    def reject_default_engine():
+        raise AssertionError("dashboard builder used the shared backend engine")
+
+    monkeypatch.setattr(main_module, "get_engine", reject_default_engine)
+
+    def build(received_engine):
+        nonlocal calls
+        calls += 1
+        assert received_engine is dashboard_engine
+        if calls == 1:
+            raise timeout
+        return _payload(snapshot_id="after-db-timeout")
+
+    monkeypatch.setattr(main_module, "build_factor_lab_dashboard", build)
+    store = DashboardSnapshotStore(main_module._build_dashboard_snapshot)
+
+    with pytest.raises(SnapshotUnavailable) as first_failure:
+        store.get()
+
+    assert first_failure.value.__cause__ is timeout
+    assert store._building is False
+    assert store.diagnostics()["last_attempt_status"] == "failed"
+
+    rebuilt = store.get()
+
+    assert rebuilt.cache_status == "MISS"
+    assert rebuilt.payload["snapshot_id"] == "after-db-timeout"
+    assert calls == 2
+    assert store._building is False
+    assert store.diagnostics()["last_attempt_status"] == "success"
 
 
 def test_successful_fresh_request_recovers_health_to_ready(

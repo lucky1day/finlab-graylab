@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from collections import OrderedDict, defaultdict
+from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -25,7 +26,7 @@ from backend.factor_lab_dashboard_semantics import (
     backtest_data_source_label,
     choose_latest_backtest_runs,
     choose_live_prediction_rows,
-    collapse_actual_facts,
+    collapse_actual_facts_with_diagnostics,
     compact_detail_row,
     live_actual_selector,
     validate_dashboard_payload,
@@ -137,7 +138,7 @@ def build_factor_lab_dashboard(
         (scheme["target_tenor"], *live_actual_selector(scheme["task_type"]))
         for scheme in registry
     }
-    actual_facts = _collapse_actual_rows(
+    actual_facts, actual_diagnostics = _collapse_actual_rows(
         actual_rows,
         active_actual_scopes=active_actual_scopes,
     )
@@ -304,6 +305,7 @@ def build_factor_lab_dashboard(
             "detail_row_count": live_row_count + backtest_row_count,
             "raw_bytes": encoding.raw_size,
             "gzip_bytes": encoding.gzip_size,
+            **actual_diagnostics,
         },
     )
     return payload
@@ -313,7 +315,7 @@ def dashboard_build_diagnostics(snapshot_id: str) -> dict[str, Any] | None:
     """返回指定成功快照的有界构建诊断副本。"""
     with _diagnostics_lock:
         diagnostics = _diagnostics_by_snapshot_id.get(snapshot_id)
-        return None if diagnostics is None else dict(diagnostics)
+        return None if diagnostics is None else deepcopy(diagnostics)
 
 
 def _record_build_diagnostics(
@@ -322,7 +324,7 @@ def _record_build_diagnostics(
 ) -> None:
     """线程安全保存最近少量成功快照的构建诊断。"""
     with _diagnostics_lock:
-        _diagnostics_by_snapshot_id[snapshot_id] = dict(diagnostics)
+        _diagnostics_by_snapshot_id[snapshot_id] = deepcopy(dict(diagnostics))
         _diagnostics_by_snapshot_id.move_to_end(snapshot_id)
         while len(_diagnostics_by_snapshot_id) > _DIAGNOSTICS_LIMIT:
             _diagnostics_by_snapshot_id.popitem(last=False)
@@ -547,7 +549,10 @@ def _collapse_actual_rows(
     actual_rows: list[Mapping[str, Any]],
     *,
     active_actual_scopes: set[tuple[str, str, str]],
-) -> dict[tuple[str, str], dict[tuple[str, str, str], int | None]]:
+) -> tuple[
+    dict[tuple[str, str], dict[tuple[str, str, str], int | None]],
+    dict[str, dict[str, int]],
+]:
     grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for row in actual_rows:
         candidate_scope = (
@@ -563,13 +568,88 @@ def _collapse_actual_rows(
         target_rule = _required_text(row.get("target_rule"), field="target_rule")
         grouped[(actual_kind, target_rule)].append(row)
 
-    return {
-        selector: collapse_actual_facts(
-            rows,
-            fact_name=f"{selector[0]} actuals",
+    duplicates_folded = {"daily": 0, "weekly": 0, "monthly": 0}
+    direction_conflicts = {"daily": 0, "weekly": 0, "monthly": 0}
+    facts_by_selector: dict[
+        tuple[str, str],
+        dict[tuple[str, str, str], int | None],
+    ] = {}
+    for selector, rows in grouped.items():
+        frequency = _actual_frequency(selector[0])
+        try:
+            result = collapse_actual_facts_with_diagnostics(
+                rows,
+                fact_name=f"{selector[0]} actuals",
+                frequency=frequency,
+            )
+        except DashboardDataError as exc:
+            conflict_locator = exc.diagnostics.get(
+                "actual_conflict_locator"
+            )
+            if not isinstance(conflict_locator, Mapping):
+                raise
+            duplicates_folded[frequency] += int(
+                exc.diagnostics.get("same_direction_duplicates_folded", 0)
+            )
+            direction_conflicts[frequency] += int(
+                exc.diagnostics.get("direction_conflicts", 0)
+            )
+            diagnostics = {
+                "actual_same_direction_duplicates_folded": duplicates_folded,
+                "actual_direction_conflicts": direction_conflicts,
+                "actual_conflict_locator": conflict_locator,
+            }
+            _log_actual_conflict(diagnostics)
+            raise DashboardDataError(
+                str(exc),
+                diagnostics=diagnostics,
+            ) from exc
+        facts_by_selector[selector] = result.facts
+        duplicates_folded[frequency] += (
+            result.same_direction_duplicates_folded
         )
-        for selector, rows in grouped.items()
+        direction_conflicts[frequency] += result.direction_conflicts
+
+    return facts_by_selector, {
+        "actual_same_direction_duplicates_folded": duplicates_folded,
+        "actual_direction_conflicts": direction_conflicts,
     }
+
+
+def _log_actual_conflict(diagnostics: Mapping[str, Any]) -> None:
+    """记录一次不含方向值、异常文本或原始行的冲突事件。"""
+    event = {
+        "actual_same_direction_duplicates_folded": dict(
+            diagnostics["actual_same_direction_duplicates_folded"]
+        ),
+        "actual_direction_conflicts": dict(
+            diagnostics["actual_direction_conflicts"]
+        ),
+        "actual_conflict_locator": dict(
+            diagnostics["actual_conflict_locator"]
+        ),
+    }
+    logger.error(
+        "factor_lab_dashboard_actual_conflict %s",
+        json.dumps(
+            event,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        extra={"dashboard_event": event},
+    )
+
+
+def _actual_frequency(actual_kind: str) -> str:
+    """把内部 actual selector 收敛为安全的三类诊断标签。"""
+    if actual_kind in {"daily_1d", "daily_5d"}:
+        return "daily"
+    if actual_kind in {"weekly", "monthly"}:
+        return actual_kind
+    raise DashboardDataError(
+        f"dashboard actual_kind is invalid: {actual_kind!r}"
+    )
 
 
 def _registry_dto(row: Mapping[str, Any]) -> dict[str, Any]:

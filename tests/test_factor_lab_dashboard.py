@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -1099,8 +1101,11 @@ def test_canonical_and_dto_work_happens_after_snapshot_connection_closes(
 
     monkeypatch.setattr(
         dashboard,
-        "collapse_actual_facts",
-        _after_close("collapse", dashboard.collapse_actual_facts),
+        "collapse_actual_facts_with_diagnostics",
+        _after_close(
+            "collapse",
+            dashboard.collapse_actual_facts_with_diagnostics,
+        ),
     )
     monkeypatch.setattr(
         dashboard,
@@ -1116,6 +1121,53 @@ def test_canonical_and_dto_work_happens_after_snapshot_connection_closes(
     dashboard.build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
     assert {"collapse", "canonical", "compact"}.issubset(called)
+
+
+def test_build_diagnostics_report_actual_folding_by_frequency_without_extra_sql(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import (
+        build_factor_lab_dashboard,
+        dashboard_build_diagnostics,
+    )
+
+    engine, trace = dashboard_db
+
+    payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+    diagnostics = dashboard_build_diagnostics(payload["snapshot_id"])
+
+    assert diagnostics is not None
+    assert diagnostics["actual_same_direction_duplicates_folded"] == {
+        "daily": 0,
+        "weekly": 0,
+        "monthly": 1,
+    }
+    assert diagnostics["actual_direction_conflicts"] == {
+        "daily": 0,
+        "weekly": 0,
+        "monthly": 0,
+    }
+    assert len(trace.statements) == 6
+
+
+def test_build_diagnostics_nested_counts_are_defensive_copies(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import (
+        build_factor_lab_dashboard,
+        dashboard_build_diagnostics,
+    )
+
+    engine, _trace = dashboard_db
+    payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+    first = dashboard_build_diagnostics(payload["snapshot_id"])
+    assert first is not None
+    first["actual_same_direction_duplicates_folded"]["monthly"] = 999
+
+    second = dashboard_build_diagnostics(payload["snapshot_id"])
+    assert second is not None
+    assert second["actual_same_direction_duplicates_folded"]["monthly"] == 1
 
 
 def test_payload_validator_rejects_identity_top_level_and_uniqueness_damage(
@@ -1380,6 +1432,7 @@ def test_dashboard_response_budgets_fail_closed_without_truncation(
 
 def test_conflicting_actual_fails_whole_snapshot_with_one_checkout(
     dashboard_db: tuple[Engine, SqlTrace],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     from backend.factor_lab_dashboard import build_factor_lab_dashboard
     from backend.factor_lab_dashboard_semantics import DashboardDataError
@@ -1399,12 +1452,108 @@ def test_conflicting_actual_fails_whole_snapshot_with_one_checkout(
         )
     trace.reset()
 
-    with pytest.raises(DashboardDataError, match="monthly actuals.*conflicting"):
-        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+    with caplog.at_level(
+        logging.ERROR,
+        logger="backend.factor_lab_dashboard",
+    ):
+        with pytest.raises(
+            DashboardDataError,
+            match="monthly actuals.*conflicting",
+        ) as captured:
+            build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
 
+    assert captured.value.diagnostics == {
+        "actual_same_direction_duplicates_folded": {
+            "daily": 0,
+            "weekly": 0,
+            "monthly": 1,
+        },
+        "actual_direction_conflicts": {
+            "daily": 0,
+            "weekly": 0,
+            "monthly": 1,
+        },
+        "actual_conflict_locator": {
+            "frequency": "monthly",
+            "target_tenor": "10Y",
+            "target_date": "2026-07-15",
+            "target_rule": (
+                "next_month_observation_yield_vs_"
+                "feature_month_observation_yield"
+            ),
+        },
+    }
+    records = [
+        record
+        for record in caplog.records
+        if record.getMessage().startswith(
+            "factor_lab_dashboard_actual_conflict "
+        )
+    ]
+    assert len(records) == 1
+    event = json.loads(records[0].getMessage().split(" ", 1)[1])
+    assert records[0].dashboard_event == event
+    assert event == captured.value.diagnostics
+    assert "conflicting directions" not in records[0].getMessage()
+    assert " != " not in records[0].getMessage()
     assert len(trace.checkouts) == 1
     assert len(trace.checkins) == 1
     assert len(set(trace.connection_ids)) == 1
+
+
+def test_actual_conflict_event_hashes_unsafe_locator_fields(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import backend.factor_lab_dashboard as dashboard
+
+    unsafe_tenor = "secret\n" + ("X" * 200)
+    unsafe_rule = "sql=SELECT * FROM private"
+    rows = [
+        {
+            "actual_kind": "monthly",
+            "target_tenor": unsafe_tenor,
+            "target_date": "2026-07-15",
+            "target_rule": unsafe_rule,
+            "actual_direction": direction,
+        }
+        for direction in (1, -1)
+    ]
+
+    with caplog.at_level(
+        logging.ERROR,
+        logger="backend.factor_lab_dashboard",
+    ):
+        with pytest.raises(dashboard.DashboardDataError):
+            dashboard._collapse_actual_rows(
+                rows,
+                active_actual_scopes={
+                    (unsafe_tenor, "monthly", unsafe_rule)
+                },
+            )
+
+    record = next(
+        item
+        for item in caplog.records
+        if item.getMessage().startswith(
+            "factor_lab_dashboard_actual_conflict "
+        )
+    )
+    event = record.dashboard_event
+    assert set(event) == {
+        "actual_same_direction_duplicates_folded",
+        "actual_direction_conflicts",
+        "actual_conflict_locator",
+    }
+    assert re.fullmatch(
+        r"redacted-sha256:[0-9a-f]{16}",
+        event["actual_conflict_locator"]["target_tenor"],
+    )
+    assert re.fullmatch(
+        r"redacted-sha256:[0-9a-f]{16}",
+        event["actual_conflict_locator"]["target_rule"],
+    )
+    assert unsafe_tenor not in record.getMessage()
+    assert unsafe_rule not in record.getMessage()
 
 
 def test_unconsumed_actual_scope_conflict_does_not_fail_snapshot(

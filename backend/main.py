@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from backend.db import get_engine
+from backend.db import get_dashboard_engine, get_engine
 from backend.dashboard_snapshot import (
     DashboardSnapshotStore,
     SnapshotResult,
@@ -211,7 +211,7 @@ class NoCacheFrontendStaticFiles(StaticFiles):
 
 def _build_dashboard_snapshot() -> dict[str, Any]:
     """延迟取得 DB engine；模块 import 不连接数据库。"""
-    return build_factor_lab_dashboard(get_engine())
+    return build_factor_lab_dashboard(get_dashboard_engine())
 
 
 dashboard_snapshot_store = DashboardSnapshotStore(_build_dashboard_snapshot)
@@ -458,6 +458,15 @@ def _integer_metric(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return result if result >= 0 else None
+
+
+def _actual_frequency_metrics(value: Any) -> dict[str, int | None]:
+    """仅允许三类固定 actual 频率进入结构化请求日志。"""
+    source = value if isinstance(value, dict) else {}
+    return {
+        frequency: _integer_metric(source.get(frequency))
+        for frequency in ("daily", "weekly", "monthly")
+    }
 
 
 def _server_timing(
@@ -783,6 +792,16 @@ def _factor_lab_dashboard_response(request: Request) -> Response:
             ),
             "backtest_row_count": _integer_metric(
                 build_diagnostics.get("backtest_row_count")
+            ),
+            "actual_same_direction_duplicates_folded": (
+                _actual_frequency_metrics(
+                    build_diagnostics.get(
+                        "actual_same_direction_duplicates_folded"
+                    )
+                )
+            ),
+            "actual_direction_conflicts": _actual_frequency_metrics(
+                build_diagnostics.get("actual_direction_conflicts")
             ),
             "snapshot_origin_raw_bytes": _integer_metric(
                 build_diagnostics.get("raw_bytes")

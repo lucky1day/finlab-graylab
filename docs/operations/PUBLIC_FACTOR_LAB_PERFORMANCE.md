@@ -48,6 +48,15 @@ Chrome / panda_quantflow iframe
 `source`、`schemeCount`、`liveRowCount`、`backtestRowCount`。端到端耗时由外部探针以
 `Page.navigate` 前后的 monotonic 时钟计算；不得采用前端字段反推导航耗时。
 
+Dashboard snapshot 使用独立的只读 SQLAlchemy/PyMySQL Engine，不复用 scheduler
+写库 Engine。固定预算为 TCP connect `0.5s`、socket read `0.75s`、socket write
+`0.5s`，并在 MySQL 8 会话设置单条 `SELECT MAX_EXECUTION_TIME=500ms`。500ms 给
+6 个有界批量 SELECT 的正常亚秒 DB 目标保留空间，同时让单条异常查询显著早于公网
+upstream `3s` 预算失败；这些设置不得外推到 scheduler writer 或算法运行环境。若
+connect/read/write/query 超时，当前 owner 以失败 terminal outcome 释放 single-flight：
+已有 LKG 时该次请求显式返回 `STALE`，无 LKG 时返回 `UNAVAILABLE`；后续请求可重新
+成为 owner 并重建，禁止用不可取消后台线程伪造总超时。
+
 ## 2. SLO、样本和容量预算
 
 正式公网 direct URL 和真实 panda_quantflow iframe 分开验收，均要求：
@@ -211,7 +220,9 @@ backend cold 与公网传输，但浏览器 navigation-to-ready 才是主验收�
    稳定错误码 `dashboard_snapshot_stale`。
 2. 查应用结构化日志中的 request/snapshot ID、cache state、rebuild error、waiter 数、
    DB/canonical/serialization/build duration。
-3. 查 single-flight 是否释放、是否只存在一个 rebuild；再查 DB 连接池和 actual 冲突。
+3. 查 single-flight 是否释放、是否只存在一个 rebuild；再查 dashboard 专用 DB Engine
+   的 connect/read/write/`MAX_EXECUTION_TIME` 超时、连接池和 actual 冲突。超时后的下一
+   请求应能成为新 owner；若 flight 持续 active，按缺陷处理而不是提高 upstream timeout。
 4. LKG 可保持页面可见，但不能用 stale 伪装健康 SLO。
 
 ### 503 / `UNAVAILABLE`

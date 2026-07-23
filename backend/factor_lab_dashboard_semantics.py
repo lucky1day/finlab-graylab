@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
@@ -48,6 +50,15 @@ BACKTEST_DATA_SOURCE_LABELS = {
     "runtime_default": "按方案运行时选择回测",
     "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
 }
+_ACTUAL_CONFLICT_FREQUENCIES = frozenset({"daily", "weekly", "monthly"})
+_ACTUAL_CONFLICT_TENOR_PATTERN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._:+/-]{0,31}\Z",
+    flags=re.ASCII,
+)
+_ACTUAL_CONFLICT_RULE_PATTERN = re.compile(
+    r"[a-z][a-z0-9_]{0,127}\Z",
+    flags=re.ASCII,
+)
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 SNAPSHOT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -107,6 +118,24 @@ BACKTEST_FIELDS = {
 
 class DashboardDataError(RuntimeError):
     """展示快照存在冲突或结构错误。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        diagnostics: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.diagnostics = dict(diagnostics or {})
+
+
+@dataclass(frozen=True, slots=True)
+class ActualFactCollapseResult:
+    """actual 事实折叠结果及不含事实明细的安全计数。"""
+
+    facts: dict[tuple[str, str, str], int | None]
+    same_direction_duplicates_folded: int
+    direction_conflicts: int
 
 
 def live_actual_selector(task_type: Any) -> tuple[str, str]:
@@ -256,7 +285,21 @@ def collapse_actual_facts(
     fact_name: str,
 ) -> dict[tuple[str, str, str], int | None]:
     """按业务事实键折叠同方向 actual，方向冲突时失败关闭。"""
+    return collapse_actual_facts_with_diagnostics(
+        rows,
+        fact_name=fact_name,
+    ).facts
+
+
+def collapse_actual_facts_with_diagnostics(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    fact_name: str,
+    frequency: str | None = None,
+) -> ActualFactCollapseResult:
+    """单遍折叠 actual，并返回安全的重复/冲突聚合计数。"""
     facts: dict[tuple[str, str, str], int | None] = {}
+    same_direction_duplicates_folded = 0
     for row in rows:
         key = (
             _required_text(row.get("target_tenor"), field="target_tenor"),
@@ -264,13 +307,84 @@ def collapse_actual_facts(
             _required_text(row.get("target_rule"), field="target_rule"),
         )
         direction = _direction(row.get("actual_direction"), allow_none=True)
-        if key in facts and facts[key] != direction:
-            raise DashboardDataError(
-                f"{fact_name} has conflicting directions for fact key {key}: "
-                f"{facts[key]} != {direction}"
-            )
+        if key in facts:
+            if facts[key] != direction:
+                raise DashboardDataError(
+                    f"{fact_name} has conflicting directions",
+                    diagnostics={
+                        "same_direction_duplicates_folded": (
+                            same_direction_duplicates_folded
+                        ),
+                        "direction_conflicts": 1,
+                        **(
+                            {
+                                "actual_conflict_locator": (
+                                    _actual_conflict_locator(
+                                        frequency=frequency,
+                                        target_tenor=key[0],
+                                        target_date=key[1],
+                                        target_rule=key[2],
+                                    )
+                                )
+                            }
+                            if frequency in _ACTUAL_CONFLICT_FREQUENCIES
+                            else {}
+                        ),
+                    },
+                )
+            same_direction_duplicates_folded += 1
         facts[key] = direction
-    return facts
+    return ActualFactCollapseResult(
+        facts=facts,
+        same_direction_duplicates_folded=same_direction_duplicates_folded,
+        direction_conflicts=0,
+    )
+
+
+def _actual_conflict_locator(
+    *,
+    frequency: str,
+    target_tenor: str,
+    target_date: str,
+    target_rule: str,
+) -> dict[str, str]:
+    """构造只含规范业务字段或稳定哈希替代值的冲突定位信息。"""
+    return {
+        "frequency": frequency,
+        "target_tenor": _safe_actual_locator_text(
+            target_tenor,
+            pattern=_ACTUAL_CONFLICT_TENOR_PATTERN,
+        ),
+        "target_date": _safe_actual_locator_date(target_date),
+        "target_rule": _safe_actual_locator_text(
+            target_rule,
+            pattern=_ACTUAL_CONFLICT_RULE_PATTERN,
+        ),
+    }
+
+
+def _safe_actual_locator_text(
+    value: str,
+    *,
+    pattern: re.Pattern[str],
+) -> str:
+    """合法值原样保留；其它值只输出稳定短哈希。"""
+    if pattern.fullmatch(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"redacted-sha256:{digest}"
+
+
+def _safe_actual_locator_date(value: str) -> str:
+    """仅保留 canonical YYYY-MM-DD；其它日期只输出稳定短哈希。"""
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.isoformat() == value:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+    return f"redacted-sha256:{digest}"
 
 
 def compact_detail_row(row: Mapping[str, Any], *, source: str) -> list[Any]:

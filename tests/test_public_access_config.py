@@ -735,7 +735,9 @@ def test_deploy_readme_points_to_current_performance_work() -> None:
         "(../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)"
         in readme
     )
-    assert "Task 10 手册落地前禁止执行本次发布" in readme
+    assert "公网性能运行手册已落地" in readme
+    assert "Task 10 将把可执行性能验收手册落到" not in readme
+    assert "Task 10 手册落地前禁止执行本次发布" not in readme
     assert "该文件落地前不创建失效链接" not in readme
     assert "不改任何业务代码" not in readme
     assert "后端不参与" not in readme

@@ -2,9 +2,9 @@
 
 当前公网性能与访问控制规范以
 [`docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md`](../docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md)
-为准。Task 10 将把可执行性能验收手册落到
-[公网性能运行手册](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)，并同步
-`docs/operations/README.md` 入口。这是实施计划中的有意顺序依赖：Task 10 手册落地前禁止执行本次发布。
+为准。公网性能运行手册已落地，详见
+[公网性能运行手册](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)，并已同步
+`docs/operations/README.md` 入口；发布前、rollout、final 与回滚均须按该手册执行。
 历史公网 PRD 只作决策记录，不能覆盖当前规范。
 
 ## 链路
