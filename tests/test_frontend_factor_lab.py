@@ -475,20 +475,26 @@ class FactorLabRankingTests(unittest.TestCase):
             "function loadBacktestFactorLabData(",
             "function loadBacktestFactorLabDataSilent(",
             'scanline.className = "route-scanline"',
+            "var isRouting =",
+            "var reduceMotionQuery =",
+            "function getViewForRoute(",
         )
         for marker in dead_markers:
             with self.subTest(dead_marker=marker):
                 self.assertNotIn(marker, script)
 
         preserved_markers = (
-            "PUBLIC_BASE_PATH",
-            "apiUrl",
-            "normalizeRoute",
-            "setActiveRoute",
-            "aifin:navigate",
-            "factorLabRuntimeState",
-            "decodeDashboardPayload",
-            "fetchLegacyFactorLabCandidate",
+            'var PUBLIC_BASE_PATH = "/bond-factor-lab"',
+            "function publicBasePath(",
+            "function apiUrl(",
+            "function normalizeRoute(",
+            "function routeUrl(",
+            "function setActiveRoute(",
+            "function getActiveView(",
+            'data.type !== "aifin:navigate"',
+            "var factorLabRuntimeState =",
+            "function decodeDashboardPayload(",
+            "function fetchLegacyFactorLabCandidate(",
             "window.__factorLabReady",
             "window.__factorLabTestHooks",
         )
