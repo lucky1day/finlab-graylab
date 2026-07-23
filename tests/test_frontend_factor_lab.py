@@ -542,6 +542,28 @@ class FactorLabRankingTests(unittest.TestCase):
         for selector in dead_selectors:
             self.assertNotIn(selector, css)
 
+        dead_tokens = (
+            ".factor-stack",
+            ".factor-filter-group.is-hidden",
+            ".factor-refresh-btn",
+            ".factor-accuracy-panel",
+            ".factor-scheme-badge",
+            ".factor-live-since-badge",
+            ".factor-accuracy-wrap",
+            ".factor-accuracy-table",
+            ".factor-accuracy-score",
+            ".factor-accuracy-value",
+            ".factor-accuracy-track",
+            ".factor-status-pill",
+            ".route-scanline",
+            "scanline-sweep",
+            "scanline-glow",
+        )
+        for token in dead_tokens:
+            self.assertNotIn(token, css)
+
+        self.assertEqual(css.count(".factor-sample-badge {"), 1)
+
         dead_variables = (
             "--bg-elevated:",
             "--surface-dark:",
