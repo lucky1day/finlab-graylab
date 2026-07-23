@@ -4,11 +4,10 @@
 
 **适用版本**：dashboard schema `factor-lab-dashboard-v1`
 
-**最后核验日期**：2026-07-22
+**最后核验日期**：2026-07-24
 **目标读者**：发布执行人、平台运维和性能验收人员
 
-本文把[公网亚秒设计](../superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md)
-转成可执行检查。部署和 Nginx 原子切换仍以
+本文是公网亚秒刷新链路的当前可执行规范。部署和 Nginx 原子切换仍以
 [`deploy/README.md`](../../deploy/README.md) 为准；本手册不授予部署、重启、Nginx
 reload、生产数据库操作、合并 `master` 或推送远程的权限。
 

@@ -729,13 +729,17 @@ def test_header_parser_uses_final_block_and_exact_tokens(tmp_path: Path) -> None
 def test_deploy_readme_points_to_current_performance_work() -> None:
     readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
 
-    assert "docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md" in readme
+    assert (
+        "docs/superpowers/specs/"
+        "2026-07-22-factor-lab-subsecond-dashboard-design.md"
+        not in readme
+    )
     assert (
         "[公网性能运行手册]"
         "(../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)"
         in readme
     )
-    assert "公网性能运行手册已落地" in readme
+    assert "当前公网性能与访问控制规范" in readme
     assert "Task 10 将把可执行性能验收手册落到" not in readme
     assert "Task 10 手册落地前禁止执行本次发布" not in readme
     assert "该文件落地前不创建失效链接" not in readme

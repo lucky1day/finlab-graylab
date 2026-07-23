@@ -1,10 +1,8 @@
 # 部署：本地灰度实验室外网只读访问
 
 当前公网性能与访问控制规范以
-[`docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md`](../docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md)
-为准。公网性能运行手册已落地，详见
-[公网性能运行手册](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)，并已同步
-`docs/operations/README.md` 入口；发布前、rollout、final 与回滚均须按该手册执行。
+[公网性能运行手册](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)和本目录中的
+版本化 Nginx 配置为准；发布前、rollout、final 与回滚均须按该手册执行。
 历史公网 PRD 只作决策记录，不能覆盖当前规范。
 
 ## 链路
