@@ -8,4 +8,3 @@
 
 - [Blackbox V2 三期限算法改造 BTB 任务设计](2026-07-22-blackbox-v2-weekly-lgbm-3tenor-btb-task-design.md)
 - [Blackbox V2 日级数据 Gate 与 Scheduler 重启管理设计](2026-07-21-v2-daily-gate-scheduler-restart-design.md)
-- [Blackbox V2 上游交付 SOP 自包含梳理设计](2026-07-21-blackbox-v2-upstream-sop-self-contained-design.md)
