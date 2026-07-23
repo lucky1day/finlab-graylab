@@ -7,4 +7,3 @@
 **最后核验日期**：2026-07-24
 
 - [Blackbox V2 三期限算法改造 BTB 任务实施计划](2026-07-22-blackbox-v2-weekly-lgbm-3tenor-btb-task.md)
-- [Blackbox V2 日级 Gate 与 Scheduler 重启实施计划](2026-07-21-v2-daily-gate-scheduler-restart.md)
