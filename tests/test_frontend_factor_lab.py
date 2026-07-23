@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import subprocess
 import textwrap
@@ -461,6 +462,53 @@ def _minimal_legacy_responses() -> dict[str, dict]:
 
 
 class FactorLabRankingTests(unittest.TestCase):
+    def test_equivalent_cleanup_removes_only_audited_dead_javascript(self) -> None:
+        script = FRONTEND_SCRIPT.read_text(encoding="utf-8")
+
+        dead_markers = (
+            "var factorStatusLabels =",
+            "var factorSchemeNamePool =",
+            "function makeMonthRows(",
+            "function makeMockDetailRowsByMonth(",
+            "function createTaskSchemes(",
+            "function fetchLiveFactorLabTasks(",
+            "function loadBacktestFactorLabData(",
+            "function loadBacktestFactorLabDataSilent(",
+            'scanline.className = "route-scanline"',
+        )
+        for marker in dead_markers:
+            with self.subTest(dead_marker=marker):
+                self.assertNotIn(marker, script)
+
+        preserved_markers = (
+            "PUBLIC_BASE_PATH",
+            "apiUrl",
+            "normalizeRoute",
+            "setActiveRoute",
+            "aifin:navigate",
+            "factorLabRuntimeState",
+            "decodeDashboardPayload",
+            "fetchLegacyFactorLabCandidate",
+            "window.__factorLabReady",
+            "window.__factorLabTestHooks",
+        )
+        for marker in preserved_markers:
+            with self.subTest(preserved_marker=marker):
+                self.assertIn(marker, script)
+
+        expected_asset_hashes = {
+            FRONTEND_INDEX: "bf72d27941b76153c6214c8f5f02e680919c40d9256f8f644aea4034fdbf625c",
+            PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-icon.svg": (
+                "e014fc86d69d61a32892b9799f83f8c784898d705c8df05313a04216281d2259"
+            ),
+            PROJECT_ROOT / "frontend" / "assets" / "aifin-lab-logo.svg": (
+                "fdb09795b77161900b6e48982a7678f9038786ba80c9838f2f80e22500fef5b5"
+            ),
+        }
+        for path, expected_hash in expected_asset_hashes.items():
+            with self.subTest(asset=path.name):
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected_hash)
+
     def test_node_vm_scheduler_and_abort_host_contract(self) -> None:
         result = _run_factor_lab_hook(
             """

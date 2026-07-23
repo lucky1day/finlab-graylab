@@ -16,8 +16,6 @@
   var shell = document.getElementById("aifin-shell");
   var views = Array.prototype.slice.call(document.querySelectorAll("[data-view]"));
   var routeButtons = Array.prototype.slice.call(document.querySelectorAll("button[data-route]"));
-  var isRouting = false;
-  var reduceMotionQuery = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
 
   /* ─── Routing ─── */
   function publicBasePath() {
@@ -106,10 +104,6 @@
     }
   }
 
-  function getViewForRoute(route) {
-    return routeToView[normalizeRoute(route)] || "factor-lab";
-  }
-
   function getActiveView() {
     if (shell && shell.getAttribute("data-active-view")) {
       return shell.getAttribute("data-active-view");
@@ -149,34 +143,7 @@
   });
 
   function navigateWithTransition(route) {
-    var nextView = getViewForRoute(route);
-
-    if (isRouting || nextView === getActiveView()) {
-      setActiveRoute(route, true);
-      return;
-    }
-
-    var reduceMotion = reduceMotionQuery && reduceMotionQuery.matches;
-    if (!shell || reduceMotion) {
-      setActiveRoute(route, true);
-      return;
-    }
-
-    isRouting = true;
-
-    var scanline = document.createElement("div");
-    scanline.className = "route-scanline";
-    scanline.setAttribute("aria-hidden", "true");
-    shell.appendChild(scanline);
-
-    window.setTimeout(function () {
-      setActiveRoute(route, true);
-    }, 120);
-
-    window.setTimeout(function () {
-      scanline.remove();
-      isRouting = false;
-    }, 400);
+    setActiveRoute(route, true);
   }
 
   function escapeHtml(value) {
@@ -225,31 +192,12 @@
     { id: "weeklyAverage", label: "周平均", taskType: "weekly_average", frequency: "weekly", horizon: "NEXT_WEEK_AVERAGE" },
     { id: "monthly", label: "月度", taskType: "monthly", frequency: "monthly", horizon: "MONTHLY" }
   ];
-  var factorStatusLabels = {
-    active: "运行中",
-    paused: "暂停",
-    running: "运行中",
-    complete: "已完成",
-    archived: "已归档",
-    validated: "已验证",
-    retired: "已退役",
-    failed: "失败",
-    success: "成功"
-  };
   var factorTrendMetrics = [
     { id: "overall", label: "整体准确率", color: "#15623f" },
     { id: "upPrecision", label: "上涨准确率", color: "#2f7ba1" },
     { id: "upRecall", label: "上涨召回率", color: "#b98728" },
     { id: "downPrecision", label: "下跌准确率", color: "#d62828" },
     { id: "downRecall", label: "下跌召回率", color: "#6f5aa8" }
-  ];
-  var factorSchemeNamePool = [
-    "F-v22 term-micro × MTL-v07",
-    "F-v22 term-micro × LGBM-0526",
-    "F-v21 momentum × XGB-v18",
-    "F-v20 macro-lite × Ridge-ens",
-    "F-v23 liquidity × CatBoost-v03",
-    "F-v19 carry-slope × RF-v11"
   ];
 
   var factorDailyBaseRows = [
@@ -500,90 +448,6 @@
       label: getTargetDisplayName(parts[0] || "3Y") + " · " + column.label,
       columnLabel: column.label
     };
-  }
-
-  function makeMonthRows(baseRows, offset) {
-    return baseRows.map(function (row, index) {
-      var wave = (index % 2 === 0 ? 1 : -1) * 1.4;
-      var overall = clampPercent(row.overall + offset + wave);
-      var samples = Number(row.samples) || 0;
-      var actualCounts = normalizeDist(row.actualDist);
-      var predictedCounts = normalizeDist(row.predictedDist);
-      return {
-        month: row.month,
-        samples: samples,
-        actualDist: row.actualDist,
-        predictedDist: row.predictedDist,
-        actualCounts: actualCounts,
-        predictedCounts: predictedCounts,
-        metricActualCounts: actualCounts,
-        metricPredictedCounts: predictedCounts,
-        metricSamples: (predictedCounts.up || 0) + (predictedCounts.down || 0),
-        overall: overall,
-        correct: Math.max(0, Math.min(samples, Math.round(samples * overall / 100))),
-        upPrecision: clampPercent(row.upPrecision + offset * 0.8 + wave),
-        upRecall: clampPercent(row.upRecall + offset * 0.6 - wave),
-        downPrecision: clampPercent(row.downPrecision + offset * 0.7 + wave),
-        downRecall: clampPercent(row.downRecall + offset * 0.5 - wave)
-      };
-    });
-  }
-
-  function makeMockDetailRowsByMonth(monthlyRows) {
-    var grouped = {};
-    (monthlyRows || []).forEach(function (row) {
-      var samples = Number(row.samples) || 0;
-      var correctTarget = Math.max(0, Math.min(samples, Math.round(samples * (Number(row.overall) || 0) / 100)));
-      grouped[row.month] = [];
-      for (var i = 0; i < samples; i++) {
-        var predictedDirection = i % 8 === 7 ? 0 : (i % 2 === 0 ? 1 : -1);
-        var actualDirection = i < correctTarget && predictedDirection !== 0
-          ? predictedDirection
-          : (predictedDirection === 1 ? -1 : 1);
-        var day = String(Math.min(28, i + 1)).padStart(2, "0");
-        grouped[row.month].push({
-          day: row.month.slice(5, 7) + "/" + day,
-          predictDate: row.month + "-" + day,
-          featureDate: row.month + "-" + day,
-          targetDate: row.month + "-" + day,
-          predictionPhase: "",
-          runId: null,
-          schemeVersion: "mock",
-          inputArtifactHash: "",
-          confidence: null,
-          predicted: directionText(predictedDirection),
-          actual: directionText(actualDirection),
-          predictedDirection: predictedDirection,
-          actualDirection: actualDirection,
-          correct: predictedDirection === 0 ? false : predictedDirection === actualDirection
-        });
-      }
-    });
-    return grouped;
-  }
-
-  function createTaskSchemes(target, column, count, targetIndex, columnIndex) {
-    var schemes = [];
-    var baseRows = column.frequency === "weekly" ? factorWeeklyBaseRows : factorDailyBaseRows;
-    var baseline = targetIndex * 2.5 + (column.id === "dailyT5" ? 4.2 : (column.frequency === "weekly" ? 2.8 : 0));
-    for (var i = 0; i < count; i++) {
-      var name = factorSchemeNamePool[i % factorSchemeNamePool.length];
-      var status = i === 0 ? "running" : (i === count - 1 && count > 3 ? "archived" : "complete");
-      var qualityStep = status === "archived" ? 0.4 : i * 1.9;
-      var dailyRowsByMonth = makeMockDetailRowsByMonth(makeMonthRows(baseRows, baseline + qualityStep - (count - 3) * 0.7));
-      schemes.push({
-        id: target.toLowerCase() + "-" + column.id + "-s" + (i + 1),
-        taskKey: getTaskKey(target, column),
-        name: name,
-        status: status,
-        latestRun: status === "archived" ? "05-21" : "05-29",
-        deploymentDate: "2026/06/01",
-        remark: "",
-        monthlyRows: monthlyRowsFromGroupedDetails(dailyRowsByMonth),
-        dailyRowsByMonth: dailyRowsByMonth
-      });
-    }
-    return schemes;
   }
 
   var factorTaskSchemes = initEmptyTaskSchemes();
@@ -1409,43 +1273,6 @@
     return tasks;
   }
 
-  function fetchLiveFactorLabTasks() {
-    return fetchJson("/api/schemes")
-      .then(function (payload) {
-        var schemes = Array.isArray(payload) ? payload : (payload.schemes || []);
-        var metricsByKey = {};
-        var requests = [];
-        schemes.forEach(function (scheme) {
-          columnForScheme(scheme);
-          if (!scheme.scheme_id || !scheme.target_tenor) return;
-          requests.push(
-            fetchJson("/api/metrics/" + encodeURIComponent(scheme.scheme_id))
-              .then(function (metrics) {
-                metricsByKey[scheme.scheme_id] = metrics;
-              })
-              .catch(function (error) {
-                error.isLiveMetricError = true;
-                throw error;
-              })
-          );
-        });
-        return Promise.all(requests).then(function () {
-          return buildLiveTaskSchemes(schemes, metricsByKey);
-        });
-      });
-  }
-
-  function loadBacktestFactorLabData() {
-    return fetchJson("/api/backtests/factor-lab").then(function (payload) {
-      if (payload && payload.schemes && payload.schemes.length) {
-        finishFactorLabDataLoad(buildBacktestTaskSchemes(payload), "backtest");
-        return true;
-      }
-      finishFactorLabDataLoad(initEmptyTaskSchemes(), "backtest");
-      return false;
-    });
-  }
-
   function factorLabNow() {
     return window.performance && typeof window.performance.now === "function"
       ? window.performance.now()
@@ -1832,15 +1659,6 @@
       message.indexOf("has monthly_metrics but no detail rows") !== -1 ||
       message.indexOf("requires metric_") !== -1 ||
       message.indexOf("requires metricSamples") !== -1;
-  }
-
-  function loadBacktestFactorLabDataSilent() {
-    return fetchJson("/api/backtests/factor-lab").then(function (payload) {
-      if (payload && payload.schemes && payload.schemes.length) {
-        return buildBacktestTaskSchemes(payload);
-      }
-      return null;  // no backtest data, not an error
-    });
   }
 
   function mergeFactorLabTasks(backtestTasks, liveTasks) {
