@@ -886,7 +886,8 @@ def test_versioned_nginx_publish_is_immutable_and_idempotent(
     assert snippet_conflict.returncode != 0
     assert snippet_target.read_text(encoding="utf-8") == "different snippet\n"
 
-    (fake_bin / "systemctl").write_text(
+    replacement_systemctl = fake_bin / "systemctl.replacement"
+    replacement_systemctl.write_text(
         "#!/bin/sh\n"
         "count=0\n"
         "test ! -f \"$BOND_SYSTEMCTL_COUNT\" || count=$(cat \"$BOND_SYSTEMCTL_COUNT\")\n"
@@ -895,7 +896,8 @@ def test_versioned_nginx_publish_is_immutable_and_idempotent(
         "test \"$count\" -ne 1\n",
         encoding="utf-8",
     )
-    (fake_bin / "systemctl").chmod(0o755)
+    replacement_systemctl.chmod(0o755)
+    replacement_systemctl.replace(fake_bin / "systemctl")
     environment["BOND_SYSTEMCTL_COUNT"] = str(tmp_path / "systemctl.count")
     recovery_root = prepare_root("reload-recovery")
     old_snippet = recovery_root / "snippets/bond-proxy-headers-old.conf"
