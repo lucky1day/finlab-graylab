@@ -4,9 +4,8 @@
 
 **目标读者**：平台开发和历史审计人员
 
-**最后核验日期**：2026-07-21
+**最后核验日期**：2026-07-24
 
-- [2026-06-24-external-gray-lab-access-design.md](2026-06-24-external-gray-lab-access-design.md)
 - [2026-07-12-liwei-0616-incremental-phase-a-cache-design.md](2026-07-12-liwei-0616-incremental-phase-a-cache-design.md)
 - [2026-07-12-liwei-full-oos-gray-models-design.md](2026-07-12-liwei-full-oos-gray-models-design.md)
 - [2026-07-19-blackbox-v2-production-path-closure-design.md](2026-07-19-blackbox-v2-production-path-closure-design.md)
