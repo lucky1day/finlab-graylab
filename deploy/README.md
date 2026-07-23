@@ -1,7 +1,11 @@
 # 部署：本地灰度实验室外网只读访问
 
-落地 PRD [`docs/product/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md`](../docs/product/PRD_PUBLIC_BOND_FACTOR_LAB_ACCESS.md)。
-本目录是**配置 + 脚本**交付物，**不改任何业务代码**（backend / frontend / schemes / scheduler）。
+当前公网性能与访问控制规范以
+[`docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md`](../docs/superpowers/specs/2026-07-22-factor-lab-subsecond-dashboard-design.md)
+为准。公网性能运行手册已落地，详见
+[公网性能运行手册](../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)，并已同步
+`docs/operations/README.md` 入口；发布前、rollout、final 与回滚均须按该手册执行。
+历史公网 PRD 只作决策记录，不能覆盖当前规范。
 
 ## 链路
 
@@ -17,7 +21,7 @@ https://bond.finailab.cn/bond-factor-lab/
 
 | 机器 | 组件 | 交付物 |
 |------|------|--------|
-| 公网入口机 | Nginx 443 入口 + 访问控制 | `deploy/nginx/bond-factor-lab.conf`、`deploy/nginx/snippets/bond-proxy-headers.conf` |
+| 公网入口机 | Nginx 443 入口 + 访问控制 | `deploy/nginx/bond-factor-lab.conf`、`deploy/nginx/snippets/bond-proxy-headers.conf`（部署为版本化片段） |
 | 本地 Mac | 后端、scheduler、SSH 反向隧道 | `deploy/launchd/*.plist` |
 | 任意可联公网点 | 验收 / 监控 | `scripts/check_public_access.sh`、`scripts/healthcheck_alert.sh` |
 
@@ -33,12 +37,15 @@ https://bond.finailab.cn/bond-factor-lab/
 - actuals 每天 `08:30/19:00/23:45` 三档刷新；`23:45` 用于承接 BondPrediction `23:25` 左右的 Wind 日频导入。若源表在最后一档之后才补齐，非交易日 actuals job 会补刷上一交易日的 daily/weekly actual，避免前端 T+1 最新验证卡在上一交易日。
 - 慢速 source-backed 方案使用 `config.yaml.schedule.timeout_sec` 配置方案级 executor timeout，例如 10Y02 当前为 `3600` 秒；该配置只影响算法子进程等待预算，不改变业务 cron 或日期语义。
 
-## 访问控制（默认拒绝 + 展示白名单）
+## 访问控制（默认拒绝 + 精确展示白名单）
 
-由 Nginx 入口实现（PRD §6），后端不参与：
+Nginx 负责公网精确白名单、原始 URI guard、限流和短超时；后端负责一致性
+dashboard、健康状态、`Vary` 和隧道前 gzip。两层合同必须同时验收。
 
-- **放行（GET）**：`/bond-factor-lab/`、静态资源、`/api/health`、`/api/schemes`、`/api/metrics/{id}`、`/api/backtests/factor-lab`。
-- **403**：其余所有 `/api/*`（`predictions`/`actuals`/`targets`/`backtests/runs*`/`data-checks` 原始数据导出，`schemes/{id}/trigger`、`admin/registry/sync` 写入接口），以及任何非 GET 方法。
+- **始终放行（GET/HEAD）**：`/bond-factor-lab/`、必要的精确 HTML/CSS/JS/两个 SVG、`/api/health`、`/api/factor-lab/dashboard`。
+- **rollout 临时放行（GET/HEAD）**：旧 `/api/schemes`、`/api/metrics/{id}`、`/api/backtests/factor-lab`，供新旧前端兼容。
+- **final 拒绝**：上述三个旧展示 API 与其它所有页面/API。FastAPI 本机旧路由仍保留用于 harness 和回滚。
+- 原始 path 中任何 `%HH`、双斜杠、明文单/双 dot segment、大小写和尾斜杠变体均 fail closed；query 不由 path guard 误杀，而由各只读 API 自身契约校验；写接口始终拒绝。
 
 > Nginx location 优先级细节见 `deploy/nginx/bond-factor-lab.conf` 顶部注释。
 
@@ -46,15 +53,173 @@ https://bond.finailab.cn/bond-factor-lab/
 
 ### 1) 公网入口机：Nginx
 
+<!-- NGINX_RELEASE_SCRIPT_BEGIN -->
 ```bash
-# 复制配置与公共片段
-sudo cp deploy/nginx/bond-factor-lab.conf       /etc/nginx/sites-available/bond-factor-lab
-sudo cp deploy/nginx/snippets/bond-proxy-headers.conf /etc/nginx/snippets/
-sudo ln -sf /etc/nginx/sites-available/bond-factor-lab /etc/nginx/sites-enabled/bond-factor-lab
+publish_bond_factor_nginx() (
+  set -euo pipefail
 
-# 按入口机实际情况确认：TLS 证书路径、80->443 跳转是否已有（见 conf 注释，二选一）
-sudo nginx -t && sudo systemctl reload nginx
+  release_stage="${BOND_FACTOR_RELEASE_STAGE:-rollout}"
+  release_id="20260722b"
+  nginx_root="${BOND_NGINX_ROOT:-/etc/nginx}"
+  case "$release_stage" in
+    rollout|final) ;;
+    *) printf 'invalid BOND_FACTOR_RELEASE_STAGE\n' >&2; return 2 ;;
+  esac
+
+  canonical_existing_directory() {
+    local input_directory="$1" resolved_directory
+    resolved_directory="$(
+      sudo readlink -f -- "$input_directory" 2>/dev/null || true
+    )"
+    if [[ -z "$resolved_directory" ]] \
+        || ! sudo test -d "$resolved_directory"; then
+      printf 'required nginx directory is missing: %s\n' \
+        "$input_directory" >&2
+      return 1
+    fi
+    printf '%s\n' "$resolved_directory"
+  }
+
+  snippets_directory="$(
+    canonical_existing_directory "${nginx_root}/snippets"
+  )"
+  sites_available_directory="$(
+    canonical_existing_directory "${nginx_root}/sites-available"
+  )"
+  sites_enabled_directory="$(
+    canonical_existing_directory "${nginx_root}/sites-enabled"
+  )"
+
+  site_source="deploy/nginx/bond-factor-lab.conf"
+  snippet_source="deploy/nginx/snippets/bond-proxy-headers.conf"
+  # 候选文件可能尚不存在：先 canonicalize 已存在的父目录，再拼接 basename。
+  snippet_target="${snippets_directory}/bond-proxy-headers-${release_id}.conf"
+  target="${sites_available_directory}/bond-factor-lab-${release_id}-${release_stage}"
+  active="${sites_enabled_directory}/bond-factor-lab"
+  # 生产默认 snippet_target：
+  # /etc/nginx/snippets/bond-proxy-headers-20260722b.conf
+
+  candidate_file="$(mktemp)"
+  trap 'rm -f -- "$candidate_file"' EXIT
+  sed "s/^    default rollout;$/    default ${release_stage};/" \
+    "$site_source" >"$candidate_file"
+  test "$(grep -Ec '^    default (rollout|final);$' "$candidate_file")" -eq 1
+  grep -Fxq "    default ${release_stage};" "$candidate_file"
+
+  install_immutable() {
+    source_file="$1"
+    immutable_target="$2"
+    staged_target="${immutable_target}.stage.$$"
+    if sudo test -L "$immutable_target"; then
+      printf 'immutable release path must not be a symlink: %s\n' \
+        "$immutable_target" >&2
+      return 1
+    fi
+    if sudo test -e "$immutable_target"; then
+      if sudo test -f "$immutable_target" \
+          && sudo cmp -s "$source_file" "$immutable_target"; then
+        return 0
+      fi
+      printf 'immutable release id collision: %s\n' "$immutable_target" >&2
+      return 1
+    fi
+
+    sudo install -m 0644 "$source_file" "$staged_target"
+    if sudo ln "$staged_target" "$immutable_target" 2>/dev/null; then
+      sudo rm -f -- "$staged_target"
+      return 0
+    fi
+    sudo rm -f -- "$staged_target"
+    if sudo test ! -L "$immutable_target" \
+        && sudo test -f "$immutable_target" \
+        && sudo cmp -s "$source_file" "$immutable_target"; then
+      return 0
+    fi
+    printf 'immutable release id collision: %s\n' "$immutable_target" >&2
+    return 1
+  }
+
+  previous_target=""
+  already_active=0
+  if sudo test -L "$active"; then
+    current_target="$(sudo readlink -f -- "$active" 2>/dev/null || true)"
+    if [[ -z "$current_target" ]] || ! sudo test -f "$current_target" \
+        || ! sudo test -r "$current_target"; then
+      printf 'active symlink target is missing or unreadable: %s\n' "$active" >&2
+      return 1
+    fi
+    if [[ "$current_target" == "$target" ]]; then
+      already_active=1
+    else
+      previous_target="$current_target"
+    fi
+  elif sudo test -e "$active"; then
+    printf '%s: %s\n' \
+      'active path is a regular file; migrate it to an immutable release' \
+      "$active" >&2
+    return 1
+  fi
+
+  install_immutable "$snippet_source" "$snippet_target"
+  install_immutable "$candidate_file" "$target"
+
+  if [[ "$already_active" -eq 1 ]]; then
+    sudo nginx -t
+    printf 'release already active: %s\n' "$target"
+    return 0
+  fi
+  if [[ -n "$previous_target" && "$previous_target" == "$target" ]]; then
+    printf 'previous target must differ from candidate\n' >&2
+    return 1
+  fi
+
+  restore_previous_link() {
+    if [[ -n "$previous_target" ]]; then
+      rollback_link="${active}.rollback.$$"
+      sudo ln -s "$previous_target" "$rollback_link"
+      sudo mv -f "$rollback_link" "$active"
+    else
+      sudo rm -f -- "$active"
+    fi
+  }
+
+  next_link="${active}.next.$$"
+  sudo ln -s "$target" "$next_link"
+  sudo mv -f "$next_link" "$active"
+
+  if ! sudo nginx -t; then
+    restore_previous_link
+    sudo nginx -t
+    return 1
+  fi
+  if ! sudo systemctl reload nginx; then
+    restore_previous_link
+    if [[ -n "$previous_target" ]]; then
+      # previous site 引用其自身不可变 snippet；test 后恢复完整旧策略。
+      sudo nginx -t && sudo systemctl reload nginx
+    else
+      # 首次启用无 previous：删除 active 后只 test，绝不 reload “无站点”。
+      sudo nginx -t
+    fi
+    printf 'candidate reload failed; previous policy restored\n' >&2
+    return 1
+  fi
+)
+
+publish_bond_factor_nginx
 ```
+<!-- NGINX_RELEASE_SCRIPT_END -->
+
+切换 final 使用完全相同的命令块，并设置 `BOND_FACTOR_RELEASE_STAGE=final`；候选由同一
+`20260722b` release 模板生成，`nginx -t` 成功后才 reload。不得现场删除或注释 legacy
+location。仓库 site 文件不包含 `events {}` / `http {}`，因此不能执行
+`nginx -t -c deploy/nginx/bond-factor-lab.conf`；Task 12 必须在入口机真实完整配置中验证。
+候选 `nginx -t` 或 reload 失败也必须以非零状态结束，不能因 previous policy 恢复
+成功而把失败发布报告为成功。
+
+入口最低支持版本为 Nginx 1.18+。Task 12 必须记录入口机实际 `nginx -v`，并在
+真实完整配置执行 `nginx -t` 后才允许 reload。本地 wrapper 不能替代生产入口验证；
+它只验证仓库模板在本机 Nginx 上的语法和 location/normalize 行为。
 
 ### 2) 本地 Mac：SSH 反向隧道（launchd 常驻）
 
@@ -113,11 +278,14 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.scheduler
 ## 验收
 
 ```bash
-# 200/403 矩阵（在能访问公网的机器上运行；覆盖 R3/R4/R5/R6/R8）
-bash scripts/check_public_access.sh
-# -> 退出码 0；逐项 PASS
+# rollout：dashboard + 旧三类展示 API 均可达
+scripts/check_public_access.sh --mode rollout https://bond.finailab.cn
 
-# 前端回归（本地，PRD §8.3）
+# final：旧三类展示 API 已拒绝；其余协议/安全矩阵不变
+scripts/check_public_access.sh --mode final https://bond.finailab.cn
+# -> 退出码 0；每项输出 code/size/time
+
+# 前端回归（本地）
 conda run -n bond_factor_lab_service python -m unittest tests.test_frontend_factor_lab
 
 # 本地不受影响（仅公网被收口）
@@ -147,20 +315,33 @@ conda run -n bond_factor_lab_service python scripts/check_production_daily_healt
 
 ## 回滚
 
+常规版本回滚必须保持公网可用：SSH 反向隧道和服务必须保持在线，不得用停隧道
+代替版本回滚。
+
 ```bash
-# 入口机：摘掉 Nginx 站点
-sudo rm -f /etc/nginx/sites-enabled/bond-factor-lab
-sudo nginx -t && sudo systemctl reload nginx
+# 1. 入口机先复用上文原子切换块，release_stage=rollout，恢复旧前端依赖 API；
+#    nginx -t 和 reload 成功后验证 rollout 矩阵。
+scripts/check_public_access.sh --mode rollout https://bond.finailab.cn
 
-# 本地 Mac：停隧道
+# 2. 再按版本化发布流程恢复上一份前端/后端 commit；仅在应用代码需要时
+#    kickstart backend，不能 bootout SSH tunnel。
+# 3. 最后复核 direct URL、iframe、health、旧展示 API 和写接口拒绝矩阵。
+```
+
+不要把 admin token 删除当作版本回滚；未配置 token 时 admin/trigger 写接口会
+fail-closed 返回 503。
+
+## 全站紧急下线（造成中断，需专项授权）
+
+只有明确要求全站中断并取得专项授权后，才允许停止 SSH 反向隧道。该操作不属于
+本次性能发布的常规回滚：
+
+```bash
 launchctl bootout gui/$(id -u)/com.bond-factor-lab.ssh-tunnel
-
-# 本地 Mac：如需回滚 token 值，替换 plist 里的 BOND_ADMIN_TOKEN 后 kickstart -k 重载；
-# 不要删除 BOND_ADMIN_TOKEN，未配置时 admin/trigger 写接口会 fail-closed 返回 503。
 ```
 
 ## 安全约束
 
 - 真实 `BOND_ADMIN_TOKEN`、SSH 私钥**不入库**（仓库内只放占位符）。
 - 隧道远端绑 `127.0.0.1:18100`，公网无法直连裸后端，只有入口机本地 Nginx 可达。
-- 展示接口的 JSON 在浏览器天然可见（客户端渲染）；用户能取得的不超过页面已展示内容（PRD §6.3）。
+- 展示接口的 JSON 在浏览器天然可见（客户端渲染）；精确白名单只允许当前页面所需的数据面。

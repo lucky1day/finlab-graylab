@@ -8,10 +8,17 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
+from backend.factor_lab_dashboard_semantics import (
+    BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
+    backtest_benchmark_label,
+    backtest_data_source_label,
+    choose_latest_backtest_runs,
+    choose_live_prediction_rows,
+)
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
 from shared.metrics import direction_metric_block
@@ -35,23 +42,6 @@ WEEKLY_TASK_TARGET_RULES = {
     "weekly_point": WEEKLY_TARGET_RULE,
     "weekly_average": WEEKLY_AVERAGE_TARGET_RULE,
 }
-BACKTEST_BENCHMARK_LABELS = {
-    "model_muti_0529": "0529历史基准",
-}
-BACKTEST_DATA_SOURCE_LABELS = {
-    "baseline_original_csv": "原始代码基准CSV回测",
-    "framework_original_csv": "框架算法基准CSV回测",
-    "framework_db_aligned": "当前DB对齐回测",
-    "blackbox_v2_current_snapshot_as_of": "Blackbox V2 当前快照回测",
-    "runtime_default": "按方案运行时选择回测",
-    "source_original_monthly_binary_runner": "月度0629原始二进制Runner回测",
-}
-BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE = {
-    "native_adapter": "framework_db_aligned",
-    "blackbox_v2": "blackbox_v2_current_snapshot_as_of",
-}
-
-
 def _iso(value: Any) -> str | None:
     if value is None:
         return None
@@ -212,13 +202,11 @@ def _target_label(target_tenor: str, labels: dict[str, str] | None = None) -> st
 
 
 def _backtest_benchmark_label(benchmark_id: str | None) -> str:
-    if benchmark_id in (None, "", "all"):
-        return "全部历史基准"
-    return BACKTEST_BENCHMARK_LABELS.get(str(benchmark_id), str(benchmark_id))
+    return backtest_benchmark_label(benchmark_id)
 
 
 def _backtest_data_source_label(data_source: str) -> str:
-    return BACKTEST_DATA_SOURCE_LABELS.get(str(data_source), str(data_source))
+    return backtest_data_source_label(data_source)
 
 
 def _backtest_scheme_name(meta: dict[str, Any], scheme_id: str) -> str:
@@ -604,22 +592,8 @@ def scheme_metrics(
     with engine.connect() as conn:
         raw_rows = conn.execute(sql, params).mappings().all()
 
-    latest_by_point: dict[tuple[Any, Any, Any, Any], Any] = {}
-    for row in raw_rows:
-        point_date = _prediction_point_date(row)
-        key = (row["scheme_id"], row["target_tenor"], row["horizon"], point_date)
-        current = latest_by_point.get(key)
-        if current is None or _is_better_prediction_for_point(row, _json_value(row["extra"], {}), current):
-            latest_by_point[key] = row
-    raw_rows = sorted(
-        latest_by_point.values(),
-        key=lambda row: (
-            _prediction_point_date(row),
-            row["predict_date"],
-            row["target_tenor"],
-        ),
-    )
     display_until = _today_iso()
+    raw_rows = choose_live_prediction_rows(raw_rows, display_until=display_until)
 
     daily_rows: list[dict[str, Any]] = []
     matched_rows: list[dict[str, Any]] = []
@@ -627,9 +601,6 @@ def scheme_metrics(
         extra = _json_value(row["extra"], {})
         predict_date = _iso(row["predict_date"])
         target_date = _require_target_date(row["target_date"], context="scheme metrics", row=row)
-        point_date = _prediction_point_date(row)
-        if predict_date and display_until and predict_date > display_until:
-            continue
         metric_month = _scheme_metric_month(
             row["horizon"],
             predict_date,
@@ -700,36 +671,6 @@ def _scheme_metric_month(horizon: Any, predict_date: str, target_date: str, extr
     return _require_target_date(target_date, context="scheme metric month")[:7]
 
 
-def _prediction_point_date(row: Any) -> str:
-    return _require_target_date(row["target_date"], context="prediction point", row=row)
-
-
-def _is_better_prediction_for_point(candidate: Any, candidate_extra: dict[str, Any], current: Any) -> bool:
-    if _is_weekly_metric(candidate["horizon"], candidate_extra):
-        return _is_better_weekly_prediction(candidate, current)
-    return int(candidate["id"] or 0) > int(current["id"] or 0)
-
-
-def _is_better_weekly_prediction(candidate: Any, current: Any) -> bool:
-    """同一预测周多次 approved 时，优先保留特征窗口更新的一条。"""
-    candidate_feature = _prediction_feature_date(candidate)
-    current_feature = _prediction_feature_date(current)
-    if candidate_feature != current_feature:
-        return candidate_feature > current_feature
-
-    candidate_predict = _iso(candidate["predict_date"]) or ""
-    current_predict = _iso(current["predict_date"]) or ""
-    if candidate_predict != current_predict:
-        return candidate_predict < current_predict
-
-    return int(candidate["id"] or 0) > int(current["id"] or 0)
-
-
-def _prediction_feature_date(row: Any) -> str:
-    extra = _json_value(row["extra"], {})
-    return _row_feature_date(row, extra) or _iso(row["predict_date"]) or ""
-
-
 def _row_feature_date(row: Any, extra: dict[str, Any] | None = None) -> str:
     extra = extra if extra is not None else _json_value(row["extra"], {})
     return _iso(row["feature_date"]) or _iso(extra.get("feature_date")) or ""
@@ -767,13 +708,83 @@ def _today_iso() -> str:
     return os.getenv("BOND_FACTOR_LAB_TODAY") or date.today().isoformat()
 
 
-def _is_weekly_metric(horizon: Any, extra: dict[str, Any]) -> bool:
-    frequency = str(extra.get("frequency") or "").lower()
-    try:
-        is_weekly = int(horizon) == 6
-    except (TypeError, ValueError):
-        is_weekly = False
-    return is_weekly or frequency == "weekly"
+def _backtest_run_candidates(
+    engine: Engine,
+    *,
+    base_scheme_ids: list[str],
+) -> list[Any]:
+    if not base_scheme_ids:
+        return []
+    data_sources = sorted(set(BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE.values()))
+    statement = text(
+        """
+        SELECT id, benchmark_id, scheme_id, data_source, start_date, end_date,
+               status, summary, report_path, created_at, updated_at
+        FROM t_backtest_runs
+        WHERE status = :success_status
+          AND scheme_id IN :base_scheme_ids
+          AND data_source IN :data_sources
+        """
+    ).bindparams(
+        bindparam("base_scheme_ids", expanding=True),
+        bindparam("data_sources", expanding=True),
+    )
+    with engine.connect() as conn:
+        return list(
+            conn.execute(
+                statement,
+                {
+                    "success_status": "success",
+                    "base_scheme_ids": base_scheme_ids,
+                    "data_sources": data_sources,
+                },
+            ).mappings().all()
+        )
+
+
+def _validate_default_backtest_registry_scopes(
+    schemes: list[dict[str, Any]],
+    *,
+    selected_by_registry: dict[str, Any],
+    registry_rows: list[dict[str, Any]],
+) -> None:
+    schemes_by_scope = {
+        (str(item["scheme_id"]), int(item["run_id"])): item
+        for item in schemes
+    }
+    for registry_row in registry_rows:
+        registry_scheme_id = str(registry_row["scheme_id"])
+        selected_run = selected_by_registry.get(registry_scheme_id)
+        if selected_run is None:
+            continue
+        run_id = int(selected_run["id"])
+        item = schemes_by_scope.get((registry_scheme_id, run_id))
+        if item is None:
+            raise ValueError(
+                f"base_scheme_id={registry_row['base_scheme_id']} "
+                f"target_tenor={registry_row['target_tenor']} has no detail "
+                f"for selected backtest run_id={run_id}"
+            )
+        registry_horizon = int(registry_row["horizon"])
+        daily_rows = item.get("daily_rows")
+        if not isinstance(daily_rows, list) or not daily_rows:
+            raise ValueError(
+                "backtest detail horizon does not match Registry scheme "
+                f"{registry_scheme_id}: detail=None "
+                f"registry={registry_horizon}"
+            )
+        for detail_row in daily_rows:
+            detail_horizon = (
+                detail_row.get("horizon")
+                if isinstance(detail_row, dict)
+                else None
+            )
+            if type(detail_horizon) is not int or detail_horizon != registry_horizon:
+                raise ValueError(
+                    "backtest detail horizon does not match Registry scheme "
+                    f"{registry_scheme_id}: detail={detail_horizon} "
+                    f"registry={registry_horizon}"
+                )
 
 
 def backtest_factor_lab_results(
@@ -801,17 +812,37 @@ def backtest_factor_lab_results(
         ORDER BY benchmark_id, scheme_id, updated_at DESC, id DESC
         """
     )
-    with engine.connect() as conn:
-        run_rows = conn.execute(
-            run_sql,
-            {
-                "benchmark_id": benchmark_id,
-                "data_source": data_source,
-                "auto_source": 1 if data_source is None else 0,
-            },
-        ).mappings().all()
+    use_default_selector = benchmark_id is None and data_source is None
+    registry_rows: list[dict[str, Any]] = []
+    selected_by_registry: dict[str, Any] = {}
+    if use_default_selector:
+        registry_rows = list(scheme_meta.values())
+        candidate_rows = _backtest_run_candidates(
+            engine,
+            base_scheme_ids=sorted(
+                {str(row["base_scheme_id"]) for row in registry_rows}
+            ),
+        )
+        selected_by_registry = choose_latest_backtest_runs(
+            candidate_rows,
+            registry_rows,
+        )
+        run_rows_by_id = {
+            int(row["id"]): row for row in selected_by_registry.values()
+        }
+        run_rows = list(run_rows_by_id.values())
+    else:
+        with engine.connect() as conn:
+            run_rows = conn.execute(
+                run_sql,
+                {
+                    "benchmark_id": benchmark_id,
+                    "data_source": data_source,
+                    "auto_source": 1 if data_source is None else 0,
+                },
+            ).mappings().all()
 
-    if data_source is None:
+    if data_source is None and not use_default_selector:
         runtime_types_by_scheme: dict[str, set[str]] = defaultdict(set)
         for (base_scheme_id, _target_tenor), meta in scheme_meta.items():
             runtime_types_by_scheme[base_scheme_id].add(str(meta["runtime_type"]))
@@ -928,6 +959,21 @@ def backtest_factor_lab_results(
             if current is None or item_rank > current_rank:
                 latest_by_scope[key] = item
         schemes = list(latest_by_scope.values())
+
+    if use_default_selector:
+        _validate_default_backtest_registry_scopes(
+            schemes,
+            selected_by_registry=selected_by_registry,
+            registry_rows=registry_rows,
+        )
+        schemes.sort(
+            key=lambda item: (
+                str(item["scheme_id"]),
+                int(item["run_id"]),
+                str(item["target_tenor"]),
+                str(item["data_source"]),
+            )
+        )
 
     selected_sources = {str(item["data_source"]) for item in schemes}
     if len(selected_sources) == 1:
