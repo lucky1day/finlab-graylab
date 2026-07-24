@@ -5,7 +5,7 @@
   "decision_sequence": null,
   "candidate_fingerprint": null,
   "policy_version": "daily-scheduler-policy-v1",
-  "policy_sha256": "343edad8cd9ff8b12d300e2f44de77a639a63f641bd1df07735d7f72f94751b5",
+  "policy_sha256": "88286ca68bdd66d2cf570d9c039fa7e9b273c4837f40a99d67e44c3343f6b217",
   "machine_id": null,
   "evidence_uri": null,
   "evidence_sha256": null,
@@ -15,5 +15,5 @@
   "not_before": null,
   "expires_at": null,
   "admitted_by": null,
-  "reason": "Three Native inputs remain unsupported and the required same-Mac forced-cold, revision, fault-injection, and stability evidence is incomplete."
+  "reason": "The three approved 0629 live-source compatibility paths are not yet production-qualified, and the required same-Mac forced-cold, revision, fault-injection, and stability evidence is incomplete."
 }

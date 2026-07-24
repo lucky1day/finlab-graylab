@@ -13,11 +13,15 @@ from scheduler.discovery import discover_schemes
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v1.json"
-UNSUPPORTED_0629 = {
+LIVE_SOURCE_0629 = {
     "daily_10y_lgbm_10y04_0629",
     "daily_1y_xgb_1y13_0629",
     "daily_5y_lgbm_5y10_0629",
 }
+DAILY_0629_SOURCE_PACKAGE_SHA256 = (
+    "3025fc532dfdeb8e17cfd6b79103d5b3"
+    "ddb56b404c81eef82710b136ddf65689"
+)
 
 
 def _policy_module():
@@ -184,7 +188,11 @@ class DailyPolicyTests(unittest.TestCase):
                 self.assertIsNotNone(item.absolute_deadline)
                 self.assertIn(
                     item.input_compatibility,
-                    {"generation_v1", "databridge_v1", "unsupported"},
+                    {
+                        "generation_v1",
+                        "databridge_v1",
+                        "live_source_0629",
+                    },
                 )
                 self.assertIn(item.task_type, {"T+1", "T+5"})
                 self.assertTrue(item.target_tenors)
@@ -354,7 +362,7 @@ class DailyPolicyTests(unittest.TestCase):
                 discovered=drifted_discovery,
             )
 
-    def test_three_direct_db_0629_items_are_terminally_unsupported(self) -> None:
+    def test_only_three_0629_items_use_live_source_compatibility(self) -> None:
         self.assertIsNotNone(self.module, "scheduler.daily_policy is missing")
 
         policy = self.module.load_daily_policy(
@@ -362,18 +370,32 @@ class DailyPolicyTests(unittest.TestCase):
             discovered=self.active_daily,
         )
 
-        unsupported = {
+        live_source = {
             item.scheme_id
             for item in policy.schemes.values()
-            if item.input_compatibility == "unsupported"
+            if item.input_compatibility == "live_source_0629"
         }
-        self.assertEqual(unsupported, UNSUPPORTED_0629)
+        self.assertEqual(live_source, LIVE_SOURCE_0629)
+        self.assertEqual(
+            {
+                item.source_package_sha256
+                for item in policy.schemes.values()
+                if item.scheme_id in LIVE_SOURCE_0629
+            },
+            {DAILY_0629_SOURCE_PACKAGE_SHA256},
+        )
+        self.assertFalse(
+            any(
+                item.input_compatibility == "unsupported"
+                for item in policy.schemes.values()
+            )
+        )
         self.assertTrue(
             all(
                 item.input_compatibility == "generation_v1"
                 for item in policy.schemes.values()
                 if item.runtime_type == "native_adapter"
-                and item.scheme_id not in UNSUPPORTED_0629
+                and item.scheme_id not in LIVE_SOURCE_0629
             )
         )
         self.assertTrue(
@@ -383,6 +405,38 @@ class DailyPolicyTests(unittest.TestCase):
                 if item.runtime_type == "blackbox_v2"
             )
         )
+
+    def test_policy_rejects_live_source_mode_on_other_native(self) -> None:
+        payload = self._payload()
+        target = next(
+            row
+            for row in payload["schemes"]
+            if row["scheme_id"] == "t1_daily"
+        )
+        target["input_compatibility"] = "live_source_0629"
+
+        with self.assertRaisesRegex(
+            self.module.DailyPolicyError,
+            "live source compatibility",
+        ):
+            self._load_payload(payload)
+
+    def test_policy_rejects_missing_live_source_package_hash(
+        self,
+    ) -> None:
+        payload = self._payload()
+        target = next(
+            row
+            for row in payload["schemes"]
+            if row["scheme_id"] == "daily_1y_xgb_1y13_0629"
+        )
+        target.pop("source_package_sha256")
+
+        with self.assertRaisesRegex(
+            self.module.DailyPolicyError,
+            "source_package_sha256",
+        ):
+            self._load_payload(payload)
 
     def test_policy_rejects_unknown_scheme(self) -> None:
         self.assertIsNotNone(self.module, "scheduler.daily_policy is missing")

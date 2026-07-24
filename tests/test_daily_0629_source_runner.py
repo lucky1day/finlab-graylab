@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import textwrap
 import unittest
@@ -8,6 +9,205 @@ from unittest.mock import patch
 
 
 class Daily0629SourceEvidenceTests(unittest.TestCase):
+    def test_private_source_copy_must_match_frozen_package_hash(
+        self,
+    ) -> None:
+        from shared.daily_0629_source_runner import _source_runtime
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir) / "source"
+            source.mkdir()
+            (source / "runner.py").write_text(
+                "VALUE = 1\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "copied source package hash",
+            ):
+                with _source_runtime(source, "0" * 64):
+                    self.fail(
+                        "mismatched private source copy was accepted"
+                    )
+
+    def test_partial_scheduled_live_compatibility_environment_fails_closed(
+        self,
+    ) -> None:
+        from shared import input_artifacts
+        from shared.daily_0629_predict_adapter import (
+            run_daily_0629_prediction,
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    input_artifacts.LIVE_SOURCE_INPUT_MODE_ENV:
+                        "live_source_0629",
+                },
+                clear=True,
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "partial daily 0629 live source",
+            ),
+        ):
+            run_daily_0629_prediction(
+                "daily_1y_xgb_1y13_0629",
+                "2026-07-24",
+            )
+
+    def test_scheduled_live_rejects_source_package_identity_drift(
+        self,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from shared import input_artifacts
+        from shared.daily_0629_predict_adapter import (
+            run_daily_0629_prediction,
+        )
+
+        environment = {
+            input_artifacts.LIVE_SOURCE_INPUT_MODE_ENV:
+                "live_source_0629",
+            input_artifacts.LIVE_SOURCE_FENCE_GENERATION_ID_ENV:
+                "native-20260724",
+            input_artifacts.LIVE_SOURCE_FEATURE_DATE_ENV:
+                "2026-07-23",
+            input_artifacts.LIVE_SOURCE_PACKAGE_SHA256_ENV:
+                "b" * 64,
+        }
+        evidence = SimpleNamespace(source_package_hash="a" * 64)
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "require_daily_0629_source_evidence",
+                return_value=evidence,
+            ),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "run_source_daily_live",
+            ) as source_runner,
+            self.assertRaisesRegex(
+                RuntimeError,
+                "differs from frozen occurrence policy",
+            ),
+        ):
+            run_daily_0629_prediction(
+                "daily_1y_xgb_1y13_0629",
+                "2026-07-24",
+            )
+
+        source_runner.assert_not_called()
+
+    def test_scheduled_live_compatibility_records_input_watermark(
+        self,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from shared import input_artifacts
+        from shared.daily_0629_predict_adapter import (
+            run_daily_0629_prediction,
+        )
+
+        evidence = SimpleNamespace(
+            frequency="D1Y",
+            target_tenor="1Y",
+            source_package_hash="a" * 64,
+            model_id="model",
+            final_select_id="1Y13",
+        )
+        source = {
+            "frequency": "D1Y",
+            "pred_label": 1,
+            "prediction_date": "2026-07-23",
+            "rdate": "2026-07-27",
+        }
+        artifact = SimpleNamespace(
+            path=Path("/tmp/daily-input.csv"),
+            source="shared_data_service_daily",
+            source_watermark="2026-07-23",
+        )
+        calendar = object()
+        engine = SimpleNamespace(dispose=lambda: None)
+        context = SimpleNamespace(
+            feature_date="2026-07-23",
+            target_date="2026-07-27",
+        )
+        events: list[str] = []
+
+        def build_artifact(*args, **kwargs):
+            del args, kwargs
+            events.append("artifact")
+            return artifact
+
+        def run_source(*args, **kwargs):
+            del args, kwargs
+            events.append("source")
+            return [source]
+
+        environment = {
+            input_artifacts.LIVE_SOURCE_INPUT_MODE_ENV:
+                "live_source_0629",
+            input_artifacts.LIVE_SOURCE_FENCE_GENERATION_ID_ENV:
+                "native-20260724",
+            input_artifacts.LIVE_SOURCE_FEATURE_DATE_ENV:
+                "2026-07-23",
+            input_artifacts.LIVE_SOURCE_PACKAGE_SHA256_ENV:
+                "a" * 64,
+        }
+        with (
+            patch.dict(os.environ, environment, clear=False),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "require_daily_0629_source_evidence",
+                return_value=evidence,
+            ),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "run_source_daily_live",
+                side_effect=run_source,
+            ),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "create_input_engine",
+                return_value=engine,
+            ),
+            patch(
+                "shared.daily_0629_predict_adapter.get_calendar",
+                return_value=calendar,
+            ),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "build_daily_live_context",
+                return_value=context,
+            ),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "build_daily_input_artifact",
+                side_effect=build_artifact,
+            ),
+        ):
+            records = run_daily_0629_prediction(
+                "daily_1y_xgb_1y13_0629",
+                "2026-07-24",
+            )
+
+        extra = records[0].extra or {}
+        self.assertEqual(extra["input_mode"], "live_source_0629")
+        self.assertEqual(extra["data_watermark"], "2026-07-23")
+        self.assertEqual(
+            extra["data_watermark_basis"],
+            "source_output_prediction_date",
+        )
+        self.assertEqual(
+            extra["live_source_fence_generation_id"],
+            "native-20260724",
+        )
+        self.assertEqual(extra["source_package_hash"], "a" * 64)
+        self.assertEqual(events, ["artifact", "source"])
+
     def test_require_daily_source_evidence_reads_manifest_entry(self) -> None:
         from shared.daily_0629_source_evidence import DAILY_0629_SOURCE_ROLE, require_daily_0629_source_evidence
 

@@ -11,7 +11,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from shared.daily_0629_source_evidence import Daily0629SourceEvidence
+from shared.daily_0629_source_evidence import (
+    Daily0629SourceEvidence,
+    source_package_tree_sha256,
+)
 
 
 SELECTED_ROWS_RELATIVE_PATH = Path("prediction") / "daily_selected_prediction_rows.csv"
@@ -62,7 +65,10 @@ def _run_source_daily_live_cached(
         if cached is not None:
             return cached
 
-    with _source_runtime(Path(source_package_path)) as source_root:
+    with _source_runtime(
+        Path(source_package_path),
+        source_package_hash,
+    ) as source_root:
         _run_daily_live(source_root, predict_date)
         rows = tuple(_read_live_rows(source_root / "daily_project" / "output", predict_date))
     if cache_path is not None:
@@ -83,7 +89,10 @@ def _run_source_daily_backtest_cached(
         if cached is not None:
             return cached
 
-    with _source_runtime(Path(source_package_path)) as source_root:
+    with _source_runtime(
+        Path(source_package_path),
+        source_package_hash,
+    ) as source_root:
         _run_daily_backtest(source_root, source_run_date)
         rows = tuple(_read_backtest_rows(source_root / "daily_project" / "output", source_run_date))
     if cache_path is not None:
@@ -146,8 +155,15 @@ def _write_source_cache(
 
 
 class _source_runtime:
-    def __init__(self, source_package_path: Path):
+    def __init__(
+        self,
+        source_package_path: Path,
+        expected_source_package_sha256: str,
+    ):
         self.source_package_path = source_package_path
+        self.expected_source_package_sha256 = (
+            expected_source_package_sha256
+        )
         self.tempdir: tempfile.TemporaryDirectory[str] | None = None
         self.source_root: Path | None = None
 
@@ -156,6 +172,15 @@ class _source_runtime:
         self.source_root = Path(self.tempdir.name) / "forecast_project"
         shutil.copytree(self.source_package_path, self.source_root)
         _clear_quarantine(self.source_root)
+        copied_sha256 = source_package_tree_sha256(self.source_root)
+        if copied_sha256 != self.expected_source_package_sha256:
+            self.tempdir.cleanup()
+            self.tempdir = None
+            self.source_root = None
+            raise RuntimeError(
+                "daily 0629 copied source package hash differs from "
+                "frozen source identity"
+            )
         return self.source_root
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:

@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-07-24
+**最后核验日期**：2026-07-25
 
 本文只保留当前有效结论。较早的逐日状态、数据库快照和整改过程已冻结到[历史状态记录](records/status/README.md)。
 
@@ -60,8 +60,8 @@
 - 健康投影区分 committed、DB 可见回执和外部 no-store API 观察；24/25、ETA
   超线、零进展、generation 异常或 mode 漂移均不得为 `ok`。节假日 watchdog
   返回 `IDLE`，严格执行 envelope 仍保持 fail-closed。
-- Native 在 06:30 后先检查 T-1 日历、五个曲线锚点和三频最小历史；未就绪不创建
-  attempt。就绪后在同一 RR snapshot 内复核锚点并冻结输入，最迟 08:30 前开启。
+- Native 在 06:30 后检查 T-1 日历、五个曲线锚点和三频最小历史；未就绪不创建 attempt。
+  就绪后 14 个 Native 冻结 RR 输入；三个 0629 兼容桥绑定同日 generation fence 和水位。
 - 06:55 是版本化 DataBridge readiness guardrail：未 SEALED/绑定即 `LATE`/告警，但仍只刷新当天新 generation 到 08:30。
 - generation/DataBridge current roots 要求服务 UID + `0700`；旧 caller-supplied retention 已禁用，只回收 DB 证明无引用的 `INVALIDATED` payload。
 - 2026-07-24 输入域在 06:30 后仍有写入，最晚 `create_time=07:10:12`；因此
@@ -70,8 +70,9 @@
   全部显式为 `legacy`，保留切换前唯一 refresh owner。2026-07-24 13:04 本机
   `bond_db` 已建立 001..017 history 并应用 017 schema；五张 ledger 表为空，
   既有 1187 条 run 的新关联字段均为 NULL。服务未重启，新协调器没有写权。
-- 三个 0629 Native 仍不兼容 generation；forced-cold、revision/suffix、
-  故障注入、20+20 次样本和连续 10 个交易日 25/25 均未完成。
+- 仅三个固定 0629 ID 可用 `live_source_0629`；协调器校验 mode、冻结 source hash、source 输出水位和 generation fence。
+  其它 Native 不可使用且 generation 失败不回退；三方案 CompareGate 337/337 行零差异，该桥尚未取得生产资格。
+- forced-cold、revision/suffix、故障注入、20+20 次样本和连续 10 个交易日 25/25 均未完成。
 - cache 候选具备单 prewarmer、不可变 generation、原子 pointer、硬配额和受证明
   的 daily suffix；周/月或依赖不明自动 full rebuild。生产 caller 尚无绑定
   input/spec/cache hash 的完整 cached-vs-cold 内部字段证据，故继续拒绝。
@@ -103,8 +104,8 @@
 
 ## 当前观察项
 
-1. 先完成三个 0629 Native 的受控兼容桥，再验证 17 个 Native 唯一触发；之后
-   逐项完成 generation 替换、迁移及容量/故障演练，门禁前不得打开 ledger。
+1. 下一步在隔离环境验证 17 个 Native 由协调器唯一触发；之后逐项完成 0629
+   generation 替换、迁移及容量/故障演练，门禁前不得打开 ledger。
 2. 使用历史交易日 `--no-persist` 驻留回放验证 21 item/25 target、四个 V2
    同代 generation 和 `+0/+2/+4/+6` 独立释放。
 3. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。

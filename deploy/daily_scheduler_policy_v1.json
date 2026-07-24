@@ -77,14 +77,15 @@
       "task_type": "T+1",
       "horizon": 1,
       "target_tenors": ["10Y"],
-      "resource_class": "native_unsupported",
+      "resource_class": "native_light",
       "internal_workers": 1,
-      "cache_group": "direct-db-unsupported:daily-10y-0629",
+      "cache_group": "live-source-0629:daily-10y-0629",
       "cache_prerequisite": false,
       "estimated_cold_sec": 70,
       "admitted_hard_runtime_sec": 600,
       "absolute_deadline": "07:55",
-      "input_compatibility": "unsupported"
+      "input_compatibility": "live_source_0629",
+      "source_package_sha256": "3025fc532dfdeb8e17cfd6b79103d5b3ddb56b404c81eef82710b136ddf65689"
     },
     {
       "scheme_id": "daily_1y_xgb_1y13_0629",
@@ -92,14 +93,15 @@
       "task_type": "T+1",
       "horizon": 1,
       "target_tenors": ["1Y"],
-      "resource_class": "native_unsupported",
+      "resource_class": "native_light",
       "internal_workers": 1,
-      "cache_group": "direct-db-unsupported:daily-1y-0629",
+      "cache_group": "live-source-0629:daily-1y-0629",
       "cache_prerequisite": false,
       "estimated_cold_sec": 20,
       "admitted_hard_runtime_sec": 600,
       "absolute_deadline": "07:55",
-      "input_compatibility": "unsupported"
+      "input_compatibility": "live_source_0629",
+      "source_package_sha256": "3025fc532dfdeb8e17cfd6b79103d5b3ddb56b404c81eef82710b136ddf65689"
     },
     {
       "scheme_id": "daily_5y_2_v28",
@@ -122,14 +124,15 @@
       "task_type": "T+1",
       "horizon": 1,
       "target_tenors": ["5Y"],
-      "resource_class": "native_unsupported",
+      "resource_class": "native_light",
       "internal_workers": 1,
-      "cache_group": "direct-db-unsupported:daily-5y-0629",
+      "cache_group": "live-source-0629:daily-5y-0629",
       "cache_prerequisite": false,
       "estimated_cold_sec": 20,
       "admitted_hard_runtime_sec": 600,
       "absolute_deadline": "07:55",
-      "input_compatibility": "unsupported"
+      "input_compatibility": "live_source_0629",
+      "source_package_sha256": "3025fc532dfdeb8e17cfd6b79103d5b3ddb56b404c81eef82710b136ddf65689"
     },
     {
       "scheme_id": "daily_7y_1_v28",

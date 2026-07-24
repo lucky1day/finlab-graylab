@@ -14,7 +14,7 @@ from scheduler.discovery import discover_schemes
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 POLICY_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v1.json"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-UNSUPPORTED_0629 = {
+LIVE_SOURCE_0629 = {
     "daily_10y_lgbm_10y04_0629",
     "daily_1y_xgb_1y13_0629",
     "daily_5y_lgbm_5y10_0629",
@@ -1072,7 +1072,7 @@ class DailyCoordinatorTests(unittest.TestCase):
         self.assertEqual(by_id["t1_daily"].action, "TERMINAL")
         self.assertEqual(by_id["t1_daily"].reason, "NO_CROSS_DAY")
 
-    def test_unsupported_native_items_remain_visible_as_terminal_decisions(
+    def test_approved_0629_live_source_items_are_dispatchable(
         self,
     ) -> None:
         self.assertIsNotNone(self.coordinator, "scheduler.daily_coordinator is missing")
@@ -1096,16 +1096,24 @@ class DailyCoordinatorTests(unittest.TestCase):
         )
         by_id = {decision.scheme_id: decision for decision in decisions}
 
-        self.assertEqual(
-            {
-                scheme_id
-                for scheme_id, decision in by_id.items()
-                if decision.failure_code == "NATIVE_GENERATION_UNSUPPORTED"
-            },
-            UNSUPPORTED_0629,
+        self.assertTrue(
+            all(
+                by_id[scheme_id].failure_code is None
+                for scheme_id in LIVE_SOURCE_0629
+            )
         )
         self.assertTrue(
-            all(by_id[scheme_id].action == "TERMINAL" for scheme_id in UNSUPPORTED_0629)
+            any(
+                by_id[scheme_id].action == "DISPATCH"
+                for scheme_id in LIVE_SOURCE_0629
+            )
+        )
+        self.assertTrue(
+            all(
+                by_id[scheme_id].action
+                in {"DISPATCH", "WAIT_POOL", "WAIT_RESOURCE"}
+                for scheme_id in LIVE_SOURCE_0629
+            )
         )
 
     def test_occurrence_file_lock_is_nonblocking_and_not_unlinked(self) -> None:

@@ -21,6 +21,9 @@ from scheduler.completion_verifier import (
     FilesystemScheduledCompletionVerifier,
     ScheduledVerificationError,
 )
+from scheduler.daily_policy import (
+    APPROVED_0629_LIVE_SOURCE_SCHEMES,
+)
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.daily_ledger import (
     FAILURE_ABANDONED_FENCE_PENDING_CLEANUP,
@@ -54,6 +57,7 @@ from shared.daily_coordinator_mode import (
     assert_daily_coordinator_epoch_matches_policy,
 )
 from shared.input_artifacts import BLACKBOX_SCHEMA_PATH
+from shared.input_artifacts import LIVE_SOURCE_INPUT_MODE
 from shared.models import PredictionRecord
 from shared.native_input_generation import open_native_generation
 from shared.liwei_0616_cache_contract import (
@@ -227,6 +231,93 @@ def _frozen_cache_use_qualification(
     return trusted
 
 
+def _frozen_scheme_policy_row(
+    envelope: ScheduleExecutionEnvelope,
+) -> dict[str, object]:
+    """读取 occurrence 中当前 item 的唯一冻结策略行。"""
+    policy = getattr(envelope.occurrence, "policy_json", None)
+    if not isinstance(policy, dict):
+        raise ScheduledContractError(
+            "frozen occurrence policy is unavailable"
+        )
+    raw_schemes = policy.get("schemes")
+    if not isinstance(raw_schemes, list):
+        raise ScheduledContractError(
+            "frozen policy schemes are unavailable"
+        )
+    matches = [
+        row
+        for row in raw_schemes
+        if (
+            isinstance(row, dict)
+            and row.get("scheme_id") == envelope.item.base_scheme_id
+        )
+    ]
+    if len(matches) != 1:
+        raise ScheduledContractError(
+            "frozen policy consumer identity is ambiguous"
+        )
+    return matches[0]
+
+
+def _frozen_input_compatibility(
+    envelope: ScheduleExecutionEnvelope,
+) -> str:
+    """从 occurrence 冻结策略读取并复核 item 的输入模式。"""
+    input_compatibility = _frozen_scheme_policy_row(envelope).get(
+        "input_compatibility"
+    )
+    if envelope.item.runtime_type == "blackbox_v2":
+        if input_compatibility != "databridge_v1":
+            raise ScheduledContractError(
+                "Blackbox V2 frozen input compatibility must be "
+                "databridge_v1"
+            )
+        return "databridge_v1"
+    if envelope.item.runtime_type != "native_adapter":
+        raise ScheduledContractError(
+            "unsupported frozen runtime_type for input compatibility"
+        )
+    if input_compatibility == "generation_v1":
+        return "generation_v1"
+    if (
+        input_compatibility == LIVE_SOURCE_INPUT_MODE
+        and envelope.item.base_scheme_id
+        in APPROVED_0629_LIVE_SOURCE_SCHEMES
+    ):
+        return LIVE_SOURCE_INPUT_MODE
+    raise ScheduledContractError(
+        "live source compatibility is not approved for frozen item: "
+        f"{envelope.item.base_scheme_id}"
+    )
+
+
+def _frozen_live_source_package_sha256(
+    envelope: ScheduleExecutionEnvelope,
+    *,
+    input_compatibility: str,
+) -> str | None:
+    value = _frozen_scheme_policy_row(envelope).get(
+        "source_package_sha256"
+    )
+    if input_compatibility != LIVE_SOURCE_INPUT_MODE:
+        if value is not None:
+            raise ScheduledContractError(
+                "source_package_sha256 is only valid for live source "
+                "compatibility"
+            )
+        return None
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise ScheduledContractError(
+            "frozen live source package sha256 is invalid"
+        )
+    return value
+
+
 def _native_generation_audit_binding(
     envelope: ScheduleExecutionEnvelope,
 ) -> dict[str, object]:
@@ -273,6 +364,47 @@ def _verify_cache_qualified_records(
         )
 
 
+def _verify_input_compatibility_records(
+    records: Iterable[PredictionRecord],
+    *,
+    envelope: ScheduleExecutionEnvelope,
+    input_compatibility: str,
+) -> None:
+    """原子提交前验证 live-source mode、水位和 generation fence。"""
+    for record in records:
+        extra = dict(record.extra or {})
+        claimed_mode = extra.get("input_mode")
+        if input_compatibility != LIVE_SOURCE_INPUT_MODE:
+            if claimed_mode == LIVE_SOURCE_INPUT_MODE:
+                raise ScheduledResultError(
+                    "generation input item cannot claim live source mode"
+                )
+            continue
+        expected = {
+            "input_mode": LIVE_SOURCE_INPUT_MODE,
+            "data_watermark": envelope.occurrence.feature_date,
+            "data_watermark_basis":
+                "source_output_prediction_date",
+            "live_source_fence_generation_id":
+                envelope.generation.generation_id,
+            "source_package_hash":
+                _frozen_live_source_package_sha256(
+                    envelope,
+                    input_compatibility=input_compatibility,
+                ),
+        }
+        drift = sorted(
+            field
+            for field, expected_value in expected.items()
+            if extra.get(field) != expected_value
+        )
+        if drift:
+            raise ScheduledResultError(
+                "live source compatibility audit drift: "
+                + ", ".join(drift)
+            )
+
+
 def execute_scheduled_item(
     engine,
     *,
@@ -317,6 +449,13 @@ def execute_scheduled_item(
             envelope,
             project_root=project_root,
         )
+        input_compatibility = _frozen_input_compatibility(envelope)
+        live_source_package_sha256 = (
+            _frozen_live_source_package_sha256(
+                envelope,
+                input_compatibility=input_compatibility,
+            )
+        )
         native_generation, databridge_generation, calendar_generation = (
             _open_frozen_generations(
                 envelope,
@@ -357,6 +496,12 @@ def execute_scheduled_item(
                 algo_env=algo_env,
                 timeout_sec=timeout_sec,
                 native_generation=native_generation,
+                live_source_compatibility=(
+                    input_compatibility == LIVE_SOURCE_INPUT_MODE
+                ),
+                live_source_package_sha256=(
+                    live_source_package_sha256
+                ),
                 cache_use_qualification=cache_use_qualification,
                 databridge_generation=databridge_generation,
                 calendar_generation=calendar_generation,
@@ -370,6 +515,11 @@ def execute_scheduled_item(
             raise
         except Exception as exc:
             raise _classify_algorithm_exception(exc) from exc
+        _verify_input_compatibility_records(
+            records,
+            envelope=envelope,
+            input_compatibility=input_compatibility,
+        )
         if cache_use_qualification is not None:
             _verify_cache_qualified_records(
                 records,

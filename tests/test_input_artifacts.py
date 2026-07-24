@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import hashlib
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -64,6 +65,35 @@ class InputArtifactTests(unittest.TestCase):
                 predict_date="2026-06-05",
                 output_root=Path("/tmp"),
             )
+
+    def test_scheduled_live_source_artifact_path_uses_frozen_fence(
+        self,
+    ) -> None:
+        from shared import input_artifacts
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch.dict(
+                os.environ,
+                {
+                    input_artifacts.SCHEDULE_EXECUTION_TOKEN_ENV:
+                        "compat-attempt",
+                    input_artifacts.LIVE_SOURCE_FENCE_GENERATION_ID_ENV:
+                        "native-20260724",
+                },
+                clear=True,
+            ),
+        ):
+            path = input_artifacts.input_artifact_path(
+                scheme_id="daily_1y_xgb_1y13_0629",
+                frequency="daily",
+                predict_date="2026-07-24",
+                output_root=Path(tmpdir),
+            )
+
+        self.assertEqual(path.parent.name, "compat-attempt")
+        self.assertEqual(path.parent.parent.name, "native-20260724")
+        self.assertEqual(path.parent.parent.parent.name, "_scheduled")
 
     def test_daily_input_artifact_delegates_to_unified_data_service_file(self) -> None:
         from shared.input_artifacts import build_daily_input_artifact

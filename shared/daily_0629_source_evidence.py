@@ -80,7 +80,7 @@ def require_daily_0629_source_evidence(
         generator=generator,
         manifest_path=manifest_path,
         source_package_path=source_package,
-        source_package_hash=_tree_sha256(source_package),
+        source_package_hash=source_package_tree_sha256(source_package),
         runner_module=runner_module,
         live_runner_module=live_runner_module,
         frequency=frequency,
@@ -122,7 +122,8 @@ def _reject_unsupported_daily_scheme(
         raise RuntimeError(f"{scheme_id}: expected daily 0629 source {expected}, got {actual}")
 
 
-def _tree_sha256(path: Path) -> str:
+def source_package_tree_sha256(path: Path) -> str:
+    """计算 0629 source package 的内容与相对路径摘要。"""
     digest = hashlib.sha256()
     for item in sorted(path.rglob("*")):
         if item.is_dir():

@@ -40,6 +40,13 @@ https://bond.finailab.cn/bond-factor-lab/
   06:55 是 DataBridge readiness 审计点：未就绪即
   `LATE`/告警，但 ledger 仍继续刷新当天新 generation 到 08:30；07:00 只做
   watchdog，不重启 scheduler。
+- 17 个 Native 中 14 个固定使用 `generation_v1`；仅
+  `daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629` 和
+  `daily_10y_lgbm_10y04_0629` 可使用 `live_source_0629` MVP 兼容桥。三者仍
+  绑定当天 Native generation fence，由 ledger `started_at` 记录启动；policy
+  冻结 source package hash，子进程复制后重验，prediction extra 记录并复核
+  source 输出水位。其它 Native 不得使用，generation 任务失败不得回退。平台
+  pre-run artifact 仅证明 readiness 观察，不冒充算法输入。该桥未取得切换资格。
 - 仓库中的 scheduler、backend 和 V2 preflight 三份 launchd 配置，以及
   `deploy/daily_coordinator_rollout_v1.json`，均显式保持
   `BOND_DAILY_COORDINATOR_MODE=legacy`/`mode=legacy`，表示生产切换尚未授权。
@@ -301,7 +308,7 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 
 ledger 切换前必须按
 [日频信号 08:00 SLA 架构](../docs/architecture/DAILY_SIGNAL_SLA.md)
-完成迁移、Native generation 输入适配、20 次 forced-cold、20 次真实 revision、
+完成迁移、0629 generation 输入替换、20 次 forced-cold、20 次真实 revision、
 故障注入和连续 10 个交易日 25/25。以下只读 CLI 仅做离线统计/结构评估，
 输出中的 `runtime_admission_eligible` 固定为 `false`；它不能直接打开 rollout：
 

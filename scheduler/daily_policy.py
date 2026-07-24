@@ -20,9 +20,10 @@ RUNTIME_TYPES = {"native_adapter", "blackbox_v2"}
 INPUT_COMPATIBILITIES = {
     "generation_v1",
     "databridge_v1",
+    "live_source_0629",
     "unsupported",
 }
-DIRECT_DB_UNSUPPORTED_SCHEMES = frozenset(
+APPROVED_0629_LIVE_SOURCE_SCHEMES = frozenset(
     {
         "daily_10y_lgbm_10y04_0629",
         "daily_1y_xgb_1y13_0629",
@@ -68,6 +69,7 @@ class SchemeDailyPolicy:
     admitted_hard_runtime_sec: int
     absolute_deadline: time
     input_compatibility: str
+    source_package_sha256: str | None = None
     v2_release_offset_min: int | None = None
 
 
@@ -316,6 +318,10 @@ def _parse_scheme_policy(
         admitted_hard_runtime_sec=admitted_hard_runtime_sec,
         absolute_deadline=_parse_time(row, "absolute_deadline"),
         input_compatibility=input_compatibility,
+        source_package_sha256=_optional_sha256(
+            row,
+            "source_package_sha256",
+        ),
         v2_release_offset_min=release_offset,
     )
 
@@ -415,10 +421,21 @@ def _validate_global_policy(
         for item in policy.schemes.values()
         if item.input_compatibility == "unsupported"
     }
-    if unsupported != DIRECT_DB_UNSUPPORTED_SCHEMES:
+    if unsupported:
         raise DailyPolicyError(
-            "unsupported native scheme set must exactly match direct-DB 0629 "
+            "daily policy cannot retain unsupported Native inputs: "
             f"schemes: {sorted(unsupported)}"
+        )
+    live_source = {
+        item.scheme_id
+        for item in policy.schemes.values()
+        if item.input_compatibility == "live_source_0629"
+    }
+    if live_source != APPROVED_0629_LIVE_SOURCE_SCHEMES:
+        raise DailyPolicyError(
+            "live source compatibility must be limited to the approved "
+            "0629 schemes: "
+            f"{sorted(live_source)}"
         )
     for item in policy.schemes.values():
         if item.runtime_type == "blackbox_v2":
@@ -435,13 +452,30 @@ def _validate_global_policy(
                 raise DailyPolicyError(
                     f"{item.scheme_id}: Native cannot declare a V2 release offset"
                 )
-            if (
-                item.scheme_id not in DIRECT_DB_UNSUPPORTED_SCHEMES
-                and item.input_compatibility != "generation_v1"
-            ):
-                raise DailyPolicyError(
-                    f"{item.scheme_id}: supported Native requires generation_v1"
+            expected_native_input = (
+                "live_source_0629"
+                if (
+                    item.scheme_id
+                    in APPROVED_0629_LIVE_SOURCE_SCHEMES
                 )
+                else "generation_v1"
+            )
+            if item.input_compatibility != expected_native_input:
+                raise DailyPolicyError(
+                    f"{item.scheme_id}: Native input compatibility must be "
+                    f"{expected_native_input}"
+                )
+        if item.input_compatibility == "live_source_0629":
+            if item.source_package_sha256 is None:
+                raise DailyPolicyError(
+                    f"{item.scheme_id}: live source compatibility requires "
+                    "source_package_sha256"
+                )
+        elif item.source_package_sha256 is not None:
+            raise DailyPolicyError(
+                f"{item.scheme_id}: source_package_sha256 is only valid "
+                "for live_source_0629"
+            )
         if item.absolute_deadline > policy.target_ready:
             raise DailyPolicyError(
                 f"{item.scheme_id}: absolute_deadline exceeds target_ready"

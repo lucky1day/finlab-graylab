@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Callable
 
 from scheduler.discovery import SchemeConfig, discover_schemes
+from scheduler.daily_policy import (
+    APPROVED_0629_LIVE_SOURCE_SCHEMES,
+)
 from scheduler.process_control import (
     ProcessGroupTerminationError,
     ProcessGroupTerminationResult,
@@ -37,6 +40,11 @@ from shared.blackbox_v2.contracts import load_metadata
 from shared.blackbox_v2.requests import build_live_request
 from shared.input_artifacts import (
     BLACKBOX_SCHEMA_PATH,
+    LIVE_SOURCE_FEATURE_DATE_ENV,
+    LIVE_SOURCE_FENCE_GENERATION_ID_ENV,
+    LIVE_SOURCE_INPUT_MODE,
+    LIVE_SOURCE_INPUT_MODE_ENV,
+    LIVE_SOURCE_PACKAGE_SHA256_ENV,
     NATIVE_BUSINESS_DATE_ENV,
     NATIVE_FEATURE_DATE_ENV,
     NATIVE_GENERATION_ID_ENV,
@@ -174,12 +182,28 @@ def _validated_execution_token(
     return execution_token
 
 
+def _validated_live_source_package_sha256(
+    value: str | None,
+) -> str | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(char not in "0123456789abcdef" for char in value)
+    ):
+        raise ValueError("live source package sha256 is invalid")
+    return value
+
+
 def run_scheme_subprocess(
     scheme_id: str,
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
     native_generation: NativeGenerationContext | None = None,
+    live_source_compatibility: bool = False,
+    live_source_package_sha256: str | None = None,
     cache_use_qualification: dict[str, object] | None = None,
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
@@ -197,6 +221,14 @@ def run_scheme_subprocess(
     )
     for name in native_environment_names:
         env.pop(name, None)
+    live_source_environment_names = (
+        LIVE_SOURCE_INPUT_MODE_ENV,
+        LIVE_SOURCE_FENCE_GENERATION_ID_ENV,
+        LIVE_SOURCE_FEATURE_DATE_ENV,
+        LIVE_SOURCE_PACKAGE_SHA256_ENV,
+    )
+    for name in live_source_environment_names:
+        env.pop(name, None)
     env.pop(CACHE_USE_QUALIFICATION_ENV, None)
     env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
     validated_execution_token = _validated_execution_token(
@@ -204,6 +236,37 @@ def run_scheme_subprocess(
     )
     if validated_execution_token is not None:
         env[SCHEDULE_EXECUTION_TOKEN_ENV] = validated_execution_token
+    if live_source_compatibility and native_generation is None:
+        raise ValueError(
+            "live source compatibility requires a frozen Native fence"
+        )
+    if live_source_compatibility and (
+        scheme_id not in APPROVED_0629_LIVE_SOURCE_SCHEMES
+    ):
+        raise ValueError(
+            f"live source compatibility is not approved for {scheme_id}"
+        )
+    validated_source_package_sha256 = (
+        _validated_live_source_package_sha256(
+            live_source_package_sha256
+        )
+    )
+    if (
+        live_source_compatibility
+        and validated_source_package_sha256 is None
+    ):
+        raise ValueError(
+            "live source compatibility requires a frozen source package "
+            "sha256"
+        )
+    if (
+        not live_source_compatibility
+        and validated_source_package_sha256 is not None
+    ):
+        raise ValueError(
+            "live source package sha256 is only valid for compatibility "
+            "mode"
+        )
     if native_generation is not None:
         if not isinstance(native_generation, NativeGenerationContext):
             raise TypeError(
@@ -223,22 +286,44 @@ def run_scheme_subprocess(
             raise ValueError(
                 "Native generation manifest path must be absolute"
             )
-        env.update(
-            {
-                NATIVE_INPUT_MODE_ENV: NATIVE_INPUT_MODE,
-                NATIVE_MANIFEST_PATH_ENV:
-                    str(native_generation.manifest_path),
-                NATIVE_GENERATION_ID_ENV:
-                    native_generation.generation_id,
-                NATIVE_MANIFEST_SHA256_ENV:
-                    native_generation.manifest_sha256,
-                NATIVE_BUSINESS_DATE_ENV:
-                    native_generation.business_date,
-                NATIVE_FEATURE_DATE_ENV:
-                    native_generation.feature_date,
-            }
-        )
+        if live_source_compatibility:
+            env.update(
+                {
+                    LIVE_SOURCE_INPUT_MODE_ENV:
+                        LIVE_SOURCE_INPUT_MODE,
+                    LIVE_SOURCE_FENCE_GENERATION_ID_ENV:
+                        native_generation.generation_id,
+                    LIVE_SOURCE_FEATURE_DATE_ENV:
+                        native_generation.feature_date,
+                    LIVE_SOURCE_PACKAGE_SHA256_ENV:
+                        validated_source_package_sha256,
+                    # 兼容桥每个 attempt 使用独立 source runtime，避免
+                    # 多进程竞争旧 runner 的共享临时 cache 文件。
+                    "DAILY_0629_SOURCE_CACHE_DISABLE": "1",
+                }
+            )
+        else:
+            env.update(
+                {
+                    NATIVE_INPUT_MODE_ENV: NATIVE_INPUT_MODE,
+                    NATIVE_MANIFEST_PATH_ENV:
+                        str(native_generation.manifest_path),
+                    NATIVE_GENERATION_ID_ENV:
+                        native_generation.generation_id,
+                    NATIVE_MANIFEST_SHA256_ENV:
+                        native_generation.manifest_sha256,
+                    NATIVE_BUSINESS_DATE_ENV:
+                        native_generation.business_date,
+                    NATIVE_FEATURE_DATE_ENV:
+                        native_generation.feature_date,
+                }
+            )
     if cache_use_qualification is not None:
+        if live_source_compatibility:
+            raise ValueError(
+                "live source compatibility cannot use frozen cache "
+                "qualification"
+            )
         try:
             trusted_cache_qualification = (
                 validate_trusted_cache_use_qualification(
@@ -312,6 +397,8 @@ def run_configured_scheme(
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
     native_generation: NativeGenerationContext | None = None,
+    live_source_compatibility: bool = False,
+    live_source_package_sha256: str | None = None,
     cache_use_qualification: dict[str, object] | None = None,
     databridge_generation: DataBridgeGenerationContext | None = None,
     calendar_generation: NativeGenerationContext | None = None,
@@ -348,6 +435,16 @@ def run_configured_scheme(
             native_kwargs["cache_use_qualification"] = (
                 cache_use_qualification
             )
+        if live_source_compatibility:
+            native_kwargs["live_source_compatibility"] = True
+            native_kwargs["live_source_package_sha256"] = (
+                live_source_package_sha256
+            )
+        elif live_source_package_sha256 is not None:
+            raise ValueError(
+                "live source package sha256 is only valid for "
+                "compatibility mode"
+            )
         if validated_execution_token is not None:
             native_kwargs["execution_token"] = validated_execution_token
         if process_started is not None:
@@ -362,6 +459,14 @@ def run_configured_scheme(
             **native_kwargs,
         )
     if runtime_type == "blackbox_v2":
+        if live_source_compatibility:
+            raise ValueError(
+                "live source compatibility is not valid for blackbox_v2"
+            )
+        if live_source_package_sha256 is not None:
+            raise ValueError(
+                "live source package sha256 is not valid for blackbox_v2"
+            )
         if cache_use_qualification is not None:
             raise ValueError(
                 "cache_use_qualification is not valid for blackbox_v2"

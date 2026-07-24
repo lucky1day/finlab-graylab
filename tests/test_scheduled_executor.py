@@ -38,7 +38,9 @@ def _generation(
 def _envelope(*, runtime_type: str = "native_adapter"):
     generation = _generation()
     calendar_generation = generation
+    input_compatibility = "generation_v1"
     if runtime_type == "blackbox_v2":
+        input_compatibility = "databridge_v1"
         calendar_generation = _generation(
             generation_id="native-calendar-20260724",
             manifest_sha256="f" * 64,
@@ -51,6 +53,7 @@ def _envelope(*, runtime_type: str = "native_adapter"):
         occurrence=SimpleNamespace(
             occurrence_id=7,
             predict_date="2026-07-24",
+            feature_date="2026-07-23",
             policy_json={
                 "daily_coordinator_epoch": {
                     "epoch": 1,
@@ -61,6 +64,7 @@ def _envelope(*, runtime_type: str = "native_adapter"):
                     {
                         "scheme_id": "alpha",
                         "cache_spec_fingerprint": None,
+                        "input_compatibility": input_compatibility,
                     }
                 ],
             },
@@ -822,6 +826,12 @@ class ScheduledExecutorTests(unittest.TestCase):
             run_scheme.call_args.kwargs["native_generation"],
             native_context,
         )
+        self.assertFalse(
+            run_scheme.call_args.kwargs.get(
+                "live_source_compatibility",
+                False,
+            )
+        )
         self.assertEqual(
             run_scheme.call_args.kwargs["execution_token"],
             "attempt-token",
@@ -834,6 +844,238 @@ class ScheduledExecutorTests(unittest.TestCase):
             committed[0].extra["input_generation_id"],
             "native-20260724",
         )
+
+    def test_approved_0629_uses_live_source_mode_with_frozen_fence(
+        self,
+    ) -> None:
+        from scheduler.scheduled_executor import execute_scheduled_item
+
+        scheme_id = "daily_1y_xgb_1y13_0629"
+        envelope = _envelope()
+        envelope.item.base_scheme_id = scheme_id
+        envelope.item.scheme_version = "0629-v1"
+        envelope.occurrence.policy_json["schemes"] = [
+            {
+                "scheme_id": scheme_id,
+                "cache_spec_fingerprint": None,
+                "input_compatibility": "live_source_0629",
+                "source_package_sha256": "c" * 64,
+            }
+        ]
+        config = _config()
+        config.scheme_id = scheme_id
+        config.scheme_version = "0629-v1"
+        attempt = SimpleNamespace(
+            item_id=11,
+            run_id=201,
+            attempt_no=1,
+            execution_token="compat-token",
+        )
+        native_context = SimpleNamespace(
+            generation_id="native-20260724",
+            manifest_sha256="e" * 64,
+            business_date="2026-07-24",
+            feature_date="2026-07-23",
+        )
+        record = PredictionRecord(
+            scheme_id=scheme_id,
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-24",
+            feature_date="2026-07-23",
+            target_date="2026-07-27",
+            predicted_direction=1,
+            extra={
+                "input_mode": "live_source_0629",
+                "data_watermark": "2026-07-23",
+                "data_watermark_basis":
+                    "source_output_prediction_date",
+                "live_source_fence_generation_id":
+                    "native-20260724",
+                "source_package_hash": "c" * 64,
+            },
+        )
+
+        with (
+            patch(
+                "scheduler.scheduled_executor."
+                "read_schedule_execution_envelope",
+                return_value=envelope,
+            ),
+            patch(
+                "scheduler.scheduled_executor.start_schedule_attempt",
+                return_value=attempt,
+            ),
+            patch(
+                "scheduler.scheduled_executor.load_scheme_config",
+                return_value=config,
+            ),
+            patch(
+                "scheduler.scheduled_executor.open_native_generation",
+                return_value=native_context,
+            ),
+            patch(
+                "scheduler.scheduled_executor.run_configured_scheme",
+                return_value=[record],
+            ) as run_scheme,
+            patch(
+                "scheduler.scheduled_executor.complete_scheduled_attempt",
+                return_value=1,
+            ),
+        ):
+            result = execute_scheduled_item(object(), item_id=11)
+
+        self.assertEqual(result.status, "success")
+        self.assertTrue(
+            run_scheme.call_args.kwargs["live_source_compatibility"]
+        )
+        self.assertIs(
+            run_scheme.call_args.kwargs["native_generation"],
+            native_context,
+        )
+        self.assertEqual(
+            run_scheme.call_args.kwargs[
+                "live_source_package_sha256"
+            ],
+            "c" * 64,
+        )
+
+    def test_live_source_audit_rejects_source_package_drift(
+        self,
+    ) -> None:
+        from scheduler.scheduled_executor import (
+            ScheduledResultError,
+            _verify_input_compatibility_records,
+        )
+
+        scheme_id = "daily_1y_xgb_1y13_0629"
+        envelope = _envelope()
+        envelope.item.base_scheme_id = scheme_id
+        envelope.occurrence.policy_json["schemes"] = [
+            {
+                "scheme_id": scheme_id,
+                "cache_spec_fingerprint": None,
+                "input_compatibility": "live_source_0629",
+                "source_package_sha256": "c" * 64,
+            }
+        ]
+        record = PredictionRecord(
+            scheme_id=scheme_id,
+            target_tenor="1Y",
+            horizon=1,
+            predict_date="2026-07-24",
+            feature_date="2026-07-23",
+            target_date="2026-07-27",
+            predicted_direction=1,
+            extra={
+                "input_mode": "live_source_0629",
+                "data_watermark": "2026-07-23",
+                "data_watermark_basis":
+                    "source_output_prediction_date",
+                "live_source_fence_generation_id":
+                    "native-20260724",
+                "source_package_hash": "d" * 64,
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ScheduledResultError,
+            "source_package_hash",
+        ):
+            _verify_input_compatibility_records(
+                [record],
+                envelope=envelope,
+                input_compatibility="live_source_0629",
+            )
+
+    def test_live_source_audit_rejects_watermark_basis_drift(
+        self,
+    ) -> None:
+        from scheduler.scheduled_executor import (
+            ScheduledResultError,
+            _verify_input_compatibility_records,
+        )
+
+        scheme_id = "daily_1y_xgb_1y13_0629"
+        envelope = _envelope()
+        envelope.item.base_scheme_id = scheme_id
+        envelope.occurrence.policy_json["schemes"] = [
+            {
+                "scheme_id": scheme_id,
+                "cache_spec_fingerprint": None,
+                "input_compatibility": "live_source_0629",
+                "source_package_sha256": "c" * 64,
+            }
+        ]
+        record = PredictionRecord(
+            scheme_id=scheme_id,
+            target_tenor="1Y",
+            horizon=1,
+            predict_date="2026-07-24",
+            feature_date="2026-07-23",
+            target_date="2026-07-27",
+            predicted_direction=1,
+            extra={
+                "input_mode": "live_source_0629",
+                "data_watermark": "2026-07-23",
+                "data_watermark_basis": "forged_basis",
+                "live_source_fence_generation_id":
+                    "native-20260724",
+                "source_package_hash": "c" * 64,
+            },
+        )
+
+        with self.assertRaisesRegex(
+            ScheduledResultError,
+            "data_watermark_basis",
+        ):
+            _verify_input_compatibility_records(
+                [record],
+                envelope=envelope,
+                input_compatibility="live_source_0629",
+            )
+
+    def test_unapproved_live_source_policy_fails_closed(self) -> None:
+        from scheduler.scheduled_executor import execute_scheduled_item
+
+        envelope = _envelope()
+        envelope.occurrence.policy_json["schemes"][0][
+            "input_compatibility"
+        ] = "live_source_0629"
+        attempt = SimpleNamespace(
+            item_id=11,
+            run_id=202,
+            attempt_no=1,
+            execution_token="forged-compat-token",
+        )
+        with (
+            patch(
+                "scheduler.scheduled_executor."
+                "read_schedule_execution_envelope",
+                return_value=envelope,
+            ),
+            patch(
+                "scheduler.scheduled_executor.start_schedule_attempt",
+                return_value=attempt,
+            ),
+            patch(
+                "scheduler.scheduled_executor.load_scheme_config",
+                return_value=_config(),
+            ),
+            patch(
+                "scheduler.scheduled_executor.run_configured_scheme",
+            ) as run_scheme,
+            patch(
+                "scheduler.scheduled_executor."
+                "mark_schedule_attempt_terminal_failure",
+                return_value="FAILED_TERMINAL",
+            ),
+        ):
+            result = execute_scheduled_item(object(), item_id=11)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.failure_code, "CONTRACT")
+        run_scheme.assert_not_called()
 
     def test_v2_reopens_bound_databridge_and_its_frozen_native_calendar(
         self,

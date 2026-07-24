@@ -170,6 +170,70 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             "attempt-7",
         )
 
+    def test_approved_0629_live_source_uses_fence_without_frozen_db_mode(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+        from shared import input_artifacts
+
+        context = _generation_context()
+        captured: dict[str, str] = {}
+
+        def fake_run(cmd, *, cwd, env, timeout):
+            from subprocess import CompletedProcess
+
+            del cwd, timeout
+            captured.update(env)
+            return CompletedProcess(cmd, 0, "[]", "")
+
+        with patch(
+            "scheduler.executor._run_process_group",
+            side_effect=fake_run,
+        ):
+            run_scheme_subprocess(
+                "daily_1y_xgb_1y13_0629",
+                "2026-07-24",
+                native_generation=context,
+                execution_token="compat-attempt",
+                live_source_compatibility=True,
+                live_source_package_sha256=(
+                    "3025fc532dfdeb8e17cfd6b79103d5b3"
+                    "ddb56b404c81eef82710b136ddf65689"
+                ),
+            )
+
+        self.assertNotIn(
+            input_artifacts.NATIVE_INPUT_MODE_ENV,
+            captured,
+        )
+        self.assertEqual(
+            captured[input_artifacts.LIVE_SOURCE_INPUT_MODE_ENV],
+            "live_source_0629",
+        )
+        self.assertEqual(
+            captured[
+                input_artifacts.LIVE_SOURCE_FENCE_GENERATION_ID_ENV
+            ],
+            context.generation_id,
+        )
+        self.assertEqual(
+            captured[input_artifacts.LIVE_SOURCE_FEATURE_DATE_ENV],
+            context.feature_date,
+        )
+        self.assertEqual(
+            captured[
+                input_artifacts.LIVE_SOURCE_PACKAGE_SHA256_ENV
+            ],
+            (
+                "3025fc532dfdeb8e17cfd6b79103d5b3"
+                "ddb56b404c81eef82710b136ddf65689"
+            ),
+        )
+        self.assertEqual(
+            captured["DAILY_0629_SOURCE_CACHE_DISABLE"],
+            "1",
+        )
+
     def test_cache_qualification_is_explicitly_validated_and_injected(
         self,
     ) -> None:

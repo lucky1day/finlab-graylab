@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、架构评审和风险控制人员
 
-**最后核验日期**：2026-07-24
+**最后核验日期**：2026-07-25
 
 本文定义单台 Mac Studio 上日频预测的目标架构、不可破坏的不变量和上线门禁。
 它不证明当前生产已达到 08:00 SLA；动态结论以
@@ -16,8 +16,9 @@
 - 一个交易日只有一个 `daily-signals + predict_date` occurrence。
 - occurrence 创建时冻结 active daily Registry、代码/config 摘要、输入 generation
   和 target 验收全集；当前候选 policy 基线是 21 个 execution、25 个 target。
-- Native 与 Blackbox V2 只读取当天已封存的不可变 generation，不读取旧
-  `current`，也不在任务内查询变化中的源数据。
+- 14 个 `generation_v1` Native 与 Blackbox V2 只读取当天已封存的不可变
+  generation，不读取旧 `current`。三个固定 0629 Native 在 MVP 阶段使用受控
+  `live_source_0629` 兼容桥；该例外不允许扩展，也不是 generation 失败回退。
 - 单机 owner 使用 `launchd + flock`；完成权使用数据库
   `current_run_id + attempt_no` fence。不实现 lease、heartbeat claim、
   `SKIP LOCKED` 或通用分布式 worker。
@@ -107,9 +108,19 @@ Repeatable Read generation，不能把 `create_time` 水位误称为完整变更
 除五个曲线就绪锚点外，单个 factor 的业务空值可以保留为 NULL，不把“每列
 非空”误当作数据 readiness。
 
-仍直接查询 live DB 的 Native source runner 不具备输入隔离资格。若只能通过改变
-算法逻辑才能适配，则必须创建独立 Blackbox V2 replacement，不允许修改
-source-backed Native 算法贴合平台。
+MVP 仅允许 `daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629` 和
+`daily_10y_lgbm_10y04_0629` 使用 `live_source_0629`。它们仍由同一协调器
+绑定当天 Native generation 作为 occurrence、日历和 completion fence，但算法
+输入复用已通过灰度的 source runner。policy 冻结 source package SHA-256，子进程
+只执行复制后重新验 hash 的私有副本；结果提交前再次比对该 hash。`data_watermark`
+取冻结 source runner 实际输出的 `prediction_date`，平台 artifact 只作为运行前
+readiness 观察，不宣称是算法消费的内容摘要。任务开始时间沿用 ledger
+`started_at`；mode、水位口径、fence generation 任一漂移都在原子提交前拒绝。
+兼容桥不使用旧 source cache，也不允许其它 Native 使用；generation 失败不回退。
+
+该桥只解决 MVP 的有序触发与可审计落库，不提供不可变输入隔离。MVP 后必须逐个
+替换为公共 generation adapter；若只能通过 L2 算法修改才能适配，则创建独立
+Blackbox V2 replacement，不修改 source-backed Native 算法贴合平台。
 
 ## 4. 账本和验收权
 
@@ -282,8 +293,9 @@ command hook 告警：generation 构建失败、07:00 ETA/进度异常、07:45 V
    `COMPLETE` 只原子提交 history mark；`COMPATIBLE_PARTIAL` 才允许幂等重放，
    且定义 drift 只放行 SQL 明确产生的四个 nullable 过渡列。任何失败继续保留
    `APPLYING`，不得人工改 history 或复用旧 digest。
-2. 三个当前标记 `input_compatibility=unsupported` 的 0629 Native 方案完成
-   L0/L1 generation 输入适配，或从候选日批移除并走替代方案审批。
+2. 三个 0629 Native 的 `live_source_0629` 兼容桥完成隔离回放、唯一触发、
+   原子提交和同机容量验证；正式切换前再完成 L0/L1 generation 输入适配，或
+   从候选日批移除并走替代方案审批。
 3. DataBridge 当天 generation 最迟 06:55 SEALED；06:55 未就绪必须固化
    `LATE`/告警但仍只刷新当天新 generation 到 08:30。四个 V2 最迟 07:10 可见，
    25 个 target 最迟 07:55 可见。
