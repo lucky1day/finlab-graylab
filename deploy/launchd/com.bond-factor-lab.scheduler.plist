@@ -27,6 +27,8 @@
     <string>1</string>
     <key>BOND_ALGO_CONDA_ENV</key>
     <string>forecast_env</string>
+    <key>BOND_DAILY_COORDINATOR_MODE</key>
+    <string>legacy</string>
     <key>BOND_SCHEDULER_STAGGER_MINUTES</key>
     <string>2</string>
     <key>BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY</key>
@@ -34,9 +36,9 @@
     <key>BOND_SCHEDULER_STARTUP_CATCHUP</key>
     <string>1</string>
     <key>DATABRIDGE_REFRESH_START</key>
-    <string>06:00</string>
+    <string>06:30</string>
     <key>DATABRIDGE_REFRESH_DEADLINE</key>
-    <string>07:00</string>
+    <string>06:55</string>
   </dict>
 
   <key>RunAtLoad</key>

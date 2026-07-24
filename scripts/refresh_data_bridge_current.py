@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -29,8 +30,16 @@ from shared.data_bridge.refresh import (  # noqa: E402
     run_full_refresh,
 )
 from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E402
+from shared.daily_coordinator_mode import (  # noqa: E402
+    DAILY_COORDINATOR_MODE_ENV,
+    require_daily_coordinator_mode,
+)
 
 Mode = Literal["dry-run", "publish", "check-only"]
+
+
+def _daily_coordinator_mode() -> str:
+    return require_daily_coordinator_mode()
 
 
 def refresh_current(*, refresh_date: str, publish: bool):
@@ -55,6 +64,19 @@ def check_current(*, refresh_date: str):
 
 def run_command(mode: Mode, *, refresh_date: str) -> tuple[int, dict[str, object]]:
     try:
+        if (
+            mode in {"publish", "dry-run"}
+            and _daily_coordinator_mode() == "ledger"
+        ):
+            return 2, {
+                "status": "configuration_error",
+                "mode": mode,
+                "error": (
+                    "standalone DataBridge refresh is disabled in ledger "
+                    "mode; use the daily coordinator, and allow only "
+                    "--check-only from standalone callers"
+                ),
+            }
         if mode == "check-only":
             current = check_current(refresh_date=refresh_date)
             return 0, {"status": "ok", "mode": mode, "state": current.state}

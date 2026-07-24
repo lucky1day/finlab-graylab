@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,21 +16,99 @@ class DataBridgeCliTests(unittest.TestCase):
             rounds_completed=2,
             duration_sec=1.25,
         )
-        with patch.object(command, "refresh_current", return_value=result) as refresh:
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+                clear=True,
+            ),
+            patch.object(
+                command,
+                "refresh_current",
+                return_value=result,
+            ) as refresh,
+        ):
             exit_code, payload = command.run_command("publish", refresh_date="2026-07-19")
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(payload["status"], "ok")
         refresh.assert_called_once_with(refresh_date="2026-07-19", publish=True)
 
+    def test_ledger_mode_rejects_standalone_publish(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch.object(command, "refresh_current") as refresh,
+        ):
+            exit_code, payload = command.run_command(
+                "publish",
+                refresh_date="2026-07-24",
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(payload["status"], "configuration_error")
+        self.assertIn("coordinator", str(payload["error"]).lower())
+        refresh.assert_not_called()
+
+    def test_ledger_mode_rejects_standalone_dry_run(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+                clear=True,
+            ),
+            patch.object(command, "refresh_current") as refresh,
+        ):
+            exit_code, payload = command.run_command(
+                "dry-run",
+                refresh_date="2026-07-24",
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(payload["status"], "configuration_error")
+        self.assertIn("check-only", str(payload["error"]))
+        refresh.assert_not_called()
+
+    def test_publish_without_explicit_mode_fails_closed(self) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(command, "refresh_current") as refresh,
+        ):
+            exit_code, payload = command.run_command(
+                "publish",
+                refresh_date="2026-07-24",
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(payload["status"], "configuration_error")
+        self.assertIn("explicitly set", str(payload["error"]))
+        refresh.assert_not_called()
+
     def test_configuration_error_uses_exit_code_two_and_redacts_password(self) -> None:
         from scripts import refresh_data_bridge_current as command
         from shared.data_bridge.client import DataBridgeConfigurationError
 
-        with patch.object(
-            command,
-            "refresh_current",
-            side_effect=DataBridgeConfigurationError("bad credential 123"),
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+                clear=True,
+            ),
+            patch.object(
+                command,
+                "refresh_current",
+                side_effect=DataBridgeConfigurationError(
+                    "bad credential 123"
+                ),
+            ),
         ):
             exit_code, payload = command.run_command("dry-run", refresh_date="2026-07-19")
 

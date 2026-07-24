@@ -10,8 +10,8 @@ try:
 except ModuleNotFoundError:  # forecast_env keeps scheduler dry-run lean and may not include PyYAML.
     yaml = None
 
-from harness.contracts.config_schema import validate_config
 from shared.blackbox_v2.versioning import compute_blackbox_config_hash
+from shared.scheme_config_schema import validate_config
 from shared.versioning import (
     compute_code_hash,
     compute_config_hash,

@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import io
+import json
+import os
+import plistlib
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -14,6 +19,7 @@ from scheduler.v2_daily_preflight import (
     ASIA_SHANGHAI,
     PreflightDependencies,
     PreflightError,
+    main,
     resolve_phase,
     restart_scheduler,
     run_phase,
@@ -179,8 +185,126 @@ class V2DailyPreflightTests(unittest.TestCase):
 
         self.restart.assert_not_called()
 
+    def test_main_ledger_mode_is_disabled_before_loading_dependencies(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch(
+                "scheduler.v2_daily_preflight._daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch(
+                "scheduler.v2_daily_preflight.default_dependencies"
+            ) as dependencies,
+            patch(
+                "scheduler.v2_daily_preflight.resolve_phase"
+            ) as phase_resolver,
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(["--phase", "auto"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {
+                "coordinator_mode": "ledger",
+                "event": "v2_daily_preflight",
+                "phase": "disabled",
+                "reason": "daily-coordinator-ledger-mode",
+                "run_date": datetime.now(ASIA_SHANGHAI).date().isoformat(),
+                "status": "disabled",
+            },
+        )
+        dependencies.assert_not_called()
+        phase_resolver.assert_not_called()
+
+    def test_main_without_resolvable_mode_fails_before_loading_dependencies(
+        self,
+    ) -> None:
+        stderr = io.StringIO()
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "scheduler.v2_daily_preflight."
+                "bootstrap_deployment_daily_coordinator_mode",
+                side_effect=ValueError(
+                    "BOND_DAILY_COORDINATOR_MODE must be explicitly set"
+                ),
+            ),
+            patch(
+                "scheduler.v2_daily_preflight.default_dependencies"
+            ) as dependencies,
+            redirect_stderr(stderr),
+        ):
+            exit_code = main(["--phase", "auto"])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("must be explicitly set", stderr.getvalue())
+        dependencies.assert_not_called()
+
+    def test_main_legacy_mode_keeps_controlled_preflight_behavior(self) -> None:
+        stdout = io.StringIO()
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+            ),
+            patch(
+                "scheduler.v2_daily_preflight.default_dependencies",
+                return_value=self.dependencies,
+            ),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(["--phase", "refresh-primary"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())["status"], "refreshed")
+        self.refresh.assert_called_once()
+        self.check.assert_not_called()
+        self.restart.assert_not_called()
+
 
 class SchedulerRestartTests(unittest.TestCase):
+    def test_restart_refuses_ledger_mode_before_launchctl(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch(
+                "scheduler.v2_daily_preflight._daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch(
+                "scheduler.v2_daily_preflight.subprocess.run"
+            ) as run,
+            patch(
+                "scheduler.v2_daily_preflight._launchctl_print"
+            ) as launchctl_print,
+        ):
+            with self.assertRaisesRegex(
+                PreflightError,
+                "disabled in ledger mode",
+            ):
+                restart_scheduler(
+                    datetime(
+                        2026,
+                        7,
+                        22,
+                        7,
+                        0,
+                        tzinfo=ZoneInfo("Asia/Shanghai"),
+                    ),
+                    uid=501,
+                    timeout_sec=1.0,
+                )
+
+        run.assert_not_called()
+        launchctl_print.assert_not_called()
+
     def test_restart_uses_fixed_launchd_label_and_requires_changed_pid(self) -> None:
         print_outputs = [
             "state = running\n\tpid = 100\n",
@@ -188,6 +312,10 @@ class SchedulerRestartTests(unittest.TestCase):
         ]
 
         with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+            ),
             patch(
                 "scheduler.v2_daily_preflight.subprocess.run"
             ) as run,
@@ -216,6 +344,39 @@ class SchedulerRestartTests(unittest.TestCase):
         self.assertEqual(result["old_pid"], 100)
         self.assertEqual(result["new_pid"], 200)
         self.assertTrue(result["verified"])
+
+
+class V2PreflightLaunchdTests(unittest.TestCase):
+    def test_repository_default_preserves_legacy_refresh_until_cutover(self) -> None:
+        plist_path = (
+            Path(__file__).resolve().parents[1]
+            / "deploy"
+            / "launchd"
+            / "com.bond-factor-lab.v2-preflight.plist"
+        )
+        with plist_path.open("rb") as handle:
+            payload = plistlib.load(handle)
+
+        self.assertNotIn("Disabled", payload)
+        self.assertEqual(
+            {
+                (item["Hour"], item["Minute"])
+                for item in payload["StartCalendarInterval"]
+            },
+            {(6, 0), (6, 30), (6, 35), (7, 0)},
+        )
+        self.assertEqual(
+            payload["EnvironmentVariables"]["BOND_DAILY_COORDINATOR_MODE"],
+            "legacy",
+        )
+        self.assertEqual(
+            payload["EnvironmentVariables"]["DATABRIDGE_REFRESH_START"],
+            "06:00",
+        )
+        self.assertEqual(
+            payload["EnvironmentVariables"]["DATABRIDGE_REFRESH_DEADLINE"],
+            "07:00",
+        )
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ DOCS_ROOT = PROJECT_ROOT / "docs"
 UPSTREAM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md"
 PLATFORM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md"
 SOP_INDEX = DOCS_ROOT / "sop" / "README.md"
+DEPLOY_README = PROJECT_ROOT / "deploy" / "README.md"
+DAILY_SIGNAL_SLA = DOCS_ROOT / "architecture" / "DAILY_SIGNAL_SLA.md"
 
 
 class OnboardingDocumentationTests(unittest.TestCase):
@@ -155,6 +157,48 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn(marker, platform)
         self.assertNotIn("按冻结 Schema 生成", platform)
 
+    def test_daily_rollout_docs_define_monotonic_epoch_cutover(self) -> None:
+        deploy = DEPLOY_README.read_text(encoding="utf-8")
+        architecture = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            "bootout legacy V2 preflight",
+            "root-owned append-only epoch chain",
+            "只能追加更高 epoch",
+            "daily_coordinator_epoch_operator.py",
+            "hard-link no-clobber",
+            "仓库 rollout",
+            "candidate v2",
+            "launchctl print",
+            "scripts/apply_migrations.py --apply",
+        ):
+            self.assertIn(marker, deploy)
+
+        for marker in (
+            "bootout legacy preflight",
+            "machine-global append-only chain",
+            "允许受控回滚",
+            "hard-link no-clobber",
+            "仓库 rollout",
+            "candidate v2",
+            "scripts/apply_migrations.py --apply",
+        ):
+            self.assertIn(marker, architecture)
+
+        for text in (deploy, architecture, platform):
+            self.assertIn(
+                "BOND_DAILY_COORDINATOR_MODE=ledger",
+                text,
+            )
+            self.assertIn("--check-only", text)
+            self.assertIn("--dry-run", text)
+
+        self.assertIn(
+            "BOND_DAILY_COORDINATOR_MODE=legacy",
+            platform,
+        )
+
     def test_upstream_metadata_name_is_task_scoped_and_concise(self) -> None:
         text = UPSTREAM_SOP.read_text(encoding="utf-8")
 
@@ -246,7 +290,22 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, platform)
 
-    def test_v2_preflight_launchd_owns_four_daily_time_points(self) -> None:
+    def test_launchd_defaults_keep_one_coherent_legacy_control_plane(self) -> None:
+        rollout = json.loads(
+            (
+                PROJECT_ROOT
+                / "deploy"
+                / "daily_coordinator_rollout_v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            rollout,
+            {
+                "schema_version": "daily-coordinator-rollout-v1",
+                "mode": "legacy",
+            },
+        )
+
         preflight_path = (
             PROJECT_ROOT
             / "deploy"
@@ -259,6 +318,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertEqual(preflight["Label"], "com.bond-factor-lab.v2-preflight")
         self.assertNotIn("KeepAlive", preflight)
         self.assertNotIn("RunAtLoad", preflight)
+        self.assertNotIn("Disabled", preflight)
         self.assertEqual(
             {
                 (item["Hour"], item["Minute"])
@@ -269,6 +329,12 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn(
             "scheduler.v2_daily_preflight",
             preflight["ProgramArguments"],
+        )
+        self.assertEqual(
+            preflight["EnvironmentVariables"][
+                "BOND_DAILY_COORDINATOR_MODE"
+            ],
+            "legacy",
         )
         self.assertEqual(
             preflight["EnvironmentVariables"]["DATABRIDGE_REFRESH_START"],
@@ -288,21 +354,38 @@ class OnboardingDocumentationTests(unittest.TestCase):
         with scheduler_path.open("rb") as handle:
             scheduler = plistlib.load(handle)
         scheduler_env = scheduler["EnvironmentVariables"]
-        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_START"], "06:00")
-        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_DEADLINE"], "07:00")
+        self.assertEqual(
+            scheduler_env["BOND_DAILY_COORDINATOR_MODE"],
+            "legacy",
+        )
+        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_START"], "06:30")
+        self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_DEADLINE"], "06:55")
 
-    def test_platform_sop_defines_v2_preflight_timeline_and_isolation(self) -> None:
+        backend_path = (
+            PROJECT_ROOT
+            / "deploy"
+            / "launchd"
+            / "com.bond-factor-lab.backend.plist"
+        )
+        with backend_path.open("rb") as handle:
+            backend = plistlib.load(handle)
+        self.assertEqual(
+            backend["EnvironmentVariables"]["BOND_DAILY_COORDINATOR_MODE"],
+            "legacy",
+        )
+
+    def test_platform_sop_defines_occurrence_timeline_and_isolation(self) -> None:
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
         for marker in (
-            "06:00",
             "06:30",
-            "06:35",
             "07:00",
-            "V1 不读取",
-            "校验成功后重启",
-            "不重启、不补跑",
-            "单个预测任务不得回写 Registry",
-            "v2-scheduler-gate-v1",
+            "07:45",
+            "08:00",
+            "08:30",
+            "+0/+2/+4/+6",
+            "不重启 scheduler",
+            "旧 generation",
+            "scheduled_live",
         ):
             self.assertIn(marker, platform)
 

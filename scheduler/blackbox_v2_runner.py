@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shutil
-import signal
 import stat
 import subprocess
 import sys
@@ -13,8 +12,15 @@ import time
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
+from scheduler.process_control import (
+    ProcessGroupTerminationError,
+    ProcessGroupTerminationResult,
+    ProcessRegistrationCleanupError,
+    capture_new_session_process_group,
+    terminate_process_group,
+)
 from shared.blackbox_v2.contracts import (
     BlackboxMetadata,
     BlackboxRequest,
@@ -30,6 +36,11 @@ from shared.models import PredictionRecord
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _RUNTIME_PROFILE_PATH = _PROJECT_ROOT / "deploy" / "blackbox_v2" / "runtime_profile_v1.json"
 _SAFE_ENVIRONMENT_KEYS = frozenset({"LANG", "LC_ALL", "TZ"})
+_SCHEDULE_EXECUTION_TOKEN_ENV = "BOND_SCHEDULE_EXECUTION_TOKEN"
+_SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+)
 _PROFILE_FIELDS = frozenset(
     {
         "profile_name",
@@ -388,6 +399,9 @@ def execute_blackbox_cli(
     output_path: str | Path,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     timeout_sec: float | None = None,
+    execution_token: str | None = None,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """执行一次 Blackbox V2 CLI；仅进程成功且 Output 合法存在才返回。"""
     _validate_runtime_profile(profile, source="runtime profile")
@@ -450,6 +464,7 @@ def execute_blackbox_cli(
             profile,
             output.parent,
             python_executable=python_executable,
+            execution_token=execution_token,
         )
         profile_timeout = (
             profile.predict_timeout_sec if mode == "predict" else profile.backtest_timeout_sec
@@ -461,16 +476,20 @@ def execute_blackbox_cli(
         )
         if timeout <= 0:
             raise BlackboxExecutionError(f"Blackbox V2 {mode} deadline expired before process start")
-        completed = _run_process(
-            command,
-            cwd=output.parent,
-            env=env,
-            timeout=timeout,
-            memory_limit_bytes=profile.memory_limit_bytes,
-            max_capture_bytes=profile.max_log_bytes,
-            max_run_dir_bytes=profile.max_run_dir_bytes,
-            max_run_dir_entries=profile.max_run_dir_entries,
-        )
+        process_kwargs = {
+            "cwd": output.parent,
+            "env": env,
+            "timeout": timeout,
+            "memory_limit_bytes": profile.memory_limit_bytes,
+            "max_capture_bytes": profile.max_log_bytes,
+            "max_run_dir_bytes": profile.max_run_dir_bytes,
+            "max_run_dir_entries": profile.max_run_dir_entries,
+        }
+        if process_started is not None:
+            process_kwargs["process_started"] = process_started
+        if process_fence is not None:
+            process_kwargs["process_fence"] = process_fence
+        completed = _run_process(command, **process_kwargs)
         if completed.returncode != 0:
             raise BlackboxExecutionError(
                 f"Blackbox V2 {mode} exited {completed.returncode}: {_bounded(completed.stderr)}"
@@ -505,19 +524,29 @@ def run_blackbox_predict(
     data_dir: str | Path,
     data_snapshot_id: str,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
+    execution_token: str | None = None,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
 ) -> PredictionRecord:
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
         request_path = write_request(request, root / "request.json")
         output_path = root / "output" / "prediction.json"
-        execute_blackbox_cli(
-            script_path=script_path,
-            mode="predict",
-            input_path=request_path,
-            data_dir=data_dir,
-            output_path=output_path,
-            profile=profile,
-        )
+        execute_kwargs = {
+            "script_path": script_path,
+            "mode": "predict",
+            "input_path": request_path,
+            "data_dir": data_dir,
+            "output_path": output_path,
+            "profile": profile,
+        }
+        if execution_token is not None:
+            execute_kwargs["execution_token"] = execution_token
+        if process_started is not None:
+            execute_kwargs["process_started"] = process_started
+        if process_fence is not None:
+            execute_kwargs["process_fence"] = process_fence
+        execute_blackbox_cli(**execute_kwargs)
         result = load_prediction_result(output_path, request)
     return _to_prediction_record(metadata, result, data_snapshot_id, profile)
 
@@ -1070,7 +1099,11 @@ def _runtime_environment(
     writable_dir: Path,
     *,
     python_executable: str | Path | None = None,
+    execution_token: str | None = None,
 ) -> dict[str, str]:
+    validated_execution_token = _validated_execution_token(
+        execution_token
+    )
     allowed = set(profile.environment_allowlist)
     defaults = dict(profile.environment_defaults)
     unexpected_defaults = defaults.keys() - allowed
@@ -1084,6 +1117,11 @@ def _runtime_environment(
     for key in profile.environment_allowlist:
         if key in os.environ:
             env[key] = os.environ[key]
+    env.pop(_SCHEDULE_EXECUTION_TOKEN_ENV, None)
+    if validated_execution_token is not None:
+        env[_SCHEDULE_EXECUTION_TOKEN_ENV] = (
+            validated_execution_token
+        )
 
     executable = Path(python_executable or _python_command(profile)[0]).resolve(strict=True)
     run_dir = str(writable_dir)
@@ -1110,6 +1148,25 @@ def _runtime_environment(
     return env
 
 
+def _validated_execution_token(
+    execution_token: str | None,
+) -> str | None:
+    """校验显式调度 token，禁止从父环境隐式继承。"""
+    if execution_token is None:
+        return None
+    if (
+        not isinstance(execution_token, str)
+        or not execution_token
+        or len(execution_token) > 128
+        or any(
+            char not in _SAFE_EXECUTION_TOKEN_CHARACTERS
+            for char in execution_token
+        )
+    ):
+        raise ValueError("execution_token is unsafe")
+    return execution_token
+
+
 def _run_process(
     command: list[str],
     *,
@@ -1120,6 +1177,8 @@ def _run_process(
     max_capture_bytes: int,
     max_run_dir_bytes: int,
     max_run_dir_entries: int,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if max_capture_bytes <= 0:
         raise ValueError("max_capture_bytes must be positive")
@@ -1129,6 +1188,8 @@ def _run_process(
         raise ValueError("max_run_dir_entries must be positive")
     with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stdout_file:
         with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stderr_file:
+            if process_fence is not None:
+                process_fence()
             process = subprocess.Popen(
                 command,
                 cwd=cwd,
@@ -1137,6 +1198,26 @@ def _run_process(
                 stderr=stderr_file,
                 start_new_session=True,
             )
+            process_group_id = capture_new_session_process_group(
+                process
+            )
+            if process_fence is not None or process_started is not None:
+                try:
+                    if process_fence is not None:
+                        process_fence()
+                    if process_started is not None:
+                        process_started(process.pid, process_group_id)
+                except BaseException as registration_error:
+                    termination = _terminate_process_group(
+                        process,
+                        process_group_id=process_group_id,
+                    )
+                    if not termination.confirmed_gone:
+                        raise ProcessRegistrationCleanupError(
+                            registration_error=registration_error,
+                            termination=termination,
+                        ) from registration_error
+                    raise
             deadline = time.monotonic() + timeout
             failure: str | None = None
             while process.poll() is None:
@@ -1190,7 +1271,15 @@ def _run_process(
                     if quota_failure is not None:
                         failure = quota_failure
             if failure is not None:
-                _terminate_process_group(process)
+                termination = _terminate_process_group(
+                    process,
+                    process_group_id=process_group_id,
+                )
+                if not termination.confirmed_gone:
+                    raise ProcessGroupTerminationError(
+                        termination=termination,
+                        context=failure,
+                    )
             stdout = _read_capture(stdout_file, max_capture_bytes)
             stderr = _read_capture(stderr_file, max_capture_bytes)
             if failure is not None:
@@ -1275,22 +1364,15 @@ def _process_group_rss_bytes(pid: int) -> int:
     return total_kib * 1024
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> None:
-    try:
-        process_group = os.getpgid(process.pid)
-    except ProcessLookupError:
-        return
-    try:
-        os.killpg(process_group, signal.SIGTERM)
-        process.wait(timeout=5)
-    except ProcessLookupError:
-        return
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process_group, signal.SIGKILL)
-            process.wait(timeout=5)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
-            return
+def _terminate_process_group(
+    process: subprocess.Popen[str],
+    *,
+    process_group_id: int | None = None,
+) -> ProcessGroupTerminationResult:
+    return terminate_process_group(
+        process,
+        process_group_id=process_group_id,
+    )
 
 
 def _bounded(value: str, limit: int = 4000) -> str:

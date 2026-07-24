@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from harness.contracts.config_schema import ALLOWED_TENORS, SCHEME_ID_PATTERN
+from shared.scheme_config_schema import ALLOWED_TENORS, SCHEME_ID_PATTERN
 
 
 TASK_COMBINATIONS = {

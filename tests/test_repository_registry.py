@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
@@ -29,6 +30,8 @@ class _MappingResult:
 
 
 class _CaptureConnection:
+    schema_capabilities = {"daily_schedule_ledger": False}
+
     def __init__(self, store: dict) -> None:
         self._store = store
 
@@ -788,6 +791,8 @@ class _Result:
 
 
 class _RunConnection:
+    schema_capabilities = {"daily_schedule_ledger": False}
+
     def __init__(self, store: dict) -> None:
         self._store = store
 
@@ -821,6 +826,50 @@ class _RunEngine:
 
 
 class ImmutablePredictionRepositoryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._mode_patcher = patch.dict(
+            os.environ,
+            {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+        )
+        self._mode_patcher.start()
+
+    def tearDown(self) -> None:
+        self._mode_patcher.stop()
+
+    def test_daily_run_creation_without_explicit_mode_fails_closed(
+        self,
+    ) -> None:
+        from scheduler.repository import create_scheme_run
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaisesRegex(ValueError, "must be explicitly set"),
+        ):
+            create_scheme_run(
+                _RunEngine(),
+                scheme_id="t1_daily",
+                predict_date="2026-07-24",
+                prediction_phase="scheduled_live",
+                schedule_frequency="daily",
+            )
+
+    def test_daily_ledger_schema_detection_fails_closed_for_unknown_connection(self) -> None:
+        from scheduler.repository import (
+            _assert_prediction_keys_not_frozen_by_daily_ledger_conn,
+        )
+
+        class _UninspectableConnection:
+            pass
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "cannot determine daily ledger schema availability",
+        ):
+            _assert_prediction_keys_not_frozen_by_daily_ledger_conn(
+                _UninspectableConnection(),
+                [],
+            )
+
     def test_attach_run_data_snapshot_updates_only_the_run_audit_row(self) -> None:
         from scheduler.repository import attach_run_data_snapshot
 

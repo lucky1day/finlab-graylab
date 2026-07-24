@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "migrations": [
+    {
+      "version": 1,
+      "filename": "001_init.sql",
+      "sha256": "e4d18246a9e5e7a98b9664c20c886d178cedc3acb9cfd7e9e373fe5c45596a64"
+    },
+    {
+      "version": 2,
+      "filename": "002_backtests.sql",
+      "sha256": "31b7bacd3c1dbffd1cdc351c97906b0243c1c8d52100515b9b676045d9b12e88"
+    },
+    {
+      "version": 3,
+      "filename": "003_target_registry.sql",
+      "sha256": "8eb4c4d17f629d96006fb02c4ccd7a62fd75dea30c3f40112f6afa22dbd56c2d"
+    },
+    {
+      "version": 4,
+      "filename": "004_weekly_actuals.sql",
+      "sha256": "e69ce38e5933a038a0089a4f53b7192aca4860023a38e0b1a296cd5e278d1158"
+    },
+    {
+      "version": 5,
+      "filename": "005_lifecycle.sql",
+      "sha256": "fe75638931c8a9e3d8989821d9998e7368afc7d0ec3ae4334c05da7b33a8cfba"
+    },
+    {
+      "version": 6,
+      "filename": "006_predictions_runid_uk.sql",
+      "sha256": "9165ab57b2e3f0a2a33e2a9fc71ff242ccf9a55e25f1b7527ccf1c03bdf46bbb"
+    },
+    {
+      "version": 7,
+      "filename": "007_backtest_immutable.sql",
+      "sha256": "be13506fb04366021f5fa7f1caa8e41aea3a89668d1048f2795d721729e334f3"
+    },
+    {
+      "version": 8,
+      "filename": "008_predictions_target_uk.sql",
+      "sha256": "b558b446ec66d43c2d6f431bd53b3c38bd4be4314ca9d2fe800e6f673950b4df"
+    },
+    {
+      "version": 9,
+      "filename": "009_backtest_latest_view.sql",
+      "sha256": "5aa5ffa799027679f36f8bdcb9021372f65800ed69d3a6d66b1da920882b7c45"
+    },
+    {
+      "version": 10,
+      "filename": "010_prediction_semantics.sql",
+      "sha256": "e3e01376f7b77c7a97e6b337a3acde218eef05b1860debdf4f51169ffd32d61d"
+    },
+    {
+      "version": 11,
+      "filename": "011_registry_per_tenor.sql",
+      "sha256": "836c10f1075b20695fc9d4651e561da331652970dbface6158fcd25ad521cd70"
+    },
+    {
+      "version": 12,
+      "filename": "012_registry_task_type.sql",
+      "sha256": "91a9e8d596e25a968b3f0deee14aad485644b4df7cb36beed14926535cc5bcc9"
+    },
+    {
+      "version": 13,
+      "filename": "013_add_1y_target_registry.sql",
+      "sha256": "9ddf0bf104f6bc51abebb3572cf905eb6759ec94fdc4763313f1caa83a4f5b7e"
+    },
+    {
+      "version": 14,
+      "filename": "014_weekly_average_actuals.sql",
+      "sha256": "e5a888add30c718133320688c6d54f24ade4d98152f6439a008540ce237a36ed"
+    },
+    {
+      "version": 15,
+      "filename": "015_monthly_actuals.sql",
+      "sha256": "6864fcba39b9aef5a905519ba9bb81bd02bf307dfcbb46ba57844bbb88cbbca3"
+    },
+    {
+      "version": 16,
+      "filename": "016_dual_runtime.sql",
+      "sha256": "b6cf5333e28e195a22f1b8096500e992968af8f45b9513606882808a6c4eb1a4"
+    },
+    {
+      "version": 17,
+      "filename": "017_daily_schedule_ledger.sql",
+      "sha256": "a405ba82a857fc36252256c91fa9719e57b63007830bd9acf734f5f8e0c743fb"
+    }
+  ]
+}

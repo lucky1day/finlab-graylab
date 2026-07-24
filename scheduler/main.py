@@ -13,11 +13,21 @@ from typing import Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.executors.pool import (
+    ThreadPoolExecutor as APSchedulerThreadPoolExecutor,
+)
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
 from scheduler.daily_actuals_updater import update_actuals
+from scheduler.capacity_admission import (
+    CapacityAdmissionError,
+)
+from scheduler.capacity_runtime_admission import (
+    require_current_capacity_admission,
+)
 from scheduler.monthly_actuals_updater import update_monthly_actuals
 from scheduler.weekly_actuals_updater import update_weekly_actuals
 from scheduler.calendar import is_trading_day
@@ -31,6 +41,10 @@ from shared.data_bridge.refresh import (
     check_current_dataset,
     run_full_refresh,
 )
+from shared.daily_coordinator_mode import (
+    DAILY_COORDINATOR_MODE_ENV,
+    bootstrap_deployment_daily_coordinator_mode,
+)
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -40,7 +54,9 @@ PREDICTION_MAX_CONCURRENCY_ENV = "BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY"
 STARTUP_CATCHUP_ENV = "BOND_SCHEDULER_STARTUP_CATCHUP"
 DEFAULT_STAGGER_MINUTES = 2
 DEFAULT_PREDICTION_MAX_CONCURRENCY = 1
-DEFAULT_DATA_BRIDGE_REFRESH_START = "06:00"
+DEFAULT_DATA_BRIDGE_REFRESH_START = "06:30"
+DAILY_RECOVERY_NOT_BEFORE = time(6, 30)
+DAILY_RECOVERY_CUTOFF = time(8, 30)
 PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
 logger = logging.getLogger(__name__)
 _prediction_semaphore_lock = threading.Lock()
@@ -101,6 +117,18 @@ def _env_bool(name: str, default: bool) -> bool:
     if normalized in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"{name} must be a boolean, got {raw!r}")
+
+
+def _daily_coordinator_mode() -> str:
+    return bootstrap_deployment_daily_coordinator_mode()
+
+
+def _require_ledger_runtime_mode() -> None:
+    """外层只拒绝 mode 漂移；容量验证由不可绕过的 runtime 内层执行。"""
+    if _daily_coordinator_mode() != "ledger":
+        raise RuntimeError(
+            "daily ledger entry requires ledger coordinator mode"
+        )
 
 
 def _format_actuals_refresh_times() -> str:
@@ -551,6 +579,13 @@ def run_prediction_job(
             0.0,
             f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} scheme not found: {scheme_id}",
         )
+    if (
+        cfg.frequency == "daily"
+        and _daily_coordinator_mode() != "legacy"
+    ):
+        raise RuntimeError(
+            "direct daily prediction is disabled; use the ledger coordinator"
+        )
     return _run_prediction_config(
         cfg,
         predict_date,
@@ -566,6 +601,22 @@ def run_scheduled_prediction_job(
     force: bool = False,
 ) -> SchemeRunResult:
     """执行 APScheduler 预测任务，并向调度器暴露失败状态。"""
+    scheduled_config = next(
+        (
+            config
+            for config in discover_schemes()
+            if config.scheme_id == scheme_id
+        ),
+        None,
+    )
+    if (
+        scheduled_config is not None
+        and scheduled_config.frequency == "daily"
+        and _daily_coordinator_mode() != "legacy"
+    ):
+        raise RuntimeError(
+            "legacy scheduled daily prediction is disabled in ledger mode"
+        )
     result = run_prediction_job(
         scheme_id,
         run_date=run_date,
@@ -576,6 +627,110 @@ def run_scheduled_prediction_job(
         detail = f": {result.error_msg}" if result.error_msg else ""
         raise RuntimeError(f"Scheduled prediction {result.status}: {scheme_id}{detail}")
     return result
+
+
+def run_daily_coordinator_job(
+    run_date: str | date | None = None,
+    *,
+    algo_env: str = DEFAULT_ALGO_ENV,
+    trigger_origin: str = "apscheduler",
+):
+    """延迟导入 ledger runtime，确保旧回滚模式不初始化新写入路径。"""
+    _require_ledger_runtime_mode()
+    from scheduler.daily_runtime import run_daily_occurrence
+
+    return run_daily_occurrence(
+        run_date=run_date,
+        algo_env=algo_env,
+        trigger_origin=trigger_origin,
+    )
+
+
+def run_daily_recovery_tick_job(
+    run_date: str | date | None = None,
+    *,
+    algo_env: str = DEFAULT_ALGO_ENV,
+    now: datetime | None = None,
+):
+    """在恢复窗口内周期性重入同一协调器，弥补单次 job 异常。
+
+    该入口不创建第二套队列；真正的单 owner、冻结 occurrence、attempt
+    fence 与 08:30 截止仍由 ``run_daily_occurrence`` 强制执行。
+    """
+    checked_at = now or datetime.now(ASIA_SHANGHAI)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=ASIA_SHANGHAI)
+    local_now = checked_at.astimezone(ASIA_SHANGHAI)
+    predict_date = (
+        local_now.date().isoformat()
+        if run_date is None
+        else _normalize_run_date(run_date)
+    )
+    inside_window = (
+        local_now.date().isoformat() == predict_date
+        and DAILY_RECOVERY_NOT_BEFORE
+        <= local_now.time().replace(tzinfo=None)
+        < DAILY_RECOVERY_CUTOFF
+    )
+    if inside_window:
+        return run_daily_coordinator_job(
+            run_date=predict_date,
+            algo_env=algo_env,
+            trigger_origin="startup_catchup",
+        )
+    after_cutoff_same_day = (
+        local_now.date().isoformat() == predict_date
+        and local_now.time().replace(tzinfo=None)
+        >= DAILY_RECOVERY_CUTOFF
+    )
+    if after_cutoff_same_day:
+        return run_daily_watchdog_job(
+            "recovery_cutoff",
+            run_date=predict_date,
+        )
+    else:
+        return {
+            "status": "outside_recovery_window",
+            "predict_date": predict_date,
+        }
+
+
+def run_daily_watchdog_job(
+    stage: str,
+    run_date: str | date | None = None,
+):
+    """执行日批进度/guardrail/SLA/cutoff 控制动作。"""
+    _require_ledger_runtime_mode()
+    from scheduler.daily_runtime import run_daily_watchdog
+
+    return run_daily_watchdog(stage=stage, run_date=run_date)
+
+
+def run_daily_heartbeat_job(
+    run_date: str | date | None = None,
+):
+    """独立刷新日批心跳，避免长任务占满预测执行池造成假失联。"""
+    _require_ledger_runtime_mode()
+    from scheduler.daily_runtime import run_scheduler_heartbeat
+
+    return run_scheduler_heartbeat(run_date=run_date)
+
+
+def run_daily_operator_recovery_job(
+    scheme_id: str,
+    run_date: str | date | None = None,
+    *,
+    algo_env: str = DEFAULT_ALGO_ENV,
+):
+    """将 admin 单方案恢复请求路由到同一 occurrence 协调器。"""
+    _require_ledger_runtime_mode()
+    from scheduler.daily_runtime import run_operator_recovery
+
+    return run_operator_recovery(
+        scheme_id=scheme_id,
+        run_date=run_date,
+        algo_env=algo_env,
+    )
 
 
 def run_all_prediction_jobs(
@@ -611,6 +766,34 @@ def _prediction_exit_code(results: Sequence[SchemeRunResult]) -> int:
     if any(result.status in {"failed", "partial"} for result in results):
         return 1
     return 0
+
+
+def _daily_runtime_exit_code(result: object) -> int:
+    """把单 occurrence admin 结果映射为稳定退出码。"""
+    status = str(getattr(result, "status", "unknown"))
+    return 0 if status in {"complete", "non_trading_day"} else 1
+
+
+def _emit_daily_runtime_result(result: object, exit_code: int) -> None:
+    """输出 ledger admin 入口的 JSON-safe 单 occurrence 摘要。"""
+    payload = {
+        "event": "daily_occurrence_run",
+        "business_date": getattr(result, "business_date", None),
+        "occurrence_id": getattr(result, "occurrence_id", None),
+        "status": getattr(result, "status", "unknown"),
+        "dispatched_scheme_ids": list(
+            getattr(result, "dispatched_scheme_ids", ()) or ()
+        ),
+        "exit_code": int(exit_code),
+    }
+    print(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
 
 
 def _emit_prediction_summary(results: Sequence[SchemeRunResult], exit_code: int) -> None:
@@ -658,6 +841,7 @@ def run_actuals_job(run_date: str | date | None = None, force: bool = False) -> 
 
 def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     """创建 APScheduler 实例。"""
+    coordinator_mode = _daily_coordinator_mode()
     stagger_minutes = _env_int(STAGGER_MINUTES_ENV, DEFAULT_STAGGER_MINUTES, min_value=0)
     max_concurrency = _env_int(
         PREDICTION_MAX_CONCURRENCY_ENV,
@@ -666,10 +850,46 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     )
     _configure_prediction_semaphore(max_concurrency)
     schemes = discover_schemes()
-    _sync_registry(schemes)
-    scheduler = BlockingScheduler(timezone=ASIA_SHANGHAI)
+    if coordinator_mode == "ledger":
+        admission_engine = create_engine_from_env()
+        try:
+            require_current_capacity_admission(
+                admission_engine,
+                discovered=schemes,
+                algo_env=algo_env,
+            )
+        finally:
+            admission_engine.dispose()
+    else:
+        _sync_registry(schemes)
+    scheduler = BlockingScheduler(
+        timezone=ASIA_SHANGHAI,
+        executors={
+            "default": APSchedulerThreadPoolExecutor(max_workers=4),
+            "daily_control": APSchedulerThreadPoolExecutor(max_workers=1),
+            "daily_heartbeat": APSchedulerThreadPoolExecutor(max_workers=1),
+            "daily_soft_watchdog": APSchedulerThreadPoolExecutor(
+                max_workers=2
+            ),
+            "daily_sla": APSchedulerThreadPoolExecutor(max_workers=1),
+            "daily_cutoff": APSchedulerThreadPoolExecutor(max_workers=1),
+            "daily_recovery": APSchedulerThreadPoolExecutor(max_workers=1),
+            "recurring_predictions": APSchedulerThreadPoolExecutor(
+                max_workers=2
+            ),
+            "actuals": APSchedulerThreadPoolExecutor(max_workers=1),
+        },
+    )
 
-    for job in _staggered_prediction_jobs(schemes, stagger_minutes):
+    prediction_schemes = (
+        schemes
+        if coordinator_mode == "legacy"
+        else [cfg for cfg in schemes if cfg.frequency != "daily"]
+    )
+    for job in _staggered_prediction_jobs(
+        prediction_schemes,
+        stagger_minutes,
+    ):
         cfg = job.cfg
         scheduler.add_job(
             run_scheduled_prediction_job,
@@ -681,6 +901,11 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=1800,
+            executor=(
+                "recurring_predictions"
+                if coordinator_mode == "ledger"
+                else "default"
+            ),
         )
         logger.info(
             "Scheduled scheme %s at %s -> %s (offset=%smin, max_concurrency=%s)",
@@ -700,20 +925,140 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,
+            executor="actuals",
         )
     logger.info("Scheduled actuals refresh at %s Asia/Shanghai", _format_actuals_refresh_times())
-    if _env_bool(STARTUP_CATCHUP_ENV, True):
+    if coordinator_mode == "ledger":
         scheduler.add_job(
-            run_startup_tasks,
-            trigger=DateTrigger(run_date=datetime.now(ASIA_SHANGHAI), timezone=ASIA_SHANGHAI),
+            run_daily_heartbeat_job,
+            trigger=IntervalTrigger(
+                seconds=30,
+                timezone=ASIA_SHANGHAI,
+            ),
+            id="daily:heartbeat",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=30,
+            executor="daily_heartbeat",
+        )
+        scheduler.add_job(
+            run_daily_coordinator_job,
+            trigger=CronTrigger(
+                hour=6,
+                minute=30,
+                day_of_week="mon-fri",
+                timezone=ASIA_SHANGHAI,
+            ),
+            kwargs={
+                "algo_env": algo_env,
+                "trigger_origin": "apscheduler",
+            },
+            id="daily:coordinator",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=7200,
+            executor="daily_control",
+        )
+        scheduler.add_job(
+            run_daily_recovery_tick_job,
+            trigger=CronTrigger(
+                hour="6-8",
+                minute="1-59/2",
+                day_of_week="mon-fri",
+                timezone=ASIA_SHANGHAI,
+            ),
             kwargs={"algo_env": algo_env},
-            id="startup:data-refresh-and-prediction-catchup",
+            id="daily:recovery-loop",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=60,
+            executor="daily_recovery",
+        )
+        control_jobs = (
+            (
+                "databridge-readiness",
+                6,
+                55,
+                "databridge_readiness_guardrail",
+            ),
+            ("watchdog", 7, 0, "progress"),
+            ("v2-guardrail", 7, 45, "v2_start_guardrail"),
+            ("sla", 8, 0, "target_sla"),
+            ("recovery-cutoff", 8, 30, "recovery_cutoff"),
+        )
+        control_executor = {
+            "databridge-readiness": "daily_soft_watchdog",
+            "watchdog": "daily_soft_watchdog",
+            "v2-guardrail": "daily_soft_watchdog",
+            "sla": "daily_sla",
+            "recovery-cutoff": "daily_cutoff",
+        }
+        for job_name, hour, minute, stage in control_jobs:
+            scheduler.add_job(
+                run_daily_watchdog_job,
+                trigger=CronTrigger(
+                    hour=hour,
+                    minute=minute,
+                    day_of_week="mon-fri",
+                    timezone=ASIA_SHANGHAI,
+                ),
+                args=[stage],
+                id=f"daily:{job_name}:{hour:02d}{minute:02d}",
+                replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=1800,
+                executor=control_executor[job_name],
+            )
+        logger.info(
+            "Scheduled ledger daily coordinator at 06:30, a two-minute "
+            "recovery loop through 08:29, and isolated "
+            "06:55/07:00/07:45/08:00/08:30 control jobs"
+        )
+
+    if _env_bool(STARTUP_CATCHUP_ENV, True):
+        startup_function = (
+            run_daily_coordinator_job
+            if coordinator_mode == "ledger"
+            else run_startup_tasks
+        )
+        startup_kwargs = (
+            {
+                "algo_env": algo_env,
+                "trigger_origin": "startup_catchup",
+            }
+            if coordinator_mode == "ledger"
+            else {"algo_env": algo_env}
+        )
+        startup_id = (
+            "startup:daily-occurrence-catchup"
+            if coordinator_mode == "ledger"
+            else "startup:data-refresh-and-prediction-catchup"
+        )
+        scheduler.add_job(
+            startup_function,
+            trigger=DateTrigger(run_date=datetime.now(ASIA_SHANGHAI), timezone=ASIA_SHANGHAI),
+            kwargs=startup_kwargs,
+            id=startup_id,
             replace_existing=True,
             max_instances=1,
             coalesce=True,
             misfire_grace_time=3600,
+            executor=(
+                "daily_control"
+                if coordinator_mode == "ledger"
+                else "default"
+            ),
         )
-        logger.info("Scheduled startup DataBridge refresh and prediction catchup")
+        logger.info(
+            "Scheduled startup %s catchup",
+            "daily occurrence"
+            if coordinator_mode == "ledger"
+            else "DataBridge refresh and prediction",
+        )
     return scheduler
 
 
@@ -731,7 +1076,29 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
+        coordinator_mode = _daily_coordinator_mode()
         if args.run_once == "predictions":
+            if coordinator_mode == "ledger":
+                if args.force:
+                    raise ValueError(
+                        "--force is not supported by the ledger daily "
+                        "coordinator"
+                    )
+                if args.scheme_id:
+                    daily_result = run_daily_operator_recovery_job(
+                        args.scheme_id,
+                        run_date=args.date,
+                        algo_env=args.algo_env,
+                    )
+                else:
+                    daily_result = run_daily_coordinator_job(
+                        run_date=args.date,
+                        algo_env=args.algo_env,
+                        trigger_origin="operator_recovery",
+                    )
+                exit_code = _daily_runtime_exit_code(daily_result)
+                _emit_daily_runtime_result(daily_result, exit_code)
+                return exit_code
             if args.scheme_id:
                 results = [
                     run_prediction_job(
@@ -754,11 +1121,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_actuals_job(run_date=args.date, force=args.force)
             return 0
         if args.run_once == "data-refresh":
-            run_data_bridge_refresh_job(run_date=args.date, enforce_deadline=False)
+            if coordinator_mode == "ledger":
+                data_bridge_refresh_is_current(args.date)
+            else:
+                run_data_bridge_refresh_job(
+                    run_date=args.date,
+                    enforce_deadline=False,
+                )
             return 0
 
         scheduler = build_scheduler(algo_env=args.algo_env)
-    except ValueError as exc:
+    except (ValueError, CapacityAdmissionError) as exc:
         if args.run_once == "predictions":
             _emit_prediction_summary([], 2)
         logger.error("Scheduler argument or configuration error: %s", exc)

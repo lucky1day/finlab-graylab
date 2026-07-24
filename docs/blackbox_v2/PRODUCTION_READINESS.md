@@ -3,7 +3,7 @@
 **文档状态**：`BLOCKED_DRAFT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台开发、运维、风险控制和授权人员
-**最后核验日期**：2026-07-21
+**最后核验日期**：2026-07-24
 
 本文不是可执行的生产 SOP。它只列出 Blackbox V2 从 `shadow + paused` 晋级为 `active/live` 前必须完成并验证的阻塞项。
 
@@ -28,7 +28,17 @@
 - 尚未用独立真实交付覆盖月频和周平均，真实交付总批次数仍少于 3。
 - 当前 `weekly_10y_lgbm_point_v1` 与四个 1Y T+5 指定方案获得专项生产灰度授权；首条 gray live actual 均要到目标日 `2026-07-24` 后才能验证。
 - 四个日频方案均已 active，尚待下一交易日自然 `scheduled_live`；用户明确授权的当天全量激活不等于自然 scheduler 验收已完成。
-- 日频 V2 上线必须经过独立日级 DataBridge Gate：06:00 首刷、06:30 检查、06:35 条件重刷、07:00 最终检查。最终通过才允许在 07:03 前重启并生成当天 ready 凭证；失败只阻断 V2，不影响 Native V1，也不得自动补跑。
+- 原 06:00/06:30/06:35/07:00 V2 preflight + scheduler restart
+  路径已被 2026-07-24 的架构复审判定为不适合日频 SLA，ledger 模式下已经
+  fail-closed 退休。候选路径在 06:30 由单一 occurrence coordinator 同时构建
+  Native 和当天全新 DataBridge generation；V2 只在 DataBridge SEALED 后按
+  `+0/+2/+4/+6` 独立释放。
+- 在 ledger 获准切换前，仓库 launchd 仍以 legacy mode 保留上述 preflight，
+  因为它是 legacy 跨日运行的每日 DataBridge refresh owner；切换必须先 unload
+  preflight，并同步切换/restart backend 与 scheduler，不能形成双 owner。
+- 日频候选协调器仍处于“改造/观测中”：生产 rollout 保持 legacy，迁移、
+  三个 Native 输入适配、容量门禁、故障注入和连续 10 个交易日 25/25
+  尚未完成，不能宣称 08:00 SLA 稳定。
 - 四个日频方案已通过专用 `gray-backfill` Gate 补齐 `target_date >= 2026-06-01` 的连续 `gray_live`：每方案 39 条 gray、0 条 scheduled，历史/live target overlap 为 0；API 和前端阶段分界已验收，达到 `Onboarding Complete`，仍待自然 scheduler 才能成为 `Production Observed`。
 - 这些专项激活不代表 Blackbox V2 已获得面向任意新交付的通用生产授权。
 
@@ -54,7 +64,13 @@
 3. 确认不同依赖栈在冻结 Runtime Profile 中可运行，或以版本化 Profile 显式管理，不临时安装依赖。
 4. 由业务、平台和运维审核认证证据并明确通用生产激活、暂停和回退责任人。
 5. 将平台生产晋级操作文档标记为 `CURRENT` 后，才允许把生产授权作为后续新方案的标准流程；现有专项灰度授权不得作为自动放行依据。
-6. 每个生产日保存 `v2-scheduler-gate-v1` 凭证、四阶段日志、DataBridge generation/digest、scheduler PID 切换和 V1 零影响证据；单个预测任务不得承担 Registry 同步。
+6. 每个生产日保存 occurrence、冻结 Registry digest、Native/DataBridge
+   generation/digest、四个 V2 release/start/accepted 时间、21/25 验收账本和
+   write-once SLA 结果；不再以 scheduler PID 切换或旧
+   `v2-scheduler-gate-v1` 凭证作为当前日频生产证据。
+7. 完成同一 Mac Studio 的 20 次 forced-cold、20 次真实 revision/suffix、
+   故障注入和连续 10 个交易日 25/25；forced-cold P95 不高于 80 分钟、
+   最大值不高于 85 分钟。
 
 本文件在此之前保持 `BLOCKED_DRAFT`。这里的阻塞来自真实方案覆盖和上线授权，不再来自 BBV2-01 至 BBV2-07 的代码能力缺失。
 

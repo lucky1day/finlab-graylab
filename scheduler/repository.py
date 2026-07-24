@@ -2,21 +2,73 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import sys
+import uuid
+from collections import Counter
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, replace
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Mapping
+from typing import Callable, Iterable, Iterator, Mapping, Protocol
+from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.engine import Connection, Engine, URL
+from sqlalchemy.exc import NoInspectionAvailable
 
+from scheduler.daily_coordinator import is_first_attempt_covered
+from scheduler.daily_ledger import (
+    FAILURE_ABANDONED_FENCE_PENDING_CLEANUP,
+    FAILURE_ABANDONED_ORPHAN_CLEANUP,
+    FAILURE_RECOVERY_CUTOFF_EXPIRED,
+    FAILURE_RESULT,
+    FAILURE_TRANSIENT_INFRA,
+    GENERATION_BUILDING,
+    GENERATION_INVALIDATED,
+    GENERATION_SEALED,
+    GUARDRAIL_NOT_APPLICABLE,
+    ITEM_ABANDONED,
+    ITEM_EXPIRED,
+    ITEM_FAILED_TERMINAL,
+    ITEM_PENDING,
+    ITEM_RETRY_WAIT,
+    ITEM_RUNNING,
+    ITEM_SLA_LATE,
+    ITEM_SLA_ON_TIME,
+    ITEM_SUCCESS,
+    OCCURRENCE_FAILED,
+    OCCURRENCE_PENDING,
+    OCCURRENCE_RUNNING,
+    OCCURRENCE_SUCCESS,
+    NONEXECUTED_FAILURE_CODES,
+    SCHEDULE_FAILURE_CODES,
+    SLA_BREACHED,
+    SLA_MET,
+    SLA_PENDING,
+    TARGET_ACCEPTED,
+    TERMINAL_EXECUTION_FAILURE_CODES,
+    StartGuardrailProjection,
+    TargetSlaProjection,
+    freeze_active_daily_registry,
+    project_target_availability_sla,
+    project_v2_start_guardrail,
+    validate_snapshot_cardinality,
+)
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from shared.blackbox_v2.lifecycle import assert_lifecycle_clear, lifecycle_operation_lock
+from shared.daily_coordinator_mode import (
+    assert_daily_coordinator_epoch_payload_matches_current,
+    require_daily_coordinator_mode,
+)
 from shared.db_config import DatabaseConfig
 from shared.input_artifacts import InputArtifact
+from shared.liwei_0616_cache_contract import (
+    validate_prediction_cache_audit,
+    validate_trusted_cache_use_qualification,
+)
 from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
 
 
@@ -51,6 +103,11 @@ BLACKBOX_BOOTSTRAP_EMPTY_TABLES = (
     "t_backtest_reproduction_checks",
     "t_harness_runs",
     "t_harness_gate_results",
+    "t_input_generations",
+    "t_schedule_occurrences",
+    "t_schedule_items",
+    "t_schedule_item_targets",
+    "t_scheduler_heartbeat",
 )
 BLACKBOX_BOOTSTRAP_BASELINE_TABLES = ("t_target_registry",)
 BLACKBOX_BOOTSTRAP_GUARDED_TABLES = (
@@ -75,6 +132,30 @@ _TARGET_REGISTRY_BASELINE = (
     ("10Y", "10Y国债活跃", "bond", "active_treasury", 100, "active", {"legacy_tenor": "10Y"}),
 )
 _BLACKBOX_CERTIFICATION_SCHEMA = re.compile(r"^bbv2_cert_[A-Za-z0-9_]+$")
+_GENERATION_TYPES = {"native_source", "databridge_v1"}
+_READINESS_BASES = {"UPSTREAM_SEAL", "CLOCK_CONTRACT"}
+_MAX_SCHEDULE_ATTEMPTS = 2
+_ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
+_SCHEDULE_TRIGGER_ORIGINS = {
+    "apscheduler",
+    "startup_catchup",
+    "auto_retry",
+    "operator_recovery",
+}
+_SECOND_ATTEMPT_TRIGGER_ORIGINS = {"auto_retry", "operator_recovery"}
+_ABANDONED_TRIGGER_ORIGINS = {"startup_catchup", "operator_recovery"}
+_TERMINAL_SCHEDULE_FAILURE_CODES = frozenset(
+    {
+        *TERMINAL_EXECUTION_FAILURE_CODES,
+        FAILURE_RECOVERY_CUTOFF_EXPIRED,
+    }
+)
+_NONEXECUTED_SCHEDULE_FAILURE_CODES = NONEXECUTED_FAILURE_CODES
+_ABANDONED_FENCE_PENDING_CLEANUP = (
+    FAILURE_ABANDONED_FENCE_PENDING_CLEANUP
+)
+_ABANDONED_ORPHAN_CLEANUP = FAILURE_ABANDONED_ORPHAN_CLEANUP
+_LOGGER = logging.getLogger(__name__)
 
 
 class BlackboxTargetRegistryBaselineError(RuntimeError):
@@ -138,6 +219,283 @@ class BlackboxBootstrapState:
     target_registry_baseline: dict[str, object]
 
 
+@dataclass(frozen=True)
+class ScheduledAttempt:
+    """日批 item 当前一次带 fence 的执行尝试。"""
+
+    item_id: int
+    run_id: int
+    attempt_no: int
+    execution_token: str
+
+
+@dataclass(frozen=True)
+class FencedScheduleAttempt:
+    """已先行失效、等待孤儿进程清理确认的 attempt 身份。"""
+
+    item_id: int
+    run_id: int
+    execution_token: str
+    process_id: int | None
+    process_group_id: int | None
+    fenced_at: datetime
+
+
+@dataclass(frozen=True)
+class ScheduledCompletionEvidence:
+    """算法返回前由执行器在同一输入 generation 上观测的完整性证据。"""
+
+    observed_generation_id: str
+    manifest_sha256: str
+    generation_dataset_content_id: str
+    generation_schema_version: str
+    generation_exporter_version: str
+    feature_date: str
+    scheme_version: str
+    code_sha256: str
+    config_sha256: str
+    native_generation_id: str | None = None
+    native_manifest_sha256: str | None = None
+    native_dataset_content_id: str | None = None
+    native_schema_version: str | None = None
+    native_exporter_version: str | None = None
+    native_feature_date: str | None = None
+
+
+@dataclass(frozen=True)
+class ScheduledCompletionExpectation:
+    """受信 verifier 在事务外重开并复核文件所需的冻结期望。"""
+
+    run_id: int
+    item_id: int
+    occurrence_id: int
+    base_scheme_id: str
+    runtime_type: str
+    generation_id: str
+    manifest_uri: str
+    manifest_sha256: str
+    generation_dataset_content_id: str
+    generation_schema_version: str
+    generation_exporter_version: str
+    feature_date: str
+    business_date: str
+    scheme_version: str
+    code_sha256: str
+    config_sha256: str
+    native_generation_id: str | None = None
+    native_manifest_uri: str | None = None
+    native_manifest_sha256: str | None = None
+    native_dataset_content_id: str | None = None
+    native_schema_version: str | None = None
+    native_exporter_version: str | None = None
+    native_feature_date: str | None = None
+    native_business_date: str | None = None
+
+
+class ScheduledCompletionVerifier(Protocol):
+    """事务外执行实际 rehash，并返回强类型观测证据。"""
+
+    def verify(
+        self,
+        expectation: ScheduledCompletionExpectation,
+    ) -> ScheduledCompletionEvidence:
+        """返回基于实际文件/代码复核得到的证据。"""
+
+
+@dataclass(frozen=True)
+class ScheduleOccurrenceEnvelope:
+    """只由 occurrence 冻结行构造的执行上下文。"""
+
+    occurrence_id: int
+    schedule_key: str
+    predict_date: str
+    feature_date: str
+    policy_version: str
+    policy_sha256: str
+    policy_json: Mapping[str, object]
+    registry_digest: str
+    completion_state: str
+    expected_item_count: int
+    expected_target_count: int
+    accepted_target_count: int
+    sla_accepted_target_count: int | None
+    sla_deadline_at: datetime
+    recovery_cutoff_at: datetime
+    sla_outcome: str
+    sla_evaluated_at: datetime | None
+    sla_reason: str | None
+    failure_code: str | None
+    failure_message: str | None
+    started_at: datetime | None
+    completed_at: datetime | None
+
+
+@dataclass(frozen=True)
+class ScheduleItemEnvelope:
+    """只由 item 冻结行及其 occurrence 时限构造的执行上下文。"""
+
+    item_id: int
+    occurrence_id: int
+    base_scheme_id: str
+    runtime_type: str
+    scheme_version: str
+    code_sha256: str
+    config_sha256: str
+    cache_group: str
+    input_generation_id: str | None
+    resource_class: str
+    internal_workers: int
+    release_offset_minutes: int
+    release_at: datetime
+    deadline_at: datetime
+    recovery_cutoff_at: datetime
+    occurrence_sla_deadline_at: datetime
+    state: str
+    sla_status: str
+    late_reason: str | None
+    sla_evaluated_at: datetime | None
+    attempt_no: int
+    current_run_id: int | None
+    started_at: datetime | None
+    completed_at: datetime | None
+    failure_code: str | None
+    failure_message: str | None
+
+
+@dataclass(frozen=True)
+class ScheduleTargetEnvelope:
+    """冻结 target 身份与后续 acceptance 状态。"""
+
+    target_id: int
+    occurrence_id: int
+    item_id: int
+    registry_scheme_id: str
+    base_scheme_id: str
+    runtime_type: str
+    task_type: str
+    target_tenor: str
+    horizon: int
+    target_date: str
+    status: str
+    accepted_run_id: int | None
+    accepted_prediction_id: int | None
+    accepted_at: datetime | None
+    visible_at: datetime | None
+    accepted_linkage_valid: bool = False
+
+
+@dataclass(frozen=True)
+class ScheduleInputGenerationEnvelope:
+    """冻结 input generation provenance。"""
+
+    generation_id: str
+    generation_type: str
+    business_date: str
+    feature_date: str
+    readiness_basis: str
+    source_commit_token: str
+    dataset_content_id: str
+    schema_version: str
+    exporter_version: str
+    manifest_uri: str
+    manifest_sha256: str
+    native_generation_id: str | None
+    native_manifest_sha256: str | None
+    state: str
+    sealed_at: datetime | None
+    invalidated_at: datetime | None
+    invalid_reason: str | None
+
+
+@dataclass(frozen=True)
+class ScheduleExecutionEnvelope:
+    """一次 item 执行所需的完整冻结信封。"""
+
+    occurrence: ScheduleOccurrenceEnvelope
+    item: ScheduleItemEnvelope
+    generation: ScheduleInputGenerationEnvelope
+    calendar_generation: ScheduleInputGenerationEnvelope
+    targets: tuple[ScheduleTargetEnvelope, ...]
+
+
+@dataclass(frozen=True)
+class ScheduleHealthEnvelope:
+    """只读健康投影信封，不承担执行授权。
+
+    与 ``ScheduleExecutionEnvelope`` 不同，本信封允许 generation 尚未
+    绑定、仍在 BUILDING、已经 INVALIDATED，或其关联行缺失。调用方可
+    逐 item 呈现原因；执行入口仍必须使用严格信封并 fail-closed。
+    """
+
+    occurrence: ScheduleOccurrenceEnvelope
+    item: ScheduleItemEnvelope
+    generation: ScheduleInputGenerationEnvelope | None
+    calendar_generation: ScheduleInputGenerationEnvelope | None
+    targets: tuple[ScheduleTargetEnvelope, ...]
+    generation_issue: str | None
+
+
+@dataclass(frozen=True)
+class ScheduleApiVisibilityProbe:
+    """一次 fresh DB 事务中可供无缓存 HTTP 探针返回的证据。
+
+    ``db_visible_registry_ids`` 仍只表示 write-once DB receipt；只有外部
+    调用方实际收到承载本对象的 no-store HTTP 响应，才能形成 API
+    visibility 的观察证据。
+    """
+
+    occurrence_id: int
+    observed_at: datetime
+    expected_target_count: int
+    committed_registry_ids: tuple[str, ...]
+    linked_registry_ids: tuple[str, ...]
+    db_visible_registry_ids: tuple[str, ...]
+    missing_registry_ids: tuple[str, ...]
+    receipt_missing_registry_ids: tuple[str, ...]
+    source_generation: str
+
+
+@dataclass(frozen=True)
+class ScheduleOccurrenceItemSummary:
+    """Occurrence 详情中的 item 与 target 聚合。"""
+
+    item: ScheduleItemEnvelope
+    target_count: int
+    accepted_target_count: int
+
+
+@dataclass(frozen=True)
+class ScheduleOccurrenceSnapshot:
+    """Occurrence、全部 items 及一致性聚合的只读快照。"""
+
+    occurrence: ScheduleOccurrenceEnvelope
+    items: tuple[ScheduleOccurrenceItemSummary, ...]
+    actual_item_count: int
+    actual_target_count: int
+    actual_accepted_target_count: int
+    item_state_counts: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True)
+class SchedulerHeartbeat:
+    """跨进程 scheduler 存活与当前工作状态。"""
+
+    service_name: str
+    process_id: int
+    host_name: str
+    state: str
+    occurrence_id: int | None
+    heartbeat_at: datetime
+    details: Mapping[str, object]
+
+
+class _LedgerClock(Protocol):
+    """仅供内部测试 seam 使用的可信 UTC clock。"""
+
+    def now_utc(self) -> datetime:
+        """返回带时区的 UTC 当前时间。"""
+
+
 def registry_scheme_id(base_scheme_id: str, horizon: int, target_tenor: str) -> str:
     """生成前端/业务层唯一方案 ID。"""
     return f"{base_scheme_id}__h{int(horizon)}__{target_tenor}"
@@ -155,7 +513,32 @@ def create_engine_from_env() -> Engine:
         database=cfg.database,
         query={"charset": cfg.charset},
     )
-    return create_engine(url, future=True)
+    engine = create_engine(
+        url,
+        future=True,
+        connect_args={
+            "init_command": "SET SESSION time_zone = '+00:00'",
+        },
+    )
+    event.listen(
+        engine,
+        "checkout",
+        _set_mysql_session_utc_on_checkout,
+    )
+    return engine
+
+
+def _set_mysql_session_utc_on_checkout(
+    dbapi_connection: object,
+    _connection_record: object,
+    _connection_proxy: object,
+) -> None:
+    """每次连接池 checkout 都修复 MySQL session 时区为 UTC。"""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("SET SESSION time_zone = '+00:00'")
+    finally:
+        cursor.close()
 
 
 def bootstrap_blackbox_control_plane(
@@ -1153,6 +1536,5943 @@ def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
     return value.astimezone(timezone.utc).replace(tzinfo=None, microsecond=0)
 
 
+def _normalize_input_generation_registration(
+    *,
+    generation_id: str,
+    generation_type: str,
+    business_date: str,
+    feature_date: str,
+    readiness_basis: str,
+    source_commit_token: str,
+    dataset_content_id: str,
+    schema_version: str,
+    exporter_version: str,
+    manifest_uri: str,
+    manifest_sha256: str,
+    native_generation_id: str | None = None,
+    native_manifest_sha256: str | None = None,
+) -> dict[str, object]:
+    """规范化 generation 的不可变登记身份。"""
+    if generation_type not in _GENERATION_TYPES:
+        raise ValueError(
+            f"generation_type must be one of {sorted(_GENERATION_TYPES)}"
+        )
+    if readiness_basis not in _READINESS_BASES:
+        raise ValueError(
+            f"readiness_basis must be one of {sorted(_READINESS_BASES)}"
+        )
+    if generation_type == "databridge_v1":
+        if native_generation_id is None:
+            raise ValueError(
+                "native_generation_id is required for databridge_v1"
+            )
+        if native_manifest_sha256 is None:
+            raise ValueError(
+                "native_manifest_sha256 is required for databridge_v1"
+            )
+    elif (
+        native_generation_id is not None
+        or native_manifest_sha256 is not None
+    ):
+        raise ValueError(
+            "native generation relation is only valid for databridge_v1"
+        )
+    return {
+        "generation_id": _require_nonempty(generation_id, "generation_id"),
+        "generation_type": _require_nonempty(
+            generation_type,
+            "generation_type",
+        ),
+        "business_date": date.fromisoformat(business_date).isoformat(),
+        "feature_date": date.fromisoformat(feature_date).isoformat(),
+        "readiness_basis": _require_nonempty(
+            readiness_basis,
+            "readiness_basis",
+        ),
+        "source_commit_token": _require_opaque_id(
+            source_commit_token,
+            "source_commit_token",
+        ),
+        "dataset_content_id": _require_opaque_id(
+            dataset_content_id,
+            "dataset_content_id",
+        ),
+        "schema_version": _require_nonempty(
+            schema_version,
+            "schema_version",
+        ),
+        "exporter_version": _require_nonempty(
+            exporter_version,
+            "exporter_version",
+        ),
+        "manifest_uri": _require_nonempty(manifest_uri, "manifest_uri"),
+        "manifest_sha256": _require_sha256(
+            manifest_sha256,
+            "manifest_sha256",
+        ),
+        "native_generation_id": (
+            _require_nonempty(
+                native_generation_id,
+                "native_generation_id",
+            )
+            if native_generation_id is not None
+            else None
+        ),
+        "native_manifest_sha256": (
+            _require_sha256(
+                native_manifest_sha256,
+                "native_manifest_sha256",
+            )
+            if native_manifest_sha256 is not None
+            else None
+        ),
+    }
+
+
+def _lock_registration_native_parent_conn(
+    conn: Connection,
+    params: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    """按父→子锁序锁定并验证 DataBridge 的 Native generation。"""
+    if str(params.get("generation_type")) != "databridge_v1":
+        return None
+    native_generation_id = params.get("native_generation_id")
+    if not native_generation_id:
+        raise RuntimeError(
+            "databridge generation is missing native_generation_id"
+        )
+    native_generation = _read_input_generation_conn(
+        conn,
+        str(native_generation_id),
+        for_update=True,
+    )
+    if native_generation is None:
+        raise RuntimeError(
+            f"native generation not found: {native_generation_id}"
+        )
+    _validate_databridge_native_relation(
+        databridge=params,
+        native_generation=native_generation,
+    )
+    return native_generation
+
+
+def _create_or_match_input_generation_conn(
+    conn: Connection,
+    params: Mapping[str, object],
+    *,
+    native_generation: Mapping[str, object] | None,
+) -> Mapping[str, object]:
+    """在调用方事务内恢复同 ID BUILDING，拒绝任何 provenance 漂移。"""
+    building_lock = (
+        ""
+        if _dialect_name(conn) == "sqlite"
+        else " FOR UPDATE"
+    )
+    unfinished = (
+        conn.execute(
+            text(
+                """
+                SELECT generation_id
+                FROM t_input_generations
+                WHERE business_date = :business_date
+                  AND generation_type = :generation_type
+                  AND state = :building
+                ORDER BY generation_id
+                """
+                + building_lock
+            ),
+            {
+                "business_date": params["business_date"],
+                "generation_type": params["generation_type"],
+                "building": GENERATION_BUILDING,
+            },
+        )
+        .scalars()
+        .all()
+    )
+    conflicting_unfinished = sorted(
+        str(value)
+        for value in unfinished
+        if str(value) != str(params["generation_id"])
+    )
+    if conflicting_unfinished:
+        raise RuntimeError(
+            "unfinished input generation blocks same-day replacement: "
+            f"type={params['generation_type']} "
+            f"business_date={params['business_date']} "
+            f"existing={conflicting_unfinished}"
+        )
+    insert_prefix = (
+        "INSERT OR IGNORE"
+        if _dialect_name(conn) == "sqlite"
+        else "INSERT IGNORE"
+    )
+    conn.execute(
+        text(
+            f"""
+            {insert_prefix} INTO t_input_generations
+                (generation_id, generation_type, business_date, feature_date,
+                 readiness_basis, source_commit_token, dataset_content_id,
+                 schema_version, exporter_version, manifest_uri,
+                 manifest_sha256, native_generation_id,
+                 native_manifest_sha256, state)
+            VALUES
+                (:generation_id, :generation_type, :business_date,
+                 :feature_date, :readiness_basis, :source_commit_token,
+                 :dataset_content_id, :schema_version, :exporter_version,
+                 :manifest_uri, :manifest_sha256, :native_generation_id,
+                 :native_manifest_sha256, '{GENERATION_BUILDING}')
+            """
+        ),
+        dict(params),
+    )
+    row = _read_input_generation_conn(
+        conn,
+        str(params["generation_id"]),
+        for_update=True,
+    )
+    if row is None:
+        raise RuntimeError(
+            "input generation insert/readback missing: "
+            f"{params['generation_id']}"
+        )
+    mismatches = {
+        field: (params[field], row.get(field))
+        for field in params
+        if str(row.get(field)) != str(params[field])
+    }
+    if mismatches:
+        raise RuntimeError(
+            f"input generation immutable provenance mismatch: {mismatches}"
+        )
+    if native_generation is not None:
+        _validate_databridge_native_relation(
+            databridge=row,
+            native_generation=native_generation,
+        )
+    return row
+
+
+def create_input_generation(
+    engine: Engine,
+    *,
+    generation_id: str,
+    generation_type: str,
+    business_date: str,
+    feature_date: str,
+    readiness_basis: str,
+    source_commit_token: str,
+    dataset_content_id: str,
+    schema_version: str,
+    exporter_version: str,
+    manifest_uri: str,
+    manifest_sha256: str,
+    native_generation_id: str | None = None,
+    native_manifest_sha256: str | None = None,
+) -> str:
+    """创建不可变输入 generation；相同 ID 只允许完全相同的 provenance。"""
+    params = _normalize_input_generation_registration(
+        generation_id=generation_id,
+        generation_type=generation_type,
+        business_date=business_date,
+        feature_date=feature_date,
+        readiness_basis=readiness_basis,
+        source_commit_token=source_commit_token,
+        dataset_content_id=dataset_content_id,
+        schema_version=schema_version,
+        exporter_version=exporter_version,
+        manifest_uri=manifest_uri,
+        manifest_sha256=manifest_sha256,
+        native_generation_id=native_generation_id,
+        native_manifest_sha256=native_manifest_sha256,
+    )
+    with engine.begin() as conn:
+        native_generation = _lock_registration_native_parent_conn(
+            conn,
+            params,
+        )
+        _create_or_match_input_generation_conn(
+            conn,
+            params,
+            native_generation=native_generation,
+        )
+    return str(params["generation_id"])
+
+
+def read_sealed_input_generation(
+    engine: Engine,
+    *,
+    generation_id: str,
+    expected_generation_type: str,
+) -> ScheduleInputGenerationEnvelope:
+    """读取一个已 SEALED generation 的完整不可变 DB fence。"""
+    if expected_generation_type not in _GENERATION_TYPES:
+        raise ValueError(
+            "expected_generation_type must be one of "
+            f"{sorted(_GENERATION_TYPES)}"
+        )
+    normalized_generation_id = _require_nonempty(
+        generation_id,
+        "generation_id",
+    )
+    with engine.begin() as conn:
+        row = _read_input_generation_conn(
+            conn,
+            normalized_generation_id,
+            for_update=False,
+        )
+    if row is None:
+        raise RuntimeError(
+            f"input generation not found: {normalized_generation_id}"
+        )
+    if str(row.get("generation_type")) != expected_generation_type:
+        raise RuntimeError(
+            "input generation type differs from expected DB fence: "
+            f"{normalized_generation_id}"
+        )
+    if str(row.get("state")) != GENERATION_SEALED:
+        raise RuntimeError(
+            "input generation DB fence is not SEALED: "
+            f"{normalized_generation_id}"
+        )
+    if row.get("sealed_at") is None:
+        raise RuntimeError(
+            "SEALED input generation DB fence has no sealed_at: "
+            f"{normalized_generation_id}"
+        )
+    return _schedule_generation_envelope(row)
+
+
+def resolve_reclaimable_generation_payloads(
+    engine: Engine,
+) -> tuple[ScheduleInputGenerationEnvelope, ...]:
+    """由 DB 引用闭包解析可删除 payload；SEALED/历史绑定永不返回。"""
+    with engine.begin() as conn:
+        rows = (
+            conn.execute(
+                text(
+                    """
+                    SELECT g.generation_id, g.generation_type,
+                           g.business_date, g.feature_date,
+                           g.readiness_basis, g.source_commit_token,
+                           g.dataset_content_id, g.schema_version,
+                           g.exporter_version, g.manifest_uri,
+                           g.manifest_sha256, g.native_generation_id,
+                           g.native_manifest_sha256, g.state, g.sealed_at,
+                           g.invalidated_at, g.invalid_reason
+                    FROM t_input_generations AS g
+                    WHERE g.state = :invalidated
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM t_schedule_items AS i
+                          WHERE i.input_generation_id = g.generation_id
+                      )
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM t_input_generations AS child
+                          WHERE child.native_generation_id = g.generation_id
+                      )
+                    ORDER BY g.generation_type, g.generation_id
+                    """
+                ),
+                {"invalidated": GENERATION_INVALIDATED},
+            )
+            .mappings()
+            .all()
+        )
+    return tuple(_schedule_generation_envelope(row) for row in rows)
+
+
+def finalize_reclaimed_generation_payload(
+    engine: Engine,
+    *,
+    generation_id: str,
+    expected_generation_type: str,
+    expected_business_date: str,
+    expected_feature_date: str,
+    expected_manifest_uri: str,
+    expected_manifest_sha256: str,
+) -> bool:
+    """payload 删除后重验 DB 引用闭包并移除 INVALIDATED tombstone 行。
+
+    文件删除与 DB 删除无法组成同一事务。若进程在文件删除后崩溃，重启会再次
+    解析同一候选；文件侧删除是幂等的，本函数随后完成 DB finalize。删除子
+    DataBridge 行后，下一轮 resolver 才可能释放其 Native 父代。
+    """
+    normalized_generation_id = _require_nonempty(
+        generation_id,
+        "generation_id",
+    )
+    if expected_generation_type not in _GENERATION_TYPES:
+        raise ValueError(
+            "expected_generation_type must be one of "
+            f"{sorted(_GENERATION_TYPES)}"
+        )
+    normalized_business_date = date.fromisoformat(
+        str(expected_business_date)
+    ).isoformat()
+    normalized_feature_date = date.fromisoformat(
+        str(expected_feature_date)
+    ).isoformat()
+    normalized_manifest_uri = _require_nonempty(
+        expected_manifest_uri,
+        "expected_manifest_uri",
+    )
+    normalized_manifest_sha256 = _require_sha256(
+        expected_manifest_sha256,
+        "expected_manifest_sha256",
+    )
+    with engine.begin() as conn:
+        row = _read_input_generation_conn(
+            conn,
+            normalized_generation_id,
+            for_update=True,
+        )
+        if row is None:
+            return False
+        expected_identity = {
+            "generation_type": expected_generation_type,
+            "business_date": normalized_business_date,
+            "feature_date": normalized_feature_date,
+            "manifest_uri": normalized_manifest_uri,
+            "manifest_sha256": normalized_manifest_sha256,
+            "state": GENERATION_INVALIDATED,
+        }
+        actual_identity = {
+            "generation_type": str(row.get("generation_type")),
+            "business_date": str(row.get("business_date")),
+            "feature_date": str(row.get("feature_date")),
+            "manifest_uri": str(row.get("manifest_uri")),
+            "manifest_sha256": str(row.get("manifest_sha256")),
+            "state": str(row.get("state")),
+        }
+        if actual_identity != expected_identity:
+            raise RuntimeError(
+                "reclaimed generation DB fence changed before finalize: "
+                f"{normalized_generation_id}"
+            )
+        item_reference_count = int(
+            conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM t_schedule_items
+                    WHERE input_generation_id = :generation_id
+                    """
+                ),
+                {"generation_id": normalized_generation_id},
+            ).scalar_one()
+        )
+        child_reference_count = int(
+            conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM t_input_generations
+                    WHERE native_generation_id = :generation_id
+                    """
+                ),
+                {"generation_id": normalized_generation_id},
+            ).scalar_one()
+        )
+        if item_reference_count or child_reference_count:
+            raise RuntimeError(
+                "reclaimed generation gained a DB reference before "
+                f"finalize: {normalized_generation_id}"
+            )
+        deleted = conn.execute(
+            text(
+                """
+                DELETE FROM t_input_generations
+                WHERE generation_id = :generation_id
+                  AND state = :invalidated
+                """
+            ),
+            {
+                "generation_id": normalized_generation_id,
+                "invalidated": GENERATION_INVALIDATED,
+            },
+        )
+        if deleted.rowcount != 1:
+            raise RuntimeError(
+                "reclaimed generation DB finalize lost its locked row: "
+                f"{normalized_generation_id}"
+            )
+    return True
+
+
+def _validate_databridge_native_relation(
+    *,
+    databridge: Mapping[str, object],
+    native_generation: Mapping[str, object],
+) -> None:
+    """验证 DataBridge 冻结的 calendar generation 关系。"""
+    native_generation_id = str(native_generation["generation_id"])
+    if str(native_generation.get("generation_type")) != "native_source":
+        raise RuntimeError(
+            "native generation relation must reference native_source: "
+            f"{native_generation_id}"
+        )
+    if str(native_generation.get("state")) != GENERATION_SEALED:
+        raise RuntimeError(
+            "native generation relation is not SEALED: "
+            f"{native_generation_id}"
+        )
+    for field in ("business_date", "feature_date"):
+        if str(native_generation.get(field)) != str(databridge.get(field)):
+            raise RuntimeError(
+                "native generation relation date mismatch: "
+                f"{field}={native_generation.get(field)} != "
+                f"{databridge.get(field)}"
+            )
+    if str(native_generation.get("manifest_sha256")) != str(
+        databridge.get("native_manifest_sha256")
+    ):
+        raise RuntimeError(
+            "native generation manifest_sha256 mismatch: "
+            f"{native_generation_id}"
+        )
+
+
+def seal_input_generation(
+    engine: Engine,
+    *,
+    generation_id: str,
+    sealed_at: datetime | None = None,
+) -> None:
+    """将 BUILDING generation 幂等封存为 SEALED。"""
+    effective_time = _utc_datetime6(sealed_at)
+    with engine.begin() as conn:
+        row, _native_generation = (
+            _lock_input_generation_with_parent_conn(
+                conn,
+                generation_id,
+            )
+        )
+        if row is None:
+            raise RuntimeError(f"input generation not found: {generation_id}")
+        state = str(row.get("state"))
+        if state == GENERATION_SEALED:
+            return
+        if state != GENERATION_BUILDING:
+            raise RuntimeError(
+                f"input generation cannot be sealed from state={state}"
+            )
+        result = conn.execute(
+            text(
+                """
+                UPDATE t_input_generations
+                SET state = :state,
+                    sealed_at = :sealed_at,
+                    updated_at = :sealed_at
+                WHERE generation_id = :generation_id
+                  AND state = :building
+                """
+            ),
+            {
+                "state": GENERATION_SEALED,
+                "sealed_at": effective_time,
+                "generation_id": generation_id,
+                "building": GENERATION_BUILDING,
+            },
+        )
+        _require_rowcount(result, 1, "input generation seal")
+
+
+def _lock_input_generation_with_parent_conn(
+    conn: Connection,
+    generation_id: str,
+) -> tuple[
+    Mapping[str, object] | None,
+    Mapping[str, object] | None,
+]:
+    """以 Native 父 generation→DataBridge 子 generation 的顺序加锁。"""
+    preview = _read_input_generation_conn(
+        conn,
+        generation_id,
+        for_update=False,
+    )
+    if preview is None:
+        return None, None
+    native_generation = None
+    preview_native_id = preview.get("native_generation_id")
+    if str(preview.get("generation_type")) == "databridge_v1":
+        if not preview_native_id:
+            raise RuntimeError(
+                "databridge generation is missing native_generation_id"
+            )
+        native_generation = _read_input_generation_conn(
+            conn,
+            str(preview_native_id),
+            for_update=True,
+        )
+        if native_generation is None:
+            raise RuntimeError(
+                f"native generation not found: {preview_native_id}"
+            )
+    row = _read_input_generation_conn(
+        conn,
+        generation_id,
+        for_update=True,
+    )
+    if row is None:
+        raise RuntimeError(
+            f"input generation disappeared while locking: {generation_id}"
+        )
+    if (
+        str(row.get("generation_type"))
+        != str(preview.get("generation_type"))
+        or str(row.get("native_generation_id"))
+        != str(preview_native_id)
+    ):
+        raise RuntimeError(
+            "input generation immutable parent relation changed while locking: "
+            f"{generation_id}"
+        )
+    if native_generation is not None:
+        _validate_databridge_native_relation(
+            databridge=row,
+            native_generation=native_generation,
+        )
+    return row, native_generation
+
+
+def _validate_generation_seal_dependencies_conn(
+    conn: Connection,
+    generation: Mapping[str, object],
+) -> None:
+    """在 generation 锁后复核其不可变父 generation 仍可用于封存。"""
+    if str(generation.get("generation_type")) != "databridge_v1":
+        return
+    native_generation_id = generation.get("native_generation_id")
+    if not native_generation_id:
+        raise RuntimeError(
+            "databridge generation is missing native_generation_id"
+        )
+    native_generation = _read_input_generation_conn(
+        conn,
+        str(native_generation_id),
+        for_update=True,
+    )
+    if native_generation is None:
+        raise RuntimeError(
+            f"native generation not found: {native_generation_id}"
+        )
+    _validate_databridge_native_relation(
+        databridge=generation,
+        native_generation=native_generation,
+    )
+
+
+def invalidate_input_generation(
+    engine: Engine,
+    *,
+    generation_id: str,
+    reason: str,
+    invalidated_at: datetime | None = None,
+) -> None:
+    """将 generation 标为 INVALIDATED，并保留首次失效原因。"""
+    normalized_reason = _require_nonempty(reason, "reason")
+    effective_time = _utc_datetime6(invalidated_at)
+    with engine.begin() as conn:
+        row = _read_input_generation_conn(
+            conn,
+            generation_id,
+            for_update=True,
+        )
+        if row is None:
+            raise RuntimeError(f"input generation not found: {generation_id}")
+        if row.get("state") == GENERATION_INVALIDATED:
+            if row.get("invalid_reason") != normalized_reason:
+                raise RuntimeError(
+                    "input generation is already invalidated with another reason"
+                )
+            return
+        result = conn.execute(
+            text(
+                """
+                UPDATE t_input_generations
+                SET state = :state,
+                    invalidated_at = :invalidated_at,
+                    invalid_reason = :invalid_reason,
+                    updated_at = :invalidated_at
+                WHERE generation_id = :generation_id
+                  AND state IN (:building, :sealed)
+                """
+            ),
+            {
+                "state": GENERATION_INVALIDATED,
+                "invalidated_at": effective_time,
+                "invalid_reason": normalized_reason,
+                "generation_id": generation_id,
+                "building": GENERATION_BUILDING,
+                "sealed": GENERATION_SEALED,
+            },
+        )
+        _require_rowcount(result, 1, "input generation invalidate")
+
+
+def create_schedule_occurrence(
+    engine: Engine,
+    *,
+    schedule_key: str,
+    predict_date: str,
+    feature_date: str,
+    target_dates: Mapping[str, str],
+    item_policy_by_base: Mapping[str, Mapping[str, object]],
+    policy_version: str = "daily-ledger-v1",
+    policy_json: Mapping[str, object] | None = None,
+    policy_sha256: str | None = None,
+    sla_deadline_at: datetime | None = None,
+    recovery_cutoff_at: datetime | None = None,
+) -> int:
+    """从 active daily Registry 原子冻结幂等 occurrence/items/targets。"""
+    normalized_schedule_key = _require_nonempty(
+        schedule_key,
+        "schedule_key",
+    )
+    normalized_predict_date = date.fromisoformat(predict_date).isoformat()
+    normalized_feature_date = date.fromisoformat(feature_date).isoformat()
+    if normalized_feature_date >= normalized_predict_date:
+        raise ValueError(
+            "feature_date must be earlier than predict_date"
+        )
+    normalized_policy_version = _require_nonempty(
+        policy_version,
+        "policy_version",
+    )
+    policy_payload = dict(policy_json or {})
+    _assert_deployed_epoch_payload(
+        policy_payload.get("daily_coordinator_epoch"),
+        label="new daily occurrence coordinator epoch",
+    )
+    policy_text = json.dumps(
+        policy_payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    computed_policy_sha256 = hashlib.sha256(policy_text.encode("utf-8")).hexdigest()
+    if (
+        policy_sha256 is not None
+        and _require_sha256(policy_sha256, "policy_sha256")
+        != computed_policy_sha256
+    ):
+        raise ValueError("policy_sha256 does not match canonical policy_json")
+    effective_sla_deadline = _utc_datetime6(
+        sla_deadline_at
+        or _business_time_utc(
+            normalized_predict_date,
+            time(8, 0),
+        )
+    )
+    effective_recovery_cutoff = _utc_datetime6(
+        recovery_cutoff_at
+        or _business_time_utc(
+            normalized_predict_date,
+            time(8, 30),
+        )
+    )
+    if effective_recovery_cutoff < effective_sla_deadline:
+        raise ValueError("recovery_cutoff_at cannot be earlier than sla_deadline_at")
+
+    with engine.begin() as conn:
+        _assert_deployed_epoch_payload(
+            policy_payload.get("daily_coordinator_epoch"),
+            label="new daily occurrence coordinator epoch",
+        )
+        existing = _read_schedule_occurrence_conn(
+            conn,
+            schedule_key=normalized_schedule_key,
+            predict_date=normalized_predict_date,
+            for_update=True,
+        )
+        registry_rows = _read_active_daily_registry_snapshot_rows(
+            conn,
+            target_dates=target_dates,
+            item_policy_by_base=item_policy_by_base,
+        )
+        snapshot = freeze_active_daily_registry(registry_rows)
+        if existing is not None:
+            _assert_occurrence_epoch_conn(existing)
+            _validate_stored_occurrence_cardinality(conn, existing)
+            expected_identity = {
+                "feature_date": normalized_feature_date,
+                "policy_version": normalized_policy_version,
+                "policy_sha256": computed_policy_sha256,
+                "registry_digest": snapshot.registry_digest,
+                "expected_item_count": snapshot.expected_item_count,
+                "expected_target_count": snapshot.expected_target_count,
+                "sla_deadline_at": effective_sla_deadline,
+                "recovery_cutoff_at": effective_recovery_cutoff,
+            }
+            drift = {
+                field: (existing.get(field), expected)
+                for field, expected in expected_identity.items()
+                if (
+                    _as_datetime(existing[field], field) != expected
+                    if field in {
+                        "sla_deadline_at",
+                        "recovery_cutoff_at",
+                    }
+                    else str(existing.get(field)) != str(expected)
+                )
+            }
+            if drift:
+                raise RuntimeError(
+                    "occurrence immutable snapshot mismatch: "
+                    f"{drift}"
+                )
+            return int(existing["occurrence_id"])
+        occurrence_params = {
+            "schedule_key": normalized_schedule_key,
+            "predict_date": normalized_predict_date,
+            "feature_date": normalized_feature_date,
+            "policy_version": normalized_policy_version,
+            "policy_sha256": computed_policy_sha256,
+            "policy_json": policy_text,
+            "registry_digest": snapshot.registry_digest,
+            "completion_state": OCCURRENCE_PENDING,
+            "expected_item_count": snapshot.expected_item_count,
+            "expected_target_count": snapshot.expected_target_count,
+            "sla_deadline_at": effective_sla_deadline,
+            "recovery_cutoff_at": effective_recovery_cutoff,
+        }
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO t_schedule_occurrences
+                    (schedule_key, predict_date, feature_date, policy_version,
+                     policy_sha256, policy_json, registry_digest, completion_state,
+                     expected_item_count, expected_target_count,
+                     accepted_target_count, sla_deadline_at,
+                     recovery_cutoff_at, sla_outcome)
+                VALUES
+                    (:schedule_key, :predict_date, :feature_date,
+                     :policy_version, :policy_sha256, :policy_json, :registry_digest,
+                     :completion_state, :expected_item_count,
+                     :expected_target_count, 0, :sla_deadline_at,
+                     :recovery_cutoff_at, 'PENDING')
+                """
+            ),
+            occurrence_params,
+        )
+        occurrence_id = _result_lastrowid(conn, result)
+        for item in snapshot.items:
+            item_result = conn.execute(
+                text(
+                    """
+                    INSERT INTO t_schedule_items
+                        (occurrence_id, base_scheme_id, runtime_type,
+                         scheme_version, code_sha256, config_sha256,
+                         cache_group, input_generation_id, resource_class,
+                         internal_workers, release_offset_minutes, release_at,
+                         deadline_at, state, attempt_no)
+                    VALUES
+                        (:occurrence_id, :base_scheme_id, :runtime_type,
+                         :scheme_version, :code_sha256, :config_sha256,
+                         :cache_group, NULL, :resource_class,
+                         :internal_workers, :release_offset_minutes,
+                         :release_at, :deadline_at, 'PENDING', 0)
+                    """
+                ),
+                {
+                    "occurrence_id": occurrence_id,
+                    "base_scheme_id": item.base_scheme_id,
+                    "runtime_type": item.runtime_type,
+                    "scheme_version": item.scheme_version,
+                    "code_sha256": item.code_sha256,
+                    "config_sha256": item.config_sha256,
+                    "cache_group": item.cache_group,
+                    "resource_class": item.resource_class,
+                    "internal_workers": item.internal_workers,
+                    "release_offset_minutes": (
+                        item.release_offset_minutes
+                    ),
+                    "release_at": item.release_at,
+                    "deadline_at": item.deadline_at,
+                },
+            )
+            item_id = _result_lastrowid(conn, item_result)
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_schedule_item_targets
+                        (occurrence_id, item_id, registry_scheme_id,
+                         base_scheme_id, runtime_type, task_type,
+                         target_tenor, horizon, target_date, status)
+                    VALUES
+                        (:occurrence_id, :item_id, :registry_scheme_id,
+                         :base_scheme_id, :runtime_type, :task_type,
+                         :target_tenor, :horizon, :target_date, 'PENDING')
+                    """
+                ),
+                [
+                    {
+                        "occurrence_id": occurrence_id,
+                        "item_id": item_id,
+                        "registry_scheme_id": target.registry_scheme_id,
+                        "base_scheme_id": target.base_scheme_id,
+                        "runtime_type": target.runtime_type,
+                        "task_type": target.task_type,
+                        "target_tenor": target.target_tenor,
+                        "horizon": target.horizon,
+                        "target_date": target.target_date,
+                    }
+                    for target in item.targets
+                ],
+            )
+        actual_item_count = int(
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_schedule_items "
+                    "WHERE occurrence_id = :occurrence_id"
+                ),
+                {"occurrence_id": occurrence_id},
+            ).scalar_one()
+        )
+        actual_target_count = int(
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_schedule_item_targets "
+                    "WHERE occurrence_id = :occurrence_id"
+                ),
+                {"occurrence_id": occurrence_id},
+            ).scalar_one()
+        )
+        validate_snapshot_cardinality(
+            snapshot,
+            actual_item_count=actual_item_count,
+            actual_target_count=actual_target_count,
+        )
+        return occurrence_id
+
+
+def read_schedule_execution_envelope(
+    engine: Engine,
+    *,
+    item_id: int,
+) -> ScheduleExecutionEnvelope:
+    """单事务读取 item 执行所需的全部冻结 ledger 身份。"""
+    with engine.begin() as conn:
+        item = _read_schedule_item_conn(
+            conn,
+            item_id=int(item_id),
+            for_update=False,
+        )
+        if item is None:
+            raise RuntimeError(f"schedule item not found: {item_id}")
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(item["occurrence_id"]),
+            for_update=False,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {item['occurrence_id']}"
+            )
+        generation_id = item.get("input_generation_id")
+        if generation_id is None:
+            raise RuntimeError(
+                f"schedule item has no bound input generation: {item_id}"
+            )
+        generation = _read_input_generation_conn(
+            conn,
+            str(generation_id),
+            for_update=False,
+        )
+        if generation is None:
+            raise RuntimeError(
+                f"bound input generation not found: {generation_id}"
+            )
+        if str(generation.get("state")) != GENERATION_SEALED:
+            raise RuntimeError(
+                f"bound input generation is not SEALED: {generation_id}"
+            )
+        generation_type = str(generation.get("generation_type"))
+        if generation_type == "native_source":
+            if (
+                generation.get("native_generation_id") is not None
+                or generation.get("native_manifest_sha256") is not None
+            ):
+                raise RuntimeError(
+                    "native_source generation cannot reference another "
+                    "native generation"
+                )
+            calendar_generation = generation
+        elif generation_type == "databridge_v1":
+            native_generation_id = generation.get(
+                "native_generation_id"
+            )
+            if not native_generation_id:
+                raise RuntimeError(
+                    "databridge generation is missing native_generation_id"
+                )
+            calendar_generation = _read_input_generation_conn(
+                conn,
+                str(native_generation_id),
+                for_update=False,
+            )
+            if calendar_generation is None:
+                raise RuntimeError(
+                    "native generation not found: "
+                    f"{native_generation_id}"
+                )
+            _validate_databridge_native_relation(
+                databridge=generation,
+                native_generation=calendar_generation,
+            )
+        else:
+            raise RuntimeError(
+                f"unsupported stored generation_type: {generation_type}"
+            )
+        targets = _read_schedule_targets_conn(
+            conn,
+            item_id=int(item_id),
+            for_update=False,
+        )
+        return ScheduleExecutionEnvelope(
+            occurrence=_schedule_occurrence_envelope(occurrence),
+            item=_schedule_item_envelope(item, occurrence),
+            generation=_schedule_generation_envelope(generation),
+            calendar_generation=_schedule_generation_envelope(
+                calendar_generation
+            ),
+            targets=tuple(
+                _schedule_target_envelope(target)
+                for target in targets
+            ),
+        )
+
+
+def read_schedule_health_envelope(
+    engine: Engine,
+    *,
+    item_id: int,
+) -> ScheduleHealthEnvelope:
+    """单事务读取可观察但不授权执行的 item 健康信封。
+
+    正常生命周期状态不会抛错：未绑定、BUILDING 与 INVALIDATED 都按
+    原样返回。只有 occurrence/item/target 等冻结账本本身不可解码时才
+    抛错，避免健康查询把数据损坏伪装成普通等待。
+    """
+    with engine.begin() as conn:
+        item = _read_schedule_item_conn(
+            conn,
+            item_id=int(item_id),
+            for_update=False,
+        )
+        if item is None:
+            raise RuntimeError(f"schedule item not found: {item_id}")
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(item["occurrence_id"]),
+            for_update=False,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {item['occurrence_id']}"
+            )
+        targets = _read_schedule_targets_conn(
+            conn,
+            item_id=int(item_id),
+            for_update=False,
+        )
+        generation: Mapping[str, object] | None = None
+        calendar_generation: Mapping[str, object] | None = None
+        generation_issue: str | None = None
+        generation_id = item.get("input_generation_id")
+        if generation_id is None:
+            generation_issue = "UNBOUND_INPUT_GENERATION"
+        else:
+            generation = _read_input_generation_conn(
+                conn,
+                str(generation_id),
+                for_update=False,
+            )
+            if generation is None:
+                generation_issue = "BOUND_GENERATION_MISSING"
+            else:
+                generation_type = str(generation.get("generation_type"))
+                if generation_type == "native_source":
+                    calendar_generation = generation
+                elif generation_type == "databridge_v1":
+                    native_generation_id = generation.get(
+                        "native_generation_id"
+                    )
+                    if not native_generation_id:
+                        generation_issue = (
+                            "NATIVE_GENERATION_REFERENCE_MISSING"
+                        )
+                    else:
+                        calendar_generation = _read_input_generation_conn(
+                            conn,
+                            str(native_generation_id),
+                            for_update=False,
+                        )
+                        if calendar_generation is None:
+                            generation_issue = (
+                                "NATIVE_GENERATION_MISSING"
+                            )
+                else:
+                    generation_issue = "UNSUPPORTED_GENERATION_TYPE"
+        return ScheduleHealthEnvelope(
+            occurrence=_schedule_occurrence_envelope(occurrence),
+            item=_schedule_item_envelope(item, occurrence),
+            generation=(
+                None
+                if generation is None
+                else _schedule_generation_envelope(generation)
+            ),
+            calendar_generation=(
+                None
+                if calendar_generation is None
+                else _schedule_generation_envelope(calendar_generation)
+            ),
+            targets=tuple(
+                _schedule_target_envelope(target)
+                for target in targets
+            ),
+            generation_issue=generation_issue,
+        )
+
+
+def read_schedule_occurrence_snapshot(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+) -> ScheduleOccurrenceSnapshot:
+    """单事务读取 occurrence、ordered items 与 target 聚合。"""
+    normalized_occurrence_id = int(occurrence_id)
+    with engine.begin() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=normalized_occurrence_id,
+            for_update=False,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        items = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=normalized_occurrence_id,
+            for_update=False,
+        )
+        targets = _read_schedule_targets_for_occurrence_conn(
+            conn,
+            occurrence_id=normalized_occurrence_id,
+        )
+        target_counts: Counter[int] = Counter()
+        accepted_counts: Counter[int] = Counter()
+        for target in targets:
+            target_item_id = int(target["item_id"])
+            target_counts[target_item_id] += 1
+            if _is_valid_accepted_schedule_target(target):
+                accepted_counts[target_item_id] += 1
+        state_counts = Counter(str(item["state"]) for item in items)
+        summaries = tuple(
+            ScheduleOccurrenceItemSummary(
+                item=_schedule_item_envelope(item, occurrence),
+                target_count=target_counts[int(item["item_id"])],
+                accepted_target_count=accepted_counts[
+                    int(item["item_id"])
+                ],
+            )
+            for item in items
+        )
+        return ScheduleOccurrenceSnapshot(
+            occurrence=_schedule_occurrence_envelope(occurrence),
+            items=summaries,
+            actual_item_count=len(items),
+            actual_target_count=len(targets),
+            actual_accepted_target_count=sum(accepted_counts.values()),
+            item_state_counts=tuple(sorted(state_counts.items())),
+        )
+
+
+def find_schedule_occurrence_id(
+    engine: Engine,
+    *,
+    schedule_key: str,
+    predict_date: str,
+) -> int | None:
+    """只读定位唯一冻结 occurrence；供同步控制面 guard 使用。"""
+    normalized_key = _require_bounded_identifier(
+        schedule_key,
+        "schedule_key",
+        max_length=128,
+    )
+    normalized_date = date.fromisoformat(predict_date).isoformat()
+    with engine.connect() as conn:
+        value = conn.execute(
+            text(
+                """
+                SELECT occurrence_id
+                FROM t_schedule_occurrences
+                WHERE schedule_key = :schedule_key
+                  AND predict_date = :predict_date
+                LIMIT 1
+                """
+            ),
+            {
+                "schedule_key": normalized_key,
+                "predict_date": normalized_date,
+            },
+        ).scalar()
+    return None if value is None else int(value)
+
+
+def read_dashboard_source_generation(
+    engine: Engine,
+    *,
+    schedule_key: str,
+    occurrence_id: int | None = None,
+) -> str:
+    """返回 dashboard 日批数据源的跨进程、内容寻址代次。
+
+    代次来自数据库中的冻结 target、prediction linkage 与 write-once
+    visibility receipt。backend 每次复用进程内快照前重新读取此值，
+    因而 scheduler 进程提交后无需向 backend 发送进程内失效信号。
+    """
+    normalized_schedule_key = _require_bounded_identifier(
+        schedule_key,
+        "schedule_key",
+        max_length=128,
+    )
+    normalized_occurrence_id = (
+        None if occurrence_id is None else int(occurrence_id)
+    )
+    with engine.begin() as conn:
+        if normalized_occurrence_id is None:
+            occurrence = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT occurrence_id, predict_date
+                        FROM t_schedule_occurrences
+                        WHERE schedule_key = :schedule_key
+                        ORDER BY predict_date DESC, occurrence_id DESC
+                        LIMIT 1
+                        """
+                    ),
+                    {"schedule_key": normalized_schedule_key},
+                )
+                .mappings()
+                .one_or_none()
+            )
+        else:
+            occurrence = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT occurrence_id, predict_date
+                        FROM t_schedule_occurrences
+                        WHERE schedule_key = :schedule_key
+                          AND occurrence_id = :occurrence_id
+                        """
+                    ),
+                    {
+                        "schedule_key": normalized_schedule_key,
+                        "occurrence_id": normalized_occurrence_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+        target_rows: list[Mapping[str, object]] = []
+        if occurrence is not None:
+            target_rows = list(
+                (
+                    conn.execute(
+                        text(
+                            """
+                            SELECT target_id, registry_scheme_id, status,
+                                   accepted_run_id,
+                                   accepted_prediction_id, accepted_at,
+                                   visible_at
+                            FROM t_schedule_item_targets
+                            WHERE occurrence_id = :occurrence_id
+                            ORDER BY target_id
+                            """
+                        ),
+                        {
+                            "occurrence_id": int(
+                                occurrence["occurrence_id"]
+                            )
+                        },
+                    )
+                    .mappings()
+                    .all()
+                )
+            )
+    return _schedule_visibility_source_generation(
+        schedule_key=normalized_schedule_key,
+        occurrence=occurrence,
+        target_rows=target_rows,
+    )
+
+
+def read_schedule_api_visibility_probe(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+    _clock: _LedgerClock | None = None,
+) -> ScheduleApiVisibilityProbe:
+    """fresh transaction 核验 target→scheduled prediction 与 DB receipt。"""
+    normalized_occurrence_id = int(occurrence_id)
+    with engine.begin() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=normalized_occurrence_id,
+            for_update=False,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        target_rows = _read_schedule_targets_for_occurrence_conn(
+            conn,
+            occurrence_id=normalized_occurrence_id,
+        )
+        observed_at = _read_observed_at_utc(conn, clock=_clock)
+
+    valid_accepted = sorted(
+        _stored_text(row, "registry_scheme_id")
+        for row in target_rows
+        if _is_valid_accepted_schedule_target(row)
+    )
+    linked = list(valid_accepted)
+    db_visible = sorted(
+        _stored_text(row, "registry_scheme_id")
+        for row in target_rows
+        if (
+            _is_valid_accepted_schedule_target(row)
+            and row.get("visible_at") is not None
+        )
+    )
+    api_ready = set(linked) & set(db_visible)
+    all_registry_ids = {
+        _stored_text(row, "registry_scheme_id")
+        for row in target_rows
+    }
+    receipt_missing = sorted(
+        _stored_text(row, "registry_scheme_id")
+        for row in target_rows
+        if (
+            _is_valid_accepted_schedule_target(row)
+            and row.get("visible_at") is None
+        )
+    )
+    return ScheduleApiVisibilityProbe(
+        occurrence_id=normalized_occurrence_id,
+        observed_at=observed_at,
+        expected_target_count=int(
+            occurrence["expected_target_count"]
+        ),
+        committed_registry_ids=tuple(valid_accepted),
+        linked_registry_ids=tuple(linked),
+        db_visible_registry_ids=tuple(db_visible),
+        missing_registry_ids=tuple(
+            sorted(all_registry_ids - api_ready)
+        ),
+        receipt_missing_registry_ids=tuple(receipt_missing),
+        source_generation=_schedule_visibility_source_generation(
+            schedule_key=_stored_text(occurrence, "schedule_key"),
+            occurrence=occurrence,
+            target_rows=target_rows,
+        ),
+    )
+
+
+def upsert_scheduler_heartbeat(
+    engine: Engine,
+    *,
+    service_name: str,
+    process_id: int,
+    host_name: str,
+    state: str,
+    occurrence_id: int | None,
+    details: Mapping[str, object] | None = None,
+    _clock: _LedgerClock | None = None,
+) -> SchedulerHeartbeat:
+    """在独立服务行上 upsert 跨进程 heartbeat，不触碰 run/ledger 锁。"""
+    normalized_service = _require_bounded_identifier(
+        service_name,
+        "service_name",
+        max_length=64,
+    )
+    normalized_host = _require_nonempty(host_name, "host_name")
+    if len(normalized_host) > 255:
+        raise ValueError("host_name must be at most 255 characters")
+    normalized_state = _require_bounded_identifier(
+        state,
+        "state",
+        max_length=32,
+    )
+    normalized_process_id = int(process_id)
+    if normalized_process_id <= 0:
+        raise ValueError("process_id must be a positive integer")
+    normalized_occurrence_id = (
+        None if occurrence_id is None else int(occurrence_id)
+    )
+    if (
+        normalized_occurrence_id is not None
+        and normalized_occurrence_id <= 0
+    ):
+        raise ValueError("occurrence_id must be a positive integer")
+    normalized_details = dict(details or {})
+    if normalized_service == "daily-coordinator":
+        _assert_deployed_epoch_payload(
+            normalized_details.get("daily_coordinator_epoch"),
+            label="daily coordinator heartbeat epoch",
+        )
+    details_text = json.dumps(
+        normalized_details,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    effective_time = _trusted_ledger_now(_clock)
+    params = {
+        "service_name": normalized_service,
+        "process_id": normalized_process_id,
+        "host_name": normalized_host,
+        "state": normalized_state,
+        "occurrence_id": normalized_occurrence_id,
+        "heartbeat_at": effective_time,
+        "details_json": details_text,
+    }
+    with engine.begin() as conn:
+        if normalized_service == "daily-coordinator":
+            _assert_deployed_epoch_payload(
+                normalized_details.get("daily_coordinator_epoch"),
+                label="daily coordinator heartbeat epoch",
+            )
+            if normalized_occurrence_id is not None:
+                occurrence = _read_schedule_occurrence_by_id_conn(
+                    conn,
+                    occurrence_id=normalized_occurrence_id,
+                    for_update=False,
+                )
+                if occurrence is None:
+                    raise RuntimeError(
+                        "scheduler heartbeat occurrence is missing"
+                    )
+                _assert_occurrence_epoch_conn(occurrence)
+        if _dialect_name(conn) == "sqlite":
+            sql = text(
+                """
+                INSERT INTO t_scheduler_heartbeat
+                    (service_name, process_id, host_name, state,
+                     occurrence_id, heartbeat_at, details_json)
+                VALUES
+                    (:service_name, :process_id, :host_name, :state,
+                     :occurrence_id, :heartbeat_at, :details_json)
+                ON CONFLICT(service_name) DO UPDATE SET
+                    process_id = excluded.process_id,
+                    host_name = excluded.host_name,
+                    state = excluded.state,
+                    occurrence_id = excluded.occurrence_id,
+                    heartbeat_at = excluded.heartbeat_at,
+                    details_json = excluded.details_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """
+            )
+        else:
+            sql = text(
+                """
+                INSERT INTO t_scheduler_heartbeat
+                    (service_name, process_id, host_name, state,
+                     occurrence_id, heartbeat_at, details_json)
+                VALUES
+                    (:service_name, :process_id, :host_name, :state,
+                     :occurrence_id, :heartbeat_at,
+                     CAST(:details_json AS JSON))
+                ON DUPLICATE KEY UPDATE
+                    process_id = VALUES(process_id),
+                    host_name = VALUES(host_name),
+                    state = VALUES(state),
+                    occurrence_id = VALUES(occurrence_id),
+                    heartbeat_at = VALUES(heartbeat_at),
+                    details_json = VALUES(details_json),
+                    updated_at = UTC_TIMESTAMP(6)
+                """
+            )
+        conn.execute(sql, params)
+        stored = _read_scheduler_heartbeat_conn(
+            conn,
+            service_name=normalized_service,
+        )
+        if stored is None:
+            raise RuntimeError(
+                f"scheduler heartbeat upsert was not visible: "
+                f"{normalized_service}"
+            )
+        return _scheduler_heartbeat(stored)
+
+
+def read_scheduler_heartbeat(
+    engine: Engine,
+    *,
+    service_name: str,
+) -> SchedulerHeartbeat | None:
+    """只读指定 service 的最近一次跨进程 heartbeat。"""
+    normalized_service = _require_bounded_identifier(
+        service_name,
+        "service_name",
+        max_length=64,
+    )
+    with engine.begin() as conn:
+        stored = _read_scheduler_heartbeat_conn(
+            conn,
+            service_name=normalized_service,
+        )
+        return None if stored is None else _scheduler_heartbeat(stored)
+
+
+def _occurrence_feature_date(
+    occurrence: Mapping[str, object],
+    *,
+    expected_feature_date: str | None,
+) -> str:
+    """只信 occurrence 冻结日；调用方日期仅作额外一致性断言。"""
+    stored = occurrence.get("feature_date")
+    if stored is None:
+        raise RuntimeError(
+            "schedule occurrence feature_date is missing; "
+            "legacy occurrence must be reconciled explicitly"
+        )
+    normalized = date.fromisoformat(str(stored)).isoformat()
+    predict_date = date.fromisoformat(
+        str(occurrence.get("predict_date"))
+    ).isoformat()
+    if normalized >= predict_date:
+        raise RuntimeError(
+            "schedule occurrence feature_date must be earlier than "
+            f"predict_date: {normalized} >= {predict_date}"
+        )
+    if expected_feature_date is not None:
+        expected = date.fromisoformat(
+            expected_feature_date
+        ).isoformat()
+        if expected != normalized:
+            raise RuntimeError(
+                "caller expected_feature_date does not match occurrence "
+                f"feature_date: {expected} != {normalized}"
+            )
+    return normalized
+
+
+def _require_databridge_parent_bound_to_native_items(
+    siblings: Iterable[Mapping[str, object]],
+    *,
+    native_generation_id: str,
+) -> None:
+    """DataBridge 只能复用同 occurrence 已冻结到 Native items 的父代。"""
+    native_items = [
+        item
+        for item in siblings
+        if str(item.get("runtime_type")) == "native_adapter"
+    ]
+    mismatched = [
+        {
+            "item_id": int(item["item_id"]),
+            "input_generation_id": item.get("input_generation_id"),
+        }
+        for item in native_items
+        if str(item.get("input_generation_id") or "")
+        != native_generation_id
+    ]
+    if mismatched:
+        raise RuntimeError(
+            "all Native runtime items must be bound to the DataBridge "
+            f"parent generation {native_generation_id}: {mismatched}"
+        )
+
+
+def _seal_and_bind_schedule_occurrence_generation_conn(
+    conn: Connection,
+    *,
+    occurrence: Mapping[str, object],
+    siblings: Iterable[Mapping[str, object]],
+    generation: Mapping[str, object],
+    native_generation: Mapping[str, object] | None,
+    expected_feature_date: str | None,
+    building_sealed_at: datetime,
+    require_already_sealed: bool,
+) -> tuple[str, int]:
+    """在已取得 occurrence→items→父 generation→子 generation 锁后提交。"""
+    normalized_generation_id = str(generation["generation_id"])
+    sibling_rows = tuple(dict(item) for item in siblings)
+    generation_state = str(generation.get("state"))
+    if generation_state not in {
+        GENERATION_BUILDING,
+        GENERATION_SEALED,
+    }:
+        raise RuntimeError(
+            "input generation cannot be sealed/bound from state="
+            f"{generation_state}: {normalized_generation_id}"
+        )
+    if require_already_sealed and generation_state != GENERATION_SEALED:
+        raise RuntimeError(
+            f"input generation is not SEALED: {normalized_generation_id}"
+        )
+    generation_type = str(generation.get("generation_type"))
+    if generation_type == "databridge_v1":
+        if native_generation is None:
+            raise RuntimeError(
+                "databridge generation is missing locked native parent"
+            )
+        _validate_databridge_native_relation(
+            databridge=generation,
+            native_generation=native_generation,
+        )
+        _require_databridge_parent_bound_to_native_items(
+            sibling_rows,
+            native_generation_id=str(
+                native_generation["generation_id"]
+            ),
+        )
+    elif generation_type != "native_source":
+        raise RuntimeError(
+            f"unsupported stored generation_type: {generation_type}"
+        )
+
+    frozen_feature_date = _occurrence_feature_date(
+        occurrence,
+        expected_feature_date=expected_feature_date,
+    )
+    if str(generation.get("business_date")) != str(
+        occurrence.get("predict_date")
+    ):
+        raise RuntimeError(
+            "input generation business_date does not match occurrence "
+            f"predict_date: {generation.get('business_date')} != "
+            f"{occurrence.get('predict_date')}"
+        )
+    if str(generation.get("feature_date")) != frozen_feature_date:
+        raise RuntimeError(
+            "input generation feature_date does not match occurrence "
+            f"feature_date: {generation.get('feature_date')} != "
+            f"{frozen_feature_date}"
+        )
+
+    expected_runtime_type = (
+        "blackbox_v2"
+        if generation_type == "databridge_v1"
+        else "native_adapter"
+    )
+    runtime_items = [
+        item
+        for item in sibling_rows
+        if str(item.get("runtime_type")) == expected_runtime_type
+    ]
+    if not runtime_items:
+        raise RuntimeError(
+            "occurrence has no item for generation runtime: "
+            f"{generation_type}"
+        )
+    conflicting = {
+        str(item["input_generation_id"])
+        for item in runtime_items
+        if (
+            item.get("input_generation_id") is not None
+            and str(item["input_generation_id"])
+            != normalized_generation_id
+        )
+    }
+    if conflicting:
+        raise RuntimeError(
+            "same occurrence runtime generation must be unique: "
+            f"existing={sorted(conflicting)} "
+            f"requested={normalized_generation_id}"
+        )
+
+    effective_sealed_at = building_sealed_at
+    if generation_state == GENERATION_SEALED:
+        if generation.get("sealed_at") is None:
+            raise RuntimeError(
+                "SEALED input generation has no sealed_at: "
+                f"{normalized_generation_id}"
+            )
+        effective_sealed_at = _as_datetime(
+            generation["sealed_at"],
+            "sealed_at",
+        )
+    finalized_releases: dict[int, datetime] = {}
+    recovery_cutoff = _as_datetime(
+        occurrence["recovery_cutoff_at"],
+        "recovery_cutoff_at",
+    )
+    for item in runtime_items:
+        release_at = _as_datetime(item["release_at"], "release_at")
+        if expected_runtime_type == "blackbox_v2":
+            release_at = max(
+                release_at,
+                effective_sealed_at
+                + timedelta(
+                    minutes=int(item["release_offset_minutes"])
+                ),
+            )
+            if release_at >= recovery_cutoff:
+                raise RuntimeError(
+                    "finalized release_at must be earlier than "
+                    "occurrence recovery_cutoff_at"
+                )
+        finalized_releases[int(item["item_id"])] = release_at
+
+    if generation_state == GENERATION_BUILDING:
+        sealed = conn.execute(
+            text(
+                """
+                UPDATE t_input_generations
+                SET state = :sealed,
+                    sealed_at = :sealed_at,
+                    updated_at = :sealed_at
+                WHERE generation_id = :generation_id
+                  AND state = :building
+                """
+            ),
+            {
+                "sealed": GENERATION_SEALED,
+                "sealed_at": effective_sealed_at,
+                "generation_id": normalized_generation_id,
+                "building": GENERATION_BUILDING,
+            },
+        )
+        _require_rowcount(
+            sealed,
+            1,
+            "input generation atomic seal",
+        )
+
+    occurrence_id = int(occurrence["occurrence_id"])
+    for item in runtime_items:
+        if str(item.get("input_generation_id") or "") == (
+            normalized_generation_id
+        ):
+            continue
+        bound = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET input_generation_id = :generation_id,
+                    release_at = :release_at
+                WHERE item_id = :item_id
+                  AND occurrence_id = :occurrence_id
+                  AND input_generation_id IS NULL
+                """
+            ),
+            {
+                "generation_id": normalized_generation_id,
+                "release_at": finalized_releases[
+                    int(item["item_id"])
+                ],
+                "item_id": int(item["item_id"]),
+                "occurrence_id": occurrence_id,
+            },
+        )
+        _require_rowcount(
+            bound,
+            1,
+            "schedule occurrence generation bind",
+        )
+    return normalized_generation_id, len(runtime_items)
+
+
+def register_seal_and_bind_schedule_occurrence_generation(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+    generation_id: str,
+    generation_type: str,
+    business_date: str,
+    feature_date: str,
+    readiness_basis: str,
+    source_commit_token: str,
+    dataset_content_id: str,
+    schema_version: str,
+    exporter_version: str,
+    manifest_uri: str,
+    manifest_sha256: str,
+    native_generation_id: str | None = None,
+    native_manifest_sha256: str | None = None,
+    expected_feature_date: str | None = None,
+    _clock: _LedgerClock | None = None,
+) -> tuple[str, int]:
+    """单事务创建/精确恢复、封存并绑定 occurrence generation。"""
+    params = _normalize_input_generation_registration(
+        generation_id=generation_id,
+        generation_type=generation_type,
+        business_date=business_date,
+        feature_date=feature_date,
+        readiness_basis=readiness_basis,
+        source_commit_token=source_commit_token,
+        dataset_content_id=dataset_content_id,
+        schema_version=schema_version,
+        exporter_version=exporter_version,
+        manifest_uri=manifest_uri,
+        manifest_sha256=manifest_sha256,
+        native_generation_id=native_generation_id,
+        native_manifest_sha256=native_manifest_sha256,
+    )
+    with engine.begin() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        siblings = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        frozen_feature_date = _occurrence_feature_date(
+            occurrence,
+            expected_feature_date=expected_feature_date,
+        )
+        if str(params["business_date"]) != str(
+            occurrence["predict_date"]
+        ):
+            raise RuntimeError(
+                "input generation business_date does not match occurrence "
+                f"predict_date: {params['business_date']} != "
+                f"{occurrence['predict_date']}"
+            )
+        if str(params["feature_date"]) != frozen_feature_date:
+            raise RuntimeError(
+                "input generation feature_date does not match occurrence "
+                f"feature_date: {params['feature_date']} != "
+                f"{frozen_feature_date}"
+            )
+        native_generation = _lock_registration_native_parent_conn(
+            conn,
+            params,
+        )
+        if native_generation is not None:
+            _require_databridge_parent_bound_to_native_items(
+                siblings,
+                native_generation_id=str(
+                    native_generation["generation_id"]
+                ),
+            )
+        generation = _create_or_match_input_generation_conn(
+            conn,
+            params,
+            native_generation=native_generation,
+        )
+        trusted_sealed_at, _trusted_now = (
+            _ledger_event_time_after_locks(
+                conn,
+                None,
+                field="sealed_at",
+                clock=_clock,
+            )
+        )
+        return _seal_and_bind_schedule_occurrence_generation_conn(
+            conn,
+            occurrence=occurrence,
+            siblings=siblings,
+            generation=generation,
+            native_generation=native_generation,
+            expected_feature_date=expected_feature_date,
+            building_sealed_at=trusted_sealed_at,
+            require_already_sealed=False,
+        )
+
+
+def seal_and_bind_schedule_occurrence_generation(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+    generation_id: str,
+    expected_feature_date: str,
+    sealed_at: datetime | None = None,
+    _require_already_sealed: bool = False,
+) -> tuple[str, int]:
+    """兼容已登记 generation 的 occurrence 级原子封存/绑定入口。"""
+    normalized_generation_id = _require_nonempty(
+        generation_id,
+        "generation_id",
+    )
+    normalized_feature_date = date.fromisoformat(
+        expected_feature_date
+    ).isoformat()
+    requested_sealed_at = _utc_datetime6(sealed_at)
+    with engine.begin() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        siblings = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        generation, native_generation = (
+            _lock_input_generation_with_parent_conn(
+                conn,
+                normalized_generation_id,
+            )
+        )
+        if generation is None:
+            raise RuntimeError(
+                f"input generation not found: {normalized_generation_id}"
+            )
+        return _seal_and_bind_schedule_occurrence_generation_conn(
+            conn,
+            occurrence=occurrence,
+            siblings=siblings,
+            generation=generation,
+            native_generation=native_generation,
+            expected_feature_date=normalized_feature_date,
+            building_sealed_at=requested_sealed_at,
+            require_already_sealed=_require_already_sealed,
+        )
+
+
+def bind_schedule_item_input_generation(
+    engine: Engine,
+    *,
+    item_id: int,
+    generation_id: str,
+    expected_feature_date: str,
+) -> str:
+    """兼容入口：转为 occurrence 同 runtime 的原子全量绑定。
+
+    禁止逐 item 修改，避免同一 occurrence 在崩溃窗口内只绑定部分执行项。
+    """
+    normalized_feature_date = date.fromisoformat(
+        expected_feature_date
+    ).isoformat()
+    with engine.begin() as conn:
+        locator = _read_schedule_item_locator_conn(
+            conn,
+            item_id=int(item_id),
+        )
+        if locator is None:
+            raise RuntimeError(f"schedule item not found: {item_id}")
+        occurrence_id = int(locator["occurrence_id"])
+    try:
+        seal_and_bind_schedule_occurrence_generation(
+            engine,
+            occurrence_id=occurrence_id,
+            generation_id=generation_id,
+            expected_feature_date=normalized_feature_date,
+            _require_already_sealed=True,
+        )
+    except RuntimeError as exc:
+        if "same occurrence runtime generation must be unique" in str(exc):
+            raise RuntimeError(
+                "same occurrence runtime generation is already bound: "
+                f"item_id={item_id}"
+            ) from exc
+        raise
+    return generation_id
+
+
+def start_schedule_attempt(
+    engine: Engine,
+    *,
+    item_id: int,
+    trigger_origin: str = "apscheduler",
+    execution_token: str | None = None,
+    queued_at: datetime | None = None,
+    process_id: int | None = None,
+    process_group_id: int | None = None,
+    started_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> ScheduledAttempt:
+    """在 item fence 下 claim 唯一 attempt；不伪造真实进程启动时刻。"""
+    if process_id is not None or process_group_id is not None:
+        raise ValueError(
+            "process identity must be registered by the Popen callback"
+        )
+    normalized_origin = _require_schedule_trigger_origin(trigger_origin)
+    normalized_token = _require_bounded_identifier(
+        execution_token or uuid.uuid4().hex,
+        "execution_token",
+        max_length=128,
+    )
+    with engine.begin() as conn:
+        locator = _read_schedule_item_locator_conn(
+            conn,
+            item_id=int(item_id),
+        )
+        if locator is None:
+            raise RuntimeError(f"schedule item not found: {item_id}")
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(locator["occurrence_id"]),
+            for_update=True,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {locator['occurrence_id']}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        siblings = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=int(locator["occurrence_id"]),
+            for_update=True,
+        )
+        stored_item = next(
+            (
+                row
+                for row in siblings
+                if int(row["item_id"]) == int(item_id)
+            ),
+            None,
+        )
+        if stored_item is None:
+            raise RuntimeError(f"schedule item not found: {item_id}")
+        item = {
+            **dict(stored_item),
+            "predict_date": occurrence["predict_date"],
+            "recovery_cutoff_at": occurrence["recovery_cutoff_at"],
+            "sla_deadline_at": occurrence["sla_deadline_at"],
+        }
+        effective_claimed_at, _trusted_now = (
+            _ledger_event_time_after_locks(
+                conn,
+                started_at,
+                field="claimed_at",
+                clock=_clock,
+            )
+        )
+        if queued_at is None:
+            effective_queued_at = effective_claimed_at
+        else:
+            effective_queued_at, _ = _ledger_event_time_after_locks(
+                conn,
+                queued_at,
+                field="queued_at",
+                clock=_clock,
+            )
+            if effective_queued_at > effective_claimed_at:
+                raise RuntimeError(
+                    "queued_at cannot be after claimed_at"
+                )
+        state = str(item["state"])
+        allowed_states = {ITEM_PENDING, ITEM_RETRY_WAIT, ITEM_ABANDONED}
+        if state not in allowed_states:
+            raise RuntimeError(
+                f"schedule item cannot start from state={state}: {item_id}"
+            )
+        if (
+            state == ITEM_ABANDONED
+            and str(item.get("failure_code") or "")
+            != _ABANDONED_ORPHAN_CLEANUP
+        ):
+            raise RuntimeError(
+                "orphan cleanup confirmation is required before recovery: "
+                f"item_id={item_id}"
+            )
+        cutoff = _as_datetime(
+            item["recovery_cutoff_at"],
+            "recovery_cutoff_at",
+        )
+        if effective_claimed_at >= cutoff:
+            raise RuntimeError(
+                f"schedule item cannot start at/after recovery cutoff: {item_id}"
+            )
+        release_at = _as_datetime(item["release_at"], "release_at")
+        if effective_claimed_at < release_at:
+            raise RuntimeError(
+                "schedule item cannot start before release_at: "
+                f"{effective_claimed_at.isoformat()} < {release_at.isoformat()}"
+            )
+        generation_id = item.get("input_generation_id")
+        if not generation_id:
+            raise RuntimeError(
+                f"schedule item has no bound input generation: {item_id}"
+            )
+        generation = _read_input_generation_conn(
+            conn,
+            str(generation_id),
+            for_update=True,
+        )
+        if generation is None:
+            raise RuntimeError(
+                f"bound input generation not found: {generation_id}"
+            )
+        if generation.get("state") != GENERATION_SEALED:
+            raise RuntimeError(
+                f"bound input generation is not SEALED: {generation_id}"
+            )
+        attempt_no = int(item["attempt_no"]) + 1
+        if attempt_no > _MAX_SCHEDULE_ATTEMPTS:
+            raise RuntimeError(
+                f"schedule item exhausted {_MAX_SCHEDULE_ATTEMPTS} attempts: "
+                f"{item_id}"
+            )
+        if (
+            attempt_no == 2
+            and normalized_origin not in _SECOND_ATTEMPT_TRIGGER_ORIGINS
+            and not (
+                state == ITEM_ABANDONED
+                and normalized_origin == "startup_catchup"
+            )
+        ):
+            raise ValueError(
+                "attempt 2 trigger_origin must be auto_retry or "
+                "operator_recovery, except startup_catchup for ABANDONED"
+            )
+        if (
+            state == ITEM_ABANDONED
+            and normalized_origin not in _ABANDONED_TRIGGER_ORIGINS
+        ):
+            raise ValueError(
+                "ABANDONED item trigger_origin must be startup_catchup or "
+                "operator_recovery"
+            )
+        if attempt_no == 2:
+            waiting_items = sum(
+                1
+                for sibling in siblings
+                if not is_first_attempt_covered(
+                    state=str(sibling["state"]),
+                    attempt_no=int(sibling["attempt_no"]),
+                )
+            )
+            if waiting_items:
+                raise RuntimeError(
+                    "schedule occurrence first-attempt barrier is not "
+                    f"satisfied: waiting_items={waiting_items}"
+                )
+
+        current_run_id = item.get("current_run_id")
+        if current_run_id is not None:
+            previous = _read_schedule_run_conn(
+                conn,
+                run_id=int(current_run_id),
+                for_update=True,
+            )
+            if previous is None:
+                raise RuntimeError(
+                    f"schedule item current run is missing: {current_run_id}"
+                )
+            if previous.get("status") == "running":
+                raise RuntimeError(
+                    "schedule item still has a RUNNING current run; "
+                    "confirmed abandon is required"
+                )
+
+        targets = _read_schedule_targets_conn(
+            conn,
+            item_id=int(item_id),
+            for_update=True,
+        )
+        expected_targets = len(targets)
+        if expected_targets <= 0:
+            raise RuntimeError(
+                f"schedule item has no frozen targets: {item_id}"
+            )
+        run_id = _create_scheme_run_conn(
+            conn,
+            scheme_id=str(item["base_scheme_id"]),
+            predict_date=str(item["predict_date"]),
+            scheme_version=str(item["scheme_version"]),
+            runtime_type=str(item["runtime_type"]),
+            run_type="active",
+            prediction_phase="scheduled_live",
+            status="running",
+            records_expected=expected_targets,
+            schedule_item_id=int(item_id),
+            attempt_no=attempt_no,
+            trigger_origin=normalized_origin,
+            queued_at=effective_queued_at,
+            execution_token=normalized_token,
+            process_id=None,
+            process_group_id=None,
+        )
+        # t_scheme_runs 的 legacy DDL 对 started_at 有 CURRENT_TIMESTAMP
+        # 默认值；ledger claim 必须显式清空，真实启动只由 Popen callback 写入。
+        conn.execute(
+            text(
+                "UPDATE t_scheme_runs SET started_at = NULL "
+                "WHERE run_id = :run_id"
+            ),
+            {"run_id": run_id},
+        )
+        result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET state = :running,
+                    attempt_no = :attempt_no,
+                    current_run_id = :run_id,
+                    started_at = NULL,
+                    completed_at = NULL,
+                    failure_code = NULL,
+                    failure_message = NULL
+                WHERE item_id = :item_id
+                  AND attempt_no = :previous_attempt_no
+                """
+            ),
+            {
+                "running": ITEM_RUNNING,
+                "attempt_no": attempt_no,
+                "run_id": run_id,
+                "item_id": int(item_id),
+                "previous_attempt_no": attempt_no - 1,
+            },
+        )
+        _require_rowcount(result, 1, "schedule attempt fence")
+        conn.execute(
+            text(
+                """
+                UPDATE t_schedule_occurrences
+                SET completion_state = :running,
+                    started_at = COALESCE(started_at, :started_at),
+                    completed_at = NULL
+                WHERE occurrence_id = :occurrence_id
+                  AND (
+                      completion_state IN (:pending, :already_running)
+                      OR (
+                          completion_state = :failed
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM t_schedule_items terminal_item
+                              WHERE terminal_item.occurrence_id =
+                                    t_schedule_occurrences.occurrence_id
+                                AND terminal_item.state IN (
+                                    :failed_terminal,
+                                    :expired
+                                )
+                          )
+                      )
+                  )
+                """
+            ),
+            {
+                "running": OCCURRENCE_RUNNING,
+                "started_at": effective_claimed_at,
+                "occurrence_id": int(item["occurrence_id"]),
+                "pending": OCCURRENCE_PENDING,
+                "already_running": OCCURRENCE_RUNNING,
+                "failed": OCCURRENCE_FAILED,
+                "failed_terminal": ITEM_FAILED_TERMINAL,
+                "expired": ITEM_EXPIRED,
+            },
+        )
+    return ScheduledAttempt(
+        item_id=int(item_id),
+        run_id=run_id,
+        attempt_no=attempt_no,
+        execution_token=normalized_token,
+    )
+
+
+def register_schedule_attempt_process(
+    engine: Engine,
+    *,
+    run_id: int,
+    execution_token: str,
+    process_id: int,
+    process_group_id: int,
+    started_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> tuple[int, int]:
+    """在当前 attempt fence 内一次性登记真实子进程身份。
+
+    Popen 成功后、进入 communicate 前必须调用本函数。同一身份重放是
+    幂等的；token、PID 或 PGID 漂移一律 fail-closed。
+    """
+    normalized_token = _require_bounded_identifier(
+        execution_token,
+        "execution_token",
+        max_length=128,
+    )
+    normalized_process_id = int(process_id)
+    normalized_process_group_id = int(process_group_id)
+    if normalized_process_id <= 0:
+        raise ValueError("process_id must be a positive integer")
+    if normalized_process_group_id <= 0:
+        raise ValueError("process_group_id must be a positive integer")
+    with engine.begin() as conn:
+        item_id = _resolve_schedule_item_id_for_run(
+            conn,
+            run_id=int(run_id),
+        )
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=item_id,
+        )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        if (
+            run is None
+            or int(run.get("schedule_item_id") or 0) != item_id
+        ):
+            raise RuntimeError(f"scheduled run mapping changed: {run_id}")
+        if (
+            int(item.get("current_run_id") or 0) != int(run_id)
+            or item.get("state") != ITEM_RUNNING
+            or run.get("status") != "running"
+        ):
+            raise RuntimeError(
+                f"stale scheduled run fence rejected run_id={run_id}"
+            )
+        if str(run.get("execution_token") or "") != normalized_token:
+            raise RuntimeError(
+                f"scheduled run execution token mismatch: run_id={run_id}"
+            )
+        stored_process_id = run.get("process_id")
+        stored_process_group_id = run.get("process_group_id")
+        if (
+            stored_process_id is not None
+            or stored_process_group_id is not None
+        ):
+            if (
+                stored_process_id is None
+                or stored_process_group_id is None
+                or int(stored_process_id) != normalized_process_id
+                or int(stored_process_group_id)
+                != normalized_process_group_id
+            ):
+                raise RuntimeError(
+                    "scheduled run process identity drift rejected: "
+                    f"run_id={run_id}"
+                )
+            if run.get("started_at") is not None:
+                if (
+                    item.get("started_at") is None
+                    or _as_datetime(
+                        item["started_at"],
+                        "item started_at",
+                    )
+                    != _as_datetime(
+                        run["started_at"],
+                        "run started_at",
+                    )
+                ):
+                    raise RuntimeError(
+                        "scheduled run/item process start identity drift "
+                        f"rejected: run_id={run_id}"
+                    )
+                return normalized_process_id, normalized_process_group_id
+
+        effective_started_at, _trusted_now = (
+            _ledger_event_time_after_locks(
+                conn,
+                started_at,
+                field="started_at",
+                clock=_clock,
+            )
+        )
+        cutoff = _as_datetime(
+            item["recovery_cutoff_at"],
+            "recovery_cutoff_at",
+        )
+        if effective_started_at >= cutoff:
+            raise RuntimeError(
+                "schedule process cannot start at/after recovery cutoff: "
+                f"run_id={run_id}"
+            )
+        _require_not_before(
+            effective_started_at,
+            run.get("queued_at"),
+            event_field="started_at",
+            lower_field="run queued_at",
+        )
+
+        updated = conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET process_id = :process_id,
+                    process_group_id = :process_group_id,
+                    started_at = :started_at
+                WHERE run_id = :run_id
+                  AND status = 'running'
+                  AND execution_token = :execution_token
+                  AND (
+                      (process_id IS NULL AND process_group_id IS NULL)
+                      OR (
+                          process_id = :process_id
+                          AND process_group_id = :process_group_id
+                      )
+                  )
+                  AND started_at IS NULL
+                """
+            ),
+            {
+                "process_id": normalized_process_id,
+                "process_group_id": normalized_process_group_id,
+                "started_at": effective_started_at,
+                "run_id": int(run_id),
+                "execution_token": normalized_token,
+            },
+        )
+        _require_rowcount(updated, 1, "schedule process identity register")
+        item_updated = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET started_at = :started_at
+                WHERE item_id = :item_id
+                  AND current_run_id = :run_id
+                  AND state = :running
+                  AND started_at IS NULL
+                """
+            ),
+            {
+                "started_at": effective_started_at,
+                "item_id": item_id,
+                "run_id": int(run_id),
+                "running": ITEM_RUNNING,
+            },
+        )
+        _require_rowcount(
+            item_updated,
+            1,
+            "schedule item process start register",
+        )
+        _persist_v2_start_guardrail_conn(
+            conn,
+            item=item,
+            started_at=effective_started_at,
+            evaluated_at=effective_started_at,
+        )
+    return normalized_process_id, normalized_process_group_id
+
+
+def fence_current_schedule_attempt(
+    engine: Engine,
+    *,
+    item_id: int,
+    fenced_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> FencedScheduleAttempt:
+    """先在数据库拒绝旧 attempt 完成，再允许清理其进程组。
+
+    fence 提交后 item 保持不可重排，直至
+    ``confirm_schedule_attempt_orphan_cleanup`` 成功。这样即使进程清理与
+    恢复动作之间崩溃，旧 attempt 也无法发布结果。
+    """
+    effective_time, _trusted_now = _ledger_event_time(
+        fenced_at,
+        field="fenced_at",
+        clock=_clock,
+    )
+    with engine.begin() as conn:
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=int(item_id),
+        )
+        run_id = int(item.get("current_run_id") or 0)
+        if run_id <= 0:
+            raise RuntimeError(
+                f"schedule item has no current run to fence: {item_id}"
+            )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=run_id,
+            for_update=True,
+        )
+        if (
+            run is None
+            or int(run.get("schedule_item_id") or 0) != int(item_id)
+        ):
+            raise RuntimeError(f"scheduled run mapping changed: {run_id}")
+
+        item_failure_code = str(item.get("failure_code") or "")
+        run_failure_code = str(run.get("failure_code") or "")
+        already_fenced = (
+            item.get("state") == ITEM_ABANDONED
+            and run.get("status") == "failed"
+            and item_failure_code
+            in {
+                _ABANDONED_FENCE_PENDING_CLEANUP,
+                _ABANDONED_ORPHAN_CLEANUP,
+            }
+            and run_failure_code == item_failure_code
+        )
+        if not already_fenced:
+            if (
+                item.get("state") != ITEM_RUNNING
+                or run.get("status") != "running"
+            ):
+                raise RuntimeError(
+                    f"schedule item is not RUNNING: {item_id}"
+                )
+            _require_run_lifecycle_time(
+                effective_time,
+                run,
+                event_field="fenced_at",
+            )
+            run_result = conn.execute(
+                text(
+                    """
+                    UPDATE t_scheme_runs
+                    SET status = 'failed',
+                        failure_code = :failure_code,
+                        error_message = :failure_message,
+                        finished_at = :finished_at
+                    WHERE run_id = :run_id
+                      AND status = 'running'
+                    """
+                ),
+                {
+                    "failure_code": _ABANDONED_FENCE_PENDING_CLEANUP,
+                    "failure_message": (
+                        "attempt fenced before orphan cleanup confirmation"
+                    ),
+                    "finished_at": effective_time,
+                    "run_id": run_id,
+                },
+            )
+            _require_rowcount(run_result, 1, "schedule run recovery fence")
+            item_result = conn.execute(
+                text(
+                    """
+                    UPDATE t_schedule_items
+                    SET state = :abandoned,
+                        failure_code = :failure_code,
+                        failure_message = :failure_message,
+                        completed_at = :completed_at
+                    WHERE item_id = :item_id
+                      AND current_run_id = :run_id
+                      AND state = :running
+                    """
+                ),
+                {
+                    "abandoned": ITEM_ABANDONED,
+                    "failure_code": _ABANDONED_FENCE_PENDING_CLEANUP,
+                    "failure_message": (
+                        "attempt fenced before orphan cleanup confirmation"
+                    ),
+                    "completed_at": effective_time,
+                    "item_id": int(item_id),
+                    "run_id": run_id,
+                    "running": ITEM_RUNNING,
+                },
+            )
+            _require_rowcount(item_result, 1, "schedule item recovery fence")
+            _mark_occurrence_failed_conn(
+                conn,
+                occurrence_id=int(item["occurrence_id"]),
+                completed_at=effective_time,
+            )
+            result_fenced_at = effective_time
+        else:
+            result_fenced_at = _as_datetime(
+                run.get("finished_at"),
+                "run finished_at",
+            )
+
+        token = str(run.get("execution_token") or "")
+        if not token:
+            raise RuntimeError(
+                f"scheduled run has no execution token: {run_id}"
+            )
+        process_id = (
+            int(run["process_id"])
+            if run.get("process_id") is not None
+            else None
+        )
+        process_group_id = (
+            int(run["process_group_id"])
+            if run.get("process_group_id") is not None
+            else None
+        )
+    return FencedScheduleAttempt(
+        item_id=int(item_id),
+        run_id=run_id,
+        execution_token=token,
+        process_id=process_id,
+        process_group_id=process_group_id,
+        fenced_at=result_fenced_at,
+    )
+
+
+def confirm_schedule_attempt_orphan_cleanup(
+    engine: Engine,
+    *,
+    item_id: int,
+    run_id: int,
+    execution_token: str,
+) -> str:
+    """确认已 fence attempt 的进程组清理完成，随后才允许恢复启动。"""
+    normalized_token = _require_bounded_identifier(
+        execution_token,
+        "execution_token",
+        max_length=128,
+    )
+    with engine.begin() as conn:
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=int(item_id),
+        )
+        if int(item.get("current_run_id") or 0) != int(run_id):
+            raise RuntimeError(
+                f"stale scheduled run fence rejected run_id={run_id}"
+            )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        if (
+            run is None
+            or int(run.get("schedule_item_id") or 0) != int(item_id)
+        ):
+            raise RuntimeError(f"scheduled run mapping changed: {run_id}")
+        if str(run.get("execution_token") or "") != normalized_token:
+            raise RuntimeError(
+                f"scheduled run execution token mismatch: run_id={run_id}"
+            )
+        if (
+            item.get("state") != ITEM_ABANDONED
+            or run.get("status") != "failed"
+        ):
+            raise RuntimeError(
+                f"scheduled attempt is not fenced: run_id={run_id}"
+            )
+        item_failure_code = str(item.get("failure_code") or "")
+        run_failure_code = str(run.get("failure_code") or "")
+        if (
+            item_failure_code == _ABANDONED_ORPHAN_CLEANUP
+            and run_failure_code == _ABANDONED_ORPHAN_CLEANUP
+        ):
+            return ITEM_ABANDONED
+        if (
+            item_failure_code != _ABANDONED_FENCE_PENDING_CLEANUP
+            or run_failure_code != _ABANDONED_FENCE_PENDING_CLEANUP
+        ):
+            raise RuntimeError(
+                "orphan cleanup confirmation requires a pending recovery "
+                f"fence: run_id={run_id}"
+            )
+        run_result = conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET failure_code = :confirmed_code,
+                    error_message = :failure_message
+                WHERE run_id = :run_id
+                  AND status = 'failed'
+                  AND failure_code = :pending_code
+                  AND execution_token = :execution_token
+                """
+            ),
+            {
+                "confirmed_code": _ABANDONED_ORPHAN_CLEANUP,
+                "failure_message": (
+                    "orphan cleanup confirmed after recovery fence"
+                ),
+                "run_id": int(run_id),
+                "pending_code": _ABANDONED_FENCE_PENDING_CLEANUP,
+                "execution_token": normalized_token,
+            },
+        )
+        _require_rowcount(run_result, 1, "schedule run cleanup confirm")
+        item_result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET failure_code = :confirmed_code,
+                    failure_message = :failure_message
+                WHERE item_id = :item_id
+                  AND current_run_id = :run_id
+                  AND state = :abandoned
+                  AND failure_code = :pending_code
+                """
+            ),
+            {
+                "confirmed_code": _ABANDONED_ORPHAN_CLEANUP,
+                "failure_message": (
+                    "orphan cleanup confirmed after recovery fence"
+                ),
+                "item_id": int(item_id),
+                "run_id": int(run_id),
+                "abandoned": ITEM_ABANDONED,
+                "pending_code": _ABANDONED_FENCE_PENDING_CLEANUP,
+            },
+        )
+        _require_rowcount(item_result, 1, "schedule item cleanup confirm")
+    return ITEM_ABANDONED
+
+
+def abandon_current_schedule_attempt(
+    engine: Engine,
+    *,
+    item_id: int,
+    orphan_cleanup_confirmed: bool = False,
+    abandoned_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> str:
+    """仅在外部已确认孤儿进程清理后，显式废弃当前 RUNNING attempt。"""
+    if orphan_cleanup_confirmed is not True:
+        raise RuntimeError(
+            "orphan cleanup confirmation is required before abandon"
+    )
+    effective_time, _trusted_now = _ledger_event_time(
+        abandoned_at,
+        field="abandoned_at",
+        clock=_clock,
+    )
+    with engine.begin() as conn:
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=int(item_id),
+        )
+        if item.get("state") != ITEM_RUNNING or not item.get(
+            "current_run_id"
+        ):
+            raise RuntimeError(
+                f"schedule item is not RUNNING: {item_id}"
+            )
+        run_id = int(item["current_run_id"])
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=run_id,
+            for_update=True,
+        )
+        if run is None or run.get("status") != "running":
+            raise RuntimeError(
+                f"current scheduled run is not running: {run_id}"
+            )
+        _require_run_lifecycle_time(
+            effective_time,
+            run,
+            event_field="abandoned_at",
+        )
+        run_result = conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET status = 'failed',
+                    failure_code = :failure_code,
+                    error_message = 'orphan cleanup confirmed before recovery',
+                    finished_at = :finished_at
+                WHERE run_id = :run_id
+                  AND status = 'running'
+                """
+            ),
+            {
+                "failure_code": _ABANDONED_ORPHAN_CLEANUP,
+                "run_id": run_id,
+                "finished_at": effective_time,
+            },
+        )
+        _require_rowcount(run_result, 1, "schedule run abandon")
+        item_result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET state = :abandoned,
+                    failure_code = :failure_code,
+                    failure_message = 'orphan cleanup confirmed before recovery',
+                    completed_at = :completed_at
+                WHERE item_id = :item_id
+                  AND current_run_id = :run_id
+                  AND state = :running
+                """
+            ),
+            {
+                "abandoned": ITEM_ABANDONED,
+                "failure_code": _ABANDONED_ORPHAN_CLEANUP,
+                "completed_at": effective_time,
+                "item_id": int(item_id),
+                "run_id": run_id,
+                "running": ITEM_RUNNING,
+            },
+        )
+        _require_rowcount(item_result, 1, "schedule item abandon")
+        _mark_occurrence_failed_conn(
+            conn,
+            occurrence_id=int(item["occurrence_id"]),
+            completed_at=effective_time,
+        )
+    return ITEM_ABANDONED
+
+
+def mark_schedule_attempt_retry_wait(
+    engine: Engine,
+    *,
+    run_id: int,
+    failure_code: str,
+    error_message: str | None = None,
+    failed_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> str:
+    """结束当前失败 attempt；首败等待一次重试，第二次失败转终态。"""
+    if failure_code != FAILURE_TRANSIENT_INFRA:
+        raise ValueError(
+            "retry-wait failure_code must be TRANSIENT_INFRA"
+        )
+    effective_failed_at, _trusted_now = _ledger_event_time(
+        failed_at,
+        field="failed_at",
+        clock=_clock,
+    )
+    with engine.begin() as conn:
+        item_id = _resolve_schedule_item_id_for_run(
+            conn,
+            run_id=int(run_id),
+        )
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=item_id,
+        )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        if (
+            run is None
+            or int(run.get("schedule_item_id") or 0) != item_id
+        ):
+            raise RuntimeError(f"scheduled run mapping changed: {run_id}")
+        if int(item.get("current_run_id") or 0) != int(run_id):
+            raise RuntimeError(
+                f"stale scheduled run fence rejected run_id={run_id}"
+            )
+        if run.get("status") != "running" or item.get("state") != ITEM_RUNNING:
+            raise RuntimeError(
+                f"scheduled run is not running: run_id={run_id}"
+            )
+        _require_run_lifecycle_time(
+            effective_failed_at,
+            run,
+            event_field="failed_at",
+        )
+        next_state = (
+            ITEM_RETRY_WAIT
+            if int(run["attempt_no"]) < _MAX_SCHEDULE_ATTEMPTS
+            else ITEM_FAILED_TERMINAL
+        )
+        run_result = conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET status = 'failed',
+                    failure_code = :failure_code,
+                    error_message = :error_message,
+                    finished_at = :failed_at
+                WHERE run_id = :run_id
+                  AND status = 'running'
+                """
+            ),
+            {
+                "failure_code": FAILURE_TRANSIENT_INFRA,
+                "error_message": error_message,
+                "failed_at": effective_failed_at,
+                "run_id": int(run_id),
+            },
+        )
+        _require_rowcount(run_result, 1, "schedule run failure")
+        item_result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET state = :state,
+                    failure_code = :failure_code,
+                    failure_message = :failure_message,
+                    completed_at = :completed_at
+                WHERE item_id = :item_id
+                  AND current_run_id = :run_id
+                  AND state = :running
+                """
+            ),
+            {
+                "state": next_state,
+                "failure_code": FAILURE_TRANSIENT_INFRA,
+                "failure_message": error_message,
+                "completed_at": (
+                    effective_failed_at
+                    if next_state == ITEM_FAILED_TERMINAL
+                    else None
+                ),
+                "item_id": int(item["item_id"]),
+                "run_id": int(run_id),
+                "running": ITEM_RUNNING,
+            },
+        )
+        _require_rowcount(item_result, 1, "schedule item failure")
+        if next_state == ITEM_FAILED_TERMINAL:
+            _mark_occurrence_failed_conn(
+                conn,
+                occurrence_id=int(item["occurrence_id"]),
+                completed_at=effective_failed_at,
+            )
+    return next_state
+
+
+def mark_schedule_attempt_terminal_failure(
+    engine: Engine,
+    *,
+    run_id: int,
+    failure_code: str,
+    error_message: str | None = None,
+    failed_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> str:
+    """将执行终态或真实启动越过 recovery cutoff 原子收口。"""
+    normalized_failure_code = _require_schedule_failure_code(failure_code)
+    if normalized_failure_code not in _TERMINAL_SCHEDULE_FAILURE_CODES:
+        raise ValueError(
+            "terminal failure_code must be one of "
+            f"{sorted(_TERMINAL_SCHEDULE_FAILURE_CODES)}"
+        )
+    effective_failed_at, _trusted_now = _ledger_event_time(
+        failed_at,
+        field="failed_at",
+        clock=_clock,
+    )
+    with engine.begin() as conn:
+        item_id = _resolve_schedule_item_id_for_run(
+            conn,
+            run_id=int(run_id),
+        )
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=item_id,
+        )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        if (
+            run is None
+            or int(run.get("schedule_item_id") or 0) != item_id
+        ):
+            raise RuntimeError(f"scheduled run mapping changed: {run_id}")
+        if int(item.get("current_run_id") or 0) != int(run_id):
+            raise RuntimeError(
+                f"stale scheduled run fence rejected run_id={run_id}"
+            )
+        if run.get("status") != "running" or item.get("state") != ITEM_RUNNING:
+            raise RuntimeError(
+                f"scheduled run is not running: run_id={run_id}"
+            )
+        _require_run_lifecycle_time(
+            effective_failed_at,
+            run,
+            event_field="failed_at",
+        )
+        run_result = conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET status = 'failed',
+                    failure_code = :failure_code,
+                    error_message = :error_message,
+                    finished_at = :failed_at
+                WHERE run_id = :run_id
+                  AND status = 'running'
+                """
+            ),
+            {
+                "failure_code": normalized_failure_code,
+                "error_message": error_message,
+                "failed_at": effective_failed_at,
+                "run_id": int(run_id),
+            },
+        )
+        _require_rowcount(run_result, 1, "terminal schedule run failure")
+        terminal_item_state = (
+            ITEM_EXPIRED
+            if normalized_failure_code
+            == FAILURE_RECOVERY_CUTOFF_EXPIRED
+            else ITEM_FAILED_TERMINAL
+        )
+        item_result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET state = :terminal_state,
+                    failure_code = :failure_code,
+                    failure_message = :failure_message,
+                    completed_at = :completed_at
+                WHERE item_id = :item_id
+                  AND current_run_id = :run_id
+                  AND state = :running
+                """
+            ),
+            {
+                "terminal_state": terminal_item_state,
+                "failure_code": normalized_failure_code,
+                "failure_message": error_message,
+                "completed_at": effective_failed_at,
+                "item_id": item_id,
+                "run_id": int(run_id),
+                "running": ITEM_RUNNING,
+            },
+        )
+        _require_rowcount(item_result, 1, "terminal schedule item failure")
+        _mark_occurrence_failed_conn(
+            conn,
+            occurrence_id=int(item["occurrence_id"]),
+            completed_at=effective_failed_at,
+        )
+    return terminal_item_state
+
+
+def fail_schedule_item_without_attempt(
+    engine: Engine,
+    *,
+    item_id: int,
+    failure_code: str,
+    failure_message: str | None = None,
+    _clock: _LedgerClock | None = None,
+) -> str:
+    """将尚未进入新 attempt 的 item 原子终止，并记录 occurrence 审计。"""
+    normalized_failure_code = _require_schedule_failure_code(failure_code)
+    if normalized_failure_code not in _NONEXECUTED_SCHEDULE_FAILURE_CODES:
+        raise ValueError(
+            "non-executed failure_code must be one of "
+            f"{sorted(_NONEXECUTED_SCHEDULE_FAILURE_CODES)}"
+        )
+    normalized_failure_message = (
+        str(failure_message).strip()
+        if failure_message is not None
+        else None
+    )
+    if failure_message is not None and not normalized_failure_message:
+        raise ValueError("failure_message must be non-empty when provided")
+    completed_at = _trusted_ledger_now(_clock)
+    with engine.begin() as conn:
+        locator = _select_mapping_one_or_none(
+            conn,
+            """
+            SELECT item_id, occurrence_id
+            FROM t_schedule_items
+            WHERE item_id = :item_id
+            """,
+            {"item_id": int(item_id)},
+            for_update=False,
+        )
+        if locator is None:
+            raise RuntimeError(f"schedule item not found: {item_id}")
+        occurrence_id = int(locator["occurrence_id"])
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=occurrence_id,
+            for_update=True,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        siblings = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=occurrence_id,
+            for_update=True,
+        )
+        item = next(
+            (
+                row
+                for row in siblings
+                if int(row["item_id"]) == int(item_id)
+            ),
+            None,
+        )
+        if item is None:
+            raise RuntimeError(f"schedule item not found: {item_id}")
+        if str(item["state"]) == ITEM_FAILED_TERMINAL:
+            if (
+                str(item.get("failure_code"))
+                == normalized_failure_code
+                and _optional_stored_text(
+                    item.get("failure_message")
+                )
+                == normalized_failure_message
+            ):
+                return ITEM_FAILED_TERMINAL
+            raise RuntimeError(
+                "schedule item is already terminal with different "
+                f"failure audit: {item_id}"
+            )
+        allowed_states = {
+            ITEM_PENDING,
+            ITEM_RETRY_WAIT,
+            ITEM_ABANDONED,
+        }
+        if str(item["state"]) not in allowed_states:
+            raise RuntimeError(
+                "schedule item cannot fail without an attempt from "
+                f"state={item['state']}: {item_id}"
+            )
+        result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET state = :failed_terminal,
+                    failure_code = :failure_code,
+                    failure_message = :failure_message,
+                    completed_at = :completed_at
+                WHERE item_id = :item_id
+                  AND state IN (:pending, :retry_wait, :abandoned)
+                """
+            ),
+            {
+                "failed_terminal": ITEM_FAILED_TERMINAL,
+                "failure_code": normalized_failure_code,
+                "failure_message": normalized_failure_message,
+                "completed_at": completed_at,
+                "item_id": int(item_id),
+                "pending": ITEM_PENDING,
+                "retry_wait": ITEM_RETRY_WAIT,
+                "abandoned": ITEM_ABANDONED,
+            },
+        )
+        _require_rowcount(result, 1, "non-executed schedule item failure")
+        _mark_occurrence_failed_conn(
+            conn,
+            occurrence_id=occurrence_id,
+            completed_at=completed_at,
+            failure_code=normalized_failure_code,
+            failure_message=normalized_failure_message,
+        )
+    return ITEM_FAILED_TERMINAL
+
+
+def expire_schedule_items(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+    evaluated_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> int:
+    """到 recovery cutoff 后，将尚未执行完成的 item 原子置为 EXPIRED。"""
+    with engine.begin() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        effective_time, _trusted_now = (
+            _ledger_event_time_after_locks(
+                conn,
+                evaluated_at,
+                field="evaluated_at",
+                clock=_clock,
+            )
+        )
+        if effective_time < _as_datetime(
+            occurrence["recovery_cutoff_at"],
+            "recovery_cutoff_at",
+        ):
+            return 0
+        result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET state = :expired,
+                    failure_code = :failure_code,
+                    failure_message = 'item did not start before recovery cutoff',
+                    completed_at = :evaluated_at
+                WHERE occurrence_id = :occurrence_id
+                  AND state IN (:pending, :retry_wait, :abandoned)
+                """
+            ),
+            {
+                "expired": ITEM_EXPIRED,
+                "failure_code": FAILURE_RECOVERY_CUTOFF_EXPIRED,
+                "evaluated_at": effective_time,
+                "occurrence_id": int(occurrence_id),
+                "pending": ITEM_PENDING,
+                "retry_wait": ITEM_RETRY_WAIT,
+                "abandoned": ITEM_ABANDONED,
+            },
+        )
+        expired_count = int(getattr(result, "rowcount", 0) or 0)
+        if expired_count:
+            _mark_occurrence_failed_conn(
+                conn,
+                occurrence_id=int(occurrence_id),
+                completed_at=effective_time,
+            )
+        return expired_count
+
+
+def evaluate_schedule_item_start_sla(
+    engine: Engine,
+    *,
+    item_id: int,
+    evaluated_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> StartGuardrailProjection:
+    """求值并一次性落盘 Blackbox V2 的 07:45 启动 guardrail。"""
+    with engine.begin() as conn:
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=int(item_id),
+        )
+        effective_time, _trusted_now = (
+            _ledger_event_time_after_locks(
+                conn,
+                evaluated_at,
+                field="evaluated_at",
+                clock=_clock,
+            )
+        )
+        # 07:45 是固定业务 guardrail。DataBridge 晚封存时，动态
+        # release_at 可能晚于 07:45；这恰好应记录 LATE，而不是拒绝求值。
+        projection = _persist_v2_start_guardrail_conn(
+            conn,
+            item=item,
+            started_at=(
+                _as_datetime(item["started_at"], "started_at")
+                if item.get("started_at") is not None
+                else None
+            ),
+            evaluated_at=effective_time,
+        )
+    return projection
+
+
+def complete_scheduled_attempt(
+    engine: Engine,
+    *,
+    run_id: int,
+    records: Iterable[PredictionRecord],
+    trusted_verifier: ScheduledCompletionVerifier,
+    scheme_version: str | None = None,
+    completed_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> int:
+    """在完整性 evidence gate 后原子完成 daily ledger attempt。
+
+    P0 集成边界：旧 generic ``scheduled_live`` 写入路径暂未全局关闭；
+    daily production 协调器必须只调用本函数，后续由 mode fence 统一收口。
+    """
+    if trusted_verifier is None or not callable(
+        getattr(trusted_verifier, "verify", None)
+    ):
+        raise TypeError(
+            "trusted_verifier must implement "
+            "ScheduledCompletionVerifier.verify"
+        )
+    expectation = _read_scheduled_completion_expectation(
+        engine,
+        run_id=int(run_id),
+    )
+    _assert_scheduled_completion_epoch(engine, expectation)
+    evidence = trusted_verifier.verify(expectation)
+    _assert_scheduled_completion_epoch(engine, expectation)
+    if not isinstance(evidence, ScheduledCompletionEvidence):
+        raise RuntimeError(
+            "trusted_verifier must return ScheduledCompletionEvidence"
+        )
+    record_list = list(records)
+    with engine.begin() as conn:
+        item_id = _resolve_schedule_item_id_for_run(
+            conn,
+            run_id=int(run_id),
+        )
+        occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=item_id,
+        )
+        if int(item.get("current_run_id") or 0) != int(run_id):
+            raise RuntimeError(
+                f"stale scheduled run fence rejected run_id={run_id}"
+            )
+        if not item.get("input_generation_id"):
+            raise RuntimeError(
+                f"schedule item has no bound input generation: {item['item_id']}"
+            )
+        generation = _read_input_generation_conn(
+            conn,
+            str(item["input_generation_id"]),
+            for_update=True,
+        )
+        if generation is None:
+            raise RuntimeError(
+                "bound input generation not found: "
+                f"{item['input_generation_id']}"
+            )
+        if generation.get("state") != GENERATION_SEALED:
+            raise RuntimeError(
+                "input generation is not SEALED: "
+                f"{item['input_generation_id']}"
+            )
+        native_generation = None
+        if str(generation.get("generation_type")) == "databridge_v1":
+            native_generation_id = generation.get(
+                "native_generation_id"
+            )
+            if not native_generation_id:
+                raise RuntimeError(
+                    "databridge generation is missing native_generation_id"
+                )
+            native_generation = _read_input_generation_conn(
+                conn,
+                str(native_generation_id),
+                for_update=True,
+            )
+            if native_generation is None:
+                raise RuntimeError(
+                    "native generation relation not found: "
+                    f"{native_generation_id}"
+                )
+            _validate_databridge_native_relation(
+                databridge=generation,
+                native_generation=native_generation,
+            )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        if (
+            run is None
+            or int(run.get("schedule_item_id") or 0) != item_id
+        ):
+            raise RuntimeError(f"scheduled run mapping changed: {run_id}")
+        if (
+            run.get("status") != "running"
+            or item.get("state") != ITEM_RUNNING
+        ):
+            raise RuntimeError(
+                f"stale scheduled run fence rejected run_id={run_id}"
+            )
+        targets = _read_schedule_targets_conn(
+            conn,
+            item_id=int(item["item_id"]),
+            for_update=True,
+        )
+        _validate_scheduled_completion_evidence(
+            evidence=evidence,
+            item=item,
+            generation=generation,
+            native_generation=native_generation,
+        )
+        _validate_cache_qualified_completion(
+            occurrence=occurrence,
+            item=item,
+            generation=generation,
+            records=record_list,
+        )
+        _validate_scheduled_records(
+            run_id=int(run_id),
+            run=run,
+            item=item,
+            occurrence=occurrence,
+            targets=targets,
+            records=record_list,
+            scheme_version=scheme_version,
+            generation_feature_date=str(generation["feature_date"]),
+        )
+        effective_time, _trusted_now = _ledger_event_time_after_locks(
+            conn,
+            completed_at,
+            field="completed_at",
+            clock=_clock,
+        )
+        _require_not_before(
+            effective_time,
+            run.get("started_at"),
+            event_field="completed_at",
+            lower_field="run started_at",
+        )
+        _require_not_before(
+            effective_time,
+            generation.get("sealed_at"),
+            event_field="completed_at",
+            lower_field="generation sealed_at",
+        )
+        exact_scheme_version = str(item["scheme_version"])
+        written = _insert_run_predictions_conn(
+            conn,
+            int(run_id),
+            record_list,
+            scheme_version=exact_scheme_version,
+            insert_only=True,
+        )
+        predictions = (
+            conn.execute(
+                text(
+                    """
+                    SELECT id, run_id, scheme_id, target_tenor, horizon,
+                           target_date
+                    FROM t_scheme_predictions
+                    WHERE run_id = :run_id
+                    ORDER BY id
+                    """
+                ),
+                {"run_id": int(run_id)},
+            )
+            .mappings()
+            .all()
+        )
+        prediction_ids = {
+            (
+                str(row["target_tenor"]),
+                int(row["horizon"]),
+                str(row["target_date"]),
+            ): int(row["id"])
+            for row in predictions
+            if (
+                int(row["run_id"]) == int(run_id)
+                and str(row["scheme_id"]) == str(item["base_scheme_id"])
+            )
+        }
+        expected_keys = {
+            (
+                str(target["target_tenor"]),
+                int(target["horizon"]),
+                str(target["target_date"]),
+            )
+            for target in targets
+        }
+        if set(prediction_ids) != expected_keys or len(predictions) != len(targets):
+            raise RuntimeError(
+                "inserted prediction acceptance identity mismatch for "
+                f"run_id={run_id}"
+            )
+        for target in targets:
+            key = (
+                str(target["target_tenor"]),
+                int(target["horizon"]),
+                str(target["target_date"]),
+            )
+            accepted = conn.execute(
+                text(
+                    """
+                    UPDATE t_schedule_item_targets
+                    SET status = :accepted,
+                        accepted_run_id = :run_id,
+                        accepted_prediction_id = :prediction_id,
+                        accepted_at = :accepted_at
+                    WHERE target_id = :target_id
+                      AND item_id = :item_id
+                      AND status = 'PENDING'
+                      AND accepted_run_id IS NULL
+                      AND accepted_prediction_id IS NULL
+                    """
+                ),
+                {
+                    "accepted": TARGET_ACCEPTED,
+                    "run_id": int(run_id),
+                    "prediction_id": prediction_ids[key],
+                    "accepted_at": effective_time,
+                    "target_id": int(target["target_id"]),
+                    "item_id": int(item["item_id"]),
+                },
+            )
+            _require_rowcount(accepted, 1, "schedule target accept")
+        _finish_scheme_run_conn(
+            conn,
+            run_id=int(run_id),
+            status="success",
+            records_returned=len(record_list),
+            records_written=written,
+            error_message=None,
+            finished_at=effective_time,
+            require_exact_run=True,
+        )
+        item_result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET state = :success,
+                    completed_at = :completed_at,
+                    failure_code = NULL,
+                    failure_message = NULL
+                WHERE item_id = :item_id
+                  AND current_run_id = :run_id
+                  AND state = :running
+                """
+            ),
+            {
+                "success": ITEM_SUCCESS,
+                "completed_at": effective_time,
+                "item_id": int(item["item_id"]),
+                "run_id": int(run_id),
+                "running": ITEM_RUNNING,
+            },
+        )
+        _require_rowcount(item_result, 1, "schedule item complete")
+        accepted_count = _count_accepted_schedule_targets(
+            conn,
+            occurrence_id=int(item["occurrence_id"]),
+        )
+        successful_items = int(
+            conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM t_schedule_items "
+                    "WHERE occurrence_id = :occurrence_id AND state = :success"
+                ),
+                {
+                    "occurrence_id": int(item["occurrence_id"]),
+                    "success": ITEM_SUCCESS,
+                },
+            ).scalar_one()
+        )
+        occurrence_success = (
+            accepted_count == int(occurrence["expected_target_count"])
+            and successful_items == int(occurrence["expected_item_count"])
+        )
+        next_occurrence_state = (
+            OCCURRENCE_SUCCESS
+            if occurrence_success
+            else (
+                OCCURRENCE_FAILED
+                if occurrence.get("completion_state") == OCCURRENCE_FAILED
+                else OCCURRENCE_RUNNING
+            )
+        )
+        next_completed_at = (
+            effective_time
+            if next_occurrence_state == OCCURRENCE_SUCCESS
+            else (
+                occurrence.get("completed_at")
+                if next_occurrence_state == OCCURRENCE_FAILED
+                else None
+            )
+        )
+        occurrence_result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_occurrences
+                SET accepted_target_count = :accepted_target_count,
+                    completion_state = :completion_state,
+                    completed_at = :completed_at
+                WHERE occurrence_id = :occurrence_id
+                """
+            ),
+            {
+                "accepted_target_count": accepted_count,
+                "completion_state": next_occurrence_state,
+                "completed_at": next_completed_at,
+                "occurrence_id": int(item["occurrence_id"]),
+            },
+        )
+        _require_rowcount(
+            occurrence_result,
+            1,
+            "schedule occurrence aggregate",
+        )
+    try:
+        record_schedule_attempt_visibility(
+            engine,
+            run_id=int(run_id),
+            _clock=_clock,
+        )
+    except Exception:
+        # 预测、run、item 与 target acceptance 已在上一事务提交。receipt
+        # 失败不能把一个已提交的成功 attempt 伪装成算法失败；缺失 receipt
+        # 会被 SLA/health 保守计为不可用，并由恢复循环显式补写。
+        _LOGGER.exception(
+            "schedule visibility receipt failed after committed success: "
+            "run_id=%s",
+            run_id,
+        )
+    return written
+
+
+def record_schedule_attempt_visibility(
+    engine: Engine,
+    *,
+    run_id: int,
+    _clock: _LedgerClock | None = None,
+) -> datetime:
+    """在成功发布事务提交后记录 write-once 可见性 receipt。
+
+    receipt 使用第二个事务中的数据库 UTC 时钟。该时刻是预测提交已可被
+    新事务观测到的保守上界；重放只会在 receipt 缺失时使用重放当下时钟，
+    永不回填为原 attempt 的 ``accepted_at``。
+    """
+    with engine.begin() as conn:
+        item_id = _resolve_schedule_item_id_for_run(
+            conn,
+            run_id=int(run_id),
+        )
+        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
+            conn,
+            item_id=item_id,
+        )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        if (
+            run is None
+            or int(run.get("schedule_item_id") or 0) != item_id
+            or int(item.get("current_run_id") or 0) != int(run_id)
+        ):
+            raise RuntimeError(
+                f"stale schedule visibility receipt rejected: run_id={run_id}"
+            )
+        if run.get("status") != "success" or item.get("state") != ITEM_SUCCESS:
+            raise RuntimeError(
+                "schedule visibility receipt requires committed success: "
+                f"run_id={run_id}"
+            )
+        targets = _read_schedule_targets_conn(
+            conn,
+            item_id=item_id,
+            for_update=True,
+        )
+        if not targets:
+            raise RuntimeError(
+                f"schedule visibility receipt has no targets: run_id={run_id}"
+            )
+        relationship_targets = _read_schedule_targets_conn(
+            conn,
+            item_id=item_id,
+            for_update=False,
+        )
+        if {
+            int(target["target_id"]) for target in relationship_targets
+        } != {int(target["target_id"]) for target in targets}:
+            raise RuntimeError(
+                "schedule visibility receipt target linkage invalid: "
+                f"run_id={run_id}"
+            )
+        for target in relationship_targets:
+            if (
+                not _is_valid_accepted_schedule_target(target)
+                or int(target.get("accepted_run_id") or 0) != int(run_id)
+            ):
+                raise RuntimeError(
+                    "schedule visibility receipt target linkage invalid: "
+                    f"run_id={run_id} target_id={target.get('target_id')}"
+                )
+
+        existing_receipts = [
+            target.get("visible_at") for target in relationship_targets
+        ]
+        if any(value is not None for value in existing_receipts):
+            if not all(value is not None for value in existing_receipts):
+                raise RuntimeError(
+                    "partial schedule visibility receipt rejected: "
+                    f"run_id={run_id}"
+                )
+            normalized_receipts = [
+                _as_datetime(value, "visible_at")
+                for value in existing_receipts
+            ]
+            for target, receipt_at in zip(
+                relationship_targets,
+                normalized_receipts,
+                strict=True,
+            ):
+                _require_not_before(
+                    receipt_at,
+                    target.get("accepted_at"),
+                    event_field="visible_at",
+                    lower_field="accepted_at",
+                )
+            return max(normalized_receipts)
+
+        visible_at, _trusted_now = _ledger_event_time_after_locks(
+            conn,
+            None,
+            field="visible_at",
+            clock=_clock,
+        )
+        _require_not_before(
+            visible_at,
+            run.get("finished_at"),
+            event_field="visible_at",
+            lower_field="run finished_at",
+        )
+        for target in relationship_targets:
+            _require_not_before(
+                visible_at,
+                target.get("accepted_at"),
+                event_field="visible_at",
+                lower_field="accepted_at",
+            )
+        result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_item_targets
+                SET visible_at = :visible_at
+                WHERE item_id = :item_id
+                  AND accepted_run_id = :run_id
+                  AND status = :accepted
+                  AND accepted_prediction_id IS NOT NULL
+                  AND accepted_at IS NOT NULL
+                  AND visible_at IS NULL
+                """
+            ),
+            {
+                "visible_at": visible_at,
+                "item_id": item_id,
+                "run_id": int(run_id),
+                "accepted": TARGET_ACCEPTED,
+            },
+        )
+        _require_rowcount(
+            result,
+            len(relationship_targets),
+            "schedule visibility receipt",
+        )
+    return visible_at
+
+
+def reconcile_schedule_occurrence_visibility_receipts(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+    _clock: _LedgerClock | None = None,
+) -> int:
+    """补写 occurrence 内 crash-after-commit 遗留的 visibility receipts。
+
+    每个成功 run 经独立短事务补写，便于中途崩溃后安全重放。返回本次发现
+    并完成 reconcile 的 run 数；已存在的 write-once receipt 不会改写。
+    """
+    with engine.connect() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=False,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        candidates = list(
+            conn.execute(
+                text(
+                    """
+                    SELECT i.item_id, i.current_run_id
+                    FROM t_schedule_items i
+                    JOIN t_scheme_runs r
+                      ON r.run_id = i.current_run_id
+                    WHERE i.occurrence_id = :occurrence_id
+                      AND i.state = :success
+                      AND r.status = 'success'
+                    ORDER BY i.current_run_id
+                    """
+                ),
+                {
+                    "occurrence_id": int(occurrence_id),
+                    "success": ITEM_SUCCESS,
+                },
+            ).mappings()
+        )
+        run_ids = []
+        for candidate in candidates:
+            targets = _read_schedule_targets_conn(
+                conn,
+                item_id=int(candidate["item_id"]),
+                for_update=False,
+            )
+            if (
+                targets
+                and all(
+                    _is_valid_accepted_schedule_target(target)
+                    for target in targets
+                )
+                and any(
+                    target.get("visible_at") is None
+                    for target in targets
+                )
+            ):
+                run_ids.append(int(candidate["current_run_id"]))
+    for missing_run_id in run_ids:
+        record_schedule_attempt_visibility(
+            engine,
+            run_id=missing_run_id,
+            _clock=_clock,
+        )
+    return len(run_ids)
+
+
+def evaluate_schedule_occurrence_target_sla(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+    evaluated_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
+) -> TargetSlaProjection:
+    """求值并一次性落盘 08:00 target availability SLA。"""
+    with engine.begin() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                f"schedule occurrence not found: {occurrence_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        items = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=int(occurrence_id),
+            for_update=True,
+        )
+        if not items:
+            raise RuntimeError(
+                f"schedule occurrence has no items: {occurrence_id}"
+            )
+        effective_time, _trusted_now = (
+            _ledger_event_time_after_locks(
+                conn,
+                evaluated_at,
+                field="evaluated_at",
+                clock=_clock,
+            )
+        )
+        earliest_release_at = min(
+            _as_datetime(item["release_at"], "release_at")
+            for item in items
+        )
+        _require_not_before(
+            effective_time,
+            earliest_release_at,
+            event_field="evaluated_at",
+            lower_field="release_at",
+        )
+        accepted_count, visible_count, accepted_by_deadline_count = (
+            _count_schedule_target_availability(
+                conn,
+                occurrence_id=int(occurrence_id),
+                deadline_at=_as_datetime(
+                    occurrence["sla_deadline_at"],
+                    "sla_deadline_at",
+                ),
+                for_update=True,
+            )
+        )
+        deadline = _as_datetime(
+            occurrence["sla_deadline_at"],
+            "sla_deadline_at",
+        )
+        current = None
+        if occurrence.get("sla_outcome") in {SLA_MET, SLA_BREACHED}:
+            if occurrence.get("sla_accepted_target_count") is None:
+                raise RuntimeError(
+                    "terminal schedule occurrence is missing "
+                    "sla_accepted_target_count"
+                )
+            current = TargetSlaProjection(
+                status=str(occurrence["sla_outcome"]),
+                evaluated_at=_as_datetime(
+                    occurrence["sla_evaluated_at"],
+                    "sla_evaluated_at",
+                ),
+                deadline_at=deadline,
+                accepted_target_count=int(
+                    occurrence["accepted_target_count"]
+                ),
+                accepted_by_deadline_count=int(
+                    occurrence["sla_accepted_target_count"]
+                ),
+                expected_target_count=int(
+                    occurrence["expected_target_count"]
+                ),
+                reason=(
+                    str(occurrence["sla_reason"])
+                    if occurrence.get("sla_reason") is not None
+                    else None
+                ),
+            )
+        projection = project_target_availability_sla(
+            current=current,
+            visible_target_count=visible_count,
+            accepted_by_deadline_count=accepted_by_deadline_count,
+            expected_target_count=int(occurrence["expected_target_count"]),
+            evaluated_at=effective_time,
+            deadline_at=deadline,
+        )
+        if current is None and projection.status in {SLA_MET, SLA_BREACHED}:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE t_schedule_occurrences
+                    SET accepted_target_count = :accepted_target_count,
+                        sla_accepted_target_count = :sla_accepted_target_count,
+                        sla_outcome = :sla_outcome,
+                        sla_evaluated_at = :sla_evaluated_at,
+                        sla_reason = :sla_reason,
+                        failure_code = CASE
+                          WHEN completion_state = :occurrence_success
+                           AND :accepted_target_count
+                               <> expected_target_count
+                          THEN COALESCE(failure_code, :failure_result)
+                          ELSE failure_code
+                        END,
+                        failure_message = CASE
+                          WHEN completion_state = :occurrence_success
+                           AND :accepted_target_count
+                               <> expected_target_count
+                          THEN COALESCE(
+                            failure_message,
+                            :relationship_failure_message
+                          )
+                          ELSE failure_message
+                        END,
+                        completion_state = CASE
+                          WHEN completion_state = :occurrence_success
+                           AND :accepted_target_count
+                               <> expected_target_count
+                          THEN :occurrence_failed
+                          ELSE completion_state
+                        END
+                    WHERE occurrence_id = :occurrence_id
+                      AND sla_outcome = :pending
+                    """
+                ),
+                {
+                    "accepted_target_count": accepted_count,
+                    "sla_accepted_target_count": (
+                        accepted_by_deadline_count
+                    ),
+                    "sla_outcome": projection.status,
+                    "sla_evaluated_at": projection.evaluated_at,
+                    "sla_reason": projection.reason,
+                    "occurrence_success": OCCURRENCE_SUCCESS,
+                    "occurrence_failed": OCCURRENCE_FAILED,
+                    "failure_result": FAILURE_RESULT,
+                    "relationship_failure_message": (
+                        "accepted target relationship evidence mismatch"
+                    ),
+                    "occurrence_id": int(occurrence_id),
+                    "pending": SLA_PENDING,
+                },
+            )
+            _require_rowcount(result, 1, "schedule occurrence SLA")
+            projection = replace(
+                projection,
+                newly_persisted=True,
+            )
+        else:
+            result = conn.execute(
+                text(
+                    """
+                    UPDATE t_schedule_occurrences
+                    SET accepted_target_count = :accepted_target_count,
+                        failure_code = CASE
+                          WHEN completion_state = :occurrence_success
+                           AND :accepted_target_count
+                               <> expected_target_count
+                          THEN COALESCE(failure_code, :failure_result)
+                          ELSE failure_code
+                        END,
+                        failure_message = CASE
+                          WHEN completion_state = :occurrence_success
+                           AND :accepted_target_count
+                               <> expected_target_count
+                          THEN COALESCE(
+                            failure_message,
+                            :relationship_failure_message
+                          )
+                          ELSE failure_message
+                        END,
+                        completion_state = CASE
+                          WHEN completion_state = :occurrence_success
+                           AND :accepted_target_count
+                               <> expected_target_count
+                          THEN :occurrence_failed
+                          ELSE completion_state
+                        END
+                    WHERE occurrence_id = :occurrence_id
+                    """
+                ),
+                {
+                    "accepted_target_count": accepted_count,
+                    "occurrence_success": OCCURRENCE_SUCCESS,
+                    "occurrence_failed": OCCURRENCE_FAILED,
+                    "failure_result": FAILURE_RESULT,
+                    "relationship_failure_message": (
+                        "accepted target relationship evidence mismatch"
+                    ),
+                    "occurrence_id": int(occurrence_id),
+                },
+            )
+            _require_rowcount(
+                result,
+                1,
+                "schedule occurrence accepted target refresh",
+            )
+    return projection
+
+
+def _require_nonempty(value: str, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field} must be a non-empty string")
+    return value.strip()
+
+
+def _require_sha256(value: str, field: str) -> str:
+    normalized = _require_nonempty(value, field).lower()
+    if len(normalized) != 64 or any(
+        character not in "0123456789abcdef" for character in normalized
+    ):
+        raise ValueError(f"{field} must be a 64-character SHA256 hex digest")
+    return normalized
+
+
+def _require_opaque_id(value: str, field: str) -> str:
+    """校验上游提交或内容标识，不假定其一定是裸 SHA256。"""
+    return _require_bounded_identifier(value, field, max_length=128)
+
+
+def _require_bounded_identifier(
+    value: str,
+    field: str,
+    *,
+    max_length: int,
+) -> str:
+    normalized = _require_nonempty(value, field)
+    if len(normalized) > max_length or re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._:/@+,\-=]*",
+        normalized,
+    ) is None:
+        raise ValueError(
+            f"{field} must be at most {max_length} safe identifier characters"
+        )
+    return normalized
+
+
+def _require_schedule_trigger_origin(value: str) -> str:
+    normalized = _require_bounded_identifier(
+        value,
+        "trigger_origin",
+        max_length=32,
+    )
+    if normalized not in _SCHEDULE_TRIGGER_ORIGINS:
+        raise ValueError(
+            "trigger_origin must be one of "
+            f"{sorted(_SCHEDULE_TRIGGER_ORIGINS)}"
+        )
+    return normalized
+
+
+def _require_schedule_failure_code(value: str) -> str:
+    """只接受日批账本的稳定词表；旧别名必须由显式迁移处理。"""
+    normalized = _require_bounded_identifier(
+        value,
+        "failure_code",
+        max_length=64,
+    )
+    if normalized not in SCHEDULE_FAILURE_CODES:
+        raise ValueError(
+            "schedule failure_code must be one of "
+            f"{sorted(SCHEDULE_FAILURE_CODES)}; "
+            f"legacy/unknown value rejected: {normalized}"
+        )
+    return normalized
+
+
+def _utc_datetime6(value: datetime | None) -> datetime:
+    effective = value or datetime.now(timezone.utc)
+    if effective.tzinfo is not None:
+        effective = effective.astimezone(timezone.utc).replace(tzinfo=None)
+    return effective
+
+
+def _trusted_ledger_now(clock: _LedgerClock | None) -> datetime:
+    if clock is None:
+        return _utc_datetime6(datetime.now(timezone.utc))
+    observed = clock.now_utc()
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise ValueError("internal _clock seam must return timezone-aware UTC")
+    return _utc_datetime6(observed)
+
+
+def _ledger_event_time(
+    value: datetime | None,
+    *,
+    field: str,
+    clock: _LedgerClock | None,
+) -> tuple[datetime, datetime]:
+    trusted_now = _trusted_ledger_now(clock)
+    if value is None:
+        return trusted_now, trusted_now
+    if clock is None:
+        raise ValueError(
+            f"{field} override requires explicit internal _clock seam"
+        )
+    event_time = _utc_datetime6(value)
+    if event_time > trusted_now:
+        raise RuntimeError(
+            f"{field} cannot be in the future relative to trusted clock"
+        )
+    return event_time, trusted_now
+
+
+def _ledger_event_time_after_locks(
+    conn: Connection,
+    value: datetime | None,
+    *,
+    field: str,
+    clock: _LedgerClock | None,
+) -> tuple[datetime, datetime]:
+    """锁定/验证后取完成时刻；生产 MySQL 使用数据库 UTC 时钟。"""
+    if clock is not None:
+        trusted_now = _trusted_ledger_now(clock)
+    elif _dialect_name(conn) == "mysql":
+        observed = conn.execute(
+            text("SELECT UTC_TIMESTAMP(6)")
+        ).scalar_one()
+        trusted_now = _utc_datetime6(
+            observed
+            if isinstance(observed, datetime)
+            else datetime.fromisoformat(str(observed))
+        )
+    else:
+        trusted_now = _trusted_ledger_now(None)
+    if value is None:
+        return trusted_now, trusted_now
+    if clock is None:
+        raise ValueError(
+            f"{field} override requires explicit internal _clock seam"
+        )
+    event_time = _utc_datetime6(value)
+    if event_time > trusted_now:
+        raise RuntimeError(
+            f"{field} cannot be in the future relative to trusted clock"
+        )
+    return event_time, trusted_now
+
+
+def _read_observed_at_utc(
+    conn: Connection,
+    *,
+    clock: _LedgerClock | None,
+) -> datetime:
+    """只读观察使用同一事务的数据库 UTC 时钟。"""
+    if clock is not None:
+        return _trusted_ledger_now(clock)
+    if _dialect_name(conn) == "mysql":
+        observed = conn.execute(
+            text("SELECT UTC_TIMESTAMP(6)")
+        ).scalar_one()
+        return _utc_datetime6(
+            observed
+            if isinstance(observed, datetime)
+            else datetime.fromisoformat(str(observed))
+        )
+    return _trusted_ledger_now(None)
+
+
+def _require_not_before(
+    event_time: datetime,
+    lower_bound: object,
+    *,
+    event_field: str,
+    lower_field: str,
+) -> None:
+    if lower_bound is None:
+        raise RuntimeError(f"{lower_field} is required")
+    normalized_lower_bound = _as_datetime(lower_bound, lower_field)
+    if event_time < normalized_lower_bound:
+        raise RuntimeError(
+            f"{event_field} cannot be before {lower_field}"
+        )
+
+
+def _require_run_lifecycle_time(
+    event_time: datetime,
+    run: Mapping[str, object],
+    *,
+    event_field: str,
+) -> None:
+    """进程未 Popen 时，失败/恢复事件以 claim 的 queued_at 为下界。"""
+    started_at = run.get("started_at")
+    _require_not_before(
+        event_time,
+        started_at if started_at is not None else run.get("queued_at"),
+        event_field=event_field,
+        lower_field=(
+            "run started_at"
+            if started_at is not None
+            else "run queued_at"
+        ),
+    )
+
+
+def _business_time_utc(business_date: str, local_time: time) -> datetime:
+    local = datetime.combine(
+        date.fromisoformat(business_date),
+        local_time,
+        tzinfo=_ASIA_SHANGHAI,
+    )
+    return local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _dialect_name(conn: Connection) -> str:
+    return str(getattr(getattr(conn, "dialect", None), "name", "mysql"))
+
+
+def _select_mapping_one_or_none(
+    conn: Connection,
+    sql: str,
+    params: Mapping[str, object],
+    *,
+    for_update: bool,
+) -> Mapping[str, object] | None:
+    lock = (
+        ""
+        if not for_update or _dialect_name(conn) == "sqlite"
+        else " FOR UPDATE"
+    )
+    return (
+        conn.execute(text(sql + lock), dict(params))
+        .mappings()
+        .one_or_none()
+    )
+
+
+def _read_input_generation_conn(
+    conn: Connection,
+    generation_id: str,
+    *,
+    for_update: bool,
+) -> Mapping[str, object] | None:
+    return _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT generation_id, generation_type, business_date, feature_date,
+               readiness_basis, source_commit_token, dataset_content_id,
+               schema_version, exporter_version, manifest_uri,
+               manifest_sha256, native_generation_id,
+               native_manifest_sha256, state, sealed_at,
+               invalidated_at, invalid_reason
+        FROM t_input_generations
+        WHERE generation_id = :generation_id
+        """,
+        {"generation_id": generation_id},
+        for_update=for_update,
+    )
+
+
+def _read_schedule_occurrence_conn(
+    conn: Connection,
+    *,
+    schedule_key: str,
+    predict_date: str,
+    for_update: bool,
+) -> Mapping[str, object] | None:
+    return _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT occurrence_id, schedule_key, predict_date, feature_date,
+               policy_version, policy_sha256, policy_json, registry_digest,
+               completion_state,
+               expected_item_count, expected_target_count,
+               accepted_target_count, sla_accepted_target_count,
+               sla_deadline_at, recovery_cutoff_at,
+               sla_outcome, sla_evaluated_at, sla_reason, failure_code,
+               failure_message, started_at, completed_at
+        FROM t_schedule_occurrences
+        WHERE schedule_key = :schedule_key
+          AND predict_date = :predict_date
+        """,
+        {"schedule_key": schedule_key, "predict_date": predict_date},
+        for_update=for_update,
+    )
+
+
+def _read_schedule_occurrence_by_id_conn(
+    conn: Connection,
+    *,
+    occurrence_id: int,
+    for_update: bool,
+) -> Mapping[str, object] | None:
+    return _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT occurrence_id, schedule_key, predict_date, feature_date,
+               policy_version, policy_sha256, policy_json, registry_digest,
+               completion_state,
+               expected_item_count, expected_target_count,
+               accepted_target_count, sla_accepted_target_count,
+               sla_deadline_at, recovery_cutoff_at,
+               sla_outcome, sla_evaluated_at, sla_reason, failure_code,
+               failure_message, started_at, completed_at
+        FROM t_schedule_occurrences
+        WHERE occurrence_id = :occurrence_id
+        """,
+        {"occurrence_id": int(occurrence_id)},
+        for_update=for_update,
+    )
+
+
+def _read_schedule_item_locator_conn(
+    conn: Connection,
+    *,
+    item_id: int,
+) -> Mapping[str, object] | None:
+    """无锁读取 immutable item→occurrence 映射，供统一锁序定位。"""
+    return _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT item_id, occurrence_id
+        FROM t_schedule_items
+        WHERE item_id = :item_id
+        """,
+        {"item_id": int(item_id)},
+        for_update=False,
+    )
+
+
+def _lock_schedule_item_context_conn(
+    conn: Connection,
+    *,
+    item_id: int,
+) -> tuple[
+    Mapping[str, object],
+    Mapping[str, object],
+    list[Mapping[str, object]],
+]:
+    """按 occurrence→ordered siblings 锁定 item 的统一事务上下文。"""
+    locator = _read_schedule_item_locator_conn(
+        conn,
+        item_id=int(item_id),
+    )
+    if locator is None:
+        raise RuntimeError(f"schedule item not found: {item_id}")
+    occurrence = _read_schedule_occurrence_by_id_conn(
+        conn,
+        occurrence_id=int(locator["occurrence_id"]),
+        for_update=True,
+    )
+    if occurrence is None:
+        raise RuntimeError(
+            f"schedule occurrence not found: {locator['occurrence_id']}"
+        )
+    _assert_occurrence_epoch_conn(occurrence)
+    siblings = _read_schedule_items_for_occurrence_conn(
+        conn,
+        occurrence_id=int(locator["occurrence_id"]),
+        for_update=True,
+    )
+    stored_item = next(
+        (
+            row
+            for row in siblings
+            if int(row["item_id"]) == int(item_id)
+        ),
+        None,
+    )
+    if stored_item is None:
+        raise RuntimeError(f"schedule item not found: {item_id}")
+    item = {
+        **dict(stored_item),
+        "predict_date": occurrence["predict_date"],
+        "recovery_cutoff_at": occurrence["recovery_cutoff_at"],
+        "sla_deadline_at": occurrence["sla_deadline_at"],
+    }
+    return occurrence, item, siblings
+
+
+def _resolve_schedule_item_id_for_run(
+    conn: Connection,
+    *,
+    run_id: int,
+) -> int:
+    """无锁读取 immutable run→item 映射，随后调用方必须按 item→run 加锁。"""
+    row = _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT run_id, schedule_item_id
+        FROM t_scheme_runs
+        WHERE run_id = :run_id
+        """,
+        {"run_id": int(run_id)},
+        for_update=False,
+    )
+    if row is None or row.get("schedule_item_id") is None:
+        raise RuntimeError(f"scheduled run not found: {run_id}")
+    return int(row["schedule_item_id"])
+
+
+def _assert_run_not_ledger_bound_conn(
+    conn: Connection,
+    *,
+    run_id: int,
+    operation: str,
+) -> None:
+    """阻止 daily ledger run 绕过 ledger 专属完成/失败事务。"""
+    row = _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT run_id, schedule_item_id
+        FROM t_scheme_runs
+        WHERE run_id = :run_id
+        """,
+        {"run_id": int(run_id)},
+        for_update=False,
+    )
+    if row is not None and row.get("schedule_item_id") is not None:
+        raise RuntimeError(
+            f"{operation} rejected ledger-bound run_id={run_id}; "
+            "use the daily ledger API"
+        )
+
+
+def _mark_occurrence_failed_conn(
+    conn: Connection,
+    *,
+    occurrence_id: int,
+    completed_at: datetime,
+    failure_code: str | None = None,
+    failure_message: str | None = None,
+) -> None:
+    result = conn.execute(
+        text(
+            """
+            UPDATE t_schedule_occurrences
+            SET completion_state = :failed,
+                completed_at = COALESCE(completed_at, :completed_at),
+                failure_code = COALESCE(failure_code, :failure_code),
+                failure_message = COALESCE(
+                    failure_message,
+                    :failure_message
+                )
+            WHERE occurrence_id = :occurrence_id
+            """
+        ),
+        {
+            "failed": OCCURRENCE_FAILED,
+            "completed_at": completed_at,
+            "failure_code": failure_code,
+            "failure_message": failure_message,
+            "occurrence_id": int(occurrence_id),
+        },
+    )
+    _require_rowcount(result, 1, "schedule occurrence failure")
+
+
+def _read_schedule_item_conn(
+    conn: Connection,
+    *,
+    item_id: int,
+    for_update: bool,
+) -> Mapping[str, object] | None:
+    return _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT i.item_id, i.occurrence_id, i.base_scheme_id, i.runtime_type,
+               i.scheme_version, i.code_sha256, i.config_sha256,
+               i.cache_group, i.input_generation_id, i.resource_class,
+               i.internal_workers, i.release_offset_minutes, i.release_at,
+               i.deadline_at, i.state,
+               i.sla_status, i.late_reason, i.sla_evaluated_at,
+               i.attempt_no, i.current_run_id, i.started_at, i.completed_at,
+               i.failure_code, i.failure_message, o.predict_date,
+               o.recovery_cutoff_at, o.sla_deadline_at
+        FROM t_schedule_items i
+        JOIN t_schedule_occurrences o
+          ON o.occurrence_id = i.occurrence_id
+        WHERE i.item_id = :item_id
+        """,
+        {"item_id": int(item_id)},
+        for_update=for_update,
+    )
+
+
+def _read_schedule_items_for_occurrence_conn(
+    conn: Connection,
+    *,
+    occurrence_id: int,
+    for_update: bool,
+) -> list[Mapping[str, object]]:
+    lock = (
+        ""
+        if not for_update or _dialect_name(conn) == "sqlite"
+        else " FOR UPDATE"
+    )
+    return list(
+        (
+            conn.execute(
+                text(
+                    """
+                    SELECT item_id, occurrence_id, base_scheme_id,
+                           runtime_type, scheme_version, code_sha256,
+                           config_sha256, cache_group, input_generation_id,
+                           resource_class, internal_workers,
+                           release_offset_minutes, release_at, deadline_at,
+                           state, sla_status, late_reason,
+                           sla_evaluated_at, attempt_no, current_run_id,
+                           started_at, completed_at, failure_code,
+                           failure_message
+                    FROM t_schedule_items
+                    WHERE occurrence_id = :occurrence_id
+                    ORDER BY item_id
+                    """
+                    + lock
+                ),
+                {"occurrence_id": int(occurrence_id)},
+            )
+            .mappings()
+            .all()
+        )
+    )
+
+
+def _read_schedule_run_conn(
+    conn: Connection,
+    *,
+    run_id: int,
+    for_update: bool,
+) -> Mapping[str, object] | None:
+    return _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT run_id, scheme_id, scheme_version, runtime_type, run_type,
+               prediction_phase, predict_date, status, records_expected,
+               records_returned, records_written, schedule_item_id,
+               attempt_no, trigger_origin, queued_at, failure_code,
+               execution_token, process_id, process_group_id, started_at,
+               finished_at
+        FROM t_scheme_runs
+        WHERE run_id = :run_id
+        """,
+        {"run_id": int(run_id)},
+        for_update=for_update,
+    )
+
+
+_SCHEDULE_TARGET_RELATIONSHIP_CASE_SQL = """
+CASE
+  WHEN i.item_id IS NOT NULL
+   AND o.occurrence_id IS NOT NULL
+   AND i.occurrence_id = t.occurrence_id
+   AND i.base_scheme_id = t.base_scheme_id
+   AND i.runtime_type = t.runtime_type
+   AND (
+     (
+       t.status = 'ACCEPTED'
+       AND t.accepted_at IS NOT NULL
+       AND (
+         t.visible_at IS NULL
+         OR t.visible_at >= t.accepted_at
+       )
+       AND i.current_run_id = t.accepted_run_id
+       AND r.run_id IS NOT NULL
+       AND r.schedule_item_id = t.item_id
+       AND r.scheme_id = i.base_scheme_id
+       AND r.scheme_version = i.scheme_version
+       AND r.runtime_type = i.runtime_type
+       AND r.run_type = 'active'
+       AND r.prediction_phase = 'scheduled_live'
+       AND r.predict_date = o.predict_date
+       AND r.status = 'success'
+       AND r.attempt_no = i.attempt_no
+       AND p.id IS NOT NULL
+       AND p.run_id = t.accepted_run_id
+       AND p.scheme_id = t.base_scheme_id
+       AND p.scheme_version = i.scheme_version
+       AND p.target_tenor = t.target_tenor
+       AND p.horizon = t.horizon
+       AND p.predict_date = o.predict_date
+       AND p.feature_date = o.feature_date
+       AND p.target_date = t.target_date
+       AND p.prediction_phase = 'scheduled_live'
+     )
+     OR (
+       t.status = 'PENDING'
+       AND t.accepted_run_id IS NULL
+       AND t.accepted_prediction_id IS NULL
+       AND t.accepted_at IS NULL
+       AND t.visible_at IS NULL
+     )
+   )
+  THEN 1
+  ELSE 0
+END
+"""
+
+
+def _read_schedule_target_relationships_conn(
+    conn: Connection,
+    *,
+    item_id: int | None = None,
+    occurrence_id: int | None = None,
+) -> list[Mapping[str, object]]:
+    """读取 target 及其完整 item/run/prediction 关系判定。"""
+    if (item_id is None) == (occurrence_id is None):
+        raise ValueError(
+            "exactly one of item_id or occurrence_id is required"
+        )
+    if item_id is not None:
+        where_clause = "t.item_id = :identity"
+        order_clause = "t.target_id"
+        identity = int(item_id)
+    else:
+        where_clause = (
+            "(t.occurrence_id = :identity "
+            "OR i.occurrence_id = :identity)"
+        )
+        order_clause = "t.item_id, t.target_id"
+        identity = int(occurrence_id)
+    return list(
+        (
+            conn.execute(
+                text(
+                    f"""
+                    SELECT t.target_id, t.occurrence_id, t.item_id,
+                           t.registry_scheme_id, t.base_scheme_id,
+                           t.runtime_type, t.task_type, t.target_tenor,
+                           t.horizon, t.target_date, t.status,
+                           t.accepted_run_id, t.accepted_prediction_id,
+                           t.accepted_at, t.visible_at,
+                           {_SCHEDULE_TARGET_RELATIONSHIP_CASE_SQL}
+                           AS accepted_linkage_valid
+                    FROM t_schedule_item_targets t
+                    LEFT JOIN t_schedule_items i
+                      ON i.item_id = t.item_id
+                    LEFT JOIN t_schedule_occurrences o
+                      ON o.occurrence_id = t.occurrence_id
+                    LEFT JOIN t_scheme_runs r
+                      ON r.run_id = t.accepted_run_id
+                    LEFT JOIN t_scheme_predictions p
+                      ON p.id = t.accepted_prediction_id
+                    WHERE {where_clause}
+                    ORDER BY {order_clause}
+                    """
+                ),
+                {"identity": identity},
+            )
+            .mappings()
+            .all()
+        )
+    )
+
+
+def _read_schedule_targets_conn(
+    conn: Connection,
+    *,
+    item_id: int,
+    for_update: bool,
+) -> list[Mapping[str, object]]:
+    if not for_update:
+        return _read_schedule_target_relationships_conn(
+            conn,
+            item_id=int(item_id),
+        )
+    lock = (
+        ""
+        if _dialect_name(conn) == "sqlite"
+        else " FOR UPDATE"
+    )
+    return list(
+        (
+            conn.execute(
+                text(
+                    """
+                    SELECT target_id, occurrence_id, item_id,
+                           registry_scheme_id, base_scheme_id, runtime_type,
+                           task_type, target_tenor, horizon, target_date,
+                           status, accepted_run_id, accepted_prediction_id,
+                           accepted_at, visible_at
+                    FROM t_schedule_item_targets
+                    WHERE item_id = :item_id
+                    ORDER BY target_id
+                    """
+                    + lock
+                ),
+                {"item_id": int(item_id)},
+            )
+            .mappings()
+            .all()
+        )
+    )
+
+
+def _read_schedule_targets_for_occurrence_conn(
+    conn: Connection,
+    *,
+    occurrence_id: int,
+) -> list[Mapping[str, object]]:
+    return _read_schedule_target_relationships_conn(
+        conn,
+        occurrence_id=int(occurrence_id),
+    )
+
+
+def _read_scheduler_heartbeat_conn(
+    conn: Connection,
+    *,
+    service_name: str,
+) -> Mapping[str, object] | None:
+    return _select_mapping_one_or_none(
+        conn,
+        """
+        SELECT service_name, process_id, host_name, state, occurrence_id,
+               heartbeat_at, details_json
+        FROM t_scheduler_heartbeat
+        WHERE service_name = :service_name
+        """,
+        {"service_name": service_name},
+        for_update=False,
+    )
+
+
+def _schedule_occurrence_envelope(
+    row: Mapping[str, object],
+) -> ScheduleOccurrenceEnvelope:
+    return ScheduleOccurrenceEnvelope(
+        occurrence_id=int(row["occurrence_id"]),
+        schedule_key=_stored_text(row, "schedule_key"),
+        predict_date=_stored_iso_date(row, "predict_date"),
+        feature_date=_stored_iso_date(row, "feature_date"),
+        policy_version=_stored_text(row, "policy_version"),
+        policy_sha256=_stored_text(row, "policy_sha256"),
+        policy_json=_stored_json_mapping(row, "policy_json"),
+        registry_digest=_stored_text(row, "registry_digest"),
+        completion_state=_stored_text(row, "completion_state"),
+        expected_item_count=int(row["expected_item_count"]),
+        expected_target_count=int(row["expected_target_count"]),
+        accepted_target_count=int(row["accepted_target_count"]),
+        sla_accepted_target_count=_optional_int(
+            row.get("sla_accepted_target_count")
+        ),
+        sla_deadline_at=_as_datetime(
+            row["sla_deadline_at"],
+            "sla_deadline_at",
+        ),
+        recovery_cutoff_at=_as_datetime(
+            row["recovery_cutoff_at"],
+            "recovery_cutoff_at",
+        ),
+        sla_outcome=_stored_text(row, "sla_outcome"),
+        sla_evaluated_at=_optional_stored_datetime(
+            row.get("sla_evaluated_at"),
+            "sla_evaluated_at",
+        ),
+        sla_reason=_optional_stored_text(row.get("sla_reason")),
+        failure_code=_optional_stored_schedule_failure_code(
+            row.get("failure_code")
+        ),
+        failure_message=_optional_stored_text(row.get("failure_message")),
+        started_at=_optional_stored_datetime(
+            row.get("started_at"),
+            "started_at",
+        ),
+        completed_at=_optional_stored_datetime(
+            row.get("completed_at"),
+            "completed_at",
+        ),
+    )
+
+
+def _schedule_item_envelope(
+    row: Mapping[str, object],
+    occurrence: Mapping[str, object],
+) -> ScheduleItemEnvelope:
+    return ScheduleItemEnvelope(
+        item_id=int(row["item_id"]),
+        occurrence_id=int(row["occurrence_id"]),
+        base_scheme_id=_stored_text(row, "base_scheme_id"),
+        runtime_type=_stored_text(row, "runtime_type"),
+        scheme_version=_stored_text(row, "scheme_version"),
+        code_sha256=_stored_text(row, "code_sha256"),
+        config_sha256=_stored_text(row, "config_sha256"),
+        cache_group=_stored_text(row, "cache_group"),
+        input_generation_id=_optional_stored_text(
+            row.get("input_generation_id")
+        ),
+        resource_class=_stored_text(row, "resource_class"),
+        internal_workers=int(row["internal_workers"]),
+        release_offset_minutes=int(row["release_offset_minutes"]),
+        release_at=_as_datetime(row["release_at"], "release_at"),
+        deadline_at=_as_datetime(row["deadline_at"], "deadline_at"),
+        recovery_cutoff_at=_as_datetime(
+            occurrence["recovery_cutoff_at"],
+            "recovery_cutoff_at",
+        ),
+        occurrence_sla_deadline_at=_as_datetime(
+            occurrence["sla_deadline_at"],
+            "sla_deadline_at",
+        ),
+        state=_stored_text(row, "state"),
+        sla_status=_stored_text(row, "sla_status"),
+        late_reason=_optional_stored_text(row.get("late_reason")),
+        sla_evaluated_at=_optional_stored_datetime(
+            row.get("sla_evaluated_at"),
+            "sla_evaluated_at",
+        ),
+        attempt_no=int(row["attempt_no"]),
+        current_run_id=_optional_int(row.get("current_run_id")),
+        started_at=_optional_stored_datetime(
+            row.get("started_at"),
+            "started_at",
+        ),
+        completed_at=_optional_stored_datetime(
+            row.get("completed_at"),
+            "completed_at",
+        ),
+        failure_code=_optional_stored_schedule_failure_code(
+            row.get("failure_code")
+        ),
+        failure_message=_optional_stored_text(row.get("failure_message")),
+    )
+
+
+def _schedule_target_envelope(
+    row: Mapping[str, object],
+) -> ScheduleTargetEnvelope:
+    return ScheduleTargetEnvelope(
+        target_id=int(row["target_id"]),
+        occurrence_id=int(row["occurrence_id"]),
+        item_id=int(row["item_id"]),
+        registry_scheme_id=_stored_text(row, "registry_scheme_id"),
+        base_scheme_id=_stored_text(row, "base_scheme_id"),
+        runtime_type=_stored_text(row, "runtime_type"),
+        task_type=_stored_text(row, "task_type"),
+        target_tenor=_stored_text(row, "target_tenor"),
+        horizon=int(row["horizon"]),
+        target_date=_stored_iso_date(row, "target_date"),
+        status=_stored_text(row, "status"),
+        accepted_run_id=_optional_int(row.get("accepted_run_id")),
+        accepted_prediction_id=_optional_int(
+            row.get("accepted_prediction_id")
+        ),
+        accepted_at=_optional_stored_datetime(
+            row.get("accepted_at"),
+            "accepted_at",
+        ),
+        visible_at=_optional_stored_datetime(
+            row.get("visible_at"),
+            "visible_at",
+        ),
+        accepted_linkage_valid=bool(
+            int(row.get("accepted_linkage_valid", 0))
+        ),
+    )
+
+
+def _schedule_generation_envelope(
+    row: Mapping[str, object],
+) -> ScheduleInputGenerationEnvelope:
+    return ScheduleInputGenerationEnvelope(
+        generation_id=_stored_text(row, "generation_id"),
+        generation_type=_stored_text(row, "generation_type"),
+        business_date=_stored_iso_date(row, "business_date"),
+        feature_date=_stored_iso_date(row, "feature_date"),
+        readiness_basis=_stored_text(row, "readiness_basis"),
+        source_commit_token=_stored_text(row, "source_commit_token"),
+        dataset_content_id=_stored_text(row, "dataset_content_id"),
+        schema_version=_stored_text(row, "schema_version"),
+        exporter_version=_stored_text(row, "exporter_version"),
+        manifest_uri=_stored_text(row, "manifest_uri"),
+        manifest_sha256=_stored_text(row, "manifest_sha256"),
+        native_generation_id=_optional_stored_text(
+            row.get("native_generation_id")
+        ),
+        native_manifest_sha256=_optional_stored_text(
+            row.get("native_manifest_sha256")
+        ),
+        state=_stored_text(row, "state"),
+        sealed_at=_optional_stored_datetime(
+            row.get("sealed_at"),
+            "sealed_at",
+        ),
+        invalidated_at=_optional_stored_datetime(
+            row.get("invalidated_at"),
+            "invalidated_at",
+        ),
+        invalid_reason=_optional_stored_text(row.get("invalid_reason")),
+    )
+
+
+def _scheduler_heartbeat(
+    row: Mapping[str, object],
+) -> SchedulerHeartbeat:
+    return SchedulerHeartbeat(
+        service_name=_stored_text(row, "service_name"),
+        process_id=int(row["process_id"]),
+        host_name=_stored_text(row, "host_name"),
+        state=_stored_text(row, "state"),
+        occurrence_id=_optional_int(row.get("occurrence_id")),
+        heartbeat_at=_as_datetime(row["heartbeat_at"], "heartbeat_at"),
+        details=_stored_json_mapping(row, "details_json"),
+    )
+
+
+def _count_accepted_schedule_targets(
+    conn: Connection,
+    *,
+    occurrence_id: int,
+    for_update: bool = False,
+) -> int:
+    if for_update:
+        lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+        conn.execute(
+            text(
+                """
+                SELECT target_id
+                FROM t_schedule_item_targets
+                WHERE occurrence_id = :occurrence_id
+                ORDER BY target_id
+                """
+                + lock
+            ),
+            {"occurrence_id": int(occurrence_id)},
+        ).all()
+    rows = _read_schedule_targets_for_occurrence_conn(
+        conn,
+        occurrence_id=int(occurrence_id),
+    )
+    return sum(
+        1 for row in rows if _is_valid_accepted_schedule_target(row)
+    )
+
+
+def _count_schedule_target_availability(
+    conn: Connection,
+    *,
+    occurrence_id: int,
+    deadline_at: datetime,
+    for_update: bool,
+) -> tuple[int, int, int]:
+    """返回 ACCEPTED、当前可见及 deadline 前可见的 target 数。"""
+    if for_update:
+        lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+        conn.execute(
+            text(
+                """
+                SELECT target_id
+                FROM t_schedule_item_targets
+                WHERE occurrence_id = :occurrence_id
+                ORDER BY target_id
+                """
+                + lock
+            ),
+            {"occurrence_id": int(occurrence_id)},
+        ).all()
+    rows = _read_schedule_targets_for_occurrence_conn(
+        conn,
+        occurrence_id=int(occurrence_id),
+    )
+    accepted_count = 0
+    visible_count = 0
+    accepted_by_deadline_count = 0
+    for row in rows:
+        if not _is_valid_accepted_schedule_target(row):
+            continue
+        accepted_count += 1
+        if row.get("visible_at") is None:
+            continue
+        visible_count += 1
+        if _as_datetime(row["visible_at"], "visible_at") <= deadline_at:
+            accepted_by_deadline_count += 1
+    return accepted_count, visible_count, accepted_by_deadline_count
+
+
+def _is_valid_accepted_schedule_target(
+    row: Mapping[str, object],
+) -> bool:
+    """只有完整关系证据成立的 ACCEPTED target 才参与任何聚合。"""
+    return (
+        str(row.get("status")) == TARGET_ACCEPTED
+        and bool(int(row.get("accepted_linkage_valid", 0)))
+        and row.get("accepted_run_id") is not None
+        and row.get("accepted_prediction_id") is not None
+        and row.get("accepted_at") is not None
+    )
+
+
+def _persist_v2_start_guardrail_conn(
+    conn: Connection,
+    *,
+    item: Mapping[str, object],
+    started_at: datetime | None,
+    evaluated_at: datetime,
+) -> StartGuardrailProjection:
+    deadline = _business_time_utc(
+        str(item["predict_date"]),
+        time(7, 45),
+    )
+    current = None
+    if item.get("sla_status") in {ITEM_SLA_ON_TIME, ITEM_SLA_LATE}:
+        current = StartGuardrailProjection(
+            status=str(item["sla_status"]),
+            evaluated_at=_as_datetime(
+                item["sla_evaluated_at"],
+                "sla_evaluated_at",
+            ),
+            deadline_at=deadline,
+            reason=(
+                str(item["late_reason"])
+                if item.get("late_reason") is not None
+                else None
+            ),
+        )
+    projection = project_v2_start_guardrail(
+        current=current,
+        runtime_type=str(item["runtime_type"]),
+        started_at=started_at,
+        evaluated_at=evaluated_at,
+        deadline_at=deadline,
+    )
+    if (
+        current is None
+        and str(item["runtime_type"]) == "blackbox_v2"
+        and projection.status in {ITEM_SLA_ON_TIME, ITEM_SLA_LATE}
+    ):
+        result = conn.execute(
+            text(
+                """
+                UPDATE t_schedule_items
+                SET sla_status = :sla_status,
+                    late_reason = :late_reason,
+                    sla_evaluated_at = :sla_evaluated_at
+                WHERE item_id = :item_id
+                  AND sla_status = :pending
+                """
+            ),
+            {
+                "sla_status": projection.status,
+                "late_reason": projection.reason,
+                "sla_evaluated_at": projection.evaluated_at,
+                "item_id": int(item["item_id"]),
+                "pending": SLA_PENDING,
+            },
+        )
+        _require_rowcount(result, 1, "schedule item start SLA")
+        projection = replace(
+            projection,
+            newly_persisted=True,
+        )
+    return projection
+
+
+def _validate_scheduled_records(
+    *,
+    run_id: int,
+    run: Mapping[str, object],
+    item: Mapping[str, object],
+    occurrence: Mapping[str, object],
+    targets: list[Mapping[str, object]],
+    records: list[PredictionRecord],
+    scheme_version: str | None,
+    generation_feature_date: str,
+) -> None:
+    if not targets:
+        raise RuntimeError(
+            f"schedule item has no frozen targets: {item['item_id']}"
+        )
+    if int(run.get("attempt_no") or 0) != int(item["attempt_no"]):
+        raise RuntimeError(
+            f"stale scheduled run attempt mismatch: run_id={run_id}"
+        )
+    frozen_version = str(item["scheme_version"])
+    if scheme_version is not None and scheme_version != frozen_version:
+        raise RuntimeError(
+            "scheduled scheme_version mismatch: "
+            f"expected={frozen_version} actual={scheme_version}"
+        )
+    expected_run_fields = {
+        "scheme_id": str(item["base_scheme_id"]),
+        "scheme_version": frozen_version,
+        "runtime_type": str(item["runtime_type"]),
+        "predict_date": str(occurrence["predict_date"]),
+        "prediction_phase": "scheduled_live",
+    }
+    for field, expected_value in expected_run_fields.items():
+        if str(run.get(field)) != expected_value:
+            raise RuntimeError(
+                "scheduled run identity mismatch: "
+                f"{field} expected={expected_value} actual={run.get(field)}"
+            )
+    if int(run.get("records_expected") or 0) != len(targets):
+        raise RuntimeError(
+            "scheduled run records_expected mismatch: "
+            f"expected={len(targets)} actual={run.get('records_expected')}"
+        )
+    expected = Counter(
+        (
+            str(target["target_tenor"]),
+            int(target["horizon"]),
+            str(target["target_date"]),
+        )
+        for target in targets
+    )
+    actual = Counter(
+        (
+            str(record.target_tenor),
+            int(record.horizon),
+            date.fromisoformat(str(record.target_date)).isoformat(),
+        )
+        for record in records
+    )
+    if actual != expected:
+        raise RuntimeError(
+            "scheduled target multiset mismatch: "
+            f"expected={dict(expected)} actual={dict(actual)}"
+        )
+    expected_predict_date = str(occurrence["predict_date"])
+    for record in records:
+        phase = record.prediction_phase or (record.extra or {}).get(
+            "prediction_phase"
+        )
+        if record.scheme_id != str(item["base_scheme_id"]):
+            raise RuntimeError(
+                "scheduled prediction scheme_id mismatch: "
+                f"{record.scheme_id} != {item['base_scheme_id']}"
+            )
+        if (
+            date.fromisoformat(str(record.predict_date)).isoformat()
+            != expected_predict_date
+        ):
+            raise RuntimeError(
+                "scheduled prediction predict_date mismatch: "
+                f"{record.predict_date} != {expected_predict_date}"
+            )
+        if phase != "scheduled_live":
+            raise RuntimeError(
+                "scheduled prediction_phase must be scheduled_live"
+            )
+        if record.run_id is not None and int(record.run_id) != int(run_id):
+            raise RuntimeError(
+                f"scheduled prediction run_id mismatch: {record.run_id}"
+            )
+        if (
+            record.scheme_version is not None
+            and record.scheme_version != frozen_version
+        ):
+            raise RuntimeError(
+                "scheduled prediction scheme_version mismatch: "
+                f"{record.scheme_version} != {frozen_version}"
+            )
+        extra_feature_date = (
+            (record.extra or {}).get("feature_date")
+            if isinstance(record.extra, Mapping)
+            else None
+        )
+        if (
+            record.feature_date is not None
+            and extra_feature_date is not None
+            and str(record.feature_date) != str(extra_feature_date)
+        ):
+            raise RuntimeError(
+                "scheduled record feature_date fields disagree: "
+                f"record={record.feature_date} extra={extra_feature_date}"
+            )
+        observed_feature_date = (
+            record.feature_date
+            if record.feature_date is not None
+            else extra_feature_date
+        )
+        if observed_feature_date is None:
+            raise RuntimeError(
+                "scheduled record feature_date is required"
+            )
+        try:
+            normalized_feature_date = date.fromisoformat(
+                str(observed_feature_date)
+            ).isoformat()
+        except ValueError as exc:
+            raise RuntimeError(
+                "scheduled record feature_date must be an ISO date: "
+                f"{observed_feature_date}"
+            ) from exc
+        if normalized_feature_date != generation_feature_date:
+            raise RuntimeError(
+                "scheduled record feature_date mismatch: "
+                f"{normalized_feature_date} != {generation_feature_date}"
+            )
+    if any(str(target["status"]) != "PENDING" for target in targets):
+        raise RuntimeError(
+            f"schedule item targets were already accepted: {item['item_id']}"
+        )
+
+
+def _read_scheduled_completion_expectation(
+    engine: Engine,
+    *,
+    run_id: int,
+) -> ScheduledCompletionExpectation:
+    """单事务读取 verifier 所需冻结期望，不锁表、不回查 Registry。"""
+    with engine.begin() as conn:
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=False,
+        )
+        if run is None or run.get("schedule_item_id") is None:
+            raise RuntimeError(f"scheduled run not found: {run_id}")
+        item_id = int(run["schedule_item_id"])
+        item = _read_schedule_item_conn(
+            conn,
+            item_id=item_id,
+            for_update=False,
+        )
+        if item is None:
+            raise RuntimeError(
+                f"schedule item not found for run: {run_id}"
+            )
+        if int(item.get("current_run_id") or 0) != int(run_id):
+            raise RuntimeError(
+                f"stale scheduled run fence rejected run_id={run_id}"
+            )
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(item["occurrence_id"]),
+            for_update=False,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                "schedule occurrence not found for run: "
+                f"{run_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+        generation_id = item.get("input_generation_id")
+        if not generation_id:
+            raise RuntimeError(
+                f"schedule item has no bound input generation: {item_id}"
+            )
+        generation = _read_input_generation_conn(
+            conn,
+            str(generation_id),
+            for_update=False,
+        )
+        if generation is None:
+            raise RuntimeError(
+                f"bound input generation not found: {generation_id}"
+            )
+        native_generation = None
+        if str(generation.get("generation_type")) == "databridge_v1":
+            native_generation_id = generation.get(
+                "native_generation_id"
+            )
+            if not native_generation_id:
+                raise RuntimeError(
+                    "databridge generation is missing native_generation_id"
+                )
+            native_generation = _read_input_generation_conn(
+                conn,
+                str(native_generation_id),
+                for_update=False,
+            )
+            if native_generation is None:
+                raise RuntimeError(
+                    "native generation relation not found: "
+                    f"{native_generation_id}"
+                )
+            _validate_databridge_native_relation(
+                databridge=generation,
+                native_generation=native_generation,
+            )
+        return ScheduledCompletionExpectation(
+            run_id=int(run_id),
+            item_id=item_id,
+            occurrence_id=int(item["occurrence_id"]),
+            base_scheme_id=str(item["base_scheme_id"]),
+            runtime_type=str(item["runtime_type"]),
+            generation_id=str(generation_id),
+            manifest_uri=str(generation["manifest_uri"]),
+            manifest_sha256=str(generation["manifest_sha256"]),
+            generation_dataset_content_id=str(
+                generation["dataset_content_id"]
+            ),
+            generation_schema_version=str(generation["schema_version"]),
+            generation_exporter_version=str(
+                generation["exporter_version"]
+            ),
+            feature_date=str(generation["feature_date"]),
+            business_date=str(generation["business_date"]),
+            scheme_version=str(item["scheme_version"]),
+            code_sha256=str(item["code_sha256"]),
+            config_sha256=str(item["config_sha256"]),
+            native_generation_id=(
+                str(native_generation["generation_id"])
+                if native_generation is not None
+                else None
+            ),
+            native_manifest_uri=(
+                str(native_generation["manifest_uri"])
+                if native_generation is not None
+                else None
+            ),
+            native_manifest_sha256=(
+                str(native_generation["manifest_sha256"])
+                if native_generation is not None
+                else None
+            ),
+            native_dataset_content_id=(
+                str(native_generation["dataset_content_id"])
+                if native_generation is not None
+                else None
+            ),
+            native_schema_version=(
+                str(native_generation["schema_version"])
+                if native_generation is not None
+                else None
+            ),
+            native_exporter_version=(
+                str(native_generation["exporter_version"])
+                if native_generation is not None
+                else None
+            ),
+            native_feature_date=(
+                str(native_generation["feature_date"])
+                if native_generation is not None
+                else None
+            ),
+            native_business_date=(
+                str(native_generation["business_date"])
+                if native_generation is not None
+                else None
+            ),
+        )
+
+
+def _assert_scheduled_completion_epoch(
+    engine: Engine,
+    expectation: ScheduledCompletionExpectation,
+) -> None:
+    """在 verifier 前后重读 occurrence 并校验 current exact epoch。"""
+    with engine.connect() as conn:
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=int(expectation.occurrence_id),
+            for_update=False,
+        )
+        if occurrence is None:
+            raise RuntimeError(
+                "schedule occurrence not found for completion: "
+                f"{expectation.occurrence_id}"
+            )
+        _assert_occurrence_epoch_conn(occurrence)
+
+
+def _validate_scheduled_completion_evidence(
+    *,
+    evidence: ScheduledCompletionEvidence,
+    item: Mapping[str, object],
+    generation: Mapping[str, object],
+    native_generation: Mapping[str, object] | None = None,
+) -> None:
+    """逐字段核对 validator evidence 与冻结 item/generation 身份。"""
+    expected = {
+        "observed_generation_id": str(item["input_generation_id"]),
+        "manifest_sha256": str(generation["manifest_sha256"]),
+        "generation_dataset_content_id": str(
+            generation["dataset_content_id"]
+        ),
+        "generation_schema_version": str(generation["schema_version"]),
+        "generation_exporter_version": str(
+            generation["exporter_version"]
+        ),
+        "feature_date": str(generation["feature_date"]),
+        "scheme_version": str(item["scheme_version"]),
+        "code_sha256": str(item["code_sha256"]),
+        "config_sha256": str(item["config_sha256"]),
+    }
+    for field, expected_value in expected.items():
+        actual_value = str(getattr(evidence, field))
+        if actual_value != expected_value:
+            raise RuntimeError(
+                "scheduled completion evidence mismatch: "
+                f"{field} expected={expected_value} actual={actual_value}"
+            )
+    if str(generation.get("generation_type")) == "databridge_v1":
+        if native_generation is None:
+            raise RuntimeError(
+                "scheduled completion is missing linked native generation"
+            )
+        native_expected = {
+            "native_generation_id": str(
+                native_generation["generation_id"]
+            ),
+            "native_manifest_sha256": str(
+                native_generation["manifest_sha256"]
+            ),
+            "native_dataset_content_id": str(
+                native_generation["dataset_content_id"]
+            ),
+            "native_schema_version": str(
+                native_generation["schema_version"]
+            ),
+            "native_exporter_version": str(
+                native_generation["exporter_version"]
+            ),
+            "native_feature_date": str(
+                native_generation["feature_date"]
+            ),
+        }
+        for field, expected_value in native_expected.items():
+            actual_value = getattr(evidence, field)
+            if actual_value is None or str(actual_value) != expected_value:
+                raise RuntimeError(
+                    "scheduled completion evidence mismatch: "
+                    f"{field} expected={expected_value} "
+                    f"actual={actual_value}"
+                )
+    elif any(
+        getattr(evidence, field) is not None
+        for field in (
+            "native_generation_id",
+            "native_manifest_sha256",
+            "native_dataset_content_id",
+            "native_schema_version",
+            "native_exporter_version",
+            "native_feature_date",
+        )
+    ):
+        raise RuntimeError(
+            "native scheduled completion evidence cannot contain a linked "
+            "native generation"
+        )
+
+
+def _validate_cache_qualified_completion(
+    *,
+    occurrence: Mapping[str, object],
+    item: Mapping[str, object],
+    generation: Mapping[str, object],
+    records: Iterable[PredictionRecord],
+) -> None:
+    """在提交事务内二次复核冻结 qualification 与 cache acceptance 文件。"""
+    policy = _stored_json_mapping(occurrence, "policy_json")
+    scheme_id = str(item["base_scheme_id"])
+    raw_qualifications = policy.get("cache_use_qualifications")
+    raw_schemes = policy.get("schemes")
+    expected_spec = None
+    if isinstance(raw_schemes, list):
+        matches = [
+            row
+            for row in raw_schemes
+            if (
+                isinstance(row, Mapping)
+                and row.get("scheme_id") == scheme_id
+            )
+        ]
+        if len(matches) == 1:
+            expected_spec = matches[0].get(
+                "cache_spec_fingerprint"
+            )
+    raw_qualification = (
+        raw_qualifications.get(scheme_id)
+        if isinstance(raw_qualifications, Mapping)
+        else None
+    )
+    if raw_qualification is None:
+        if expected_spec is not None:
+            raise RuntimeError(
+                "cache-qualified completion is missing frozen qualification"
+            )
+        return
+    if not isinstance(raw_qualification, Mapping):
+        raise RuntimeError(
+            "frozen cache qualification must be an object"
+        )
+    if str(generation.get("generation_type")) != "native_source":
+        raise RuntimeError(
+            "cache qualification is only valid for Native generation"
+        )
+    candidate = policy.get("capacity_candidate_fingerprint")
+    if not isinstance(candidate, str):
+        raise RuntimeError(
+            "cache qualification is missing capacity candidate"
+        )
+    try:
+        trusted = validate_trusted_cache_use_qualification(
+            raw_qualification,
+            expected_base_scheme_id=scheme_id,
+            expected_candidate_fingerprint=candidate,
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "frozen cache qualification is invalid"
+        ) from exc
+    qualification = trusted["qualification"]
+    expected_consumer = {
+        "scheme_version": str(item["scheme_version"]),
+        "cache_group": str(item["cache_group"]),
+        "spec_fingerprint": expected_spec,
+    }
+    mismatches = [
+        field
+        for field, expected_value in expected_consumer.items()
+        if qualification.get(field) != expected_value
+    ]
+    if mismatches:
+        raise RuntimeError(
+            "cache completion consumer identity mismatch: "
+            + ",".join(sorted(mismatches))
+        )
+    expected_native_generation = {
+        "generation_id": str(generation["generation_id"]),
+        "manifest_sha256": str(generation["manifest_sha256"]),
+        "dataset_content_id": str(generation["dataset_content_id"]),
+        "business_date": str(generation["business_date"]),
+        "feature_date": str(generation["feature_date"]),
+        "schema_version": str(generation["schema_version"]),
+        "exporter_version": str(generation["exporter_version"]),
+    }
+    # 延迟 import 避免通用 repository 启动路径无条件加载 pandas/numpy。
+    from shared.liwei_0616_phase_a_cache import (
+        verify_phase_a_cache_audit_files,
+    )
+
+    saw_record = False
+    for record in records:
+        saw_record = True
+        try:
+            validate_prediction_cache_audit(
+                record.extra,
+                expected_qualification=trusted,
+                expected_native_generation=expected_native_generation,
+            )
+            verify_phase_a_cache_audit_files(
+                record.extra or {},
+                expected_qualification=trusted,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "cache-qualified completion audit verification failed"
+            ) from exc
+    if not saw_record:
+        raise RuntimeError(
+            "cache-qualified completion contains no records"
+        )
+
+
+def _validate_stored_occurrence_cardinality(
+    conn: Connection,
+    occurrence: Mapping[str, object],
+) -> None:
+    occurrence_id = int(occurrence["occurrence_id"])
+    item_count = int(
+        conn.execute(
+            text(
+                "SELECT COUNT(*) FROM t_schedule_items "
+                "WHERE occurrence_id = :occurrence_id"
+            ),
+            {"occurrence_id": occurrence_id},
+        ).scalar_one()
+    )
+    target_count = int(
+        conn.execute(
+            text(
+                "SELECT COUNT(*) FROM t_schedule_item_targets "
+                "WHERE occurrence_id = :occurrence_id"
+            ),
+            {"occurrence_id": occurrence_id},
+        ).scalar_one()
+    )
+    expected_items = int(occurrence["expected_item_count"])
+    expected_targets = int(occurrence["expected_target_count"])
+    if item_count != expected_items or target_count != expected_targets:
+        raise RuntimeError(
+            "stored daily occurrence cardinality mismatch: "
+            f"expected items={expected_items} targets={expected_targets}, "
+            f"got items={item_count} targets={target_count}"
+        )
+
+
+def _read_active_daily_registry_snapshot_rows(
+    conn: Connection,
+    *,
+    target_dates: Mapping[str, str],
+    item_policy_by_base: Mapping[str, Mapping[str, object]],
+) -> list[Mapping[str, object]]:
+    lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+    rows = (
+        conn.execute(
+            text(
+                """
+                SELECT r.scheme_id, r.base_scheme_id, r.runtime_type,
+                       r.status, r.frequency, r.task_type, r.target_tenor,
+                       r.horizon
+                FROM t_scheme_registry r
+                WHERE r.status = 'active'
+                  AND r.frequency = 'daily'
+                ORDER BY r.base_scheme_id, r.scheme_id
+                """
+                + lock
+            )
+        )
+        .mappings()
+        .all()
+    )
+    registry_ids = {str(row["scheme_id"]) for row in rows}
+    base_scheme_ids = {str(row["base_scheme_id"]) for row in rows}
+    if set(item_policy_by_base) != base_scheme_ids:
+        raise ValueError(
+            "item policy must exactly match active daily base schemes: "
+            f"missing={sorted(base_scheme_ids - set(item_policy_by_base))}, "
+            f"extra={sorted(set(item_policy_by_base) - base_scheme_ids)}"
+        )
+    normalized_target_dates = {
+        str(registry_id): date.fromisoformat(str(target_date)).isoformat()
+        for registry_id, target_date in target_dates.items()
+    }
+    if set(normalized_target_dates) != registry_ids:
+        raise ValueError(
+            "target_dates must exactly match active daily Registry ids: "
+            f"missing={sorted(registry_ids - set(normalized_target_dates))}, "
+            f"extra={sorted(set(normalized_target_dates) - registry_ids)}"
+        )
+    version_by_base: dict[str, Mapping[str, object]] = {}
+    for base_scheme_id in sorted(base_scheme_ids):
+        policy = dict(item_policy_by_base[base_scheme_id])
+        policy_scheme_version = _require_nonempty(
+            str(policy.get("scheme_version") or ""),
+            f"{base_scheme_id}.scheme_version",
+        )
+        version = _select_mapping_one_or_none(
+            conn,
+            """
+            SELECT scheme_id, scheme_version, runtime_type,
+                   code_hash AS code_sha256,
+                   config_hash AS config_sha256, status
+            FROM t_scheme_versions
+            WHERE scheme_id = :scheme_id
+              AND scheme_version = :scheme_version
+              AND status = 'active'
+            """,
+            {
+                "scheme_id": base_scheme_id,
+                "scheme_version": policy_scheme_version,
+            },
+            for_update=True,
+        )
+        if version is None:
+            raise ValueError(
+                "active version not found for exact item policy "
+                "(scheme_version): "
+                f"{base_scheme_id}/{policy_scheme_version}"
+            )
+        version_by_base[base_scheme_id] = version
+    frozen_rows: list[Mapping[str, object]] = []
+    for source in rows:
+        row = dict(source)
+        base_scheme_id = str(row["base_scheme_id"])
+        policy = dict(item_policy_by_base[base_scheme_id])
+        version = version_by_base[base_scheme_id]
+        if str(version["runtime_type"]) != str(row["runtime_type"]):
+            raise ValueError(
+                "Registry/version runtime_type mismatch for "
+                f"{base_scheme_id}: registry={row['runtime_type']} "
+                f"version={version['runtime_type']}"
+            )
+        row.update(
+            {
+                "scheme_version": version["scheme_version"],
+                "code_sha256": version["code_sha256"],
+                "config_sha256": version["config_sha256"],
+            }
+        )
+        policy_scheme_version = _require_nonempty(
+            str(policy.get("scheme_version") or ""),
+            f"{base_scheme_id}.scheme_version",
+        )
+        policy_code_sha256 = _require_sha256(
+            str(policy.get("code_sha256") or ""),
+            f"{base_scheme_id}.code_sha256",
+        )
+        policy_config_sha256 = _require_sha256(
+            str(policy.get("config_sha256") or ""),
+            f"{base_scheme_id}.config_sha256",
+        )
+        identity_pairs = (
+            ("scheme_version", policy_scheme_version),
+            ("code_sha256", policy_code_sha256),
+            ("config_sha256", policy_config_sha256),
+        )
+        for field, expected in identity_pairs:
+            actual = str(row[field])
+            if actual != expected:
+                raise ValueError(
+                    f"item policy {field} mismatch for {base_scheme_id}: "
+                    f"expected={expected} active_db={actual}"
+                )
+        cache_group = _require_nonempty(
+            str(policy.get("cache_group") or ""),
+            f"{base_scheme_id}.cache_group",
+        )
+        resource_class = _require_nonempty(
+            str(policy.get("resource_class") or ""),
+            f"{base_scheme_id}.resource_class",
+        )
+        try:
+            internal_workers = int(policy["internal_workers"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{base_scheme_id}.internal_workers must be a positive integer"
+            ) from exc
+        if internal_workers <= 0:
+            raise ValueError(
+                f"{base_scheme_id}.internal_workers must be a positive integer"
+            )
+        try:
+            release_offset_minutes = int(
+                policy["release_offset_minutes"]
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{base_scheme_id}.release_offset_minutes must be a "
+                "non-negative integer"
+            ) from exc
+        if (
+            isinstance(policy["release_offset_minutes"], bool)
+            or release_offset_minutes < 0
+        ):
+            raise ValueError(
+                f"{base_scheme_id}.release_offset_minutes must be a "
+                "non-negative integer"
+            )
+        release_at = _require_policy_datetime(
+            policy.get("release_at"),
+            f"{base_scheme_id}.release_at",
+        )
+        deadline_at = _require_policy_datetime(
+            policy.get("deadline_at"),
+            f"{base_scheme_id}.deadline_at",
+        )
+        if _as_datetime(release_at, "release_at") >= _as_datetime(
+            deadline_at,
+            "deadline_at",
+        ):
+            raise ValueError(
+                f"{base_scheme_id} release_at must be earlier than deadline_at"
+            )
+        row.update(
+            {
+                "target_date": normalized_target_dates[str(row["scheme_id"])],
+                "cache_group": cache_group,
+                "resource_class": resource_class,
+                "internal_workers": internal_workers,
+                "release_offset_minutes": release_offset_minutes,
+                "release_at": release_at,
+                "deadline_at": deadline_at,
+            }
+        )
+        frozen_rows.append(row)
+    return frozen_rows
+
+
+def _datetime_text_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _utc_datetime6(value).isoformat(sep=" ")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    raise ValueError("datetime policy values must be datetime or non-empty text")
+
+
+def _require_policy_datetime(value: object, field: str) -> str:
+    normalized = _datetime_text_or_none(value)
+    if normalized is None:
+        raise ValueError(f"{field} is required")
+    try:
+        parsed = _as_datetime(normalized, field)
+    except RuntimeError as exc:
+        raise ValueError(f"{field} must be an ISO datetime") from exc
+    return parsed.isoformat(sep=" ")
+
+
+def _result_lastrowid(conn: Connection, result: object) -> int:
+    value = getattr(result, "lastrowid", None)
+    if value not in (None, 0):
+        return int(value)
+    if _dialect_name(conn) == "sqlite":
+        return int(conn.execute(text("SELECT last_insert_rowid()")).scalar_one())
+    return int(conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one())
+
+
+def _require_rowcount(result: object, expected: int, operation: str) -> None:
+    actual = int(getattr(result, "rowcount", 0) or 0)
+    if actual != expected:
+        raise RuntimeError(
+            f"{operation} affected {actual} rows, expected {expected}"
+        )
+
+
+def _as_datetime(value: object, field: str) -> datetime:
+    if isinstance(value, datetime):
+        return _utc_datetime6(value)
+    if isinstance(value, str):
+        try:
+            return _utc_datetime6(datetime.fromisoformat(value))
+        except ValueError as exc:
+            raise RuntimeError(f"invalid stored {field}: {value!r}") from exc
+    raise RuntimeError(f"invalid stored {field}: {value!r}")
+
+
+def _optional_stored_datetime(
+    value: object,
+    field: str,
+) -> datetime | None:
+    return None if value is None else _as_datetime(value, field)
+
+
+def _dashboard_generation_timestamp(value: object) -> str | None:
+    if value is None:
+        return None
+    return _as_datetime(value, "dashboard source timestamp").isoformat(
+        timespec="microseconds"
+    )
+
+
+def _schedule_visibility_source_generation(
+    *,
+    schedule_key: str,
+    occurrence: Mapping[str, object] | None,
+    target_rows: Iterable[Mapping[str, object]],
+) -> str:
+    payload = {
+        "schedule_key": schedule_key,
+        "occurrence_id": (
+            None
+            if occurrence is None
+            else int(occurrence["occurrence_id"])
+        ),
+        "predict_date": (
+            None
+            if occurrence is None
+            else _stored_iso_date(occurrence, "predict_date")
+        ),
+        "targets": [
+            {
+                "target_id": int(row["target_id"]),
+                "registry_scheme_id": _stored_text(
+                    row,
+                    "registry_scheme_id",
+                ),
+                "status": _stored_text(row, "status"),
+                "accepted_run_id": _optional_int(
+                    row.get("accepted_run_id")
+                ),
+                "accepted_prediction_id": _optional_int(
+                    row.get("accepted_prediction_id")
+                ),
+                "accepted_at": _dashboard_generation_timestamp(
+                    row.get("accepted_at")
+                ),
+                "visible_at": _dashboard_generation_timestamp(
+                    row.get("visible_at")
+                ),
+            }
+            for row in target_rows
+        ],
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _stored_text(row: Mapping[str, object], field: str) -> str:
+    value = row.get(field)
+    if value is None or not str(value).strip():
+        raise RuntimeError(f"invalid stored {field}: {value!r}")
+    return str(value)
+
+
+def _optional_stored_text(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _optional_stored_schedule_failure_code(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value)
+    if normalized not in SCHEDULE_FAILURE_CODES:
+        raise RuntimeError(
+            "non-canonical stored schedule failure_code; "
+            f"explicit audit migration required: {normalized!r}"
+        )
+    return normalized
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(value)
+
+
+def _stored_iso_date(
+    row: Mapping[str, object],
+    field: str,
+) -> str:
+    value = row.get(field)
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value).isoformat()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"invalid stored {field}: {value!r}"
+            ) from exc
+    raise RuntimeError(f"invalid stored {field}: {value!r}")
+
+
+def _stored_json_mapping(
+    row: Mapping[str, object],
+    field: str,
+) -> Mapping[str, object]:
+    value = row.get(field)
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"invalid stored {field}: malformed JSON"
+            ) from exc
+    if not isinstance(value, Mapping):
+        raise RuntimeError(
+            f"invalid stored {field}: expected JSON object"
+        )
+    return dict(value)
+
+
+def _assert_deployed_epoch_payload(
+    frozen: object,
+    *,
+    label: str,
+) -> None:
+    """所有 ledger 写入口都必须验证非零、exact epoch capability。"""
+    assert_daily_coordinator_epoch_payload_matches_current(
+        frozen,
+        label=label,
+    )
+
+
+def _assert_occurrence_epoch_conn(
+    occurrence: Mapping[str, object],
+) -> None:
+    policy = _stored_json_mapping(occurrence, "policy_json")
+    _assert_deployed_epoch_payload(
+        policy.get("daily_coordinator_epoch"),
+        label="daily occurrence coordinator epoch",
+    )
+
+
 def create_scheme_run(
     engine: Engine,
     *,
@@ -1167,18 +7487,133 @@ def create_scheme_run(
     input_artifact_id: str | None = None,
     data_snapshot_id: str | None = None,
     records_expected: int | None = None,
+    schedule_item_id: int | None = None,
+    attempt_no: int | None = None,
+    trigger_origin: str | None = None,
+    queued_at: datetime | None = None,
+    failure_code: str | None = None,
+    execution_token: str | None = None,
+    process_id: int | None = None,
+    process_group_id: int | None = None,
+    schedule_frequency: str | None = None,
+    enforce_scheduled_live_ledger: bool = False,
+    _clock: _LedgerClock | None = None,
 ) -> int:
     """创建一次不可变预测运行记录，返回 run_id。"""
     if prediction_phase is not None and prediction_phase not in VALID_PREDICTION_PHASES:
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
+    normalized_frequency = None
+    if schedule_frequency is not None:
+        normalized_frequency = _require_bounded_identifier(
+            schedule_frequency,
+            "schedule_frequency",
+            max_length=16,
+        )
+        if normalized_frequency not in {"daily", "weekly", "monthly"}:
+            raise ValueError(
+                "schedule_frequency must be daily, weekly, or monthly"
+            )
+    if prediction_phase == "scheduled_live" and schedule_item_id is None:
+        daily_or_unknown = normalized_frequency not in {
+            "weekly",
+            "monthly",
+        }
+        coordinator_mode = (
+            require_daily_coordinator_mode()
+            if daily_or_unknown
+            else None
+        )
+        if enforce_scheduled_live_ledger or (
+            coordinator_mode == "ledger" and daily_or_unknown
+        ):
+            raise RuntimeError(
+                "scheduled_live daily creation requires a daily ledger "
+                "item in ledger mode"
+            )
+    effective_queued_at = queued_at
+    if queued_at is not None:
+        effective_queued_at, _trusted_now = _ledger_event_time(
+            queued_at,
+            field="queued_at",
+            clock=_clock,
+        )
+    with engine.begin() as conn:
+        return _create_scheme_run_conn(
+            conn,
+            scheme_id=scheme_id,
+            predict_date=predict_date,
+            scheme_version=scheme_version,
+            runtime_type=runtime_type,
+            run_type=run_type,
+            prediction_phase=prediction_phase,
+            status=status,
+            harness_run_id=harness_run_id,
+            input_artifact_id=input_artifact_id,
+            data_snapshot_id=data_snapshot_id,
+            records_expected=records_expected,
+            schedule_item_id=schedule_item_id,
+            attempt_no=attempt_no,
+            trigger_origin=trigger_origin,
+            queued_at=effective_queued_at,
+            failure_code=failure_code,
+            execution_token=execution_token,
+            process_id=process_id,
+            process_group_id=process_group_id,
+        )
+
+
+def _create_scheme_run_conn(
+    conn: Connection,
+    *,
+    scheme_id: str,
+    predict_date: str,
+    scheme_version: str | None = None,
+    runtime_type: str = "native_adapter",
+    run_type: str = "active",
+    prediction_phase: str | None = None,
+    status: str = "running",
+    harness_run_id: str | None = None,
+    input_artifact_id: str | None = None,
+    data_snapshot_id: str | None = None,
+    records_expected: int | None = None,
+    schedule_item_id: int | None = None,
+    attempt_no: int | None = None,
+    trigger_origin: str | None = None,
+    queued_at: datetime | None = None,
+    failure_code: str | None = None,
+    execution_token: str | None = None,
+    process_id: int | None = None,
+    process_group_id: int | None = None,
+) -> int:
+    """在调用方事务内创建 scheme run。"""
+    normalized_trigger_origin = (
+        _require_schedule_trigger_origin(trigger_origin)
+        if trigger_origin is not None
+        else None
+    )
+    normalized_failure_code = None
+    if failure_code is not None:
+        normalized_failure_code = (
+            _require_schedule_failure_code(failure_code)
+            if schedule_item_id is not None
+            else _require_bounded_identifier(
+                failure_code,
+                "failure_code",
+                max_length=64,
+            )
+        )
     sql = text(
         """
         INSERT INTO t_scheme_runs
             (scheme_id, scheme_version, runtime_type, run_type, prediction_phase, predict_date, status,
-             harness_run_id, input_artifact_id, data_snapshot_id, records_expected)
+             harness_run_id, input_artifact_id, data_snapshot_id, records_expected,
+             schedule_item_id, attempt_no, trigger_origin, queued_at, failure_code,
+             execution_token, process_id, process_group_id)
         VALUES
             (:scheme_id, :scheme_version, :runtime_type, :run_type, :prediction_phase, :predict_date, :status,
-             :harness_run_id, :input_artifact_id, :data_snapshot_id, :records_expected)
+             :harness_run_id, :input_artifact_id, :data_snapshot_id, :records_expected,
+             :schedule_item_id, :attempt_no, :trigger_origin, :queued_at, :failure_code,
+             :execution_token, :process_id, :process_group_id)
         """
     )
     params = {
@@ -1193,12 +7628,19 @@ def create_scheme_run(
         "input_artifact_id": input_artifact_id,
         "data_snapshot_id": data_snapshot_id,
         "records_expected": records_expected,
+        "schedule_item_id": schedule_item_id,
+        "attempt_no": attempt_no,
+        "trigger_origin": normalized_trigger_origin,
+        "queued_at": queued_at,
+        "failure_code": normalized_failure_code,
+        "execution_token": execution_token,
+        "process_id": process_id,
+        "process_group_id": process_group_id,
     }
-    with engine.begin() as conn:
-        result = conn.execute(sql, params)
-        run_id = getattr(result, "lastrowid", None)
-        if run_id is None:
-            run_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
+    result = conn.execute(sql, params)
+    run_id = getattr(result, "lastrowid", None)
+    if run_id is None:
+        run_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar_one()
     return int(run_id)
 
 
@@ -1227,9 +7669,34 @@ def finish_scheme_run(
     records_returned: int | None = None,
     records_written: int | None = None,
     error_message: str | None = None,
+    finished_at: datetime | None = None,
+    _clock: _LedgerClock | None = None,
 ) -> None:
     """标记预测运行结束。"""
+    effective_time, _trusted_now = _ledger_event_time(
+        finished_at,
+        field="finished_at",
+        clock=_clock,
+    )
     with engine.begin() as conn:
+        _assert_run_not_ledger_bound_conn(
+            conn,
+            run_id=int(run_id),
+            operation="generic finish",
+        )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        if run is None:
+            raise RuntimeError(f"scheme run not found: {run_id}")
+        _require_not_before(
+            effective_time,
+            run.get("started_at"),
+            event_field="finished_at",
+            lower_field="run started_at",
+        )
         _finish_scheme_run_conn(
             conn,
             run_id=run_id,
@@ -1237,6 +7704,7 @@ def finish_scheme_run(
             records_returned=records_returned,
             records_written=records_written,
             error_message=error_message,
+            finished_at=effective_time,
         )
 
 
@@ -1248,6 +7716,7 @@ def _finish_scheme_run_conn(
     records_returned: int | None = None,
     records_written: int | None = None,
     error_message: str | None = None,
+    finished_at: datetime | None = None,
     require_exact_run: bool = False,
 ) -> None:
     """在调用方事务中标记预测运行结束。"""
@@ -1255,7 +7724,7 @@ def _finish_scheme_run_conn(
         """
         UPDATE t_scheme_runs
         SET status = :status,
-            finished_at = CURRENT_TIMESTAMP,
+            finished_at = COALESCE(:finished_at, CURRENT_TIMESTAMP),
             records_returned = :records_returned,
             records_written = :records_written,
             error_message = :error_message
@@ -1270,6 +7739,7 @@ def _finish_scheme_run_conn(
             "records_returned": records_returned,
             "records_written": records_written,
             "error_message": error_message,
+            "finished_at": finished_at,
         },
     )
     if require_exact_run and int(getattr(result, "rowcount", 0) or 0) != 1:
@@ -1288,6 +7758,11 @@ def insert_run_predictions(
 ) -> int:
     """UPSERT 预测记录，按 UK (scheme_id, target_tenor, horizon, target_date) 覆盖。"""
     with engine.begin() as conn:
+        _assert_run_not_ledger_bound_conn(
+            conn,
+            run_id=int(run_id),
+            operation="generic prediction insert",
+        )
         return _insert_run_predictions_conn(
             conn,
             run_id,
@@ -1311,6 +7786,11 @@ def insert_approved_blackbox_predictions(
         records,
         scheme_version=scheme_version,
     ) as (conn, record_list, exact_scheme_version):
+        _assert_run_not_ledger_bound_conn(
+            conn,
+            run_id=int(run_id),
+            operation="generic approved prediction insert",
+        )
         return _insert_run_predictions_conn(
             conn,
             run_id,
@@ -1339,6 +7819,11 @@ def complete_approved_blackbox_run(
         records,
         scheme_version=scheme_version,
     ) as (conn, record_list, exact_scheme_version):
+        _assert_run_not_ledger_bound_conn(
+            conn,
+            run_id=int(run_id),
+            operation="generic approved completion",
+        )
         if records_returned != len(record_list):
             raise RuntimeError(
                 "Blackbox completion records_returned mismatch: "
@@ -1391,6 +7876,11 @@ def fail_scheme_run_atomic(
 ) -> None:
     """以独立事务同时写入 failed run 状态与失败日志。"""
     with engine.begin() as conn:
+        _assert_run_not_ledger_bound_conn(
+            conn,
+            run_id=int(run_id),
+            operation="generic failure",
+        )
         _finish_scheme_run_conn(
             conn,
             run_id=run_id,
@@ -1484,28 +7974,46 @@ def _insert_run_predictions_conn(
     insert_only: bool = False,
 ) -> int:
     """在调用方事务中写入预测；历史灰度补齐使用 insert-only。"""
+    sqlite = _dialect_name(conn) == "sqlite"
+    extra_expression = ":extra" if sqlite else "CAST(:extra AS JSON)"
     statement = """
         INSERT INTO t_scheme_predictions
             (run_id, scheme_version, scheme_id, target_tenor, horizon, predict_date, feature_date, target_date,
              prediction_phase, predicted_direction, confidence, model_version, extra)
         VALUES
             (:run_id, :scheme_version, :scheme_id, :target_tenor, :horizon, :predict_date, :feature_date, :target_date,
-             :prediction_phase, :predicted_direction, :confidence, :model_version, CAST(:extra AS JSON))
-        """
+             :prediction_phase, :predicted_direction, :confidence, :model_version, {extra_expression})
+        """.format(extra_expression=extra_expression)
     if not insert_only:
-        statement += """
-        ON DUPLICATE KEY UPDATE
-            run_id = VALUES(run_id),
-            scheme_version = VALUES(scheme_version),
-            predict_date = VALUES(predict_date),
-            feature_date = VALUES(feature_date),
-            prediction_phase = VALUES(prediction_phase),
-            predicted_direction = VALUES(predicted_direction),
-            confidence = VALUES(confidence),
-            model_version = VALUES(model_version),
-            extra = VALUES(extra),
-            updated_at = CURRENT_TIMESTAMP
-        """
+        if sqlite:
+            statement += """
+            ON CONFLICT(scheme_id, target_tenor, horizon, target_date)
+            DO UPDATE SET
+                run_id = excluded.run_id,
+                scheme_version = excluded.scheme_version,
+                predict_date = excluded.predict_date,
+                feature_date = excluded.feature_date,
+                prediction_phase = excluded.prediction_phase,
+                predicted_direction = excluded.predicted_direction,
+                confidence = excluded.confidence,
+                model_version = excluded.model_version,
+                extra = excluded.extra,
+                updated_at = CURRENT_TIMESTAMP
+            """
+        else:
+            statement += """
+            ON DUPLICATE KEY UPDATE
+                run_id = VALUES(run_id),
+                scheme_version = VALUES(scheme_version),
+                predict_date = VALUES(predict_date),
+                feature_date = VALUES(feature_date),
+                prediction_phase = VALUES(prediction_phase),
+                predicted_direction = VALUES(predicted_direction),
+                confidence = VALUES(confidence),
+                model_version = VALUES(model_version),
+                extra = VALUES(extra),
+                updated_at = CURRENT_TIMESTAMP
+            """
     sql = text(statement)
     rows = []
     for record in records:
@@ -1528,6 +8036,11 @@ def _insert_run_predictions_conn(
         extra["feature_date"] = str(feature_date)
         extra["prediction_phase"] = str(phase)
         row["run_id"] = record.run_id if record.run_id is not None else run_id
+        if int(row["run_id"]) != int(run_id):
+            raise RuntimeError(
+                "prediction record run_id must match the committing run: "
+                f"{row['run_id']} != {run_id}"
+            )
         row["scheme_version"] = record.scheme_version if record.scheme_version is not None else scheme_version
         row["feature_date"] = str(feature_date)
         row["prediction_phase"] = str(phase)
@@ -1535,8 +8048,150 @@ def _insert_run_predictions_conn(
         rows.append(row)
     if not rows:
         return 0
+    if not insert_only:
+        _assert_prediction_keys_not_frozen_by_daily_ledger_conn(
+            conn,
+            rows,
+        )
     conn.execute(sql, rows)
     return len(rows)
+
+
+def _assert_prediction_keys_not_frozen_by_daily_ledger_conn(
+    conn: Connection,
+    rows: Iterable[Mapping[str, object]],
+) -> None:
+    """阻止 generic UPSERT 改写 occurrence 已冻结的 canonical key。
+
+    先按稳定 key 顺序锁 target，和 ledger completion 的 target→prediction
+    顺序一致。迁移尚未启用的 legacy 数据库没有 ledger 表，此时保持旧
+    写入行为，便于受控回滚。
+    """
+    if not _daily_schedule_ledger_schema_available_conn(conn):
+        return
+    keys = {
+        (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+            str(row["target_date"]),
+        )
+        for row in rows
+    }
+    candidate_items: dict[int, set[int]] = {}
+    for scheme_id, tenor, horizon, target_date in sorted(keys):
+        candidates = (
+            conn.execute(
+                text(
+                    """
+                    SELECT occurrence_id, item_id
+                    FROM t_schedule_item_targets
+                    WHERE base_scheme_id = :base_scheme_id
+                      AND target_tenor = :target_tenor
+                      AND horizon = :horizon
+                      AND target_date = :target_date
+                    ORDER BY occurrence_id, item_id, target_id
+                    """
+                ),
+                {
+                    "base_scheme_id": scheme_id,
+                    "target_tenor": tenor,
+                    "horizon": horizon,
+                    "target_date": target_date,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        for candidate in candidates:
+            candidate_items.setdefault(
+                int(candidate["occurrence_id"]),
+                set(),
+            ).add(int(candidate["item_id"]))
+    if not candidate_items:
+        return
+
+    # 与 ledger completion 完全相同地先锁 occurrence→ordered siblings，
+    # 再按 item/target_id 锁 target。不能按 tenor 逐行 FOR UPDATE，否则
+    # 5Y/10Y 等逻辑顺序与 target_id 顺序相反时会制造死锁。
+    for occurrence_id in sorted(candidate_items):
+        occurrence = _read_schedule_occurrence_by_id_conn(
+            conn,
+            occurrence_id=occurrence_id,
+            for_update=True,
+        )
+        if occurrence is None:
+            continue
+        _assert_occurrence_epoch_conn(occurrence)
+        siblings = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=occurrence_id,
+            for_update=True,
+        )
+        sibling_ids = {
+            int(item["item_id"])
+            for item in siblings
+        }
+        frozen: list[Mapping[str, object]] = []
+        for item_id in sorted(
+            candidate_items[occurrence_id] & sibling_ids
+        ):
+            for target in _read_schedule_targets_conn(
+                conn,
+                item_id=item_id,
+                for_update=True,
+            ):
+                identity = (
+                    str(target["base_scheme_id"]),
+                    str(target["target_tenor"]),
+                    int(target["horizon"]),
+                    str(target["target_date"]),
+                )
+                if identity in keys:
+                    frozen.append(target)
+        if not frozen:
+            continue
+        identities = [
+            {
+                "target_id": int(row["target_id"]),
+                "occurrence_id": int(row["occurrence_id"]),
+                "status": str(row["status"]),
+                "accepted_run_id": _optional_int(
+                    row.get("accepted_run_id")
+                ),
+                "accepted_prediction_id": _optional_int(
+                    row.get("accepted_prediction_id")
+                ),
+            }
+            for row in frozen
+        ]
+        first = frozen[0]
+        raise RuntimeError(
+            "generic prediction mutation rejected for frozen daily "
+            "ledger target: "
+            f"{first['base_scheme_id']}/{first['target_tenor']}/"
+            f"h{first['horizon']}/{first['target_date']} "
+            f"targets={identities}"
+        )
+
+
+def _daily_schedule_ledger_schema_available_conn(conn: Connection) -> bool:
+    """确认 ledger Schema 是否存在；无法检查时必须有显式连接能力声明。"""
+    try:
+        return bool(inspect(conn).has_table("t_schedule_item_targets"))
+    except NoInspectionAvailable as exc:
+        capabilities = getattr(conn, "schema_capabilities", None)
+        if (
+            not isinstance(capabilities, Mapping)
+            or "daily_schedule_ledger" not in capabilities
+            or type(capabilities["daily_schedule_ledger"]) is not bool
+        ):
+            raise RuntimeError(
+                "cannot determine daily ledger schema availability; "
+                "connection is not SQLAlchemy-inspectable and has no explicit "
+                "boolean daily_schedule_ledger capability"
+            ) from exc
+        return capabilities["daily_schedule_ledger"]
 
 
 def upsert_input_artifact(engine: Engine, artifact: InputArtifact) -> str:

@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from datetime import datetime
 from types import SimpleNamespace
@@ -37,10 +38,431 @@ def _cfg(
 
 
 class SchedulerMainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._mode_patcher = patch.dict(
+            os.environ,
+            {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+        )
+        self._mode_patcher.start()
+        self._capacity_patcher = patch(
+            "scheduler.main.require_current_capacity_admission",
+            return_value={"status": "ADMITTED"},
+        )
+        self._capacity_patcher.start()
+
+    def tearDown(self) -> None:
+        self._capacity_patcher.stop()
+        self._mode_patcher.stop()
+
+    def test_ledger_mode_registers_one_daily_coordinator_and_isolates_pools(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        schemes = [
+            _cfg("daily_native", frequency="daily"),
+            _cfg("weekly_native", frequency="weekly"),
+            _cfg("monthly_native", frequency="monthly"),
+        ]
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BOND_DAILY_COORDINATOR_MODE": "ledger",
+                    "BOND_SCHEDULER_STARTUP_CATCHUP": "false",
+                },
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            jobs = {job.id: job for job in scheduler.get_jobs()}
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertIn("daily:coordinator", jobs)
+        self.assertEqual(
+            jobs["daily:coordinator"].func.__name__,
+            "run_daily_coordinator_job",
+        )
+        self.assertEqual(jobs["daily:coordinator"].executor, "daily_control")
+        self.assertIn("hour='6'", str(jobs["daily:coordinator"].trigger))
+        self.assertIn("minute='30'", str(jobs["daily:coordinator"].trigger))
+        self.assertNotIn("predict:daily_native", jobs)
+        self.assertEqual(
+            jobs["predict:weekly_native"].executor,
+            "recurring_predictions",
+        )
+        self.assertEqual(
+            jobs["predict:monthly_native"].executor,
+            "recurring_predictions",
+        )
+        for job_id in (
+            "daily:databridge-readiness:0655",
+            "daily:watchdog:0700",
+            "daily:v2-guardrail:0745",
+        ):
+            self.assertIn(job_id, jobs)
+            self.assertEqual(
+                jobs[job_id].executor,
+                "daily_soft_watchdog",
+            )
+        self.assertEqual(
+            jobs["daily:sla:0800"].executor,
+            "daily_sla",
+        )
+        self.assertEqual(
+            jobs["daily:recovery-cutoff:0830"].executor,
+            "daily_cutoff",
+        )
+        self.assertIn("daily:heartbeat", jobs)
+        self.assertEqual(
+            jobs["daily:heartbeat"].func.__name__,
+            "run_daily_heartbeat_job",
+        )
+        self.assertEqual(
+            jobs["daily:heartbeat"].executor,
+            "daily_heartbeat",
+        )
+        self.assertIn("0:00:30", str(jobs["daily:heartbeat"].trigger))
+        recovery_loop = jobs["daily:recovery-loop"]
+        self.assertEqual(
+            recovery_loop.func.__name__,
+            "run_daily_recovery_tick_job",
+        )
+        self.assertEqual(recovery_loop.executor, "daily_recovery")
+        self.assertEqual(
+            len(
+                {
+                    jobs["daily:heartbeat"].executor,
+                    jobs["daily:sla:0800"].executor,
+                    jobs["daily:recovery-cutoff:0830"].executor,
+                    recovery_loop.executor,
+                    jobs["daily:coordinator"].executor,
+                }
+            ),
+            5,
+        )
+        self.assertEqual(
+            recovery_loop.kwargs["algo_env"],
+            "forecast_env",
+        )
+        self.assertIn("hour='6-8'", str(recovery_loop.trigger))
+        self.assertIn("minute='1-59/2'", str(recovery_loop.trigger))
+        for job_id in ("actuals:0830", "actuals:1900", "actuals:2345"):
+            self.assertEqual(jobs[job_id].executor, "actuals")
+
+    def test_recovery_tick_reenters_same_coordinator_only_inside_window(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+        from zoneinfo import ZoneInfo
+
+        shanghai = ZoneInfo("Asia/Shanghai")
+        with patch.object(
+            scheduler_main,
+            "run_daily_coordinator_job",
+            return_value="resumed",
+        ) as coordinator, patch.object(
+            scheduler_main,
+            "run_daily_watchdog_job",
+            return_value="cutoff-reconciled",
+        ) as watchdog:
+            before = scheduler_main.run_daily_recovery_tick_job(
+                run_date="2026-07-24",
+                now=datetime(2026, 7, 24, 6, 29, tzinfo=shanghai),
+            )
+            active = scheduler_main.run_daily_recovery_tick_job(
+                run_date="2026-07-24",
+                now=datetime(2026, 7, 24, 6, 31, tzinfo=shanghai),
+            )
+            cutoff = scheduler_main.run_daily_recovery_tick_job(
+                run_date="2026-07-24",
+                now=datetime(2026, 7, 24, 8, 30, tzinfo=shanghai),
+            )
+            delayed = scheduler_main.run_daily_recovery_tick_job(
+                run_date="2026-07-24",
+                now=datetime(2026, 7, 24, 8, 31, tzinfo=shanghai),
+            )
+
+        self.assertEqual(before["status"], "outside_recovery_window")
+        self.assertEqual(active, "resumed")
+        self.assertEqual(cutoff, "cutoff-reconciled")
+        self.assertEqual(delayed, "cutoff-reconciled")
+        coordinator.assert_called_once_with(
+            run_date="2026-07-24",
+            algo_env="forecast_env",
+            trigger_origin="startup_catchup",
+        )
+        self.assertEqual(watchdog.call_count, 2)
+        watchdog.assert_called_with(
+            "recovery_cutoff",
+            run_date="2026-07-24",
+        )
+
+    def test_recovery_tick_does_not_swallow_coordinator_failure(self) -> None:
+        from scheduler import main as scheduler_main
+        from zoneinfo import ZoneInfo
+
+        with (
+            patch.object(
+                scheduler_main,
+                "run_daily_coordinator_job",
+                side_effect=RuntimeError("coordinator failed"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "coordinator failed"),
+        ):
+            scheduler_main.run_daily_recovery_tick_job(
+                run_date="2026-07-24",
+                now=datetime(
+                    2026,
+                    7,
+                    24,
+                    7,
+                    1,
+                    tzinfo=ZoneInfo("Asia/Shanghai"),
+                ),
+            )
+
+    def test_legacy_mode_does_not_register_ledger_heartbeat(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BOND_DAILY_COORDINATOR_MODE": "legacy",
+                    "BOND_SCHEDULER_STARTUP_CATCHUP": "false",
+                },
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[],
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            self.assertIsNone(scheduler.get_job("daily:heartbeat"))
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+    def test_ledger_mode_startup_catchup_routes_only_through_coordinator(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BOND_DAILY_COORDINATOR_MODE": "ledger",
+                    "BOND_SCHEDULER_STARTUP_CATCHUP": "true",
+                },
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[_cfg("daily_native")],
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            startup = scheduler.get_job(
+                "startup:daily-occurrence-catchup"
+            )
+            legacy = scheduler.get_job(
+                "startup:data-refresh-and-prediction-catchup"
+            )
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertIsNotNone(startup)
+        self.assertEqual(
+            startup.func.__name__,
+            "run_daily_coordinator_job",
+        )
+        self.assertEqual(startup.kwargs["trigger_origin"], "startup_catchup")
+        self.assertIsNone(legacy)
+
+    def test_coordinator_entry_does_not_grant_process_wide_publish_scope(
+        self,
+    ) -> None:
+        from scheduler import daily_runtime
+        from scheduler import main as scheduler_main
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshError,
+            _require_publish_authority,
+        )
+
+        def fake_occurrence(**_kwargs):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with self.assertRaises(DataBridgeRefreshError):
+                    pool.submit(
+                        _require_publish_authority,
+                        publish=True,
+                    ).result()
+            return "delegated"
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                daily_runtime,
+                "run_daily_occurrence",
+                side_effect=fake_occurrence,
+            ),
+        ):
+            result = scheduler_main.run_daily_coordinator_job(
+                run_date="2026-07-24",
+            )
+            with self.assertRaises(DataBridgeRefreshError):
+                _require_publish_authority(publish=True)
+
+        self.assertEqual(result, "delegated")
+
+    def test_operator_recovery_never_receives_databridge_publish_scope(
+        self,
+    ) -> None:
+        from scheduler import daily_runtime
+        from scheduler import main as scheduler_main
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshError,
+            _require_publish_authority,
+        )
+
+        def fake_recovery(**_kwargs):
+            with self.assertRaises(DataBridgeRefreshError):
+                _require_publish_authority(publish=True)
+            return "recovered-without-publication"
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                daily_runtime,
+                "run_operator_recovery",
+                side_effect=fake_recovery,
+            ),
+        ):
+            result = scheduler_main.run_daily_operator_recovery_job(
+                "daily_alpha",
+                run_date="2026-07-24",
+            )
+
+        self.assertEqual(result, "recovered-without-publication")
+
+    def test_scheduler_rejects_unknown_daily_coordinator_mode(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "both"},
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[],
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "BOND_DAILY_COORDINATOR_MODE",
+            ):
+                scheduler_main.build_scheduler()
+
+    def test_scheduler_rejects_missing_mode_when_rollout_bootstrap_fails(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch.object(
+                scheduler_main,
+                "bootstrap_deployment_daily_coordinator_mode",
+                side_effect=ValueError(
+                    "BOND_DAILY_COORDINATOR_MODE must be explicitly set"
+                ),
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[],
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+            self.assertRaisesRegex(ValueError, "must be explicitly set"),
+        ):
+            scheduler_main.build_scheduler()
+
     def test_scheduler_does_not_own_daily_data_bridge_refresh(self) -> None:
         from scheduler import main as scheduler_main
 
         with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+                clear=True,
+            ),
             patch.object(scheduler_main, "discover_schemes", return_value=[]),
             patch.object(scheduler_main, "_sync_registry", return_value=None),
         ):
@@ -53,6 +475,37 @@ class SchedulerMainTests(unittest.TestCase):
                 scheduler.shutdown(wait=False)
 
         self.assertIsNone(job)
+
+    def test_ledger_run_once_data_refresh_is_check_only(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "data_bridge_refresh_is_current",
+                return_value=True,
+            ) as check_current,
+            patch.object(
+                scheduler_main,
+                "run_data_bridge_refresh_job",
+            ) as publish_refresh,
+        ):
+            exit_code = scheduler_main.main(
+                ["--run-once", "data-refresh", "--date", "2026-07-24"]
+            )
+
+        self.assertEqual(exit_code, 0)
+        check_current.assert_called_once_with("2026-07-24")
+        publish_refresh.assert_not_called()
 
     def test_startup_tasks_refresh_before_prediction_catchup(self) -> None:
         from scheduler import main as scheduler_main
@@ -248,6 +701,39 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(result, expected)
 
+    def test_ledger_cutover_rejects_direct_legacy_daily_entry(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        cfg = _cfg("daily_demo", frequency="daily")
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[cfg],
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+            ) as legacy_run,
+            self.assertRaisesRegex(
+                RuntimeError,
+                "direct daily prediction.*ledger coordinator",
+            ),
+        ):
+            scheduler_main.run_prediction_job(
+                "daily_demo",
+                run_date="2026-07-24",
+            )
+
+        legacy_run.assert_not_called()
+
     def test_v2_scheduled_job_requires_daily_ready_gate(self) -> None:
         from scheduler import main as scheduler_main
 
@@ -386,6 +872,111 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(code, 0)
 
+    def test_ledger_run_once_single_scheme_routes_operator_recovery(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        result = SimpleNamespace(
+            business_date="2026-07-24",
+            occurrence_id=42,
+            status="complete",
+            dispatched_scheme_ids=("daily_alpha",),
+        )
+        stdout = io.StringIO()
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "run_daily_operator_recovery_job",
+                return_value=result,
+            ) as recovery,
+            patch.object(
+                scheduler_main,
+                "run_prediction_job",
+            ) as legacy,
+            redirect_stdout(stdout),
+        ):
+            code = scheduler_main.main(
+                [
+                    "--run-once",
+                    "predictions",
+                    "--scheme-id",
+                    "daily_alpha",
+                    "--date",
+                    "2026-07-24",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        recovery.assert_called_once_with(
+            "daily_alpha",
+            run_date="2026-07-24",
+            algo_env="forecast_env",
+        )
+        legacy.assert_not_called()
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["event"], "daily_occurrence_run")
+        self.assertEqual(payload["status"], "complete")
+        self.assertEqual(payload["occurrence_id"], 42)
+
+    def test_ledger_run_once_all_routes_single_daily_coordinator(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        result = SimpleNamespace(
+            business_date="2026-07-24",
+            occurrence_id=43,
+            status="incomplete",
+            dispatched_scheme_ids=("daily_alpha", "daily_beta"),
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "run_daily_coordinator_job",
+                return_value=result,
+            ) as coordinator,
+            patch.object(
+                scheduler_main,
+                "run_all_prediction_jobs",
+            ) as legacy,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = scheduler_main.main(
+                [
+                    "--run-once",
+                    "predictions",
+                    "--date",
+                    "2026-07-24",
+                ]
+            )
+
+        self.assertEqual(code, 1)
+        coordinator.assert_called_once_with(
+            run_date="2026-07-24",
+            algo_env="forecast_env",
+            trigger_origin="operator_recovery",
+        )
+        legacy.assert_not_called()
+
     def test_main_returns_zero_for_expected_skipped_prediction(self) -> None:
         from scheduler import main as scheduler_main
 
@@ -518,6 +1109,41 @@ class SchedulerMainTests(unittest.TestCase):
                     actual = scheduler_main.run_scheduled_prediction_job("scheduled_demo")
 
                 self.assertIs(actual, result)
+
+    def test_ledger_cutover_rejects_already_registered_legacy_daily_job(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[_cfg("daily_demo", frequency="daily")],
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "run_prediction_job",
+                return_value=SchemeRunResult(
+                    "daily_demo",
+                    "success",
+                    1,
+                    0.1,
+                ),
+            ) as legacy_run,
+            self.assertRaisesRegex(
+                RuntimeError,
+                "legacy scheduled daily prediction.*ledger",
+            ),
+        ):
+            scheduler_main.run_scheduled_prediction_job("daily_demo")
+
+        legacy_run.assert_not_called()
 
     def test_weekly_and_monthly_predictions_run_on_non_trading_day(self) -> None:
         from scheduler import main as scheduler_main

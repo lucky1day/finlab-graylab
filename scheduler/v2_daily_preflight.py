@@ -24,6 +24,10 @@ from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     check_current_dataset,
 )
+from shared.daily_coordinator_mode import (
+    DAILY_COORDINATOR_MODE_ENV,
+    bootstrap_deployment_daily_coordinator_mode,
+)
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -272,6 +276,8 @@ def restart_scheduler(
     timeout_sec: float = 45.0,
 ) -> dict[str, object]:
     """只重启固定 launchd scheduler label，并验证 PID 已切换。"""
+    if _daily_coordinator_mode() == "ledger":
+        raise PreflightError("scheduler restart is disabled in ledger mode")
     run_now = _localized(now)
     if (run_now.hour, run_now.minute) != (7, 0):
         raise PreflightError("scheduler restart is outside the 07:00 safe window")
@@ -425,6 +431,15 @@ def _localized(value: datetime) -> datetime:
     return value.astimezone(ASIA_SHANGHAI)
 
 
+def _daily_coordinator_mode() -> str:
+    try:
+        return bootstrap_deployment_daily_coordinator_mode()
+    except ValueError as exc:
+        raise PreflightError(
+            str(exc)
+        ) from exc
+
+
 @contextmanager
 def _single_instance(config: DataBridgeRefreshConfig) -> Iterator[bool]:
     lock_path = config.runtime_root / "v2_scheduler_gate" / "preflight.lock"
@@ -447,6 +462,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     now = datetime.now(ASIA_SHANGHAI)
     try:
+        coordinator_mode = _daily_coordinator_mode()
+        if coordinator_mode == "ledger":
+            payload = {
+                "coordinator_mode": coordinator_mode,
+                "event": "v2_daily_preflight",
+                "phase": "disabled",
+                "reason": "daily-coordinator-ledger-mode",
+                "run_date": now.date().isoformat(),
+                "status": "disabled",
+            }
+            print(json.dumps(payload, ensure_ascii=True, sort_keys=True))
+            return 0
         phase = resolve_phase(now) if args.phase == "auto" else args.phase
         dependencies = default_dependencies()
         with _single_instance(dependencies.config_factory()) as acquired:

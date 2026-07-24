@@ -171,7 +171,7 @@ class StaticGate(Gate):
         violations: list[RuleViolation] = []
         for path in sorted(scheme_dir.rglob("*.py")):
             tree = parse_python(path)
-            violations.extend(cross_scheme_imports(path, tree, scheme_id))
+            violations.extend(cross_scheme_imports(path, tree, scheme_id, project_root))
         return violations
 
     def _backtest_input_artifact_errors(self, config_raw: dict[str, Any], project_root: Path) -> list[str]:

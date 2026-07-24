@@ -293,7 +293,10 @@ class FiveYearAllK10CoreAuditTests(unittest.TestCase):
                         n_workers=1,
                         cache_root=Path("/tmp/liwei-phase-a"),
                     )
-                self.assertEqual(prepare.call_args.kwargs["cache_root"], cache_root)
+                self.assertEqual(
+                    prepare.call_args.kwargs["cache_root"],
+                    Path("/tmp/liwei-phase-a"),
+                )
 
         self.assertNotIn("liwei_0616_5y01_full_oos_v1", model_versions)
         self.assertNotIn("liwei_0616_5y_v31", cache_families)

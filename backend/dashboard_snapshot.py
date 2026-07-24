@@ -36,10 +36,15 @@ class SnapshotResult:
     cache_status: Literal["HIT", "MISS", "STALE"]
     age_seconds: float
     build_seconds: float | None
+    source_generation: str | None = None
 
 
 class SnapshotUnavailable(RuntimeError):
     """首份 dashboard 快照不可用。"""
+
+
+class _SnapshotSourceChanged(RuntimeError):
+    """快照构建期间数据库代次发生变化，禁止发布混合视图。"""
 
 
 @dataclass(frozen=True)
@@ -80,11 +85,16 @@ class DashboardSnapshotStore:
         ttl_seconds: float = 1.0,
         wait_timeout_seconds: float = 0.6,
         monotonic: Callable[[], float] = time.monotonic,
+        source_generation: Callable[[], str] | None = None,
     ) -> None:
         if not callable(builder):
             raise TypeError("builder must be callable")
         if not callable(monotonic):
             raise TypeError("monotonic must be callable")
+        if source_generation is not None and not callable(
+            source_generation
+        ):
+            raise TypeError("source_generation must be callable")
         self._ttl_seconds = _validated_duration(
             "ttl_seconds",
             ttl_seconds,
@@ -97,8 +107,10 @@ class DashboardSnapshotStore:
         )
         self._builder = builder
         self._monotonic = monotonic
+        self._source_generation_reader = source_generation
         self._condition = Condition()
         self._snapshot: tuple[dict, float] | None = None
+        self._snapshot_source_generation: str | None = None
         self._flight: _Flight | None = None
         self._request_local = local()
         self._observation_revision = 0
@@ -125,7 +137,37 @@ class DashboardSnapshotStore:
             "attempt_seconds": None,
             "attempt_id": None,
         }
+        try:
+            requested_source_generation = self._read_source_generation()
+        except BaseException as error:  # noqa: BLE001 - 控制信号原样传播
+            if not isinstance(error, Exception):
+                raise
+            with self._condition:
+                observed_at = self._sample_monotonic()
+                return self._stale_or_raise(
+                    observed_at=observed_at,
+                    message="dashboard source generation is unavailable",
+                    cause=error,
+                )
         with self._condition:
+            try:
+                requested_source_generation = (
+                    self._invalidate_changed_source_generation(
+                        requested_source_generation
+                    )
+                )
+            except BaseException as error:  # noqa: BLE001
+                if not isinstance(error, Exception):
+                    raise
+                observed_at = self._sample_monotonic()
+                return self._stale_or_raise(
+                    observed_at=observed_at,
+                    message=(
+                        "dashboard source generation confirmation "
+                        "is unavailable"
+                    ),
+                    cause=error,
+                )
             flight_at_entry = self._flight
             joined_active_flight = (
                 flight_at_entry is not None and not flight_at_entry.done
@@ -221,6 +263,11 @@ class DashboardSnapshotStore:
             if not isinstance(payload, dict):
                 raise TypeError("dashboard snapshot builder must return a dict")
             frozen_payload = _freeze(payload)
+            completed_source_generation = self._read_source_generation()
+            if completed_source_generation != requested_source_generation:
+                raise _SnapshotSourceChanged(
+                    "dashboard source generation changed during build"
+                )
             build_finished_at = self._sample_monotonic()
             build_seconds = _elapsed(build_finished_at, build_started_at)
             result = SnapshotResult(
@@ -228,6 +275,7 @@ class DashboardSnapshotStore:
                 cache_status="MISS",
                 age_seconds=0.0,
                 build_seconds=build_seconds,
+                source_generation=completed_source_generation,
             )
         except BaseException as error:  # noqa: BLE001 - 必须释放所有 flight
             return self._finish_owner_failure(
@@ -241,6 +289,7 @@ class DashboardSnapshotStore:
                 flight,
                 snapshot=(frozen_payload, build_finished_at),
                 build_seconds=build_seconds,
+                source_generation=completed_source_generation,
             )
         except BaseException as error:  # noqa: BLE001 - 发布取消也必须完成 flight
             return self._finish_owner_failure(
@@ -311,6 +360,44 @@ class DashboardSnapshotStore:
             name="monotonic",
         )
 
+    def _read_source_generation(self) -> str | None:
+        reader = self._source_generation_reader
+        if reader is None:
+            return None
+        value = reader()
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                "source_generation must return a non-empty string"
+            )
+        return value.strip()
+
+    def _invalidate_changed_source_generation(
+        self,
+        requested_source_generation: str | None,
+    ) -> str | None:
+        """在 condition 内丢弃已知过时代次，禁止作为 fresh 或 LKG 返回。"""
+        if (
+            self._source_generation_reader is None
+            or self._snapshot is None
+            or self._snapshot_source_generation
+            == requested_source_generation
+        ):
+            return requested_source_generation
+        # provider 读取发生在 condition 外，调用方可能等待锁期间已经有
+        # 新代次成功发布。只在 mismatch 时于锁内复核，防止迟到的旧 token
+        # 反向淘汰更新快照，同时避免每个 HIT 都做第二次 DB 查询。
+        confirmed_source_generation = self._read_source_generation()
+        if (
+            self._snapshot_source_generation
+            == confirmed_source_generation
+        ):
+            return confirmed_source_generation
+        self._snapshot = None
+        self._snapshot_source_generation = None
+        self._snapshot_origin_waiter_count = 0
+        self._snapshot_origin_build_seconds = None
+        return confirmed_source_generation
+
     def _cached_result(
         self,
         cache_status: Literal["HIT", "STALE"],
@@ -337,6 +424,7 @@ class DashboardSnapshotStore:
             cache_status=cache_status,
             age_seconds=_elapsed(observed_at, built_at),
             build_seconds=None,
+            source_generation=self._snapshot_source_generation,
         )
 
     def _stale_or_raise(
@@ -375,6 +463,7 @@ class DashboardSnapshotStore:
         *,
         snapshot: tuple[dict, float],
         build_seconds: float = 0.0,
+        source_generation: str | None = None,
     ) -> bool:
         """原子发布成功快照；临界区取消时回滚为原 LKG。"""
         terminal_error: BaseException | None = None
@@ -382,6 +471,9 @@ class DashboardSnapshotStore:
             if self._flight is not flight or flight.done:
                 return False
             previous_snapshot = self._snapshot
+            previous_source_generation = (
+                self._snapshot_source_generation
+            )
             previous_snapshot_generation = self._snapshot_generation
             previous_snapshot_origin_waiter_count = (
                 self._snapshot_origin_waiter_count
@@ -393,6 +485,7 @@ class DashboardSnapshotStore:
             previous_build_seconds = self._last_build_seconds
             try:
                 self._snapshot = snapshot
+                self._snapshot_source_generation = source_generation
                 self._snapshot_generation += 1
                 self._snapshot_origin_waiter_count = flight.waiter_count
                 self._snapshot_origin_build_seconds = build_seconds
@@ -414,6 +507,9 @@ class DashboardSnapshotStore:
             except BaseException:  # noqa: BLE001 - 回滚半完成发布
                 if flight.outcome is None:
                     self._snapshot = previous_snapshot
+                    self._snapshot_source_generation = (
+                        previous_source_generation
+                    )
                     self._snapshot_generation = previous_snapshot_generation
                     self._snapshot_origin_waiter_count = (
                         previous_snapshot_origin_waiter_count

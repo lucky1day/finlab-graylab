@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
@@ -222,6 +223,10 @@ def _load_root_db_config() -> DatabaseConfig:
 
 
 def create_sqlalchemy_engine(db_config: Optional[DatabaseConfig] = None):
+    if os.getenv("BOND_NATIVE_INPUT_MODE") == "native_generation_v1":
+        raise RuntimeError(
+            "frozen Native generation mode forbids live database access"
+        )
     from sqlalchemy import create_engine
     from sqlalchemy.engine import URL
 

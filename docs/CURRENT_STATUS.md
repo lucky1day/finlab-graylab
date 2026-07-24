@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-07-21
+**最后核验日期**：2026-07-24
 
 本文只保留当前有效结论。较早的逐日状态、数据库快照和整改过程已冻结到[历史状态记录](records/status/README.md)。
 
@@ -22,6 +22,7 @@
 | Native V1 | 现有方案保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、统一 DataBridge 输入、七个 Gate、预测和 no-persist 回测已形成稳定路径 |
 | Blackbox V2 生产路径 | 已完成一个真实周频方案的专项生产灰度激活 |
+| 日频 08:00 保障 | `REMEDIATION_OBSERVATION`；ledger 协调器代码已进入候选分支，但 rollout 关闭，不能宣称 SLA 稳定 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 | 新方案默认终点 | 先进入受控技术验收；生产运行必须逐方案专项授权 |
 
@@ -44,6 +45,52 @@
 - 2026-07-21 的人工重启未在 07:03 前执行，四方案当天没有自然 `scheduled_live`；旧 scheduler 同时在 07:03 用过期 discovery 回写 Registry 长名称。12:22 已安装 V2 独立日级 Gate 和自动重启控制并重载 scheduler：四个 V2 job 已挂载，今天以 blocked 凭证拒绝 startup catchup，17 个 Native V1 运行保持 17/17，Registry、本地及公网 API 已恢复四个短名称。随后按用户专项授权以 fresh LiveGate 补齐四条当日 `gray_live`，没有伪造 `scheduled_live`；下一交易日四阶段自然运行和 `scheduled_live` 仍待观察。
 - 四个日频算法来自同一上游批次，证明了日频 Blackbox 运行路径，但不等于四个独立交付包，也不覆盖月频。
 
+### 日频 08:00 整改状态
+
+- 2026-07-24 的旧 APScheduler 路径只生成 16/21 个 scheduled run：13 success、
+  3 failed、5 个未运行；该事实否定了“当前日频已稳定”的结论。
+- 候选已实现单一 06:30 coordinator、两类不可变 generation、三层账本、
+  attempt fence、原子提交、隔离 Native/V2 pool、动态 21/25 健康投影和容量门禁。
+- 07:45/08:00 边界不再依赖一次性 Cron；同日恢复入口会幂等补写 PENDING
+  guardrail/SLA。ABANDONED 只有清理确认、首轮覆盖、attempt 和剩余预算均通过
+  才能二次启动。
+- 两类 generation 均在 staging 完成 manifest、重开校验、`chmod/fsync`，再以
+  一次目录 rename 发布；DB `sealed_at` 是权威时点。ledger 拒绝 standalone
+  DataBridge publisher，刷新锁覆盖下载、发布与清理。
+- 健康投影区分 committed、DB 可见回执和外部 no-store API 观察；24/25、ETA
+  超线、零进展、generation 异常或 mode 漂移均不得为 `ok`。节假日 watchdog
+  返回 `IDLE`，严格执行 envelope 仍保持 fail-closed。
+- Native RR snapshot 必须严格早于 06:31 开启（恰好 06:31 拒绝），覆盖 source evidence、日/周/月、metadata 和 calendar；迟到 catch-up 不读 live DB。
+- 06:55 是版本化 DataBridge readiness guardrail：未 SEALED/绑定即 `LATE`/告警，但仍只刷新当天新 generation 到 08:30。
+- generation/DataBridge current roots 要求服务 UID + `0700`；旧 caller-supplied retention 已禁用，只回收 DB 证明无引用的 `INVALIDATED` payload。
+- 2026-07-24 只读复核发现冻结域在 06:30 后写入 11 行，最晚
+  `create_time=07:10:12`；“06:30 已封账”当前不成立，必须按
+  `DATA_CONTRACT_BREACH` 处理，不能靠延迟调度掩盖。
+- ledger 候选已退休旧 V2 精确分钟触发与 scheduler restart；仓库 launchd 仍
+  全部显式为 `legacy`，保留切换前唯一 refresh owner。2026-07-24 13:04 本机
+  `bond_db` 已建立 001..017 history 并应用 017 schema；五张 ledger 表为空，
+  既有 1187 条 run 的新关联字段均为 NULL。服务未重启，新协调器没有写权。
+- 三个 0629 Native 仍不兼容 generation；forced-cold、revision/suffix、
+  故障注入、20+20 次样本和连续 10 个交易日 25/25 均未完成。
+- cache 候选具备单 prewarmer、不可变 generation、原子 pointer、硬配额和受证明
+  的 daily suffix；周/月或依赖不明自动 full rebuild。生产 caller 尚无绑定
+  input/spec/cache hash 的完整 cached-vs-cold 内部字段证据，故继续拒绝。
+- 容量准入使用独立 collector/operator macOS CMS、root-owned trust、时效/序列
+  和当前 candidate 精确重算；三套环境同时绑定 conda explicit 与含 pip 的全包
+  清单，非 `forecast_env` Native 执行被拒绝，occurrence 冻结后还会二次复核。
+  当前 evidence schema 仍固定 21/25 与四个 V2，扩容前须发布参数化 v3 并重新
+  认证；缺 017 的预迁移探针会拒绝，默认 admission 继续 `BLOCKED`。
+- pending-only runner 已在隔离 MySQL 8.0.45 通过 clean/legacy v16/零执行重跑；
+  CLI 写路径必须显式 `--apply`。`017=APPLYING` 现有只读三态 inspect 和
+  digest-fenced recovery，已隔离覆盖 DDL 前、四列 nullable 过渡和完整未 mark，
+  失败保持 `APPLYING`。生产精确 clone 的 partial-DDL 演练仍未完成，也未授权在
+  当前 `bond_db` 执行恢复。
+- DataBridge refresh/pack 与 Native 的同机 forced-cold 尚未准入；factor 表缺可靠 `update_time`，冻结 generation 不能替代上游 seal/CDC。
+- generation 长期归档、去重、保留周期和磁盘满验收未完成；当前安全清理只防误删，不能解除上线门禁。
+
+权威设计与门禁见
+[日频信号 08:00 SLA 架构](architecture/DAILY_SIGNAL_SLA.md)。
+
 详细证据见[首个生产灰度激活记录](blackbox_v2/records/PRODUCTION_GRAY_ACTIVATION_20260720.md)、[1Y T+5 四方案分阶段记录](blackbox_v2/records/PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md)和[Blackbox V2 试验记录](blackbox_v2/records/README.md)。
 
 ## Native V1 当前摘要
@@ -56,10 +103,13 @@
 
 ## 当前观察项
 
-1. 下一交易日观察已安装的 V2 preflight 自然执行 06:00 首刷、06:30 检查、06:35 条件重刷和 07:00 最终检查，并验收四个 1Y T+5 方案在 07:33/07:35/07:37/07:39 的自然 `scheduled_live`。
-2. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
-3. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
-4. DataBridge 当日刷新失败时继续阻断 `data_bridge_current` 方案，不影响 Native V1 的 `legacy_db` 路径。
+1. 先修复 06:30 上游封账违约并补可验证 seal/CDC，再完成三个 0629 Native
+   的 generation 输入适配、迁移演练和同机容量/故障注入；
+   门禁通过前不得打开 ledger rollout。
+2. 使用历史交易日 `--no-persist` 驻留回放验证 21 item/25 target、四个 V2
+   同代 generation 和 `+0/+2/+4/+6` 独立释放。
+3. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
+4. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
 
 ## 权威入口
 

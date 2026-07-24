@@ -25,6 +25,8 @@
   <dict>
     <key>PYTHONNOUSERSITE</key>
     <string>1</string>
+    <key>BOND_DAILY_COORDINATOR_MODE</key>
+    <string>legacy</string>
     <key>DATABRIDGE_REFRESH_START</key>
     <string>06:00</string>
     <key>DATABRIDGE_REFRESH_DEADLINE</key>

@@ -118,7 +118,12 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(kwargs["end_date"], "2026-06-05")
         self.assertIs(kwargs["engine"], engine)
         self.assertIs(daily_service.save_daily_output.call_args.args[0], daily_df)
-        self.assertEqual(daily_service.save_daily_output.call_args.args[1], artifact.path)
+        saved_path = Path(
+            daily_service.save_daily_output.call_args.args[1]
+        )
+        self.assertEqual(saved_path.parent, artifact.path.parent)
+        self.assertTrue(saved_path.name.startswith(f".{artifact.path.name}."))
+        self.assertEqual(saved_path.suffix, ".tmp")
         self.assertTrue(artifact_exists)
 
     def test_weekly_input_artifact_delegates_to_unified_data_service_file(self) -> None:
@@ -174,7 +179,12 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(kwargs["as_of_date"], "2026-05-29")
         self.assertIs(kwargs["engine"], engine)
         self.assertIs(data_service.save_weekly_output.call_args.args[0], weekly_df)
-        self.assertEqual(data_service.save_weekly_output.call_args.args[1], artifact.path)
+        saved_path = Path(
+            data_service.save_weekly_output.call_args.args[1]
+        )
+        self.assertEqual(saved_path.parent, artifact.path.parent)
+        self.assertTrue(saved_path.name.startswith(f".{artifact.path.name}."))
+        self.assertEqual(saved_path.suffix, ".tmp")
 
     def test_weekly_output_filters_raw_rows_by_as_of_date_before_dedup(self) -> None:
         from shared.data_service import build_weekly_output_from_frames
@@ -279,7 +289,12 @@ class InputArtifactTests(unittest.TestCase):
         self.assertEqual(kwargs["end_date"], "2026-06-05")
         self.assertIs(kwargs["engine"], engine)
         self.assertIs(data_service.save_monthly_output.call_args.args[0], monthly_df)
-        self.assertEqual(data_service.save_monthly_output.call_args.args[1], artifact.path)
+        saved_path = Path(
+            data_service.save_monthly_output.call_args.args[1]
+        )
+        self.assertEqual(saved_path.parent, artifact.path.parent)
+        self.assertTrue(saved_path.name.startswith(f".{artifact.path.name}."))
+        self.assertEqual(saved_path.suffix, ".tmp")
 
     def test_weekly_input_artifact_signature_removes_legacy_flags(self) -> None:
         from shared.input_artifacts import build_weekly_input_artifact

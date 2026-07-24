@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 from bisect import bisect_right
@@ -26,6 +27,10 @@ from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     check_current_dataset,
 )
+from shared.native_input_generation import (
+    NativeGenerationContext,
+    open_native_generation,
+)
 
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
@@ -41,10 +46,60 @@ _FREQUENCY_FILE_PREFIXES = {
     "weekly": "weekly_output",
     "monthly": "monthly_output",
 }
+NATIVE_INPUT_MODE = "native_generation_v1"
+NATIVE_INPUT_MODE_ENV = "BOND_NATIVE_INPUT_MODE"
+NATIVE_MANIFEST_PATH_ENV = "BOND_NATIVE_GENERATION_MANIFEST"
+NATIVE_GENERATION_ID_ENV = "BOND_NATIVE_GENERATION_ID"
+NATIVE_MANIFEST_SHA256_ENV = "BOND_NATIVE_GENERATION_MANIFEST_SHA256"
+NATIVE_BUSINESS_DATE_ENV = "BOND_NATIVE_GENERATION_BUSINESS_DATE"
+NATIVE_FEATURE_DATE_ENV = "BOND_NATIVE_GENERATION_FEATURE_DATE"
+SCHEDULE_EXECUTION_TOKEN_ENV = "BOND_SCHEDULE_EXECUTION_TOKEN"
+_NATIVE_GENERATION_ENV_FIELDS = {
+    NATIVE_INPUT_MODE_ENV,
+    NATIVE_MANIFEST_PATH_ENV,
+    NATIVE_GENERATION_ID_ENV,
+    NATIVE_MANIFEST_SHA256_ENV,
+    NATIVE_BUSINESS_DATE_ENV,
+    NATIVE_FEATURE_DATE_ENV,
+}
 
 
 def create_input_engine():
-    """创建输入 artifact 构建所需 DB engine，避免 adapter 直接依赖 data_service。"""
+    """创建输入源；日批 Native 环境中只打开被冻结的 generation。"""
+    configured = {
+        name: os.environ.get(name)
+        for name in _NATIVE_GENERATION_ENV_FIELDS
+        if name in os.environ
+    }
+    if configured:
+        missing = sorted(_NATIVE_GENERATION_ENV_FIELDS - set(configured))
+        empty = sorted(
+            name
+            for name, value in configured.items()
+            if not isinstance(value, str) or not value.strip()
+        )
+        if missing or empty:
+            raise ValueError(
+                "partial Native input generation environment: "
+                f"missing={missing}, empty={empty}"
+            )
+        if configured[NATIVE_INPUT_MODE_ENV] != NATIVE_INPUT_MODE:
+            raise ValueError(
+                "unsupported Native input generation mode: "
+                f"{configured[NATIVE_INPUT_MODE_ENV]}"
+            )
+        manifest_path = Path(configured[NATIVE_MANIFEST_PATH_ENV])
+        if not manifest_path.is_absolute():
+            raise ValueError(
+                "Native input generation manifest path must be absolute"
+            )
+        return open_native_generation(
+            manifest_path,
+            expected_generation_id=configured[NATIVE_GENERATION_ID_ENV],
+            expected_manifest_sha256=configured[NATIVE_MANIFEST_SHA256_ENV],
+            expected_business_date=configured[NATIVE_BUSINESS_DATE_ENV],
+            expected_feature_date=configured[NATIVE_FEATURE_DATE_ENV],
+        )
     return _data_service.create_sqlalchemy_engine()
 
 
@@ -420,7 +475,27 @@ def input_artifact_path(
     prefix = _FREQUENCY_FILE_PREFIXES.get(str(frequency))
     if prefix is None:
         raise ValueError(f"unsupported frequency for input artifact path: {frequency}")
-    return Path(output_root) / safe_scheme_id / f"{prefix}_{safe_predict_date}.csv"
+    filename = f"{prefix}_{safe_predict_date}.csv"
+    execution_token = os.environ.get(SCHEDULE_EXECUTION_TOKEN_ENV)
+    if execution_token is None:
+        return Path(output_root) / safe_scheme_id / filename
+    generation_id = os.environ.get(NATIVE_GENERATION_ID_ENV)
+    safe_token = _require_safe_artifact_identity(
+        execution_token,
+        field=SCHEDULE_EXECUTION_TOKEN_ENV,
+    )
+    safe_generation_id = _require_safe_artifact_identity(
+        generation_id,
+        field=NATIVE_GENERATION_ID_ENV,
+    )
+    return (
+        Path(output_root)
+        / safe_scheme_id
+        / "_scheduled"
+        / safe_generation_id
+        / safe_token
+        / filename
+    )
 
 
 def build_daily_input_artifact(
@@ -439,13 +514,27 @@ def build_daily_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = _data_service.build_daily_output_from_db(
-        start_date=start_date,
-        end_date=end_date,
-        engine=engine,
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _data_service.save_daily_output(df, path)
+    generation = _native_generation_context(engine)
+    if generation is None:
+        df = _data_service.build_daily_output_from_db(
+            start_date=start_date,
+            end_date=end_date,
+            engine=engine,
+        )
+    else:
+        _require_frozen_cutoff(
+            end_date,
+            generation=generation,
+            field_name="end_date",
+        )
+        df = _data_service.build_daily_output_from_frames(
+            generation.frame("metadata"),
+            generation.frame("api_wind_daily"),
+            generation.frame("api_wind_derivative_daily"),
+            start_date=start_date,
+            end_date=end_date,
+        )
+    _atomic_save_output(_data_service.save_daily_output, df, path)
     read_back = _read_daily_output_csv(path)
     profile = _dataframe_profile(read_back, coverage_field="date", required_columns=("date",))
     content_hash = _file_sha256(path)
@@ -467,11 +556,14 @@ def build_daily_input_artifact(
         columns=profile["columns"],
         date_coverage=profile["date_coverage"],
         quality_flags=profile["quality_flags"],
-        metadata={
-            "start_date": start_date,
-            "end_date": end_date,
-            "predict_date": predict_date,
-        },
+        metadata=_with_generation_provenance(
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "predict_date": predict_date,
+            },
+            generation,
+        ),
     )
 
 
@@ -493,15 +585,44 @@ def build_weekly_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = _data_service.build_weekly_output_from_db(
-        schema_columns=schema_columns,
-        start_week=start_week,
-        end_week=end_week,
-        as_of_date=as_of_date,
-        engine=engine,
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _data_service.save_weekly_output(df, path)
+    generation = _native_generation_context(engine)
+    if generation is None:
+        df = _data_service.build_weekly_output_from_db(
+            schema_columns=schema_columns,
+            start_week=start_week,
+            end_week=end_week,
+            as_of_date=as_of_date,
+            engine=engine,
+        )
+    else:
+        if as_of_date is not None:
+            _require_frozen_cutoff(
+                as_of_date,
+                generation=generation,
+                field_name="as_of_date",
+            )
+        metadata = generation.frame("metadata")
+        raw = generation.frame("api_wind_weekly")
+        derivative = generation.frame("api_wind_derivative_weekly")
+        if schema_columns is None:
+            df = _data_service.build_weekly_output_from_metadata(
+                metadata,
+                raw,
+                derivative,
+                start_week=start_week,
+                end_week=end_week,
+                as_of_date=as_of_date,
+            )
+        else:
+            df = _data_service.build_weekly_output_from_frames(
+                schema_columns,
+                raw,
+                derivative,
+                start_week=start_week,
+                end_week=end_week,
+                as_of_date=as_of_date,
+            )
+    _atomic_save_output(_data_service.save_weekly_output, df, path)
     read_back = pd.read_csv(path)
     if "week_id" in read_back.columns:
         read_back["week_id"] = pd.to_numeric(read_back["week_id"], errors="coerce").astype("Int64")
@@ -528,12 +649,15 @@ def build_weekly_input_artifact(
         columns=profile["columns"],
         date_coverage=profile["date_coverage"],
         quality_flags=profile["quality_flags"],
-        metadata={
-            "start_week": start_week,
-            "end_week": end_week,
-            "as_of_date": as_of_date,
-            "predict_date": predict_date,
-        },
+        metadata=_with_generation_provenance(
+            {
+                "start_week": start_week,
+                "end_week": end_week,
+                "as_of_date": as_of_date,
+                "predict_date": predict_date,
+            },
+            generation,
+        ),
     )
 
 
@@ -553,13 +677,27 @@ def build_monthly_input_artifact(
         predict_date=predict_date,
         output_root=output_root,
     )
-    df = _data_service.build_monthly_output_from_db(
-        start_date=start_date,
-        end_date=end_date,
-        engine=engine,
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    _data_service.save_monthly_output(df, path)
+    generation = _native_generation_context(engine)
+    if generation is None:
+        df = _data_service.build_monthly_output_from_db(
+            start_date=start_date,
+            end_date=end_date,
+            engine=engine,
+        )
+    else:
+        _require_frozen_cutoff(
+            end_date,
+            generation=generation,
+            field_name="end_date",
+        )
+        df = _data_service.build_monthly_output_from_frames(
+            generation.frame("metadata"),
+            generation.frame("api_wind_monthly"),
+            generation.frame("api_wind_derivative_monthly"),
+            start_date=start_date,
+            end_date=end_date,
+        )
+    _atomic_save_output(_data_service.save_monthly_output, df, path)
     read_back = _read_monthly_output_csv(path)
     profile = _dataframe_profile(read_back, coverage_field="month_id", required_columns=("month_id",))
     content_hash = _file_sha256(path)
@@ -581,12 +719,118 @@ def build_monthly_input_artifact(
         columns=profile["columns"],
         date_coverage=profile["date_coverage"],
         quality_flags=profile["quality_flags"],
-        metadata={
-            "start_date": start_date,
-            "end_date": end_date,
-            "predict_date": predict_date,
-        },
+        metadata=_with_generation_provenance(
+            {
+                "start_date": start_date,
+                "end_date": end_date,
+                "predict_date": predict_date,
+            },
+            generation,
+        ),
     )
+
+
+def _native_generation_context(
+    candidate: object,
+) -> NativeGenerationContext | None:
+    if isinstance(candidate, NativeGenerationContext):
+        return candidate
+    return None
+
+
+def _require_safe_artifact_identity(
+    value: object,
+    *,
+    field: str,
+) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or safe_path_part(value) != value
+    ):
+        raise ValueError(f"{field} must be a safe non-empty path identity")
+    return value
+
+
+def _atomic_save_output(save_output, frame: pd.DataFrame, path: Path) -> None:
+    """同目录写临时文件，fsync 后原子替换，失败时保留旧完整文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        save_output(frame, temporary)
+        if temporary.is_symlink() or not temporary.is_file():
+            raise OSError(
+                f"input artifact writer did not create a regular file: "
+                f"{temporary}"
+            )
+        with temporary.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        flags |= os.O_DIRECTORY
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _require_frozen_cutoff(
+    value: object,
+    *,
+    generation: NativeGenerationContext,
+    field_name: str,
+) -> None:
+    normalized = _normalize_feature_date(value)
+    if normalized > generation.feature_date:
+        raise ValueError(
+            f"{field_name}={normalized} is after frozen "
+            f"feature_date={generation.feature_date}"
+        )
+
+
+def _with_generation_provenance(
+    metadata: dict[str, Any],
+    generation: NativeGenerationContext | None,
+) -> dict[str, Any]:
+    result = dict(metadata)
+    if generation is None:
+        return result
+    result.update(
+        {
+            "input_generation_id": generation.generation_id,
+            "input_generation_type": generation.generation_type,
+            "input_generation_manifest_sha256":
+                generation.manifest_sha256,
+            "input_generation_dataset_content_id":
+                generation.dataset_content_id,
+            "input_generation_business_date": generation.business_date,
+            "input_generation_feature_date": generation.feature_date,
+            "input_generation_source_commit_token":
+                generation.source_commit_token,
+            "input_generation_schema_version": generation.schema_version,
+            "input_generation_exporter_version":
+                generation.exporter_version,
+        }
+    )
+    return result
 
 
 def _dataframe_profile(

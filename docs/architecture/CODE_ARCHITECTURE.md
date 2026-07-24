@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-07-22
+**最后核验日期**：2026-07-24
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -11,7 +11,9 @@
 - [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) 边界总纲 → [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) 共享方案契约 → [onboarding/README.md](../onboarding/README.md) 统一入库导航。本文把它们统一到一张依赖图上。
 - [SOURCE_ALGORITHM_FIDELITY.md](SOURCE_ALGORITHM_FIDELITY.md) 是 source-backed 方案的源算法保真总纲；它约束 L2 core 与 L4 backtest runner 不得借平台适配改变原始算法逻辑。
 
-> 本文为设计文档，不含实现代码。所示"现状违规"基于真实 import 扫描（2026-06-08），是数据层重构与 StaticGate 的目标。
+> 本文同时记录设计约束与机器门禁的真实覆盖范围。历史 V1–V4 基于
+> 2026-06-08 扫描；2026-07-24 新增的 repo-wide AST 扫描检出并推动清零
+> V5–V6，当前扫描结果为零违规。
 
 ---
 
@@ -74,7 +76,8 @@
 
 ## 3. 包依赖方向规则（强约束核心）
 
-这是"强约束 harness 工程"的骨架：**每条允许的 import 边都明确列出，未列出的即禁止**。StaticGate 据此机器判定（§9）。
+这是"强约束 harness 工程"的骨架：**每条允许的 import 边都明确列出，未列出的即禁止**。
+onboarding StaticGate 与 repo-wide CI gate 分别守护方案局部契约和全仓静态依赖图（§9）。
 
 ### 3.1 允许的静态 import 边
 
@@ -85,7 +88,8 @@ schemes/*/core/      → （无本仓库依赖；仅 pandas/numpy/sklearn/lgbm�
 scheduler/     → shared.{models, db_config, data_service}  + scheduler 内部
 backend/       → scheduler.{repository, discovery, executor, main} + shared + backend 内部
 backtests/     → shared.{input_artifacts, data_service, calendar_service}
-                 + schemes/*/core（调用方案算法）+ backtests 内部
+                 + schemes/*/{core,inference}（调用方案算法，不依赖 predict adapter）
+                 + backtests 内部
 harness/       → 读取/调用 scheduler、shared、backtests（编排用）；不被任何层 import
 tests/         → 任意（验证需要）
 ```
@@ -104,6 +108,7 @@ tests/         → 任意（验证需要）
 
 - ✗ⁱ：`schemes.core` **禁止** import `shared`（含 `data_service`/`input_artifacts`）——core 必须是纯算法，输入由 adapter 注入。这是"core 零 DB"的根。
 - importlibᵈ：`scheduler.scheme_runner` 在 **conda 子进程运行时**用 `importlib.import_module(f"schemes.{id}.predict")` 动态加载，不是静态 import 边——保持 scheduler 对具体方案零静态耦合（插件模型的关键）。
+- `backtests → schemes/{id}/inference` 与 `backtests → schemes/{id}/core` 是按同一方案复现算法的允许边；`backtests → schemes/{id}/predict` 禁止，避免历史复现调用 live adapter。
 - 跨方案：`schemes/A` **禁止** import `schemes/B`（任何子模块）。
 
 ### 3.3 四条不可破坏的不变量
@@ -117,7 +122,9 @@ tests/         → 任意（验证需要）
 
 ## 4. 现状依赖与违规
 
-初次扫描（2026-06-08）发现 4 处违规。随数据层重构推进，清零进度如下表「状态」列（最近更新 2026-06-11）：
+初次扫描（2026-06-08）发现的 4 处违规已经处理；2026-07-24 首次用
+repo-wide gate 扫描全部生产层 Python 文件后，另发现 2 处此前 onboarding
+StaticGate 覆盖不到的包级逆向依赖：
 
 | # | 状态 | 违规边 | 位置 | 违反规则 | 处置（归属文档） |
 |---|------|--------|------|----------|------------------|
@@ -125,16 +132,12 @@ tests/         → 任意（验证需要）
 | V2 | ✅ 已清零(S2) | 当时旧周频 10Y 方案 `core/weekly_data_service.py → shared.data_service`（含 `create_sqlalchemy_engine`） | core 连库 | §3.2 ✗ⁱ core 零 DB | S2：该文件已确认为死代码并删除（连同 `weekly_output_0529_columns.json` 与对应测试） |
 | V3 | ✅ 已清零(S1) | 当时旧周频 adapter 直接取 `shared.data_service.create_sqlalchemy_engine` 传给日历查询 | adapter 直接取引擎传给日历查询 | §3.1 过渡期容忍，目标消除 | S1 已让日历查询走 `calendar_service`；当前 active 周频 5Y/7Y adapter 不直接取 DB engine |
 | V4 | ✅ 已清零(S3) | `backtests/daily_0529_reproduction.py → shared.data_service.build_daily_output_from_db` | 回测绕过 `input_artifacts` 拼日频输入 | §3.3 输入单点 | S3：daily backtest runner 已改走 `build_daily_input_artifact` |
+| V5 | ✅ 已清零 | `shared/blackbox_v2/contracts.py → harness.contracts.config_schema` | L1 依赖 L5 | §3.1 `shared` 无上行依赖 | 纯 schema 实现下沉至 `shared.scheme_config_schema`；harness 兼容模块只做从 L1 向上 re-export |
+| V6 | ✅ 已清零 | `scheduler/discovery.py → harness.contracts.config_schema` | L3 依赖 L5 | §3.1 `scheduler` 不依赖 harness | `scheduler.discovery` 改为直接依赖 `shared.scheme_config_schema` |
 
-合规的关键边（已正确）：
-
-- 所有 `predict.py` 都经 `shared.input_artifacts.build_*_input_artifact` 取输入 ✅
-- `scheduler` 只依赖 `shared` + 自身，对具体方案零静态耦合 ✅
-- `backtests` 通过 import `schemes/*/core/predictors` 调用算法，不碰 adapter ✅
-- `shared` 无任何上行依赖 ✅
-- `shared.week_calendar_normalizer` 是只读周历归一化公共点，供 `shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 共享；它只修正源周历孤立 forward jump，不能被方案 core 用来重算任意周编号或绕过 source 信号水位 ✅
-
-> 进度：V1（S1）、V2（S2）、V4（S3）已清零；V3 部分完成（日历查询已收敛到 `calendar_service`，adapter 仍自建 engine 传入——属白名单内 `adapter→shared` 边，不阻塞 StaticGate，engine 工厂下沉作为独立小重构后续处理）。数据层依赖白名单（§3.1）实质成立。每步均通过等价闸（`scripts/compare_refactor_outputs.py`，diff_count=0）验证行为保持。
+V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为零违规。
+方案级输入、写库、Native core/predict 等细粒度约束仍由 onboarding StaticGate
+持续检查。
 
 ---
 
@@ -302,21 +305,30 @@ schemes/{id}/                     schemes/{id}/
 
 ---
 
-## 9. 强约束如何被强制（依赖规则 → StaticGate）
+## 9. 强约束如何被强制（onboarding StaticGate + repo-wide CI gate）
 
-代码架构的每条规则都映射到一条可机器执行的 StaticGate 判定（见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md) / [SCHEME_CONTRACT.md](SCHEME_CONTRACT.md) §4）：
+机器守护分为两个互补作用域，二者不可互相替代：
 
-| 架构规则 | StaticGate 判定 |
-|----------|-----------------|
+- **onboarding StaticGate**：以单个 `scheme_id` 为范围，检查方案身份、入口、
+  Native core/predict、跨方案、输入与写库契约；它不会扫描 `shared/`、
+  `scheduler/`、`backend/` 等全仓包。
+- **repo-wide CI gate**：`harness.contracts.import_rules.repository_layer_import_violations`
+  扫描 `shared/`、`schemes/`、`scheduler/`、`backend/`、`backtests/`、`harness/`
+  中的生产 Python 文件；`tests/`、`outputs/` 和未纳入分层图的管理脚本不在扫描集。
+  它报告精确路径、行号和 import，不以历史违规基线放行新旧逆向依赖。
+
+| 架构规则 | 机器判定 |
+|----------|----------|
 | Native 白名单 | `native_adapter` ID 不在 `deploy/onboarding_policy_v1.json` → FAIL，ActivationGate 同样阻断 |
-| Native core 零本仓库依赖（§3.2 ✗ⁱ） | AST 扫 `core/*.py` 命中 `sqlalchemy`/`scheduler`/`shared.input_artifacts`/`read_sql`/`text(` → FAIL |
-| 跨方案禁止（§3.2） | AST 扫 `from schemes.<other>` → FAIL |
+| Native core 零本仓库依赖（§3.2 ✗ⁱ） | onboarding StaticGate 扫 DB/I/O/写库规则；repo-wide gate 额外禁止 `core → shared` 和向上依赖 |
+| 跨方案禁止（§3.2） | onboarding StaticGate 与 repo-wide gate 均按源文件 package 解析绝对/相对 import，再扫描 `schemes.<other>`；`from ..other.core` 不可绕过 |
 | 写库单点（§3.3） | predict/core 命中 `insert_run_predictions`/`write_run_log`/`execute_scheme`/`INSERT…` → FAIL |
 | 输入单点（§3.3） | predict 必须 import `shared.input_artifacts`；backtest runner 同 → 否则 FAIL |
 | 运行时入口（§6） | Native 校验 `SCHEME_ID + run`；Blackbox 校验两文件、Metadata 与 CLI |
-| 依赖只向下（§3.3） | 扫描 import 边不在 §3.1 白名单 → FAIL |
+| 依赖只向下（§3.3） | repo-wide gate 扫描生产层 import；未列入 §3.1 的静态边 → FAIL |
 
-→ "强约束"不是文档口号，而是一组在 CI 可执行的 import-direction 断言。当前 4 处违规（§4 V1–V4）在数据层重构后清零，StaticGate 持续守护防回潮。
+repo-wide gate 曾精确阻断 §4 的 V5–V6；依赖下沉后全仓扫描为零违规。
+后续任何同类逆向依赖都会直接令 CI 测试失败。
 
 ---
 
@@ -325,17 +337,18 @@ schemes/{id}/                     schemes/{id}/
 > 本节是方向；S0–S8 已完成，最新落地状态见 [CURRENT_STATUS.md](../CURRENT_STATUS.md)。
 
 ```
-现状（依赖违规已清零，harness 已落地）
+现状（onboarding harness 与 repo-wide gate 均已落地）
   │
   ① 数据层重构（已落地到 `shared.data_service` / `shared.input_artifacts` / `shared.calendar_service`）
   │    新建 calendar_service → 消 V1/V3；周频去重收编 → 消 V2；backtest 统一输入 → 消 V4
   ▼
-依赖图全合规（§3.1 白名单 100% 成立）
+依赖图全合规（repo-wide CI gate 全绿）
   │
   ② harness/ 持续演进（见 [HARNESS_ARCHITECTURE.md](HARNESS_ARCHITECTURE.md)）
-  │    contracts + StaticGate（守护依赖规则）→ 其余 Gate → 授权 → orchestrator/CLI
+  │    onboarding StaticGate（方案局部）+ repo-wide gate（全仓 import 图）
+  │    → 其余 Gate → 授权 → orchestrator/CLI
   ▼
 强约束自动化入库（用户给方案 → harness 驱动改造-测试-验证-实盘）
 ```
 
-> 本文为代码架构主蓝图。未创建或修改任何代码；§4 违规与 §10 演进为后续实现阶段的目标。
+> 本文为代码架构主蓝图。§4 的状态以 repo-wide gate 的实际扫描结果为准。

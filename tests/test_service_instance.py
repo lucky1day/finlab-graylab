@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import unittest
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 class _Scalar:
@@ -179,6 +180,11 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
                 "status": "ok",
                 "service_instance": identity,
                 "dashboard_snapshot": {"status": "ready", "error_code": None},
+                "daily_schedule": {
+                    "mode": "legacy",
+                    "overall": "not_enabled",
+                    "reasons": ["LEDGER_ROLLOUT_DISABLED"],
+                },
             },
         )
         self.assertEqual(engine.queries[0].upper(), "SELECT 1")
@@ -212,6 +218,11 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
                 "status": "ok",
                 "service_instance": {"fingerprint_version": "2", "fingerprint": None},
                 "dashboard_snapshot": {"status": "ready", "error_code": None},
+                "daily_schedule": {
+                    "mode": "legacy",
+                    "overall": "not_enabled",
+                    "reasons": ["LEDGER_ROLLOUT_DISABLED"],
+                },
             },
         )
         serialized = json.dumps(result, sort_keys=True)
@@ -263,3 +274,112 @@ class ServiceInstanceIdentityTests(unittest.TestCase):
             main.health()
 
         self.assertEqual(engine.queries, ["SELECT 1"])
+
+    def test_health_ledger_mode_projects_frozen_occurrence_and_surfaces_error(
+        self,
+    ) -> None:
+        from types import SimpleNamespace
+
+        from backend import main
+
+        engine = _Engine(schema="native_service")
+        epoch_identity = {
+            "epoch": 7,
+            "mode": "ledger",
+            "record_sha256": "e" * 64,
+        }
+        checked_at = datetime(
+            2026,
+            7,
+            24,
+            0,
+            0,
+            tzinfo=timezone.utc,
+        )
+        heartbeat = SimpleNamespace(
+            service_name="daily-coordinator",
+            state="RUNNING",
+            occurrence_id=91,
+            heartbeat_at=checked_at - timedelta(seconds=15),
+            details={
+                "business_date": "2026-07-24",
+                "coordinator_mode": "ledger",
+                "daily_coordinator_epoch": dict(epoch_identity),
+            },
+        )
+        snapshot = SimpleNamespace(
+            occurrence=SimpleNamespace(
+                predict_date="2026-07-24",
+                policy_json={
+                    "daily_coordinator_epoch": dict(epoch_identity),
+                },
+            ),
+            items=(
+                SimpleNamespace(item=SimpleNamespace(item_id=11)),
+                SimpleNamespace(item=SimpleNamespace(item_id=12)),
+            )
+        )
+        projected = {
+            "overall": "error",
+            "reasons": ["DATABRIDGE_READY_V2_INCOMPLETE"],
+        }
+        with (
+            patch.object(main, "get_engine", return_value=engine),
+            patch.object(
+                main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                main,
+                "require_current_daily_coordinator_identity",
+                return_value=SimpleNamespace(
+                    mode="ledger",
+                    policy_payload=lambda: dict(epoch_identity),
+                ),
+            ),
+            patch.object(
+                main,
+                "read_scheduler_heartbeat",
+                return_value=heartbeat,
+            ),
+            patch.object(
+                main,
+                "read_schedule_occurrence_snapshot",
+                return_value=snapshot,
+            ),
+            patch.object(
+                main,
+                "read_schedule_health_envelope",
+                side_effect=("envelope-11", "envelope-12"),
+            ) as read_envelope,
+            patch.object(
+                main,
+                "project_daily_health",
+                return_value=projected,
+            ) as project,
+            patch.object(
+                main,
+                "datetime",
+                MagicMock(
+                    wraps=datetime,
+                    **{"now.return_value": checked_at},
+                ),
+            ),
+            patch.dict("os.environ", {}, clear=True),
+        ):
+            result = main.health()
+
+        self.assertEqual(result["status"], "error")
+        self.assertEqual(
+            result["daily_schedule"],
+            {"mode": "ledger", **projected},
+        )
+        self.assertEqual(
+            [call.kwargs["item_id"] for call in read_envelope.call_args_list],
+            [11, 12],
+        )
+        self.assertEqual(
+            project.call_args.kwargs["execution_envelopes"],
+            ("envelope-11", "envelope-12"),
+        )

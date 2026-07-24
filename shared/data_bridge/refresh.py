@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import csv
+import copy
 import fcntl
 import io
 import json
 import os
+import re
 import shutil
+import stat
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Callable, Iterator, Mapping
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -27,10 +31,175 @@ from shared.data_bridge.validation import (
     validate_unique_csv_header,
     write_validated_dataset,
 )
+from shared.daily_coordinator_mode import (
+    assert_daily_coordinator_epoch_payload_matches_current,
+    require_current_daily_coordinator_identity,
+)
 
 
 class DataBridgeRefreshError(RuntimeError):
     """A full refresh could not produce a stable valid dataset."""
+
+
+class DataBridgePublicationFenceError(DataBridgeRefreshError):
+    """Occurrence-bound publication capability 已缺失或漂移。"""
+
+
+CURRENT_PUBLICATION_MANIFEST = ".publication-manifest.json"
+CURRENT_PUBLICATION_MANIFEST_VERSION = "data-bridge-current-v1"
+CURRENT_PUBLICATION_MANIFEST_FIELDS = frozenset(
+    {
+        "manifest_version",
+        "generation_id",
+        "refresh_date",
+        "schema_version",
+        "business_digest",
+        "files",
+        "publication_capability",
+    }
+)
+
+
+@dataclass(frozen=True)
+class DailyCoordinatorPublicationCapability:
+    """绑定单个 occurrence/date/exact epoch 的不可变发布能力。"""
+
+    occurrence_id: int
+    business_date: str
+    epoch: int
+    mode: str
+    record_sha256: str
+    occurrence_validator: (
+        Callable[[], Mapping[str, object]] | None
+    ) = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def from_occurrence(
+        cls,
+        *,
+        occurrence_id: int,
+        business_date: str,
+        policy_json: Mapping[str, object],
+        occurrence_validator: Callable[[], Mapping[str, object]],
+    ) -> "DailyCoordinatorPublicationCapability":
+        frozen = policy_json.get("daily_coordinator_epoch")
+        if not isinstance(frozen, Mapping):
+            raise DataBridgeRefreshError(
+                "daily occurrence publication epoch is unavailable"
+            )
+        return cls(
+            occurrence_id=int(occurrence_id),
+            business_date=date.fromisoformat(
+                business_date
+            ).isoformat(),
+            epoch=int(frozen.get("epoch", 0)),
+            mode=str(frozen.get("mode", "")),
+            record_sha256=str(frozen.get("record_sha256", "")),
+            occurrence_validator=occurrence_validator,
+        )
+
+    def epoch_payload(self) -> dict[str, object]:
+        return {
+            "epoch": self.epoch,
+            "mode": self.mode,
+            "record_sha256": self.record_sha256,
+        }
+
+
+def _validate_publication_capability(
+    capability: object,
+) -> DailyCoordinatorPublicationCapability:
+    if not isinstance(
+        capability,
+        DailyCoordinatorPublicationCapability,
+    ):
+        raise DataBridgePublicationFenceError(
+            "DataBridge publication capability is missing"
+        )
+    if capability.occurrence_id <= 0:
+        raise DataBridgePublicationFenceError(
+            "DataBridge publication occurrence_id is invalid"
+        )
+    if not callable(capability.occurrence_validator):
+        raise DataBridgePublicationFenceError(
+            "DataBridge publication occurrence validator is missing"
+        )
+    try:
+        normalized_date = date.fromisoformat(
+            capability.business_date
+        ).isoformat()
+        occurrence = capability.occurrence_validator()
+        if not isinstance(occurrence, Mapping):
+            raise ValueError("occurrence validator returned no snapshot")
+        snapshot_occurrence_id = int(
+            occurrence.get("occurrence_id", 0)
+        )
+        snapshot_business_date = date.fromisoformat(
+            str(occurrence.get("business_date", ""))
+        ).isoformat()
+        snapshot_epoch = occurrence.get("daily_coordinator_epoch")
+        if not isinstance(snapshot_epoch, Mapping):
+            raise ValueError("occurrence epoch is unavailable")
+        normalized_snapshot_epoch = {
+            "epoch": int(snapshot_epoch.get("epoch", 0)),
+            "mode": str(snapshot_epoch.get("mode", "")),
+            "record_sha256": str(
+                snapshot_epoch.get("record_sha256", "")
+            ),
+        }
+        if (
+            snapshot_occurrence_id != capability.occurrence_id
+            or snapshot_business_date != capability.business_date
+            or normalized_snapshot_epoch != capability.epoch_payload()
+        ):
+            raise ValueError("occurrence publication identity drifted")
+        assert_daily_coordinator_epoch_payload_matches_current(
+            normalized_snapshot_epoch,
+            label="DataBridge publication coordinator epoch",
+        )
+    except Exception as exc:
+        raise DataBridgePublicationFenceError(
+            "DataBridge publication occurrence snapshot or coordinator "
+            "epoch drifted"
+        ) from exc
+    if normalized_date != capability.business_date:
+        raise DataBridgePublicationFenceError(
+            "DataBridge publication business_date is non-canonical"
+        )
+    if capability.mode != "ledger":
+        raise DataBridgePublicationFenceError(
+            "DataBridge publication capability must use ledger mode"
+        )
+    return capability
+
+
+def _require_publish_authority(
+    *,
+    publish: bool,
+    publication_capability: (
+        DailyCoordinatorPublicationCapability | None
+    ) = None,
+) -> DailyCoordinatorPublicationCapability | None:
+    """DataBridge refresh 必须绑定显式模式，ledger 仅限协调器调用域。"""
+    del publish
+    try:
+        identity = require_current_daily_coordinator_identity()
+    except Exception as exc:
+        raise DataBridgePublicationFenceError(
+            "DataBridge coordinator epoch identity is unavailable"
+        ) from exc
+    mode = identity.mode
+    if mode != "ledger":
+        return None
+    capability = (
+        publication_capability
+    )
+    if capability is None:
+        raise DataBridgePublicationFenceError(
+            "DataBridge refresh is reserved for an occurrence-bound daily "
+            "coordinator capability in ledger mode"
+        )
+    return _validate_publication_capability(capability)
 
 
 REQUIRED_SOURCE_TABLES = frozenset(
@@ -63,8 +232,8 @@ class DataBridgeRefreshConfig:
     download_concurrency: int = 4
     max_rounds: int = 3
     round_timeout_sec: int = 900
-    refresh_start: str = "06:00"
-    refresh_deadline: str = "07:00"
+    refresh_start: str = "06:30"
+    refresh_deadline: str = "06:55"
 
     @classmethod
     def from_env(cls) -> "DataBridgeRefreshConfig":
@@ -75,8 +244,8 @@ class DataBridgeRefreshConfig:
             schema_path=project_root / "shared" / "blackbox_v2" / "data_bridge_v1_schema.json",
             daily_chunk_months=int(os.getenv("DATABRIDGE_DAILY_CHUNK_MONTHS", "3")),
             download_concurrency=int(os.getenv("DATABRIDGE_DOWNLOAD_CONCURRENCY", "4")),
-            refresh_start=os.getenv("DATABRIDGE_REFRESH_START", "06:00"),
-            refresh_deadline=os.getenv("DATABRIDGE_REFRESH_DEADLINE", "07:00"),
+            refresh_start=os.getenv("DATABRIDGE_REFRESH_START", "06:30"),
+            refresh_deadline=os.getenv("DATABRIDGE_REFRESH_DEADLINE", "06:55"),
         )
         if config.daily_chunk_months <= 0 or config.download_concurrency <= 0:
             raise ValueError("DataBridge chunk months and download concurrency must be positive")
@@ -162,7 +331,7 @@ class DataBridgeRoundBuilder:
                 f"DataBridge full round exceeded {self.config.round_timeout_sec}s: {elapsed:.1f}s"
             )
         staging_root = self.config.runtime_root / "staging"
-        staging_root.mkdir(parents=True, exist_ok=True)
+        staging_root.mkdir(parents=True, mode=0o700, exist_ok=True)
         destination = staging_root / round_id
         if destination.exists():
             shutil.rmtree(destination)
@@ -218,66 +387,104 @@ def run_full_refresh(
     refresh_date: str,
     publish: bool,
     deadline_at: datetime | None = None,
+    publication_capability: (
+        DailyCoordinatorPublicationCapability | None
+    ) = None,
 ) -> RefreshResult:
-    started = time.monotonic()
+    authority = _require_publish_authority(
+        publish=publish,
+        publication_capability=publication_capability,
+    )
+    if (
+        authority is not None
+        and authority.business_date != refresh_date
+    ):
+        raise DataBridgePublicationFenceError(
+            "DataBridge publication capability business_date does not "
+            "match refresh_date"
+        )
     store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
-    built_directories: list[Path] = []
-    try:
-        store.recover(schema_path=config.schema_path)
-        _ensure_before_deadline(deadline_at)
-        _validate_source_tables(client.get_tables())
-        _ensure_source_ready(client, expected_daily_date)
-        previous_keys = _load_previous_keys(store, config.schema_path)
-        builder = DataBridgeRoundBuilder(client, config)
+    with store.lock(exclusive=True, blocking=False):
+        if authority is not None:
+            _validate_publication_capability(authority)
+        refresh_started_at = _shanghai_now()
+        started = time.monotonic()
+        built_directories: list[Path] = []
+        try:
+            store.recover(schema_path=config.schema_path)
+            _ensure_before_deadline(deadline_at)
+            _validate_source_tables(client.get_tables())
+            _ensure_source_ready(client, expected_daily_date)
+            previous_keys = _load_previous_keys(store, config.schema_path)
+            builder = DataBridgeRoundBuilder(client, config)
 
-        def rounds() -> Iterator[DownloadRound]:
-            for index in range(config.max_rounds):
-                _ensure_before_deadline(deadline_at)
-                item = builder.build(
-                    f"round-{index + 1}",
-                    end_date=refresh_date,
-                    expected_daily_date=expected_daily_date,
-                    previous_keys=previous_keys,
-                )
-                built_directories.append(item.directory)
-                _ensure_before_deadline(deadline_at)
-                yield item
-                item = None
+            def rounds() -> Iterator[DownloadRound]:
+                for index in range(config.max_rounds):
+                    _ensure_before_deadline(deadline_at)
+                    item = builder.build(
+                        f"round-{index + 1}",
+                        end_date=refresh_date,
+                        expected_daily_date=expected_daily_date,
+                        previous_keys=previous_keys,
+                    )
+                    built_directories.append(item.directory)
+                    _ensure_before_deadline(deadline_at)
+                    yield item
+                    item = None
 
-        selected = select_stable_round(rounds(), max_rounds=config.max_rounds)
-        assert selected.dataset is not None
-        for directory in built_directories:
-            if directory != selected.directory and directory.exists():
-                shutil.rmtree(directory)
-        state = _build_state(
-            selected.dataset,
-            refresh_date,
-            len(built_directories),
-            duration_sec=time.monotonic() - started,
-        )
-        if publish:
-            store.publish(selected.directory, state)
-        return RefreshResult(
-            state=state,
-            published=publish,
-            rounds_completed=len(built_directories),
-            duration_sec=time.monotonic() - started,
-        )
-    except BaseException as exc:
-        if publish:
-            try:
-                store.record_failed_attempt(
-                    refresh_date=refresh_date,
-                    error=str(exc)[:1000],
-                    duration_sec=time.monotonic() - started,
+            selected = select_stable_round(
+                rounds(),
+                max_rounds=config.max_rounds,
+            )
+            if authority is not None:
+                _validate_publication_capability(authority)
+            assert selected.dataset is not None
+            for directory in built_directories:
+                if (
+                    directory != selected.directory
+                    and directory.exists()
+                ):
+                    shutil.rmtree(directory)
+            state = _build_state(
+                selected.dataset,
+                refresh_date,
+                len(built_directories),
+                refresh_started_at=refresh_started_at,
+                duration_sec=time.monotonic() - started,
+            )
+            if publish:
+                state = store.publish(
+                    selected.directory,
+                    state,
+                    publication_capability=authority,
                 )
-            except Exception:
-                pass
-        raise
-    finally:
-        staging_root = config.runtime_root / "staging"
-        if staging_root.exists():
-            shutil.rmtree(staging_root)
+            return RefreshResult(
+                state=state,
+                published=publish,
+                rounds_completed=len(built_directories),
+                duration_sec=time.monotonic() - started,
+            )
+        except BaseException as exc:
+            if (
+                publish
+                and not isinstance(
+                    exc,
+                    DataBridgePublicationFenceError,
+                )
+            ):
+                try:
+                    store.record_failed_attempt(
+                        refresh_date=refresh_date,
+                        error=str(exc)[:1000],
+                        duration_sec=time.monotonic() - started,
+                    )
+                except Exception:
+                    pass
+            raise
+        finally:
+            staging_root = config.runtime_root / "staging"
+            if staging_root.exists():
+                shutil.rmtree(staging_root)
 
 
 def _ensure_before_deadline(deadline_at: datetime | None) -> None:
@@ -309,8 +516,13 @@ def check_current_dataset(
     *,
     required_refresh_date: str | None = None,
     expected_daily_date: str | None = None,
+    expected_generation_id: str | None = None,
+    expected_business_digest: str | None = None,
+    expected_publication_capability: (
+        DailyCoordinatorPublicationCapability | None
+    ) = None,
 ) -> CurrentDataset:
-    """在共享锁内验证 current 三文件与发布状态完全一致。"""
+    """在共享锁内验证 current 文件、状态及调用方拥有的发布身份。"""
     store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
     with store.lock(exclusive=False):
         if not store.state_path.is_file():
@@ -319,8 +531,20 @@ def check_current_dataset(
             state = json.loads(store.state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise DataBridgeRefreshError("DataBridge refresh state is invalid") from exc
+        marker = _read_publication_manifest(store.current_dir)
+        state_identity = _publication_identity_from_state(state)
+        if marker != state_identity:
+            raise DataBridgeRefreshError(
+                "DataBridge current publication manifest identity does not "
+                "match state"
+            )
         dataset = validate_dataset(
-            read_dataset_directory(store.current_dir),
+            read_dataset_directory(
+                store.current_dir,
+                allowed_sidecar_filenames=frozenset(
+                    {CURRENT_PUBLICATION_MANIFEST}
+                ),
+            ),
             schema_path=config.schema_path,
             expected_daily_date=expected_daily_date,
         )
@@ -328,6 +552,39 @@ def check_current_dataset(
             raise DataBridgeRefreshError("DataBridge state schema_version does not match current files")
         if state.get("business_digest") != dataset.business_digest:
             raise DataBridgeRefreshError("DataBridge state digest does not match current files")
+        _validate_identity_against_dataset(
+            marker,
+            dataset=dataset,
+        )
+        if expected_publication_capability is not None:
+            authority = _validate_publication_capability(
+                expected_publication_capability
+            )
+            if state.get("publication_capability") != (
+                _publication_capability_payload(authority)
+            ):
+                raise DataBridgePublicationFenceError(
+                    "DataBridge current publication capability does not "
+                    "match caller occurrence"
+                )
+        if (
+            expected_generation_id is not None
+            and state.get("generation_id") != expected_generation_id
+        ):
+            raise DataBridgeRefreshError(
+                "DataBridge current generation_id was replaced after refresh: "
+                f"expected {expected_generation_id}, "
+                f"got {state.get('generation_id')}"
+            )
+        if (
+            expected_business_digest is not None
+            and dataset.business_digest != expected_business_digest
+        ):
+            raise DataBridgeRefreshError(
+                "DataBridge current business_digest was replaced after refresh: "
+                f"expected {expected_business_digest}, "
+                f"got {dataset.business_digest}"
+            )
         if required_refresh_date is not None and state.get("refresh_date") != required_refresh_date:
             raise DataBridgeRefreshError(
                 f"DataBridge refresh_date must be {required_refresh_date}, got {state.get('refresh_date')}"
@@ -369,7 +626,12 @@ def _load_previous_keys(
         return None
     with store.lock(exclusive=False):
         dataset = validate_dataset(
-            read_dataset_directory(store.current_dir),
+            read_dataset_directory(
+                store.current_dir,
+                allowed_sidecar_filenames=frozenset(
+                    {CURRENT_PUBLICATION_MANIFEST}
+                ),
+            ),
             schema_path=schema_path,
         )
     return {filename: profile.keys for filename, profile in dataset.files.items()}
@@ -380,21 +642,39 @@ def _build_state(
     refresh_date: str,
     stability_rounds: int,
     *,
+    refresh_started_at: datetime,
     duration_sec: float,
 ) -> dict[str, object]:
-    now = datetime.now(ZoneInfo("Asia/Shanghai"))
+    now = _shanghai_now()
+    if (
+        refresh_started_at.tzinfo is None
+        or refresh_started_at.utcoffset() is None
+    ):
+        raise ValueError("refresh_started_at must be timezone-aware")
+    refresh_started_at = refresh_started_at.astimezone(
+        ZoneInfo("Asia/Shanghai")
+    )
+    if now < refresh_started_at:
+        raise ValueError("DataBridge refresh completion precedes start")
     generation_id = f"full-{refresh_date.replace('-', '')}-{now.strftime('%H%M%S')}-{dataset.business_digest[:12]}"
     return {
         "schema_version": dataset.schema_version,
         "generation_id": generation_id,
         "refresh_date": refresh_date,
+        "refresh_started_at": refresh_started_at.isoformat(
+            timespec="seconds"
+        ),
         "refreshed_at": now.isoformat(timespec="seconds"),
+        "published_at": None,
         "source_mode": "full_export",
         "stability_rounds": stability_rounds,
         "business_digest": dataset.business_digest,
         "last_attempt": {
             "status": "success",
             "refresh_date": refresh_date,
+            "started_at": refresh_started_at.isoformat(
+                timespec="seconds"
+            ),
             "finished_at": now.isoformat(timespec="seconds"),
             "duration_sec": round(duration_sec, 3),
             "error": None,
@@ -411,6 +691,284 @@ def _build_state(
             for filename, profile in dataset.files.items()
         },
     }
+
+
+def _publication_capability_payload(
+    capability: DailyCoordinatorPublicationCapability,
+) -> dict[str, object]:
+    return {
+        "occurrence_id": capability.occurrence_id,
+        "business_date": capability.business_date,
+        "daily_coordinator_epoch": capability.epoch_payload(),
+    }
+
+
+def _publication_identity_from_state(
+    state: Mapping[str, object],
+) -> dict[str, object]:
+    """提取与 current 原子切换的稳定身份；排除后置 published_at。"""
+    if not isinstance(state, Mapping):
+        raise DataBridgeRefreshError(
+            "DataBridge publication state must be an object"
+        )
+    return {
+        "manifest_version": CURRENT_PUBLICATION_MANIFEST_VERSION,
+        "generation_id": copy.deepcopy(state.get("generation_id")),
+        "refresh_date": copy.deepcopy(state.get("refresh_date")),
+        "schema_version": copy.deepcopy(state.get("schema_version")),
+        "business_digest": copy.deepcopy(
+            state.get("business_digest")
+        ),
+        "files": copy.deepcopy(state.get("files")),
+        "publication_capability": (
+            _normalize_stored_publication_capability(
+                state.get("publication_capability")
+            )
+        ),
+    }
+
+
+def _normalize_stored_publication_capability(
+    payload: object,
+) -> dict[str, object] | None:
+    if payload is None:
+        return None
+    if (
+        not isinstance(payload, Mapping)
+        or set(payload)
+        != {
+            "occurrence_id",
+            "business_date",
+            "daily_coordinator_epoch",
+        }
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge publication capability fields are invalid"
+        )
+    occurrence_id = payload.get("occurrence_id")
+    business_date = payload.get("business_date")
+    epoch = payload.get("daily_coordinator_epoch")
+    if (
+        not isinstance(occurrence_id, int)
+        or isinstance(occurrence_id, bool)
+        or occurrence_id <= 0
+        or not isinstance(business_date, str)
+        or date.fromisoformat(business_date).isoformat()
+        != business_date
+        or not isinstance(epoch, Mapping)
+        or set(epoch) != {"epoch", "mode", "record_sha256"}
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge publication capability identity is invalid"
+        )
+    normalized_epoch = {
+        "epoch": epoch.get("epoch"),
+        "mode": epoch.get("mode"),
+        "record_sha256": epoch.get("record_sha256"),
+    }
+    if (
+        not isinstance(normalized_epoch["epoch"], int)
+        or isinstance(normalized_epoch["epoch"], bool)
+        or normalized_epoch["epoch"] <= 0
+        or normalized_epoch["mode"] != "ledger"
+        or not isinstance(
+            normalized_epoch["record_sha256"],
+            str,
+        )
+        or re.fullmatch(
+            r"[0-9a-f]{64}",
+            normalized_epoch["record_sha256"],
+        )
+        is None
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge publication capability epoch is invalid"
+        )
+    return {
+        "occurrence_id": occurrence_id,
+        "business_date": business_date,
+        "daily_coordinator_epoch": normalized_epoch,
+    }
+
+
+def _canonical_publication_manifest_bytes(
+    manifest: Mapping[str, object],
+) -> bytes:
+    return (
+        json.dumps(
+            manifest,
+            ensure_ascii=True,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _write_publication_manifest(
+    directory: Path,
+    *,
+    state: Mapping[str, object],
+) -> None:
+    marker_path = directory / CURRENT_PUBLICATION_MANIFEST
+    if os.path.lexists(marker_path):
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest already exists"
+        )
+    payload = _canonical_publication_manifest_bytes(
+        _publication_identity_from_state(state)
+    )
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".publication-manifest-",
+        dir=directory,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o444)
+        os.replace(temporary, marker_path)
+        _fsync_directory(directory)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _read_publication_manifest(
+    directory: Path,
+) -> dict[str, object]:
+    marker_path = directory / CURRENT_PUBLICATION_MANIFEST
+    try:
+        descriptor = os.open(
+            marker_path,
+            os.O_RDONLY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest is missing"
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            marker_stat = os.fstat(handle.fileno())
+            if not stat.S_ISREG(marker_stat.st_mode):
+                raise DataBridgeRefreshError(
+                    "DataBridge current publication manifest is not a "
+                    "regular file"
+                )
+            if stat.S_IMODE(marker_stat.st_mode) & 0o222:
+                raise DataBridgeRefreshError(
+                    "DataBridge current publication manifest must be "
+                    "read-only"
+                )
+            raw = handle.read(1024 * 1024 + 1)
+    except OSError as exc:
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest is invalid"
+        ) from exc
+    if len(raw) > 1024 * 1024:
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest is too large"
+        )
+    try:
+        marker = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest is invalid"
+        ) from exc
+    if not isinstance(marker, dict):
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest must be an object"
+        )
+    if set(marker) != CURRENT_PUBLICATION_MANIFEST_FIELDS:
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest fields are invalid"
+        )
+    if marker != _publication_identity_from_state(marker):
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest identity is invalid"
+        )
+    if raw != _canonical_publication_manifest_bytes(marker):
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest is not canonical JSON"
+        )
+    return marker
+
+
+def _validate_identity_against_dataset(
+    identity: Mapping[str, object],
+    *,
+    dataset: ValidatedDataBridgeDataset,
+) -> None:
+    generation_id = identity.get("generation_id")
+    refresh_date = identity.get("refresh_date")
+    business_digest = identity.get("business_digest")
+    if (
+        not isinstance(generation_id, str)
+        or not generation_id
+        or not isinstance(refresh_date, str)
+        or date.fromisoformat(refresh_date).isoformat() != refresh_date
+        or not isinstance(business_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", business_digest) is None
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge publication manifest generation identity is invalid"
+        )
+    if identity.get("schema_version") != dataset.schema_version:
+        raise DataBridgeRefreshError(
+            "DataBridge publication manifest schema does not match files"
+        )
+    if identity.get("business_digest") != dataset.business_digest:
+        raise DataBridgeRefreshError(
+            "DataBridge publication manifest digest does not match files"
+        )
+    files = identity.get("files")
+    if not isinstance(files, Mapping):
+        raise DataBridgeRefreshError(
+            "DataBridge publication manifest files profile is missing"
+        )
+    if set(files) != set(EXPECTED_FILENAMES):
+        raise DataBridgeRefreshError(
+            "DataBridge publication manifest files profile is incomplete"
+        )
+    for filename, profile in dataset.files.items():
+        stored = files.get(filename)
+        if (
+            not isinstance(stored, Mapping)
+            or stored.get("sha256") != profile.sha256
+        ):
+            raise DataBridgeRefreshError(
+                "DataBridge publication manifest hash mismatch for "
+                f"{filename}"
+            )
+
+
+def _directory_publication_identity(
+    directory: Path,
+    *,
+    schema_path: Path,
+) -> dict[str, object] | None:
+    if not directory.is_dir():
+        return None
+    try:
+        identity = _read_publication_manifest(directory)
+        dataset = validate_dataset(
+            read_dataset_directory(
+                directory,
+                allowed_sidecar_filenames=frozenset(
+                    {CURRENT_PUBLICATION_MANIFEST}
+                ),
+            ),
+            schema_path=schema_path,
+        )
+        _validate_identity_against_dataset(
+            identity,
+            dataset=dataset,
+        )
+        return identity
+    except (DataBridgeRefreshError, OSError, ValueError):
+        return None
 
 
 def _merge_daily_payloads(payloads: list[bytes]) -> pd.DataFrame:
@@ -470,15 +1028,56 @@ class DataBridgeStore:
         self.previous_dir = self.runtime_root / "previous"
         self.state_path = self.runtime_root / "state.json"
         self.lock_path = self.runtime_root / "refresh.lock"
+        self._thread_lock_state = threading.local()
 
     @contextmanager
-    def lock(self, *, exclusive: bool) -> Iterator[None]:
-        self.runtime_root.mkdir(parents=True, exist_ok=True)
-        with self.lock_path.open("a+b") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    def lock(
+        self,
+        *,
+        exclusive: bool,
+        blocking: bool = True,
+    ) -> Iterator[None]:
+        depth = int(getattr(self._thread_lock_state, "depth", 0))
+        held_exclusive = bool(
+            getattr(self._thread_lock_state, "exclusive", False)
+        )
+        if depth:
+            if exclusive and not held_exclusive:
+                raise DataBridgeRefreshError(
+                    "cannot upgrade an active shared DataBridge lock"
+                )
+            self._thread_lock_state.depth = depth + 1
             try:
                 yield
             finally:
+                self._thread_lock_state.depth -= 1
+            return
+
+        _ensure_private_directory(
+            self.data_root,
+            label="DataBridge data root",
+        )
+        _ensure_private_directory(
+            self.runtime_root,
+            label="DataBridge runtime root",
+        )
+        with self.lock_path.open("a+b") as handle:
+            operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+            if not blocking:
+                operation |= fcntl.LOCK_NB
+            try:
+                fcntl.flock(handle.fileno(), operation)
+            except BlockingIOError as exc:
+                raise DataBridgeRefreshError(
+                    "DataBridge refresh is busy in another process"
+                ) from exc
+            self._thread_lock_state.depth = 1
+            self._thread_lock_state.exclusive = exclusive
+            try:
+                yield
+            finally:
+                self._thread_lock_state.depth = 0
+                self._thread_lock_state.exclusive = False
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def publish(
@@ -487,30 +1086,71 @@ class DataBridgeStore:
         state: dict[str, object],
         *,
         fail_after_backup: bool = False,
-    ) -> None:
+        publication_capability: (
+            DailyCoordinatorPublicationCapability | None
+        ) = None,
+    ) -> dict[str, object]:
+        authority = _require_publish_authority(
+            publish=True,
+            publication_capability=publication_capability,
+        )
         candidate = Path(candidate_dir)
-        entries = {path.name for path in candidate.iterdir()} if candidate.is_dir() else set()
-        if entries != set(EXPECTED_FILENAMES):
-            raise DataBridgeRefreshError("candidate directory does not contain exactly three data files")
-        self.data_root.mkdir(parents=True, exist_ok=True)
-        self.runtime_root.mkdir(parents=True, exist_ok=True)
+        _validate_publish_candidate(candidate)
         with self.lock(exclusive=True):
+            if authority is not None:
+                _validate_publication_capability(authority)
+            _validate_publish_candidate(candidate)
             self._recover_locked()
             next_dir = Path(tempfile.mkdtemp(prefix=".current-next-", dir=self.data_root))
             shutil.rmtree(next_dir)
-            shutil.copytree(candidate, next_dir)
+            shutil.copytree(
+                candidate,
+                next_dir,
+                copy_function=_copy_regular_file_no_follow,
+            )
+            _validate_publish_candidate(candidate)
+            published_state = copy.deepcopy(state)
+            if authority is not None:
+                _validate_publication_capability(authority)
+                published_state["publication_capability"] = (
+                    _publication_capability_payload(authority)
+                )
+            _write_publication_manifest(
+                next_dir,
+                state=published_state,
+            )
             for path in next_dir.iterdir():
                 path.chmod(0o444)
+                _fsync_regular_file(path)
+            _fsync_directory(next_dir)
             had_current = self.current_dir.exists()
+            previous_state = (
+                self.state_path.read_bytes()
+                if self.state_path.is_file()
+                else None
+            )
+            state_replaced = False
             try:
+                if authority is not None:
+                    _validate_publication_capability(authority)
                 if self.previous_dir.exists():
                     shutil.rmtree(self.previous_dir)
                 if had_current:
                     os.replace(self.current_dir, self.previous_dir)
                 if fail_after_backup:
                     raise RuntimeError("injected publication failure")
+                if authority is not None:
+                    _validate_publication_capability(authority)
                 os.replace(next_dir, self.current_dir)
-                self._write_state_locked(state)
+                published_state["published_at"] = (
+                    _shanghai_now().isoformat(
+                        timespec="seconds"
+                    )
+                )
+                state_replaced = True
+                if authority is not None:
+                    _validate_publication_capability(authority)
+                self._write_state_locked(published_state)
                 _fsync_directory(self.data_root)
                 _fsync_directory(self.runtime_root)
                 if self.previous_dir.exists():
@@ -522,9 +1162,49 @@ class DataBridgeStore:
                     os.replace(self.previous_dir, self.current_dir)
                 if next_dir.exists():
                     shutil.rmtree(next_dir)
+                if state_replaced:
+                    self._restore_state_locked(previous_state)
                 _fsync_directory(self.data_root)
                 _fsync_directory(self.runtime_root)
                 raise
+        return published_state
+
+    def cleanup_crash_debris(self) -> tuple[str, ...]:
+        """在外层 occurrence owner 下清理未发布 ``.current-next-*``。"""
+        _ensure_private_directory(
+            self.data_root,
+            label="DataBridge data root",
+        )
+        _ensure_private_directory(
+            self.runtime_root,
+            label="DataBridge runtime root",
+        )
+        removed: list[str] = []
+        with self.lock(exclusive=True):
+            candidates = sorted(
+                (
+                    entry
+                    for entry in self.data_root.iterdir()
+                    if entry.name.startswith(".current-next-")
+                ),
+                key=lambda entry: entry.name,
+            )
+            for entry in candidates:
+                if not re.fullmatch(
+                    r"\.current-next-[A-Za-z0-9_-]+",
+                    entry.name,
+                ):
+                    raise DataBridgeRefreshError(
+                        "DataBridge crash debris has an unsafe name"
+                    )
+                _remove_private_debris_tree(
+                    entry,
+                    label="DataBridge current-next crash debris",
+                )
+                removed.append(entry.name)
+            if removed:
+                _fsync_directory(self.data_root)
+        return tuple(removed)
 
     def load_state(self) -> dict[str, object]:
         with self.lock(exclusive=False):
@@ -533,24 +1213,69 @@ class DataBridgeStore:
             return json.loads(self.state_path.read_text(encoding="utf-8"))
 
     def recover(self, *, schema_path: str | Path) -> None:
-        """按 state 摘要恢复原子发布中断现场，并清理未发布 staging。"""
+        """按 state/current 完整发布身份恢复原子切换中断现场。"""
         with self.lock(exclusive=True):
-            state_digest: str | None = None
+            state: Mapping[str, object] | None = None
+            state_identity: dict[str, object] | None = None
             if self.state_path.is_file():
                 try:
                     state = json.loads(self.state_path.read_text(encoding="utf-8"))
-                    if state.get("business_digest"):
-                        state_digest = str(state["business_digest"])
+                    state_identity = _publication_identity_from_state(
+                        state
+                    )
                 except (OSError, json.JSONDecodeError):
-                    state_digest = None
+                    state_identity = None
 
-            current_digest = self._directory_digest(self.current_dir, Path(schema_path))
-            previous_digest = self._directory_digest(self.previous_dir, Path(schema_path))
+            current_identity = _directory_publication_identity(
+                self.current_dir,
+                schema_path=Path(schema_path),
+            )
+            previous_identity = _directory_publication_identity(
+                self.previous_dir,
+                schema_path=Path(schema_path),
+            )
+            marker_path = (
+                self.current_dir / CURRENT_PUBLICATION_MANIFEST
+            )
+            if (
+                not self.previous_dir.exists()
+                and self.current_dir.is_dir()
+                and current_identity is None
+                and state is not None
+                and state_identity is not None
+                and not os.path.lexists(marker_path)
+            ):
+                try:
+                    legacy_dataset = validate_dataset(
+                        read_dataset_directory(self.current_dir),
+                        schema_path=Path(schema_path),
+                    )
+                except (OSError, ValueError):
+                    legacy_dataset = None
+                if legacy_dataset is not None:
+                    _validate_identity_against_dataset(
+                        state_identity,
+                        dataset=legacy_dataset,
+                    )
+                    _write_publication_manifest(
+                        self.current_dir,
+                        state=state,
+                    )
+                    current_identity = (
+                        _directory_publication_identity(
+                            self.current_dir,
+                            schema_path=Path(schema_path),
+                        )
+                    )
             if self.previous_dir.exists():
-                if current_digest is not None and current_digest == state_digest:
+                if (
+                    state_identity is not None
+                    and current_identity == state_identity
+                ):
                     shutil.rmtree(self.previous_dir)
-                elif previous_digest is not None and (
-                    state_digest is None or previous_digest == state_digest
+                elif (
+                    state_identity is not None
+                    and previous_identity == state_identity
                 ):
                     if self.current_dir.exists():
                         shutil.rmtree(self.current_dir)
@@ -559,22 +1284,18 @@ class DataBridgeStore:
                     raise DataBridgeRefreshError(
                         "cannot recover DataBridge current/previous against published state"
                     )
+            elif self.current_dir.exists() and (
+                state_identity is None
+                or current_identity != state_identity
+            ):
+                raise DataBridgeRefreshError(
+                    "DataBridge current publication identity drifted from "
+                    "state"
+                )
 
             staging = self.runtime_root / "staging"
             if staging.exists():
                 shutil.rmtree(staging)
-
-    @staticmethod
-    def _directory_digest(directory: Path, schema_path: Path) -> str | None:
-        if not directory.is_dir():
-            return None
-        try:
-            return validate_dataset(
-                read_dataset_directory(directory),
-                schema_path=schema_path,
-            ).business_digest
-        except (OSError, ValueError):
-            return None
 
     def record_failed_attempt(
         self,
@@ -584,7 +1305,7 @@ class DataBridgeStore:
         duration_sec: float,
     ) -> None:
         """记录失败原因，但不替换最后成功的 current generation。"""
-        now = datetime.now(ZoneInfo("Asia/Shanghai"))
+        now = _shanghai_now()
         with self.lock(exclusive=True):
             if self.state_path.is_file():
                 try:
@@ -620,6 +1341,28 @@ class DataBridgeStore:
             temporary.unlink(missing_ok=True)
             raise
 
+    def _restore_state_locked(self, previous: bytes | None) -> None:
+        """发布后置失败时恢复 publication 前的 state 字节。"""
+        if previous is None:
+            self.state_path.unlink(missing_ok=True)
+            _fsync_directory(self.runtime_root)
+            return
+        fd, temporary_name = tempfile.mkstemp(
+            prefix=".state-restore-",
+            dir=self.runtime_root,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(previous)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self.state_path)
+            _fsync_directory(self.runtime_root)
+        except BaseException:
+            temporary.unlink(missing_ok=True)
+            raise
+
 
 def _fsync_directory(directory: Path) -> None:
     descriptor = os.open(directory, os.O_RDONLY)
@@ -627,3 +1370,167 @@ def _fsync_directory(directory: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _fsync_regular_file(path: Path) -> None:
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise DataBridgeRefreshError(
+                "DataBridge fsync target is not a regular file"
+            )
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _require_private_directory(path: Path, *, label: str) -> None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise DataBridgeRefreshError(f"{label} is missing") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise DataBridgeRefreshError(f"{label} must not be a symlink")
+    if not stat.S_ISDIR(info.st_mode):
+        raise DataBridgeRefreshError(f"{label} must be a directory")
+    if info.st_uid != os.getuid():
+        raise DataBridgeRefreshError(f"{label} has another owner")
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise DataBridgeRefreshError(
+            f"{label} must be private (mode 0700 or stricter)"
+        )
+
+
+def _ensure_private_directory(path: Path, *, label: str) -> None:
+    """只创建新私有根；既有非私有根必须由部署迁移显式修复。"""
+    path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    _require_private_directory(path, label=label)
+
+
+def _validate_publish_candidate(path: Path) -> None:
+    try:
+        root_info = path.lstat()
+    except FileNotFoundError as exc:
+        raise DataBridgeRefreshError(
+            "candidate directory does not exist"
+        ) from exc
+    if stat.S_ISLNK(root_info.st_mode):
+        raise DataBridgeRefreshError(
+            "candidate directory must not be a symlink"
+        )
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise DataBridgeRefreshError("candidate must be a directory")
+    entries = list(path.iterdir())
+    if {entry.name for entry in entries} != set(EXPECTED_FILENAMES):
+        raise DataBridgeRefreshError(
+            "candidate directory does not contain exactly three data files"
+        )
+    for entry in entries:
+        info = entry.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise DataBridgeRefreshError(
+                f"candidate file must not be a symlink: {entry.name}"
+            )
+        if not stat.S_ISREG(info.st_mode):
+            raise DataBridgeRefreshError(
+                f"candidate file must be regular: {entry.name}"
+            )
+
+
+def _copy_regular_file_no_follow(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+) -> str:
+    """以 O_NOFOLLOW 复制候选文件，并拒绝复制期间身份漂移。"""
+    source_path = Path(source)
+    destination_path = Path(destination)
+    before = source_path.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise DataBridgeRefreshError(
+            f"candidate file must be regular and non-symlink: "
+            f"{source_path.name}"
+        )
+    source_descriptor = os.open(
+        source_path,
+        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(source_descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+        ):
+            raise DataBridgeRefreshError(
+                f"candidate file changed while opening: {source_path.name}"
+            )
+        destination_descriptor = os.open(
+            destination_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        try:
+            while True:
+                chunk = os.read(source_descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                view = memoryview(chunk)
+                while view:
+                    written = os.write(destination_descriptor, view)
+                    view = view[written:]
+        finally:
+            os.close(destination_descriptor)
+    finally:
+        os.close(source_descriptor)
+    after = source_path.lstat()
+    if (
+        stat.S_ISLNK(after.st_mode)
+        or after.st_dev != before.st_dev
+        or after.st_ino != before.st_ino
+        or after.st_size != before.st_size
+        or after.st_mtime_ns != before.st_mtime_ns
+    ):
+        raise DataBridgeRefreshError(
+            f"candidate file changed while copying: {source_path.name}"
+        )
+    return str(destination_path)
+
+
+def _remove_private_debris_tree(path: Path, *, label: str) -> None:
+    try:
+        root_info = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(root_info.st_mode):
+        raise DataBridgeRefreshError(f"{label} must not be a symlink")
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise DataBridgeRefreshError(f"{label} must be a directory")
+    for current_root, directory_names, filenames in os.walk(
+        path,
+        topdown=True,
+        followlinks=False,
+    ):
+        current = Path(current_root)
+        for name in (*directory_names, *filenames):
+            entry = current / name
+            info = entry.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise DataBridgeRefreshError(
+                    f"{label} contains a symlink"
+                )
+            if not (
+                stat.S_ISDIR(info.st_mode)
+                or stat.S_ISREG(info.st_mode)
+            ):
+                raise DataBridgeRefreshError(
+                    f"{label} contains a special file"
+                )
+    shutil.rmtree(path)
+
+
+def _shanghai_now() -> datetime:
+    """返回 DataBridge 契约时区的当前时刻，测试可替换。"""
+    return datetime.now(ZoneInfo("Asia/Shanghai"))

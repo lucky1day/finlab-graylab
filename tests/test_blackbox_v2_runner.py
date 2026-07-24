@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -36,6 +37,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         inherited = {
             "LANG": "zh_CN.UTF-8",
             "BOND_DB_PASSWORD": "db-secret",
+            "BOND_SCHEDULE_EXECUTION_TOKEN": "stale-attempt-token",
             "DATABRIDGE_API_PASSWORD": "bridge-secret",
             "HARNESS_AUTH_SECRET": "auth-secret",
             "AWS_SECRET_ACCESS_KEY": "cloud-secret",
@@ -44,8 +46,13 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             run_dir = Path(tmpdir)
+            profile = RuntimeProfile.for_tests()
+            self.assertNotIn(
+                "BOND_SCHEDULE_EXECUTION_TOKEN",
+                profile.environment_allowlist,
+            )
             with patch.dict(os.environ, inherited, clear=True):
-                env = _runtime_environment(RuntimeProfile.for_tests(), run_dir)
+                env = _runtime_environment(profile, run_dir)
 
         for key in inherited.keys() - {"LANG"}:
             self.assertNotIn(key, env)
@@ -158,6 +165,10 @@ class BlackboxV2RunnerTests(unittest.TestCase):
             delivery_script=Path("trial.py"),
             delivery_metadata=Path("trial.json"),
         )
+
+        def process_started(_pid: int, _pgid: int) -> None:
+            return None
+
         with patch("scheduler.executor.load_metadata", return_value=_metadata()):
             with patch("scheduler.executor.open_blackbox_input_snapshot", side_effect=open_snapshot):
                 with patch("scheduler.executor.get_calendar", return_value="calendar"):
@@ -173,17 +184,27 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                                 with patch(
                                     "scheduler.blackbox_v2_runner.run_blackbox_predict",
                                     return_value="record",
-                                ):
+                                ) as predict:
                                     result = run_blackbox_scheme_subprocess(
                                         cfg,
                                         "2026-07-16",
                                         engine="engine",
                                         algo_env="forecast_env_blackbox_v1",
                                         timeout_sec=3600,
+                                        execution_token="scheduled-token_123",
+                                        process_started=process_started,
                                     )
 
         self.assertEqual(result, ["record"])
         self.assertEqual(events, ["opened", "closed"])
+        self.assertIs(
+            predict.call_args.kwargs["process_started"],
+            process_started,
+        )
+        self.assertEqual(
+            predict.call_args.kwargs["execution_token"],
+            "scheduled-token_123",
+        )
 
     def test_gray_backfill_uses_historical_as_of_snapshot_with_provenance(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
@@ -319,6 +340,352 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(record.extra["runtime_type"], "blackbox_v2")
         self.assertEqual(record.extra["request_id"], "001")
         self.assertEqual(record.extra["data_snapshot_id"], "snapshot-test")
+
+    def test_predict_subprocess_receives_exact_explicit_execution_token(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            run_blackbox_predict,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            record = run_blackbox_predict(
+                metadata=_metadata(),
+                script_path=_write_script(
+                    root / "execution-token.py",
+                    _EXECUTION_TOKEN_SUCCESS_SCRIPT,
+                ),
+                request=_request("001"),
+                data_dir=_write_data_dir(root),
+                data_snapshot_id="snapshot-test",
+                profile=RuntimeProfile.for_tests(),
+                execution_token="scheduled-token_123",
+            )
+
+        self.assertEqual(record.predicted_direction, 1)
+
+    def test_predict_subprocess_does_not_inherit_execution_token(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            run_blackbox_predict,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch.dict(
+                os.environ,
+                {"BOND_SCHEDULE_EXECUTION_TOKEN": "stale-parent-token"},
+            ):
+                record = run_blackbox_predict(
+                    metadata=_metadata(),
+                    script_path=_write_script(
+                        root / "execution-token-absent.py",
+                        _EXECUTION_TOKEN_ABSENT_SCRIPT,
+                    ),
+                    request=_request("001"),
+                    data_dir=_write_data_dir(root),
+                    data_snapshot_id="snapshot-test",
+                    profile=RuntimeProfile.for_tests(),
+                )
+
+        self.assertEqual(record.predicted_direction, 1)
+
+    def test_predict_rejects_unsafe_execution_token_before_process_start(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            run_blackbox_predict,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            with patch(
+                "scheduler.blackbox_v2_runner._run_process",
+            ) as process:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "execution_token is unsafe",
+                ):
+                    run_blackbox_predict(
+                        metadata=_metadata(),
+                        script_path=_write_script(
+                            root / "trial.py",
+                            _SUCCESS_SCRIPT,
+                        ),
+                        request=_request("001"),
+                        data_dir=_write_data_dir(root),
+                        data_snapshot_id="snapshot-test",
+                        profile=RuntimeProfile.for_tests(),
+                        execution_token="../unsafe",
+                    )
+
+        process.assert_not_called()
+
+    def test_predict_reports_real_pid_and_pgid_exactly_once(self) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            run_blackbox_predict,
+        )
+
+        started: list[tuple[int, int]] = []
+        fence_calls: list[str] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            record = run_blackbox_predict(
+                metadata=_metadata(),
+                script_path=_write_script(root / "trial.py", _SUCCESS_SCRIPT),
+                request=_request("001"),
+                data_dir=_write_data_dir(root),
+                data_snapshot_id="snapshot-test",
+                profile=RuntimeProfile.for_tests(),
+                process_started=lambda pid, pgid: started.append((pid, pgid)),
+                process_fence=lambda: fence_calls.append("epoch-fence"),
+            )
+
+        self.assertEqual(record.predicted_direction, 1)
+        self.assertEqual(len(started), 1)
+        self.assertEqual(fence_calls, ["epoch-fence", "epoch-fence"])
+        self.assertGreater(started[0][0], 1)
+        self.assertGreater(started[0][1], 1)
+
+    def test_blackbox_callback_failure_kills_group_before_reraising(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import _run_process
+
+        events: list[object] = []
+
+        class RegistrationError(RuntimeError):
+            pass
+
+        class FakeProcess:
+            pid = 22334
+            returncode = None
+
+            def __init__(self) -> None:
+                self.wait_calls = 0
+
+            def poll(self):
+                events.append("poll")
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                events.append(("wait", timeout))
+                if self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired(
+                        cmd=["blackbox"],
+                        timeout=timeout,
+                    )
+                self.returncode = -signal.SIGKILL
+                return self.returncode
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+            raise RegistrationError("ledger write failed")
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.getpgid",
+                    return_value=33445,
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.killpg",
+                    side_effect=killpg,
+                ),
+                patch(
+                    "scheduler.process_control."
+                    "_wait_for_process_group_exit",
+                    side_effect=(False, True),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RegistrationError,
+                    "ledger write failed",
+                ):
+                    _run_process(
+                        ["blackbox"],
+                        cwd=Path(tmpdir),
+                        env={},
+                        timeout=10,
+                        memory_limit_bytes=0,
+                        max_capture_bytes=1024,
+                        max_run_dir_bytes=4096,
+                        max_run_dir_entries=10,
+                        process_started=process_started,
+                    )
+
+        self.assertEqual(
+            events,
+            [
+                ("started", 22334, 33445),
+                ("killpg", 33445, signal.SIGTERM),
+                ("killpg", 33445, signal.SIGKILL),
+            ],
+        )
+
+    def test_blackbox_callback_failure_fences_when_group_survives_kill(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import _run_process
+        from scheduler.process_control import (
+            ProcessRegistrationCleanupError,
+        )
+
+        events: list[object] = []
+
+        class RegistrationError(RuntimeError):
+            pass
+
+        class FakeProcess:
+            pid = 22334
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        registration_error = RegistrationError("ledger write failed")
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+            raise registration_error
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.getpgid",
+                    return_value=33445,
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.killpg",
+                    side_effect=killpg,
+                ),
+                patch(
+                    "scheduler.process_control."
+                    "_wait_for_process_group_exit",
+                    side_effect=(False, False),
+                ),
+            ):
+                with self.assertRaises(
+                    ProcessRegistrationCleanupError
+                ) as raised:
+                    _run_process(
+                        ["blackbox"],
+                        cwd=Path(tmpdir),
+                        env={},
+                        timeout=10,
+                        memory_limit_bytes=0,
+                        max_capture_bytes=1024,
+                        max_run_dir_bytes=4096,
+                        max_run_dir_entries=10,
+                        process_started=process_started,
+                    )
+
+        self.assertIs(raised.exception.registration_error, registration_error)
+        self.assertFalse(
+            raised.exception.termination.confirmed_gone
+        )
+        self.assertEqual(
+            raised.exception.termination.process_group_id,
+            33445,
+        )
+        self.assertEqual(
+            events,
+            [
+                ("started", 22334, 33445),
+                ("killpg", 33445, signal.SIGTERM),
+                ("killpg", 33445, signal.SIGKILL),
+            ],
+        )
+
+    def test_blackbox_captures_process_group_before_failure_poll(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            BlackboxExecutionError,
+            _run_process,
+        )
+
+        events: list[object] = []
+
+        class FakeProcess:
+            pid = 22334
+            returncode = None
+
+            def poll(self):
+                events.append("poll")
+                return None
+
+        def getpgid(pid: int) -> int:
+            events.append(("getpgid", pid))
+            return 33445
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.getpgid",
+                    side_effect=getpgid,
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.killpg",
+                    side_effect=killpg,
+                ),
+                patch(
+                    "scheduler.process_control."
+                    "_wait_for_process_group_exit",
+                    return_value=True,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    BlackboxExecutionError,
+                    "timed out",
+                ):
+                    _run_process(
+                        ["blackbox"],
+                        cwd=Path(tmpdir),
+                        env={},
+                        timeout=0,
+                        memory_limit_bytes=0,
+                        max_capture_bytes=1024,
+                        max_run_dir_bytes=4096,
+                        max_run_dir_entries=10,
+                    )
+
+        self.assertEqual(
+            events[:3],
+            [
+                ("getpgid", 22334),
+                "poll",
+                ("killpg", 33445, signal.SIGTERM),
+            ],
+        )
 
     def test_failed_process_removes_output_even_if_script_wrote_one(self) -> None:
         from scheduler.blackbox_v2_runner import (
@@ -1016,6 +1383,56 @@ else:
             result = {field: request[field] for field in fields}
             result["predicted_direction"] = 1
             writer.writerow(result)
+'''
+
+
+_EXECUTION_TOKEN_SUCCESS_SCRIPT = r'''
+import argparse
+import json
+import os
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode", choices=("predict",))
+parser.add_argument("--request", required=True)
+parser.add_argument("--data-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+if os.environ.get("BOND_SCHEDULE_EXECUTION_TOKEN") != "scheduled-token_123":
+    raise SystemExit(3)
+with open(args.request, encoding="utf-8") as handle:
+    request = json.load(handle)
+result = {
+    field: request[field]
+    for field in ("request_id", "predict_date", "feature_date", "target_date")
+}
+result["predicted_direction"] = 1
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(result, handle)
+'''
+
+
+_EXECUTION_TOKEN_ABSENT_SCRIPT = r'''
+import argparse
+import json
+import os
+
+parser = argparse.ArgumentParser()
+parser.add_argument("mode", choices=("predict",))
+parser.add_argument("--request", required=True)
+parser.add_argument("--data-dir", required=True)
+parser.add_argument("--output", required=True)
+args = parser.parse_args()
+if "BOND_SCHEDULE_EXECUTION_TOKEN" in os.environ:
+    raise SystemExit(3)
+with open(args.request, encoding="utf-8") as handle:
+    request = json.load(handle)
+result = {
+    field: request[field]
+    for field in ("request_id", "predict_date", "feature_date", "target_date")
+}
+result["predicted_direction"] = 1
+with open(args.output, "w", encoding="utf-8") as handle:
+    json.dump(result, handle)
 '''
 
 

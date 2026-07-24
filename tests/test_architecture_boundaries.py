@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from harness.contracts import import_rules
+
+
+class RepositoryArchitectureBoundaryTests(unittest.TestCase):
+    def test_repository_boundary_scanner_is_available(self) -> None:
+        self.assertTrue(
+            hasattr(import_rules, "repository_layer_import_violations"),
+            "repo-wide architecture gate must expose a repository scanner",
+        )
+
+    def test_shared_and_scheduler_upward_imports_report_exact_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root / "shared" / "allowed.py", "from shared.models import PredictionRecord\n")
+            self._write(
+                root / "shared" / "bad.py",
+                "\nfrom scheduler.executor import execute_scheme\n",
+            )
+            self._write(
+                root / "scheduler" / "scheme_edge.py",
+                "from schemes.alpha.predict import run\n",
+            )
+            self._write(
+                root / "scheduler" / "harness_edge.py",
+                "import harness.contracts.config_schema\n",
+            )
+
+            actual = [
+                violation.format(root)
+                for violation in import_rules.repository_layer_import_violations(root)
+            ]
+
+            self.assertEqual(
+                [
+                    "scheduler/harness_edge.py:1: forbidden layer import: "
+                    "scheduler -> harness.contracts.config_schema",
+                    "scheduler/scheme_edge.py:1: forbidden layer import: "
+                    "scheduler -> schemes.alpha.predict",
+                    "shared/bad.py:2: forbidden layer import: shared -> scheduler.executor",
+                ],
+                actual,
+            )
+
+    def test_backend_and_backtests_follow_existing_dependency_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(
+                root / "backend" / "allowed.py",
+                "from shared.models import PredictionRecord\n"
+                "from scheduler.repository import create_engine_from_env\n",
+            )
+            self._write(
+                root / "backend" / "bad.py",
+                "from backtests.repository import clean_json\n",
+            )
+            self._write(
+                root / "backtests" / "allowed.py",
+                "from schemes.alpha.core.model import predict\n"
+                "from schemes.alpha.inference import run_window\n",
+            )
+            self._write(
+                root / "backtests" / "bad.py",
+                "from scheduler.executor import execute_scheme\n"
+                "from schemes.alpha.predict import run\n"
+                "import harness\n",
+            )
+
+            actual = [
+                violation.format(root)
+                for violation in import_rules.repository_layer_import_violations(root)
+            ]
+
+            self.assertEqual(
+                [
+                    "backend/bad.py:1: forbidden layer import: backend -> backtests.repository",
+                    "backtests/bad.py:1: forbidden layer import: backtests -> scheduler.executor",
+                    "backtests/bad.py:2: forbidden layer import: backtests -> schemes.alpha.predict",
+                    "backtests/bad.py:3: forbidden layer import: backtests -> harness",
+                ],
+                actual,
+            )
+
+    def test_scanner_excludes_tests_outputs_and_unclassified_tooling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(root / "tests" / "bad.py", "from scheduler import executor\n")
+            self._write(root / "outputs" / "bad.py", "from scheduler import executor\n")
+            self._write(root / "scripts" / "admin.py", "from scheduler import repository\n")
+            self._write(root / "shared" / "ok.py", "from shared import models\n")
+
+            self.assertEqual(
+                [],
+                import_rules.repository_layer_import_violations(root),
+            )
+
+    def test_native_core_and_scheme_boundaries_remain_repo_wide(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(
+                root / "schemes" / "alpha" / "core" / "model.py",
+                "from shared.models import PredictionRecord\n",
+            )
+            self._write(
+                root / "schemes" / "alpha" / "predict.py",
+                "from scheduler.executor import execute_scheme\n"
+                "from schemes.beta.core.model import predict\n",
+            )
+
+            actual = [
+                violation.format(root)
+                for violation in import_rules.repository_layer_import_violations(root)
+            ]
+
+            self.assertEqual(
+                [
+                    "schemes/alpha/core/model.py:1: forbidden layer import: "
+                    "schemes.alpha -> shared.models",
+                    "schemes/alpha/predict.py:1: forbidden layer import: "
+                    "schemes.alpha -> scheduler.executor",
+                    "schemes/alpha/predict.py:2: forbidden layer import: "
+                    "schemes.alpha -> schemes.beta.core.model",
+                ],
+                actual,
+            )
+
+    def test_parent_relative_cross_scheme_import_is_resolved_from_source_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(
+                root / "schemes" / "alpha" / "predict.py",
+                "from .core.model import predict\n"
+                "from ..beta.core import model\n",
+            )
+            self._write(
+                root / "schemes" / "alpha" / "core" / "model.py",
+                "from .helpers import build_features\n",
+            )
+
+            actual = [
+                violation.format(root)
+                for violation in import_rules.repository_layer_import_violations(root)
+            ]
+
+            self.assertEqual(
+                [
+                    "schemes/alpha/predict.py:2: forbidden layer import: "
+                    "schemes.alpha -> schemes.beta.core",
+                ],
+                actual,
+            )
+
+    def test_current_repository_has_no_layer_inversions(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+
+        violations = import_rules.repository_layer_import_violations(project_root)
+
+        self.assertEqual(
+            [],
+            [violation.format(project_root) for violation in violations],
+            "repo-wide production import graph contains upward dependencies",
+        )
+
+    @staticmethod
+    def _write(path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    unittest.main()

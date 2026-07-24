@@ -3,16 +3,23 @@ from __future__ import annotations
 import json
 import logging
 import os
-import signal
 import subprocess
 import time
 from collections import Counter
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from scheduler.discovery import SchemeConfig, discover_schemes
+from scheduler.process_control import (
+    ProcessGroupTerminationError,
+    ProcessGroupTerminationResult,
+    ProcessRegistrationCleanupError,
+    capture_new_session_process_group,
+    terminate_process_group,
+)
 from scheduler.repository import (
     attach_run_data_snapshot,
     complete_approved_blackbox_run,
@@ -28,8 +35,33 @@ from scheduler.repository import (
 from shared.calendar_service import get_calendar
 from shared.blackbox_v2.contracts import load_metadata
 from shared.blackbox_v2.requests import build_live_request
-from shared.input_artifacts import open_blackbox_input_snapshot, resolve_blackbox_input_cutoffs
+from shared.input_artifacts import (
+    BLACKBOX_SCHEMA_PATH,
+    NATIVE_BUSINESS_DATE_ENV,
+    NATIVE_FEATURE_DATE_ENV,
+    NATIVE_GENERATION_ID_ENV,
+    NATIVE_INPUT_MODE,
+    NATIVE_INPUT_MODE_ENV,
+    NATIVE_MANIFEST_PATH_ENV,
+    NATIVE_MANIFEST_SHA256_ENV,
+    open_blackbox_input_snapshot,
+    resolve_blackbox_input_cutoffs,
+)
+from shared.databridge_input_generation import (
+    DataBridgeGenerationContext,
+    open_databridge_generation,
+)
+from shared.daily_coordinator_mode import require_daily_coordinator_mode
 from shared.models import PredictionRecord
+from shared.native_input_generation import (
+    NativeGenerationContext,
+    open_native_generation,
+)
+from shared.liwei_0616_cache_contract import (
+    CACHE_USE_QUALIFICATION_ENV,
+    canonical_json_bytes as canonical_cache_contract_json_bytes,
+    validate_trusted_cache_use_qualification,
+)
 from shared.prediction_context import (
     build_daily_live_context,
     build_monthly_live_context,
@@ -47,7 +79,50 @@ VALID_BLACKBOX_SNAPSHOT_MODES = {
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
 }
 TIMEOUT_OUTPUT_DRAIN_SEC = 1
+SCHEDULE_EXECUTION_TOKEN_ENV = "BOND_SCHEDULE_EXECUTION_TOKEN"
+_SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+)
 logger = logging.getLogger(__name__)
+
+_ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "LANG",
+        "LANGUAGE",
+        "TZ",
+        "CONDA_EXE",
+        "CONDA_PYTHON_EXE",
+        "_CE_CONDA",
+        "_CE_M",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "GLOG_minloglevel",
+        "ABSL_LOGGING_MIN_LEVEL",
+        "MPLCONFIGDIR",
+        "BOND_DAILY_COORDINATOR_MODE",
+        "LIWEI_0616_PHASE_A_CACHE_ROOT",
+        "DAILY_0629_SOURCE_CACHE_DISABLE",
+        "DAILY_0629_SOURCE_CACHE_DIR",
+        "DAILY_0629_SOURCE_TIMEOUT_SEC",
+        "DAILY_0629_SOURCE_PYTHON",
+        "DAILY_N_JOBS",
+        "DAILY_BACKTEST_WORKERS",
+        "MONTHLY_SOURCE_CACHE_DISABLE",
+        "MONTHLY_SOURCE_CACHE_DIR",
+        "MONTHLY_SOURCE_PYTHON",
+        "WEEKLY_AVERAGE_SOURCE_PYTHON",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -80,15 +155,110 @@ def _record_from_payload(item: dict) -> PredictionRecord:
     )
 
 
+def _validated_execution_token(
+    execution_token: str | None,
+) -> str | None:
+    """校验调度 attempt token，禁止作为任意环境变量载荷。"""
+    if execution_token is None:
+        return None
+    if (
+        not isinstance(execution_token, str)
+        or not execution_token
+        or len(execution_token) > 128
+        or any(
+            char not in _SAFE_EXECUTION_TOKEN_CHARACTERS
+            for char in execution_token
+        )
+    ):
+        raise ValueError("execution_token is unsafe")
+    return execution_token
+
+
 def run_scheme_subprocess(
     scheme_id: str,
     predict_date: str,
     algo_env: str = DEFAULT_ALGO_ENV,
     timeout_sec: int = 600,
+    native_generation: NativeGenerationContext | None = None,
+    cache_use_qualification: dict[str, object] | None = None,
+    execution_token: str | None = None,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
-    env = os.environ.copy()
-    env["PYTHONNOUSERSITE"] = "1"
+    env = _build_algorithm_environment()
+    native_environment_names = (
+        NATIVE_INPUT_MODE_ENV,
+        NATIVE_MANIFEST_PATH_ENV,
+        NATIVE_GENERATION_ID_ENV,
+        NATIVE_MANIFEST_SHA256_ENV,
+        NATIVE_BUSINESS_DATE_ENV,
+        NATIVE_FEATURE_DATE_ENV,
+    )
+    for name in native_environment_names:
+        env.pop(name, None)
+    env.pop(CACHE_USE_QUALIFICATION_ENV, None)
+    env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
+    validated_execution_token = _validated_execution_token(
+        execution_token
+    )
+    if validated_execution_token is not None:
+        env[SCHEDULE_EXECUTION_TOKEN_ENV] = validated_execution_token
+    if native_generation is not None:
+        if not isinstance(native_generation, NativeGenerationContext):
+            raise TypeError(
+                "native_generation must be a validated "
+                "NativeGenerationContext"
+            )
+        canonical_predict_date = date.fromisoformat(
+            predict_date
+        ).isoformat()
+        if native_generation.business_date != canonical_predict_date:
+            raise ValueError(
+                "Native generation business_date does not match "
+                f"predict_date: {native_generation.business_date} != "
+                f"{canonical_predict_date}"
+            )
+        if not native_generation.manifest_path.is_absolute():
+            raise ValueError(
+                "Native generation manifest path must be absolute"
+            )
+        env.update(
+            {
+                NATIVE_INPUT_MODE_ENV: NATIVE_INPUT_MODE,
+                NATIVE_MANIFEST_PATH_ENV:
+                    str(native_generation.manifest_path),
+                NATIVE_GENERATION_ID_ENV:
+                    native_generation.generation_id,
+                NATIVE_MANIFEST_SHA256_ENV:
+                    native_generation.manifest_sha256,
+                NATIVE_BUSINESS_DATE_ENV:
+                    native_generation.business_date,
+                NATIVE_FEATURE_DATE_ENV:
+                    native_generation.feature_date,
+            }
+        )
+    if cache_use_qualification is not None:
+        try:
+            trusted_cache_qualification = (
+                validate_trusted_cache_use_qualification(
+                    cache_use_qualification,
+                    expected_base_scheme_id=scheme_id,
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "cache_use_qualification is invalid"
+            ) from exc
+        if native_generation is None:
+            raise ValueError(
+                "cache_use_qualification requires Native generation"
+            )
+        env[CACHE_USE_QUALIFICATION_ENV] = (
+            canonical_cache_contract_json_bytes(
+                trusted_cache_qualification
+            ).decode("ascii")
+        )
     cmd = [
         "conda",
         "run",
@@ -103,16 +273,32 @@ def run_scheme_subprocess(
         "--predict-date",
         predict_date,
     ]
-    completed = _run_process_group(
-        cmd,
-        cwd=PROJECT_ROOT,
-        env=env,
-        timeout=timeout_sec,
-    )
+    process_kwargs = {
+        "cwd": PROJECT_ROOT,
+        "env": env,
+        "timeout": timeout_sec,
+    }
+    if process_started is not None:
+        process_kwargs["process_started"] = process_started
+    if process_fence is not None:
+        process_kwargs["process_fence"] = process_fence
+    completed = _run_process_group(cmd, **process_kwargs)
     payload = json.loads(completed.stdout)
     if not isinstance(payload, list):
         raise ValueError(f"scheme runner returned non-list payload for {scheme_id}")
     return [_record_from_payload(item) for item in payload]
+
+
+def _build_algorithm_environment() -> dict[str, str]:
+    """仅向 Native 算法进程传递运行必需且不含凭据的环境变量。"""
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name in _ALGORITHM_ENVIRONMENT_ALLOWLIST
+        or name.startswith("LC_")
+    }
+    environment["PYTHONNOUSERSITE"] = "1"
+    return environment
 
 
 def run_configured_scheme(
@@ -125,23 +311,65 @@ def run_configured_scheme(
     blackbox_snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
+    native_generation: NativeGenerationContext | None = None,
+    cache_use_qualification: dict[str, object] | None = None,
+    databridge_generation: DataBridgeGenerationContext | None = None,
+    calendar_generation: NativeGenerationContext | None = None,
+    execution_token: str | None = None,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
+    validated_execution_token = _validated_execution_token(
+        execution_token
+    )
     if blackbox_snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
         raise ValueError(f"unsupported Blackbox snapshot mode: {blackbox_snapshot_mode}")
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     if runtime_type == "native_adapter":
+        if (
+            databridge_generation is not None
+            or calendar_generation is not None
+        ):
+            raise ValueError(
+                "DataBridge/calendar generation is not valid for "
+                "native_adapter"
+            )
         if blackbox_snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
             raise ValueError(
                 "historical Blackbox snapshot mode is not valid for native_adapter"
             )
+        native_kwargs = (
+            {"native_generation": native_generation}
+            if native_generation is not None
+            else {}
+        )
+        if cache_use_qualification is not None:
+            native_kwargs["cache_use_qualification"] = (
+                cache_use_qualification
+            )
+        if validated_execution_token is not None:
+            native_kwargs["execution_token"] = validated_execution_token
+        if process_started is not None:
+            native_kwargs["process_started"] = process_started
+        if process_fence is not None:
+            native_kwargs["process_fence"] = process_fence
         return run_scheme_subprocess(
             cfg.scheme_id,
             predict_date,
             algo_env=algo_env,
             timeout_sec=timeout_sec,
+            **native_kwargs,
         )
     if runtime_type == "blackbox_v2":
+        if cache_use_qualification is not None:
+            raise ValueError(
+                "cache_use_qualification is not valid for blackbox_v2"
+            )
+        if native_generation is not None:
+            raise ValueError(
+                "Native generation is not valid for blackbox_v2"
+            )
         if getattr(cfg, "input_source", None) != "data_bridge_current":
             raise ValueError(f"Blackbox V2 input_source must be data_bridge_current: {cfg.scheme_id}")
         blackbox_kwargs = {
@@ -150,9 +378,26 @@ def run_configured_scheme(
             "timeout_sec": timeout_sec,
             "snapshot_mode": blackbox_snapshot_mode,
         }
+        if databridge_generation is not None:
+            blackbox_kwargs["databridge_generation"] = (
+                databridge_generation
+            )
+            blackbox_kwargs["calendar_generation"] = calendar_generation
+        elif calendar_generation is not None:
+            raise ValueError(
+                "calendar_generation requires databridge_generation"
+            )
         if blackbox_snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
             blackbox_kwargs["expected_generation_id"] = expected_generation_id
             blackbox_kwargs["expected_refresh_date"] = expected_refresh_date
+        if validated_execution_token is not None:
+            blackbox_kwargs["execution_token"] = (
+                validated_execution_token
+            )
+        if process_started is not None:
+            blackbox_kwargs["process_started"] = process_started
+        if process_fence is not None:
+            blackbox_kwargs["process_fence"] = process_fence
         return run_blackbox_scheme_subprocess(
             cfg,
             predict_date,
@@ -171,20 +416,93 @@ def run_blackbox_scheme_subprocess(
     snapshot_mode: str = BLACKBOX_SNAPSHOT_MODE_FRESH,
     expected_generation_id: str | None = None,
     expected_refresh_date: str | None = None,
+    databridge_generation: DataBridgeGenerationContext | None = None,
+    calendar_generation: NativeGenerationContext | None = None,
+    execution_token: str | None = None,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
 ) -> list[PredictionRecord]:
     """生成平台输入并通过 Blackbox V2 CLI 执行一个实盘 Request。"""
     from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, run_blackbox_predict
 
+    validated_execution_token = _validated_execution_token(
+        execution_token
+    )
     if snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
         raise ValueError(f"unsupported Blackbox snapshot mode: {snapshot_mode}")
     if cfg.delivery_script is None or cfg.delivery_metadata is None:
         raise ValueError(f"Blackbox V2 delivery paths missing for {cfg.scheme_id}")
+    bound_databridge: DataBridgeGenerationContext | None = None
+    if databridge_generation is not None:
+        if snapshot_mode != BLACKBOX_SNAPSHOT_MODE_FRESH:
+            raise ValueError(
+                "bound DataBridge generation only supports fresh live mode"
+            )
+        if not isinstance(
+            databridge_generation,
+            DataBridgeGenerationContext,
+        ):
+            raise TypeError(
+                "databridge_generation must be a validated context"
+            )
+        if not isinstance(calendar_generation, NativeGenerationContext):
+            raise ValueError(
+                "bound DataBridge generation requires a validated "
+                "calendar Native generation"
+            )
+        if databridge_generation.business_date != predict_date:
+            raise ValueError(
+                "DataBridge generation business_date does not match "
+                f"predict_date: {databridge_generation.business_date} != "
+                f"{predict_date}"
+            )
+        if (
+            calendar_generation.generation_id
+            != databridge_generation.native_generation_id
+        ):
+            raise ValueError(
+                "DataBridge generation linked Native generation mismatch"
+            )
+        if (
+            calendar_generation.manifest_sha256
+            != databridge_generation.native_manifest_sha256
+        ):
+            raise ValueError(
+                "DataBridge generation linked Native manifest mismatch"
+            )
+        verified_calendar = open_native_generation(
+            calendar_generation.manifest_path,
+            expected_generation_id=calendar_generation.generation_id,
+            expected_manifest_sha256=calendar_generation.manifest_sha256,
+            expected_business_date=predict_date,
+            expected_feature_date=databridge_generation.feature_date,
+        )
+        bound_databridge = open_databridge_generation(
+            databridge_generation.manifest_path,
+            expected_generation_id=databridge_generation.generation_id,
+            expected_manifest_sha256=(
+                databridge_generation.manifest_sha256
+            ),
+            expected_business_date=predict_date,
+            expected_feature_date=databridge_generation.feature_date,
+            schema_path=BLACKBOX_SCHEMA_PATH,
+        )
+        snapshot_context = nullcontext(bound_databridge.snapshot)
+        calendar_source = verified_calendar
+    else:
+        if calendar_generation is not None:
+            raise ValueError(
+                "calendar_generation requires databridge_generation"
+            )
+        require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
+        snapshot_context = open_blackbox_input_snapshot(
+            snapshot_date=predict_date,
+            require_fresh=require_fresh,
+        )
+        calendar_source = engine
+
     metadata = load_metadata(cfg.delivery_metadata)
-    require_fresh = snapshot_mode == BLACKBOX_SNAPSHOT_MODE_FRESH
-    with open_blackbox_input_snapshot(
-        snapshot_date=predict_date,
-        require_fresh=require_fresh,
-    ) as snapshot:
+    with snapshot_context as snapshot:
         if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
             _validate_historical_snapshot(
                 snapshot,
@@ -192,7 +510,7 @@ def run_blackbox_scheme_subprocess(
                 expected_generation_id=expected_generation_id,
                 expected_refresh_date=expected_refresh_date,
             )
-        calendar = get_calendar(engine)
+        calendar = get_calendar(calendar_source)
         if metadata.frequency == "daily":
             feature_date = build_daily_live_context(
                 calendar,
@@ -203,11 +521,20 @@ def run_blackbox_scheme_subprocess(
             feature_date = build_weekly_live_context(calendar, predict_date).feature_date
         else:
             feature_date = build_monthly_live_context(calendar, predict_date).feature_date
-        cutoffs = resolve_blackbox_input_cutoffs(
-            snapshot,
-            feature_date=feature_date,
-            engine=engine,
-        )
+        if bound_databridge is not None:
+            if feature_date != bound_databridge.feature_date:
+                raise ValueError(
+                    "DataBridge generation feature_date does not match "
+                    f"calendar context: {bound_databridge.feature_date} != "
+                    f"{feature_date}"
+                )
+            cutoffs = bound_databridge.cutoffs
+        else:
+            cutoffs = resolve_blackbox_input_cutoffs(
+                snapshot,
+                feature_date=feature_date,
+                engine=engine,
+            )
         request = build_live_request(
             metadata,
             predict_date=predict_date,
@@ -220,14 +547,43 @@ def run_blackbox_scheme_subprocess(
             conda_env=blackbox_env,
             predict_timeout_sec=timeout_sec,
         )
-        record = run_blackbox_predict(
-            metadata=metadata,
-            script_path=cfg.delivery_script,
-            request=request,
-            data_dir=snapshot.data_dir,
-            data_snapshot_id=snapshot.snapshot_id,
-            profile=profile,
-        )
+        predict_kwargs = {
+            "metadata": metadata,
+            "script_path": cfg.delivery_script,
+            "request": request,
+            "data_dir": snapshot.data_dir,
+            "data_snapshot_id": snapshot.snapshot_id,
+            "profile": profile,
+        }
+        if validated_execution_token is not None:
+            predict_kwargs["execution_token"] = (
+                validated_execution_token
+            )
+        if process_started is not None:
+            predict_kwargs["process_started"] = process_started
+        if process_fence is not None:
+            predict_kwargs["process_fence"] = process_fence
+        record = run_blackbox_predict(**predict_kwargs)
+        if bound_databridge is not None:
+            extra = dict(record.extra or {})
+            extra.update(
+                {
+                    "data_generation_id":
+                        bound_databridge.generation_id,
+                    "data_generation_manifest_sha256":
+                        bound_databridge.manifest_sha256,
+                    "source_refresh_date":
+                        bound_databridge.business_date,
+                    "upstream_data_generation_id":
+                        bound_databridge.upstream_generation_id,
+                    "native_generation_id":
+                        bound_databridge.native_generation_id,
+                    "daily_cutoff_key": cutoffs.daily_cutoff_key,
+                    "weekly_cutoff_key": cutoffs.weekly_cutoff_key,
+                    "monthly_cutoff_key": cutoffs.monthly_cutoff_key,
+                }
+            )
+            record = replace(record, extra=extra)
         if snapshot_mode == BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF:
             extra = dict(record.extra or {})
             extra.update(
@@ -297,8 +653,12 @@ def _run_process_group(
     cwd: Path,
     env: dict[str, str],
     timeout: int,
+    process_started: Callable[[int, int], None] | None = None,
+    process_fence: Callable[[], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """启动独立进程组，timeout 时清理 conda wrapper 及其子进程。"""
+    if process_fence is not None:
+        process_fence()
     process = subprocess.Popen(
         cmd,
         cwd=cwd,
@@ -308,11 +668,37 @@ def _run_process_group(
         text=True,
         start_new_session=True,
     )
+    process_group_id = capture_new_session_process_group(process)
+    if process_fence is not None or process_started is not None:
+        try:
+            if process_fence is not None:
+                process_fence()
+            if process_started is not None:
+                process_started(process.pid, process_group_id)
+        except BaseException as registration_error:
+            termination = _terminate_process_group(
+                process,
+                process_group_id=process_group_id,
+            )
+            if not termination.confirmed_gone:
+                raise ProcessRegistrationCleanupError(
+                    registration_error=registration_error,
+                    termination=termination,
+                ) from registration_error
+            raise
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        _terminate_process_group(process)
+        termination = _terminate_process_group(
+            process,
+            process_group_id=process_group_id,
+        )
         stdout, stderr = _drain_timed_out_process_output(process)
+        if not termination.confirmed_gone:
+            raise ProcessGroupTerminationError(
+                termination=termination,
+                context=f"Native process timed out after {timeout}s",
+            ) from exc
         raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr) from exc
     completed = subprocess.CompletedProcess(cmd, process.returncode, stdout, stderr)
     if completed.returncode != 0:
@@ -325,26 +711,16 @@ def _run_process_group(
     return completed
 
 
-def _terminate_process_group(process: subprocess.Popen[str]) -> None:
-    """先 SIGTERM，若进程未退出再 SIGKILL 整个进程组。"""
-    try:
-        pgid = os.getpgid(process.pid)
-    except ProcessLookupError:
-        return
-    try:
-        os.killpg(pgid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(pgid, signal.SIGKILL)
-            process.wait(timeout=5)
-        except ProcessLookupError:
-            return
-        except subprocess.TimeoutExpired:
-            return
+def _terminate_process_group(
+    process: subprocess.Popen[str],
+    *,
+    process_group_id: int | None = None,
+) -> ProcessGroupTerminationResult:
+    """终止进程组并返回“整个组已消失”的明确证据。"""
+    return terminate_process_group(
+        process,
+        process_group_id=process_group_id,
+    )
 
 
 def _drain_timed_out_process_output(process: subprocess.Popen[str]) -> tuple[str, str]:
@@ -448,6 +824,16 @@ def execute_scheme(
     records_returned: int | None = None
     records_written = 0
     try:
+        creation_fence: dict[str, object] = {}
+        if prediction_phase == "scheduled_live":
+            frequency = getattr(cfg, "frequency", None)
+            if frequency not in {"weekly", "monthly"}:
+                coordinator_mode = require_daily_coordinator_mode()
+                if coordinator_mode == "ledger":
+                    creation_fence["schedule_frequency"] = frequency
+                    creation_fence[
+                        "enforce_scheduled_live_ledger"
+                    ] = True
         run_id = create_scheme_run(
             engine,
             scheme_id=cfg.scheme_id,
@@ -457,6 +843,7 @@ def execute_scheme(
             run_type="active",
             prediction_phase=prediction_phase,
             records_expected=len(active_targets),
+            **creation_fence,
         )
         if not active_targets:
             raise ValueError(
@@ -609,12 +996,14 @@ def _append_audit_error(error_msg: str, operation: str, exc: Exception) -> str:
 
 
 def _effective_timeout_sec(cfg: SchemeConfig, default_timeout_sec: int) -> int:
-    """读取方案级执行 timeout；未配置时保持全局默认。"""
+    """读取执行 timeout；Blackbox 的调用方 policy 值是不可放宽上限。"""
     schedule = getattr(cfg, "schedule", None)
     configured = getattr(schedule, "timeout_sec", None)
     if configured is None:
         configured = getattr(cfg, "execution_timeout_sec", None)
     timeout = int(configured) if configured is not None else int(default_timeout_sec)
+    if getattr(cfg, "runtime_type", "native_adapter") == "blackbox_v2":
+        timeout = min(timeout, int(default_timeout_sec))
     if timeout <= 0:
         raise ValueError(f"scheme {cfg.scheme_id} timeout_sec must be positive, got {timeout}")
     return timeout

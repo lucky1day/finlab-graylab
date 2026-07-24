@@ -187,12 +187,20 @@ def write_validated_dataset(dataset: ValidatedDataBridgeDataset, directory: str 
     return destination
 
 
-def read_dataset_directory(directory: str | Path) -> dict[str, pd.DataFrame]:
+def read_dataset_directory(
+    directory: str | Path,
+    *,
+    allowed_sidecar_filenames: frozenset[str] = frozenset(),
+) -> dict[str, pd.DataFrame]:
     root = Path(directory)
     entries = {path.name for path in root.iterdir()} if root.is_dir() else set()
-    if entries != set(EXPECTED_FILENAMES):
+    expected_entries = set(EXPECTED_FILENAMES) | set(
+        allowed_sidecar_filenames
+    )
+    if entries != expected_entries:
         raise DataBridgeValidationError(
-            f"DataBridge directory files must be exactly {list(EXPECTED_FILENAMES)}"
+            "DataBridge directory files must be exactly "
+            f"{sorted(expected_entries)}"
         )
     frames: dict[str, pd.DataFrame] = {}
     for filename in EXPECTED_FILENAMES:

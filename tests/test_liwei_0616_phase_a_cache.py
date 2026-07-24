@@ -125,7 +125,9 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
             self.assertEqual(audit["status"], "cold_build")
             self.assertEqual(trained_batches, [["2026-07-01", "2026-07-02"]])
 
-    def test_appended_week_and_month_rows_do_not_invalidate_old_prefix(self) -> None:
+    def test_appended_week_and_month_rows_force_full_without_mapping_proof(
+        self,
+    ) -> None:
         trained_batches: list[list[str]] = []
         trainer = self._trainer(trained_batches)
         with tempfile.TemporaryDirectory() as tmp:
@@ -147,10 +149,18 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 **{**common, "weekly_df": weekly, "monthly_df": monthly},
                 test_ranges=(("2026-07-01", "2026-07-03"),),
             )
-            self.assertEqual(audit["status"], "extended")
-            self.assertEqual(trained_batches, [["2026-07-03"]])
+            self.assertEqual(audit["status"], "cold_build")
+            self.assertEqual(audit["build_mode"], "full")
+            self.assertEqual(
+                audit["build_reason"],
+                "weekly_input_append_unmappable",
+            )
+            self.assertEqual(
+                trained_batches,
+                [["2026-07-01", "2026-07-02", "2026-07-03"]],
+            )
 
-    def test_current_week_and_month_updates_do_not_invalidate(self) -> None:
+    def test_current_week_and_month_revisions_force_full_rebuild(self) -> None:
         trained_batches: list[list[str]] = []
         trainer = self._trainer(trained_batches)
         with tempfile.TemporaryDirectory() as tmp:
@@ -170,8 +180,13 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 test_ranges=(("2026-07-01", "2026-07-03"),),
             )
 
-            self.assertEqual(audit["status"], "extended")
-            self.assertEqual(trained_batches, [["2026-07-03"]])
+            self.assertEqual(audit["status"], "cold_build")
+            self.assertEqual(audit["build_mode"], "full")
+            self.assertEqual(audit["build_reason"], "input_revision")
+            self.assertEqual(
+                trained_batches,
+                [["2026-07-01", "2026-07-02", "2026-07-03"]],
+            )
 
     def test_completed_week_revision_forces_cold_rebuild(self) -> None:
         trained_batches: list[list[str]] = []
@@ -227,11 +242,15 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             common = self._common(root, trainer)
-            prepare_phase_a_caches(
+            _cache, first_audit = prepare_phase_a_caches(
                 **common,
                 test_ranges=(("2026-07-01", "2026-07-02"),),
             )
-            cache_path = root / "5y" / "STD.pkl"
+            cache_path = (
+                Path(first_audit["generation_path"])
+                / "baselines"
+                / "STD.pkl"
+            )
             cache_path.write_bytes(b"not-a-pickle")
             trained_batches.clear()
             _cache, audit = prepare_phase_a_caches(
@@ -239,20 +258,34 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 test_ranges=(("2026-07-01", "2026-07-02"),),
             )
             self.assertEqual(audit["status"], "cold_build")
+            self.assertEqual(
+                audit["build_reason"],
+                "current_generation_invalid",
+            )
             self.assertEqual(trained_batches, [["2026-07-01", "2026-07-02"]])
-            self.assertEqual(len(list(cache_path.parent.glob("STD.pkl.invalid-*"))), 1)
+            self.assertNotEqual(
+                audit["generation_id"],
+                first_audit["generation_id"],
+            )
+            self.assertEqual(cache_path.read_bytes(), b"not-a-pickle")
 
     def test_failed_extension_keeps_previous_cache_byte_for_byte(self) -> None:
         trained_batches: list[list[str]] = []
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             common = self._common(root, self._trainer(trained_batches))
-            prepare_phase_a_caches(
+            _cache, first_audit = prepare_phase_a_caches(
                 **common,
                 test_ranges=(("2026-07-01", "2026-07-02"),),
             )
-            cache_path = root / "5y" / "STD.pkl"
-            before = cache_path.read_bytes()
+            pointer = Path(first_audit["current_pointer"])
+            before = pointer.read_bytes()
+            cache_path = (
+                Path(first_audit["generation_path"])
+                / "baselines"
+                / "STD.pkl"
+            )
+            cache_before = cache_path.read_bytes()
 
             def failing_trainer(_baseline: str, _ranges: tuple[tuple[str, str], ...]) -> dict[str, object]:
                 raise RuntimeError("training failed")
@@ -262,19 +295,20 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                     **{**common, "train_missing": failing_trainer},
                     test_ranges=(("2026-07-01", "2026-07-03"),),
                 )
-            self.assertEqual(cache_path.read_bytes(), before)
+            self.assertEqual(pointer.read_bytes(), before)
+            self.assertEqual(cache_path.read_bytes(), cache_before)
 
     def test_older_truncated_request_does_not_lower_persisted_watermark(self) -> None:
         trained_batches: list[list[str]] = []
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             common = self._common(root, self._trainer(trained_batches))
-            prepare_phase_a_caches(
+            _cache, first_audit = prepare_phase_a_caches(
                 **common,
                 test_ranges=(("2026-07-01", "2026-07-03"),),
             )
-            cache_path = root / "5y" / "STD.pkl"
-            before = cache_path.read_bytes()
+            pointer = Path(first_audit["current_pointer"])
+            before = pointer.read_bytes()
             trained_batches.clear()
 
             cache, audit = prepare_phase_a_caches(
@@ -285,21 +319,29 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 test_ranges=(("2026-07-01", "2026-07-02"),),
             )
 
-            self.assertEqual(trained_batches, [["2026-07-01", "2026-07-02"]])
-            self.assertEqual(cache["STD"]["test_dates"], ["2026-07-01", "2026-07-02"])
+            self.assertEqual(trained_batches, [])
+            self.assertEqual(
+                cache["STD"]["test_dates"],
+                ["2026-07-01", "2026-07-02", "2026-07-03"],
+            )
+            self.assertEqual(audit["status"], "hit")
             self.assertTrue(audit["baselines"]["STD"]["preserved_newer_watermark"])
-            self.assertEqual(cache_path.read_bytes(), before)
+            self.assertEqual(pointer.read_bytes(), before)
 
     def test_structurally_corrupt_newer_cache_is_not_preserved(self) -> None:
         trained_batches: list[list[str]] = []
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             common = self._common(root, self._trainer(trained_batches))
-            prepare_phase_a_caches(
+            _cache, first_audit = prepare_phase_a_caches(
                 **common,
                 test_ranges=(("2026-07-01", "2026-07-03"),),
             )
-            cache_path = root / "5y" / "STD.pkl"
+            cache_path = (
+                Path(first_audit["generation_path"])
+                / "baselines"
+                / "STD.pkl"
+            )
             with cache_path.open("rb") as handle:
                 envelope = pickle.load(handle)
             envelope["phase_a_cache"]["results"] = []
@@ -316,7 +358,14 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
             )
 
             self.assertFalse(audit["baselines"]["STD"]["preserved_newer_watermark"])
-            self.assertEqual(len(list(cache_path.parent.glob("STD.pkl.invalid-*"))), 1)
+            self.assertEqual(
+                audit["build_reason"],
+                "current_generation_invalid",
+            )
+            self.assertNotEqual(
+                audit["generation_id"],
+                first_audit["generation_id"],
+            )
             self.assertEqual(trained_batches, [["2026-07-01", "2026-07-02"]])
 
     def test_concurrent_cold_requests_train_each_date_once(self) -> None:
@@ -341,15 +390,20 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
             self.assertEqual(trained_batches, [["2026-07-01", "2026-07-02"]])
             self.assertEqual({audit["status"] for audit in audits}, {"cold_build", "hit"})
 
-    def test_7y_scheme_pair_declares_one_shared_baseline_family(self) -> None:
+    def test_7y_incompatible_specs_use_distinct_cache_families(self) -> None:
         from schemes.liwei_0616_7y01_cons_say_k3_div_k10 import inference as y01_inference
         from schemes.liwei_0616_7y01_cons_say_k3_div_k10.core import v31_common as y01_core
         from schemes.liwei_0616_7y03_cons_all_k3_div_k8 import inference as y03_inference
         from schemes.liwei_0616_7y03_cons_all_k3_div_k8.core import v31_common as y03_core
 
-        self.assertEqual(y01_inference.CACHE_FAMILY, "liwei_0616_7y_v31")
-        self.assertEqual(y03_inference.CACHE_FAMILY, y01_inference.CACHE_FAMILY)
+        self.assertEqual(y01_inference.CACHE_FAMILY, "liwei_0616_7y01_v31")
+        self.assertEqual(y03_inference.CACHE_FAMILY, "liwei_0616_7y03_v31")
+        self.assertNotEqual(
+            y01_inference.CACHE_FAMILY,
+            y03_inference.CACHE_FAMILY,
+        )
         self.assertEqual(y01_core.BASELINE_CONFIGS, y03_core.BASELINE_CONFIGS)
+        self.assertNotEqual(y01_core.__file__, y03_core.__file__)
         self.assertEqual(y01_core.required_baselines(), ["STD", "ACCWT", "CROSS_5Y", "DIV"])
 
     def test_10y_scheme_pair_declares_one_shared_baseline_family(self) -> None:

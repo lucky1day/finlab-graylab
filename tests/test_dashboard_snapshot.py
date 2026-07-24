@@ -392,6 +392,111 @@ def test_fresh_snapshot_is_reused_within_one_second() -> None:
         hit.cache_status = "STALE"  # type: ignore[misc]
 
 
+def test_db_backed_source_generation_invalidates_before_ttl() -> None:
+    clock = ManualMonotonic(100.0)
+    generation = {"value": "ledger-g1"}
+    builder = ControlledBuilder(
+        {"snapshot_id": "first"},
+        {"snapshot_id": "second"},
+    )
+    store = DashboardSnapshotStore(
+        builder,
+        monotonic=clock,
+        source_generation=lambda: generation["value"],
+    )
+
+    first = store.prewarm()
+    generation["value"] = "ledger-g2"
+    second = store.get()
+
+    assert first.cache_status == "MISS"
+    assert second.cache_status == "MISS"
+    assert second.payload["snapshot_id"] == "second"
+    assert second.source_generation == "ledger-g2"
+    assert builder.calls == 2
+
+
+def test_changed_source_generation_never_serves_old_lkg_on_rebuild_failure(
+    ) -> None:
+    generation = {"value": "ledger-g1"}
+    builder = ControlledBuilder(
+        {"snapshot_id": "first"},
+        RuntimeError("database unavailable"),
+    )
+    store = DashboardSnapshotStore(
+        builder,
+        source_generation=lambda: generation["value"],
+    )
+    store.prewarm()
+    generation["value"] = "ledger-g2"
+
+    with pytest.raises(SnapshotUnavailable):
+        store.get()
+
+
+def test_source_generation_must_remain_stable_across_snapshot_build() -> None:
+    generations = iter(("ledger-g1", "ledger-g2"))
+    store = DashboardSnapshotStore(
+        lambda: {"snapshot_id": "mixed"},
+        source_generation=lambda: next(generations),
+    )
+
+    with pytest.raises(SnapshotUnavailable):
+        store.prewarm()
+
+    assert store._payload is None
+
+
+def test_stale_prelock_generation_cannot_invalidate_newer_published_snapshot(
+    ) -> None:
+    generation = {"value": "ledger-g1"}
+    captured = threading.Event()
+    release = threading.Event()
+    stale_reader_sampled = False
+
+    def source_generation() -> str:
+        nonlocal stale_reader_sampled
+        value = generation["value"]
+        if (
+            threading.current_thread().name == "stale-reader"
+            and not stale_reader_sampled
+        ):
+            stale_reader_sampled = True
+            captured.set()
+            assert release.wait(timeout=3.0)
+        return value
+
+    builder = ControlledBuilder(
+        {"snapshot_id": "first"},
+        {"snapshot_id": "second"},
+        {"snapshot_id": "must-not-build"},
+    )
+    store = DashboardSnapshotStore(
+        builder,
+        source_generation=source_generation,
+    )
+    store.prewarm()
+    results: dict[str, SnapshotResult] = {}
+    errors: dict[str, BaseException] = {}
+    stale_thread = _start_get(
+        store,
+        name="stale-reader",
+        results=results,
+        errors=errors,
+    )
+    assert captured.wait(timeout=3.0)
+    generation["value"] = "ledger-g2"
+    current = store.get()
+    release.set()
+    _join_all([stale_thread])
+
+    assert errors == {}
+    assert current.payload["snapshot_id"] == "second"
+    assert results["stale-reader"].payload["snapshot_id"] == "second"
+    assert results["stale-reader"].cache_status == "HIT"
+    assert builder.calls == 2
+
+
 def test_snapshot_expires_at_exact_ttl_boundary() -> None:
     clock = ManualMonotonic()
     builder = ControlledBuilder(

@@ -6,7 +6,7 @@ from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import pandas as pd
 
@@ -14,6 +14,7 @@ from shared.liwei_0616_phase_a_cache import (
     DEFAULT_CACHE_ROOT,
     PhaseACacheSpec,
     prepare_phase_a_caches,
+    runtime_compare_gate_callbacks,
 )
 
 from .core.v31_common import (
@@ -31,6 +32,7 @@ from .core.v31_common import (
 DEFAULT_N_WORKERS = 10
 SOURCE_OOS_START = "2024-01-01"
 CACHE_FAMILY = "liwei_0616_5y_allk10_ic_yearly_v1"
+CACHE_CONSUMER_ID = "liwei_0616_5y_ic_yearly_all_k3_div_k10"
 MODEL_VERSION = "liwei_5y_allk10_ic_yearly_v1"
 
 
@@ -107,6 +109,24 @@ def run_for_feature_date(
     window = full_oos_window(feature_date)
     phase_a_caches: dict[str, dict[str, Any]] | None = None
     cache_audit: dict[str, Any] | None = None
+
+    def run_window(
+        caches: Mapping[str, Mapping[str, Any]] | None,
+    ) -> pd.DataFrame:
+        return run_for_window_silent(
+            daily_df=daily_df,
+            weekly_df=weekly_df,
+            monthly_df=monthly_df,
+            date_to_week=date_to_week,
+            feature_date=feature_date,
+            test_ranges=window.test_ranges,
+            current_start=window.current_start,
+            current_end=window.current_end,
+            require_labels=require_labels,
+            n_workers=n_workers,
+            phase_a_caches=caches,
+        )
+
     if use_incremental_cache:
         phase_a_caches, cache_audit = _prepare_incremental_phase_a_caches(
             daily_df=daily_df,
@@ -116,20 +136,9 @@ def run_for_feature_date(
             test_ranges=window.test_ranges,
             n_workers=n_workers,
             cache_root=cache_root,
+            full_output_compare_runner=run_window,
         )
-    detail = run_for_window_silent(
-        daily_df=daily_df,
-        weekly_df=weekly_df,
-        monthly_df=monthly_df,
-        date_to_week=date_to_week,
-        feature_date=feature_date,
-        test_ranges=window.test_ranges,
-        current_start=window.current_start,
-        current_end=window.current_end,
-        require_labels=require_labels,
-        n_workers=n_workers,
-        phase_a_caches=phase_a_caches,
-    )
+    detail = run_window(phase_a_caches)
     matched = detail[detail["anchor_date"].astype(str) == feature_date]
     if matched.empty:
         raise RuntimeError(
@@ -167,6 +176,13 @@ def _prepare_incremental_phase_a_caches(
     test_ranges: tuple[tuple[str, str], ...],
     n_workers: int,
     cache_root: str | Path | None,
+    full_output_compare_runner: (
+        Callable[
+            [Mapping[str, Mapping[str, Any]] | None],
+            pd.DataFrame,
+        ]
+        | None
+    ) = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     baselines = tuple(str(name) for name in PROD_CONFIG["baselines"])
     spec = PhaseACacheSpec(
@@ -203,6 +219,10 @@ def _prepare_incremental_phase_a_caches(
             raise RuntimeError(f"5Y baseline {baseline} did not return Phase A cache")
         return context["phase_a_cache"]
 
+    compare_cold, compare_full_output = runtime_compare_gate_callbacks(
+        train_phase_a=train_missing,
+        run_full_output=full_output_compare_runner,
+    )
     return prepare_phase_a_caches(
         spec=spec,
         daily_df=daily_df,
@@ -210,7 +230,10 @@ def _prepare_incremental_phase_a_caches(
         monthly_df=monthly_df,
         test_ranges=test_ranges,
         train_missing=train_missing,
-        cache_root=family_cache_root(cache_root),
+        compare_cold=compare_cold,
+        compare_full_output=compare_full_output,
+        cache_consumer_id=CACHE_CONSUMER_ID,
+        cache_root=cache_root,
     )
 
 

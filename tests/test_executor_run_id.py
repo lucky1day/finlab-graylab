@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import unittest
 import inspect
 import signal
@@ -17,9 +18,431 @@ class _FakeEngine:
         self.disposed = True
 
 
-class ExecutorRunIdTests(unittest.TestCase):
+class _ExplicitLegacyModeTestCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._mode_patcher = patch.dict(
+            os.environ,
+            {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+        )
+        self._mode_patcher.start()
+
+    def tearDown(self) -> None:
+        self._mode_patcher.stop()
+
+
+class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
+    def test_algorithm_environment_propagates_daily_coordinator_mode(
+        self,
+    ) -> None:
+        from scheduler.executor import _build_algorithm_environment
+
+        with patch.dict(
+            os.environ,
+            {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            clear=False,
+        ):
+            environment = _build_algorithm_environment()
+
+        self.assertEqual(
+            environment["BOND_DAILY_COORDINATOR_MODE"],
+            "ledger",
+        )
+
+    def test_native_process_started_callback_runs_once_before_communicate(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        events: list[object] = []
+
+        class FakeProcess:
+            pid = 12345
+            returncode = 0
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                events.append(("communicate", timeout))
+                return "[]", ""
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+
+        def process_fence() -> None:
+            events.append("epoch-fence")
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=FakeProcess(),
+            ),
+            patch("scheduler.executor.os.getpgid", return_value=67890),
+        ):
+            records = run_scheme_subprocess(
+                "demo",
+                "2026-07-03",
+                algo_env="test_env",
+                timeout_sec=7,
+                process_started=process_started,
+                process_fence=process_fence,
+            )
+
+        self.assertEqual(records, [])
+        self.assertEqual(
+            events,
+            [
+                "epoch-fence",
+                "epoch-fence",
+                ("started", 12345, 67890),
+                ("communicate", 7),
+            ],
+        )
+
+    def test_native_post_popen_epoch_drift_kills_process_group(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        events: list[object] = []
+
+        class EpochDrift(RuntimeError):
+            pass
+
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise AssertionError(
+                    "epoch-drifted process must not communicate"
+                )
+
+        fence_calls = 0
+
+        def process_fence() -> None:
+            nonlocal fence_calls
+            fence_calls += 1
+            events.append(("epoch-fence", fence_calls))
+            if fence_calls == 2:
+                raise EpochDrift("epoch changed after Popen")
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=FakeProcess(),
+            ),
+            patch("scheduler.executor.os.getpgid", return_value=67890),
+            patch("scheduler.executor.os.killpg", side_effect=killpg),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                return_value=True,
+            ),
+        ):
+            with self.assertRaisesRegex(EpochDrift, "after Popen"):
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    process_fence=process_fence,
+                )
+
+        self.assertEqual(
+            events,
+            [
+                ("epoch-fence", 1),
+                ("epoch-fence", 2),
+                ("killpg", 67890, signal.SIGTERM),
+            ],
+        )
+
+    def test_native_callback_failure_kills_group_before_reraising(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        events: list[object] = []
+
+        class RegistrationError(RuntimeError):
+            pass
+
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                events.append(("communicate", timeout))
+                return "[]", ""
+
+            def wait(self, timeout=None):
+                events.append(("wait", timeout))
+                self.returncode = -signal.SIGTERM
+                return self.returncode
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+            raise RegistrationError("ledger write failed")
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=FakeProcess(),
+            ),
+            patch("scheduler.executor.os.getpgid", return_value=67890),
+            patch("scheduler.executor.os.killpg", side_effect=killpg),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                return_value=True,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RegistrationError,
+                "ledger write failed",
+            ):
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    process_started=process_started,
+                )
+
+        self.assertEqual(
+            events,
+            [
+                ("started", 12345, 67890),
+                ("killpg", 67890, signal.SIGTERM),
+            ],
+        )
+
+    def test_native_callback_failure_fences_when_group_survives_kill(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+        from scheduler.process_control import (
+            ProcessRegistrationCleanupError,
+        )
+
+        events: list[object] = []
+
+        class RegistrationError(RuntimeError):
+            pass
+
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise AssertionError(
+                    "unregistered process must never enter communicate"
+                )
+
+        registration_error = RegistrationError("ledger write failed")
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+            raise registration_error
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=FakeProcess(),
+            ),
+            patch("scheduler.executor.os.getpgid", return_value=67890),
+            patch("scheduler.executor.os.killpg", side_effect=killpg),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                side_effect=(False, False),
+            ),
+        ):
+            with self.assertRaises(
+                ProcessRegistrationCleanupError
+            ) as raised:
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    process_started=process_started,
+                )
+
+        self.assertIs(raised.exception.registration_error, registration_error)
+        self.assertFalse(
+            raised.exception.termination.confirmed_gone
+        )
+        self.assertEqual(
+            raised.exception.termination.process_group_id,
+            67890,
+        )
+        self.assertEqual(
+            events,
+            [
+                ("started", 12345, 67890),
+                ("killpg", 67890, signal.SIGTERM),
+                ("killpg", 67890, signal.SIGKILL),
+            ],
+        )
+
+    def test_run_configured_scheme_forwards_process_callback_by_runtime(
+        self,
+    ) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        def callback(_pid: int, _pgid: int) -> None:
+            return None
+
+        def fence() -> None:
+            return None
+
+        native_cfg = SimpleNamespace(
+            runtime_type="native_adapter",
+            scheme_id="native_trial",
+        )
+        blackbox_cfg = SimpleNamespace(
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            scheme_id="blackbox_trial",
+        )
+        with patch(
+            "scheduler.executor.run_scheme_subprocess",
+            return_value=[],
+        ) as native:
+            run_configured_scheme(
+                native_cfg,
+                "2026-07-03",
+                engine="engine",
+                algo_env="test_env",
+                timeout_sec=7,
+                process_started=callback,
+                process_fence=fence,
+            )
+        with patch(
+            "scheduler.executor.run_blackbox_scheme_subprocess",
+            return_value=[],
+        ) as blackbox:
+            run_configured_scheme(
+                blackbox_cfg,
+                "2026-07-03",
+                engine="engine",
+                algo_env="test_env",
+                timeout_sec=7,
+                process_started=callback,
+                process_fence=fence,
+            )
+
+        self.assertIs(native.call_args.kwargs["process_started"], callback)
+        self.assertIs(blackbox.call_args.kwargs["process_started"], callback)
+        self.assertIs(native.call_args.kwargs["process_fence"], fence)
+        self.assertIs(blackbox.call_args.kwargs["process_fence"], fence)
+
+    def test_run_configured_scheme_forwards_explicit_blackbox_execution_token(
+        self,
+    ) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        cfg = SimpleNamespace(
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            scheme_id="blackbox_trial",
+        )
+        with patch(
+            "scheduler.executor.run_blackbox_scheme_subprocess",
+            return_value=[],
+        ) as blackbox:
+            run_configured_scheme(
+                cfg,
+                "2026-07-03",
+                engine="engine",
+                algo_env="test_env",
+                timeout_sec=7,
+                execution_token="scheduled-token_123",
+            )
+
+        self.assertEqual(
+            blackbox.call_args.kwargs["execution_token"],
+            "scheduled-token_123",
+        )
+
+    def test_run_configured_scheme_does_not_steal_blackbox_token_from_environment(
+        self,
+    ) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        cfg = SimpleNamespace(
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            scheme_id="blackbox_trial",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_SCHEDULE_EXECUTION_TOKEN": "stale-parent-token"},
+            ),
+            patch(
+                "scheduler.executor.run_blackbox_scheme_subprocess",
+                return_value=[],
+            ) as blackbox,
+        ):
+            run_configured_scheme(
+                cfg,
+                "2026-07-03",
+                engine="engine",
+                algo_env="test_env",
+                timeout_sec=7,
+            )
+
+        self.assertNotIn(
+            "execution_token",
+            blackbox.call_args.kwargs,
+        )
+
+    def test_run_configured_scheme_rejects_unsafe_execution_token_before_dispatch(
+        self,
+    ) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        cfg = SimpleNamespace(
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            scheme_id="blackbox_trial",
+        )
+        with patch(
+            "scheduler.executor.run_blackbox_scheme_subprocess",
+        ) as blackbox:
+            with self.assertRaisesRegex(ValueError, "execution_token is unsafe"):
+                run_configured_scheme(
+                    cfg,
+                    "2026-07-03",
+                    engine="engine",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    execution_token="unsafe token",
+                )
+
+        blackbox.assert_not_called()
+
     def test_run_scheme_subprocess_timeout_kills_process_group(self) -> None:
         from scheduler.executor import run_scheme_subprocess
+
+        events: list[object] = []
 
         class FakeProcess:
             pid = 12345
@@ -29,6 +452,7 @@ class ExecutorRunIdTests(unittest.TestCase):
                 self.communicate_calls = 0
 
             def communicate(self, timeout=None):
+                events.append(("communicate", timeout))
                 self.communicate_calls += 1
                 if self.communicate_calls == 1:
                     raise subprocess.TimeoutExpired(cmd=["conda"], timeout=timeout)
@@ -39,15 +463,49 @@ class ExecutorRunIdTests(unittest.TestCase):
                 return self.returncode
 
         fake_process = FakeProcess()
-        with patch("scheduler.executor.subprocess.Popen", return_value=fake_process) as popen:
-            with patch("scheduler.executor.os.getpgid", return_value=67890) as getpgid:
-                with patch("scheduler.executor.os.killpg") as killpg:
-                    with self.assertRaises(subprocess.TimeoutExpired):
-                        run_scheme_subprocess("demo", "2026-07-03", algo_env="test_env", timeout_sec=1)
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=fake_process,
+            ) as popen,
+            patch(
+                "scheduler.executor.os.getpgid",
+                side_effect=lambda pid: (
+                    events.append(("getpgid", pid)) or 67890
+                ),
+            ) as getpgid,
+            patch(
+                "scheduler.executor.os.killpg",
+                side_effect=lambda pgid, signum: events.append(
+                    ("killpg", pgid, signum)
+                ),
+            ) as killpg,
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                return_value=True,
+            ),
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=1,
+                )
 
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         getpgid.assert_called_once_with(12345)
         killpg.assert_called_once_with(67890, signal.SIGTERM)
+        self.assertEqual(
+            events,
+            [
+                ("getpgid", 12345),
+                ("communicate", 1),
+                ("killpg", 67890, signal.SIGTERM),
+                ("communicate", 1),
+            ],
+        )
 
     def test_run_scheme_subprocess_timeout_drain_is_bounded(self) -> None:
         from scheduler.executor import run_scheme_subprocess
@@ -79,11 +537,26 @@ class ExecutorRunIdTests(unittest.TestCase):
                 return self.returncode
 
         fake_process = FakeProcess()
-        with patch("scheduler.executor.subprocess.Popen", return_value=fake_process):
-            with patch("scheduler.executor.os.getpgid", return_value=67890):
-                with patch("scheduler.executor.os.killpg"):
-                    with self.assertRaises(subprocess.TimeoutExpired) as ctx:
-                        run_scheme_subprocess("demo", "2026-07-03", algo_env="test_env", timeout_sec=7)
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=fake_process,
+            ),
+            patch("scheduler.executor.os.getpgid", return_value=67890),
+            patch("scheduler.executor.os.killpg"),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                return_value=True,
+            ),
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired) as ctx:
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                )
 
         self.assertEqual(fake_process.communicate_timeouts, [7, 1])
         self.assertTrue(fake_process.stdout.closed)
@@ -220,6 +693,115 @@ class ExecutorRunIdTests(unittest.TestCase):
             timeout_sec=1800,
         )
 
+    def test_ledger_mode_daily_executor_fails_before_algorithm_process(
+        self,
+    ) -> None:
+        from scheduler.executor import execute_scheme
+
+        engine = _FakeEngine()
+        cfg = SimpleNamespace(
+            scheme_id="daily_fenced",
+            status="active",
+            scheme_version="v1",
+            runtime_type="native_adapter",
+            frequency="daily",
+        )
+        with (
+            patch(
+                "scheduler.executor.create_engine_from_env",
+                return_value=engine,
+            ),
+            patch(
+                "scheduler.executor._verify_scheme_activation",
+                return_value=(True, "ok"),
+            ),
+            patch(
+                "scheduler.executor._active_registry_targets",
+                return_value={("5Y", 1)},
+            ),
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            ),
+            patch(
+                "scheduler.executor.create_scheme_run",
+                side_effect=RuntimeError(
+                    "scheduled_live daily creation requires a daily "
+                    "ledger item in ledger mode"
+                ),
+            ) as create_run,
+            patch(
+                "scheduler.executor.run_configured_scheme",
+            ) as algorithm,
+            patch("scheduler.executor.write_run_log"),
+        ):
+            result = execute_scheme(
+                cfg,
+                "2026-07-24",
+                algo_env="test_env",
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("daily ledger item", result.error_msg or "")
+        self.assertTrue(
+            create_run.call_args.kwargs[
+                "enforce_scheduled_live_ledger"
+            ]
+        )
+        self.assertEqual(
+            create_run.call_args.kwargs["schedule_frequency"],
+            "daily",
+        )
+        algorithm.assert_not_called()
+        self.assertTrue(engine.disposed)
+
+    def test_daily_executor_without_explicit_mode_fails_before_run_creation(
+        self,
+    ) -> None:
+        from scheduler.executor import execute_scheme
+
+        engine = _FakeEngine()
+        cfg = SimpleNamespace(
+            scheme_id="daily_unowned",
+            status="active",
+            scheme_version="v1",
+            runtime_type="native_adapter",
+            frequency="daily",
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "scheduler.executor.create_engine_from_env",
+                return_value=engine,
+            ),
+            patch(
+                "scheduler.executor._verify_scheme_activation",
+                return_value=(True, "ok"),
+            ),
+            patch(
+                "scheduler.executor._active_registry_targets",
+                return_value={("5Y", 1)},
+            ),
+            patch(
+                "scheduler.executor.create_scheme_run",
+            ) as create_run,
+            patch(
+                "scheduler.executor.run_configured_scheme",
+            ) as algorithm,
+            patch("scheduler.executor.write_run_log"),
+        ):
+            result = execute_scheme(
+                cfg,
+                "2026-07-24",
+                algo_env="test_env",
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertIn("must be explicitly set", result.error_msg or "")
+        create_run.assert_not_called()
+        algorithm.assert_not_called()
+        self.assertTrue(engine.disposed)
+
     def test_execute_scheme_rejects_records_outside_active_registry_targets(self) -> None:
         from scheduler.executor import execute_scheme
         from shared.models import PredictionRecord
@@ -321,7 +903,7 @@ class ExecutorRunIdTests(unittest.TestCase):
         self.assertNotIn("update_serving_pointer", inspect.getsource(executor))
 
 
-class BlackboxExecutionApprovalTests(unittest.TestCase):
+class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
     @staticmethod
     def _config(
         *,
@@ -750,7 +1332,7 @@ class BlackboxExecutionApprovalTests(unittest.TestCase):
         native_gate.assert_called_once_with(engine, "native_scheme", "native-version-1")
 
 
-class ExecutorTargetCompletenessTests(unittest.TestCase):
+class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
     @staticmethod
     def _record(
         target_tenor: str,

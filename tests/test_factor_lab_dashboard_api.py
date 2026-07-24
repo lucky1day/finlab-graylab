@@ -280,7 +280,13 @@ def test_dashboard_get_returns_schema_no_store_vary_and_observability_headers(
     main_module,
     monkeypatch,
 ) -> None:
-    result = SnapshotResult(_payload(), "MISS", 0.012, 0.031)
+    result = SnapshotResult(
+        _payload(),
+        "MISS",
+        0.012,
+        0.031,
+        source_generation="a" * 64,
+    )
     store = _FixedStore(result)
     monkeypatch.setattr(main_module, "dashboard_snapshot_store", store)
 
@@ -302,6 +308,7 @@ def test_dashboard_get_returns_schema_no_store_vary_and_observability_headers(
     assert headers["x-dashboard-snapshot-id"] == "snapshot-test"
     assert headers["x-dashboard-cache"] == "MISS"
     assert headers["x-dashboard-snapshot-age"] == "12"
+    assert headers["x-dashboard-source-generation"] == "a" * 64
     assert "request_compact_json_budget_gzip;dur=" in headers["server-timing"]
     assert "request_route;dur=" in headers["server-timing"]
     assert "snapshot_origin_db;dur=" in headers["server-timing"]

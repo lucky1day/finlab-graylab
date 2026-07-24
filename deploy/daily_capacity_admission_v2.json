@@ -1,0 +1,19 @@
+{
+  "schema_version": "daily-capacity-admission-v2",
+  "status": "BLOCKED",
+  "decision_id": null,
+  "decision_sequence": null,
+  "candidate_fingerprint": null,
+  "policy_version": "daily-scheduler-policy-v1",
+  "policy_sha256": "02b1652c0c16c5c5c0d799a0a2f47287e048ecb441388abfd2f6fac78b8a0f67",
+  "machine_id": null,
+  "evidence_uri": null,
+  "evidence_sha256": null,
+  "collector_signature_uri": null,
+  "operator_signature_uri": null,
+  "issued_at": null,
+  "not_before": null,
+  "expires_at": null,
+  "admitted_by": null,
+  "reason": "Three Native inputs remain unsupported and the required same-Mac forced-cold, revision, fault-injection, and stability evidence is incomplete."
+}

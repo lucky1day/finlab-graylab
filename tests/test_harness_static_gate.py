@@ -93,6 +93,50 @@ class HarnessStaticGateTests(unittest.TestCase):
         self.assertTrue(any("predict.py" in item for item in result.errors), result.errors)
         self.assertIn("cross_scheme_imports", _evidence_keys(result))
 
+    def test_parent_relative_cross_scheme_import_fails_with_resolved_module(self) -> None:
+        from harness.context import GateContext
+        from harness.gates.static_gate import StaticGate
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            scheme_dir = _write_minimal_scheme(project_root, scheme_id="demo_daily")
+            (scheme_dir / "predict.py").write_text(
+                "\n".join(
+                    [
+                        "from shared.input_artifacts import build_daily_input_artifact",
+                        "from .core import model",
+                        "from ..other_daily.core import model as other_model",
+                        'SCHEME_ID = "demo_daily"',
+                        "def run(predict_date: str):",
+                        "    return []",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            result = StaticGate().run(
+                GateContext(
+                    scheme_id="demo_daily",
+                    predict_date="2026-06-08",
+                    project_root=project_root,
+                    report_dir=project_root / "reports",
+                )
+            )
+
+        self.assertFalse(result.passed)
+        self.assertTrue(
+            any(
+                "cross-scheme import: schemes.other_daily.core" in item
+                for item in result.errors
+            ),
+            result.errors,
+        )
+        self.assertFalse(
+            any("cross-scheme import: schemes.demo_daily.core" in item for item in result.errors),
+            result.errors,
+        )
+        self.assertIn("cross_scheme_imports", _evidence_keys(result))
+
     def test_db_call_rules_do_not_flag_text_suffixes_or_context_calls(self) -> None:
         from harness.context import GateContext
         from harness.gates.static_gate import StaticGate
