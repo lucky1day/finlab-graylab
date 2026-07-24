@@ -33,6 +33,7 @@ from scheduler.daily_coordinator import (
 from scheduler.daily_policy import load_daily_policy
 from scheduler.data_contract import (
     detect_late_source_writes,
+    inspect_native_input_readiness,
 )
 from scheduler.discovery import discover_schemes
 from scheduler.generation_registry import (
@@ -255,6 +256,10 @@ class _GenerationAvailability:
             )
 
 
+class NativeReadinessPending(RuntimeError):
+    """日历或 T-1 最小输入尚未到位，可由同日 recovery tick 重试。"""
+
+
 class DefaultDailyRuntimeServices:
     """生产依赖适配；业务执行身份只从冻结 ledger 信封读取。"""
 
@@ -376,8 +381,34 @@ class DefaultDailyRuntimeServices:
             ).resolve(strict=False)
         )
 
-    def is_trading_day(self, business_date: date) -> bool:
-        return CalendarService(self.engine).is_trading_day(business_date)
+    def is_trading_day(self, business_date: date) -> bool | None:
+        """返回交易日状态；日历尚无该日时用 None 表示继续等待。"""
+        with self.engine.connect() as connection:
+            flag = connection.execute(
+                text(
+                    """
+                    SELECT trade_flag
+                    FROM t_trade_calendar
+                    WHERE rdate = :rdate
+                    LIMIT 1
+                    """
+                ),
+                {"rdate": business_date.isoformat()},
+            ).scalar()
+        if flag is None:
+            return None
+        return str(flag).strip() == "1"
+
+    def check_native_readiness(
+        self,
+        *,
+        feature_date: str,
+    ):
+        """只读检查 T-1 最小输入锚点，不把源库变成算法输入。"""
+        return inspect_native_input_readiness(
+            self.engine,
+            feature_date=feature_date,
+        )
 
     def find_occurrence_id(self, business_date: date) -> int | None:
         with self.engine.connect() as connection:
@@ -655,7 +686,10 @@ class DefaultDailyRuntimeServices:
         business_date: date,
     ) -> OccurrenceInputs:
         calendar = CalendarService(self.engine)
-        feature_date = calendar.previous_trading_day(business_date)
+        try:
+            feature_date = calendar.previous_trading_day(business_date)
+        except ValueError as exc:
+            raise NativeReadinessPending(str(exc)) from exc
         target_dates: dict[str, str] = {}
         item_policy_by_base: dict[str, Mapping[str, object]] = {}
         timezone_info = ZoneInfo(policy.timezone)
@@ -674,10 +708,13 @@ class DefaultDailyRuntimeServices:
                 raise RuntimeError(
                     f"daily policy/config identity drift: {scheme_id}"
                 )
-            target_date = calendar.nth_trading_day_after(
-                feature_date,
-                scheme_policy.horizon,
-            )
+            try:
+                target_date = calendar.nth_trading_day_after(
+                    feature_date,
+                    scheme_policy.horizon,
+                )
+            except ValueError as exc:
+                raise NativeReadinessPending(str(exc)) from exc
             for tenor in scheme_policy.target_tenors:
                 registry_id = (
                     f"{scheme_id}__h{scheme_policy.horizon}__{tenor}"
@@ -1293,11 +1330,35 @@ class DefaultDailyRuntimeServices:
             if business_date == now.date()
             else None
         )
+        previous = read_scheduler_heartbeat(
+            self.engine,
+            service_name="daily-coordinator",
+        )
         if occurrence_id is None:
             state = "IDLE"
             details: dict[str, object] = {
                 "business_date": business_date.isoformat(),
             }
+            if (
+                previous is not None
+                and previous.occurrence_id is None
+                and str(previous.state).upper()
+                == "WAITING_NATIVE_READINESS"
+                and isinstance(previous.details, Mapping)
+                and previous.details.get("business_date")
+                == business_date.isoformat()
+            ):
+                state = "WAITING_NATIVE_READINESS"
+                missing = previous.details.get("missing_requirements")
+                if isinstance(missing, (list, tuple)):
+                    details["missing_requirements"] = [
+                        str(value)
+                        for value in missing
+                        if isinstance(value, str) and value
+                    ]
+                reason = previous.details.get("reason")
+                if isinstance(reason, str) and reason:
+                    details["reason"] = reason
         else:
             snapshot = self.read_snapshot(occurrence_id)
             state = f"OCCURRENCE_{snapshot.occurrence.completion_state}"
@@ -1308,11 +1369,32 @@ class DefaultDailyRuntimeServices:
                 "expected_target_count":
                     snapshot.occurrence.expected_target_count,
             }
-            previous = read_scheduler_heartbeat(
-                self.engine,
-                service_name="daily-coordinator",
-            )
             if (
+                snapshot.actual_accepted_target_count
+                < snapshot.occurrence.expected_target_count
+                and previous is not None
+                and previous.occurrence_id == occurrence_id
+                and isinstance(previous.details, Mapping)
+                and str(previous.state).upper()
+                == "WAITING_NATIVE_READINESS"
+                and _snapshot_runtime_generation_id(
+                    snapshot,
+                    runtime_type="native_adapter",
+                )
+                is None
+            ):
+                state = "WAITING_NATIVE_READINESS"
+                feature_date = previous.details.get("feature_date")
+                if isinstance(feature_date, str) and feature_date:
+                    details["feature_date"] = feature_date
+                missing = previous.details.get("missing_requirements")
+                if isinstance(missing, (list, tuple)):
+                    details["missing_requirements"] = [
+                        str(value)
+                        for value in missing
+                        if isinstance(value, str) and value
+                    ]
+            elif (
                 snapshot.actual_accepted_target_count
                 < snapshot.occurrence.expected_target_count
                 and previous is not None
@@ -1608,16 +1690,57 @@ class DailyRuntime:
                 )
             inputs: OccurrenceInputs | None
             if occurrence_id is None:
-                if not self._services.is_trading_day(business_date):
+                trading_day_status = self._services.is_trading_day(
+                    business_date
+                )
+                if trading_day_status is None:
+                    details = {
+                        "business_date": business_date.isoformat(),
+                        "missing_requirements": [
+                            "calendar:business_date"
+                        ],
+                        "trigger_origin": trigger_origin,
+                    }
+                    self._services.heartbeat(
+                        occurrence_id=None,
+                        state="WAITING_NATIVE_READINESS",
+                        details=details,
+                    )
+                    return DailyRuntimeResult(
+                        business_date=business_date.isoformat(),
+                        occurrence_id=None,
+                        status="waiting_for_native_readiness",
+                    )
+                if not trading_day_status:
                     return DailyRuntimeResult(
                         business_date=business_date.isoformat(),
                         occurrence_id=None,
                         status="non_trading_day",
                     )
-                inputs = self._services.prepare_occurrence_inputs(
-                    policy,
-                    business_date,
-                )
+                try:
+                    inputs = self._services.prepare_occurrence_inputs(
+                        policy,
+                        business_date,
+                    )
+                except NativeReadinessPending as exc:
+                    details = {
+                        "business_date": business_date.isoformat(),
+                        "missing_requirements": [
+                            "calendar:occurrence_horizon"
+                        ],
+                        "reason": _bounded_exception(exc),
+                        "trigger_origin": trigger_origin,
+                    }
+                    self._services.heartbeat(
+                        occurrence_id=None,
+                        state="WAITING_NATIVE_READINESS",
+                        details=details,
+                    )
+                    return DailyRuntimeResult(
+                        business_date=business_date.isoformat(),
+                        occurrence_id=None,
+                        status="waiting_for_native_readiness",
+                    )
                 occurrence_id = self._services.create_occurrence(
                     business_date=business_date,
                     inputs=inputs,
@@ -1632,33 +1755,10 @@ class DailyRuntime:
                 self._services.revalidate_capacity_admission()
             else:
                 inputs = None
-            try:
-                self._services.maintain_generation_storage()
-            except Exception as exc:
-                details = {
-                    "reason": _bounded_exception(exc),
-                    "error_type": type(exc).__name__,
-                    "stage": "pre_generation_storage",
-                }
-                self._services.heartbeat(
+            if inputs is None:
+                inputs = self._services.read_frozen_inputs(
                     occurrence_id=occurrence_id,
-                    state="GENERATION_STORAGE_UNAVAILABLE",
-                    details=details,
-                )
-                self._services.alert(
-                    code="GENERATION_STORAGE_UNAVAILABLE",
-                    severity="critical",
-                    business_date=business_date,
-                    occurrence_id=occurrence_id,
-                    message=(
-                        "Generation storage cleanup/preflight failed"
-                    ),
-                    details=details,
-                )
-                return DailyRuntimeResult(
-                    business_date=business_date.isoformat(),
-                    occurrence_id=occurrence_id,
-                    status="generation_storage_failed",
+                    policy=policy,
                 )
             if self._reconcile_visibility_receipts(
                 occurrence_id=occurrence_id,
@@ -1706,26 +1806,6 @@ class DailyRuntime:
                     occurrence_id=occurrence_id,
                     status="complete",
                 )
-            self._services.heartbeat(
-                occurrence_id=occurrence_id,
-                state="PREPARING_INPUTS",
-                details={"trigger_origin": trigger_origin},
-            )
-            if not self._recover_running_items(
-                snapshot=snapshot,
-                business_date=business_date,
-                occurrence_id=occurrence_id,
-            ):
-                return DailyRuntimeResult(
-                    business_date=business_date.isoformat(),
-                    occurrence_id=occurrence_id,
-                    status="recovery_blocked",
-                )
-            snapshot = self._services.read_snapshot(occurrence_id)
-            self._mark_unsupported_items(
-                snapshot=snapshot,
-                policy=policy,
-            )
             recovery_cutoff = datetime.combine(
                 business_date,
                 policy.recovery_cutoff,
@@ -1768,11 +1848,88 @@ class DailyRuntime:
                     occurrence_id=occurrence_id,
                     status="recovery_cutoff",
                 )
-            if inputs is None:
-                inputs = self._services.read_frozen_inputs(
-                    occurrence_id=occurrence_id,
-                    policy=policy,
+            if (
+                _snapshot_runtime_generation_id(
+                    snapshot,
+                    runtime_type="native_adapter",
                 )
+                is None
+            ):
+                readiness = self._services.check_native_readiness(
+                    feature_date=inputs.feature_date,
+                )
+                if not readiness.ready:
+                    details = {
+                        "feature_date": inputs.feature_date,
+                        "missing_requirements": list(
+                            readiness.missing_requirements
+                        ),
+                        "trigger_origin": trigger_origin,
+                    }
+                    self._services.heartbeat(
+                        occurrence_id=occurrence_id,
+                        state="WAITING_NATIVE_READINESS",
+                        details=details,
+                    )
+                    return DailyRuntimeResult(
+                        business_date=business_date.isoformat(),
+                        occurrence_id=occurrence_id,
+                        status="waiting_for_native_readiness",
+                    )
+            try:
+                self._services.maintain_generation_storage()
+            except Exception as exc:
+                details = {
+                    "reason": _bounded_exception(exc),
+                    "error_type": type(exc).__name__,
+                    "stage": "pre_generation_storage",
+                }
+                self._services.heartbeat(
+                    occurrence_id=occurrence_id,
+                    state="GENERATION_STORAGE_UNAVAILABLE",
+                    details=details,
+                )
+                self._services.alert(
+                    code="GENERATION_STORAGE_UNAVAILABLE",
+                    severity="critical",
+                    business_date=business_date,
+                    occurrence_id=occurrence_id,
+                    message=(
+                        "Generation storage cleanup/preflight failed"
+                    ),
+                    details=details,
+                )
+                return DailyRuntimeResult(
+                    business_date=business_date.isoformat(),
+                    occurrence_id=occurrence_id,
+                    status="generation_storage_failed",
+                )
+            snapshot = self._services.read_snapshot(occurrence_id)
+            _validate_snapshot_cardinality(snapshot, policy=policy)
+            self._services.validate_occurrence_policy(
+                snapshot=snapshot,
+                policy=policy,
+            )
+            self._services.heartbeat(
+                occurrence_id=occurrence_id,
+                state="PREPARING_INPUTS",
+                details={"trigger_origin": trigger_origin},
+            )
+            if not self._recover_running_items(
+                snapshot=snapshot,
+                business_date=business_date,
+                occurrence_id=occurrence_id,
+            ):
+                return DailyRuntimeResult(
+                    business_date=business_date.isoformat(),
+                    occurrence_id=occurrence_id,
+                    status="recovery_blocked",
+                )
+            snapshot = self._services.read_snapshot(occurrence_id)
+            self._mark_unsupported_items(
+                snapshot=snapshot,
+                policy=policy,
+            )
             generation_availability = _GenerationAvailability(
                 policy.allowed_resource_combinations
             )
@@ -1907,9 +2064,10 @@ class DailyRuntime:
                     occurrence_id=frozen_occurrence_id,
                     now=frozen_now,
                 )
-            if not self._services.is_trading_day(
+            trading_day_status = self._services.is_trading_day(
                 frozen_business_date
-            ):
+            )
+            if trading_day_status is False:
                 details = {
                     "business_date":
                         frozen_business_date.isoformat(),
@@ -1925,6 +2083,51 @@ class DailyRuntime:
                     occurrence_id=None,
                     stage=stage,
                     status="non_trading_day",
+                    details=details,
+                )
+            if trading_day_status is None:
+                # 关闭首次 occurrence lookup 与日历就绪检查之间的竞态；
+                # 已冻结 occurrence 永远优先于随后可变的 live calendar。
+                frozen_occurrence_id = (
+                    self._services.find_occurrence_id(
+                        frozen_business_date
+                    )
+                )
+                if frozen_occurrence_id is not None:
+                    return self._run_frozen_deadline_watchdog(
+                        stage=stage,
+                        business_date=frozen_business_date,
+                        occurrence_id=frozen_occurrence_id,
+                        now=frozen_now,
+                    )
+                details = {
+                    "business_date":
+                        frozen_business_date.isoformat(),
+                    "missing_requirements": [
+                        "calendar:business_date"
+                    ],
+                    "reason": "BUSINESS_CALENDAR_PENDING",
+                }
+                self._services.heartbeat(
+                    occurrence_id=None,
+                    state="WAITING_NATIVE_READINESS",
+                    details=details,
+                )
+                self._services.alert(
+                    code="DAILY_OCCURRENCE_MISSING",
+                    severity="critical",
+                    business_date=frozen_business_date,
+                    occurrence_id=None,
+                    message=(
+                        "Daily occurrence is waiting for business calendar"
+                    ),
+                    details={"stage": stage},
+                )
+                return WatchdogResult(
+                    business_date=frozen_business_date.isoformat(),
+                    occurrence_id=None,
+                    stage=stage,
+                    status="waiting_for_native_readiness",
                     details=details,
                 )
             # 关闭“首次 lookup 为空、随后协调器刚创建 occurrence”的竞态。
@@ -1972,24 +2175,68 @@ class DailyRuntime:
                 status="cross_day_rejected",
                 details={},
             )
-        if not self._services.is_trading_day(business_date):
-            details = {
-                "business_date": business_date.isoformat(),
-                "reason": "NON_TRADING_DAY",
-            }
-            self._services.heartbeat(
-                occurrence_id=None,
-                state="IDLE",
-                details=details,
-            )
-            return WatchdogResult(
-                business_date=business_date.isoformat(),
-                occurrence_id=None,
-                stage=stage,
-                status="non_trading_day",
-                details=details,
-            )
         occurrence_id = self._services.find_occurrence_id(business_date)
+        if occurrence_id is None:
+            trading_day_status = self._services.is_trading_day(
+                business_date
+            )
+            if trading_day_status is False:
+                details = {
+                    "business_date": business_date.isoformat(),
+                    "reason": "NON_TRADING_DAY",
+                }
+                self._services.heartbeat(
+                    occurrence_id=None,
+                    state="IDLE",
+                    details=details,
+                )
+                return WatchdogResult(
+                    business_date=business_date.isoformat(),
+                    occurrence_id=None,
+                    stage=stage,
+                    status="non_trading_day",
+                    details=details,
+                )
+            if trading_day_status is None:
+                occurrence_id = self._services.find_occurrence_id(
+                    business_date
+                )
+                if occurrence_id is None:
+                    details = {
+                        "business_date": business_date.isoformat(),
+                        "missing_requirements": [
+                            "calendar:business_date"
+                        ],
+                        "reason": "BUSINESS_CALENDAR_PENDING",
+                    }
+                    self._services.heartbeat(
+                        occurrence_id=None,
+                        state="WAITING_NATIVE_READINESS",
+                        details=details,
+                    )
+                    self._services.alert(
+                        code="DAILY_OCCURRENCE_MISSING",
+                        severity="critical",
+                        business_date=business_date,
+                        occurrence_id=None,
+                        message=(
+                            "Daily occurrence is waiting for business "
+                            "calendar"
+                        ),
+                        details={"stage": stage},
+                    )
+                    return WatchdogResult(
+                        business_date=business_date.isoformat(),
+                        occurrence_id=None,
+                        stage=stage,
+                        status="waiting_for_native_readiness",
+                        details=details,
+                    )
+            if occurrence_id is None:
+                # 关闭首次 lookup 为空、协调器随后创建 occurrence 的竞态。
+                occurrence_id = self._services.find_occurrence_id(
+                    business_date
+                )
         if occurrence_id is None:
             details = {"reason": "OCCURRENCE_NOT_FOUND"}
             self._services.heartbeat(

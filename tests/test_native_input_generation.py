@@ -127,13 +127,22 @@ def _metadata() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "indicators_code": "TB1YWI0C",
+                "indicators_code": code,
                 "frequency": "daily",
                 "status": 1,
                 "pre_forecast_flag": 1,
                 "lag_length": 0,
                 "indicators_source": "raw",
-            },
+            }
+            for code in (
+                "TB1YWI0C",
+                "TB3YWI0C",
+                "TB5YWI0C",
+                "TB7YWI0C",
+                "TB0YWI0C",
+            )
+        ]
+        + [
             {
                 "indicators_code": "WEEKLY_A",
                 "frequency": "weekly",
@@ -159,9 +168,18 @@ def _daily_frame() -> pd.DataFrame:
         [
             {
                 "rdate": "2026-07-24",
-                "indicators_code": "TB1YWI0C",
+                "indicators_code": code,
                 "indicators_value": 1.5,
-            },
+            }
+            for code in (
+                "TB1YWI0C",
+                "TB3YWI0C",
+                "TB5YWI0C",
+                "TB7YWI0C",
+                "TB0YWI0C",
+            )
+        ]
+        + [
             {
                 "rdate": "2026-07-25",
                 "indicators_code": "TB1YWI0C",
@@ -212,7 +230,12 @@ def _monthly_frame(*, include_month_id: bool) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=columns)
 
 
-def _patched_source_readers(module, connection: _Connection):
+def _patched_source_readers(
+    module,
+    connection: _Connection,
+    *,
+    evidence_timestamp: str = "2026-07-24T06:29:00.000000",
+):
     seen_connections: list[object] = []
 
     def metadata_reader(engine: object) -> pd.DataFrame:
@@ -257,7 +280,7 @@ def _patched_source_readers(module, connection: _Connection):
             module._data_contract.SourceTableEvidence(
                 table_name=table_name,
                 row_count=seed,
-                latest_create_time="2026-07-24T06:29:00.000000",
+                latest_create_time=evidence_timestamp,
             )
             for table_name in factor_tables
         ]
@@ -265,8 +288,8 @@ def _patched_source_readers(module, connection: _Connection):
             module._data_contract.SourceTableEvidence(
                 table_name=module._data_contract.METADATA_SOURCE_TABLE,
                 row_count=seed,
-                latest_create_time="2026-07-24T06:29:00.000000",
-                latest_update_time="2026-07-24T06:29:00.000000",
+                latest_create_time=evidence_timestamp,
+                latest_update_time=evidence_timestamp,
             )
         )
         tables.extend(
@@ -434,6 +457,49 @@ def _rewrite_csv_and_manifest(
 
 
 class NativeInputGenerationTransactionTests(unittest.TestCase):
+    def test_frozen_snapshot_rejects_partial_curve_anchor_set(self) -> None:
+        module = importlib.import_module("shared.native_input_generation")
+        daily = pd.DataFrame(
+            [
+                {
+                    "rdate": "2026-07-24",
+                    "indicators_code": code,
+                    "indicators_value": 1.0,
+                }
+                for code in ("TB1YWI0C", "TB5YWI0C", "TB0YWI0C")
+            ]
+        )
+        empty_daily = daily.iloc[0:0].copy()
+        frames = {
+            "api_wind_daily.csv": daily,
+            "api_wind_derivative_daily.csv": empty_daily,
+            "weekly_cutoff_index.csv": pd.DataFrame(
+                [
+                    {
+                        "week_id": "202629",
+                        "available_date": "2026-07-24",
+                    }
+                ]
+            ),
+            "monthly_cutoff_index.csv": pd.DataFrame(
+                [
+                    {
+                        "month_id": "202607",
+                        "available_date": "2026-07-24",
+                    }
+                ]
+            ),
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "missing required daily anchors.*TB3YWI0C.*TB7YWI0C",
+        ):
+            module._derive_cutoffs(
+                frames,
+                feature_date="2026-07-24",
+            )
+
     def test_clock_contract_requires_explicit_cutoff_and_capture_deadline(
         self,
     ) -> None:
@@ -455,6 +521,55 @@ class NativeInputGenerationTransactionTests(unittest.TestCase):
                     )
 
         self.assertEqual(engine.connect_count, 0)
+
+    def test_generation_accepts_ready_snapshot_after_0630_not_before(
+        self,
+    ) -> None:
+        module = importlib.import_module("shared.native_input_generation")
+        engine = _Engine()
+        patches, _ = _patched_source_readers(
+            module,
+            engine.connection,
+            evidence_timestamp="2026-07-24T06:42:00.000000",
+        )
+        capture_deadline = datetime(
+            2026,
+            7,
+            23,
+            23,
+            55,
+            tzinfo=timezone.utc,
+        )
+        snapshot_started = datetime(
+            2026,
+            7,
+            23,
+            22,
+            43,
+            tzinfo=timezone.utc,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                context = module.create_native_generation(
+                    engine,
+                    business_date="2026-07-24",
+                    feature_date="2026-07-24",
+                    output_root=tmpdir,
+                    source_contract_cutoff=_CONTRACT_CUTOFF,
+                    capture_not_after=capture_deadline,
+                    _snapshot_clock=lambda: snapshot_started,
+                )
+            reopened = module.open_native_generation(
+                context.manifest_path,
+                expected_manifest_sha256=context.manifest_sha256,
+            )
+
+        self.assertEqual(reopened.generation_id, context.generation_id)
+        self.assertEqual(
+            context.manifest["snapshot_started_at"],
+            "2026-07-23T22:43:00.000000Z",
+        )
 
     def test_native_exporter_rejects_upstream_seal_readiness(self) -> None:
         module = importlib.import_module("shared.native_input_generation")
@@ -604,7 +719,7 @@ class NativeInputGenerationTransactionTests(unittest.TestCase):
             )
             self.assertEqual(
                 context.frame("api_wind_daily")["rdate"].tolist(),
-                ["2026-07-24"],
+                ["2026-07-24"] * 5,
             )
             self.assertEqual(
                 context.frame("api_wind_weekly")["rdate"].tolist(),
@@ -1000,7 +1115,7 @@ class NativeInputGenerationIntegrityTests(unittest.TestCase):
                     expected_manifest_sha256=context.manifest_sha256,
                 )
 
-    def test_open_rejects_rehashed_source_evidence_after_contract_cutoff(
+    def test_open_rejects_rehashed_source_evidence_after_snapshot(
         self,
     ) -> None:
         module = importlib.import_module("shared.native_input_generation")
@@ -1023,7 +1138,7 @@ class NativeInputGenerationIntegrityTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError,
-                "after the contract cutoff",
+                "after the supplied cutoff",
             ):
                 module.open_native_generation(context.manifest_path)
 

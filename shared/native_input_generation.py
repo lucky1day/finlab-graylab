@@ -53,7 +53,6 @@ _FACTOR_FILENAMES = (
 _READINESS_BASES = frozenset({"CLOCK_CONTRACT"})
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _CLOCK_CONTRACT_CUTOFF = datetime_time(6, 30)
-_CLOCK_CONTRACT_CAPTURE_DEADLINE = datetime_time(6, 31)
 _SOURCE_EVIDENCE_VERSION = "native-source-watermark-v1"
 _MANIFEST_FIELDS = frozenset(
     {
@@ -839,7 +838,7 @@ def open_native_generation(
     _assert_source_evidence_payload_at_cutoff(
         source_evidence,
         cutoff_at=datetime.fromisoformat(
-            source_contract_cutoff.replace("Z", "+00:00")
+            snapshot_started_at.replace("Z", "+00:00")
         ),
         source_commit_token=source_commit_token,
     )
@@ -1047,7 +1046,7 @@ def _export_frozen_frames(
             if normalized_cutoff is not None:
                 _data_contract.assert_source_commit_evidence_at_cutoff(
                     evidence,
-                    cutoff_at=normalized_cutoff,
+                    cutoff_at=snapshot_started_at,
                 )
             frames = _read_source_frames(
                 connection,
@@ -1433,7 +1432,7 @@ def _derive_cutoffs(
     daily_targets = daily_sources[
         daily_sources["indicators_code"]
         .astype(str)
-        .isin(_data_service.DAILY_TARGETS)
+        .isin(_data_contract.NATIVE_READINESS_DAILY_ANCHORS)
     ]
     if daily_targets.empty:
         raise ValueError(
@@ -1450,6 +1449,25 @@ def _derive_cutoffs(
     if daily_cutoff != feature:
         raise ValueError(
             "Native generation daily cutoff must equal feature_date"
+        )
+    anchor_values = pd.to_numeric(
+        daily_targets["indicators_value"],
+        errors="coerce",
+    )
+    present_anchors = set(
+        daily_targets.loc[
+            (daily_dates == feature) & anchor_values.notna(),
+            "indicators_code",
+        ].astype(str)
+    )
+    missing_anchors = sorted(
+        set(_data_contract.NATIVE_READINESS_DAILY_ANCHORS)
+        - present_anchors
+    )
+    if missing_anchors:
+        raise ValueError(
+            "Native generation missing required daily anchors at "
+            f"feature_date: {', '.join(missing_anchors)}"
         )
 
     weekly_cutoff = _latest_period_cutoff(
@@ -1641,14 +1659,10 @@ def _validate_clock_contract_parameters(
             "CLOCK_CONTRACT source_contract_cutoff must be business-date "
             "06:30:00 Asia/Shanghai"
         )
-    if (
-        local_deadline.date().isoformat() != business_date
-        or local_deadline.time().replace(tzinfo=None)
-        != _CLOCK_CONTRACT_CAPTURE_DEADLINE
-    ):
+    if local_deadline.date().isoformat() != business_date:
         raise ValueError(
-            "CLOCK_CONTRACT capture_not_after must be business-date "
-            "06:31:00 Asia/Shanghai"
+            "CLOCK_CONTRACT capture_not_after must be on business-date "
+            "Asia/Shanghai"
         )
     if cutoff >= deadline:
         raise ValueError(

@@ -60,12 +60,12 @@
 - 健康投影区分 committed、DB 可见回执和外部 no-store API 观察；24/25、ETA
   超线、零进展、generation 异常或 mode 漂移均不得为 `ok`。节假日 watchdog
   返回 `IDLE`，严格执行 envelope 仍保持 fail-closed。
-- Native RR snapshot 必须严格早于 06:31 开启（恰好 06:31 拒绝），覆盖 source evidence、日/周/月、metadata 和 calendar；迟到 catch-up 不读 live DB。
+- Native 在 06:30 后先检查 T-1 日历、五个曲线锚点和三频最小历史；未就绪不创建
+  attempt。就绪后在同一 RR snapshot 内复核锚点并冻结输入，最迟 08:30 前开启。
 - 06:55 是版本化 DataBridge readiness guardrail：未 SEALED/绑定即 `LATE`/告警，但仍只刷新当天新 generation 到 08:30。
 - generation/DataBridge current roots 要求服务 UID + `0700`；旧 caller-supplied retention 已禁用，只回收 DB 证明无引用的 `INVALIDATED` payload。
-- 2026-07-24 只读复核发现冻结域在 06:30 后写入 11 行，最晚
-  `create_time=07:10:12`；“06:30 已封账”当前不成立，必须按
-  `DATA_CONTRACT_BREACH` 处理，不能靠延迟调度掩盖。
+- 2026-07-24 输入域在 06:30 后仍有写入，最晚 `create_time=07:10:12`；因此
+  06:30 只作 hard not-before，readiness 后只冻结一次，后续修正不重启 occurrence。
 - ledger 候选已退休旧 V2 精确分钟触发与 scheduler restart；仓库 launchd 仍
   全部显式为 `legacy`，保留切换前唯一 refresh owner。2026-07-24 13:04 本机
   `bond_db` 已建立 001..017 history 并应用 017 schema；五张 ledger 表为空，
@@ -85,11 +85,11 @@
   digest-fenced recovery，已隔离覆盖 DDL 前、四列 nullable 过渡和完整未 mark，
   失败保持 `APPLYING`。生产精确 clone 的 partial-DDL 演练仍未完成，也未授权在
   当前 `bond_db` 执行恢复。
-- DataBridge refresh/pack 与 Native 的同机 forced-cold 尚未准入；factor 表缺可靠 `update_time`，冻结 generation 不能替代上游 seal/CDC。
+- DataBridge refresh/pack 与 Native 的同机 forced-cold 尚未准入；晚写诊断不是
+  CDC，但 MVP 已在 readiness 后冻结一次 generation，不再依赖上游永久 seal。
 - generation 长期归档、去重、保留周期和磁盘满验收未完成；当前安全清理只防误删，不能解除上线门禁。
 
-权威设计与门禁见
-[日频信号 08:00 SLA 架构](architecture/DAILY_SIGNAL_SLA.md)。
+权威设计与门禁见[日频信号 08:00 SLA 架构](architecture/DAILY_SIGNAL_SLA.md)。
 
 详细证据见[首个生产灰度激活记录](blackbox_v2/records/PRODUCTION_GRAY_ACTIVATION_20260720.md)、[1Y T+5 四方案分阶段记录](blackbox_v2/records/PRODUCTION_GRAY_1Y_T5_4SCHEMES_20260720.md)和[Blackbox V2 试验记录](blackbox_v2/records/README.md)。
 
@@ -103,9 +103,8 @@
 
 ## 当前观察项
 
-1. 先修复 06:30 上游封账违约并补可验证 seal/CDC，再完成三个 0629 Native
-   的 generation 输入适配、迁移演练和同机容量/故障注入；
-   门禁通过前不得打开 ledger rollout。
+1. 先完成三个 0629 Native 的受控兼容桥，再验证 17 个 Native 唯一触发；之后
+   逐项完成 generation 替换、迁移及容量/故障演练，门禁前不得打开 ledger。
 2. 使用历史交易日 `--no-persist` 驻留回放验证 21 item/25 target、四个 V2
    同代 generation 和 `+0/+2/+4/+6` 独立释放。
 3. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。

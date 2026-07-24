@@ -21,6 +21,7 @@ from scheduler.daily_runtime import (
     DailyRuntime,
     DefaultDailyRuntimeServices,
     GenerationBuildOutcome,
+    NativeReadinessPending,
     OccurrenceInputs,
     WatchdogResult,
     _GenerationAvailability,
@@ -1009,6 +1010,133 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
         self.assertEqual(
             heartbeat.call_args.kwargs["state"],
             "WATCHDOG_PROGRESS",
+        )
+
+    def test_heartbeat_tick_preserves_native_readiness_wait_details(
+        self,
+    ) -> None:
+        services = DefaultDailyRuntimeServices(
+            engine=create_engine("sqlite://")
+        )
+        snapshot = SimpleNamespace(
+            occurrence=SimpleNamespace(
+                completion_state="RUNNING",
+                expected_target_count=25,
+            ),
+            items=(
+                SimpleNamespace(
+                    item=SimpleNamespace(
+                        runtime_type="native_adapter",
+                        input_generation_id=None,
+                    )
+                ),
+            ),
+            actual_accepted_target_count=0,
+        )
+        previous = SimpleNamespace(
+            state="WAITING_NATIVE_READINESS",
+            occurrence_id=41,
+            details={
+                "feature_date": "2026-07-23",
+                "missing_requirements": [
+                    "daily_target:TB5YWI0C",
+                ],
+            },
+        )
+
+        with (
+            patch.object(
+                services,
+                "now",
+                return_value=datetime(
+                    2026,
+                    7,
+                    24,
+                    6,
+                    31,
+                    tzinfo=SHANGHAI,
+                ),
+            ),
+            patch.object(
+                services,
+                "find_occurrence_id",
+                return_value=41,
+            ),
+            patch.object(
+                services,
+                "read_snapshot",
+                return_value=snapshot,
+            ),
+            patch(
+                "scheduler.daily_runtime.read_scheduler_heartbeat",
+                return_value=previous,
+            ),
+            patch.object(services, "heartbeat") as heartbeat,
+        ):
+            result = services.heartbeat_tick("2026-07-24")
+
+        self.assertEqual(result["state"], "WAITING_NATIVE_READINESS")
+        self.assertEqual(result["feature_date"], "2026-07-23")
+        self.assertEqual(
+            result["missing_requirements"],
+            ["daily_target:TB5YWI0C"],
+        )
+        self.assertEqual(
+            heartbeat.call_args.kwargs["state"],
+            "WAITING_NATIVE_READINESS",
+        )
+
+    def test_heartbeat_tick_preserves_calendar_wait_without_occurrence(
+        self,
+    ) -> None:
+        services = DefaultDailyRuntimeServices(
+            engine=create_engine("sqlite://")
+        )
+        previous = SimpleNamespace(
+            state="WAITING_NATIVE_READINESS",
+            occurrence_id=None,
+            details={
+                "business_date": "2026-07-24",
+                "missing_requirements": [
+                    "calendar:business_date",
+                ],
+            },
+        )
+
+        with (
+            patch.object(
+                services,
+                "now",
+                return_value=datetime(
+                    2026,
+                    7,
+                    24,
+                    6,
+                    31,
+                    tzinfo=SHANGHAI,
+                ),
+            ),
+            patch.object(
+                services,
+                "find_occurrence_id",
+                return_value=None,
+            ),
+            patch(
+                "scheduler.daily_runtime.read_scheduler_heartbeat",
+                return_value=previous,
+            ),
+            patch.object(services, "heartbeat") as heartbeat,
+        ):
+            result = services.heartbeat_tick("2026-07-24")
+
+        self.assertEqual(result["state"], "WAITING_NATIVE_READINESS")
+        self.assertEqual(
+            result["missing_requirements"],
+            ["calendar:business_date"],
+        )
+        self.assertEqual(
+            heartbeat.call_args.kwargs["state"],
+            "WAITING_NATIVE_READINESS",
         )
 
     def test_heartbeat_tick_preserves_zero_progress_until_progress_occurs(
@@ -2365,6 +2493,10 @@ class _FakeServices:
         self.visibility_reconcile_error: Exception | None = None
         self.capacity_revalidation_error: Exception | None = None
         self.generation_storage_error: Exception | None = None
+        self.trading_day_status: bool | None = True
+        self.occurrence_input_error: Exception | None = None
+        self.native_readiness_ready = True
+        self.native_readiness_missing: tuple[str, ...] = ()
         self.last_publication_capability = None
         native_policy = SimpleNamespace(
             scheme_id="native",
@@ -2398,7 +2530,7 @@ class _FakeServices:
             expected_target_count=2,
             timezone="Asia/Shanghai",
             not_before=time(6, 30),
-            native_capture_deadline=time(6, 31),
+            native_capture_deadline=time(8, 30),
             databridge_readiness_guardrail=time(6, 55),
             target_ready=time(7, 55),
             v2_start_guardrail=time(7, 45),
@@ -2443,9 +2575,9 @@ class _FakeServices:
             "databridge_total_bytes": 0,
         }
 
-    def is_trading_day(self, business_date: date) -> bool:
+    def is_trading_day(self, business_date: date) -> bool | None:
         self.events.append(("trading-day", business_date.isoformat()))
-        return True
+        return self.trading_day_status
 
     def prepare_occurrence_inputs(
         self,
@@ -2453,6 +2585,8 @@ class _FakeServices:
         business_date: date,
     ) -> OccurrenceInputs:
         self.events.append("prepare")
+        if self.occurrence_input_error is not None:
+            raise self.occurrence_input_error
         return OccurrenceInputs(
             feature_date="2026-07-23",
             target_dates={
@@ -2464,6 +2598,18 @@ class _FakeServices:
                 "v2": {"scheme_version": "b-v1"},
             },
             policy_json={"version": policy.version},
+        )
+
+    def check_native_readiness(
+        self,
+        *,
+        feature_date: str,
+    ):
+        self.events.append(("native-readiness", feature_date))
+        return SimpleNamespace(
+            ready=self.native_readiness_ready,
+            feature_date=feature_date,
+            missing_requirements=self.native_readiness_missing,
         )
 
     def find_occurrence_id(self, business_date: date) -> int | None:
@@ -3118,6 +3264,146 @@ class DailyRuntimeNotBeforeTests(unittest.TestCase):
 
 
 class DailyRuntimeGenerationTests(unittest.TestCase):
+    def test_missing_business_calendar_waits_without_occurrence_or_attempt(
+        self,
+    ) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 6, 30, tzinfo=SHANGHAI),
+        )
+        services.trading_day_status = None
+
+        result = DailyRuntime(services).run_occurrence(
+            run_date="2026-07-24",
+        )
+
+        self.assertEqual(result.status, "waiting_for_native_readiness")
+        self.assertIsNone(result.occurrence_id)
+        self.assertNotIn("prepare", services.events)
+        self.assertFalse(
+            any(
+                isinstance(event, tuple) and event[0] == "create"
+                for event in services.events
+            )
+        )
+        self.assertEqual(services.attempts, Counter())
+        self.assertEqual(
+            services.heartbeat_calls[-1]["state"],
+            "WAITING_NATIVE_READINESS",
+        )
+
+    def test_unready_native_inputs_wait_without_generation_or_attempt(
+        self,
+    ) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 6, 30, tzinfo=SHANGHAI),
+        )
+        services.native_readiness_ready = False
+        services.native_readiness_missing = (
+            "daily_target:TB5YWI0C",
+        )
+
+        result = DailyRuntime(services).run_occurrence(
+            run_date="2026-07-24",
+        )
+
+        self.assertEqual(result.status, "waiting_for_native_readiness")
+        self.assertEqual(result.occurrence_id, 41)
+        self.assertIn(
+            ("native-readiness", "2026-07-23"),
+            services.events,
+        )
+        self.assertNotIn(
+            ("native-generation", "started"),
+            services.events,
+        )
+        self.assertEqual(services.attempts, Counter())
+        self.assertEqual(services.failures, [])
+        self.assertEqual(
+            services.heartbeat_calls[-1]["state"],
+            "WAITING_NATIVE_READINESS",
+        )
+
+    def test_incomplete_target_calendar_waits_without_occurrence(
+        self,
+    ) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 6, 30, tzinfo=SHANGHAI),
+        )
+        services.occurrence_input_error = NativeReadinessPending(
+            "not enough trading days after 2026-07-23"
+        )
+
+        result = DailyRuntime(services).run_occurrence(
+            run_date="2026-07-24",
+        )
+
+        self.assertEqual(result.status, "waiting_for_native_readiness")
+        self.assertIsNone(result.occurrence_id)
+        self.assertEqual(services.attempts, Counter())
+        self.assertEqual(
+            services.heartbeat_calls[-1]["state"],
+            "WAITING_NATIVE_READINESS",
+        )
+
+    def test_non_readiness_input_error_is_not_masked_as_waiting(
+        self,
+    ) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 6, 30, tzinfo=SHANGHAI),
+        )
+        services.occurrence_input_error = ValueError(
+            "invalid frozen policy payload"
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "invalid frozen policy payload",
+        ):
+            DailyRuntime(services).run_occurrence(
+                run_date="2026-07-24",
+            )
+
+    def test_bound_native_generation_ignores_later_source_corrections(
+        self,
+    ) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 6, 45, tzinfo=SHANGHAI),
+        )
+        services.existing_occurrence_id = 41
+        services.bindings[1] = "native-gen"
+        frozen_native = SimpleNamespace(
+            generation_id="native-gen",
+            business_date="2026-07-24",
+            feature_date="2026-07-23",
+            sealed_at="2026-07-23T22:43:00Z",
+        )
+        services.resolve_bound_generations = lambda **_kwargs: (
+            frozen_native,
+            None,
+        )
+        services.refresh_databridge = lambda **_kwargs: SimpleNamespace(
+            state={"refresh_date": "2026-07-24"}
+        )
+
+        def forbidden_readiness(**_kwargs):
+            raise AssertionError(
+                "bound generation must not re-read mutable readiness"
+            )
+
+        services.check_native_readiness = forbidden_readiness
+
+        result = DailyRuntime(services).run_occurrence(
+            run_date="2026-07-24",
+            trigger_origin="startup_catchup",
+        )
+
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(services.bindings[1], "native-gen")
+        self.assertNotIn(
+            ("native-generation", "started"),
+            services.events,
+        )
+
     def test_owner_storage_preflight_failure_blocks_generation_build(
         self,
     ) -> None:
@@ -3247,7 +3533,7 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
         self.assertIn(
             (
                 "native-capture-window",
-                "2026-07-24T06:31:00+08:00",
+                "2026-07-24T08:30:00+08:00",
                 "2026-07-24T06:30:00+08:00",
             ),
             services.events,
@@ -3312,29 +3598,28 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
         self.assertLess(recovery_index, capture_index)
         self.assertLess(capture_index, build_index)
         self.assertIn(
-            "2026-07-24T06:31:00+08:00",
+            "2026-07-24T08:30:00+08:00",
             services.events[capture_index],
         )
 
-    def test_exact_0631_rejects_new_native_snapshot(self) -> None:
+    def test_after_0630_builds_when_native_inputs_are_ready(self) -> None:
         services = _FakeServices(
             now=datetime(2026, 7, 24, 6, 31, tzinfo=SHANGHAI),
         )
-        native_builder = Mock()
-        services.build_native_generation = native_builder
 
         result = DailyRuntime(services).run_occurrence(
             run_date="2026-07-24",
             trigger_origin="startup_catchup",
         )
 
-        self.assertEqual(result.status, "generation_failed")
-        native_builder.assert_not_called()
-        self.assertTrue(
-            any(
-                failure_code == "GENERATION_BUILD_FAILED"
-                for _item_id, failure_code in services.failures
-            )
+        self.assertEqual(result.status, "complete")
+        self.assertIn(
+            (
+                "native-capture-window",
+                "2026-07-24T08:30:00+08:00",
+                "2026-07-24T06:30:00+08:00",
+            ),
+            services.events,
         )
 
     def test_restart_after_final_rename_recovers_without_live_rebuild(
@@ -3609,7 +3894,7 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
             ],
         )
 
-    def test_late_startup_cannot_create_first_native_generation(
+    def test_ready_startup_catchup_can_create_first_native_generation(
         self,
     ) -> None:
         services = _FakeServices(
@@ -3617,28 +3902,19 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
         )
         services.existing_occurrence_id = 41
 
-        def forbidden_native_export(**_kwargs):
-            services.events.append("forbidden-native-export")
-            raise AssertionError("late startup must not export live DB")
-
-        services.build_native_generation = forbidden_native_export
-        services.refresh_databridge = lambda **_kwargs: SimpleNamespace(
-            state={"refresh_date": "2026-07-24"}
-        )
-
         result = DailyRuntime(services).run_occurrence(
             run_date="2026-07-24",
             trigger_origin="startup_catchup",
         )
 
-        self.assertEqual(result.status, "generation_failed")
-        self.assertNotIn("forbidden-native-export", services.events)
-        self.assertCountEqual(
-            services.failures,
-            [
-                (1, "GENERATION_BUILD_FAILED"),
-                (2, "GENERATION_BUILD_FAILED"),
-            ],
+        self.assertEqual(result.status, "complete")
+        self.assertIn(
+            (
+                "native-capture-window",
+                "2026-07-24T08:30:00+08:00",
+                "2026-07-24T06:30:00+08:00",
+            ),
+            services.events,
         )
 
     def test_terminal_execution_failure_alerts_without_retry(self) -> None:
@@ -4128,6 +4404,44 @@ class DailyRuntimeRecoveryTests(unittest.TestCase):
 
 
 class DailyRuntimeDeadlineCatchupTests(unittest.TestCase):
+    def test_0800_unready_inputs_persist_breach_before_waiting(self) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 8, 0, tzinfo=SHANGHAI),
+        )
+        services.existing_occurrence_id = 41
+        services.native_readiness_ready = False
+        services.native_readiness_missing = (
+            "daily_target:TB3YWI0C",
+        )
+
+        def evaluate_sla(**kwargs):
+            services.events.append(
+                ("evaluate-sla-unready", kwargs["occurrence_id"])
+            )
+            services.sla_outcome = "BREACHED"
+            return SimpleNamespace(
+                status="BREACHED",
+                accepted_target_count=0,
+                expected_target_count=2,
+                reason="TARGETS_INCOMPLETE_AT_DEADLINE",
+                newly_persisted=True,
+            )
+
+        services.evaluate_target_sla = evaluate_sla
+
+        result = DailyRuntime(services).run_occurrence(
+            run_date="2026-07-24",
+            trigger_origin="startup_catchup",
+        )
+
+        self.assertEqual(result.status, "waiting_for_native_readiness")
+        self.assertEqual(services.sla_outcome, "BREACHED")
+        self.assertIn(("evaluate-sla-unready", 41), services.events)
+        self.assertIn(
+            ("alert", "DAILY_TARGET_SLA_BREACHED"),
+            services.events,
+        )
+
     def test_replayed_deadline_projections_do_not_realert(self) -> None:
         services = _FakeServices(
             now=datetime(2026, 7, 24, 8, 0, tzinfo=SHANGHAI),
@@ -4345,6 +4659,51 @@ class DailyRuntimeDeadlineCatchupTests(unittest.TestCase):
 
 
 class DailyRuntimeCutoffTests(unittest.TestCase):
+    def test_0830_unready_inputs_expire_before_readiness_return(self) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 8, 30, tzinfo=SHANGHAI),
+        )
+        services.existing_occurrence_id = 41
+        services.native_readiness_ready = False
+        services.native_readiness_missing = (
+            "daily_target:TB3YWI0C",
+        )
+
+        def evaluate_sla(**kwargs):
+            services.events.append(
+                ("evaluate-sla-unready", kwargs["occurrence_id"])
+            )
+            services.sla_outcome = "BREACHED"
+            return SimpleNamespace(
+                status="BREACHED",
+                accepted_target_count=0,
+                expected_target_count=2,
+                reason="TARGETS_INCOMPLETE_AT_DEADLINE",
+                newly_persisted=True,
+            )
+
+        services.evaluate_target_sla = evaluate_sla
+
+        result = DailyRuntime(services).run_occurrence(
+            run_date="2026-07-24",
+            trigger_origin="startup_catchup",
+        )
+
+        self.assertEqual(result.status, "recovery_cutoff")
+        self.assertEqual(
+            services.states,
+            {"native": "EXPIRED", "v2": "EXPIRED"},
+        )
+        self.assertEqual(services.sla_outcome, "BREACHED")
+        self.assertNotIn(
+            ("native-generation", "started"),
+            services.events,
+        )
+        self.assertIn(
+            ("alert", "RECOVERY_CUTOFF_INCOMPLETE"),
+            services.events,
+        )
+
     def test_0830_expires_pending_without_building_or_starting(self) -> None:
         services = _FakeServices(
             now=datetime(2026, 7, 24, 8, 30, tzinfo=SHANGHAI),
@@ -4768,13 +5127,72 @@ class DailyRuntimeWatchdogTests(unittest.TestCase):
                         and event[0] == "find-occurrence"
                     )
                 ]
-                if stage == "progress":
-                    self.assertEqual(occurrence_lookups, [])
-                else:
-                    self.assertEqual(
-                        occurrence_lookups,
-                        [("find-occurrence", "2026-07-24")],
-                    )
+                self.assertEqual(
+                    occurrence_lookups,
+                    [("find-occurrence", "2026-07-24")],
+                )
+
+    def test_progress_watchdog_uses_frozen_occurrence_before_live_calendar(
+        self,
+    ) -> None:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 7, 0, tzinfo=SHANGHAI),
+        )
+        services.existing_occurrence_id = 41
+        services.is_trading_day = lambda _business_date: self.fail(
+            "frozen occurrence must win over mutable live calendar"
+        )
+
+        result = DailyRuntime(services).run_watchdog(
+            stage="progress",
+            run_date="2026-07-24",
+        )
+
+        self.assertEqual(result.occurrence_id, 41)
+        self.assertNotEqual(result.status, "non_trading_day")
+
+    def test_missing_live_calendar_is_waiting_not_non_trading_day(
+        self,
+    ) -> None:
+        stage_times = {
+            "progress": (7, 0),
+            "target_sla": (8, 0),
+        }
+        for stage, (hour, minute) in stage_times.items():
+            with self.subTest(stage=stage):
+                services = _FakeServices(
+                    now=datetime(
+                        2026,
+                        7,
+                        24,
+                        hour,
+                        minute,
+                        tzinfo=SHANGHAI,
+                    ),
+                )
+                services.trading_day_status = None
+
+                result = DailyRuntime(services).run_watchdog(
+                    stage=stage,
+                    run_date="2026-07-24",
+                )
+
+                self.assertEqual(
+                    result.status,
+                    "waiting_for_native_readiness",
+                )
+                self.assertEqual(
+                    result.details["missing_requirements"],
+                    ["calendar:business_date"],
+                )
+                self.assertIn(
+                    ("heartbeat", None, "WAITING_NATIVE_READINESS"),
+                    services.events,
+                )
+                self.assertIn(
+                    ("alert", "DAILY_OCCURRENCE_MISSING"),
+                    services.events,
+                )
 
     def test_watchdog_probes_late_writes_from_frozen_occurrence_when_unbound(
         self,

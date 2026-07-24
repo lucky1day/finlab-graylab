@@ -1,4 +1,4 @@
-"""06:30 Native 源数据封账证据与晚写只读审计。"""
+"""Native 源快照水位证据与 06:30 后写入的只读诊断。"""
 
 from __future__ import annotations
 
@@ -12,8 +12,14 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+NATIVE_READINESS_DAILY_ANCHORS = (
+    "TB1YWI0C",
+    "TB3YWI0C",
+    "TB5YWI0C",
+    "TB7YWI0C",
+    "TB0YWI0C",
+)
 FACTOR_SOURCE_TABLES = (
     "api_wind_daily",
     "api_wind_derivative_daily",
@@ -31,7 +37,7 @@ CALENDAR_SOURCE_TABLES = (
 
 @dataclass(frozen=True)
 class SourceTableEvidence:
-    """一个源表在 generation cutoff 上的只读水位证据。"""
+    """一个源表在 generation snapshot 内的只读水位证据。"""
 
     table_name: str
     row_count: int
@@ -58,6 +64,159 @@ class LateSourceWrite:
     latest_write_at: str
     feature_date: str
     cutoff_at: str
+
+
+@dataclass(frozen=True)
+class NativeInputReadiness:
+    """Native 日批可冻结输入的最小业务就绪证据。"""
+
+    feature_date: str
+    ready: bool
+    missing_requirements: tuple[str, ...]
+
+
+def inspect_native_input_readiness(
+    engine: Engine,
+    *,
+    feature_date: str,
+) -> NativeInputReadiness:
+    """检查 T-1 锚点、日历和三频历史是否足以开始冻结快照。
+
+    单因子缺值不是阻断条件。这里只要求日频目标锚点、两张日历、factor
+    metadata 以及至少一条可用的周/月历史；算法真正消费的全部内容仍由
+    随后的 Repeatable Read generation 一次性冻结。
+    """
+    normalized_feature_date = _canonical_date(feature_date)
+    target_parameters = {
+        f"target_{index}": target
+        for index, target in enumerate(NATIVE_READINESS_DAILY_ANCHORS)
+    }
+    target_placeholders = ", ".join(
+        f":target_{index}"
+        for index in range(len(NATIVE_READINESS_DAILY_ANCHORS))
+    )
+    with engine.connect() as connection:
+        trade_flag = connection.execute(
+            text(
+                """
+                SELECT trade_flag
+                FROM t_trade_calendar
+                WHERE rdate = :feature_date
+                LIMIT 1
+                """
+            ),
+            {"feature_date": normalized_feature_date},
+        ).scalar()
+        wind_week = connection.execute(
+            text(
+                """
+                SELECT week_id
+                FROM api_wind_date
+                WHERE rdate = :feature_date
+                LIMIT 1
+                """
+            ),
+            {"feature_date": normalized_feature_date},
+        ).scalar()
+        metadata_ready = (
+            connection.execute(
+                text(
+                    f"""
+                    SELECT 1
+                    FROM {METADATA_SOURCE_TABLE}
+                    LIMIT 1
+                    """
+                )
+            ).scalar()
+            is not None
+        )
+        daily_rows = connection.execute(
+            text(
+                f"""
+                SELECT indicators_code
+                FROM api_wind_daily
+                WHERE rdate = :feature_date
+                  AND indicators_code IN ({target_placeholders})
+                  AND indicators_value IS NOT NULL
+                UNION
+                SELECT indicators_code
+                FROM api_wind_derivative_daily
+                WHERE rdate = :feature_date
+                  AND indicators_code IN ({target_placeholders})
+                  AND indicators_value IS NOT NULL
+                """
+            ),
+            {
+                "feature_date": normalized_feature_date,
+                **target_parameters,
+            },
+        ).scalars().all()
+        weekly_ready = _has_period_history(
+            connection,
+            raw_table="api_wind_weekly",
+            derivative_table="api_wind_derivative_weekly",
+            feature_date=normalized_feature_date,
+        )
+        monthly_ready = _has_period_history(
+            connection,
+            raw_table="api_wind_monthly",
+            derivative_table="api_wind_derivative_monthly",
+            feature_date=normalized_feature_date,
+        )
+
+    missing: list[str] = []
+    if wind_week is None or not str(wind_week).strip():
+        missing.append("calendar:api_wind_date")
+    if str(trade_flag or "").strip() != "1":
+        missing.append("calendar:t_trade_calendar")
+    present_targets = {
+        str(value).strip()
+        for value in daily_rows
+        if str(value or "").strip()
+    }
+    missing.extend(
+        f"daily_target:{target}"
+        for target in NATIVE_READINESS_DAILY_ANCHORS
+        if target not in present_targets
+    )
+    if not monthly_ready:
+        missing.append("history:monthly")
+    if not weekly_ready:
+        missing.append("history:weekly")
+    if not metadata_ready:
+        missing.append("metadata:active_factors")
+    ordered = tuple(sorted(missing))
+    return NativeInputReadiness(
+        feature_date=normalized_feature_date,
+        ready=not ordered,
+        missing_requirements=ordered,
+    )
+
+
+def _has_period_history(
+    connection: Connection,
+    *,
+    raw_table: str,
+    derivative_table: str,
+    feature_date: str,
+) -> bool:
+    """用索引友好的存在性查询检查 raw/derivative 历史。"""
+    parameters = {"feature_date": feature_date}
+    for table_name in (raw_table, derivative_table):
+        row = connection.execute(
+            text(
+                f"""
+                SELECT 1
+                FROM {table_name}
+                WHERE rdate <= :feature_date
+                LIMIT 1
+                """
+            ),
+            parameters,
+        ).scalar()
+        if row is not None:
+            return True
+    return False
 
 
 def capture_source_commit_evidence(
@@ -181,7 +340,7 @@ def assert_source_commit_evidence_at_cutoff(
     *,
     cutoff_at: datetime,
 ) -> None:
-    """拒绝一致性快照中任何已知水位晚于正式 06:30 cutoff。"""
+    """拒绝一致性快照中任何已知水位晚于调用方给定边界。"""
     if not isinstance(evidence, SourceCommitEvidence):
         raise TypeError("evidence must be SourceCommitEvidence")
     if cutoff_at.tzinfo is None or cutoff_at.utcoffset() is None:
@@ -201,7 +360,7 @@ def assert_source_commit_evidence_at_cutoff(
                 )
     if late:
         raise RuntimeError(
-            "source snapshot contains writes after the contract cutoff: "
+            "source snapshot contains writes after the supplied cutoff: "
             + ", ".join(sorted(late))
         )
 

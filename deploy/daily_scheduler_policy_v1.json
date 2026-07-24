@@ -7,7 +7,7 @@
   "expected_target_count": 25,
   "times": {
     "not_before": "06:30",
-    "native_capture_deadline": "06:31",
+    "native_capture_deadline": "08:30",
     "databridge_readiness_guardrail": "06:55",
     "watchdog": "07:00",
     "v2_start_guardrail": "07:45",

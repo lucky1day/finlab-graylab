@@ -39,8 +39,8 @@
 
 | 时间（Asia/Shanghai） | 不可变语义 |
 |---|---|
-| 06:30 | hard `not_before`；创建 occurrence，同时构建 Native generation 和当天全新 DataBridge generation |
-| `< 06:31` | Native 一致性快照允许开启的严格窗口；恰好 06:31 也拒绝，错过后当日 fail-closed，不从较晚 live DB 重建 |
+| 06:30 | hard `not_before`；冻结 occurrence 账本并检查 T-1 日历、目标锚点和三频最小历史 |
+| Native readiness | 数据齐备后立即构建 Native generation 并启动当天全新 DataBridge 更新；未齐备时不创建算法 attempt，由同日 recovery tick 重试 |
 | 06:55 | DataBridge readiness 审计 guardrail；尚未 SEALED/绑定时投影为 `LATE` 并告警，但刷新继续使用当天新 generation，直至 08:30 recovery cutoff |
 | DataBridge `sealed_at` | 四个 V2 分别在 `+0/+2/+4/+6` 分钟释放，互不依赖 |
 | 07:00 | 进度 watchdog；只评估、恢复和告警，不重启 scheduler |
@@ -65,7 +65,9 @@ ON_TIME/LATE/MET/BREACHED 的边界不重复告警。
 - `BUILDING -> SEALED` 是正常单向发布；内容或证据失效后只能转
   `INVALIDATED`。
 - Native 导出必须在 MySQL `REPEATABLE READ` 的一致性快照只读事务中完成，
-  source evidence 也必须在该事务内采集；事务必须严格早于 06:31 开启，并经
+  source evidence 也必须在该事务内采集。06:30 是最早启动点，不是永久
+  source seal；readiness 到位后可在 08:30 recovery cutoff 前开启快照。1Y、
+  3Y、5Y、7Y、10Y 五个曲线锚点必须在冻结快照内再次通过同一 gate，再经
   `shared.input_artifacts` 产生内容寻址 manifest。
 - DataBridge 必须在 06:30 后发起全新全量刷新，经稳定轮次和原子发布形成当天
   generation，并绑定用于日历的同日 Native generation。
@@ -93,16 +95,17 @@ ON_TIME/LATE/MET/BREACHED 的边界不重复告警。
   上限与 2 GiB 磁盘 free-space 低水位 preflight；失败时保持旧 generation、
   拒绝新构建并结构化告警。长期归档、内容去重和
   保留周期尚未形成可验证策略，仍是 ledger 切换门禁，不能用自动删除代替。
-- 06:30 后属于当日 cutoff 的源表写入记录为 `DATA_CONTRACT_BREACH`，但不改变
-  已冻结 occurrence 的 generation。
+- 06:30 后的源表写入保留为诊断证据，但不阻断尚未冻结的晨间 generation；
+  generation 一旦冻结，后续修正不重启 occurrence，也不改变其输入。
 
 当前 factor 表只有 `create_time`、没有可靠的行级 `update_time` 或上游 seal
 token。平台能够识别 cutoff 域内的晚插入，并由冻结快照隔离之后发生的修改；
-但仅覆盖原值且不更新 `create_time` 的原位 UPSERT 无法单靠现有表证明。上线前
-必须由上游提供不可变 seal/CDC 审计，或完成等价的可验证数据契约，不能把
-`create_time` 水位误称为完整变更日志。
+但仅覆盖原值且不更新 `create_time` 的原位 UPSERT 无法单靠现有表证明。
+MVP 不把上游 seal/CDC 作为启动前置；权威边界是 readiness 通过后创建的同一
+Repeatable Read generation，不能把 `create_time` 水位误称为完整变更日志。
 
-单个 factor 的业务空值可以保留为 NULL，不把“每列非空”误当作数据 readiness。
+除五个曲线就绪锚点外，单个 factor 的业务空值可以保留为 NULL，不把“每列
+非空”误当作数据 readiness。
 
 仍直接查询 live DB 的 Native source runner 不具备输入隔离资格。若只能通过改变
 算法逻辑才能适配，则必须创建独立 Blackbox V2 replacement，不允许修改

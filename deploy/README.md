@@ -32,9 +32,12 @@ https://bond.finailab.cn/bond-factor-lab/
   `BOND_DAILY_COORDINATOR_MODE` 和 rollout 门禁；只有在获准的维护窗口内才能
   kickstart。不得通过 07:00 自动重启修复日频调度。
 - scheduler 的 launchd 配置使用 `RunAtLoad=true` 与 `KeepAlive=true`：Mac 登录该用户会自动拉起，进程退出会被 launchd 重新拉起。若需要无人登录前启动，应另行制作 root `LaunchDaemon`，不能直接复用当前依赖用户 conda 环境的 `LaunchAgent`。
-- ledger 候选路径由一个 06:30 coordinator 同时启动 Native generation 和当天
-  DataBridge generation；Native RR snapshot 必须严格早于 06:31 开启，恰好
-  06:31 也 fail-closed。06:55 是 DataBridge readiness 审计点：未就绪即
+- ledger 候选路径由一个 06:30 coordinator 冻结日批账本并检查 T-1 最小
+  readiness；未齐备时不创建算法 attempt，由 recovery tick 重试。就绪后立即
+  创建 Native RR generation 并启动当天 DataBridge generation；Native
+  snapshot 可在 08:30 recovery cutoff 前开启，且会在同一快照内复核 1Y/3Y/
+  5Y/7Y/10Y 五个曲线锚点；06:30 只是 hard not-before。
+  06:55 是 DataBridge readiness 审计点：未就绪即
   `LATE`/告警，但 ledger 仍继续刷新当天新 generation 到 08:30；07:00 只做
   watchdog，不重启 scheduler。
 - 仓库中的 scheduler、backend 和 V2 preflight 三份 launchd 配置，以及

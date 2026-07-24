@@ -344,7 +344,7 @@ def _validate_global_policy(
         "not_before": (policy.not_before, "06:30"),
         "native_capture_deadline": (
             policy.native_capture_deadline,
-            "06:31",
+            "08:30",
         ),
         "databridge_readiness_guardrail": (
             policy.databridge_readiness_guardrail,
@@ -363,13 +363,17 @@ def _validate_global_policy(
             )
     if not (
         policy.not_before
-        < policy.native_capture_deadline
         < policy.databridge_readiness_guardrail
         < policy.watchdog
+        < policy.target_ready
+        < policy.sla_deadline
+        < policy.recovery_cutoff
+        == policy.native_capture_deadline
     ):
         raise DailyPolicyError(
-            "time order must be not_before < native_capture_deadline < "
-            "databridge_readiness_guardrail < watchdog"
+            "time order must be not_before < "
+            "databridge_readiness_guardrail < watchdog < target_ready < "
+            "sla_deadline < recovery_cutoff == native_capture_deadline"
         )
     if policy.native_max_concurrency != 2:
         raise DailyPolicyError(

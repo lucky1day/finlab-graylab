@@ -66,6 +66,38 @@ class DailyHealthProjectionTests(unittest.TestCase):
             "ledger",
         )
 
+    def test_public_heartbeat_exposes_native_readiness_wait_details(
+        self,
+    ) -> None:
+        snapshot, heartbeat, envelopes = _fixture()
+        heartbeat = replace(
+            heartbeat,
+            state="WAITING_NATIVE_READINESS",
+            details={
+                "feature_date": "2026-07-23",
+                "missing_requirements": [
+                    "daily_target:TB5YWI0C",
+                ],
+            },
+        )
+
+        result = daily_health.project_daily_health(
+            snapshot,
+            heartbeat,
+            execution_envelopes=envelopes,
+            now=NOW,
+        )
+
+        self.assertEqual(
+            result["scheduler_heartbeat"]["details"],
+            {
+                "feature_date": "2026-07-23",
+                "missing_requirements": [
+                    "daily_target:TB5YWI0C",
+                ],
+            },
+        )
+
     def test_projects_json_safe_healthy_ledger_with_four_v2_items(self) -> None:
         self.assertIsNotNone(daily_health, "scheduler.daily_health is missing")
         snapshot, heartbeat, envelopes = _fixture()

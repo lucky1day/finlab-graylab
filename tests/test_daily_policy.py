@@ -74,7 +74,7 @@ class DailyPolicyTests(unittest.TestCase):
         self.assertEqual(policy.not_before.strftime("%H:%M"), "06:30")
         self.assertEqual(
             policy.native_capture_deadline.strftime("%H:%M"),
-            "06:31",
+            "08:30",
         )
         self.assertEqual(
             policy.databridge_readiness_guardrail.strftime("%H:%M"),
@@ -107,7 +107,7 @@ class DailyPolicyTests(unittest.TestCase):
     def test_policy_rejects_native_capture_deadline_drift(self) -> None:
         self.assertIsNotNone(self.module, "scheduler.daily_policy is missing")
         payload = self._payload()
-        payload["times"]["native_capture_deadline"] = "06:32"
+        payload["times"]["native_capture_deadline"] = "08:29"
 
         with self.assertRaisesRegex(
             self.module.DailyPolicyError,

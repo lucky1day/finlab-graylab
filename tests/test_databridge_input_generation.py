@@ -169,7 +169,35 @@ def _native_cutoff_context():
         include_month_id: bool = False,
     ) -> pd.DataFrame:
         del include_month_id
-        return source.frame(f"{table_name}.csv")
+        frame = source.frame(f"{table_name}.csv")
+        if table_name == "api_wind_daily":
+            present = set(frame["indicators_code"].astype(str))
+            missing = [
+                code
+                for code in (
+                    native_module._data_contract
+                    .NATIVE_READINESS_DAILY_ANCHORS
+                )
+                if code not in present
+            ]
+            frame = pd.concat(
+                [
+                    frame,
+                    pd.DataFrame(
+                        [
+                            {
+                                "rdate": "2026-07-23",
+                                "indicators_code": code,
+                                "indicators_value": 1.0,
+                            }
+                            for code in missing
+                        ],
+                        columns=frame.columns,
+                    ),
+                ],
+                ignore_index=True,
+            )
+        return frame
 
     with (
         patch.object(
