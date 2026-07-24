@@ -7,5 +7,3 @@
 **最后核验日期**：2026-07-24
 
 - [2026-07-01-daily-0629-sop-closure.md](2026-07-01-daily-0629-sop-closure.md)
-- [2026-07-12-liwei-0616-incremental-phase-a-cache.md](2026-07-12-liwei-0616-incremental-phase-a-cache.md)
-- [2026-07-12-liwei-full-oos-gray-models.md](2026-07-12-liwei-full-oos-gray-models.md)
