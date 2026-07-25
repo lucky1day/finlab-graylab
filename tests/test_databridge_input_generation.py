@@ -106,7 +106,7 @@ def _current_dataset(
 _NATIVE_TEST_DIRECTORIES: list[tempfile.TemporaryDirectory[str]] = []
 
 
-def _native_cutoff_context():
+def _native_cutoff_context(*, engine: object | None = None):
     """生成真实可重开的 Native generation，供 DataBridge 契约测试使用。"""
     import hashlib
     from datetime import datetime, timezone
@@ -227,7 +227,7 @@ def _native_cutoff_context():
         ),
     ):
         return native_module.create_native_generation(
-            _Engine(),
+            _Engine() if engine is None else engine,
             business_date="2026-07-24",
             feature_date="2026-07-23",
             source_contract_cutoff=datetime(
