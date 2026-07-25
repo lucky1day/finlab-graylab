@@ -44,15 +44,29 @@ def _generation_fixture():
 class _DBAPICursor:
     def __init__(self, row: dict[str, object]) -> None:
         self._row = row
+        self._identity_only = False
         self.description = tuple(
             (name, None, None, None, None, None, None)
             for name in row
         )
 
-    def execute(self, _statement) -> None:
-        return None
+    def execute(self, statement) -> None:
+        normalized = " ".join(str(statement).split()).upper()
+        self._identity_only = (
+            normalized == "SELECT DATABASE(), @@SERVER_UUID"
+        )
+        if self._identity_only:
+            self.description = (
+                ("database_name", None, None, None, None, None, None),
+                ("server_uuid", None, None, None, None, None, None),
+            )
 
     def fetchone(self) -> tuple[object, ...]:
+        if self._identity_only:
+            return (
+                self._row["database_name"],
+                self._row["server_uuid"],
+            )
         return tuple(self._row.values())
 
     def close(self) -> None:
@@ -68,7 +82,8 @@ class _DBAPIConnection:
 
 
 class _Connection:
-    def __init__(self, row: dict[str, object]) -> None:
+    def __init__(self, engine: _Engine, row: dict[str, object]) -> None:
+        self.engine = engine
         self._row = row
         self.info: dict[str, object] = {}
         self.connection = SimpleNamespace(
@@ -84,9 +99,11 @@ class _Connection:
 class _Engine:
     def __init__(self, row: dict[str, object]) -> None:
         self._row = row
+        self.url = SimpleNamespace(database=row["database_name"])
+        self.dialect = SimpleNamespace(name="mysql")
 
     def connect(self) -> _Connection:
-        return _Connection(self._row)
+        return _Connection(self, self._row)
 
 
 def _isolated_engine(
@@ -120,9 +137,9 @@ def _verified_isolation(engine: _Engine):
     from harness.daily_real_replay import verify_real_replay_database
 
     with (
-        patch("harness.daily_real_replay.event.listen") as listen,
+        patch("shared.daily_coordinator_mode.event.listen") as listen,
         patch(
-            "harness.daily_real_replay.event.contains",
+            "shared.daily_coordinator_mode.event.contains",
             return_value=True,
         ),
     ):
@@ -149,6 +166,26 @@ class DailyRealReplayGateTests(unittest.TestCase):
                 "register_seal_and_bind_schedule_occurrence_generation",
             )
         )
+
+    def test_shared_epoch_capability_has_no_external_registration_seam(
+        self,
+    ) -> None:
+        import inspect
+
+        from shared import daily_coordinator_mode
+
+        self.assertFalse(
+            hasattr(
+                daily_coordinator_mode,
+                "register_verified_isolated_daily_database",
+            )
+        )
+        parameters = inspect.signature(
+            daily_coordinator_mode.
+            verify_and_register_isolated_daily_database
+        ).parameters
+        self.assertNotIn("isolation", parameters)
+        self.assertNotIn("connection_guard", parameters)
 
     def test_opens_same_day_parent_bound_generations(self) -> None:
         from harness.daily_real_replay import (
@@ -425,7 +462,9 @@ class DailyRealReplayGateTests(unittest.TestCase):
                 engine = _isolated_engine()
                 engine._row[field] = value
                 with (
-                    patch("harness.daily_real_replay.event.listen"),
+                    patch(
+                        "shared.daily_coordinator_mode.event.listen"
+                    ),
                     self.assertRaises(DailyRealReplayError),
                 ):
                     verify_real_replay_database(
@@ -439,18 +478,123 @@ class DailyRealReplayGateTests(unittest.TestCase):
     def test_connection_guard_revalidates_checked_out_connection(
         self,
     ) -> None:
-        from harness.daily_real_replay import DailyRealReplayError
-
         engine = _isolated_engine()
         with _verified_isolation(engine) as (_isolation, listen):
             listen.assert_called_once()
             connection_guard = listen.call_args.args[2]
             engine._row["database_name"] = "bond_db"
             with self.assertRaisesRegex(
-                DailyRealReplayError,
+                RuntimeError,
                 "database",
             ):
                 connection_guard(engine.connect())
+
+    def test_database_capability_cannot_be_registered_twice(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            verify_real_replay_database,
+        )
+
+        engine = _isolated_engine()
+        with _verified_isolation(engine) as (_isolation, listen):
+            with self.assertRaisesRegex(
+                DailyRealReplayError,
+                "already registered",
+            ):
+                verify_real_replay_database(
+                    engine,
+                    expected_database_name=DATABASE_NAME,
+                    expected_server_uuid=SERVER_UUID,
+                    expected_port=PORT,
+                    expected_private_root=PRIVATE_ROOT,
+                )
+            listen.assert_called_once()
+
+    def test_failed_database_verification_releases_reservation(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            verify_real_replay_database,
+        )
+
+        engine = _isolated_engine()
+        engine._row["version"] = "8.0.44"
+        with self.assertRaises(DailyRealReplayError):
+            verify_real_replay_database(
+                engine,
+                expected_database_name=DATABASE_NAME,
+                expected_server_uuid=SERVER_UUID,
+                expected_port=PORT,
+                expected_private_root=PRIVATE_ROOT,
+            )
+        engine._row["version"] = "8.0.45"
+        with _verified_isolation(engine) as (isolation, listen):
+            self.assertEqual(isolation.engine_identity, id(engine))
+            listen.assert_called_once()
+
+    def test_database_verification_never_connects_under_registry_lock(
+        self,
+    ) -> None:
+        import weakref
+
+        from harness.daily_real_replay import verify_real_replay_database
+        from shared import daily_coordinator_mode
+
+        class TrackingLock:
+            held = False
+
+            def __enter__(self):
+                if self.held:
+                    raise AssertionError("capability lock re-entered")
+                self.held = True
+                return self
+
+            def __exit__(self, *_args):
+                self.held = False
+
+        capability_check = getattr(
+            daily_coordinator_mode,
+            "_is_real_replay_isolation_capability",
+        )
+
+        class ReentrantEngine(_Engine):
+            def connect(self):
+                capability_check(self, None)
+                return super().connect()
+
+        engine = ReentrantEngine(_isolated_engine()._row.copy())
+        with (
+            patch.object(
+                daily_coordinator_mode,
+                "_verified_isolation_lock",
+                TrackingLock(),
+            ),
+            patch.object(
+                daily_coordinator_mode,
+                "_verified_isolations",
+                weakref.WeakKeyDictionary(),
+            ),
+            patch.object(
+                daily_coordinator_mode,
+                "_pending_isolations",
+                weakref.WeakKeyDictionary(),
+            ),
+            patch(
+                "shared.daily_coordinator_mode.event.listen"
+            ),
+        ):
+            isolation = verify_real_replay_database(
+                engine,
+                expected_database_name=DATABASE_NAME,
+                expected_server_uuid=SERVER_UUID,
+                expected_port=PORT,
+                expected_private_root=PRIVATE_ROOT,
+            )
+
+        self.assertEqual(isolation.engine_identity, id(engine))
 
     def test_guarded_create_rejects_another_engine(self) -> None:
         from harness.daily_real_replay import (
@@ -483,7 +627,7 @@ class DailyRealReplayGateTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(
                 DailyRealReplayError,
-                "engine identity",
+                "registered capability drift",
             ):
                 create_real_replay_occurrence(
                     another_engine,
@@ -496,6 +640,223 @@ class DailyRealReplayGateTests(unittest.TestCase):
                     epoch_payload=TEST_EPOCH,
                 )
         create.assert_not_called()
+
+    def test_isolated_epoch_authority_is_bound_to_guarded_engine(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import bind_real_replay_epoch
+        from shared.daily_coordinator_mode import (
+            assert_daily_coordinator_epoch_payload_matches_current,
+        )
+
+        engine = _isolated_engine()
+        another_engine = _isolated_engine()
+        with _verified_isolation(engine) as (isolation, _listen):
+            identity = bind_real_replay_epoch(
+                engine,
+                isolation=isolation,
+                epoch_payload=TEST_EPOCH,
+            )
+            self.assertEqual(identity.policy_payload(), TEST_EPOCH)
+            self.assertEqual(identity.source, "isolated_real_replay")
+            self.assertEqual(
+                assert_daily_coordinator_epoch_payload_matches_current(
+                    TEST_EPOCH,
+                    engine=engine,
+                ),
+                identity,
+            )
+            with self.assertRaises(RuntimeError):
+                assert_daily_coordinator_epoch_payload_matches_current(
+                    TEST_EPOCH,
+                )
+            with self.assertRaises(RuntimeError):
+                assert_daily_coordinator_epoch_payload_matches_current(
+                    TEST_EPOCH,
+                    engine=another_engine,
+                )
+            connection = engine.connect()
+            self.assertEqual(
+                assert_daily_coordinator_epoch_payload_matches_current(
+                    TEST_EPOCH,
+                    engine=connection,
+                ),
+                identity,
+            )
+            self.assertEqual(
+                connection.info["daily-real-replay-v1"],
+                SERVER_UUID,
+            )
+            engine._row["database_name"] = "bond_db"
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "guard validation|actual database identity",
+            ):
+                assert_daily_coordinator_epoch_payload_matches_current(
+                    TEST_EPOCH,
+                    engine=connection,
+                )
+
+    def test_shared_epoch_binder_rejects_forged_engine_metadata(
+        self,
+    ) -> None:
+        from shared.daily_coordinator_mode import (
+            bind_isolated_daily_coordinator_epoch,
+        )
+
+        engine = _isolated_engine()
+        forged = SimpleNamespace(
+            engine_identity=id(engine),
+            database_name=DATABASE_NAME,
+            server_uuid=SERVER_UUID,
+            connection_guard=lambda _connection: None,
+        )
+        engine._bfl_real_replay_isolation = forged
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "registered database isolation",
+        ):
+            bind_isolated_daily_coordinator_epoch(
+                engine,
+                frozen=TEST_EPOCH,
+                database_name=DATABASE_NAME,
+                server_uuid=SERVER_UUID,
+                isolation=forged,
+                connection_marker_key="daily-real-replay-v1",
+            )
+
+    def test_shared_epoch_binder_rejects_unregistered_real_capability(
+        self,
+    ) -> None:
+        from dataclasses import replace
+
+        from shared.daily_coordinator_mode import (
+            bind_isolated_daily_coordinator_epoch,
+        )
+
+        engine = _isolated_engine()
+        with _verified_isolation(engine) as (isolation, _listen):
+            forged = replace(isolation)
+            engine._bfl_real_replay_isolation = forged
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "registered database isolation",
+            ):
+                bind_isolated_daily_coordinator_epoch(
+                    engine,
+                    frozen=TEST_EPOCH,
+                    database_name=DATABASE_NAME,
+                    server_uuid=SERVER_UUID,
+                    isolation=forged,
+                    connection_marker_key="daily-real-replay-v1",
+                )
+
+    def test_bound_epoch_rejects_removed_guard_listener(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import bind_real_replay_epoch
+        from shared.daily_coordinator_mode import (
+            assert_daily_coordinator_epoch_payload_matches_current,
+        )
+
+        engine = _isolated_engine()
+        with _verified_isolation(engine) as (isolation, _listen):
+            bind_real_replay_epoch(
+                engine,
+                isolation=isolation,
+                epoch_payload=TEST_EPOCH,
+            )
+            connection = engine.connect()
+            isolation.connection_guard(connection)
+            with (
+                patch(
+                    "shared.daily_coordinator_mode.event.contains",
+                    return_value=False,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "guard listener",
+                ),
+            ):
+                assert_daily_coordinator_epoch_payload_matches_current(
+                    TEST_EPOCH,
+                    engine=connection,
+                )
+
+    def test_replay_epoch_rebinding_is_idempotent_but_immutable(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import bind_real_replay_epoch
+
+        engine = _isolated_engine()
+        with _verified_isolation(engine) as (isolation, _listen):
+            first = bind_real_replay_epoch(
+                engine,
+                isolation=isolation,
+                epoch_payload=TEST_EPOCH,
+            )
+            second = bind_real_replay_epoch(
+                engine,
+                isolation=isolation,
+                epoch_payload=TEST_EPOCH,
+            )
+            self.assertEqual(first, second)
+            changed = {**TEST_EPOCH, "epoch": TEST_EPOCH["epoch"] + 1}
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "binding changed",
+            ):
+                bind_real_replay_epoch(
+                    engine,
+                    isolation=isolation,
+                    epoch_payload=changed,
+                )
+
+    def test_scheduled_executor_uses_bound_replay_epoch_before_claim(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import bind_real_replay_epoch
+        from scheduler.scheduled_executor import execute_scheduled_item
+        from tests.test_scheduled_executor import _envelope
+
+        engine = _isolated_engine()
+        another_engine = _isolated_engine()
+        envelope = _envelope()
+        envelope.occurrence.policy_json[
+            "daily_coordinator_epoch"
+        ] = dict(TEST_EPOCH)
+        with _verified_isolation(engine) as (isolation, _listen):
+            bind_real_replay_epoch(
+                engine,
+                isolation=isolation,
+                epoch_payload=TEST_EPOCH,
+            )
+            with (
+                patch(
+                    "scheduler.scheduled_executor."
+                    "read_schedule_execution_envelope",
+                    return_value=envelope,
+                ),
+                patch(
+                    "scheduler.scheduled_executor.start_schedule_attempt",
+                    side_effect=RuntimeError("claim sentinel"),
+                ) as claim,
+            ):
+                bound = execute_scheduled_item(engine, item_id=11)
+                self.assertEqual(bound.status, "claim_rejected")
+                claim.assert_called_once_with(
+                    engine,
+                    item_id=11,
+                    trigger_origin="apscheduler",
+                )
+
+                claim.reset_mock()
+                unbound = execute_scheduled_item(
+                    another_engine,
+                    item_id=11,
+                )
+                self.assertEqual(unbound.status, "claim_rejected")
+                claim.assert_not_called()
 
     def test_registers_real_manifests_parent_first(self) -> None:
         from harness.daily_real_replay import (
@@ -694,6 +1055,7 @@ class DailyRealReplayMySQLGuardTests(unittest.TestCase):
         self,
     ) -> None:
         from harness.daily_real_replay import (
+            bind_real_replay_epoch,
             create_real_replay_occurrence,
             open_real_replay_generations,
             register_real_replay_generations,
@@ -752,36 +1114,29 @@ class DailyRealReplayMySQLGuardTests(unittest.TestCase):
                     native_manifest=native.manifest_path,
                     databridge_manifest=databridge.manifest_path,
                 )
-
-                def assert_epoch(frozen, *, label: str) -> None:
-                    if dict(frozen or {}) != TEST_EPOCH:
-                        raise RuntimeError(
-                            f"{label} differs from replay epoch"
-                        )
-
-                with patch(
-                    "scheduler.repository."
-                    "assert_daily_coordinator_epoch_payload_matches_current",
-                    side_effect=assert_epoch,
-                ):
-                    occurrence_id = create_real_replay_occurrence(
-                        engine,
-                        isolation=isolation,
-                        policy=policy,
-                        configs=configs,
-                        inputs=inputs,
-                        schedule_key=(
-                            f"isolated-real-replay-v1-{suffix}"
-                        ),
-                        opened_at=datetime.now(timezone.utc),
-                        epoch_payload=TEST_EPOCH,
-                    )
-                    bindings = register_real_replay_generations(
-                        engine,
-                        occurrence_id=occurrence_id,
-                        inputs=inputs,
-                        isolation=isolation,
-                    )
+                bind_real_replay_epoch(
+                    engine,
+                    isolation=isolation,
+                    epoch_payload=TEST_EPOCH,
+                )
+                occurrence_id = create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key=(
+                        f"isolated-real-replay-v1-{suffix}"
+                    ),
+                    opened_at=datetime.now(timezone.utc),
+                    epoch_payload=TEST_EPOCH,
+                )
+                bindings = register_real_replay_generations(
+                    engine,
+                    occurrence_id=occurrence_id,
+                    inputs=inputs,
+                    isolation=isolation,
+                )
                 snapshot = read_schedule_occurrence_snapshot(
                     engine,
                     occurrence_id=occurrence_id,

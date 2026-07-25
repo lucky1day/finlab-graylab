@@ -9,9 +9,12 @@ import pwd
 import re
 import stat
 import threading
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
+
+from sqlalchemy import event
 
 
 DAILY_COORDINATOR_MODE_ENV = "BOND_DAILY_COORDINATOR_MODE"
@@ -78,6 +81,33 @@ _POLICY_EPOCH_FIELDS = frozenset(
         "record_sha256",
     }
 )
+_ISOLATED_REPLAY_ENGINE_ATTRIBUTE = (
+    "_bfl_isolated_daily_coordinator_epoch"
+)
+_ISOLATED_REPLAY_DATABASE_RE = re.compile(
+    r"^bfl_real_replay_[a-z0-9_]{1,45}$"
+)
+_ISOLATED_REPLAY_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_ISOLATED_REPLAY_IDENTITY_FIELDS = (
+    "version",
+    "database_name",
+    "server_uuid",
+    "session_time_zone",
+    "storage_engine",
+    "sql_mode",
+    "isolation_level",
+    "bind_address",
+    "port",
+    "socket_path",
+    "datadir",
+    "secure_file_priv",
+    "foreign_key_checks",
+    "log_bin",
+    "local_infile",
+)
 _EPOCH_FILENAME_RE = re.compile(r"^epoch-([0-9]{20})\.json$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _TRANSITION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -85,6 +115,15 @@ _MAX_EPOCH_RECORD_BYTES = 4096
 _MAX_CONTRACT_BYTES = 8192
 _process_identity_lock = threading.Lock()
 _process_bound_identity: DailyCoordinatorEpochIdentity | None = None
+_verified_isolation_lock = threading.Lock()
+_verified_isolations: weakref.WeakKeyDictionary[
+    object,
+    object,
+] = weakref.WeakKeyDictionary()
+_pending_isolations: weakref.WeakKeyDictionary[
+    object,
+    object,
+] = weakref.WeakKeyDictionary()
 
 
 class DailyCoordinatorModeMissingError(ValueError):
@@ -109,6 +148,285 @@ class DailyCoordinatorEpochIdentity:
             "mode": self.mode,
             "record_sha256": self.record_sha256,
         }
+
+
+@dataclass(frozen=True)
+class IsolatedDailyCoordinatorEpochBinding:
+    """只绑定到受保护临时 MySQL Engine 的 replay epoch。"""
+
+    identity: DailyCoordinatorEpochIdentity
+    engine_identity: int
+    database_name: str
+    server_uuid: str
+    isolation_identity: int
+    connection_marker_key: str
+    connection_guard_identity: int
+
+
+@dataclass(frozen=True)
+class VerifiedIsolatedDailyDatabase:
+    """由 shared 原子 verifier 创建并登记的临时 MySQL 能力。"""
+
+    version: str
+    database_name: str
+    server_uuid: str
+    session_time_zone: str
+    storage_engine: str
+    sql_mode: str
+    isolation_level: str
+    bind_address: str
+    port: int
+    socket_path: str
+    datadir: str
+    secure_file_priv: str
+    foreign_key_checks: int
+    log_bin: int
+    local_infile: int
+    engine_identity: int
+    connection_guard: Any
+
+
+def verify_and_register_isolated_daily_database(
+    engine: Any,
+    *,
+    expected_database_name: str,
+    expected_server_uuid: str,
+    expected_port: int,
+    expected_private_root: str | Path,
+    connection_marker_key: str,
+) -> VerifiedIsolatedDailyDatabase:
+    """原子验证、创建 guard 并登记隔离 replay 数据库能力。"""
+    expected_database = str(expected_database_name).strip()
+    expected_uuid = str(expected_server_uuid).strip().lower()
+    expected_root = Path(expected_private_root).resolve()
+    marker_key = str(connection_marker_key).strip()
+    if (
+        _ISOLATED_REPLAY_DATABASE_RE.fullmatch(expected_database) is None
+        or _ISOLATED_REPLAY_UUID_RE.fullmatch(expected_uuid) is None
+        or getattr(getattr(engine, "dialect", None), "name", None)
+        != "mysql"
+        or str(
+            getattr(getattr(engine, "url", None), "database", "")
+        ).strip()
+        != expected_database
+        or not marker_key
+    ):
+        raise RuntimeError(
+            "isolated replay database expected identity is invalid"
+        )
+    reservation = _reserve_isolated_database_verification(engine)
+    protected: VerifiedIsolatedDailyDatabase | None = None
+    listener_installed = False
+    try:
+        try:
+            with engine.connect() as connection:
+                actual = _read_isolated_replay_connection_identity(
+                    connection
+                )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                "isolated replay database identity could not be inspected"
+            ) from exc
+        _validate_isolated_replay_identity(actual)
+        expected_fields = {
+            "database_name": expected_database,
+            "server_uuid": expected_uuid,
+            "port": int(expected_port),
+            "socket_path": str(expected_root / "mysql.sock"),
+            "datadir": str(expected_root / "data"),
+            "secure_file_priv": str(expected_root / "secure"),
+        }
+        drift = sorted(
+            field
+            for field, expected in expected_fields.items()
+            if actual[field] != expected
+        )
+        if drift:
+            raise RuntimeError(
+                "isolated replay database differs from expected private "
+                "MySQL: " + ",".join(drift)
+            )
+
+        def connection_guard(connection: Any) -> None:
+            if protected is None:
+                raise RuntimeError(
+                    "isolated replay database capability is unavailable"
+                )
+            _assert_isolated_replay_connection_identity(
+                connection,
+                database_name=protected.database_name,
+                server_uuid=protected.server_uuid,
+                isolation=protected,
+            )
+            connection.info[marker_key] = protected.server_uuid
+
+        protected = VerifiedIsolatedDailyDatabase(
+            **actual,
+            engine_identity=id(engine),
+            connection_guard=connection_guard,
+        )
+        event.listen(engine, "engine_connect", connection_guard)
+        listener_installed = True
+        if getattr(engine, "_bfl_real_replay_isolation", None) is not None:
+            raise RuntimeError(
+                "isolated replay database Engine metadata changed"
+            )
+        setattr(engine, "_bfl_real_replay_isolation", protected)
+        _promote_isolated_database_verification(
+            engine,
+            reservation=reservation,
+            protected=protected,
+        )
+        return protected
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            "isolated replay database capability registration failed"
+        ) from exc
+    finally:
+        if not _is_real_replay_isolation_capability(
+            engine,
+            protected,
+        ):
+            if (
+                protected is not None
+                and getattr(
+                    engine,
+                    "_bfl_real_replay_isolation",
+                    None,
+                )
+                is protected
+            ):
+                delattr(engine, "_bfl_real_replay_isolation")
+            if listener_installed and protected is not None:
+                try:
+                    event.remove(
+                        engine,
+                        "engine_connect",
+                        protected.connection_guard,
+                    )
+                except Exception:
+                    pass
+            _release_isolated_database_verification(
+                engine,
+                reservation=reservation,
+            )
+
+
+def recheck_verified_isolated_daily_database(
+    engine: Any,
+    isolation: VerifiedIsolatedDailyDatabase,
+) -> None:
+    """重新核验 verifier 登记、listener 和当前完整数据库身份。"""
+    if not isinstance(isolation, VerifiedIsolatedDailyDatabase):
+        raise RuntimeError(
+            "isolated replay database verified capability is required"
+        )
+    guard = isolation.connection_guard
+    if (
+        getattr(engine, "_bfl_real_replay_isolation", None) is not isolation
+        or isolation.engine_identity != id(engine)
+        or not _is_real_replay_isolation_capability(engine, isolation)
+        or not event.contains(engine, "engine_connect", guard)
+    ):
+        raise RuntimeError(
+            "isolated replay database registered capability drift"
+        )
+    with engine.connect() as connection:
+        guard(connection)
+
+
+def bind_isolated_daily_coordinator_epoch(
+    engine: Any,
+    *,
+    frozen: Mapping[str, object],
+    database_name: str,
+    server_uuid: str,
+    isolation: object,
+    connection_marker_key: str,
+) -> DailyCoordinatorEpochIdentity:
+    """为已验证的 ``bfl_real_replay_*`` Engine 绑定非生产 epoch。"""
+    normalized_database = str(database_name).strip()
+    normalized_uuid = str(server_uuid).strip().lower()
+    normalized_marker = str(connection_marker_key).strip()
+    guard = getattr(isolation, "connection_guard", None)
+    if (
+        _ISOLATED_REPLAY_DATABASE_RE.fullmatch(normalized_database)
+        is None
+    ):
+        raise RuntimeError(
+            "isolated replay epoch requires bfl_real_replay_* database"
+        )
+    if getattr(getattr(engine, "dialect", None), "name", None) != "mysql":
+        raise RuntimeError("isolated replay epoch requires MySQL Engine")
+    if not normalized_marker:
+        raise RuntimeError(
+            "isolated replay epoch connection marker is missing"
+        )
+    if (
+        str(getattr(getattr(engine, "url", None), "database", "")).strip()
+        != normalized_database
+    ):
+        raise RuntimeError(
+            "isolated replay epoch Engine database identity drift"
+        )
+    if getattr(engine, "_bfl_real_replay_isolation", None) is not isolation:
+        raise RuntimeError(
+            "isolated replay epoch requires verified database isolation"
+        )
+    if not _is_real_replay_isolation_capability(engine, isolation):
+        raise RuntimeError(
+            "isolated replay epoch requires registered database isolation"
+        )
+    if (
+        getattr(isolation, "engine_identity", None) != id(engine)
+        or getattr(isolation, "database_name", None) != normalized_database
+        or getattr(isolation, "server_uuid", None) != normalized_uuid
+        or guard is None
+    ):
+        raise RuntimeError(
+            "isolated replay epoch database isolation identity drift"
+        )
+    if not event.contains(engine, "engine_connect", guard):
+        raise RuntimeError(
+            "isolated replay epoch database guard listener is unavailable"
+        )
+    try:
+        with engine.connect() as connection:
+            _assert_isolated_replay_connection_identity(
+                connection,
+                database_name=normalized_database,
+                server_uuid=normalized_uuid,
+                isolation=isolation,
+            )
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            "isolated replay epoch actual database identity is unavailable"
+        ) from exc
+    identity = _isolated_epoch_identity(frozen, server_uuid=normalized_uuid)
+    binding = IsolatedDailyCoordinatorEpochBinding(
+        identity=identity,
+        engine_identity=id(engine),
+        database_name=normalized_database,
+        server_uuid=normalized_uuid,
+        isolation_identity=id(isolation),
+        connection_marker_key=normalized_marker,
+        connection_guard_identity=id(guard),
+    )
+    existing = getattr(
+        engine,
+        _ISOLATED_REPLAY_ENGINE_ATTRIBUTE,
+        None,
+    )
+    if existing is not None and existing != binding:
+        raise RuntimeError("isolated replay epoch binding changed")
+    setattr(engine, _ISOLATED_REPLAY_ENGINE_ATTRIBUTE, binding)
+    return identity
 
 
 def require_daily_coordinator_mode(
@@ -512,6 +830,8 @@ def bootstrap_deployment_daily_coordinator_mode() -> str:
 
 def assert_daily_coordinator_epoch_matches_policy(
     policy_json: Mapping[str, object],
+    *,
+    engine: Any | None = None,
 ) -> DailyCoordinatorEpochIdentity:
     """要求 current/process epoch 与 occurrence 冻结 fence 完全一致。"""
     if not isinstance(policy_json, Mapping):
@@ -522,6 +842,7 @@ def assert_daily_coordinator_epoch_matches_policy(
     return assert_daily_coordinator_epoch_payload_matches_current(
         frozen,
         label="daily occurrence coordinator epoch",
+        engine=engine,
     )
 
 
@@ -529,6 +850,7 @@ def assert_daily_coordinator_epoch_payload_matches_current(
     frozen: object,
     *,
     label: str = "daily coordinator epoch",
+    engine: Any | None = None,
 ) -> DailyCoordinatorEpochIdentity:
     """校验任意 occurrence/heartbeat capability 与当前身份完全相等。"""
     if (
@@ -552,12 +874,328 @@ def assert_daily_coordinator_epoch_payload_matches_current(
         raise RuntimeError(
             f"{label} is invalid"
         )
-    current = require_current_daily_coordinator_identity()
+    isolated = _isolated_epoch_binding(engine)
+    if isolated is not None:
+        current = isolated.identity
+    else:
+        current = require_current_daily_coordinator_identity()
     if current.policy_payload() != dict(frozen):
         raise RuntimeError(
             f"{label} differs from current machine-global epoch"
         )
     return current
+
+
+def _isolated_epoch_identity(
+    frozen: Mapping[str, object],
+    *,
+    server_uuid: str,
+) -> DailyCoordinatorEpochIdentity:
+    if set(frozen) != _POLICY_EPOCH_FIELDS:
+        raise RuntimeError(
+            "isolated replay epoch has unexpected fields"
+        )
+    epoch = frozen.get("epoch")
+    mode = frozen.get("mode")
+    digest = frozen.get("record_sha256")
+    if (
+        not isinstance(epoch, int)
+        or isinstance(epoch, bool)
+        or epoch <= 0
+        or mode != "ledger"
+        or not isinstance(digest, str)
+        or _SHA256_RE.fullmatch(digest) is None
+    ):
+        raise RuntimeError("isolated replay epoch payload is invalid")
+    return DailyCoordinatorEpochIdentity(
+        epoch=epoch,
+        mode=mode,
+        previous_record_sha256=ZERO_RECORD_SHA256,
+        record_sha256=digest,
+        source="isolated_real_replay",
+        transition_id=f"isolated-real-replay:{server_uuid}",
+    )
+
+
+def _isolated_epoch_binding(
+    bind: Any | None,
+) -> IsolatedDailyCoordinatorEpochBinding | None:
+    if bind is None:
+        return None
+    engine = getattr(bind, "engine", bind)
+    is_connection = engine is not bind
+    binding = getattr(
+        engine,
+        _ISOLATED_REPLAY_ENGINE_ATTRIBUTE,
+        None,
+    )
+    if binding is None:
+        return None
+    if not isinstance(binding, IsolatedDailyCoordinatorEpochBinding):
+        raise RuntimeError("isolated replay epoch binding type drift")
+    isolation = getattr(engine, "_bfl_real_replay_isolation", None)
+    guard = getattr(isolation, "connection_guard", None)
+    if (
+        binding.engine_identity != id(engine)
+        or id(isolation) != binding.isolation_identity
+        or not _is_real_replay_isolation_capability(engine, isolation)
+        or getattr(isolation, "engine_identity", None) != id(engine)
+        or getattr(isolation, "database_name", None)
+        != binding.database_name
+        or getattr(isolation, "server_uuid", None)
+        != binding.server_uuid
+        or guard is None
+        or id(guard) != binding.connection_guard_identity
+        or getattr(getattr(engine, "dialect", None), "name", None)
+        != "mysql"
+        or str(
+            getattr(getattr(engine, "url", None), "database", "")
+        ).strip()
+        != binding.database_name
+    ):
+        raise RuntimeError("isolated replay epoch binding identity drift")
+    if not event.contains(engine, "engine_connect", guard):
+        raise RuntimeError(
+            "isolated replay epoch database guard listener is unavailable"
+        )
+    if is_connection:
+        try:
+            guard(bind)
+        except Exception as exc:
+            raise RuntimeError(
+                "isolated replay epoch connection guard validation failed"
+            ) from exc
+    if (
+        is_connection
+        and getattr(bind, "info", {}).get(
+            binding.connection_marker_key
+        )
+        != binding.server_uuid
+    ):
+        raise RuntimeError(
+            "isolated replay epoch connection guard marker is missing"
+        )
+    if is_connection:
+        _assert_isolated_replay_connection_identity(
+            bind,
+            database_name=binding.database_name,
+            server_uuid=binding.server_uuid,
+            isolation=isolation,
+        )
+    return binding
+
+
+def _is_real_replay_isolation_capability(
+    engine: object,
+    value: object,
+) -> bool:
+    with _verified_isolation_lock:
+        registered = _verified_isolations.get(engine)
+        return registered is not None and registered is value
+
+
+def _reserve_isolated_database_verification(engine: object) -> object:
+    """用短锁预留单个 Engine；锁内不执行 DB 或 event 外部代码。"""
+    reservation = object()
+    with _verified_isolation_lock:
+        try:
+            unavailable = (
+                engine in _verified_isolations
+                or engine in _pending_isolations
+            )
+        except TypeError as exc:
+            raise RuntimeError(
+                "isolated replay database Engine cannot hold capability"
+            ) from exc
+        if (
+            unavailable
+            or getattr(engine, "_bfl_real_replay_isolation", None)
+            is not None
+        ):
+            raise RuntimeError(
+                "isolated replay database Engine is already registered"
+            )
+        _pending_isolations[engine] = reservation
+    return reservation
+
+
+def _promote_isolated_database_verification(
+    engine: object,
+    *,
+    reservation: object,
+    protected: VerifiedIsolatedDailyDatabase,
+) -> None:
+    """把 exact pending reservation 原子升级为 verified capability。"""
+    with _verified_isolation_lock:
+        if (
+            _pending_isolations.get(engine) is not reservation
+            or engine in _verified_isolations
+            or getattr(engine, "_bfl_real_replay_isolation", None)
+            is not protected
+        ):
+            raise RuntimeError(
+                "isolated replay database verification reservation drift"
+            )
+        _verified_isolations[engine] = protected
+        del _pending_isolations[engine]
+
+
+def _release_isolated_database_verification(
+    engine: object,
+    *,
+    reservation: object,
+) -> None:
+    """失败时只释放调用方拥有的 exact pending reservation。"""
+    with _verified_isolation_lock:
+        try:
+            if _pending_isolations.get(engine) is reservation:
+                del _pending_isolations[engine]
+        except TypeError:
+            return
+
+
+def _assert_isolated_replay_connection_identity(
+    connection: Any,
+    *,
+    database_name: str,
+    server_uuid: str,
+    isolation: object,
+) -> None:
+    """从当前 DBAPI 连接读取完整身份，拒绝 URL、guard 或属性伪装。"""
+    normalized = _read_isolated_replay_connection_identity(connection)
+    _validate_isolated_replay_identity(normalized)
+    if (
+        normalized["database_name"] != database_name
+        or normalized["server_uuid"] != server_uuid
+    ):
+        raise RuntimeError(
+            "isolated replay epoch actual database identity drift"
+        )
+    drift = [
+        field
+        for field in _ISOLATED_REPLAY_IDENTITY_FIELDS
+        if normalized[field] != getattr(isolation, field, None)
+    ]
+    if drift:
+        raise RuntimeError(
+            "isolated replay epoch registered database identity drift: "
+            + ",".join(sorted(drift))
+        )
+
+
+def _read_isolated_replay_connection_identity(
+    connection: Any,
+) -> dict[str, object]:
+    try:
+        driver_connection = connection.connection.driver_connection
+        cursor = driver_connection.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT VERSION() AS version,
+                       DATABASE() AS database_name,
+                       @@server_uuid AS server_uuid,
+                       @@session.time_zone AS session_time_zone,
+                       @@default_storage_engine AS storage_engine,
+                       @@session.sql_mode AS sql_mode,
+                       @@session.transaction_isolation AS isolation_level,
+                       @@bind_address AS bind_address,
+                       @@port AS port,
+                       @@socket AS socket_path,
+                       @@datadir AS datadir,
+                       @@secure_file_priv AS secure_file_priv,
+                       @@foreign_key_checks AS foreign_key_checks,
+                       @@global.log_bin AS log_bin,
+                       @@global.local_infile AS local_infile
+                """
+            )
+            raw = cursor.fetchone()
+            description = tuple(cursor.description or ())
+        finally:
+            cursor.close()
+    except Exception as exc:
+        raise RuntimeError(
+            "isolated replay epoch actual database identity is unavailable"
+        ) from exc
+    if raw is None or len(raw) != len(description):
+        raise RuntimeError(
+            "isolated replay epoch actual database identity is invalid"
+        )
+    row = {
+        str(column[0]): value
+        for column, value in zip(description, raw, strict=True)
+    }
+    if set(row) != set(_ISOLATED_REPLAY_IDENTITY_FIELDS):
+        raise RuntimeError(
+            "isolated replay epoch actual database identity columns drift"
+        )
+    normalized = {
+        "version": str(row["version"] or "").strip(),
+        "database_name": str(row["database_name"] or "").strip(),
+        "server_uuid": str(row["server_uuid"] or "").strip().lower(),
+        "session_time_zone": str(
+            row["session_time_zone"] or ""
+        ).strip(),
+        "storage_engine": str(row["storage_engine"] or "").strip(),
+        "sql_mode": str(row["sql_mode"] or "").strip(),
+        "isolation_level": str(
+            row["isolation_level"] or ""
+        ).strip(),
+        "bind_address": str(row["bind_address"] or "").strip(),
+        "port": int(row["port"]),
+        "socket_path": str(
+            Path(str(row["socket_path"] or "")).resolve()
+        ),
+        "datadir": str(Path(str(row["datadir"] or "")).resolve()),
+        "secure_file_priv": str(
+            Path(str(row["secure_file_priv"] or "")).resolve()
+        ),
+        "foreign_key_checks": int(row["foreign_key_checks"]),
+        "log_bin": int(row["log_bin"]),
+        "local_infile": int(row["local_infile"]),
+    }
+    return normalized
+
+
+def _validate_isolated_replay_identity(
+    normalized: Mapping[str, object],
+) -> None:
+    sql_modes = {
+        value.strip().upper()
+        for value in str(normalized["sql_mode"]).split(",")
+        if value.strip()
+    }
+    if (
+        not str(normalized["version"]).startswith("8.0.45")
+        or _ISOLATED_REPLAY_DATABASE_RE.fullmatch(
+            str(normalized["database_name"])
+        )
+        is None
+        or _ISOLATED_REPLAY_UUID_RE.fullmatch(
+            str(normalized["server_uuid"])
+        )
+        is None
+        or normalized["session_time_zone"] != "+00:00"
+        or str(normalized["storage_engine"]).lower() != "innodb"
+        or not sql_modes.intersection(
+            {"STRICT_TRANS_TABLES", "STRICT_ALL_TABLES"}
+        )
+        or str(normalized["isolation_level"]).upper()
+        != "REPEATABLE-READ"
+        or normalized["bind_address"] != "127.0.0.1"
+        or int(normalized["port"]) <= 0
+        or int(normalized["port"]) > 65535
+        or int(normalized["port"]) == 3306
+        or not normalized["socket_path"]
+        or not normalized["datadir"]
+        or not normalized["secure_file_priv"]
+        or int(normalized["foreign_key_checks"]) != 1
+        or int(normalized["log_bin"]) != 0
+        or int(normalized["local_infile"]) != 0
+    ):
+        raise RuntimeError(
+            "isolated replay epoch actual database identity drift"
+        )
 
 
 def build_daily_coordinator_epoch_record(

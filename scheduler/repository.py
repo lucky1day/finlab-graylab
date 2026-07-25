@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Mapping, Protocol
+from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import create_engine, event, inspect, text
@@ -2246,6 +2246,7 @@ def create_schedule_occurrence(
     _assert_deployed_epoch_payload(
         policy_payload.get("daily_coordinator_epoch"),
         label="new daily occurrence coordinator epoch",
+        engine=engine,
     )
     policy_text = json.dumps(
         policy_payload,
@@ -2281,6 +2282,7 @@ def create_schedule_occurrence(
         _assert_deployed_epoch_payload(
             policy_payload.get("daily_coordinator_epoch"),
             label="new daily occurrence coordinator epoch",
+            engine=conn,
         )
         existing = _read_schedule_occurrence_conn(
             conn,
@@ -2295,7 +2297,7 @@ def create_schedule_occurrence(
         )
         snapshot = freeze_active_daily_registry(registry_rows)
         if existing is not None:
-            _assert_occurrence_epoch_conn(existing)
+            _assert_occurrence_epoch_conn(existing, engine=conn)
             _validate_stored_occurrence_cardinality(conn, existing)
             expected_identity = {
                 "feature_date": normalized_feature_date,
@@ -2927,6 +2929,7 @@ def upsert_scheduler_heartbeat(
         _assert_deployed_epoch_payload(
             normalized_details.get("daily_coordinator_epoch"),
             label="daily coordinator heartbeat epoch",
+            engine=engine,
         )
     details_text = json.dumps(
         normalized_details,
@@ -2949,6 +2952,7 @@ def upsert_scheduler_heartbeat(
             _assert_deployed_epoch_payload(
                 normalized_details.get("daily_coordinator_epoch"),
                 label="daily coordinator heartbeat epoch",
+                engine=conn,
             )
             if normalized_occurrence_id is not None:
                 occurrence = _read_schedule_occurrence_by_id_conn(
@@ -2960,7 +2964,7 @@ def upsert_scheduler_heartbeat(
                     raise RuntimeError(
                         "scheduler heartbeat occurrence is missing"
                     )
-                _assert_occurrence_epoch_conn(occurrence)
+                _assert_occurrence_epoch_conn(occurrence, engine=conn)
         if _dialect_name(conn) == "sqlite":
             sql = text(
                 """
@@ -3328,7 +3332,7 @@ def register_seal_and_bind_schedule_occurrence_generation(
             raise RuntimeError(
                 f"schedule occurrence not found: {occurrence_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         siblings = _read_schedule_items_for_occurrence_conn(
             conn,
             occurrence_id=int(occurrence_id),
@@ -3416,7 +3420,7 @@ def seal_and_bind_schedule_occurrence_generation(
             raise RuntimeError(
                 f"schedule occurrence not found: {occurrence_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         siblings = _read_schedule_items_for_occurrence_conn(
             conn,
             occurrence_id=int(occurrence_id),
@@ -3523,7 +3527,7 @@ def start_schedule_attempt(
             raise RuntimeError(
                 f"schedule occurrence not found: {locator['occurrence_id']}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         siblings = _read_schedule_items_for_occurrence_conn(
             conn,
             occurrence_id=int(locator["occurrence_id"]),
@@ -4575,7 +4579,7 @@ def fail_schedule_item_without_attempt(
             raise RuntimeError(
                 f"schedule occurrence not found: {occurrence_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         siblings = _read_schedule_items_for_occurrence_conn(
             conn,
             occurrence_id=occurrence_id,
@@ -4667,7 +4671,7 @@ def expire_schedule_items(
             raise RuntimeError(
                 f"schedule occurrence not found: {occurrence_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         _read_schedule_items_for_occurrence_conn(
             conn,
             occurrence_id=int(occurrence_id),
@@ -5259,7 +5263,7 @@ def reconcile_schedule_occurrence_visibility_receipts(
             raise RuntimeError(
                 f"schedule occurrence not found: {occurrence_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         candidates = list(
             conn.execute(
                 text(
@@ -5326,7 +5330,7 @@ def evaluate_schedule_occurrence_target_sla(
             raise RuntimeError(
                 f"schedule occurrence not found: {occurrence_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         items = _read_schedule_items_for_occurrence_conn(
             conn,
             occurrence_id=int(occurrence_id),
@@ -5864,7 +5868,7 @@ def _lock_schedule_item_context_conn(
         raise RuntimeError(
             f"schedule occurrence not found: {locator['occurrence_id']}"
         )
-    _assert_occurrence_epoch_conn(occurrence)
+    _assert_occurrence_epoch_conn(occurrence, engine=conn)
     siblings = _read_schedule_items_for_occurrence_conn(
         conn,
         occurrence_id=int(locator["occurrence_id"]),
@@ -6742,7 +6746,7 @@ def _read_scheduled_completion_expectation(
                 "schedule occurrence not found for run: "
                 f"{run_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         generation_id = item.get("input_generation_id")
         if not generation_id:
             raise RuntimeError(
@@ -6860,7 +6864,7 @@ def _assert_scheduled_completion_epoch(
                 "schedule occurrence not found for completion: "
                 f"{expectation.occurrence_id}"
             )
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
 
 
 def _validate_scheduled_completion_evidence(
@@ -7455,21 +7459,26 @@ def _assert_deployed_epoch_payload(
     frozen: object,
     *,
     label: str,
+    engine: Any | None = None,
 ) -> None:
     """所有 ledger 写入口都必须验证非零、exact epoch capability。"""
     assert_daily_coordinator_epoch_payload_matches_current(
         frozen,
         label=label,
+        engine=engine,
     )
 
 
 def _assert_occurrence_epoch_conn(
     occurrence: Mapping[str, object],
+    *,
+    engine: Any | None = None,
 ) -> None:
     policy = _stored_json_mapping(occurrence, "policy_json")
     _assert_deployed_epoch_payload(
         policy.get("daily_coordinator_epoch"),
         label="daily occurrence coordinator epoch",
+        engine=engine,
     )
 
 
@@ -8122,7 +8131,7 @@ def _assert_prediction_keys_not_frozen_by_daily_ledger_conn(
         )
         if occurrence is None:
             continue
-        _assert_occurrence_epoch_conn(occurrence)
+        _assert_occurrence_epoch_conn(occurrence, engine=conn)
         siblings = _read_schedule_items_for_occurrence_conn(
             conn,
             occurrence_id=occurrence_id,

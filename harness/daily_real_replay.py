@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping
-
-from sqlalchemy import event
-from sqlalchemy.engine import Connection
+from typing import Any, Mapping
 
 from scheduler.daily_runtime import _policy_payload
 from scheduler.repository import (
@@ -20,6 +16,13 @@ from scheduler.repository import (
     as _repository_register_generation,
 )
 from shared.calendar_service import FrozenCalendarService
+from shared.daily_coordinator_mode import (
+    DailyCoordinatorEpochIdentity,
+    VerifiedIsolatedDailyDatabase,
+    bind_isolated_daily_coordinator_epoch,
+    recheck_verified_isolated_daily_database,
+    verify_and_register_isolated_daily_database,
+)
 from shared.databridge_input_generation import (
     DataBridgeGenerationContext,
     open_databridge_generation,
@@ -33,7 +36,6 @@ from shared.native_input_generation import (
 
 REAL_REPLAY_SCHEMA_VERSION = "daily-real-replay-v1"
 REAL_REPLAY_SCHEDULE_PREFIX = "isolated-real-replay-v1-"
-REAL_REPLAY_DATABASE_PREFIX = "bfl_real_replay_"
 EXPECTED_ITEM_COUNT = 21
 EXPECTED_TARGET_COUNT = 25
 EXPECTED_NATIVE_GENERATION_COUNT = 14
@@ -41,15 +43,6 @@ EXPECTED_NATIVE_COMPATIBILITY_COUNT = 3
 EXPECTED_V2_COUNT = 4
 REPLAY_SLA_WINDOW = timedelta(hours=23)
 REPLAY_RECOVERY_WINDOW = timedelta(hours=24)
-_MYSQL_UUID_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
-    r"[0-9a-f]{4}-[0-9a-f]{12}\Z"
-)
-_REPLAY_DATABASE_RE = re.compile(
-    rf"{REAL_REPLAY_DATABASE_PREFIX}[a-z0-9_]{{1,45}}\Z"
-)
-
-
 class DailyRealReplayError(RuntimeError):
     """真实日频隔离联跑的输入或冻结策略不满足契约。"""
 
@@ -64,31 +57,7 @@ class DailyRealReplayInputs:
     feature_date: str
 
 
-@dataclass(frozen=True)
-class DailyRealReplayDatabaseIdentity:
-    """写入前已验证、且会重新核验的隔离 MySQL 身份。"""
-
-    version: str
-    database_name: str
-    server_uuid: str
-    session_time_zone: str
-    storage_engine: str
-    sql_mode: str
-    isolation_level: str
-    bind_address: str
-    port: int
-    socket_path: str
-    datadir: str
-    secure_file_priv: str
-    foreign_key_checks: int
-    log_bin: int
-    local_infile: int
-    engine_identity: int
-    connection_guard: Callable[[Connection], None] | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
+DailyRealReplayDatabaseIdentity = VerifiedIsolatedDailyDatabase
 
 
 def verify_real_replay_database(
@@ -100,60 +69,17 @@ def verify_real_replay_database(
     expected_private_root: str | Path,
 ) -> DailyRealReplayDatabaseIdentity:
     """验证并保护真实联跑专用的 loopback 临时 MySQL Engine。"""
-    expected_database = str(expected_database_name).strip()
-    expected_uuid = str(expected_server_uuid).strip().lower()
-    expected_root = Path(expected_private_root).resolve()
-    if _REPLAY_DATABASE_RE.fullmatch(expected_database) is None:
-        raise DailyRealReplayError(
-            "real replay database must use bfl_real_replay_* namespace"
+    try:
+        return verify_and_register_isolated_daily_database(
+            engine,
+            expected_database_name=expected_database_name,
+            expected_server_uuid=expected_server_uuid,
+            expected_port=expected_port,
+            expected_private_root=expected_private_root,
+            connection_marker_key=REAL_REPLAY_SCHEMA_VERSION,
         )
-    if _MYSQL_UUID_RE.fullmatch(expected_uuid) is None:
-        raise DailyRealReplayError(
-            "real replay expected server_uuid is invalid"
-        )
-    expected_paths = {
-        "socket_path": str(expected_root / "mysql.sock"),
-        "datadir": str(expected_root / "data"),
-        "secure_file_priv": str(expected_root / "secure"),
-    }
-    identity = _read_real_replay_database_identity(engine)
-    _validate_real_replay_database_identity(identity)
-    expected_fields = {
-        "database_name": expected_database,
-        "server_uuid": expected_uuid,
-        "port": int(expected_port),
-        **expected_paths,
-    }
-    drift = _database_identity_drift(identity, expected_fields)
-    if drift:
-        raise DailyRealReplayError(
-            "real replay database differs from expected private MySQL: "
-            + ",".join(drift)
-        )
-    protected: DailyRealReplayDatabaseIdentity
-
-    def connection_guard(conn: Connection) -> None:
-        actual = _read_real_replay_database_identity_conn(conn)
-        _validate_real_replay_database_identity(actual)
-        actual_drift = _database_identity_drift(
-            actual,
-            _database_identity_fields(protected),
-        )
-        if actual_drift:
-            raise DailyRealReplayError(
-                "real replay database identity drift: "
-                + ",".join(actual_drift)
-            )
-        conn.info[REAL_REPLAY_SCHEMA_VERSION] = protected.server_uuid
-
-    protected = replace(
-        identity,
-        engine_identity=id(engine),
-        connection_guard=connection_guard,
-    )
-    event.listen(engine, "engine_connect", connection_guard)
-    setattr(engine, "_bfl_real_replay_isolation", protected)
-    return protected
+    except RuntimeError as exc:
+        raise DailyRealReplayError(str(exc)) from exc
 
 
 def open_real_replay_generations(
@@ -186,6 +112,24 @@ def open_real_replay_generations(
         databridge_generation=databridge,
         business_date=native.business_date,
         feature_date=native.feature_date,
+    )
+
+
+def bind_real_replay_epoch(
+    engine: Any,
+    *,
+    isolation: DailyRealReplayDatabaseIdentity,
+    epoch_payload: Mapping[str, object],
+) -> DailyCoordinatorEpochIdentity:
+    """把 replay epoch 仅绑定到当前受保护临时 MySQL Engine。"""
+    _recheck_real_replay_database(engine, isolation)
+    return bind_isolated_daily_coordinator_epoch(
+        engine,
+        frozen=dict(epoch_payload),
+        database_name=isolation.database_name,
+        server_uuid=isolation.server_uuid,
+        isolation=isolation,
+        connection_marker_key=REAL_REPLAY_SCHEMA_VERSION,
     )
 
 
@@ -424,239 +368,14 @@ def register_real_replay_generations(
     return actual
 
 
-def _read_real_replay_database_identity(
-    engine: Any,
-) -> DailyRealReplayDatabaseIdentity:
-    try:
-        with engine.connect() as conn:
-            return _read_real_replay_database_identity_conn(conn)
-    except Exception as exc:
-        if isinstance(exc, DailyRealReplayError):
-            raise
-        raise DailyRealReplayError(
-            "real replay database identity could not be inspected"
-        ) from exc
-
-
-def _read_real_replay_database_identity_conn(
-    conn: Connection,
-) -> DailyRealReplayDatabaseIdentity:
-    try:
-        driver_connection = conn.connection.driver_connection
-        cursor = driver_connection.cursor()
-        try:
-            cursor.execute(
-                """
-                SELECT VERSION() AS version,
-                       DATABASE() AS database_name,
-                       @@server_uuid AS server_uuid,
-                       @@session.time_zone AS session_time_zone,
-                       @@default_storage_engine AS storage_engine,
-                       @@session.sql_mode AS sql_mode,
-                       @@session.transaction_isolation AS isolation_level,
-                       @@bind_address AS bind_address,
-                       @@port AS port,
-                       @@socket AS socket_path,
-                       @@datadir AS datadir,
-                       @@secure_file_priv AS secure_file_priv,
-                       @@foreign_key_checks AS foreign_key_checks,
-                       @@global.log_bin AS log_bin,
-                       @@global.local_infile AS local_infile
-                """
-            )
-            raw = cursor.fetchone()
-            description = tuple(cursor.description or ())
-        finally:
-            cursor.close()
-    except Exception as exc:
-        raise DailyRealReplayError(
-            "real replay DBAPI identity query failed"
-        ) from exc
-    if raw is None or len(description) != len(raw):
-        raise DailyRealReplayError(
-            "real replay DBAPI identity result is invalid"
-        )
-    row = {
-        str(column[0]): value
-        for column, value in zip(description, raw, strict=True)
-    }
-    required_fields = {
-        "version",
-        "database_name",
-        "server_uuid",
-        "session_time_zone",
-        "storage_engine",
-        "sql_mode",
-        "isolation_level",
-        "bind_address",
-        "port",
-        "socket_path",
-        "datadir",
-        "secure_file_priv",
-        "foreign_key_checks",
-        "log_bin",
-        "local_infile",
-    }
-    if set(row) != required_fields:
-        raise DailyRealReplayError(
-            "real replay DBAPI identity columns drifted"
-        )
-    return DailyRealReplayDatabaseIdentity(
-        version=str(row["version"] or "").strip(),
-        database_name=str(row["database_name"] or "").strip(),
-        server_uuid=str(row["server_uuid"] or "").strip().lower(),
-        session_time_zone=str(row["session_time_zone"] or "").strip(),
-        storage_engine=str(row["storage_engine"] or "").strip(),
-        sql_mode=str(row["sql_mode"] or "").strip(),
-        isolation_level=str(row["isolation_level"] or "").strip(),
-        bind_address=str(row["bind_address"] or "").strip(),
-        port=int(row["port"]),
-        socket_path=str(Path(str(row["socket_path"] or "")).resolve()),
-        datadir=str(Path(str(row["datadir"] or "")).resolve()),
-        secure_file_priv=str(
-            Path(str(row["secure_file_priv"] or "")).resolve()
-        ),
-        foreign_key_checks=int(row["foreign_key_checks"]),
-        log_bin=int(row["log_bin"]),
-        local_infile=int(row["local_infile"]),
-        engine_identity=0,
-    )
-
-
-def _validate_real_replay_database_identity(
-    identity: DailyRealReplayDatabaseIdentity,
-) -> None:
-    if not identity.version.startswith("8.0.45"):
-        raise DailyRealReplayError(
-            "real replay MySQL version must be 8.0.45"
-        )
-    if _REPLAY_DATABASE_RE.fullmatch(identity.database_name) is None:
-        raise DailyRealReplayError(
-            "real replay database is not an isolated replay schema"
-        )
-    if _MYSQL_UUID_RE.fullmatch(identity.server_uuid) is None:
-        raise DailyRealReplayError(
-            "real replay server_uuid is invalid"
-        )
-    if identity.session_time_zone != "+00:00":
-        raise DailyRealReplayError(
-            "real replay MySQL session must use UTC"
-        )
-    if identity.storage_engine.lower() != "innodb":
-        raise DailyRealReplayError(
-            "real replay MySQL default engine must be InnoDB"
-        )
-    sql_modes = {
-        value.strip().upper()
-        for value in identity.sql_mode.split(",")
-        if value.strip()
-    }
-    if not sql_modes.intersection(
-        {"STRICT_TRANS_TABLES", "STRICT_ALL_TABLES"}
-    ):
-        raise DailyRealReplayError(
-            "real replay MySQL strict SQL mode is disabled"
-        )
-    if identity.isolation_level.upper() != "REPEATABLE-READ":
-        raise DailyRealReplayError(
-            "real replay MySQL isolation must be REPEATABLE-READ"
-        )
-    if identity.bind_address != "127.0.0.1":
-        raise DailyRealReplayError(
-            "real replay MySQL is not bound to loopback"
-        )
-    if identity.port <= 0 or identity.port > 65535 or identity.port == 3306:
-        raise DailyRealReplayError(
-            "real replay MySQL must use a non-production random port"
-        )
-    if (
-        not identity.socket_path
-        or not identity.datadir
-        or not identity.secure_file_priv
-    ):
-        raise DailyRealReplayError(
-            "real replay MySQL paths are unavailable"
-        )
-    if identity.foreign_key_checks != 1:
-        raise DailyRealReplayError(
-            "real replay MySQL foreign_key_checks is disabled"
-        )
-    if identity.log_bin != 0 or identity.local_infile != 0:
-        raise DailyRealReplayError(
-            "real replay MySQL unsafe global options are enabled"
-        )
-
-
 def _recheck_real_replay_database(
     engine: Any,
     isolation: DailyRealReplayDatabaseIdentity,
 ) -> None:
-    if not isinstance(isolation, DailyRealReplayDatabaseIdentity):
-        raise DailyRealReplayError(
-            "real replay database isolation capability is required"
-        )
-    if isolation.engine_identity != id(engine):
-        raise DailyRealReplayError(
-            "real replay database engine identity drift"
-        )
-    if getattr(engine, "_bfl_real_replay_isolation", None) is not isolation:
-        raise DailyRealReplayError(
-            "real replay database engine guard drift"
-        )
-    guard = isolation.connection_guard
-    if guard is None or not event.contains(
-        engine,
-        "engine_connect",
-        guard,
-    ):
-        raise DailyRealReplayError(
-            "real replay database connection guard is unavailable"
-        )
-    actual = _read_real_replay_database_identity(engine)
-    drift = _database_identity_drift(
-        actual,
-        _database_identity_fields(isolation),
-    )
-    if drift:
-        raise DailyRealReplayError(
-            "real replay database identity drift: " + ",".join(drift)
-        )
-
-
-def _database_identity_fields(
-    identity: DailyRealReplayDatabaseIdentity,
-) -> dict[str, object]:
-    return {
-        name: getattr(identity, name)
-        for name in (
-            "version",
-            "database_name",
-            "server_uuid",
-            "session_time_zone",
-            "storage_engine",
-            "sql_mode",
-            "isolation_level",
-            "bind_address",
-            "port",
-            "socket_path",
-            "datadir",
-            "secure_file_priv",
-            "foreign_key_checks",
-            "log_bin",
-            "local_infile",
-        )
-    }
-
-
-def _database_identity_drift(
-    actual: DailyRealReplayDatabaseIdentity,
-    expected: Mapping[str, object],
-) -> list[str]:
-    return sorted(
-        name
-        for name, expected_value in expected.items()
-        if getattr(actual, name) != expected_value
-    )
+    try:
+        recheck_verified_isolated_daily_database(engine, isolation)
+    except RuntimeError as exc:
+        raise DailyRealReplayError(str(exc)) from exc
 
 
 def _input_mode_counts(

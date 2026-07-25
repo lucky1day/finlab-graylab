@@ -427,7 +427,7 @@ def execute_scheduled_item(
         item_id=int(item_id),
     )
     try:
-        _assert_execution_epoch(envelope)
+        _assert_execution_epoch(engine, envelope)
         attempt = start_schedule_attempt(
             engine,
             item_id=int(item_id),
@@ -444,7 +444,7 @@ def execute_scheduled_item(
             error_message=_bounded_error(exc),
         )
     try:
-        _assert_execution_epoch(envelope)
+        _assert_execution_epoch(engine, envelope)
         config = _load_frozen_config(
             envelope,
             project_root=project_root,
@@ -472,7 +472,7 @@ def execute_scheduled_item(
 
         def process_started(pid: int, pgid: int) -> None:
             try:
-                _assert_execution_epoch(envelope)
+                _assert_execution_epoch(engine, envelope)
                 register_schedule_attempt_process(
                     engine,
                     run_id=attempt.run_id,
@@ -480,7 +480,7 @@ def execute_scheduled_item(
                     process_id=pid,
                     process_group_id=pgid,
                 )
-                _assert_execution_epoch(envelope)
+                _assert_execution_epoch(engine, envelope)
             except RuntimeError as exc:
                 if "recovery cutoff" in str(exc).casefold():
                     raise ScheduledRecoveryCutoffError(
@@ -508,6 +508,7 @@ def execute_scheduled_item(
                 execution_token=attempt.execution_token,
                 process_started=process_started,
                 process_fence=lambda: _assert_execution_epoch(
+                    engine,
                     envelope
                 ),
             )
@@ -538,7 +539,7 @@ def execute_scheduled_item(
             ).resolve(),
         )
         try:
-            _assert_execution_epoch(envelope)
+            _assert_execution_epoch(engine, envelope)
             written = complete_scheduled_attempt(
                 engine,
                 run_id=attempt.run_id,
@@ -704,12 +705,14 @@ def _load_frozen_config(
 
 
 def _assert_execution_epoch(
+    engine,
     envelope: ScheduleExecutionEnvelope,
 ) -> None:
     """在 claim/process/commit 边界验证冻结 exact epoch capability。"""
     try:
         assert_daily_coordinator_epoch_matches_policy(
-            envelope.occurrence.policy_json
+            envelope.occurrence.policy_json,
+            engine=engine,
         )
     except Exception as exc:
         raise ScheduledEpochDriftError(
