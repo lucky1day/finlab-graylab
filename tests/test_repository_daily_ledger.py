@@ -3,15 +3,23 @@ from __future__ import annotations
 import inspect
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import IntegrityError
 
+from scheduler.discovery import discover_schemes
 from shared.daily_coordinator_mode import DailyCoordinatorEpochIdentity
 from shared.models import PredictionRecord
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DAILY_POLICY_PATH = (
+    PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v1.json"
+)
 
 
 class _FrozenLedgerClock:
@@ -330,6 +338,77 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
                     for tenor, horizon in targets
                 ],
             )
+
+    def _daily_policy_matrix(self):
+        from scheduler.daily_policy import load_daily_policy
+
+        active_daily = tuple(
+            config
+            for config in discover_schemes(strict=True)
+            if config.status == "active" and config.frequency == "daily"
+        )
+        policy = load_daily_policy(
+            DAILY_POLICY_PATH,
+            discovered=active_daily,
+        )
+        for scheme_id, item in policy.schemes.items():
+            self._seed_registry(
+                base_scheme_id=scheme_id,
+                runtime_type=item.runtime_type,
+                targets=tuple(
+                    (tenor, item.horizon)
+                    for tenor in item.target_tenors
+                ),
+            )
+        return policy
+
+    def _daily_policy_occurrence_args(
+        self,
+        policy,
+    ) -> dict[str, object]:
+        from scheduler.daily_runtime import _policy_payload
+
+        release_base = datetime(2026, 7, 23, 22, 30)
+        target_dates = {
+            f"{scheme_id}__h{item.horizon}__{tenor}": (
+                "2026-07-24"
+                if item.horizon == 1
+                else "2026-07-30"
+            )
+            for scheme_id, item in policy.schemes.items()
+            for tenor in item.target_tenors
+        }
+        item_policy_by_base = {
+            scheme_id: {
+                "scheme_version": f"{scheme_id}-v1",
+                "code_sha256": "a" * 64,
+                "config_sha256": "b" * 64,
+                "cache_group": item.cache_group,
+                "resource_class": item.resource_class,
+                "internal_workers": item.internal_workers,
+                "release_offset_minutes":
+                    item.v2_release_offset_min or 0,
+                "release_at": release_base + timedelta(
+                    minutes=item.v2_release_offset_min or 0,
+                ),
+                "deadline_at": datetime(2026, 7, 23, 23, 55),
+            }
+            for scheme_id, item in policy.schemes.items()
+        }
+        return {
+            "schedule_key": "daily-production",
+            "predict_date": "2026-07-24",
+            "feature_date": "2026-07-23",
+            "target_dates": target_dates,
+            "item_policy_by_base": item_policy_by_base,
+            "policy_version": policy.version,
+            "policy_json": _policy_payload(
+                policy,
+                daily_coordinator_epoch=(
+                    self._epoch_identity.policy_payload()
+                ),
+            ),
+        }
 
     def _create_generation(
         self,
@@ -1281,6 +1360,143 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
         self.assertRegex(occurrence["registry_digest"], r"^[0-9a-f]{64}$")
         self.assertEqual(item_count, 2)
         self.assertEqual(target_count, 3)
+
+    def test_real_policy_occurrence_freezes_complete_native_matrix(
+        self,
+    ) -> None:
+        policy = self._daily_policy_matrix()
+        create_occurrence = self._function("create_schedule_occurrence")
+
+        occurrence_id = create_occurrence(
+            self.engine,
+            **self._daily_policy_occurrence_args(policy),
+        )
+        snapshot = self._function(
+            "read_schedule_occurrence_snapshot"
+        )(
+            self.engine,
+            occurrence_id=occurrence_id,
+        )
+        native_policy_ids = {
+            scheme_id
+            for scheme_id, item in policy.schemes.items()
+            if item.runtime_type == "native_adapter"
+        }
+        native_items = tuple(
+            summary
+            for summary in snapshot.items
+            if summary.item.runtime_type == "native_adapter"
+        )
+        frozen_scheme_rows = {
+            str(row["scheme_id"]): row
+            for row in snapshot.occurrence.policy_json["schemes"]
+        }
+        frozen_native_modes = {
+            scheme_id: str(
+                frozen_scheme_rows[scheme_id]["input_compatibility"]
+            )
+            for scheme_id in native_policy_ids
+        }
+
+        self.assertEqual(snapshot.actual_item_count, 21)
+        self.assertEqual(snapshot.actual_target_count, 25)
+        self.assertEqual(len(native_items), 17)
+        self.assertEqual(
+            sum(summary.target_count for summary in native_items),
+            21,
+        )
+        self.assertEqual(
+            {
+                summary.item.base_scheme_id
+                for summary in native_items
+            },
+            native_policy_ids,
+        )
+        self.assertEqual(
+            sum(
+                mode == "generation_v1"
+                for mode in frozen_native_modes.values()
+            ),
+            14,
+        )
+        self.assertEqual(
+            {
+                scheme_id
+                for scheme_id, mode in frozen_native_modes.items()
+                if mode == "live_source_0629"
+            },
+            {
+                "daily_10y_lgbm_10y04_0629",
+                "daily_1y_xgb_1y13_0629",
+                "daily_5y_lgbm_5y10_0629",
+            },
+        )
+        for summary in native_items:
+            with self.subTest(
+                scheme_id=summary.item.base_scheme_id,
+            ):
+                self.assertEqual(summary.item.state, "PENDING")
+                self.assertEqual(summary.item.attempt_no, 0)
+                self.assertIsNone(summary.item.current_run_id)
+
+    def test_real_policy_occurrence_replay_is_idempotent(
+        self,
+    ) -> None:
+        policy = self._daily_policy_matrix()
+        create_occurrence = self._function("create_schedule_occurrence")
+        occurrence_args = self._daily_policy_occurrence_args(policy)
+
+        first = create_occurrence(self.engine, **occurrence_args)
+        second = create_occurrence(self.engine, **occurrence_args)
+
+        self.assertEqual(second, first)
+        with self.engine.connect() as conn:
+            counts = {
+                table: int(
+                    conn.execute(
+                        text(f"SELECT COUNT(*) FROM {table}")
+                    ).scalar_one()
+                )
+                for table in (
+                    "t_schedule_occurrences",
+                    "t_schedule_items",
+                    "t_schedule_item_targets",
+                    "t_scheme_runs",
+                )
+            }
+        self.assertEqual(
+            counts,
+            {
+                "t_schedule_occurrences": 1,
+                "t_schedule_items": 21,
+                "t_schedule_item_targets": 25,
+                "t_scheme_runs": 0,
+            },
+        )
+
+        drifted_policy = {
+            **occurrence_args["policy_json"],
+            "evidence_note": "step6-drift-must-be-rejected",
+        }
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "occurrence immutable snapshot mismatch",
+        ):
+            create_occurrence(
+                self.engine,
+                **{
+                    **occurrence_args,
+                    "policy_json": drifted_policy,
+                },
+            )
+        snapshot = self._function(
+            "read_schedule_occurrence_snapshot"
+        )(
+            self.engine,
+            occurrence_id=first,
+        )
+        self.assertEqual(snapshot.actual_item_count, 21)
+        self.assertEqual(snapshot.actual_target_count, 25)
 
     def test_occurrence_freezes_required_feature_date_and_rejects_drift(
         self,
