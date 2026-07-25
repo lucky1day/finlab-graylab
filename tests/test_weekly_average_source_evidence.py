@@ -40,6 +40,7 @@ class WeeklyAverageSourceEvidenceTests(unittest.TestCase):
 {
   "source_role": "source_original_weekly_average_algorithm",
   "source_package": "weekly_10y_d_overlay_0529/source_package",
+  "source_package_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "schemes": {
     "weekly_avg_10y_d_overlay_0529": {
       "frequency": "W10Y",
@@ -75,6 +76,7 @@ class WeeklyAverageSourceEvidenceTests(unittest.TestCase):
 {
   "source_role": "source_original_weekly_average_algorithm",
   "source_package": "source_package/forecast_project",
+  "source_package_sha256": "b75af8309243f9805685e28d3fd456ea3683ea7b218efe149b463393301a889e",
   "runner_module": "weekly.run_backtest",
   "live_runner_module": "weekly.run_weekly",
   "schemes": {
@@ -115,6 +117,7 @@ class WeeklyAverageSourceEvidenceTests(unittest.TestCase):
 {
   "source_role": "source_original_weekly_average_algorithm",
   "source_package": "source_package/forecast_project",
+  "source_package_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "schemes": {
     "weekly_avg_7y_lgbm_0529": {
       "frequency": "W7Y",

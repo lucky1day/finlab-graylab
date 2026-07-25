@@ -2,6 +2,7 @@
   "source_role": "source_original_weekly_average_algorithm",
   "source_family": "weekly_average_lgbm_wi1c",
   "source_package": "source_package/forecast_project",
+  "source_package_sha256": "b00e77cadcb29ad9aaeef6713a3982ea218bdf91cde181ad4c39e01d38c100ce",
   "runner_module": "weekly.run_backtest",
   "live_runner_module": "weekly.run_weekly",
   "python_env": "forecast_env",

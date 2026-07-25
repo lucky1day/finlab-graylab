@@ -19,6 +19,9 @@ from shared.input_artifacts import (
 )
 from shared.models import PredictionRecord
 from shared.prediction_context import build_daily_live_context
+from shared.source_runtime_database import (
+    load_source_runtime_database_config,
+)
 
 
 HORIZON_DAYS = 1
@@ -68,7 +71,10 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
             f"{scheme_id}: live source package hash differs from "
             "frozen occurrence policy"
         )
-    engine = create_input_engine()
+    database_config = load_source_runtime_database_config()
+    engine = create_input_engine(
+        database_config=database_config,
+    )
     try:
         calendar = get_calendar(engine)
         context = build_daily_live_context(calendar, predict_date, horizon=HORIZON_DAYS)
@@ -101,6 +107,7 @@ def run_daily_0629_prediction(scheme_id: str, predict_date: str) -> list[Predict
     source_rows = run_source_daily_live(
         evidence,
         predict_date=predict_date,
+        database_config=database_config,
     )
     source = _select_frequency_row(
         source_rows,

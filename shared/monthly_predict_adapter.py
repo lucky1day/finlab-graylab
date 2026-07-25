@@ -9,6 +9,9 @@ from shared.models import PredictionRecord
 from shared.monthly_source_evidence import MONTHLY_SOURCE_ROLE, require_monthly_source_evidence
 from shared.monthly_source_runner import run_source_monthly_live
 from shared.prediction_context import MONTHLY_TARGET_RULE, build_monthly_live_context
+from shared.source_runtime_database import (
+    load_source_runtime_database_config,
+)
 
 
 HORIZON_DAYS = 30
@@ -33,11 +36,18 @@ INTERNAL_FIELDS = (
 
 def run_monthly_prediction(scheme_id: str, predict_date: str) -> list[PredictionRecord]:
     """执行 source-original 月度 binary runner adapter。"""
+    database_config = load_source_runtime_database_config()
     evidence = require_monthly_source_evidence(scheme_id)
-    source_rows = run_source_monthly_live(evidence, predict_date=predict_date)
+    source_rows = run_source_monthly_live(
+        evidence,
+        predict_date=predict_date,
+        database_config=database_config,
+    )
     source = _select_frequency_row(source_rows, evidence.frequency, scheme_id)
 
-    engine = create_input_engine()
+    engine = create_input_engine(
+        database_config=database_config,
+    )
     try:
         calendar = get_calendar(engine)
         context = build_monthly_live_context(calendar, predict_date)

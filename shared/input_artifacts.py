@@ -73,7 +73,7 @@ _NATIVE_GENERATION_ENV_FIELDS = {
 }
 
 
-def create_input_engine():
+def create_input_engine(*, database_config: Any | None = None):
     """创建输入源；日批 Native 环境中只打开被冻结的 generation。"""
     configured = {
         name: os.environ.get(name)
@@ -81,6 +81,11 @@ def create_input_engine():
         if name in os.environ
     }
     if configured:
+        if database_config is not None:
+            raise ValueError(
+                "frozen Native generation cannot also bind a live "
+                "database config"
+            )
         missing = sorted(_NATIVE_GENERATION_ENV_FIELDS - set(configured))
         empty = sorted(
             name
@@ -109,7 +114,11 @@ def create_input_engine():
             expected_business_date=configured[NATIVE_BUSINESS_DATE_ENV],
             expected_feature_date=configured[NATIVE_FEATURE_DATE_ENV],
         )
-    return _data_service.create_sqlalchemy_engine()
+    if database_config is None:
+        return _data_service.create_sqlalchemy_engine()
+    return _data_service.create_sqlalchemy_engine(
+        db_config=database_config,
+    )
 
 
 @dataclass(frozen=True)

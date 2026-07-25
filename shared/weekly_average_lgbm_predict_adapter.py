@@ -14,6 +14,9 @@ from shared.weekly_average_source_evidence import (
     WEEKLY_AVERAGE_SOURCE_ROLE,
     require_weekly_average_source_evidence,
 )
+from shared.source_runtime_database import (
+    load_source_runtime_database_config,
+)
 
 
 HORIZON_DAYS = 6
@@ -35,12 +38,19 @@ INTERNAL_FIELDS = (
 
 def run_weekly_average_lgbm_prediction(scheme_id: str, predict_date: str) -> list[PredictionRecord]:
     """执行 source-original 周平均 LGBM live adapter。"""
+    database_config = load_source_runtime_database_config()
     evidence = require_weekly_average_source_evidence(scheme_id)
-    source_rows = run_source_weekly_live(evidence, predict_date=predict_date)
+    source_rows = run_source_weekly_live(
+        evidence,
+        predict_date=predict_date,
+        database_config=database_config,
+    )
     source = _select_frequency_row(source_rows, evidence.frequency, scheme_id)
     feature_week_id = _required_int(source.get("effective_week_id"), "effective_week_id")
 
-    engine = create_input_engine()
+    engine = create_input_engine(
+        database_config=database_config,
+    )
     try:
         calendar = get_calendar(engine)
         feature_date = calendar.week_id_to_last_trading_day(feature_week_id)

@@ -7,13 +7,27 @@ import os
 import shutil
 import subprocess
 import tempfile
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from shared.daily_0629_source_evidence import (
     Daily0629SourceEvidence,
     source_package_tree_sha256,
+)
+from shared.source_runtime_database import (
+    SourceRuntimeDatabaseConfig,
+    assert_source_package_identity,
+    assert_source_package_tree_safe,
+    assert_source_runtime_payload_safe,
+    install_source_runtime_database_config,
+    load_source_runtime_database_config,
+    prepare_private_source_runtime_tree,
+    redact_source_runtime_text,
+    run_source_subprocess,
+    source_immutable_input_token,
+    source_subprocess_environment,
+    source_timeout_seconds,
+    write_private_json_atomic,
 )
 
 
@@ -25,14 +39,17 @@ def run_source_daily_live(
     evidence: Daily0629SourceEvidence,
     *,
     predict_date: str,
+    database_config: SourceRuntimeDatabaseConfig | None = None,
 ) -> list[dict[str, Any]]:
     """重跑原始日度 dry-run live runner，并返回 selected prediction 行。"""
+    config = database_config or load_source_runtime_database_config()
     return list(
         _run_source_daily_live_cached(
             str(evidence.source_package_path),
             evidence.source_package_hash,
             evidence.live_runner_module,
             predict_date,
+            config,
         )
     )
 
@@ -41,72 +58,172 @@ def run_source_daily_backtest_panel(
     evidence: Daily0629SourceEvidence,
     *,
     source_run_date: str,
+    database_config: SourceRuntimeDatabaseConfig | None = None,
 ) -> list[dict[str, Any]]:
     """重跑原始日度 dry-run backtest runner，并返回当前 scheme 的历史预测面板。"""
+    config = database_config or load_source_runtime_database_config()
     rows = _run_source_daily_backtest_cached(
         str(evidence.source_package_path),
         evidence.source_package_hash,
         evidence.runner_module,
         source_run_date,
+        config,
     )
     return [dict(row) for row in rows if str(row.get("final_select_id")) == evidence.final_select_id]
 
 
-@lru_cache(maxsize=128)
 def _run_source_daily_live_cached(
     source_package_path: str,
     source_package_hash: str,
     live_runner_module: str,
     predict_date: str,
+    database_config: SourceRuntimeDatabaseConfig,
 ) -> tuple[dict[str, Any], ...]:
-    cache_path = _source_cache_path("live", source_package_hash, live_runner_module, predict_date)
+    assert_source_package_identity(
+        Path(source_package_path),
+        source_package_hash,
+        tree_sha256=source_package_tree_sha256,
+        label="daily 0629",
+    )
+    input_token = source_immutable_input_token()
+    cache_path = _source_cache_path(
+        "live",
+        source_package_hash,
+        live_runner_module,
+        predict_date,
+        database_config.cache_identity,
+        input_token=input_token,
+    )
     if cache_path is not None:
-        cached = _read_source_cache(cache_path, source_package_hash, live_runner_module, predict_date)
+        cached = _read_source_cache(
+            cache_path,
+            source_package_hash,
+            live_runner_module,
+            predict_date,
+            database_config.cache_identity,
+            input_token,
+        )
         if cached is not None:
+            assert_source_runtime_payload_safe(
+                cached,
+                database_config,
+            )
             return cached
 
     with _source_runtime(
         Path(source_package_path),
         source_package_hash,
+        database_config=database_config,
     ) as source_root:
-        _run_daily_live(source_root, predict_date)
+        _run_daily_live(
+            source_root,
+            predict_date,
+            database_config=database_config,
+        )
         rows = tuple(_read_live_rows(source_root / "daily_project" / "output", predict_date))
+    assert_source_runtime_payload_safe(rows, database_config)
     if cache_path is not None:
-        _write_source_cache(cache_path, source_package_hash, live_runner_module, predict_date, rows)
+        _write_source_cache(
+            cache_path,
+            source_package_hash,
+            live_runner_module,
+            predict_date,
+            database_config.cache_identity,
+            input_token,
+            rows,
+        )
     return rows
 
 
-@lru_cache(maxsize=64)
 def _run_source_daily_backtest_cached(
     source_package_path: str,
     source_package_hash: str,
     runner_module: str,
     source_run_date: str,
+    database_config: SourceRuntimeDatabaseConfig,
 ) -> tuple[dict[str, Any], ...]:
-    cache_path = _source_cache_path("backtest", source_package_hash, runner_module, source_run_date)
+    assert_source_package_identity(
+        Path(source_package_path),
+        source_package_hash,
+        tree_sha256=source_package_tree_sha256,
+        label="daily 0629",
+    )
+    input_token = source_immutable_input_token()
+    cache_path = _source_cache_path(
+        "backtest",
+        source_package_hash,
+        runner_module,
+        source_run_date,
+        database_config.cache_identity,
+        input_token=input_token,
+    )
     if cache_path is not None:
-        cached = _read_source_cache(cache_path, source_package_hash, runner_module, source_run_date)
+        cached = _read_source_cache(
+            cache_path,
+            source_package_hash,
+            runner_module,
+            source_run_date,
+            database_config.cache_identity,
+            input_token,
+        )
         if cached is not None:
+            assert_source_runtime_payload_safe(
+                cached,
+                database_config,
+            )
             return cached
 
     with _source_runtime(
         Path(source_package_path),
         source_package_hash,
+        database_config=database_config,
     ) as source_root:
-        _run_daily_backtest(source_root, source_run_date)
+        _run_daily_backtest(
+            source_root,
+            source_run_date,
+            database_config=database_config,
+        )
         rows = tuple(_read_backtest_rows(source_root / "daily_project" / "output", source_run_date))
+    assert_source_runtime_payload_safe(rows, database_config)
     if cache_path is not None:
-        _write_source_cache(cache_path, source_package_hash, runner_module, source_run_date, rows)
+        _write_source_cache(
+            cache_path,
+            source_package_hash,
+            runner_module,
+            source_run_date,
+            database_config.cache_identity,
+            input_token,
+            rows,
+        )
     return rows
 
 
-def _source_cache_path(source_type: str, source_package_hash: str, runner_module: str, date_value: str) -> Path | None:
+def _source_cache_path(
+    source_type: str,
+    source_package_hash: str,
+    runner_module: str,
+    date_value: str,
+    database_identity: str,
+    *,
+    input_token: str | None = None,
+) -> Path | None:
     if os.environ.get("DAILY_0629_SOURCE_CACHE_DISABLE") == "1":
+        return None
+    token = input_token or source_immutable_input_token()
+    if token is None:
         return None
     raw_root = os.environ.get("DAILY_0629_SOURCE_CACHE_DIR")
     root = Path(raw_root) if raw_root else Path(__file__).resolve().parents[1] / "backtest_artifacts" / "daily_0629_source_cache"
     module_key = hashlib.sha256(runner_module.encode("utf-8")).hexdigest()[:16]
-    return root / source_type / source_package_hash / module_key / f"{str(date_value)[:10]}.json"
+    return (
+        root
+        / source_type
+        / source_package_hash
+        / database_identity
+        / token
+        / module_key
+        / f"{str(date_value)[:10]}.json"
+    )
 
 
 def _read_source_cache(
@@ -114,6 +231,8 @@ def _read_source_cache(
     source_package_hash: str,
     runner_module: str,
     date_value: str,
+    database_identity: str,
+    input_token: str | None,
 ) -> tuple[dict[str, Any], ...] | None:
     if not path.exists():
         return None
@@ -129,6 +248,10 @@ def _read_source_cache(
         return None
     if payload.get("date_value") != str(date_value)[:10]:
         return None
+    if payload.get("database_identity") != database_identity:
+        return None
+    if payload.get("input_token") != input_token:
+        return None
     rows = payload.get("rows")
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         return None
@@ -140,18 +263,19 @@ def _write_source_cache(
     source_package_hash: str,
     runner_module: str,
     date_value: str,
+    database_identity: str,
+    input_token: str | None,
     rows: tuple[dict[str, Any], ...],
 ) -> None:
     payload = {
         "source_package_hash": source_package_hash,
         "runner_module": runner_module,
         "date_value": str(date_value)[:10],
+        "database_identity": database_identity,
+        "input_token": input_token,
         "rows": list(rows),
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-    tmp_path.replace(path)
+    write_private_json_atomic(path, payload)
 
 
 class _source_runtime:
@@ -159,28 +283,48 @@ class _source_runtime:
         self,
         source_package_path: Path,
         expected_source_package_sha256: str,
+        *,
+        database_config: SourceRuntimeDatabaseConfig | None = None,
     ):
         self.source_package_path = source_package_path
         self.expected_source_package_sha256 = (
             expected_source_package_sha256
         )
+        self.database_config = database_config
         self.tempdir: tempfile.TemporaryDirectory[str] | None = None
         self.source_root: Path | None = None
 
     def __enter__(self) -> Path:
         self.tempdir = tempfile.TemporaryDirectory(prefix="bfl_daily0629_source_")
         self.source_root = Path(self.tempdir.name) / "forecast_project"
-        shutil.copytree(self.source_package_path, self.source_root)
-        _clear_quarantine(self.source_root)
-        copied_sha256 = source_package_tree_sha256(self.source_root)
-        if copied_sha256 != self.expected_source_package_sha256:
+        try:
+            assert_source_package_tree_safe(
+                self.source_package_path
+            )
+            shutil.copytree(self.source_package_path, self.source_root)
+            prepare_private_source_runtime_tree(self.source_root)
+            _clear_quarantine(self.source_root)
+            copied_sha256 = source_package_tree_sha256(
+                self.source_root
+            )
+            if copied_sha256 != self.expected_source_package_sha256:
+                raise RuntimeError(
+                    "daily 0629 copied source package hash differs "
+                    "from frozen source identity"
+                )
+            config = (
+                self.database_config
+                or load_source_runtime_database_config()
+            )
+            install_source_runtime_database_config(
+                self.source_root,
+                config,
+            )
+        except BaseException:
             self.tempdir.cleanup()
             self.tempdir = None
             self.source_root = None
-            raise RuntimeError(
-                "daily 0629 copied source package hash differs from "
-                "frozen source identity"
-            )
+            raise
         return self.source_root
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -188,18 +332,45 @@ class _source_runtime:
             self.tempdir.cleanup()
 
 
-def _run_daily_live(source_root: Path, predict_date: str) -> None:
+def _run_daily_live(
+    source_root: Path,
+    predict_date: str,
+    *,
+    database_config: SourceRuntimeDatabaseConfig,
+) -> None:
     command = ["bash", "daily_project/src/run_daily.sh", "run", str(predict_date)[:10]]
-    _run_source_command(command, source_root)
+    _run_source_command(
+        command,
+        source_root,
+        database_config=database_config,
+    )
 
 
-def _run_daily_backtest(source_root: Path, source_run_date: str) -> None:
+def _run_daily_backtest(
+    source_root: Path,
+    source_run_date: str,
+    *,
+    database_config: SourceRuntimeDatabaseConfig,
+) -> None:
     command = ["bash", "run_backtest_test.sh", str(source_run_date)[:10], str(source_run_date)[:10], "daily"]
-    _run_source_command(command, source_root)
+    _run_source_command(
+        command,
+        source_root,
+        database_config=database_config,
+    )
 
 
-def _run_source_command(command: list[str], source_root: Path) -> None:
-    env = os.environ.copy()
+def _run_source_command(
+    command: list[str],
+    source_root: Path,
+    *,
+    database_config: SourceRuntimeDatabaseConfig | None = None,
+) -> None:
+    config = (
+        database_config
+        or load_source_runtime_database_config()
+    )
+    env = source_subprocess_environment()
     python = _python_command()[0]
     env["PYTHON_BIN"] = python
     env["DRY_RUN"] = "1"
@@ -212,20 +383,29 @@ def _run_source_command(command: list[str], source_root: Path) -> None:
             env.get("PYTHONPATH", ""),
         ]
     )
-    completed = subprocess.run(
-        command,
-        cwd=str(source_root),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        timeout=int(os.environ.get("DAILY_0629_SOURCE_TIMEOUT_SEC", "1800")),
+    timeout_sec = source_timeout_seconds(
+        "DAILY_0629_SOURCE_TIMEOUT_SEC"
     )
+    try:
+        completed = run_source_subprocess(
+            command,
+            cwd=str(source_root),
+            env=env,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "daily 0629 source runner timed out: "
+            f"timeout_sec={timeout_sec}\n"
+            f"stdout={redact_source_runtime_text(exc.stdout or '', config)}\n"
+            f"stderr={redact_source_runtime_text(exc.stderr or '', config)}"
+        ) from None
     if completed.returncode != 0:
         raise RuntimeError(
             "daily 0629 source runner failed: "
-            f"cmd={' '.join(command)}\nstdout={completed.stdout}\nstderr={completed.stderr}"
+            f"cmd={' '.join(command)}\n"
+            f"stdout={redact_source_runtime_text(completed.stdout, config)}\n"
+            f"stderr={redact_source_runtime_text(completed.stderr, config)}"
         )
 
 

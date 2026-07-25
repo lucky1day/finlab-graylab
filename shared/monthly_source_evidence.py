@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.source_runtime_database import (
+    require_manifest_source_package_sha256,
+)
+
 
 MONTHLY_SOURCE_ROLE = "source_original_monthly_algorithm"
 PLATFORM_CURRENT_MONTHLY_ROLE = "platform_current_monthly_adapter"
@@ -59,6 +63,12 @@ def require_monthly_source_evidence(
             f"{scheme_id}: monthly source evidence source_role must be {MONTHLY_SOURCE_ROLE!r}, got {source_role!r}"
         )
     source_package = _required_relative_dir(manifest, "source_package", batch_dir, scheme_id)
+    source_package_hash = require_manifest_source_package_sha256(
+        manifest,
+        source_package,
+        tree_sha256=source_package_tree_sha256,
+        label="monthly",
+    )
     runner_module = str(manifest.get("runner_module") or "src.monthly.run_monthly_pipeline").strip()
     frequency = str(entry.get("frequency") or "").strip()
     target_tenor = str(entry.get("target_tenor") or "").strip()
@@ -76,7 +86,7 @@ def require_monthly_source_evidence(
         generator=generator,
         manifest_path=manifest_path,
         source_package_path=source_package,
-        source_package_hash=_tree_sha256(source_package),
+        source_package_hash=source_package_hash,
         runner_module=runner_module,
         frequency=frequency,
         target_tenor=target_tenor,
@@ -91,6 +101,11 @@ def _required_relative_dir(manifest: dict[str, Any], key: str, batch_dir: Path, 
     if not value:
         raise RuntimeError(f"{scheme_id}: monthly source manifest missing {key}")
     path = (batch_dir / value).resolve()
+    if batch_dir.resolve() not in path.parents:
+        raise RuntimeError(
+            f"{scheme_id}: monthly source manifest {key} "
+            f"must stay under {batch_dir}"
+        )
     if not path.is_dir():
         raise RuntimeError(f"{scheme_id}: monthly source manifest {key} not found: {path}")
     return path
@@ -112,10 +127,15 @@ def _reject_unsupported_monthly_scheme(scheme_id: str, frequency: str, target_te
         )
 
 
-def _tree_sha256(path: Path) -> str:
+def source_package_tree_sha256(path: Path) -> str:
+    """计算月度 source package 的内容与相对路径摘要。"""
     digest = hashlib.sha256()
     for item in sorted(path.rglob("*")):
-        if item.is_dir():
+        if (
+            item.is_dir()
+            or "__pycache__" in item.parts
+            or item.suffix == ".pyc"
+        ):
             continue
         relative = item.relative_to(path).as_posix()
         digest.update(relative.encode("utf-8"))

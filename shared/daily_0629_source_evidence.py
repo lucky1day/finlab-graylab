@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.source_runtime_database import (
+    require_manifest_source_package_sha256,
+)
+
 
 DAILY_0629_SOURCE_ROLE = "source_original_daily_0629_algorithm"
 PLATFORM_CURRENT_DAILY_0629_ROLE = "platform_current_daily_0629_adapter"
@@ -61,6 +65,12 @@ def require_daily_0629_source_evidence(
             f"{scheme_id}: daily 0629 source_role must be {DAILY_0629_SOURCE_ROLE!r}, got {source_role!r}"
         )
     source_package = _required_relative_dir(manifest, "source_package", batch_dir, scheme_id)
+    source_package_hash = require_manifest_source_package_sha256(
+        manifest,
+        source_package,
+        tree_sha256=source_package_tree_sha256,
+        label="daily 0629",
+    )
     runner_module = str(manifest.get("runner_module") or "daily.run_backtest").strip()
     live_runner_module = str(manifest.get("live_runner_module") or "daily.run_daily").strip()
     frequency = str(entry.get("frequency") or "").strip()
@@ -80,7 +90,7 @@ def require_daily_0629_source_evidence(
         generator=generator,
         manifest_path=manifest_path,
         source_package_path=source_package,
-        source_package_hash=source_package_tree_sha256(source_package),
+        source_package_hash=source_package_hash,
         runner_module=runner_module,
         live_runner_module=live_runner_module,
         frequency=frequency,
@@ -97,6 +107,11 @@ def _required_relative_dir(manifest: dict[str, Any], key: str, batch_dir: Path, 
     if not value:
         raise RuntimeError(f"{scheme_id}: daily 0629 source manifest missing {key}")
     path = (batch_dir / value).resolve()
+    if batch_dir.resolve() not in path.parents:
+        raise RuntimeError(
+            f"{scheme_id}: daily 0629 source manifest {key} "
+            f"must stay under {batch_dir}"
+        )
     if not path.is_dir():
         raise RuntimeError(f"{scheme_id}: daily 0629 source manifest {key} not found: {path}")
     return path
@@ -126,7 +141,11 @@ def source_package_tree_sha256(path: Path) -> str:
     """计算 0629 source package 的内容与相对路径摘要。"""
     digest = hashlib.sha256()
     for item in sorted(path.rglob("*")):
-        if item.is_dir():
+        if (
+            item.is_dir()
+            or "__pycache__" in item.parts
+            or item.suffix == ".pyc"
+        ):
             continue
         relative = item.relative_to(path).as_posix()
         digest.update(relative.encode("utf-8"))

@@ -47,11 +47,17 @@ class MonthlyPredictAdapterTests(unittest.TestCase):
             source="shared_data_service_monthly",
         )
         engine = SimpleNamespace(dispose=lambda: None)
+        database_config = object()
 
         with (
+            patch(
+                "shared.monthly_predict_adapter."
+                "load_source_runtime_database_config",
+                return_value=database_config,
+            ),
             patch("shared.monthly_predict_adapter.require_monthly_source_evidence", return_value=evidence),
-            patch("shared.monthly_predict_adapter.run_source_monthly_live", return_value=source_rows),
-            patch("shared.monthly_predict_adapter.create_input_engine", return_value=engine),
+            patch("shared.monthly_predict_adapter.run_source_monthly_live", return_value=source_rows) as source_runner,
+            patch("shared.monthly_predict_adapter.create_input_engine", return_value=engine) as create_engine,
             patch("shared.monthly_predict_adapter.get_calendar", return_value=_MonthlyCalendar()),
             patch("shared.monthly_predict_adapter.build_monthly_input_artifact", return_value=artifact) as build_monthly,
         ):
@@ -75,6 +81,14 @@ class MonthlyPredictAdapterTests(unittest.TestCase):
         self.assertEqual(record.extra["pred_proba_down"], 0.69)
         self.assertEqual(record.extra["param_index"], 7)
         self.assertEqual(build_monthly.call_args.kwargs["end_date"], "2026-04-15")
+        self.assertIs(
+            source_runner.call_args.kwargs["database_config"],
+            database_config,
+        )
+        self.assertIs(
+            create_engine.call_args.kwargs["database_config"],
+            database_config,
+        )
 
 
 class _MonthlyCalendar:

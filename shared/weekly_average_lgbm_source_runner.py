@@ -4,13 +4,28 @@ import os
 import shutil
 import subprocess
 import tempfile
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
-from shared.weekly_average_source_evidence import WeeklyAverageSourceEvidence
+from shared.source_runtime_database import (
+    SourceRuntimeDatabaseConfig,
+    assert_source_package_identity,
+    assert_source_package_tree_safe,
+    assert_source_runtime_payload_safe,
+    install_source_runtime_database_config,
+    load_source_runtime_database_config,
+    prepare_private_source_runtime_tree,
+    redact_source_runtime_text,
+    run_source_subprocess,
+    source_subprocess_environment,
+    source_timeout_seconds,
+)
+from shared.weekly_average_source_evidence import (
+    WeeklyAverageSourceEvidence,
+    source_package_tree_sha256,
+)
 
 
 DETAIL_RELATIVE_PATH = Path("prediction") / "weekly_prediction_detail.csv"
@@ -21,8 +36,10 @@ def run_source_weekly_backtest(
     *,
     start_date: str,
     end_date: str,
+    database_config: SourceRuntimeDatabaseConfig | None = None,
 ) -> list[dict[str, Any]]:
     """重跑原始周平均 LGBM 回测包并返回 prediction detail 行。"""
+    config = database_config or load_source_runtime_database_config()
     return list(
         _run_source_weekly_backtest_cached(
             str(evidence.source_package_path),
@@ -30,6 +47,7 @@ def run_source_weekly_backtest(
             evidence.runner_module,
             start_date,
             end_date,
+            config,
         )
     )
 
@@ -38,50 +56,113 @@ def run_source_weekly_live(
     evidence: WeeklyAverageSourceEvidence,
     *,
     predict_date: str,
+    database_config: SourceRuntimeDatabaseConfig | None = None,
 ) -> list[dict[str, Any]]:
     """重跑原始周平均 LGBM live 包并返回 prediction detail 行。"""
-    with _source_runtime(evidence.source_package_path) as source_root:
+    config = database_config or load_source_runtime_database_config()
+    assert_source_package_identity(
+        evidence.source_package_path,
+        evidence.source_package_hash,
+        tree_sha256=source_package_tree_sha256,
+        label="weekly average",
+    )
+    with _source_runtime(
+        evidence.source_package_path,
+        evidence.source_package_hash,
+        database_config=config,
+    ) as source_root:
         weekly_root = source_root / "weekly_project"
         _run_python_module(
             evidence.live_runner_module,
             [predict_date, "--project-root", str(weekly_root), "--frequencies", "all", "--dry-run"],
             source_root=source_root,
             weekly_root=weekly_root,
+            database_config=config,
         )
-        return _read_detail_rows(weekly_root / "output")
+        rows = _read_detail_rows(weekly_root / "output")
+    assert_source_runtime_payload_safe(rows, config)
+    return rows
 
 
-@lru_cache(maxsize=8)
 def _run_source_weekly_backtest_cached(
     source_package_path: str,
     source_package_hash: str,
     runner_module: str,
     start_date: str,
     end_date: str,
+    database_config: SourceRuntimeDatabaseConfig,
 ) -> tuple[dict[str, Any], ...]:
-    del source_package_hash
-    with _source_runtime(Path(source_package_path)) as source_root:
+    assert_source_package_identity(
+        Path(source_package_path),
+        source_package_hash,
+        tree_sha256=source_package_tree_sha256,
+        label="weekly average",
+    )
+    with _source_runtime(
+        Path(source_package_path),
+        source_package_hash,
+        database_config=database_config,
+    ) as source_root:
         weekly_root = source_root / "weekly_project"
         _run_python_module(
             runner_module,
             [start_date, end_date, "--project-root", str(weekly_root), "--dry-run"],
             source_root=source_root,
             weekly_root=weekly_root,
+            database_config=database_config,
         )
-        return tuple(_read_detail_rows(weekly_root / "output"))
+        rows = tuple(_read_detail_rows(weekly_root / "output"))
+    assert_source_runtime_payload_safe(rows, database_config)
+    return rows
 
 
 class _source_runtime:
-    def __init__(self, source_package_path: Path):
+    def __init__(
+        self,
+        source_package_path: Path,
+        expected_source_package_sha256: str,
+        *,
+        database_config: SourceRuntimeDatabaseConfig | None = None,
+    ):
         self.source_package_path = source_package_path
+        self.expected_source_package_sha256 = (
+            expected_source_package_sha256
+        )
+        self.database_config = database_config
         self.tempdir: tempfile.TemporaryDirectory[str] | None = None
         self.source_root: Path | None = None
 
     def __enter__(self) -> Path:
         self.tempdir = tempfile.TemporaryDirectory(prefix="bfl_weekly_avg_source_")
         self.source_root = Path(self.tempdir.name) / "forecast_project"
-        shutil.copytree(self.source_package_path, self.source_root)
-        _clear_quarantine(self.source_root)
+        try:
+            assert_source_package_tree_safe(
+                self.source_package_path
+            )
+            shutil.copytree(self.source_package_path, self.source_root)
+            prepare_private_source_runtime_tree(self.source_root)
+            _clear_quarantine(self.source_root)
+            copied_sha256 = source_package_tree_sha256(
+                self.source_root
+            )
+            if copied_sha256 != self.expected_source_package_sha256:
+                raise RuntimeError(
+                    "weekly average copied source package hash differs "
+                    "from frozen source identity"
+                )
+            config = (
+                self.database_config
+                or load_source_runtime_database_config()
+            )
+            install_source_runtime_database_config(
+                self.source_root,
+                config,
+            )
+        except BaseException:
+            self.tempdir.cleanup()
+            self.tempdir = None
+            self.source_root = None
+            raise
         return self.source_root
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -95,8 +176,13 @@ def _run_python_module(
     *,
     source_root: Path,
     weekly_root: Path,
+    database_config: SourceRuntimeDatabaseConfig | None = None,
 ) -> None:
-    env = os.environ.copy()
+    config = (
+        database_config
+        or load_source_runtime_database_config()
+    )
+    env = source_subprocess_environment()
     env["PYTHONPATH"] = os.pathsep.join(
         [
             str(weekly_root / "src"),
@@ -107,19 +193,29 @@ def _run_python_module(
     )
     env["DRY_RUN"] = "1"
     command = [*_python_command(), "-m", module, *args]
-    completed = subprocess.run(
-        command,
-        cwd=str(weekly_root),
-        env=env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    timeout_sec = source_timeout_seconds(
+        "WEEKLY_AVERAGE_SOURCE_TIMEOUT_SEC"
     )
+    try:
+        completed = run_source_subprocess(
+            command,
+            cwd=str(weekly_root),
+            env=env,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "weekly average source runner timed out: "
+            f"timeout_sec={timeout_sec}\n"
+            f"stdout={redact_source_runtime_text(exc.stdout or '', config)}\n"
+            f"stderr={redact_source_runtime_text(exc.stderr or '', config)}"
+        ) from None
     if completed.returncode != 0:
         raise RuntimeError(
             "weekly average source runner failed: "
-            f"cmd={' '.join(command)}\nstdout={completed.stdout}\nstderr={completed.stderr}"
+            f"cmd={' '.join(command)}\n"
+            f"stdout={redact_source_runtime_text(completed.stdout, config)}\n"
+            f"stderr={redact_source_runtime_text(completed.stderr, config)}"
         )
 
 

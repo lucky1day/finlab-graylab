@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from shared.source_runtime_database import (
+    require_manifest_source_package_sha256,
+)
+
 
 WEEKLY_AVERAGE_SOURCE_ROLE = "source_original_weekly_average_algorithm"
 PLATFORM_CURRENT_SOURCE_ROLE = "platform_current_weekly_average_adapter"
@@ -72,6 +76,12 @@ def require_weekly_average_source_evidence(
         )
 
     source_package = _required_relative_dir(manifest, "source_package", batch_dir, scheme_id)
+    source_package_hash = require_manifest_source_package_sha256(
+        manifest,
+        source_package,
+        tree_sha256=source_package_tree_sha256,
+        label="weekly average",
+    )
     runner_module = str(manifest.get("runner_module") or "weekly.run_backtest").strip()
     live_runner_module = str(manifest.get("live_runner_module") or "weekly.run_weekly").strip()
     frequency = str(entry.get("frequency") or "").strip()
@@ -90,7 +100,7 @@ def require_weekly_average_source_evidence(
         generator=generator,
         manifest_path=manifest_path,
         source_package_path=source_package,
-        source_package_hash=_tree_sha256(source_package),
+        source_package_hash=source_package_hash,
         runner_module=runner_module,
         live_runner_module=live_runner_module,
         frequency=frequency,
@@ -179,9 +189,16 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _tree_sha256(path: Path) -> str:
+def source_package_tree_sha256(path: Path) -> str:
+    """计算周平均 source package 的内容与相对路径摘要。"""
     digest = hashlib.sha256()
-    for child in sorted(p for p in path.rglob("*") if p.is_file()):
+    for child in sorted(
+        item
+        for item in path.rglob("*")
+        if item.is_file()
+        and "__pycache__" not in item.parts
+        and item.suffix != ".pyc"
+    ):
         rel = child.relative_to(path).as_posix()
         digest.update(rel.encode("utf-8"))
         digest.update(b"\0")

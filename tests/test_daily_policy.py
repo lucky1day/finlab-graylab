@@ -19,8 +19,8 @@ LIVE_SOURCE_0629 = {
     "daily_5y_lgbm_5y10_0629",
 }
 DAILY_0629_SOURCE_PACKAGE_SHA256 = (
-    "3025fc532dfdeb8e17cfd6b79103d5b3"
-    "ddb56b404c81eef82710b136ddf65689"
+    "de63375f51810962ad10162444f93f7b"
+    "2fbde6236b7f4b9921734ae6b8fad1e3"
 )
 
 
@@ -363,6 +363,10 @@ class DailyPolicyTests(unittest.TestCase):
             )
 
     def test_only_three_0629_items_use_live_source_compatibility(self) -> None:
+        from shared.daily_0629_source_evidence import (
+            require_daily_0629_source_evidence,
+        )
+
         self.assertIsNotNone(self.module, "scheduler.daily_policy is missing")
 
         policy = self.module.load_daily_policy(
@@ -381,6 +385,15 @@ class DailyPolicyTests(unittest.TestCase):
                 item.source_package_sha256
                 for item in policy.schemes.values()
                 if item.scheme_id in LIVE_SOURCE_0629
+            },
+            {DAILY_0629_SOURCE_PACKAGE_SHA256},
+        )
+        self.assertEqual(
+            {
+                require_daily_0629_source_evidence(
+                    scheme_id
+                ).source_package_hash
+                for scheme_id in LIVE_SOURCE_0629
             },
             {DAILY_0629_SOURCE_PACKAGE_SHA256},
         )

@@ -75,6 +75,13 @@ from shared.prediction_context import (
     build_monthly_live_context,
     build_weekly_live_context,
 )
+from shared.source_runtime_database import (
+    SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV,
+    SOURCE_RUNTIME_SCHEME_IDS,
+    SourceRuntimeDatabaseConfig,
+    frozen_source_runtime_database_config,
+    load_source_runtime_database_config,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -128,7 +135,9 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "MONTHLY_SOURCE_CACHE_DISABLE",
         "MONTHLY_SOURCE_CACHE_DIR",
         "MONTHLY_SOURCE_PYTHON",
+        "MONTHLY_SOURCE_TIMEOUT_SEC",
         "WEEKLY_AVERAGE_SOURCE_PYTHON",
+        "WEEKLY_AVERAGE_SOURCE_TIMEOUT_SEC",
     }
 )
 
@@ -211,6 +220,14 @@ def run_scheme_subprocess(
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
     env = _build_algorithm_environment()
+    env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
+    source_database_config: (
+        SourceRuntimeDatabaseConfig | None
+    ) = None
+    if scheme_id in SOURCE_RUNTIME_SCHEME_IDS:
+        source_database_config = (
+            load_source_runtime_database_config()
+        )
     native_environment_names = (
         NATIVE_INPUT_MODE_ENV,
         NATIVE_MANIFEST_PATH_ENV,
@@ -367,7 +384,19 @@ def run_scheme_subprocess(
         process_kwargs["process_started"] = process_started
     if process_fence is not None:
         process_kwargs["process_fence"] = process_fence
-    completed = _run_process_group(cmd, **process_kwargs)
+    source_database_context = (
+        frozen_source_runtime_database_config(
+            source_database_config
+        )
+        if source_database_config is not None
+        else nullcontext(None)
+    )
+    with source_database_context as source_database_path:
+        if source_database_path is not None:
+            env[SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV] = str(
+                source_database_path
+            )
+        completed = _run_process_group(cmd, **process_kwargs)
     payload = json.loads(completed.stdout)
     if not isinstance(payload, list):
         raise ValueError(f"scheme runner returned non-list payload for {scheme_id}")

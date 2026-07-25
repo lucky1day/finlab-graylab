@@ -8,6 +8,22 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def _database_config():
+    from shared.source_runtime_database import (
+        SourceRuntimeDatabaseConfig,
+    )
+
+    return SourceRuntimeDatabaseConfig(
+        user="source_reader",
+        password="source-test-secret",
+        host="127.0.0.1",
+        port=43306,
+        database="bfl_source_test",
+        charset="utf8mb4",
+        config_path=Path("/private/source-db.json"),
+    )
+
+
 class Daily0629SourceEvidenceTests(unittest.TestCase):
     def test_private_source_copy_must_match_frozen_package_hash(
         self,
@@ -157,6 +173,7 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
             input_artifacts.LIVE_SOURCE_PACKAGE_SHA256_ENV:
                 "a" * 64,
         }
+        database_config = _database_config()
         with (
             patch.dict(os.environ, environment, clear=False),
             patch(
@@ -168,12 +185,12 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                 "shared.daily_0629_predict_adapter."
                 "run_source_daily_live",
                 side_effect=run_source,
-            ),
+            ) as source_runner,
             patch(
                 "shared.daily_0629_predict_adapter."
                 "create_input_engine",
                 return_value=engine,
-            ),
+            ) as create_engine,
             patch(
                 "shared.daily_0629_predict_adapter.get_calendar",
                 return_value=calendar,
@@ -187,6 +204,11 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                 "shared.daily_0629_predict_adapter."
                 "build_daily_input_artifact",
                 side_effect=build_artifact,
+            ),
+            patch(
+                "shared.daily_0629_predict_adapter."
+                "load_source_runtime_database_config",
+                return_value=database_config,
             ),
         ):
             records = run_daily_0629_prediction(
@@ -207,6 +229,14 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
         )
         self.assertEqual(extra["source_package_hash"], "a" * 64)
         self.assertEqual(events, ["artifact", "source"])
+        self.assertIs(
+            source_runner.call_args.kwargs["database_config"],
+            database_config,
+        )
+        self.assertIs(
+            create_engine.call_args.kwargs["database_config"],
+            database_config,
+        )
 
     def test_require_daily_source_evidence_reads_manifest_entry(self) -> None:
         from shared.daily_0629_source_evidence import DAILY_0629_SOURCE_ROLE, require_daily_0629_source_evidence
@@ -223,6 +253,7 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                     {{
                       "source_role": "{DAILY_0629_SOURCE_ROLE}",
                       "source_package": "source_package/forecast_project",
+                      "source_package_sha256": "d3d6784a258eb3f7e26468d16153a6d3b83cff73c8085ccf52287ed9c7cad7a6",
                       "runner_module": "daily.run_backtest",
                       "live_runner_module": "daily.run_daily",
                       "python_env": "forecast_env",
@@ -277,13 +308,21 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (source / "daily_project" / "src" / "run_daily.sh").chmod(0o755)
+            (source / "db_config.py").write_text(
+                "DB_CONFIG = {'password': 'packaged-must-not-run'}\n",
+                encoding="utf-8",
+            )
+            from shared.daily_0629_source_evidence import (
+                source_package_tree_sha256,
+            )
+
             evidence = Daily0629SourceEvidence(
                 scheme_id="daily_10y_lgbm_10y04_0629",
                 source_role="source_original_daily_0629_algorithm",
                 generator="fake",
                 manifest_path=source / "manifest.json",
                 source_package_path=source,
-                source_package_hash="0" * 64,
+                source_package_hash=source_package_tree_sha256(source),
                 runner_module="daily.run_backtest",
                 live_runner_module="daily.run_daily",
                 frequency="D10Y",
@@ -294,8 +333,22 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                 model_id="10y_all_daily_ic_top200_lgbm_7sig",
             )
 
-            with patch("shared.daily_0629_source_runner._python_command", return_value=[__import__("sys").executable]):
-                rows = run_source_daily_live(evidence, predict_date="2026-06-10")
+            with (
+                patch.dict(
+                    os.environ,
+                    {"DAILY_0629_SOURCE_CACHE_DISABLE": "1"},
+                    clear=False,
+                ),
+                patch(
+                    "shared.daily_0629_source_runner._python_command",
+                    return_value=[__import__("sys").executable],
+                ),
+            ):
+                rows = run_source_daily_live(
+                    evidence,
+                    predict_date="2026-06-10",
+                    database_config=_database_config(),
+                )
 
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["frequency"], "D10Y")

@@ -2,6 +2,7 @@
   "source_role": "source_original_daily_0629_algorithm",
   "source_family": "daily_0629_binary_runner",
   "source_package": "source_package/forecast_project",
+  "source_package_sha256": "de63375f51810962ad10162444f93f7b2fbde6236b7f4b9921734ae6b8fad1e3",
   "runner_module": "daily.run_backtest",
   "live_runner_module": "daily.run_daily",
   "python_env": "forecast_env",

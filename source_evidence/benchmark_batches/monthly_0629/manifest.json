@@ -2,6 +2,7 @@
   "source_role": "source_original_monthly_algorithm",
   "source_family": "monthly_0629_binary_runner",
   "source_package": "source_package/forecast_project",
+  "source_package_sha256": "2ab82437de8fe96a556b0cf492d36739442497f861e87d2a58be8cc320088e47",
   "runner_module": "src.monthly.run_monthly_pipeline",
   "python_env": "forecast_env",
   "source_notes": [

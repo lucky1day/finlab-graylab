@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.test_native_generation_input_artifacts import _generation_context
@@ -70,6 +72,7 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             "LC_ALL": "en_US.UTF-8",
             "OMP_NUM_THREADS": "2",
             "LIWEI_0616_PHASE_A_CACHE_ROOT": "/tmp/cache",
+            "BFL_SOURCE_DB_CONFIG_PATH": "/private/source-db.json",
             "BOND_DB_PASSWORD": "db-secret-sentinel",
             "DATABRIDGE_API_PASSWORD": "bridge-secret-sentinel",
             "ANTHROPIC_API_KEY": "api-secret-sentinel",
@@ -98,6 +101,7 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             "/tmp/cache",
         )
         for secret_name in (
+            "BFL_SOURCE_DB_CONFIG_PATH",
             "BOND_DB_PASSWORD",
             "DATABRIDGE_API_PASSWORD",
             "ANTHROPIC_API_KEY",
@@ -178,29 +182,68 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
 
         context = _generation_context()
         captured: dict[str, str] = {}
+        runtime_config_path: Path | None = None
 
         def fake_run(cmd, *, cwd, env, timeout):
             from subprocess import CompletedProcess
 
+            nonlocal runtime_config_path
             del cwd, timeout
             captured.update(env)
+            runtime_config_path = Path(
+                env["BFL_SOURCE_DB_CONFIG_PATH"]
+            )
+            self.assertTrue(runtime_config_path.is_file())
+            self.assertNotEqual(
+                runtime_config_path,
+                original_config_path,
+            )
             return CompletedProcess(cmd, 0, "[]", "")
 
-        with patch(
-            "scheduler.executor._run_process_group",
-            side_effect=fake_run,
-        ):
-            run_scheme_subprocess(
-                "daily_1y_xgb_1y13_0629",
-                "2026-07-24",
-                native_generation=context,
-                execution_token="compat-attempt",
-                live_source_compatibility=True,
-                live_source_package_sha256=(
-                    "3025fc532dfdeb8e17cfd6b79103d5b3"
-                    "ddb56b404c81eef82710b136ddf65689"
-                ),
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from shared.source_runtime_database import (
+                SourceRuntimeDatabaseConfig,
             )
+
+            original_config_path = (
+                Path(tmpdir) / "source-db.json"
+            )
+            original_config_path.write_text(
+                "{}",
+                encoding="utf-8",
+            )
+            original_config_path.chmod(0o600)
+            database_config = SourceRuntimeDatabaseConfig(
+                user="source_reader",
+                password="source-test-secret",
+                host="127.0.0.1",
+                port=43306,
+                database="bfl_source_test",
+                charset="utf8mb4",
+                config_path=original_config_path,
+            )
+            with (
+                patch(
+                    "scheduler.executor._run_process_group",
+                    side_effect=fake_run,
+                ),
+                patch(
+                    "scheduler.executor."
+                    "load_source_runtime_database_config",
+                    return_value=database_config,
+                ),
+            ):
+                run_scheme_subprocess(
+                    "daily_1y_xgb_1y13_0629",
+                    "2026-07-24",
+                    native_generation=context,
+                    execution_token="compat-attempt",
+                    live_source_compatibility=True,
+                    live_source_package_sha256=(
+                        "de63375f51810962ad10162444f93f7b"
+                        "2fbde6236b7f4b9921734ae6b8fad1e3"
+                    ),
+                )
 
         self.assertNotIn(
             input_artifacts.NATIVE_INPUT_MODE_ENV,
@@ -225,14 +268,20 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
                 input_artifacts.LIVE_SOURCE_PACKAGE_SHA256_ENV
             ],
             (
-                "3025fc532dfdeb8e17cfd6b79103d5b3"
-                "ddb56b404c81eef82710b136ddf65689"
+                "de63375f51810962ad10162444f93f7b"
+                "2fbde6236b7f4b9921734ae6b8fad1e3"
             ),
         )
         self.assertEqual(
             captured["DAILY_0629_SOURCE_CACHE_DISABLE"],
             "1",
         )
+        self.assertEqual(
+            captured["BFL_SOURCE_DB_CONFIG_PATH"],
+            str(runtime_config_path),
+        )
+        self.assertIsNotNone(runtime_config_path)
+        self.assertFalse(runtime_config_path.exists())
 
     def test_cache_qualification_is_explicitly_validated_and_injected(
         self,
