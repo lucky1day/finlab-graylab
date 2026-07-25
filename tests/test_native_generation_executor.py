@@ -249,7 +249,9 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
                 patch(
                     "scheduler.executor."
                     "load_source_runtime_database_config",
-                    return_value=database_config,
+                    side_effect=AssertionError(
+                        "explicit preflighted config must not be reloaded"
+                    ),
                 ),
             ):
                 run_scheme_subprocess(
@@ -262,6 +264,7 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
                         "de63375f51810962ad10162444f93f7b"
                         "2fbde6236b7f4b9921734ae6b8fad1e3"
                     ),
+                    source_database_config=database_config,
                 )
 
         self.assertNotIn(

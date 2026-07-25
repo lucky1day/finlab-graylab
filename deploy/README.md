@@ -378,6 +378,47 @@ conda run --no-capture-output -n forecast_env \
 不得通过伪造历史 snapshot clock、使用周末 generation 或复用旧 live DB 报告来
 替代交易日日批认证；当前没有合法 generation 时只允许提交和验证 runner 本身。
 
+三个 0629 兼容方案必须逐个完成真实 source runner 认证。本阶段只准入
+`daily_1y_xgb_1y13_0629`；入口固定使用 source-readonly 配置，关闭 source
+cache、锁定 `forecast_env` 和内部 worker 1，并在同一源水位连续运行两次。
+runner 会核对完整 PredictionRecord/extra、source package SHA、输入水位和
+全部平台可写业务表的结构与内容指纹
+（`all_platform_write_tables_full_content`）；每轮前后还会重算全部 Git
+tracked 文件及所有可执行源码根（不受 Git ignore 影响）的 bytes/mode 摘要、固定 `/usr/bin/git`
+摘要、conda explicit 清单、source Python package 清单，以及
+`bond_factor_lab_service`/`forecast_env` 两个实际环境树内全部文件 bytes。
+`conda run` 的 base runtime（排除另行绑定的 env/package cache）、有效配置源和
+`forecast_env` 实际解析结果也会逐轮复核。
+官方脚本会在 import 任一候选模块之前启动专属控制进程；控制进程和算法子进程
+分别使用全新空 `PYTHONPYCACHEPREFIX` 且禁止写 bytecode；共享 executor 会自行
+创建并回收算法 prefix，拒绝继承 launchd/人工环境中的 prefix，避免读取候选摘要之外的旧 pyc。
+证据只写入无 symlink 祖先、预先创建的
+`0700` 忽略目录，文件权限为 `0600`：
+
+```bash
+report_root="$(mktemp -d /tmp/bfl-daily-0629-cert-1y.XXXXXX)"
+chmod 700 "$report_root"
+report_root="$(cd "$report_root" && pwd -P)"
+BFL_DAILY_0629_CERTIFY_REAL=1 \
+  BFL_SOURCE_DB_CONFIG_ROOT=<absolute-bfl-private-config-root> \
+  BFL_SOURCE_DB_CONFIG_PATH=<absolute-source-readonly-config-json> \
+  conda run --no-capture-output -n bond_factor_lab_service \
+  python -B scripts/certify_daily_0629_source.py \
+    --scheme-id daily_1y_xgb_1y13_0629 \
+    --predict-date <next-trading-day> \
+    --report-path "$report_root/report.json" \
+    --authorize-real-run
+```
+
+report root 必须在候选仓库之外；仓库内路径即使被 `.gitignore` 匹配也会拒绝。
+该证据的 scope 固定为 `live_source_no_persist_observed_watermark`，不会创建
+run、prediction 或 ledger 行，也不会把报告提交 Git。报告会明确记录候选
+commit、完整候选执行闭包摘要以及 worktree 是否 clean；提交前验证即使处于
+dirty worktree，也只对报告绑定的精确 bytes 有效，提交后必须在 clean candidate
+上复跑。它证明所绑定 live-source adapter 与归档 source package 的真实确定性；
+不冒充 `SEALED` generation 或真实 occurrence fence 认证，后者仍须在完整
+21/25 隔离联跑中验证。
+
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
   python scripts/evaluate_daily_capacity_gate.py <attested-evidence.json> \

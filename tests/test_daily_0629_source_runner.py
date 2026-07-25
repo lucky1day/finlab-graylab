@@ -300,7 +300,7 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                     mkdir -p daily_project/output/$2/prediction
                     cat > daily_project/output/$2/prediction/daily_selected_prediction_rows.csv <<'CSV'
                     rdate,frequency,final_select_id,candidate_id,prediction_date,expected_prediction_date,is_prediction_date_aligned,pred_label,result,prob_up
-                    2026-06-10,D10Y,10Y04,10y_all_daily_ic_top200_lgbm_7sig,2026-06-09,2026-06-09,True,-1,多,0.51
+                    2026-06-10,D1Y,1Y13,1y_xgb,2026-06-09,2026-06-09,True,0,平,0.50
                     CSV
                     """
                 ).strip()
@@ -317,7 +317,7 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
             )
 
             evidence = Daily0629SourceEvidence(
-                scheme_id="daily_10y_lgbm_10y04_0629",
+                scheme_id="daily_1y_xgb_1y13_0629",
                 source_role="source_original_daily_0629_algorithm",
                 generator="fake",
                 manifest_path=source / "manifest.json",
@@ -325,12 +325,12 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                 source_package_hash=source_package_tree_sha256(source),
                 runner_module="daily.run_backtest",
                 live_runner_module="daily.run_daily",
-                frequency="D10Y",
-                target_tenor="10Y",
-                final_select_id="10Y04",
-                candidate_id="10y_all_daily_ic_top200_lgbm_7sig",
-                target_col="TB0YWI0C",
-                model_id="10y_all_daily_ic_top200_lgbm_7sig",
+                frequency="D1Y",
+                target_tenor="1Y",
+                final_select_id="1Y13",
+                candidate_id="1y_xgb",
+                target_col="TB1YWI0C",
+                model_id="1y_xgb",
             )
 
             with (
@@ -351,8 +351,9 @@ class Daily0629SourceEvidenceTests(unittest.TestCase):
                 )
 
         self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["frequency"], "D10Y")
+        self.assertEqual(rows[0]["frequency"], "D1Y")
         self.assertEqual(rows[0]["source_output_date"], "2026-06-10")
+        self.assertEqual(rows[0]["pred_label"], "0")
 
     def test_live_model_version_uses_short_select_id_for_db_column(self) -> None:
         from shared.daily_0629_predict_adapter import _model_version_from_evidence

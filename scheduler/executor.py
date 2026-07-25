@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import subprocess
+import tempfile
 import time
 from collections import Counter
 from contextlib import nullcontext
@@ -113,10 +115,6 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "LANG",
         "LANGUAGE",
         "TZ",
-        "CONDA_EXE",
-        "CONDA_PYTHON_EXE",
-        "_CE_CONDA",
-        "_CE_M",
         "OMP_NUM_THREADS",
         "OPENBLAS_NUM_THREADS",
         "MKL_NUM_THREADS",
@@ -125,6 +123,7 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "GLOG_minloglevel",
         "ABSL_LOGGING_MIN_LEVEL",
         "MPLCONFIGDIR",
+        "PYTHONDONTWRITEBYTECODE",
         "BOND_DAILY_COORDINATOR_MODE",
         "LIWEI_0616_PHASE_A_CACHE_ROOT",
         "DAILY_0629_SOURCE_CACHE_DISABLE",
@@ -216,6 +215,9 @@ def run_scheme_subprocess(
     live_source_package_sha256: str | None = None,
     cache_use_qualification: dict[str, object] | None = None,
     execution_token: str | None = None,
+    source_database_config: (
+        SourceRuntimeDatabaseConfig | None
+    ) = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
 ) -> list[PredictionRecord]:
@@ -223,12 +225,14 @@ def run_scheme_subprocess(
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
-    source_database_config: (
-        SourceRuntimeDatabaseConfig | None
-    ) = None
     if scheme_id in SOURCE_RUNTIME_SCHEME_IDS:
-        source_database_config = (
-            load_source_runtime_database_config()
+        if source_database_config is None:
+            source_database_config = (
+                load_source_runtime_database_config()
+            )
+    elif source_database_config is not None:
+        raise ValueError(
+            "source database config is only valid for source schemes"
         )
     native_environment_names = (
         NATIVE_INPUT_MODE_ENV,
@@ -393,15 +397,33 @@ def run_scheme_subprocess(
         if source_database_config is not None
         else nullcontext(None)
     )
-    with source_database_context as source_database_path:
-        if source_database_path is not None:
-            env[SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV] = str(
-                source_database_path.parent
+    with tempfile.TemporaryDirectory(
+        prefix="bfl-native-pycache-"
+    ) as pycache_root:
+        os.chmod(pycache_root, 0o700)
+        pycache_path = Path(pycache_root).resolve(strict=True)
+        pycache_details = pycache_path.lstat()
+        if (
+            stat.S_ISLNK(pycache_details.st_mode)
+            or not stat.S_ISDIR(pycache_details.st_mode)
+            or pycache_details.st_uid != os.getuid()
+            or stat.S_IMODE(pycache_details.st_mode) != 0o700
+            or any(pycache_path.iterdir())
+        ):
+            raise RuntimeError("native pycache root is unsafe")
+        env["PYTHONPYCACHEPREFIX"] = str(pycache_path)
+        with source_database_context as source_database_path:
+            if source_database_path is not None:
+                env[SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV] = str(
+                    source_database_path.parent
+                )
+                env[SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV] = str(
+                    source_database_path
+                )
+            completed = _run_process_group(
+                cmd,
+                **process_kwargs,
             )
-            env[SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV] = str(
-                source_database_path
-            )
-        completed = _run_process_group(cmd, **process_kwargs)
     payload = json.loads(completed.stdout)
     if not isinstance(payload, list):
         raise ValueError(f"scheme runner returned non-list payload for {scheme_id}")
@@ -417,6 +439,7 @@ def _build_algorithm_environment() -> dict[str, str]:
         or name.startswith("LC_")
     }
     environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return environment
 
 

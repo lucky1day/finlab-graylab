@@ -4,6 +4,7 @@ import os
 import unittest
 import inspect
 import signal
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -47,6 +48,93 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             environment["BOND_DAILY_COORDINATOR_MODE"],
             "ledger",
         )
+
+    def test_algorithm_environment_rejects_inherited_pycache_prefix(
+        self,
+    ) -> None:
+        from scheduler.executor import _build_algorithm_environment
+
+        with patch.dict(
+            os.environ,
+            {
+                "PYTHONPYCACHEPREFIX": "/private/empty-cert-pycache",
+                "PYTHONDONTWRITEBYTECODE": "0",
+                "CONDA_EXE": "/private/untrusted-conda",
+                "CONDA_PYTHON_EXE": "/private/untrusted-python",
+                "_CE_CONDA": "bogus",
+                "_CE_M": "bogus",
+            },
+            clear=False,
+        ):
+            environment = _build_algorithm_environment()
+
+        self.assertNotIn("PYTHONPYCACHEPREFIX", environment)
+        for name in (
+            "CONDA_EXE",
+            "CONDA_PYTHON_EXE",
+            "_CE_CONDA",
+            "_CE_M",
+        ):
+            self.assertNotIn(name, environment)
+        self.assertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
+
+    def test_native_subprocess_uses_fresh_private_pycache_prefix(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        captured: dict[str, object] = {}
+
+        def run_process(_cmd, **kwargs):
+            environment = kwargs["env"]
+            pycache = Path(environment["PYTHONPYCACHEPREFIX"])
+            captured["path"] = pycache
+            captured["mode"] = stat.S_IMODE(pycache.stat().st_mode)
+            captured["empty"] = not any(pycache.iterdir())
+            return SimpleNamespace(stdout="[]")
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PYTHONPYCACHEPREFIX":
+                        "/private/untrusted-existing-pycache",
+                },
+                clear=False,
+            ),
+            patch(
+                "scheduler.executor._run_process_group",
+                side_effect=run_process,
+            ),
+        ):
+            self.assertEqual(
+                run_scheme_subprocess(
+                    "demo",
+                    "2026-07-03",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                ),
+                [],
+            )
+
+        self.assertEqual(captured["mode"], 0o700)
+        self.assertTrue(captured["empty"])
+        self.assertFalse(Path(captured["path"]).exists())
+
+    def test_non_source_scheme_rejects_explicit_source_database_config(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "only valid for source schemes",
+        ):
+            run_scheme_subprocess(
+                "demo",
+                "2026-07-03",
+                source_database_config=SimpleNamespace(),
+            )
 
     def test_native_process_started_callback_runs_once_before_communicate(
         self,

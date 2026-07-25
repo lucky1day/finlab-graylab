@@ -854,6 +854,13 @@ class ScheduledExecutorTests(unittest.TestCase):
         envelope = _envelope()
         envelope.item.base_scheme_id = scheme_id
         envelope.item.scheme_version = "0629-v1"
+        envelope.targets = (
+            SimpleNamespace(
+                target_tenor="1Y",
+                horizon=1,
+                target_date="2026-07-24",
+            ),
+        )
         envelope.occurrence.policy_json["schemes"] = [
             {
                 "scheme_id": scheme_id,
@@ -879,11 +886,11 @@ class ScheduledExecutorTests(unittest.TestCase):
         )
         record = PredictionRecord(
             scheme_id=scheme_id,
-            target_tenor="5Y",
+            target_tenor="1Y",
             horizon=1,
             predict_date="2026-07-24",
             feature_date="2026-07-23",
-            target_date="2026-07-27",
+            target_date="2026-07-24",
             predicted_direction=1,
             extra={
                 "input_mode": "live_source_0629",
@@ -921,7 +928,7 @@ class ScheduledExecutorTests(unittest.TestCase):
             patch(
                 "scheduler.scheduled_executor.complete_scheduled_attempt",
                 return_value=1,
-            ),
+            ) as complete,
         ):
             result = execute_scheduled_item(object(), item_id=11)
 
@@ -939,6 +946,11 @@ class ScheduledExecutorTests(unittest.TestCase):
             ],
             "c" * 64,
         )
+        committed = list(complete.call_args.kwargs["records"])
+        self.assertEqual(len(committed), 1)
+        self.assertEqual(committed[0].scheme_id, scheme_id)
+        self.assertEqual(committed[0].target_tenor, "1Y")
+        self.assertEqual(committed[0].prediction_phase, "scheduled_live")
 
     def test_live_source_audit_rejects_source_package_drift(
         self,
