@@ -832,6 +832,10 @@ class Daily0629CertificationTests(unittest.TestCase):
                 check=True,
             )
             (project_root / "harness").mkdir()
+            (project_root / ".env").write_text(
+                "BOND_DB_PASSWORD=bound-only\n",
+                encoding="utf-8",
+            )
             local_control = project_root / ".claude"
             local_control.mkdir()
             (local_control / "settings.local.json").write_text(
