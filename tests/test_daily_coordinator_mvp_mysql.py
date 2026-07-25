@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import subprocess
@@ -7,6 +8,7 @@ import sys
 import threading
 import unittest
 from collections import Counter
+from contextlib import ExitStack, contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -16,9 +18,13 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import text
 
 from scheduler.daily_runtime import DailyRuntime
+from scheduler.daily_health import project_daily_health
 from scheduler import repository as schedule_repository
 from scheduler.repository import (
+    SchedulerHeartbeat,
     create_schedule_occurrence,
+    evaluate_schedule_occurrence_target_sla,
+    read_schedule_health_envelope,
     read_schedule_execution_envelope,
     read_schedule_occurrence_snapshot,
     register_seal_and_bind_schedule_occurrence_generation,
@@ -220,6 +226,7 @@ class _MVPMySQLServices(_V2MySQLServices):
         policy,
         clock: _MutableClock,
         occurrence_id: int,
+        transient_once_scheme_id: str | None = None,
     ) -> None:
         super().__init__(
             engine=engine,
@@ -253,7 +260,36 @@ class _MVPMySQLServices(_V2MySQLServices):
             summary.item.base_scheme_id: summary.item.item_id
             for summary in snapshot.items
         }
+        self.occurrence_id = occurrence_id
         self.process_started_callbacks = 0
+        self.transient_once_scheme_id = transient_once_scheme_id
+
+    def find_occurrence_id(self, business_date: date) -> int | None:
+        if business_date != BUSINESS_DATE:
+            return None
+        return self.occurrence_id
+
+    @staticmethod
+    def validate_occurrence_epoch(*, snapshot) -> None:
+        _assert_test_epoch(
+            snapshot.occurrence.policy_json.get(
+                "daily_coordinator_epoch"
+            ),
+            label="daily occurrence coordinator epoch",
+        )
+
+    def evaluate_target_sla(
+        self,
+        *,
+        occurrence_id: int,
+        evaluated_at: datetime,
+    ):
+        return evaluate_schedule_occurrence_target_sla(
+            self.engine,
+            occurrence_id=occurrence_id,
+            evaluated_at=evaluated_at,
+            _clock=self._clock,
+        )
 
     def dispatch_decisions(
         self,
@@ -360,6 +396,14 @@ class _MVPMySQLServices(_V2MySQLServices):
                 f"controlled recorder exited with {return_code}"
             )
         process_fence()
+        if (
+            config.scheme_id == self.transient_once_scheme_id
+            and self.attempts[config.scheme_id] == 1
+        ):
+            raise TimeoutError(
+                errno.ETIMEDOUT,
+                "injected transient recorder timeout",
+            )
         records = _records_for_item(self.engine, item_id)
         envelope = read_schedule_execution_envelope(
             self.engine,
@@ -415,6 +459,111 @@ def _repository_call_with_clock(function, clock):
         return function(*args, **kwargs)
 
     return call
+
+
+@contextmanager
+def _controlled_executor_patches(
+    services: _MVPMySQLServices,
+    clock: _MutableClock,
+):
+    """返回保持生产执行控制流、仅替换算法与测试时钟的 patch 集。"""
+    patches = (
+        patch(
+            "scheduler.scheduled_executor."
+            "assert_daily_coordinator_epoch_matches_policy",
+            side_effect=lambda policy_json: _assert_test_epoch(
+                policy_json.get("daily_coordinator_epoch"),
+                label="daily occurrence coordinator epoch",
+            ),
+        ),
+        patch(
+            "scheduler.scheduled_executor._open_frozen_generations",
+            side_effect=_controlled_open_frozen_generations,
+        ),
+        patch(
+            "scheduler.scheduled_executor.run_configured_scheme",
+            side_effect=services.controlled_canonical_recorder,
+        ),
+        patch(
+            "scheduler.scheduled_executor.start_schedule_attempt",
+            side_effect=_repository_call_with_clock(
+                schedule_repository.start_schedule_attempt,
+                clock,
+            ),
+        ),
+        patch(
+            "scheduler.scheduled_executor."
+            "register_schedule_attempt_process",
+            side_effect=_repository_call_with_clock(
+                schedule_repository.register_schedule_attempt_process,
+                clock,
+            ),
+        ),
+        patch(
+            "scheduler.scheduled_executor.complete_scheduled_attempt",
+            side_effect=_repository_call_with_clock(
+                schedule_repository.complete_scheduled_attempt,
+                clock,
+            ),
+        ),
+        patch(
+            "scheduler.scheduled_executor."
+            "mark_schedule_attempt_retry_wait",
+            side_effect=_repository_call_with_clock(
+                schedule_repository.mark_schedule_attempt_retry_wait,
+                clock,
+            ),
+        ),
+        patch(
+            "scheduler.scheduled_executor."
+            "mark_schedule_attempt_terminal_failure",
+            side_effect=_repository_call_with_clock(
+                schedule_repository.mark_schedule_attempt_terminal_failure,
+                clock,
+            ),
+        ),
+    )
+    with ExitStack() as stack:
+        for controlled_patch in patches:
+            stack.enter_context(controlled_patch)
+        yield
+
+
+def _health_projection(
+    engine,
+    *,
+    occurrence_id: int,
+    now: datetime,
+) -> dict[str, object]:
+    snapshot = read_schedule_occurrence_snapshot(
+        engine,
+        occurrence_id=occurrence_id,
+    )
+    envelopes = tuple(
+        read_schedule_health_envelope(
+            engine,
+            item_id=summary.item.item_id,
+        )
+        for summary in snapshot.items
+    )
+    heartbeat = SchedulerHeartbeat(
+        service_name="daily-coordinator",
+        process_id=os.getpid(),
+        host_name="isolated-mvp-mysql",
+        state="RUNNING",
+        occurrence_id=occurrence_id,
+        heartbeat_at=now,
+        details={
+            "business_date": BUSINESS_DATE.isoformat(),
+            "coordinator_mode": "ledger",
+        },
+    )
+    return project_daily_health(
+        snapshot,
+        heartbeat,
+        execution_envelopes=envelopes,
+        now=now,
+    )
 
 
 def _database_counts(engine, occurrence_id: int) -> dict[str, int]:
@@ -625,56 +774,7 @@ class DailyCoordinatorMVPMySQLTests(unittest.TestCase):
                     occurrence_id=occurrence_id,
                 )
                 runtime = DailyRuntime(services)
-                with (
-                    patch(
-                        "scheduler.scheduled_executor."
-                        "assert_daily_coordinator_epoch_matches_policy",
-                        side_effect=lambda policy_json: _assert_test_epoch(
-                            policy_json.get("daily_coordinator_epoch"),
-                            label=(
-                                "daily occurrence coordinator epoch"
-                            ),
-                        ),
-                    ),
-                    patch(
-                        "scheduler.scheduled_executor."
-                        "_open_frozen_generations",
-                        side_effect=_controlled_open_frozen_generations,
-                    ),
-                    patch(
-                        "scheduler.scheduled_executor."
-                        "run_configured_scheme",
-                        side_effect=(
-                            services.controlled_canonical_recorder
-                        ),
-                    ),
-                    patch(
-                        "scheduler.scheduled_executor."
-                        "start_schedule_attempt",
-                        side_effect=_repository_call_with_clock(
-                            schedule_repository.start_schedule_attempt,
-                            clock,
-                        ),
-                    ),
-                    patch(
-                        "scheduler.scheduled_executor."
-                        "register_schedule_attempt_process",
-                        side_effect=_repository_call_with_clock(
-                            schedule_repository.
-                            register_schedule_attempt_process,
-                            clock,
-                        ),
-                    ),
-                    patch(
-                        "scheduler.scheduled_executor."
-                        "complete_scheduled_attempt",
-                        side_effect=_repository_call_with_clock(
-                            schedule_repository.
-                            complete_scheduled_attempt,
-                            clock,
-                        ),
-                    ),
-                ):
+                with _controlled_executor_patches(services, clock):
                     first = runtime._drive_items(
                         occurrence_id=occurrence_id,
                         business_date=BUSINESS_DATE,
@@ -796,6 +896,351 @@ class DailyCoordinatorMVPMySQLTests(unittest.TestCase):
                     )
                 )
             finally:
+                engine.dispose()
+
+    def test_sla_breach_is_write_once_after_late_completion(self) -> None:
+        policy, configs = _real_policy_and_configs()
+        clock = _MutableClock(
+            datetime(2026, 7, 23, 22, 40, tzinfo=timezone.utc)
+        )
+        with (
+            _temporary_mysql() as server,
+            patch(
+                "scheduler.repository."
+                "assert_daily_coordinator_epoch_payload_matches_current",
+                side_effect=_assert_test_epoch,
+            ),
+        ):
+            schema, engine = server.create_schema("sla")
+            normal_engine = None
+            try:
+                _seed_test_registry(engine, policy, configs)
+                breach_id, _, _ = _create_mvp_occurrence(
+                    engine,
+                    policy,
+                    configs,
+                    schedule_key=f"daily-mvp-breach-{schema[-10:]}b",
+                    manifest_root=server.root,
+                    clock=clock,
+                )
+                breach_snapshot = read_schedule_occurrence_snapshot(
+                    engine,
+                    occurrence_id=breach_id,
+                )
+                failing_summary = next(
+                    summary
+                    for summary in breach_snapshot.items
+                    if summary.item.runtime_type == "blackbox_v2"
+                )
+                failing_scheme_id = (
+                    failing_summary.item.base_scheme_id
+                )
+                failing_envelope = read_schedule_execution_envelope(
+                    engine,
+                    item_id=failing_summary.item.item_id,
+                )
+                missing_registry_id = (
+                    failing_envelope.targets[0].registry_scheme_id
+                )
+                services = _MVPMySQLServices(
+                    engine=engine,
+                    policy=policy,
+                    clock=clock,
+                    occurrence_id=breach_id,
+                    transient_once_scheme_id=failing_scheme_id,
+                )
+                clock.set(
+                    datetime(2026, 7, 23, 22, 56, tzinfo=timezone.utc)
+                )
+                ordered = sorted(
+                    breach_snapshot.items,
+                    key=lambda summary: (
+                        summary.item.base_scheme_id
+                        == failing_scheme_id,
+                        summary.item.base_scheme_id,
+                    ),
+                )
+                with _controlled_executor_patches(services, clock):
+                    first_results = [
+                        execute_scheduled_item(
+                            engine,
+                            item_id=summary.item.item_id,
+                            trigger_origin="apscheduler",
+                            trusted_verifier=_ExpectationVerifier(),
+                        )
+                        for summary in ordered
+                    ]
+                    after_first = read_schedule_occurrence_snapshot(
+                        engine,
+                        occurrence_id=breach_id,
+                    )
+                    self.assertEqual(
+                        after_first.actual_accepted_target_count,
+                        24,
+                    )
+                    self.assertEqual(
+                        Counter(result.status for result in first_results),
+                        Counter({"success": 20, "retry_wait": 1}),
+                    )
+                    self.assertTrue(
+                        all(
+                            summary.item.attempt_no == 1
+                            for summary in after_first.items
+                        )
+                    )
+                    retry_item = next(
+                        summary.item
+                        for summary in after_first.items
+                        if summary.item.base_scheme_id
+                        == failing_scheme_id
+                    )
+                    self.assertEqual(retry_item.state, "RETRY_WAIT")
+
+                    deadline = datetime(
+                        2026,
+                        7,
+                        24,
+                        0,
+                        0,
+                        tzinfo=timezone.utc,
+                    )
+                    clock.set(deadline)
+                    services.current_time = deadline.astimezone(
+                        SHANGHAI
+                    )
+                    watchdog = DailyRuntime(services).run_watchdog(
+                        stage="target_sla",
+                        run_date=BUSINESS_DATE,
+                    )
+                    self.assertEqual(watchdog.status, "breached")
+                    self.assertEqual(
+                        watchdog.details["accepted_target_count"],
+                        24,
+                    )
+                    self.assertEqual(
+                        watchdog.details["sla_outcome"],
+                        "BREACHED",
+                    )
+                    self.assertTrue(
+                        any(
+                            alert["code"]
+                            == "DAILY_TARGET_SLA_BREACHED"
+                            for alert in services.alerts
+                        )
+                    )
+                    health = _health_projection(
+                        engine,
+                        occurrence_id=breach_id,
+                        now=deadline,
+                    )
+                    self.assertEqual(health["overall"], "error")
+                    self.assertEqual(
+                        health["targets"]["missing_registry_ids"],
+                        [missing_registry_id],
+                    )
+
+                    clock.set(
+                        datetime(
+                            2026,
+                            7,
+                            24,
+                            0,
+                            1,
+                            tzinfo=timezone.utc,
+                        )
+                    )
+                    retry = execute_scheduled_item(
+                        engine,
+                        item_id=retry_item.item_id,
+                        trigger_origin="auto_retry",
+                        trusted_verifier=_ExpectationVerifier(),
+                    )
+
+                self.assertEqual(retry.status, "success")
+                self.assertEqual(retry.attempt_no, 2)
+                services.current_time = clock.value.astimezone(SHANGHAI)
+                replayed_watchdog = DailyRuntime(services).run_watchdog(
+                    stage="target_sla",
+                    run_date=BUSINESS_DATE,
+                )
+                self.assertEqual(replayed_watchdog.status, "breached")
+                self.assertEqual(
+                    replayed_watchdog.details["sla_outcome"],
+                    "BREACHED",
+                )
+                self.assertEqual(
+                    sum(
+                        alert["code"] == "DAILY_TARGET_SLA_BREACHED"
+                        for alert in services.alerts
+                    ),
+                    1,
+                )
+                completed = read_schedule_occurrence_snapshot(
+                    engine,
+                    occurrence_id=breach_id,
+                )
+                self.assertEqual(
+                    completed.actual_accepted_target_count,
+                    25,
+                )
+                self.assertEqual(
+                    completed.occurrence.completion_state,
+                    "SUCCESS",
+                )
+                self.assertEqual(
+                    completed.occurrence.sla_outcome,
+                    "BREACHED",
+                )
+                self.assertEqual(
+                    completed.occurrence.sla_accepted_target_count,
+                    24,
+                )
+                self.assertEqual(
+                    completed.occurrence.sla_evaluated_at,
+                    deadline.replace(tzinfo=None),
+                )
+                self.assertEqual(_run_count(engine, breach_id), 22)
+                self.assertEqual(
+                    _database_counts(engine, breach_id),
+                    {
+                        "successful_items": 21,
+                        "accepted_targets": 25,
+                        "successful_runs": 21,
+                        "predictions": 25,
+                    },
+                )
+
+                normal_schema, normal_engine = server.create_schema("met")
+                _seed_test_registry(normal_engine, policy, configs)
+                normal_id, _, _ = _create_mvp_occurrence(
+                    normal_engine,
+                    policy,
+                    configs,
+                    schedule_key=(
+                        f"daily-mvp-normal-{normal_schema[-10:]}n"
+                    ),
+                    manifest_root=server.root,
+                    clock=clock,
+                )
+                normal_snapshot = read_schedule_occurrence_snapshot(
+                    normal_engine,
+                    occurrence_id=normal_id,
+                )
+                normal_services = _MVPMySQLServices(
+                    engine=normal_engine,
+                    policy=policy,
+                    clock=clock,
+                    occurrence_id=normal_id,
+                )
+                clock.set(
+                    datetime(2026, 7, 23, 22, 56, tzinfo=timezone.utc)
+                )
+                with _controlled_executor_patches(
+                    normal_services,
+                    clock,
+                ):
+                    normal_results = [
+                        execute_scheduled_item(
+                            normal_engine,
+                            item_id=summary.item.item_id,
+                            trigger_origin="apscheduler",
+                            trusted_verifier=_ExpectationVerifier(),
+                        )
+                        for summary in normal_snapshot.items
+                    ]
+                self.assertTrue(
+                    all(
+                        result.status == "success"
+                        for result in normal_results
+                    ),
+                    [
+                        (
+                            result.scheme_id,
+                            result.status,
+                            result.failure_code,
+                            result.error_message,
+                        )
+                        for result in normal_results
+                        if result.status != "success"
+                    ],
+                )
+                before_deadline = datetime(
+                    2026,
+                    7,
+                    23,
+                    23,
+                    59,
+                    tzinfo=timezone.utc,
+                )
+                clock.set(before_deadline)
+                met = evaluate_schedule_occurrence_target_sla(
+                    normal_engine,
+                    occurrence_id=normal_id,
+                    evaluated_at=before_deadline,
+                    _clock=clock,
+                )
+                self.assertEqual(met.status, "MET")
+                self.assertEqual(met.accepted_by_deadline_count, 25)
+
+                with normal_engine.begin() as connection:
+                    receipt = connection.execute(
+                        text(
+                            """
+                            SELECT t.target_id,
+                                   t.registry_scheme_id,
+                                   t.accepted_prediction_id
+                            FROM t_schedule_item_targets AS t
+                            JOIN t_schedule_items AS i
+                              ON i.item_id = t.item_id
+                            WHERE t.occurrence_id = :occurrence_id
+                              AND i.runtime_type = 'blackbox_v2'
+                            ORDER BY t.target_id
+                            LIMIT 1
+                            """
+                        ),
+                        {"occurrence_id": normal_id},
+                    ).mappings().one()
+                    prediction_exists = int(
+                        connection.execute(
+                            text(
+                                "SELECT COUNT(*) "
+                                "FROM t_scheme_predictions "
+                                "WHERE id = :prediction_id"
+                            ),
+                            {
+                                "prediction_id":
+                                    receipt["accepted_prediction_id"]
+                            },
+                        ).scalar_one()
+                    )
+                    connection.execute(
+                        text(
+                            "UPDATE t_schedule_item_targets "
+                            "SET visible_at = NULL "
+                            "WHERE target_id = :target_id"
+                        ),
+                        {"target_id": receipt["target_id"]},
+                    )
+                self.assertEqual(prediction_exists, 1)
+                receipt_health = _health_projection(
+                    normal_engine,
+                    occurrence_id=normal_id,
+                    now=before_deadline,
+                )
+                self.assertEqual(receipt_health["overall"], "error")
+                self.assertEqual(
+                    receipt_health["targets"]["missing_registry_ids"],
+                    [receipt["registry_scheme_id"]],
+                )
+                self.assertEqual(
+                    receipt_health["targets"][
+                        "receipt_missing_registry_ids"
+                    ],
+                    [receipt["registry_scheme_id"]],
+                )
+            finally:
+                if normal_engine is not None:
+                    normal_engine.dispose()
                 engine.dispose()
 
 
