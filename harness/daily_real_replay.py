@@ -969,15 +969,19 @@ def _revalidate_real_replay_inputs(
         raise DailyRealReplayError(
             "real replay verified generation inputs are required"
         )
-    try:
-        reopened = open_real_replay_generations(
-            native_manifest=inputs.native_generation.manifest_path,
-            databridge_manifest=inputs.databridge_generation.manifest_path,
+    if (
+        not isinstance(
+            inputs.native_generation,
+            NativeGenerationContext,
         )
-    except Exception as exc:
+        or not isinstance(
+            inputs.databridge_generation,
+            DataBridgeGenerationContext,
+        )
+    ):
         raise DailyRealReplayError(
-            "real replay generation manifest revalidation failed"
-        ) from exc
+            "real replay verified generation inputs are required"
+        )
 
     def generation_identity(generation: Any) -> tuple[object, ...]:
         return tuple(
@@ -994,18 +998,27 @@ def _revalidate_real_replay_inputs(
             for value in (getattr(generation, definition.name),)
         )
 
-    expected = (
-        inputs.business_date,
-        inputs.feature_date,
-        generation_identity(inputs.native_generation),
-        generation_identity(inputs.databridge_generation),
-    )
-    actual = (
-        reopened.business_date,
-        reopened.feature_date,
-        generation_identity(reopened.native_generation),
-        generation_identity(reopened.databridge_generation),
-    )
+    try:
+        reopened = open_real_replay_generations(
+            native_manifest=inputs.native_generation.manifest_path,
+            databridge_manifest=inputs.databridge_generation.manifest_path,
+        )
+        expected = (
+            inputs.business_date,
+            inputs.feature_date,
+            generation_identity(inputs.native_generation),
+            generation_identity(inputs.databridge_generation),
+        )
+        actual = (
+            reopened.business_date,
+            reopened.feature_date,
+            generation_identity(reopened.native_generation),
+            generation_identity(reopened.databridge_generation),
+        )
+    except Exception as exc:
+        raise DailyRealReplayError(
+            "real replay generation manifest revalidation failed"
+        ) from exc
     if actual != expected:
         raise DailyRealReplayError(
             "real replay generation context differs from reopened manifests"

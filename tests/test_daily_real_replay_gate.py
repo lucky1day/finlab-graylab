@@ -587,6 +587,62 @@ class DailyRealReplayGateTests(unittest.TestCase):
                 )
             persist.assert_not_called()
 
+    def test_create_rejects_invalid_nested_generation_context(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            invalid = replace(
+                inputs,
+                native_generation=SimpleNamespace(
+                    manifest_path=native.manifest_path,
+                ),
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence",
+                ) as persist,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "verified generation inputs are required",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=invalid,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime(
+                        2026,
+                        7,
+                        26,
+                        1,
+                        30,
+                        tzinfo=timezone.utc,
+                    ),
+                    epoch_payload=TEST_EPOCH,
+                )
+            persist.assert_not_called()
+
     def test_guarded_create_rejects_reopened_non_trading_predict_date(
         self,
     ) -> None:
@@ -1709,6 +1765,50 @@ class DailyRealReplayGateTests(unittest.TestCase):
                     engine,
                     occurrence_id=41,
                     inputs=inputs,
+                    isolation=isolation,
+                )
+            register.assert_not_called()
+
+    def test_registration_rejects_invalid_nested_context(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            open_real_replay_generations,
+            register_real_replay_generations,
+        )
+
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            invalid = replace(
+                inputs,
+                databridge_generation=SimpleNamespace(
+                    manifest_path=databridge.manifest_path,
+                ),
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_register_generation",
+                ) as register,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "verified generation inputs are required",
+                ),
+            ):
+                register_real_replay_generations(
+                    engine,
+                    occurrence_id=41,
+                    inputs=invalid,
                     isolation=isolation,
                 )
             register.assert_not_called()

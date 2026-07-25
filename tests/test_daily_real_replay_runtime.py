@@ -9,6 +9,7 @@ import threading
 import unittest
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -461,6 +462,49 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
                     policy=policy,
                     configs=configs,
                     inputs=inputs,
+                )
+            read_snapshot.assert_not_called()
+
+    def test_constructor_rejects_invalid_nested_generation_context(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            RealReplayRuntime,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        with _replay_inputs() as inputs:
+            invalid = replace(
+                inputs,
+                native_generation=SimpleNamespace(
+                    manifest_path=(
+                        inputs.native_generation.manifest_path
+                    ),
+                ),
+            )
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_read_schedule_occurrence_snapshot",
+                ) as read_snapshot,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "verified generation inputs are required",
+                ),
+            ):
+                RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=invalid,
                 )
             read_snapshot.assert_not_called()
 
