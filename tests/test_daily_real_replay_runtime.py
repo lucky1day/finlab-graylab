@@ -29,6 +29,7 @@ from tests.test_daily_real_replay_gate import (
     TEST_EPOCH,
     _generation_fixture,
     _isolated_engine,
+    _tamper_generation_file,
     _verified_isolation,
 )
 
@@ -423,6 +424,45 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
                 for parameter in (*constructor.values(), *run.values())
             )
         )
+
+    def test_constructor_rehashes_generation_before_ledger_reads(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            RealReplayRuntime,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        with _replay_inputs() as inputs:
+            _tamper_generation_file(
+                inputs.databridge_generation.data_dir
+                / "daily_output.csv"
+            )
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_read_schedule_occurrence_snapshot",
+                ) as read_snapshot,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "generation manifest revalidation failed",
+                ),
+            ):
+                RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+            read_snapshot.assert_not_called()
 
     def test_historical_predict_date_uses_canonical_executor(
         self,

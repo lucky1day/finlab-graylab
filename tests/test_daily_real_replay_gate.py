@@ -43,6 +43,11 @@ def _generation_fixture():
     return DataBridgeGenerationExecutorTests()
 
 
+def _tamper_generation_file(path: Path) -> None:
+    path.chmod(0o600)
+    path.write_bytes(path.read_bytes() + b"\n")
+
+
 class _DBAPICursor:
     def __init__(self, row: dict[str, object]) -> None:
         self._row = row
@@ -447,6 +452,140 @@ class DailyRealReplayGateTests(unittest.TestCase):
                     ),
                     epoch_payload=TEST_EPOCH,
                 )
+
+    def test_guarded_create_rejects_non_date_context_audit_drift(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            drifted_inputs = (
+                replace(
+                    inputs,
+                    native_generation=replace(
+                        inputs.native_generation,
+                        source_commit_token="a" * 64,
+                    ),
+                ),
+                replace(
+                    inputs,
+                    databridge_generation=replace(
+                        inputs.databridge_generation,
+                        upstream_business_digest="b" * 64,
+                    ),
+                ),
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence",
+                    return_value=41,
+                ) as persist,
+            ):
+                for drifted in drifted_inputs:
+                    with (
+                        self.subTest(
+                            generation_type=(
+                                "native"
+                                if drifted.native_generation
+                                is not inputs.native_generation
+                                else "databridge"
+                            ),
+                        ),
+                        self.assertRaisesRegex(
+                            DailyRealReplayError,
+                            "generation context differs from "
+                            "reopened manifests",
+                        ),
+                    ):
+                        create_real_replay_occurrence(
+                            engine,
+                            isolation=isolation,
+                            policy=policy,
+                            configs=configs,
+                            inputs=drifted,
+                            schedule_key=(
+                                "isolated-real-replay-v1-unit"
+                            ),
+                            opened_at=datetime(
+                                2026,
+                                7,
+                                26,
+                                1,
+                                30,
+                                tzinfo=timezone.utc,
+                            ),
+                            epoch_payload=TEST_EPOCH,
+                        )
+            persist.assert_not_called()
+
+    def test_create_rehashes_native_manifest_before_persistence(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            _tamper_generation_file(
+                native.files["api_wind_daily.csv"]
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence",
+                ) as persist,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "generation manifest revalidation failed",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime(
+                        2026,
+                        7,
+                        26,
+                        1,
+                        30,
+                        tzinfo=timezone.utc,
+                    ),
+                    epoch_payload=TEST_EPOCH,
+                )
+            persist.assert_not_called()
 
     def test_guarded_create_rejects_reopened_non_trading_predict_date(
         self,
@@ -1532,6 +1671,47 @@ class DailyRealReplayGateTests(unittest.TestCase):
                     isolation=isolation,
                 )
         register.assert_not_called()
+
+    def test_registration_rehashes_databridge_before_parent_write(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            open_real_replay_generations,
+            register_real_replay_generations,
+        )
+
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            _tamper_generation_file(
+                databridge.data_dir / "daily_output.csv"
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_register_generation",
+                ) as register,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "generation manifest revalidation failed",
+                ),
+            ):
+                register_real_replay_generations(
+                    engine,
+                    occurrence_id=41,
+                    inputs=inputs,
+                    isolation=isolation,
+                )
+            register.assert_not_called()
 
 
 @unittest.skipUnless(

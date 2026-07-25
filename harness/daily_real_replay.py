@@ -13,7 +13,7 @@ from concurrent.futures import (
     ThreadPoolExecutor,
     wait,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -969,18 +969,29 @@ def _revalidate_real_replay_inputs(
         raise DailyRealReplayError(
             "real replay verified generation inputs are required"
         )
-    reopened = open_real_replay_generations(
-        native_manifest=inputs.native_generation.manifest_path,
-        databridge_manifest=inputs.databridge_generation.manifest_path,
-    )
+    try:
+        reopened = open_real_replay_generations(
+            native_manifest=inputs.native_generation.manifest_path,
+            databridge_manifest=inputs.databridge_generation.manifest_path,
+        )
+    except Exception as exc:
+        raise DailyRealReplayError(
+            "real replay generation manifest revalidation failed"
+        ) from exc
 
     def generation_identity(generation: Any) -> tuple[object, ...]:
-        return (
-            generation.generation_id,
-            generation.manifest_sha256,
-            generation.business_date,
-            generation.feature_date,
-            generation.manifest_path.resolve(),
+        return tuple(
+            (
+                definition.name,
+                (
+                    value.resolve()
+                    if isinstance(value, Path)
+                    else value
+                ),
+            )
+            for definition in fields(generation)
+            if definition.name != "_frames"
+            for value in (getattr(generation, definition.name),)
         )
 
     expected = (
