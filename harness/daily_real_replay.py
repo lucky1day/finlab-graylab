@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 from scheduler.daily_runtime import _policy_payload
 from scheduler.repository import (
@@ -41,8 +42,9 @@ EXPECTED_TARGET_COUNT = 25
 EXPECTED_NATIVE_GENERATION_COUNT = 14
 EXPECTED_NATIVE_COMPATIBILITY_COUNT = 3
 EXPECTED_V2_COUNT = 4
-REPLAY_SLA_WINDOW = timedelta(hours=23)
-REPLAY_RECOVERY_WINDOW = timedelta(hours=24)
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
 class DailyRealReplayError(RuntimeError):
     """真实日频隔离联跑的输入或冻结策略不满足契约。"""
 
@@ -213,7 +215,7 @@ def _build_real_replay_occurrence_args(
     release_base = normalized_opened_at - timedelta(
         minutes=max(release_offsets)
     )
-    item_deadline = normalized_opened_at + REPLAY_RECOVERY_WINDOW
+    replay_cutoff = _next_shanghai_midnight(normalized_opened_at)
 
     for scheme_id, scheme_policy in policy.schemes.items():
         config = configs[scheme_id]
@@ -243,7 +245,7 @@ def _build_real_replay_occurrence_args(
             "internal_workers": scheme_policy.internal_workers,
             "release_offset_minutes": release_offset,
             "release_at": release_at,
-            "deadline_at": item_deadline,
+            "deadline_at": replay_cutoff,
         }
 
     if len(target_dates) != EXPECTED_TARGET_COUNT:
@@ -300,10 +302,8 @@ def _build_real_replay_occurrence_args(
         "item_policy_by_base": item_policy_by_base,
         "policy_version": policy.version,
         "policy_json": policy_json,
-        "sla_deadline_at":
-            normalized_opened_at + REPLAY_SLA_WINDOW,
-        "recovery_cutoff_at":
-            normalized_opened_at + REPLAY_RECOVERY_WINDOW,
+        "sla_deadline_at": replay_cutoff,
+        "recovery_cutoff_at": replay_cutoff,
     }
 
 
@@ -411,3 +411,14 @@ def _aware_utc(value: datetime) -> datetime:
             "real replay opened_at must be timezone-aware"
         )
     return value.astimezone(timezone.utc)
+
+
+def _next_shanghai_midnight(value: datetime) -> datetime:
+    """返回给定时刻之后的下一个上海自然日零点（UTC）。"""
+    local_date = value.astimezone(SHANGHAI_TIMEZONE).date()
+    next_date = local_date + timedelta(days=1)
+    return datetime.combine(
+        next_date,
+        time.min,
+        tzinfo=SHANGHAI_TIMEZONE,
+    ).astimezone(timezone.utc)

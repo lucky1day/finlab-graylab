@@ -340,7 +340,9 @@ strict/REPEATABLE-READ、私有 socket/datadir/secure-file-priv，且关闭
 binlog/local-infile。验证器先用短锁预留 Engine，锁外核验真实 DBAPI 连接并
 安装 connection guard，再用短锁将 exact pending token 原子升级为 verified
 capability；repository 与 executor 的每个 claim/process/commit fence 都传递
-同一 Engine 或 Connection 并重验完整身份。该 replay occurrence 只证明隔离
+同一 Engine 或 Connection 并重验完整身份。occurrence 的 SLA/recovery cutoff
+和全部 item deadline 统一冻结为 `opened_at` 之后的下一上海自然日 00:00；
+该边界只用于停止新 attempt，不制造 replay SLA。该 occurrence 只证明隔离
 功能，不得计入 07:55、20+20、签名 candidate、生产 SLA 或 rollout 证据。
 
 当前 attestation/observation schema 有意只承认这组 21/25 与四个 V2，防止新增

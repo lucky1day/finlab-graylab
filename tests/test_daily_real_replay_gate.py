@@ -5,10 +5,11 @@ import tempfile
 import unittest
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -300,11 +301,22 @@ class DailyRealReplayGateTests(unittest.TestCase):
         self.assertEqual(args["feature_date"], "2026-07-23")
         self.assertEqual(len(args["item_policy_by_base"]), 21)
         self.assertEqual(len(args["target_dates"]), 25)
-        self.assertGreater(
-            args["recovery_cutoff_at"],
-            args["sla_deadline_at"],
+        expected_cutoff = datetime(
+            2026,
+            7,
+            26,
+            16,
+            0,
+            tzinfo=timezone.utc,
         )
-        self.assertGreater(args["sla_deadline_at"], opened_at)
+        self.assertEqual(args["sla_deadline_at"], expected_cutoff)
+        self.assertEqual(args["recovery_cutoff_at"], expected_cutoff)
+        self.assertTrue(
+            all(
+                row["deadline_at"] == expected_cutoff
+                for row in args["item_policy_by_base"].values()
+            )
+        )
 
         policy_json = args["policy_json"]
         projection = policy_json["real_replay_projection"]
@@ -1119,6 +1131,7 @@ class DailyRealReplayMySQLGuardTests(unittest.TestCase):
                     isolation=isolation,
                     epoch_payload=TEST_EPOCH,
                 )
+                opened_at = datetime.now(timezone.utc)
                 occurrence_id = create_real_replay_occurrence(
                     engine,
                     isolation=isolation,
@@ -1128,7 +1141,7 @@ class DailyRealReplayMySQLGuardTests(unittest.TestCase):
                     schedule_key=(
                         f"isolated-real-replay-v1-{suffix}"
                     ),
-                    opened_at=datetime.now(timezone.utc),
+                    opened_at=opened_at,
                     epoch_payload=TEST_EPOCH,
                 )
                 bindings = register_real_replay_generations(
@@ -1149,6 +1162,31 @@ class DailyRealReplayMySQLGuardTests(unittest.TestCase):
         self.assertEqual(snapshot.actual_item_count, 21)
         self.assertEqual(snapshot.actual_target_count, 25)
         self.assertEqual(len(snapshot.items), 21)
+        next_local_date = (
+            opened_at.astimezone(ZoneInfo("Asia/Shanghai")).date()
+            + timedelta(days=1)
+        )
+        expected_cutoff = datetime(
+            next_local_date.year,
+            next_local_date.month,
+            next_local_date.day,
+            tzinfo=ZoneInfo("Asia/Shanghai"),
+        ).astimezone(timezone.utc)
+        expected_stored_cutoff = expected_cutoff.replace(tzinfo=None)
+        self.assertEqual(
+            snapshot.occurrence.sla_deadline_at,
+            expected_stored_cutoff,
+        )
+        self.assertEqual(
+            snapshot.occurrence.recovery_cutoff_at,
+            expected_stored_cutoff,
+        )
+        self.assertTrue(
+            all(
+                summary.item.deadline_at == expected_stored_cutoff
+                for summary in snapshot.items
+            )
+        )
         self.assertEqual(
             bindings,
             {
