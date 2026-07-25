@@ -333,6 +333,16 @@ command hook 告警：generation 构建失败、07:00 ETA/进度异常、07:45 V
    演练；当前仅有 DB 引用安全的 `INVALIDATED` 精确回收，不足以解除长期容量
    风险。
 
+真实 21/25 候选联跑使用独立的 Engine-bound replay epoch，不读取或修改
+machine-global epoch chain。该能力只允许绑定到 `bfl_real_replay_*` 临时
+MySQL 8.0.45：必须是 loopback 随机非 3306 端口、独立 UUID、UTC/InnoDB/
+strict/REPEATABLE-READ、私有 socket/datadir/secure-file-priv，且关闭
+binlog/local-infile。验证器先用短锁预留 Engine，锁外核验真实 DBAPI 连接并
+安装 connection guard，再用短锁将 exact pending token 原子升级为 verified
+capability；repository 与 executor 的每个 claim/process/commit fence 都传递
+同一 Engine 或 Connection 并重验完整身份。该 replay occurrence 只证明隔离
+功能，不得计入 07:55、20+20、签名 candidate、生产 SLA 或 rollout 证据。
+
 当前 attestation/observation schema 有意只承认这组 21/25 与四个 V2，防止新增
 任务偷用旧容量证据；它还不是最终的动态扩容接口。首次变更 active daily Registry
 前，必须发布 schema v3，从签名 policy 与 candidate manifest 派生 item/target/V2

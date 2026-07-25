@@ -57,8 +57,8 @@
 - 2026-07-26 在候选代码 `2bf9f5f` 上重新执行四个真实 delivery 的 sealed generation 认证：
   同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整 `PredictionRecord` 一致；
   mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝；对应测试 `4 passed`，生产表行数未变化。
-- `5aed35f` 已建立面向真实 21/25 隔离联跑的输入/数据库 gate：只接受父子摘要一致的同日 Native/DataBridge generation；
-  每次 repository 连接都复核临时 MySQL 身份，fixture 已通过 001–018、结构性 21/25 occurrence 和 17/4 generation 绑定。
+- `5aed35f` 已建立面向真实 21/25 隔离联跑的结构性 gate：只接受父子摘要一致的同日 generation，并通过 001–018、21/25 occurrence 和 17/4 绑定；不代表真实算法已同轮执行。
+- `1f81f3e` 增加 Engine-bound replay epoch：15 字段身份原子签发，claim/process/commit 重验同一 Engine/Connection；gate 文件 `23 passed`（含 2 个真实临时 MySQL 集成测试）、全量 `2621 passed, 10 skipped`，且不改变生产 rollout。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -93,8 +93,8 @@
 
 ## 当前观察项
 
-1. 下一次真实同日 Native/DataBridge generation 到位后，立即通过 `5aed35f`
-   gate 执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造
+1. 下一次真实同日 Native/DataBridge generation 到位后，立即通过 `5aed35f` + `1f81f3e` gate
+   执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造
    historical seal，不使用 recorder、不写生产库，也不把本轮计作容量样本。
 2. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
    gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
