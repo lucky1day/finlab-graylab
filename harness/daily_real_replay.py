@@ -2,19 +2,42 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import stat
+import threading
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
-from scheduler.daily_runtime import _policy_payload
+from scheduler import scheduled_executor
+from scheduler.daily_coordinator import (
+    OccurrenceFileLock,
+    OccurrenceLockUnavailable,
+    ResourceGovernor,
+    dispatch_order,
+)
+from scheduler.daily_ledger import freeze_active_daily_registry
 from scheduler.daily_policy import (
     APPROVED_0629_LIVE_SOURCE_SCHEMES,
     EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME,
+    load_daily_policy,
 )
+from scheduler.daily_runtime import _policy_payload
+from scheduler.discovery import discover_schemes
 from scheduler.repository import (
     create_schedule_occurrence as _repository_create_schedule_occurrence,
+)
+from scheduler.repository import (
+    read_schedule_execution_envelope
+    as _repository_read_schedule_execution_envelope,
+)
+from scheduler.repository import (
+    read_schedule_occurrence_snapshot
+    as _repository_read_schedule_occurrence_snapshot,
 )
 from scheduler.repository import (
     register_seal_and_bind_schedule_occurrence_generation
@@ -24,8 +47,10 @@ from shared.calendar_service import FrozenCalendarService
 from shared.daily_coordinator_mode import (
     DailyCoordinatorEpochIdentity,
     VerifiedIsolatedDailyDatabase,
+    assert_daily_coordinator_epoch_matches_policy,
     bind_isolated_daily_coordinator_epoch,
     recheck_verified_isolated_daily_database,
+    resolve_daily_runtime_root,
     verify_and_register_isolated_daily_database,
 )
 from shared.databridge_input_generation import (
@@ -63,6 +88,377 @@ class DailyRealReplayInputs:
 
 
 DailyRealReplayDatabaseIdentity = VerifiedIsolatedDailyDatabase
+
+
+@dataclass(frozen=True)
+class RealReplayRuntimeResult:
+    """一次隔离真实回放的非 SLA 结果。"""
+
+    occurrence_id: int
+    status: str
+    accepted_target_count: int
+    expected_target_count: int
+    dispatched_scheme_ids: tuple[str, ...]
+    failed_scheme_ids: tuple[str, ...]
+    blocked_scheme_ids: tuple[str, ...]
+    cutoff_at: datetime
+    qualification: str = "EXCLUDED"
+
+
+class RealReplayRuntime:
+    """串行安全基线：只经 canonical executor 写隔离 replay ledger。
+
+    本类刻意不接受 services、clock、runner、verifier 或 executor 注入。
+    当前先以单 owner、单驻留任务证明完整控制边界；后续双池优化只能在
+    保持同一 ``run`` 公共接口和 governor 约束的前提下替换内部拓扑。
+    canonical executor 仍可记录历史回放中被 EXCLUDED 的 V2 guardrail
+    审计字段；它们不构成生产 operational/SLA late 证据。本 runtime
+    也不调用 occurrence SLA evaluator 或生产健康控制面。
+    """
+
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        isolation: DailyRealReplayDatabaseIdentity,
+        occurrence_id: int,
+        policy: Any,
+        configs: Mapping[str, Any],
+        inputs: DailyRealReplayInputs,
+    ) -> None:
+        normalized_occurrence_id = int(occurrence_id)
+        if normalized_occurrence_id <= 0:
+            raise DailyRealReplayError(
+                "real replay occurrence_id must be positive"
+            )
+        self._engine = engine
+        self._isolation = isolation
+        self._occurrence_id = normalized_occurrence_id
+        self._policy = policy
+        self._configs = dict(configs)
+        if not isinstance(inputs, DailyRealReplayInputs):
+            raise DailyRealReplayError(
+                "real replay verified generation inputs are required"
+            )
+        self._inputs = inputs
+        _assert_deployed_real_replay_definitions(
+            policy,
+            configs=self._configs,
+        )
+        self._owner_active = False
+        _recheck_real_replay_database(self._engine, self._isolation)
+        snapshot = self._read_validated_snapshot()
+        _assert_real_replay_execution_envelopes(
+            self._engine,
+            snapshot=snapshot,
+            policy=self._policy,
+            inputs=self._inputs,
+        )
+        self._cutoff_at = _stored_utc_datetime(
+            snapshot.occurrence.recovery_cutoff_at,
+            field="recovery_cutoff_at",
+        )
+        observed_at = _now_utc()
+        if self._cutoff_at != _next_shanghai_midnight(observed_at):
+            raise DailyRealReplayError(
+                "real replay cutoff is not the next Shanghai midnight"
+            )
+        self._governor = ResourceGovernor(policy)
+
+    def run(self) -> RealReplayRuntimeResult:
+        """在隔离 owner 锁内串行完成所有可独立执行的首轮 item。"""
+        _recheck_real_replay_database(self._engine, self._isolation)
+        snapshot = self._read_validated_snapshot()
+        lock = OccurrenceFileLock(self._owner_lock_path())
+        try:
+            lock.acquire()
+        except OccurrenceLockUnavailable:
+            return self._result(
+                snapshot,
+                status="recovery_blocked",
+                blocked_scheme_ids=tuple(
+                    sorted(
+                        summary.item.base_scheme_id
+                        for summary in snapshot.items
+                        if summary.item.state != "SUCCESS"
+                    )
+                ),
+            )
+        self._owner_active = True
+        dispatched: list[str] = []
+        try:
+            while True:
+                _recheck_real_replay_database(
+                    self._engine,
+                    self._isolation,
+                )
+                snapshot = self._read_validated_snapshot()
+                _assert_real_replay_execution_envelopes(
+                    self._engine,
+                    snapshot=snapshot,
+                    policy=self._policy,
+                    inputs=self._inputs,
+                )
+                if (
+                    snapshot.actual_accepted_target_count
+                    == EXPECTED_TARGET_COUNT
+                ):
+                    return self._result(
+                        snapshot,
+                        status="complete",
+                        dispatched_scheme_ids=tuple(dispatched),
+                    )
+                observed_at = _now_utc()
+                if observed_at >= self._cutoff_at:
+                    return self._result(
+                        snapshot,
+                        status="cutoff_incomplete",
+                        dispatched_scheme_ids=tuple(dispatched),
+                    )
+                unexpected_running = tuple(
+                    sorted(
+                        summary.item.base_scheme_id
+                        for summary in snapshot.items
+                        if summary.item.state
+                        in {"RUNNING", "ABANDONED"}
+                    )
+                )
+                if unexpected_running:
+                    return self._result(
+                        snapshot,
+                        status="recovery_blocked",
+                        dispatched_scheme_ids=tuple(dispatched),
+                        blocked_scheme_ids=unexpected_running,
+                    )
+                candidates, cache_blocked, earliest_release = (
+                    self._eligible_replay_candidates(
+                        snapshot,
+                        observed_at=observed_at,
+                    )
+                )
+                if not candidates:
+                    if earliest_release is not None:
+                        _wait_for_release(
+                            min(
+                                1.0,
+                                max(
+                                    0.0,
+                                    (
+                                        min(
+                                            earliest_release,
+                                            self._cutoff_at,
+                                        )
+                                        - observed_at
+                                    ).total_seconds(),
+                                ),
+                            )
+                        )
+                        continue
+                    return self._result(
+                        snapshot,
+                        status="incomplete",
+                        dispatched_scheme_ids=tuple(dispatched),
+                        blocked_scheme_ids=cache_blocked,
+                    )
+                scheme_id = candidates[0]
+                if scheme_id in dispatched:
+                    return self._result(
+                        snapshot,
+                        status="integrity_error",
+                        dispatched_scheme_ids=tuple(dispatched),
+                        blocked_scheme_ids=(scheme_id,),
+                    )
+                item = next(
+                    summary.item
+                    for summary in snapshot.items
+                    if summary.item.base_scheme_id == scheme_id
+                )
+                decision = self._governor.can_start(
+                    running_scheme_ids=(),
+                    candidate_scheme_id=scheme_id,
+                )
+                if not decision.allowed:
+                    raise DailyRealReplayError(
+                        "real replay resource governor rejected "
+                        f"{scheme_id}: {decision.reason}"
+                    )
+                _recheck_real_replay_database(
+                    self._engine,
+                    self._isolation,
+                )
+                if _now_utc() >= self._cutoff_at:
+                    return self._result(
+                        snapshot,
+                        status="cutoff_incomplete",
+                        dispatched_scheme_ids=tuple(dispatched),
+                    )
+                result = self._execute_owned_item(
+                    item_id=int(item.item_id)
+                )
+                dispatched.append(scheme_id)
+                status = str(getattr(result, "status", ""))
+                if status in {
+                    "claim_rejected",
+                    "stale_rejected",
+                    "fenced_pending_cleanup",
+                    "recovery_blocked",
+                }:
+                    return self._result(
+                        self._read_validated_snapshot(),
+                        status="recovery_blocked",
+                        dispatched_scheme_ids=tuple(dispatched),
+                        blocked_scheme_ids=(scheme_id,),
+                    )
+                if status not in {
+                    "success",
+                    "failed",
+                    "retry_wait",
+                }:
+                    return self._result(
+                        self._read_validated_snapshot(),
+                        status="integrity_error",
+                        dispatched_scheme_ids=tuple(dispatched),
+                        blocked_scheme_ids=(scheme_id,),
+                    )
+        finally:
+            self._owner_active = False
+            lock.release()
+
+    def _execute_owned_item(self, *, item_id: int) -> Any:
+        if not self._owner_active:
+            raise DailyRealReplayError(
+                "real replay item execution requires the owner lock"
+            )
+        _recheck_real_replay_database(self._engine, self._isolation)
+        if _now_utc() >= self._cutoff_at:
+            raise DailyRealReplayError(
+                "real replay execution reached the frozen Shanghai cutoff"
+            )
+        result = scheduled_executor.execute_scheduled_item(
+            self._engine,
+            item_id=int(item_id),
+            trigger_origin="operator_recovery",
+        )
+        _recheck_real_replay_database(self._engine, self._isolation)
+        return result
+
+    def _read_validated_snapshot(self) -> Any:
+        snapshot = _repository_read_schedule_occurrence_snapshot(
+            self._engine,
+            occurrence_id=self._occurrence_id,
+        )
+        _assert_real_replay_runtime_snapshot(
+            snapshot,
+            occurrence_id=self._occurrence_id,
+            policy=self._policy,
+            configs=self._configs,
+            inputs=self._inputs,
+        )
+        try:
+            assert_daily_coordinator_epoch_matches_policy(
+                snapshot.occurrence.policy_json,
+                engine=self._engine,
+            )
+        except RuntimeError as exc:
+            raise DailyRealReplayError(str(exc)) from exc
+        if hasattr(self, "_cutoff_at"):
+            observed_cutoff = _stored_utc_datetime(
+                snapshot.occurrence.recovery_cutoff_at,
+                field="recovery_cutoff_at",
+            )
+            if observed_cutoff != self._cutoff_at:
+                raise DailyRealReplayError(
+                    "real replay runtime cutoff drifted"
+                )
+        return snapshot
+
+    def _eligible_replay_candidates(
+        self,
+        snapshot: Any,
+        *,
+        observed_at: datetime,
+    ) -> tuple[
+        tuple[str, ...],
+        tuple[str, ...],
+        datetime | None,
+    ]:
+        state_by_scheme = {
+            summary.item.base_scheme_id: summary.item.state
+            for summary in snapshot.items
+        }
+        prewarmer_by_group = _cache_prewarmer_by_group(self._policy)
+        candidates: list[str] = []
+        blocked: list[str] = []
+        future_releases: list[datetime] = []
+        for summary in snapshot.items:
+            item = summary.item
+            if (
+                item.state != "PENDING"
+                or int(item.attempt_no) != 0
+                or item.current_run_id is not None
+            ):
+                continue
+            release_at = _stored_utc_datetime(
+                item.release_at,
+                field="release_at",
+            )
+            if release_at > observed_at:
+                future_releases.append(release_at)
+                continue
+            scheme_policy = self._policy.schemes[
+                item.base_scheme_id
+            ]
+            if not scheme_policy.cache_prerequisite:
+                prewarmer = prewarmer_by_group.get(
+                    scheme_policy.cache_group
+                )
+                if (
+                    prewarmer is not None
+                    and state_by_scheme.get(prewarmer) != "SUCCESS"
+                ):
+                    blocked.append(item.base_scheme_id)
+                    continue
+            candidates.append(item.base_scheme_id)
+        return (
+            dispatch_order(self._policy, candidates),
+            tuple(sorted(blocked)),
+            min(future_releases) if future_releases else None,
+        )
+
+    def _owner_lock_path(self) -> Path:
+        return (
+            _real_replay_lock_root()
+            / "real-replay-runtime.lock"
+        ).resolve(strict=False)
+
+    def _result(
+        self,
+        snapshot: Any,
+        *,
+        status: str,
+        dispatched_scheme_ids: tuple[str, ...] = (),
+        blocked_scheme_ids: tuple[str, ...] = (),
+    ) -> RealReplayRuntimeResult:
+        failed = tuple(
+            sorted(
+                summary.item.base_scheme_id
+                for summary in snapshot.items
+                if summary.item.state
+                in {"FAILED_TERMINAL", "RETRY_WAIT", "EXPIRED"}
+            )
+        )
+        return RealReplayRuntimeResult(
+            occurrence_id=self._occurrence_id,
+            status=status,
+            accepted_target_count=int(
+                snapshot.actual_accepted_target_count
+            ),
+            expected_target_count=EXPECTED_TARGET_COUNT,
+            dispatched_scheme_ids=dispatched_scheme_ids,
+            failed_scheme_ids=failed,
+            blocked_scheme_ids=blocked_scheme_ids,
+            cutoff_at=self._cutoff_at,
+        )
 
 
 def verify_real_replay_database(
@@ -392,6 +788,621 @@ def _recheck_real_replay_database(
         recheck_verified_isolated_daily_database(engine, isolation)
     except RuntimeError as exc:
         raise DailyRealReplayError(str(exc)) from exc
+
+
+def _assert_real_replay_runtime_snapshot(
+    snapshot: Any,
+    *,
+    occurrence_id: int,
+    policy: Any,
+    configs: Mapping[str, Any],
+    inputs: DailyRealReplayInputs,
+) -> None:
+    """拒绝任何会把功能回放冒充 SLA/容量证据的冻结账本。"""
+    occurrence = getattr(snapshot, "occurrence", None)
+    if (
+        occurrence is None
+        or int(getattr(occurrence, "occurrence_id", 0))
+        != int(occurrence_id)
+        or not str(getattr(occurrence, "schedule_key", "")).startswith(
+            REAL_REPLAY_SCHEDULE_PREFIX
+        )
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime occurrence identity drifted"
+        )
+    if (
+        int(getattr(occurrence, "expected_item_count", -1))
+        != EXPECTED_ITEM_COUNT
+        or int(getattr(occurrence, "expected_target_count", -1))
+        != EXPECTED_TARGET_COUNT
+        or int(getattr(snapshot, "actual_item_count", -1))
+        != EXPECTED_ITEM_COUNT
+        or int(getattr(snapshot, "actual_target_count", -1))
+        != EXPECTED_TARGET_COUNT
+        or len(tuple(getattr(snapshot, "items", ())))
+        != EXPECTED_ITEM_COUNT
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime ledger cardinality drifted"
+        )
+    policy_json = getattr(occurrence, "policy_json", None)
+    projection = (
+        policy_json.get("real_replay_projection")
+        if isinstance(policy_json, Mapping)
+        else None
+    )
+    expected_projection = {
+        "schema_version": REAL_REPLAY_SCHEMA_VERSION,
+        "purpose": "isolated_21_item_25_target_function_replay",
+        "algorithm_execution":
+            "real_17_native_plus_4_blackbox_v2",
+        "persistence": "isolated_mysql_only",
+        "capacity_qualification": "EXCLUDED",
+        "sla_qualification": "EXCLUDED",
+        "cache_completion_qualification": "EXCLUDED",
+        "exclusion_reason":
+            "FUNCTION_REPLAY_NOT_PRODUCTION_ADMISSION",
+        "native_generation_id":
+            inputs.native_generation.generation_id,
+        "native_manifest_sha256":
+            inputs.native_generation.manifest_sha256,
+        "databridge_generation_id":
+            inputs.databridge_generation.generation_id,
+        "databridge_manifest_sha256":
+            inputs.databridge_generation.manifest_sha256,
+    }
+    if not isinstance(projection, Mapping):
+        raise DailyRealReplayError(
+            "real replay runtime qualification is missing"
+        )
+    drift = sorted(
+        field
+        for field, expected in expected_projection.items()
+        if projection.get(field) != expected
+    )
+    if drift:
+        raise DailyRealReplayError(
+            "real replay runtime qualification drifted: "
+            + ", ".join(drift)
+        )
+    policy_text = json.dumps(
+        dict(policy_json),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if (
+        getattr(occurrence, "policy_sha256", None)
+        != hashlib.sha256(policy_text.encode("utf-8")).hexdigest()
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime policy digest drifted"
+        )
+
+    if (
+        str(getattr(occurrence, "policy_version", ""))
+        != str(policy.version)
+        or set(configs) != set(policy.schemes)
+        or str(getattr(occurrence, "predict_date", ""))
+        != inputs.business_date
+        or str(getattr(occurrence, "feature_date", ""))
+        != inputs.feature_date
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime policy or generation dates drifted"
+        )
+    frozen_policy = dict(policy_json)
+    frozen_policy.pop("daily_coordinator_epoch", None)
+    frozen_policy.pop("real_replay_projection", None)
+    expected_policy = _policy_payload(policy)
+    for row in expected_policy["schemes"]:
+        row["cache_spec_fingerprint"] = None
+    if frozen_policy != expected_policy:
+        raise DailyRealReplayError(
+            "real replay runtime frozen policy drifted"
+        )
+
+    cutoff_at = _stored_utc_datetime(
+        occurrence.recovery_cutoff_at,
+        field="recovery_cutoff_at",
+    )
+    if (
+        _stored_utc_datetime(
+            occurrence.sla_deadline_at,
+            field="sla_deadline_at",
+        )
+        != cutoff_at
+        or getattr(occurrence, "sla_outcome", None) != "PENDING"
+        or getattr(occurrence, "sla_evaluated_at", None) is not None
+        or getattr(
+            occurrence,
+            "sla_accepted_target_count",
+            None,
+        )
+        is not None
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime SLA exclusion state drifted"
+        )
+
+    expected_native_id = inputs.native_generation.generation_id
+    expected_databridge_id = (
+        inputs.databridge_generation.generation_id
+    )
+    item_ids: list[int] = []
+    item_scheme_ids: list[str] = []
+    target_total = 0
+    accepted_total = 0
+    observed_state_counts: dict[str, int] = {}
+    for summary in snapshot.items:
+        item = getattr(summary, "item", None)
+        scheme_id = str(getattr(item, "base_scheme_id", ""))
+        scheme_policy = policy.schemes.get(scheme_id)
+        config = configs.get(scheme_id)
+        if (
+            item is None
+            or int(getattr(item, "occurrence_id", 0))
+            != int(occurrence_id)
+            or scheme_policy is None
+            or config is None
+        ):
+            raise DailyRealReplayError(
+                "real replay runtime item occurrence drifted"
+            )
+        item_ids.append(int(getattr(item, "item_id", 0)))
+        item_scheme_ids.append(scheme_id)
+        if (
+            str(getattr(item, "runtime_type", ""))
+            != scheme_policy.runtime_type
+            or str(getattr(item, "scheme_version", ""))
+            != config.scheme_version
+            or str(getattr(item, "code_sha256", ""))
+            != config.code_hash
+            or str(getattr(item, "config_sha256", ""))
+            != config.config_hash
+            or str(getattr(item, "cache_group", ""))
+            != scheme_policy.cache_group
+            or str(getattr(item, "resource_class", ""))
+            != scheme_policy.resource_class
+            or int(getattr(item, "internal_workers", -1))
+            != int(scheme_policy.internal_workers)
+            or int(
+                getattr(item, "release_offset_minutes", -1)
+            )
+            != int(scheme_policy.v2_release_offset_min or 0)
+        ):
+            raise DailyRealReplayError(
+                "real replay runtime item policy identity drifted"
+            )
+        expected_generation_id = (
+            expected_databridge_id
+            if scheme_policy.runtime_type == "blackbox_v2"
+            else expected_native_id
+        )
+        if item.input_generation_id != expected_generation_id:
+            raise DailyRealReplayError(
+                "real replay runtime item generation identity drifted"
+            )
+        if (
+            _stored_utc_datetime(
+                item.deadline_at,
+                field="item.deadline_at",
+            )
+            != cutoff_at
+            or _stored_utc_datetime(
+                item.recovery_cutoff_at,
+                field="item.recovery_cutoff_at",
+            )
+            != cutoff_at
+            or _stored_utc_datetime(
+                item.occurrence_sla_deadline_at,
+                field="item.occurrence_sla_deadline_at",
+            )
+            != cutoff_at
+            or _stored_utc_datetime(
+                item.release_at,
+                field="item.release_at",
+            )
+            >= cutoff_at
+        ):
+            raise DailyRealReplayError(
+                "real replay runtime item cutoff drifted"
+            )
+        state = str(getattr(item, "state", ""))
+        attempt_no = int(getattr(item, "attempt_no", -1))
+        current_run_id = getattr(item, "current_run_id", None)
+        if (
+            state == "PENDING"
+            and (attempt_no != 0 or current_run_id is not None)
+        ) or (
+            state != "PENDING"
+            and (attempt_no != 1 or current_run_id is None)
+        ):
+            raise DailyRealReplayError(
+                "real replay runtime item attempt fence drifted"
+            )
+        target_count = int(getattr(summary, "target_count", -1))
+        accepted_count = int(
+            getattr(summary, "accepted_target_count", -1)
+        )
+        if target_count <= 0 or accepted_count < 0:
+            raise DailyRealReplayError(
+                "real replay runtime target cardinality drifted"
+            )
+        if (
+            state == "SUCCESS"
+            and accepted_count != target_count
+        ) or (
+            state != "SUCCESS"
+            and accepted_count != 0
+        ):
+            raise DailyRealReplayError(
+                "real replay runtime target receipt state drifted"
+            )
+        item_sla_status = getattr(item, "sla_status", None)
+        item_sla_evaluated_at = getattr(
+            item,
+            "sla_evaluated_at",
+            None,
+        )
+        late_reason = getattr(item, "late_reason", None)
+        if scheme_policy.runtime_type == "native_adapter":
+            item_sla_valid = (
+                item_sla_status == "PENDING"
+                and item_sla_evaluated_at is None
+                and late_reason is None
+            )
+        else:
+            item_sla_valid = (
+                item_sla_status == "PENDING"
+                and item_sla_evaluated_at is None
+                and late_reason is None
+            ) or (
+                item_sla_status == "ON_TIME"
+                and isinstance(item_sla_evaluated_at, datetime)
+                and late_reason is None
+            ) or (
+                item_sla_status == "LATE"
+                and isinstance(item_sla_evaluated_at, datetime)
+                and late_reason
+                in {
+                    "V2_STARTED_AFTER_0745",
+                    "V2_NOT_STARTED_BY_0745",
+                }
+            )
+        if not item_sla_valid:
+            raise DailyRealReplayError(
+                "real replay runtime item SLA state drifted"
+            )
+        target_total += target_count
+        accepted_total += accepted_count
+        observed_state_counts[state] = (
+            observed_state_counts.get(state, 0) + 1
+        )
+    if (
+        any(item_id <= 0 for item_id in item_ids)
+        or len(item_ids) != len(set(item_ids))
+        or set(item_scheme_ids) != set(policy.schemes)
+        or len(item_scheme_ids) != len(set(item_scheme_ids))
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime item identities drifted"
+        )
+    if (
+        target_total != EXPECTED_TARGET_COUNT
+        or accepted_total
+        != int(snapshot.actual_accepted_target_count)
+        or accepted_total
+        != int(getattr(occurrence, "accepted_target_count", -1))
+        or tuple(sorted(observed_state_counts.items()))
+        != tuple(snapshot.item_state_counts)
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime target cardinality drifted"
+        )
+    if (
+        accepted_total == EXPECTED_TARGET_COUNT
+        and getattr(occurrence, "completion_state", None) != "SUCCESS"
+    ) or (
+        accepted_total != EXPECTED_TARGET_COUNT
+        and getattr(occurrence, "completion_state", None)
+        not in {"PENDING", "RUNNING", "FAILED"}
+    ):
+        raise DailyRealReplayError(
+            "real replay runtime completion state drifted"
+        )
+
+
+def _stored_utc_datetime(value: Any, *, field: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise DailyRealReplayError(
+            f"real replay {field} must be a datetime"
+        )
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _assert_deployed_real_replay_definitions(
+    policy: Any,
+    *,
+    configs: Mapping[str, Any],
+) -> None:
+    """要求 caller 传入的定义就是当前仓库严格 discovery 的结果。"""
+    discovered = tuple(discover_schemes(strict=True))
+    deployed_policy = load_daily_policy(discovered=discovered)
+    deployed_configs = {
+        config.scheme_id: config
+        for config in discovered
+        if config.status == "active" and config.frequency == "daily"
+    }
+    if policy != deployed_policy or dict(configs) != deployed_configs:
+        raise DailyRealReplayError(
+            "real replay runtime definitions differ from deployed policy"
+        )
+
+
+def _assert_real_replay_execution_envelopes(
+    engine: Any,
+    *,
+    snapshot: Any,
+    policy: Any,
+    inputs: DailyRealReplayInputs,
+) -> None:
+    """以逐 item 严格信封闭合 25 个 target 与 generation 身份。"""
+    calendar = FrozenCalendarService(inputs.native_generation)
+    frozen_rows: list[dict[str, object]] = []
+    native_release_times = {
+        _stored_utc_datetime(
+            summary.item.release_at,
+            field="native.release_at",
+        )
+        for summary in snapshot.items
+        if summary.item.runtime_type == "native_adapter"
+    }
+    if len(native_release_times) != 1:
+        raise DailyRealReplayError(
+            "real replay Native initial release identity drifted"
+        )
+    initial_opened_at = next(iter(native_release_times))
+    max_v2_offset = max(
+        int(item.v2_release_offset_min or 0)
+        for item in policy.schemes.values()
+        if item.runtime_type == "blackbox_v2"
+    )
+    for summary in snapshot.items:
+        item = summary.item
+        envelope = _repository_read_schedule_execution_envelope(
+            engine,
+            item_id=int(item.item_id),
+        )
+        scheme_id = str(item.base_scheme_id)
+        scheme_policy = policy.schemes[scheme_id]
+        expected_generation = (
+            inputs.databridge_generation
+            if scheme_policy.runtime_type == "blackbox_v2"
+            else inputs.native_generation
+        )
+        if (
+            envelope.occurrence != snapshot.occurrence
+            or envelope.item != item
+            or envelope.generation.generation_id
+            != expected_generation.generation_id
+            or envelope.generation.manifest_sha256
+            != expected_generation.manifest_sha256
+            or envelope.generation.business_date
+            != inputs.business_date
+            or envelope.generation.feature_date
+            != inputs.feature_date
+            or envelope.generation.state != "SEALED"
+            or envelope.generation.sealed_at is None
+            or envelope.calendar_generation.generation_id
+            != inputs.native_generation.generation_id
+            or envelope.calendar_generation.manifest_sha256
+            != inputs.native_generation.manifest_sha256
+            or envelope.calendar_generation.state != "SEALED"
+            or envelope.calendar_generation.sealed_at is None
+        ):
+            raise DailyRealReplayError(
+                "real replay execution envelope generation drifted: "
+                f"{scheme_id}"
+            )
+        initial_release_at = (
+            initial_opened_at
+            - timedelta(minutes=max_v2_offset)
+            + timedelta(
+                minutes=int(
+                    scheme_policy.v2_release_offset_min or 0
+                )
+            )
+            if scheme_policy.runtime_type == "blackbox_v2"
+            else initial_opened_at
+        )
+        expected_release_at = (
+            max(
+                initial_release_at,
+                _stored_utc_datetime(
+                    envelope.generation.sealed_at,
+                    field="databridge ledger sealed_at",
+                )
+                + timedelta(
+                    minutes=int(
+                        scheme_policy.v2_release_offset_min or 0
+                    )
+                ),
+            )
+            if scheme_policy.runtime_type == "blackbox_v2"
+            else initial_release_at
+        )
+        if (
+            _stored_utc_datetime(
+                item.release_at,
+                field="item.release_at",
+            )
+            != expected_release_at
+        ):
+            raise DailyRealReplayError(
+                "real replay execution envelope release drifted: "
+                f"{scheme_id}"
+            )
+        expected_target_date = calendar.nth_trading_day_after(
+            inputs.feature_date,
+            int(scheme_policy.horizon),
+        )
+        expected_targets = {
+            (
+                f"{scheme_id}__h{int(scheme_policy.horizon)}__{tenor}",
+                scheme_id,
+                scheme_policy.runtime_type,
+                scheme_policy.task_type,
+                tenor,
+                int(scheme_policy.horizon),
+                expected_target_date,
+            )
+            for tenor in scheme_policy.target_tenors
+        }
+        actual_targets = {
+            (
+                target.registry_scheme_id,
+                target.base_scheme_id,
+                target.runtime_type,
+                target.task_type,
+                target.target_tenor,
+                int(target.horizon),
+                target.target_date,
+            )
+            for target in envelope.targets
+        }
+        if (
+            actual_targets != expected_targets
+            or int(summary.target_count) != len(expected_targets)
+        ):
+            raise DailyRealReplayError(
+                "real replay execution envelope target identity drifted: "
+                f"{scheme_id}"
+            )
+        for target in envelope.targets:
+            frozen_rows.append(
+                {
+                    "status": "active",
+                    "frequency": "daily",
+                    "scheme_id": target.registry_scheme_id,
+                    "base_scheme_id": scheme_id,
+                    "runtime_type": scheme_policy.runtime_type,
+                    "task_type": target.task_type,
+                    "target_tenor": target.target_tenor,
+                    "horizon": int(target.horizon),
+                    "target_date": target.target_date,
+                    "scheme_version": item.scheme_version,
+                    "code_sha256": item.code_sha256,
+                    "config_sha256": item.config_sha256,
+                    "cache_group": item.cache_group,
+                    "resource_class": item.resource_class,
+                    "internal_workers": int(item.internal_workers),
+                    "release_offset_minutes":
+                        int(item.release_offset_minutes),
+                    "release_at": initial_release_at
+                    .replace(tzinfo=None)
+                    .isoformat(sep=" "),
+                    "deadline_at": _stored_utc_datetime(
+                        item.deadline_at,
+                        field="item.deadline_at",
+                    )
+                    .replace(tzinfo=None)
+                    .isoformat(sep=" "),
+                }
+            )
+    try:
+        registry_digest = freeze_active_daily_registry(
+            frozen_rows
+        ).registry_digest
+    except ValueError as exc:
+        raise DailyRealReplayError(str(exc)) from exc
+    if registry_digest != snapshot.occurrence.registry_digest:
+        raise DailyRealReplayError(
+            "real replay execution envelope registry digest drifted"
+        )
+
+
+def _now_utc() -> datetime:
+    """采样真实 wall clock；仅保留私有测试 patch seam。"""
+    return datetime.now(timezone.utc)
+
+
+def _wait_for_release(seconds: float) -> None:
+    """只为冻结 release 做至多一秒的可重入等待。"""
+    threading.Event().wait(max(0.0, min(float(seconds), 1.0)))
+
+
+def _real_replay_lock_root() -> Path:
+    """返回所有隔离回放 owner 共用、与临时 MySQL 无关的私有锁目录。"""
+    candidate = (
+        resolve_daily_runtime_root()
+        / "isolated-real-replay-locks"
+    )
+    if candidate.is_symlink():
+        raise DailyRealReplayError(
+            "real replay machine-global lock root is unsafe"
+        )
+    root = candidate.resolve(strict=False)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    details = os.stat(root, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(details.st_mode)
+        or details.st_uid != os.getuid()
+        or stat.S_IMODE(details.st_mode) != 0o700
+    ):
+        raise DailyRealReplayError(
+            "real replay machine-global lock root is unsafe"
+        )
+    return root
+
+
+def _iso_utc_datetime(value: object, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise DailyRealReplayError(
+            f"real replay {field} must be an ISO datetime"
+        )
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise DailyRealReplayError(
+            f"real replay {field} must be an ISO datetime"
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise DailyRealReplayError(
+            f"real replay {field} must be timezone-aware"
+        )
+    return parsed.astimezone(timezone.utc)
+
+
+def _cache_prewarmer_by_group(policy: Any) -> dict[str, str]:
+    """为声明 consumer 的 cache group 找到唯一 prewarmer。"""
+    members_by_group: dict[str, list[Any]] = {}
+    for item in policy.schemes.values():
+        if item.runtime_type != "native_adapter":
+            continue
+        members_by_group.setdefault(item.cache_group, []).append(item)
+    result: dict[str, str] = {}
+    for cache_group, members in members_by_group.items():
+        if len(members) < 2:
+            continue
+        prewarmers = [
+            item.scheme_id
+            for item in members
+            if item.cache_prerequisite
+        ]
+        if len(prewarmers) != 1:
+            raise DailyRealReplayError(
+                "real replay cache prerequisite topology drifted: "
+                f"{cache_group}"
+            )
+        result[cache_group] = prewarmers[0]
+    return result
 
 
 def _input_mode_counts(
