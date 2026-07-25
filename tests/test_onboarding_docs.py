@@ -358,6 +358,27 @@ class OnboardingDocumentationTests(unittest.TestCase):
             scheduler_env["BOND_DAILY_COORDINATOR_MODE"],
             "legacy",
         )
+        self.assertIn("BFL_SOURCE_DB_CONFIG_PATH", scheduler_env)
+        source_database_config = scheduler_env["BFL_SOURCE_DB_CONFIG_PATH"]
+        self.assertTrue(Path(source_database_config).is_absolute())
+        self.assertEqual(
+            Path(source_database_config).parent,
+            Path("/Users/macstudio0/.config/bond-factor-lab"),
+        )
+        self.assertEqual(
+            Path(source_database_config).name,
+            "source-runtime-db.json",
+        )
+        self.assertTrue(
+            {
+                "BOND_DB_USER",
+                "BOND_DB_PASSWORD",
+                "BOND_DB_DSN",
+                "SOURCE_DB_USER",
+                "SOURCE_DB_PASSWORD",
+                "SOURCE_DB_DSN",
+            }.isdisjoint(scheduler_env),
+        )
         self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_START"], "06:30")
         self.assertEqual(scheduler_env["DATABRIDGE_REFRESH_DEADLINE"], "06:55")
 
@@ -373,6 +394,20 @@ class OnboardingDocumentationTests(unittest.TestCase):
             backend["EnvironmentVariables"]["BOND_DAILY_COORDINATOR_MODE"],
             "legacy",
         )
+
+    def test_scheduler_source_binding_runbook_keeps_secrets_out_of_plist(
+        self,
+    ) -> None:
+        deploy = DEPLOY_README.read_text(encoding="utf-8")
+        for marker in (
+            "BFL_SOURCE_DB_CONFIG_PATH",
+            "/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json",
+            "chmod 700 /Users/macstudio0/.config/bond-factor-lab",
+            "chmod 600 /Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json",
+            "不得把用户名、密码或 DSN 写入 plist",
+            "不得修改或重启 BondProjectPro",
+        ):
+            self.assertIn(marker, deploy)
 
     def test_platform_sop_defines_occurrence_timeline_and_isolation(self) -> None:
         platform = PLATFORM_SOP.read_text(encoding="utf-8")

@@ -27,6 +27,8 @@
     <string>1</string>
     <key>BOND_ALGO_CONDA_ENV</key>
     <string>forecast_env</string>
+    <key>BFL_SOURCE_DB_CONFIG_PATH</key>
+    <string>/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json</string>
     <key>BOND_DAILY_COORDINATOR_MODE</key>
     <string>legacy</string>
     <key>BOND_SCHEDULER_STAGGER_MINUTES</key>

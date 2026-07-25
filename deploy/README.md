@@ -292,6 +292,19 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 `deploy/launchd/com.bond-factor-lab.scheduler.plist` 当前默认设置：
 
 - `BOND_DAILY_COORDINATOR_MODE=legacy`：切换门禁未通过，继续使用旧路径。
+- `BFL_SOURCE_DB_CONFIG_PATH=/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json`：
+  只向 scheduler 注入 BFL 专用 source-readonly 配置文件的位置；不得把用户名、密码或 DSN 写入 plist。
+  安装或重启 scheduler 前必须确认私有目录和终端文件权限：
+
+  ```bash
+  chmod 700 /Users/macstudio0/.config/bond-factor-lab
+  chmod 600 /Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json
+  ```
+
+  配置缺失或权限、owner、inode、symlink 检查失败时，三个 0629 source-backed
+  任务必须在算法启动前 fail-closed。仓库模板的更新不授权覆盖已安装 plist，
+  也不授权 kickstart；必须留到 BFL 专项维护窗口逐项读回验证。该配置仅属于
+  Bond Factor Lab，不得修改或重启 BondProjectPro。
 - `deploy/daily_coordinator_rollout_v1.json` 同样固定 `mode=legacy`，仅供旧
   launchd 缺少环境变量时安全 bootstrap；machine-global epoch directory 当前
   不存在，ledger 上线不能只改这个文件或任一份 plist。epoch directory 一旦
