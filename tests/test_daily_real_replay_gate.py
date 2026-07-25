@@ -5,9 +5,10 @@ import tempfile
 import unittest
 import uuid
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -431,6 +432,416 @@ class DailyRealReplayGateTests(unittest.TestCase):
                     epoch_payload=TEST_EPOCH,
                 )
             create.assert_not_called()
+
+    def test_replay_occurrence_rejects_compatibility_identity_swap(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        mutated_schemes = dict(policy.schemes)
+        approved_id = "daily_1y_xgb_1y13_0629"
+        unrelated_id = "t1_daily"
+        mutated_schemes[approved_id] = replace(
+            mutated_schemes[approved_id],
+            input_compatibility="generation_v1",
+        )
+        mutated_schemes[unrelated_id] = replace(
+            mutated_schemes[unrelated_id],
+            input_compatibility="live_source_0629",
+        )
+        mutated_policy = replace(
+            policy,
+            schemes=MappingProxyType(mutated_schemes),
+        )
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence"
+                ) as create,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "compatibility identities",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=mutated_policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime.now(timezone.utc),
+                    epoch_payload=TEST_EPOCH,
+                )
+            create.assert_not_called()
+
+    def test_replay_occurrence_rejects_duplicate_payload_id(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+        from scheduler.daily_runtime import _policy_payload
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+
+        def corrupt_payload(*args, **kwargs):
+            payload = _policy_payload(*args, **kwargs)
+            generation_rows = [
+                row
+                for row in payload["schemes"]
+                if row["input_compatibility"] == "generation_v1"
+            ]
+            generation_rows[0]["scheme_id"] = generation_rows[1][
+                "scheme_id"
+            ]
+            return payload
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay._policy_payload",
+                    side_effect=corrupt_payload,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence"
+                ) as create,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "compatibility identities",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime.now(timezone.utc),
+                    epoch_payload=TEST_EPOCH,
+                )
+            create.assert_not_called()
+
+    def test_replay_occurrence_rejects_native_v2_identity_swap(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        mutated_schemes = dict(policy.schemes)
+        native_id = "t1_daily"
+        v2_id = "one_y_t5_liq_excess_a_v1"
+        native = mutated_schemes[native_id]
+        v2 = mutated_schemes[v2_id]
+        mutated_schemes[native_id] = replace(
+            native,
+            runtime_type="blackbox_v2",
+            resource_class=v2.resource_class,
+            input_compatibility="databridge_v1",
+            v2_release_offset_min=0,
+        )
+        mutated_schemes[v2_id] = replace(
+            v2,
+            runtime_type="native_adapter",
+            resource_class=native.resource_class,
+            input_compatibility="generation_v1",
+            v2_release_offset_min=None,
+        )
+        mutated_policy = replace(
+            policy,
+            schemes=MappingProxyType(mutated_schemes),
+        )
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native_generation, databridge = (
+                fixture._delivery_generation(Path(tmpdir))
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native_generation.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence"
+                ) as create,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "compatibility identities",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=mutated_policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime.now(timezone.utc),
+                    epoch_payload=TEST_EPOCH,
+                )
+            create.assert_not_called()
+
+    def test_replay_identity_gate_rejects_native_v2_mode_only_swap(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            _assert_input_compatibility_identities,
+        )
+        from scheduler.daily_runtime import _policy_payload
+
+        policy, configs = _real_policy_and_configs()
+        mutated_schemes = dict(policy.schemes)
+        native_id = "t1_daily"
+        v2_id = "one_y_t5_liq_excess_a_v1"
+        mutated_schemes[native_id] = replace(
+            mutated_schemes[native_id],
+            input_compatibility="databridge_v1",
+        )
+        mutated_schemes[v2_id] = replace(
+            mutated_schemes[v2_id],
+            input_compatibility="generation_v1",
+        )
+        mutated_policy = replace(
+            policy,
+            schemes=MappingProxyType(mutated_schemes),
+        )
+        payload = _policy_payload(
+            mutated_policy,
+            daily_coordinator_epoch=TEST_EPOCH,
+        )
+
+        with self.assertRaisesRegex(
+            DailyRealReplayError,
+            "compatibility identities",
+        ):
+            _assert_input_compatibility_identities(
+                payload,
+                expected_policy_schemes=mutated_policy.schemes,
+                expected_configs=configs,
+            )
+
+    def test_replay_occurrence_allows_approved_0629_generation_migration(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        migrated_id = "daily_1y_xgb_1y13_0629"
+        migrated_schemes = dict(policy.schemes)
+        migrated_schemes[migrated_id] = replace(
+            migrated_schemes[migrated_id],
+            input_compatibility="generation_v1",
+            source_package_sha256=None,
+        )
+        migrated_policy = replace(
+            policy,
+            schemes=MappingProxyType(migrated_schemes),
+        )
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence",
+                    return_value=41,
+                ) as create,
+            ):
+                occurrence_id = create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=migrated_policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime.now(timezone.utc),
+                    epoch_payload=TEST_EPOCH,
+                )
+
+        self.assertEqual(occurrence_id, 41)
+        create.assert_called_once()
+
+    def test_replay_identity_gate_rejects_noncanonical_scheme_id(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            _assert_input_compatibility_identities,
+        )
+        from scheduler.daily_runtime import _policy_payload
+
+        policy, configs = _real_policy_and_configs()
+        payload = _policy_payload(
+            policy,
+            daily_coordinator_epoch=TEST_EPOCH,
+        )
+        for invalid_id in ("", "t1_daily "):
+            with self.subTest(invalid_id=invalid_id):
+                mutated = {
+                    **payload,
+                    "schemes": [
+                        dict(item)
+                        for item in payload["schemes"]
+                    ],
+                }
+                row = next(
+                    item
+                    for item in mutated["schemes"]
+                    if item["scheme_id"] == "t1_daily"
+                )
+                row["scheme_id"] = invalid_id
+                with self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "compatibility identities",
+                ):
+                    _assert_input_compatibility_identities(
+                        mutated,
+                        expected_policy_schemes=policy.schemes,
+                        expected_configs=configs,
+                    )
+
+    def test_replay_identity_gate_rejects_unknown_runtime(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            _assert_input_compatibility_identities,
+        )
+        from scheduler.daily_runtime import _policy_payload
+
+        policy, configs = _real_policy_and_configs()
+        scheme_id = "t1_daily"
+        mutated_schemes = dict(policy.schemes)
+        mutated_configs = dict(configs)
+        mutated_schemes[scheme_id] = replace(
+            mutated_schemes[scheme_id],
+            runtime_type="alien_runtime",
+        )
+        mutated_configs[scheme_id] = replace(
+            mutated_configs[scheme_id],
+            runtime_type="alien_runtime",
+        )
+        mutated_policy = replace(
+            policy,
+            schemes=MappingProxyType(mutated_schemes),
+        )
+        payload = _policy_payload(
+            mutated_policy,
+            daily_coordinator_epoch=TEST_EPOCH,
+        )
+
+        with self.assertRaisesRegex(
+            DailyRealReplayError,
+            "compatibility identities",
+        ):
+            _assert_input_compatibility_identities(
+                payload,
+                expected_policy_schemes=mutated_policy.schemes,
+                expected_configs=mutated_configs,
+            )
+
+    def test_replay_identity_gate_rejects_source_package_drift(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            _assert_input_compatibility_identities,
+        )
+        from scheduler.daily_runtime import _policy_payload
+
+        policy, configs = _real_policy_and_configs()
+        scheme_id = "daily_1y_xgb_1y13_0629"
+        migrated_schemes = dict(policy.schemes)
+        migrated_schemes[scheme_id] = replace(
+            migrated_schemes[scheme_id],
+            input_compatibility="generation_v1",
+        )
+        migrated_policy = replace(
+            policy,
+            schemes=MappingProxyType(migrated_schemes),
+        )
+        migrated_payload = _policy_payload(
+            migrated_policy,
+            daily_coordinator_epoch=TEST_EPOCH,
+        )
+        with self.assertRaisesRegex(
+            DailyRealReplayError,
+            "compatibility identities",
+        ):
+            _assert_input_compatibility_identities(
+                migrated_payload,
+                expected_policy_schemes=migrated_policy.schemes,
+                expected_configs=configs,
+            )
+
+        payload = _policy_payload(
+            policy,
+            daily_coordinator_epoch=TEST_EPOCH,
+        )
+        row = next(
+            item
+            for item in payload["schemes"]
+            if item["scheme_id"] == scheme_id
+        )
+        row["source_package_sha256"] = "a" * 64
+        with self.assertRaisesRegex(
+            DailyRealReplayError,
+            "compatibility identities",
+        ):
+            _assert_input_compatibility_identities(
+                payload,
+                expected_policy_schemes=policy.schemes,
+                expected_configs=configs,
+            )
 
     def test_database_identity_rejects_production_schema(self) -> None:
         from harness.daily_real_replay import (

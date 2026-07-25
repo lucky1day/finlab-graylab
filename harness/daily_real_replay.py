@@ -9,6 +9,10 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from scheduler.daily_runtime import _policy_payload
+from scheduler.daily_policy import (
+    APPROVED_0629_LIVE_SOURCE_SCHEMES,
+    EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME,
+)
 from scheduler.repository import (
     create_schedule_occurrence as _repository_create_schedule_occurrence,
 )
@@ -39,8 +43,7 @@ REAL_REPLAY_SCHEMA_VERSION = "daily-real-replay-v1"
 REAL_REPLAY_SCHEDULE_PREFIX = "isolated-real-replay-v1-"
 EXPECTED_ITEM_COUNT = 21
 EXPECTED_TARGET_COUNT = 25
-EXPECTED_NATIVE_GENERATION_COUNT = 14
-EXPECTED_NATIVE_COMPATIBILITY_COUNT = 3
+EXPECTED_NATIVE_COUNT = 17
 EXPECTED_V2_COUNT = 4
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
@@ -257,16 +260,29 @@ def _build_real_replay_occurrence_args(
         daily_coordinator_epoch=epoch_payload,
     )
     input_modes = _input_mode_counts(policy_json)
-    expected_modes = {
-        "generation_v1": EXPECTED_NATIVE_GENERATION_COUNT,
-        "live_source_0629": EXPECTED_NATIVE_COMPATIBILITY_COUNT,
-        "databridge_v1": EXPECTED_V2_COUNT,
-    }
-    if input_modes != expected_modes:
+    if (
+        set(input_modes)
+        - {
+            "generation_v1",
+            "live_source_0629",
+            "databridge_v1",
+        }
+        or input_modes.get("databridge_v1", 0) != EXPECTED_V2_COUNT
+        or (
+            input_modes.get("generation_v1", 0)
+            + input_modes.get("live_source_0629", 0)
+        )
+        != EXPECTED_NATIVE_COUNT
+    ):
         raise DailyRealReplayError(
             "real replay input compatibility matrix drifted: "
             f"{input_modes}"
         )
+    _assert_input_compatibility_identities(
+        policy_json,
+        expected_policy_schemes=policy.schemes,
+        expected_configs=configs,
+    )
     cache_scheme_ids = sorted(
         str(row["scheme_id"])
         for row in policy_json["schemes"]
@@ -399,6 +415,167 @@ def _input_mode_counts(
             )
         counts[mode] = counts.get(mode, 0) + 1
     return counts
+
+
+def _assert_input_compatibility_identities(
+    policy_json: Mapping[str, object],
+    *,
+    expected_policy_schemes: Mapping[str, Any],
+    expected_configs: Mapping[str, Any],
+) -> None:
+    """要求 17 个 Native 的动态模式和四个 V2 身份完全一致。"""
+    rows = policy_json.get("schemes")
+    if not isinstance(rows, list):
+        raise DailyRealReplayError(
+            "real replay policy schemes are unavailable"
+        )
+    normalized_rows = [row for row in rows if isinstance(row, Mapping)]
+    if len(normalized_rows) != len(rows):
+        raise DailyRealReplayError(
+            "real replay input compatibility identities are invalid"
+        )
+    row_ids = [row.get("scheme_id") for row in normalized_rows]
+    if any(
+        not isinstance(scheme_id, str)
+        or not scheme_id
+        or scheme_id != scheme_id.strip()
+        for scheme_id in row_ids
+    ):
+        raise DailyRealReplayError(
+            "real replay input compatibility identities are invalid"
+        )
+    canonical_ids = [str(scheme_id) for scheme_id in row_ids]
+    expected_ids = set(expected_policy_schemes)
+    if (
+        any(
+            not isinstance(scheme_id, str)
+            or not scheme_id
+            or scheme_id != scheme_id.strip()
+            for scheme_id in (
+                *expected_policy_schemes.keys(),
+                *expected_configs.keys(),
+            )
+        )
+        or len(canonical_ids) != len(set(canonical_ids))
+        or set(canonical_ids) != expected_ids
+        or expected_ids != set(expected_configs)
+    ):
+        raise DailyRealReplayError(
+            "real replay input compatibility identities drifted"
+        )
+    rows_by_id = {
+        scheme_id: row
+        for scheme_id, row in zip(
+            canonical_ids,
+            normalized_rows,
+            strict=True,
+        )
+    }
+    expected_v2_offsets = dict(
+        EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME
+    )
+    expected_v2_ids = set(expected_v2_offsets)
+    if not expected_v2_ids < expected_ids:
+        raise DailyRealReplayError(
+            "real replay input compatibility identities drifted"
+        )
+    for scheme_id in sorted(expected_ids):
+        row = rows_by_id[scheme_id]
+        policy_item = expected_policy_schemes[scheme_id]
+        config = expected_configs[scheme_id]
+        if (
+            getattr(policy_item, "scheme_id", None) != scheme_id
+            or getattr(config, "scheme_id", None) != scheme_id
+            or row.get("runtime_type")
+            != getattr(policy_item, "runtime_type", None)
+            or row.get("runtime_type")
+            != getattr(config, "runtime_type", None)
+            or row.get("input_compatibility")
+            != getattr(policy_item, "input_compatibility", None)
+            or row.get("source_package_sha256")
+            != getattr(policy_item, "source_package_sha256", None)
+        ):
+            raise DailyRealReplayError(
+                "real replay input compatibility identities drifted"
+            )
+    actual_v2_ids = {
+        scheme_id
+        for scheme_id, row in rows_by_id.items()
+        if row.get("runtime_type") == "blackbox_v2"
+    }
+    if actual_v2_ids != expected_v2_ids:
+        raise DailyRealReplayError(
+            "real replay input compatibility identities drifted"
+        )
+    offset_drift = False
+    for scheme_id, expected_offset in expected_v2_offsets.items():
+        observed_offset = rows_by_id[scheme_id].get(
+            "v2_release_offset_min"
+        )
+        if (
+            not isinstance(observed_offset, int)
+            or isinstance(observed_offset, bool)
+            or observed_offset != expected_offset
+        ):
+            offset_drift = True
+    if offset_drift:
+        raise DailyRealReplayError(
+            "real replay input compatibility identities drifted"
+        )
+    actual_live_ids = {
+        scheme_id
+        for scheme_id, row in rows_by_id.items()
+        if row.get("input_compatibility") == "live_source_0629"
+    }
+    expected_native_ids = expected_ids - expected_v2_ids
+    actual_native_ids = {
+        scheme_id
+        for scheme_id, row in rows_by_id.items()
+        if row.get("runtime_type") == "native_adapter"
+    }
+    actual_generation_ids = {
+        scheme_id
+        for scheme_id, row in rows_by_id.items()
+        if row.get("input_compatibility") == "generation_v1"
+    }
+    actual_databridge_ids = {
+        scheme_id
+        for scheme_id, row in rows_by_id.items()
+        if row.get("input_compatibility") == "databridge_v1"
+    }
+    if (
+        actual_native_ids != expected_native_ids
+        or not (
+            actual_live_ids
+            <= set(APPROVED_0629_LIVE_SOURCE_SCHEMES)
+        )
+        or not (actual_live_ids <= expected_native_ids)
+        or actual_generation_ids
+        != expected_native_ids - actual_live_ids
+        or actual_databridge_ids != expected_v2_ids
+    ):
+        raise DailyRealReplayError(
+            "real replay input compatibility identities drifted"
+        )
+    for row in rows_by_id.values():
+        mode = row.get("input_compatibility")
+        source_sha256 = row.get("source_package_sha256")
+        if mode == "live_source_0629":
+            if (
+                not isinstance(source_sha256, str)
+                or len(source_sha256) != 64
+                or any(
+                    char not in "0123456789abcdef"
+                    for char in source_sha256
+                )
+            ):
+                raise DailyRealReplayError(
+                    "real replay input compatibility identities drifted"
+                )
+        elif source_sha256 is not None:
+            raise DailyRealReplayError(
+                "real replay input compatibility identities drifted"
+            )
 
 
 def _aware_utc(value: datetime) -> datetime:
