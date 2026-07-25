@@ -20,6 +20,9 @@ from typing import Any, Callable, Iterator, Mapping
 SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV = (
     "BFL_SOURCE_DB_CONFIG_PATH"
 )
+SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV = (
+    "BFL_SOURCE_DB_CONFIG_ROOT"
+)
 SOURCE_RUNTIME_DATABASE_CONFIG_VERSION = (
     "source-runtime-database-v1"
 )
@@ -53,6 +56,7 @@ _CONFIG_KEYS = frozenset(
 _DATABASE_ENVIRONMENT_NAMES = frozenset(
     {
         SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV,
+        SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV,
         "BOND_DB_USER",
         "BOND_DB_PASSWORD",
         "BOND_DB_HOST",
@@ -138,6 +142,69 @@ class SourceRuntimeDatabaseConfig:
         return hashlib.sha256(canonical).hexdigest()
 
 
+def _validate_source_runtime_database_config_root(
+    approved_root: Path,
+) -> None:
+    """校验 BFL 私有配置根及完整父链，拒绝可替换路径。"""
+    try:
+        root_stat = approved_root.lstat()
+    except OSError as exc:
+        raise RuntimeError(
+            "source runner database approved private root is unavailable"
+        ) from exc
+    if (
+        stat.S_ISLNK(root_stat.st_mode)
+        or not stat.S_ISDIR(root_stat.st_mode)
+    ):
+        raise RuntimeError(
+            "source runner database approved private root must be a "
+            "regular non-symlink directory"
+        )
+    if root_stat.st_uid != os.getuid():
+        raise RuntimeError(
+            "source runner database approved private root must be owned "
+            "by the service user"
+        )
+    if stat.S_IMODE(root_stat.st_mode) != 0o700:
+        raise RuntimeError(
+            "source runner database approved private root must use "
+            "owner-only mode 0700"
+        )
+
+    for ancestor in approved_root.parents:
+        try:
+            ancestor_stat = ancestor.lstat()
+        except OSError as exc:
+            raise RuntimeError(
+                "source runner database approved private root ancestry "
+                "is unavailable"
+            ) from exc
+        if (
+            stat.S_ISLNK(ancestor_stat.st_mode)
+            or not stat.S_ISDIR(ancestor_stat.st_mode)
+        ):
+            raise RuntimeError(
+                "source runner database approved private root ancestry "
+                "must contain only non-symlink directories"
+            )
+        if ancestor_stat.st_uid not in {0, os.getuid()}:
+            raise RuntimeError(
+                "source runner database approved private root ancestry "
+                "has an unexpected owner"
+            )
+        mode = stat.S_IMODE(ancestor_stat.st_mode)
+        writable_by_others = bool(mode & 0o022)
+        trusted_sticky_root = bool(
+            ancestor_stat.st_uid == 0
+            and mode & stat.S_ISVTX
+        )
+        if writable_by_others and not trusted_sticky_root:
+            raise RuntimeError(
+                "source runner database approved private root ancestry "
+                "is unsafe"
+            )
+
+
 def load_source_runtime_database_config(
     environ: Mapping[str, str] | None = None,
 ) -> SourceRuntimeDatabaseConfig:
@@ -158,6 +225,28 @@ def load_source_runtime_database_config(
     if not path.is_absolute():
         raise RuntimeError(
             "source runner database config path must be absolute"
+        )
+    raw_root = str(
+        environment.get(
+            SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV,
+            "",
+        )
+    ).strip()
+    if not raw_root:
+        raise RuntimeError(
+            "source runner database injection is incomplete: "
+            f"missing {SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV}"
+        )
+    approved_root = Path(raw_root)
+    if not approved_root.is_absolute():
+        raise RuntimeError(
+            "source runner database approved private root must be absolute"
+        )
+    _validate_source_runtime_database_config_root(approved_root)
+    if path.parent != approved_root:
+        raise RuntimeError(
+            "source runner database config must stay inside the "
+            "approved private root"
         )
     try:
         path_stat = path.lstat()
@@ -516,7 +605,7 @@ def frozen_source_runtime_database_config(
     with tempfile.TemporaryDirectory(
         prefix="bfl-source-db-binding-",
     ) as tmpdir:
-        root = Path(tmpdir)
+        root = Path(tmpdir).resolve()
         root.chmod(0o700)
         path = root / "source-db.json"
         write_private_json_atomic(

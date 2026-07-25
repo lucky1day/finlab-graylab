@@ -223,6 +223,8 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
+                        "BFL_SOURCE_DB_CONFIG_ROOT":
+                            str(binding_path.parent.resolve()),
                         "BFL_SOURCE_DB_CONFIG_PATH":
                             str(binding_path.resolve()),
                     },
@@ -289,6 +291,8 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                     patch.dict(
                         os.environ,
                         {
+                            "BFL_SOURCE_DB_CONFIG_ROOT":
+                                str(binding_path.parent.resolve()),
                             "BFL_SOURCE_DB_CONFIG_PATH":
                                 str(binding_path.resolve()),
                         },
@@ -331,6 +335,7 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
         )
 
         environment = {
+            "BFL_SOURCE_DB_CONFIG_ROOT": "/private",
             "BFL_SOURCE_DB_CONFIG_PATH": "/private/source-db.json",
             "BOND_DB_USER": "service-user",
             "BOND_DB_PASSWORD": "service-secret",
@@ -351,7 +356,7 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
         )
         for key in environment:
             if (
-                key == "BFL_SOURCE_DB_CONFIG_PATH"
+                key.startswith("BFL_SOURCE_DB_")
                 or key.startswith("BOND_DB_")
                 or key in {"MYSQL_PWD", "DATABASE_URL"}
             ):
@@ -369,6 +374,8 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
             _write_private_binding(binding_path)
             config = load_source_runtime_database_config(
                 {
+                    "BFL_SOURCE_DB_CONFIG_ROOT":
+                        str(binding_path.parent.resolve()),
                     "BFL_SOURCE_DB_CONFIG_PATH":
                         str(binding_path.resolve()),
                 }
@@ -426,6 +433,8 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
             binding_path = root / "source-db.json"
             _write_private_binding(binding_path)
             source_environment = {
+                "BFL_SOURCE_DB_CONFIG_ROOT":
+                    str(binding_path.parent.resolve()),
                 "BFL_SOURCE_DB_CONFIG_PATH":
                     str(binding_path.resolve()),
             }
@@ -515,6 +524,8 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
             )
             binding_path.chmod(0o600)
             environment = {
+                "BFL_SOURCE_DB_CONFIG_ROOT":
+                    str(binding_path.parent.resolve()),
                 "BFL_SOURCE_DB_CONFIG_PATH":
                     str(binding_path.resolve()),
                 "DAILY_0629_SOURCE_TIMEOUT_SEC": "7",
@@ -828,14 +839,19 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
+            root = Path(tmpdir).resolve()
             binding_path = root / "source-db.json"
             _write_private_binding(binding_path)
             binding_path.chmod(0o640)
             with (
                 patch.dict(
                     os.environ,
-                    {"BFL_SOURCE_DB_CONFIG_PATH": str(binding_path)},
+                    {
+                        "BFL_SOURCE_DB_CONFIG_ROOT":
+                            str(root.resolve()),
+                        "BFL_SOURCE_DB_CONFIG_PATH":
+                            str(binding_path),
+                    },
                     clear=True,
                 ),
                 self.assertRaisesRegex(
@@ -852,6 +868,8 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 patch.dict(
                     os.environ,
                     {
+                        "BFL_SOURCE_DB_CONFIG_ROOT":
+                            str(root.resolve()),
                         "BFL_SOURCE_DB_CONFIG_PATH":
                             str(link_path.resolve().parent / link_path.name),
                     },
@@ -860,6 +878,111 @@ class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
                 self.assertRaisesRegex(
                     RuntimeError,
                     "regular non-symlink",
+                ),
+            ):
+                load_source_runtime_database_config()
+
+    def test_binding_path_must_stay_inside_approved_private_root(
+        self,
+    ) -> None:
+        from shared.source_runtime_database import (
+            load_source_runtime_database_config,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            approved_root = root / "private"
+            approved_root.mkdir(mode=0o700)
+            outside_root = root / "outside"
+            outside_root.mkdir(mode=0o700)
+            binding_path = outside_root / "source-db.json"
+            _write_private_binding(binding_path)
+
+            with (
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "approved private root",
+                ),
+                patch.dict(
+                    os.environ,
+                    {
+                        "BFL_SOURCE_DB_CONFIG_ROOT":
+                            str(approved_root),
+                        "BFL_SOURCE_DB_CONFIG_PATH":
+                            str(binding_path),
+                    },
+                    clear=True,
+                ),
+            ):
+                load_source_runtime_database_config()
+
+    def test_approved_private_root_rejects_unsafe_ancestry(
+        self,
+    ) -> None:
+        from shared.source_runtime_database import (
+            load_source_runtime_database_config,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir).resolve()
+            unsafe_parent = root / "unsafe"
+            unsafe_parent.mkdir(mode=0o700)
+            approved_root = unsafe_parent / "private"
+            approved_root.mkdir(mode=0o700)
+            binding_path = approved_root / "source-db.json"
+            _write_private_binding(binding_path)
+
+            cases = (
+                (
+                    "non-private root",
+                    lambda: approved_root.chmod(0o755),
+                    "owner-only mode 0700",
+                ),
+                (
+                    "writable parent",
+                    lambda: unsafe_parent.chmod(0o777),
+                    "ancestry is unsafe",
+                ),
+            )
+            for label, make_unsafe, message in cases:
+                approved_root.chmod(0o700)
+                unsafe_parent.chmod(0o700)
+                make_unsafe()
+                with (
+                    self.subTest(case=label),
+                    self.assertRaisesRegex(RuntimeError, message),
+                    patch.dict(
+                        os.environ,
+                        {
+                            "BFL_SOURCE_DB_CONFIG_ROOT":
+                                str(approved_root),
+                            "BFL_SOURCE_DB_CONFIG_PATH":
+                                str(binding_path),
+                        },
+                        clear=True,
+                    ),
+                ):
+                    load_source_runtime_database_config()
+
+            approved_root.chmod(0o700)
+            unsafe_parent.chmod(0o700)
+            real_root = root / "real-private"
+            real_root.mkdir(mode=0o700)
+            real_binding = real_root / "source-db.json"
+            _write_private_binding(real_binding)
+            linked_root = root / "linked-private"
+            linked_root.symlink_to(real_root, target_is_directory=True)
+            with (
+                self.assertRaisesRegex(RuntimeError, "non-symlink"),
+                patch.dict(
+                    os.environ,
+                    {
+                        "BFL_SOURCE_DB_CONFIG_ROOT":
+                            str(linked_root),
+                        "BFL_SOURCE_DB_CONFIG_PATH":
+                            str(linked_root / "source-db.json"),
+                    },
+                    clear=True,
                 ),
             ):
                 load_source_runtime_database_config()

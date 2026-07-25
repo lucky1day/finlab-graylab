@@ -359,10 +359,19 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "legacy",
         )
         self.assertIn("BFL_SOURCE_DB_CONFIG_PATH", scheduler_env)
+        self.assertIn("BFL_SOURCE_DB_CONFIG_ROOT", scheduler_env)
+        source_database_root = Path(
+            scheduler_env["BFL_SOURCE_DB_CONFIG_ROOT"]
+        )
         source_database_config = scheduler_env["BFL_SOURCE_DB_CONFIG_PATH"]
+        self.assertTrue(source_database_root.is_absolute())
         self.assertTrue(Path(source_database_config).is_absolute())
         self.assertEqual(
             Path(source_database_config).parent,
+            source_database_root,
+        )
+        self.assertEqual(
+            source_database_root,
             Path("/Users/macstudio0/.config/bond-factor-lab"),
         )
         self.assertEqual(
@@ -400,6 +409,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
     ) -> None:
         deploy = DEPLOY_README.read_text(encoding="utf-8")
         for marker in (
+            "BFL_SOURCE_DB_CONFIG_ROOT",
             "BFL_SOURCE_DB_CONFIG_PATH",
             "/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json",
             "chmod 700 /Users/macstudio0/.config/bond-factor-lab",

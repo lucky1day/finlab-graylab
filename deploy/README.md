@@ -292,8 +292,10 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 `deploy/launchd/com.bond-factor-lab.scheduler.plist` 当前默认设置：
 
 - `BOND_DAILY_COORDINATOR_MODE=legacy`：切换门禁未通过，继续使用旧路径。
-- `BFL_SOURCE_DB_CONFIG_PATH=/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json`：
-  只向 scheduler 注入 BFL 专用 source-readonly 配置文件的位置；不得把用户名、密码或 DSN 写入 plist。
+- `BFL_SOURCE_DB_CONFIG_ROOT=/Users/macstudio0/.config/bond-factor-lab` 与
+  `BFL_SOURCE_DB_CONFIG_PATH=/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json`：
+  前者固定批准的 BFL 私有配置根，后者只注入 source-readonly 配置文件的位置；
+  不得把用户名、密码或 DSN 写入 plist。
   安装或重启 scheduler 前必须确认私有目录和终端文件权限：
 
   ```bash

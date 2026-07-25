@@ -146,6 +146,8 @@ class SourceRunnerDatabaseIsolationMySQLTests(unittest.TestCase):
                     )
 
                 environment = {
+                    "BFL_SOURCE_DB_CONFIG_ROOT":
+                        str(binding_path.parent.resolve()),
                     "BFL_SOURCE_DB_CONFIG_PATH":
                         str(binding_path.resolve()),
                 }

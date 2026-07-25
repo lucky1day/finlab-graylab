@@ -72,6 +72,7 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             "LC_ALL": "en_US.UTF-8",
             "OMP_NUM_THREADS": "2",
             "LIWEI_0616_PHASE_A_CACHE_ROOT": "/tmp/cache",
+            "BFL_SOURCE_DB_CONFIG_ROOT": "/private",
             "BFL_SOURCE_DB_CONFIG_PATH": "/private/source-db.json",
             "BOND_DB_PASSWORD": "db-secret-sentinel",
             "DATABRIDGE_API_PASSWORD": "bridge-secret-sentinel",
@@ -101,6 +102,7 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             "/tmp/cache",
         )
         for secret_name in (
+            "BFL_SOURCE_DB_CONFIG_ROOT",
             "BFL_SOURCE_DB_CONFIG_PATH",
             "BOND_DB_PASSWORD",
             "DATABRIDGE_API_PASSWORD",
@@ -183,20 +185,37 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
         context = _generation_context()
         captured: dict[str, str] = {}
         runtime_config_path: Path | None = None
+        runtime_config_root: Path | None = None
 
         def fake_run(cmd, *, cwd, env, timeout):
             from subprocess import CompletedProcess
+            from shared.source_runtime_database import (
+                load_source_runtime_database_config,
+            )
 
-            nonlocal runtime_config_path
+            nonlocal runtime_config_path, runtime_config_root
             del cwd, timeout
             captured.update(env)
+            runtime_config_root = Path(
+                env["BFL_SOURCE_DB_CONFIG_ROOT"]
+            )
             runtime_config_path = Path(
                 env["BFL_SOURCE_DB_CONFIG_PATH"]
             )
+            self.assertEqual(
+                runtime_config_root,
+                runtime_config_path.parent,
+            )
+            self.assertTrue(runtime_config_root.is_dir())
             self.assertTrue(runtime_config_path.is_file())
             self.assertNotEqual(
                 runtime_config_path,
                 original_config_path,
+            )
+            reloaded_config = load_source_runtime_database_config(env)
+            self.assertEqual(
+                reloaded_config.cache_identity,
+                database_config.cache_identity,
             )
             return CompletedProcess(cmd, 0, "[]", "")
 
@@ -280,8 +299,14 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             captured["BFL_SOURCE_DB_CONFIG_PATH"],
             str(runtime_config_path),
         )
+        self.assertEqual(
+            captured["BFL_SOURCE_DB_CONFIG_ROOT"],
+            str(runtime_config_root),
+        )
         self.assertIsNotNone(runtime_config_path)
+        self.assertIsNotNone(runtime_config_root)
         self.assertFalse(runtime_config_path.exists())
+        self.assertFalse(runtime_config_root.exists())
 
     def test_cache_qualification_is_explicitly_validated_and_injected(
         self,

@@ -77,6 +77,7 @@ from shared.prediction_context import (
 )
 from shared.source_runtime_database import (
     SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV,
+    SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV,
     SOURCE_RUNTIME_SCHEME_IDS,
     SourceRuntimeDatabaseConfig,
     frozen_source_runtime_database_config,
@@ -221,6 +222,7 @@ def run_scheme_subprocess(
     """通过 conda 子进程在算法环境中运行方案。"""
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
+    env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
     source_database_config: (
         SourceRuntimeDatabaseConfig | None
     ) = None
@@ -393,6 +395,9 @@ def run_scheme_subprocess(
     )
     with source_database_context as source_database_path:
         if source_database_path is not None:
+            env[SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV] = str(
+                source_database_path.parent
+            )
             env[SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV] = str(
                 source_database_path
             )
