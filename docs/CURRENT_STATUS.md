@@ -54,8 +54,8 @@
 - `5aed35f` 与 `1f81f3e` 已建立 21/25 结构 gate 和 Engine-bound replay
   epoch：只接受父子摘要一致的同日 generation，完成 001–018、17/4 绑定，
   并在 claim/process/commit 重验隔离 Engine/Connection。
-- `1f101b8` 增加受保护的串行 replay runtime：唯一入口 `run()` 硬绑定 canonical executor；owner 锁内每轮重验 21 个 execution envelope，并覆盖构造后漂移、`retry_wait` 隔离、未来 V2 release 和次日零点截止。
-  普通测试 `15 passed, 1 skipped`、显式 MySQL `16 passed`、全量 `2644 passed, 11 skipped`。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
+- `1f101b8`、`9a76586` 建立受保护的双池 replay runtime：唯一入口 `run()` 硬绑定 canonical executor；2 Native / 2 V2 受 governor 限制，owner 锁内每轮重验 21 个 execution envelope，并以线性化 stop fence 阻止异常后的跨池新任务。
+  普通测试 `24 passed, 1 skipped`、显式 MySQL `25 passed`、全量 `2653 passed, 11 skipped`；cutoff、构造后漂移、`retry_wait`、cache prerequisite、非法资源组合和 pool 故障均已覆盖。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -90,7 +90,7 @@
 
 ## 当前观察项
 
-1. 下一次真实同日 Native/DataBridge generation 到位后，在 BFL 生产 scheduler/算法进程不重叠的独占窗口，通过 `5aed35f`、`1f81f3e` 和 `1f101b8`
+1. 下一次真实同日 Native/DataBridge generation 到位后，在 BFL 生产 scheduler/算法进程不重叠的独占窗口，通过 `5aed35f`、`1f81f3e` 和 `9a76586`
    执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造 historical seal，不使用 recorder、不写生产库，也不计作容量样本。
    当前 replay owner 锁只互斥 replay，不替代该运行前检查。
 2. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
