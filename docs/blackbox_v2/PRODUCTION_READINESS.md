@@ -3,7 +3,7 @@
 **文档状态**：`BLOCKED_DRAFT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台开发、运维、风险控制和授权人员
-**最后核验日期**：2026-07-24
+**最后核验日期**：2026-07-26
 
 本文不是可执行的生产 SOP。它只列出 Blackbox V2 从 `shadow + paused` 晋级为 `active/live` 前必须完成并验证的阻塞项。
 
@@ -26,8 +26,8 @@
 
 - 当前有两个真实上游交付批次：`10Y + weekly_point + LightGBM`，以及同一 ZIP 中的四个 `1Y + T+5 + daily` 算法；后者不能计作四个独立交付包。
 - 尚未用独立真实交付覆盖月频和周平均，真实交付总批次数仍少于 3。
-- 当前 `weekly_10y_lgbm_point_v1` 与四个 1Y T+5 指定方案获得专项生产灰度授权；首条 gray live actual 均要到目标日 `2026-07-24` 后才能验证。
-- 四个日频方案均已 active，尚待下一交易日自然 `scheduled_live`；用户明确授权的当天全量激活不等于自然 scheduler 验收已完成。
+- 当前 `weekly_10y_lgbm_point_v1` 与四个 1Y T+5 指定方案获得专项生产灰度授权；四个日频方案目标日 `2026-07-24` 的首条 gray-live actual 已入库并完成数据库 join，API 和前端准确率仍需按当前结果复验。
+- 四个日频方案均已 active；截至 2026-07-26，每方案各有 40 条连续 `gray_live`，`LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 的 `scheduled_live` 数量依次为 `3/2/2/0`。前三个方案已有自然调度证据，第四个仍无正式结果，因此批次尚未整体通过 `Production Observed`。
 - 原 06:00/06:30/06:35/07:00 V2 preflight + scheduler restart
   路径已被 2026-07-24 的架构复审判定为不适合日频 SLA，ledger 模式下已经
   fail-closed 退休。候选路径在 06:30 由单一 occurrence coordinator 同时构建
@@ -39,7 +39,7 @@
 - 日频候选协调器仍处于“改造/观测中”：生产 rollout 保持 legacy，迁移、
   三个 Native 输入适配、容量门禁、故障注入和连续 10 个交易日 25/25
   尚未完成，不能宣称 08:00 SLA 稳定。
-- 四个日频方案已通过专用 `gray-backfill` Gate 补齐 `target_date >= 2026-06-01` 的连续 `gray_live`：每方案 39 条 gray、0 条 scheduled，历史/live target overlap 为 0；API 和前端阶段分界已验收，达到 `Onboarding Complete`，仍待自然 scheduler 才能成为 `Production Observed`。
+- 四个日频方案已通过专用 `gray-backfill` Gate 补齐 `target_date >= 2026-06-01` 的连续 `gray_live`，历史/live target overlap 为 0，API 和前端阶段分界已验收并达到 `Onboarding Complete`。2026-07-24 旧 scheduler 仅在 11:23 为 `LIQ_EXCESS_A` 产生晚到结果，另外三个正式任务缺失；这既不能补足第四个方案的 `Production Observed`，也不能作为 08:00 SLA 稳定证据。
 - 这些专项激活不代表 Blackbox V2 已获得面向任意新交付的通用生产授权。
 
 ## 2. 必须完成的阻塞项

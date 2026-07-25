@@ -38,11 +38,11 @@
 
 - `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 的配置、方案版本和 composite Registry 均为 `active`。
 - canonical latest backtest 已切换到 run `178..181`：每方案 333 条、17 个月，`predict_date=feature_date=2025-01-02..2026-05-22`，`target_date=2025-01-09..2026-05-29`；旧 run 全部 immutable 保留审计。
-- 每方案已有 40 条连续 `gray_live`：`predict_date=2026-05-26..2026-07-21`、`feature_date=2026-05-25..2026-07-20`、`target_date=2026-06-01..2026-07-27`；历史/live target overlap 为 0，`scheduled_live=0`。
+- 每方案已有 40 条连续 `gray_live`：`predict_date=2026-05-26..2026-07-21`、`feature_date=2026-05-25..2026-07-20`、`target_date=2026-06-01..2026-07-27`；历史/live target overlap 为 0。四方案当前 `scheduled_live` 数量依次为 `3/2/2/0`。
 - 其中每方案 38 条历史缺口通过独立 `gray_backfill_write` token 和 insert-only `gray-backfill` Gate 补齐，统一绑定 generation `full-20260720-055026-00e12e3803a8` 与 snapshot `snapshot-fd8a1f8736d3a4d057fbd98e`；首条部署日 gray live 保留原记录。
-- 前端在 `1Y国债活跃 × T+5` 格子内显示 4 个短名称；2026-05 是历史末月，实盘分隔线位于 2026-06 前。所有方案的详情分隔文案统一只显示 `实盘预测目标区间`；这四个方案尚无 `scheduled_live`，因此当前显示“待产生”。
-- 四方案已达到 `Onboarding Complete`；尚未达到 `Production Observed`，因为下一交易日自然 scheduler 尚未产生 `scheduled_live`。
-- 2026-07-21 的人工重启未在 07:03 前执行，四方案当天没有自然 `scheduled_live`；旧 scheduler 同时在 07:03 用过期 discovery 回写 Registry 长名称。12:22 已安装 V2 独立日级 Gate 和自动重启控制并重载 scheduler：四个 V2 job 已挂载，今天以 blocked 凭证拒绝 startup catchup，17 个 Native V1 运行保持 17/17，Registry、本地及公网 API 已恢复四个短名称。随后按用户专项授权以 fresh LiveGate 补齐四条当日 `gray_live`，没有伪造 `scheduled_live`；下一交易日四阶段自然运行和 `scheduled_live` 仍待观察。
+- 前端在 `1Y国债活跃 × T+5` 格子内显示 4 个短名称；2026-05 是历史末月，实盘分隔线位于 2026-06 前。详情分隔文案使用各方案首条 `scheduled_live.target_date`；仅仍无正式结果的 `LIQ_EXCESS_B_W252_L7` 显示“待产生”。
+- 四方案均达到 `Onboarding Complete`；前三个方案已有可追溯的自然 `scheduled_live`，但 `LIQ_EXCESS_B_W252_L7` 仍为 0，因此四方案批次尚未整体达到 `Production Observed`。
+- 2026-07-22/23 前三个方案分别产生正式结果；2026-07-24 旧 scheduler 仅在 11:23 为 `LIQ_EXCESS_A` 产生一条晚到结果，另外三个方案缺失。该日只能证明局部执行，不能证明四阶段释放、08:00 SLA 或批次稳定。
 - 四个日频算法来自同一上游批次，证明了日频 Blackbox 运行路径，但不等于四个独立交付包，也不覆盖月频。
 
 ### 日频 08:00 整改状态
