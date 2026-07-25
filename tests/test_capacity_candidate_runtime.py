@@ -91,6 +91,7 @@ _REQUIRED_COLUMNS = {
         "attempt_no",
         "status",
         "failure_code",
+        "started_at",
     },
 }
 
@@ -121,17 +122,28 @@ def _schema_rows() -> dict[str, list[dict[str, object]]]:
     columns: list[dict[str, object]] = []
     for table_name, names in sorted(_REQUIRED_COLUMNS.items()):
         for position, column_name in enumerate(sorted(names), start=1):
-            columns.append(
-                {
-                    "table_name": table_name,
-                    "column_name": column_name,
-                    "ordinal_position": position,
-                    "column_type": "varchar(128)",
-                    "is_nullable": "NO",
-                    "column_default": None,
-                    "extra": "",
-                }
-            )
+            definition = {
+                "table_name": table_name,
+                "column_name": column_name,
+                "ordinal_position": position,
+                "column_type": "varchar(128)",
+                "is_nullable": "NO",
+                "column_default": None,
+                "extra": "",
+            }
+            if (
+                table_name == "t_scheme_runs"
+                and column_name == "started_at"
+            ):
+                definition.update(
+                    {
+                        "column_type": "datetime(6)",
+                        "is_nullable": "YES",
+                        "column_default": "CURRENT_TIMESTAMP(6)",
+                        "extra": "DEFAULT_GENERATED",
+                    }
+                )
+            columns.append(definition)
     indexes = [
         {
             "table_name": table_name,
@@ -583,6 +595,30 @@ class CurrentCapacityCandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(
             CapacityCandidateRuntimeError,
             "ledger schema|current_run_id",
+        ):
+            self._build(schema=schema)
+
+    def test_schedule_run_started_at_definition_fails_closed(
+        self,
+    ) -> None:
+        schema = _schema_rows()
+        started_at = next(
+            row
+            for row in schema["columns"]
+            if row["table_name"] == "t_scheme_runs"
+            and row["column_name"] == "started_at"
+        )
+        started_at.update(
+            {
+                "column_type": "datetime",
+                "is_nullable": "NO",
+                "column_default": "CURRENT_TIMESTAMP",
+            }
+        )
+
+        with self.assertRaisesRegex(
+            CapacityCandidateRuntimeError,
+            "started_at definition",
         ):
             self._build(schema=schema)
 

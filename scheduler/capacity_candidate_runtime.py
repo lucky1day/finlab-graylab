@@ -38,7 +38,7 @@ CommandRunner = Callable[[tuple[str, ...]], bytes]
 
 SERVICE_ENV_NAME = "bond_factor_lab_service"
 NATIVE_ENV_NAME = "forecast_env"
-LEDGER_SCHEMA_VERSION = "daily-ledger-schema-v017"
+LEDGER_SCHEMA_VERSION = "daily-ledger-schema-v018"
 MAX_SOURCE_FILE_BYTES = 64 * 1024 * 1024
 MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024
 
@@ -78,6 +78,7 @@ MIGRATION_FILES = (
     "015_monthly_actuals.sql",
     "016_dual_runtime.sql",
     "017_daily_schedule_ledger.sql",
+    "018_schedule_run_started_at_nullable.sql",
 )
 RUNTIME_PROFILE_PATH = "deploy/blackbox_v2/runtime_profile_v1.json"
 NATIVE_EXPORTER_FILES = (
@@ -158,6 +159,7 @@ _REQUIRED_LEDGER_COLUMNS = {
         "attempt_no",
         "status",
         "failure_code",
+        "started_at",
     },
 }
 _REQUIRED_LEDGER_INDEXES = {
@@ -865,7 +867,7 @@ def _collect_migration_artifacts(root: Path) -> dict[str, str]:
     expected = set(MIGRATION_FILES)
     if actual != expected:
         raise CapacityCandidateRuntimeError(
-            "migration set must be exactly 001..017: "
+            "migration set must be exactly 001..018: "
             f"missing={sorted(expected - actual)} "
             f"unknown={sorted(actual - expected)}"
         )
@@ -1214,6 +1216,41 @@ def _validate_ledger_schema(
                 f"ledger schema {table} missing columns: "
                 + ",".join(sorted(missing))
             )
+    started_at_rows = [
+        row
+        for row in columns
+        if row.get("table_name") == "t_scheme_runs"
+        and row.get("column_name") == "started_at"
+    ]
+    if len(started_at_rows) != 1:
+        raise CapacityCandidateRuntimeError(
+            "ledger schema t_scheme_runs.started_at definition is missing "
+            "or duplicated"
+        )
+    started_at = started_at_rows[0]
+    observed_started_at = {
+        "column_type": str(
+            started_at.get("column_type") or ""
+        ).lower(),
+        "is_nullable": str(
+            started_at.get("is_nullable") or ""
+        ).lower(),
+        "column_default": str(
+            started_at.get("column_default") or ""
+        ).lower(),
+        "extra": str(started_at.get("extra") or "").lower(),
+    }
+    expected_started_at = {
+        "column_type": "datetime(6)",
+        "is_nullable": "yes",
+        "column_default": "current_timestamp(6)",
+        "extra": "default_generated",
+    }
+    if observed_started_at != expected_started_at:
+        raise CapacityCandidateRuntimeError(
+            "ledger schema t_scheme_runs.started_at definition drift: "
+            f"{observed_started_at}"
+        )
     actual_indexes = {
         (
             _text_value(row.get("table_name"), "index table_name"),

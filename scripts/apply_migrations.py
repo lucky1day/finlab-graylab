@@ -3643,6 +3643,202 @@ def build_applying_017_inspection(
     }
 
 
+def _schedule_run_started_at_shape(
+    row: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """规范化 018 唯一变更列的闭世界定义。"""
+    if row is None:
+        return {"exists": False}
+    return {
+        "exists": True,
+        "column_type": str(row.get("column_type") or "").lower(),
+        "is_nullable": str(row.get("is_nullable") or "").lower(),
+        "column_default": str(
+            row.get("column_default") or ""
+        ).lower(),
+        "extra": str(row.get("extra") or "").lower(),
+    }
+
+
+def _classify_schedule_run_started_at_shape(
+    shape: Mapping[str, object],
+) -> str:
+    """只接受 018 审核过的 source 或 target 定义。"""
+    source = {
+        "exists": True,
+        "column_type": "datetime",
+        "is_nullable": "no",
+        "column_default": "current_timestamp",
+        "extra": "default_generated",
+    }
+    target = {
+        "exists": True,
+        "column_type": "datetime(6)",
+        "is_nullable": "yes",
+        "column_default": "current_timestamp(6)",
+        "extra": "default_generated",
+    }
+    normalized = dict(shape)
+    if normalized == source:
+        return "COMPATIBLE_PARTIAL"
+    if normalized == target:
+        return "COMPLETE"
+    raise MigrationPreflightError(
+        "unexpected t_scheme_runs.started_at definition: "
+        f"{normalized}"
+    )
+
+
+def _validate_applying_018_history(
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+) -> PreparedMigration:
+    """只接受 001..017 APPLIED + 018 APPLYING 的精确连续历史。"""
+    migrations = [
+        migration
+        for migration in manifest
+        if migration.version <= SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION
+    ]
+    expected_versions = list(
+        range(1, SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION + 1)
+    )
+    if [migration.version for migration in migrations] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery requires contiguous migration files "
+            "001..018"
+        )
+    target = migrations[-1]
+    if (
+        target.path.name != SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME
+        or target.sha256 != SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256
+    ):
+        raise MigrationHistoryError(
+            "migration 018 recovery identity/checksum is not the "
+            "reviewed schedule-run timestamp migration"
+        )
+    rows = sorted(history, key=lambda row: int(row["version"]))
+    if [int(row["version"]) for row in rows] != expected_versions:
+        raise MigrationHistoryError(
+            "APPLYING recovery history must be the exact contiguous "
+            "001..018 prefix"
+        )
+    by_version = {
+        migration.version: migration for migration in migrations
+    }
+    for row in rows:
+        version = int(row["version"])
+        migration = by_version[version]
+        if str(row.get("filename") or "") != migration.path.name:
+            raise MigrationHistoryError(
+                f"migration history filename drift for {version:03d}"
+            )
+        if str(row.get("sha256") or "").lower() != migration.sha256:
+            raise MigrationHistoryError(
+                f"migration history checksum drift for {version:03d}"
+            )
+        expected_state = (
+            "APPLYING"
+            if version == SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION
+            else "APPLIED"
+        )
+        if str(row.get("state") or "").upper() != expected_state:
+            raise MigrationHistoryError(
+                "only migration 018 may be APPLYING; "
+                f"version {version:03d} is {row.get('state')!r}"
+            )
+    bootstrap_flags = [
+        int(row.get("baseline_bootstrap") or 0)
+        for row in rows
+    ]
+    fresh_history = [0] * 18
+    legacy_bootstrap_history = [1] * 16 + [0, 0]
+    if tuple(bootstrap_flags) not in {
+        tuple(fresh_history),
+        tuple(legacy_bootstrap_history),
+    }:
+        raise MigrationHistoryError(
+            "migration 018 APPLYING history has an invalid baseline "
+            f"bootstrap pattern: {bootstrap_flags}"
+        )
+    if int(rows[-1].get("baseline_bootstrap") or 0) != 0:
+        raise MigrationHistoryError(
+            "migration 018 APPLYING row cannot be a baseline bootstrap"
+        )
+    return target
+
+
+def build_applying_018_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    history: Iterable[Mapping[str, object]],
+    database_identity: Mapping[str, object],
+    started_at_shape: Mapping[str, object],
+) -> dict[str, object]:
+    """构造只读 APPLYING 018 两态检查及 canonical digest。"""
+    migrations = list(manifest)
+    history_rows = sorted(
+        (dict(row) for row in history),
+        key=lambda row: int(row["version"]),
+    )
+    canonical_state = {
+        "database_identity": dict(database_identity),
+        "manifest": [
+            {
+                "version": migration.version,
+                "filename": migration.path.name,
+                "sha256": migration.sha256,
+            }
+            for migration in migrations
+            if migration.version
+            <= SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION
+        ],
+        "history": history_rows,
+        "started_at_shape": dict(started_at_shape),
+    }
+    digest = _applying_017_state_digest(canonical_state)
+    classification = "UNSAFE"
+    reason: str | None = None
+    migration_identity: dict[str, object] | None = None
+    try:
+        database_name = str(
+            database_identity.get("database_name") or ""
+        ).strip()
+        server_uuid = str(
+            database_identity.get("server_uuid") or ""
+        ).strip()
+        if not database_name or not server_uuid:
+            raise MigrationHistoryError(
+                "database name and MySQL server UUID are required"
+            )
+        target = _validate_applying_018_history(
+            migrations,
+            history_rows,
+        )
+        migration_identity = {
+            "version": target.version,
+            "filename": target.path.name,
+            "sha256": target.sha256,
+        }
+        classification = _classify_schedule_run_started_at_shape(
+            started_at_shape
+        )
+    except (
+        KeyError,
+        MigrationHistoryError,
+        MigrationPreflightError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        reason = str(exc)
+    return {
+        "classification": classification,
+        "state_digest": digest,
+        "database_identity": dict(database_identity),
+        "migration": migration_identity,
+        "reason": reason,
+    }
+
+
 def _error_location(sql: str, offset: int) -> str:
     """返回零偏移量对应的一基行列位置。"""
     line = sql.count("\n", 0, offset) + 1
@@ -3824,6 +4020,11 @@ def _is_daily_ledger_migration(path: Path) -> bool:
     return path.name.startswith("017_")
 
 
+def _is_schedule_run_started_at_migration(path: Path) -> bool:
+    """migration 018 需要精确列定义 postcondition。"""
+    return path.name == SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME
+
+
 def _partial_apply_error(
     path: Path,
     *,
@@ -3854,6 +4055,14 @@ DAILY_LEDGER_MIGRATION_FILENAME = "017_daily_schedule_ledger.sql"
 DAILY_LEDGER_MIGRATION_SHA256 = (
     "a405ba82a857fc36252256c91fa9719e5"
     "7b63007830bd9acf734f5f8e0c743fb"
+)
+SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION = 18
+SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME = (
+    "018_schedule_run_started_at_nullable.sql"
+)
+SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256 = (
+    "320cdf0877618330b8dbd52bb091e956"
+    "987e916447cb41fc4f8d7a567b5b3ba1"
 )
 
 
@@ -4287,6 +4496,221 @@ def recover_applying_migration_017(
         }
 
 
+def _read_schedule_run_started_at_shape(
+    connection: object,
+) -> dict[str, object]:
+    """从 information_schema 读取 018 唯一变更列。"""
+    rows = connection.execute(
+        text(
+            """
+            SELECT column_type AS column_type,
+                   is_nullable AS is_nullable,
+                   column_default AS column_default,
+                   extra AS extra
+            FROM information_schema.columns
+            WHERE table_schema = DATABASE()
+              AND table_name = 't_scheme_runs'
+              AND column_name = 'started_at'
+            """
+        )
+    ).mappings().all()
+    if len(rows) > 1:
+        raise MigrationHistoryError(
+            "duplicate t_scheme_runs.started_at metadata rows"
+        )
+    return _schedule_run_started_at_shape(
+        dict(rows[0]) if rows else None
+    )
+
+
+def _unsafe_applying_018_inspection(
+    *,
+    manifest: Iterable[PreparedMigration],
+    database_identity: Mapping[str, object],
+    reason: BaseException,
+) -> dict[str, object]:
+    canonical_state = {
+        "database_identity": dict(database_identity),
+        "manifest": [
+            {
+                "version": migration.version,
+                "filename": migration.path.name,
+                "sha256": migration.sha256,
+            }
+            for migration in manifest
+            if migration.version
+            <= SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION
+        ],
+        "inspection_error": {
+            "type": type(reason).__name__,
+            "message": str(reason),
+        },
+    }
+    return {
+        "classification": "UNSAFE",
+        "state_digest": _applying_017_state_digest(canonical_state),
+        "database_identity": dict(database_identity),
+        "migration": None,
+        "reason": str(reason),
+    }
+
+
+def _read_applying_018_inspection(
+    connection: object,
+    manifest: list[PreparedMigration],
+) -> dict[str, object]:
+    """在 owner lock 内读取一次 canonical APPLYING 018 状态。"""
+    identity_row = connection.execute(
+        text(
+            """
+            SELECT DATABASE() AS database_name,
+                   @@server_uuid AS server_uuid
+            """
+        )
+    ).mappings().one()
+    database_identity = {
+        "database_name": str(identity_row["database_name"] or ""),
+        "server_uuid": str(identity_row["server_uuid"] or ""),
+    }
+    try:
+        if not _migration_history_table_exists(connection):
+            raise MigrationHistoryError(
+                "migration history table does not exist"
+            )
+        _validate_migration_history_schema(
+            _read_migration_history_schema(connection)
+        )
+        return build_applying_018_inspection(
+            manifest=manifest,
+            history=_read_migration_history(connection),
+            database_identity=database_identity,
+            started_at_shape=_read_schedule_run_started_at_shape(
+                connection
+            ),
+        )
+    except (
+        AssertionError,
+        KeyError,
+        MigrationHistoryError,
+        MigrationPreflightError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        return _unsafe_applying_018_inspection(
+            manifest=manifest,
+            database_identity=database_identity,
+            reason=exc,
+        )
+
+
+def inspect_applying_migration_018(
+    engine: object,
+    paths: Iterable[Path],
+) -> dict[str, object]:
+    """连接 live DB，以 SELECT + named lock 检查 018，不执行 DDL/DML。"""
+    manifest = validate_release_migration_manifest(paths)
+    with _migration_owner_connection(engine) as owner_connection:
+        return _read_applying_018_inspection(
+            owner_connection,
+            manifest,
+        )
+
+
+def _schedule_run_started_at_recovery_target(
+    manifest: Iterable[PreparedMigration],
+) -> PreparedMigration:
+    candidates = [
+        migration
+        for migration in manifest
+        if migration.version
+        == SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION
+    ]
+    if len(candidates) != 1:
+        raise MigrationHistoryError(
+            "recovery requires exactly one migration 018 file"
+        )
+    target = candidates[0]
+    if (
+        target.path.name != SCHEDULE_RUN_STARTED_AT_MIGRATION_FILENAME
+        or target.sha256 != SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256
+    ):
+        raise MigrationHistoryError(
+            "recovery target is not the reviewed migration 018"
+        )
+    return target
+
+
+def recover_applying_migration_018(
+    engine: object,
+    paths: Iterable[Path],
+    *,
+    expected_state_digest: str,
+) -> dict[str, object]:
+    """以 inspect digest 为 fence 恢复唯一受支持的 APPLYING 018。"""
+    if re.fullmatch(r"[0-9a-f]{64}", expected_state_digest) is None:
+        raise MigrationHistoryError(
+            "expected state digest must be 64 lowercase hex characters"
+        )
+    manifest = validate_release_migration_manifest(paths)
+    target = _schedule_run_started_at_recovery_target(manifest)
+    with _migration_owner_connection(engine) as owner_connection:
+        initial = _read_applying_018_inspection(
+            owner_connection,
+            manifest,
+        )
+        observed_digest = str(initial.get("state_digest") or "")
+        if not hmac.compare_digest(
+            observed_digest,
+            expected_state_digest,
+        ):
+            raise MigrationHistoryError(
+                "APPLYING 018 state digest changed; run a new read-only "
+                "inspection before recovery"
+            )
+        classification = str(initial.get("classification") or "")
+        if classification == "UNSAFE":
+            raise MigrationHistoryError(
+                "APPLYING 018 recovery refused unsafe state: "
+                f"{initial.get('reason')}"
+            )
+        if classification == "COMPATIBLE_PARTIAL":
+            rollback = getattr(owner_connection, "rollback", None)
+            if callable(rollback):
+                rollback()
+            _execute_prepared_migration_files(
+                engine,
+                [(target.path, target.statements)],
+            )
+            if callable(rollback):
+                rollback()
+            completed = _read_applying_018_inspection(
+                owner_connection,
+                manifest,
+            )
+            if completed.get("classification") != "COMPLETE":
+                raise MigrationPartialApplyError(
+                    "migration 018 replay did not reach COMPLETE; "
+                    "history remains APPLYING. "
+                    f"inspection={completed}"
+                )
+        elif classification != "COMPLETE":
+            raise MigrationHistoryError(
+                "unknown APPLYING 018 inspection classification: "
+                f"{classification!r}"
+            )
+        _mark_migration_applied(engine, target)
+        return {
+            "recovery_outcome": "APPLIED",
+            "initial_classification": classification,
+            "initial_state_digest": observed_digest,
+            "migration": {
+                "version": target.version,
+                "filename": target.path.name,
+                "sha256": target.sha256,
+            },
+        }
+
+
 def _legacy_domain_table_count(connection: object) -> int:
     required = sorted(expected_legacy_016_baseline()["tables"])
     table_sql = ",".join(f"'{name}'" for name in required)
@@ -4469,6 +4893,9 @@ def _execute_prepared_migration_files(
     for path, raw_statements in prepared:
         statements = list(raw_statements)
         daily_ledger = _is_daily_ledger_migration(path)
+        schedule_run_started_at = (
+            _is_schedule_run_started_at_migration(path)
+        )
         mysql_session = False
         execution_started = False
         ddl_attempted = False
@@ -4509,6 +4936,27 @@ def _execute_prepared_migration_files(
                         fingerprint,
                         allow_missing=False,
                     )
+            except BaseException as exc:
+                postcondition_error = exc
+        if (
+            schedule_run_started_at
+            and mysql_session
+            and execution_started
+        ):
+            try:
+                with engine.begin() as connection:
+                    preflight_migration_session(connection)
+                    classification = (
+                        _classify_schedule_run_started_at_shape(
+                            _read_schedule_run_started_at_shape(
+                                connection
+                            )
+                        )
+                    )
+                    if classification != "COMPLETE":
+                        raise MigrationPreflightError(
+                            "migration 018 did not reach target definition"
+                        )
             except BaseException as exc:
                 postcondition_error = exc
 
@@ -4642,6 +5090,22 @@ def _parse_args(
             "from a prior read-only inspection"
         ),
     )
+    mode.add_argument(
+        "--inspect-applying-018",
+        action="store_true",
+        help=(
+            "connect to the live DB and classify an interrupted migration "
+            "018 using SELECT plus a named advisory lock only; no DDL/DML"
+        ),
+    )
+    mode.add_argument(
+        "--recover-applying-018",
+        action="store_true",
+        help=(
+            "recover migration 018 using --apply and the exact digest "
+            "from a prior read-only inspection"
+        ),
+    )
     parser.add_argument(
         "--apply",
         action="store_true",
@@ -4669,10 +5133,27 @@ def _parse_args(
                 "--state-digest must be 64 lowercase hex characters"
             )
         return args
+    if args.inspect_applying_018:
+        if args.apply or args.state_digest:
+            parser.error(
+                "read-only inspection does not accept --apply or "
+                "--state-digest"
+            )
+        return args
+    if args.recover_applying_018:
+        if not args.apply or not args.state_digest:
+            parser.error(
+                "recovery requires both --apply and --state-digest"
+            )
+        if re.fullmatch(r"[0-9a-f]{64}", args.state_digest) is None:
+            parser.error(
+                "--state-digest must be 64 lowercase hex characters"
+            )
+        return args
     if args.state_digest:
         parser.error(
             "--state-digest is only valid with "
-            "--recover-applying-017"
+            "--recover-applying-017 or --recover-applying-018"
         )
     if not args.apply:
         parser.error("--apply is required to change the database")
@@ -4700,6 +5181,28 @@ def main(argv: Iterable[str] | None = None) -> None:
             )
         elif args.recover_applying_017:
             result = recover_applying_migration_017(
+                engine,
+                paths,
+                expected_state_digest=args.state_digest,
+            )
+            print(
+                json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        elif args.inspect_applying_018:
+            result = inspect_applying_migration_018(engine, paths)
+            print(
+                json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+        elif args.recover_applying_018:
+            result = recover_applying_migration_018(
                 engine,
                 paths,
                 expected_state_digest=args.state_digest,

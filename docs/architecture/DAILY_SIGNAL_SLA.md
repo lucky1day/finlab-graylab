@@ -152,9 +152,11 @@ background 或 gray 入口不得伪造 scheduled-live provenance。
 当前已应用的 017 迁移只提供独立外键，没有把
 `target occurrence/item/base/runtime -> item -> current winning run ->
 canonical prediction` 建成数据库级 composite FK。017 的已发布内容和校验和
-不可修改；同时尚不存在能够安全处理 MySQL partial DDL/implicit commit 恢复的
-018 方案，因此 composite FK 018 是 defense-in-depth 的明确 rollout blocker，
-本阶段不得新增或尝试应用 018。切换门禁通过前，由单一 ledger 写库入口与多层
+不可修改。018 仅修复 `t_scheme_runs.started_at` 的可空性，使 claim 到真实
+子进程启动之间的账本状态能在 MySQL 上成立；该迁移不增加关系约束，也不得与
+未来 composite FK 混称。能够安全处理 MySQL partial DDL/implicit commit
+恢复的 composite FK 019 仍是 defense-in-depth 的明确 rollout blocker。
+切换门禁通过前，由单一 ledger 写库入口与多层
 严格关系验收共同兜底：任何 target/item/occurrence 身份漂移、旧 run、挂到其它
 item 的 run、非 success 或身份不符的 run、prediction run/方案/标的/期限/
 target date/phase 漂移、空 `accepted_at`，以及 `visible_at < accepted_at`，
@@ -274,13 +276,15 @@ command hook 告警：generation 构建失败、07:00 ETA/进度异常、07:45 V
 切换 `BOND_DAILY_COORDINATOR_MODE=ledger` 前必须同时完成：
 
 1. 在生产同 minor、同 `sql_mode/time_zone/foreign_key_checks` 的脱敏 clone
-   仅通过 `scripts/apply_migrations.py --apply` 完成 `001→017`、重复执行、中段断连和
+   仅通过 `scripts/apply_migrations.py --apply` 完成 `001→018`、重复执行、中段断连和
    脏数据演练；禁止客户端直跑 017 SQL。迁移器必须在任何 DDL 前
    验证 MySQL `>=8.0.16`、strict/zero-date、UTC session 和 FK 开关。MySQL
    DDL 会 implicit commit，不能把 `engine.begin()` 当文件级回滚；应用 017 后
    必须用 definition fingerprint 复核 column、UNIQUE、FK、CHECK/ENFORCED 和
-   ENUM/default 的完整定义。apply、inspect 和 recover 在建立 DB engine 前都必须
-   将工作树 `001..017` 的文件集合和逐文件 SHA-256 与受版本控制的
+   ENUM/default 的完整定义；应用 018 后必须复核
+   `t_scheme_runs.started_at=DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)`，
+   并完成 DDL 已提交但 history 未标记场景的 clone 演练。apply、inspect 和
+   recover 在建立 DB engine 前都必须将工作树 `001..018` 的文件集合和逐文件 SHA-256 与受版本控制的
    `migrations/release_manifest.json` 完整比对；未知、缺失或任一字节漂移都
    fail-closed。若 history 留下 `017=APPLYING`，恢复采用严格的
    inspect-then-recover 协议：`--inspect-applying-017` 会连接 live DB，只执行
@@ -292,7 +296,11 @@ command hook 告警：generation 构建失败、07:00 ETA/进度异常、07:45 V
    owner lock 内重读并 exact compare；状态漂移或 `UNSAFE` 一律拒绝。
    `COMPLETE` 只原子提交 history mark；`COMPATIBLE_PARTIAL` 才允许幂等重放，
    且定义 drift 只放行 SQL 明确产生的四个 nullable 过渡列。任何失败继续保留
-   `APPLYING`，不得人工改 history 或复用旧 digest。
+   `APPLYING`，不得人工改 history 或复用旧 digest。018 使用相同的
+   `--inspect-applying-018` / `--recover-applying-018 --apply
+   --state-digest` 协议，但闭世界状态只有审核过的 legacy source 定义与
+   `DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)` target 定义；任何第三种
+   定义均分类为 `UNSAFE`。
 2. 三个 0629 Native 的 `live_source_0629` 兼容桥完成隔离回放、唯一触发、
    原子提交和同机容量验证；正式切换前再完成 L0/L1 generation 输入适配，或
    从候选日批移除并走替代方案审批。
@@ -311,7 +319,7 @@ command hook 告警：generation 构建失败、07:00 ETA/进度异常、07:45 V
    只能用于计算器单测，不能取得生产切换资格。
 8. 签名 candidate 必须精确绑定当前 Registry/version 的 21 item/25 target、
    Mac identity/内存/macOS build、三套 conda explicit manifest 与 canonical
-   全包清单（包含 pip）、scheduler/scheme 文件集、runtime profile、001..017、
+   全包清单（包含 pip）、scheduler/scheme 文件集、runtime profile、001..018、
    两类 exporter、MySQL server UUID、完整 ledger schema definition，以及
    candidate v2 control-plane identity（service UID、解析后的 machine-global
    runtime root、machine-global epoch-chain directory、固定 contract/genesis

@@ -1945,7 +1945,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
             hashlib.sha256(path.read_bytes()).hexdigest(),
         )
 
-    def test_release_manifest_exactly_binds_current_001_through_017(
+    def test_release_manifest_exactly_binds_current_001_through_018(
         self,
     ) -> None:
         prepared = migration_runner.validate_release_migration_manifest(
@@ -1956,11 +1956,11 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            list(range(1, 18)),
+            list(range(1, 19)),
             [row.version for row in prepared],
         )
         self.assertEqual(
-            [f"{version:03d}" for version in range(1, 18)],
+            [f"{version:03d}" for version in range(1, 19)],
             [row.path.name[:3] for row in prepared],
         )
 
@@ -2197,7 +2197,10 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            ["017_daily_schedule_ledger.sql"],
+            [
+                "017_daily_schedule_ledger.sql",
+                "018_schedule_run_started_at_nullable.sql",
+            ],
             [migration.path.name for migration in pending],
         )
 

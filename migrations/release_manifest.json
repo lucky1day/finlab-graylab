@@ -85,6 +85,11 @@
       "version": 17,
       "filename": "017_daily_schedule_ledger.sql",
       "sha256": "a405ba82a857fc36252256c91fa9719e57b63007830bd9acf734f5f8e0c743fb"
+    },
+    {
+      "version": 18,
+      "filename": "018_schedule_run_started_at_nullable.sql",
+      "sha256": "320cdf0877618330b8dbd52bb091e956987e916447cb41fc4f8d7a567b5b3ba1"
     }
   ]
 }
