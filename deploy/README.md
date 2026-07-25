@@ -378,10 +378,10 @@ conda run --no-capture-output -n forecast_env \
 不得通过伪造历史 snapshot clock、使用周末 generation 或复用旧 live DB 报告来
 替代交易日日批认证；当前没有合法 generation 时只允许提交和验证 runner 本身。
 
-三个 0629 兼容方案必须逐个完成真实 source runner 认证。当前已准入
-`daily_1y_xgb_1y13_0629` 和 `daily_5y_lgbm_5y10_0629`，10Y 仍保持
-fail-closed；入口固定使用 source-readonly 配置，关闭 source cache、锁定
-`forecast_env` 和内部 worker 1，并在同一源水位连续运行两次。
+三个 0629 兼容方案必须逐个完成真实 source runner 认证。当前 1Y、5Y 和
+10Y 三个固定身份均已准入该认证入口；其它身份仍保持 fail-closed。入口固定
+使用 source-readonly 配置，关闭 source cache、锁定 `forecast_env` 和内部
+worker 1，并在同一源水位连续运行两次。
 runner 会核对完整 PredictionRecord/extra、source package SHA、输入水位和
 runner 可达的 19 张持久化表的结构与内容指纹
 （`runner_persistence_tables_full_content`）。由独立 actuals updater、
