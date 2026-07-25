@@ -149,7 +149,7 @@ class RealReplayRuntime:
             raise DailyRealReplayError(
                 "real replay verified generation inputs are required"
             )
-        self._inputs = inputs
+        self._inputs = _revalidate_real_replay_inputs(inputs)
         _assert_deployed_real_replay_definitions(
             policy,
             configs=self._configs,
@@ -722,6 +722,7 @@ def create_real_replay_occurrence(
 ) -> int:
     """只经受保护 Engine 创建不冒充 SLA/容量证据的 occurrence。"""
     _recheck_real_replay_database(engine, isolation)
+    inputs = _revalidate_real_replay_inputs(inputs)
     return int(
         _repository_create_schedule_occurrence(
             engine,
@@ -767,6 +768,10 @@ def _build_real_replay_occurrence_args(
         )
 
     calendar = FrozenCalendarService(inputs.native_generation)
+    if not calendar.is_trading_day(inputs.business_date):
+        raise DailyRealReplayError(
+            "real replay predict_date is not a trading day"
+        )
     if (
         calendar.previous_trading_day(inputs.business_date)
         != inputs.feature_date
@@ -903,6 +908,7 @@ def register_real_replay_generations(
 ) -> dict[str, tuple[str, int]]:
     """按 Native 父、DataBridge 子顺序登记并绑定真实 manifest。"""
     _recheck_real_replay_database(engine, isolation)
+    inputs = _revalidate_real_replay_inputs(inputs)
     native = inputs.native_generation
     databridge = inputs.databridge_generation
     native_binding = _repository_register_generation(
@@ -953,6 +959,47 @@ def register_real_replay_generations(
             f"{actual}"
         )
     return actual
+
+
+def _revalidate_real_replay_inputs(
+    inputs: DailyRealReplayInputs,
+) -> DailyRealReplayInputs:
+    """在每个持久化/执行边界重新 rehash manifest 并拒绝内存漂移。"""
+    if not isinstance(inputs, DailyRealReplayInputs):
+        raise DailyRealReplayError(
+            "real replay verified generation inputs are required"
+        )
+    reopened = open_real_replay_generations(
+        native_manifest=inputs.native_generation.manifest_path,
+        databridge_manifest=inputs.databridge_generation.manifest_path,
+    )
+
+    def generation_identity(generation: Any) -> tuple[object, ...]:
+        return (
+            generation.generation_id,
+            generation.manifest_sha256,
+            generation.business_date,
+            generation.feature_date,
+            generation.manifest_path.resolve(),
+        )
+
+    expected = (
+        inputs.business_date,
+        inputs.feature_date,
+        generation_identity(inputs.native_generation),
+        generation_identity(inputs.databridge_generation),
+    )
+    actual = (
+        reopened.business_date,
+        reopened.feature_date,
+        generation_identity(reopened.native_generation),
+        generation_identity(reopened.databridge_generation),
+    )
+    if actual != expected:
+        raise DailyRealReplayError(
+            "real replay generation context differs from reopened manifests"
+        )
+    return reopened
 
 
 def _recheck_real_replay_database(

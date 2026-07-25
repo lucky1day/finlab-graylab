@@ -390,6 +390,146 @@ class DailyRealReplayGateTests(unittest.TestCase):
             all(row["release_at"] <= opened_at for row in v2_rows)
         )
 
+    def test_guarded_create_rejects_mutated_generation_context(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            weekend_inputs = replace(
+                inputs,
+                native_generation=replace(
+                    inputs.native_generation,
+                    business_date="2026-07-25",
+                ),
+                databridge_generation=replace(
+                    inputs.databridge_generation,
+                    business_date="2026-07-25",
+                ),
+                business_date="2026-07-25",
+                feature_date="2026-07-24",
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "generation context differs from reopened manifests",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=weekend_inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime(
+                        2026,
+                        7,
+                        26,
+                        1,
+                        30,
+                        tzinfo=timezone.utc,
+                    ),
+                    epoch_payload=TEST_EPOCH,
+                )
+
+    def test_guarded_create_rejects_reopened_non_trading_predict_date(
+        self,
+    ) -> None:
+        from shared.databridge_input_generation import (
+            create_databridge_generation,
+        )
+        from tests.test_databridge_generation_executor import (
+            _FrozenCalendarConnection,
+            _delivery_dataset,
+        )
+        from tests.test_databridge_input_generation import (
+            SCHEMA_PATH,
+            _native_cutoff_context,
+        )
+        from tests.test_native_input_generation import _Engine, _Rows
+
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        class _NonTradingPredictConnection(
+            _FrozenCalendarConnection
+        ):
+            def execute(self, statement, params=None):
+                if "FROM t_trade_calendar" in str(statement):
+                    return _Rows(
+                        [
+                            {"rdate": "2026-07-23", "trade_flag": "1"},
+                            {"rdate": "2026-07-24", "trade_flag": "0"},
+                            {"rdate": "2026-07-27", "trade_flag": "1"},
+                            {"rdate": "2026-07-28", "trade_flag": "1"},
+                            {"rdate": "2026-07-29", "trade_flag": "1"},
+                            {"rdate": "2026-07-30", "trade_flag": "1"},
+                        ]
+                    )
+                return super().execute(statement, params)
+
+        source_engine = _Engine()
+        source_engine.connection = _NonTradingPredictConnection()
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native = _native_cutoff_context(engine=source_engine)
+            databridge = create_databridge_generation(
+                _delivery_dataset(),
+                native_generation=native,
+                business_date="2026-07-24",
+                feature_date="2026-07-23",
+                output_root=Path(tmpdir),
+                schema_path=SCHEMA_PATH,
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "predict_date is not a trading day",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime(
+                        2026,
+                        7,
+                        26,
+                        1,
+                        30,
+                        tzinfo=timezone.utc,
+                    ),
+                    epoch_payload=TEST_EPOCH,
+                )
+
     def test_replay_occurrence_rejects_formal_schedule_namespace(
         self,
     ) -> None:
