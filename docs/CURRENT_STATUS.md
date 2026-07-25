@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-07-25
+**最后核验日期**：2026-07-26
 
 本文只保留当前有效结论。较早的逐日状态、数据库快照和整改过程已冻结到[历史状态记录](records/status/README.md)。
 
@@ -21,7 +21,7 @@
 |---|---|
 | Native V1 | 现有方案保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、统一 DataBridge 输入、七个 Gate、预测和 no-persist 回测已形成稳定路径 |
-| Blackbox V2 生产路径 | 已完成一个真实周频方案的专项生产灰度激活 |
+| Blackbox V2 生产路径 | 已完成一个真实周频方案和同一上游批次四个日频方案的专项生产灰度激活；尚未形成面向任意新方案的通用生产授权 |
 | 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED`；21/25 ledger 功能 MVP 已在隔离 MySQL 通过，但 rollout 关闭，容量和生产门禁未通过，不能宣称 SLA 稳定 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 | 新方案默认终点 | 先进入受控技术验收；生产运行必须逐方案专项授权 |
@@ -55,6 +55,10 @@
 - 步骤 7 已完成：四个 V2 同代并按 `+0/+2/+4/+6` 独立释放，最大并发 2；
   四个真实 delivery 的冻结输入、确定性、120 秒超时、父 generation fence、
   late 后继续执行和失败隔离均通过。
+- 2026-07-26 在候选代码 `2bf9f5f` 上重新执行四个真实 delivery 的 sealed generation
+  认证：同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整
+  `PredictionRecord` 一致；mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝。
+  `tests/test_databridge_generation_executor.py` 为 `4 passed`，生产表行数未变化。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -81,23 +85,31 @@
 
 - 版本化政策清单保留 29 个 Native V1 仓库身份；新增身份继续由机器门禁拒绝。
 - 当前业务展示目标覆盖 `1Y/3Y/5Y/7Y/10Y`，具体 active 范围以 Registry 和 API 为准。
+- 日频候选中的 14 个 `generation_v1` Native 和三个 0629 兼容方案已经完成逐类真实
+  no-persist 认证；三个 0629 仍未完成公共 generation adapter 或生产容量准入。
 - 5Y/7Y 周点值方案已使用 `no_signal_to_flat_v1` 处理算法有效无信号；异常、缺数和执行失败仍然 fail-closed。
 - 10Y 周点值方案的历史周历和输入冲突尚未通过数据治理修复，不能用补平或修改算法绕过。
 - 两个 Full-OOS 灰度方案已经观察到真实 scheduler 触发，历史细节只保留在状态快照中。
 
 ## 当前观察项
 
-1. 下一步先在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、
-   断连和 `APPLYING` 恢复；当前生产仍停留在 migration 017。
-2. 随后三个 0629 方案逐个改为公共 generation adapter，每个方案独立执行
+1. 当前优先执行一次真实 21 算法、25 target 的隔离 MySQL 全量联跑；使用
+   真实 17 个 Native 和四个 sealed DataBridge V2，不使用受控 recorder，
+   不写生产库，本轮先验收功能完整性而不宣称容量达标。
+2. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
+   gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
+   `gray_live` 与正式 21/25 occurrence 解耦。
+3. 在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、断连和
+   `APPLYING` 恢复；当前生产仍停留在 migration 017。
+4. 三个 0629 方案逐个改为公共 generation adapter，每个方案独立执行
    CompareGate 和 commit；若触及 L2 算法语义则停止并改走 Blackbox V2 replacement。
-3. 完成功能候选上的一次真实 21 算法全量联跑后，才进入单 Mac cache/I/O
-   容量优化、20 次 forced-cold、20 次 revision/suffix、故障注入和 07:55 门禁。
-4. generation 长期归档/去重/磁盘上限、019 composite FK 与连续 10 个交易日
+5. 真实联跑功能通过后才进入单 Mac cache/I/O 容量优化、20 次 forced-cold、
+   20 次 revision/suffix、故障注入和 07:55 门禁。
+6. generation 长期归档/去重/磁盘上限、019 composite FK 与连续 10 个交易日
    25/25 仍是生产切换前置条件；在此之前 rollout 保持 `legacy`、admission
    保持 `BLOCKED`。
-5. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
-6. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
+7. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
+8. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
 
 ## 权威入口
 
