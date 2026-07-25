@@ -55,7 +55,7 @@
   epoch：只接受父子摘要一致的同日 generation，完成 001–018、17/4 绑定，
   并在 claim/process/commit 重验隔离 Engine/Connection。
 - `1f101b8`、`9a76586` 建立受保护的双池 replay runtime：唯一入口 `run()` 硬绑定 canonical executor；2 Native / 2 V2 受 governor 限制，owner 锁内每轮重验 21 个 execution envelope，并以线性化 stop fence 阻止异常后的跨池新任务。
-  普通测试 `24 passed, 1 skipped`、显式 MySQL `25 passed`、全量 `2653 passed, 11 skipped`；cutoff、构造后漂移、`retry_wait`、cache prerequisite、非法资源组合和 pool 故障均已覆盖。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
+  `5943b88`、`9b2624e`、`5b00981` 进一步要求 replay `predict_date` 必须是冻结日历中的交易日，并在 occurrence 创建、generation 注册和 runtime 构造三个边界重新打开、rehash 和比较完整 generation context；磁盘 payload、内存审计字段或非法嵌套 context 均在 ledger 写入前以稳定错误拒绝。相关测试 `88 passed, 3 skipped`、显式 MySQL `65 passed`、全量 `2662 passed, 11 skipped`。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -90,23 +90,24 @@
 
 ## 当前观察项
 
-1. 下一次真实同日 Native/DataBridge generation 到位后，在 BFL 生产 scheduler/算法进程不重叠的独占窗口，通过 `5aed35f`、`1f81f3e` 和 `9a76586`
+1. 先补齐真实 replay operator/preflight：必须验证 source-readonly、精确 policy/Registry、候选代码身份、临时 MySQL 生命周期、生产 scheduler/算法进程静默和最终 21/25 证据；同一进程持锁并在每次 dispatch 前重验，禁止用测试 fixture 手工拼装运行。
+2. 下一次交易业务日的真实同日 Native/DataBridge generation 到位后，在 BFL 生产 scheduler/算法进程不重叠的独占窗口，通过 `5aed35f`、`1f81f3e`、`9a76586`、`5943b88`、`9b2624e` 和 `5b00981`
    执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造 historical seal，不使用 recorder、不写生产库，也不计作容量样本。
-   当前 replay owner 锁只互斥 replay，不替代该运行前检查。
-2. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
+   当前 replay owner 锁只互斥 replay，不替代 operator 的运行前和运行中静默检查。
+3. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
    gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
    `gray_live` 与正式 21/25 occurrence 解耦。
-3. 在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、断连和
+4. 在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、断连和
    `APPLYING` 恢复；当前生产仍停留在 migration 017。
-4. 三个 0629 方案逐个改为公共 generation adapter，每个方案独立执行
+5. 三个 0629 方案逐个改为公共 generation adapter，每个方案独立执行
    CompareGate 和 commit；若触及 L2 算法语义则停止并改走 Blackbox V2 replacement。
-5. 真实联跑功能通过后才进入单 Mac cache/I/O 容量优化、20 次 forced-cold、
+6. 真实联跑功能通过后才进入单 Mac cache/I/O 容量优化、20 次 forced-cold、
    20 次 revision/suffix、故障注入和 07:55 门禁。
-6. generation 长期归档/去重/磁盘上限、019 composite FK 与连续 10 个交易日
+7. generation 长期归档/去重/磁盘上限、019 composite FK 与连续 10 个交易日
    25/25 仍是生产切换前置条件；在此之前 rollout 保持 `legacy`、admission
    保持 `BLOCKED`。
-7. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
-8. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
+8. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
+9. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
 
 ## 权威入口
 
