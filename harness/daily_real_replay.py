@@ -7,6 +7,12 @@ import json
 import os
 import stat
 import threading
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    wait,
+)
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
@@ -77,6 +83,10 @@ class DailyRealReplayError(RuntimeError):
     """真实日频隔离联跑的输入或冻结策略不满足契约。"""
 
 
+class _RealReplayCutoffReached(DailyRealReplayError):
+    """worker 已获内部执行资格，但在 claim 前到达冻结截止。"""
+
+
 @dataclass(frozen=True)
 class DailyRealReplayInputs:
     """一组已重新打开并交叉验证的真实联跑 generation。"""
@@ -106,11 +116,10 @@ class RealReplayRuntimeResult:
 
 
 class RealReplayRuntime:
-    """串行安全基线：只经 canonical executor 写隔离 replay ledger。
+    """双池安全基线：只经 canonical executor 写隔离 replay ledger。
 
     本类刻意不接受 services、clock、runner、verifier 或 executor 注入。
-    当前先以单 owner、单驻留任务证明完整控制边界；后续双池优化只能在
-    保持同一 ``run`` 公共接口和 governor 约束的前提下替换内部拓扑。
+    单 replay owner 内只允许 policy 已批准的 2 Native / 2 V2 驻留组合。
     canonical executor 仍可记录历史回放中被 EXCLUDED 的 V2 guardrail
     审计字段；它们不构成生产 operational/SLA late 证据。本 runtime
     也不调用 occurrence SLA evaluator 或生产健康控制面。
@@ -166,7 +175,15 @@ class RealReplayRuntime:
         self._governor = ResourceGovernor(policy)
 
     def run(self) -> RealReplayRuntimeResult:
-        """在隔离 owner 锁内串行完成所有可独立执行的首轮 item。"""
+        """在隔离 owner 锁内用受控双池完成独立首轮 item。"""
+        if (
+            self._policy.native_max_concurrency != 2
+            or self._policy.v2_max_concurrency != 2
+        ):
+            raise DailyRealReplayError(
+                "real replay only permits the approved "
+                "2 Native / 2 V2 pool limits"
+            )
         _recheck_real_replay_database(self._engine, self._isolation)
         snapshot = self._read_validated_snapshot()
         lock = OccurrenceFileLock(self._owner_lock_path())
@@ -186,7 +203,21 @@ class RealReplayRuntime:
             )
         self._owner_active = True
         dispatched: list[str] = []
+        active: dict[Future[Any], str] = {}
+        stop_status: str | None = None
+        stop_blocked: set[str] = set()
+        dispatch_lock = threading.Lock()
+        stop_signal = threading.Event()
+        pools: dict[str, ThreadPoolExecutor] = {}
         try:
+            pools["native"] = ThreadPoolExecutor(
+                max_workers=self._policy.native_max_concurrency,
+                thread_name_prefix="real-replay-native",
+            )
+            pools["v2"] = ThreadPoolExecutor(
+                max_workers=self._policy.v2_max_concurrency,
+                thread_name_prefix="real-replay-v2",
+            )
             while True:
                 _recheck_real_replay_database(
                     self._engine,
@@ -199,10 +230,34 @@ class RealReplayRuntime:
                     policy=self._policy,
                     inputs=self._inputs,
                 )
+                completed = tuple(
+                    future for future in active if future.done()
+                )
+                if completed:
+                    stop_status = self._harvest_completed_futures(
+                        active,
+                        completed=completed,
+                        stop_status=stop_status,
+                        stop_blocked=stop_blocked,
+                    )
+                    continue
                 if (
                     snapshot.actual_accepted_target_count
                     == EXPECTED_TARGET_COUNT
+                    and not active
                 ):
+                    if stop_status in {
+                        "integrity_error",
+                        "recovery_blocked",
+                    }:
+                        return self._result(
+                            snapshot,
+                            status=stop_status,
+                            dispatched_scheme_ids=tuple(dispatched),
+                            blocked_scheme_ids=tuple(
+                                sorted(stop_blocked)
+                            ),
+                        )
                     return self._result(
                         snapshot,
                         status="complete",
@@ -210,119 +265,239 @@ class RealReplayRuntime:
                     )
                 observed_at = _now_utc()
                 if observed_at >= self._cutoff_at:
-                    return self._result(
-                        snapshot,
-                        status="cutoff_incomplete",
-                        dispatched_scheme_ids=tuple(dispatched),
+                    stop_status = _merge_replay_stop_status(
+                        stop_status,
+                        "cutoff_incomplete",
                     )
+                active_scheme_ids = tuple(active.values())
                 unexpected_running = tuple(
                     sorted(
                         summary.item.base_scheme_id
                         for summary in snapshot.items
                         if summary.item.state
                         in {"RUNNING", "ABANDONED"}
+                        and summary.item.base_scheme_id
+                        not in active_scheme_ids
                     )
                 )
                 if unexpected_running:
+                    stop_status = _merge_replay_stop_status(
+                        stop_status,
+                        "recovery_blocked",
+                    )
+                    stop_blocked.update(unexpected_running)
+                if stop_status is not None and not active:
                     return self._result(
                         snapshot,
-                        status="recovery_blocked",
+                        status=stop_status,
                         dispatched_scheme_ids=tuple(dispatched),
-                        blocked_scheme_ids=unexpected_running,
+                        blocked_scheme_ids=tuple(
+                            sorted(stop_blocked)
+                        ),
                     )
-                candidates, cache_blocked, earliest_release = (
-                    self._eligible_replay_candidates(
+                candidates: tuple[str, ...] = ()
+                cache_blocked: tuple[str, ...] = ()
+                earliest_release: datetime | None = None
+                if stop_status is None:
+                    (
+                        candidates,
+                        cache_blocked,
+                        earliest_release,
+                    ) = self._eligible_replay_candidates(
                         snapshot,
                         observed_at=observed_at,
                     )
-                )
-                if not candidates:
-                    if earliest_release is not None:
-                        _wait_for_release(
-                            min(
-                                1.0,
-                                max(
-                                    0.0,
-                                    (
-                                        min(
-                                            earliest_release,
-                                            self._cutoff_at,
-                                        )
-                                        - observed_at
-                                    ).total_seconds(),
-                                ),
+                    item_by_scheme = {
+                        summary.item.base_scheme_id: summary.item
+                        for summary in snapshot.items
+                    }
+                    for scheme_id in candidates:
+                        if scheme_id in active.values():
+                            continue
+                        if scheme_id in dispatched:
+                            stop_status = _merge_replay_stop_status(
+                                stop_status,
+                                "integrity_error",
                             )
+                            stop_blocked.add(scheme_id)
+                            break
+                        decision = self._governor.can_start(
+                            running_scheme_ids=tuple(active.values()),
+                            candidate_scheme_id=scheme_id,
                         )
-                        continue
+                        if not decision.allowed:
+                            if not active:
+                                raise DailyRealReplayError(
+                                    "real replay resource governor rejected "
+                                    f"{scheme_id}: {decision.reason}"
+                                )
+                            continue
+                        _recheck_real_replay_database(
+                            self._engine,
+                            self._isolation,
+                        )
+                        if _now_utc() >= self._cutoff_at:
+                            stop_status = _merge_replay_stop_status(
+                                stop_status,
+                                "cutoff_incomplete",
+                            )
+                            break
+                        item = item_by_scheme[scheme_id]
+                        pool_name = (
+                            "v2"
+                            if item.runtime_type == "blackbox_v2"
+                            else "native"
+                        )
+                        with dispatch_lock:
+                            if stop_signal.is_set():
+                                break
+                            future = pools[pool_name].submit(
+                                self._execute_owned_item_with_stop_fence,
+                                item_id=int(item.item_id),
+                                dispatch_lock=dispatch_lock,
+                                stop_signal=stop_signal,
+                            )
+                            active[future] = scheme_id
+                            dispatched.append(scheme_id)
+
+                if active:
+                    wait(
+                        tuple(active),
+                        timeout=1.0,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    continue
+
+                if stop_status is not None:
                     return self._result(
                         snapshot,
-                        status="incomplete",
+                        status=stop_status,
                         dispatched_scheme_ids=tuple(dispatched),
-                        blocked_scheme_ids=cache_blocked,
+                        blocked_scheme_ids=tuple(
+                            sorted(stop_blocked)
+                        ),
                     )
-                scheme_id = candidates[0]
-                if scheme_id in dispatched:
-                    return self._result(
-                        snapshot,
-                        status="integrity_error",
-                        dispatched_scheme_ids=tuple(dispatched),
-                        blocked_scheme_ids=(scheme_id,),
+                if earliest_release is not None:
+                    _wait_for_release(
+                        min(
+                            1.0,
+                            max(
+                                0.0,
+                                (
+                                    min(
+                                        earliest_release,
+                                        self._cutoff_at,
+                                    )
+                                    - observed_at
+                                ).total_seconds(),
+                            ),
+                        )
                     )
-                item = next(
-                    summary.item
-                    for summary in snapshot.items
-                    if summary.item.base_scheme_id == scheme_id
+                    continue
+                return self._result(
+                    snapshot,
+                    status="incomplete",
+                    dispatched_scheme_ids=tuple(dispatched),
+                    blocked_scheme_ids=cache_blocked,
                 )
-                decision = self._governor.can_start(
-                    running_scheme_ids=(),
-                    candidate_scheme_id=scheme_id,
-                )
-                if not decision.allowed:
-                    raise DailyRealReplayError(
-                        "real replay resource governor rejected "
-                        f"{scheme_id}: {decision.reason}"
-                    )
-                _recheck_real_replay_database(
-                    self._engine,
-                    self._isolation,
-                )
-                if _now_utc() >= self._cutoff_at:
-                    return self._result(
-                        snapshot,
-                        status="cutoff_incomplete",
-                        dispatched_scheme_ids=tuple(dispatched),
-                    )
-                result = self._execute_owned_item(
-                    item_id=int(item.item_id)
-                )
-                dispatched.append(scheme_id)
-                status = str(getattr(result, "status", ""))
-                if status in {
-                    "claim_rejected",
-                    "stale_rejected",
-                    "fenced_pending_cleanup",
-                    "recovery_blocked",
-                }:
-                    return self._result(
-                        self._read_validated_snapshot(),
-                        status="recovery_blocked",
-                        dispatched_scheme_ids=tuple(dispatched),
-                        blocked_scheme_ids=(scheme_id,),
-                    )
-                if status not in {
-                    "success",
-                    "failed",
-                    "retry_wait",
-                }:
-                    return self._result(
-                        self._read_validated_snapshot(),
-                        status="integrity_error",
-                        dispatched_scheme_ids=tuple(dispatched),
-                        blocked_scheme_ids=(scheme_id,),
-                    )
         finally:
-            self._owner_active = False
-            lock.release()
+            try:
+                shutdown_error: BaseException | None = None
+                for pool in pools.values():
+                    try:
+                        pool.shutdown(
+                            wait=True,
+                            cancel_futures=False,
+                        )
+                    except BaseException as exc:
+                        if shutdown_error is None:
+                            shutdown_error = exc
+                if shutdown_error is not None:
+                    raise shutdown_error
+            finally:
+                self._owner_active = False
+                lock.release()
+
+    def _harvest_completed_futures(
+        self,
+        active: dict[Future[Any], str],
+        *,
+        completed: tuple[Future[Any], ...],
+        stop_status: str | None,
+        stop_blocked: set[str],
+    ) -> str | None:
+        """先收口所有已完成任务，再允许主循环计算新的 dispatch。"""
+        for future in sorted(
+            completed,
+            key=lambda value: active[value],
+        ):
+            scheme_id = active.pop(future)
+            try:
+                result = future.result()
+            except _RealReplayCutoffReached:
+                stop_status = _merge_replay_stop_status(
+                    stop_status,
+                    "cutoff_incomplete",
+                )
+                stop_blocked.add(scheme_id)
+                continue
+            except Exception:
+                stop_status = _merge_replay_stop_status(
+                    stop_status,
+                    "integrity_error",
+                )
+                stop_blocked.add(scheme_id)
+                continue
+            status = str(getattr(result, "status", ""))
+            if status in {
+                "claim_rejected",
+                "stale_rejected",
+                "fenced_pending_cleanup",
+                "recovery_blocked",
+            }:
+                stop_status = _merge_replay_stop_status(
+                    stop_status,
+                    "recovery_blocked",
+                )
+                stop_blocked.add(scheme_id)
+            elif status not in {
+                "success",
+                "failed",
+                "retry_wait",
+            }:
+                stop_status = _merge_replay_stop_status(
+                    stop_status,
+                    "integrity_error",
+                )
+                stop_blocked.add(scheme_id)
+        return stop_status
+
+    def _execute_owned_item_with_stop_fence(
+        self,
+        *,
+        item_id: int,
+        dispatch_lock: threading.Lock,
+        stop_signal: threading.Event,
+    ) -> Any:
+        """在 future 完成前发布阻断 fence，与新 submit 线性化。"""
+        try:
+            result = self._execute_owned_item(item_id=item_id)
+        except BaseException:
+            _set_replay_stop_signal(dispatch_lock, stop_signal)
+            raise
+        status = str(getattr(result, "status", ""))
+        if status in {
+            "claim_rejected",
+            "stale_rejected",
+            "fenced_pending_cleanup",
+            "recovery_blocked",
+        } or status not in {
+            "success",
+            "failed",
+            "retry_wait",
+        }:
+            _set_replay_stop_signal(dispatch_lock, stop_signal)
+        return result
 
     def _execute_owned_item(self, *, item_id: int) -> Any:
         if not self._owner_active:
@@ -331,7 +506,7 @@ class RealReplayRuntime:
             )
         _recheck_real_replay_database(self._engine, self._isolation)
         if _now_utc() >= self._cutoff_at:
-            raise DailyRealReplayError(
+            raise _RealReplayCutoffReached(
                 "real replay execution reached the frozen Shanghai cutoff"
             )
         result = scheduled_executor.execute_scheduled_item(
@@ -1185,8 +1360,10 @@ def _assert_real_replay_execution_envelopes(
             else inputs.native_generation
         )
         if (
-            envelope.occurrence != snapshot.occurrence
-            or envelope.item != item
+            _frozen_occurrence_identity(envelope.occurrence)
+            != _frozen_occurrence_identity(snapshot.occurrence)
+            or _frozen_item_identity(envelope.item)
+            != _frozen_item_identity(item)
             or envelope.generation.generation_id
             != expected_generation.generation_id
             or envelope.generation.manifest_sha256
@@ -1323,6 +1500,88 @@ def _assert_real_replay_execution_envelopes(
         raise DailyRealReplayError(
             "real replay execution envelope registry digest drifted"
         )
+
+
+def _frozen_occurrence_identity(value: Any) -> tuple[object, ...]:
+    """只比较 occurrence 的 write-once 调度身份，排除运行态字段。"""
+    return tuple(
+        getattr(value, field, None)
+        for field in (
+            "occurrence_id",
+            "schedule_key",
+            "predict_date",
+            "feature_date",
+            "policy_version",
+            "policy_sha256",
+            "policy_json",
+            "registry_digest",
+            "expected_item_count",
+            "expected_target_count",
+            "sla_deadline_at",
+            "recovery_cutoff_at",
+        )
+    )
+
+
+def _frozen_item_identity(value: Any) -> tuple[object, ...]:
+    """只比较 item 的 write-once 执行身份，排除 claim/completion 状态。"""
+    return tuple(
+        getattr(value, field, None)
+        for field in (
+            "item_id",
+            "occurrence_id",
+            "base_scheme_id",
+            "runtime_type",
+            "scheme_version",
+            "code_sha256",
+            "config_sha256",
+            "cache_group",
+            "input_generation_id",
+            "resource_class",
+            "internal_workers",
+            "release_offset_minutes",
+            "release_at",
+            "deadline_at",
+            "recovery_cutoff_at",
+            "occurrence_sla_deadline_at",
+        )
+    )
+
+
+def _merge_replay_stop_status(
+    current: str | None,
+    candidate: str,
+) -> str:
+    """以固定优先级归并并发停止原因，拒绝完成顺序影响结果。"""
+    priority = {
+        "cutoff_incomplete": 1,
+        "recovery_blocked": 2,
+        "integrity_error": 3,
+    }
+    if candidate not in priority:
+        raise DailyRealReplayError(
+            f"unsupported real replay stop status: {candidate}"
+        )
+    if current is None:
+        return candidate
+    if current not in priority:
+        raise DailyRealReplayError(
+            f"unsupported real replay stop status: {current}"
+        )
+    return (
+        candidate
+        if priority[candidate] > priority[current]
+        else current
+    )
+
+
+def _set_replay_stop_signal(
+    dispatch_lock: threading.Lock,
+    stop_signal: threading.Event,
+) -> None:
+    """在与 submit 相同的同步边界内发布不可逆 stop fence。"""
+    with dispatch_lock:
+        stop_signal.set()
 
 
 def _now_utc() -> datetime:

@@ -5,6 +5,7 @@ import inspect
 import json
 import os
 import tempfile
+import threading
 import unittest
 import uuid
 from contextlib import contextmanager
@@ -887,6 +888,922 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
         wait_for_release.assert_called()
         canonical.assert_called_once()
         self.assertEqual(canonical.call_args.kwargs["item_id"], item_id)
+
+    def test_runs_approved_native_and_v2_pools_with_two_lanes(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from scheduler.daily_coordinator import dispatch_order
+
+        policy, configs = _real_policy_and_configs()
+        ordered = dispatch_order(policy, policy.schemes)
+        v2_schemes = tuple(
+            scheme_id
+            for scheme_id in ordered
+            if policy.schemes[scheme_id].runtime_type == "blackbox_v2"
+        )[:2]
+        native_heavy = next(
+            scheme_id
+            for scheme_id in ordered
+            if policy.schemes[scheme_id].runtime_type == "native_adapter"
+            and policy.schemes[scheme_id].resource_class == "native_heavy"
+            and policy.schemes[scheme_id].cache_prerequisite
+        )
+        native_light = next(
+            scheme_id
+            for scheme_id in ordered
+            if policy.schemes[scheme_id].runtime_type == "native_adapter"
+            and policy.schemes[scheme_id].resource_class == "native_light"
+        )
+        selected = (*v2_schemes, native_heavy, native_light)
+        states = {
+            scheme_id: (
+                "PENDING"
+                if scheme_id in selected
+                else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        item_id_by_scheme = {
+            scheme_id: item_id
+            for item_id, scheme_id in enumerate(
+                sorted(policy.schemes),
+                start=1,
+            )
+        }
+        scheme_by_item_id = {
+            item_id: scheme_id
+            for scheme_id, item_id in item_id_by_scheme.items()
+        }
+        active_by_pool = {"native": 0, "v2": 0}
+        max_active_by_pool = {"native": 0, "v2": 0}
+        active_total = 0
+        max_active_total = 0
+        all_started = threading.Event()
+        state_lock = threading.Lock()
+
+        with _replay_inputs() as inputs:
+            observed_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=7)
+            )
+
+            def read_snapshot(*_args, **_kwargs):
+                with state_lock:
+                    current_states = dict(states)
+                return _runtime_snapshot(
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    observed_at=observed_at,
+                    states=current_states,
+                )
+
+            def execute(_engine, *, item_id: int, **_kwargs):
+                nonlocal active_total, max_active_total
+                scheme_id = scheme_by_item_id[item_id]
+                pool = (
+                    "v2"
+                    if policy.schemes[scheme_id].runtime_type
+                    == "blackbox_v2"
+                    else "native"
+                )
+                with state_lock:
+                    states[scheme_id] = "RUNNING"
+                    active_by_pool[pool] += 1
+                    active_total += 1
+                    max_active_by_pool[pool] = max(
+                        max_active_by_pool[pool],
+                        active_by_pool[pool],
+                    )
+                    max_active_total = max(
+                        max_active_total,
+                        active_total,
+                    )
+                    if active_total == 4:
+                        all_started.set()
+                all_started.wait(timeout=1.0)
+                with state_lock:
+                    states[scheme_id] = "SUCCESS"
+                    active_by_pool[pool] -= 1
+                    active_total -= 1
+                return SimpleNamespace(
+                    status="success",
+                    scheme_id=scheme_id,
+                    item_id=item_id,
+                )
+
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(read_snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=_AcquiredOwnerLock(),
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                    side_effect=execute,
+                ) as canonical,
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                result = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                ).run()
+
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(max_active_by_pool, {"native": 2, "v2": 2})
+        self.assertEqual(max_active_total, 4)
+        self.assertEqual(canonical.call_count, 4)
+        self.assertEqual(
+            set(result.dispatched_scheme_ids),
+            set(selected),
+        )
+
+    def test_worker_exception_drains_active_and_stops_new_dispatch(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from scheduler.daily_coordinator import dispatch_order
+
+        policy, configs = _real_policy_and_configs()
+        selected = dispatch_order(
+            policy,
+            (
+                scheme_id
+                for scheme_id, item in policy.schemes.items()
+                if item.runtime_type == "blackbox_v2"
+            ),
+        )[:3]
+        failed_scheme = selected[0]
+        states = {
+            scheme_id: (
+                "PENDING"
+                if scheme_id in selected
+                else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        scheme_by_item_id = {
+            item_id: scheme_id
+            for item_id, scheme_id in enumerate(
+                sorted(policy.schemes),
+                start=1,
+            )
+        }
+        active: set[str] = set()
+        both_started = threading.Event()
+        state_lock = threading.Lock()
+
+        with _replay_inputs() as inputs:
+            observed_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=7)
+            )
+
+            def read_snapshot(*_args, **_kwargs):
+                with state_lock:
+                    current_states = dict(states)
+                return _runtime_snapshot(
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    observed_at=observed_at,
+                    states=current_states,
+                )
+
+            def execute(_engine, *, item_id: int, **_kwargs):
+                scheme_id = scheme_by_item_id[item_id]
+                with state_lock:
+                    states[scheme_id] = "RUNNING"
+                    active.add(scheme_id)
+                    if len(active) == 2:
+                        both_started.set()
+                both_started.wait(timeout=1.0)
+                with state_lock:
+                    active.discard(scheme_id)
+                    states[scheme_id] = (
+                        "ABANDONED"
+                        if scheme_id == failed_scheme
+                        else "SUCCESS"
+                    )
+                if scheme_id == failed_scheme:
+                    raise RuntimeError("worker audit failed")
+                return SimpleNamespace(
+                    status="success",
+                    scheme_id=scheme_id,
+                )
+
+            engine = _isolated_engine()
+            owner = _AcquiredOwnerLock()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(read_snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=owner,
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                    side_effect=execute,
+                ) as canonical,
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                result = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                ).run()
+
+        self.assertEqual(result.status, "integrity_error")
+        self.assertEqual(canonical.call_count, 2)
+        self.assertNotIn(selected[2], result.dispatched_scheme_ids)
+        self.assertIn(failed_scheme, result.blocked_scheme_ids)
+        self.assertFalse(owner.acquired)
+
+    def test_cross_pool_failure_fence_blocks_newly_released_v2(
+        self,
+    ) -> None:
+        import harness.daily_real_replay as replay_module
+        from harness.daily_real_replay import RealReplayRuntime
+        from scheduler.daily_coordinator import dispatch_order
+
+        policy, configs = _real_policy_and_configs()
+        ordered = dispatch_order(policy, policy.schemes)
+        heavy = next(
+            scheme_id
+            for scheme_id in ordered
+            if policy.schemes[scheme_id].runtime_type == "native_adapter"
+            and policy.schemes[scheme_id].resource_class == "native_heavy"
+            and policy.schemes[scheme_id].cache_prerequisite
+        )
+        light = next(
+            scheme_id
+            for scheme_id in ordered
+            if policy.schemes[scheme_id].runtime_type == "native_adapter"
+            and policy.schemes[scheme_id].resource_class == "native_light"
+        )
+        future_v2 = next(
+            scheme_id
+            for scheme_id in ordered
+            if policy.schemes[scheme_id].runtime_type == "blackbox_v2"
+            and int(
+                policy.schemes[scheme_id].v2_release_offset_min or 0
+            )
+            == 2
+        )
+        selected = (heavy, light, future_v2)
+        states = {
+            scheme_id: (
+                "PENDING"
+                if scheme_id in selected
+                else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        scheme_by_item_id = {
+            item_id: scheme_id
+            for item_id, scheme_id in enumerate(
+                sorted(policy.schemes),
+                start=1,
+            )
+        }
+        state_lock = threading.Lock()
+        native_started: set[str] = set()
+        both_native_started = threading.Event()
+        release_failure = threading.Event()
+        failure_fenced = threading.Event()
+        finish_light = threading.Event()
+
+        with _replay_inputs() as inputs:
+            before_release = datetime.now(timezone.utc)
+
+            def read_snapshot(*_args, **_kwargs):
+                with state_lock:
+                    current_states = dict(states)
+                return _runtime_snapshot(
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    observed_at=before_release,
+                    states=current_states,
+                )
+
+            initial = read_snapshot()
+            v2_release_at = next(
+                summary.item.release_at.replace(
+                    tzinfo=timezone.utc
+                )
+                for summary in initial.items
+                if summary.item.base_scheme_id == future_v2
+            )
+            self.assertGreater(v2_release_at, before_release)
+            after_release = v2_release_at + timedelta(microseconds=1)
+
+            def execute(_engine, *, item_id: int, **_kwargs):
+                scheme_id = scheme_by_item_id[item_id]
+                with state_lock:
+                    states[scheme_id] = "RUNNING"
+                    native_started.add(scheme_id)
+                    if native_started == {heavy, light}:
+                        both_native_started.set()
+                if scheme_id == heavy:
+                    release_failure.wait(timeout=2.0)
+                    with state_lock:
+                        states[scheme_id] = "ABANDONED"
+                    raise RuntimeError("cross-pool worker failed")
+                finish_light.wait(timeout=2.0)
+                with state_lock:
+                    states[scheme_id] = "SUCCESS"
+                return SimpleNamespace(
+                    status="success",
+                    scheme_id=scheme_id,
+                )
+
+            original_signal = replay_module._set_replay_stop_signal
+
+            def set_stop_signal(dispatch_lock, stop_signal):
+                original_signal(dispatch_lock, stop_signal)
+                failure_fenced.set()
+
+            def now_utc():
+                if (
+                    threading.current_thread().name
+                    == "MainThread"
+                    and both_native_started.is_set()
+                ):
+                    release_failure.set()
+                    failure_fenced.wait(timeout=2.0)
+                    finish_light.set()
+                    return after_release
+                return before_release
+
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(read_snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=_AcquiredOwnerLock(),
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_set_replay_stop_signal",
+                    side_effect=set_stop_signal,
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    side_effect=now_utc,
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                    side_effect=execute,
+                ) as canonical,
+            ):
+                result = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                ).run()
+
+        called_schemes = {
+            scheme_by_item_id[call.kwargs["item_id"]]
+            for call in canonical.call_args_list
+        }
+        self.assertEqual(result.status, "integrity_error")
+        self.assertEqual(called_schemes, {heavy, light})
+        self.assertNotIn(future_v2, result.dispatched_scheme_ids)
+        self.assertTrue(failure_fenced.is_set())
+
+    def test_integrity_failure_is_not_overwritten_by_complete(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from scheduler.daily_coordinator import dispatch_order
+
+        policy, configs = _real_policy_and_configs()
+        selected = dispatch_order(
+            policy,
+            (
+                scheme_id
+                for scheme_id, item in policy.schemes.items()
+                if item.runtime_type == "blackbox_v2"
+            ),
+        )[:2]
+        states = {
+            scheme_id: (
+                "PENDING"
+                if scheme_id in selected
+                else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        scheme_by_item_id = {
+            item_id: scheme_id
+            for item_id, scheme_id in enumerate(
+                sorted(policy.schemes),
+                start=1,
+            )
+        }
+        status_by_scheme = {
+            selected[0]: "claim_rejected",
+            selected[1]: "unexpected_status",
+        }
+        state_lock = threading.Lock()
+        both_started = threading.Barrier(2)
+
+        with _replay_inputs() as inputs:
+            observed_at = (
+                datetime.now(timezone.utc) + timedelta(minutes=7)
+            )
+
+            def read_snapshot(*_args, **_kwargs):
+                with state_lock:
+                    current_states = dict(states)
+                return _runtime_snapshot(
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    observed_at=observed_at,
+                    states=current_states,
+                )
+
+            def execute(_engine, *, item_id: int, **_kwargs):
+                scheme_id = scheme_by_item_id[item_id]
+                with state_lock:
+                    states[scheme_id] = "RUNNING"
+                both_started.wait(timeout=1.0)
+                with state_lock:
+                    states[scheme_id] = "SUCCESS"
+                return SimpleNamespace(
+                    status=status_by_scheme[scheme_id],
+                    scheme_id=scheme_id,
+                )
+
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(read_snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=_AcquiredOwnerLock(),
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                    side_effect=execute,
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                result = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                ).run()
+
+        self.assertEqual(result.status, "integrity_error")
+        self.assertEqual(
+            set(result.blocked_scheme_ids),
+            set(selected),
+        )
+
+    def test_pool_creation_failure_releases_owner_and_first_pool(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+
+        policy, configs = _real_policy_and_configs()
+        with _replay_inputs() as inputs:
+            observed_at = datetime.now(timezone.utc)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+            )
+            engine = _isolated_engine()
+            owner = _AcquiredOwnerLock()
+            first_pool = Mock()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=owner,
+                ),
+                patch(
+                    "harness.daily_real_replay.ThreadPoolExecutor",
+                    side_effect=(
+                        first_pool,
+                        RuntimeError("v2 pool unavailable"),
+                    ),
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "v2 pool unavailable",
+                ):
+                    runtime.run()
+
+        first_pool.shutdown.assert_called_once_with(
+            wait=True,
+            cancel_futures=False,
+        )
+        self.assertFalse(owner.acquired)
+
+    def test_pool_shutdown_failure_still_releases_owner(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+
+        policy, configs = _real_policy_and_configs()
+        with _replay_inputs() as inputs:
+            observed_at = datetime.now(timezone.utc)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+                states={
+                    scheme_id: "SUCCESS"
+                    for scheme_id in policy.schemes
+                },
+            )
+            engine = _isolated_engine()
+            owner = _AcquiredOwnerLock()
+            native_pool = Mock()
+            native_pool.shutdown.side_effect = RuntimeError(
+                "native shutdown failed"
+            )
+            v2_pool = Mock()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=owner,
+                ),
+                patch(
+                    "harness.daily_real_replay.ThreadPoolExecutor",
+                    side_effect=(native_pool, v2_pool),
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "native shutdown failed",
+                ):
+                    runtime.run()
+
+        native_pool.shutdown.assert_called_once()
+        v2_pool.shutdown.assert_called_once()
+        self.assertFalse(owner.acquired)
+
+    def test_worker_cutoff_handoff_returns_structured_result(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+
+        policy, configs = _real_policy_and_configs()
+        v2_scheme = next(
+            scheme_id
+            for scheme_id, item in policy.schemes.items()
+            if item.runtime_type == "blackbox_v2"
+        )
+        with _replay_inputs() as inputs:
+            before_cutoff = datetime.now(timezone.utc)
+            cutoff = _next_midnight_utc(before_cutoff)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=before_cutoff,
+                states={
+                    scheme_id: (
+                        "PENDING"
+                        if scheme_id == v2_scheme
+                        else "SUCCESS"
+                    )
+                    for scheme_id in policy.schemes
+                },
+            )
+
+            def now_utc():
+                if threading.current_thread().name.startswith(
+                    "real-replay-"
+                ):
+                    return cutoff
+                return before_cutoff
+
+            engine = _isolated_engine()
+            owner = _AcquiredOwnerLock()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=owner,
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    side_effect=now_utc,
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                ) as canonical,
+            ):
+                result = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                ).run()
+
+        self.assertEqual(result.status, "cutoff_incomplete")
+        self.assertEqual(result.blocked_scheme_ids, (v2_scheme,))
+        canonical.assert_not_called()
+        self.assertFalse(owner.acquired)
+
+    def test_disallowed_native_heavy_pair_never_overlaps(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from scheduler.daily_coordinator import dispatch_order
+
+        policy, configs = _real_policy_and_configs()
+        selected = tuple(
+            scheme_id
+            for scheme_id in dispatch_order(policy, policy.schemes)
+            if policy.schemes[scheme_id].runtime_type == "native_adapter"
+            and policy.schemes[scheme_id].resource_class == "native_heavy"
+            and policy.schemes[scheme_id].cache_prerequisite
+        )[:2]
+        self.assertEqual(len(selected), 2)
+        states = {
+            scheme_id: (
+                "PENDING"
+                if scheme_id in selected
+                else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        scheme_by_item_id = {
+            item_id: scheme_id
+            for item_id, scheme_id in enumerate(
+                sorted(policy.schemes),
+                start=1,
+            )
+        }
+        active_count = 0
+        max_active = 0
+        state_lock = threading.Lock()
+        with _replay_inputs() as inputs:
+            observed_at = datetime.now(timezone.utc)
+
+            def read_snapshot(*_args, **_kwargs):
+                with state_lock:
+                    current_states = dict(states)
+                return _runtime_snapshot(
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    observed_at=observed_at,
+                    states=current_states,
+                )
+
+            def execute(_engine, *, item_id: int, **_kwargs):
+                nonlocal active_count, max_active
+                scheme_id = scheme_by_item_id[item_id]
+                with state_lock:
+                    states[scheme_id] = "RUNNING"
+                    active_count += 1
+                    max_active = max(max_active, active_count)
+                threading.Event().wait(0.05)
+                with state_lock:
+                    states[scheme_id] = "SUCCESS"
+                    active_count -= 1
+                return SimpleNamespace(
+                    status="success",
+                    scheme_id=scheme_id,
+                )
+
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(read_snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=_AcquiredOwnerLock(),
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                    side_effect=execute,
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                result = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                ).run()
+
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(max_active, 1)
+        self.assertEqual(
+            result.dispatched_scheme_ids,
+            selected,
+        )
+
+    def test_cache_consumer_waits_for_prewarmer_success(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+
+        policy, configs = _real_policy_and_configs()
+        prewarmer = next(
+            item
+            for item in policy.schemes.values()
+            if item.runtime_type == "native_adapter"
+            and item.cache_prerequisite
+            and any(
+                peer.runtime_type == "native_adapter"
+                and peer.cache_group == item.cache_group
+                and not peer.cache_prerequisite
+                for peer in policy.schemes.values()
+            )
+        )
+        consumer = next(
+            item
+            for item in policy.schemes.values()
+            if item.runtime_type == "native_adapter"
+            and item.cache_group == prewarmer.cache_group
+            and not item.cache_prerequisite
+        )
+        selected = (prewarmer.scheme_id, consumer.scheme_id)
+        states = {
+            scheme_id: (
+                "PENDING"
+                if scheme_id in selected
+                else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        scheme_by_item_id = {
+            item_id: scheme_id
+            for item_id, scheme_id in enumerate(
+                sorted(policy.schemes),
+                start=1,
+            )
+        }
+        execution_order: list[str] = []
+        active_count = 0
+        max_active = 0
+        state_lock = threading.Lock()
+        with _replay_inputs() as inputs:
+            observed_at = datetime.now(timezone.utc)
+
+            def read_snapshot(*_args, **_kwargs):
+                with state_lock:
+                    current_states = dict(states)
+                return _runtime_snapshot(
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    observed_at=observed_at,
+                    states=current_states,
+                )
+
+            def execute(_engine, *, item_id: int, **_kwargs):
+                nonlocal active_count, max_active
+                scheme_id = scheme_by_item_id[item_id]
+                with state_lock:
+                    execution_order.append(scheme_id)
+                    states[scheme_id] = "RUNNING"
+                    active_count += 1
+                    max_active = max(max_active, active_count)
+                threading.Event().wait(0.05)
+                with state_lock:
+                    states[scheme_id] = "SUCCESS"
+                    active_count -= 1
+                return SimpleNamespace(
+                    status="success",
+                    scheme_id=scheme_id,
+                )
+
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(read_snapshot),
+                patch(
+                    "harness.daily_real_replay.OccurrenceFileLock",
+                    return_value=_AcquiredOwnerLock(),
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                    side_effect=execute,
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                result = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                ).run()
+
+        self.assertEqual(result.status, "complete")
+        self.assertEqual(execution_order, list(selected))
+        self.assertEqual(max_active, 1)
 
     def test_rejects_incomplete_generation_identity(self) -> None:
         from harness.daily_real_replay import (
