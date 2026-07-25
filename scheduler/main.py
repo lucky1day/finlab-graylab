@@ -45,6 +45,12 @@ from shared.daily_coordinator_mode import (
     DAILY_COORDINATOR_MODE_ENV,
     bootstrap_deployment_daily_coordinator_mode,
 )
+from shared.source_runtime_database import (
+    SOURCE_RUNTIME_SCHEME_IDS,
+    SourceRuntimeDatabasePreflightError,
+    load_source_runtime_database_config,
+    preflight_source_runtime_database_access,
+)
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -92,6 +98,24 @@ def _sync_registry(schemes: list[SchemeConfig]) -> None:
         sync_scheme_registry(engine, schemes)
     finally:
         engine.dispose()
+
+
+def _preflight_source_runtime_database(
+    schemes: Sequence[SchemeConfig],
+) -> None:
+    """在任何 Registry/任务副作用前验证 source-readonly 绑定。"""
+    if not any(
+        cfg.scheme_id in SOURCE_RUNTIME_SCHEME_IDS
+        for cfg in schemes
+    ):
+        return
+    try:
+        config = load_source_runtime_database_config()
+    except RuntimeError:
+        raise SourceRuntimeDatabasePreflightError(
+            "SOURCE_DB_CONFIG_INVALID"
+        ) from None
+    preflight_source_runtime_database_access(config)
 
 
 def _env_int(name: str, default: int, *, min_value: int) -> int:
@@ -850,6 +874,7 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     )
     _configure_prediction_semaphore(max_concurrency)
     schemes = discover_schemes()
+    _preflight_source_runtime_database(schemes)
     if coordinator_mode == "ledger":
         admission_engine = create_engine_from_env()
         try:
@@ -1131,7 +1156,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         scheduler = build_scheduler(algo_env=args.algo_env)
-    except (ValueError, CapacityAdmissionError) as exc:
+    except (
+        ValueError,
+        CapacityAdmissionError,
+        SourceRuntimeDatabasePreflightError,
+    ) as exc:
         if args.run_once == "predictions":
             _emit_prediction_summary([], 2)
         logger.error("Scheduler argument or configuration error: %s", exc)

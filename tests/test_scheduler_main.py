@@ -54,6 +54,144 @@ class SchedulerMainTests(unittest.TestCase):
         self._capacity_patcher.stop()
         self._mode_patcher.stop()
 
+    def test_source_database_preflight_runs_before_registry_sync(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        events: list[str] = []
+        database_config = object()
+
+        def record_preflight(config):
+            self.assertIs(config, database_config)
+            events.append("source-preflight")
+
+        def record_sync(_schemes):
+            events.append("registry-sync")
+
+        schemes = [
+            _cfg("daily_1y_xgb_1y13_0629"),
+            _cfg("daily_native"),
+        ]
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "load_source_runtime_database_config",
+                return_value=database_config,
+            ),
+            patch.object(
+                scheduler_main,
+                "preflight_source_runtime_database_access",
+                side_effect=record_preflight,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                side_effect=record_sync,
+            ),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            self.assertEqual(
+                events[:2],
+                ["source-preflight", "registry-sync"],
+            )
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+    def test_source_database_preflight_failure_prevents_registry_sync(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        schemes = [_cfg("daily_1y_xgb_1y13_0629")]
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "load_source_runtime_database_config",
+                return_value=object(),
+            ),
+            patch.object(
+                scheduler_main,
+                "preflight_source_runtime_database_access",
+                side_effect=RuntimeError("SOURCE_DB_GRANT_UNSAFE"),
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+            ) as sync_registry,
+            self.assertRaisesRegex(
+                RuntimeError,
+                "SOURCE_DB_GRANT_UNSAFE",
+            ),
+        ):
+            scheduler_main.build_scheduler()
+
+        sync_registry.assert_not_called()
+
+    def test_source_database_config_failure_is_stable_and_redacted(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+        from shared.source_runtime_database import (
+            SourceRuntimeDatabasePreflightError,
+        )
+
+        schemes = [_cfg("daily_1y_xgb_1y13_0629")]
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "load_source_runtime_database_config",
+                side_effect=RuntimeError(
+                    "source-test-secret must not escape"
+                ),
+            ),
+            patch.object(
+                scheduler_main,
+                "preflight_source_runtime_database_access",
+            ) as preflight,
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+            ) as sync_registry,
+            self.assertRaises(
+                SourceRuntimeDatabasePreflightError
+            ) as caught,
+        ):
+            scheduler_main.build_scheduler()
+
+        self.assertEqual(
+            caught.exception.code,
+            "SOURCE_DB_CONFIG_INVALID",
+        )
+        self.assertNotIn(
+            "source-test-secret",
+            str(caught.exception),
+        )
+        preflight.assert_not_called()
+        sync_registry.assert_not_called()
+
     def test_ledger_mode_registers_one_daily_coordinator_and_isolates_pools(
         self,
     ) -> None:

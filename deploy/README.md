@@ -304,7 +304,12 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
   ```
 
   配置缺失或权限、owner、inode、symlink 检查失败时，三个 0629 source-backed
-  任务必须在算法启动前 fail-closed。仓库模板的更新不授权覆盖已安装 plist，
+  任务必须在算法启动前 fail-closed。scheduler 启动时先执行
+  `SHOW GRANTS FOR CURRENT_USER()` 的保守授权审计，再对由统一数据契约声明的
+  9 张必需源表逐表执行零行 SELECT；只有直接 `USAGE/SELECT`、无 role、无
+  grant option、无未知权限时才允许继续 Registry 同步和任务注册。
+  生产预检禁止执行 DDL/DML；INSERT/UPDATE/DELETE/CREATE/ALTER/DROP 的拒绝
+  证据只在隔离临时 MySQL 中采集。仓库模板的更新不授权覆盖已安装 plist，
   也不授权 kickstart；必须留到 BFL 专项维护窗口逐项读回验证。该配置仅属于
   Bond Factor Lab，不得修改或重启 BondProjectPro。
 - `deploy/daily_coordinator_rollout_v1.json` 同样固定 `mode=legacy`，仅供旧

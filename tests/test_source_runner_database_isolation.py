@@ -66,6 +66,181 @@ def _write_private_binding(path: Path) -> None:
 
 
 class SourceRunnerDatabaseIsolationTests(unittest.TestCase):
+    def test_database_preflight_reads_exact_native_source_tables(
+        self,
+    ) -> None:
+        from shared.data_contract import (
+            CALENDAR_SOURCE_TABLES,
+            FACTOR_SOURCE_TABLES,
+            METADATA_SOURCE_TABLE,
+        )
+        from shared.source_runtime_database import (
+            SourceRuntimeDatabaseConfig,
+            preflight_source_runtime_database_access,
+        )
+
+        required_tables = (
+            *FACTOR_SOURCE_TABLES,
+            METADATA_SOURCE_TABLE,
+            *CALENDAR_SOURCE_TABLES,
+        )
+        executed: list[str] = []
+
+        class _Cursor:
+            current_query = ""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, query):
+                self.current_query = str(query)
+                executed.append(self.current_query)
+
+            def fetchone(self):
+                if "DATABASE()" in self.current_query:
+                    return ("bfl_source_test", "source_reader@127.0.0.1")
+                raise AssertionError(self.current_query)
+
+            def fetchall(self):
+                if "SHOW GRANTS" in self.current_query:
+                    return (
+                        (
+                            "GRANT USAGE ON *.* TO "
+                            "`source_reader`@`127.0.0.1`",
+                        ),
+                        (
+                            "GRANT SELECT ON `bfl_source_test`.* TO "
+                            "`source_reader`@`127.0.0.1`",
+                        ),
+                    )
+                raise AssertionError(self.current_query)
+
+        class _Connection:
+            def cursor(self):
+                return _Cursor()
+
+            def close(self):
+                executed.append("CLOSE")
+
+        config = SourceRuntimeDatabaseConfig(
+            user="source_reader",
+            password="source-test-secret",
+            host="127.0.0.1",
+            port=43306,
+            database="bfl_source_test",
+            charset="utf8mb4",
+            config_path=Path("/private/source-db.json"),
+        )
+        with patch(
+            "shared.source_runtime_database.pymysql.connect",
+            return_value=_Connection(),
+        ) as connect:
+            result = preflight_source_runtime_database_access(config)
+
+        self.assertEqual(result.database, config.database)
+        self.assertEqual(result.tables, required_tables)
+        connect.assert_called_once()
+        connect_kwargs = connect.call_args.kwargs
+        self.assertEqual(connect_kwargs["user"], config.user)
+        self.assertEqual(connect_kwargs["database"], config.database)
+        self.assertEqual(connect_kwargs["password"], config.password)
+        self.assertEqual(
+            tuple(
+                query
+                for query in executed
+                if query.startswith("SELECT * FROM")
+            ),
+            tuple(
+                f"SELECT * FROM `{table}` LIMIT 0"
+                for table in required_tables
+            ),
+        )
+        self.assertEqual(executed[-1], "CLOSE")
+
+    def test_database_preflight_rejects_write_or_role_grants(
+        self,
+    ) -> None:
+        from shared.source_runtime_database import (
+            SourceRuntimeDatabaseConfig,
+            SourceRuntimeDatabasePreflightError,
+            preflight_source_runtime_database_access,
+        )
+
+        class _Cursor:
+            current_query = ""
+
+            def __init__(self, grant: str):
+                self.grant = grant
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, query):
+                self.current_query = str(query)
+
+            def fetchone(self):
+                return ("bfl_source_test", "source_reader@127.0.0.1")
+
+            def fetchall(self):
+                return ((self.grant,),)
+
+        class _Connection:
+            def __init__(self, grant: str):
+                self.grant = grant
+
+            def cursor(self):
+                return _Cursor(self.grant)
+
+            def close(self):
+                return None
+
+        config = SourceRuntimeDatabaseConfig(
+            user="source_reader",
+            password="source-test-secret",
+            host="127.0.0.1",
+            port=43306,
+            database="bfl_source_test",
+            charset="utf8mb4",
+            config_path=Path("/private/source-db.json"),
+        )
+        unsafe_grants = (
+            "GRANT SELECT, INSERT ON `bfl_source_test`.* TO "
+            "`source_reader`@`127.0.0.1`",
+            "GRANT `source_writer`@`%` TO "
+            "`source_reader`@`127.0.0.1`",
+            "GRANT SELECT ON `bfl_source_test`.* TO "
+            "`source_reader`@`127.0.0.1` WITH GRANT OPTION",
+            "GRANT PROXY ON `writer`@`%` TO "
+            "`source_reader`@`127.0.0.1`",
+            "GRANT SELECT ON *.* TO "
+            "`source_reader`@`127.0.0.1`",
+            "GRANT BACKUP_ADMIN ON *.* TO "
+            "`source_reader`@`127.0.0.1`",
+            "GRANT UNKNOWN SOURCE CAPABILITY TO "
+            "`source_reader`@`127.0.0.1`",
+        )
+        for grant in unsafe_grants:
+            with (
+                self.subTest(grant=grant.split(" TO ", 1)[0]),
+                patch(
+                    "shared.source_runtime_database.pymysql.connect",
+                    return_value=_Connection(grant),
+                ),
+                self.assertRaises(
+                    SourceRuntimeDatabasePreflightError
+                ) as caught,
+            ):
+                preflight_source_runtime_database_access(config)
+            self.assertEqual(caught.exception.code, "SOURCE_DB_GRANT_UNSAFE")
+            self.assertNotIn(config.password, str(caught.exception))
+            self.assertNotIn(grant, str(caught.exception))
+
     def test_all_archived_source_manifests_pin_package_identity(
         self,
     ) -> None:

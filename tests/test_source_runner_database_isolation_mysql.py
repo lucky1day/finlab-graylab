@@ -46,9 +46,23 @@ class SourceRunnerDatabaseIsolationMySQLTests(unittest.TestCase):
         from shared.weekly_average_lgbm_source_runner import (
             _source_runtime as weekly_runtime,
         )
+        from shared.data_contract import (
+            CALENDAR_SOURCE_TABLES,
+            FACTOR_SOURCE_TABLES,
+            METADATA_SOURCE_TABLE,
+        )
+        from shared.source_runtime_database import (
+            SourceRuntimeDatabaseConfig,
+            preflight_source_runtime_database_access,
+        )
 
         with _temporary_mysql() as server:
             schema, engine = server.create_schema("source")
+            required_tables = (
+                *FACTOR_SOURCE_TABLES,
+                METADATA_SOURCE_TABLE,
+                *CALENDAR_SOURCE_TABLES,
+            )
             reader_user = f"bfl_src_{uuid.uuid4().hex[:10]}"
             reader_password = (
                 uuid.uuid4().hex + uuid.uuid4().hex
@@ -56,14 +70,25 @@ class SourceRunnerDatabaseIsolationMySQLTests(unittest.TestCase):
             admin = server._socket_admin_engine()
             try:
                 with admin.begin() as connection:
+                    for table in required_tables:
+                        connection.exec_driver_sql(
+                            f"CREATE TABLE `{schema}`.`{table}` "
+                            "(id INT PRIMARY KEY)"
+                        )
+                    connection.exec_driver_sql(
+                        f"CREATE TABLE `{schema}`."
+                        "`source_drop_must_fail` "
+                        "(id INT PRIMARY KEY)"
+                    )
                     connection.exec_driver_sql(
                         f"CREATE USER '{reader_user}'@'127.0.0.1' "
                         f"IDENTIFIED BY '{reader_password}'"
                     )
-                    connection.exec_driver_sql(
-                        f"GRANT SELECT ON `{schema}`.* "
-                        f"TO '{reader_user}'@'127.0.0.1'"
-                    )
+                    for table in required_tables:
+                        connection.exec_driver_sql(
+                            f"GRANT SELECT ON `{schema}`.`{table}` "
+                            f"TO '{reader_user}'@'127.0.0.1'"
+                        )
             finally:
                 admin.dispose()
 
@@ -88,26 +113,44 @@ class SourceRunnerDatabaseIsolationMySQLTests(unittest.TestCase):
                     "import json\n"
                     "import pymysql\n"
                     "from db_config import DB_CONFIG\n"
+                    f"required_tables = {required_tables!r}\n"
                     "connection = pymysql.connect(**DB_CONFIG)\n"
                     "try:\n"
                     "    with connection.cursor() as cursor:\n"
                     "        cursor.execute("
                     '"SELECT DATABASE(), @@server_uuid")\n'
                     "        database_name, server_uuid = cursor.fetchone()\n"
-                    "        cursor.execute("
-                    '"SELECT COUNT(*) FROM t_schema_migrations")\n'
-                    "        migration_count = cursor.fetchone()[0]\n"
-                    "        write_rejected = False\n"
-                    "        try:\n"
+                    "        readable_tables = []\n"
+                    "        for table in required_tables:\n"
                     "            cursor.execute("
-                    '"CREATE TABLE source_write_must_fail (id INT)")\n'
-                    "        except Exception:\n"
-                    "            write_rejected = True\n"
+                    "'SELECT * FROM `' + table + '` LIMIT 0')\n"
+                    "            readable_tables.append(table)\n"
+                    "        write_probes = {\n"
+                    '            "insert": "INSERT INTO '
+                    '`api_wind_daily` (id) VALUES (9001)",\n'
+                    '            "update": "UPDATE '
+                    '`api_wind_daily` SET id=id WHERE 1=0",\n'
+                    '            "delete": "DELETE FROM '
+                    '`api_wind_daily` WHERE 1=0",\n'
+                    '            "create": "CREATE TABLE '
+                    'source_create_must_fail (id INT)",\n'
+                    '            "alter": "ALTER TABLE '
+                    '`api_wind_daily` ADD COLUMN unsafe INT",\n'
+                    '            "drop": "DROP TABLE '
+                    'source_drop_must_fail",\n'
+                    "        }\n"
+                    "        rejected_writes = []\n"
+                    "        for operation, statement in "
+                    "write_probes.items():\n"
+                    "            try:\n"
+                    "                cursor.execute(statement)\n"
+                    "            except Exception:\n"
+                    "                rejected_writes.append(operation)\n"
                     "    print(json.dumps({\n"
                     '        "database": database_name,\n'
                     '        "server_uuid": server_uuid,\n'
-                    '        "migration_count": migration_count,\n'
-                    '        "write_rejected": write_rejected,\n'
+                    '        "readable_tables": readable_tables,\n'
+                    '        "rejected_writes": rejected_writes,\n'
                     "    }, sort_keys=True))\n"
                     "finally:\n"
                     "    connection.close()\n",
@@ -133,6 +176,22 @@ class SourceRunnerDatabaseIsolationMySQLTests(unittest.TestCase):
                     encoding="utf-8",
                 )
                 binding_path.chmod(0o600)
+                database_config = SourceRuntimeDatabaseConfig(
+                    user=reader_user,
+                    password=reader_password,
+                    host="127.0.0.1",
+                    port=server.port,
+                    database=schema,
+                    charset="utf8mb4",
+                    config_path=binding_path,
+                )
+                preflight = preflight_source_runtime_database_access(
+                    database_config
+                )
+                self.assertEqual(
+                    preflight.tables,
+                    required_tables,
+                )
 
                 with self.assertRaises(pymysql.MySQLError):
                     pymysql.connect(
@@ -185,11 +244,21 @@ class SourceRunnerDatabaseIsolationMySQLTests(unittest.TestCase):
                             payload["server_uuid"],
                             server.server_uuid,
                         )
-                        self.assertGreaterEqual(
-                            payload["migration_count"],
-                            17,
+                        self.assertEqual(
+                            tuple(payload["readable_tables"]),
+                            required_tables,
                         )
-                        self.assertTrue(payload["write_rejected"])
+                        self.assertEqual(
+                            set(payload["rejected_writes"]),
+                            {
+                                "insert",
+                                "update",
+                                "delete",
+                                "create",
+                                "alter",
+                                "drop",
+                            },
+                        )
 
                 self.assertEqual(
                     packaged_config.read_bytes(),

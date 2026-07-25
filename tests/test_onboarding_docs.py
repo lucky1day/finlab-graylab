@@ -415,6 +415,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "chmod 700 /Users/macstudio0/.config/bond-factor-lab",
             "chmod 600 /Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json",
             "不得把用户名、密码或 DSN 写入 plist",
+            "SHOW GRANTS FOR CURRENT_USER()",
+            "9 张必需源表",
+            "生产预检禁止执行 DDL/DML",
             "不得修改或重启 BondProjectPro",
         ):
             self.assertIn(marker, deploy)

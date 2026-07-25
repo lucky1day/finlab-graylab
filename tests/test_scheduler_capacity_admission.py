@@ -15,7 +15,12 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
         from scheduler import main as scheduler_main
 
         engine = SimpleNamespace(dispose=Mock())
-        schemes = [SimpleNamespace(frequency="daily")]
+        schemes = [
+            SimpleNamespace(
+                scheme_id="daily_native",
+                frequency="daily",
+            )
+        ]
         with (
             patch.dict(
                 os.environ,
