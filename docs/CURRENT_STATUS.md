@@ -47,18 +47,18 @@
 
 ### 日频 08:00 整改状态
 
-- 2026-07-24 旧 APScheduler 路径仅生成 16/21 个 run（13 success、3 failed、
-  5 未运行），因此当前生产不能认定为稳定。
+- 2026-07-24 旧 APScheduler 路径仅生成 16/21 个 run（13 success、3 failed、5 未运行），因此当前生产不能认定为稳定。
 - 步骤 6 已完成：隔离 MySQL 精确展开 21 item/25 target，其中 Native
   17 item/21 target、输入模式 14/3；双 lane、失败隔离、重入幂等和 claim 单
   winner 均通过。
 - 步骤 7 已完成：四个 V2 同代并按 `+0/+2/+4/+6` 独立释放，最大并发 2；
   四个真实 delivery 的冻结输入、确定性、120 秒超时、父 generation fence、
   late 后继续执行和失败隔离均通过。
-- 2026-07-26 在候选代码 `2bf9f5f` 上重新执行四个真实 delivery 的 sealed generation
-  认证：同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整
-  `PredictionRecord` 一致；mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝。
-  `tests/test_databridge_generation_executor.py` 为 `4 passed`，生产表行数未变化。
+- 2026-07-26 在候选代码 `2bf9f5f` 上重新执行四个真实 delivery 的 sealed generation 认证：
+  同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整 `PredictionRecord` 一致；
+  mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝；对应测试 `4 passed`，生产表行数未变化。
+- `5aed35f` 已建立面向真实 21/25 隔离联跑的输入/数据库 gate：只接受父子摘要一致的同日 Native/DataBridge generation；
+  每次 repository 连接都复核临时 MySQL 身份，fixture 已通过 001–018、结构性 21/25 occurrence 和 17/4 generation 绑定。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -93,9 +93,9 @@
 
 ## 当前观察项
 
-1. 当前优先执行一次真实 21 算法、25 target 的隔离 MySQL 全量联跑；使用
-   真实 17 个 Native 和四个 sealed DataBridge V2，不使用受控 recorder，
-   不写生产库，本轮先验收功能完整性而不宣称容量达标。
+1. 下一次真实同日 Native/DataBridge generation 到位后，立即通过 `5aed35f`
+   gate 执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造
+   historical seal，不使用 recorder、不写生产库，也不把本轮计作容量样本。
 2. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
    gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
    `gray_live` 与正式 21/25 occurrence 解耦。

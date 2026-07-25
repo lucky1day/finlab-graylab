@@ -4,7 +4,7 @@
 
 **目标读者**：平台维护人员、算法工程师、代码评审人员
 
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-26
 
 本文只负责选择入库路径，不记录方案数量、运行结果或生命周期现状。动态事实查看[当前状态](../CURRENT_STATUS.md)。
 
@@ -27,7 +27,7 @@
 | 机器标识 | `runtime_type: native_adapter` | `runtime_type: blackbox_v2` |
 | 管理定位 | 既有身份的存量维护 | 后续新增方案唯一入口 |
 | 上游形态 | 仓库内 `config + predict + core` | 一个 `.py` 和一个 `.json` |
-| 输入 | `legacy_db` 经统一输入层 | `data_bridge_current` 三频 Snapshot |
+| 输入 | 配置/通用执行契约仍为 `legacy_db` 经统一输入层；正式 scheduled daily 按版本化 policy 使用 `generation_v1`，只有 policy 精确 allowlist 的存量兼容 ID 可使用 `live_source_0629` | 交付配置契约为 `data_bridge_current` 三频 Snapshot；正式 scheduled daily 必须绑定当天 `SEALED` generation，禁止旧代 fallback |
 | 执行 | import adapter 子进程 | sandbox CLI 子进程 |
 | 生产权限 | 保持既有方案的独立状态 | 每个方案必须单独完成生产准备和专项授权 |
 
