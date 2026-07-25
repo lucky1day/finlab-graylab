@@ -26,11 +26,16 @@ from shared.models import PredictionRecord
 
 
 SCHEME_ID = "daily_1y_xgb_1y13_0629"
+SCHEME_5Y_ID = "daily_5y_lgbm_5y10_0629"
 PREDICT_DATE = "2026-07-27"
 FEATURE_DATE = "2026-07-24"
 TARGET_DATE = "2026-07-27"
 PACKAGE_SHA = "a" * 64
 SOURCE_TOKEN = "b" * 64
+SOURCE_5Y_MODEL_ID = (
+    "5Y_weekmap_top120_seed_quota_7sig_combo_rolling40_"
+    "target_0.50_mtd_floor_0.50_causal"
+)
 
 
 def _record(*, active_score: float = 0.0) -> PredictionRecord:
@@ -73,6 +78,57 @@ def _record(*, active_score: float = 0.0) -> PredictionRecord:
         predicted_direction=0,
         confidence=0.5,
         model_version="1Y13",
+        extra=extra,
+    )
+
+
+def _record_5y() -> PredictionRecord:
+    extra = {
+        field: None
+        for field in DAILY_0629_INTERNAL_FIELDS
+    }
+    extra.update(
+        {
+            "source_role": DAILY_0629_SOURCE_ROLE,
+            "source_model_id": SOURCE_5Y_MODEL_ID,
+            "source_package_hash": PACKAGE_SHA,
+            "source_output_date": PREDICT_DATE,
+            "source_prediction_date": FEATURE_DATE,
+            "source_rdate": TARGET_DATE,
+            "input_cutoff_date": FEATURE_DATE,
+            "feature_date": FEATURE_DATE,
+            "target_date": TARGET_DATE,
+            "input_artifact_path": "/private/runtime/daily.csv",
+            "input_artifact_source": "shared_data_service_daily",
+            "frequency": "D5Y",
+            "final_select_id": "5Y10",
+            "candidate_id": SOURCE_5Y_MODEL_ID,
+            "target_col": "TB5YWI0C",
+            "prediction_mode": "active_abstain",
+            "candidate_pred": 1,
+            "model_pred": 1,
+            "vote_pred": 1,
+            "prob_up": 0.55,
+            "threshold": 0.5,
+            "decision": "current",
+            "signal_sum": 3,
+            "vote_sum": 4,
+            "active_score": 0.55,
+            "pre_quota_candidate_pred": 1,
+            "candidate_pred_before_direction_tuning": 1,
+            "direction_tuning_rule": "unchanged",
+        }
+    )
+    return PredictionRecord(
+        scheme_id=SCHEME_5Y_ID,
+        target_tenor="5Y",
+        horizon=1,
+        predict_date=PREDICT_DATE,
+        feature_date=FEATURE_DATE,
+        target_date=TARGET_DATE,
+        predicted_direction=1,
+        confidence=0.55,
+        model_version="5Y10",
         extra=extra,
     )
 
@@ -314,6 +370,56 @@ class Daily0629CertificationTests(unittest.TestCase):
                     deps["guard_engine"],
                 )
 
+    def test_real_certification_runs_5y_twice_with_full_internal_fields(
+        self,
+    ) -> None:
+        from harness.daily_0629_certification import (
+            certify_daily_0629_source_execution,
+        )
+
+        deps = _dependencies(records=[_record_5y(), _record_5y()])
+        source_evidence = SimpleNamespace(
+            source_package_path=Path("/private/source"),
+            source_package_hash=PACKAGE_SHA,
+            target_tenor="5Y",
+            final_select_id="5Y10",
+            candidate_id=SOURCE_5Y_MODEL_ID,
+            model_id=SOURCE_5Y_MODEL_ID,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir).resolve() / "evidence"
+            output_dir.mkdir(mode=0o700)
+            report_path = output_dir / "report.json"
+            with (
+                _patched_dependencies(deps),
+                patch(
+                    "harness.daily_0629_certification."
+                    "require_daily_0629_source_evidence",
+                    return_value=source_evidence,
+                ),
+            ):
+                report = certify_daily_0629_source_execution(
+                    scheme_id=SCHEME_5Y_ID,
+                    predict_date=PREDICT_DATE,
+                    report_path=report_path,
+                    runner=deps["runner"],
+                )
+
+        self.assertEqual(report["status"], "PASSED")
+        self.assertEqual(report["scheme_id"], SCHEME_5Y_ID)
+        self.assertEqual(report["canonical_records"][0]["target_tenor"], "5Y")
+        self.assertEqual(
+            report["canonical_records"][0]["model_version"],
+            "5Y10",
+        )
+        self.assertEqual(deps["runner"].call_count, 2)
+        for call in deps["runner"].call_args_list:
+            self.assertEqual(
+                call.args[:2],
+                (SCHEME_5Y_ID, PREDICT_DATE),
+            )
+            self.assertEqual(call.kwargs["timeout_sec"], 600)
+
     def test_certification_rejects_scheme_not_yet_admitted_for_this_stage(
         self,
     ) -> None:
@@ -327,7 +433,7 @@ class Daily0629CertificationTests(unittest.TestCase):
             self.assertRaises(Daily0629CertificationError) as raised,
         ):
             certify_daily_0629_source_execution(
-                scheme_id="daily_5y_lgbm_5y10_0629",
+                scheme_id="daily_10y_lgbm_10y04_0629",
                 predict_date=PREDICT_DATE,
                 report_path=Path(tmpdir) / "report.json",
                 runner=Mock(),
