@@ -421,6 +421,12 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "7 个日频存储根",
             "backtest_artifacts/runtime_cache/liwei_0616",
             "不会静默 chmod",
+            "certify_generation_native_daily.py",
+            "--no-persist",
+            "clean detached worktree",
+            "POSIX semaphore",
+            'pwd -P',
+            "伪造历史 snapshot clock",
             "不得修改或重启 BondProjectPro",
         ):
             self.assertIn(marker, deploy)

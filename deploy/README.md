@@ -346,6 +346,38 @@ symlink、owner 为实际 scheduler 服务 UID，再显式创建/调整为 `0700
 symlink 一律 fail-closed，不会静默 chmod，也不会在发现任一不安全根后创建
 其它缺失根。
 
+容量联跑前必须先用真实、交易日合法 capture window 产生的 `SEALED` Native
+generation 认证 14 个 `generation_v1` 日频方案。认证只允许在与候选 commit
+一致的 clean detached worktree 中运行，`forecast_env` 是唯一算法环境，输出根
+必须位于 worktree 外且预先以 `0700` 创建。runner 固定串行执行、禁止网络和
+业务持久化；每个 worker 使用 macOS sandbox 将候选 worktree 和 generation
+挂为只读、只允许写外部证据根，并通过最小环境 allowlist 清除数据库连接信息。
+原算法的 `multiprocessing.Pool` 必须保持 `forecast_env` 的 spawn 模式；policy
+只允许 fork、POSIX semaphore 和精确 Python executable 的 exec，所有 spawn
+子进程继续继承同一断网和只读边界，不允许其它 executable 或越界写入。
+父进程在每次执行前后重新核对 detached HEAD、clean 状态、tracked policy SHA
+和输出根 inode，worker 也独立核对同一 policy；任一漂移或孤儿进程均
+fail-closed。t1/t5、V28 各独立双跑，10 个 Liwei 按 cache family 执行
+cold / warm-build / warm-hit，并比较除明确路径/cache audit 外的全部 canonical
+字段，同时核对共享 family 的 cache generation lineage。cache、日志和
+`certification.json` 留在忽略的外部证据目录，原 SEALED generation 保持只读；
+二者都不得提交 Git，也不能据此自动打开 admission。
+
+```bash
+cert_root="$(mktemp -d /tmp/bfl-native-cert.XXXXXX)"
+chmod 700 "$cert_root"
+cert_root="$(cd "$cert_root" && pwd -P)"
+cd <clean-detached-candidate-worktree>
+conda run --no-capture-output -n forecast_env \
+  python -B scripts/certify_generation_native_daily.py \
+    --manifest <absolute-sealed-native-manifest> \
+    --output-root "$cert_root" \
+    --no-persist
+```
+
+不得通过伪造历史 snapshot clock、使用周末 generation 或复用旧 live DB 报告来
+替代交易日日批认证；当前没有合法 generation 时只允许提交和验证 runner 本身。
+
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
   python scripts/evaluate_daily_capacity_gate.py <attested-evidence.json> \
