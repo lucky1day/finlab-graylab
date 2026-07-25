@@ -65,6 +65,7 @@ from shared.daily_coordinator_mode import (
     require_current_daily_coordinator_identity,
     resolve_daily_runtime_root,
 )
+from shared.daily_storage_preflight import preflight_daily_storage
 from shared.data_bridge.client import DataBridgeClient, DataBridgeClientConfig
 from shared.data_bridge.refresh import (
     DailyCoordinatorPublicationCapability,
@@ -5378,6 +5379,8 @@ def run_daily_occurrence(
         verify_current_capacity=True,
     )
     try:
+        if _services is None:
+            preflight_daily_storage()
         return DailyRuntime(services).run_occurrence(
             run_date=run_date,
             trigger_origin=trigger_origin,
@@ -5421,6 +5424,8 @@ def run_operator_recovery(
         verify_current_capacity=True,
     )
     try:
+        if _services is None:
+            preflight_daily_storage()
         return DailyRuntime(services).run_operator_recovery(
             scheme_id=scheme_id,
             run_date=run_date,

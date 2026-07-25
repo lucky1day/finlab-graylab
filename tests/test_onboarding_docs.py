@@ -418,6 +418,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "SHOW GRANTS FOR CURRENT_USER()",
             "9 张必需源表",
             "生产预检禁止执行 DDL/DML",
+            "7 个日频存储根",
+            "backtest_artifacts/runtime_cache/liwei_0616",
+            "不会静默 chmod",
             "不得修改或重启 BondProjectPro",
         ):
             self.assertIn(marker, deploy)

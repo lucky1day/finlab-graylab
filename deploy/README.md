@@ -332,13 +332,19 @@ ledger 切换前必须按
 故障注入和连续 10 个交易日 25/25。以下只读 CLI 仅做离线统计/结构评估，
 输出中的 `runtime_admission_eligible` 固定为 `false`；它不能直接打开 rollout：
 
-切换维护窗口内还必须在服务停止时迁移四个存储根：
+切换维护窗口内还必须在服务停止时核验并准备 7 个日频存储根：
+`~/Library/Application Support/BondFactorLab/daily-runtime-v1`、
+其下的 `occurrence-locks`、
 `backtest_artifacts/input_generations/native`、
 `backtest_artifacts/input_generations/databridge`、`data/data_bridge` 和
-`backtest_artifacts/data_bridge_refresh`。逐个确认路径及父链无 symlink、owner
-为实际 scheduler 服务 UID，再显式创建/调整为 `0700`；迁移后以同一服务 UID
-完成 create/open/cleanup/preflight 演练。runtime 只会以 `0700` 创建不存在的
-最终根，对既有 `0755`、错误 owner 或 symlink 一律 fail-closed，不会静默修权。
+`backtest_artifacts/data_bridge_refresh`，以及
+`backtest_artifacts/runtime_cache/liwei_0616`。逐个确认路径及父链无
+symlink、owner 为实际 scheduler 服务 UID，再显式创建/调整为 `0700`；迁移后
+以同一服务 UID 完成 create/open/cleanup/preflight 演练。scheduler 启动会先
+统一检查全部根，ledger occurrence 与 operator recovery 在任何 attempt 前再次
+检查。runtime 只会以 `0700` 创建不存在的目录；对既有 `0755`、错误 owner 或
+symlink 一律 fail-closed，不会静默 chmod，也不会在发现任一不安全根后创建
+其它缺失根。
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \

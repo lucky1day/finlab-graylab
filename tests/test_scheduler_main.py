@@ -49,8 +49,13 @@ class SchedulerMainTests(unittest.TestCase):
             return_value={"status": "ADMITTED"},
         )
         self._capacity_patcher.start()
+        self._storage_patcher = patch(
+            "scheduler.main.preflight_daily_storage",
+        )
+        self._storage_patcher.start()
 
     def tearDown(self) -> None:
+        self._storage_patcher.stop()
         self._capacity_patcher.stop()
         self._mode_patcher.stop()
 
@@ -191,6 +196,138 @@ class SchedulerMainTests(unittest.TestCase):
         )
         preflight.assert_not_called()
         sync_registry.assert_not_called()
+
+    def test_main_preflights_storage_before_scheduler_construction(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        events: list[str] = []
+
+        class _Scheduler:
+            def start(self):
+                events.append("start")
+
+        with (
+            patch.object(
+                scheduler_main,
+                "preflight_daily_storage",
+                side_effect=lambda: events.append("storage-preflight"),
+            ),
+            patch.object(
+                scheduler_main,
+                "build_scheduler",
+                side_effect=lambda **_kwargs: (
+                    events.append("build") or _Scheduler()
+                ),
+            ),
+        ):
+            code = scheduler_main.main([])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            events,
+            ["storage-preflight", "build", "start"],
+        )
+
+    def test_storage_preflight_failure_prevents_scheduler_construction(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+        from shared.daily_storage_preflight import (
+            DailyStoragePreflightError,
+        )
+
+        with (
+            patch.object(
+                scheduler_main,
+                "preflight_daily_storage",
+                side_effect=DailyStoragePreflightError(
+                    "DAILY_STORAGE_ROOT_NOT_PRIVATE",
+                    label="liwei_cache",
+                ),
+            ),
+            patch.object(
+                scheduler_main,
+                "build_scheduler",
+            ) as build_scheduler,
+        ):
+            code = scheduler_main.main([])
+
+        self.assertEqual(code, 2)
+        build_scheduler.assert_not_called()
+
+    def test_legacy_run_once_writers_preflight_storage_before_work(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        for run_once in ("predictions", "data-refresh"):
+            events: list[str] = []
+            with (
+                self.subTest(run_once=run_once),
+                patch.object(
+                    scheduler_main,
+                    "preflight_daily_storage",
+                    side_effect=lambda: events.append("preflight"),
+                ),
+                patch.object(
+                    scheduler_main,
+                    "run_all_prediction_jobs",
+                    side_effect=lambda **_kwargs: (
+                        events.append("predictions") or []
+                    ),
+                ),
+                patch.object(
+                    scheduler_main,
+                    "run_data_bridge_refresh_job",
+                    side_effect=lambda **_kwargs: events.append(
+                        "data-refresh"
+                    ),
+                ),
+            ):
+                code = scheduler_main.main(
+                    ["--run-once", run_once]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(events, ["preflight", run_once])
+
+    def test_run_once_storage_failure_blocks_legacy_writers(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+        from shared.daily_storage_preflight import (
+            DailyStoragePreflightError,
+        )
+
+        for run_once in ("predictions", "data-refresh"):
+            with (
+                self.subTest(run_once=run_once),
+                patch.object(
+                    scheduler_main,
+                    "preflight_daily_storage",
+                    side_effect=DailyStoragePreflightError(
+                        "DAILY_STORAGE_PATH_UNSAFE",
+                        label="daily_runtime",
+                    ),
+                ),
+                patch.object(
+                    scheduler_main,
+                    "run_all_prediction_jobs",
+                ) as predictions,
+                patch.object(
+                    scheduler_main,
+                    "run_data_bridge_refresh_job",
+                ) as data_refresh,
+            ):
+                code = scheduler_main.main(
+                    ["--run-once", run_once]
+                )
+
+            self.assertEqual(code, 2)
+            predictions.assert_not_called()
+            data_refresh.assert_not_called()
 
     def test_ledger_mode_registers_one_daily_coordinator_and_isolates_pools(
         self,

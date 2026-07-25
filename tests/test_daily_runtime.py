@@ -5707,6 +5707,54 @@ class DailyRuntimeOperatorRecoveryTests(unittest.TestCase):
 
 
 class DailyRuntimePublicEntryTests(unittest.TestCase):
+    def test_write_entries_recheck_storage_before_occurrence_work(
+        self,
+    ) -> None:
+        from shared.daily_storage_preflight import (
+            DailyStoragePreflightError,
+        )
+
+        entries = (
+            lambda: run_daily_occurrence(run_date="2026-07-24"),
+            lambda: run_operator_recovery(
+                scheme_id="v2",
+                run_date="2026-07-24",
+            ),
+        )
+        for entry in entries:
+            services = _FakeServices(
+                now=datetime(
+                    2026,
+                    7,
+                    24,
+                    7,
+                    20,
+                    tzinfo=SHANGHAI,
+                ),
+            )
+            dispose = Mock()
+            with (
+                self.subTest(entry=entry),
+                patch(
+                    "scheduler.daily_runtime._runtime_services",
+                    return_value=(services, dispose),
+                ),
+                patch(
+                    "scheduler.daily_runtime."
+                    "preflight_daily_storage",
+                    side_effect=DailyStoragePreflightError(
+                        "DAILY_STORAGE_ROOT_NOT_PRIVATE",
+                        label="liwei_cache",
+                    ),
+                ),
+                self.assertRaises(
+                    DailyStoragePreflightError
+                ),
+            ):
+                entry()
+            self.assertEqual(services.events, [])
+            dispose.assert_called_once_with()
+
     def test_dispatch_entries_require_inner_runtime_authority(
         self,
     ) -> None:

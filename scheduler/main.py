@@ -45,6 +45,10 @@ from shared.daily_coordinator_mode import (
     DAILY_COORDINATOR_MODE_ENV,
     bootstrap_deployment_daily_coordinator_mode,
 )
+from shared.daily_storage_preflight import (
+    DailyStoragePreflightError,
+    preflight_daily_storage,
+)
 from shared.source_runtime_database import (
     SOURCE_RUNTIME_SCHEME_IDS,
     SourceRuntimeDatabasePreflightError,
@@ -1102,6 +1106,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         coordinator_mode = _daily_coordinator_mode()
+        if args.run_once in {"predictions", "data-refresh"}:
+            preflight_daily_storage()
         if args.run_once == "predictions":
             if coordinator_mode == "ledger":
                 if args.force:
@@ -1155,10 +1161,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             return 0
 
+        preflight_daily_storage()
         scheduler = build_scheduler(algo_env=args.algo_env)
     except (
         ValueError,
         CapacityAdmissionError,
+        DailyStoragePreflightError,
         SourceRuntimeDatabasePreflightError,
     ) as exc:
         if args.run_once == "predictions":
