@@ -28,10 +28,8 @@
 
 ## 当前生产灰度方案
 
-- `weekly_10y_lgbm_point_v1` 已通过专项授权进入生产灰度。
-- 当前配置、方案版本和 composite Registry 状态为 `active`。
-- 已完成一次持久化回测和一次 `gray_live` 预测，API、前端和 scheduler 已识别该方案。
-- 首条灰度预测目标日为 2026-07-24；实际方向和对应准确率必须在目标数据产生后复验。
+- `weekly_10y_lgbm_point_v1` 已通过专项授权进入生产灰度，配置、版本和 composite Registry 均为 `active`。
+- 已完成一次持久化回测和一次 `gray_live` 预测，API、前端和 scheduler 已识别；首条目标日为 2026-07-24，待目标数据到达后复验。
 - 当前只有一个真实 `10Y + weekly_point + LightGBM` 交付样本，不能代表所有任务类型和依赖组合稳定。
 
 1Y T+5 四方案批次已按用户明确授权全部进入生产灰度：
@@ -39,11 +37,8 @@
 - `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 的配置、方案版本和 composite Registry 均为 `active`。
 - canonical latest backtest 已切换到 run `178..181`：每方案 333 条、17 个月，`predict_date=feature_date=2025-01-02..2026-05-22`，`target_date=2025-01-09..2026-05-29`；旧 run 全部 immutable 保留审计。
 - 每方案已有 40 条连续 `gray_live`：`predict_date=2026-05-26..2026-07-21`、`feature_date=2026-05-25..2026-07-20`、`target_date=2026-06-01..2026-07-27`；历史/live target overlap 为 0。四方案当前 `scheduled_live` 数量依次为 `3/2/2/0`。
-- 其中每方案 38 条历史缺口通过独立 `gray_backfill_write` token 和 insert-only `gray-backfill` Gate 补齐，统一绑定 generation `full-20260720-055026-00e12e3803a8` 与 snapshot `snapshot-fd8a1f8736d3a4d057fbd98e`；首条部署日 gray live 保留原记录。
-- 前端在 `1Y国债活跃 × T+5` 格子内显示 4 个短名称；2026-05 是历史末月，实盘分隔线位于 2026-06 前。详情分隔文案使用各方案首条 `scheduled_live.target_date`；仅仍无正式结果的 `LIQ_EXCESS_B_W252_L7` 显示“待产生”。
-- 四方案均达到 `Onboarding Complete`；前三个方案已有可追溯的自然 `scheduled_live`，但 `LIQ_EXCESS_B_W252_L7` 仍为 0，因此四方案批次尚未整体达到 `Production Observed`。
-- 2026-07-22/23 前三个方案分别产生正式结果；2026-07-24 旧 scheduler 仅在 11:23 为 `LIQ_EXCESS_A` 产生一条晚到结果，另外三个方案缺失。该日只能证明局部执行，不能证明四阶段释放、08:00 SLA 或批次稳定。
-- 四个日频算法来自同一上游批次，证明了日频 Blackbox 运行路径，但不等于四个独立交付包，也不覆盖月频。
+- 四方案均达到 `Onboarding Complete`，但第四个尚无 `scheduled_live`，批次未整体达到 `Production Observed`；2026-07-24 旧 scheduler 也只产生一条 11:23 晚到结果，不能证明四阶段释放或 SLA 稳定。
+- 四个算法来自同一上游批次，只证明日频 Blackbox 路径；回测、补齐、generation 和前端证据保留在专项记录中，不能外推到独立交付或月频。
 
 ### 日频 08:00 整改状态
 
@@ -54,11 +49,13 @@
 - 步骤 7 已完成：四个 V2 同代并按 `+0/+2/+4/+6` 独立释放，最大并发 2；
   四个真实 delivery 的冻结输入、确定性、120 秒超时、父 generation fence、
   late 后继续执行和失败隔离均通过。
-- 2026-07-26 在候选代码 `2bf9f5f` 上重新执行四个真实 delivery 的 sealed generation 认证：
-  同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整 `PredictionRecord` 一致；
-  mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝；对应测试 `4 passed`，生产表行数未变化。
-- `5aed35f` 已建立面向真实 21/25 隔离联跑的结构性 gate：只接受父子摘要一致的同日 generation，并通过 001–018、21/25 occurrence 和 17/4 绑定；不代表真实算法已同轮执行。
-- `1f81f3e` 增加 Engine-bound replay epoch：15 字段身份原子签发，claim/process/commit 重验同一 Engine/Connection；gate 文件 `23 passed`（含 2 个真实临时 MySQL 集成测试）、全量 `2621 passed, 10 skipped`，且不改变生产 rollout。
+- 2026-07-26 在候选 `2bf9f5f` 上重新认证四个真实 sealed delivery：同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整 `PredictionRecord` 一致；
+  mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝，测试 `4 passed`，生产表行数未变化。
+- `5aed35f` 与 `1f81f3e` 已建立 21/25 结构 gate 和 Engine-bound replay
+  epoch：只接受父子摘要一致的同日 generation，完成 001–018、17/4 绑定，
+  并在 claim/process/commit 重验隔离 Engine/Connection。
+- `1f101b8` 增加受保护的串行 replay runtime：唯一入口 `run()` 硬绑定 canonical executor；owner 锁内每轮重验 21 个 execution envelope，并覆盖构造后漂移、`retry_wait` 隔离、未来 V2 release 和次日零点截止。
+  普通测试 `15 passed, 1 skipped`、显式 MySQL `16 passed`、全量 `2644 passed, 11 skipped`。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -93,9 +90,9 @@
 
 ## 当前观察项
 
-1. 下一次真实同日 Native/DataBridge generation 到位后，立即通过 `5aed35f` + `1f81f3e` gate
-   执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造
-   historical seal，不使用 recorder、不写生产库，也不把本轮计作容量样本。
+1. 下一次真实同日 Native/DataBridge generation 到位后，在 BFL 生产 scheduler/算法进程不重叠的独占窗口，通过 `5aed35f`、`1f81f3e` 和 `1f101b8`
+   执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造 historical seal，不使用 recorder、不写生产库，也不计作容量样本。
+   当前 replay owner 锁只互斥 replay，不替代该运行前检查。
 2. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
    gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
    `gray_live` 与正式 21/25 occurrence 解耦。
