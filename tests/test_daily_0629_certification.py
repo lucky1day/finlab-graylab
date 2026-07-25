@@ -169,6 +169,36 @@ def _dependencies(
 
 
 class Daily0629CertificationTests(unittest.TestCase):
+    def test_no_persist_guard_excludes_independent_background_writers(
+        self,
+    ) -> None:
+        from harness.daily_0629_certification import (
+            _BUSINESS_WRITE_GUARD_TABLES,
+        )
+
+        self.assertTrue(
+            {
+                "t_scheme_runs",
+                "t_scheme_predictions",
+                "t_scheme_run_log",
+                "t_input_artifacts",
+                "t_input_generations",
+                "t_schedule_occurrences",
+                "t_schedule_items",
+                "t_schedule_item_targets",
+            }.issubset(_BUSINESS_WRITE_GUARD_TABLES)
+        )
+        self.assertTrue(
+            {
+                "t_scheme_actuals",
+                "t_scheme_weekly_actuals",
+                "t_scheme_monthly_actuals",
+                "t_scheduler_heartbeat",
+                "t_pre_market_forecast",
+                "t_shap",
+            }.isdisjoint(_BUSINESS_WRITE_GUARD_TABLES)
+        )
+
     def test_real_certification_runs_1y_twice_and_writes_private_report(
         self,
     ) -> None:
@@ -230,7 +260,7 @@ class Daily0629CertificationTests(unittest.TestCase):
             self.assertTrue(report["business_tables_unchanged"])
             self.assertEqual(
                 report["business_table_guard_scope"],
-                "all_platform_write_tables_full_content",
+                "runner_persistence_tables_full_content",
             )
             self.assertFalse(
                 report["scheduled_compatibility_fence_exercised"]

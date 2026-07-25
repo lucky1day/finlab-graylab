@@ -424,7 +424,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "certify_generation_native_daily.py",
             "certify_daily_0629_source.py",
             "BFL_DAILY_0629_CERTIFY_REAL=1",
-            "all_platform_write_tables_full_content",
+            "runner_persistence_tables_full_content",
             "PYTHONPYCACHEPREFIX",
             "live_source_no_persist_observed_watermark",
             "提交后必须在 clean candidate",

@@ -107,9 +107,6 @@ _BUSINESS_WRITE_GUARD_TABLES = (
     "t_scheme_predictions",
     "t_scheme_run_log",
     "t_scheme_serving_pointer",
-    "t_scheme_actuals",
-    "t_scheme_weekly_actuals",
-    "t_scheme_monthly_actuals",
     "t_backtest_runs",
     "t_backtest_predictions",
     "t_backtest_monthly_metrics",
@@ -121,9 +118,6 @@ _BUSINESS_WRITE_GUARD_TABLES = (
     "t_schedule_occurrences",
     "t_schedule_items",
     "t_schedule_item_targets",
-    "t_scheduler_heartbeat",
-    "t_pre_market_forecast",
-    "t_shap",
 )
 
 
@@ -443,7 +437,7 @@ def certify_daily_0629_source_execution(
                 len(_BUSINESS_WRITE_GUARD_TABLES),
             "business_tables_unchanged": True,
             "business_table_guard_scope":
-                "all_platform_write_tables_full_content",
+                "runner_persistence_tables_full_content",
             "source_database_identity_sha256":
                 database_config.cache_identity,
             "source_database_table_count": len(preflight.tables),

@@ -382,8 +382,11 @@ conda run --no-capture-output -n forecast_env \
 `daily_1y_xgb_1y13_0629`；入口固定使用 source-readonly 配置，关闭 source
 cache、锁定 `forecast_env` 和内部 worker 1，并在同一源水位连续运行两次。
 runner 会核对完整 PredictionRecord/extra、source package SHA、输入水位和
-全部平台可写业务表的结构与内容指纹
-（`all_platform_write_tables_full_content`）；每轮前后还会重算全部 Git
+runner 可达的 19 张持久化表的结构与内容指纹
+（`runner_persistence_tables_full_content`）。由独立 actuals updater、
+scheduler heartbeat 或 BondProjectPro 维护的表不纳入此窗口级相等断言，
+避免把正常并发维护误判为 runner 写入；runner 本身仍只获得经过 DDL/DML
+拒绝预检的 source-readonly 配置。每轮前后还会重算全部 Git
 tracked 文件及所有可执行源码根（不受 Git ignore 影响）的 bytes/mode 摘要、固定 `/usr/bin/git`
 摘要、conda explicit 清单、source Python package 清单，以及
 `bond_factor_lab_service`/`forecast_env` 两个实际环境树内全部文件 bytes。
