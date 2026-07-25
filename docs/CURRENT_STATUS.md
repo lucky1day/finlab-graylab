@@ -22,7 +22,7 @@
 | Native V1 | 现有方案保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、统一 DataBridge 输入、七个 Gate、预测和 no-persist 回测已形成稳定路径 |
 | Blackbox V2 生产路径 | 已完成一个真实周频方案的专项生产灰度激活 |
-| 日频 08:00 保障 | `REMEDIATION_OBSERVATION`；ledger 协调器代码已进入候选分支，但 rollout 关闭，不能宣称 SLA 稳定 |
+| 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED`；21/25 ledger 功能 MVP 已在隔离 MySQL 通过，但 rollout 关闭，容量和生产门禁未通过，不能宣称 SLA 稳定 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 | 新方案默认终点 | 先进入受控技术验收；生产运行必须逐方案专项授权 |
 
@@ -47,48 +47,31 @@
 
 ### 日频 08:00 整改状态
 
-- 2026-07-24 的旧 APScheduler 路径只生成 16/21 个 scheduled run：13 success、
-  3 failed、5 个未运行；该事实否定了“当前日频已稳定”的结论。
-- 候选已实现单一 06:30 coordinator、两类不可变 generation、三层账本、
-  attempt fence、原子提交、隔离 Native/V2 pool、动态 21/25 健康投影和容量门禁。
-- 07:45/08:00 边界不再依赖一次性 Cron；同日恢复入口会幂等补写 PENDING
-  guardrail/SLA。ABANDONED 只有清理确认、首轮覆盖、attempt 和剩余预算均通过
-  才能二次启动。
-- 两类 generation 均在 staging 完成 manifest、重开校验、`chmod/fsync`，再以
-  一次目录 rename 发布；DB `sealed_at` 是权威时点。ledger 拒绝 standalone
-  DataBridge publisher，刷新锁覆盖下载、发布与清理。
-- 健康投影区分 committed、DB 可见回执和外部 no-store API 观察；24/25、ETA
-  超线、零进展、generation 异常或 mode 漂移均不得为 `ok`。节假日 watchdog
-  返回 `IDLE`，严格执行 envelope 仍保持 fail-closed。
-- Native 在 06:30 后检查 T-1 日历、五个曲线锚点和三频最小历史；未就绪不创建 attempt。
-  就绪后 14 个 Native 冻结 RR 输入；三个 0629 兼容桥绑定同日 generation fence 和水位。
-- 06:55 是版本化 DataBridge readiness guardrail：未 SEALED/绑定即 `LATE`/告警，但仍只刷新当天新 generation 到 08:30。
-- generation/DataBridge current roots 要求服务 UID + `0700`；旧 caller-supplied retention 已禁用，只回收 DB 证明无引用的 `INVALIDATED` payload。
-- 2026-07-24 输入域在 06:30 后仍有写入，最晚 `create_time=07:10:12`；因此
-  06:30 只作 hard not-before，readiness 后只冻结一次，后续修正不重启 occurrence。
-- ledger 候选已退休旧 V2 精确分钟触发与 scheduler restart；仓库 launchd 仍
-  全部显式为 `legacy`，保留切换前唯一 refresh owner。2026-07-24 13:04 本机
-  `bond_db` 已建立 001..017 history 并应用 017 schema；五张 ledger 表为空，
-  既有 1187 条 run 的新关联字段均为 NULL。服务未重启，新协调器没有写权。
-- 仅三个固定 0629 ID 可用 `live_source_0629`；协调器校验 mode、冻结 source hash、source 输出水位和 generation fence。
-  其它 Native 不可使用且 generation 失败不回退；三方案 CompareGate 337/337 行零差异，该桥尚未取得生产资格。
-- forced-cold、revision/suffix、故障注入、20+20 次样本和连续 10 个交易日 25/25 均未完成。
-- cache 候选具备单 prewarmer、不可变 generation、原子 pointer、硬配额和受证明
-  的 daily suffix；周/月或依赖不明自动 full rebuild。生产 caller 尚无绑定
-  input/spec/cache hash 的完整 cached-vs-cold 内部字段证据，故继续拒绝。
-- 容量准入使用独立 collector/operator macOS CMS、root-owned trust、时效/序列
-  和当前 candidate 精确重算；三套环境同时绑定 conda explicit 与含 pip 的全包
-  清单，非 `forecast_env` Native 执行被拒绝，occurrence 冻结后还会二次复核。
-  当前 evidence schema 仍固定 21/25 与四个 V2，扩容前须发布参数化 v3 并重新
-  认证；缺 017 的预迁移探针会拒绝，默认 admission 继续 `BLOCKED`。
-- pending-only runner 已在隔离 MySQL 8.0.45 通过 clean/legacy v16/零执行重跑；
-  CLI 写路径必须显式 `--apply`。`017=APPLYING` 现有只读三态 inspect 和
-  digest-fenced recovery，已隔离覆盖 DDL 前、四列 nullable 过渡和完整未 mark，
-  失败保持 `APPLYING`。生产精确 clone 的 partial-DDL 演练仍未完成，也未授权在
-  当前 `bond_db` 执行恢复。
-- DataBridge refresh/pack 与 Native 的同机 forced-cold 尚未准入；晚写诊断不是
-  CDC，但 MVP 已在 readiness 后冻结一次 generation，不再依赖上游永久 seal。
-- generation 长期归档、去重、保留周期和磁盘满验收未完成；当前安全清理只防误删，不能解除上线门禁。
+- 2026-07-24 旧 APScheduler 路径仅生成 16/21 个 run（13 success、3 failed、
+  5 未运行），因此当前生产不能认定为稳定。
+- 步骤 6 已完成：隔离 MySQL 精确展开 21 item/25 target，其中 Native
+  17 item/21 target、输入模式 14/3；双 lane、失败隔离、重入幂等和 claim 单
+  winner 均通过。
+- 步骤 7 已完成：四个 V2 同代并按 `+0/+2/+4/+6` 独立释放，最大并发 2；
+  四个真实 delivery 的冻结输入、确定性、120 秒超时、父 generation fence、
+  late 后继续执行和失败隔离均通过。
+- 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
+  走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
+  增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
+  08:01 补齐不回写；正常 25/25 为 `MET`，缺 visibility receipt 仍算 missing。
+- 候选已实现 06:30 readiness 后单次冻结、Native/V2 双池、三层账本、
+  attempt fence、原子提交和动态 21/25 健康投影；07:45/08:00 可幂等补写，
+  后续源数据修正不重启当前 occurrence。
+- 生产仍为 `legacy`，`bond_db` 保持 migration 017 且 ledger 表为空；三个
+  0629 仅处于受控兼容桥，其他 Native 禁止 fallback，该桥尚无生产资格。
+- 本轮只证明分层功能 MVP：真实 21 算法同轮、07:55 容量、生产 clone 迁移、
+  generation 长期归档/磁盘上限、20+20 样本、故障注入和连续 10 日均未通过；
+  admission 继续 `BLOCKED`。
+- cache 候选虽具备单 prewarmer、不可变 generation、原子 pointer 和硬配额，
+  但完整 cached-vs-cold 内部字段证据不足；DataBridge 与 Native 同机
+  forced-cold 也未准入。
+- migration runner 已在隔离 MySQL 覆盖 017 clean/legacy/APPLYING 恢复；
+  生产同构 clone 的 018 partial-DDL 演练仍未完成，未授权当前生产执行。
 
 权威设计与门禁见[日频信号 08:00 SLA 架构](architecture/DAILY_SIGNAL_SLA.md)。
 
@@ -104,12 +87,17 @@
 
 ## 当前观察项
 
-1. 下一步在隔离环境验证 17 个 Native 由协调器唯一触发；之后逐项完成 0629
-   generation 替换、迁移及容量/故障演练，门禁前不得打开 ledger。
-2. 使用历史交易日 `--no-persist` 驻留回放验证 21 item/25 target、四个 V2
-   同代 generation 和 `+0/+2/+4/+6` 独立释放。
-3. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
-4. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
+1. 下一步先在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、
+   断连和 `APPLYING` 恢复；当前生产仍停留在 migration 017。
+2. 随后三个 0629 方案逐个改为公共 generation adapter，每个方案独立执行
+   CompareGate 和 commit；若触及 L2 算法语义则停止并改走 Blackbox V2 replacement。
+3. 完成功能候选上的一次真实 21 算法全量联跑后，才进入单 Mac cache/I/O
+   容量优化、20 次 forced-cold、20 次 revision/suffix、故障注入和 07:55 门禁。
+4. generation 长期归档/去重/磁盘上限、019 composite FK 与连续 10 个交易日
+   25/25 仍是生产切换前置条件；在此之前 rollout 保持 `legacy`、admission
+   保持 `BLOCKED`。
+5. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
+6. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
 
 ## 权威入口
 
