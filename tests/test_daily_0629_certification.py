@@ -832,6 +832,12 @@ class Daily0629CertificationTests(unittest.TestCase):
                 check=True,
             )
             (project_root / "harness").mkdir()
+            local_control = project_root / ".claude"
+            local_control.mkdir()
+            (local_control / "settings.local.json").write_text(
+                '{"local": true}\n',
+                encoding="utf-8",
+            )
             with patch(
                 "harness.daily_0629_certification._PROJECT_ROOT",
                 project_root,
@@ -886,6 +892,7 @@ class Daily0629CertificationTests(unittest.TestCase):
             baseline.tree_sha256,
             bytes_changed.tree_sha256,
         )
+        self.assertTrue(baseline.worktree_clean)
         self.assertNotEqual(
             bytes_changed.tree_sha256,
             mode_changed.tree_sha256,

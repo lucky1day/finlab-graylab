@@ -1099,7 +1099,7 @@ def _canonical_date(value: object, code: str) -> str:
 
 
 def _freeze_candidate_identity() -> Daily0629CandidateIdentity:
-    """绑定当前全部 tracked 与非忽略 untracked 文件的实际 bytes。"""
+    """绑定当前候选运行闭包内全部文件的实际 bytes 与 mode。"""
     try:
         git_stat = _GIT_PATH.lstat()
     except OSError as exc:
@@ -1127,7 +1127,7 @@ def _freeze_candidate_identity() -> Daily0629CandidateIdentity:
         raise Daily0629CertificationError(
             "DAILY_0629_CERT_CANDIDATE_HEAD_INVALID"
         )
-    relative_paths, has_untracked_executable = (
+    relative_paths, has_untracked_candidate = (
         _candidate_relative_paths()
     )
     digest = hashlib.sha256()
@@ -1165,13 +1165,13 @@ def _freeze_candidate_identity() -> Daily0629CandidateIdentity:
                 "DAILY_0629_CERT_CANDIDATE_FILE_UNREADABLE"
             ) from exc
         digest.update(b"\0")
-    dirty = has_untracked_executable or bool(
+    dirty = has_untracked_candidate or bool(
         _git_output(
             (
                 "status",
                 "--porcelain=v1",
                 "-z",
-                "--untracked-files=all",
+                "--untracked-files=no",
             )
         )
     )
@@ -1234,7 +1234,7 @@ def _git_output(arguments: Sequence[str]) -> bytes:
 
 
 def _candidate_relative_paths() -> tuple[list[bytes], bool]:
-    """绑定 tracked 文件及所有可执行源码根，拒绝 Git ignore 绕过。"""
+    """绑定候选运行闭包，并标记其中未跟踪的候选文件。"""
     tracked = _git_output(("ls-files", "-z", "--cached"))
     tracked_paths = {
         item
@@ -1242,16 +1242,18 @@ def _candidate_relative_paths() -> tuple[list[bytes], bool]:
         if item
     }
     relative_paths = set(tracked_paths)
-    executable_paths: set[bytes] = set()
+    git_control_relative_paths: set[bytes] = set()
     git_control_paths = (
         _PROJECT_ROOT / ".git" / "config",
         _PROJECT_ROOT / ".git" / "info" / "exclude",
     )
     for path in git_control_paths:
         if path.is_file() and not path.is_symlink():
-            relative_paths.add(
-                os.fsencode(path.relative_to(_PROJECT_ROOT))
+            encoded = os.fsencode(
+                path.relative_to(_PROJECT_ROOT)
             )
+            git_control_relative_paths.add(encoded)
+            relative_paths.add(encoded)
     for path in _PROJECT_ROOT.iterdir():
         if (
             path.is_file()
@@ -1291,7 +1293,6 @@ def _candidate_relative_paths() -> tuple[list[bytes], bool]:
                 encoded = os.fsencode(
                     path.relative_to(_PROJECT_ROOT)
                 )
-                executable_paths.add(encoded)
                 relative_paths.add(encoded)
     for current, directory_names, file_names in os.walk(
         _PROJECT_ROOT,
@@ -1332,11 +1333,14 @@ def _candidate_relative_paths() -> tuple[list[bytes], bool]:
                     "DAILY_0629_CERT_CANDIDATE_FILE_UNSAFE"
                 )
             encoded = os.fsencode(path.relative_to(_PROJECT_ROOT))
-            executable_paths.add(encoded)
             relative_paths.add(encoded)
     return (
         sorted(relative_paths),
-        bool(executable_paths - tracked_paths),
+        bool(
+            relative_paths
+            - tracked_paths
+            - git_control_relative_paths
+        ),
     )
 
 
