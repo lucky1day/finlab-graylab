@@ -1,0 +1,810 @@
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+import uuid
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from sqlalchemy import text
+
+from tests.test_daily_native_coordinator_mysql import (
+    MIGRATIONS,
+    _seed_test_registry,
+    _temporary_mysql,
+    _real_policy_and_configs,
+    apply_migration_files,
+)
+TEST_EPOCH = {
+    "epoch": 999_999,
+    "mode": "ledger",
+    "record_sha256": "9" * 64,
+}
+DATABASE_NAME = "bfl_real_replay_0123456789"
+SERVER_UUID = "01234567-89ab-cdef-0123-456789abcdef"
+PORT = 43306
+PRIVATE_ROOT = Path("/private/tmp/bfl-real-replay")
+SOCKET_PATH = PRIVATE_ROOT / "mysql.sock"
+DATADIR = PRIVATE_ROOT / "data"
+SECURE_FILE_DIR = PRIVATE_ROOT / "secure"
+
+
+def _generation_fixture():
+    from tests.test_databridge_generation_executor import (
+        DataBridgeGenerationExecutorTests,
+    )
+
+    return DataBridgeGenerationExecutorTests()
+
+
+class _DBAPICursor:
+    def __init__(self, row: dict[str, object]) -> None:
+        self._row = row
+        self.description = tuple(
+            (name, None, None, None, None, None, None)
+            for name in row
+        )
+
+    def execute(self, _statement) -> None:
+        return None
+
+    def fetchone(self) -> tuple[object, ...]:
+        return tuple(self._row.values())
+
+    def close(self) -> None:
+        return None
+
+
+class _DBAPIConnection:
+    def __init__(self, row: dict[str, object]) -> None:
+        self._row = row
+
+    def cursor(self) -> _DBAPICursor:
+        return _DBAPICursor(self._row)
+
+
+class _Connection:
+    def __init__(self, row: dict[str, object]) -> None:
+        self._row = row
+        self.info: dict[str, object] = {}
+        self.connection = SimpleNamespace(
+            driver_connection=_DBAPIConnection(row)
+        )
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+class _Engine:
+    def __init__(self, row: dict[str, object]) -> None:
+        self._row = row
+
+    def connect(self) -> _Connection:
+        return _Connection(self._row)
+
+
+def _isolated_engine(
+    *,
+    database_name: str = DATABASE_NAME,
+    server_uuid: str = SERVER_UUID,
+) -> _Engine:
+    return _Engine(
+        {
+            "version": "8.0.45",
+            "database_name": database_name,
+            "server_uuid": server_uuid,
+            "session_time_zone": "+00:00",
+            "storage_engine": "InnoDB",
+            "sql_mode": "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION",
+            "isolation_level": "REPEATABLE-READ",
+            "bind_address": "127.0.0.1",
+            "port": PORT,
+            "socket_path": str(SOCKET_PATH),
+            "datadir": f"{DATADIR}/",
+            "secure_file_priv": f"{SECURE_FILE_DIR}/",
+            "foreign_key_checks": 1,
+            "log_bin": 0,
+            "local_infile": 0,
+        }
+    )
+
+
+@contextmanager
+def _verified_isolation(engine: _Engine):
+    from harness.daily_real_replay import verify_real_replay_database
+
+    with (
+        patch("harness.daily_real_replay.event.listen") as listen,
+        patch(
+            "harness.daily_real_replay.event.contains",
+            return_value=True,
+        ),
+    ):
+        isolation = verify_real_replay_database(
+            engine,
+            expected_database_name=DATABASE_NAME,
+            expected_server_uuid=SERVER_UUID,
+            expected_port=PORT,
+            expected_private_root=PRIVATE_ROOT,
+        )
+        yield isolation, listen
+
+
+class DailyRealReplayGateTests(unittest.TestCase):
+    def test_repository_mutators_are_not_reexported(self) -> None:
+        from harness import daily_real_replay
+
+        self.assertFalse(
+            hasattr(daily_real_replay, "create_schedule_occurrence")
+        )
+        self.assertFalse(
+            hasattr(
+                daily_real_replay,
+                "register_seal_and_bind_schedule_occurrence_generation",
+            )
+        )
+
+    def test_opens_same_day_parent_bound_generations(self) -> None:
+        from harness.daily_real_replay import (
+            open_real_replay_generations,
+        )
+
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+
+        self.assertEqual(
+            inputs.native_generation.generation_id,
+            native.generation_id,
+        )
+        self.assertEqual(
+            inputs.databridge_generation.generation_id,
+            databridge.generation_id,
+        )
+        self.assertEqual(inputs.business_date, "2026-07-24")
+        self.assertEqual(inputs.feature_date, "2026-07-23")
+
+    def test_rejects_databridge_bound_to_another_native_parent(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            open_real_replay_generations,
+        )
+
+        fixture = _generation_fixture()
+        with (
+            tempfile.TemporaryDirectory() as native_root,
+            tempfile.TemporaryDirectory() as databridge_root,
+        ):
+            unrelated_native, _ = fixture._generation(
+                Path(native_root)
+            )
+            _, databridge = fixture._delivery_generation(
+                Path(databridge_root)
+            )
+            with self.assertRaisesRegex(
+                DailyRealReplayError,
+                "Native parent",
+            ):
+                open_real_replay_generations(
+                    native_manifest=unrelated_native.manifest_path,
+                    databridge_manifest=databridge.manifest_path,
+                )
+
+    def test_guarded_create_builds_non_sla_21_25_occurrence(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        opened_at = datetime(
+            2026,
+            7,
+            26,
+            1,
+            30,
+            tzinfo=timezone.utc,
+        )
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            captured: dict[str, object] = {}
+
+            def create(create_engine, **kwargs) -> int:
+                self.assertIs(create_engine, engine)
+                captured.update(kwargs)
+                return 41
+
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence",
+                    side_effect=create,
+                ),
+            ):
+                occurrence_id = create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=opened_at,
+                    epoch_payload=TEST_EPOCH,
+                )
+
+        self.assertEqual(occurrence_id, 41)
+        args = captured
+        self.assertEqual(args["predict_date"], "2026-07-24")
+        self.assertEqual(args["feature_date"], "2026-07-23")
+        self.assertEqual(len(args["item_policy_by_base"]), 21)
+        self.assertEqual(len(args["target_dates"]), 25)
+        self.assertGreater(
+            args["recovery_cutoff_at"],
+            args["sla_deadline_at"],
+        )
+        self.assertGreater(args["sla_deadline_at"], opened_at)
+
+        policy_json = args["policy_json"]
+        projection = policy_json["real_replay_projection"]
+        self.assertEqual(
+            projection["algorithm_execution"],
+            "real_17_native_plus_4_blackbox_v2",
+        )
+        self.assertEqual(
+            projection["capacity_qualification"],
+            "EXCLUDED",
+        )
+        self.assertEqual(
+            projection["sla_qualification"],
+            "EXCLUDED",
+        )
+        self.assertEqual(
+            projection["native_generation_id"],
+            native.generation_id,
+        )
+        self.assertEqual(
+            projection["databridge_generation_id"],
+            databridge.generation_id,
+        )
+        self.assertEqual(
+            policy_json["daily_coordinator_epoch"],
+            TEST_EPOCH,
+        )
+        self.assertFalse(
+            any(
+                row["cache_spec_fingerprint"] is not None
+                for row in policy_json["schemes"]
+            )
+        )
+        self.assertEqual(
+            {
+                row["input_compatibility"]
+                for row in policy_json["schemes"]
+                if row["runtime_type"] == "blackbox_v2"
+            },
+            {"databridge_v1"},
+        )
+        self.assertEqual(
+            sum(
+                row["input_compatibility"] == "generation_v1"
+                for row in policy_json["schemes"]
+            ),
+            14,
+        )
+        self.assertEqual(
+            sum(
+                row["input_compatibility"] == "live_source_0629"
+                for row in policy_json["schemes"]
+            ),
+            3,
+        )
+        v2_rows = sorted(
+            (
+                row
+                for row in args["item_policy_by_base"].values()
+                if row["release_offset_minutes"] in {0, 2, 4, 6}
+                and row["resource_class"] == "blackbox_v2"
+            ),
+            key=lambda row: row["release_offset_minutes"],
+        )
+        self.assertEqual(
+            [row["release_offset_minutes"] for row in v2_rows],
+            [0, 2, 4, 6],
+        )
+        self.assertTrue(
+            all(row["release_at"] <= opened_at for row in v2_rows)
+        )
+
+    def test_replay_occurrence_rejects_formal_schedule_namespace(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_create_schedule_occurrence"
+                ) as create,
+                self.assertRaisesRegex(
+                    DailyRealReplayError,
+                    "schedule namespace",
+                ),
+            ):
+                create_real_replay_occurrence(
+                    engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="critical-daily-signals-v1",
+                    opened_at=datetime.now(timezone.utc),
+                    epoch_payload=TEST_EPOCH,
+                )
+            create.assert_not_called()
+
+    def test_database_identity_rejects_production_schema(self) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            verify_real_replay_database,
+        )
+
+        with self.assertRaisesRegex(
+            DailyRealReplayError,
+            "database",
+        ):
+            verify_real_replay_database(
+                _isolated_engine(database_name="bond_db"),
+                expected_database_name="bond_db",
+                expected_server_uuid=SERVER_UUID,
+                expected_port=PORT,
+                expected_private_root=PRIVATE_ROOT,
+            )
+
+    def test_database_identity_requires_full_mysql_contract(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            verify_real_replay_database,
+        )
+
+        invalid_values = {
+            "version": "8.0.44",
+            "session_time_zone": "SYSTEM",
+            "storage_engine": "MyISAM",
+            "sql_mode": "NO_ENGINE_SUBSTITUTION",
+            "isolation_level": "READ-COMMITTED",
+            "foreign_key_checks": 0,
+            "bind_address": "0.0.0.0",
+            "log_bin": 1,
+            "local_infile": 1,
+        }
+        for field, value in invalid_values.items():
+            with self.subTest(field=field):
+                engine = _isolated_engine()
+                engine._row[field] = value
+                with (
+                    patch("harness.daily_real_replay.event.listen"),
+                    self.assertRaises(DailyRealReplayError),
+                ):
+                    verify_real_replay_database(
+                        engine,
+                        expected_database_name=DATABASE_NAME,
+                        expected_server_uuid=SERVER_UUID,
+                        expected_port=PORT,
+                        expected_private_root=PRIVATE_ROOT,
+                    )
+
+    def test_connection_guard_revalidates_checked_out_connection(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import DailyRealReplayError
+
+        engine = _isolated_engine()
+        with _verified_isolation(engine) as (_isolation, listen):
+            listen.assert_called_once()
+            connection_guard = listen.call_args.args[2]
+            engine._row["database_name"] = "bond_db"
+            with self.assertRaisesRegex(
+                DailyRealReplayError,
+                "database",
+            ):
+                connection_guard(engine.connect())
+
+    def test_guarded_create_rejects_another_engine(self) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        isolated_engine = _isolated_engine()
+        another_engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            _verified_isolation(isolated_engine) as (
+                isolation,
+                _listen,
+            ),
+            patch(
+                "harness.daily_real_replay."
+                "_repository_create_schedule_occurrence"
+            ) as create,
+        ):
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            with self.assertRaisesRegex(
+                DailyRealReplayError,
+                "engine identity",
+            ):
+                create_real_replay_occurrence(
+                    another_engine,
+                    isolation=isolation,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    schedule_key="isolated-real-replay-v1-unit",
+                    opened_at=datetime.now(timezone.utc),
+                    epoch_payload=TEST_EPOCH,
+                )
+        create.assert_not_called()
+
+    def test_registers_real_manifests_parent_first(self) -> None:
+        from harness.daily_real_replay import (
+            open_real_replay_generations,
+            register_real_replay_generations,
+        )
+
+        fixture = _generation_fixture()
+        engine = _isolated_engine()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            calls: list[dict[str, object]] = []
+
+            def register(_engine, **kwargs):
+                calls.append(kwargs)
+                expected = (
+                    17
+                    if kwargs["generation_type"] == "native_source"
+                    else 4
+                )
+                return kwargs["generation_id"], expected
+
+            with (
+                _verified_isolation(engine) as (isolation, _listen),
+                patch(
+                    "harness.daily_real_replay."
+                    "_repository_register_generation",
+                    side_effect=register,
+                ),
+            ):
+                result = register_real_replay_generations(
+                    engine,
+                    occurrence_id=41,
+                    inputs=inputs,
+                    isolation=isolation,
+                )
+
+        self.assertEqual(
+            result,
+            {
+                "native_source": (native.generation_id, 17),
+                "databridge_v1": (databridge.generation_id, 4),
+            },
+        )
+        self.assertEqual(
+            [call["generation_type"] for call in calls],
+            ["native_source", "databridge_v1"],
+        )
+        self.assertEqual(calls[0]["occurrence_id"], 41)
+        self.assertEqual(
+            calls[0]["manifest_sha256"],
+            native.manifest_sha256,
+        )
+        self.assertEqual(
+            calls[1]["manifest_sha256"],
+            databridge.manifest_sha256,
+        )
+        self.assertEqual(
+            calls[1]["native_generation_id"],
+            native.generation_id,
+        )
+        self.assertEqual(
+            calls[1]["native_manifest_sha256"],
+            native.manifest_sha256,
+        )
+
+    def test_database_identity_is_rechecked_before_registration(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            open_real_replay_generations,
+            register_real_replay_generations,
+        )
+
+        engine = _isolated_engine()
+        fixture = _generation_fixture()
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            _verified_isolation(engine) as (isolation, _listen),
+            patch(
+                "harness.daily_real_replay."
+                "_repository_register_generation"
+            ) as register,
+        ):
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
+            inputs = open_real_replay_generations(
+                native_manifest=native.manifest_path,
+                databridge_manifest=databridge.manifest_path,
+            )
+            engine._row["server_uuid"] = (
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            )
+            with self.assertRaisesRegex(
+                DailyRealReplayError,
+                "identity drift",
+            ):
+                register_real_replay_generations(
+                    engine,
+                    occurrence_id=41,
+                    inputs=inputs,
+                    isolation=isolation,
+                )
+        register.assert_not_called()
+
+
+@unittest.skipUnless(
+    os.environ.get("BFL_DAILY_REAL_REPLAY_MYSQL") == "1",
+    "set BFL_DAILY_REAL_REPLAY_MYSQL=1 for isolated replay MySQL guard",
+)
+class DailyRealReplayMySQLGuardTests(unittest.TestCase):
+    def test_real_engine_checks_identity_on_each_connection(self) -> None:
+        from harness.daily_real_replay import (
+            REAL_REPLAY_SCHEMA_VERSION,
+            verify_real_replay_database,
+        )
+
+        with _temporary_mysql() as server:
+            suffix = uuid.uuid4().hex[:10]
+            schema = f"bfl_real_replay_{suffix}"
+            username = f"bfl_rr_{suffix}"
+            password = uuid.uuid4().hex + uuid.uuid4().hex
+            admin = server._socket_admin_engine()
+            try:
+                with admin.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"CREATE DATABASE `{schema}` "
+                        "CHARACTER SET utf8mb4 "
+                        "COLLATE utf8mb4_0900_ai_ci"
+                    )
+                    connection.exec_driver_sql(
+                        f"CREATE USER '{username}'@'127.0.0.1' "
+                        f"IDENTIFIED BY '{password}'"
+                    )
+                    connection.exec_driver_sql(
+                        f"GRANT ALL PRIVILEGES ON `{schema}`.* "
+                        f"TO '{username}'@'127.0.0.1'"
+                    )
+            finally:
+                admin.dispose()
+            server._schema_credentials[schema] = (username, password)
+            engine = server.engine(schema)
+            try:
+                isolation = verify_real_replay_database(
+                    engine,
+                    expected_database_name=schema,
+                    expected_server_uuid=(
+                        server.expected_server_uuid or ""
+                    ),
+                    expected_port=server.port,
+                    expected_private_root=server.root,
+                )
+                with engine.begin() as connection:
+                    self.assertEqual(
+                        connection.info[REAL_REPLAY_SCHEMA_VERSION],
+                        isolation.server_uuid,
+                    )
+                    connection.execute(
+                        text(
+                            "CREATE TABLE replay_guard_probe "
+                            "(probe_id INT PRIMARY KEY)"
+                        )
+                    )
+                    connection.execute(
+                        text(
+                            "INSERT INTO replay_guard_probe "
+                            "(probe_id) VALUES (1)"
+                        )
+                    )
+                with engine.connect() as connection:
+                    self.assertEqual(
+                        connection.info[REAL_REPLAY_SCHEMA_VERSION],
+                        isolation.server_uuid,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            text(
+                                "SELECT COUNT(*) "
+                                "FROM replay_guard_probe"
+                            )
+                        ).scalar_one(),
+                        1,
+                    )
+            finally:
+                engine.dispose()
+
+    def test_guarded_repository_creates_and_binds_21_25_occurrence(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            create_real_replay_occurrence,
+            open_real_replay_generations,
+            register_real_replay_generations,
+            verify_real_replay_database,
+        )
+        from scheduler.repository import (
+            read_schedule_occurrence_snapshot,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        fixture = _generation_fixture()
+        with (
+            _temporary_mysql() as server,
+            tempfile.TemporaryDirectory() as generation_root,
+        ):
+            suffix = uuid.uuid4().hex[:10]
+            schema = f"bfl_real_replay_{suffix}"
+            username = f"bfl_rr_{suffix}"
+            password = uuid.uuid4().hex + uuid.uuid4().hex
+            admin = server._socket_admin_engine()
+            try:
+                with admin.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"CREATE DATABASE `{schema}` "
+                        "CHARACTER SET utf8mb4 "
+                        "COLLATE utf8mb4_0900_ai_ci"
+                    )
+                    connection.exec_driver_sql(
+                        f"CREATE USER '{username}'@'127.0.0.1' "
+                        f"IDENTIFIED BY '{password}'"
+                    )
+                    connection.exec_driver_sql(
+                        f"GRANT ALL PRIVILEGES ON `{schema}`.* "
+                        f"TO '{username}'@'127.0.0.1'"
+                    )
+            finally:
+                admin.dispose()
+            server._schema_credentials[schema] = (username, password)
+            engine = server.engine(schema)
+            try:
+                isolation = verify_real_replay_database(
+                    engine,
+                    expected_database_name=schema,
+                    expected_server_uuid=(
+                        server.expected_server_uuid or ""
+                    ),
+                    expected_port=server.port,
+                    expected_private_root=server.root,
+                )
+                apply_migration_files(engine, MIGRATIONS)
+                _seed_test_registry(engine, policy, configs)
+                native, databridge = fixture._delivery_generation(
+                    Path(generation_root)
+                )
+                inputs = open_real_replay_generations(
+                    native_manifest=native.manifest_path,
+                    databridge_manifest=databridge.manifest_path,
+                )
+
+                def assert_epoch(frozen, *, label: str) -> None:
+                    if dict(frozen or {}) != TEST_EPOCH:
+                        raise RuntimeError(
+                            f"{label} differs from replay epoch"
+                        )
+
+                with patch(
+                    "scheduler.repository."
+                    "assert_daily_coordinator_epoch_payload_matches_current",
+                    side_effect=assert_epoch,
+                ):
+                    occurrence_id = create_real_replay_occurrence(
+                        engine,
+                        isolation=isolation,
+                        policy=policy,
+                        configs=configs,
+                        inputs=inputs,
+                        schedule_key=(
+                            f"isolated-real-replay-v1-{suffix}"
+                        ),
+                        opened_at=datetime.now(timezone.utc),
+                        epoch_payload=TEST_EPOCH,
+                    )
+                    bindings = register_real_replay_generations(
+                        engine,
+                        occurrence_id=occurrence_id,
+                        inputs=inputs,
+                        isolation=isolation,
+                    )
+                snapshot = read_schedule_occurrence_snapshot(
+                    engine,
+                    occurrence_id=occurrence_id,
+                )
+            finally:
+                engine.dispose()
+
+        self.assertEqual(snapshot.occurrence.expected_item_count, 21)
+        self.assertEqual(snapshot.occurrence.expected_target_count, 25)
+        self.assertEqual(snapshot.actual_item_count, 21)
+        self.assertEqual(snapshot.actual_target_count, 25)
+        self.assertEqual(len(snapshot.items), 21)
+        self.assertEqual(
+            bindings,
+            {
+                "native_source": (native.generation_id, 17),
+                "databridge_v1": (
+                    databridge.generation_id,
+                    4,
+                ),
+            },
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
