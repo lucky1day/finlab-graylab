@@ -176,6 +176,56 @@ class RealReplayRuntime:
 
     def run(self) -> RealReplayRuntimeResult:
         """在隔离 owner 锁内用受控双池完成独立首轮 item。"""
+        return self._run()
+
+    def _run_with_operator_session(
+        self,
+        session: object,
+    ) -> RealReplayRuntimeResult:
+        """仅借用真实 operator session 已持有的 runtime lock。"""
+        locked_session = self._require_operator_session(session)
+        with locked_session:
+            return self._run(
+                operator_session=locked_session,
+            )
+
+    def _require_operator_session(self, session: object) -> object:
+        """在每个借用入口校验不可伪造的真实 operator capability。"""
+        try:
+            from harness.daily_real_replay_operator import (
+                _ReplayOperatorSession,
+            )
+
+            if type(session) is not _ReplayOperatorSession:
+                raise DailyRealReplayError(
+                    "real replay operator session is invalid"
+                )
+            session.assert_held()
+            if (
+                session.runtime_lock.path
+                != self._owner_lock_path()
+            ):
+                raise DailyRealReplayError(
+                    "real replay operator runtime lock path drifted"
+                )
+            return session
+        except DailyRealReplayError:
+            raise
+        except Exception:
+            raise DailyRealReplayError(
+                "real replay operator session is unavailable"
+            ) from None
+
+    def _run(
+        self,
+        *,
+        operator_session: object | None = None,
+    ) -> RealReplayRuntimeResult:
+        """使用自有锁或已验证 operator 会话运行同一执行循环。"""
+        if operator_session is not None:
+            operator_session = self._require_operator_session(
+                operator_session
+            )
         if (
             self._policy.native_max_concurrency != 2
             or self._policy.v2_max_concurrency != 2
@@ -186,21 +236,33 @@ class RealReplayRuntime:
             )
         _recheck_real_replay_database(self._engine, self._isolation)
         snapshot = self._read_validated_snapshot()
-        lock = OccurrenceFileLock(self._owner_lock_path())
-        try:
-            lock.acquire()
-        except OccurrenceLockUnavailable:
-            return self._result(
-                snapshot,
-                status="recovery_blocked",
-                blocked_scheme_ids=tuple(
-                    sorted(
-                        summary.item.base_scheme_id
-                        for summary in snapshot.items
-                        if summary.item.state != "SUCCESS"
-                    )
-                ),
-            )
+        owns_lock = operator_session is None
+        if owns_lock:
+            lock = OccurrenceFileLock(self._owner_lock_path())
+            try:
+                lock.acquire()
+            except OccurrenceLockUnavailable:
+                return self._result(
+                    snapshot,
+                    status="recovery_blocked",
+                    blocked_scheme_ids=tuple(
+                        sorted(
+                            summary.item.base_scheme_id
+                            for summary in snapshot.items
+                            if summary.item.state != "SUCCESS"
+                        )
+                    ),
+                )
+        else:
+            operator_session.assert_held()
+            lock = operator_session.runtime_lock
+            if (
+                not lock.acquired
+                or lock.path != self._owner_lock_path()
+            ):
+                raise DailyRealReplayError(
+                    "real replay borrowed runtime lock is invalid"
+                )
         self._owner_active = True
         dispatched: list[str] = []
         active: dict[Future[Any], str] = {}
@@ -219,6 +281,8 @@ class RealReplayRuntime:
                 thread_name_prefix="real-replay-v2",
             )
             while True:
+                if operator_session is not None:
+                    operator_session.assert_held()
                 _recheck_real_replay_database(
                     self._engine,
                     self._isolation,
@@ -416,7 +480,10 @@ class RealReplayRuntime:
                     raise shutdown_error
             finally:
                 self._owner_active = False
-                lock.release()
+                if owns_lock:
+                    lock.release()
+                else:
+                    operator_session.assert_held()
 
     def _harvest_completed_futures(
         self,

@@ -2026,6 +2026,341 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
         self.assertEqual(result.status, "complete")
         canonical.assert_not_called()
 
+    def test_operator_session_reuses_runtime_lock_without_releasing_it(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            RealReplayRuntime,
+        )
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+        from scheduler.daily_coordinator import (
+            OccurrenceFileLock,
+            OccurrenceLockUnavailable,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+                states={
+                    scheme_id: "SUCCESS"
+                    for scheme_id in policy.schemes
+                },
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                ) as canonical,
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with _preflight_session() as session:
+                    result = runtime._run_with_operator_session(
+                        session
+                    )
+                    session.assert_held()
+                    self.assertTrue(
+                        session.operator_lock.acquired
+                    )
+                    self.assertTrue(
+                        session.runtime_lock.acquired
+                    )
+                    with self.assertRaises(
+                        OccurrenceLockUnavailable
+                    ):
+                        OccurrenceFileLock(
+                            root / "real-replay-runtime.lock"
+                        ).acquire()
+                    with (
+                        patch.object(
+                            runtime,
+                            "_read_validated_snapshot",
+                            side_effect=DailyRealReplayError(
+                                "forced-runtime-failure"
+                            ),
+                        ),
+                        self.assertRaisesRegex(
+                            DailyRealReplayError,
+                            "forced-runtime-failure",
+                        ),
+                    ):
+                        runtime._run_with_operator_session(
+                            session
+                        )
+                    session.assert_held()
+                    self.assertTrue(
+                        session.operator_lock.acquired
+                    )
+                    self.assertTrue(
+                        session.runtime_lock.acquired
+                    )
+
+                self.assertFalse(session.operator_lock.acquired)
+                self.assertFalse(session.runtime_lock.acquired)
+
+        self.assertEqual(result.status, "complete")
+        canonical.assert_not_called()
+
+    def test_core_runtime_rejects_forged_operator_session_before_io(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            RealReplayRuntime,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with _replay_inputs() as inputs:
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+                states={
+                    scheme_id: "SUCCESS"
+                    for scheme_id in policy.schemes
+                },
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                forged = SimpleNamespace(
+                    assert_held=Mock(),
+                    runtime_lock=SimpleNamespace(
+                        acquired=True,
+                        path=runtime._owner_lock_path(),
+                    ),
+                )
+                with (
+                    patch(
+                        "harness.daily_real_replay."
+                        "_recheck_real_replay_database"
+                    ) as database_recheck,
+                    patch.object(
+                        runtime,
+                        "_read_validated_snapshot",
+                    ) as snapshot_read,
+                    self.assertRaisesRegex(
+                        DailyRealReplayError,
+                        "operator session is invalid",
+                    ),
+                ):
+                    runtime._run(operator_session=forged)
+
+        database_recheck.assert_not_called()
+        snapshot_read.assert_not_called()
+
+    def test_core_runtime_rejects_drifted_or_released_real_session(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            RealReplayRuntime,
+        )
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+                states={
+                    scheme_id: "SUCCESS"
+                    for scheme_id in policy.schemes
+                },
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+
+                def assert_rejected(session: object) -> None:
+                    with (
+                        patch(
+                            "harness.daily_real_replay."
+                            "_recheck_real_replay_database"
+                        ) as database_recheck,
+                        patch.object(
+                            runtime,
+                            "_read_validated_snapshot",
+                        ) as snapshot_read,
+                        self.assertRaisesRegex(
+                            DailyRealReplayError,
+                            "operator session is unavailable",
+                        ),
+                    ):
+                        runtime._run(operator_session=session)
+                    database_recheck.assert_not_called()
+                    snapshot_read.assert_not_called()
+
+                with _preflight_session() as session:
+                    with (
+                        patch.object(
+                            session.operator_lock,
+                            "acquire",
+                            wraps=session.operator_lock.acquire,
+                        ) as operator_acquire,
+                        patch.object(
+                            session.operator_lock,
+                            "release",
+                            wraps=session.operator_lock.release,
+                        ) as operator_release,
+                        patch.object(
+                            session.runtime_lock,
+                            "acquire",
+                            wraps=session.runtime_lock.acquire,
+                        ) as runtime_acquire,
+                        patch.object(
+                            session.runtime_lock,
+                            "release",
+                            wraps=session.runtime_lock.release,
+                        ) as runtime_release,
+                    ):
+                        owner_pid = session.owner_pid
+                        object.__setattr__(
+                            session,
+                            "owner_pid",
+                            owner_pid + 1,
+                        )
+                        assert_rejected(session)
+                        object.__setattr__(
+                            session,
+                            "owner_pid",
+                            owner_pid,
+                        )
+
+                        runtime_path = session.runtime_lock.path
+                        session.runtime_lock._path = (
+                            root / "drifted-runtime.lock"
+                        )
+                        assert_rejected(session)
+                        session.runtime_lock._path = runtime_path
+
+                        displaced = root / "runtime-held-inode"
+                        runtime_path.replace(displaced)
+                        runtime_path.write_bytes(b"replacement")
+                        runtime_path.chmod(0o600)
+                        try:
+                            assert_rejected(session)
+                        finally:
+                            runtime_path.unlink()
+                            displaced.replace(runtime_path)
+
+                        operator_acquire.assert_not_called()
+                        operator_release.assert_not_called()
+                        runtime_acquire.assert_not_called()
+                        runtime_release.assert_not_called()
+                    session.assert_held()
+
+                with (
+                    patch.object(
+                        session.operator_lock,
+                        "acquire",
+                        wraps=session.operator_lock.acquire,
+                    ) as operator_acquire,
+                    patch.object(
+                        session.operator_lock,
+                        "release",
+                        wraps=session.operator_lock.release,
+                    ) as operator_release,
+                    patch.object(
+                        session.runtime_lock,
+                        "acquire",
+                        wraps=session.runtime_lock.acquire,
+                    ) as runtime_acquire,
+                    patch.object(
+                        session.runtime_lock,
+                        "release",
+                        wraps=session.runtime_lock.release,
+                    ) as runtime_release,
+                ):
+                    assert_rejected(session)
+                    operator_acquire.assert_not_called()
+                    operator_release.assert_not_called()
+                    runtime_acquire.assert_not_called()
+                    runtime_release.assert_not_called()
+
     def test_does_not_enter_production_control_plane(self) -> None:
         from harness.daily_real_replay import RealReplayRuntime
 
