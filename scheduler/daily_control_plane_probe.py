@@ -7,9 +7,10 @@ import plistlib
 import pwd
 import stat
 import subprocess
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Mapping
+from typing import Iterable, Mapping
 
 from shared.daily_coordinator_mode import (
     DAILY_COORDINATOR_MODE_ENV,
@@ -33,6 +34,40 @@ QUIESCENCE_FIELDS = frozenset(
     }
 )
 _MAX_PLIST_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class ReplayProcessBoundaryObservation:
+    """不含命令行的隔离 replay 进程边界证据。"""
+
+    process_id: int
+    process_group_id: int
+    uid: int
+    classification: str
+
+
+@dataclass(frozen=True)
+class ReplayProcessBoundaryReport:
+    """当前 occurrence 的确定性 replay 进程边界报告。"""
+
+    service_uid: int
+    occurrence_id: int
+    active_item_ids: tuple[int, ...]
+    registered_leader_process_ids: tuple[int, ...]
+    registered_process_group_ids: tuple[int, ...]
+    allowed_processes: tuple[
+        ReplayProcessBoundaryObservation,
+        ...,
+    ]
+    blocked_processes: tuple[
+        ReplayProcessBoundaryObservation,
+        ...,
+    ]
+
+    @property
+    def boundary_clear(self) -> bool:
+        """仅在没有任何阻塞进程时返回真。"""
+        return not self.blocked_processes
 
 
 def probe_launchagent_service_states(
@@ -162,6 +197,179 @@ def probe_daily_transition_quiescence(
     }
     _validate_quiescence_report(report)
     return report
+
+
+def probe_isolated_replay_process_boundary(
+    engine: object,
+    *,
+    service_uid: int,
+    occurrence_id: int,
+    active_item_ids: Iterable[int],
+) -> ReplayProcessBoundaryReport:
+    """只允许当前 operator 与隔离账本证明的 replay 进程组。"""
+    from scheduler.repository import (
+        read_current_replay_attempt_processes,
+    )
+
+    normalized_service_uid = _require_positive_int(
+        service_uid,
+        field="service_uid",
+    )
+    normalized_occurrence_id = _require_positive_int(
+        occurrence_id,
+        field="occurrence_id",
+    )
+    normalized_item_ids = tuple(
+        sorted(
+            {
+                _require_positive_int(
+                    item_id,
+                    field="active_item_id",
+                )
+                for item_id in active_item_ids
+            }
+        )
+    )
+    registered_rows = read_current_replay_attempt_processes(
+        engine,
+        occurrence_id=normalized_occurrence_id,
+        active_item_ids=normalized_item_ids,
+    )
+    registered_pids, registered_pgids = (
+        _normalize_registered_replay_processes(registered_rows)
+    )
+    process_rows = _normalize_process_rows(
+        _read_process_table(fail_on_malformed=True)
+    )
+    operator_pid = os.getpid()
+    if (
+        not _is_safe_process_identity(operator_pid)
+        or sum(
+            1
+            for row in process_rows
+            if row["pid"] == operator_pid
+        )
+        != 1
+    ):
+        raise RuntimeError(
+            "operator process identity is not uniquely observable"
+        )
+    operator_process_group_id = int(
+        next(
+            row["pgid"]
+            for row in process_rows
+            if row["pid"] == operator_pid
+        )
+    )
+    _validate_replay_operator_identity(
+        operator_pid=operator_pid,
+        operator_process_group_id=operator_process_group_id,
+        registered_process_ids=registered_pids,
+        registered_process_group_ids=registered_pgids,
+    )
+    replay_descendant_pids = _read_replay_descendant_pids(
+        process_rows,
+        root_process_ids={
+            operator_pid,
+            *registered_pids,
+        },
+    )
+    allowed: list[ReplayProcessBoundaryObservation] = []
+    blocked: list[ReplayProcessBoundaryObservation] = []
+    for row in process_rows:
+        pid = int(row["pid"])
+        pgid = int(row["pgid"])
+        uid = int(row["uid"])
+        if pid == operator_pid:
+            destination = (
+                allowed
+                if uid == normalized_service_uid
+                else blocked
+            )
+            destination.append(
+                _replay_process_observation(
+                    row,
+                    classification=(
+                        "operator"
+                        if uid == normalized_service_uid
+                        else "operator_uid_mismatch"
+                    ),
+                )
+            )
+            continue
+        matches_leader = pid in registered_pids
+        matches_group = pgid in registered_pgids
+        if matches_leader or matches_group:
+            if uid != normalized_service_uid:
+                blocked.append(
+                    _replay_process_observation(
+                        row,
+                        classification=(
+                            "registered_identity_uid_mismatch"
+                        ),
+                    )
+                )
+                continue
+            allowed.append(
+                _replay_process_observation(
+                    row,
+                    classification=(
+                        "registered_leader"
+                        if matches_leader
+                        else "registered_process_group_member"
+                    ),
+                )
+            )
+            continue
+        if pgid == operator_process_group_id:
+            if uid != normalized_service_uid:
+                blocked.append(
+                    _replay_process_observation(
+                        row,
+                        classification=(
+                            "operator_process_group_uid_mismatch"
+                        ),
+                    )
+                )
+                continue
+            if pid in replay_descendant_pids:
+                allowed.append(
+                    _replay_process_observation(
+                        row,
+                        classification=(
+                            "operator_process_group_member"
+                        ),
+                    )
+                )
+                continue
+        if pid in replay_descendant_pids:
+            blocked.append(
+                _replay_process_observation(
+                    row,
+                    classification=(
+                        "unregistered_replay_descendant"
+                    ),
+                )
+            )
+            continue
+        if _is_daily_platform_process(str(row["command"])):
+            blocked.append(
+                _replay_process_observation(
+                    row,
+                    classification=(
+                        "unregistered_daily_platform_process"
+                    ),
+                )
+            )
+    return ReplayProcessBoundaryReport(
+        service_uid=normalized_service_uid,
+        occurrence_id=normalized_occurrence_id,
+        active_item_ids=normalized_item_ids,
+        registered_leader_process_ids=registered_pids,
+        registered_process_group_ids=registered_pgids,
+        allowed_processes=tuple(allowed),
+        blocked_processes=tuple(blocked),
+    )
 
 
 def _read_database_quiescence(
@@ -303,37 +511,256 @@ def _validate_quiescence_report(
             )
 
 
-def _read_process_table() -> list[dict[str, object]]:
-    completed = subprocess.run(
-        [
-            "ps",
-            "-axo",
-            "pid=,pgid=,uid=,command=",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+def _read_process_table(
+    *,
+    fail_on_malformed: bool = False,
+) -> list[dict[str, object]]:
+    command = [
+        "/bin/ps",
+        "-axo",
+        "pid=,ppid=,pgid=,uid=,command=",
+    ]
+    try:
+        sampler = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        sampler_pid = sampler.pid
+        stdout, stderr = sampler.communicate()
+    except Exception:
+        raise RuntimeError(
+            "OS process table sampling failed"
+        ) from None
+    if (
+        not _is_safe_process_identity(sampler_pid)
+        or not isinstance(sampler.returncode, int)
+        or isinstance(sampler.returncode, bool)
+        or sampler.returncode != 0
+        or not isinstance(stdout, str)
+        or not stdout.strip()
+        or not isinstance(stderr, str)
+        or stderr
+    ):
+        raise RuntimeError("OS process table sampling failed")
     rows: list[dict[str, object]] = []
-    for line in completed.stdout.splitlines():
-        fields = line.strip().split(maxsplit=3)
-        if len(fields) != 4:
+    sampler_row_count = 0
+    for line in stdout.splitlines():
+        fields = line.strip().split(maxsplit=4)
+        if len(fields) != 5:
+            if fail_on_malformed:
+                raise RuntimeError("OS process table is malformed")
             continue
         try:
-            pid, pgid, uid = (
-                int(value) for value in fields[:3]
+            pid, ppid, pgid, uid = (
+                int(value) for value in fields[:4]
             )
         except ValueError:
+            if fail_on_malformed:
+                raise RuntimeError(
+                    "OS process table is malformed"
+                ) from None
+            continue
+        if pid == sampler_pid:
+            sampler_row_count += 1
             continue
         rows.append(
             {
                 "pid": pid,
+                "ppid": ppid,
                 "pgid": pgid,
                 "uid": uid,
-                "command": fields[3],
+                "command": fields[4],
             }
         )
+    if sampler_row_count != 1:
+        raise RuntimeError("OS process table sampling failed")
     return rows
+
+
+def _validate_replay_operator_identity(
+    *,
+    operator_pid: int,
+    operator_process_group_id: int,
+    registered_process_ids: Iterable[int],
+    registered_process_group_ids: Iterable[int],
+) -> None:
+    if (
+        not _is_safe_process_identity(operator_pid)
+        or not _is_safe_process_identity(
+            operator_process_group_id
+        )
+    ):
+        raise RuntimeError("operator process identity is invalid")
+    operator_identity = {
+        operator_pid,
+        operator_process_group_id,
+    }
+    registered_identity = {
+        *registered_process_ids,
+        *registered_process_group_ids,
+    }
+    if operator_identity & registered_identity:
+        raise RuntimeError(
+            "operator and registered replay process "
+            "identities collide"
+        )
+
+
+def _normalize_registered_replay_processes(
+    rows: Iterable[object],
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    registered_pids: set[int] = set()
+    registered_pgids: set[int] = set()
+    for row in rows:
+        try:
+            process_id = row.process_id
+            process_group_id = row.process_group_id
+        except AttributeError:
+            raise RuntimeError(
+                "registered replay process identity is invalid"
+            ) from None
+        if (
+            not _is_safe_process_identity(process_id)
+            or not _is_safe_process_identity(process_group_id)
+            or process_id != process_group_id
+            or process_id in registered_pids
+            or process_group_id in registered_pgids
+        ):
+            raise RuntimeError(
+                "registered replay process identity is invalid"
+            )
+        registered_pids.add(process_id)
+        registered_pgids.add(process_group_id)
+    return (
+        tuple(sorted(registered_pids)),
+        tuple(sorted(registered_pgids)),
+    )
+
+
+def _normalize_process_rows(
+    rows: Iterable[Mapping[str, object]],
+) -> tuple[Mapping[str, object], ...]:
+    normalized: list[Mapping[str, object]] = []
+    process_ids: set[int] = set()
+    for row in rows:
+        try:
+            pid = row["pid"]
+            ppid = row["ppid"]
+            pgid = row["pgid"]
+            uid = row["uid"]
+            command = row["command"]
+        except (KeyError, TypeError):
+            raise RuntimeError(
+                "OS process table is malformed"
+            ) from None
+        if (
+            not _is_positive_int(pid)
+            or not isinstance(ppid, int)
+            or isinstance(ppid, bool)
+            or ppid < 0
+            or not _is_positive_int(pgid)
+            or not isinstance(uid, int)
+            or isinstance(uid, bool)
+            or uid < 0
+            or not isinstance(command, str)
+            or not command
+            or pid in process_ids
+        ):
+            raise RuntimeError("OS process table is malformed")
+        process_ids.add(pid)
+        normalized.append(row)
+    return tuple(
+        sorted(
+            normalized,
+            key=lambda row: (
+                int(row["pid"]),
+                int(row["pgid"]),
+                int(row["uid"]),
+            ),
+        )
+    )
+
+
+def _read_replay_descendant_pids(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    root_process_ids: set[int],
+) -> frozenset[int]:
+    parent_by_pid = {
+        int(row["pid"]): int(row["ppid"])
+        for row in rows
+    }
+    for process_id in parent_by_pid:
+        visited: set[int] = set()
+        current = process_id
+        while current != 0:
+            if current in visited:
+                raise RuntimeError(
+                    "OS process table parent relationships "
+                    "are malformed"
+                )
+            visited.add(current)
+            try:
+                current = parent_by_pid[current]
+            except KeyError:
+                raise RuntimeError(
+                    "OS process table parent relationships "
+                    "are malformed"
+                ) from None
+    children_by_parent: dict[int, list[int]] = {}
+    for process_id, parent_id in parent_by_pid.items():
+        children_by_parent.setdefault(parent_id, []).append(
+            process_id
+        )
+    descendants: set[int] = set()
+    pending = sorted(
+        process_id
+        for process_id in root_process_ids
+        if process_id in parent_by_pid
+    )
+    while pending:
+        parent_id = pending.pop()
+        for child_id in sorted(
+            children_by_parent.get(parent_id, ())
+        ):
+            if child_id in descendants:
+                continue
+            descendants.add(child_id)
+            pending.append(child_id)
+    return frozenset(descendants)
+
+
+def _replay_process_observation(
+    row: Mapping[str, object],
+    *,
+    classification: str,
+) -> ReplayProcessBoundaryObservation:
+    return ReplayProcessBoundaryObservation(
+        process_id=int(row["pid"]),
+        process_group_id=int(row["pgid"]),
+        uid=int(row["uid"]),
+        classification=classification,
+    )
+
+
+def _require_positive_int(value: object, *, field: str) -> int:
+    if not _is_positive_int(value):
+        raise ValueError(f"{field} must be a positive integer")
+    return value
+
+
+def _is_positive_int(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value > 0
+    )
+
+
+def _is_safe_process_identity(value: object) -> bool:
+    return _is_positive_int(value) and value > 1
 
 
 def _is_daily_platform_process(command: str) -> bool:
