@@ -365,7 +365,7 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 **执行时间**：2026-07-26 15:20 至 15:21，`Asia/Shanghai`。
 
-**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+**机器证据文件名**：`TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json`（未纳入本次纯文档 backport）。
 
 | 项目 | 实测结果 |
 |---|---|
@@ -389,7 +389,7 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 **执行时间**：2026-07-26 15:23 至 15:24，`Asia/Shanghai`。
 
-**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+**机器证据文件名**：`TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json`（未纳入本次纯文档 backport）。
 
 | 项目 | 实测结果 |
 |---|---|
@@ -413,7 +413,7 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 **执行时间**：2026-07-26 15:25 至 15:26，`Asia/Shanghai`。
 
-**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+**机器证据文件名**：`TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json`（未纳入本次纯文档 backport）。
 
 | 项目 | 实测结果 |
 |---|---|
@@ -437,7 +437,7 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 **执行时间**：2026-07-26 15:28 至 15:29，`Asia/Shanghai`。
 
-**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+**机器证据文件名**：`TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json`（未纳入本次纯文档 backport）。
 
 | 项目 | 实测结果 |
 |---|---|
