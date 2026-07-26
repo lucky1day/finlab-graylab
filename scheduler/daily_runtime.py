@@ -59,6 +59,7 @@ from scheduler.repository import (
     upsert_scheduler_heartbeat,
 )
 from scheduler.scheduled_executor import execute_scheduled_item
+from scheduler.process_control import ProcessStartGuard
 from shared.calendar_service import CalendarService, FrozenCalendarService
 from shared.daily_coordinator_mode import (
     assert_daily_coordinator_epoch_matches_policy,
@@ -281,6 +282,7 @@ class DefaultDailyRuntimeServices:
         self._capacity_cache_use_qualifications: dict[
             str, dict[str, object]
         ] = {}
+        self._process_start_guard = ProcessStartGuard()
         self._alert_dispatcher = AlertDispatcher(
             AlertSettings.from_env()
         )
@@ -1296,6 +1298,7 @@ class DefaultDailyRuntimeServices:
             item_id=item_id,
             algo_env=self._algo_env,
             trigger_origin=trigger_origin,
+            process_start_guard=self._process_start_guard,
         )
 
     def heartbeat(

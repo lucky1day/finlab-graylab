@@ -46,6 +46,37 @@ TEST_COORDINATOR_EPOCH = {
 
 
 class DailyRuntimeDefaultServiceTests(unittest.TestCase):
+    def test_execute_item_reuses_canonical_process_start_guard(
+        self,
+    ) -> None:
+        from scheduler import daily_runtime as module
+        from scheduler.process_control import ProcessStartGuard
+
+        services = DefaultDailyRuntimeServices(
+            engine=create_engine("sqlite://")
+        )
+        with patch.object(
+            module,
+            "execute_scheduled_item",
+            return_value=object(),
+        ) as execute:
+            services.execute_item(
+                item_id=11,
+                trigger_origin="apscheduler",
+            )
+            services.execute_item(
+                item_id=12,
+                trigger_origin="apscheduler",
+            )
+
+        guards = [
+            call.kwargs["process_start_guard"]
+            for call in execute.call_args_list
+        ]
+        self.assertEqual(len(guards), 2)
+        self.assertIs(guards[0], guards[1])
+        self.assertIsInstance(guards[0], ProcessStartGuard)
+
     def test_generation_builds_pass_policy_hard_storage_limits(self) -> None:
         from scheduler import daily_runtime as module
 

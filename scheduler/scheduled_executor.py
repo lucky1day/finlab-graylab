@@ -41,7 +41,11 @@ from scheduler.executor import (
     _effective_timeout_sec,
     run_configured_scheme,
 )
-from scheduler.process_control import ProcessGroupTerminationError
+from scheduler.process_control import (
+    ProcessGroupTerminationError,
+    ProcessStartGuard,
+    require_process_start_guard,
+)
 from scheduler.repository import (
     ScheduleExecutionEnvelope,
     complete_scheduled_attempt,
@@ -415,6 +419,7 @@ def execute_scheduled_item(
     project_root: str | Path = PROJECT_ROOT,
     databridge_schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
     trusted_verifier=None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> ScheduledItemExecutionResult:
     """执行一个已绑定 generation 的 item，且只通过原子 ledger API 提交。
 
@@ -422,6 +427,9 @@ def execute_scheduled_item(
     ``execute_scheme`` 写入路径。Registry target、代码版本、输入 generation
     与日期均来自 occurrence 创建时冻结的执行信封。
     """
+    process_start_guard = require_process_start_guard(
+        process_start_guard
+    )
     envelope = read_schedule_execution_envelope(
         engine,
         item_id=int(item_id),
@@ -511,6 +519,7 @@ def execute_scheduled_item(
                     engine,
                     envelope
                 ),
+                process_start_guard=process_start_guard,
             )
         except ScheduledEpochDriftError:
             raise

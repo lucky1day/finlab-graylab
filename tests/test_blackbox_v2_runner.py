@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from contextlib import contextmanager
@@ -141,6 +142,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
     def test_scheduled_blackbox_uses_fresh_temporary_current_snapshot(self) -> None:
         from scheduler.executor import run_blackbox_scheme_subprocess
+        from scheduler.process_control import ProcessStartGuard
         from shared.blackbox_v2.snapshot import BlackboxSnapshot, CutoffKeys
 
         events: list[str] = []
@@ -169,6 +171,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         def process_started(_pid: int, _pgid: int) -> None:
             return None
 
+        process_start_guard = ProcessStartGuard()
         with patch("scheduler.executor.load_metadata", return_value=_metadata()):
             with patch("scheduler.executor.open_blackbox_input_snapshot", side_effect=open_snapshot):
                 with patch("scheduler.executor.get_calendar", return_value="calendar"):
@@ -193,6 +196,9 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                                         timeout_sec=3600,
                                         execution_token="scheduled-token_123",
                                         process_started=process_started,
+                                        process_start_guard=(
+                                            process_start_guard
+                                        ),
                                     )
 
         self.assertEqual(result, ["record"])
@@ -204,6 +210,10 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(
             predict.call_args.kwargs["execution_token"],
             "scheduled-token_123",
+        )
+        self.assertIs(
+            predict.call_args.kwargs["process_start_guard"],
+            process_start_guard,
         )
 
     def test_gray_backfill_uses_historical_as_of_snapshot_with_provenance(self) -> None:
@@ -434,6 +444,9 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         started: list[tuple[int, int]] = []
         fence_calls: list[str] = []
+        from scheduler.process_control import ProcessStartGuard
+
+        process_start_guard = ProcessStartGuard()
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             record = run_blackbox_predict(
@@ -445,6 +458,7 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                 profile=RuntimeProfile.for_tests(),
                 process_started=lambda pid, pgid: started.append((pid, pgid)),
                 process_fence=lambda: fence_calls.append("epoch-fence"),
+                process_start_guard=process_start_guard,
             )
 
         self.assertEqual(record.predicted_direction, 1)
@@ -452,6 +466,302 @@ class BlackboxV2RunnerTests(unittest.TestCase):
         self.assertEqual(fence_calls, ["epoch-fence", "epoch-fence"])
         self.assertGreater(started[0][0], 1)
         self.assertGreater(started[0][1], 1)
+
+    def test_blackbox_backtest_rejects_process_start_guard(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from scheduler.process_control import ProcessStartGuard
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "only valid for Blackbox predict",
+        ):
+            execute_blackbox_cli(
+                script_path="/missing/trial.py",
+                mode="backtest",
+                input_path="/missing/requests.jsonl",
+                data_dir="/missing/data",
+                output_path="/missing/output.jsonl",
+                profile=RuntimeProfile.for_tests(),
+                process_start_guard=ProcessStartGuard(),
+            )
+
+    def test_blackbox_process_start_guard_has_exact_short_sequence(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import _run_process
+
+        events: list[object] = []
+        guard_lock = threading.Lock()
+
+        class RecordingGuard:
+            def __enter__(self):
+                guard_lock.acquire()
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
+                guard_lock.release()
+
+        class FakeProcess:
+            pid = 22334
+            returncode = 0
+
+            def poll(self):
+                if guard_lock.locked():
+                    raise AssertionError(
+                        "poll must run after process-start guard release"
+                    )
+                events.append("poll")
+                return self.returncode
+
+        def popen(*_args, **_kwargs):
+            events.append("popen")
+            return FakeProcess()
+
+        def getpgid(pid: int) -> int:
+            events.append(("capture-pgid", pid))
+            return 33445
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+
+        def process_fence() -> None:
+            events.append("epoch-fence")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    side_effect=popen,
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.getpgid",
+                    side_effect=getpgid,
+                ),
+            ):
+                completed = _run_process(
+                    ["blackbox"],
+                    cwd=Path(tmpdir),
+                    env={},
+                    timeout=10,
+                    memory_limit_bytes=0,
+                    max_capture_bytes=1024,
+                    max_run_dir_bytes=4096,
+                    max_run_dir_entries=10,
+                    process_started=process_started,
+                    process_fence=process_fence,
+                    process_start_guard=RecordingGuard(),
+                )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(
+            events,
+            [
+                "guard-enter",
+                "epoch-fence",
+                "popen",
+                ("capture-pgid", 22334),
+                ("started", 22334, 33445),
+                "epoch-fence",
+                "guard-exit",
+                "poll",
+            ],
+        )
+
+    def test_blackbox_guard_exit_failure_kills_registered_process_group(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import _run_process
+
+        events: list[object] = []
+
+        class GuardReleaseError(RuntimeError):
+            pass
+
+        class FailingExitGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
+                raise GuardReleaseError("guard release failed")
+
+        class FakeProcess:
+            pid = 22334
+            returncode = None
+
+            def poll(self):
+                raise AssertionError(
+                    "guard-release failure must stop algorithm runtime"
+                )
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.getpgid",
+                    return_value=33445,
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.killpg",
+                    side_effect=killpg,
+                ),
+                patch(
+                    "scheduler.process_control."
+                    "_wait_for_process_group_exit",
+                    return_value=True,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    GuardReleaseError,
+                    "guard release failed",
+                ):
+                    _run_process(
+                        ["blackbox"],
+                        cwd=Path(tmpdir),
+                        env={},
+                        timeout=10,
+                        memory_limit_bytes=0,
+                        max_capture_bytes=1024,
+                        max_run_dir_bytes=4096,
+                        max_run_dir_entries=10,
+                        process_started=process_started,
+                        process_start_guard=FailingExitGuard(),
+                    )
+
+        self.assertEqual(
+            events,
+            [
+                "guard-enter",
+                ("started", 22334, 33445),
+                "guard-exit",
+                ("killpg", 33445, signal.SIGTERM),
+            ],
+        )
+
+    def test_blackbox_unconfirmed_post_fence_cleanup_wins_over_guard_exit(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import _run_process
+        from scheduler.process_control import (
+            ProcessRegistrationCleanupError,
+        )
+
+        events: list[object] = []
+
+        class EpochDriftError(RuntimeError):
+            pass
+
+        class GuardReleaseError(RuntimeError):
+            pass
+
+        class FailingExitGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
+                raise GuardReleaseError("guard release failed")
+
+        class FakeProcess:
+            pid = 22334
+            returncode = None
+
+            def poll(self):
+                raise AssertionError(
+                    "unconfirmed cleanup must stop algorithm runtime"
+                )
+
+        fence_calls = 0
+        epoch_drift_error = EpochDriftError(
+            "post-registration epoch drift"
+        )
+
+        def process_fence() -> None:
+            nonlocal fence_calls
+            fence_calls += 1
+            events.append(("fence", fence_calls))
+            if fence_calls == 2:
+                raise epoch_drift_error
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner.subprocess.Popen",
+                    return_value=FakeProcess(),
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.getpgid",
+                    return_value=33445,
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner.os.killpg",
+                    side_effect=killpg,
+                ),
+                patch(
+                    "scheduler.process_control."
+                    "_wait_for_process_group_exit",
+                    side_effect=(False, False),
+                ),
+            ):
+                with self.assertRaises(
+                    ProcessRegistrationCleanupError
+                ) as raised:
+                    _run_process(
+                        ["blackbox"],
+                        cwd=Path(tmpdir),
+                        env={},
+                        timeout=10,
+                        memory_limit_bytes=0,
+                        max_capture_bytes=1024,
+                        max_run_dir_bytes=4096,
+                        max_run_dir_entries=10,
+                        process_fence=process_fence,
+                        process_start_guard=FailingExitGuard(),
+                    )
+
+        self.assertIs(
+            raised.exception.registration_error,
+            epoch_drift_error,
+        )
+        self.assertIsInstance(
+            raised.exception.__cause__,
+            GuardReleaseError,
+        )
+        self.assertFalse(
+            raised.exception.termination.confirmed_gone
+        )
+        self.assertEqual(
+            events,
+            [
+                "guard-enter",
+                ("fence", 1),
+                ("fence", 2),
+                ("killpg", 33445, signal.SIGTERM),
+                ("killpg", 33445, signal.SIGKILL),
+                "guard-exit",
+            ],
+        )
 
     def test_blackbox_callback_failure_kills_group_before_reraising(
         self,
@@ -462,6 +772,14 @@ class BlackboxV2RunnerTests(unittest.TestCase):
 
         class RegistrationError(RuntimeError):
             pass
+
+        class RecordingGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
 
         class FakeProcess:
             pid = 22334
@@ -526,14 +844,17 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                         max_run_dir_bytes=4096,
                         max_run_dir_entries=10,
                         process_started=process_started,
+                        process_start_guard=RecordingGuard(),
                     )
 
         self.assertEqual(
             events,
             [
+                "guard-enter",
                 ("started", 22334, 33445),
                 ("killpg", 33445, signal.SIGTERM),
                 ("killpg", 33445, signal.SIGKILL),
+                "guard-exit",
             ],
         )
 
@@ -1105,6 +1426,87 @@ class BlackboxV2RunnerTests(unittest.TestCase):
                         output_path=run_dir / "prediction.json",
                         profile=RuntimeProfile.for_tests(),
                     )
+
+    def test_cleanup_failure_does_not_mask_process_group_cleanup_error(
+        self,
+    ) -> None:
+        from scheduler.blackbox_v2_runner import (
+            RuntimeProfile,
+            execute_blackbox_cli,
+        )
+        from scheduler.process_control import (
+            ProcessGroupTerminationResult,
+            ProcessRegistrationCleanupError,
+        )
+        from shared.blackbox_v2.requests import write_request
+
+        process_error = ProcessRegistrationCleanupError(
+            registration_error=RuntimeError(
+                "process registration failed"
+            ),
+            termination=ProcessGroupTerminationResult(
+                process_id=22334,
+                process_group_id=33445,
+                term_sent=True,
+                kill_sent=True,
+                confirmed_gone=False,
+                failure_reason=(
+                    "process group still exists after SIGKILL"
+                ),
+            ),
+        )
+        cleanup_error = OSError("cleanup-denied")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            script = _write_script(
+                root / "trial.py",
+                _SUCCESS_SCRIPT,
+            )
+            request = write_request(
+                _request("001"),
+                root / "request.json",
+            )
+            run_dir = root / "run"
+            run_dir.mkdir()
+            with (
+                patch(
+                    "scheduler.blackbox_v2_runner._run_process",
+                    side_effect=process_error,
+                ),
+                patch(
+                    "scheduler.blackbox_v2_runner."
+                    "_cleanup_run_directory",
+                    side_effect=cleanup_error,
+                ),
+            ):
+                with self.assertRaises(
+                    ProcessRegistrationCleanupError
+                ) as raised:
+                    execute_blackbox_cli(
+                        script_path=script,
+                        mode="predict",
+                        input_path=request,
+                        data_dir=_write_data_dir(root),
+                        output_path=(
+                            run_dir / "prediction.json"
+                        ),
+                        profile=RuntimeProfile.for_tests(),
+                    )
+
+        self.assertIs(raised.exception, process_error)
+        self.assertIs(raised.exception.__cause__, cleanup_error)
+        self.assertTrue(
+            any(
+                "run directory cleanup failed" in note
+                and "cleanup-denied" in note
+                for note in getattr(
+                    raised.exception,
+                    "__notes__",
+                    (),
+                )
+            )
+        )
 
     def test_process_launcher_uses_bootstrap_without_preexec_or_shell(self) -> None:
         from scheduler.blackbox_v2_runner import RuntimeProfile, execute_blackbox_cli

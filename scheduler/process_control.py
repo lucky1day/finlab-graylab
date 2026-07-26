@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 
@@ -64,6 +65,77 @@ class ProcessRegistrationCleanupError(ProcessGroupTerminationError):
                 f"{registration_error}"
             ),
         )
+
+
+class ProcessStartGuardPoisonedError(ProcessGroupTerminationError):
+    """同一 occurrence 已存在清理未确认的进程，禁止再启动。"""
+
+    def __init__(
+        self,
+        *,
+        poison_error: ProcessGroupTerminationError,
+    ) -> None:
+        self.poison_error = poison_error
+        super().__init__(
+            termination=poison_error.termination,
+            context=(
+                "process-start guard is poisoned by unconfirmed "
+                f"cleanup: {poison_error}"
+            ),
+        )
+
+
+class ProcessStartGuard:
+    """串行化启动登记窗口，并永久传播清理未确认的 poison。"""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._poison_error: ProcessGroupTerminationError | None = None
+
+    def __enter__(self) -> ProcessStartGuard:
+        self._lock.acquire()
+        if self._poison_error is not None:
+            poison_error = self._poison_error
+            self._lock.release()
+            raise ProcessStartGuardPoisonedError(
+                poison_error=poison_error,
+            ) from poison_error
+        return self
+
+    def __exit__(
+        self,
+        _exc_type,
+        exc: BaseException | None,
+        _traceback,
+    ) -> bool:
+        try:
+            if (
+                isinstance(exc, ProcessGroupTerminationError)
+                and not exc.termination.confirmed_gone
+            ):
+                self._poison_error = exc
+        finally:
+            self._lock.release()
+        return False
+
+    @property
+    def poisoned(self) -> bool:
+        """返回 poison 状态；只读检查也与启动窗口串行。"""
+        with self._lock:
+            return self._poison_error is not None
+
+
+def require_process_start_guard(
+    guard: object | None,
+) -> ProcessStartGuard | None:
+    """生产入口只接受 canonical guard，禁止普通 Lock 误绕过 poison。"""
+    if guard is None:
+        return None
+    if type(guard) is not ProcessStartGuard:
+        raise TypeError(
+            "process_start_guard must be a canonical ProcessStartGuard"
+        )
+    return guard
 
 
 def capture_new_session_process_group(

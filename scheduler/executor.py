@@ -12,7 +12,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, ContextManager
 
 from scheduler.discovery import SchemeConfig, discover_schemes
 from scheduler.daily_policy import (
@@ -22,7 +22,9 @@ from scheduler.process_control import (
     ProcessGroupTerminationError,
     ProcessGroupTerminationResult,
     ProcessRegistrationCleanupError,
+    ProcessStartGuard,
     capture_new_session_process_group,
+    require_process_start_guard,
     terminate_process_group,
 )
 from scheduler.repository import (
@@ -220,8 +222,12 @@ def run_scheme_subprocess(
     ) = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
+    process_start_guard = require_process_start_guard(
+        process_start_guard
+    )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
@@ -390,6 +396,8 @@ def run_scheme_subprocess(
         process_kwargs["process_started"] = process_started
     if process_fence is not None:
         process_kwargs["process_fence"] = process_fence
+    if process_start_guard is not None:
+        process_kwargs["process_start_guard"] = process_start_guard
     source_database_context = (
         frozen_source_runtime_database_config(
             source_database_config
@@ -462,8 +470,12 @@ def run_configured_scheme(
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
+    process_start_guard = require_process_start_guard(
+        process_start_guard
+    )
     validated_execution_token = _validated_execution_token(
         execution_token
     )
@@ -508,6 +520,8 @@ def run_configured_scheme(
             native_kwargs["process_started"] = process_started
         if process_fence is not None:
             native_kwargs["process_fence"] = process_fence
+        if process_start_guard is not None:
+            native_kwargs["process_start_guard"] = process_start_guard
         return run_scheme_subprocess(
             cfg.scheme_id,
             predict_date,
@@ -560,6 +574,10 @@ def run_configured_scheme(
             blackbox_kwargs["process_started"] = process_started
         if process_fence is not None:
             blackbox_kwargs["process_fence"] = process_fence
+        if process_start_guard is not None:
+            blackbox_kwargs["process_start_guard"] = (
+                process_start_guard
+            )
         return run_blackbox_scheme_subprocess(
             cfg,
             predict_date,
@@ -583,10 +601,14 @@ def run_blackbox_scheme_subprocess(
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> list[PredictionRecord]:
     """生成平台输入并通过 Blackbox V2 CLI 执行一个实盘 Request。"""
     from scheduler.blackbox_v2_runner import DEFAULT_RUNTIME_PROFILE, run_blackbox_predict
 
+    process_start_guard = require_process_start_guard(
+        process_start_guard
+    )
     validated_execution_token = _validated_execution_token(
         execution_token
     )
@@ -725,6 +747,10 @@ def run_blackbox_scheme_subprocess(
             predict_kwargs["process_started"] = process_started
         if process_fence is not None:
             predict_kwargs["process_fence"] = process_fence
+        if process_start_guard is not None:
+            predict_kwargs["process_start_guard"] = (
+                process_start_guard
+            )
         record = run_blackbox_predict(**predict_kwargs)
         if bound_databridge is not None:
             extra = dict(record.extra or {})
@@ -817,37 +843,78 @@ def _run_process_group(
     timeout: int,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
+    process_start_guard: ContextManager[object] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """启动独立进程组，timeout 时清理 conda wrapper 及其子进程。"""
-    if process_fence is not None:
-        process_fence()
-    process = subprocess.Popen(
-        cmd,
-        cwd=cwd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
+    guard_context = (
+        process_start_guard
+        if process_start_guard is not None
+        else nullcontext()
     )
-    process_group_id = capture_new_session_process_group(process)
-    if process_fence is not None or process_started is not None:
-        try:
+    process_start_completed = False
+    unconfirmed_cleanup_error: ProcessRegistrationCleanupError | None = None
+    try:
+        with guard_context:
             if process_fence is not None:
                 process_fence()
-            if process_started is not None:
-                process_started(process.pid, process_group_id)
-        except BaseException as registration_error:
+            process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            process_group_id: int | None = None
+            try:
+                process_group_id = capture_new_session_process_group(
+                    process
+                )
+                if process_started is not None:
+                    process_started(process.pid, process_group_id)
+                if process_fence is not None:
+                    process_fence()
+            except BaseException as registration_error:
+                termination = _terminate_process_group(
+                    process,
+                    process_group_id=process_group_id,
+                )
+                if not termination.confirmed_gone:
+                    unconfirmed_cleanup_error = (
+                        ProcessRegistrationCleanupError(
+                            registration_error=registration_error,
+                            termination=termination,
+                        )
+                    )
+                    raise unconfirmed_cleanup_error from registration_error
+                raise
+            process_start_completed = True
+    except BaseException as guard_exit_error:
+        if (
+            unconfirmed_cleanup_error is not None
+            and guard_exit_error is not unconfirmed_cleanup_error
+        ):
+            raise unconfirmed_cleanup_error from guard_exit_error
+        if process_start_completed:
             termination = _terminate_process_group(
                 process,
                 process_group_id=process_group_id,
             )
             if not termination.confirmed_gone:
                 raise ProcessRegistrationCleanupError(
-                    registration_error=registration_error,
+                    registration_error=guard_exit_error,
                     termination=termination,
-                ) from registration_error
-            raise
+                ) from guard_exit_error
+        raise
+    if not process_start_completed:
+        if unconfirmed_cleanup_error is not None:
+            raise unconfirmed_cleanup_error
+        raise RuntimeError(
+            "process_start_guard suppressed a process-start failure"
+        )
+    if process_group_id is None:
+        raise AssertionError("process group was not captured")
     try:
         stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired as exc:

@@ -9,16 +9,19 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, ContextManager, Sequence
 
 from scheduler.process_control import (
     ProcessGroupTerminationError,
     ProcessGroupTerminationResult,
     ProcessRegistrationCleanupError,
+    ProcessStartGuard,
     capture_new_session_process_group,
+    require_process_start_guard,
     terminate_process_group,
 )
 from shared.blackbox_v2.contracts import (
@@ -402,11 +405,19 @@ def execute_blackbox_cli(
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """执行一次 Blackbox V2 CLI；仅进程成功且 Output 合法存在才返回。"""
+    process_start_guard = require_process_start_guard(
+        process_start_guard
+    )
     _validate_runtime_profile(profile, source="runtime profile")
     if mode not in {"predict", "backtest"}:
         raise ValueError(f"unsupported Blackbox V2 mode: {mode}")
+    if process_start_guard is not None and mode != "predict":
+        raise ValueError(
+            "process_start_guard is only valid for Blackbox predict"
+        )
     script = _resolve_controlled_path(script_path, label="script")
     input_file = _resolve_controlled_path(input_path, label="input")
     data = _resolve_controlled_path(data_dir, label="data-dir")
@@ -489,6 +500,10 @@ def execute_blackbox_cli(
             process_kwargs["process_started"] = process_started
         if process_fence is not None:
             process_kwargs["process_fence"] = process_fence
+        if process_start_guard is not None:
+            process_kwargs["process_start_guard"] = (
+                process_start_guard
+            )
         completed = _run_process(command, **process_kwargs)
         if completed.returncode != 0:
             raise BlackboxExecutionError(
@@ -510,6 +525,15 @@ def execute_blackbox_cli(
         try:
             _cleanup_run_directory(output.parent)
         except Exception as cleanup_error:
+            if isinstance(
+                execution_error,
+                ProcessGroupTerminationError,
+            ):
+                execution_error.add_note(
+                    "Blackbox V2 run directory cleanup failed: "
+                    f"{cleanup_error}"
+                )
+                raise execution_error from cleanup_error
             raise BlackboxExecutionError(
                 f"{execution_error}; cleanup failed for {output.parent}: {cleanup_error}"
             ) from execution_error
@@ -527,7 +551,11 @@ def run_blackbox_predict(
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
+    process_start_guard: ProcessStartGuard | None = None,
 ) -> PredictionRecord:
+    process_start_guard = require_process_start_guard(
+        process_start_guard
+    )
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
         request_path = write_request(request, root / "request.json")
@@ -546,6 +574,10 @@ def run_blackbox_predict(
             execute_kwargs["process_started"] = process_started
         if process_fence is not None:
             execute_kwargs["process_fence"] = process_fence
+        if process_start_guard is not None:
+            execute_kwargs["process_start_guard"] = (
+                process_start_guard
+            )
         execute_blackbox_cli(**execute_kwargs)
         result = load_prediction_result(output_path, request)
     return _to_prediction_record(metadata, result, data_snapshot_id, profile)
@@ -1179,6 +1211,7 @@ def _run_process(
     max_run_dir_entries: int,
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
+    process_start_guard: ContextManager[object] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if max_capture_bytes <= 0:
         raise ValueError("max_capture_bytes must be positive")
@@ -1188,36 +1221,82 @@ def _run_process(
         raise ValueError("max_run_dir_entries must be positive")
     with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stdout_file:
         with tempfile.TemporaryFile(mode="w+b", dir=cwd) as stderr_file:
-            if process_fence is not None:
-                process_fence()
-            process = subprocess.Popen(
-                command,
-                cwd=cwd,
-                env=env,
-                stdout=stdout_file,
-                stderr=stderr_file,
-                start_new_session=True,
+            guard_context = (
+                process_start_guard
+                if process_start_guard is not None
+                else nullcontext()
             )
-            process_group_id = capture_new_session_process_group(
-                process
-            )
-            if process_fence is not None or process_started is not None:
-                try:
+            process_start_completed = False
+            unconfirmed_cleanup_error: (
+                ProcessRegistrationCleanupError | None
+            ) = None
+            try:
+                with guard_context:
                     if process_fence is not None:
                         process_fence()
-                    if process_started is not None:
-                        process_started(process.pid, process_group_id)
-                except BaseException as registration_error:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=cwd,
+                        env=env,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        start_new_session=True,
+                    )
+                    process_group_id: int | None = None
+                    try:
+                        process_group_id = (
+                            capture_new_session_process_group(
+                                process
+                            )
+                        )
+                        if process_started is not None:
+                            process_started(
+                                process.pid,
+                                process_group_id,
+                            )
+                        if process_fence is not None:
+                            process_fence()
+                    except BaseException as registration_error:
+                        termination = _terminate_process_group(
+                            process,
+                            process_group_id=process_group_id,
+                        )
+                        if not termination.confirmed_gone:
+                            unconfirmed_cleanup_error = (
+                                ProcessRegistrationCleanupError(
+                                    registration_error=registration_error,
+                                    termination=termination,
+                                )
+                            )
+                            raise unconfirmed_cleanup_error from registration_error
+                        raise
+                    process_start_completed = True
+            except BaseException as guard_exit_error:
+                if (
+                    unconfirmed_cleanup_error is not None
+                    and guard_exit_error is not unconfirmed_cleanup_error
+                ):
+                    raise unconfirmed_cleanup_error from guard_exit_error
+                if process_start_completed:
                     termination = _terminate_process_group(
                         process,
                         process_group_id=process_group_id,
                     )
                     if not termination.confirmed_gone:
                         raise ProcessRegistrationCleanupError(
-                            registration_error=registration_error,
+                            registration_error=guard_exit_error,
                             termination=termination,
-                        ) from registration_error
-                    raise
+                        ) from guard_exit_error
+                raise
+            if not process_start_completed:
+                if unconfirmed_cleanup_error is not None:
+                    raise unconfirmed_cleanup_error
+                raise RuntimeError(
+                    "process_start_guard suppressed a process-start "
+                    "failure"
+                )
+            if process_group_id is None:
+                raise AssertionError("process group was not captured")
             deadline = time.monotonic() + timeout
             failure: str | None = None
             while process.poll() is None:

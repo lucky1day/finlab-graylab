@@ -6,6 +6,7 @@ import inspect
 import signal
 import stat
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -139,9 +140,17 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
     def test_native_process_started_callback_runs_once_before_communicate(
         self,
     ) -> None:
-        from scheduler.executor import run_scheme_subprocess
+        from scheduler.executor import _run_process_group
 
         events: list[object] = []
+
+        class RecordingGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
 
         class FakeProcess:
             pid = 12345
@@ -159,29 +168,42 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         def process_fence() -> None:
             events.append("epoch-fence")
 
+        def popen(*_args, **_kwargs):
+            events.append("popen")
+            return FakeProcess()
+
+        def getpgid(pid: int) -> int:
+            events.append(("capture-pgid", pid))
+            return 67890
+
         with (
             patch(
                 "scheduler.executor.subprocess.Popen",
-                return_value=FakeProcess(),
+                side_effect=popen,
             ),
-            patch("scheduler.executor.os.getpgid", return_value=67890),
+            patch("scheduler.executor.os.getpgid", side_effect=getpgid),
         ):
-            records = run_scheme_subprocess(
-                "demo",
-                "2026-07-03",
-                algo_env="test_env",
-                timeout_sec=7,
+            completed = _run_process_group(
+                ["demo"],
+                cwd=Path.cwd(),
+                env={},
+                timeout=7,
                 process_started=process_started,
                 process_fence=process_fence,
+                process_start_guard=RecordingGuard(),
             )
 
-        self.assertEqual(records, [])
+        self.assertEqual(completed.stdout, "[]")
         self.assertEqual(
             events,
             [
+                "guard-enter",
                 "epoch-fence",
-                "epoch-fence",
+                "popen",
+                ("capture-pgid", 12345),
                 ("started", 12345, 67890),
+                "epoch-fence",
+                "guard-exit",
                 ("communicate", 7),
             ],
         )
@@ -189,7 +211,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
     def test_native_post_popen_epoch_drift_kills_process_group(
         self,
     ) -> None:
-        from scheduler.executor import run_scheme_subprocess
+        from scheduler.executor import _run_process_group
 
         events: list[object] = []
 
@@ -216,6 +238,17 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             if fence_calls == 2:
                 raise EpochDrift("epoch changed after Popen")
 
+        class RecordingGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+
         def killpg(pgid: int, signum: int) -> None:
             events.append(("killpg", pgid, signum))
 
@@ -233,22 +266,629 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             ),
         ):
             with self.assertRaisesRegex(EpochDrift, "after Popen"):
-                run_scheme_subprocess(
-                    "demo",
-                    "2026-07-03",
-                    algo_env="test_env",
-                    timeout_sec=7,
+                _run_process_group(
+                    ["demo"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_started=process_started,
                     process_fence=process_fence,
+                    process_start_guard=RecordingGuard(),
                 )
 
         self.assertEqual(
             events,
             [
+                "guard-enter",
                 ("epoch-fence", 1),
+                ("started", 12345, 67890),
                 ("epoch-fence", 2),
+                ("killpg", 67890, signal.SIGTERM),
+                "guard-exit",
+            ],
+        )
+
+    def test_native_popen_failure_releases_process_start_guard(
+        self,
+    ) -> None:
+        from scheduler.executor import _run_process_group
+
+        events: list[str] = []
+
+        class RecordingGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
+
+        def process_fence() -> None:
+            events.append("epoch-fence")
+
+        def popen(*_args, **_kwargs):
+            events.append("popen")
+            raise OSError("fork failed")
+
+        with patch(
+            "scheduler.executor.subprocess.Popen",
+            side_effect=popen,
+        ):
+            with self.assertRaisesRegex(OSError, "fork failed"):
+                _run_process_group(
+                    ["demo"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_fence=process_fence,
+                    process_start_guard=RecordingGuard(),
+                )
+
+        self.assertEqual(
+            events,
+            [
+                "guard-enter",
+                "epoch-fence",
+                "popen",
+                "guard-exit",
+            ],
+        )
+
+    def test_native_guard_exit_failure_kills_registered_process_group(
+        self,
+    ) -> None:
+        from scheduler.executor import _run_process_group
+
+        events: list[object] = []
+
+        class GuardReleaseError(RuntimeError):
+            pass
+
+        class FailingExitGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
+                raise GuardReleaseError("guard release failed")
+
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise AssertionError(
+                    "guard-release failure must stop algorithm runtime"
+                )
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=FakeProcess(),
+            ),
+            patch(
+                "scheduler.executor.os.getpgid",
+                return_value=67890,
+            ),
+            patch(
+                "scheduler.executor.os.killpg",
+                side_effect=killpg,
+            ),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                return_value=True,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                GuardReleaseError,
+                "guard release failed",
+            ):
+                _run_process_group(
+                    ["demo"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_started=process_started,
+                    process_start_guard=FailingExitGuard(),
+                )
+
+        self.assertEqual(
+            events,
+            [
+                "guard-enter",
+                ("started", 12345, 67890),
+                "guard-exit",
                 ("killpg", 67890, signal.SIGTERM),
             ],
         )
+
+    def test_native_guard_exit_failure_fences_unconfirmed_cleanup(
+        self,
+    ) -> None:
+        from scheduler.executor import _run_process_group
+        from scheduler.process_control import (
+            ProcessRegistrationCleanupError,
+        )
+
+        events: list[object] = []
+
+        class GuardReleaseError(RuntimeError):
+            pass
+
+        class FailingExitGuard:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                raise GuardReleaseError("guard release failed")
+
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise AssertionError(
+                    "unconfirmed cleanup must stop algorithm runtime"
+                )
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=FakeProcess(),
+            ),
+            patch(
+                "scheduler.executor.os.getpgid",
+                return_value=67890,
+            ),
+            patch(
+                "scheduler.executor.os.killpg",
+                side_effect=killpg,
+            ),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                side_effect=(False, False),
+            ),
+        ):
+            with self.assertRaises(
+                ProcessRegistrationCleanupError
+            ) as raised:
+                _run_process_group(
+                    ["demo"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_start_guard=FailingExitGuard(),
+                )
+
+        self.assertIsInstance(
+            raised.exception.registration_error,
+            GuardReleaseError,
+        )
+        self.assertFalse(
+            raised.exception.termination.confirmed_gone
+        )
+        self.assertEqual(
+            events,
+            [
+                ("killpg", 67890, signal.SIGTERM),
+                ("killpg", 67890, signal.SIGKILL),
+            ],
+        )
+
+    def test_native_unconfirmed_registration_cleanup_wins_over_guard_exit(
+        self,
+    ) -> None:
+        from scheduler.executor import _run_process_group
+        from scheduler.process_control import (
+            ProcessRegistrationCleanupError,
+        )
+
+        events: list[object] = []
+
+        class RegistrationError(RuntimeError):
+            pass
+
+        class GuardReleaseError(RuntimeError):
+            pass
+
+        class FailingExitGuard:
+            def __enter__(self):
+                events.append("guard-enter")
+                return self
+
+            def __exit__(self, *_exc_info):
+                events.append("guard-exit")
+                raise GuardReleaseError("guard release failed")
+
+        class FakeProcess:
+            pid = 12345
+            returncode = None
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise AssertionError(
+                    "unconfirmed cleanup must stop algorithm runtime"
+                )
+
+        registration_error = RegistrationError(
+            "process registration failed"
+        )
+
+        def process_started(_pid: int, _pgid: int) -> None:
+            events.append("registration")
+            raise registration_error
+
+        def killpg(pgid: int, signum: int) -> None:
+            events.append(("killpg", pgid, signum))
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                return_value=FakeProcess(),
+            ),
+            patch(
+                "scheduler.executor.os.getpgid",
+                return_value=67890,
+            ),
+            patch(
+                "scheduler.executor.os.killpg",
+                side_effect=killpg,
+            ),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                side_effect=(False, False),
+            ),
+        ):
+            with self.assertRaises(
+                ProcessRegistrationCleanupError
+            ) as raised:
+                _run_process_group(
+                    ["demo"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_started=process_started,
+                    process_start_guard=FailingExitGuard(),
+                )
+
+        self.assertIs(
+            raised.exception.registration_error,
+            registration_error,
+        )
+        self.assertIsInstance(
+            raised.exception.__cause__,
+            GuardReleaseError,
+        )
+        self.assertFalse(
+            raised.exception.termination.confirmed_gone
+        )
+        self.assertEqual(
+            events,
+            [
+                "guard-enter",
+                "registration",
+                ("killpg", 67890, signal.SIGTERM),
+                ("killpg", 67890, signal.SIGKILL),
+                "guard-exit",
+            ],
+        )
+
+    def test_native_registration_precedes_post_fence_without_guard(
+        self,
+    ) -> None:
+        from scheduler.executor import _run_process_group
+
+        events: list[object] = []
+
+        class FakeProcess:
+            pid = 12345
+            returncode = 0
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                events.append(("communicate", timeout))
+                return "[]", ""
+
+        def popen(*_args, **_kwargs):
+            events.append("popen")
+            return FakeProcess()
+
+        def process_started(pid: int, pgid: int) -> None:
+            events.append(("started", pid, pgid))
+
+        def process_fence() -> None:
+            events.append("epoch-fence")
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                side_effect=popen,
+            ),
+            patch(
+                "scheduler.executor.os.getpgid",
+                return_value=67890,
+            ),
+        ):
+            completed = _run_process_group(
+                ["demo"],
+                cwd=Path.cwd(),
+                env={},
+                timeout=7,
+                process_started=process_started,
+                process_fence=process_fence,
+            )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(
+            events,
+            [
+                "epoch-fence",
+                "popen",
+                ("started", 12345, 67890),
+                "epoch-fence",
+                ("communicate", 7),
+            ],
+        )
+
+    def test_native_shared_guard_prevents_unregistered_start_overlap(
+        self,
+    ) -> None:
+        from scheduler.executor import _run_process_group
+
+        events: list[tuple[str, int]] = []
+        events_lock = threading.Lock()
+        shared_lock = threading.Lock()
+        first_popen_completed = threading.Event()
+        second_enter_attempted = threading.Event()
+        allow_first_registration = threading.Event()
+        process_ids = iter((10101, 20202))
+
+        class ObservedSharedGuard:
+            def __enter__(self):
+                if threading.current_thread().name == "second-start":
+                    second_enter_attempted.set()
+                shared_lock.acquire()
+                return self
+
+            def __exit__(self, *_exc_info):
+                shared_lock.release()
+
+        guard = ObservedSharedGuard()
+
+        class FakeProcess:
+            returncode = 0
+            stdout = None
+            stderr = None
+
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+
+            def communicate(self, timeout=None):
+                self.assert_guard_released()
+                return "[]", ""
+
+            @staticmethod
+            def assert_guard_released() -> None:
+                if shared_lock.locked():
+                    raise AssertionError(
+                        "algorithm runtime must not hold process-start guard"
+                    )
+
+        def popen(*_args, **_kwargs):
+            pid = next(process_ids)
+            with events_lock:
+                events.append(("popen", pid))
+            if pid == 10101:
+                first_popen_completed.set()
+            return FakeProcess(pid)
+
+        def process_started(pid: int, _pgid: int) -> None:
+            if pid == 10101:
+                if not allow_first_registration.wait(timeout=2):
+                    raise AssertionError(
+                        "test did not release first registration"
+                    )
+            with events_lock:
+                events.append(("registered", pid))
+
+        errors: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                _run_process_group(
+                    ["demo"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_started=process_started,
+                    process_start_guard=guard,
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                side_effect=popen,
+            ),
+            patch(
+                "scheduler.executor.os.getpgid",
+                side_effect=lambda pid: pid,
+            ),
+        ):
+            first = threading.Thread(target=run, name="first-start")
+            second = threading.Thread(target=run, name="second-start")
+            first.start()
+            self.assertTrue(first_popen_completed.wait(timeout=2))
+            second.start()
+            self.assertTrue(second_enter_attempted.wait(timeout=2))
+            with events_lock:
+                self.assertEqual(events, [("popen", 10101)])
+            allow_first_registration.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            events,
+            [
+                ("popen", 10101),
+                ("registered", 10101),
+                ("popen", 20202),
+                ("registered", 20202),
+            ],
+        )
+
+    def test_canonical_guard_poison_blocks_waiter_before_popen_and_db_fence(
+        self,
+    ) -> None:
+        from scheduler.executor import _run_process_group
+        from scheduler.process_control import (
+            ProcessRegistrationCleanupError,
+            ProcessStartGuard,
+            ProcessStartGuardPoisonedError,
+        )
+
+        guard = ProcessStartGuard()
+        first_registration_entered = threading.Event()
+        release_first_failure = threading.Event()
+        second_call_started = threading.Event()
+        second_pre_fence = threading.Event()
+        first_db_fence_started = threading.Event()
+        release_first_db_fence = threading.Event()
+        second_done = threading.Event()
+        popen_calls: list[int] = []
+        outcomes: dict[str, BaseException] = {}
+
+        class RegistrationError(RuntimeError):
+            pass
+
+        class FakeProcess:
+            pid = 10101
+            returncode = None
+            stdout = None
+            stderr = None
+
+            def communicate(self, timeout=None):
+                raise AssertionError(
+                    "poisoned process-start window must not communicate"
+                )
+
+        def popen(*_args, **_kwargs):
+            popen_calls.append(len(popen_calls) + 1)
+            if len(popen_calls) > 1:
+                raise AssertionError(
+                    "poisoned waiter must fail before Popen"
+                )
+            return FakeProcess()
+
+        def first_process_started(_pid: int, _pgid: int) -> None:
+            first_registration_entered.set()
+            if not release_first_failure.wait(timeout=2):
+                raise AssertionError("first failure was not released")
+            raise RegistrationError("ledger registration failed")
+
+        def run_first() -> None:
+            try:
+                _run_process_group(
+                    ["first"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_started=first_process_started,
+                    process_start_guard=guard,
+                )
+            except BaseException as exc:
+                outcomes["first"] = exc
+                first_db_fence_started.set()
+                release_first_db_fence.wait(timeout=2)
+
+        def run_second() -> None:
+            second_call_started.set()
+            try:
+                _run_process_group(
+                    ["second"],
+                    cwd=Path.cwd(),
+                    env={},
+                    timeout=7,
+                    process_fence=second_pre_fence.set,
+                    process_start_guard=guard,
+                )
+            except BaseException as exc:
+                outcomes["second"] = exc
+            finally:
+                second_done.set()
+
+        with (
+            patch(
+                "scheduler.executor.subprocess.Popen",
+                side_effect=popen,
+            ),
+            patch(
+                "scheduler.executor.os.getpgid",
+                return_value=10101,
+            ),
+            patch(
+                "scheduler.executor.os.killpg",
+            ),
+            patch(
+                "scheduler.process_control."
+                "_wait_for_process_group_exit",
+                side_effect=(False, False),
+            ),
+        ):
+            first = threading.Thread(target=run_first)
+            second = threading.Thread(target=run_second)
+            first.start()
+            self.assertTrue(
+                first_registration_entered.wait(timeout=2)
+            )
+            second.start()
+            self.assertTrue(second_call_started.wait(timeout=2))
+            release_first_failure.set()
+            self.assertTrue(first_db_fence_started.wait(timeout=2))
+            self.assertTrue(
+                second_done.wait(timeout=2),
+                "poisoned waiter must not wait for DB fence persistence",
+            )
+            self.assertFalse(second_pre_fence.is_set())
+            self.assertEqual(popen_calls, [1])
+            release_first_db_fence.set()
+            first.join(timeout=2)
+            second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertIsInstance(
+            outcomes["first"],
+            ProcessRegistrationCleanupError,
+        )
+        self.assertIsInstance(
+            outcomes["second"],
+            ProcessStartGuardPoisonedError,
+        )
+        self.assertTrue(guard.poisoned)
 
     def test_native_callback_failure_kills_group_before_reraising(
         self,
@@ -393,6 +1033,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         self,
     ) -> None:
         from scheduler.executor import run_configured_scheme
+        from scheduler.process_control import ProcessStartGuard
 
         def callback(_pid: int, _pgid: int) -> None:
             return None
@@ -400,6 +1041,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         def fence() -> None:
             return None
 
+        process_start_guard = ProcessStartGuard()
         native_cfg = SimpleNamespace(
             runtime_type="native_adapter",
             scheme_id="native_trial",
@@ -421,6 +1063,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                 timeout_sec=7,
                 process_started=callback,
                 process_fence=fence,
+                process_start_guard=process_start_guard,
             )
         with patch(
             "scheduler.executor.run_blackbox_scheme_subprocess",
@@ -434,12 +1077,49 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                 timeout_sec=7,
                 process_started=callback,
                 process_fence=fence,
+                process_start_guard=process_start_guard,
             )
 
         self.assertIs(native.call_args.kwargs["process_started"], callback)
         self.assertIs(blackbox.call_args.kwargs["process_started"], callback)
         self.assertIs(native.call_args.kwargs["process_fence"], fence)
         self.assertIs(blackbox.call_args.kwargs["process_fence"], fence)
+        self.assertIs(
+            native.call_args.kwargs["process_start_guard"],
+            process_start_guard,
+        )
+        self.assertIs(
+            blackbox.call_args.kwargs["process_start_guard"],
+            process_start_guard,
+        )
+
+    def test_run_configured_scheme_rejects_noncanonical_process_start_guard(
+        self,
+    ) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        cfg = SimpleNamespace(
+            runtime_type="native_adapter",
+            scheme_id="native_trial",
+        )
+        with patch(
+            "scheduler.executor.run_scheme_subprocess",
+            return_value=[],
+        ) as native:
+            with self.assertRaisesRegex(
+                TypeError,
+                "ProcessStartGuard",
+            ):
+                run_configured_scheme(
+                    cfg,
+                    "2026-07-03",
+                    engine="engine",
+                    algo_env="test_env",
+                    timeout_sec=7,
+                    process_start_guard=threading.Lock(),
+                )
+
+        native.assert_not_called()
 
     def test_run_configured_scheme_forwards_explicit_blackbox_execution_token(
         self,

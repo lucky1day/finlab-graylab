@@ -465,9 +465,11 @@ class ScheduledExecutorTests(unittest.TestCase):
     def test_process_callback_registers_current_attempt_identity(
         self,
     ) -> None:
+        from scheduler.process_control import ProcessStartGuard
         from scheduler.scheduled_executor import execute_scheduled_item
 
         engine = object()
+        process_start_guard = ProcessStartGuard()
         envelope = _envelope()
         attempt = SimpleNamespace(
             item_id=11,
@@ -477,6 +479,10 @@ class ScheduledExecutorTests(unittest.TestCase):
         )
 
         def run_scheme(*_args, **kwargs):
+            self.assertIs(
+                kwargs["process_start_guard"],
+                process_start_guard,
+            )
             kwargs["process_started"](43210, 43210)
             return [_record()]
 
@@ -518,6 +524,7 @@ class ScheduledExecutorTests(unittest.TestCase):
                 engine,
                 item_id=11,
                 trigger_origin="auto_retry",
+                process_start_guard=process_start_guard,
             )
 
         self.assertEqual(result.status, "success")
