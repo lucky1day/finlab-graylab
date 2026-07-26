@@ -1431,30 +1431,6 @@ def _build_replay_dispatch_identity(
     source_end: ReplaySourceInputEvidence,
 ) -> _ReplayDispatchIdentity:
     """把成功二次预检的稳定输入压缩为 write-once capability。"""
-    definition_payload = {
-        "policy_version": definitions.policy_version,
-        "policy_sha256": definitions.policy_sha256,
-        "expected_item_count": definitions.expected_item_count,
-        "expected_target_count": definitions.expected_target_count,
-        "native_item_count": definitions.native_item_count,
-        "v2_item_count": definitions.v2_item_count,
-        "input_mode_counts": dict(definitions.input_mode_counts),
-        "registry_rows": [
-            vars(row) for row in definitions.registry_rows
-        ],
-        "version_rows": [
-            vars(row) for row in definitions.version_rows
-        ],
-    }
-    production_payload = {
-        "database_name": production.database_name,
-        "server_identity_sha256":
-            production.server_identity_sha256,
-        "migration_rows": [
-            dict(row) for row in production.migration_rows
-        ],
-        "registry_digest": production_registry_digest,
-    }
     return _ReplayDispatchIdentity(
         service_uid=service_uid,
         business_date=inputs.business_date,
@@ -1464,33 +1440,19 @@ def _build_replay_dispatch_identity(
         databridge_manifest_path=str(
             Path(databridge_manifest).resolve(strict=False)
         ),
-        candidate_digest=_canonical_sha256(
-            {
-                "branch": candidate.branch,
-                "git_head": candidate.git_head,
-                "tree_sha256": candidate.tree_sha256,
-                "policy_sha256": candidate.policy_sha256,
-            }
-        ),
-        generation_digest=_canonical_sha256(
-            {"identity": list(_generation_identity(inputs))}
-        ),
-        definition_digest=_canonical_sha256(
-            definition_payload
+        candidate_digest=_replay_candidate_digest(candidate),
+        generation_digest=_replay_generation_digest(inputs),
+        definition_digest=_replay_definition_digest(
+            definitions
         ),
         control_plane_digest=control_plane.digest,
-        production_digest=_canonical_sha256(
-            production_payload
+        production_digest=_replay_production_digest(
+            production,
+            registry_digest=production_registry_digest,
         ),
-        source_database_digest=_canonical_sha256(
-            {
-                "identity": list(
-                    _source_database_identity(
-                        source_config,
-                        source_preflight,
-                    )
-                )
-            }
+        source_database_digest=_replay_source_database_digest(
+            source_config,
+            source_preflight,
         ),
         source_watermark_digest=_canonical_sha256(
             {
@@ -1506,6 +1468,155 @@ def _build_replay_dispatch_identity(
                 },
             }
         ),
+    )
+
+
+def assert_real_replay_dispatch_identity_current(
+    session: object,
+) -> _ReplayDispatchIdentity:
+    """重读并比较不允许在 dispatch 间漂移的成功预检身份。"""
+    if type(session) is not _ReplayOperatorSession:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_DISPATCH_IDENTITY_INVALID"
+        )
+    baseline = session.require_dispatch_identity()
+    try:
+        candidate = _stable_candidate_identity()
+        inputs = _stable_generation_inputs(
+            native_manifest=baseline.native_manifest_path,
+            databridge_manifest=(
+                baseline.databridge_manifest_path
+            ),
+        )
+        definitions = _stable_definition_snapshot(inputs)
+        control_plane = _read_control_plane_boundary(
+            baseline.service_uid
+        )
+        production = _read_production_daily_snapshot()
+        registry_digest = validate_production_daily_snapshot(
+            production,
+            definitions=definitions,
+        )
+        source_config = load_source_runtime_database_config()
+        source_preflight = (
+            preflight_source_runtime_database_access(
+                source_config
+            )
+        )
+        validate_source_database_preflight(
+            source_config,
+            preflight=source_preflight,
+        )
+        current = (
+            os.getuid(),
+            inputs.business_date,
+            _replay_candidate_digest(candidate),
+            _replay_generation_digest(inputs),
+            _replay_definition_digest(definitions),
+            control_plane.digest,
+            _replay_production_digest(
+                production,
+                registry_digest=registry_digest,
+            ),
+            _replay_source_database_digest(
+                source_config,
+                source_preflight,
+            ),
+        )
+    except Exception:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_DISPATCH_IDENTITY_DRIFT"
+        ) from None
+    expected = (
+        baseline.service_uid,
+        baseline.business_date,
+        baseline.candidate_digest,
+        baseline.generation_digest,
+        baseline.definition_digest,
+        baseline.control_plane_digest,
+        baseline.production_digest,
+        baseline.source_database_digest,
+    )
+    if current != expected:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_DISPATCH_IDENTITY_DRIFT"
+        )
+    session.assert_held()
+    return baseline
+
+
+def _replay_candidate_digest(
+    candidate: ReplayCandidateIdentity,
+) -> str:
+    return _canonical_sha256(
+        {
+            "branch": candidate.branch,
+            "git_head": candidate.git_head,
+            "tree_sha256": candidate.tree_sha256,
+            "policy_sha256": candidate.policy_sha256,
+        }
+    )
+
+
+def _replay_generation_digest(
+    inputs: DailyRealReplayInputs,
+) -> str:
+    return _canonical_sha256(
+        {"identity": list(_generation_identity(inputs))}
+    )
+
+
+def _replay_definition_digest(
+    definitions: ReplayDefinitionSnapshot,
+) -> str:
+    payload = {
+        "policy_version": definitions.policy_version,
+        "policy_sha256": definitions.policy_sha256,
+        "expected_item_count": definitions.expected_item_count,
+        "expected_target_count": definitions.expected_target_count,
+        "native_item_count": definitions.native_item_count,
+        "v2_item_count": definitions.v2_item_count,
+        "input_mode_counts": dict(definitions.input_mode_counts),
+        "registry_rows": [
+            vars(row) for row in definitions.registry_rows
+        ],
+        "version_rows": [
+            vars(row) for row in definitions.version_rows
+        ],
+    }
+    return _canonical_sha256(payload)
+
+
+def _replay_production_digest(
+    production: ProductionDailySnapshot,
+    *,
+    registry_digest: str,
+) -> str:
+    payload = {
+        "database_name": production.database_name,
+        "server_identity_sha256":
+            production.server_identity_sha256,
+        "migration_rows": [
+            dict(row) for row in production.migration_rows
+        ],
+        "registry_digest": registry_digest,
+    }
+    return _canonical_sha256(payload)
+
+
+def _replay_source_database_digest(
+    source_config: object,
+    source_preflight: object,
+) -> str:
+    return _canonical_sha256(
+        {
+            "identity": list(
+                _source_database_identity(
+                    source_config,
+                    source_preflight,
+                )
+            )
+        }
     )
 
 

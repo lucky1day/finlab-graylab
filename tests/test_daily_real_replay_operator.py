@@ -679,6 +679,185 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             "PREFLIGHT_SESSION_NOT_HELD",
         )
 
+    def test_dispatch_identity_recheck_detects_candidate_drift(
+        self,
+    ) -> None:
+        from shared.data_contract import (
+            CALENDAR_SOURCE_TABLES,
+            FACTOR_SOURCE_TABLES,
+            METADATA_SOURCE_TABLE,
+        )
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            ReplaySourceInputEvidence,
+            _build_replay_dispatch_identity,
+            _preflight_session,
+            assert_real_replay_dispatch_identity_current,
+            validate_production_daily_snapshot,
+        )
+
+        candidate = self._candidate()
+        inputs = self._inputs()
+        definitions = self._definitions()
+        production = self._production_snapshot(definitions)
+        registry_digest = validate_production_daily_snapshot(
+            production,
+            definitions=definitions,
+        )
+        control_plane = SimpleNamespace(digest="6" * 64)
+        source_config = SimpleNamespace(
+            cache_identity="f" * 64,
+            database="source_db",
+            user="source_readonly",
+        )
+        source_preflight = SimpleNamespace(
+            database="source_db",
+            authenticated_user="source_readonly",
+            tables=(
+                *FACTOR_SOURCE_TABLES,
+                METADATA_SOURCE_TABLE,
+                *CALENDAR_SOURCE_TABLES,
+            ),
+        )
+        identity = _build_replay_dispatch_identity(
+            service_uid=os.getuid(),
+            native_manifest="/private/native/manifest.json",
+            databridge_manifest="/private/databridge/manifest.json",
+            candidate=candidate,
+            inputs=inputs,
+            definitions=definitions,
+            control_plane=control_plane,
+            production=production,
+            production_registry_digest=registry_digest,
+            source_config=source_config,
+            source_preflight=source_preflight,
+            source_start=ReplaySourceInputEvidence(
+                feature_date="2026-07-24",
+                source_commit_token="7" * 64,
+            ),
+            source_end=ReplaySourceInputEvidence(
+                feature_date="2026-07-24",
+                source_commit_token="8" * 64,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = os.path.realpath(temporary)
+            os.chmod(root, 0o700)
+            with (
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=__import__("pathlib").Path(root),
+                ),
+                _preflight_session() as session,
+            ):
+                session.bind_dispatch_identity(identity)
+                stable_patches = (
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_stable_candidate_identity",
+                        return_value=candidate,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_stable_generation_inputs",
+                        return_value=inputs,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_stable_definition_snapshot",
+                        return_value=definitions,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_read_control_plane_boundary",
+                        return_value=control_plane,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_read_production_daily_snapshot",
+                        return_value=production,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "load_source_runtime_database_config",
+                        return_value=source_config,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "preflight_source_runtime_database_access",
+                        return_value=source_preflight,
+                    ),
+                )
+                with (
+                    stable_patches[0],
+                    stable_patches[1],
+                    stable_patches[2],
+                    stable_patches[3],
+                    stable_patches[4],
+                    stable_patches[5],
+                    stable_patches[6],
+                ):
+                    self.assertIs(
+                        assert_real_replay_dispatch_identity_current(
+                            session
+                        ),
+                        identity,
+                    )
+
+                drifted = replace(
+                    candidate,
+                    tree_sha256="9" * 64,
+                )
+                with (
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_stable_candidate_identity",
+                        return_value=drifted,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_stable_generation_inputs",
+                        return_value=inputs,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_stable_definition_snapshot",
+                        return_value=definitions,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_read_control_plane_boundary",
+                        return_value=control_plane,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "_read_production_daily_snapshot",
+                        return_value=production,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "load_source_runtime_database_config",
+                        return_value=source_config,
+                    ),
+                    patch(
+                        "harness.daily_real_replay_operator."
+                        "preflight_source_runtime_database_access",
+                        return_value=source_preflight,
+                    ),
+                    self.assertRaises(
+                        DailyRealReplayPreflightError
+                    ) as raised,
+                ):
+                    assert_real_replay_dispatch_identity_current(
+                        session
+                    )
+
+        self.assertEqual(
+            raised.exception.code,
+            "REPLAY_DISPATCH_IDENTITY_DRIFT",
+        )
+
     def test_second_candidate_or_generation_read_detects_drift(self) -> None:
         from harness.daily_real_replay_operator import (
             DailyRealReplayPreflightError,
