@@ -362,6 +362,12 @@ production audit-readonly endpoint/server UUID，扩大未登记 source/Blackbox
 后代进程和二进制/Conda 环境身份覆盖，并降低两次 source watermark 对生产源库
 的扫描负载。
 
+operator/runtime 双锁由一个同进程 session 持有，session 绑定创建 PID、固定锁名、
+共同父目录和设备/inode；内部预检只能借用该 session，不得重新获取或释放锁。
+成功预检在首尾验锁，PID 漂移、锁释放、路径替换、owner/权限漂移均 fail-closed。
+外层 session 退出时固定先释放 runtime、再释放 operator，为后续 execute 的无缝
+持锁和逆序资源清理提供唯一入口。
+
 当前 attestation/observation schema 有意只承认这组 21/25 与四个 V2，防止新增
 任务偷用旧容量证据；它还不是最终的动态扩容接口。首次变更 active daily Registry
 前，必须发布 schema v3，从签名 policy 与 candidate manifest 派生 item/target/V2

@@ -44,11 +44,12 @@
 - `1f101b8`、`9a76586` 建立受保护的双池 replay runtime：唯一入口 `run()` 硬绑定 canonical executor；2 Native / 2 V2 受 governor 限制，owner 锁内每轮重验 21 个 execution envelope，并以线性化 stop fence 阻止异常后的跨池新任务。
   `5943b88`、`9b2624e`、`5b00981` 进一步要求 replay `predict_date` 必须是冻结日历中的交易日，并在 occurrence 创建、generation 注册和 runtime 构造三个边界重新打开、rehash 和比较完整 generation context；磁盘 payload、内存审计字段或非法嵌套 context 均在 ledger 写入前以稳定错误拒绝。相关测试 `88 passed, 3 skipped`、replay 测试文件 `65 passed`（其中 3 个真实临时 MySQL 集成测试）、全量 `2662 passed, 11 skipped`。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
 - `08d9827` 已增加 `python -m harness daily-real-replay --check-only` 瞬时业务数据只读预检：双读 generation/候选，校验 21/25、14/3/4、生产 migration/Registry/version、source-readonly、控制面和全局静默；结果固定为 `CHECK_PASSED + qualification=EXCLUDED`，本地只保留 `0600` fence 文件。`04cb709` 将共用探针下沉到 `scheduler` 并禁止 `harness -> scripts`。
+- `b00d381` 将 operator/runtime 双锁提升为同进程可验证会话：绑定创建 PID、固定路径和设备/inode，内部预检只借用既有锁而不重抢或提前释放，成功路径首尾验锁；这只关闭 execute 自锁竞态，尚未提供 execute CLI。
 - 当前真实环境预检仍会 fail-closed：已安装的 backend LaunchAgent 尚未携带合法
   coordinator mode，因此控制面检查返回 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
   本轮未修改已安装 plist、未 bootout/kickstart 服务；只能在获准的独占维护窗口
   修复后重新检查。
-- 最新验证为相关回归 `192 passed, 3 skipped`、replay 测试文件 `65 passed`（其中 3 个真实临时 MySQL 集成测试）、全量 `2679 passed, 11 skipped`；全仓分层扫描 0 violation。生产只读快照仍是 migration 017、run/prediction `1193/1111`，四类 ledger 均为 0。
+- 最新验证为 replay 测试文件 `65 passed`（其中 3 个真实临时 MySQL 集成测试）、全量 `2680 passed, 11 skipped`；全仓分层扫描 0 violation。生产只读快照仍是 migration 017、run/prediction `1193/1111`，四类 ledger 均为 0。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -81,7 +82,7 @@
 
 ## 当前观察项
 
-1. `check-only` 功能实现和测试已完成，但真实环境预检尚未通过；下一项是同一进程、同一双锁内的 execute 和临时 MySQL 生命周期。执行前仍须钉住 production audit-readonly endpoint/server UUID，扩大后代进程和 `.so/.pyc`/Conda 身份覆盖，并降低 watermark 扫描负载；旧 digest 不得跨进程复用。
+1. `check-only` 和可借用双锁会话已完成，但真实环境预检尚未通过；下一项是隔离临时 MySQL 生命周期。execute 前仍须钉住 production audit-readonly endpoint/server UUID，扩大后代进程和 `.so/.pyc`/Conda 身份覆盖，并降低 watermark 扫描负载；旧 digest 不得跨进程复用。
 2. 在获准的独占维护窗口修复 BFL 三份已安装 plist 的 mode 一致性并重跑
    `--check-only`；不得自动停服务、修改 production rollout/admission 或触碰
    BondProjectPro。
