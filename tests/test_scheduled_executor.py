@@ -5,7 +5,7 @@ import subprocess
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from sqlalchemy.exc import (
     DBAPIError,
@@ -200,6 +200,163 @@ class ScheduledExecutorTests(unittest.TestCase):
         self.assertIsNone(result.run_id)
         claim.assert_not_called()
         run_scheme.assert_not_called()
+
+    def test_process_fence_rejects_before_attempt_claim(self) -> None:
+        from scheduler.process_control import ProcessStartGuard
+        from scheduler.scheduled_executor import (
+            ScheduledProcessFenceError,
+            execute_scheduled_item,
+        )
+
+        envelope = _envelope()
+        process_start_guard = ProcessStartGuard()
+        fence = Mock(
+            side_effect=ScheduledProcessFenceError(
+                "isolated replay process boundary is blocked"
+            )
+        )
+        with (
+            patch(
+                "scheduler.scheduled_executor."
+                "read_schedule_execution_envelope",
+                return_value=envelope,
+            ),
+            patch(
+                "scheduler.scheduled_executor.start_schedule_attempt",
+            ) as claim,
+            patch(
+                "scheduler.scheduled_executor.run_configured_scheme",
+            ) as run_scheme,
+        ):
+            result = execute_scheduled_item(
+                object(),
+                item_id=11,
+                process_start_guard=process_start_guard,
+                _process_fence=fence,
+            )
+
+        self.assertEqual(result.status, "recovery_blocked")
+        self.assertIsNone(result.run_id)
+        self.assertIsNone(result.failure_code)
+        fence.assert_called_once_with()
+        claim.assert_not_called()
+        run_scheme.assert_not_called()
+
+    def test_process_fence_requires_canonical_start_guard(self) -> None:
+        from scheduler.scheduled_executor import execute_scheduled_item
+
+        fence = Mock()
+        with (
+            patch(
+                "scheduler.scheduled_executor."
+                "read_schedule_execution_envelope",
+            ) as read_envelope,
+            self.assertRaisesRegex(
+                TypeError,
+                "process fence requires canonical ProcessStartGuard",
+            ),
+        ):
+            execute_scheduled_item(
+                object(),
+                item_id=11,
+                _process_fence=fence,
+            )
+
+        fence.assert_not_called()
+        read_envelope.assert_not_called()
+
+    def test_post_registration_process_fence_is_not_algorithm_failure(
+        self,
+    ) -> None:
+        from scheduler.process_control import ProcessStartGuard
+        from scheduler.scheduled_executor import (
+            ScheduledProcessFenceError,
+            execute_scheduled_item,
+        )
+
+        engine = object()
+        envelope = _envelope()
+        attempt = SimpleNamespace(
+            item_id=11,
+            run_id=919,
+            attempt_no=1,
+            execution_token="process-boundary-token",
+        )
+        process_start_guard = ProcessStartGuard()
+        fence_calls = 0
+
+        def process_fence() -> None:
+            nonlocal fence_calls
+            fence_calls += 1
+            if fence_calls == 2:
+                raise ScheduledProcessFenceError(
+                    "registered process boundary drifted"
+                )
+
+        def run_scheme(*_args, **kwargs):
+            self.assertIs(
+                kwargs["process_start_guard"],
+                process_start_guard,
+            )
+            kwargs["process_started"](43219, 43219)
+            kwargs["process_fence"]()
+            self.fail("process fence failure must stop algorithm execution")
+
+        with (
+            patch(
+                "scheduler.scheduled_executor."
+                "read_schedule_execution_envelope",
+                return_value=envelope,
+            ),
+            patch(
+                "scheduler.scheduled_executor.start_schedule_attempt",
+                return_value=attempt,
+            ),
+            patch(
+                "scheduler.scheduled_executor.load_scheme_config",
+                return_value=_config(),
+            ),
+            patch(
+                "scheduler.scheduled_executor.open_native_generation",
+                return_value=SimpleNamespace(),
+            ),
+            patch(
+                "scheduler.scheduled_executor.run_configured_scheme",
+                side_effect=run_scheme,
+            ),
+            patch(
+                "scheduler.scheduled_executor."
+                "register_schedule_attempt_process",
+            ) as register,
+            patch(
+                "scheduler.scheduled_executor."
+                "mark_schedule_attempt_terminal_failure",
+            ) as terminal,
+            patch(
+                "scheduler.scheduled_executor."
+                "mark_schedule_attempt_retry_wait",
+            ) as retry,
+        ):
+            result = execute_scheduled_item(
+                engine,
+                item_id=11,
+                process_start_guard=process_start_guard,
+                _process_fence=process_fence,
+            )
+
+        self.assertEqual(result.status, "recovery_blocked")
+        self.assertEqual(result.run_id, 919)
+        self.assertIsNone(result.failure_code)
+        self.assertEqual(fence_calls, 2)
+        register.assert_called_once_with(
+            engine,
+            run_id=919,
+            execution_token="process-boundary-token",
+            process_id=43219,
+            process_group_id=43219,
+        )
+        terminal.assert_not_called()
+        retry.assert_not_called()
 
     def test_cache_qualified_record_missing_extra_is_rejected_precommit(
         self,

@@ -60,6 +60,53 @@ def _next_midnight_utc(observed_at: datetime) -> datetime:
     ).astimezone(timezone.utc)
 
 
+def _bind_test_dispatch_identity(session, root: Path):
+    from harness.daily_real_replay_operator import (
+        _ReplayDispatchIdentity,
+    )
+
+    identity = _ReplayDispatchIdentity(
+        service_uid=os.getuid(),
+        business_date="2026-07-24",
+        native_manifest_path=str(
+            (root / "native-manifest.json").resolve(strict=False)
+        ),
+        databridge_manifest_path=str(
+            (root / "databridge-manifest.json").resolve(strict=False)
+        ),
+        candidate_digest="1" * 64,
+        generation_digest="2" * 64,
+        definition_digest="3" * 64,
+        control_plane_digest="4" * 64,
+        production_digest="5" * 64,
+        source_database_digest="6" * 64,
+        source_watermark_digest="7" * 64,
+    )
+    session.bind_dispatch_identity(identity)
+    return identity
+
+
+def _replay_process_boundary_report(
+    *,
+    service_uid: int,
+    occurrence_id: int,
+    active_item_ids: tuple[int, ...],
+):
+    from scheduler.daily_control_plane_probe import (
+        ReplayProcessBoundaryReport,
+    )
+
+    return ReplayProcessBoundaryReport(
+        service_uid=service_uid,
+        occurrence_id=occurrence_id,
+        active_item_ids=active_item_ids,
+        registered_leader_process_ids=(),
+        registered_process_group_ids=(),
+        allowed_processes=(),
+        blocked_processes=(),
+    )
+
+
 def _runtime_snapshot(
     *,
     policy,
@@ -2561,6 +2608,9 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
             policy,
             policy.schemes,
         )[0]
+        blocked_item_id = (
+            sorted(policy.schemes).index(blocked_scheme) + 1
+        )
         observed_at = datetime.now(timezone.utc)
         states = {
             scheme_id: (
@@ -2611,12 +2661,21 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
                     "harness.daily_real_replay_operator."
                     "assert_real_replay_dispatch_identity_current",
                     side_effect=(
-                        None,
+                        SimpleNamespace(service_uid=os.getuid()),
                         DailyRealReplayPreflightError(
                             "REPLAY_DISPATCH_IDENTITY_DRIFT"
                         ),
                     ),
                 ) as dispatch_fence,
+                patch(
+                    "harness.daily_real_replay."
+                    "probe_isolated_replay_process_boundary",
+                    return_value=_replay_process_boundary_report(
+                        service_uid=os.getuid(),
+                        occurrence_id=41,
+                        active_item_ids=(blocked_item_id,),
+                    ),
+                ),
                 patch(
                     "harness.daily_real_replay."
                     "_recheck_real_replay_database",
@@ -2663,6 +2722,593 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
         self.assertTrue(recheck_threads)
         self.assertEqual(set(recheck_threads), {"MainThread"})
         canonical.assert_not_called()
+
+    def test_operator_dispatch_probes_exact_active_items_with_one_guard(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+        from scheduler.process_control import ProcessStartGuard
+        from scheduler.daily_coordinator import dispatch_order
+
+        policy, configs = _real_policy_and_configs()
+        selected = dispatch_order(policy, policy.schemes)[0]
+        item_id = sorted(policy.schemes).index(selected) + 1
+        states = {
+            scheme_id: (
+                "PENDING" if scheme_id == selected else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        observed_at = (
+            datetime.now(timezone.utc) + timedelta(minutes=7)
+        )
+        probe_calls: list[dict[str, object]] = []
+        probe_guard_states: list[bool] = []
+        guards: list[object] = []
+        state_lock = threading.Lock()
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+
+            def read_snapshot(*_args, **_kwargs):
+                with state_lock:
+                    current_states = dict(states)
+                return _runtime_snapshot(
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                    observed_at=observed_at,
+                    states=current_states,
+                )
+
+            def probe(engine, **kwargs):
+                probe_guard_states.append(
+                    runtime._process_start_guard._lock.locked()
+                )
+                probe_calls.append(
+                    {
+                        "engine": engine,
+                        **kwargs,
+                    }
+                )
+                return _replay_process_boundary_report(
+                    service_uid=kwargs["service_uid"],
+                    occurrence_id=kwargs["occurrence_id"],
+                    active_item_ids=kwargs["active_item_ids"],
+                )
+
+            def execute(_engine, **kwargs):
+                guards.append(kwargs["process_start_guard"])
+                with kwargs["process_start_guard"]:
+                    kwargs["_process_fence"]()
+                    kwargs["_process_fence"]()
+                with state_lock:
+                    states[selected] = "SUCCESS"
+                return SimpleNamespace(
+                    status="success",
+                    scheme_id=selected,
+                    item_id=item_id,
+                )
+
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(read_snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "assert_real_replay_dispatch_identity_current",
+                ) as identity_recheck,
+                patch(
+                    "harness.daily_real_replay."
+                    "probe_isolated_replay_process_boundary",
+                    side_effect=probe,
+                    create=True,
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                    side_effect=execute,
+                ) as canonical,
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with _preflight_session() as session:
+                    identity = _bind_test_dispatch_identity(
+                        session,
+                        root,
+                    )
+                    identity_recheck.return_value = identity
+                    result = runtime._run_with_operator_session(
+                        session
+                    )
+
+        self.assertEqual(result.status, "complete")
+        canonical.assert_called_once()
+        self.assertEqual(len(guards), 1)
+        self.assertIsInstance(guards[0], ProcessStartGuard)
+        self.assertIs(guards[0], runtime._process_start_guard)
+        self.assertGreaterEqual(len(probe_calls), 4)
+        self.assertEqual(
+            probe_guard_states,
+            [True] * len(probe_calls),
+        )
+        for call in probe_calls:
+            self.assertIs(call["engine"], engine)
+            self.assertEqual(call["service_uid"], os.getuid())
+            self.assertEqual(call["occurrence_id"], 41)
+            self.assertIsInstance(call["active_item_ids"], tuple)
+            self.assertEqual(call["active_item_ids"], (item_id,))
+        self.assertEqual(runtime._active_item_ids, set())
+
+    def test_process_boundary_report_identity_is_exact_before_claim(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+        from scheduler.scheduled_executor import (
+            execute_scheduled_item,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                runtime._active_item_ids.add(1)
+                with _preflight_session() as session:
+                    identity = _bind_test_dispatch_identity(
+                        session,
+                        root,
+                    )
+                    reports = {
+                        "wrong_type": SimpleNamespace(
+                            service_uid=os.getuid(),
+                            occurrence_id=41,
+                            active_item_ids=(1,),
+                            boundary_clear=True,
+                        ),
+                        "wrong_uid":
+                            _replay_process_boundary_report(
+                                service_uid=os.getuid() + 1,
+                                occurrence_id=41,
+                                active_item_ids=(1,),
+                            ),
+                        "wrong_occurrence":
+                            _replay_process_boundary_report(
+                                service_uid=os.getuid(),
+                                occurrence_id=42,
+                                active_item_ids=(1,),
+                            ),
+                        "wrong_active_items":
+                            _replay_process_boundary_report(
+                                service_uid=os.getuid(),
+                                occurrence_id=41,
+                                active_item_ids=(1, 2),
+                            ),
+                    }
+                    for label, report in reports.items():
+                        with (
+                            self.subTest(label=label),
+                            patch(
+                                "harness.daily_real_replay_operator."
+                                "assert_real_replay_dispatch_identity_current",
+                                return_value=identity,
+                            ),
+                            patch(
+                                "harness.daily_real_replay."
+                                "probe_isolated_replay_process_boundary",
+                                return_value=report,
+                            ),
+                            patch(
+                                "scheduler.scheduled_executor."
+                                "read_schedule_execution_envelope",
+                                return_value=(
+                                    snapshot.execution_envelopes[1]
+                                ),
+                            ),
+                            patch(
+                                "scheduler.scheduled_executor."
+                                "start_schedule_attempt",
+                                side_effect=RuntimeError(
+                                    "unexpected attempt claim"
+                                ),
+                            ) as claim,
+                        ):
+                            result = execute_scheduled_item(
+                                engine,
+                                item_id=1,
+                                process_start_guard=(
+                                    runtime._process_start_guard
+                                ),
+                                _process_fence=lambda: (
+                                    runtime.
+                                    _assert_replay_process_boundary(
+                                        session
+                                    )
+                                ),
+                            )
+                            self.assertEqual(
+                                result.status,
+                                "recovery_blocked",
+                            )
+                            self.assertIsNone(result.run_id)
+                            claim.assert_not_called()
+
+    def test_process_boundary_compares_the_probed_snapshot_once(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with _preflight_session() as session:
+                    identity = _bind_test_dispatch_identity(
+                        session,
+                        root,
+                    )
+                    with (
+                        patch(
+                            "harness.daily_real_replay_operator."
+                            "assert_real_replay_dispatch_identity_current",
+                            return_value=identity,
+                        ),
+                        patch.object(
+                            runtime,
+                            "_active_item_snapshot",
+                            side_effect=(
+                                (1,),
+                                AssertionError(
+                                    "active snapshot was read twice"
+                                ),
+                            ),
+                        ) as active_snapshot,
+                        patch(
+                            "harness.daily_real_replay."
+                            "probe_isolated_replay_process_boundary",
+                            return_value=(
+                                _replay_process_boundary_report(
+                                    service_uid=os.getuid(),
+                                    occurrence_id=41,
+                                    active_item_ids=(1,),
+                                )
+                            ),
+                        ) as probe,
+                    ):
+                        runtime._assert_replay_process_boundary(
+                            session
+                        )
+
+        active_snapshot.assert_called_once_with()
+        self.assertEqual(
+            probe.call_args.kwargs["active_item_ids"],
+            (1,),
+        )
+
+    def test_submit_failure_rolls_back_reserved_active_item(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+        from scheduler.daily_coordinator import dispatch_order
+
+        class SubmitFailurePool:
+            def submit(self, *_args, **_kwargs):
+                raise RuntimeError("worker pool rejected submit")
+
+            def shutdown(self, **_kwargs) -> None:
+                return None
+
+        policy, configs = _real_policy_and_configs()
+        selected = dispatch_order(policy, policy.schemes)[0]
+        observed_at = (
+            datetime.now(timezone.utc) + timedelta(minutes=7)
+        )
+        states = {
+            scheme_id: (
+                "PENDING" if scheme_id == selected else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+                states=states,
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "assert_real_replay_dispatch_identity_current",
+                ) as identity_recheck,
+                patch(
+                    "harness.daily_real_replay."
+                    "probe_isolated_replay_process_boundary",
+                    return_value=_replay_process_boundary_report(
+                        service_uid=os.getuid(),
+                        occurrence_id=41,
+                        active_item_ids=(
+                            sorted(policy.schemes).index(selected) + 1,
+                        ),
+                    ),
+                    create=True,
+                ),
+                patch(
+                    "harness.daily_real_replay.ThreadPoolExecutor",
+                    side_effect=(
+                        SubmitFailurePool(),
+                        SubmitFailurePool(),
+                    ),
+                ),
+                patch(
+                    "harness.daily_real_replay._now_utc",
+                    return_value=observed_at,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with _preflight_session() as session:
+                    identity = _bind_test_dispatch_identity(
+                        session,
+                        root,
+                    )
+                    identity_recheck.return_value = identity
+                    result = runtime._run_with_operator_session(
+                        session
+                    )
+
+        self.assertEqual(result.status, "recovery_blocked")
+        self.assertEqual(result.dispatched_scheme_ids, ())
+        self.assertEqual(result.blocked_scheme_ids, (selected,))
+        self.assertEqual(runtime._active_item_ids, set())
+
+    def test_queued_worker_observes_stop_before_executor_entry(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from scheduler.scheduled_executor import (
+            ScheduledProcessFenceError,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with _replay_inputs() as inputs:
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                stop_signal = threading.Event()
+                stop_signal.set()
+                with (
+                    patch.object(
+                        runtime,
+                        "_execute_owned_item",
+                    ) as execute,
+                    self.assertRaises(ScheduledProcessFenceError),
+                ):
+                    runtime._execute_owned_item_with_stop_fence(
+                        item_id=1,
+                        dispatch_lock=threading.Lock(),
+                        stop_signal=stop_signal,
+                    )
+
+        execute.assert_not_called()
+
+    def test_direct_runtime_executor_fails_closed_before_claim(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with _replay_inputs() as inputs:
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                runtime._owner_active = True
+                runtime._active_item_ids.add(1)
+                try:
+                    with (
+                        patch(
+                            "harness.daily_real_replay."
+                            "_recheck_real_replay_database"
+                        ),
+                        patch(
+                            "scheduler.scheduled_executor."
+                            "read_schedule_execution_envelope",
+                            return_value=(
+                                snapshot.execution_envelopes[1]
+                            ),
+                        ),
+                        patch(
+                            "scheduler.scheduled_executor."
+                            "start_schedule_attempt",
+                        ) as claim,
+                    ):
+                        result = runtime._execute_owned_item(
+                            item_id=1
+                        )
+                finally:
+                    runtime._owner_active = False
+
+        self.assertEqual(result.status, "recovery_blocked")
+        self.assertIsNone(result.run_id)
+        claim.assert_not_called()
 
     def test_does_not_enter_production_control_plane(self) -> None:
         from harness.daily_real_replay import RealReplayRuntime

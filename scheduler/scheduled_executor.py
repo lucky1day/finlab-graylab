@@ -7,7 +7,7 @@ import json
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from sqlalchemy.exc import (
     DBAPIError,
@@ -132,6 +132,10 @@ class ScheduledRecoveryCutoffError(RuntimeError):
 
 class ScheduledEpochDriftError(ScheduledContractError):
     """current machine epoch 与冻结 occurrence capability 不一致。"""
+
+
+class ScheduledProcessFenceError(RuntimeError):
+    """隔离 replay 进程边界无法确认，禁止 claim/启动/提交。"""
 
 
 @dataclass(frozen=True)
@@ -420,6 +424,7 @@ def execute_scheduled_item(
     databridge_schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
     trusted_verifier=None,
     process_start_guard: ProcessStartGuard | None = None,
+    _process_fence: Callable[[], None] | None = None,
 ) -> ScheduledItemExecutionResult:
     """执行一个已绑定 generation 的 item，且只通过原子 ledger API 提交。
 
@@ -430,16 +435,37 @@ def execute_scheduled_item(
     process_start_guard = require_process_start_guard(
         process_start_guard
     )
+    if _process_fence is not None and process_start_guard is None:
+        raise TypeError(
+            "process fence requires canonical ProcessStartGuard"
+        )
     envelope = read_schedule_execution_envelope(
         engine,
         item_id=int(item_id),
     )
     try:
         _assert_execution_epoch(engine, envelope)
+        if _process_fence is not None:
+            if process_start_guard is None:
+                raise AssertionError(
+                    "validated process fence lost its start guard"
+                )
+            with process_start_guard:
+                _invoke_process_fence(_process_fence)
         attempt = start_schedule_attempt(
             engine,
             item_id=int(item_id),
             trigger_origin=trigger_origin,
+        )
+    except (ScheduledProcessFenceError, ProcessGroupTerminationError) as exc:
+        return ScheduledItemExecutionResult(
+            item_id=int(item_id),
+            scheme_id=envelope.item.base_scheme_id,
+            status="recovery_blocked",
+            run_id=None,
+            attempt_no=None,
+            failure_code=None,
+            error_message=_bounded_error(exc),
         )
     except (RuntimeError, ValueError) as exc:
         return ScheduledItemExecutionResult(
@@ -515,13 +541,16 @@ def execute_scheduled_item(
                 calendar_generation=calendar_generation,
                 execution_token=attempt.execution_token,
                 process_started=process_started,
-                process_fence=lambda: _assert_execution_epoch(
+                process_fence=lambda: _assert_scheduled_process_fence(
                     engine,
-                    envelope
+                    envelope=envelope,
+                    process_fence=_process_fence,
                 ),
                 process_start_guard=process_start_guard,
             )
         except ScheduledEpochDriftError:
+            raise
+        except ScheduledProcessFenceError:
             raise
         except Exception as exc:
             raise _classify_algorithm_exception(exc) from exc
@@ -605,6 +634,16 @@ def execute_scheduled_item(
                 envelope=envelope,
                 attempt=attempt,
                 error=exc,
+            )
+        if isinstance(exc, ScheduledProcessFenceError):
+            return ScheduledItemExecutionResult(
+                item_id=int(item_id),
+                scheme_id=envelope.item.base_scheme_id,
+                status="recovery_blocked",
+                run_id=attempt.run_id,
+                attempt_no=attempt.attempt_no,
+                failure_code=None,
+                error_message=_bounded_error(exc),
             )
         failure_code = _failure_code(exc)
         message = _bounded_error(exc)
@@ -728,6 +767,32 @@ def _assert_execution_epoch(
             "daily occurrence coordinator epoch differs from current "
             "machine-global epoch"
         ) from exc
+
+
+def _invoke_process_fence(
+    process_fence: Callable[[], None],
+) -> None:
+    """把外部 replay fence 的任意失败稳定映射为恢复阻断。"""
+    try:
+        process_fence()
+    except ScheduledProcessFenceError:
+        raise
+    except Exception as exc:
+        raise ScheduledProcessFenceError(
+            "isolated replay process boundary could not be confirmed"
+        ) from exc
+
+
+def _assert_scheduled_process_fence(
+    engine,
+    *,
+    envelope: ScheduleExecutionEnvelope,
+    process_fence: Callable[[], None] | None,
+) -> None:
+    """在 canonical guard 内组合 epoch 与隔离进程边界。"""
+    _assert_execution_epoch(engine, envelope)
+    if process_fence is not None:
+        _invoke_process_fence(process_fence)
 
 
 def _open_frozen_generations(

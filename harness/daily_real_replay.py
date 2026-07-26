@@ -26,6 +26,10 @@ from scheduler.daily_coordinator import (
     ResourceGovernor,
     dispatch_order,
 )
+from scheduler.daily_control_plane_probe import (
+    ReplayProcessBoundaryReport,
+    probe_isolated_replay_process_boundary,
+)
 from scheduler.daily_ledger import freeze_active_daily_registry
 from scheduler.daily_policy import (
     APPROVED_0629_LIVE_SOURCE_SCHEMES,
@@ -34,6 +38,7 @@ from scheduler.daily_policy import (
 )
 from scheduler.daily_runtime import _policy_payload
 from scheduler.discovery import discover_schemes
+from scheduler.process_control import ProcessStartGuard
 from scheduler.repository import (
     create_schedule_occurrence as _repository_create_schedule_occurrence,
 )
@@ -178,6 +183,9 @@ class RealReplayRuntime:
         )
         self._governor = ResourceGovernor(policy)
         self._active_operator_session: object | None = None
+        self._process_start_guard = ProcessStartGuard()
+        self._dispatch_lock = threading.Lock()
+        self._active_item_ids: set[int] = set()
 
     def run(self) -> RealReplayRuntimeResult:
         """在隔离 owner 锁内用受控双池完成独立首轮 item。"""
@@ -224,7 +232,7 @@ class RealReplayRuntime:
     def _assert_operator_dispatch_identity(
         self,
         session: object,
-    ) -> None:
+    ) -> object:
         """重读成功预检身份；只返回通过或稳定 drift 错误。"""
         locked_session = self._require_operator_session(session)
         try:
@@ -232,13 +240,116 @@ class RealReplayRuntime:
                 assert_real_replay_dispatch_identity_current,
             )
 
-            assert_real_replay_dispatch_identity_current(
+            identity = assert_real_replay_dispatch_identity_current(
                 locked_session
             )
+            service_uid = getattr(identity, "service_uid", None)
+            if (
+                type(service_uid) is not int
+                or service_uid != os.getuid()
+            ):
+                raise RuntimeError(
+                    "real replay service UID drifted"
+                )
+            return identity
         except Exception:
             raise _RealReplayDispatchIdentityDrift(
                 "real replay dispatch identity drifted"
             ) from None
+
+    def _active_item_snapshot(self) -> tuple[int, ...]:
+        """只在 dispatch lock 下复制当前 reserved/running item ID。"""
+        with self._dispatch_lock:
+            return tuple(sorted(self._active_item_ids))
+
+    def _reserve_active_item(
+        self,
+        item_id: int,
+        *,
+        stop_signal: threading.Event,
+    ) -> bool:
+        """submit 前原子预留；stop 已发布时拒绝 queued dispatch。"""
+        normalized_item_id = int(item_id)
+        with self._dispatch_lock:
+            if stop_signal.is_set():
+                return False
+            if normalized_item_id in self._active_item_ids:
+                raise DailyRealReplayError(
+                    "real replay item is already reserved"
+                )
+            self._active_item_ids.add(normalized_item_id)
+            return True
+
+    def _release_active_item(self, item_id: int) -> None:
+        """仅在 submit 失败或 future 已收口后释放预留。"""
+        normalized_item_id = int(item_id)
+        with self._dispatch_lock:
+            if normalized_item_id not in self._active_item_ids:
+                raise DailyRealReplayError(
+                    "real replay active item reservation is missing"
+                )
+            self._active_item_ids.remove(normalized_item_id)
+
+    def _assert_replay_process_boundary(
+        self,
+        operator_session: object | None,
+    ) -> None:
+        """用 write-once service UID 与精确 active snapshot 执行 OS probe。"""
+        try:
+            if operator_session is None:
+                raise RuntimeError(
+                    "real replay process dispatch requires operator session"
+                )
+            identity = self._assert_operator_dispatch_identity(
+                operator_session
+            )
+            service_uid = int(identity.service_uid)
+            active_item_ids = self._active_item_snapshot()
+            report = probe_isolated_replay_process_boundary(
+                self._engine,
+                service_uid=service_uid,
+                occurrence_id=self._occurrence_id,
+                active_item_ids=active_item_ids,
+            )
+            if type(report) is not ReplayProcessBoundaryReport:
+                raise RuntimeError(
+                    "isolated replay process boundary report is invalid"
+                )
+            if (
+                report.service_uid != service_uid
+                or report.occurrence_id != self._occurrence_id
+                or report.active_item_ids != active_item_ids
+            ):
+                raise RuntimeError(
+                    "isolated replay process boundary report drifted"
+                )
+            if not report.boundary_clear:
+                raise RuntimeError(
+                    "isolated replay process boundary is blocked"
+                )
+        except scheduled_executor.ScheduledProcessFenceError:
+            raise
+        except Exception as exc:
+            raise scheduled_executor.ScheduledProcessFenceError(
+                "isolated replay process boundary could not be confirmed"
+            ) from exc
+
+    def _probe_replay_process_boundary(
+        self,
+        operator_session: object,
+    ) -> None:
+        """在共享 start guard 内执行 submit/worker 的 OS probe。"""
+        try:
+            with self._process_start_guard:
+                self._assert_replay_process_boundary(
+                    operator_session
+                )
+        except scheduled_executor.ScheduledProcessFenceError:
+            raise
+        except Exception as exc:
+            raise scheduled_executor.ScheduledProcessFenceError(
+                "isolated replay process boundary could not be confirmed"
+            ) from exc
 
     def _run(
         self,
@@ -291,12 +402,18 @@ class RealReplayRuntime:
         self._owner_active = True
         dispatched: list[str] = []
         active: dict[Future[Any], str] = {}
+        active_item_id_by_future: dict[Future[Any], int] = {}
         stop_status: str | None = None
         stop_blocked: set[str] = set()
-        dispatch_lock = threading.Lock()
+        dispatch_lock = self._dispatch_lock
         stop_signal = threading.Event()
         pools: dict[str, ThreadPoolExecutor] = {}
         try:
+            with dispatch_lock:
+                if self._active_item_ids:
+                    raise DailyRealReplayError(
+                        "real replay active item reservations were not empty"
+                    )
             pools["native"] = ThreadPoolExecutor(
                 max_workers=self._policy.native_max_concurrency,
                 thread_name_prefix="real-replay-native",
@@ -325,6 +442,9 @@ class RealReplayRuntime:
                 if completed:
                     stop_status = self._harvest_completed_futures(
                         active,
+                        active_item_id_by_future=(
+                            active_item_id_by_future
+                        ),
                         completed=completed,
                         stop_status=stop_status,
                         stop_blocked=stop_blocked,
@@ -437,33 +557,39 @@ class RealReplayRuntime:
                             if item.runtime_type == "blackbox_v2"
                             else "native"
                         )
-                        with dispatch_lock:
-                            if stop_signal.is_set():
-                                break
+                        item_id = int(item.item_id)
+                        if not self._reserve_active_item(
+                            item_id,
+                            stop_signal=stop_signal,
+                        ):
+                            break
+                        try:
                             if operator_session is not None:
-                                try:
-                                    self._assert_operator_dispatch_identity(
-                                        operator_session
-                                    )
-                                except DailyRealReplayError:
-                                    stop_signal.set()
-                                    stop_status = (
-                                        _merge_replay_stop_status(
-                                            stop_status,
-                                            "recovery_blocked",
-                                        )
-                                    )
-                                    stop_blocked.add(scheme_id)
-                                    break
+                                self._probe_replay_process_boundary(
+                                    operator_session
+                                )
                             future = pools[pool_name].submit(
                                 self._execute_owned_item_with_stop_fence,
-                                item_id=int(item.item_id),
+                                item_id=item_id,
                                 dispatch_lock=dispatch_lock,
                                 stop_signal=stop_signal,
                                 operator_session=operator_session,
                             )
-                            active[future] = scheme_id
-                            dispatched.append(scheme_id)
+                        except Exception:
+                            self._release_active_item(item_id)
+                            _set_replay_stop_signal(
+                                dispatch_lock,
+                                stop_signal,
+                            )
+                            stop_status = _merge_replay_stop_status(
+                                stop_status,
+                                "recovery_blocked",
+                            )
+                            stop_blocked.add(scheme_id)
+                            break
+                        active[future] = scheme_id
+                        active_item_id_by_future[future] = item_id
+                        dispatched.append(scheme_id)
 
                 if active:
                     wait(
@@ -520,6 +646,8 @@ class RealReplayRuntime:
                 if shutdown_error is not None:
                     raise shutdown_error
             finally:
+                with dispatch_lock:
+                    self._active_item_ids.clear()
                 self._owner_active = False
                 self._active_operator_session = None
                 if owns_lock:
@@ -531,6 +659,7 @@ class RealReplayRuntime:
         self,
         active: dict[Future[Any], str],
         *,
+        active_item_id_by_future: dict[Future[Any], int],
         completed: tuple[Future[Any], ...],
         stop_status: str | None,
         stop_blocked: set[str],
@@ -541,51 +670,58 @@ class RealReplayRuntime:
             key=lambda value: active[value],
         ):
             scheme_id = active.pop(future)
+            item_id = active_item_id_by_future.pop(future)
             try:
-                result = future.result()
-            except _RealReplayCutoffReached:
-                stop_status = _merge_replay_stop_status(
-                    stop_status,
-                    "cutoff_incomplete",
-                )
-                stop_blocked.add(scheme_id)
-                continue
-            except _RealReplayDispatchIdentityDrift:
-                stop_status = _merge_replay_stop_status(
-                    stop_status,
+                try:
+                    result = future.result()
+                except _RealReplayCutoffReached:
+                    stop_status = _merge_replay_stop_status(
+                        stop_status,
+                        "cutoff_incomplete",
+                    )
+                    stop_blocked.add(scheme_id)
+                    continue
+                except (
+                    _RealReplayDispatchIdentityDrift,
+                    scheduled_executor.ScheduledProcessFenceError,
+                ):
+                    stop_status = _merge_replay_stop_status(
+                        stop_status,
+                        "recovery_blocked",
+                    )
+                    stop_blocked.add(scheme_id)
+                    continue
+                except Exception:
+                    stop_status = _merge_replay_stop_status(
+                        stop_status,
+                        "integrity_error",
+                    )
+                    stop_blocked.add(scheme_id)
+                    continue
+                status = str(getattr(result, "status", ""))
+                if status in {
+                    "claim_rejected",
+                    "stale_rejected",
+                    "fenced_pending_cleanup",
                     "recovery_blocked",
-                )
-                stop_blocked.add(scheme_id)
-                continue
-            except Exception:
-                stop_status = _merge_replay_stop_status(
-                    stop_status,
-                    "integrity_error",
-                )
-                stop_blocked.add(scheme_id)
-                continue
-            status = str(getattr(result, "status", ""))
-            if status in {
-                "claim_rejected",
-                "stale_rejected",
-                "fenced_pending_cleanup",
-                "recovery_blocked",
-            }:
-                stop_status = _merge_replay_stop_status(
-                    stop_status,
-                    "recovery_blocked",
-                )
-                stop_blocked.add(scheme_id)
-            elif status not in {
-                "success",
-                "failed",
-                "retry_wait",
-            }:
-                stop_status = _merge_replay_stop_status(
-                    stop_status,
-                    "integrity_error",
-                )
-                stop_blocked.add(scheme_id)
+                }:
+                    stop_status = _merge_replay_stop_status(
+                        stop_status,
+                        "recovery_blocked",
+                    )
+                    stop_blocked.add(scheme_id)
+                elif status not in {
+                    "success",
+                    "failed",
+                    "retry_wait",
+                }:
+                    stop_status = _merge_replay_stop_status(
+                        stop_status,
+                        "integrity_error",
+                    )
+                    stop_blocked.add(scheme_id)
+            finally:
+                self._release_active_item(item_id)
         return stop_status
 
     def _execute_owned_item_with_stop_fence(
@@ -598,6 +734,17 @@ class RealReplayRuntime:
     ) -> Any:
         """在 future 完成前发布阻断 fence，与新 submit 线性化。"""
         try:
+            with dispatch_lock:
+                if stop_signal.is_set():
+                    raise (
+                        scheduled_executor.ScheduledProcessFenceError(
+                            "real replay dispatch stopped before worker entry"
+                        )
+                    )
+            if operator_session is not None:
+                self._probe_replay_process_boundary(
+                    operator_session
+                )
             result = self._execute_owned_item(
                 item_id=item_id,
                 operator_session=operator_session,
@@ -654,6 +801,12 @@ class RealReplayRuntime:
             self._engine,
             item_id=int(item_id),
             trigger_origin="operator_recovery",
+            process_start_guard=self._process_start_guard,
+            _process_fence=lambda: (
+                self._assert_replay_process_boundary(
+                    operator_session
+                )
+            ),
         )
         _recheck_real_replay_database(self._engine, self._isolation)
         return result
