@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台入库、运行和审计人员
-**最后核验日期**：2026-07-24
+**最后核验日期**：2026-07-26
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)；具体方案的版本、快照、运行结果和当前状态只追加到 [Blackbox V2 入库试验台账](../blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
@@ -23,10 +23,13 @@
 执行 Intake 前确认：
 
 - 两个条目均为普通文件，不是目录或符号链接；
-- 文件名与 Metadata 中的 `scheme_id` 一致；Metadata 有八个必填字段，并提供 `description`；
+- 文件名与 Metadata 中的 `scheme_id` 一致；Metadata 有历史八字段，并提供正式新交付必填的 `description`；
+- Metadata 不含 `platform_inputs`；该字段属于 Intake 生成的平台配置，不属于上游合同；
 - `.py` 是唯一可执行内容，不存在模型、配置、依赖或辅助模块；
 - trial 的 base `scheme_id` 和 composite Registry ID 均未占用；
 - 同一算法已有原生实现时使用独立 trial ID，不覆盖原方案。
+
+上游工作目录可以含自验用 `api_wind_date.csv`、sample 或交接材料，但不得把这些内容交给 Intake。平台必须先复制精确 `.py + .json` 到私有临时目录，并确认该目录恰好两个普通文件；上游随包日历永不成为正式运行输入。
 
 记录收到文件的原始摘要：
 
@@ -36,12 +39,15 @@ shasum -a 256 <delivery-dir>/{scheme_id}.py <delivery-dir>/{scheme_id}.json
 
 ### 1.2 执行 Intake
 
+以下示例为需要平台周历的方案；不需要任何平台注册制品时省略最后一行：
+
 ```bash
 python -m harness intake-blackbox \
   --delivery-dir <incoming-two-file-directory> \
   --project-root /Users/macstudio0/bond-factor-lab \
   --runtime-profile blackbox-v2-v1 \
-  --data-schema-version data-bridge-v1
+  --data-schema-version data-bridge-v1 \
+  --platform-input api-wind-date-v1
 ```
 
 Intake 应原字节保存交付文件，并生成：
@@ -54,7 +60,8 @@ schemes/{scheme_id}/
     └── {scheme_id}.json
 ```
 
-检查平台配置至少包含：
+检查平台配置至少包含基础字段；使用上述参数时还必须包含
+`platform_inputs`：
 
 ```yaml
 scheme_id: <scheme_id>
@@ -62,21 +69,23 @@ runtime_type: blackbox_v2
 input_source: data_bridge_current
 runtime_profile: blackbox-v2-v1
 data_schema_version: data-bridge-v1
+platform_inputs:
+  - api-wind-date-v1
 status: paused
 version_status: draft
 ```
 
 名称、算法版本、期限、任务类型、horizon 和 target rule 只能来自 Metadata。`blackbox-v2-v1` 是运行 profile；`forecast_env_blackbox_v1` 是该 profile 当前引用的 conda 环境，两者不得混称。
 
-`description` 在 Contract 1.0 中仍是推荐而非机器必填的算法逻辑摘要，以兼容既有不可变交付。缺失不阻断 Intake：命令仍以退出码 `0` 成功，并在机器 JSON 的 `warnings` 数组返回“建议上游补充简短算法逻辑说明”；该 warning 不进入 Gate 失败计数，也不授予任何生产权限。对后续新交付，平台人工收包必须在 Gate 前拒绝缺失说明的包；当前这是人工 fail-closed，机器门禁仍待独立 TDD 实施。提供时必须是单段非空纯文本、最多 300 个字符，换行、`<`、`>`、空字符串或错误类型均拒绝。
+`description` 是正式新交付的必填算法逻辑摘要。为兼容已有不可变交付，机器兼容 Intake 对历史八字段包仍可能以退出码 `0` 返回，并在机器 JSON 的 `warnings` 数组提示缺少说明；机器兼容 Intake 不等于正式收包通过。平台必须在 Gate 前 fail-closed，拒绝任何缺少 `description` 的正式新交付。说明必须是单段非空纯文本、最多 300 个字符，换行、`<`、`>`、空字符串或错误类型均拒绝。
 
 已有方案缺少 `description` 时不修改只读 Metadata、不推测算法逻辑，也不制造新版本；只有在专项批次记录中写明 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED` 的既有交付，才可按其原有授权范围继续发现、Gate 和运行。缺失说明在平台配置中映射为空字符串。
 
 ### 1.3 对照 Contract 1.0
 
-机器契约 `shared.blackbox_v2.contracts` 是字段和组合的判定源：
+机器契约 `shared.blackbox_v2.contracts` 是字段和组合的判定源；平台注册输入则由 Intake 参数和 `config.yaml` 表达，不写入 Metadata：
 
-- Metadata 必须包含八字段：`schema_version`、`scheme_id`、`name`、`algorithm_version`、`target_tenor`、`task_type`、`horizon`、`target_rule`；可选增加 `description`，其他额外字段继续 fail-closed。
+- Metadata 的历史机器基线包含八字段：`schema_version`、`scheme_id`、`name`、`algorithm_version`、`target_tenor`、`task_type`、`horizon`、`target_rule`；正式新交付还必须有 `description`，其他额外字段（包括 `platform_inputs`）继续 fail-closed。
 - Request 恰好七字段：`request_id`、`predict_date`、`feature_date`、`target_date`、`daily_cutoff_key`、`weekly_cutoff_key`、`monthly_cutoff_key`。
 - Result 恰好五字段：`request_id`、`predict_date`、`feature_date`、`target_date`、`predicted_direction`。
 
@@ -201,18 +210,58 @@ SHA、business/feature date 或关联摘要任一漂移时 fail-closed。旧 gen
 
 ### 3.1 运行快照
 
-平台通过 `shared.input_artifacts`：
+平台输入分两层。DataBridge 父快照仍然严格只有三份业务文件：
 
 1. 在共享锁内校验 `data/data_bridge/current` 与 state；
 2. 复制 `daily_output.csv`、`weekly_output.csv`、`monthly_output.csv`；
-3. 按最低兼容字段基线校验实际表头，并用三份实际文件的完整列集合和内容生成内容寻址的 `data_snapshot_id`；
-4. 将目录和文件设为只读，释放锁后启动算法。
+3. 按最低兼容字段基线校验实际表头，并用三份实际文件的完整列集合和内容生成父 `snapshot_id`；
+4. 不把日历或其它平台注册制品加入 DataBridge generation、父
+   Snapshot 或 `SNAPSHOT_FILENAMES`。
 
-Input 报告必须记录 snapshot ID、Schema、三份文件行列数与 SHA256，以及 Request 的三个日期和三个截止键。
+声明了 `platform_inputs: [api-wind-date-v1]` 的方案在父快照上组合
+`api_wind_date.csv`。首个 provider 的固定契约是：
 
-`blackbox_v2/input_state.json` 必须记录 `generation_id`、`refresh_date`、business digest、环境指纹和 Snapshot 身份；Input Gate 同时记录三份文件摘要和 Request。授权段必须绑定该 input state，不能只凭三份 SHA256 推断 generation。
+```text
+artifact_id: api-wind-date-v1
+provider_version: api-wind-date-provider-v1
+filename: api_wind_date.csv
+columns: rdate,week_id
+```
 
-正常 `onboard --stage all` 结束后临时快照会删除。`input_state.json` 中的绝对路径只在执行期间有效，不能用于回放；平台不永久保存该次完整输入文件。
+Provider 将 `rdate` 规范化为非空、唯一、严格升序的 `YYYY-MM-DD`，
+将整数或尾随 `.0` 形式的 `week_id` 规范化为六位平台键，并要求覆盖
+本次 Request 的 `weekly_cutoff_key`。日历按完整权威范围冻结，不按
+`feature_date` 截断；三频业务文件仍按各自 cutoff 使用。
+
+Harness/check-only 通过只读 DB capture 读取权威 `api_wind_date`；
+scheduled 路径只使用已与 DataBridge generation 核对 ID 和 manifest
+SHA 的 Native generation 冻结帧。两条路径使用同一个 provider
+规范化内容，但在 `source provenance` 中分别记录来源。来源类型、
+generation ID、捕获时间和临时路径仅进入 `audit_manifest`，不参与
+内容身份。
+
+组合对象同时记录 `combined_snapshot_id`、`parent_snapshot_id`、
+三频父快照、已排序 `platform_inputs`、制品摘要、`identity_manifest`
+和 `audit_manifest`。没有平台注册制品时，组合 ID 直接沿用父
+snapshot ID；有制品时只对身份 schema 版本、父 ID，以及按 ID 排序
+的 artifact ID、provider version、文件名、SHA256、大小、行数和列
+计算组合 ID。因此相同父快照和相同规范化日历跨 DB capture/Native
+generation 具有相同 `combined_snapshot_id`。
+
+每次子进程运行前，平台把三频父快照和声明的制品物化成独立、私有
+的临时运行视图。文件必须是普通文件而非 symlink/hardlink，写入后
+复核 SHA256，再将文件设为 `0444`、目录设为 `0555`；Runner 只允许
+精确三文件或声明后的精确四文件。正常退出后清理视图；无法确认
+子进程终止时移入受控 `debris cleanup`，不得立即删除仍可能被读取
+的目录。平台不长期重复保存三份大型 CSV。
+
+Input 报告必须分组记录三频父快照与平台注册制品，并记录父/组合
+snapshot ID、Schema、各文件行列数与 SHA256、两个 manifest，以及
+Request 的三个日期和三个截止键。
+
+`blackbox_v2/input_state.json` 必须记录 `generation_id`、`refresh_date`、business digest、环境指纹、父/组合 Snapshot 身份和制品 provenance；Input Gate 同时记录三份业务文件、平台注册制品摘要和 Request。授权段必须绑定该 input state，不能只凭三份 SHA256 推断 generation。
+
+正常 `onboard --stage all` 结束后临时父快照和运行视图会删除。`input_state.json` 中的绝对路径只在执行期间有效，不能用于回放；Harness 报告保留组合 manifest，但平台不永久保存该次完整输入文件。
 
 ### 3.2 Request
 
@@ -258,16 +307,48 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 
 任一 Gate 失败时 fail-fast，不进入后续 Gate，不签发 shadow 授权。
 
+仅做技术入库准备、要求生产数据库零写入时，必须使用正式
+`--check-only` 编排：
+
+```bash
+conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness onboard {scheme_id} \
+    --predict-date YYYY-MM-DD \
+    --stage all \
+    --check-only \
+    --algo-env forecast_env_blackbox_v1 \
+    --timeout-sec 1800
+```
+
+`--check-only` 仍使用只读 Engine 构造平台日历、三个 cutoff 和
+Request，仍按固定七 Gate 顺序 fail-fast，并生成本地
+`harness_run_id`、逐 Gate JSON 与统一报告；但完全不调用 Harness
+控制面 run/gate 持久化，也不写任何业务表。统一报告必须同时写明：
+
+```text
+check_only=true
+control_plane_persisted=false
+business_tables_written=false
+persist_backtest=false
+```
+
+该模式只允许 `--stage all`，且与授权 token、持久化 backtest、
+shadow、activate、gray/live 和真实 API 等任何副作用阶段不兼容；
+出现组合参数时必须 fail-closed。Backtest Gate 固定执行 100 条
+no-persist 验收，必须得到 `100/100` 且 `persist=false`；
+`api-readiness` 仍只做结构验证，不访问真实 Registry、HTTP API 或
+scheduler。
+
 ### 4.2 Gate 证据边界
 
 | Gate | 当前检查 | 当前没有证明 | 主要证据 |
 |---|---|---|---|
-| `static` | 两文件、Metadata、语法、禁止 import/调用，以及 `/Users/`、`/home/`、Windows 盘符形式的绝对路径字面量 | 其他绝对路径、算法效果、全局文件读取隔离 | runtime、版本、Metadata、违规列表 |
-| `input` | 三频 Schema、快照、七字段 Request、三个截止键 | 当天 freshness、generation 映射 | snapshot ID、三 SHA、Request |
+| `static` | 两文件、Metadata、已声明 provider、语法、禁止 import/调用，以及 `/Users/`、`/home/`、Windows 盘符形式的绝对路径字面量 | 其他绝对路径、算法效果、全局文件读取隔离 | runtime、版本、Metadata、`platform_inputs`、违规列表 |
+| `input` | 三频 Schema、父/组合快照、平台注册制品、七字段 Request、三个截止键 | 当天 freshness、scheduled generation 映射 | 两类文件摘要、父/组合 ID、两个 manifest、Request |
 | `unit` | help 暴露两个模式；一个非法 Request 失败且无 Output | 所有非法组合均被覆盖 | help、非法输入、失败无 Output |
-| `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、结果路径 |
-| `compare` | 重复、predict/backtest、分批、顺序、后续行隔离 | 准确率、历史修订回放 | 五类一致性证据 |
-| `backtest` | 100 条全部返回、no-persist | 大于 100 条单进程能力、效果门槛 | 请求/结果数量、persist=false |
+| `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、组合 ID、结果路径 |
+| `compare` | 重复、predict/backtest、分批、顺序、后续业务行隔离；平台制品哈希不变 | 准确率、历史修订回放 | 五类一致性证据、`platform_input_hashes_unchanged=true` |
+| `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛 | 请求/结果数量、组合 ID、persist=false |
 | `api-readiness` | composite 身份和结果结构兼容 | 真实 Registry、HTTP API 或 scheduler 探针 | registry ID、结构结果 |
 
 报告中的 `business_tables_written: false` 是声明性证据，不是数据库前后计数。`api-readiness` 中的 scheduler/API 状态也是结构预期，不能单独证明生产不可见。
@@ -276,7 +357,7 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 
 ### 4.3 自动段副作用
 
-`--stage all` 可以写：
+普通 `--stage all`（没有 `--check-only`）可以写：
 
 - `reports/harness/{scheme_id}/...`；
 - `t_harness_runs`、`t_harness_gate_results` 等控制面审计记录。
@@ -284,6 +365,10 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 它不得写 `t_scheme_runs`、`t_scheme_predictions`、`t_backtest_*` 业务记录、active Registry 或前端可见状态。
 
 Harness 控制面持久化采用 fail-closed。即使 `onboard_report.json` 为 `overall_passed=true`，仍必须确认 exact `harness_run_id` 和七个 Gate 已存在于审计数据库，才能授权 shadow。
+
+`--check-only` 恰好相反：它不得尝试写
+`t_harness_runs`/`t_harness_gate_results`，本地通过报告也不能用于
+签发 shadow 或任何生产授权。两种模式的报告不得混称。
 
 Result 解析器严格要求 JSON 的 `predicted_direction` 为整数 `-1/0/1`，拒绝字符串、布尔值和浮点数；CSV 继续按合同接受文本 token `-1/0/1`。
 
@@ -540,7 +625,9 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 ## 9. 最终检查
 
 - [ ] 两文件和 Metadata 通过 Intake，摘要已记录
+- [ ] 正式新交付含合法 `description`；自验日历未进入两文件目录，Metadata 未声明 `platform_inputs`
 - [ ] base/composite 身份无冲突，配置为 `blackbox_v2 + paused + draft`
+- [ ] 需要平台周历的方案以 `--platform-input api-wind-date-v1` Intake，父快照仍严格三文件
 - [ ] 冻结环境和 sandbox 自检通过
 - [ ] DataBridge generation 状态和三 SHA 已保存
 - [ ] 当天 occurrence 已冻结 Registry、代码/config 摘要、21/25 动态期望数
@@ -549,8 +636,9 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 08:00 target SLA 已从冻结 ledger 评估；late completion 没有回写 `BREACHED`
 - [ ] Input 报告三 SHA 与选定 generation 完全一致
 - [ ] 七个 Gate 通过，并理解各 Gate 没有证明什么
-- [ ] exact Harness run 和七个结果已进入审计 DB
-- [ ] 自动段只产生控制面审计，没有业务表新增
+- [ ] 技术零写入批次使用 `--check-only`，报告四个零写字段正确，Backtest 为 `100/100 + persist=false`，API readiness 仅为结构验证
+- [ ] 如准备 shadow（非 check-only），exact Harness run 和七个结果已进入审计 DB
+- [ ] 普通自动段只产生控制面审计，没有业务表新增；check-only 连控制面也未持久化
 - [ ] Shadow token 绑定 exact version/run 并设置短有效期
 - [ ] 登记后配置、版本、Registry 为 `shadow + paused`
 - [ ] 独立 DB、scheduler 和 API 检查证明 trial 未进入生产链路

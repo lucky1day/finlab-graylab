@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：Harness 开发、平台入库和安全审计人员
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-26
 
 本文是双运行时 Harness 的强约束总纲。所有后续新方案只允许 Blackbox V2；Native V1 仅维护政策清单中的存量身份。Harness 统一编排 Gate，但按显式 `runtime_type` 选择检查和执行驱动。
 
@@ -15,10 +15,10 @@ Harness 不是新的预测算法，也不是新的数据口径。Harness 的职�
 
 核心边界:
 
-- `shared.input_artifacts` 是所有算法输入的唯一平台入口：Native V1 由它构建 DB artifact，Blackbox V2 由它复制 DataBridge 同代三频只读快照。
+- `shared.input_artifacts` 是所有算法输入的唯一平台入口：Native V1 由它构建 DB artifact，Blackbox V2 由它复制 DataBridge 同代三频父快照，并组合显式声明的平台制品。
 - `shared.calendar_service` 与 `scheduler.weekly_actuals_updater` 必须共享同一周历事实；源周历孤立 forward jump 只允许通过公共只读 normalizer 处理，不能在方案 adapter、core 或临时脚本里各自修正。
 - Native V1 的 `core/` 和 `predict.py` 继续遵守纯算法与 adapter 边界；清单外 Native 身份必须在 StaticGate 和 ActivationGate fail-closed。
-- Blackbox V2 的 delivery 两文件保持上游原始字节，平台不重写算法；脚本只读三频快照，通过 CLI 输出标准 Result。
+- Blackbox V2 的 delivery 两文件保持上游原始字节，平台不重写算法；脚本只读“三频父快照 + 显式声明的平台制品”的精确临时视图，通过 CLI 输出标准 Result。
 - Native source-backed 保真由平台 core/benchmark 证据验证；Blackbox 内部保真由上游负责，平台验证确定性、截止隔离和标准结果。
 - `scheduler.scheme_runner` 是只读 dry-run 边界，只输出 JSON，不写库。
 - `scheduler.executor` / `scheduler.repository` 是正式预测写库边界。算法层不得直接写 `t_scheme_predictions` 或 `t_scheme_run_log`。
@@ -62,7 +62,7 @@ bond-factor-lab/
 |------|------|----------|
 | `harness.contracts` | 校验入库政策、共享身份；按 runtime 校验 Native adapter 或 Blackbox Metadata/Request/Result | 不运行算法、不写库 |
 | `harness.import_audit` | 静态扫描危险导入和绕路调用 | 不自动改代码 |
-| `harness.input_gate` | Native 构建并核验 artifact；Blackbox 记录同代三频快照摘要和 Request 截止键 | 不直接调用源表写入，不把摘要证据夸大为 generation freshness |
+| `harness.input_gate` | Native 构建并核验 artifact；Blackbox 记录三频父快照、平台注册制品、组合输入身份和 Request 截止键 | 不直接调用源表写入，不把摘要证据夸大为 generation freshness |
 | `harness.dry_run_gate` | 调用 `scheduler.scheme_runner`，核验 dry-run 不写正式表，并校验 `predict_date/feature_date/target_date` 语义 | 不调用 `scheduler.executor` |
 | `harness.compare_gate` | Native 执行 source benchmark；Blackbox 验证 predict/backtest、重复、分批、顺序和未来行隔离 | 不用调参、改脚本或伪造结果 |
 | `harness.backtest_gate` | 先跑 `--no-persist`，生成回测摘要和报告；历史排行样本统一要求 `predict_date >= 2025-01-01`，并对受保护表做前后快照 | 未授权不落 `t_backtest_*`；授权落库时也只能改 `t_backtest_*` |
@@ -80,6 +80,11 @@ python -m harness onboard t1_daily \
   --predict-date 2026-06-06 \
   --stage all
 
+python -m harness onboard t1_daily \
+  --predict-date 2026-06-06 \
+  --stage all \
+  --check-only
+
 python -m harness gate live \
   --scheme-id t1_daily \
   --predict-date 2026-06-06 \
@@ -88,6 +93,19 @@ python -m harness gate live \
 ```
 
 `--stage all` 的顺序固定为: static -> input -> unit -> dry-run -> compare -> backtest-no-persist -> api-readiness。任何一步失败都停止。Native Compare 是否允许跳过只由其存量维护契约判定；Blackbox Compare 必须完成确定性和隔离检查。`api-readiness` 只按其实现证据声明结构兼容性，不等同于真实 Registry、HTTP API 或 scheduler 探针。`live`、持久化 backtest、`activate` 不属于默认 `all`。
+
+`--check-only` 只允许 canonical `--stage all`，仍执行七个自动 Gate，
+仍可通过只读 Engine 捕获日历和构造 Request，但控制面零持久化、
+业务表零写入。它不调用 Harness run/gate persistence，Backtest 固定
+no-persist，并拒绝授权 token、持久化、shadow/activate/live 或其它
+副作用上下文。各 Gate 的证据职责是：
+
+- Static 只记录声明的 provider；
+- Input 创建并记录组合输入身份；
+- Unit/Dry-run/Compare/Backtest/API readiness 共享同一组合输入身份。
+
+报告显式记录四个零写字段；本地通过报告不能代替可签发授权的持久
+审计记录。
 
 `config.yaml.schedule.timeout_sec` 是 executor 层运行预算，harness config schema 只校验其为正整数。它不能替代 Unit/Dry-run/Compare/Backtest 证据，也不能作为放宽 source fidelity、日期语义或 protected table guard 的理由。若方案依赖更长 timeout 才能完成，验证报告应同时记录实际 `duration_sec` 与配置值。
 
@@ -99,7 +117,7 @@ python -m harness gate live \
 
 1. 上游按 Contract 1.0 交付一个 `.py` 和一个 `.json`。
 2. Intake 校验普通文件、八字段 Metadata、trial 身份和摘要，生成 `paused/draft` 平台配置。
-3. 平台确认 Runtime Profile、最新通过校验的 DataBridge generation、三频快照和七字段 Request。
+3. 平台确认 Runtime Profile、最新通过校验的 DataBridge generation、三频父快照、声明制品、组合输入身份和七字段 Request。
 4. 依次执行 `static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness`。
 5. 独立查询证明预测、回测等业务表零写入。
 6. 通用入库授权只登记为 `shadow + paused`；生产准备通过的具体方案仍须取得独立专项授权，才能执行 ActivationGate、持久化回测或 LiveGate。
@@ -128,9 +146,15 @@ python -m harness gate live \
 - `api_wind_weekly`
 - `api_wind_derivative_weekly`
 - `api_wind_indicators_all`
+- `api_wind_date`
 - `t_trade_calendar`
 - `t_pre_market_forecast`
 - `t_shap`
+
+`api_wind_date` 仅由平台输入 provider 通过只读连接捕获，用于
+Harness/check-only 冻结平台注册日历；scheduled 复用已核验的 Native
+generation 冻结副本。算法子进程、方案 adapter 和其它 Gate 不得直接
+查询该表。
 
 正式预测写库只允许这些边界:
 

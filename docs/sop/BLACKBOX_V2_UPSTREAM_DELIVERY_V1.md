@@ -6,11 +6,13 @@
 
 **目标读者**：上游算法工程师
 
-**最后核验日期**：2026-07-21
+**最后核验日期**：2026-07-26
 
 本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和三份脱敏 sample；不需要再阅读仓库内其他文档。
 
 本地开发、训练和效果验证优先使用从统一 DataBridge 下载的真实 DataBridge 数据。三份 sample 只在 DataBridge 暂时不可用时用于读取、选列、截止截断和接口烟雾测试，不能用于训练或效果回测。最终交付物仍然只有同名的 `{scheme_id}.py + {scheme_id}.json`。
+
+若方案需要平台统一周历，可以在开发目录放置 `api_wind_date.csv` 做本地自验，但它不是交付物。正式交付目录仍然只能包含同名 `.py + .json`；`api_wind_date.csv` 只允许作为上游自验材料，不得进入正式两文件交付目录。平台通过 Intake 参数声明和提供该制品，不从 Metadata 或上游目录取日历。
 
 本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是三频数据 Schema；三者不能混作算法版本。
 
@@ -78,6 +80,15 @@ Blackbox V2 Contract 1.0 当前使用的 Python 和关键包版本：
 - 不得额外交付依赖文件、模型文件、配置文件、辅助模块、数据文件、凭证或项目目录。
 
 如算法需要训练，训练逻辑和固定参数必须包含在 `.py` 中，并且只能使用当前 Request 允许的数据。DataBridge 下载文件、机器 Schema 和脱敏 sample 是开发材料，不是算法方案交付物。
+
+需要周历的平台适配由平台操作人员在 Intake 时显式声明：
+
+```bash
+python -m harness intake-blackbox ... \
+  --platform-input api-wind-date-v1
+```
+
+上游不得在 Metadata 中增加 `platform_inputs`，也不得用随包日历代替平台提供的权威制品。
 
 ---
 
@@ -283,7 +294,7 @@ Contract 1.0 只允许以下组合：
 
 ### 4.2 填写 `{scheme_id}.json`
 
-Metadata 必须是无 BOM 的 UTF-8 JSON。Contract 1.0 包含八个必填字段，并可选提供推荐字段 `description`：
+Metadata 必须是无 BOM 的 UTF-8 JSON。机器兼容解析保留八个历史必填字段；对所有正式新交付，`description` 是正式交付必填字段：
 
 ```json
 {
@@ -305,11 +316,11 @@ Metadata 必须是无 BOM 的 UTF-8 JSON。Contract 1.0 包含八个必填字段
 - `scheme_id` 是算法执行身份；`name` 是当前任务格子内用于区分候选方案的简洁业务名称，两者不要混用。
 - `name` 不得重复 `target_tenor`、不得重复 `task_type` 或 `horizon`，也不得追加“方向预测”等已经由任务格子表达的说明。
 - `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
-- `description` 是 Contract 1.0 的可选算法逻辑摘要；为保留既有交付兼容性，机器 Intake 对缺失说明不阻断，历史交付仍强烈建议补充可追溯的算法说明。后续新交付必须提供；缺失说明的新交付不得进入后续平台验收或获得运行授权。
-- `description` 建议简述主要输入、窗口或规则、模型类型以及最终方向形成方式；平台不会根据脚本或名称代写算法逻辑。
-- `description` 存在时必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
+- `description` 必须简述主要输入、窗口或规则、模型类型以及最终方向形成方式；平台不会根据脚本或名称代写算法逻辑。
+- `description` 必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
+- 机器 Intake 为读取既有不可变交付而保留缺失字段兼容，不改变正式交付规则；正式新交付缺少 `description` 时不得进入平台 Gate。
 - `task_type`、`horizon` 和 `target_rule` 必须来自上一节的同一行。
-- 除可选 `description` 外，不得增加 `frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
+- Metadata 不得增加 `platform_inputs`、`frequency`、输入路径、运行开关、可变阈值、特征列表或模型参数。
 
 ---
 
@@ -350,7 +361,7 @@ python {scheme_id}.py backtest \
 
 ## 6. 读取数据和 Request
 
-### 6.1 读取三频数据
+### 6.1 读取平台提供的数据
 
 平台每次运行都通过 `--data-dir` 提供：
 
@@ -366,6 +377,18 @@ python {scheme_id}.py backtest \
 - 三份文件的业务列只能是有限数值或空值。
 - 数据行数、列数、起止区间、业务值和空值都可以变化；算法必须按字段名选择实际消费列，并忽略未使用的新增列。
 - 不得假定固定行数、固定列数、固定终点或“文件最后一行就是当前 Request 截止点”。
+
+只有在平台为方案显式声明 `api-wind-date-v1` 时，同一 `--data-dir` 还会提供：
+
+```text
+<data-dir>/api_wind_date.csv
+```
+
+该文件固定为 `rdate,week_id` 两列；`rdate` 是升序、唯一的
+`YYYY-MM-DD`，`week_id` 是六位平台周键。算法可以用它按
+`weekly_cutoff_key` 查询平台周映射，但不得改写文件、连接数据库补全
+日历，或回退读取交付目录旁的同名文件。未声明该制品的方案仍只看到
+三频文件。
 
 推荐按字符串读取时间键：
 
@@ -517,7 +540,7 @@ python {scheme_id}.py backtest \
 |---|---|---|
 | DataBridge 下载 | 分别下载日、周、月三份真实 CSV | HTTP 成功，文件名固定，文件非空 |
 | Schema 校验 | 执行第 3.5 节校验命令，并检查算法消费字段 | 基线字段和相对顺序兼容，时间键合法；不限制总列数 |
-| 交付物 | 检查文件数量、命名、Metadata 八个必填字段、`description` 和任务组合 | 只有两个交付文件，身份、说明和任务组合合法；缺少说明只可通过兼容 Intake，不得进入后续验收 |
+| 交付物 | 检查文件数量、命名、Metadata 历史八字段、必填 `description` 和任务组合 | 只有两个交付文件，身份、说明和任务组合合法；自验日历不进入交付目录 |
 | 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
 | 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |
 | 批量回测 | 使用至少两个不同截止键执行 `backtest` | 每个 Request 恰好一条结果，数量和顺序一致 |
@@ -537,6 +560,7 @@ python {scheme_id}.py backtest \
 
 - [ ] 只交付同名 `{scheme_id}.py + {scheme_id}.json`；
 - [ ] `.json` 的八个必填字段合法，且提供符合约束的 `description`；
+- [ ] Metadata 未增加 `platform_inputs`；如需平台周历，已告知平台在 Intake 使用 `--platform-input api-wind-date-v1`；
 - [ ] `name` 是任务格子内的简洁方案名，没有重复期限、任务或“方向预测”；
 - [ ] `predict` 和 `backtest` 使用同一算法逻辑；
 - [ ] 真实 DataBridge 数据下载和 Schema 校验已通过；
@@ -545,5 +569,6 @@ python {scheme_id}.py backtest \
 - [ ] 成功时 stdout 为空，失败时不产生 Output；
 - [ ] 交付脚本和 Metadata 不含 DataBridge 地址、用户名、密码或下载逻辑；
 - [ ] 没有网络、数据库、额外代码、模型或数据依赖。
+- [ ] `api_wind_date.csv`（如用于自验）未进入正式两文件交付目录。
 
 全部完成后，只提交 `{scheme_id}.py` 和 `{scheme_id}.json`。

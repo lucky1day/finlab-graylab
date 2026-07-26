@@ -19,6 +19,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = PROJECT_ROOT / "docs"
 UPSTREAM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md"
 PLATFORM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md"
+BLACKBOX_ARCHITECTURE = (
+    DOCS_ROOT / "architecture" / "BLACKBOX_V2_PLATFORM.md"
+)
+SCHEME_CONTRACT = DOCS_ROOT / "architecture" / "SCHEME_CONTRACT.md"
+HARNESS_ARCHITECTURE = (
+    DOCS_ROOT / "architecture" / "HARNESS_ARCHITECTURE.md"
+)
 SOP_INDEX = DOCS_ROOT / "sop" / "README.md"
 DEPLOY_README = PROJECT_ROOT / "deploy" / "README.md"
 DAILY_SIGNAL_SLA = DOCS_ROOT / "architecture" / "DAILY_SIGNAL_SLA.md"
@@ -282,27 +289,29 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, platform)
 
-    def test_blackbox_description_is_optional_and_recommended(self) -> None:
+    def test_blackbox_formal_delivery_requires_description(self) -> None:
         upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
 
         for marker in (
             '"schema_version": "1.0"',
             '"description":',
-            "可选",
-            "强烈建议",
+            "正式交付必填",
             "主要输入",
             "窗口或规则",
             "模型类型",
             "方向形成方式",
-            "不阻断",
+            "不得进入平台 Gate",
         ):
             self.assertIn(marker, upstream)
 
         for marker in (
             "description",
             "warnings",
-            "不阻断 Intake",
+            "机器兼容 Intake",
+            "不等于正式收包通过",
+            "正式新交付",
+            "Gate 前 fail-closed",
             "t_scheme_registry.description",
             "/api/schemes",
             "/api/backtests/factor-lab",
@@ -311,6 +320,91 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "前端备注",
         ):
             self.assertIn(marker, platform)
+
+    def test_blackbox_platform_input_delivery_and_check_only_contract(self) -> None:
+        upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            "正式交付目录仍然只能包含",
+            "`api_wind_date.csv` 只允许作为上游自验材料",
+            "不得进入正式两文件交付目录",
+            "不得在 Metadata 中增加 `platform_inputs`",
+            "--platform-input api-wind-date-v1",
+        ):
+            self.assertIn(marker, upstream)
+
+        for marker in (
+            "--platform-input api-wind-date-v1",
+            "platform_inputs",
+            "api-wind-date-provider-v1",
+            "api_wind_date.csv",
+            "DataBridge 父快照仍然严格只有三份业务文件",
+            "combined_snapshot_id",
+            "parent_snapshot_id",
+            "identity_manifest",
+            "audit_manifest",
+            "Harness/check-only",
+            "只读 DB capture",
+            "scheduled",
+            "Native generation",
+            "source provenance",
+            "--check-only",
+            "check_only=true",
+            "control_plane_persisted=false",
+            "business_tables_written=false",
+            "persist_backtest=false",
+            "100/100",
+            "结构验证",
+        ):
+            self.assertIn(marker, platform)
+
+    def test_blackbox_architecture_defines_composed_runtime_inputs(self) -> None:
+        blackbox = BLACKBOX_ARCHITECTURE.read_text(encoding="utf-8")
+        contract = SCHEME_CONTRACT.read_text(encoding="utf-8")
+        harness = HARNESS_ARCHITECTURE.read_text(encoding="utf-8")
+
+        for marker in (
+            "DataBridge 父快照",
+            "严格保持三个文件",
+            "三频父快照 + 显式声明的平台制品",
+            "combined_snapshot_id",
+            "parent_snapshot_id",
+            "identity schema version",
+            "provider version",
+            "source provenance",
+            "不进入组合内容身份",
+            "普通文件",
+            "0444",
+            "0555",
+            "debris cleanup",
+            "PredictionRecord.extra",
+            "input_identity_manifest",
+            "input_audit_manifest",
+        ):
+            self.assertIn(marker, blackbox)
+
+        for marker in (
+            "三频父快照 + 显式声明的平台制品",
+            "platform_inputs",
+            "api-wind-date-v1",
+            "组合输入身份",
+            "父快照身份",
+        ):
+            self.assertIn(marker, contract)
+
+        for marker in (
+            "--check-only",
+            "七个自动 Gate",
+            "控制面零持久化",
+            "业务表零写入",
+            "Static 只记录声明的 provider",
+            "Input 创建并记录组合输入身份",
+            "Unit/Dry-run/Compare/Backtest/API readiness 共享同一组合输入身份",
+            "`api_wind_date`",
+            "仅由平台输入 provider 通过只读连接捕获",
+        ):
+            self.assertIn(marker, harness)
 
     def test_launchd_defaults_keep_one_coherent_legacy_control_plane(self) -> None:
         rollout = json.loads(

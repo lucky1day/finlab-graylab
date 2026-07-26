@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发、入库和审计人员
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-26
 
 本文只定义两种运行时共享的身份、日期、结果、生命周期和分派边界。运行时专属契约分别由 [Native V1 存量契约](../native_v1/SCHEME_CONTRACT.md)和 [Blackbox V2 Contract 1.0](../sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)定义。
 
@@ -19,6 +19,7 @@
 | `schema_version=1.0` | Blackbox 上游接口合同版本 |
 | `data-bridge-v1` | 三频 CSV 数据 Schema |
 | `blackbox-v2-v1` | Blackbox 隔离执行 Runtime Profile |
+| `api-wind-date-v1` | 版本化平台注册日历制品 ID |
 | `policy_version=1.0` | 新旧运行时入库政策清单版本 |
 
 ## 2. 显式运行类型
@@ -71,6 +72,25 @@ Blackbox 还由平台提供与三频快照真实存在的 `daily_cutoff`、`week
 
 完整规则以[预测日期与实盘语义](PREDICTION_SEMANTICS.md)为准。
 
+### 5.1 Blackbox 组合输入
+
+Blackbox 的输入契约是：
+
+```text
+三频父快照 + 显式声明的平台制品
+```
+
+DataBridge 父快照继续只包含日、周、月三频 CSV；平台制品通过
+Blackbox `config.yaml.platform_inputs` 声明版本化 ID，不写入上游
+Metadata，也不成为 DataBridge 的第四个文件。当前注册的
+`api-wind-date-v1` 运行文件为 `api_wind_date.csv`。
+
+平台根据父快照身份和制品内容计算组合输入身份。没有平台注册制品
+时沿用父快照身份；有制品时，组合身份绑定父快照身份、provider
+版本、文件内容摘要和结构，来源 provenance 仅用于审计。算法只能
+读取平台为声明 ID 生成的精确只读运行视图，不得读取交付目录旁的
+同名文件或自行访问数据库。
+
 ## 6. 标准结果
 
 两种运行时最终都转换为 `shared.models.PredictionRecord`，至少承载：
@@ -82,6 +102,11 @@ Blackbox 还由平台提供与三频快照真实存在的 `daily_cutoff`、`week
 - 可审计的模型、输入快照和运行上下文
 
 Blackbox 上游结果文件本身只包含 Contract 1.0 的五个字段；平台校验成功后结合 Metadata 和运行上下文完成转换。异常、缺数或低置信度不得伪装成方向 `0`。
+
+Blackbox `PredictionRecord.extra.data_snapshot_id` 使用组合输入身份；
+声明平台注册制品时还必须记录父快照身份、已排序
+`platform_inputs` 以及身份/审计 manifests，使内容身份和来源
+provenance 可分别追溯。
 
 从 `PredictionRecord` 开始，Registry、actual join、指标、落库、API 和前端不再区分运行时。
 
@@ -111,13 +136,14 @@ python -m harness onboard {scheme_id} --predict-date YYYY-MM-DD --stage all
 - Native：校验 adapter/core、输入 artifact 和 source fidelity。
 - Blackbox：校验两文件、CLI、三频快照、确定性、截止隔离和标准结果。
 - persist、shadow、activate 或 live 都不包含在无授权自动段中。
+- `--check-only` 仍执行七个自动 Gate，但只写本地报告，控制面和业务表均零持久化。
 
 ## 9. 责任边界
 
 | 事项 | Native V1 | Blackbox V2 |
 |---|---|---|
 | 算法内部保真 | 平台可检查 core 和内部 benchmark | 上游负责；平台不反编译或改写脚本 |
-| 输入 | `shared.input_artifacts` 注入 | 同代三频只读快照加平台 Request |
+| 输入 | `shared.input_artifacts` 注入 | 三频父快照 + 显式声明的平台制品 + 平台 Request |
 | 结果验收 | `PredictionRecord` 与 source evidence | Result 合同、确定性和截止隔离 |
 | 新身份 | 禁止 | 唯一允许路径 |
 | 业务写入 | 受授权 repository | 默认禁止；生产准备通过并取得专项授权后由专用 Gate 执行 |
