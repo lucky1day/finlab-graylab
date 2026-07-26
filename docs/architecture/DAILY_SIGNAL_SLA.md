@@ -370,8 +370,10 @@ operator/runtime 双锁由一个同进程 session 持有，session 绑定创建 
 wrapper 与核心借用入口都必须在 DB、快照或线程池副作用之前验证 exact session
 类型、持有 PID、路径和 inode。借用路径只允许验证，不得 acquire/release；
 成功、运行异常和线程池收口之后，锁所有权都必须仍属于外层 operator session。
-这只完成锁所有权交接；每次 dispatch 前的候选/输入/控制面/进程 fence 仍是
-execute CLI 接线前的独立阻断项。
+runtime 还必须把 exact session 绑定到本次运行态，在主线程 submit 前和 worker
+进入 canonical claim 前分别复验；借用模式省略或替换 session 必须在 DB/claim
+之前拒绝。这两层只完成锁/session fence；每次 dispatch 前的候选、输入、控制面
+和 replay-aware 进程 fence 仍是 execute CLI 接线前的独立阻断项。
 
 隔离 replay MySQL 由专用 context manager 创建，固定使用本机新 datadir、新
 server UUID、loopback 随机非 3306 端口和唯一 `bfl_real_replay_*` schema；
