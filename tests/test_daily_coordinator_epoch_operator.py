@@ -558,6 +558,22 @@ class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
                         },
                     )
 
+    def test_unregistered_native_scheme_runner_counts_as_platform_process(
+        self,
+    ) -> None:
+        from scripts.daily_coordinator_epoch_operator import (
+            _is_daily_platform_process,
+        )
+
+        command = (
+            "/Users/macstudio0/miniconda3/bin/conda run "
+            "--no-capture-output -n forecast_env python -m "
+            "scheduler.scheme_runner --scheme-id "
+            "daily_1y_xgb_1y13_0629 --predict-date 2026-07-27"
+        )
+
+        self.assertTrue(_is_daily_platform_process(command))
+
     def test_target_ledger_requires_current_trusted_capacity_admission(
         self,
     ) -> None:

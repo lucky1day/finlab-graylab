@@ -937,6 +937,7 @@ def _is_daily_platform_process(command: str) -> bool:
     tokens = (
         "bond-factor-lab",
         "scheduler.main",
+        "scheduler.scheme_runner",
         "backend.main",
         "scheduler.v2_daily_preflight",
         "/schemes/",
