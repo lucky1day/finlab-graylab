@@ -368,6 +368,13 @@ operator/runtime 双锁由一个同进程 session 持有，session 绑定创建 
 外层 session 退出时固定先释放 runtime、再释放 operator，为后续 execute 的无缝
 持锁和逆序资源清理提供唯一入口。
 
+隔离 replay MySQL 由专用 context manager 创建，固定使用本机新 datadir、新
+server UUID、loopback 随机非 3306 端口和唯一 `bfl_real_replay_*` schema；
+Engine 使用显式 URL 并安装 per-connection identity guard，不读取生产连接环境。
+退出顺序固定为 dispose Engine、停止并确认 mysqld 退出、最后经 parent/root fd
+清理原 inode；路径并发替换、进程仍存活或 owner/权限漂移均保留现场并
+fail-closed。该层不应用 migration、不 seed Registry，也不执行算法。
+
 当前 attestation/observation schema 有意只承认这组 21/25 与四个 V2，防止新增
 任务偷用旧容量证据；它还不是最终的动态扩容接口。首次变更 active daily Registry
 前，必须发布 schema v3，从签名 policy 与 candidate manifest 派生 item/target/V2

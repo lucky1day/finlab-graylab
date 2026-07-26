@@ -298,6 +298,7 @@ schemes/{id}/                     schemes/{id}/
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/main.py` | L3 | APScheduler 调度 | `build_scheduler` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
+| `harness/daily_real_replay_mysql.py` | L5 | 真实联跑专用的隔离 MySQL 生命周期；不读取生产 env，不应用 migration | `isolated_replay_mysql`、`IsolatedReplayMySQL.create_replay_database` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |
 | `tests/` | L4 | 单元/集成验证 | unittest |
