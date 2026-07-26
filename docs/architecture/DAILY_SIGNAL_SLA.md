@@ -372,8 +372,8 @@ wrapper 与核心借用入口都必须在 DB、快照或线程池副作用之前
 成功、运行异常和线程池收口之后，锁所有权都必须仍属于外层 operator session。
 runtime 还必须把 exact session 绑定到本次运行态，在主线程 submit 前和 worker
 进入 canonical claim 前分别复验；借用模式省略或替换 session 必须在 DB/claim
-之前拒绝。这两层只完成锁/session fence；每次 dispatch 前的候选、输入、控制面
-和 replay-aware 进程 fence 仍是 execute CLI 接线前的独立阻断项。
+之前拒绝。这两层完成锁/session fence；动态身份由下文的 dispatch identity
+重读提供，replay-aware 进程 fence 仍是 execute CLI 接线前的独立阻断项。
 
 成功的二次预检还必须在同一 session 上一次性绑定不可序列化的 dispatch
 identity；它只保存固定 manifest 路径和脱敏摘要，覆盖候选 Git/policy、
@@ -383,8 +383,11 @@ generation、21/25 定义、控制面、生产 migration/Registry/version、sour
 替代该 capability；未绑定、重复绑定或 session 已释放均 fail-closed。当前这层
 已经提供动态重读 helper：重开 manifest 并重验候选、定义、控制面、生产
 migration/Registry/version 和 source endpoint/principal/table；source 水位只
-记录、不要求静止。该 helper 尚未接入 runtime 的 submit/claim 线性化路径，
-replay-aware 进程校验也未完成。
+记录、不要求静止。runtime 现已在 dispatch lock 内、future submit
+之前重读一次，并在 worker 进入 canonical claim 前再重读一次；前者失败不得
+submit，后者失败不得接触隔离 DB/claim，两者都结构化为 `recovery_blocked` 并
+停止后续 dispatch。当前剩余缺口是区分当前 replay 已登记 PGID 与外部、旧
+attempt 或异 UID 算法进程。
 
 隔离 replay MySQL 由专用 context manager 创建，固定使用本机新 datadir、新
 server UUID、loopback 随机非 3306 端口和唯一 `bfl_real_replay_*` schema；
