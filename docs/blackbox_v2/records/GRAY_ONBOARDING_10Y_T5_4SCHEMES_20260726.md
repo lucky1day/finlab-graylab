@@ -6,6 +6,8 @@
 
 **当前状态**：`four-schemes-gray-live-accepted`
 
+**机器证据**：[GRAY_ACCEPTANCE_10Y_T5_4SCHEMES_20260726.evidence.json](GRAY_ACCEPTANCE_10Y_T5_4SCHEMES_20260726.evidence.json)
+
 本文是本批四个 10Y T+5 Blackbox V2 方案的时点记录。批次初始状态为
 `authorized/manual-onboarding-pending-revalidation`，授权逐方案 revalidation →
 `controlled activate` → `persistent backtest` → `manual gray_live` →
@@ -264,24 +266,35 @@
 `gray_live` 并在 metrics/dashboard 前端数据接口可见，总计 156 条。
 本批不存在 `scheduled_live`，也未获得自动调度权限。
 
+## 4. 批次终态与接口可见性
+
 - 四个 exact version 与 composite Registry 均为 `active`；run `182` 至
   `185` 分别是四方案唯一的成功持久化回测 run，每个 run 都有 333 条
   canonical prediction 和 17 个月度指标。
 - `/api/schemes` 已返回四个方案，dashboard 的 10Y/T+5 格子共有 8 个候选；
-  `/api/backtests/factor-lab` 与前端均可见四方案的 333 条日频历史和 17 个月度
-  指标。四方案实时 `/api/metrics/{scheme_id}` 均为空。
-- production `t_input_generations=0`；四方案的 `gray_live`、`live_write` 和
-  `scheduled_live` 均为 0，统一状态为
-  `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。因此本批只能称为历史入库
-  验收完成，不能称为完整 gray 入库完成。
+  `/api/backtests/factor-lab` 与前端均可见四方案的 333 条日频历史和 17
+  个月度指标。四方案实时 `/api/metrics/{scheme_id}` 各返回 39 条
+  `gray_live`；前端每方案合计 `333 + 39 = 372` 条展示记录。
+- 四方案共 156 条 `gray_live`，run/prediction/run-log 一一对应，run ID
+  连续覆盖 `1194..1349`；使用 DataBridge generation
+  `full-20260724-062251-4977e502dadf` 和 runtime snapshot
+  `snapshot-46ff3231de2c4a080c46ba56`。
+- 独立只读终验时间为 `2026-07-27 00:58:19 Asia/Shanghai`。精确日期范围为
+  `predict_date=2026-05-26..2026-07-20`、
+  `feature_date=2026-05-25..2026-07-17`、
+  `target_date=2026-06-01..2026-07-24`；历史与灰度无重叠。
+- 本批 `scheduled_live=0`，三层 ledger 为 `0/0/0`；没有启动或修改
+  scheduler。
+- 本 integration/operator 的 active daily discovery 为 25 item/29 target，
+  正式 policy 仍为 21 item/25 target；legacy scheduler 不检查 gray
+  admission，因此本分支不得用于重启 scheduler，也不得整体合入当前 scheduler
+  checkout。
 - scheduler、真实 21/25、rollout=`legacy` 和 admission=`BLOCKED` 均未因
   本批改变。
 
 ## 5. 后续顺序
 
-下一合法动作是等待获准生产者发布合法同日 `SEALED` generation，再按 exact
-version 逐方案手工执行 `manual gray_live` 和实时 DB/API/frontend 验收；禁止
-旧 generation fallback。自动灰度调度必须先完成[TODO](../../TODO.md)列出的
+本批手工灰度入库已完成。自动灰度调度必须先完成[TODO](../../TODO.md)列出的
 21/25、迁移、replay、容量、恢复和连续观察门禁，调度设计通过后另行获得独立
-`scheduler_admission=gray|formal` 与逐方案授权。`formal` 晋级不由本记录或
-`gray` admission 推导。
+`scheduler_admission=gray|formal` 与逐方案授权；仍禁止旧 generation
+fallback。`formal` 晋级不由本记录或 `gray` admission 推导。

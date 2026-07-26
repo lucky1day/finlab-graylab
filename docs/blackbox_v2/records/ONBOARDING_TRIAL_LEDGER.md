@@ -4,7 +4,7 @@
 
 **目标读者**：平台入库、审计和复盘人员
 
-**最后核验日期**：2026-07-26
+**最后核验日期**：2026-07-27
 
 **记录时区**：除明确标注 UTC 外，本文时间均为 `Asia/Shanghai`。
 **文档性质**：追加式平台规划和试验台账，不是上游交付契约，也不是平台操作 SOP。
@@ -481,6 +481,30 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 该终态只证明历史入库和可见性已完成，不能表述为完整 gray 入库完成，也不授予
 `scheduled_live`、formal 或通用生产权限。
+
+### 4.17 记录 003E：10Y T+5 四方案手工灰度入库完成
+
+**最终只读核验时间**：2026-07-27 00:58:19，`Asia/Shanghai`。
+
+**机器证据**：[GRAY_ACCEPTANCE_10Y_T5_4SCHEMES_20260726.evidence.json](GRAY_ACCEPTANCE_10Y_T5_4SCHEMES_20260726.evidence.json)。
+
+本条是记录 003 的最新追加终态，supersede 4.16 的
+`GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION` 时点状态，但不删除或改写旧证据。
+
+| 项目 | 最终核验 |
+|---|---|
+| exact identity | 四个 exact version 和 composite Registry 继续为 `active`，target 均为 `10Y / T+5` |
+| persistent backtest | run `182..185`，每方案 333 条 canonical prediction 和 17 个月度指标 |
+| manual gray_live | 每方案 39 条，共 156 条；run/prediction/run-log 一一对应，run ID 依次为 `1194..1232`、`1233..1271`、`1272..1310`、`1311..1349` |
+| DataBridge provenance | generation `full-20260724-062251-4977e502dadf`；refresh date `2026-07-24`；runtime snapshot `snapshot-46ff3231de2c4a080c46ba56` |
+| 日期范围 | `predict_date=2026-05-26..2026-07-20`、`feature_date=2026-05-25..2026-07-17`、`target_date=2026-06-01..2026-07-24`；与历史 `target_date<=2026-05-29` 无重叠 |
+| API / frontend | 四方案 metrics 各 39 条；dashboard 每方案 `333 backtest + 39 gray_live = 372` 条展示记录；10Y/T+5 格子仍为 8 个候选 |
+| 调度边界 | `scheduled_live=0`，三层 ledger=`0/0/0`，rollout/admission=`legacy/BLOCKED`；没有启动或修改 scheduler |
+| 现存 P1 | 第四方案成功 Gate run `hr_20260726T134918Z_b71762de0a2f` 的 `report_uri` 仍位于 `/tmp`，当前可读但未进入受治理的长期审计存储 |
+| 后续 | 先完成真实 21/25、迁移、replay、容量与恢复门禁，再通过独立 gray admission 讨论自动调度 |
+
+本条只证明本批手工灰度入库、DB/API 和前端数据链路完成，不授予
+`scheduled_live`、formal、08:00 SLA 或通用生产权限。
 
 ## 5. 已确认的通用迭代规则
 

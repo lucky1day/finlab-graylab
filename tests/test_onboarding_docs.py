@@ -31,6 +31,10 @@ TEN_Y_T5_RECORD = (
     / "GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md"
 )
 BLACKBOX_RECORDS = DOCS_ROOT / "blackbox_v2" / "records"
+TEN_Y_T5_GRAY_EVIDENCE = (
+    BLACKBOX_RECORDS
+    / "GRAY_ACCEPTANCE_10Y_T5_4SCHEMES_20260726.evidence.json"
+)
 BLACKBOX_TRIAL_LEDGER = BLACKBOX_RECORDS / "ONBOARDING_TRIAL_LEDGER.md"
 BLACKBOX_RECORDS_INDEX = BLACKBOX_RECORDS / "README.md"
 TEN_Y_T5_SCHEME_IDS = (
@@ -514,7 +518,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
             {"README.md", "CURRENT_STATUS.md", "TODO.md"},
         )
 
-    def test_todo_prioritizes_the_10y_batch_and_platform_dependencies(self) -> None:
+    def test_todo_prioritizes_platform_after_completed_manual_gray(self) -> None:
         text = TODO.read_text(encoding="utf-8")
         p0, _ = text.split("## P1", maxsplit=1)
 
@@ -552,19 +556,18 @@ class OnboardingDocumentationTests(unittest.TestCase):
 
     def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
         todo = TODO.read_text(encoding="utf-8")
-        p0, _ = todo.split("## P1", maxsplit=1)
         record = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
 
-        for text in (p0, record):
-            for marker in (
-                "controlled activate",
-                "persistent backtest",
-                "manual gray_live",
-            ):
-                self.assertIn(marker, text)
+        for marker in (
+            "controlled activate",
+            "persistent backtest",
+            "manual gray_live",
+        ):
+            self.assertIn(marker, record)
 
         self.assertIn("四个方案均已完成 39 条", record)
         self.assertIn("本批总计 156 条", record)
+        self.assertIn("合计 372 条", record)
         self.assertEqual(
             record.count("GRAY_LIVE_WAITING_FOR_MANUAL_EXECUTION"),
             0,
@@ -574,36 +577,64 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("scheduled_live", record)
         self.assertIn("旧 generation fallback", record)
 
-    def test_10y_batch_current_docs_record_historical_only_completion(self) -> None:
+    def test_10y_batch_current_docs_record_manual_gray_completion(self) -> None:
         todo = TODO.read_text(encoding="utf-8")
         current = CURRENT_STATUS.read_text(encoding="utf-8")
         record = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
         ledger = BLACKBOX_TRIAL_LEDGER.read_text(encoding="utf-8")
         index = BLACKBOX_RECORDS_INDEX.read_text(encoding="utf-8")
 
-        for text in (todo, current):
+        for text in (todo, current, record):
             self.assertNotIn(
                 "当前状态是 `authorized/manual-onboarding-pending-revalidation`",
                 text,
             )
+            self.assertNotIn("GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION", text)
+
+        for text in (current, record):
             for marker in (
                 "333",
                 "17",
+                "39",
+                "372",
+                "156",
                 "10Y/T+5",
                 "8 个候选",
-                "GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION",
-                "integration",
-                "闭世界 21/25",
-                "fail-closed",
             ):
                 self.assertIn(marker, text)
 
+        for marker in (
+            "integration",
+            "25 item/29 target",
+            "闭世界 21 item/25 target",
+            "fail-closed",
+        ):
+            self.assertIn(marker, current)
+
+        for text in (todo, current, record):
+            self.assertIn("25 item/29 target", text)
+            self.assertIn("21 item/25 target", text)
+            self.assertIn("schedule_cron", text)
+            self.assertIn("legacy scheduler", text)
+
+        for text in (current, record):
+            self.assertIn("rollout=`legacy`", text)
+            self.assertIn("admission=`BLOCKED`", text)
+            self.assertIn("scheduled_live=0", text)
+
         self.assertIn(
-            "**当前状态**：`GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`",
+            "**当前状态**：`four-schemes-gray-live-accepted`",
             record,
         )
         for marker in (
-            "t_input_generations=0",
+            "full-20260724-062251-4977e502dadf",
+            "snapshot-46ff3231de2c4a080c46ba56",
+            "1194..1232",
+            "1233..1271",
+            "1272..1310",
+            "1311..1349",
+            "25 item/29 target",
+            "21 item/25 target",
             "gray_live",
             "scheduled_live",
             "rollout=`legacy`",
@@ -616,7 +647,41 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn(marker, record + ledger)
 
         self.assertIn("### 4.16 记录 003 终态", ledger)
-        self.assertIn("历史入库验收", index)
+        self.assertIn("### 4.17 记录 003E", ledger)
+        self.assertIn("手工灰度验收", index)
+
+        evidence = json.loads(TEN_Y_T5_GRAY_EVIDENCE.read_text(encoding="utf-8"))
+        self.assertEqual(evidence["batch_totals"]["gray_predictions"], 156)
+        self.assertEqual(evidence["batch_totals"]["gray_runs"], 156)
+        self.assertEqual(evidence["batch_totals"]["gray_run_logs"], 156)
+        self.assertEqual(evidence["batch_totals"]["scheduled_live"], 0)
+        boundary = evidence["scheduler_boundary"]
+        self.assertEqual(boundary["rollout"], "legacy")
+        self.assertEqual(boundary["admission"], "BLOCKED")
+        self.assertEqual(boundary["formal_policy"], "21-item-25-target")
+        self.assertEqual(boundary["integration_discovery"], "25-item-29-target")
+        self.assertFalse(boundary["scheduler_restarted"])
+        self.assertTrue(boundary["active_configs_have_schedule_cron"])
+        self.assertFalse(boundary["integration_merge_authorized"])
+        self.assertFalse(boundary["automatic_gray_authorized"])
+        self.assertEqual(len(evidence["schemes"]), 4)
+        expected_run_start = 1194
+        gray_total = 0
+        for scheme in evidence["schemes"]:
+            self.assertEqual(scheme["backtest_rows"], 333)
+            self.assertEqual(scheme["gray_predictions"], 39)
+            self.assertEqual(
+                scheme["backtest_rows"] + scheme["gray_predictions"],
+                scheme["frontend_samples"],
+            )
+            self.assertEqual(scheme["frontend_samples"], 372)
+            run_start, run_end = scheme["gray_run_range"]
+            self.assertEqual(run_start, expected_run_start)
+            self.assertEqual(run_end - run_start + 1, 39)
+            expected_run_start = run_end + 1
+            gray_total += scheme["gray_predictions"]
+        self.assertEqual(expected_run_start, 1350)
+        self.assertEqual(gray_total, evidence["batch_totals"]["gray_predictions"])
 
     def test_each_document_directory_has_a_complete_index(self) -> None:
         missing_indexes: list[str] = []

@@ -4,30 +4,15 @@
 
 **目标读者**：项目负责人、平台开发、运维和审计人员
 
-**最后核验日期**：2026-07-26
+**最后核验日期**：2026-07-27
 
 本文是当前未完成工作的唯一权威排序。它不替代[当前状态](CURRENT_STATUS.md)的已验证结论，也不替代专项记录的时点证据。
 
-## P0：10Y T+5 四方案同日手工灰度补全
+本批 10Y T+5 四方案的 `controlled activate`、`persistent backtest`、
+`manual gray_live` 和前端验收已经完成，不再列为待办；终态见
+[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
 
-本批四个日频 Blackbox V2 方案已完成 revalidation → `controlled activate` → `persistent backtest` → 历史 `DB/API/frontend acceptance`：四个 exact version 和 composite Registry 均为 `active`，每方案各有 1 个成功持久化回测 run、333 条历史 prediction 和 17 个月度指标；`/api/schemes` 与前端均已可见，10Y/T+5 格子共有 8 个候选。该结论只是历史入库完成，不是完整 `gray_live` 入库完成。
-
-| base scheme ID | description 专项状态 | 当前入库状态 |
-|---|---|---|
-| `ten_y_t5_maj3_k3_ic_static_v1` | `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED` | `EXACT_ACTIVE / GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION` |
-| `ten_y_t5_maj4_k3_ic_static_v1` | `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED` | `EXACT_ACTIVE / GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION` |
-| `ten_y_t5_maj4_k3_ic_yearly_v1` | `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED` | `EXACT_ACTIVE / GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION` |
-| `ten_y_t5_say_k5_sharpe_static_v1` | `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED` | `EXACT_ACTIVE / GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION` |
-
-- production `t_input_generations=0`，四方案的 `gray_live`、`live_write` 和 `scheduled_live` 均为 0；实时 metrics 为空，统一状态为 `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。
-- 下一合法动作是在获准生产者发布合法同日 `SEALED` generation 后，按 exact version 专项授权手工执行 `manual gray_live`，再验收实时 DB/API/frontend；禁止 `旧 generation fallback`，也不得提前执行 `scheduled_live`。
-- 四个 active 配置均含 `schedule_cron`；在 gray admission 的调度设计通过并获授权前，不得把本 integration 合入或用于重启 legacy scheduler。`active` 不等于 scheduler 授权。
-- 本 integration 的四个 active config 会使 active daily discovery 从 21 变为 25，而正式 policy 仍是闭世界 21/25；因此 policy、coordinator 和 replay 全量测试按设计 fail-closed。这是上线阻断证据，不是回归通过；在 gray admission 将灰度 discovery 与正式 occurrence 分离前，分支必须保持隔离。
-- 四个不可变既有 Metadata 均缺少 `description`；专项豁免不改写 Metadata、不代写算法逻辑，也不外推到其他交付。
-- 后续新交付必须提供合规的 `description`；当前机器 Intake 对缺失仍只返回兼容 warning，平台人工收包必须 fail-closed。把该要求升级为机器门禁尚待独立 TDD 实施，不能由本批豁免推定已完成。
-- 本批 exact version、Metadata/Delivery SHA、运行异常和来源提交只由[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)定义。
-
-## P1：日频平台前置依赖（严格顺序）
+## P0：日频平台前置依赖（严格顺序）
 
 本批自动调度只能在以下依赖全部通过后开始；每项均需有可审计证据，不能以 recorder、伪造 seal、生产库写入或其他替代物跳过。
 
@@ -44,10 +29,23 @@
 
 前置事项的架构门禁见[日频信号 08:00 SLA 架构](architecture/DAILY_SIGNAL_SLA.md)；已验证进展只记录在[当前状态](CURRENT_STATUS.md)。
 
-## P2：独立 gray/formal admission 与本批自动灰度
+## P1：独立 gray/formal admission 与本批自动灰度
 
-仅在 P1 全部通过、调度设计验收通过且获得新的专项授权后，才建设独立的 `scheduler_admission=gray|formal`（即 `gray/formal admission`）。它必须与既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray admission 通过后才可把本批四方案接入 `automatic gray scheduling`。`formal` 的准入必须另行授权，不能由 `gray`、description 豁免或本批手工入库结论推导。
+仅在 P0 全部通过、调度设计验收通过且获得新的专项授权后，才建设独立的 `scheduler_admission=gray|formal`（即 `gray/formal admission`）。它必须与既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray admission 通过后才可把以下四个方案接入 `automatic gray scheduling`：
 
-## P3：正式晋级
+- `ten_y_t5_maj3_k3_ic_static_v1`
+- `ten_y_t5_maj4_k3_ic_static_v1`
+- `ten_y_t5_maj4_k3_ic_yearly_v1`
+- `ten_y_t5_say_k5_sharpe_static_v1`
+
+四个 active 配置均含 `schedule_cron`；在 gray admission 通过前，不得把本
+integration 合入或用于重启 legacy scheduler。该 integration 的 active daily
+discovery 为 25 item/29 target，而正式 policy 仍为闭世界 21 item/25 target；
+policy、coordinator 和 replay 全量测试继续按设计 fail-closed。`active` 不等于
+scheduler 授权，禁止旧
+generation fallback。`formal` 的准入必须另行授权，不能由 `gray`、description
+豁免或本批手工入库结论推导。
+
+## P2：正式晋级
 
 只有本批自动灰度完成专项观察、actual/API/前端证据齐全并取得新的逐方案授权后，才可讨论 `formal promotion`；不得把手工入库、前端可见性或 gray admission 混称为正式生产。
