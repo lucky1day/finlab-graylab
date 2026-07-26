@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "ten_y_t5_say_k5_sharpe_static_v1",
+  "name": "10Y T+5 SAY K5 Sharpe static representative",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "10Y",
+  "task_type": "T+5",
+  "horizon": 5,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}
