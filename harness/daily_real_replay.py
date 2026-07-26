@@ -171,8 +171,9 @@ class RealReplayRuntime:
         if self._cutoff_at != _next_shanghai_midnight(observed_at):
             raise DailyRealReplayError(
                 "real replay cutoff is not the next Shanghai midnight"
-            )
+        )
         self._governor = ResourceGovernor(policy)
+        self._active_operator_session: object | None = None
 
     def run(self) -> RealReplayRuntimeResult:
         """在隔离 owner 锁内用受控双池完成独立首轮 item。"""
@@ -263,6 +264,7 @@ class RealReplayRuntime:
                 raise DailyRealReplayError(
                     "real replay borrowed runtime lock is invalid"
                 )
+        self._active_operator_session = operator_session
         self._owner_active = True
         dispatched: list[str] = []
         active: dict[Future[Any], str] = {}
@@ -415,11 +417,16 @@ class RealReplayRuntime:
                         with dispatch_lock:
                             if stop_signal.is_set():
                                 break
+                            if operator_session is not None:
+                                self._require_operator_session(
+                                    operator_session
+                                )
                             future = pools[pool_name].submit(
                                 self._execute_owned_item_with_stop_fence,
                                 item_id=int(item.item_id),
                                 dispatch_lock=dispatch_lock,
                                 stop_signal=stop_signal,
+                                operator_session=operator_session,
                             )
                             active[future] = scheme_id
                             dispatched.append(scheme_id)
@@ -480,6 +487,7 @@ class RealReplayRuntime:
                     raise shutdown_error
             finally:
                 self._owner_active = False
+                self._active_operator_session = None
                 if owns_lock:
                     lock.release()
                 else:
@@ -545,10 +553,14 @@ class RealReplayRuntime:
         item_id: int,
         dispatch_lock: threading.Lock,
         stop_signal: threading.Event,
+        operator_session: object | None = None,
     ) -> Any:
         """在 future 完成前发布阻断 fence，与新 submit 线性化。"""
         try:
-            result = self._execute_owned_item(item_id=item_id)
+            result = self._execute_owned_item(
+                item_id=item_id,
+                operator_session=operator_session,
+            )
         except BaseException:
             _set_replay_stop_signal(dispatch_lock, stop_signal)
             raise
@@ -566,7 +578,25 @@ class RealReplayRuntime:
             _set_replay_stop_signal(dispatch_lock, stop_signal)
         return result
 
-    def _execute_owned_item(self, *, item_id: int) -> Any:
+    def _execute_owned_item(
+        self,
+        *,
+        item_id: int,
+        operator_session: object | None = None,
+    ) -> Any:
+        active_operator_session = self._active_operator_session
+        if active_operator_session is not None:
+            if operator_session is not active_operator_session:
+                raise DailyRealReplayError(
+                    "real replay worker operator session mismatch"
+                )
+            self._require_operator_session(
+                active_operator_session
+            )
+        elif operator_session is not None:
+            raise DailyRealReplayError(
+                "real replay worker operator session mismatch"
+            )
         if not self._owner_active:
             raise DailyRealReplayError(
                 "real replay item execution requires the owner lock"

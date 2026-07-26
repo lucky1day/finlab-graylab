@@ -2361,6 +2361,115 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
                     runtime_acquire.assert_not_called()
                     runtime_release.assert_not_called()
 
+    def test_worker_rechecks_operator_session_before_claim(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            RealReplayRuntime,
+        )
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with _preflight_session() as session:
+                    runtime._active_operator_session = session
+                    owner_pid = session.owner_pid
+                    runtime._owner_active = True
+                    try:
+                        with (
+                            patch(
+                                "harness.daily_real_replay."
+                                "_recheck_real_replay_database"
+                            ) as database_recheck,
+                            patch(
+                                "scheduler.scheduled_executor."
+                                "execute_scheduled_item",
+                            ) as canonical,
+                            self.assertRaisesRegex(
+                                DailyRealReplayError,
+                                "operator session mismatch",
+                            ),
+                        ):
+                            runtime._execute_owned_item(item_id=1)
+                        database_recheck.assert_not_called()
+                        canonical.assert_not_called()
+
+                        object.__setattr__(
+                            session,
+                            "owner_pid",
+                            owner_pid + 1,
+                        )
+                        with (
+                            patch(
+                                "harness.daily_real_replay."
+                                "_recheck_real_replay_database"
+                            ) as database_recheck,
+                            patch(
+                                "scheduler.scheduled_executor."
+                                "execute_scheduled_item",
+                            ) as canonical,
+                            self.assertRaisesRegex(
+                                DailyRealReplayError,
+                                "operator session is unavailable",
+                            ),
+                        ):
+                            runtime._execute_owned_item(
+                                item_id=1,
+                                operator_session=session,
+                            )
+                    finally:
+                        runtime._owner_active = False
+                        runtime._active_operator_session = None
+                        object.__setattr__(
+                            session,
+                            "owner_pid",
+                            owner_pid,
+                        )
+                    database_recheck.assert_not_called()
+                    canonical.assert_not_called()
+                    session.assert_held()
+
     def test_does_not_enter_production_control_plane(self) -> None:
         from harness.daily_real_replay import RealReplayRuntime
 
