@@ -15,8 +15,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
+from scheduler import scheduled_executor
 from scheduler.daily_runtime import DailyRuntime
 from scheduler.daily_health import project_daily_health
 from scheduler import repository as schedule_repository
@@ -32,6 +33,8 @@ from scheduler.repository import (
 from scheduler.scheduled_executor import execute_scheduled_item
 from tests.test_daily_native_coordinator_mysql import (
     FEATURE_DATE,
+    TEST_EPOCH,
+    _VERIFIED_ISOLATED_ENGINES,
     _ExpectationVerifier,
     _assert_test_epoch,
     _occurrence_args,
@@ -471,10 +474,10 @@ def _controlled_executor_patches(
         patch(
             "scheduler.scheduled_executor."
             "assert_daily_coordinator_epoch_matches_policy",
-            side_effect=lambda policy_json: _assert_test_epoch(
+            side_effect=lambda policy_json, *, engine: _assert_test_epoch(
                 policy_json.get("daily_coordinator_epoch"),
                 label="daily occurrence coordinator epoch",
-                engine=services.engine,
+                engine=engine,
             ),
         ),
         patch(
@@ -528,6 +531,37 @@ def _controlled_executor_patches(
         for controlled_patch in patches:
             stack.enter_context(controlled_patch)
         yield
+
+
+class DailyCoordinatorMVPEpochPatchContractTests(unittest.TestCase):
+    def test_executor_epoch_patch_forwards_exact_engine(self) -> None:
+        verified_engine = create_engine("sqlite+pysqlite:///:memory:")
+        foreign_engine = create_engine("sqlite+pysqlite:///:memory:")
+        _VERIFIED_ISOLATED_ENGINES.add(verified_engine)
+        services = SimpleNamespace(
+            engine=verified_engine,
+            controlled_canonical_recorder=lambda *_args, **_kwargs: (),
+        )
+        clock = _MutableClock(
+            datetime(2026, 7, 23, 22, 56, tzinfo=timezone.utc)
+        )
+        try:
+            with _controlled_executor_patches(services, clock):
+                scheduled_executor.assert_daily_coordinator_epoch_matches_policy(
+                    {"daily_coordinator_epoch": TEST_EPOCH},
+                    engine=services.engine,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "verified isolated MySQL engine",
+                ):
+                    scheduled_executor.assert_daily_coordinator_epoch_matches_policy(
+                        {"daily_coordinator_epoch": TEST_EPOCH},
+                        engine=foreign_engine,
+                    )
+        finally:
+            foreign_engine.dispose()
+            verified_engine.dispose()
 
 
 def _health_projection(
