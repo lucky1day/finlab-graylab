@@ -82,6 +82,50 @@
         "business_tables": false
       },
       "status": "TECHNICAL_GATES_PASSED_DESCRIPTION_PENDING"
+    },
+    {
+      "scheme_id": "ten_y_t5_maj4_k3_ic_static_v1",
+      "registry_id": "ten_y_t5_maj4_k3_ic_static_v1__h5__10Y",
+      "metadata_status": "description-and-short-name-pending-upstream",
+      "python_sha256": "64000f9a4521dfdf8da04792e8b083bf12cd0837870b7714b27725d4dcbc955b",
+      "metadata_sha256": "eee777b89f0a9138dce0454044e0569f91459c28f0f5426d8a7d5c06202da005",
+      "scheme_version": "6bdabf86b4a6",
+      "harness_run_id": "hr_20260726T072359Z_611676555f0d",
+      "snapshot_id": "snapshot-46ff3231de2c4a080c46ba56",
+      "predict_date": "2026-07-24",
+      "feature_date": "2026-07-23",
+      "target_date": "2026-07-30",
+      "gates": {
+        "static": "passed",
+        "input": "passed",
+        "unit": "passed",
+        "dry-run": "passed",
+        "compare": "passed",
+        "backtest": "passed",
+        "api-readiness": "passed"
+      },
+      "backtest": {
+        "requests": 100,
+        "records": 100,
+        "persist": false
+      },
+      "api_readiness": {
+        "lifecycle_mode": "pre_shadow",
+        "registry_status": "paused",
+        "scheduler_eligible": false,
+        "api_visible": false
+      },
+      "registry_collision_checks": {
+        "repository_and_git_history": "no-conflict",
+        "active_api": "no-conflict",
+        "production_control_plane_sql": "not-run-source-readonly-has-no-access"
+      },
+      "database_writes": {
+        "harness_audit": false,
+        "registry": false,
+        "business_tables": false
+      },
+      "status": "TECHNICAL_GATES_PASSED_DESCRIPTION_PENDING"
     }
   ]
 }

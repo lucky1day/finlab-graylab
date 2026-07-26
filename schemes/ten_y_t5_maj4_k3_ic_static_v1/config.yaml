@@ -1,0 +1,14 @@
+scheme_id: ten_y_t5_maj4_k3_ic_static_v1
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+status: paused
+version_status: draft
+schedule:
+  cron: '3 7 * * 1-5'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+delivery:
+  script: delivery/ten_y_t5_maj4_k3_ic_static_v1.py
+  metadata: delivery/ten_y_t5_maj4_k3_ic_static_v1.json
