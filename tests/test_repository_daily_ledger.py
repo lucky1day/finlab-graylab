@@ -3230,6 +3230,164 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
                 process_group_id=9202,
             )
 
+    def test_current_replay_process_query_requires_active_current_run(
+        self,
+    ) -> None:
+        from scheduler.repository import (
+            read_current_replay_attempt_processes,
+            register_schedule_attempt_process,
+            start_schedule_attempt,
+        )
+
+        occurrence_id, item_id = self._create_occurrence(
+            targets=(("5Y", 1),),
+        )
+        with self.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE t_schedule_occurrences "
+                    "SET schedule_key = :schedule_key "
+                    "WHERE occurrence_id = :occurrence_id"
+                ),
+                {
+                    "schedule_key":
+                        "isolated-real-replay-v1-test",
+                    "occurrence_id": occurrence_id,
+                },
+            )
+        attempt = start_schedule_attempt(
+            self.engine,
+            item_id=item_id,
+            trigger_origin="operator_recovery",
+            execution_token="replay-process-token",
+            _clock=self._clock(datetime(2026, 7, 23, 23, 30)),
+        )
+        register_schedule_attempt_process(
+            self.engine,
+            run_id=attempt.run_id,
+            execution_token=attempt.execution_token,
+            process_id=9500,
+            process_group_id=9500,
+            started_at=datetime(2026, 7, 23, 23, 30, 1),
+            _clock=self._clock(
+                datetime(2026, 7, 23, 23, 30, 1)
+            ),
+        )
+
+        rows = read_current_replay_attempt_processes(
+            self.engine,
+            occurrence_id=occurrence_id,
+            active_item_ids=(item_id,),
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].item_id, item_id)
+        self.assertEqual(rows[0].run_id, attempt.run_id)
+        self.assertEqual(
+            rows[0].execution_token,
+            "replay-process-token",
+        )
+        self.assertEqual(rows[0].process_id, 9500)
+        self.assertEqual(rows[0].process_group_id, 9500)
+        self.assertEqual(
+            read_current_replay_attempt_processes(
+                self.engine,
+                occurrence_id=occurrence_id,
+                active_item_ids=(),
+            ),
+            (),
+        )
+        self.assertEqual(
+            read_current_replay_attempt_processes(
+                self.engine,
+                occurrence_id=occurrence_id,
+                active_item_ids=(item_id + 999,),
+            ),
+            (),
+        )
+        with self.engine.connect() as connection:
+            stored_run = dict(
+                connection.execute(
+                    text(
+                        """
+                        SELECT scheme_id, scheme_version, runtime_type,
+                               run_type, prediction_phase, predict_date,
+                               trigger_origin, process_id, process_group_id
+                        FROM t_scheme_runs
+                        WHERE run_id = :run_id
+                        """
+                    ),
+                    {"run_id": attempt.run_id},
+                ).mappings().one()
+            )
+        unsafe_values = (
+            ("scheme_id", "wrong-scheme"),
+            ("scheme_version", "wrong-version"),
+            ("runtime_type", "blackbox_v2"),
+            ("run_type", "manual"),
+            ("prediction_phase", "gray_live"),
+            ("predict_date", "2026-07-22"),
+            ("trigger_origin", "apscheduler"),
+            ("process_id", 1),
+            ("process_id", 9501),
+            ("process_group_id", 1),
+        )
+        for field, unsafe_value in unsafe_values:
+            with self.subTest(field=field, unsafe_value=unsafe_value):
+                with self.engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            f"""
+                            UPDATE t_scheme_runs
+                            SET {field} = :unsafe_value
+                            WHERE run_id = :run_id
+                            """
+                        ),
+                        {
+                            "unsafe_value": unsafe_value,
+                            "run_id": attempt.run_id,
+                        },
+                    )
+                try:
+                    self.assertEqual(
+                        read_current_replay_attempt_processes(
+                            self.engine,
+                            occurrence_id=occurrence_id,
+                            active_item_ids=(item_id,),
+                        ),
+                        (),
+                    )
+                finally:
+                    with self.engine.begin() as connection:
+                        connection.execute(
+                            text(
+                                f"""
+                                UPDATE t_scheme_runs
+                                SET {field} = :stored_value
+                                WHERE run_id = :run_id
+                                """
+                            ),
+                            {
+                                "stored_value": stored_run[field],
+                                "run_id": attempt.run_id,
+                            },
+                        )
+
+        self._function("fence_current_schedule_attempt")(
+            self.engine,
+            item_id=item_id,
+            fenced_at=datetime(2026, 7, 23, 23, 31),
+            _clock=self._clock(datetime(2026, 7, 23, 23, 31)),
+        )
+        self.assertEqual(
+            read_current_replay_attempt_processes(
+                self.engine,
+                occurrence_id=occurrence_id,
+                active_item_ids=(item_id,),
+            ),
+            (),
+        )
+
     def test_attempt_claim_does_not_fabricate_process_start_or_v2_guardrail(
         self,
     ) -> None:

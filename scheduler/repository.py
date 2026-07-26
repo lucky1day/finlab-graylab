@@ -230,6 +230,17 @@ class ScheduledAttempt:
 
 
 @dataclass(frozen=True)
+class CurrentReplayAttemptProcess:
+    """当前隔离 replay occurrence 可允许的已登记进程组。"""
+
+    item_id: int
+    run_id: int
+    execution_token: str
+    process_id: int
+    process_group_id: int
+
+
+@dataclass(frozen=True)
 class FencedScheduleAttempt:
     """已先行失效、等待孤儿进程清理确认的 attempt 身份。"""
 
@@ -2449,6 +2460,88 @@ def create_schedule_occurrence(
             actual_target_count=actual_target_count,
         )
         return occurrence_id
+
+
+def read_current_replay_attempt_processes(
+    engine: Engine,
+    *,
+    occurrence_id: int,
+    active_item_ids: Iterable[int],
+) -> tuple[CurrentReplayAttemptProcess, ...]:
+    """只返回当前隔离 replay active future 的 current running 进程组。"""
+    normalized_occurrence_id = int(occurrence_id)
+    if normalized_occurrence_id <= 0:
+        raise ValueError("occurrence_id must be positive")
+    normalized_item_ids = tuple(
+        sorted({int(item_id) for item_id in active_item_ids})
+    )
+    if any(item_id <= 0 for item_id in normalized_item_ids):
+        raise ValueError("active_item_ids must be positive")
+    if not normalized_item_ids:
+        return ()
+    placeholders = ", ".join(
+        f":active_item_id_{index}"
+        for index in range(len(normalized_item_ids))
+    )
+    parameters: dict[str, object] = {
+        "occurrence_id": normalized_occurrence_id,
+        **{
+            f"active_item_id_{index}": item_id
+            for index, item_id in enumerate(normalized_item_ids)
+        },
+    }
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                f"""
+                SELECT i.item_id, r.run_id, r.execution_token,
+                       r.process_id, r.process_group_id
+                FROM t_schedule_occurrences o
+                JOIN t_schedule_items i
+                  ON i.occurrence_id = o.occurrence_id
+                JOIN t_scheme_runs r
+                  ON r.run_id = i.current_run_id
+                 AND r.schedule_item_id = i.item_id
+                 AND r.attempt_no = i.attempt_no
+                WHERE o.occurrence_id = :occurrence_id
+                  AND o.schedule_key LIKE
+                      'isolated-real-replay-v1-%'
+                  AND o.completion_state IN ('PENDING', 'RUNNING')
+                  AND i.item_id IN ({placeholders})
+                  AND i.state = 'RUNNING'
+                  AND i.failure_code IS NULL
+                  AND i.started_at IS NOT NULL
+                  AND r.scheme_id = i.base_scheme_id
+                  AND r.scheme_version = i.scheme_version
+                  AND r.runtime_type = i.runtime_type
+                  AND r.predict_date = o.predict_date
+                  AND r.run_type = 'active'
+                  AND r.prediction_phase = 'scheduled_live'
+                  AND r.trigger_origin = 'operator_recovery'
+                  AND r.status = 'running'
+                  AND r.failure_code IS NULL
+                  AND r.execution_token IS NOT NULL
+                  AND r.execution_token <> ''
+                  AND r.process_id > 1
+                  AND r.process_group_id > 1
+                  AND r.process_id = r.process_group_id
+                  AND r.started_at = i.started_at
+                  AND r.finished_at IS NULL
+                ORDER BY i.item_id
+                """
+            ),
+            parameters,
+        ).mappings().all()
+    return tuple(
+        CurrentReplayAttemptProcess(
+            item_id=int(row["item_id"]),
+            run_id=int(row["run_id"]),
+            execution_token=str(row["execution_token"]),
+            process_id=int(row["process_id"]),
+            process_group_id=int(row["process_group_id"]),
+        )
+        for row in rows
+    )
 
 
 def read_schedule_execution_envelope(
