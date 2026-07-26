@@ -4,7 +4,7 @@
 
 **目标读者**：平台入库、审计和复盘人员
 
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-26
 
 **记录时区**：除明确标注 UTC 外，本文时间均为 `Asia/Shanghai`。
 **文档性质**：追加式平台规划和试验台账，不是上游交付契约，也不是平台操作 SOP。
@@ -360,6 +360,127 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 | 当前状态 | 四方案继续 `GRAY_ACTIVE`；等待自然 `scheduled_live` 和 2026-07-24 actual |
 
 该记录证明 Contract 单批 100 是调用边界而非完整回测上限。完整历史仍是 current snapshot as-of replay，不得描述为 historical vintage PIT。
+
+### 4.12 记录 003A：10Y T+5 方案 1 技术 Gate
+
+**执行时间**：2026-07-26 15:20 至 15:21，`Asia/Shanghai`。
+
+**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+
+| 项目 | 实测结果 |
+|---|---|
+| 方案 | `ten_y_t5_maj3_k3_ic_static_v1` |
+| 过渡边界 | 本包在 `description` 新政策生效前已接收；缺少 `description` 且 `name` 重复任务格子信息，按用户明确授权继续技术 Gate，状态保持待上游修订 |
+| 原始摘要 | Python `75749f165e3ce2c5cb70f86fae1336e52e693655198b05c78e45422e165471de`；Metadata `10c41c6d3e271e76c6c03afc4e9ff3ad998ffefb92b557d5bb868d69e077329d`；Intake 后逐字节摘要一致 |
+| scheme version | `c54b90bcafa7` |
+| Harness | `hr_20260726T072056Z_0d6e33033ba3`，`static/input/unit/dry-run/compare/backtest/api-readiness` 7/7 passed |
+| generation / snapshot | `full-20260724-062251-4977e502dadf` / `snapshot-46ff3231de2c4a080c46ba56` |
+| Request | `predict=2026-07-24`、`feature=2026-07-23`、`target=2026-07-30` |
+| no-persist backtest | 100 requests / 100 records；分批、变序一致；`persist=false` |
+| 结构 readiness | composite ID `ten_y_t5_maj3_k3_ic_static_v1__h5__10Y`；`pre_shadow + paused`；scheduler/API 预期均不可见 |
+| 数据库边界 | Harness 使用已验证仅能读取九张源表的 `bfl_source_readonly`；未写 Harness 审计、Registry、run、prediction、backtest 或 gray-live 表 |
+| Registry 检查范围 | 仓库与 Git 全历史无同 ID；本机 active `/api/schemes` 无冲突；生产控制面 Registry SQL 因只读账号无权限未执行 |
+| 当前状态 | `TECHNICAL_GATES_PASSED_DESCRIPTION_PENDING`；不是 `SHADOW_READY`，未激活、未登记 Registry、未持久化回测、未写实盘 |
+
+上游补充 `description` 和简洁 `name` 后，Metadata 摘要与 canonical
+`scheme_version` 必须变化；该方案届时按新交付版本重新执行七个 Gate，不直接覆盖并沿用本次结论。
+
+### 4.13 记录 003B：10Y T+5 方案 2 技术 Gate
+
+**执行时间**：2026-07-26 15:23 至 15:24，`Asia/Shanghai`。
+
+**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+
+| 项目 | 实测结果 |
+|---|---|
+| 方案 | `ten_y_t5_maj4_k3_ic_static_v1` |
+| 过渡边界 | 本包在 `description` 新政策生效前已接收；缺少 `description` 且 `name` 重复任务格子信息，按用户明确授权继续技术 Gate，状态保持待上游修订 |
+| 原始摘要 | Python `64000f9a4521dfdf8da04792e8b083bf12cd0837870b7714b27725d4dcbc955b`；Metadata `eee777b89f0a9138dce0454044e0569f91459c28f0f5426d8a7d5c06202da005`；Intake 后逐字节摘要一致 |
+| scheme version | `6bdabf86b4a6` |
+| Harness | `hr_20260726T072359Z_611676555f0d`，`static/input/unit/dry-run/compare/backtest/api-readiness` 7/7 passed |
+| generation / snapshot | `full-20260724-062251-4977e502dadf` / `snapshot-46ff3231de2c4a080c46ba56` |
+| Request | `predict=2026-07-24`、`feature=2026-07-23`、`target=2026-07-30` |
+| no-persist backtest | 100 requests / 100 records；分批、变序一致；`persist=false` |
+| 结构 readiness | composite ID `ten_y_t5_maj4_k3_ic_static_v1__h5__10Y`；`pre_shadow + paused`；scheduler/API 预期均不可见 |
+| 数据库边界 | Harness 使用已验证仅能读取九张源表的 `bfl_source_readonly`；未写 Harness 审计、Registry、run、prediction、backtest 或 gray-live 表 |
+| Registry 检查范围 | 仓库与 Git 全历史无同 ID；本机 active `/api/schemes` 无冲突；生产控制面 Registry SQL 因只读账号无权限未执行 |
+| 当前状态 | `TECHNICAL_GATES_PASSED_DESCRIPTION_PENDING`；不是 `SHADOW_READY`，未激活、未登记 Registry、未持久化回测、未写实盘 |
+
+上游补充 `description` 和简洁 `name` 后，Metadata 摘要与 canonical
+`scheme_version` 必须变化；该方案届时按新交付版本重新执行七个 Gate，不直接覆盖并沿用本次结论。
+
+### 4.14 记录 003C：10Y T+5 方案 3 技术 Gate
+
+**执行时间**：2026-07-26 15:25 至 15:26，`Asia/Shanghai`。
+
+**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+
+| 项目 | 实测结果 |
+|---|---|
+| 方案 | `ten_y_t5_maj4_k3_ic_yearly_v1` |
+| 过渡边界 | 本包在 `description` 新政策生效前已接收；缺少 `description` 且 `name` 重复任务格子信息，按用户明确授权继续技术 Gate，状态保持待上游修订 |
+| 原始摘要 | Python `7e55fae577b3a14085fdba98af638e449c11b935db373a6176238d72afea3781`；Metadata `be7b6950d329ce058726d7bff80e4069192d2724223a364b02549527ec9f720a`；Intake 后逐字节摘要一致 |
+| scheme version | `af04567a19c3` |
+| Harness | `hr_20260726T072555Z_623181f5aecd`，`static/input/unit/dry-run/compare/backtest/api-readiness` 7/7 passed |
+| generation / snapshot | `full-20260724-062251-4977e502dadf` / `snapshot-46ff3231de2c4a080c46ba56` |
+| Request | `predict=2026-07-24`、`feature=2026-07-23`、`target=2026-07-30` |
+| no-persist backtest | 100 requests / 100 records；分批、变序一致；`persist=false` |
+| 结构 readiness | composite ID `ten_y_t5_maj4_k3_ic_yearly_v1__h5__10Y`；`pre_shadow + paused`；scheduler/API 预期均不可见 |
+| 数据库边界 | Harness 使用已验证仅能读取九张源表的 `bfl_source_readonly`；未写 Harness 审计、Registry、run、prediction、backtest 或 gray-live 表 |
+| Registry 检查范围 | 仓库与 Git 全历史无同 ID；本机 active `/api/schemes` 无冲突；生产控制面 Registry SQL 因只读账号无权限未执行 |
+| 当前状态 | `TECHNICAL_GATES_PASSED_DESCRIPTION_PENDING`；不是 `SHADOW_READY`，未激活、未登记 Registry、未持久化回测、未写实盘 |
+
+上游补充 `description` 和简洁 `name` 后，Metadata 摘要与 canonical
+`scheme_version` 必须变化；该方案届时按新交付版本重新执行七个 Gate，不直接覆盖并沿用本次结论。
+
+### 4.15 记录 003D：10Y T+5 方案 4 技术 Gate
+
+**执行时间**：2026-07-26 15:28 至 15:29，`Asia/Shanghai`。
+
+**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
+
+| 项目 | 实测结果 |
+|---|---|
+| 方案 | `ten_y_t5_say_k5_sharpe_static_v1` |
+| 过渡边界 | 本包在 `description` 新政策生效前已接收；缺少 `description` 且 `name` 重复任务格子信息，按用户明确授权继续技术 Gate，状态保持待上游修订 |
+| 原始摘要 | Python `960a058e9f98525022d21b19034e7055d49bb56e2bba54447dc0c79870d9010c`；Metadata `a6fd633a49cdb7e8e52d900cf1372fbdeccb61528426d3606d30f1a141b80311`；Intake 后逐字节摘要一致 |
+| scheme version | `e8137af4b655` |
+| Harness | `hr_20260726T072831Z_2c1bbc549d72`，`static/input/unit/dry-run/compare/backtest/api-readiness` 7/7 passed |
+| generation / snapshot | `full-20260724-062251-4977e502dadf` / `snapshot-46ff3231de2c4a080c46ba56` |
+| Request | `predict=2026-07-24`、`feature=2026-07-23`、`target=2026-07-30` |
+| no-persist backtest | 100 requests / 100 records；分批、变序一致；`persist=false` |
+| 结构 readiness | composite ID `ten_y_t5_say_k5_sharpe_static_v1__h5__10Y`；`pre_shadow + paused`；scheduler/API 预期均不可见 |
+| 数据库边界 | Harness 使用已验证仅能读取九张源表的 `bfl_source_readonly`；未写 Harness 审计、Registry、run、prediction、backtest 或 gray-live 表 |
+| Registry 检查范围 | 仓库与 Git 全历史无同 ID；本机 active `/api/schemes` 无冲突；生产控制面 Registry SQL 因只读账号无权限未执行 |
+| 当前状态 | `TECHNICAL_GATES_PASSED_DESCRIPTION_PENDING`；不是 `SHADOW_READY`，未激活、未登记 Registry、未持久化回测、未写实盘 |
+
+上游补充 `description` 和简洁 `name` 后，Metadata 摘要与 canonical
+`scheme_version` 必须变化；该方案届时按新交付版本重新执行七个 Gate，不直接覆盖并沿用本次结论。
+
+### 4.16 记录 003 终态：10Y T+5 四方案历史入库完成、实时灰度等待
+
+**最终核验日期**：2026-07-26，`Asia/Shanghai`。
+
+**专项记录**：[GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md](GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
+
+本条只追加终态，不改写记录 003A 至 003D 的技术 Gate 时点证据；以下当前状态
+明确 supersede 003A 至 003D 的 `pre_shadow + paused`、未激活和未持久化回测
+状态。
+
+| 项目 | 最终核验 |
+|---|---|
+| exact identity | 四个 exact version 和 composite Registry 均为 `active` |
+| description 豁免 | 四个不可变既有 Metadata 均为 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED`；豁免不改写 Metadata，也不外推到其他交付 |
+| persistent backtest | run `182` 至 `185` 分别对应四方案；每方案恰有 1 个成功 run、333 条 canonical prediction 和 17 个月度指标 |
+| API / frontend | `/api/schemes` 返回四方案；dashboard 10Y/T+5 格子共有 8 个候选；四方案历史均在 `/api/backtests/factor-lab` 和前端可见 |
+| live boundary | production `t_input_generations=0`；四方案 `gray_live`、`live_write`、`scheduled_live` 均为 0，实时 metrics 为空，状态为 `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION` |
+| provenance | `t_backtest_runs.code_hash/config_hash/input_artifact_hash` 三个可选列为 NULL；当前身份仍由 harness run、exact version、prediction extra 和 code/config/Metadata hashes 闭合 |
+| 第四方案 P1 | 首次 all-stage run 因系统 Python 3.9 启动，在 compare Gate 失败；服务 Python 3.12 重跑 7/7 成功，但成功 `report_uri` 位于 `/tmp`，尚非耐久审计存储 |
+| 调度边界 | scheduler、真实 21/25、rollout=`legacy`、admission=`BLOCKED` 均未改变；四个 active 配置虽含 `schedule_cron`，gray admission 前不得把本 integration 合入或用于重启 legacy scheduler |
+| 下一步 | 合法同日 `SEALED` generation 到位后按 exact version 手工 `manual gray_live`；调度设计和 gray admission 通过后才可自动灰度调度 |
+
+该终态只证明历史入库和可见性已完成，不能表述为完整 gray 入库完成，也不授予
+`scheduled_live`、formal 或通用生产权限。
 
 ## 5. 已确认的通用迭代规则
 

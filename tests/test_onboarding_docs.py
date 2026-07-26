@@ -23,12 +23,16 @@ SOP_INDEX = DOCS_ROOT / "sop" / "README.md"
 DEPLOY_README = PROJECT_ROOT / "deploy" / "README.md"
 DAILY_SIGNAL_SLA = DOCS_ROOT / "architecture" / "DAILY_SIGNAL_SLA.md"
 TODO = DOCS_ROOT / "TODO.md"
+CURRENT_STATUS = DOCS_ROOT / "CURRENT_STATUS.md"
 TEN_Y_T5_RECORD = (
     DOCS_ROOT
     / "blackbox_v2"
     / "records"
     / "GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md"
 )
+BLACKBOX_RECORDS = DOCS_ROOT / "blackbox_v2" / "records"
+BLACKBOX_TRIAL_LEDGER = BLACKBOX_RECORDS / "ONBOARDING_TRIAL_LEDGER.md"
+BLACKBOX_RECORDS_INDEX = BLACKBOX_RECORDS / "README.md"
 TEN_Y_T5_SCHEME_IDS = (
     "ten_y_t5_maj3_k3_ic_static_v1",
     "ten_y_t5_maj4_k3_ic_static_v1",
@@ -563,6 +567,50 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("automatic gray scheduling", todo)
         self.assertIn("scheduled_live", record)
         self.assertIn("旧 generation fallback", record)
+
+    def test_10y_batch_current_docs_record_historical_only_completion(self) -> None:
+        todo = TODO.read_text(encoding="utf-8")
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        record = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
+        ledger = BLACKBOX_TRIAL_LEDGER.read_text(encoding="utf-8")
+        index = BLACKBOX_RECORDS_INDEX.read_text(encoding="utf-8")
+
+        for text in (todo, current):
+            self.assertNotIn(
+                "当前状态是 `authorized/manual-onboarding-pending-revalidation`",
+                text,
+            )
+            for marker in (
+                "333",
+                "17",
+                "10Y/T+5",
+                "8 个候选",
+                "GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION",
+                "integration",
+                "闭世界 21/25",
+                "fail-closed",
+            ):
+                self.assertIn(marker, text)
+
+        self.assertIn(
+            "**当前状态**：`GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`",
+            record,
+        )
+        for marker in (
+            "t_input_generations=0",
+            "gray_live",
+            "scheduled_live",
+            "rollout=`legacy`",
+            "admission=`BLOCKED`",
+            "schedule_cron",
+            "Python 3.12",
+            "report_uri",
+            "code_hash/config_hash/input_artifact_hash",
+        ):
+            self.assertIn(marker, record + ledger)
+
+        self.assertIn("### 4.16 记录 003 终态", ledger)
+        self.assertIn("历史入库验收", index)
 
     def test_each_document_directory_has_a_complete_index(self) -> None:
         missing_indexes: list[str] = []

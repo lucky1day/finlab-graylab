@@ -4,13 +4,15 @@
 
 **执行日期**：2026-07-26，`Asia/Shanghai`
 
-**当前状态**：`four-schemes-persistent-backtest-accepted-gray-waiting`
+**当前状态**：`GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`
 
 本文是本批四个 10Y T+5 Blackbox V2 方案的时点记录。批次初始状态为
 `authorized/manual-onboarding-pending-revalidation`，授权逐方案 revalidation →
 `controlled activate` → `persistent backtest` → `manual gray_live` →
-`DB/API/frontend acceptance`。当前四个方案均已完成技术复核、激活、持久化
-回测和回测 API 验收；实时灰度仍因缺少合法同日 SEALED generation 而等待。
+`DB/API/frontend acceptance`。初始授权记录中的“截至本记录尚未执行”仅描述
+执行前状态，已由本文终态取代。当前四个方案均已完成技术复核、exact active、
+持久化回测和历史 DB/API/frontend 验收；实时灰度仍因缺少合法同日 `SEALED`
+generation 而等待。
 
 ## 1. 来源与范围
 
@@ -28,10 +30,14 @@
 1. 每个方案只能使用上表 exact scheme version、Metadata SHA-256 与 Delivery SHA-256 进行手工入库和 revalidation；摘要漂移即停止并重新判定。
 2. revalidation 通过后，可逐方案按顺序执行 `controlled activate`、`persistent backtest`、`manual gray_live` 和 `DB/API/frontend acceptance`；每阶段都须复核专项授权和前序证据。
 3. 四个方案的精确 version 和 composite Registry 均已 active，且各自已有
-   333 条历史回测明细和 17 条月度指标；四个方案截至本记录尚未执行
-   `manual gray_live`，也未写入 live prediction 或 `scheduled_live`。
+   1 个成功持久化回测 run、333 条历史回测明细和 17 条月度指标；四个方案
+   截至本记录尚未执行 `manual gray_live`，也未写入 live prediction 或
+   `scheduled_live`。
 4. 自动 scheduler、`automatic gray scheduling` 和 `scheduled_live` 仍禁止并延后到 TODO 的独立 admission；任何阶段都不得使用 `旧 generation fallback`。
 5. 缺少 `description` 的状态仅是这四个不可变既有交付的专项豁免；不得补写或重写 Metadata，不得推测算法逻辑。后续新交付仍由当前人工 fail-closed 流程要求提供 `description`，机器门禁另行 TDD。
+6. 四个 active 配置均含 `schedule_cron`；在 gray admission 的调度设计通过并
+   获授权前，不得把本 integration 合入或用于重启 legacy scheduler。active
+   只授予当前灰度实验室历史可见性，不授予调度权。
 
 ## 3. 已验收方案
 
@@ -188,11 +194,26 @@
   generation 伪造实时结果。
 - 本验收不是正式 21/25、08:00 SLA、自动灰度调度或正式日批准入。
 
-截至本记录，四个方案均为 active、各有 333 条历史回测明细和 17 条月度
-指标，历史数据已在回测 API 可见；四个方案统一处于
-`GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。前端实时信号仍未完成，
-且不存在本批 `gray_live`、`live_write` 或 `scheduled_live`。
+## 4. 批次终态与接口可见性
 
-## 4. 后续顺序
+- 四个 exact version 与 composite Registry 均为 `active`；run `182` 至
+  `185` 分别是四方案唯一的成功持久化回测 run，每个 run 都有 333 条
+  canonical prediction 和 17 个月度指标。
+- `/api/schemes` 已返回四个方案，dashboard 的 10Y/T+5 格子共有 8 个候选；
+  `/api/backtests/factor-lab` 与前端均可见四方案的 333 条日频历史和 17 个月度
+  指标。四方案实时 `/api/metrics/{scheme_id}` 均为空。
+- production `t_input_generations=0`；四方案的 `gray_live`、`live_write` 和
+  `scheduled_live` 均为 0，统一状态为
+  `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。因此本批只能称为历史入库
+  验收完成，不能称为完整 gray 入库完成。
+- scheduler、真实 21/25、rollout=`legacy` 和 admission=`BLOCKED` 均未因
+  本批改变。
 
-本批之后的自动灰度调度必须先完成[TODO](../../TODO.md)列出的 21/25、迁移、replay、容量、恢复和连续观察门禁，并另行获得独立 `scheduler_admission=gray|formal` 与逐方案授权。`formal` 晋级不由本记录或 `gray` admission 推导。
+## 5. 后续顺序
+
+下一合法动作是等待获准生产者发布合法同日 `SEALED` generation，再按 exact
+version 逐方案手工执行 `manual gray_live` 和实时 DB/API/frontend 验收；禁止
+旧 generation fallback。自动灰度调度必须先完成[TODO](../../TODO.md)列出的
+21/25、迁移、replay、容量、恢复和连续观察门禁，调度设计通过后另行获得独立
+`scheduler_admission=gray|formal` 与逐方案授权。`formal` 晋级不由本记录或
+`gray` admission 推导。

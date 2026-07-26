@@ -20,14 +20,18 @@
 |---|---|
 | Native V1 | 保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、统一 DataBridge 输入、七个 Gate、预测和 no-persist 回测已形成稳定路径 |
-| Blackbox V2 生产路径 | 已完成一个真实周频方案和同一上游批次四个日频方案的专项生产灰度激活；尚未形成面向任意新方案的通用生产授权 |
+| Blackbox V2 生产路径 | 一个真实周频方案已完成专项生产灰度；同一上游批次四个日频方案已完成 exact active 与历史入库验收，但实时灰度仍等待合法同日 generation；尚未形成面向任意新方案的通用生产授权 |
 | 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED` 仅指受控 recorder 的 21/25 ledger 功能验证；真实 17+4 尚未联跑，08:00 SLA 与 07:55 容量仍无证据 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 
 ## 本轮 10Y T+5 入库状态
 
-- `ten_y_t5_maj3_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_yearly_v1` 和 `ten_y_t5_say_k5_sharpe_static_v1` 已获得 revalidation → controlled activation → persistent backtest → manual gray live → DB/API/frontend acceptance 的逐方案专项授权。
-- 当前状态是 `authorized/manual-onboarding-pending-revalidation`：截至记录这些阶段尚未执行；自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止，也不构成通用生产授权。
+- `ten_y_t5_maj3_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_yearly_v1` 和 `ten_y_t5_say_k5_sharpe_static_v1` 的 exact version 与 composite Registry 均为 `active`；每方案各有 1 个成功持久化回测 run、333 条历史 prediction 和 17 个月度指标。
+- `/api/schemes` 已返回四方案，前端 10Y/T+5 格子共有 8 个候选，四方案的历史回测均已在 API 和前端可见；实时 `/api/metrics/{scheme_id}` 仍为空。
+- production `t_input_generations=0`，四方案的 `gray_live`、`live_write`、`scheduled_live` 均为 0，统一状态为 `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`；因此不能称为完整 gray 入库完成。
+- 下一合法动作是在获准生产者发布合法同日 `SEALED` generation 后按 exact version 手工执行 `manual gray_live` 并验收实时 DB/API/frontend；调度设计和 gray admission 通过后才可自动调度。
+- 四个 active 配置虽含 `schedule_cron`，在 gray admission 前不得把本 integration 合入或用于重启 legacy scheduler；自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止。
+- 本 integration 的 active daily discovery 为 25，而正式 policy 仍保持闭世界 21/25；policy、coordinator 和 replay 全量测试因此按设计 fail-closed。该结果是上线阻断证据，不是回归通过；gray admission 分离灰度 discovery 前必须继续隔离本分支。
 - 四个缺少 `description` 的不可变既有交付均为 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED`；exact version、摘要和来源证据见[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
 
 ## 日频 08:00 整改状态
