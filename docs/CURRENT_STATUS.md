@@ -48,12 +48,13 @@
 - `b99e24f` 已让真实 replay runtime 复用该会话持有的同一 runtime 锁：借用入口和核心执行入口都会在任何 DB/快照/线程池副作用前验证真实 session capability；伪造对象、跨 PID、已释放、路径或 inode 漂移均 fail-closed，成功和异常路径都不替外层 acquire/release。execute CLI 与逐 dispatch 运行中 fence 仍未提供。
 - `349475f` 进一步把 exact operator session 绑定到 runtime 运行态，并在主线程 submit 前、worker 进入 canonical claim 前复验；借用模式省略或替换 session 均在 DB/claim 前拒绝。该提交只完成 session fence，不代表候选、generation、控制面和 replay-aware 进程动态 fence 已完成。
 - `0d1b70d` 在成功的二次预检后为同一锁会话一次性绑定脱敏 dispatch identity，覆盖候选、generation、21/25 定义、控制面、生产 migration/Registry/version、source 连接身份和起止水位；未绑定、重复绑定或 session 已释放均拒绝。该 capability 仍只是 write-once 基线，尚未在每次 dispatch 前重读比较。
+- `cab7b0d` 已提供 dispatch identity 动态重读：重新打开两份 manifest，并复核候选 Git/policy、21/25 定义、legacy/BLOCKED、生产 001–017/Registry/version 及 source endpoint/principal/table；source 水位继续允许前进。该 helper 尚未接入 runtime submit/claim，因此不能单独视为逐 dispatch fence 完成。
 - `93de8ad` 建立隔离 replay MySQL 生命周期：新 datadir/UUID、loopback 非 3306、固定安全参数、唯一 schema/账号、per-connection guard，以及 Engine→进程→fd 锚定目录的异常安全清理；不含 migration、Registry 或算法执行。
 - 当前真实环境预检仍会 fail-closed：已安装的 backend LaunchAgent 尚未携带合法
   coordinator mode，因此控制面检查返回 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
   本轮未修改已安装 plist、未 bootout/kickstart 服务；只能在获准的独占维护窗口
   修复后重新检查。
-- 最新验证为 replay 相关回归 `83 passed, 3 skipped`、启用真实临时 MySQL 的 replay gate/runtime `69 passed`（13 个 subtest）和全量 `2696 passed, 13 skipped`；只读复审无 P0/P1。生产只读快照仍是 migration 017、run/prediction `1193/1111`，input generation 与三层 ledger 均为 0。
+- 最新验证为 replay 相关回归 `84 passed, 3 skipped`、启用真实临时 MySQL 的 replay gate/runtime `69 passed`（13 个 subtest）和全量 `2697 passed, 13 skipped`；只读复审无 P0/P1。生产只读快照仍是 migration 017、run/prediction `1193/1111`，input generation 与三层 ledger 均为 0。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
@@ -86,7 +87,7 @@
 
 ## 当前观察项
 
-1. `check-only`、operator/runtime 同锁交接、submit/claim 前 session fence、write-once dispatch identity 和隔离 MySQL 生命周期已完成，但真实环境预检尚未通过；下一项是每次 dispatch 前重读并比较 identity，再实现 replay-aware 进程 fence。execute 前仍须钉住 production audit-readonly endpoint/server UUID，扩大后代进程和 `.so/.pyc`/Conda 身份覆盖，并降低 watermark 扫描负载；旧 digest 不得跨进程复用。
+1. `check-only`、operator/runtime 同锁交接、submit/claim 前 session fence、write-once dispatch identity、动态重读 helper 和隔离 MySQL 生命周期已完成，但真实环境预检尚未通过；下一项是把动态重读线性化接到每次 submit/claim，再实现 replay-aware 进程 fence。execute 前仍须钉住 production audit-readonly endpoint/server UUID，扩大后代进程和 `.so/.pyc`/Conda 身份覆盖，并降低 watermark 扫描负载；旧 digest 不得跨进程复用。
 2. 在获准的独占维护窗口修复 BFL 三份已安装 plist 的 mode 一致性并重跑
    `--check-only`；不得自动停服务、修改 production rollout/admission 或触碰
    BondProjectPro。

@@ -381,7 +381,10 @@ generation、21/25 定义、控制面、生产 migration/Registry/version、sour
 连接身份及预检起止水位。source 水位允许在预检期间前进，但起止两端都必须进入
 身份，不能把两个数据状态压成同一个 capability。check-only report/digest 不得
 替代该 capability；未绑定、重复绑定或 session 已释放均 fail-closed。当前这层
-只冻结比较基线，逐 dispatch 重读和 replay-aware 进程校验仍未完成。
+已经提供动态重读 helper：重开 manifest 并重验候选、定义、控制面、生产
+migration/Registry/version 和 source endpoint/principal/table；source 水位只
+记录、不要求静止。该 helper 尚未接入 runtime 的 submit/claim 线性化路径，
+replay-aware 进程校验也未完成。
 
 隔离 replay MySQL 由专用 context manager 创建，固定使用本机新 datadir、新
 server UUID、loopback 随机非 3306 端口和唯一 `bfl_real_replay_*` schema；
