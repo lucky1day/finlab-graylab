@@ -49,20 +49,21 @@
 - `349475f` 进一步把 exact operator session 绑定到 runtime 运行态，并在主线程 submit 前、worker 进入 canonical claim 前复验；借用模式省略或替换 session 均在 DB/claim 前拒绝。该提交只完成 session fence，不代表候选、generation、控制面和 replay-aware 进程动态 fence 已完成。
 - `0d1b70d` 在成功的二次预检后为同一锁会话一次性绑定脱敏 dispatch identity，覆盖候选、generation、21/25 定义、控制面、生产 migration/Registry/version、source 连接身份和起止水位；未绑定、重复绑定或 session 已释放均拒绝。该提交只建立 write-once 基线，在该阶段尚未逐 dispatch 重读。
 - `cab7b0d` 提供 dispatch identity 动态重读：重新打开两份 manifest，并复核候选 Git/policy、21/25 定义、legacy/BLOCKED、生产 001–017/Registry/version 及 source endpoint/principal/table；source 水位继续允许前进。该提交只提供 helper，在该阶段尚未接入 runtime submit/claim。
-- `5129451` 已把动态 identity 重读线性化接入主线程 submit 前和 worker canonical claim 前；submit 漂移与 submit 后/worker 前漂移都会发布 stop fence、返回 `recovery_blocked`，且零 attempt/claim。该提交只完成 identity fence；OS process boundary、runtime 接线和最小 start-window 在该阶段仍是独立阻断项。
-- `c76e96c` 新增 repository 只读查询，只从本次 replay occurrence、runtime 当前 active future 和 current `operator_recovery + scheduled_live` running attempt 返回已登记 leader PID/PGID；查询闭合 scheme/version/runtime/date/state/token 以及 `PID=PGID>1`。这是进程 allowlist 的账本身份底座，不是 OS 进程探针；后续探针消费该查询，但 runtime 接线仍未完成。
-- `ed0f362` 已完成隔离 replay 专用 OS process-boundary probe：以账本 allowlist 和 fail-closed 进程表快照区分当前已登记 leader/进程组、operator 后代、旧或未登记后代、外部日频平台进程及 UID 漂移。该能力仍是独立只读探针，尚未接入 real replay runtime 的每次 dispatch。
+- `5129451` 已把动态 identity 重读线性化接入主线程 submit 前和 worker canonical claim 前；submit 漂移与 submit 后/worker 前漂移都会发布 stop fence、返回 `recovery_blocked`，且零 attempt/claim。该提交只完成 identity fence；OS process boundary 与最小 start-window 后续由 `ed0f362`、`8b59489` 和 `3c24ec6` 闭合。
+- `c76e96c` 新增 repository 只读查询，只从本次 replay occurrence、runtime 当前 active future 和 current `operator_recovery + scheduled_live` running attempt 返回已登记 leader PID/PGID；查询闭合 scheme/version/runtime/date/state/token 以及 `PID=PGID>1`。这是进程 allowlist 的账本身份底座，不是 OS 进程探针；`ed0f362` 消费该查询，`3c24ec6` 完成 runtime 接线。
+- `ed0f362` 已完成隔离 replay 专用 OS process-boundary probe：以账本 allowlist 和 fail-closed 进程表快照区分当前已登记 leader/进程组、operator 后代、旧或未登记后代、外部日频平台进程及 UID 漂移。该提交先落地独立只读探针，后由 `3c24ec6` 接入 real replay runtime 的每次 dispatch。
 - `8b59489` 已完成 canonical `ProcessStartGuard`：`DefaultDailyRuntimeServices` 内的单一共享实例同时约束 Native/Blackbox，在 pre-fence、`Popen`、PID/PGID 登记和 post-fence 之间串行化；长时间 communicate/poll 在锁外。登记窗口清理未确认会 poison guard 并在后续 `Popen` 前 fail-closed，普通 `Lock` 被生产入口拒绝。
+- `3c24ec6` 已把上述 OS probe 与 canonical `ProcessStartGuard` 接入 real replay 的每次 dispatch：item 在 submit 前精确预留并进入 active snapshot，submit 前、worker 入口、attempt claim 前以及每次 `Popen` 前和进程组登记后均 fail-closed 复核。probe report 必须是精确 `ReplayProcessBoundaryReport`，且 service UID、occurrence 和 active item 与同一快照完全一致；claim 前 process fence 失败保持零 run、零 claim，claim 后且进程组清理确认的 fence 失败返回 `recovery_blocked`。若清理无法确认则走 `ProcessGroupTerminationError`：completion fence 持久化成功返回 `fenced_pending_cleanup`，持久化失败才返回 `recovery_blocked`。所有路径均发布 stop fence 并释放 reservation。该提交未提供 execute-only CLI，也未执行真实 17+4 联跑。
 - `93de8ad` 建立隔离 replay MySQL 生命周期：新 datadir/UUID、loopback 非 3306、固定安全参数、唯一 schema/账号、per-connection guard，以及 Engine→进程→fd 锚定目录的异常安全清理；不含 migration、Registry 或算法执行。
 - 当前真实环境预检仍会 fail-closed：已安装的 backend LaunchAgent 尚未携带合法
   coordinator mode，因此控制面检查返回 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
   本轮未修改已安装 plist、未 bootout/kickstart 服务；只能在获准的独占维护窗口
   修复后重新检查。
-- 当前全量验证为 `2735 passed, 13 skipped`（832 个 subtest）；显式启用真实临时 MySQL 的 replay gate/runtime 为 `71 passed`（13 个 subtest）。这些是代码与隔离功能证据，不是 execute-only 真实 17+4 联跑或容量证据。
+- 当前全量验证为 `2744 passed, 13 skipped`（836 个 subtest）；显式启用真实临时 MySQL 的 replay gate/runtime 为 `77 passed`（17 个 subtest）。这些是代码与隔离功能证据，不是 execute-only 真实 17+4 联跑或容量证据。
 - 候选已实现 06:30 readiness 后单次冻结、Native/V2 双池、三层账本、attempt fence、原子提交和动态 21/25 健康投影；07:45/08:00 可幂等补写，后续源数据修正不重启当前 occurrence。
 - 生产仍为 migration 017、rollout=`legacy`、admission=`BLOCKED`，ledger
-  三层账本与 generation 计数均为 0；三个 0629 仅处于受控兼容桥，其他 Native
-  禁止 fallback，该桥尚无生产资格。
+  三层账本与 generation 计数均为 0、未发生变化；三个 0629 仅处于受控兼容桥，
+  其他 Native 禁止 fallback，该桥尚无生产资格。
 - 本轮只证明分层功能 MVP：真实 21 算法同轮、07:55 容量、生产 clone 迁移、
   generation 长期归档/磁盘上限、20+20 样本、故障注入和连续 10 日均未通过；
   admission 继续 `BLOCKED`。
@@ -88,9 +89,9 @@
 
 ## 当前观察项
 
-1. `ed0f362` 的 OS process-boundary probe 与 `8b59489` 的 canonical start-window guard 已完成；不得把独立探针或启动窗口闭合单独称为逐 dispatch process fence。
-2. 下一步把专用 OS 探针接入 real replay runtime 的每次 dispatch；完成前不开放 execute CLI。execute 仍须钉住 production audit-readonly endpoint/server UUID、覆盖 `.so/.pyc`/Conda 身份并控制重复扫描负载。
-3. 上述接线完成且获准独占维护窗口后，修复 BFL 三份已安装 plist 的 mode 一致性并重跑 `--check-only`；下一次交易业务日的真实同日 generation 到位后，只通过 execute 入口执行 17 Native + 4 V2、21 item/25 target 的隔离 MySQL 全量联跑。禁止伪造 seal、使用 recorder、写生产库、触碰 BondProjectPro 或计作容量样本。
+1. `3c24ec6` 已完成 real replay 逐 dispatch process fence：submit、worker、preclaim 和 `Popen` 登记窗口共享 exact active reservation、精确 report identity 与 canonical start guard；这仍不代表 execute-only 入口或真实算法联跑已完成。
+2. 下一工程步骤是补齐 execute-only CLI；该入口仍须钉住 production audit-readonly endpoint/server UUID、覆盖 `.so/.pyc`/Conda 身份并控制重复扫描负载。CLI 尚未提供，真实 17+4 隔离 replay 也尚未执行。
+3. execute-only CLI 完成且获准独占维护窗口后，修复 BFL 三份已安装 plist 的 mode 一致性并重跑 `--check-only`；当前 backend 仍因缺少合法 coordinator mode 而 fail-closed。下一次交易业务日的真实同日 generation 到位后，只通过 execute 入口执行 17 Native + 4 V2、21 item/25 target 的隔离 MySQL 全量联跑。禁止伪造 seal、使用 recorder、写生产库、触碰 BondProjectPro 或计作容量样本。
 4. 真实联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
    gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
    `gray_live` 与正式 21/25 occurrence 解耦。
