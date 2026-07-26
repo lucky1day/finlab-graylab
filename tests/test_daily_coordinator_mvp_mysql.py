@@ -269,13 +269,13 @@ class _MVPMySQLServices(_V2MySQLServices):
             return None
         return self.occurrence_id
 
-    @staticmethod
-    def validate_occurrence_epoch(*, snapshot) -> None:
+    def validate_occurrence_epoch(self, *, snapshot) -> None:
         _assert_test_epoch(
             snapshot.occurrence.policy_json.get(
                 "daily_coordinator_epoch"
             ),
             label="daily occurrence coordinator epoch",
+            engine=self.engine,
         )
 
     def evaluate_target_sla(
@@ -474,6 +474,7 @@ def _controlled_executor_patches(
             side_effect=lambda policy_json: _assert_test_epoch(
                 policy_json.get("daily_coordinator_epoch"),
                 label="daily occurrence coordinator epoch",
+                engine=services.engine,
             ),
         ),
         patch(

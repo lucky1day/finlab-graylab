@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 import uuid
+import weakref
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -67,6 +68,7 @@ TEST_EPOCH = {
     "record_sha256": "1" * 64,
 }
 SCHEMA_PREFIX = "bfl_step6_"
+_VERIFIED_ISOLATED_ENGINES: weakref.WeakSet[object] = weakref.WeakSet()
 
 
 class _FixedClock:
@@ -380,7 +382,7 @@ class _TemporaryMySQL:
             database=database,
             query={"charset": "utf8mb4"},
         )
-        return create_engine(
+        engine = create_engine(
             url,
             future=True,
             pool_pre_ping=True,
@@ -388,6 +390,13 @@ class _TemporaryMySQL:
                 "init_command": "SET SESSION time_zone = '+00:00'",
             },
         )
+        try:
+            self._assert_isolated_session(engine, database)
+        except BaseException:
+            engine.dispose()
+            raise
+        _VERIFIED_ISOLATED_ENGINES.add(engine)
+        return engine
 
     def create_schema(self, purpose: str):
         suffix = uuid.uuid4().hex[:10]
@@ -420,7 +429,6 @@ class _TemporaryMySQL:
         self._schema_credentials[schema] = (username, password)
         engine = self.engine(schema)
         try:
-            self._assert_isolated_session(engine, schema)
             apply_migration_files(engine, MIGRATIONS)
             self._assert_migrated_schema(engine)
             self._assert_generic_run_default(engine)
@@ -642,11 +650,43 @@ def _temporary_mysql():
                 shutil.rmtree(server.root)
 
 
-def _assert_test_epoch(frozen, *, label: str) -> None:
+def _assert_test_epoch(frozen, *, label: str, engine=None) -> None:
     if dict(frozen or {}) != TEST_EPOCH:
         raise RuntimeError(
             f"{label} does not match isolated Step 6 epoch"
         )
+    root_engine = getattr(engine, "engine", None)
+    if root_engine not in _VERIFIED_ISOLATED_ENGINES:
+        raise RuntimeError(
+            f"{label} did not use a verified isolated MySQL engine"
+        )
+
+
+class Step6EpochFixtureContractTests(unittest.TestCase):
+    def test_epoch_assertion_rejects_missing_engine(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "verified isolated MySQL engine",
+        ):
+            _assert_test_epoch(
+                TEST_EPOCH,
+                label="missing engine fixture",
+            )
+
+    def test_epoch_assertion_rejects_foreign_engine(self) -> None:
+        foreign_engine = create_engine("sqlite+pysqlite:///:memory:")
+        try:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "verified isolated MySQL engine",
+            ):
+                _assert_test_epoch(
+                    TEST_EPOCH,
+                    label="foreign engine fixture",
+                    engine=foreign_engine,
+                )
+        finally:
+            foreign_engine.dispose()
 
 
 def _real_policy_and_configs():
