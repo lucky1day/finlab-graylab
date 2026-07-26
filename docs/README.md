@@ -6,7 +6,7 @@
 
 **最后核验日期**：2026-07-26
 
-本文是仓库文档的唯一总入口。这里不复制方案数量、运行 ID、replay 进度或生产 migration/rollout/admission；动态事实统一查看[当前状态](CURRENT_STATUS.md)。
+本文是仓库文档的唯一总入口。这里不复制方案数量、运行 ID、replay 进度或生产 migration/rollout/admission；已验证的动态事实统一查看[当前状态](CURRENT_STATUS.md)，未完成工作的优先级统一查看[TODO](TODO.md)。
 
 ## 按角色进入
 
@@ -17,7 +17,7 @@
 | 平台入库和审计人员 | [方案入库统一入口](onboarding/README.md) |
 | 平台开发人员 | [架构与契约](architecture/README.md) |
 | 平台运维人员 | [运维文档](operations/README.md) |
-| 项目负责人 | [当前状态](CURRENT_STATUS.md) |
+| 项目负责人 | [当前状态](CURRENT_STATUS.md)和[TODO](TODO.md) |
 
 ## 文档域
 
@@ -30,6 +30,7 @@
 | [运维文档](operations/README.md) | 环境和部署资料 | 以文档状态为准 |
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和试验记录 | 规范与记录分开 |
 | [Native V1](native_v1/README.md) | 存量方案维护及冻结前历史 | 仅存量维护 |
+| [当前优先级与待办](TODO.md) | 未完成工作、前置依赖与排序 | 是 |
 | [审计与状态记录](records/README.md) | 带日期的状态、审计和系统检查 | 否 |
 | [历史入口](archive/README.md) | 已退出当前阅读路径的兼容页 | 否 |
 | [内部设计记录](internal/README.md) | 实施计划与设计过程 | 否 |
@@ -46,7 +47,7 @@
 ## 维护规则
 
 1. 每个包含 Markdown 的目录必须有 `README.md`，并登记本层文档和子目录。
-2. 动态状态只写入 `CURRENT_STATUS.md`；带日期的详情进入 `records/`。
+2. 已验证的动态状态只写入 `CURRENT_STATUS.md`；未完成工作的排序只写入 `TODO.md`；带日期的详情进入 `records/`。
 3. 通用 SOP 不记录具体方案、generation、snapshot 或 Harness run。
 4. 历史记录不反向定义当前规则；过期文档必须标明替代入口。
 5. 文档移动必须同步更新相对链接，并通过文档门禁测试。

@@ -305,7 +305,7 @@ Metadata 必须是无 BOM 的 UTF-8 JSON。Contract 1.0 包含八个必填字段
 - `scheme_id` 是算法执行身份；`name` 是当前任务格子内用于区分候选方案的简洁业务名称，两者不要混用。
 - `name` 不得重复 `target_tenor`、不得重复 `task_type` 或 `horizon`，也不得追加“方向预测”等已经由任务格子表达的说明。
 - `name` 和 `algorithm_version` 必须是非空字符串；`algorithm_version` 不强制使用特定版本格式。
-- `description` 是可选的算法逻辑摘要，缺失不阻断 Contract 1.0 交付和自验，但强烈建议提供，方便后续按算法版本回溯。
+- `description` 是 Contract 1.0 的可选算法逻辑摘要；为保留既有交付兼容性，机器 Intake 对缺失说明不阻断，历史交付仍强烈建议补充可追溯的算法说明。后续新交付必须提供；缺失说明的新交付不得进入后续平台验收或获得运行授权。
 - `description` 建议简述主要输入、窗口或规则、模型类型以及最终方向形成方式；平台不会根据脚本或名称代写算法逻辑。
 - `description` 存在时必须是单段非空纯文本，最多 300 个字符，不得包含换行、HTML 或其他标记文本。
 - `task_type`、`horizon` 和 `target_rule` 必须来自上一节的同一行。
@@ -517,7 +517,7 @@ python {scheme_id}.py backtest \
 |---|---|---|
 | DataBridge 下载 | 分别下载日、周、月三份真实 CSV | HTTP 成功，文件名固定，文件非空 |
 | Schema 校验 | 执行第 3.5 节校验命令，并检查算法消费字段 | 基线字段和相对顺序兼容，时间键合法；不限制总列数 |
-| 交付物 | 检查文件数量、命名、Metadata 八个必填字段、可选说明和任务组合 | 只有两个交付文件，身份和任务组合合法；缺少说明不阻断 |
+| 交付物 | 检查文件数量、命名、Metadata 八个必填字段、`description` 和任务组合 | 只有两个交付文件，身份、说明和任务组合合法；缺少说明只可通过兼容 Intake，不得进入后续验收 |
 | 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
 | 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |
 | 批量回测 | 使用至少两个不同截止键执行 `backtest` | 每个 Request 恰好一条结果，数量和顺序一致 |
@@ -536,7 +536,7 @@ python {scheme_id}.py backtest \
 提交前逐项确认：
 
 - [ ] 只交付同名 `{scheme_id}.py + {scheme_id}.json`；
-- [ ] `.json` 的八个必填字段合法，`description` 如提供则符合约束；
+- [ ] `.json` 的八个必填字段合法，且提供符合约束的 `description`；
 - [ ] `name` 是任务格子内的简洁方案名，没有重复期限、任务或“方向预测”；
 - [ ] `predict` 和 `backtest` 使用同一算法逻辑；
 - [ ] 真实 DataBridge 数据下载和 Schema 校验已通过；

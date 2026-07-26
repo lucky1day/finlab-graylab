@@ -23,7 +23,7 @@
 执行 Intake 前确认：
 
 - 两个条目均为普通文件，不是目录或符号链接；
-- 文件名与 Metadata 中的 `scheme_id` 一致；Metadata 有八个必填字段，可选包含 `description`；
+- 文件名与 Metadata 中的 `scheme_id` 一致；Metadata 有八个必填字段，并提供 `description`；
 - `.py` 是唯一可执行内容，不存在模型、配置、依赖或辅助模块；
 - trial 的 base `scheme_id` 和 composite Registry ID 均未占用；
 - 同一算法已有原生实现时使用独立 trial ID，不覆盖原方案。
@@ -68,9 +68,9 @@ version_status: draft
 
 名称、算法版本、期限、任务类型、horizon 和 target rule 只能来自 Metadata。`blackbox-v2-v1` 是运行 profile；`forecast_env_blackbox_v1` 是该 profile 当前引用的 conda 环境，两者不得混称。
 
-`description` 是推荐而非必填的算法逻辑摘要。缺失不阻断 Intake：命令仍以退出码 `0` 成功，并在机器 JSON 的 `warnings` 数组返回“建议上游补充简短算法逻辑说明”；该 warning 不进入 Gate 失败计数，也不授予任何生产权限。提供时必须是单段非空纯文本、最多 300 个字符，换行、`<`、`>`、空字符串或错误类型均拒绝。
+`description` 在 Contract 1.0 中仍是推荐而非机器必填的算法逻辑摘要，以兼容既有不可变交付。缺失不阻断 Intake：命令仍以退出码 `0` 成功，并在机器 JSON 的 `warnings` 数组返回“建议上游补充简短算法逻辑说明”；该 warning 不进入 Gate 失败计数，也不授予任何生产权限。对后续新交付，平台人工收包必须在 Gate 前拒绝缺失说明的包；当前这是人工 fail-closed，机器门禁仍待独立 TDD 实施。提供时必须是单段非空纯文本、最多 300 个字符，换行、`<`、`>`、空字符串或错误类型均拒绝。
 
-已有方案缺少 `description` 时继续正常发现、Gate 和运行；已有方案不修改只读 Metadata，不推测算法逻辑，也不制造新版本。缺失说明在平台配置中映射为空字符串。
+已有方案缺少 `description` 时不修改只读 Metadata、不推测算法逻辑，也不制造新版本；只有在专项批次记录中写明 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED` 的既有交付，才可按其原有授权范围继续发现、Gate 和运行。缺失说明在平台配置中映射为空字符串。
 
 ### 1.3 对照 Contract 1.0
 

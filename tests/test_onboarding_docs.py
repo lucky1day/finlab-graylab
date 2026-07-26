@@ -22,6 +22,19 @@ PLATFORM_SOP = DOCS_ROOT / "sop" / "BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md"
 SOP_INDEX = DOCS_ROOT / "sop" / "README.md"
 DEPLOY_README = PROJECT_ROOT / "deploy" / "README.md"
 DAILY_SIGNAL_SLA = DOCS_ROOT / "architecture" / "DAILY_SIGNAL_SLA.md"
+TODO = DOCS_ROOT / "TODO.md"
+TEN_Y_T5_RECORD = (
+    DOCS_ROOT
+    / "blackbox_v2"
+    / "records"
+    / "GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md"
+)
+TEN_Y_T5_SCHEME_IDS = (
+    "ten_y_t5_maj3_k3_ic_static_v1",
+    "ten_y_t5_maj4_k3_ic_static_v1",
+    "ten_y_t5_maj4_k3_ic_yearly_v1",
+    "ten_y_t5_say_k5_sharpe_static_v1",
+)
 
 
 class OnboardingDocumentationTests(unittest.TestCase):
@@ -491,11 +504,65 @@ class OnboardingDocumentationTests(unittest.TestCase):
         for status in ("CURRENT", "LEGACY_MAINTENANCE", "HISTORICAL"):
             self.assertIn(f"`{status}`", text)
 
-    def test_docs_root_contains_only_navigation_and_current_status(self) -> None:
+    def test_docs_root_contains_navigation_current_status_and_todo(self) -> None:
         self.assertEqual(
             {path.name for path in DOCS_ROOT.glob("*.md")},
-            {"README.md", "CURRENT_STATUS.md"},
+            {"README.md", "CURRENT_STATUS.md", "TODO.md"},
         )
+
+    def test_todo_prioritizes_the_10y_batch_and_platform_dependencies(self) -> None:
+        text = TODO.read_text(encoding="utf-8")
+        p0, _ = text.split("## P1", maxsplit=1)
+
+        for scheme_id in TEN_Y_T5_SCHEME_IDS:
+            self.assertIn(scheme_id, text)
+        self.assertNotIn("one_y_t5_", p0)
+
+        dependencies = (
+            "migration017 namespace digest",
+            "migration017 real MySQL recovery",
+            "canonical migration runner",
+            "execute-only replay",
+            "real 17 Native + 4 formal V2 21/25",
+            "scheduler resource/recovery/atomic commit/capacity",
+            "three 0629 generation adapters",
+            "migrations018/019/020",
+            "archive/disk",
+            "exact 20 forced-cold +20 revision/suffix",
+            "gray/formal admission",
+            "automatic gray scheduling",
+            "formal promotion",
+        )
+        positions = [text.index(marker) for marker in dependencies]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_10y_gray_onboarding_record_binds_the_exact_batch(self) -> None:
+        self.assertTrue(TEN_Y_T5_RECORD.exists())
+        if not TEN_Y_T5_RECORD.exists():
+            return
+
+        text = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
+        self.assertIn("authorized/manual-onboarding-pending-revalidation", text)
+        for scheme_id in TEN_Y_T5_SCHEME_IDS:
+            self.assertIn(scheme_id, text)
+
+    def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
+        todo = TODO.read_text(encoding="utf-8")
+        p0, _ = todo.split("## P1", maxsplit=1)
+        record = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
+
+        for text in (p0, record):
+            for marker in (
+                "controlled activate",
+                "persistent backtest",
+                "manual gray_live",
+            ):
+                self.assertIn(marker, text)
+
+        self.assertIn("截至本记录尚未执行", record)
+        self.assertIn("automatic gray scheduling", todo)
+        self.assertIn("scheduled_live", record)
+        self.assertIn("旧 generation fallback", record)
 
     def test_each_document_directory_has_a_complete_index(self) -> None:
         missing_indexes: list[str] = []
