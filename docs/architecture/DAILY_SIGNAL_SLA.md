@@ -366,7 +366,12 @@ operator/runtime 双锁由一个同进程 session 持有，session 绑定创建 
 共同父目录和设备/inode；内部预检只能借用该 session，不得重新获取或释放锁。
 成功预检在首尾验锁，PID 漂移、锁释放、路径替换、owner/权限漂移均 fail-closed。
 外层 session 退出时固定先释放 runtime、再释放 operator，为后续 execute 的无缝
-持锁和逆序资源清理提供唯一入口。
+持锁和逆序资源清理提供唯一入口。真实 replay runtime 已复用同一 runtime 锁；
+wrapper 与核心借用入口都必须在 DB、快照或线程池副作用之前验证 exact session
+类型、持有 PID、路径和 inode。借用路径只允许验证，不得 acquire/release；
+成功、运行异常和线程池收口之后，锁所有权都必须仍属于外层 operator session。
+这只完成锁所有权交接；每次 dispatch 前的候选/输入/控制面/进程 fence 仍是
+execute CLI 接线前的独立阻断项。
 
 隔离 replay MySQL 由专用 context manager 创建，固定使用本机新 datadir、新
 server UUID、loopback 随机非 3306 端口和唯一 `bfl_real_replay_*` schema；
