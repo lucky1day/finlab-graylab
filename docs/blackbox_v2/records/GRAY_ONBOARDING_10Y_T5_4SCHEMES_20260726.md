@@ -4,14 +4,15 @@
 
 **执行日期**：2026-07-26，`Asia/Shanghai`
 
-**当前状态**：`pilot-gray-live-accepted-three-gray-waiting`
+**当前状态**：`two-schemes-gray-live-accepted-two-gray-waiting`
 
 本文是本批四个 10Y T+5 Blackbox V2 方案的时点记录。批次初始状态为
 `authorized/manual-onboarding-pending-revalidation`，授权逐方案 revalidation →
 `controlled activate` → `persistent backtest` → `manual gray_live` →
 `DB/API/frontend acceptance`。当前四个方案均已完成技术复核、激活、持久化
-回测和回测 API 验收；pilot 已使用最新合法 DataBridge generation 完成 39
-条手工 `gray_live` 及 DB/API/frontend 验收，其余三个方案仍等待逐方案执行。
+回测和回测 API 验收；前两个方案已使用最新合法 DataBridge generation 各
+完成 39 条手工 `gray_live` 及 DB/API/frontend 验收，其余两个方案仍等待
+逐方案执行。
 
 ## 1. 来源与范围
 
@@ -29,8 +30,8 @@
 1. 每个方案只能使用上表 exact scheme version、Metadata SHA-256 与 Delivery SHA-256 进行手工入库和 revalidation；摘要漂移即停止并重新判定。
 2. revalidation 通过后，可逐方案按顺序执行 `controlled activate`、`persistent backtest`、`manual gray_live` 和 `DB/API/frontend acceptance`；每阶段都须复核专项授权和前序证据。
 3. 四个方案的精确 version 和 composite Registry 均已 active，且各自已有
-   333 条历史回测明细和 17 条月度指标；pilot 已完成 39 条
-   `manual gray_live`，其余三个方案尚未写入 live prediction。四个方案均未
+   333 条历史回测明细和 17 条月度指标；前两个方案已各完成 39 条
+   `manual gray_live`，其余两个方案尚未写入 live prediction。四个方案均未
    写入 `scheduled_live`。
 4. 自动 scheduler、`automatic gray scheduling` 和 `scheduled_live` 仍禁止并延后到 TODO 的独立 admission；任何阶段都不得使用 `旧 generation fallback`。
 5. 缺少 `description` 的状态仅是这四个不可变既有交付的专项豁免；不得补写或重写 Metadata，不得推测算法逻辑。后续新交付仍由当前人工 fail-closed 流程要求提供 `description`，机器门禁另行 TDD。
@@ -71,7 +72,7 @@
   写值，这是现行审计技术债，不影响本批跨表身份验收。
 - 手工 `gray_live` 使用经完整 current 校验的 DataBridge generation
   `full-20260724-062251-4977e502dadf`，`source_refresh_date` 为
-  `2026-07-24`，Native/DataBridge snapshot 为
+  `2026-07-24`，DataBridge `data_snapshot_id`/runtime snapshot 为
   `snapshot-46ff3231de2c4a080c46ba56`。39 行均具有相同 generation 和
   snapshot，且每行 `daily_cutoff_key` 与自身 `feature_date` 一致。
 - 日期集合由生产交易日历动态生成并精确验收为 39 行：
@@ -122,10 +123,26 @@
   code/config/Metadata hashes 共同闭环。现行 Blackbox 持久化路径的
   `t_backtest_runs.code_hash/config_hash/input_artifact_hash` 三个可选列
   仍为 NULL，与 pilot 使用相同的跨表身份验收口径。
-- 当前 `t_input_generations` 仍为 0，状态为
-  `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。未写入 `gray_live`、
-  `live_write` 或 `scheduled_live`，前端实时信号尚未完成；不得使用旧
-  generation 伪造实时结果。
+- 手工 `gray_live` 使用经完整 current 校验的 DataBridge generation
+  `full-20260724-062251-4977e502dadf`，`source_refresh_date` 为
+  `2026-07-24`，DataBridge `data_snapshot_id`/runtime snapshot 为
+  `snapshot-46ff3231de2c4a080c46ba56`。39 行均具有相同 generation 和
+  snapshot，且每行 `daily_cutoff_key` 与自身 `feature_date` 一致。
+- 日期集合由生产交易日历动态生成并精确验收为 39 行：
+  `predict_date=2026-05-26..2026-07-20`、
+  `feature_date=2026-05-25..2026-07-17`、
+  `target_date=2026-06-01..2026-07-24`。历史回测最大
+  `target_date=2026-05-29`，因此历史 333 行与灰度 39 行无重叠。
+- 39 个 Gate 均成功，生产 run ID 为连续集合 `1233..1271`；数据库精确新增
+  39 个 success run、39 个 run log 和 39 个 canonical prediction，无重复
+  predict/feature/target 组合。
+- `/api/metrics/ten_y_t5_maj4_k3_ic_static_v1__h5__10Y` 返回 HTTP 200，
+  `daily_rows=39`、summary `total=39`；`/api/factor-lab/dashboard`
+  中该方案为 39 条 live rows 和 333 条 backtest rows，合计 372 条。
+- pilot 仍为 39 条 live prediction，其余两个本批方案的 live run、
+  prediction 和 run log 仍均为 0；本批 `scheduled_live=0`，三层 ledger
+  行数仍为 0，rollout/admission 仍为 `legacy/BLOCKED`。本次验收没有启动
+  或修改 scheduler。
 - 本验收不是正式 21/25、08:00 SLA、自动灰度调度或正式日批准入。
 
 ### 3.3 第三个方案
@@ -157,8 +174,7 @@
   code/config/Metadata hashes 共同闭环。现行 Blackbox 持久化路径的
   `t_backtest_runs.code_hash/config_hash/input_artifact_hash` 三个可选列
   仍为 NULL，与前两个方案使用相同的跨表身份验收口径。
-- 当前 `t_input_generations` 仍为 0，状态为
-  `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。未写入 `gray_live`、
+- 当前状态为 `GRAY_LIVE_WAITING_FOR_MANUAL_EXECUTION`。未写入 `gray_live`、
   `live_write` 或 `scheduled_live`，前端实时信号尚未完成；不得使用旧
   generation 伪造实时结果。
 - 本验收不是正式 21/25、08:00 SLA、自动灰度调度或正式日批准入。
@@ -205,15 +221,14 @@
   code/config/Metadata hashes 共同闭环。现行 Blackbox 持久化路径的
   `t_backtest_runs.code_hash/config_hash/input_artifact_hash` 三个可选列
   仍为 NULL，与前三个方案使用相同的跨表身份验收口径。
-- 当前 `t_input_generations` 仍为 0，状态为
-  `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。未写入 `gray_live`、
+- 当前状态为 `GRAY_LIVE_WAITING_FOR_MANUAL_EXECUTION`。未写入 `gray_live`、
   `live_write` 或 `scheduled_live`，前端实时信号尚未完成；不得使用旧
   generation 伪造实时结果。
 - 本验收不是正式 21/25、08:00 SLA、自动灰度调度或正式日批准入。
 
 截至本记录，四个方案均为 active、各有 333 条历史回测明细和 17 条月度
-指标，历史数据已在回测 API 可见。pilot 已完成 39 条手工 `gray_live` 并在
-metrics/dashboard 前端数据接口可见；其余三个方案仍处于
+指标，历史数据已在回测 API 可见。前两个方案已各完成 39 条手工
+`gray_live` 并在 metrics/dashboard 前端数据接口可见；其余两个方案仍处于
 `GRAY_LIVE_WAITING_FOR_MANUAL_EXECUTION`。本批不存在 `scheduled_live`，
 也未获得自动调度权限。
 

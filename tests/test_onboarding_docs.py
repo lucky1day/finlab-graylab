@@ -563,8 +563,12 @@ class OnboardingDocumentationTests(unittest.TestCase):
             ):
                 self.assertIn(marker, text)
 
-        self.assertIn("pilot 已完成 39 条", record)
-        self.assertIn("其余三个方案尚未写入 live prediction", record)
+        self.assertIn("前两个方案已各完成 39 条", record)
+        self.assertIn("其余两个方案尚未写入 live prediction", record)
+        self.assertEqual(
+            record.count("GRAY_LIVE_WAITING_FOR_MANUAL_EXECUTION"),
+            3,
+        )
         self.assertIn("本批不存在 `scheduled_live`", record)
         self.assertIn("automatic gray scheduling", todo)
         self.assertIn("scheduled_live", record)
