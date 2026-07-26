@@ -4,9 +4,13 @@
 
 **执行日期**：2026-07-26，`Asia/Shanghai`
 
-**当前状态**：`authorized/manual-onboarding-pending-revalidation`
+**当前状态**：`pilot-persistent-backtest-accepted-gray-waiting`
 
-本文是本批四个 10Y T+5 Blackbox V2 方案的时点记录。它授权逐方案 revalidation → `controlled activate` → `persistent backtest` → `manual gray_live` → `DB/API/frontend acceptance`；截至本记录尚未执行这些阶段。
+本文是本批四个 10Y T+5 Blackbox V2 方案的时点记录。批次初始状态为
+`authorized/manual-onboarding-pending-revalidation`，授权逐方案 revalidation →
+`controlled activate` → `persistent backtest` → `manual gray_live` →
+`DB/API/frontend acceptance`。当前 pilot 已完成技术复核、激活、持久化回测和
+回测 API 验收；实时灰度仍因缺少合法同日 SEALED generation 而等待。
 
 ## 1. 来源与范围
 
@@ -23,10 +27,47 @@
 
 1. 每个方案只能使用上表 exact scheme version、Metadata SHA-256 与 Delivery SHA-256 进行手工入库和 revalidation；摘要漂移即停止并重新判定。
 2. revalidation 通过后，可逐方案按顺序执行 `controlled activate`、`persistent backtest`、`manual gray_live` 和 `DB/API/frontend acceptance`；每阶段都须复核专项授权和前序证据。
-3. 截至本记录尚未执行 activation、active Registry 登记、持久化回测、`manual gray_live`、业务表写入或 DB/API/frontend acceptance；该时点事实不取消前项已授权的受控阶段。
+3. 对其余三个方案，截至本记录尚未执行 activation、active Registry 登记、
+   持久化回测、`manual gray_live`、业务表写入或 DB/API/frontend acceptance；
+   pilot 的精确已完成范围见下一节。
 4. 自动 scheduler、`automatic gray scheduling` 和 `scheduled_live` 仍禁止并延后到 TODO 的独立 admission；任何阶段都不得使用 `旧 generation fallback`。
 5. 缺少 `description` 的状态仅是这四个不可变既有交付的专项豁免；不得补写或重写 Metadata，不得推测算法逻辑。后续新交付仍由当前人工 fail-closed 流程要求提供 `description`，机器门禁另行 TDD。
 
-## 3. 后续顺序
+## 3. Pilot 验收
+
+`ten_y_t5_maj3_k3_ic_static_v1` 的精确验收结果如下：
+
+- scheme version 为 `c54b90bcafa7`；Metadata SHA-256 和 Delivery SHA-256
+  分别仍为
+  `10c41c6d3e271e76c6c03afc4e9ff3ad998ffefb92b557d5bb868d69e077329d`
+  和
+  `75749f165e3ce2c5cb70f86fae1336e52e693655198b05c78e45422e165471de`。
+- production all-stage run
+  `hr_20260726T122333Z_b65e23488522` 为 7/7 passed；技术
+  no-persist backtest 为 100/100、`persist=false`。
+- composite Registry
+  `ten_y_t5_maj3_k3_ic_static_v1__h5__10Y` 和精确 version 均为
+  `active`；该 active 只授予灰度实验室可见性，不授予 scheduler 权限。
+- 持久化回测 run `182` 为 `success`，产生 333/333 条唯一 canonical
+  prediction 和 17 条月度指标；批次为 `[100, 100, 100, 33]`。
+  `predict_date/feature_date` 从 `2025-01-02` 到 `2026-05-22`，
+  `target_date` 从 `2025-01-09` 到 `2026-05-29`，全部严格早于
+  `2026-06-01`。
+- `/api/backtests/factor-lab` 返回 HTTP 200，精确命中一个 pilot，
+  包含 333 条 daily rows 和 17 条 monthly metrics，因此历史回测已在
+  API 可见。
+- 回测 provenance 由 run summary 和 prediction extra 中的
+  `scheme_version`、`harness_run_id`、`generation_id`、
+  `data_snapshot_id`，以及精确 active version 行中的
+  code/config/Metadata hashes 共同闭环。当前 Blackbox 持久化路径未向
+  `t_backtest_runs.code_hash/config_hash/input_artifact_hash` 三个可选列
+  写值，这是现行审计技术债，不影响本批跨表身份验收。
+- 当前 `t_input_generations` 仍为 0，状态为
+  `GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION`。未写入 `gray_live`、
+  `live_write` 或 `scheduled_live`，前端实时信号尚未完成；不得使用旧
+  generation 伪造实时结果。
+- 本验收不是正式 21/25、08:00 SLA、自动灰度调度或正式日批准入。
+
+## 4. 后续顺序
 
 本批之后的自动灰度调度必须先完成[TODO](../../TODO.md)列出的 21/25、迁移、replay、容量、恢复和连续观察门禁，并另行获得独立 `scheduler_admission=gray|formal` 与逐方案授权。`formal` 晋级不由本记录或 `gray` admission 推导。
