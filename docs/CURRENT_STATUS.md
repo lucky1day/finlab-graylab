@@ -22,7 +22,7 @@
 | Native V1 | 现有方案保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、统一 DataBridge 输入、七个 Gate、预测和 no-persist 回测已形成稳定路径 |
 | Blackbox V2 生产路径 | 已完成一个真实周频方案和同一上游批次四个日频方案的专项生产灰度激活；尚未形成面向任意新方案的通用生产授权 |
-| 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED`；21/25 ledger 功能 MVP 已在隔离 MySQL 通过，但 rollout 关闭，容量和生产门禁未通过，不能宣称 SLA 稳定 |
+| 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED` 仅指受控 recorder 的 21/25 ledger 功能验证；真实 17+4 尚未联跑，08:00 SLA 与 07:55 容量均无证据，生产门禁仍阻断 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 | 新方案默认终点 | 先进入受控技术验收；生产运行必须逐方案专项授权 |
 
@@ -30,12 +30,12 @@
 
 - `weekly_10y_lgbm_point_v1` 已专项授权进入生产灰度，并完成一次持久化回测和一次 `gray_live`；目标数据到达后仍需复验 actual join。
 - 1Y T+5 四方案 `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 已专项授权并达到 `Onboarding Complete`；每方案保留 333 条 canonical backtest 和 40 条连续 `gray_live`。
-- 四方案当前 `scheduled_live` 数为 `3/2/2/0`，因此批次尚未整体达到 `Production Observed`。同一上游批次的证据不能外推到独立交付、周平均或月频；完整证据见本节后的专项记录链接。
+- 四方案批次尚未整体达到 `Production Observed`。同一上游批次的证据不能外推到独立交付、周平均或月频；完整证据见本节后的专项记录链接，当前生产行数不在状态文档中固化。
 
 ### 日频 08:00 整改状态
 
 - 2026-07-24 旧 APScheduler 路径仅生成 16/21 个 run（13 success、3 failed、5 未运行），因此当前生产不能认定为稳定。
-- 步骤 6 已完成：隔离 MySQL 精确展开 21 item/25 target，其中 Native 17 item/21 target、输入模式 14/3；双 lane、失败隔离、重入幂等和 claim 单 winner 均通过。
+- 步骤 6 已完成：受控 recorder 在隔离 MySQL 精确展开 21 item/25 target，其中 Native 17 item/21 target、输入模式 14/3；双 lane、失败隔离、重入幂等、claim 单 winner、原子提交和 write-once watchdog 均通过。该功能验证没有执行真实 17+4 算法。
 - 步骤 7 已完成：四个 V2 同代并按 `+0/+2/+4/+6` 独立释放，最大并发 2；
   四个真实 delivery 的冻结输入、确定性、120 秒超时、父 generation fence、
   late 后继续执行和失败隔离均通过。
@@ -47,22 +47,19 @@
 - `b00d381` 将 operator/runtime 双锁提升为同进程可验证会话：绑定创建 PID、固定路径和设备/inode，内部预检只借用既有锁而不重抢或提前释放，成功路径首尾验锁。
 - `b99e24f` 已让真实 replay runtime 复用该会话持有的同一 runtime 锁：借用入口和核心执行入口都会在任何 DB/快照/线程池副作用前验证真实 session capability；伪造对象、跨 PID、已释放、路径或 inode 漂移均 fail-closed，成功和异常路径都不替外层 acquire/release。execute CLI 与逐 dispatch 运行中 fence 仍未提供。
 - `349475f` 进一步把 exact operator session 绑定到 runtime 运行态，并在主线程 submit 前、worker 进入 canonical claim 前复验；借用模式省略或替换 session 均在 DB/claim 前拒绝。该提交只完成 session fence，不代表候选、generation、控制面和 replay-aware 进程动态 fence 已完成。
-- `0d1b70d` 在成功的二次预检后为同一锁会话一次性绑定脱敏 dispatch identity，覆盖候选、generation、21/25 定义、控制面、生产 migration/Registry/version、source 连接身份和起止水位；未绑定、重复绑定或 session 已释放均拒绝。该 capability 仍只是 write-once 基线，尚未在每次 dispatch 前重读比较。
-- `cab7b0d` 已提供 dispatch identity 动态重读：重新打开两份 manifest，并复核候选 Git/policy、21/25 定义、legacy/BLOCKED、生产 001–017/Registry/version 及 source endpoint/principal/table；source 水位继续允许前进。该 helper 尚未接入 runtime submit/claim，因此不能单独视为逐 dispatch fence 完成。
-- `5129451` 已把动态 identity 重读线性化接入主线程 submit 前和 worker canonical claim 前；submit 漂移与 submit 后/worker 前漂移都会发布 stop fence、返回 `recovery_blocked`，且零 attempt/claim。当前仍缺 replay-aware 进程 allowlist，因此逐 dispatch 运行中 fence 尚未全部完成。
+- `0d1b70d` 在成功的二次预检后为同一锁会话一次性绑定脱敏 dispatch identity，覆盖候选、generation、21/25 定义、控制面、生产 migration/Registry/version、source 连接身份和起止水位；未绑定、重复绑定或 session 已释放均拒绝。该提交只建立 write-once 基线，在该阶段尚未逐 dispatch 重读。
+- `cab7b0d` 提供 dispatch identity 动态重读：重新打开两份 manifest，并复核候选 Git/policy、21/25 定义、legacy/BLOCKED、生产 001–017/Registry/version 及 source endpoint/principal/table；source 水位继续允许前进。该提交只提供 helper，在该阶段尚未接入 runtime submit/claim。
+- `5129451` 已把动态 identity 重读线性化接入主线程 submit 前和 worker canonical claim 前；submit 漂移与 submit 后/worker 前漂移都会发布 stop fence、返回 `recovery_blocked`，且零 attempt/claim。当前仍缺 replay 专用 OS 进程探针、runtime 接线和最小 start-window fence，因此逐 dispatch 运行中 fence 尚未全部完成。
+- `c76e96c` 新增 repository 只读查询，只从本次 replay occurrence、runtime 当前 active future 和 current `operator_recovery + scheduled_live` running attempt 返回已登记 leader PID/PGID；查询闭合 scheme/version/runtime/date/state/token 以及 `PID=PGID>1`。这是进程 allowlist 的账本身份底座，不是 OS 进程探针，也尚未接入 runtime。
 - `93de8ad` 建立隔离 replay MySQL 生命周期：新 datadir/UUID、loopback 非 3306、固定安全参数、唯一 schema/账号、per-connection guard，以及 Engine→进程→fd 锚定目录的异常安全清理；不含 migration、Registry 或算法执行。
 - 当前真实环境预检仍会 fail-closed：已安装的 backend LaunchAgent 尚未携带合法
   coordinator mode，因此控制面检查返回 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
   本轮未修改已安装 plist、未 bootout/kickstart 服务；只能在获准的独占维护窗口
   修复后重新检查。
-- 最新验证为 replay 相关回归 `86 passed, 3 skipped`、启用真实临时 MySQL 的 replay gate/runtime `71 passed`（13 个 subtest）和全量 `2699 passed, 13 skipped`；只读复审无 P0/P1。生产只读快照仍是 migration 017、run/prediction `1193/1111`，input generation 与三层 ledger 均为 0。
-- 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
-  走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
-  增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
-  08:01 补齐不回写；正常 25/25 为 `MET`，缺 visibility receipt 仍算 missing。
+- 既有验证证据保持为 replay 相关回归 `86 passed, 3 skipped`、启用真实临时 MySQL 的 replay gate/runtime `71 passed`（13 个 subtest）和全量 `2699 passed, 13 skipped`；只读复审无 P0/P1。这些是代码与隔离功能证据，不是 execute-only 真实 17+4 联跑或容量证据。
 - 候选已实现 06:30 readiness 后单次冻结、Native/V2 双池、三层账本、attempt fence、原子提交和动态 21/25 健康投影；07:45/08:00 可幂等补写，后续源数据修正不重启当前 occurrence。
-- 生产仍为 `legacy`，`bond_db` 保持 migration 017 且 ledger 表为空；三个
-  0629 仅处于受控兼容桥，其他 Native 禁止 fallback，该桥尚无生产资格。
+- 生产仍为 migration 017、rollout=`legacy`、admission=`BLOCKED`；三个 0629
+  仅处于受控兼容桥，其他 Native 禁止 fallback，该桥尚无生产资格。
 - 本轮只证明分层功能 MVP：真实 21 算法同轮、07:55 容量、生产 clone 迁移、
   generation 长期归档/磁盘上限、20+20 样本、故障注入和连续 10 日均未通过；
   admission 继续 `BLOCKED`。
@@ -88,12 +85,10 @@
 
 ## 当前观察项
 
-1. `check-only`、operator/runtime 同锁交接、submit/claim 前 session/identity fence、write-once dispatch identity 和隔离 MySQL 生命周期已完成，但真实环境预检尚未通过；下一项是 replay-aware 进程 fence。execute 前仍须钉住 production audit-readonly endpoint/server UUID，扩大后代进程和 `.so/.pyc`/Conda 身份覆盖，并降低重复 identity 扫描负载；旧 digest 不得跨进程复用。
-2. 在获准的独占维护窗口修复 BFL 三份已安装 plist 的 mode 一致性并重跑
-   `--check-only`；不得自动停服务、修改 production rollout/admission 或触碰
-   BondProjectPro。
-3. 下一次交易业务日的真实同日 generation 到位后，在 BFL 独占窗口执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造 seal、使用 recorder、写生产库或计作容量样本。operator 须持续持锁并在每次 dispatch 前重验。
-4. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
+1. 先基于 `c76e96c` 的账本身份查询实现 replay 专用 OS 进程探针，逐项区分当前已登记 leader PGID 与外部、旧 attempt、异 UID 及未登记后代进程；不得把 repository 查询本身称为进程 fence。
+2. 再把专用探针接入 runtime 每个 dispatch，并以最小 start-window fence 闭合 `Popen` 成功到 PID/PGID 登记之间的窗口；完成前不开放 execute CLI。execute 仍须钉住 production audit-readonly endpoint/server UUID、覆盖 `.so/.pyc`/Conda 身份并控制重复扫描负载。
+3. 上述 fence 完成且获准独占维护窗口后，修复 BFL 三份已安装 plist 的 mode 一致性并重跑 `--check-only`；下一次交易业务日的真实同日 generation 到位后，只通过 execute 入口执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑。禁止伪造 seal、使用 recorder、写生产库、触碰 BondProjectPro 或计作容量样本。
+4. 真实联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
    gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
    `gray_live` 与正式 21/25 occurrence 解耦。
 5. 在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、断连和

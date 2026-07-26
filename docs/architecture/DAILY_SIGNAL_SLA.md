@@ -4,7 +4,7 @@
 
 **目标读者**：平台开发、运维、架构评审和风险控制人员
 
-**最后核验日期**：2026-07-25
+**最后核验日期**：2026-07-26
 
 本文定义单台 Mac Studio 上日频预测的目标架构、不可破坏的不变量和上线门禁。
 它不证明当前生产已达到 08:00 SLA；动态结论以
@@ -22,8 +22,9 @@
 - 单机 owner 使用 `launchd + flock`；完成权使用数据库
   `current_run_id + attempt_no` fence。不实现 lease、heartbeat claim、
   `SKIP LOCKED` 或通用分布式 worker。
-- 当前 rollout 开关必须保持 `legacy`，直到迁移、输入适配、容量、故障注入和
-  连续运行门禁全部通过。新旧路径不得并行写库。
+- rollout 在迁移、输入适配、容量、故障注入和连续运行门禁全部通过前必须保持
+  incumbent/legacy control path；真实配置值只记录在[当前状态](../CURRENT_STATUS.md)。
+  新旧路径不得并行写库。
 - mode 是跨进程控制面：backend、scheduler、健康巡检和写库 fence 必须读取同一
   部署状态。仓库 launchd 默认全部为 `legacy`，并保留 legacy V2 preflight
   作为该模式唯一的每日 DataBridge refresh owner；版本化 rollout bootstrap
@@ -149,9 +150,9 @@ target 只承担业务验收和缺失定位，不参与 worker claim。
 `scheduled_live` 必须绑定真实 `schedule_item_id` 和 attempt；manual、
 background 或 gray 入口不得伪造 scheduled-live provenance。
 
-当前已应用的 017 迁移只提供独立外键，没有把
+当前迁移契约只提供独立外键，没有把
 `target occurrence/item/base/runtime -> item -> current winning run ->
-canonical prediction` 建成数据库级 composite FK。017 的已发布内容和校验和
+canonical prediction` 建成数据库级 composite FK。已发布迁移的内容和校验和
 不可修改。018 仅修复 `t_scheme_runs.started_at` 的可空性，使 claim 到真实
 子进程启动之间的账本状态能在 MySQL 上成立；该迁移不增加关系约束，也不得与
 未来 composite FK 混称。能够安全处理 MySQL partial DDL/implicit commit
@@ -350,44 +351,54 @@ capability；repository 与 executor 的每个 claim/process/commit fence 都传
 私有 runtime root 创建并保留 `0600` fence 文件；除此之外不修改生产业务表、
 服务状态、rollout 或 admission。检查在同一锁会话内首尾两次重开 Native/
 DataBridge manifest，并复核候选 Git/policy、完整 active daily
-Registry/version、生产 migration 001–017、source-readonly 九表与 T-1 readiness、
-live/frozen calendar、start/end watermark、三份 installed plist、legacy/BLOCKED
-边界，以及全日期 ledger/run/孤儿进程静默。输出固定为
+Registry/version、migration history、source-readonly 九表与 T-1 readiness、
+live/frozen calendar、start/end watermark、installed service definitions、
+rollout-admission identity 边界，以及全日期 ledger/run/孤儿进程静默。输出固定为
 `CHECK_PASSED + qualification=EXCLUDED` 或脱敏稳定错误码。
 
 check-only 返回即释放锁，旧 `preflight_digest` 不带签名、TTL 或 capability
 语义，未来 execute 不得接受它跨进程复用。execute 必须在同一进程重新完成全部
 检查、持续持有两把锁并在每次 dispatch 前重验。增加 execute 前还须钉住独立
-production audit-readonly endpoint/server UUID，扩大未登记 source/Blackbox
-后代进程和二进制/Conda 环境身份覆盖，并降低两次 source watermark 对生产源库
-的扫描负载。
+production audit-readonly endpoint/server UUID，完成 source/Blackbox 后代
+进程和二进制/Conda 环境身份覆盖，并降低两次 source watermark 对生产源库的
+扫描负载。
 
 operator/runtime 双锁由一个同进程 session 持有，session 绑定创建 PID、固定锁名、
 共同父目录和设备/inode；内部预检只能借用该 session，不得重新获取或释放锁。
 成功预检在首尾验锁，PID 漂移、锁释放、路径替换、owner/权限漂移均 fail-closed。
 外层 session 退出时固定先释放 runtime、再释放 operator，为后续 execute 的无缝
-持锁和逆序资源清理提供唯一入口。真实 replay runtime 已复用同一 runtime 锁；
-wrapper 与核心借用入口都必须在 DB、快照或线程池副作用之前验证 exact session
-类型、持有 PID、路径和 inode。借用路径只允许验证，不得 acquire/release；
-成功、运行异常和线程池收口之后，锁所有权都必须仍属于外层 operator session。
-runtime 还必须把 exact session 绑定到本次运行态，在主线程 submit 前和 worker
-进入 canonical claim 前分别复验；借用模式省略或替换 session 必须在 DB/claim
-之前拒绝。这两层完成锁/session fence；动态身份由下文的 dispatch identity
-重读提供，replay-aware 进程 fence 仍是 execute CLI 接线前的独立阻断项。
+持锁和逆序资源清理提供唯一入口。replay runtime 必须复用同一 runtime 锁；
+wrapper 与核心借用入口都在 DB、快照或线程池副作用之前验证 exact session 类型、
+持有 PID、路径和 inode。借用路径只允许验证，不得 acquire/release；成功、
+运行异常和线程池收口之后，锁所有权都必须仍属于外层 operator session。runtime
+还必须把 exact session 绑定到本次运行态，在主线程 submit 前和 worker 进入
+canonical claim 前分别复验；借用模式省略或替换 session 必须在 DB/claim 前拒绝。
+锁/session、dispatch identity 和 replay-aware 进程 fence 都是 execute 的前置条件。
 
 成功的二次预检还必须在同一 session 上一次性绑定不可序列化的 dispatch
 identity；它只保存固定 manifest 路径和脱敏摘要，覆盖候选 Git/policy、
-generation、21/25 定义、控制面、生产 migration/Registry/version、source
+generation、冻结 item/target 定义、控制面、生产 migration/Registry/version、source
 连接身份及预检起止水位。source 水位允许在预检期间前进，但起止两端都必须进入
 身份，不能把两个数据状态压成同一个 capability。check-only report/digest 不得
-替代该 capability；未绑定、重复绑定或 session 已释放均 fail-closed。当前这层
-已经提供动态重读 helper：重开 manifest 并重验候选、定义、控制面、生产
-migration/Registry/version 和 source endpoint/principal/table；source 水位只
-记录、不要求静止。runtime 现已在 dispatch lock 内、future submit
-之前重读一次，并在 worker 进入 canonical claim 前再重读一次；前者失败不得
-submit，后者失败不得接触隔离 DB/claim，两者都结构化为 `recovery_blocked` 并
-停止后续 dispatch。当前剩余缺口是区分当前 replay 已登记 PGID 与外部、旧
-attempt 或异 UID 算法进程。
+替代该 capability；未绑定、重复绑定或 session 已释放均 fail-closed。runtime
+必须在 dispatch lock 内、future submit 前重开 manifest 并重验候选、定义、
+控制面、生产 migration/Registry/version 和 source endpoint/principal/table，
+再在 worker 进入 canonical claim 前重复该检查；前者失败不得 submit，后者失败
+不得接触隔离 DB/claim，两者都结构化为 `recovery_blocked` 并停止后续 dispatch。
+
+replay 进程 allowlist 的 repository 查询契约只接受本 replay occurrence、runtime
+当前 active future 和 current `operator_recovery + scheduled_live` running
+attempt，并闭合 scheme/version/runtime/date/state/token 与 `PID=PGID>1`，只返回
+已登记 leader PID/PGID。该查询只提供账本身份；OS 进程表、后代关系、UID 和
+Popen-to-registration 窗口必须由专用进程 fence 独立验证。
+
+真实 replay 的 MVP 顺序固定为：
+
+1. 基于上述账本身份实现 replay 专用 OS 进程探针；
+2. 在 runtime 每个 dispatch 接线，并以最小 start-window fence 闭合 `Popen`
+   成功到 PID/PGID 登记之间的窗口；
+3. 只通过 execute 入口完成冻结 candidate 的 Native/V2 与 target 全集的隔离
+   MySQL 联跑。
 
 隔离 replay MySQL 由专用 context manager 创建，固定使用本机新 datadir、新
 server UUID、loopback 随机非 3306 端口和唯一 `bfl_real_replay_*` schema；

@@ -4,9 +4,9 @@
 
 **目标读者**：所有项目参与者
 
-**最后核验日期**：2026-07-24
+**最后核验日期**：2026-07-26
 
-本文是仓库文档的唯一总入口。这里不复制方案数量、运行 ID 或生命周期现状；动态事实统一查看[当前状态](CURRENT_STATUS.md)。
+本文是仓库文档的唯一总入口。这里不复制方案数量、运行 ID、replay 进度或生产 migration/rollout/admission；动态事实统一查看[当前状态](CURRENT_STATUS.md)。
 
 ## 按角色进入
 
@@ -25,7 +25,7 @@
 |---|---|---|
 | [入库导航](onboarding/README.md) | 判断使用 Blackbox V2 新增还是 Native V1 存量维护 | 是 |
 | [SOP](sop/README.md) | 上游交付、平台入库和 Native 存量维护步骤 | 是 |
-| [架构与契约](architecture/README.md) | 系统架构、代码边界、日频 SLA、日期语义和共享契约 | 是 |
+| [架构与契约](architecture/README.md) | 系统架构、代码边界、日频 SLA 目标与门禁、日期语义和共享契约 | 是 |
 | [产品文档](product/README.md) | 用户手册和产品需求记录 | 以文档状态为准 |
 | [运维文档](operations/README.md) | 环境和部署资料 | 以文档状态为准 |
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和试验记录 | 规范与记录分开 |
