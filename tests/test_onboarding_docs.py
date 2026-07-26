@@ -563,7 +563,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             ):
                 self.assertIn(marker, text)
 
-        self.assertIn("截至本记录尚未执行", record)
+        self.assertIn("pilot 已完成 39 条", record)
+        self.assertIn("其余三个方案尚未写入 live prediction", record)
+        self.assertIn("本批不存在 `scheduled_live`", record)
         self.assertIn("automatic gray scheduling", todo)
         self.assertIn("scheduled_live", record)
         self.assertIn("旧 generation fallback", record)
