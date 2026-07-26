@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 from sqlalchemy import create_engine, event, text
 
 from backtests._base_runner import RunOutput, make_run_output
@@ -198,6 +199,88 @@ def _counts(engine) -> tuple[int, int, int]:
 
 
 class BlackboxV2BacktestConversionTests(unittest.TestCase):
+    def test_platform_bundle_is_forwarded_to_historical_delivery(self) -> None:
+        from backtests.blackbox_v2 import run_blackbox_historical_backtest
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+        )
+
+        cases = _cases(2)
+        observed: dict[str, object] = {}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = _snapshot(root)
+            artifact = freeze_platform_input(
+                "api-wind-date-v1",
+                pd.DataFrame(
+                    {
+                        "rdate": ["2026-07-15"],
+                        "week_id": ["202627"],
+                    }
+                ),
+                weekly_cutoff_key="202627",
+            )
+            bundle = compose_blackbox_input_bundle(
+                snapshot,
+                platform_input_ids=["api-wind-date-v1"],
+                platform_input_artifacts=[artifact],
+            )
+            runtime_data_dir = root / "private-runtime-view"
+            runtime_data_dir.mkdir()
+
+            def run_delivery(**kwargs):
+                observed.update(kwargs)
+                return _records(cases)
+
+            output = run_blackbox_historical_backtest(
+                metadata=_metadata(),
+                script_path=root / "delivery.py",
+                cases=cases,
+                snapshot=snapshot,
+                input_bundle=bundle,
+                runtime_data_dir=runtime_data_dir,
+                scheme_version="version-test",
+                generation_id="generation-test",
+                benchmark_id="bundle-history",
+                harness_run_id="hr-bundle",
+                run_delivery=run_delivery,
+                profile=RuntimeProfile.for_tests(),
+            )
+
+        self.assertEqual(observed["data_dir"], runtime_data_dir)
+        self.assertEqual(
+            observed["data_snapshot_id"],
+            bundle.combined_snapshot_id,
+        )
+        self.assertEqual(
+            observed["platform_input_ids"],
+            ("api-wind-date-v1",),
+        )
+        self.assertEqual(
+            observed["parent_data_snapshot_id"],
+            snapshot.snapshot_id,
+        )
+        self.assertEqual(
+            observed["input_identity_manifest"],
+            bundle.identity_manifest,
+        )
+        self.assertEqual(
+            observed["input_audit_manifest"],
+            bundle.audit_manifest,
+        )
+        self.assertEqual(
+            output.summary["data_snapshot_id"],
+            bundle.combined_snapshot_id,
+        )
+        self.assertTrue(
+            all(
+                row["extra"]["data_snapshot_id"]
+                == bundle.combined_snapshot_id
+                for row in output.rows
+            )
+        )
+
     def test_backtest_converter_has_no_scheduler_dependency(self) -> None:
         module_path = Path(__file__).resolve().parents[1] / "backtests" / "blackbox_v2.py"
         tree = ast.parse(module_path.read_text(encoding="utf-8"))

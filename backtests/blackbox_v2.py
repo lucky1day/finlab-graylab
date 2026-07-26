@@ -11,7 +11,10 @@ from shared.blackbox_v2.history import (
     HistoricalCase,
     validate_historical_cases,
 )
-from shared.blackbox_v2.snapshot import BlackboxSnapshot
+from shared.blackbox_v2.snapshot import (
+    BlackboxInputBundle,
+    BlackboxSnapshot,
+)
 
 
 DATA_SOURCE = "blackbox_v2_current_snapshot_as_of"
@@ -23,6 +26,8 @@ def run_blackbox_historical_backtest(
     script_path: str | Path,
     cases: Sequence[HistoricalCase],
     snapshot: BlackboxSnapshot,
+    input_bundle: BlackboxInputBundle | None = None,
+    runtime_data_dir: str | Path | None = None,
     scheme_version: str,
     generation_id: str,
     benchmark_id: str,
@@ -38,15 +43,59 @@ def run_blackbox_historical_backtest(
     materialized = validate_historical_cases(cases, expected_count=len(cases))
     if not materialized:
         raise ValueError("Blackbox historical backtest requires at least one case")
-    records = run_delivery(
-        metadata=metadata,
-        script_path=script_path,
-        requests=[case.request for case in materialized],
-        data_dir=snapshot.data_dir,
-        data_snapshot_id=snapshot.snapshot_id,
-        profile=profile,
-        budget=budget,
-    )
+    delivery_kwargs = {
+        "metadata": metadata,
+        "script_path": script_path,
+        "requests": [case.request for case in materialized],
+        "profile": profile,
+        "budget": budget,
+    }
+    if input_bundle is None:
+        if runtime_data_dir is not None:
+            raise ValueError(
+                "runtime_data_dir requires a Blackbox input bundle"
+            )
+        execution_snapshot_id = snapshot.snapshot_id
+        delivery_kwargs.update(
+            {
+                "data_dir": snapshot.data_dir,
+                "data_snapshot_id": execution_snapshot_id,
+            }
+        )
+    else:
+        if (
+            input_bundle.base_snapshot.snapshot_id
+            != snapshot.snapshot_id
+            or input_bundle.parent_snapshot_id != snapshot.snapshot_id
+        ):
+            raise ValueError(
+                "historical input bundle does not match parent snapshot"
+            )
+        if runtime_data_dir is None:
+            raise ValueError(
+                "historical input bundle requires a private runtime data dir"
+            )
+        execution_snapshot_id = input_bundle.combined_snapshot_id
+        delivery_kwargs.update(
+            {
+                "data_dir": Path(runtime_data_dir),
+                "data_snapshot_id": execution_snapshot_id,
+                "platform_input_ids":
+                    input_bundle.platform_input_ids,
+            }
+        )
+        if input_bundle.platform_input_ids:
+            delivery_kwargs.update(
+                {
+                    "parent_data_snapshot_id":
+                        input_bundle.parent_snapshot_id,
+                    "input_identity_manifest":
+                        input_bundle.identity_manifest,
+                    "input_audit_manifest":
+                        input_bundle.audit_manifest,
+                }
+            )
+    records = run_delivery(**delivery_kwargs)
     if len(records) != len(materialized):
         raise ValueError(
             f"historical Result count mismatch: expected={len(materialized)}, got={len(records)}"
@@ -106,7 +155,7 @@ def run_blackbox_historical_backtest(
                     "target_rule": metadata.target_rule,
                     "scheme_version": scheme_version,
                     "generation_id": generation_id,
-                    "data_snapshot_id": snapshot.snapshot_id,
+                    "data_snapshot_id": execution_snapshot_id,
                     "replay_semantics": CURRENT_SNAPSHOT_REPLAY,
                 },
             }
@@ -124,7 +173,7 @@ def run_blackbox_historical_backtest(
         {
             "scheme_version": scheme_version,
             "generation_id": generation_id,
-            "data_snapshot_id": snapshot.snapshot_id,
+            "data_snapshot_id": execution_snapshot_id,
             "harness_run_id": harness_run_id,
             "request_count": len(materialized),
             "backtest_start_date": backtest_start_date,

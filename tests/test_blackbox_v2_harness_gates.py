@@ -14,6 +14,373 @@ import pandas as pd
 
 
 class BlackboxV2HarnessGateTests(unittest.TestCase):
+    def test_stable_private_file_reader_rejects_path_replacement_during_read(self) -> None:
+        from harness.blackbox_v2.gates import (
+            _read_stable_private_file,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            target = root / "state.json"
+            replacement = root / "replacement.json"
+            target.write_bytes(b'{"old":true}\n')
+            replacement.write_bytes(b'{"new":true}\n')
+            real_read = os.read
+            replaced = False
+
+            def racing_read(descriptor, count):
+                nonlocal replaced
+                content = real_read(descriptor, count)
+                if not replaced:
+                    replaced = True
+                    os.replace(replacement, target)
+                return content
+
+            with (
+                patch(
+                    "harness.blackbox_v2.gates.os.read",
+                    side_effect=racing_read,
+                ),
+                self.assertRaisesRegex(ValueError, "changed"),
+            ):
+                _read_stable_private_file(
+                    target,
+                    label="test state",
+                )
+
+    def test_runtime_platform_file_verifier_rejects_write_symlink_and_hardlink(self) -> None:
+        from harness.blackbox_v2.gates import (
+            _verify_runtime_platform_files,
+        )
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        artifact = freeze_platform_input(
+            "api-wind-date-v1",
+            pd.DataFrame(
+                {
+                    "rdate": ["2026-07-15"],
+                    "week_id": ["202627"],
+                }
+            ),
+            weekly_cutoff_key="202627",
+        )
+        for mutation in ("writable", "symlink", "hardlink"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                snapshot = create_snapshot_from_frames(
+                    _snapshot_frames(),
+                    output_root=root / "snapshots",
+                    expected_columns={
+                        name: list(frame.columns)
+                        for name, frame in _snapshot_frames().items()
+                    },
+                    schema_version="data-bridge-v1",
+                )
+                bundle = compose_blackbox_input_bundle(
+                    snapshot,
+                    platform_input_ids=["api-wind-date-v1"],
+                    platform_input_artifacts=[artifact],
+                )
+                with open_blackbox_runtime_view(
+                    bundle,
+                    runtime_root=root / "views",
+                ) as view:
+                    calendar_path = (
+                        view.data_dir / "api_wind_date.csv"
+                    )
+                    view.data_dir.chmod(0o755)
+                    if mutation == "writable":
+                        calendar_path.chmod(0o644)
+                    else:
+                        calendar_path.unlink()
+                        external = root / f"{mutation}.csv"
+                        external.write_bytes(artifact.content_bytes)
+                        external.chmod(0o444)
+                        if mutation == "symlink":
+                            calendar_path.symlink_to(external)
+                        else:
+                            os.link(external, calendar_path)
+                    view.data_dir.chmod(0o555)
+
+                    with self.assertRaises(ValueError):
+                        _verify_runtime_platform_files(
+                            bundle,
+                            view.data_dir,
+                        )
+
+    def test_input_state_captures_declared_platform_input_in_read_only_transaction(self) -> None:
+        from harness.blackbox_v2.gates import (
+            _ensure_input_state,
+            _read_input_state,
+        )
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.contracts import BlackboxRequest
+        from shared.blackbox_v2.intake import intake_delivery
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            CutoffKeys,
+            create_snapshot_from_frames,
+        )
+
+        class Connection:
+            def __init__(self) -> None:
+                self.commands: list[str] = []
+                self.rolled_back = False
+
+            def exec_driver_sql(self, statement):
+                self.commands.append(str(statement))
+
+            def rollback(self):
+                self.rolled_back = True
+
+        class ConnectionContext:
+            def __init__(self, connection) -> None:
+                self.connection = connection
+
+            def __enter__(self):
+                return self.connection
+
+            def __exit__(self, exc_type, exc, tb):
+                return None
+
+        class Engine:
+            def __init__(self) -> None:
+                self.connection = Connection()
+                self.disposed = False
+
+            def connect(self):
+                return ConnectionContext(self.connection)
+
+            def dispose(self):
+                self.disposed = True
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+                platform_inputs=["api-wind-date-v1"],
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            snapshot = create_snapshot_from_frames(
+                _snapshot_frames(),
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in _snapshot_frames().items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            cutoffs = CutoffKeys("2026-07-15", "202627", "202606")
+            request = BlackboxRequest(
+                request_id="trial-request",
+                predict_date="2026-07-15",
+                feature_date="2026-07-15",
+                target_date="2026-07-16",
+                daily_cutoff_key=cutoffs.daily_cutoff_key,
+                weekly_cutoff_key=cutoffs.weekly_cutoff_key,
+                monthly_cutoff_key=cutoffs.monthly_cutoff_key,
+            )
+            artifact = freeze_platform_input(
+                "api-wind-date-v1",
+                pd.DataFrame(
+                    {
+                        "rdate": ["2026-07-14", "2026-07-15"],
+                        "week_id": ["202627", "202627"],
+                    }
+                ),
+                weekly_cutoff_key=cutoffs.weekly_cutoff_key,
+                audit_provenance={"source_kind": "harness_database"},
+            )
+            engine = Engine()
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-15",
+                project_root=root,
+                report_dir=root / "reports",
+                config=config,
+                engine_factory=lambda: engine,
+            )
+            with (
+                patch(
+                    "harness.blackbox_v2.gates.build_blackbox_input_snapshot",
+                    return_value=snapshot,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.resolve_blackbox_input_cutoffs",
+                    return_value=cutoffs,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates._feature_date",
+                    return_value="2026-07-15",
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.build_live_request",
+                    return_value=request,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.capture_blackbox_platform_inputs_from_connection",
+                    return_value=(artifact,),
+                ) as capture,
+                patch(
+                    "harness.blackbox_v2.gates._data_bridge_provenance",
+                    return_value={
+                        "generation_id": "generation-test",
+                        "refresh_date": "2026-07-15",
+                        "refreshed_at": "2026-07-15T00:02:00+08:00",
+                        "business_digest": "digest",
+                        "runtime_profile": "blackbox-v2-v1",
+                        "environment_fingerprint": "e" * 64,
+                    },
+                ),
+                patch("harness.blackbox_v2.gates.get_calendar"),
+            ):
+                state = _ensure_input_state(ctx)
+
+            self.assertNotEqual(
+                state.bundle.combined_snapshot_id,
+                snapshot.snapshot_id,
+            )
+            self.assertEqual(
+                state.bundle.platform_input_ids,
+                ("api-wind-date-v1",),
+            )
+            capture.assert_called_once_with(
+                config.platform_inputs,
+                connection=engine.connection,
+                weekly_cutoff_key="202627",
+            )
+            self.assertEqual(
+                engine.connection.commands,
+                ["START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"],
+            )
+            self.assertTrue(engine.connection.rolled_back)
+            self.assertTrue(engine.disposed)
+            raw_state = json.loads(
+                (
+                    root
+                    / "reports"
+                    / "blackbox_v2"
+                    / "input_state.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                raw_state["combined_snapshot_id"],
+                state.bundle.combined_snapshot_id,
+            )
+            self.assertEqual(
+                raw_state["platform_input_ids"],
+                ["api-wind-date-v1"],
+            )
+            self.assertEqual(
+                raw_state["platform_input_artifacts"][0]["sha256"],
+                artifact.sha256,
+            )
+            self.assertTrue(
+                (
+                    root
+                    / "reports"
+                    / "blackbox_v2"
+                    / "input_state.initialized"
+                ).is_file()
+            )
+            self.assertNotIn(
+                "content_base64",
+                raw_state["platform_input_artifacts"][0],
+            )
+            self.assertTrue(
+                Path(
+                    raw_state["platform_input_artifacts"][0][
+                        "runtime_content_path"
+                    ]
+                ).is_file()
+            )
+            self.assertRegex(
+                raw_state["request_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
+            reloaded = _read_input_state(
+                root
+                / "reports"
+                / "blackbox_v2"
+                / "input_state.json"
+            )
+            self.assertEqual(
+                reloaded.bundle.combined_snapshot_id,
+                state.bundle.combined_snapshot_id,
+            )
+            self.assertEqual(
+                reloaded.bundle.audit_manifest,
+                state.bundle.audit_manifest,
+            )
+            state.request_path.write_text("{}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Request"):
+                _read_input_state(
+                    root
+                    / "reports"
+                    / "blackbox_v2"
+                    / "input_state.json"
+                )
+            (
+                root
+                / "reports"
+                / "blackbox_v2"
+                / "input_state.json"
+            ).unlink()
+            with self.assertRaisesRegex(ValueError, "initialized"):
+                _ensure_input_state(ctx)
+
+    def test_non_input_gate_fails_closed_on_missing_or_invalid_input_state(self) -> None:
+        from harness.blackbox_v2.gates import (
+            INPUT_STATE_INITIALIZED_SEAL,
+            _ensure_input_state,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ctx = GateContext(
+                scheme_id="trial",
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=root / "reports",
+            )
+            gate_root = ctx.report_dir / "blackbox_v2"
+            gate_root.mkdir(parents=True)
+            (gate_root / "request.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            with patch(
+                "harness.blackbox_v2.gates.build_blackbox_input_snapshot"
+            ) as build, self.assertRaisesRegex(ValueError, "residual"):
+                _ensure_input_state(ctx)
+            build.assert_not_called()
+
+            (gate_root / "request.json").unlink()
+            seal_path = gate_root / "input_state.initialized"
+            seal_path.write_bytes(INPUT_STATE_INITIALIZED_SEAL)
+            with patch(
+                "harness.blackbox_v2.gates.build_blackbox_input_snapshot"
+            ) as build, self.assertRaisesRegex(ValueError, "initialized"):
+                _ensure_input_state(ctx)
+            build.assert_not_called()
+
+            state_path = gate_root / "input_state.json"
+            state_path.write_text("{not-json", encoding="utf-8")
+            with (
+                patch(
+                    "harness.blackbox_v2.gates.build_blackbox_input_snapshot"
+                ) as build,
+                self.assertRaises(Exception),
+            ):
+                _ensure_input_state(ctx)
+            build.assert_not_called()
+
     def test_future_row_probe_appends_parseable_daily_date_after_snapshot_max(self) -> None:
         from harness.blackbox_v2.gates import _append_future_rows
 
@@ -94,7 +461,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     ]
 
                 with (
-                    patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
+                    patch(
+                        "harness.blackbox_v2.gates._ensure_input_state",
+                        return_value=state,
+                    ),
                     patch(
                         "harness.blackbox_v2.gates._profile",
                         return_value=RuntimeProfile.for_tests(max_batch_requests=100),
@@ -220,6 +590,172 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertFalse((gate_root / "runtime_snapshot").exists())
             self.assertTrue(state_path.is_file())
 
+    def test_cleanup_preserves_runtime_view_marked_as_uncertain_debris(self) -> None:
+        from harness.blackbox_v2.gates import cleanup_runtime_input
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_dir = root / "reports"
+            runtime_root = report_dir / "blackbox_v2" / "runtime_views"
+            active_view = (
+                runtime_root
+                / "active"
+                / "blackbox-runtime-uncertain"
+            )
+            debris_root = runtime_root / "debris"
+            active_view.mkdir(parents=True)
+            debris_root.mkdir()
+            (active_view / "api_wind_date.csv").write_text(
+                "rdate,week_id\n",
+                encoding="utf-8",
+            )
+            (debris_root / "blackbox-runtime-uncertain.json").write_text(
+                "{}\n",
+                encoding="utf-8",
+            )
+            ctx = GateContext(
+                scheme_id="trial",
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=report_dir,
+            )
+
+            cleanup_runtime_input(ctx)
+
+            self.assertTrue(active_view.is_dir())
+            self.assertTrue(
+                (
+                    debris_root
+                    / "blackbox-runtime-uncertain.json"
+                ).is_file()
+            )
+
+    def test_cleanup_rejects_runtime_symlink_without_touching_external_files(self) -> None:
+        from harness.blackbox_v2.gates import cleanup_runtime_input
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_dir = root / "reports"
+            gate_root = report_dir / "blackbox_v2"
+            gate_root.mkdir(parents=True)
+            external = root / "external"
+            external.mkdir()
+            sentinel = external / "sentinel.txt"
+            sentinel.write_text("keep\n", encoding="utf-8")
+            (gate_root / "runtime_snapshot").symlink_to(
+                external,
+                target_is_directory=True,
+            )
+            ctx = GateContext(
+                scheme_id="trial",
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=report_dir,
+            )
+
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                cleanup_runtime_input(ctx)
+
+            self.assertEqual(
+                sentinel.read_text(encoding="utf-8"),
+                "keep\n",
+            )
+            self.assertTrue(
+                (gate_root / "runtime_snapshot").is_symlink()
+            )
+
+    def test_cleanup_rejects_report_or_gate_root_symlink(self) -> None:
+        from harness.blackbox_v2.gates import cleanup_runtime_input
+
+        for target in ("report_dir", "gate_root"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                external = root / "external"
+                external.mkdir()
+                sentinel = external / "sentinel.txt"
+                sentinel.write_text("keep\n", encoding="utf-8")
+                report_dir = root / "reports"
+                if target == "report_dir":
+                    report_dir.symlink_to(
+                        external,
+                        target_is_directory=True,
+                    )
+                else:
+                    report_dir.mkdir()
+                    (report_dir / "blackbox_v2").symlink_to(
+                        external,
+                        target_is_directory=True,
+                    )
+                ctx = GateContext(
+                    scheme_id="trial",
+                    predict_date="2026-07-16",
+                    project_root=root,
+                    report_dir=report_dir,
+                )
+
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    cleanup_runtime_input(ctx)
+
+                self.assertEqual(
+                    sentinel.read_text(encoding="utf-8"),
+                    "keep\n",
+                )
+
+    def test_cleanup_removes_platform_runtime_bytes_from_final_state(self) -> None:
+        from harness.blackbox_v2.gates import cleanup_runtime_input
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            report_dir = root / "reports"
+            gate_root = report_dir / "blackbox_v2"
+            runtime_snapshot = gate_root / "runtime_snapshot"
+            platform_file = (
+                runtime_snapshot
+                / "platform_inputs"
+                / "api_wind_date.csv"
+            )
+            platform_file.parent.mkdir(parents=True)
+            platform_file.write_text(
+                "rdate,week_id\n2026-07-15,202627\n",
+                encoding="utf-8",
+            )
+            state_path = gate_root / "input_state.json"
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "platform_input_artifacts": [
+                            {
+                                "artifact_id": "api-wind-date-v1",
+                                "sha256": "a" * 64,
+                                "runtime_content_path": str(platform_file),
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            ctx = GateContext(
+                scheme_id="trial",
+                predict_date="2026-07-16",
+                project_root=root,
+                report_dir=report_dir,
+            )
+
+            cleanup_runtime_input(ctx)
+
+            final_state = json.loads(
+                state_path.read_text(encoding="utf-8")
+            )
+            self.assertFalse(runtime_snapshot.exists())
+            self.assertNotIn(
+                "runtime_content_path",
+                final_state["platform_input_artifacts"][0],
+            )
+            self.assertNotIn(
+                "content_base64",
+                state_path.read_text(encoding="utf-8"),
+            )
+
     def test_direct_blackbox_gate_cli_cleans_runtime_snapshot(self) -> None:
         """单 Gate CLI 结束后也必须清理临时三频副本。"""
         from harness.cli import _build_parser, _run_gate
@@ -312,13 +848,18 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             BlackboxDryRunGate,
             BlackboxUnitGate,
             InputState,
+            _append_future_rows,
         )
         from scheduler.blackbox_v2_runner import RuntimeProfile
         from scheduler.discovery import load_scheme_config
         from shared.blackbox_v2.contracts import BlackboxRequest
         from shared.blackbox_v2.intake import intake_delivery
         from shared.blackbox_v2.requests import write_request
-        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
         from tests.test_blackbox_v2_runner import _SUCCESS_SCRIPT
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -326,6 +867,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             scheme_dir = intake_delivery(
                 _delivery(root / "incoming", script=_SUCCESS_SCRIPT),
                 schemes_root=root / "schemes",
+                platform_inputs=["api-wind-date-v1"],
             )
             config = load_scheme_config(scheme_dir / "config.yaml")
             frames = _snapshot_frames()
@@ -345,7 +887,28 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 monthly_cutoff_key="202606",
             )
             request_path = write_request(request, root / "request.json")
-            state = InputState(snapshot=snapshot, request_path=request_path, request=request)
+            calendar_artifact = freeze_platform_input(
+                "api-wind-date-v1",
+                pd.DataFrame(
+                    {
+                        "rdate": ["2026-07-13", "2026-07-14", "2026-07-15"],
+                        "week_id": ["202627", "202627", "202627"],
+                    }
+                ),
+                weekly_cutoff_key=request.weekly_cutoff_key,
+                audit_provenance={"source_kind": "harness_database"},
+            )
+            bundle = compose_blackbox_input_bundle(
+                snapshot,
+                platform_input_ids=config.platform_inputs,
+                platform_input_artifacts=[calendar_artifact],
+            )
+            state = InputState(
+                snapshot=snapshot,
+                request_path=request_path,
+                request=request,
+                bundle=bundle,
+            )
             ctx = _context(root, config)
             gates = [
                 BlackboxUnitGate(),
@@ -360,11 +923,76 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     return_value=RuntimeProfile.for_tests(),
                 ):
                     results = [gate.run(ctx) for gate in gates]
+            def tamper_calendar(data_dir):
+                counts = _append_future_rows(data_dir)
+                calendar_path = data_dir / "api_wind_date.csv"
+                calendar_path.chmod(0o644)
+                calendar_path.write_text(
+                    "rdate,week_id\n2099-01-01,209901\n",
+                    encoding="utf-8",
+                )
+                return counts
+
+            with (
+                patch(
+                    "harness.blackbox_v2.gates._ensure_input_state",
+                    return_value=state,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates._profile",
+                    return_value=RuntimeProfile.for_tests(),
+                ),
+                patch(
+                    "harness.blackbox_v2.gates._append_future_rows",
+                    side_effect=tamper_calendar,
+                ),
+            ):
+                tampered_compare = BlackboxCompareGate().run(ctx)
             unit_root = root / "reports" / "blackbox_v2" / "unit"
             self.assertTrue((unit_root / "request" / "invalid_request.json").is_file())
             self.assertFalse((unit_root / "invalid_request.json").exists())
+            for result in results:
+                evidence = {item.key: item.value for item in result.evidence}
+                self.assertEqual(
+                    evidence["data_snapshot_id"],
+                    bundle.combined_snapshot_id,
+                )
+                self.assertEqual(
+                    evidence["parent_data_snapshot_id"],
+                    snapshot.snapshot_id,
+                )
+                self.assertEqual(
+                    evidence["platform_input_ids"],
+                    ["api-wind-date-v1"],
+                )
+                self.assertEqual(
+                    evidence["platform_input_hashes"],
+                    {"api-wind-date-v1": calendar_artifact.sha256},
+                )
+            backtest_evidence = {
+                item.key: item.value
+                for item in results[3].evidence
+            }
+            self.assertEqual(backtest_evidence["requests"], 100)
+            self.assertEqual(backtest_evidence["records"], 100)
+            self.assertFalse(backtest_evidence["persist"])
+            compare_evidence = {
+                item.key: item.value
+                for item in results[2].evidence
+            }
+            self.assertTrue(
+                compare_evidence["platform_input_hashes_unchanged"]
+            )
+            self.assertFalse(
+                (root / "reports" / "blackbox_v2" / "runtime_views").exists()
+            )
 
         self.assertTrue(all(result.passed for result in results), [result.errors for result in results])
+        self.assertFalse(tampered_compare.passed)
+        self.assertIn(
+            "platform input",
+            "\n".join(tampered_compare.errors).lower(),
+        )
 
     def test_api_readiness_allows_active_scheme_recertification(self) -> None:
         from harness.blackbox_v2.gates import BlackboxApiReadinessGate, InputState
@@ -430,12 +1058,20 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         from scheduler.discovery import load_scheme_config
         from shared.blackbox_v2.intake import intake_delivery
         from shared.blackbox_v2.requests import write_request
-        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
         from tests.test_blackbox_v2_backtest_persistence import _cases, _output
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+                platform_inputs=["api-wind-date-v1"],
+            )
             config = load_scheme_config(scheme_dir / "config.yaml")
             snapshot = create_snapshot_from_frames(
                 _snapshot_frames(),
@@ -444,9 +1080,31 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 schema_version="data-bridge-v1",
             )
             request = _cases(1)[0].request
-            state = InputState(snapshot, write_request(request, root / "request.json"), request)
+            artifact = freeze_platform_input(
+                "api-wind-date-v1",
+                pd.DataFrame(
+                    {
+                        "rdate": ["2026-07-15"],
+                        "week_id": [request.weekly_cutoff_key],
+                    }
+                ),
+                weekly_cutoff_key=request.weekly_cutoff_key,
+            )
+            bundle = compose_blackbox_input_bundle(
+                snapshot,
+                platform_input_ids=config.platform_inputs,
+                platform_input_artifacts=[artifact],
+            )
+            state = InputState(
+                snapshot,
+                write_request(request, root / "request.json"),
+                request,
+                bundle,
+            )
             passed = PassedAllRun(
-                "hr_passed", root / "reports" / "all", snapshot.snapshot_id,
+                "hr_passed",
+                root / "reports" / "all",
+                bundle.combined_snapshot_id,
                 generation_id="generation-current", runtime_profile="blackbox-v2-v1",
                 environment_fingerprint="e" * 64,
             )
@@ -472,6 +1130,25 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 )
                 output = _output(205)
                 metric_count = len(output.monthly_metrics)
+                historical_runtime_files: list[str] = []
+
+                def run_history(**kwargs):
+                    historical_runtime_files.extend(
+                        sorted(
+                            path.name
+                            for path in kwargs[
+                                "runtime_data_dir"
+                            ].iterdir()
+                        )
+                    )
+                    self.assertEqual(
+                        kwargs[
+                            "input_bundle"
+                        ].combined_snapshot_id,
+                        bundle.combined_snapshot_id,
+                    )
+                    return output
+
                 snapshots = [
                     {"t_backtest_runs": 10, "t_backtest_predictions": 1000, "t_backtest_monthly_metrics": 20},
                     {
@@ -481,7 +1158,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     },
                 ]
                 with (
-                    patch("harness.blackbox_v2.gates._ensure_input_state", return_value=state),
+                    patch(
+                        "harness.blackbox_v2.gates._ensure_input_state",
+                        return_value=state,
+                    ) as ensure_state,
                     patch("harness.blackbox_v2.gates._verify_passed_all", return_value=passed),
                     patch("harness.blackbox_v2.gates._data_bridge_provenance", return_value={
                         "generation_id": "generation-current",
@@ -493,19 +1173,23 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     }),
                     patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
                     patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(205)) as build_cases,
-                    patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=output) as run_history,
+                    patch(
+                        "harness.blackbox_v2.gates.run_blackbox_historical_backtest",
+                        side_effect=run_history,
+                    ) as run_history_mock,
                     patch("harness.blackbox_v2.gates.persist_backtest_output_atomic", return_value=301) as persist,
                     patch("harness.blackbox_v2.gates.snapshot_backtest_scope_counts", side_effect=snapshots),
                 ):
                     result = BlackboxBacktestGate().run(ctx)
 
         self.assertTrue(result.passed, result.errors)
+        ensure_state.assert_called_once_with(ctx)
         build_cases.assert_called_once()
         self.assertIsNone(build_cases.call_args.kwargs["limit"])
         self.assertEqual(build_cases.call_args.kwargs["target_date_before"], "2026-07-16")
         self.assertEqual(build_cases.call_args.kwargs["predict_date_from"], "2025-01-01")
-        run_history.assert_called_once()
-        budget = run_history.call_args.kwargs["budget"]
+        run_history_mock.assert_called_once()
+        budget = run_history_mock.call_args.kwargs["budget"]
         self.assertEqual(budget.max_subprocesses, 3)
         persist.assert_called_once()
         evidence = {item.key: item.value for item in result.evidence}
@@ -521,6 +1205,19 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual(evidence["batch_count"], 3)
         self.assertEqual(evidence["batch_sizes"], [100, 100, 5])
         self.assertEqual(evidence["replay_semantics"], "current_snapshot_as_of_not_historical_vintage")
+        self.assertEqual(
+            historical_runtime_files,
+            [
+                "api_wind_date.csv",
+                "daily_output.csv",
+                "monthly_output.csv",
+                "weekly_output.csv",
+            ],
+        )
+        self.assertEqual(
+            evidence["data_snapshot_id"],
+            bundle.combined_snapshot_id,
+        )
 
     def test_persist_backtest_token_start_date_must_match_context(self) -> None:
         from harness.authorization import issue_token
@@ -1069,6 +1766,28 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             result = BlackboxStaticGate().run(_context(root, config))
 
         self.assertTrue(result.passed, result.errors)
+
+    def test_static_gate_records_declared_platform_input_provider(self) -> None:
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+                platform_inputs=["api-wind-date-v1"],
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            result = BlackboxStaticGate().run(_context(root, config))
+
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertTrue(result.passed, result.errors)
+        self.assertEqual(
+            evidence["platform_inputs"],
+            ["api-wind-date-v1"],
+        )
 
     def test_static_gate_rejects_network_and_database_imports(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate

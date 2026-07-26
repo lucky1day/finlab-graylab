@@ -7,6 +7,35 @@ from pathlib import Path
 
 
 class BlackboxV2RequestContractTests(unittest.TestCase):
+    def test_request_can_be_strictly_parsed_from_verified_bytes(self) -> None:
+        from shared.blackbox_v2.contracts import load_request_bytes
+
+        request = load_request_bytes(
+            (
+                b'{"request_id":"r1","predict_date":"2026-07-15",'
+                b'"feature_date":"2026-07-15","target_date":"2026-07-16",'
+                b'"daily_cutoff_key":"2026-07-15",'
+                b'"weekly_cutoff_key":"202627",'
+                b'"monthly_cutoff_key":"202606"}\n'
+            ),
+            source="verified Request",
+        )
+
+        self.assertEqual(request.request_id, "r1")
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            load_request_bytes(
+                (
+                    b'{"request_id":"r1","request_id":"r2",'
+                    b'"predict_date":"2026-07-15",'
+                    b'"feature_date":"2026-07-15",'
+                    b'"target_date":"2026-07-16",'
+                    b'"daily_cutoff_key":"2026-07-15",'
+                    b'"weekly_cutoff_key":"202627",'
+                    b'"monthly_cutoff_key":"202606"}'
+                ),
+                source="verified Request",
+            )
+
     def test_reads_strict_single_request(self) -> None:
         from shared.blackbox_v2.contracts import load_request
 

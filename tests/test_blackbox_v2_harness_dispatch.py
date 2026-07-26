@@ -9,6 +9,39 @@ from harness.context import GateContext
 
 
 class BlackboxV2HarnessDispatchTests(unittest.TestCase):
+    def test_check_only_cli_is_available_only_for_zero_side_effect_all_stage(self) -> None:
+        from harness.cli import _build_parser, _run_onboard_command
+
+        parser = _build_parser()
+        safe = parser.parse_args([
+            "onboard",
+            "blackbox_trial",
+            "--predict-date",
+            "2026-07-15",
+            "--stage",
+            "all",
+            "--check-only",
+        ])
+        self.assertTrue(safe.check_only)
+
+        incompatible = (
+            ["--stage", "api"],
+            ["--authorize", "signed-token"],
+            ["--prediction-phase", "gray_live"],
+        )
+        for extra in incompatible:
+            with self.subTest(extra=extra):
+                args = parser.parse_args([
+                    "onboard",
+                    "blackbox_trial",
+                    "--predict-date",
+                    "2026-07-15",
+                    "--check-only",
+                    *extra,
+                ])
+                with self.assertRaisesRegex(SystemExit, "check-only"):
+                    _run_onboard_command(args)
+
     def test_backtest_cli_defaults_to_full_range_without_sample_size(self) -> None:
         from harness.cli import _build_parser
 

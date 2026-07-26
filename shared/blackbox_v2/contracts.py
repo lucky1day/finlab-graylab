@@ -154,9 +154,27 @@ def _optional_description(raw: dict[str, Any]) -> str | None:
 def load_request(path: str | Path) -> BlackboxRequest:
     request_path = Path(path)
     try:
-        raw = json.loads(request_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        payload = request_path.read_bytes()
+    except OSError as exc:
         raise ValueError(f"invalid Request JSON {request_path}: {exc}") from exc
+    return load_request_bytes(payload, source=str(request_path))
+
+
+def load_request_bytes(
+    payload: bytes,
+    *,
+    source: str = "<bytes>",
+) -> BlackboxRequest:
+    """从调用方已经稳定读取的 UTF-8 bytes 严格解析单条 Request。"""
+    if not isinstance(payload, bytes):
+        raise ValueError("Request payload must be bytes")
+    try:
+        raw = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid Request JSON {source}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ValueError("Request must be a JSON object")
     return request_from_mapping(raw)

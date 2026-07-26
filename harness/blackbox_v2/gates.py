@@ -7,8 +7,10 @@ import math
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -40,13 +42,31 @@ from scheduler.blackbox_v2_runner import (
     run_blackbox_backtest,
     run_blackbox_predict,
 )
+from scheduler.process_control import ProcessGroupTerminationError
 from scheduler.discovery import SchemeConfig, load_scheme_config
-from shared.blackbox_v2.contracts import BlackboxMetadata, BlackboxRequest, load_metadata, load_request
+from shared.blackbox_v2.contracts import (
+    BlackboxMetadata,
+    BlackboxRequest,
+    load_metadata,
+    load_request_bytes,
+)
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
 from shared.blackbox_v2.requests import build_live_request, write_request
-from shared.blackbox_v2.snapshot import BlackboxSnapshot, SNAPSHOT_FILENAMES
+from shared.blackbox_v2.platform_inputs import FrozenPlatformInput
+from shared.blackbox_v2.snapshot import (
+    BlackboxInputBundle,
+    BlackboxSnapshot,
+    SNAPSHOT_FILENAMES,
+    compose_blackbox_input_bundle,
+    create_snapshot_from_frames,
+)
 from shared.calendar_service import get_calendar
-from shared.input_artifacts import build_blackbox_input_snapshot, resolve_blackbox_input_cutoffs
+from shared.input_artifacts import (
+    build_blackbox_input_snapshot,
+    capture_blackbox_platform_inputs_from_connection,
+    open_blackbox_runtime_view,
+    resolve_blackbox_input_cutoffs,
+)
 from shared.blackbox_v2.lifecycle import (
     LifecycleOperationError,
     LifecycleState,
@@ -74,6 +94,9 @@ FORBIDDEN_IMPORT_ROOTS = {
 FORBIDDEN_CALLS = {"eval", "exec", "compile", "__import__"}
 FORBIDDEN_QUALIFIED_CALLS = {"os.system", "os.popen", "os.spawnl", "os.spawnv"}
 ABSOLUTE_PATH_PATTERN = re.compile(r"^(?:/Users/|/home/|[A-Za-z]:[\\/])")
+INPUT_STATE_INITIALIZED_SEAL = (
+    b'{"schema_version":"blackbox-input-state-initialized-v1"}\n'
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +104,15 @@ class InputState:
     snapshot: BlackboxSnapshot
     request_path: Path
     request: BlackboxRequest
+    bundle: BlackboxInputBundle | None = None
+
+
+@dataclass(frozen=True)
+class _StablePrivateFile:
+    content_bytes: bytes
+    sha256: str
+    size_bytes: int
+    mode: int
 
 
 @dataclass(frozen=True)
@@ -146,6 +178,7 @@ class BlackboxStaticGate(_BlackboxGate):
             Evidence("delivery_entries", sorted(delivery_entries)),
             Evidence("script_violations", violations),
             Evidence("metadata", asdict(metadata)),
+            Evidence("platform_inputs", list(cfg.platform_inputs)),
         ]
         return _finish(self.name, started_at, evidence, errors)
 
@@ -156,20 +189,35 @@ class BlackboxInputGate(_BlackboxGate):
     def _run(self, ctx: GateContext, started_at: str) -> GateResult:
         state = _ensure_input_state(ctx, force=True)
         manifest = json.loads(state.snapshot.manifest_path.read_text(encoding="utf-8"))
+        bundle = _input_bundle(state)
+        platform_files = {
+            artifact.filename: {
+                "artifact_id": artifact.artifact_id,
+                "provider_version": artifact.provider_version,
+                "row_count": artifact.row_count,
+                "column_count": len(artifact.columns),
+                "sha256": artifact.sha256,
+            }
+            for artifact in bundle.platform_input_artifacts
+        }
+        base_snapshot_files = {
+            name: {
+                "row_count": manifest["files"][name]["row_count"],
+                "column_count": len(
+                    manifest["files"][name]["columns"]
+                ),
+                "sha256": manifest["files"][name]["sha256"],
+            }
+            for name in SNAPSHOT_FILENAMES
+        }
         evidence = [
-            Evidence("data_snapshot_id", state.snapshot.snapshot_id),
+            *_bundle_evidence(bundle),
             Evidence("data_schema_version", state.snapshot.schema_version),
-            Evidence(
-                "files",
-                {
-                    name: {
-                        "row_count": manifest["files"][name]["row_count"],
-                        "column_count": len(manifest["files"][name]["columns"]),
-                        "sha256": manifest["files"][name]["sha256"],
-                    }
-                    for name in SNAPSHOT_FILENAMES
-                },
-            ),
+            Evidence("files", base_snapshot_files),
+            Evidence("base_snapshot_files", base_snapshot_files),
+            Evidence("platform_input_files", platform_files),
+            Evidence("input_identity_manifest", bundle.identity_manifest),
+            Evidence("input_audit_manifest", bundle.audit_manifest),
             Evidence("request", asdict(state.request)),
         ]
         return _finish(self.name, started_at, evidence, [])
@@ -193,23 +241,26 @@ class BlackboxUnitGate(_BlackboxGate):
         output = output_dir / "invalid_output.json"
         help_output = probe_blackbox_help(_script(cfg), profile=_profile(ctx))
         rejected = False
-        try:
-            execute_blackbox_cli(
-                script_path=_script(cfg),
-                mode="predict",
-                input_path=invalid_request,
-                data_dir=state.snapshot.data_dir,
-                output_path=output,
-                profile=_profile(ctx),
-            )
-        except BlackboxExecutionError:
-            rejected = True
+        with _open_runtime_input(ctx, state) as runtime_view:
+            try:
+                execute_blackbox_cli(
+                    script_path=_script(cfg),
+                    mode="predict",
+                    input_path=invalid_request,
+                    data_dir=runtime_view.data_dir,
+                    output_path=output,
+                    profile=_profile(ctx),
+                    platform_input_ids=runtime_view.bundle.platform_input_ids,
+                )
+            except BlackboxExecutionError:
+                rejected = True
         errors: list[str] = []
         if not rejected:
             errors.append("script must reject an invalid Request with a non-zero exit")
         if output.exists():
             errors.append("failed execution must not leave an Output file")
         evidence = [
+            *_bundle_evidence(_input_bundle(state)),
             Evidence("help_exposes_modes", {"predict": "predict" in help_output, "backtest": "backtest" in help_output}),
             Evidence("invalid_request_rejected", rejected),
             Evidence("failed_output_absent", not output.exists()),
@@ -224,17 +275,19 @@ class BlackboxDryRunGate(_BlackboxGate):
         cfg = _config(ctx)
         metadata = _metadata(cfg)
         state = _ensure_input_state(ctx)
-        record = run_blackbox_predict(
-            metadata=metadata,
-            script_path=_script(cfg),
-            request=state.request,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=_profile(ctx),
-        )
+        with _open_runtime_input(ctx, state) as runtime_view:
+            record = run_blackbox_predict(
+                metadata=metadata,
+                script_path=_script(cfg),
+                request=state.request,
+                data_dir=runtime_view.data_dir,
+                profile=_profile(ctx),
+                **_runner_bundle_kwargs(runtime_view.bundle),
+            )
         result_path = _gate_root(ctx) / "dry_run_prediction_record.json"
         result_path.write_text(json.dumps(asdict(record), ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
         evidence = [
+            *_bundle_evidence(_input_bundle(state)),
             Evidence("prediction_record", asdict(record)),
             Evidence("result_path", str(result_path)),
             Evidence("business_tables_written", False),
@@ -250,69 +303,119 @@ class BlackboxCompareGate(_BlackboxGate):
         metadata = _metadata(cfg)
         state = _ensure_input_state(ctx)
         profile = _profile(ctx)
-        baseline = run_blackbox_predict(
-            metadata=metadata,
-            script_path=_script(cfg),
-            request=state.request,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=profile,
-        )
-        repeated = run_blackbox_predict(
-            metadata=metadata,
-            script_path=_script(cfg),
-            request=state.request,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=profile,
-        )
-
-        batch = _comparison_requests(state.request, state.snapshot.data_dir)
-        earlier = run_blackbox_predict(
-            metadata=metadata,
-            script_path=_script(cfg),
-            request=batch[0],
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=profile,
-        )
-        unsplit = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=batch,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=profile,
-        )
-        split = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=batch,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=replace(profile, max_batch_requests=1),
-        )
-        reversed_records = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=list(reversed(batch)),
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=profile,
-        )
-
-        with tempfile.TemporaryDirectory(prefix="blackbox-v2-future-isolation-") as tmpdir:
-            mutated_data = Path(tmpdir) / "data"
-            shutil.copytree(state.snapshot.data_dir, mutated_data)
-            appended_rows = _append_future_rows(mutated_data)
-            future_record = run_blackbox_predict(
+        bundle = _input_bundle(state)
+        with _open_runtime_input(ctx, state) as runtime_view:
+            original_platform_hashes = _verify_runtime_platform_files(
+                runtime_view.bundle,
+                runtime_view.data_dir,
+            )
+            runtime_kwargs = _runner_bundle_kwargs(runtime_view.bundle)
+            baseline = run_blackbox_predict(
                 metadata=metadata,
                 script_path=_script(cfg),
                 request=state.request,
-                data_dir=mutated_data,
-                data_snapshot_id=f"{state.snapshot.snapshot_id}-future-probe",
+                data_dir=runtime_view.data_dir,
                 profile=profile,
+                **runtime_kwargs,
             )
+            repeated = run_blackbox_predict(
+                metadata=metadata,
+                script_path=_script(cfg),
+                request=state.request,
+                data_dir=runtime_view.data_dir,
+                profile=profile,
+                **runtime_kwargs,
+            )
+
+            batch = _comparison_requests(
+                state.request,
+                runtime_view.data_dir,
+            )
+            earlier = run_blackbox_predict(
+                metadata=metadata,
+                script_path=_script(cfg),
+                request=batch[0],
+                data_dir=runtime_view.data_dir,
+                profile=profile,
+                **runtime_kwargs,
+            )
+            unsplit = run_blackbox_backtest(
+                metadata=metadata,
+                script_path=_script(cfg),
+                requests=batch,
+                data_dir=runtime_view.data_dir,
+                profile=profile,
+                **runtime_kwargs,
+            )
+            split = run_blackbox_backtest(
+                metadata=metadata,
+                script_path=_script(cfg),
+                requests=batch,
+                data_dir=runtime_view.data_dir,
+                profile=replace(profile, max_batch_requests=1),
+                **runtime_kwargs,
+            )
+            reversed_records = run_blackbox_backtest(
+                metadata=metadata,
+                script_path=_script(cfg),
+                requests=list(reversed(batch)),
+                data_dir=runtime_view.data_dir,
+                profile=profile,
+                **runtime_kwargs,
+            )
+
+            with tempfile.TemporaryDirectory(
+                prefix="blackbox-v2-future-isolation-"
+            ) as tmpdir:
+                probe_root = Path(tmpdir)
+                mutated_data = probe_root / "data"
+                shutil.copytree(runtime_view.data_dir, mutated_data)
+                appended_rows = _append_future_rows(mutated_data)
+                mutated_platform_hashes = (
+                    _verify_runtime_platform_files(
+                        bundle,
+                        mutated_data,
+                    )
+                )
+                mutated_frames = {
+                    filename: pd.read_csv(
+                        mutated_data / filename,
+                        dtype=str,
+                        keep_default_na=False,
+                    )
+                    for filename in SNAPSHOT_FILENAMES
+                }
+                mutated_snapshot = create_snapshot_from_frames(
+                    mutated_frames,
+                    output_root=probe_root / "snapshots",
+                    expected_columns={
+                        filename: list(frame.columns)
+                        for filename, frame in mutated_frames.items()
+                    },
+                    schema_version=state.snapshot.schema_version,
+                )
+                mutated_bundle = compose_blackbox_input_bundle(
+                    mutated_snapshot,
+                    platform_input_ids=bundle.platform_input_ids,
+                    platform_input_artifacts=bundle.platform_input_artifacts,
+                )
+                mutated_state = replace(
+                    state,
+                    snapshot=mutated_snapshot,
+                    bundle=mutated_bundle,
+                )
+                with _open_runtime_input(
+                    ctx,
+                    mutated_state,
+                ) as mutated_view:
+                    future_record = run_blackbox_predict(
+                        metadata=metadata,
+                        script_path=_script(cfg),
+                        request=state.request,
+                        data_dir=mutated_view.data_dir,
+                        profile=profile,
+                        **_runner_bundle_kwargs(mutated_view.bundle),
+                    )
 
         baseline_direction = baseline.predicted_direction
         errors: list[str] = []
@@ -330,7 +433,15 @@ class BlackboxCompareGate(_BlackboxGate):
             errors.append("backtest result changes when Request order changes")
         if future_record.predicted_direction != baseline_direction:
             errors.append("prediction changes after rows beyond cutoff keys are appended")
+        platform_input_hashes_unchanged = (
+            original_platform_hashes == mutated_platform_hashes
+        )
+        if not platform_input_hashes_unchanged:
+            errors.append(
+                "CompareGate changed a declared platform input artifact"
+            )
         evidence = [
+            *_bundle_evidence(bundle),
             Evidence("repeat_deterministic", repeated.predicted_direction == baseline_direction),
             Evidence("predict_backtest_equal", _direction_map(unsplit) == direct_directions),
             Evidence(
@@ -348,6 +459,10 @@ class BlackboxCompareGate(_BlackboxGate):
             Evidence("request_order_invariant", _direction_map(unsplit) == _direction_map(reversed_records)),
             Evidence("future_row_isolation", future_record.predicted_direction == baseline_direction),
             Evidence("future_rows_appended", appended_rows),
+            Evidence(
+                "platform_input_hashes_unchanged",
+                platform_input_hashes_unchanged,
+            ),
         ]
         return _finish(self.name, started_at, evidence, errors)
 
@@ -378,14 +493,7 @@ class BlackboxBacktestGate(_BlackboxGate):
         cfg = _config(ctx)
         metadata = _metadata(cfg)
         state = _ensure_input_state(ctx)
-        templates = _comparison_requests(state.request, state.snapshot.data_dir)
-        requests = [
-            replace(
-                templates[index % len(templates)],
-                request_id=f"{state.request.request_id}:batch:{index:04d}",
-            )
-            for index in range(sample_size)
-        ]
+        bundle = _input_bundle(state)
         profile = _profile(ctx)
         alternate_batch_size = _alternate_batch_size(profile.max_batch_requests)
         max_subprocesses = (
@@ -396,24 +504,41 @@ class BlackboxBacktestGate(_BlackboxGate):
             deadline_monotonic=time.monotonic() + ctx.timeout_sec,
             max_subprocesses=max_subprocesses,
         )
-        records = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=requests,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=profile,
-            budget=budget,
-        )
-        alternate_records = run_blackbox_backtest(
-            metadata=metadata,
-            script_path=_script(cfg),
-            requests=requests,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=replace(profile, max_batch_requests=alternate_batch_size),
-            budget=budget,
-        )
+        with _open_runtime_input(ctx, state) as runtime_view:
+            templates = _comparison_requests(
+                state.request,
+                runtime_view.data_dir,
+            )
+            requests = [
+                replace(
+                    templates[index % len(templates)],
+                    request_id=(
+                        f"{state.request.request_id}:batch:{index:04d}"
+                    ),
+                )
+                for index in range(sample_size)
+            ]
+            records = run_blackbox_backtest(
+                metadata=metadata,
+                script_path=_script(cfg),
+                requests=requests,
+                data_dir=runtime_view.data_dir,
+                profile=profile,
+                budget=budget,
+                **_runner_bundle_kwargs(runtime_view.bundle),
+            )
+            alternate_records = run_blackbox_backtest(
+                metadata=metadata,
+                script_path=_script(cfg),
+                requests=requests,
+                data_dir=runtime_view.data_dir,
+                profile=replace(
+                    profile,
+                    max_batch_requests=alternate_batch_size,
+                ),
+                budget=budget,
+                **_runner_bundle_kwargs(runtime_view.bundle),
+            )
         errors: list[str] = []
         if len(records) != sample_size:
             errors.append(
@@ -429,6 +554,7 @@ class BlackboxBacktestGate(_BlackboxGate):
         ]:
             errors.append("alternate batch partition did not preserve Request order")
         evidence = [
+            *_bundle_evidence(bundle),
             Evidence("requests", len(requests)),
             Evidence("records", len(records)),
             Evidence("sample_size", sample_size),
@@ -529,22 +655,26 @@ class BlackboxBacktestGate(_BlackboxGate):
                 max_subprocesses=len(batch_sizes),
             )
             benchmark_id = f"bbv2-{cfg.scheme_id}-{passed_run.harness_run_id}"
-            output = run_blackbox_historical_backtest(
-                metadata=metadata,
-                script_path=_script(cfg),
-                cases=cases,
-                snapshot=state.snapshot,
-                scheme_version=cfg.scheme_version,
-                generation_id=generation_id,
-                benchmark_id=benchmark_id,
-                harness_run_id=passed_run.harness_run_id,
-                run_delivery=run_blackbox_backtest,
-                profile=profile,
-                budget=budget,
-                backtest_start_date=ctx.backtest_start_date,
-                target_date_before=ctx.predict_date,
-                total_deadline_sec=ctx.timeout_sec,
-            )
+            bundle = _input_bundle(state)
+            with _open_runtime_input(ctx, state) as runtime_view:
+                output = run_blackbox_historical_backtest(
+                    metadata=metadata,
+                    script_path=_script(cfg),
+                    cases=cases,
+                    snapshot=state.snapshot,
+                    input_bundle=runtime_view.bundle,
+                    runtime_data_dir=runtime_view.data_dir,
+                    scheme_version=cfg.scheme_version,
+                    generation_id=generation_id,
+                    benchmark_id=benchmark_id,
+                    harness_run_id=passed_run.harness_run_id,
+                    run_delivery=run_blackbox_backtest,
+                    profile=profile,
+                    budget=budget,
+                    backtest_start_date=ctx.backtest_start_date,
+                    target_date_before=ctx.predict_date,
+                    total_deadline_sec=ctx.timeout_sec,
+                )
             if len(output.rows) != len(cases) or not output.monthly_metrics:
                 raise ValueError(
                     "Blackbox persisted backtest requires one Result per historical Request "
@@ -575,7 +705,10 @@ class BlackboxBacktestGate(_BlackboxGate):
             Evidence("scheme_version", cfg.scheme_version),
             Evidence("harness_run_id", passed_run.harness_run_id),
             Evidence("generation_id", generation_id),
-            Evidence("data_snapshot_id", state.snapshot.snapshot_id),
+            Evidence(
+                "data_snapshot_id",
+                _input_bundle(state).combined_snapshot_id,
+            ),
             Evidence("backtest_start_date", ctx.backtest_start_date),
             Evidence("target_date_before", ctx.predict_date),
             Evidence("requests", len(cases)),
@@ -604,14 +737,16 @@ class BlackboxApiReadinessGate(_BlackboxGate):
         cfg = _config(ctx)
         metadata = _metadata(cfg)
         state = _ensure_input_state(ctx)
-        record = run_blackbox_predict(
-            metadata=metadata,
-            script_path=_script(cfg),
-            request=state.request,
-            data_dir=state.snapshot.data_dir,
-            data_snapshot_id=state.snapshot.snapshot_id,
-            profile=_profile(ctx),
-        )
+        bundle = _input_bundle(state)
+        with _open_runtime_input(ctx, state) as runtime_view:
+            record = run_blackbox_predict(
+                metadata=metadata,
+                script_path=_script(cfg),
+                request=state.request,
+                data_dir=runtime_view.data_dir,
+                profile=_profile(ctx),
+                **_runner_bundle_kwargs(runtime_view.bundle),
+            )
         registry_id = f"{cfg.scheme_id}__h{cfg.horizon}__{metadata.target_tenor}"
         errors: list[str] = []
         if record.scheme_id != cfg.scheme_id:
@@ -638,6 +773,7 @@ class BlackboxApiReadinessGate(_BlackboxGate):
                 "Blackbox V2 api-readiness requires paused onboarding or active recertification"
             )
         evidence = [
+            *_bundle_evidence(bundle),
             Evidence("prediction_record", asdict(record)),
             Evidence("registry_id", registry_id),
             Evidence("registry_status", cfg.status),
@@ -882,14 +1018,158 @@ def _profile(ctx: GateContext) -> RuntimeProfile:
     return DEFAULT_RUNTIME_PROFILE
 
 
+def _input_bundle(state: InputState) -> BlackboxInputBundle:
+    if state.bundle is not None:
+        return state.bundle
+    return compose_blackbox_input_bundle(state.snapshot)
+
+
+@contextmanager
+def _open_runtime_input(ctx: GateContext, state: InputState):
+    gate_root = _gate_root(ctx)
+    runtime_root = gate_root / "runtime_views"
+    runtime_root.mkdir(exist_ok=True)
+    _require_controlled_directory(
+        runtime_root,
+        controlled_parent=gate_root,
+        label="Blackbox runtime views",
+    )
+    try:
+        with open_blackbox_runtime_view(
+            _input_bundle(state),
+            runtime_root=runtime_root,
+        ) as runtime_view:
+            try:
+                yield runtime_view
+            except ProcessGroupTerminationError:
+                runtime_view.mark_termination_uncertain()
+                raise
+    finally:
+        _cleanup_empty_runtime_view_root(runtime_root)
+
+
+def _cleanup_empty_runtime_view_root(runtime_root: Path) -> None:
+    if not os.path.lexists(runtime_root):
+        return
+    runtime_info = runtime_root.lstat()
+    if (
+        stat.S_ISLNK(runtime_info.st_mode)
+        or not stat.S_ISDIR(runtime_info.st_mode)
+    ):
+        raise ValueError(
+            "Blackbox runtime views must be a real directory"
+        )
+    active = runtime_root / "active"
+    debris = runtime_root / "debris"
+    for path, label in (
+        (active, "Blackbox runtime active root"),
+        (debris, "Blackbox runtime debris root"),
+    ):
+        if os.path.lexists(path) and not _is_real_directory(path):
+            raise ValueError(f"{label} must not be a symlink")
+    if (
+        _is_real_directory(active)
+        and _is_real_directory(debris)
+        and not any(active.iterdir())
+        and not any(debris.iterdir())
+    ):
+        active.rmdir()
+        debris.rmdir()
+        runtime_root.rmdir()
+
+
+def _runner_bundle_kwargs(bundle: BlackboxInputBundle) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "data_snapshot_id": bundle.combined_snapshot_id,
+        "platform_input_ids": bundle.platform_input_ids,
+    }
+    if bundle.platform_input_ids:
+        kwargs.update(
+            {
+                "parent_data_snapshot_id": bundle.parent_snapshot_id,
+                "input_identity_manifest": bundle.identity_manifest,
+                "input_audit_manifest": bundle.audit_manifest,
+            }
+        )
+    return kwargs
+
+
+def _bundle_evidence(bundle: BlackboxInputBundle) -> list[Evidence]:
+    return [
+        Evidence("data_snapshot_id", bundle.combined_snapshot_id),
+        Evidence("parent_data_snapshot_id", bundle.parent_snapshot_id),
+        Evidence("platform_input_ids", list(bundle.platform_input_ids)),
+        Evidence("platform_input_hashes", _platform_hashes(bundle)),
+    ]
+
+
+def _platform_hashes(bundle: BlackboxInputBundle) -> dict[str, str]:
+    return {
+        artifact.artifact_id: artifact.sha256
+        for artifact in bundle.platform_input_artifacts
+    }
+
+
+def _verify_runtime_platform_files(
+    bundle: BlackboxInputBundle,
+    data_dir: Path,
+) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for artifact in bundle.platform_input_artifacts:
+        path = data_dir / artifact.filename
+        stable = _read_stable_private_file(
+            path,
+            label=f"platform input {artifact.artifact_id}",
+            require_read_only=True,
+        )
+        if (
+            stable.sha256 != artifact.sha256
+            or stable.size_bytes != artifact.size_bytes
+        ):
+            raise ValueError(
+                f"platform input {artifact.artifact_id} content mismatch"
+            )
+        hashes[artifact.artifact_id] = stable.sha256
+    return hashes
+
+
 def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
     root = _gate_root(ctx)
     state_path = root / "input_state.json"
-    if state_path.exists() and not force:
-        try:
-            return _read_input_state(state_path)
-        except (OSError, ValueError):
-            pass
+    seal_path = root / "input_state.initialized"
+    state_exists = os.path.lexists(state_path)
+    seal_exists = os.path.lexists(seal_path)
+    if not force and (state_exists or seal_exists):
+        if not state_exists or not seal_exists:
+            raise ValueError(
+                "Blackbox V2 input state was initialized but its canonical "
+                "state or initialization seal is missing"
+            )
+        _validate_input_state_seal(seal_path)
+        return _read_input_state(state_path)
+    if not force:
+        residual_entries = sorted(path.name for path in root.iterdir())
+        if residual_entries:
+            raise ValueError(
+                "Blackbox V2 fresh input state root contains residual "
+                f"artifacts: {residual_entries}"
+            )
+    if state_exists:
+        _require_regular_file(
+            state_path,
+            "Blackbox V2 input state",
+        )
+    if seal_exists:
+        _require_regular_file(
+            seal_path,
+            "Blackbox V2 input state initialization seal",
+        )
+    runtime_snapshot_root = root / "runtime_snapshot"
+    if os.path.lexists(runtime_snapshot_root):
+        _remove_harness_runtime_tree(
+            runtime_snapshot_root,
+            controlled_parent=root,
+        )
     cfg = _config(ctx)
     metadata = _metadata(cfg)
     engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
@@ -910,10 +1190,48 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
             calendar=get_calendar(engine),
             cutoffs=cutoffs,
         )
+        platform_input_ids = tuple(cfg.platform_inputs)
+        if platform_input_ids:
+            with engine.connect() as connection:
+                connection.exec_driver_sql(
+                    "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+                )
+                try:
+                    platform_input_artifacts = (
+                        capture_blackbox_platform_inputs_from_connection(
+                            platform_input_ids,
+                            connection=connection,
+                            weekly_cutoff_key=cutoffs.weekly_cutoff_key,
+                        )
+                    )
+                finally:
+                    connection.rollback()
+        else:
+            platform_input_artifacts = ()
     finally:
         if hasattr(engine, "dispose"):
             engine.dispose()
-    request_path = write_request(request, root / "request.json")
+    bundle = compose_blackbox_input_bundle(
+        snapshot,
+        platform_input_ids=platform_input_ids,
+        platform_input_artifacts=platform_input_artifacts,
+    )
+    runtime_platform_paths = _write_runtime_platform_inputs(
+        root,
+        bundle.platform_input_artifacts,
+    )
+    request_path = root / "request.json"
+    if os.path.lexists(request_path):
+        _require_regular_file(request_path, "Blackbox Request")
+        if request_path.lstat().st_nlink != 1:
+            raise ValueError(
+                "Blackbox Request must not be a hardlink"
+            )
+    request_path = write_request(request, request_path)
+    request_sha256 = _regular_file_sha256(
+        request_path,
+        label="Blackbox Request",
+    )
     provenance = _data_bridge_provenance(ctx, snapshot)
     payload = {
         "snapshot_id": snapshot.snapshot_id,
@@ -922,10 +1240,46 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
         "manifest_path": str(snapshot.manifest_path),
         "schema_version": snapshot.schema_version,
         "request_path": str(request_path),
+        "combined_snapshot_id": bundle.combined_snapshot_id,
+        "parent_snapshot_id": bundle.parent_snapshot_id,
+        "platform_input_ids": list(bundle.platform_input_ids),
+        "platform_input_artifacts": [
+            {
+                **artifact.identity_manifest,
+                "runtime_content_path": str(
+                    runtime_platform_paths[artifact.artifact_id]
+                ),
+                "audit_provenance": dict(artifact.audit_provenance),
+            }
+            for artifact in bundle.platform_input_artifacts
+        ],
+        "identity_manifest": bundle.identity_manifest,
+        "audit_manifest": bundle.audit_manifest,
+        "request_sha256": request_sha256,
         **provenance,
     }
     _atomic_write(state_path, json.dumps(payload, ensure_ascii=True, indent=2) + "\n")
-    return InputState(snapshot=snapshot, request_path=request_path, request=request)
+    _atomic_write(
+        seal_path,
+        INPUT_STATE_INITIALIZED_SEAL.decode("ascii"),
+    )
+    return InputState(
+        snapshot=snapshot,
+        request_path=request_path,
+        request=request,
+        bundle=bundle,
+    )
+
+
+def _validate_input_state_seal(seal_path: Path) -> None:
+    stable = _read_stable_private_file(
+        seal_path,
+        label="Blackbox V2 input state initialization seal",
+    )
+    if stable.content_bytes != INPUT_STATE_INITIALIZED_SEAL:
+        raise ValueError(
+            "Blackbox V2 initialized state seal is not canonical"
+        )
 
 
 def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dict[str, str]:
@@ -964,17 +1318,183 @@ def _data_bridge_provenance(ctx: GateContext, snapshot: BlackboxSnapshot) -> dic
 
 
 def cleanup_runtime_input(ctx: GateContext) -> None:
-    """删除 Harness 临时三频副本，保留 input_state.json 审计记录。"""
-    runtime_root = ctx.report_dir / "blackbox_v2" / "runtime_snapshot"
-    if not runtime_root.exists():
+    """删除 Harness 临时输入副本，保留 input_state.json 审计记录。"""
+    root = _existing_gate_root(ctx)
+    if root is None:
         return
-    for current_root, directories, files in os.walk(runtime_root):
-        Path(current_root).chmod(0o755)
-        for directory in directories:
-            (Path(current_root) / directory).chmod(0o755)
-        for filename in files:
-            (Path(current_root) / filename).chmod(0o644)
+    runtime_snapshot = root / "runtime_snapshot"
+    if os.path.lexists(runtime_snapshot):
+        _remove_harness_runtime_tree(
+            runtime_snapshot,
+            controlled_parent=root,
+        )
+    runtime_views = root / "runtime_views"
+    if os.path.lexists(runtime_views):
+        _require_controlled_directory(
+            runtime_views,
+            controlled_parent=root,
+            label="Blackbox runtime views",
+        )
+    _cleanup_empty_runtime_view_root(runtime_views)
+    _sanitize_final_input_state(root / "input_state.json")
+
+
+def _remove_harness_runtime_tree(
+    runtime_root: Path,
+    *,
+    controlled_parent: Path,
+) -> None:
+    _require_controlled_directory(
+        runtime_root,
+        controlled_parent=controlled_parent,
+        label="Blackbox Harness runtime tree",
+    )
+    entries: list[Path] = []
+    for current_root, directories, files in os.walk(
+        runtime_root,
+        topdown=True,
+        followlinks=False,
+    ):
+        current = Path(current_root)
+        for name in (*directories, *files):
+            entry = current / name
+            info = entry.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError(
+                    "Blackbox Harness runtime tree contains a symlink"
+                )
+            if not (
+                stat.S_ISDIR(info.st_mode)
+                or stat.S_ISREG(info.st_mode)
+            ):
+                raise ValueError(
+                    "Blackbox Harness runtime tree contains a special file"
+                )
+            entries.append(entry)
+    os.chmod(runtime_root, 0o755, follow_symlinks=False)
+    for entry in entries:
+        mode = entry.lstat().st_mode
+        os.chmod(
+            entry,
+            0o755 if stat.S_ISDIR(mode) else 0o644,
+            follow_symlinks=False,
+        )
     shutil.rmtree(runtime_root)
+
+
+def _write_runtime_platform_inputs(
+    gate_root: Path,
+    artifacts: tuple[FrozenPlatformInput, ...],
+) -> dict[str, Path]:
+    if not artifacts:
+        return {}
+    runtime_snapshot = gate_root / "runtime_snapshot"
+    runtime_snapshot.mkdir(exist_ok=True)
+    _require_controlled_directory(
+        runtime_snapshot,
+        controlled_parent=gate_root,
+        label="Blackbox runtime snapshot",
+    )
+    platform_root = runtime_snapshot / "platform_inputs"
+    platform_root.mkdir()
+    _require_controlled_directory(
+        platform_root,
+        controlled_parent=runtime_snapshot,
+        label="Blackbox runtime platform inputs",
+    )
+    paths: dict[str, Path] = {}
+    for artifact in artifacts:
+        destination = platform_root / artifact.filename
+        with destination.open("xb") as stream:
+            stream.write(artifact.content_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        destination.chmod(0o444)
+        if (
+            _regular_file_sha256(
+                destination,
+                label=f"platform input {artifact.artifact_id}",
+            )
+            != artifact.sha256
+        ):
+            raise ValueError(
+                f"platform input {artifact.artifact_id} write mismatch"
+            )
+        paths[artifact.artifact_id] = destination
+    platform_root.chmod(0o555)
+    return paths
+
+
+def _read_runtime_platform_content(
+    state_path: Path,
+    raw_artifact: dict[str, Any],
+) -> bytes:
+    runtime_snapshot = state_path.parent / "runtime_snapshot"
+    _require_controlled_directory(
+        runtime_snapshot,
+        controlled_parent=state_path.parent,
+        label="Blackbox runtime snapshot",
+    )
+    platform_root = runtime_snapshot / "platform_inputs"
+    _require_controlled_directory(
+        platform_root,
+        controlled_parent=runtime_snapshot,
+        label="Blackbox runtime platform inputs",
+    )
+    runtime_path = Path(raw_artifact["runtime_content_path"])
+    filename = str(raw_artifact["filename"])
+    expected = (
+        platform_root / filename
+    )
+    if runtime_path != expected:
+        raise ValueError(
+            "platform input runtime path is outside controlled snapshot"
+        )
+    stable = _read_stable_private_file(
+        runtime_path,
+        label=f"platform input {raw_artifact.get('artifact_id')}",
+        require_read_only=True,
+    )
+    expected_size = raw_artifact.get("size_bytes")
+    expected_sha256 = raw_artifact.get("sha256")
+    if (
+        stable.size_bytes != expected_size
+        or stable.sha256 != expected_sha256
+    ):
+        raise ValueError("platform input runtime content mismatch")
+    return stable.content_bytes
+
+
+def _sanitize_final_input_state(state_path: Path) -> None:
+    if not os.path.lexists(state_path):
+        return
+    stable = _read_stable_private_file(
+        state_path,
+        label="Blackbox V2 input state",
+    )
+    raw = json.loads(stable.content_bytes.decode("utf-8"))
+    artifacts = raw.get("platform_input_artifacts", [])
+    if not isinstance(artifacts, list):
+        raise ValueError(
+            "Blackbox V2 input state platform artifacts are invalid"
+        )
+    sanitized: list[dict[str, Any]] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            raise ValueError(
+                "Blackbox V2 input state platform artifact is invalid"
+            )
+        clean = dict(item)
+        clean.pop("content_base64", None)
+        clean.pop("runtime_content_path", None)
+        clean["runtime_content_removed"] = True
+        sanitized.append(clean)
+    raw["platform_input_artifacts"] = sanitized
+    raw["runtime_content_removed"] = True
+    _atomic_write(
+        state_path,
+        json.dumps(raw, ensure_ascii=True, indent=2) + "\n",
+    )
 
 
 def _feature_date(metadata: BlackboxMetadata, predict_date: str, engine: Any) -> str:
@@ -991,7 +1511,11 @@ def _feature_date(metadata: BlackboxMetadata, predict_date: str, engine: Any) ->
 
 
 def _read_input_state(path: Path) -> InputState:
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    stable_state = _read_stable_private_file(
+        path,
+        label="Blackbox V2 input state",
+    )
+    raw = json.loads(stable_state.content_bytes.decode("utf-8"))
     snapshot = BlackboxSnapshot(
         snapshot_id=str(raw["snapshot_id"]),
         root_dir=Path(raw["snapshot_root"]),
@@ -1002,7 +1526,70 @@ def _read_input_state(path: Path) -> InputState:
     request_path = Path(raw["request_path"])
     if not snapshot.manifest_path.is_file() or not snapshot.data_dir.is_dir() or not request_path.is_file():
         raise ValueError(f"Blackbox V2 input state references missing artifacts: {path}")
-    return InputState(snapshot=snapshot, request_path=request_path, request=load_request(request_path))
+    expected_request_path = path.parent / "request.json"
+    if request_path != expected_request_path:
+        raise ValueError("Blackbox V2 Request path is outside the gate root")
+    request_sha256 = raw.get("request_sha256")
+    stable_request = _read_stable_private_file(
+        request_path,
+        label="Blackbox Request",
+    )
+    if (
+        not isinstance(request_sha256, str)
+        or stable_request.sha256 != request_sha256
+    ):
+        raise ValueError("Blackbox V2 Request SHA-256 mismatch")
+    request = load_request_bytes(
+        stable_request.content_bytes,
+        source="verified Blackbox Request",
+    )
+    raw_artifacts = raw.get("platform_input_artifacts", [])
+    if not isinstance(raw_artifacts, list):
+        raise ValueError("Blackbox V2 input state platform artifacts are invalid")
+    artifacts: list[FrozenPlatformInput] = []
+    for item in raw_artifacts:
+        if not isinstance(item, dict):
+            raise ValueError("Blackbox V2 input state platform artifact is invalid")
+        try:
+            artifacts.append(
+                FrozenPlatformInput(
+                    artifact_id=item["artifact_id"],
+                    provider_version=item["provider_version"],
+                    filename=item["filename"],
+                    columns=tuple(item["columns"]),
+                    content_bytes=_read_runtime_platform_content(
+                        path,
+                        item,
+                    ),
+                    sha256=item["sha256"],
+                    size_bytes=item["size_bytes"],
+                    row_count=item["row_count"],
+                    audit_provenance=item["audit_provenance"],
+                )
+            )
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "Blackbox V2 input state platform artifact is invalid"
+            ) from exc
+    platform_input_ids = tuple(raw.get("platform_input_ids", ()))
+    bundle = compose_blackbox_input_bundle(
+        snapshot,
+        platform_input_ids=platform_input_ids,
+        platform_input_artifacts=artifacts,
+    )
+    if (
+        raw.get("combined_snapshot_id") != bundle.combined_snapshot_id
+        or raw.get("parent_snapshot_id") != bundle.parent_snapshot_id
+        or raw.get("identity_manifest") != bundle.identity_manifest
+        or raw.get("audit_manifest") != bundle.audit_manifest
+    ):
+        raise ValueError("Blackbox V2 input state bundle evidence mismatch")
+    return InputState(
+        snapshot=snapshot,
+        request_path=request_path,
+        request=request,
+        bundle=bundle,
+    )
 
 
 def _create_engine():
@@ -1011,10 +1598,152 @@ def _create_engine():
     return create_engine_from_env()
 
 
-def _gate_root(ctx: GateContext) -> Path:
-    root = ctx.report_dir / "blackbox_v2"
-    root.mkdir(parents=True, exist_ok=True)
+def _existing_gate_root(ctx: GateContext) -> Path | None:
+    report_dir = ctx.report_dir
+    if not os.path.lexists(report_dir):
+        return None
+    _require_real_directory(report_dir, "Harness report_dir")
+    root = report_dir / "blackbox_v2"
+    if not os.path.lexists(root):
+        return None
+    _require_controlled_directory(
+        root,
+        controlled_parent=report_dir,
+        label="Blackbox gate root",
+    )
     return root
+
+
+def _gate_root(ctx: GateContext) -> Path:
+    report_dir = ctx.report_dir
+    report_dir.mkdir(parents=True, exist_ok=True)
+    _require_real_directory(report_dir, "Harness report_dir")
+    root = report_dir / "blackbox_v2"
+    root.mkdir(exist_ok=True)
+    _require_controlled_directory(
+        root,
+        controlled_parent=report_dir,
+        label="Blackbox gate root",
+    )
+    return root
+
+
+def _require_real_directory(path: Path, label: str) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"{label} must not be a symlink")
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"{label} must be a directory")
+
+
+def _require_controlled_directory(
+    path: Path,
+    *,
+    controlled_parent: Path,
+    label: str,
+) -> None:
+    _require_real_directory(controlled_parent, f"{label} parent")
+    _require_real_directory(path, label)
+    try:
+        actual_parent = path.parent.resolve(strict=True)
+        expected_parent = controlled_parent.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"{label} boundary is unavailable") from exc
+    if actual_parent != expected_parent:
+        raise ValueError(f"{label} is outside the controlled boundary")
+
+
+def _is_real_directory(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(
+        info.st_mode
+    )
+
+
+def _require_regular_file(path: Path, label: str) -> None:
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"{label} must not be a symlink")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"{label} must be a regular file")
+
+
+def _regular_file_sha256(path: Path, *, label: str) -> str:
+    return _read_stable_private_file(path, label=label).sha256
+
+
+def _read_stable_private_file(
+    path: Path,
+    *,
+    label: str,
+    require_read_only: bool = False,
+) -> _StablePrivateFile:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError(
+                f"{label} must be a private regular file"
+            )
+        if require_read_only and before.st_mode & 0o222:
+            raise ValueError(f"{label} must be read-only")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after_fd = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    before_fingerprint = _stable_file_fingerprint(before)
+    after_fd_fingerprint = _stable_file_fingerprint(after_fd)
+    if before_fingerprint != after_fd_fingerprint:
+        raise ValueError(f"{label} changed while reading")
+    content = b"".join(chunks)
+    if len(content) != before.st_size:
+        raise ValueError(f"{label} size changed while reading")
+    try:
+        after_path = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} changed while reading") from exc
+    if (
+        stat.S_ISLNK(after_path.st_mode)
+        or _stable_file_fingerprint(after_path)
+        != after_fd_fingerprint
+    ):
+        raise ValueError(f"{label} changed while reading")
+    return _StablePrivateFile(
+        content_bytes=content,
+        sha256=hashlib.sha256(content).hexdigest(),
+        size_bytes=len(content),
+        mode=stat.S_IMODE(before.st_mode),
+    )
+
+
+def _stable_file_fingerprint(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
 
 
 def _script_violations(tree: ast.AST) -> list[str]:
@@ -1175,7 +1904,7 @@ def _persisted_backtest_provenance_errors(
         "environment_fingerprint": passed_run.environment_fingerprint,
     }
     current = {
-        "data_snapshot_id": state.snapshot.snapshot_id,
+        "data_snapshot_id": _input_bundle(state).combined_snapshot_id,
         "generation_id": str(provenance.get("generation_id", "")).strip() or None,
         "runtime_profile": cfg.runtime_profile,
         "environment_fingerprint": environment_fingerprint,
@@ -1259,11 +1988,17 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
     state_path = report_dir / "blackbox_v2" / "input_state.json"
     if not state_path.is_file():
         raise ValueError(f"passed all-stage run has no Blackbox V2 input state: {state_path}")
-    state = json.loads(state_path.read_text(encoding="utf-8"))
+    stable_state = _read_stable_private_file(
+        state_path,
+        label="passed all-stage Blackbox V2 input state",
+    )
+    state = json.loads(stable_state.content_bytes.decode("utf-8"))
     return PassedAllRun(
         harness_run_id=str(row["harness_run_id"]),
         report_uri=report_dir,
-        data_snapshot_id=str(state["snapshot_id"]),
+        data_snapshot_id=str(
+            state.get("combined_snapshot_id", state["snapshot_id"])
+        ),
         generation_id=(str(state["generation_id"]) if state.get("generation_id") else None),
         runtime_profile=(str(state["runtime_profile"]) if state.get("runtime_profile") else None),
         environment_fingerprint=(

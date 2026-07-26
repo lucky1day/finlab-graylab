@@ -190,6 +190,7 @@ def _build_parser() -> argparse.ArgumentParser:
     onboard_parser.add_argument("--api-instance-nonce", default=None)
     onboard_parser.add_argument("--authorize", default=None)
     onboard_parser.add_argument("--prediction-phase", choices=("gray_live", "scheduled_live"), default=None)
+    onboard_parser.add_argument("--check-only", action="store_true")
 
     activate_parser = subparsers.add_parser("activate")
     activate_parser.add_argument("--scheme-id", required=True)
@@ -298,6 +299,15 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
 
 
 def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
+    if args.check_only and (
+        args.stage.strip().lower() != "all"
+        or args.authorize is not None
+        or args.prediction_phase is not None
+    ):
+        raise SystemExit(
+            "--check-only requires --stage all and forbids authorization "
+            "or prediction side-effect phases"
+        )
     project_root = args.project_root.resolve()
     report_dir = args.report_dir or project_root / "reports" / "harness" / args.scheme_id / _timestamp()
     config = _load_config_for_dispatch(project_root / "schemes" / args.scheme_id / "config.yaml")
@@ -314,8 +324,13 @@ def _run_onboard_command(args: argparse.Namespace) -> OnboardReport:
         api_base_url=args.api_base_url,
         api_instance_nonce=args.api_instance_nonce,
         engine_factory=create_engine_from_env,
+        check_only=bool(args.check_only),
     )
-    return run_onboard(ctx, stage=args.stage)
+    return run_onboard(
+        ctx,
+        stage=args.stage,
+        check_only=bool(args.check_only),
+    )
 
 
 def _load_config_for_dispatch(config_path: Path):
