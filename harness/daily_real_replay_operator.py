@@ -32,7 +32,7 @@ from scheduler.daily_policy import (
 )
 from scheduler.discovery import discover_schemes
 from scheduler.repository import create_engine_from_env
-from scripts.daily_coordinator_epoch_operator import (
+from scheduler.daily_control_plane_probe import (
     probe_daily_transition_quiescence,
     probe_launchagent_service_states,
     read_installed_launchagent_modes,

@@ -99,6 +99,30 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                 import_rules.repository_layer_import_violations(root),
             )
 
+    def test_harness_cannot_import_one_shot_admin_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(
+                root / "harness" / "bad.py",
+                "from scripts.daily_coordinator_epoch_operator "
+                "import probe_daily_transition_quiescence\n",
+            )
+
+            actual = [
+                violation.format(root)
+                for violation
+                in import_rules.repository_layer_import_violations(root)
+            ]
+
+            self.assertEqual(
+                [
+                    "harness/bad.py:1: forbidden layer import: "
+                    "harness -> "
+                    "scripts.daily_coordinator_epoch_operator"
+                ],
+                actual,
+            )
+
     def test_native_core_and_scheme_boundaries_remain_repo_wide(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

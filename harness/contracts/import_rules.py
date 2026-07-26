@@ -94,6 +94,7 @@ REPOSITORY_FORBIDDEN_LAYER_IMPORTS = {
     "backend": frozenset({"schemes", "backtests", "harness"}),
     "backtests": frozenset({"scheduler", "backend", "harness"}),
     "schemes": frozenset({"scheduler", "backend", "backtests", "harness"}),
+    "harness": frozenset({"scripts"}),
 }
 
 
