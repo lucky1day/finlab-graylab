@@ -8,7 +8,7 @@ import unittest
 from contextlib import nullcontext, redirect_stdout
 from dataclasses import replace
 from types import MappingProxyType, SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 
 class DailyRealReplayOperatorTests(unittest.TestCase):
@@ -206,11 +206,14 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             digest="1" * 64,
         )
         control_plane = SimpleNamespace(digest="6" * 64)
+        locked_session = MagicMock()
+        locked_session.assert_held = Mock()
+        locked_session.__enter__.return_value = locked_session
 
         with (
             patch(
                 "harness.daily_real_replay_operator._preflight_session",
-                return_value=nullcontext(),
+                return_value=nullcontext(locked_session),
             ),
             patch(
                 "harness.daily_real_replay_operator._freeze_candidate_identity",
@@ -300,6 +303,10 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         self.assertNotIn("password", repr(report).casefold())
         self.assertEqual(freeze_candidate.call_count, 2)
         self.assertEqual(open_generations.call_count, 2)
+        self.assertEqual(
+            locked_session.assert_held.call_args_list,
+            [unittest.mock.call(), unittest.mock.call()],
+        )
 
     def test_registry_drift_is_rejected_without_reporting_database_rows(
         self,
@@ -504,6 +511,59 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             "PREFLIGHT_SESSION_ALREADY_HELD",
         )
 
+    def test_preflight_session_yields_owned_double_lock_until_exit(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            _preflight_session,
+        )
+        from scheduler.daily_coordinator import (
+            OccurrenceFileLock,
+            OccurrenceLockUnavailable,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = os.path.realpath(temporary)
+            os.chmod(root, 0o700)
+            operator_path = os.path.join(
+                root,
+                "real-replay-operator.lock",
+            )
+            runtime_path = os.path.join(
+                root,
+                "real-replay-runtime.lock",
+            )
+            with patch(
+                "harness.daily_real_replay_operator._real_replay_lock_root",
+                return_value=__import__("pathlib").Path(root),
+            ):
+                with _preflight_session() as session:
+                    session.assert_held()
+                    self.assertEqual(session.owner_pid, os.getpid())
+                    self.assertTrue(session.operator_lock.acquired)
+                    self.assertTrue(session.runtime_lock.acquired)
+                    with session as borrowed:
+                        self.assertIs(borrowed, session)
+                    self.assertTrue(session.operator_lock.acquired)
+                    self.assertTrue(session.runtime_lock.acquired)
+                    with self.assertRaises(OccurrenceLockUnavailable):
+                        OccurrenceFileLock(operator_path).acquire()
+                    with self.assertRaises(OccurrenceLockUnavailable):
+                        OccurrenceFileLock(runtime_path).acquire()
+
+                self.assertFalse(session.operator_lock.acquired)
+                self.assertFalse(session.runtime_lock.acquired)
+                with self.assertRaises(
+                    DailyRealReplayPreflightError
+                ) as raised:
+                    session.assert_held()
+
+        self.assertEqual(
+            raised.exception.code,
+            "PREFLIGHT_SESSION_NOT_HELD",
+        )
+
     def test_second_candidate_or_generation_read_detects_drift(self) -> None:
         from harness.daily_real_replay_operator import (
             DailyRealReplayPreflightError,
@@ -516,11 +576,14 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         drifted_candidate = replace(candidate, git_head="9" * 40)
         inputs = self._inputs()
         definitions = self._definitions()
+        locked_session = MagicMock()
+        locked_session.assert_held = Mock()
+        locked_session.__enter__.return_value = locked_session
 
         with (
             patch(
                 "harness.daily_real_replay_operator._preflight_session",
-                return_value=nullcontext(),
+                return_value=nullcontext(locked_session),
             ),
             patch(
                 "harness.daily_real_replay_operator._freeze_candidate_identity",
@@ -621,6 +684,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                 )
 
         self.assertEqual(raised.exception.code, "PREFLIGHT_IDENTITY_DRIFT")
+        locked_session.assert_held.assert_called_once_with()
 
     def test_source_preflight_rejects_same_count_with_wrong_tables(self) -> None:
         from harness.daily_real_replay_operator import (

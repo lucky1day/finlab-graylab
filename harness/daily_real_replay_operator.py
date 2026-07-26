@@ -98,6 +98,55 @@ class DailyRealReplayPreflightError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class _ReplayOperatorSession:
+    """同一进程持续持有的 operator/runtime 双重文件锁。"""
+
+    owner_pid: int
+    operator_lock: OccurrenceFileLock
+    runtime_lock: OccurrenceFileLock
+    operator_file_identity: tuple[int, int]
+    runtime_file_identity: tuple[int, int]
+
+    def assert_held(self) -> None:
+        """拒绝跨进程、已释放或路径被替换的锁会话。"""
+        try:
+            valid = (
+                self.owner_pid == os.getpid()
+                and self.operator_lock.acquired
+                and self.runtime_lock.acquired
+                and self.operator_lock.path.name
+                == "real-replay-operator.lock"
+                and self.runtime_lock.path.name
+                == "real-replay-runtime.lock"
+                and self.operator_lock.path.parent
+                == self.runtime_lock.path.parent
+                and _lock_file_identity(self.operator_lock.path)
+                == self.operator_file_identity
+                and _lock_file_identity(self.runtime_lock.path)
+                == self.runtime_file_identity
+            )
+        except Exception:
+            valid = False
+        if not valid:
+            raise DailyRealReplayPreflightError(
+                "PREFLIGHT_SESSION_NOT_HELD"
+            )
+
+    def __enter__(self) -> _ReplayOperatorSession:
+        """借用已持有的会话；资源所有权仍属于外层 session manager。"""
+        self.assert_held()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: object,
+        exc_value: object,
+        traceback: object,
+    ) -> None:
+        self.assert_held()
+
+
+@dataclass(frozen=True)
 class ReplayCandidateIdentity:
     """候选 Git 闭包及 policy bytes 的不可变身份。"""
 
@@ -232,12 +281,30 @@ def run_real_replay_preflight(
     """在全局 session lock 内完成只读检查，并在返回前二次验明身份。"""
     service_uid = _require_operator_service_uid()
     try:
-        session = _preflight_session()
+        session_context = _preflight_session()
     except Exception:
         raise DailyRealReplayPreflightError(
             "PREFLIGHT_SESSION_UNAVAILABLE"
         ) from None
-    with session:
+    with session_context as session:
+        return _run_real_replay_preflight_locked(
+            session,
+            service_uid=service_uid,
+            native_manifest=native_manifest,
+            databridge_manifest=databridge_manifest,
+        )
+
+
+def _run_real_replay_preflight_locked(
+    session: _ReplayOperatorSession,
+    *,
+    service_uid: int,
+    native_manifest: str | Path,
+    databridge_manifest: str | Path,
+) -> DailyRealReplayPreflightReport:
+    """只在调用方持续持有同一双锁时执行完整预检。"""
+    with session as locked_session:
+        locked_session.assert_held()
         candidate = _stable_candidate_identity()
         inputs = _stable_generation_inputs(
             native_manifest=native_manifest,
@@ -339,6 +406,7 @@ def run_real_replay_preflight(
                 "PREFLIGHT_IDENTITY_DRIFT"
             )
 
+        locked_session.assert_held()
         checked_at = datetime.now(timezone.utc).isoformat()
         report_payload: dict[str, object] = {
             "schema_version": PREFLIGHT_SCHEMA_VERSION,
@@ -641,7 +709,7 @@ def _read_control_plane_boundary(
 
 
 @contextmanager
-def _preflight_session() -> Iterator[None]:
+def _preflight_session() -> Iterator[_ReplayOperatorSession]:
     """check-only 与未来 execute 共用的机器级非阻塞 operator fence。"""
     operator_lock = None
     runtime_lock = None
@@ -655,6 +723,17 @@ def _preflight_session() -> Iterator[None]:
             lock_root / "real-replay-runtime.lock"
         )
         runtime_lock.acquire()
+        session = _ReplayOperatorSession(
+            owner_pid=os.getpid(),
+            operator_lock=operator_lock,
+            runtime_lock=runtime_lock,
+            operator_file_identity=_lock_file_identity(
+                operator_lock.path
+            ),
+            runtime_file_identity=_lock_file_identity(
+                runtime_lock.path
+            ),
+        )
     except OccurrenceLockUnavailable:
         if runtime_lock is not None:
             runtime_lock.release()
@@ -678,12 +757,26 @@ def _preflight_session() -> Iterator[None]:
             "PREFLIGHT_SESSION_UNAVAILABLE"
         ) from None
     try:
-        yield
+        yield session
     finally:
         if runtime_lock is not None:
             runtime_lock.release()
         if operator_lock is not None:
             operator_lock.release()
+
+
+def _lock_file_identity(path: Path) -> tuple[int, int]:
+    """返回 owner-only 普通 fence 文件的稳定设备/inode 身份。"""
+    details = path.lstat()
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or details.st_uid != os.getuid()
+        or stat.S_IMODE(details.st_mode) != 0o600
+    ):
+        raise DailyRealReplayPreflightError(
+            "PREFLIGHT_SESSION_NOT_HELD"
+        )
+    return details.st_dev, details.st_ino
 
 
 def _stable_candidate_identity() -> ReplayCandidateIdentity:
