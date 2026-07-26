@@ -2470,6 +2470,200 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
                     canonical.assert_not_called()
                     session.assert_held()
 
+    def test_dispatch_identity_drift_blocks_submit_before_claim(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            DailyRealReplayError,
+            RealReplayRuntime,
+        )
+        from harness.daily_real_replay_operator import (
+            _preflight_session,
+        )
+
+        policy, configs = _real_policy_and_configs()
+        observed_at = datetime.now(timezone.utc)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+            )
+            engine = _isolated_engine()
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                ) as canonical,
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with (
+                    _preflight_session() as session,
+                    patch.object(
+                        runtime,
+                        "_assert_operator_dispatch_identity",
+                        create=True,
+                        side_effect=DailyRealReplayError(
+                            "replay dispatch identity drifted"
+                        ),
+                    ) as dispatch_fence,
+                ):
+                    result = runtime._run_with_operator_session(
+                        session
+                    )
+                    session.assert_held()
+
+        self.assertEqual(result.status, "recovery_blocked")
+        self.assertEqual(result.dispatched_scheme_ids, ())
+        self.assertGreaterEqual(dispatch_fence.call_count, 1)
+        canonical.assert_not_called()
+
+    def test_worker_identity_drift_after_submit_blocks_claim(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import RealReplayRuntime
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            _preflight_session,
+        )
+        from scheduler.daily_coordinator import dispatch_order
+
+        policy, configs = _real_policy_and_configs()
+        blocked_scheme = dispatch_order(
+            policy,
+            policy.schemes,
+        )[0]
+        observed_at = datetime.now(timezone.utc)
+        states = {
+            scheme_id: (
+                "PENDING"
+                if scheme_id == blocked_scheme
+                else "SUCCESS"
+            )
+            for scheme_id in policy.schemes
+        }
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            _replay_inputs() as inputs,
+        ):
+            root = Path(os.path.realpath(temporary))
+            root.chmod(0o700)
+            snapshot = _runtime_snapshot(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                observed_at=observed_at,
+                states=states,
+            )
+            engine = _isolated_engine()
+            recheck_threads: list[str] = []
+
+            def database_recheck(*_args, **_kwargs):
+                recheck_threads.append(
+                    threading.current_thread().name
+                )
+
+            with (
+                _runtime_isolation(engine) as (
+                    isolation,
+                    _listen,
+                ),
+                _runtime_repository(snapshot),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_real_replay_lock_root",
+                    return_value=root,
+                ),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "assert_real_replay_dispatch_identity_current",
+                    side_effect=(
+                        None,
+                        DailyRealReplayPreflightError(
+                            "REPLAY_DISPATCH_IDENTITY_DRIFT"
+                        ),
+                    ),
+                ) as dispatch_fence,
+                patch(
+                    "harness.daily_real_replay."
+                    "_recheck_real_replay_database",
+                    side_effect=database_recheck,
+                ),
+                patch(
+                    "harness.daily_real_replay."
+                    "_set_replay_stop_signal",
+                    wraps=__import__(
+                        "harness.daily_real_replay",
+                        fromlist=["_set_replay_stop_signal"],
+                    )._set_replay_stop_signal,
+                ) as stop_fence,
+                patch(
+                    "scheduler.scheduled_executor."
+                    "execute_scheduled_item",
+                ) as canonical,
+            ):
+                runtime = RealReplayRuntime(
+                    engine,
+                    isolation=isolation,
+                    occurrence_id=41,
+                    policy=policy,
+                    configs=configs,
+                    inputs=inputs,
+                )
+                with _preflight_session() as session:
+                    result = runtime._run_with_operator_session(
+                        session
+                    )
+                    session.assert_held()
+
+        self.assertEqual(result.status, "recovery_blocked")
+        self.assertEqual(
+            result.dispatched_scheme_ids,
+            (blocked_scheme,),
+        )
+        self.assertEqual(
+            result.blocked_scheme_ids,
+            (blocked_scheme,),
+        )
+        self.assertEqual(dispatch_fence.call_count, 2)
+        self.assertGreaterEqual(stop_fence.call_count, 1)
+        self.assertTrue(recheck_threads)
+        self.assertEqual(set(recheck_threads), {"MainThread"})
+        canonical.assert_not_called()
+
     def test_does_not_enter_production_control_plane(self) -> None:
         from harness.daily_real_replay import RealReplayRuntime
 

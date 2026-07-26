@@ -87,6 +87,10 @@ class _RealReplayCutoffReached(DailyRealReplayError):
     """worker 已获内部执行资格，但在 claim 前到达冻结截止。"""
 
 
+class _RealReplayDispatchIdentityDrift(DailyRealReplayError):
+    """成功预检绑定的动态 dispatch 身份已不可确认。"""
+
+
 @dataclass(frozen=True)
 class DailyRealReplayInputs:
     """一组已重新打开并交叉验证的真实联跑 generation。"""
@@ -215,6 +219,25 @@ class RealReplayRuntime:
         except Exception:
             raise DailyRealReplayError(
                 "real replay operator session is unavailable"
+            ) from None
+
+    def _assert_operator_dispatch_identity(
+        self,
+        session: object,
+    ) -> None:
+        """重读成功预检身份；只返回通过或稳定 drift 错误。"""
+        locked_session = self._require_operator_session(session)
+        try:
+            from harness.daily_real_replay_operator import (
+                assert_real_replay_dispatch_identity_current,
+            )
+
+            assert_real_replay_dispatch_identity_current(
+                locked_session
+            )
+        except Exception:
+            raise _RealReplayDispatchIdentityDrift(
+                "real replay dispatch identity drifted"
             ) from None
 
     def _run(
@@ -418,9 +441,20 @@ class RealReplayRuntime:
                             if stop_signal.is_set():
                                 break
                             if operator_session is not None:
-                                self._require_operator_session(
-                                    operator_session
-                                )
+                                try:
+                                    self._assert_operator_dispatch_identity(
+                                        operator_session
+                                    )
+                                except DailyRealReplayError:
+                                    stop_signal.set()
+                                    stop_status = (
+                                        _merge_replay_stop_status(
+                                            stop_status,
+                                            "recovery_blocked",
+                                        )
+                                    )
+                                    stop_blocked.add(scheme_id)
+                                    break
                             future = pools[pool_name].submit(
                                 self._execute_owned_item_with_stop_fence,
                                 item_id=int(item.item_id),
@@ -516,6 +550,13 @@ class RealReplayRuntime:
                 )
                 stop_blocked.add(scheme_id)
                 continue
+            except _RealReplayDispatchIdentityDrift:
+                stop_status = _merge_replay_stop_status(
+                    stop_status,
+                    "recovery_blocked",
+                )
+                stop_blocked.add(scheme_id)
+                continue
             except Exception:
                 stop_status = _merge_replay_stop_status(
                     stop_status,
@@ -591,6 +632,9 @@ class RealReplayRuntime:
                     "real replay worker operator session mismatch"
                 )
             self._require_operator_session(
+                active_operator_session
+            )
+            self._assert_operator_dispatch_identity(
                 active_operator_session
             )
         elif operator_session is not None:
