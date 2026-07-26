@@ -28,6 +28,8 @@ Intake、快照身份、Runtime/Sandbox 和 Harness 都会拒绝额外文件。
 平台已经具备权威数据来源：
 
 - `shared.calendar_service` 统一读取 `api_wind_date`；
+- `insertDateList.py` 由既有 cron 每日 `00:01` 执行，已确认任务快速、
+  稳定完成，因此本次不新增日历调度或等待基础设施；
 - Native generation 已冻结并校验 `api_wind_date.csv`；
 - DataBridge generation 已绑定同日的 Native generation；
 - scheduled executor 已把绑定的 Native calendar generation 传给
@@ -35,7 +37,8 @@ Intake、快照身份、Runtime/Sandbox 和 Harness 都会拒绝额外文件。
 
 本设计补齐一套可复用的 Blackbox 平台输入制品机制，并以
 `api_wind_date.csv` 作为第一个制品；不新增数据源，也不修改日频
-coordinator。
+coordinator。DataBridge 本身仍然只生成日频、周频、月频三个业务
+文件，日历不成为第四个 DataBridge 文件。
 
 ## 2. 目标
 
@@ -141,18 +144,30 @@ platform_inputs:
 
 ```text
 artifact_id: api-wind-date-v1
+provider_version: api-wind-date-provider-v1
 filename: api_wind_date.csv
 columns: rdate,week_id
 ```
 
 ### 5.2 数据来源
 
-- Harness/check-only：通过 `shared.input_artifacts` 从平台日历只读
-  接口捕获 `api_wind_date`。
+- 唯一权威逻辑来源始终是平台表 `api_wind_date`。
+- Harness/check-only：通过 `shared.input_artifacts` 和
+  `read_calendar_snapshot_from_connection()` 从只读数据库连接捕获
+  `api_wind_date`。
 - scheduled live：使用已经与 DataBridge generation 绑定并完成
-  校验的 Native generation 中的 `api_wind_date.csv`。
+  ID/manifest SHA 校验的 Native generation 冻结副本，通过
+  `NativeGenerationContext.frame("api_wind_date")` 取得内容。
 - no-persist backtest：使用本次 Harness 输入构造时冻结的同一份
   日历，不在算法子进程内访问数据库。
+
+Harness 与 scheduled 并不是两套日历口径：二者共享同一个
+`api-wind-date-v1` provider 的列、规范化、覆盖范围和内容哈希校验。
+区别只在捕获形态——Harness 从只读数据库即时冻结，scheduled 从
+同批 Native generation 读取已经冻结的副本。`source_kind`、Native
+generation ID、manifest SHA 和捕获时间仅记录在审计 provenance；
+它们不进入内容身份。因此同一父 DataBridge 快照和相同规范化日历
+内容，无论由哪条路径取得，都生成相同的组合输入 ID。
 
 任何路径都不得读取 delivery 目录或上游包中的日历。
 
@@ -162,11 +177,16 @@ columns: rdate,week_id
 
 - 文件逻辑名必须精确为 `api_wind_date.csv`；
 - 列必须精确为 `rdate,week_id`；
-- `rdate` 可规范化为日期且不能为空；
-- `week_id` 可规范化为非空周键；
+- `rdate` 规范化为 `YYYY-MM-DD` 且不能为空；
+- `week_id` 接受整数或尾随 `.0` 的等价表示，并规范化为六位平台
+  周键；
 - 日期不得重复并且必须严格升序；
 - 至少覆盖本次 `weekly_cutoff_key`；
 - 日历不得包含指标值或其它业务列。
+
+输出固定为 UTF-8、LF 换行和 `rdate,week_id` 列顺序。平台不按
+`feature_date` 截断日历；业务数据的 cutoff 隔离仍只作用于
+DataBridge 三频文件。相同规范化内容必须产生相同 SHA-256。
 
 算法仍负责按自身定义把同一 `week_id` 的最大 `rdate` 作为周末
 自然日。平台不改写算法的对齐逻辑。
@@ -180,9 +200,15 @@ columns: rdate,week_id
 - 按制品 ID 排序记录 `platform_inputs`；
 - manifest 分别记录三频业务文件和每个制品的 ID、文件名、版本、
   来源及内容哈希；
-- 组合 `snapshot_id` 由父快照身份和有序制品 manifest 共同决定；
+- 组合 `snapshot_id` 只由身份 schema 版本、父快照身份，以及按
+  artifact ID 排序后的 provider version、文件名、SHA、字节数、
+  行数和列组成；
 - 相同父快照与相同制品内容必须得到相同 ID；
 - 预测记录使用组合快照 ID，确保实际算法输入可追溯。
+
+捕获时间、临时路径、`source_kind` 和 generation ID 只进入审计
+manifest，不进入组合内容身份。未声明平台制品时，组合 ID 直接
+沿用父 DataBridge 三文件 `snapshot_id`。
 
 平台不长期复制三份 DataBridge 业务文件来保存所谓“四文件
 快照”。长期证据只保存父快照引用和平台制品 manifest；算法运行
