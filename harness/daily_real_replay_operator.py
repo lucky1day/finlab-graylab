@@ -8,7 +8,7 @@ import os
 import stat
 import subprocess
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -98,6 +98,59 @@ class DailyRealReplayPreflightError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class _ReplayDispatchIdentity:
+    """成功预检后一次性绑定到锁会话的脱敏 dispatch 身份。"""
+
+    service_uid: int
+    business_date: str
+    native_manifest_path: str
+    databridge_manifest_path: str
+    candidate_digest: str
+    generation_digest: str
+    definition_digest: str
+    control_plane_digest: str
+    production_digest: str
+    source_database_digest: str
+    source_watermark_digest: str
+
+    def __post_init__(self) -> None:
+        try:
+            date.fromisoformat(self.business_date)
+            paths = (
+                Path(self.native_manifest_path),
+                Path(self.databridge_manifest_path),
+            )
+            digests = (
+                self.candidate_digest,
+                self.generation_digest,
+                self.definition_digest,
+                self.control_plane_digest,
+                self.production_digest,
+                self.source_database_digest,
+                self.source_watermark_digest,
+            )
+            valid = (
+                isinstance(self.service_uid, int)
+                and not isinstance(self.service_uid, bool)
+                and self.service_uid >= 0
+                and all(
+                    path.is_absolute()
+                    and path == path.resolve(strict=False)
+                    for path in paths
+                )
+                and all(
+                    len(value) == 64
+                    and set(value) <= set("0123456789abcdef")
+                    for value in digests
+                )
+            )
+        except Exception:
+            valid = False
+        if not valid:
+            raise ValueError("real replay dispatch identity is invalid")
+
+
+@dataclass(frozen=True)
 class _ReplayOperatorSession:
     """同一进程持续持有的 operator/runtime 双重文件锁。"""
 
@@ -106,6 +159,12 @@ class _ReplayOperatorSession:
     runtime_lock: OccurrenceFileLock
     operator_file_identity: tuple[int, int]
     runtime_file_identity: tuple[int, int]
+    _dispatch_identity: _ReplayDispatchIdentity | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def assert_held(self) -> None:
         """拒绝跨进程、已释放或路径被替换的锁会话。"""
@@ -144,6 +203,32 @@ class _ReplayOperatorSession:
         traceback: object,
     ) -> None:
         self.assert_held()
+
+    def bind_dispatch_identity(
+        self,
+        identity: _ReplayDispatchIdentity,
+    ) -> None:
+        """只允许成功预检在持锁期间绑定一次 execution capability。"""
+        self.assert_held()
+        if type(identity) is not _ReplayDispatchIdentity:
+            raise DailyRealReplayPreflightError(
+                "REPLAY_DISPATCH_IDENTITY_INVALID"
+            )
+        if self._dispatch_identity is not None:
+            raise DailyRealReplayPreflightError(
+                "REPLAY_DISPATCH_IDENTITY_ALREADY_BOUND"
+            )
+        object.__setattr__(self, "_dispatch_identity", identity)
+
+    def require_dispatch_identity(self) -> _ReplayDispatchIdentity:
+        """返回仍由本 session 持有的 write-once dispatch 身份。"""
+        self.assert_held()
+        identity = self._dispatch_identity
+        if type(identity) is not _ReplayDispatchIdentity:
+            raise DailyRealReplayPreflightError(
+                "REPLAY_DISPATCH_IDENTITY_UNBOUND"
+            )
+        return identity
 
 
 @dataclass(frozen=True)
@@ -406,6 +491,23 @@ def _run_real_replay_preflight_locked(
                 "PREFLIGHT_IDENTITY_DRIFT"
             )
 
+        locked_session.bind_dispatch_identity(
+            _build_replay_dispatch_identity(
+                service_uid=service_uid,
+                native_manifest=native_manifest,
+                databridge_manifest=databridge_manifest,
+                candidate=candidate,
+                inputs=inputs,
+                definitions=definitions,
+                control_plane=control_plane,
+                production=production,
+                production_registry_digest=registry_digest,
+                source_config=source_config,
+                source_preflight=source_preflight,
+                source_start=source_start,
+                source_end=source_end,
+            )
+        )
         locked_session.assert_held()
         checked_at = datetime.now(timezone.utc).isoformat()
         report_payload: dict[str, object] = {
@@ -1309,6 +1411,101 @@ def _generation_identity(
         str(inputs.native_generation.manifest_sha256),
         str(inputs.databridge_generation.generation_id),
         str(inputs.databridge_generation.manifest_sha256),
+    )
+
+
+def _build_replay_dispatch_identity(
+    *,
+    service_uid: int,
+    native_manifest: str | Path,
+    databridge_manifest: str | Path,
+    candidate: ReplayCandidateIdentity,
+    inputs: DailyRealReplayInputs,
+    definitions: ReplayDefinitionSnapshot,
+    control_plane: ReplayControlPlaneSnapshot,
+    production: ProductionDailySnapshot,
+    production_registry_digest: str,
+    source_config: object,
+    source_preflight: object,
+    source_start: ReplaySourceInputEvidence,
+    source_end: ReplaySourceInputEvidence,
+) -> _ReplayDispatchIdentity:
+    """把成功二次预检的稳定输入压缩为 write-once capability。"""
+    definition_payload = {
+        "policy_version": definitions.policy_version,
+        "policy_sha256": definitions.policy_sha256,
+        "expected_item_count": definitions.expected_item_count,
+        "expected_target_count": definitions.expected_target_count,
+        "native_item_count": definitions.native_item_count,
+        "v2_item_count": definitions.v2_item_count,
+        "input_mode_counts": dict(definitions.input_mode_counts),
+        "registry_rows": [
+            vars(row) for row in definitions.registry_rows
+        ],
+        "version_rows": [
+            vars(row) for row in definitions.version_rows
+        ],
+    }
+    production_payload = {
+        "database_name": production.database_name,
+        "server_identity_sha256":
+            production.server_identity_sha256,
+        "migration_rows": [
+            dict(row) for row in production.migration_rows
+        ],
+        "registry_digest": production_registry_digest,
+    }
+    return _ReplayDispatchIdentity(
+        service_uid=service_uid,
+        business_date=inputs.business_date,
+        native_manifest_path=str(
+            Path(native_manifest).resolve(strict=False)
+        ),
+        databridge_manifest_path=str(
+            Path(databridge_manifest).resolve(strict=False)
+        ),
+        candidate_digest=_canonical_sha256(
+            {
+                "branch": candidate.branch,
+                "git_head": candidate.git_head,
+                "tree_sha256": candidate.tree_sha256,
+                "policy_sha256": candidate.policy_sha256,
+            }
+        ),
+        generation_digest=_canonical_sha256(
+            {"identity": list(_generation_identity(inputs))}
+        ),
+        definition_digest=_canonical_sha256(
+            definition_payload
+        ),
+        control_plane_digest=control_plane.digest,
+        production_digest=_canonical_sha256(
+            production_payload
+        ),
+        source_database_digest=_canonical_sha256(
+            {
+                "identity": list(
+                    _source_database_identity(
+                        source_config,
+                        source_preflight,
+                    )
+                )
+            }
+        ),
+        source_watermark_digest=_canonical_sha256(
+            {
+                "start": {
+                    "feature_date": source_start.feature_date,
+                    "source_commit_token":
+                        source_start.source_commit_token,
+                },
+                "end": {
+                    "feature_date": source_end.feature_date,
+                    "source_commit_token":
+                        source_end.source_commit_token,
+                },
+            }
+        ),
     )
 
 

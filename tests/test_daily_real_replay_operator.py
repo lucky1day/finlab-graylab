@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -307,6 +308,55 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             locked_session.assert_held.call_args_list,
             [unittest.mock.call(), unittest.mock.call()],
         )
+        locked_session.bind_dispatch_identity.assert_called_once()
+        dispatch_identity = (
+            locked_session.bind_dispatch_identity.call_args.args[0]
+        )
+        self.assertEqual(dispatch_identity.service_uid, os.getuid())
+        self.assertEqual(
+            dispatch_identity.business_date,
+            inputs.business_date,
+        )
+        self.assertEqual(
+            dispatch_identity.native_manifest_path,
+            "/private/native/manifest.json",
+        )
+        self.assertEqual(
+            dispatch_identity.databridge_manifest_path,
+            "/private/databridge/manifest.json",
+        )
+        for value in (
+            dispatch_identity.candidate_digest,
+            dispatch_identity.generation_digest,
+            dispatch_identity.definition_digest,
+            dispatch_identity.control_plane_digest,
+            dispatch_identity.production_digest,
+            dispatch_identity.source_database_digest,
+            dispatch_identity.source_watermark_digest,
+        ):
+            self.assertRegex(value, r"^[0-9a-f]{64}$")
+        expected_watermark_digest = hashlib.sha256(
+            json.dumps(
+                {
+                    "start": {
+                        "feature_date": "2026-07-24",
+                        "source_commit_token": "7" * 64,
+                    },
+                    "end": {
+                        "feature_date": "2026-07-24",
+                        "source_commit_token": "8" * 64,
+                    },
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        self.assertEqual(
+            dispatch_identity.source_watermark_digest,
+            expected_watermark_digest,
+        )
 
     def test_registry_drift_is_rejected_without_reporting_database_rows(
         self,
@@ -561,6 +611,71 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
 
         self.assertEqual(
             raised.exception.code,
+            "PREFLIGHT_SESSION_NOT_HELD",
+        )
+
+    def test_dispatch_identity_is_write_once_and_requires_held_session(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            _ReplayDispatchIdentity,
+            _preflight_session,
+        )
+
+        identity = _ReplayDispatchIdentity(
+            service_uid=os.getuid(),
+            business_date="2026-07-27",
+            native_manifest_path="/private/native/manifest.json",
+            databridge_manifest_path=(
+                "/private/databridge/manifest.json"
+            ),
+            candidate_digest="1" * 64,
+            generation_digest="2" * 64,
+            definition_digest="3" * 64,
+            control_plane_digest="4" * 64,
+            production_digest="5" * 64,
+            source_database_digest="6" * 64,
+            source_watermark_digest="7" * 64,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = os.path.realpath(temporary)
+            os.chmod(root, 0o700)
+            with patch(
+                "harness.daily_real_replay_operator."
+                "_real_replay_lock_root",
+                return_value=__import__("pathlib").Path(root),
+            ):
+                with _preflight_session() as session:
+                    with self.assertRaises(
+                        DailyRealReplayPreflightError
+                    ) as unbound:
+                        session.require_dispatch_identity()
+                    self.assertEqual(
+                        unbound.exception.code,
+                        "REPLAY_DISPATCH_IDENTITY_UNBOUND",
+                    )
+                    session.bind_dispatch_identity(identity)
+                    self.assertIs(
+                        session.require_dispatch_identity(),
+                        identity,
+                    )
+                    with self.assertRaises(
+                        DailyRealReplayPreflightError
+                    ) as rebound:
+                        session.bind_dispatch_identity(identity)
+                    self.assertEqual(
+                        rebound.exception.code,
+                        "REPLAY_DISPATCH_IDENTITY_ALREADY_BOUND",
+                    )
+
+                with self.assertRaises(
+                    DailyRealReplayPreflightError
+                ) as released:
+                    session.require_dispatch_identity()
+
+        self.assertEqual(
+            released.exception.code,
             "PREFLIGHT_SESSION_NOT_HELD",
         )
 
