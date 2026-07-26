@@ -13,7 +13,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, ContextManager, Sequence
+from typing import Any, Callable, ContextManager, Mapping, Sequence
 
 from scheduler.process_control import (
     ProcessGroupTerminationError,
@@ -31,8 +31,14 @@ from shared.blackbox_v2.contracts import (
     load_backtest_results,
     load_prediction_result,
 )
+from shared.blackbox_v2.platform_input_registry import (
+    PLATFORM_INPUT_REGISTRY,
+)
 from shared.blackbox_v2.requests import write_request, write_requests
-from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
+from shared.blackbox_v2.snapshot import (
+    SNAPSHOT_FILENAMES,
+    compute_blackbox_combined_snapshot_id,
+)
 from shared.models import PredictionRecord
 
 
@@ -400,6 +406,7 @@ def execute_blackbox_cli(
     input_path: str | Path,
     data_dir: str | Path,
     output_path: str | Path,
+    platform_input_ids: Sequence[str] = (),
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     timeout_sec: float | None = None,
     execution_token: str | None = None,
@@ -426,12 +433,21 @@ def execute_blackbox_cli(
         raise ValueError(f"Blackbox V2 script must be one regular .py file: {script}")
     if not input_file.is_file():
         raise ValueError(f"Blackbox V2 input must be one regular file: {input_file}")
-    _validate_data_dir(data)
+    normalized_platform_input_ids = _normalize_platform_input_ids(
+        platform_input_ids
+    )
+    expected_filenames = _expected_data_filenames(
+        normalized_platform_input_ids
+    )
+    initial_data_state = _validate_data_dir(
+        data,
+        platform_input_ids=normalized_platform_input_ids,
+    )
     if output.exists():
         raise ValueError(f"platform must provide a fresh output path: {output}")
     runtime = _python_runtime(profile)
     read_roots = _resolve_runtime_read_roots(profile)
-    data_files = tuple(data / filename for filename in SNAPSHOT_FILENAMES)
+    data_files = tuple(data / filename for filename in expected_filenames)
     _prepare_output_directory(
         output.parent,
         controls=(
@@ -443,6 +459,16 @@ def execute_blackbox_cli(
             *(("runtime read root", item.resolved) for item in read_roots),
         ),
     )
+    if (
+        _validate_data_dir(
+            data,
+            platform_input_ids=normalized_platform_input_ids,
+        )
+        != initial_data_state
+    ):
+        raise ValueError(
+            "Blackbox V2 data-dir changed before process start"
+        )
 
     try:
         input_flag = "--request" if mode == "predict" else "--requests"
@@ -466,6 +492,7 @@ def execute_blackbox_cli(
                 script_path=script,
                 input_path=input_file,
                 data_dir=data,
+                platform_input_ids=normalized_platform_input_ids,
                 runtime=runtime,
                 resolved_read_roots=read_roots,
             )
@@ -547,6 +574,10 @@ def run_blackbox_predict(
     request: BlackboxRequest,
     data_dir: str | Path,
     data_snapshot_id: str,
+    platform_input_ids: Sequence[str] = (),
+    parent_data_snapshot_id: str | None = None,
+    input_identity_manifest: Mapping[str, Any] | None = None,
+    input_audit_manifest: Mapping[str, Any] | None = None,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     execution_token: str | None = None,
     process_started: Callable[[int, int], None] | None = None,
@@ -555,6 +586,18 @@ def run_blackbox_predict(
 ) -> PredictionRecord:
     process_start_guard = require_process_start_guard(
         process_start_guard
+    )
+    (
+        normalized_platform_input_ids,
+        validated_parent_snapshot_id,
+        validated_identity_manifest,
+        validated_audit_manifest,
+    ) = _validate_platform_input_evidence(
+        data_snapshot_id=data_snapshot_id,
+        platform_input_ids=platform_input_ids,
+        parent_data_snapshot_id=parent_data_snapshot_id,
+        input_identity_manifest=input_identity_manifest,
+        input_audit_manifest=input_audit_manifest,
     )
     with tempfile.TemporaryDirectory(prefix="blackbox-v2-predict-") as tmpdir:
         root = Path(tmpdir)
@@ -567,6 +610,7 @@ def run_blackbox_predict(
             "data_dir": data_dir,
             "output_path": output_path,
             "profile": profile,
+            "platform_input_ids": normalized_platform_input_ids,
         }
         if execution_token is not None:
             execute_kwargs["execution_token"] = execution_token
@@ -580,7 +624,16 @@ def run_blackbox_predict(
             )
         execute_blackbox_cli(**execute_kwargs)
         result = load_prediction_result(output_path, request)
-    return _to_prediction_record(metadata, result, data_snapshot_id, profile)
+    return _to_prediction_record(
+        metadata,
+        result,
+        data_snapshot_id,
+        profile,
+        platform_input_ids=normalized_platform_input_ids,
+        parent_data_snapshot_id=validated_parent_snapshot_id,
+        input_identity_manifest=validated_identity_manifest,
+        input_audit_manifest=validated_audit_manifest,
+    )
 
 
 def run_blackbox_backtest(
@@ -590,9 +643,25 @@ def run_blackbox_backtest(
     requests: Sequence[BlackboxRequest],
     data_dir: str | Path,
     data_snapshot_id: str,
+    platform_input_ids: Sequence[str] = (),
+    parent_data_snapshot_id: str | None = None,
+    input_identity_manifest: Mapping[str, Any] | None = None,
+    input_audit_manifest: Mapping[str, Any] | None = None,
     profile: RuntimeProfile = DEFAULT_RUNTIME_PROFILE,
     budget: BacktestExecutionBudget | None = None,
 ) -> list[PredictionRecord]:
+    (
+        normalized_platform_input_ids,
+        validated_parent_snapshot_id,
+        validated_identity_manifest,
+        validated_audit_manifest,
+    ) = _validate_platform_input_evidence(
+        data_snapshot_id=data_snapshot_id,
+        platform_input_ids=platform_input_ids,
+        parent_data_snapshot_id=parent_data_snapshot_id,
+        input_identity_manifest=input_identity_manifest,
+        input_audit_manifest=input_audit_manifest,
+    )
     if not requests:
         raise ValueError("Blackbox V2 backtest requires at least one Request")
     if profile.max_batch_requests <= 0:
@@ -617,6 +686,7 @@ def run_blackbox_backtest(
                     data_dir=data_dir,
                     output_path=output_path,
                     profile=profile,
+                    platform_input_ids=normalized_platform_input_ids,
                     timeout_sec=remaining_timeout,
                 )
             except BlackboxExecutionError as exc:
@@ -627,7 +697,16 @@ def run_blackbox_backtest(
                 raise
             results = load_backtest_results(output_path, batch)
         records.extend(
-            _to_prediction_record(metadata, result, data_snapshot_id, profile)
+            _to_prediction_record(
+                metadata,
+                result,
+                data_snapshot_id,
+                profile,
+                platform_input_ids=normalized_platform_input_ids,
+                parent_data_snapshot_id=validated_parent_snapshot_id,
+                input_identity_manifest=validated_identity_manifest,
+                input_audit_manifest=validated_audit_manifest,
+            )
             for result in results
         )
     return records
@@ -638,7 +717,40 @@ def _to_prediction_record(
     result: BlackboxResult,
     data_snapshot_id: str,
     profile: RuntimeProfile,
+    *,
+    platform_input_ids: tuple[str, ...] = (),
+    parent_data_snapshot_id: str | None = None,
+    input_identity_manifest: Mapping[str, Any] | None = None,
+    input_audit_manifest: Mapping[str, Any] | None = None,
 ) -> PredictionRecord:
+    extra: dict[str, Any] = {
+        "runtime_type": "blackbox_v2",
+        "request_id": result.request_id,
+        "task_type": metadata.task_type,
+        "target_rule": metadata.target_rule,
+        "contract_version": metadata.schema_version,
+        "runtime_profile": profile.name,
+        "data_snapshot_id": data_snapshot_id,
+    }
+    if platform_input_ids:
+        extra.update(
+            {
+                "parent_data_snapshot_id": parent_data_snapshot_id,
+                "platform_input_ids": list(
+                    platform_input_ids
+                ),
+                "platform_input_identity_manifest":
+                    _copy_manifest(
+                        input_identity_manifest,
+                        "input_identity_manifest",
+                    ),
+                "platform_input_audit_manifest":
+                    _copy_manifest(
+                        input_audit_manifest,
+                        "input_audit_manifest",
+                    ),
+            }
+        )
     return PredictionRecord(
         scheme_id=metadata.scheme_id,
         target_tenor=metadata.target_tenor,
@@ -648,15 +760,7 @@ def _to_prediction_record(
         target_date=result.target_date,
         predicted_direction=result.predicted_direction,
         model_version=metadata.algorithm_version,
-        extra={
-            "runtime_type": "blackbox_v2",
-            "request_id": result.request_id,
-            "task_type": metadata.task_type,
-            "target_rule": metadata.target_rule,
-            "contract_version": metadata.schema_version,
-            "runtime_profile": profile.name,
-            "data_snapshot_id": data_snapshot_id,
-        },
+        extra=extra,
     )
 
 
@@ -686,16 +790,274 @@ def _resolve_controlled_path(
         raise ValueError(f"Blackbox V2 {label} path does not exist: {absolute}") from exc
 
 
-def _validate_data_dir(data_dir: Path) -> None:
-    if not data_dir.is_dir() or data_dir.is_symlink():
+def _normalize_platform_input_ids(
+    platform_input_ids: Sequence[str],
+) -> tuple[str, ...]:
+    if isinstance(platform_input_ids, (str, bytes)):
+        raise ValueError(
+            "platform_input_ids must be a sequence of registered IDs"
+        )
+    values = tuple(platform_input_ids)
+    if not values:
+        return ()
+    normalized = PLATFORM_INPUT_REGISTRY.normalize_ids(values)
+    if values != normalized:
+        raise ValueError(
+            "platform_input_ids must be unique and sorted"
+        )
+    return normalized
+
+
+def _expected_data_filenames(
+    platform_input_ids: Sequence[str],
+) -> tuple[str, ...]:
+    normalized = _normalize_platform_input_ids(platform_input_ids)
+    return SNAPSHOT_FILENAMES + tuple(
+        PLATFORM_INPUT_REGISTRY.get(artifact_id).filename
+        for artifact_id in normalized
+    )
+
+
+def _copy_manifest(
+    value: Mapping[str, Any],
+    field: str,
+) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field} must be a mapping")
+    try:
+        copied = json.loads(
+            json.dumps(
+                dict(value),
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be JSON serializable") from exc
+    if not isinstance(copied, dict):
+        raise ValueError(f"{field} must be an object")
+    return copied
+
+
+def _validate_platform_input_evidence(
+    *,
+    data_snapshot_id: str,
+    platform_input_ids: Sequence[str],
+    parent_data_snapshot_id: str | None,
+    input_identity_manifest: Mapping[str, Any] | None,
+    input_audit_manifest: Mapping[str, Any] | None,
+) -> tuple[
+    tuple[str, ...],
+    str | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+]:
+    normalized = _normalize_platform_input_ids(platform_input_ids)
+    if normalized:
+        if (
+            not isinstance(parent_data_snapshot_id, str)
+            or not parent_data_snapshot_id
+            or input_identity_manifest is None
+            or input_audit_manifest is None
+        ):
+            raise ValueError(
+                "declared platform inputs require parent snapshot and "
+                "identity/audit manifests"
+            )
+        identity = _copy_manifest(
+            input_identity_manifest,
+            "input_identity_manifest",
+        )
+        audit = _copy_manifest(
+            input_audit_manifest,
+            "input_audit_manifest",
+        )
+        expected_combined_snapshot_id = (
+            compute_blackbox_combined_snapshot_id(identity)
+        )
+        if expected_combined_snapshot_id != data_snapshot_id:
+            raise ValueError(
+                "combined snapshot ID does not match identity manifest"
+            )
+        if identity["parent_snapshot_id"] != parent_data_snapshot_id:
+            raise ValueError(
+                "identity manifest parent_snapshot_id does not match "
+                "runner evidence"
+            )
+        artifact_ids = tuple(
+            artifact["artifact_id"]
+            for artifact in identity["platform_inputs"]
+        )
+        if artifact_ids != normalized:
+            raise ValueError(
+                "identity manifest platform inputs do not match "
+                "runner declaration"
+            )
+        _validate_platform_input_audit_manifest(
+            audit,
+            identity_manifest=identity,
+            parent_snapshot_id=parent_data_snapshot_id,
+        )
+        return (
+            normalized,
+            parent_data_snapshot_id,
+            identity,
+            audit,
+        )
+    if any(
+        value is not None
+        for value in (
+            parent_data_snapshot_id,
+            input_identity_manifest,
+            input_audit_manifest,
+        )
+    ):
+        raise ValueError(
+            "platform input manifests require declared platform inputs"
+        )
+    return (), None, None, None
+
+
+def _validate_platform_input_audit_manifest(
+    audit_manifest: Mapping[str, Any],
+    *,
+    identity_manifest: Mapping[str, Any],
+    parent_snapshot_id: str,
+) -> None:
+    if set(audit_manifest) != {
+        "identity",
+        "base_snapshot",
+        "platform_inputs",
+    }:
+        raise ValueError("platform input audit manifest fields are invalid")
+    if audit_manifest["identity"] != identity_manifest:
+        raise ValueError(
+            "platform input audit manifest identity does not match "
+            "identity manifest"
+        )
+    base_snapshot = audit_manifest["base_snapshot"]
+    if (
+        not isinstance(base_snapshot, Mapping)
+        or set(base_snapshot)
+        != {
+            "snapshot_id",
+            "schema_version",
+            "generation_id",
+            "refresh_date",
+        }
+        or base_snapshot["snapshot_id"] != parent_snapshot_id
+    ):
+        raise ValueError(
+            "platform input audit manifest base snapshot is invalid"
+        )
+    audit_artifacts = audit_manifest["platform_inputs"]
+    identity_artifacts = identity_manifest["platform_inputs"]
+    if (
+        not isinstance(audit_artifacts, list)
+        or len(audit_artifacts) != len(identity_artifacts)
+    ):
+        raise ValueError(
+            "platform input audit manifest artifacts are invalid"
+        )
+    for audit_artifact, identity_artifact in zip(
+        audit_artifacts,
+        identity_artifacts,
+    ):
+        if (
+            not isinstance(audit_artifact, Mapping)
+            or set(audit_artifact) != {"identity", "provenance"}
+            or audit_artifact["identity"] != identity_artifact
+            or not isinstance(audit_artifact["provenance"], Mapping)
+        ):
+            raise ValueError(
+                "platform input audit manifest artifact is invalid"
+            )
+
+
+def _validate_data_dir(
+    data_dir: Path,
+    *,
+    platform_input_ids: Sequence[str] = (),
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    try:
+        directory_before = data_dir.lstat()
+    except OSError as exc:
+        raise ValueError(
+            f"Blackbox V2 data-dir is unavailable: {data_dir}"
+        ) from exc
+    if (
+        stat.S_ISLNK(directory_before.st_mode)
+        or not stat.S_ISDIR(directory_before.st_mode)
+    ):
         raise ValueError(f"Blackbox V2 data-dir must be one regular directory: {data_dir}")
+    expected_filenames = _expected_data_filenames(platform_input_ids)
     entries = {path.name for path in data_dir.iterdir()}
-    if entries != set(SNAPSHOT_FILENAMES):
-        raise ValueError(f"Blackbox V2 data-dir files must be exactly {list(SNAPSHOT_FILENAMES)}")
-    for filename in SNAPSHOT_FILENAMES:
+    if entries != set(expected_filenames):
+        raise ValueError(
+            "Blackbox V2 data-dir files must be exactly "
+            f"{list(expected_filenames)}"
+        )
+    states: list[tuple[str, tuple[int, ...]]] = []
+    for filename in expected_filenames:
         path = data_dir / filename
-        if not path.is_file() or path.is_symlink():
+        try:
+            before = path.lstat()
+        except OSError as exc:
+            raise ValueError(
+                f"Blackbox V2 data file is unavailable: {path}"
+            ) from exc
+        if stat.S_ISLNK(before.st_mode):
             raise ValueError(f"Blackbox V2 data file must be regular and not a symlink: {path}")
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(
+                f"Blackbox V2 data file must be regular: {path}"
+            )
+        if before.st_nlink != 1:
+            raise ValueError(
+                f"Blackbox V2 data file must not be a hardlink: {path}"
+            )
+        before_fingerprint = _data_path_fingerprint(before)
+        after = path.stat(follow_symlinks=False)
+        if _data_path_fingerprint(after) != before_fingerprint:
+            raise ValueError(
+                f"Blackbox V2 data file changed during validation: {path}"
+            )
+        states.append((filename, before_fingerprint))
+    if {path.name for path in data_dir.iterdir()} != entries:
+        raise ValueError(
+            "Blackbox V2 data-dir changed during validation"
+        )
+    directory_after = data_dir.lstat()
+    if (
+        directory_after.st_dev != directory_before.st_dev
+        or directory_after.st_ino != directory_before.st_ino
+        or directory_after.st_mtime_ns != directory_before.st_mtime_ns
+        or directory_after.st_ctime_ns != directory_before.st_ctime_ns
+    ):
+        raise ValueError(
+            "Blackbox V2 data-dir changed during validation"
+        )
+    for filename, expected_state in states:
+        current = (data_dir / filename).stat(follow_symlinks=False)
+        if _data_path_fingerprint(current) != expected_state:
+            raise ValueError(
+                "Blackbox V2 data file changed during validation: "
+                f"{data_dir / filename}"
+            )
+    return tuple(states)
+
+
+def _data_path_fingerprint(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        int(value.st_dev),
+        int(value.st_ino),
+        int(value.st_mode),
+        int(value.st_nlink),
+        int(value.st_size),
+        int(value.st_mtime_ns),
+        int(value.st_ctime_ns),
+    )
 
 
 def _prepare_output_directory(
@@ -957,6 +1319,7 @@ def _sandbox_command(
     script_path: Path | None = None,
     input_path: Path | None = None,
     data_dir: Path | None = None,
+    platform_input_ids: Sequence[str] = (),
     runtime: _PythonRuntime | None = None,
     resolved_read_roots: Sequence[_ResolvedReadRoot] | None = None,
 ) -> list[str]:
@@ -977,6 +1340,7 @@ def _sandbox_command(
         script_path=script_path,
         input_path=input_path,
         data_dir=data_dir,
+        platform_input_ids=platform_input_ids,
     )
     selected_command = [str(selected_runtime.executable), *command[1:]]
     return _bootstrap_command(selected_command, profile.max_run_dir_bytes, policy=policy)
@@ -990,6 +1354,7 @@ def _sandbox_policy(
     script_path: Path | None,
     input_path: Path | None,
     data_dir: Path | None,
+    platform_input_ids: Sequence[str] = (),
 ) -> str:
     runtime_directories = [runtime.prefix, *(item.resolved for item in read_roots)]
     read_aliases: list[Path] = []
@@ -1004,7 +1369,10 @@ def _sandbox_policy(
     resolved_data_dir: Path | None = None
     if data_dir is not None:
         resolved_data_dir = data_dir.resolve(strict=True)
-        read_files.extend(resolved_data_dir / filename for filename in SNAPSHOT_FILENAMES)
+        read_files.extend(
+            resolved_data_dir / filename
+            for filename in _expected_data_filenames(platform_input_ids)
+        )
 
     read_directories = [*runtime_directories, writable]
     read_filters = _sandbox_path_filters(read_directories, include_children=True)

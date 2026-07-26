@@ -42,6 +42,7 @@ from scheduler.repository import (
 from shared.calendar_service import get_calendar
 from shared.blackbox_v2.contracts import load_metadata
 from shared.blackbox_v2.requests import build_live_request
+from shared.blackbox_v2.snapshot import compose_blackbox_input_bundle
 from shared.input_artifacts import (
     BLACKBOX_SCHEMA_PATH,
     LIVE_SOURCE_FEATURE_DATE_ENV,
@@ -56,7 +57,10 @@ from shared.input_artifacts import (
     NATIVE_INPUT_MODE_ENV,
     NATIVE_MANIFEST_PATH_ENV,
     NATIVE_MANIFEST_SHA256_ENV,
+    capture_blackbox_platform_inputs_from_connection,
+    capture_blackbox_platform_inputs_from_native_generation,
     open_blackbox_input_snapshot,
+    open_blackbox_runtime_view,
     resolve_blackbox_input_cutoffs,
 )
 from shared.databridge_input_generation import (
@@ -725,33 +729,79 @@ def run_blackbox_scheme_subprocess(
             calendar=calendar,
             cutoffs=cutoffs,
         )
+        platform_input_ids = tuple(
+            getattr(cfg, "platform_inputs", ()) or ()
+        )
+        if platform_input_ids and bound_databridge is not None:
+            platform_input_artifacts = (
+                capture_blackbox_platform_inputs_from_native_generation(
+                    platform_input_ids,
+                    native_generation=verified_calendar,
+                    weekly_cutoff_key=cutoffs.weekly_cutoff_key,
+                )
+            )
+        elif platform_input_ids:
+            platform_input_artifacts = (
+                _capture_blackbox_platform_inputs_from_engine(
+                    engine,
+                    platform_input_ids=platform_input_ids,
+                    weekly_cutoff_key=cutoffs.weekly_cutoff_key,
+                )
+            )
+        else:
+            platform_input_artifacts = ()
+        input_bundle = compose_blackbox_input_bundle(
+            snapshot,
+            platform_input_ids=platform_input_ids,
+            platform_input_artifacts=platform_input_artifacts,
+        )
         blackbox_env = DEFAULT_RUNTIME_PROFILE.conda_env if algo_env == DEFAULT_ALGO_ENV else algo_env
         profile = replace(
             DEFAULT_RUNTIME_PROFILE,
             conda_env=blackbox_env,
             predict_timeout_sec=timeout_sec,
         )
-        predict_kwargs = {
-            "metadata": metadata,
-            "script_path": cfg.delivery_script,
-            "request": request,
-            "data_dir": snapshot.data_dir,
-            "data_snapshot_id": snapshot.snapshot_id,
-            "profile": profile,
-        }
-        if validated_execution_token is not None:
-            predict_kwargs["execution_token"] = (
-                validated_execution_token
-            )
-        if process_started is not None:
-            predict_kwargs["process_started"] = process_started
-        if process_fence is not None:
-            predict_kwargs["process_fence"] = process_fence
-        if process_start_guard is not None:
-            predict_kwargs["process_start_guard"] = (
-                process_start_guard
-            )
-        record = run_blackbox_predict(**predict_kwargs)
+        with open_blackbox_runtime_view(input_bundle) as runtime_view:
+            trusted_bundle = runtime_view.bundle
+            predict_kwargs = {
+                "metadata": metadata,
+                "script_path": cfg.delivery_script,
+                "request": request,
+                "data_dir": runtime_view.data_dir,
+                "data_snapshot_id":
+                    trusted_bundle.combined_snapshot_id,
+                "platform_input_ids":
+                    trusted_bundle.platform_input_ids,
+                "profile": profile,
+            }
+            if trusted_bundle.platform_input_ids:
+                predict_kwargs.update(
+                    {
+                        "parent_data_snapshot_id":
+                            trusted_bundle.parent_snapshot_id,
+                        "input_identity_manifest":
+                            trusted_bundle.identity_manifest,
+                        "input_audit_manifest":
+                            trusted_bundle.audit_manifest,
+                    }
+                )
+            if validated_execution_token is not None:
+                predict_kwargs["execution_token"] = (
+                    validated_execution_token
+                )
+            if process_started is not None:
+                predict_kwargs["process_started"] = process_started
+            if process_fence is not None:
+                predict_kwargs["process_fence"] = process_fence
+            if process_start_guard is not None:
+                predict_kwargs["process_start_guard"] = (
+                    process_start_guard
+                )
+            try:
+                record = run_blackbox_predict(**predict_kwargs)
+            except ProcessGroupTerminationError:
+                runtime_view.mark_termination_uncertain()
+                raise
         if bound_databridge is not None:
             extra = dict(record.extra or {})
             extra.update(
@@ -792,6 +842,27 @@ def run_blackbox_scheme_subprocess(
             )
             record = replace(record, extra=extra)
     return [record]
+
+
+def _capture_blackbox_platform_inputs_from_engine(
+    engine,
+    *,
+    platform_input_ids: tuple[str, ...],
+    weekly_cutoff_key: str,
+):
+    """从显式只读一致性事务捕获非 scheduled 平台输入。"""
+    with engine.connect() as connection:
+        connection.exec_driver_sql(
+            "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+        )
+        try:
+            return capture_blackbox_platform_inputs_from_connection(
+                platform_input_ids,
+                connection=connection,
+                weekly_cutoff_key=weekly_cutoff_key,
+            )
+        finally:
+            connection.rollback()
 
 
 def _validate_historical_snapshot(

@@ -276,6 +276,89 @@ class DataBridgeGenerationExecutorTests(unittest.TestCase):
             {generation.generation_id},
         )
 
+    def test_declared_platform_input_uses_bound_native_generation_bundle(
+        self,
+    ) -> None:
+        from scheduler.discovery import load_scheme_config
+        from scheduler.executor import run_blackbox_scheme_subprocess
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            native, generation = self._delivery_generation(Path(tmpdir))
+            cfg = replace(
+                load_scheme_config(
+                    PROJECT_ROOT
+                    / "schemes"
+                    / V2_IDS[0]
+                    / "config.yaml"
+                ),
+                platform_inputs=("api-wind-date-v1",),
+            )
+            with (
+                patch(
+                    "scheduler.executor.open_blackbox_input_snapshot",
+                    side_effect=AssertionError(
+                        "must not read mutable DataBridge current"
+                    ),
+                ),
+                patch(
+                    "scheduler.executor.resolve_blackbox_input_cutoffs",
+                    side_effect=AssertionError("must not query live DB"),
+                ),
+                patch(
+                    "scheduler.executor."
+                    "capture_blackbox_platform_inputs_from_connection",
+                    side_effect=AssertionError(
+                        "scheduled platform input must not query live DB"
+                    ),
+                    create=True,
+                ),
+            ):
+                records = run_blackbox_scheme_subprocess(
+                    cfg,
+                    "2026-07-24",
+                    engine=_NoLiveDatabase(),
+                    algo_env="forecast_env_blackbox_v1",
+                    timeout_sec=120,
+                    databridge_generation=generation,
+                    calendar_generation=native,
+                )
+
+        self.assertEqual(len(records), 1)
+        extra = records[0].extra
+        self.assertNotEqual(
+            extra["data_snapshot_id"],
+            generation.snapshot.snapshot_id,
+        )
+        self.assertEqual(
+            extra["parent_data_snapshot_id"],
+            generation.snapshot.snapshot_id,
+        )
+        self.assertEqual(
+            extra["platform_input_ids"],
+            ["api-wind-date-v1"],
+        )
+        artifact = extra["platform_input_identity_manifest"][
+            "platform_inputs"
+        ][0]
+        self.assertEqual(artifact["artifact_id"], "api-wind-date-v1")
+        self.assertEqual(artifact["filename"], "api_wind_date.csv")
+        self.assertEqual(len(artifact["sha256"]), 64)
+        provenance = extra["platform_input_audit_manifest"][
+            "platform_inputs"
+        ][0]["provenance"]
+        self.assertEqual(
+            provenance["source_kind"],
+            "scheduled_native_generation",
+        )
+        self.assertEqual(
+            provenance["generation_id"],
+            native.generation_id,
+        )
+        self.assertEqual(
+            provenance["manifest_sha256"],
+            native.manifest_sha256,
+        )
+
     def test_v2_execution_uses_bound_generation_and_frozen_cutoffs_only(
         self,
     ) -> None:
@@ -350,10 +433,9 @@ class DataBridgeGenerationExecutorTests(unittest.TestCase):
             request_builder.call_args.kwargs["cutoffs"],
             generation.cutoffs,
         )
-        self.assertEqual(
-            runner.call_args.kwargs["data_dir"],
-            generation.data_dir,
-        )
+        runtime_data_dir = runner.call_args.kwargs["data_dir"]
+        self.assertNotEqual(runtime_data_dir, generation.data_dir)
+        self.assertFalse(runtime_data_dir.exists())
         self.assertEqual(
             runner.call_args.kwargs["data_snapshot_id"],
             generation.snapshot.snapshot_id,

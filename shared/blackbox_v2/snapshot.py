@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -29,6 +30,25 @@ TIME_KEY_BY_FILE = {
     "monthly_output.csv": "month_id",
 }
 COMBINED_INPUT_IDENTITY_SCHEMA_VERSION = "blackbox-combined-input-v1"
+_COMBINED_IDENTITY_FIELDS = frozenset(
+    {
+        "identity_schema_version",
+        "parent_snapshot_id",
+        "platform_inputs",
+    }
+)
+_PLATFORM_INPUT_IDENTITY_FIELDS = frozenset(
+    {
+        "artifact_id",
+        "provider_version",
+        "filename",
+        "sha256",
+        "size_bytes",
+        "row_count",
+        "columns",
+    }
+)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -147,18 +167,9 @@ def compose_blackbox_input_bundle(
             for artifact in sorted_artifacts
         ],
     }
-    if sorted_artifacts:
-        identity_bytes = json.dumps(
-            identity,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        combined_snapshot_id = (
-            f"snapshot-{hashlib.sha256(identity_bytes).hexdigest()[:24]}"
-        )
-    else:
-        combined_snapshot_id = base_snapshot.snapshot_id
+    combined_snapshot_id = compute_blackbox_combined_snapshot_id(
+        identity
+    )
 
     audit = {
         "identity": identity,
@@ -183,6 +194,101 @@ def compose_blackbox_input_bundle(
         _identity_manifest_json=_canonical_json(identity),
         _audit_manifest_json=_canonical_json(audit),
     )
+
+
+def compute_blackbox_combined_snapshot_id(
+    identity_manifest: Mapping[str, Any],
+) -> str:
+    """严格校验组合身份 manifest，并以统一 canonical 规则计算 ID。"""
+    if not isinstance(identity_manifest, Mapping):
+        raise ValueError("combined input identity manifest must be an object")
+    identity = dict(identity_manifest)
+    if set(identity) != _COMBINED_IDENTITY_FIELDS:
+        raise ValueError(
+            "combined input identity manifest fields are invalid"
+        )
+    if (
+        identity["identity_schema_version"]
+        != COMBINED_INPUT_IDENTITY_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "combined input identity schema version is invalid"
+        )
+    parent_snapshot_id = identity["parent_snapshot_id"]
+    if (
+        not isinstance(parent_snapshot_id, str)
+        or not parent_snapshot_id
+    ):
+        raise ValueError(
+            "combined input identity parent_snapshot_id is invalid"
+        )
+    platform_inputs = identity["platform_inputs"]
+    if not isinstance(platform_inputs, list):
+        raise ValueError(
+            "combined input identity platform_inputs must be a list"
+        )
+
+    artifact_ids: list[str] = []
+    for raw_artifact in platform_inputs:
+        if not isinstance(raw_artifact, Mapping):
+            raise ValueError(
+                "combined input identity platform input must be an object"
+            )
+        artifact = dict(raw_artifact)
+        if set(artifact) != _PLATFORM_INPUT_IDENTITY_FIELDS:
+            raise ValueError(
+                "combined input identity platform input fields are invalid"
+            )
+        artifact_id = artifact["artifact_id"]
+        if not isinstance(artifact_id, str):
+            raise ValueError(
+                "combined input identity artifact_id is invalid"
+            )
+        spec = PLATFORM_INPUT_REGISTRY.get(artifact_id)
+        if artifact["provider_version"] != spec.provider_version:
+            raise ValueError(
+                "combined input identity provider_version mismatch"
+            )
+        if artifact["filename"] != spec.filename:
+            raise ValueError(
+                "combined input identity filename mismatch"
+            )
+        if artifact["columns"] != list(spec.columns):
+            raise ValueError(
+                "combined input identity columns mismatch"
+            )
+        if (
+            not isinstance(artifact["sha256"], str)
+            or not _SHA256_PATTERN.fullmatch(artifact["sha256"])
+        ):
+            raise ValueError(
+                "combined input identity sha256 is invalid"
+            )
+        for field in ("size_bytes", "row_count"):
+            value = artifact[field]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+            ):
+                raise ValueError(
+                    f"combined input identity {field} is invalid"
+                )
+        artifact_ids.append(artifact_id)
+
+    if artifact_ids:
+        normalized_ids = PLATFORM_INPUT_REGISTRY.normalize_ids(
+            tuple(artifact_ids)
+        )
+        if tuple(artifact_ids) != normalized_ids:
+            raise ValueError(
+                "combined input identity platform inputs must be sorted"
+            )
+        identity_bytes = _canonical_json(identity).encode("utf-8")
+        return (
+            f"snapshot-{hashlib.sha256(identity_bytes).hexdigest()[:24]}"
+        )
+    return parent_snapshot_id
 
 
 def _canonical_json(value: Mapping[str, Any]) -> str:
