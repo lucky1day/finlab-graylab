@@ -4,6 +4,10 @@ import hashlib
 import json
 from typing import Any, Mapping
 
+from shared.blackbox_v2.platform_input_registry import (
+    normalize_platform_input_ids,
+)
+
 
 REQUIRED_TOP_LEVEL_FIELDS = (
     "runtime_type",
@@ -32,6 +36,10 @@ def canonical_platform_config(raw: Mapping[str, Any]) -> dict[str, Any]:
         "script": str(_required_value(delivery, "script", "delivery.script")),
         "metadata": str(_required_value(delivery, "metadata", "delivery.metadata")),
     }
+    if "platform_inputs" in raw:
+        canonical["platform_inputs"] = list(
+            normalize_platform_input_ids(raw["platform_inputs"])
+        )
     return canonical
 
 

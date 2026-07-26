@@ -47,14 +47,21 @@ class BlackboxV2MetadataTests(unittest.TestCase):
                     )
 
     def test_rejects_other_undeclared_metadata_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = _write_metadata(Path(tmpdir))
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            raw["platform_note"] = "平台运营说明"
-            path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+        for field, value in (
+            ("platform_note", "平台运营说明"),
+            ("platform_inputs", ["api-wind-date-v1"]),
+        ):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as tmpdir:
+                path = _write_metadata(Path(tmpdir))
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                raw[field] = value
+                path.write_text(
+                    json.dumps(raw, ensure_ascii=False),
+                    encoding="utf-8",
+                )
 
-            with self.assertRaisesRegex(ValueError, "metadata fields mismatch"):
-                load_metadata(path)
+                with self.assertRaisesRegex(ValueError, "metadata fields mismatch"):
+                    load_metadata(path)
 
 
 def _write_metadata(

@@ -79,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             schemes_root=args.project_root.resolve() / "schemes",
             runtime_profile=args.runtime_profile,
             data_schema_version=args.data_schema_version,
+            platform_inputs=args.platform_input,
         )
         metadata = load_metadata(
             scheme_dir / "delivery" / f"{scheme_dir.name}.json"
@@ -207,6 +208,12 @@ def _build_parser() -> argparse.ArgumentParser:
     intake_parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
     intake_parser.add_argument("--runtime-profile", default="blackbox-v2-v1")
     intake_parser.add_argument("--data-schema-version", default="data-bridge-v1")
+    intake_parser.add_argument(
+        "--platform-input",
+        action="append",
+        default=None,
+        dest="platform_input",
+    )
 
     replay_parser = subparsers.add_parser("daily-real-replay")
     replay_parser.add_argument(

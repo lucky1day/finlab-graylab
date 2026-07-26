@@ -89,6 +89,95 @@ class BlackboxV2IntakeTests(unittest.TestCase):
             self.assertIn("status: paused", config)
             self.assertIn("version_status: draft", config)
             self.assertIn("cron: '3 7 * * 1-5'", config)
+            self.assertNotIn("platform_inputs:", config)
+
+    def test_cli_intake_writes_declared_platform_input(self) -> None:
+        from harness.cli import main
+        from scheduler.discovery import load_scheme_config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _write_delivery(root / "incoming")
+
+            exit_code = main(
+                [
+                    "intake-blackbox",
+                    "--delivery-dir",
+                    str(delivery),
+                    "--project-root",
+                    str(root),
+                    "--platform-input",
+                    "api-wind-date-v1",
+                ]
+            )
+            config_path = root / "schemes" / "trial_10y" / "config.yaml"
+            config_text = config_path.read_text(encoding="utf-8")
+            config = load_scheme_config(config_path)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn(
+            "platform_inputs:\n  - api-wind-date-v1\n",
+            config_text,
+        )
+        self.assertEqual(config.platform_inputs, ("api-wind-date-v1",))
+
+    def test_intake_rejects_duplicate_platform_input(self) -> None:
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _write_delivery(root / "incoming")
+
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                intake_delivery(
+                    delivery,
+                    schemes_root=root / "schemes",
+                    platform_inputs=[
+                        "api-wind-date-v1",
+                        "api-wind-date-v1",
+                    ],
+                )
+
+        self.assertFalse((root / "schemes" / "trial_10y").exists())
+
+    def test_cli_intake_rejects_repeated_platform_input_flag(self) -> None:
+        from harness.cli import main
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _write_delivery(root / "incoming")
+
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                main(
+                    [
+                        "intake-blackbox",
+                        "--delivery-dir",
+                        str(delivery),
+                        "--project-root",
+                        str(root),
+                        "--platform-input",
+                        "api-wind-date-v1",
+                        "--platform-input",
+                        "api-wind-date-v1",
+                    ]
+                )
+
+            self.assertFalse((root / "schemes" / "trial_10y").exists())
+
+    def test_intake_rejects_explicit_empty_or_unknown_platform_inputs(self) -> None:
+        from shared.blackbox_v2.intake import intake_delivery
+
+        for value in ([], ["unknown-input-v1"]):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                delivery = _write_delivery(root / "incoming")
+
+                with self.assertRaises(ValueError):
+                    intake_delivery(
+                        delivery,
+                        schemes_root=root / "schemes",
+                        platform_inputs=value,
+                    )
 
     def test_intake_rejects_additional_delivery_file(self) -> None:
         from shared.blackbox_v2.intake import intake_delivery
