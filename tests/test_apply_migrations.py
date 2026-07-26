@@ -12,11 +12,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from scripts import apply_migrations as migration_runner
-from scripts.apply_migrations import (
+from migrations import runner as migration_runner
+from migrations.runner import (
     MigrationSQLParseError,
     split_sql_statements,
 )
+from scripts import apply_migrations as migration_cli
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -1848,23 +1849,23 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         }
         with (
             patch.object(
-                migration_runner,
+                migration_cli,
                 "create_engine_from_env",
                 return_value=engine,
             ),
             patch.object(
-                migration_runner,
+                migration_cli,
                 "inspect_applying_migration_017",
                 return_value=inspection,
                 create=True,
             ) as inspect,
             patch.object(
-                migration_runner,
+                migration_cli,
                 "apply_pending_migration_files",
             ) as apply_pending,
             patch("builtins.print") as print_output,
         ):
-            migration_runner.main(["--inspect-applying-017"])
+            migration_cli.main(["--inspect-applying-017"])
 
         inspect.assert_called_once()
         apply_pending.assert_not_called()
@@ -1886,11 +1887,11 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         for argv in invalid_commands:
             with self.subTest(argv=argv):
                 with patch.object(
-                    migration_runner,
+                    migration_cli,
                     "create_engine_from_env",
                 ) as create_engine:
                     with self.assertRaises(SystemExit) as raised:
-                        migration_runner.main(argv)
+                        migration_cli.main(argv)
 
                 self.assertEqual(2, raised.exception.code)
                 create_engine.assert_not_called()
@@ -1904,23 +1905,23 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         digest = "a" * 64
         with (
             patch.object(
-                migration_runner,
+                migration_cli,
                 "create_engine_from_env",
                 return_value=engine,
             ),
             patch.object(
-                migration_runner,
+                migration_cli,
                 "recover_applying_migration_017",
                 return_value=recovery,
                 create=True,
             ) as recover,
             patch.object(
-                migration_runner,
+                migration_cli,
                 "apply_pending_migration_files",
             ) as apply_pending,
             patch("builtins.print"),
         ):
-            migration_runner.main(
+            migration_cli.main(
                 [
                     "--recover-applying-017",
                     "--apply",
@@ -2014,37 +2015,37 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                 root, manifest_path = self._release_manifest_fixture(tmp)
                 mutate(root)
                 with (
-                    patch.object(migration_runner, "MIGRATIONS_DIR", root),
+                    patch.object(migration_cli, "MIGRATIONS_DIR", root),
                     patch.object(
-                        migration_runner,
+                        migration_cli,
                         "RELEASE_MIGRATION_MANIFEST_PATH",
                         manifest_path,
                         create=True,
                     ),
                     patch.object(
-                        migration_runner,
+                        migration_cli,
                         "create_engine_from_env",
                     ) as create_engine,
                     patch.object(
-                        migration_runner,
+                        migration_cli,
                         "apply_pending_migration_files",
                     ),
                     patch.object(
-                        migration_runner,
+                        migration_cli,
                         "inspect_applying_migration_017",
                         return_value={},
                     ),
                     patch.object(
-                        migration_runner,
+                        migration_cli,
                         "recover_applying_migration_017",
                         return_value={},
                     ),
                 ):
                     with self.assertRaisesRegex(
-                        migration_runner.MigrationHistoryError,
+                        migration_cli.MigrationHistoryError,
                         "release migration manifest",
                     ):
-                        migration_runner.main(argv)
+                        migration_cli.main(argv)
 
                 create_engine.assert_not_called()
 
@@ -2063,16 +2064,16 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         engine = Mock()
         with (
             patch.object(
-                migration_runner,
+                migration_cli,
                 "create_engine_from_env",
                 return_value=engine,
             ),
             patch.object(
-                migration_runner,
+                migration_cli,
                 "apply_pending_migration_files",
             ) as apply_pending,
         ):
-            migration_runner.main(["--apply"])
+            migration_cli.main(["--apply"])
 
         apply_pending.assert_called_once()
         self.assertIs(apply_pending.call_args.args[0], engine)
@@ -2086,16 +2087,16 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                 ["scripts/apply_migrations.py", "--help"],
             ),
             patch.object(
-                migration_runner,
+                migration_cli,
                 "create_engine_from_env",
             ) as create_engine,
             patch.object(
-                migration_runner,
+                migration_cli,
                 "apply_pending_migration_files",
             ) as apply_pending,
         ):
             with self.assertRaises(SystemExit) as raised:
-                migration_runner.main()
+                migration_cli.main()
 
         self.assertEqual(raised.exception.code, 0)
         create_engine.assert_not_called()
@@ -2110,16 +2111,16 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                 with (
                     patch.object(sys, "argv", argv),
                     patch.object(
-                        migration_runner,
+                        migration_cli,
                         "create_engine_from_env",
                     ) as create_engine,
                     patch.object(
-                        migration_runner,
+                        migration_cli,
                         "apply_pending_migration_files",
                     ) as apply_pending,
                 ):
                     with self.assertRaises(SystemExit) as raised:
-                        migration_runner.main()
+                        migration_cli.main()
 
                 self.assertEqual(raised.exception.code, 2)
                 create_engine.assert_not_called()

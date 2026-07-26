@@ -6,8 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from scripts import apply_migrations as migration_runner
-from scripts.apply_migrations import split_sql_statements
+from migrations import runner as migration_runner
+from migrations.runner import split_sql_statements
+from scripts import apply_migrations as migration_cli
 
 
 MIGRATION = (
@@ -365,11 +366,11 @@ class ScheduleRunStartedAtMigrationTests(unittest.TestCase):
         mark_applied.assert_not_called()
 
     def test_018_cli_authorization_modes(self) -> None:
-        inspect_args = migration_runner._parse_args(
+        inspect_args = migration_cli._parse_args(
             ["--inspect-applying-018"]
         )
         self.assertTrue(inspect_args.inspect_applying_018)
-        recover_args = migration_runner._parse_args(
+        recover_args = migration_cli._parse_args(
             [
                 "--recover-applying-018",
                 "--apply",
@@ -379,11 +380,11 @@ class ScheduleRunStartedAtMigrationTests(unittest.TestCase):
         )
         self.assertTrue(recover_args.recover_applying_018)
         with self.assertRaises(SystemExit):
-            migration_runner._parse_args(
+            migration_cli._parse_args(
                 ["--recover-applying-018", "--apply"]
             )
         with self.assertRaises(SystemExit):
-            migration_runner._parse_args(
+            migration_cli._parse_args(
                 ["--inspect-applying-018", "--apply"]
             )
 

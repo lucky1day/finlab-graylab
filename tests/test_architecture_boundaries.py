@@ -123,6 +123,29 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                 actual,
             )
 
+    def test_scheduler_cannot_import_one_shot_admin_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._write(
+                root / "scheduler" / "bad.py",
+                "from scripts.apply_migrations import "
+                "apply_migration_files\n",
+            )
+
+            actual = [
+                violation.format(root)
+                for violation
+                in import_rules.repository_layer_import_violations(root)
+            ]
+
+            self.assertEqual(
+                [
+                    "scheduler/bad.py:1: forbidden layer import: "
+                    "scheduler -> scripts.apply_migrations"
+                ],
+                actual,
+            )
+
     def test_native_core_and_scheme_boundaries_remain_repo_wide(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

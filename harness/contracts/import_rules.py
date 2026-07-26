@@ -90,7 +90,9 @@ REPOSITORY_PRODUCTION_LAYER_ROOTS = (
 )
 REPOSITORY_FORBIDDEN_LAYER_IMPORTS = {
     "shared": frozenset({"schemes", "scheduler", "backend", "backtests", "harness"}),
-    "scheduler": frozenset({"schemes", "backend", "backtests", "harness"}),
+    "scheduler": frozenset(
+        {"schemes", "backend", "backtests", "harness", "scripts"}
+    ),
     "backend": frozenset({"schemes", "backtests", "harness"}),
     "backtests": frozenset({"scheduler", "backend", "harness"}),
     "schemes": frozenset({"scheduler", "backend", "backtests", "harness"}),

@@ -22,7 +22,8 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import URL, create_engine, text
 from sqlalchemy.exc import OperationalError
 
-from scripts import apply_migrations as migration_runner
+from migrations import runner as migration_runner
+from migrations.runner import apply_migration_files
 from scheduler.daily_runtime import (
     DailyRuntime,
     DefaultDailyRuntimeServices,
@@ -46,7 +47,6 @@ from scheduler.repository import (
     start_schedule_attempt,
     sync_scheme_registry,
 )
-from scripts.apply_migrations import apply_migration_files
 from shared.models import PredictionRecord
 
 

@@ -4,8 +4,8 @@ import re
 import unittest
 from pathlib import Path
 
+from migrations.runner import split_sql_statements
 from scheduler.daily_ledger import SCHEDULE_FAILURE_CODES
-from scripts.apply_migrations import split_sql_statements
 
 
 MIGRATION = (
