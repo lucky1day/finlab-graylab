@@ -1344,9 +1344,10 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
 
         captured = {}
 
-        def fake_onboard(ctx, stage: str) -> OnboardReport:
+        def fake_onboard(ctx, stage: str, *, check_only: bool) -> OnboardReport:
             captured["api_base_url"] = ctx.api_base_url
             captured["prediction_phase"] = ctx.prediction_phase
+            captured["check_only"] = check_only
             return OnboardReport(
                 scheme_id=ctx.scheme_id,
                 predict_date=ctx.predict_date,
@@ -1375,6 +1376,7 @@ class HarnessBacktestApiOrchestratorTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(captured["api_base_url"], "http://127.0.0.1:8100")
         self.assertEqual(captured["prediction_phase"], "gray_live")
+        self.assertFalse(captured["check_only"])
 
 
 def _evidence_keys(result) -> set[str]:
