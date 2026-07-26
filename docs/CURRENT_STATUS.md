@@ -28,41 +28,32 @@
 
 ## 当前生产灰度方案
 
-- `weekly_10y_lgbm_point_v1` 已通过专项授权进入生产灰度，配置、版本和 composite Registry 均为 `active`。
-- 已完成一次持久化回测和一次 `gray_live` 预测，API、前端和 scheduler 已识别；首条目标日为 2026-07-24，待目标数据到达后复验。
-- 当前只有一个真实 `10Y + weekly_point + LightGBM` 交付样本，不能代表所有任务类型和依赖组合稳定。
-
-1Y T+5 四方案批次已按用户明确授权全部进入生产灰度：
-
-- `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 的配置、方案版本和 composite Registry 均为 `active`。
-- canonical latest backtest 已切换到 run `178..181`：每方案 333 条、17 个月，`predict_date=feature_date=2025-01-02..2026-05-22`，`target_date=2025-01-09..2026-05-29`；旧 run 全部 immutable 保留审计。
-- 每方案已有 40 条连续 `gray_live`：`predict_date=2026-05-26..2026-07-21`、`feature_date=2026-05-25..2026-07-20`、`target_date=2026-06-01..2026-07-27`；历史/live target overlap 为 0。四方案当前 `scheduled_live` 数量依次为 `3/2/2/0`。
-- 四方案均达到 `Onboarding Complete`，但第四个尚无 `scheduled_live`，批次未整体达到 `Production Observed`；2026-07-24 旧 scheduler 也只产生一条 11:23 晚到结果，不能证明四阶段释放或 SLA 稳定。
-- 四个算法来自同一上游批次，只证明日频 Blackbox 路径；回测、补齐、generation 和前端证据保留在专项记录中，不能外推到独立交付或月频。
+- `weekly_10y_lgbm_point_v1` 已专项授权进入生产灰度，并完成一次持久化回测和一次 `gray_live`；目标数据到达后仍需复验 actual join。
+- 1Y T+5 四方案 `LIQ_EXCESS_A`、`LIQ_EXCESS_A_W252_L7`、`LIQ_EXCESS_A_W350_L7`、`LIQ_EXCESS_B_W252_L7` 已专项授权并达到 `Onboarding Complete`；每方案保留 333 条 canonical backtest 和 40 条连续 `gray_live`。
+- 四方案当前 `scheduled_live` 数为 `3/2/2/0`，因此批次尚未整体达到 `Production Observed`。同一上游批次的证据不能外推到独立交付、周平均或月频；完整证据见本节后的专项记录链接。
 
 ### 日频 08:00 整改状态
 
 - 2026-07-24 旧 APScheduler 路径仅生成 16/21 个 run（13 success、3 failed、5 未运行），因此当前生产不能认定为稳定。
-- 步骤 6 已完成：隔离 MySQL 精确展开 21 item/25 target，其中 Native
-  17 item/21 target、输入模式 14/3；双 lane、失败隔离、重入幂等和 claim 单
-  winner 均通过。
+- 步骤 6 已完成：隔离 MySQL 精确展开 21 item/25 target，其中 Native 17 item/21 target、输入模式 14/3；双 lane、失败隔离、重入幂等和 claim 单 winner 均通过。
 - 步骤 7 已完成：四个 V2 同代并按 `+0/+2/+4/+6` 独立释放，最大并发 2；
   四个真实 delivery 的冻结输入、确定性、120 秒超时、父 generation fence、
   late 后继续执行和失败隔离均通过。
-- 2026-07-26 在候选 `2bf9f5f` 上重新认证四个真实 sealed delivery：同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整 `PredictionRecord` 一致；
-  mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝，测试 `4 passed`，生产表行数未变化。
-- `5aed35f` 与 `1f81f3e` 已建立 21/25 结构 gate 和 Engine-bound replay
-  epoch：只接受父子摘要一致的同日 generation，完成 001–018、17/4 绑定，
-  并在 claim/process/commit 重验隔离 Engine/Connection。
+- 2026-07-26 在候选 `2bf9f5f` 上重新认证四个真实 sealed delivery：同一 DataBridge generation 和 Native calendar parent 上各运行两次，完整 `PredictionRecord` 一致；mutable `current`、实时数据库、错误 parent ID/hash 均被拒绝，生产表行数未变化。
+- `5aed35f` 与 `1f81f3e` 已建立 21/25 结构 gate 和 Engine-bound replay epoch：只接受父子摘要一致的同日 generation，完成 001–018、17/4 绑定，并在 claim/process/commit 重验隔离 Engine/Connection。
 - `1f101b8`、`9a76586` 建立受保护的双池 replay runtime：唯一入口 `run()` 硬绑定 canonical executor；2 Native / 2 V2 受 governor 限制，owner 锁内每轮重验 21 个 execution envelope，并以线性化 stop fence 阻止异常后的跨池新任务。
-  `5943b88`、`9b2624e`、`5b00981` 进一步要求 replay `predict_date` 必须是冻结日历中的交易日，并在 occurrence 创建、generation 注册和 runtime 构造三个边界重新打开、rehash 和比较完整 generation context；磁盘 payload、内存审计字段或非法嵌套 context 均在 ledger 写入前以稳定错误拒绝。相关测试 `88 passed, 3 skipped`、显式 MySQL `65 passed`、全量 `2662 passed, 11 skipped`。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
+  `5943b88`、`9b2624e`、`5b00981` 进一步要求 replay `predict_date` 必须是冻结日历中的交易日，并在 occurrence 创建、generation 注册和 runtime 构造三个边界重新打开、rehash 和比较完整 generation context；磁盘 payload、内存审计字段或非法嵌套 context 均在 ledger 写入前以稳定错误拒绝。相关测试 `88 passed, 3 skipped`、replay 测试文件 `65 passed`（其中 3 个真实临时 MySQL 集成测试）、全量 `2662 passed, 11 skipped`。结果仍为 `EXCLUDED`；尚未执行真实 21 算法，也不与生产 scheduler 共锁，不构成 SLA/容量证据。
+- `08d9827` 已增加 `python -m harness daily-real-replay --check-only` 瞬时业务数据只读预检：双读 generation/候选，校验 21/25、14/3/4、生产 migration/Registry/version、source-readonly、控制面和全局静默；结果固定为 `CHECK_PASSED + qualification=EXCLUDED`，本地只保留 `0600` fence 文件。`04cb709` 将共用探针下沉到 `scheduler` 并禁止 `harness -> scripts`。
+- 当前真实环境预检仍会 fail-closed：已安装的 backend LaunchAgent 尚未携带合法
+  coordinator mode，因此控制面检查返回 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
+  本轮未修改已安装 plist、未 bootout/kickstart 服务；只能在获准的独占维护窗口
+  修复后重新检查。
+- 最新验证为相关回归 `192 passed, 3 skipped`、replay 测试文件 `65 passed`（其中 3 个真实临时 MySQL 集成测试）、全量 `2679 passed, 11 skipped`；全仓分层扫描 0 violation。生产只读快照仍是 migration 017、run/prediction `1193/1111`，四类 ledger 均为 0。
 - 功能 MVP 已完成：真实 coordinator/repository/executor 配合受控 recorder
   走过 21 次 claim、子进程回调、原子提交和 25 次 target acceptance；重入不
   增加 run/prediction。24/25 时真实 08:00 watchdog 永久写入 `BREACHED`，
   08:01 补齐不回写；正常 25/25 为 `MET`，缺 visibility receipt 仍算 missing。
-- 候选已实现 06:30 readiness 后单次冻结、Native/V2 双池、三层账本、
-  attempt fence、原子提交和动态 21/25 健康投影；07:45/08:00 可幂等补写，
-  后续源数据修正不重启当前 occurrence。
+- 候选已实现 06:30 readiness 后单次冻结、Native/V2 双池、三层账本、attempt fence、原子提交和动态 21/25 健康投影；07:45/08:00 可幂等补写，后续源数据修正不重启当前 occurrence。
 - 生产仍为 `legacy`，`bond_db` 保持 migration 017 且 ledger 表为空；三个
   0629 仅处于受控兼容桥，其他 Native 禁止 fallback，该桥尚无生产资格。
 - 本轮只证明分层功能 MVP：真实 21 算法同轮、07:55 容量、生产 clone 迁移、
@@ -90,24 +81,24 @@
 
 ## 当前观察项
 
-1. 先补齐真实 replay operator/preflight：必须验证 source-readonly、精确 policy/Registry、候选代码身份、临时 MySQL 生命周期、生产 scheduler/算法进程静默和最终 21/25 证据；同一进程持锁并在每次 dispatch 前重验，禁止用测试 fixture 手工拼装运行。
-2. 下一次交易业务日的真实同日 Native/DataBridge generation 到位后，在 BFL 生产 scheduler/算法进程不重叠的独占窗口，通过 `5aed35f`、`1f81f3e`、`9a76586`、`5943b88`、`9b2624e` 和 `5b00981`
-   执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造 historical seal，不使用 recorder、不写生产库，也不计作容量样本。
-   当前 replay owner 锁只互斥 replay，不替代 operator 的运行前和运行中静默检查。
-3. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
+1. `check-only` 功能实现和测试已完成，但真实环境预检尚未通过；下一项是同一进程、同一双锁内的 execute 和临时 MySQL 生命周期。执行前仍须钉住 production audit-readonly endpoint/server UUID，扩大后代进程和 `.so/.pyc`/Conda 身份覆盖，并降低 watermark 扫描负载；旧 digest 不得跨进程复用。
+2. 在获准的独占维护窗口修复 BFL 三份已安装 plist 的 mode 一致性并重跑
+   `--check-only`；不得自动停服务、修改 production rollout/admission 或触碰
+   BondProjectPro。
+3. 下一次交易业务日的真实同日 generation 到位后，在 BFL 独占窗口执行 17 Native + 4 V2、25 target 的隔离 MySQL 全量联跑；禁止伪造 seal、使用 recorder、写生产库或计作容量样本。operator 须持续持锁并在每次 dispatch 前重验。
+4. 联跑通过后复核并收口 Blackbox V2 从两文件 Intake、七个自动 Gate 到签名
    gray admission 的标准路径，使后续新方案可按 SOP 进入灰度，同时保持
    `gray_live` 与正式 21/25 occurrence 解耦。
-4. 在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、断连和
+5. 在生产同构脱敏 clone 演练 migration 018 的 apply、重复执行、断连和
    `APPLYING` 恢复；当前生产仍停留在 migration 017。
-5. 三个 0629 方案逐个改为公共 generation adapter，每个方案独立执行
+6. 三个 0629 方案逐个改为公共 generation adapter，每个方案独立执行
    CompareGate 和 commit；若触及 L2 算法语义则停止并改走 Blackbox V2 replacement。
-6. 真实联跑功能通过后才进入单 Mac cache/I/O 容量优化、20 次 forced-cold、
+7. 真实联跑功能通过后才进入单 Mac cache/I/O 容量优化、20 次 forced-cold、
    20 次 revision/suffix、故障注入和 07:55 门禁。
-7. generation 长期归档/去重/磁盘上限、019 composite FK 与连续 10 个交易日
+8. generation 长期归档/去重/磁盘上限、019 composite FK 与连续 10 个交易日
    25/25 仍是生产切换前置条件；在此之前 rollout 保持 `legacy`、admission
    保持 `BLOCKED`。
-8. 随 target 到达持续复验 pending gray live 的 actual join、指标 API 和前端准确率展示；不得人工补 actual。
-9. 使用更多独立真实交付继续覆盖周平均和月频任务；每个新方案继续执行独立生产准备检查，不复用已有方案授权。
+9. 持续复验 gray live 的 actual join、指标 API 和前端准确率；用独立真实交付覆盖周平均/月频，不人工补 actual、不复用已有方案授权。
 
 ## 权威入口
 

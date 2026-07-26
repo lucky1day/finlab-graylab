@@ -294,6 +294,7 @@ schemes/{id}/                     schemes/{id}/
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
 | `scheduler/repository.py` | L3 | 写库单点 | `create_scheme_run`、`insert_run_predictions`、`write_run_log`、`sync_scheme_registry` |
+| `scheduler/daily_control_plane_probe.py` | L3 | LaunchAgent、全日期账本和算法进程的共用只读静默探针 | `probe_launchagent_service_states`、`probe_daily_transition_quiescence` |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/main.py` | L3 | APScheduler 调度 | `build_scheduler` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
@@ -322,6 +323,7 @@ schemes/{id}/                     schemes/{id}/
 | Native 白名单 | `native_adapter` ID 不在 `deploy/onboarding_policy_v1.json` → FAIL，ActivationGate 同样阻断 |
 | Native core 零本仓库依赖（§3.2 ✗ⁱ） | onboarding StaticGate 扫 DB/I/O/写库规则；repo-wide gate 额外禁止 `core → shared` 和向上依赖 |
 | 跨方案禁止（§3.2） | onboarding StaticGate 与 repo-wide gate 均按源文件 package 解析绝对/相对 import，再扫描 `schemes.<other>`；`from ..other.core` 不可绕过 |
+| 生产层不得反向依赖一次性工具 | repo-wide gate 明确拒绝 `harness → scripts`；共用只读控制面能力必须下沉到 `scheduler/shared`，`scripts` 只能作为调用入口 |
 | 写库单点（§3.3） | predict/core 命中 `insert_run_predictions`/`write_run_log`/`execute_scheme`/`INSERT…` → FAIL |
 | 输入单点（§3.3） | predict 必须 import `shared.input_artifacts`；backtest runner 同 → 否则 FAIL |
 | 运行时入口（§6） | Native 校验 `SCHEME_ID + run`；Blackbox 校验两文件、Metadata 与 CLI |

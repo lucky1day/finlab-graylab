@@ -345,6 +345,23 @@ capability；repository 与 executor 的每个 claim/process/commit fence 都传
 该边界只用于停止新 attempt，不制造 replay SLA。该 occurrence 只证明隔离
 功能，不得计入 07:55、20+20、签名 candidate、生产 SLA 或 rollout 证据。
 
+真实 replay 的 `--check-only` 是瞬时、业务数据只读的人工判断，不是持久状态或
+执行授权。它使用 machine-global operator/runtime 两把 `flock`，因此会在 BFL
+私有 runtime root 创建并保留 `0600` fence 文件；除此之外不修改生产业务表、
+服务状态、rollout 或 admission。检查在同一锁会话内首尾两次重开 Native/
+DataBridge manifest，并复核候选 Git/policy、完整 active daily
+Registry/version、生产 migration 001–017、source-readonly 九表与 T-1 readiness、
+live/frozen calendar、start/end watermark、三份 installed plist、legacy/BLOCKED
+边界，以及全日期 ledger/run/孤儿进程静默。输出固定为
+`CHECK_PASSED + qualification=EXCLUDED` 或脱敏稳定错误码。
+
+check-only 返回即释放锁，旧 `preflight_digest` 不带签名、TTL 或 capability
+语义，未来 execute 不得接受它跨进程复用。execute 必须在同一进程重新完成全部
+检查、持续持有两把锁并在每次 dispatch 前重验。增加 execute 前还须钉住独立
+production audit-readonly endpoint/server UUID，扩大未登记 source/Blackbox
+后代进程和二进制/Conda 环境身份覆盖，并降低两次 source watermark 对生产源库
+的扫描负载。
+
 当前 attestation/observation schema 有意只承认这组 21/25 与四个 V2，防止新增
 任务偷用旧容量证据；它还不是最终的动态扩容接口。首次变更 active daily Registry
 前，必须发布 schema v3，从签名 policy 与 candidate manifest 派生 item/target/V2
