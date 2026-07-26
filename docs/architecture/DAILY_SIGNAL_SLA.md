@@ -375,6 +375,14 @@ runtime 还必须把 exact session 绑定到本次运行态，在主线程 submi
 之前拒绝。这两层只完成锁/session fence；每次 dispatch 前的候选、输入、控制面
 和 replay-aware 进程 fence 仍是 execute CLI 接线前的独立阻断项。
 
+成功的二次预检还必须在同一 session 上一次性绑定不可序列化的 dispatch
+identity；它只保存固定 manifest 路径和脱敏摘要，覆盖候选 Git/policy、
+generation、21/25 定义、控制面、生产 migration/Registry/version、source
+连接身份及预检起止水位。source 水位允许在预检期间前进，但起止两端都必须进入
+身份，不能把两个数据状态压成同一个 capability。check-only report/digest 不得
+替代该 capability；未绑定、重复绑定或 session 已释放均 fail-closed。当前这层
+只冻结比较基线，逐 dispatch 重读和 replay-aware 进程校验仍未完成。
+
 隔离 replay MySQL 由专用 context manager 创建，固定使用本机新 datadir、新
 server UUID、loopback 随机非 3306 端口和唯一 `bfl_real_replay_*` schema；
 Engine 使用显式 URL 并安装 per-connection identity guard，不读取生产连接环境。
