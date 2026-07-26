@@ -1,0 +1,87 @@
+{
+  "schema_version": "blackbox-v2-technical-onboarding-evidence-v1",
+  "batch_id": "10y-t5-4schemes-20260726",
+  "policy": {
+    "description_status": "pre-policy-received-batch-pending-upstream",
+    "activation_allowed": false,
+    "registry_write_allowed": false,
+    "business_database_write_allowed": false,
+    "persistent_backtest_allowed": false
+  },
+  "environment": {
+    "runtime_profile": "blackbox-v2-v1",
+    "environment_fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+    "sandbox_network_access": "denied",
+    "sandbox_data_dir_write": "denied",
+    "database_principal": "bfl_source_readonly",
+    "database_grant_preflight": "select-only-nine-source-tables"
+  },
+  "data_bridge": {
+    "generation_id": "full-20260724-062251-4977e502dadf",
+    "refresh_date": "2026-07-24",
+    "business_digest": "4977e502dadfae225b8ae25461b870b28213356b4bc6f8e52c16aa739ace573b",
+    "files": {
+      "daily_output.csv": {
+        "rows": 3882,
+        "columns": 774,
+        "sha256": "eedbcf3ffd479da4b67a4bebdf0b375913ae4eb5ddcde3cc55c079880a57cb9b"
+      },
+      "weekly_output.csv": {
+        "rows": 848,
+        "columns": 575,
+        "sha256": "b634aee8ff668b690b0d84e9998b0ad9692fd12b879cab51f56c610ef3646946"
+      },
+      "monthly_output.csv": {
+        "rows": 201,
+        "columns": 123,
+        "sha256": "b5f7c3a45740c2acc629b53b6a6ebe56c29c5cac9f8ee4e4048ff61c9ea7d740"
+      }
+    }
+  },
+  "schemes": [
+    {
+      "scheme_id": "ten_y_t5_maj3_k3_ic_static_v1",
+      "registry_id": "ten_y_t5_maj3_k3_ic_static_v1__h5__10Y",
+      "metadata_status": "description-and-short-name-pending-upstream",
+      "python_sha256": "75749f165e3ce2c5cb70f86fae1336e52e693655198b05c78e45422e165471de",
+      "metadata_sha256": "10c41c6d3e271e76c6c03afc4e9ff3ad998ffefb92b557d5bb868d69e077329d",
+      "scheme_version": "c54b90bcafa7",
+      "harness_run_id": "hr_20260726T072056Z_0d6e33033ba3",
+      "snapshot_id": "snapshot-46ff3231de2c4a080c46ba56",
+      "predict_date": "2026-07-24",
+      "feature_date": "2026-07-23",
+      "target_date": "2026-07-30",
+      "gates": {
+        "static": "passed",
+        "input": "passed",
+        "unit": "passed",
+        "dry-run": "passed",
+        "compare": "passed",
+        "backtest": "passed",
+        "api-readiness": "passed"
+      },
+      "backtest": {
+        "requests": 100,
+        "records": 100,
+        "persist": false
+      },
+      "api_readiness": {
+        "lifecycle_mode": "pre_shadow",
+        "registry_status": "paused",
+        "scheduler_eligible": false,
+        "api_visible": false
+      },
+      "registry_collision_checks": {
+        "repository_and_git_history": "no-conflict",
+        "active_api": "no-conflict",
+        "production_control_plane_sql": "not-run-source-readonly-has-no-access"
+      },
+      "database_writes": {
+        "harness_audit": false,
+        "registry": false,
+        "business_tables": false
+      },
+      "status": "TECHNICAL_GATES_PASSED_DESCRIPTION_PENDING"
+    }
+  ]
+}

@@ -365,7 +365,7 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 **执行时间**：2026-07-26 15:20 至 15:21，`Asia/Shanghai`。
 
-**机器证据文件名**：`TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json`（未纳入本次纯文档 backport）。
+**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
 
 | 项目 | 实测结果 |
 |---|---|
@@ -505,7 +505,6 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 本条只证明本批手工灰度入库、DB/API 和前端数据链路完成，不授予
 `scheduled_live`、formal、08:00 SLA 或通用生产权限。
-
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。
