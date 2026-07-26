@@ -389,14 +389,24 @@ generation、冻结 item/target 定义、控制面、生产 migration/Registry/v
 replay 进程 allowlist 的 repository 查询契约只接受本 replay occurrence、runtime
 当前 active future 和 current `operator_recovery + scheduled_live` running
 attempt，并闭合 scheme/version/runtime/date/state/token 与 `PID=PGID>1`，只返回
-已登记 leader PID/PGID。该查询只提供账本身份；OS 进程表、后代关系、UID 和
-Popen-to-registration 窗口必须由专用进程 fence 独立验证。
+已登记 leader PID/PGID。该查询只提供账本身份。专用 OS process-boundary probe
+必须以 fail-closed 进程表快照复核 operator、当前已登记 leader/进程组、后代关系
+和 service UID；旧或未登记 replay 后代、外部日频平台进程、异 UID 或不完整进程表
+都必须阻断。
 
-真实 replay 的 MVP 顺序固定为：
+进程启动登记窗口必须使用平台唯一的 canonical `ProcessStartGuard`，普通
+`Lock` 或任意自定义 context manager 不得进入生产调用链。Native 与 Blackbox
+共用同一个 occurrence 级 guard，并在 guard 内依次完成 pre-fence、`Popen`、
+PID/PGID 捕获、账本登记和 post-fence；communicate/poll 等长时间算法执行必须在
+guard 释放后进行。登记窗口异常必须先终止新进程组；若无法确认进程组已消失，
+guard 必须永久 poison，使所有等待者在下一次 `Popen` 前 fail-closed，并保留
+可供账本 cleanup fence 分类的异常类型。
 
-1. 基于上述账本身份实现 replay 专用 OS 进程探针；
-2. 在 runtime 每个 dispatch 接线，并以最小 start-window fence 闭合 `Popen`
-   成功到 PID/PGID 登记之间的窗口；
+真实 replay 的放行顺序固定为：
+
+1. runtime 每个 dispatch 都调用上述 OS process-boundary probe；
+2. 边界清晰后，使用 canonical start guard 闭合 `Popen` 成功到 PID/PGID
+   登记之间的窗口；
 3. 只通过 execute 入口完成冻结 candidate 的 Native/V2 与 target 全集的隔离
    MySQL 联跑。
 
