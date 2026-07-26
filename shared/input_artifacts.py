@@ -16,6 +16,7 @@ import pandas as pd
 
 from shared import data_service as _data_service
 from shared.artifact_paths import BACKTEST_ARTIFACT_ROOT, RUNTIME_INPUT_ROOT, safe_path_part
+from shared.blackbox_v2 import platform_inputs as _platform_inputs
 from shared.blackbox_v2.snapshot import (
     SNAPSHOT_FILENAMES,
     BlackboxSnapshot,
@@ -175,6 +176,38 @@ def build_blackbox_input_snapshot(
         snapshot,
         generation_id=generation_id,
         refresh_date=refresh_date,
+    )
+
+
+def capture_blackbox_platform_inputs_from_connection(
+    platform_input_ids: Iterable[str],
+    *,
+    connection,
+    weekly_cutoff_key: object,
+    captured_at: str | None = None,
+) -> tuple[_platform_inputs.FrozenPlatformInput, ...]:
+    """从同一只读事务冻结 Blackbox 显式声明的平台输入。"""
+    return _platform_inputs.capture_platform_inputs_from_connection(
+        platform_input_ids,
+        connection=connection,
+        weekly_cutoff_key=weekly_cutoff_key,
+        captured_at=captured_at,
+    )
+
+
+def capture_blackbox_platform_inputs_from_native_generation(
+    platform_input_ids: Iterable[str],
+    *,
+    native_generation: NativeGenerationContext,
+    weekly_cutoff_key: object,
+    captured_at: str | None = None,
+) -> tuple[_platform_inputs.FrozenPlatformInput, ...]:
+    """从已校验的 Native generation 冻结 scheduled 平台输入。"""
+    return _platform_inputs.capture_platform_inputs_from_native_generation(
+        platform_input_ids,
+        native_generation=native_generation,
+        weekly_cutoff_key=weekly_cutoff_key,
+        captured_at=captured_at,
     )
 
 

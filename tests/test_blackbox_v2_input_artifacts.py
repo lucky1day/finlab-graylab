@@ -292,6 +292,166 @@ class BlackboxV2InputArtifactTests(unittest.TestCase):
 
         self.assertEqual(list(resolved), ["2026-07-15"])
 
+    def test_harness_platform_input_capture_reuses_calendar_snapshot_reader(
+        self,
+    ) -> None:
+        from shared.input_artifacts import (
+            capture_blackbox_platform_inputs_from_connection,
+        )
+
+        calendar_frames = {
+            "api_wind_date.csv": pd.DataFrame(
+                {
+                    "rdate": ["2026-07-14", "2026-07-15"],
+                    "week_id": [202628, 202628],
+                }
+            ),
+            "t_trade_calendar.csv": pd.DataFrame(
+                {
+                    "rdate": ["2026-07-14", "2026-07-15"],
+                    "trade_flag": ["1", "1"],
+                }
+            ),
+        }
+        with patch(
+            "shared.blackbox_v2.platform_inputs."
+            "read_calendar_snapshot_from_connection",
+            return_value=calendar_frames,
+        ) as read_calendar:
+            artifacts = capture_blackbox_platform_inputs_from_connection(
+                ("api-wind-date-v1",),
+                connection="read-only-connection",
+                weekly_cutoff_key="202628",
+                captured_at="2026-07-26T00:00:00Z",
+            )
+
+        read_calendar.assert_called_once_with("read-only-connection")
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0].filename, "api_wind_date.csv")
+        self.assertEqual(
+            artifacts[0].audit_provenance,
+            {
+                "source_kind": "harness_database",
+                "generation_id": None,
+                "manifest_sha256": None,
+                "captured_at": "2026-07-26T00:00:00Z",
+            },
+        )
+
+    def test_scheduled_platform_input_capture_uses_validated_native_frame(
+        self,
+    ) -> None:
+        from unittest.mock import Mock
+
+        from shared.input_artifacts import (
+            capture_blackbox_platform_inputs_from_native_generation,
+        )
+        from shared.native_input_generation import NativeGenerationContext
+
+        frame = pd.DataFrame(
+            {
+                "rdate": ["2026-07-14", "2026-07-15"],
+                "week_id": ["202628.0", "202628"],
+            }
+        )
+        generation = Mock(spec=NativeGenerationContext)
+        generation.frame.return_value = frame
+        generation.generation_id = "native-generation-1"
+        generation.manifest_sha256 = "b" * 64
+
+        artifacts = capture_blackbox_platform_inputs_from_native_generation(
+            ("api-wind-date-v1",),
+            native_generation=generation,
+            weekly_cutoff_key="202628",
+            captured_at="2026-07-26T00:01:00Z",
+        )
+
+        generation.frame.assert_called_once_with("api_wind_date")
+        self.assertEqual(
+            artifacts[0].audit_provenance,
+            {
+                "source_kind": "scheduled_native_generation",
+                "generation_id": "native-generation-1",
+                "manifest_sha256": "b" * 64,
+                "captured_at": "2026-07-26T00:01:00Z",
+            },
+        )
+
+    def test_db_and_native_platform_input_capture_are_content_identical(
+        self,
+    ) -> None:
+        from unittest.mock import Mock
+
+        from shared.input_artifacts import (
+            capture_blackbox_platform_inputs_from_connection,
+            capture_blackbox_platform_inputs_from_native_generation,
+        )
+        from shared.native_input_generation import NativeGenerationContext
+
+        db_frame = pd.DataFrame(
+            {
+                "rdate": [date(2026, 7, 14), date(2026, 7, 15)],
+                "week_id": [202628, 202628],
+            }
+        )
+        native_frame = pd.DataFrame(
+            {
+                "rdate": ["2026-07-14", "2026-07-15"],
+                "week_id": ["202628.0", "202628"],
+            }
+        )
+        generation = Mock(spec=NativeGenerationContext)
+        generation.frame.return_value = native_frame
+        generation.generation_id = "native-generation-1"
+        generation.manifest_sha256 = "c" * 64
+        with patch(
+            "shared.blackbox_v2.platform_inputs."
+            "read_calendar_snapshot_from_connection",
+            return_value={
+                "api_wind_date.csv": db_frame,
+                "t_trade_calendar.csv": pd.DataFrame(),
+            },
+        ):
+            db_artifact = capture_blackbox_platform_inputs_from_connection(
+                ("api-wind-date-v1",),
+                connection="read-only-connection",
+                weekly_cutoff_key="202628",
+                captured_at="2026-07-26T00:00:00Z",
+            )[0]
+        native_artifact = (
+            capture_blackbox_platform_inputs_from_native_generation(
+                ("api-wind-date-v1",),
+                native_generation=generation,
+                weekly_cutoff_key="202628",
+                captured_at="2026-07-26T00:01:00Z",
+            )[0]
+        )
+
+        self.assertEqual(db_artifact.content_bytes, native_artifact.content_bytes)
+        self.assertEqual(db_artifact.sha256, native_artifact.sha256)
+        self.assertEqual(
+            db_artifact.identity_manifest,
+            native_artifact.identity_manifest,
+        )
+
+    def test_empty_platform_input_selection_does_not_capture_calendar(self) -> None:
+        from shared.input_artifacts import (
+            capture_blackbox_platform_inputs_from_connection,
+        )
+
+        with patch(
+            "shared.blackbox_v2.platform_inputs."
+            "read_calendar_snapshot_from_connection",
+        ) as read_calendar:
+            artifacts = capture_blackbox_platform_inputs_from_connection(
+                (),
+                connection="read-only-connection",
+                weekly_cutoff_key="202628",
+            )
+
+        self.assertEqual(artifacts, ())
+        read_calendar.assert_not_called()
+
 
 def _frames() -> dict[str, pd.DataFrame]:
     return {
