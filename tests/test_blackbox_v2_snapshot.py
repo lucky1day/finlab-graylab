@@ -10,6 +10,20 @@ import pandas as pd
 
 
 class BlackboxV2SnapshotTests(unittest.TestCase):
+    def test_snapshot_filename_contract_remains_exactly_three_business_files(
+        self,
+    ) -> None:
+        from shared.blackbox_v2.snapshot import SNAPSHOT_FILENAMES
+
+        self.assertEqual(
+            SNAPSHOT_FILENAMES,
+            (
+                "daily_output.csv",
+                "weekly_output.csv",
+                "monthly_output.csv",
+            ),
+        )
+
     def test_snapshot_is_content_addressed_and_uses_fixed_filenames(self) -> None:
         from shared.blackbox_v2.snapshot import create_snapshot_from_frames
 
@@ -186,6 +200,170 @@ class BlackboxV2SnapshotTests(unittest.TestCase):
                 schema_version="data-bridge-v1",
             )
             self.assertTrue(snapshot.data_dir.is_dir())
+
+    def test_bundle_without_platform_inputs_preserves_parent_identity(self) -> None:
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+
+        frames = _frames()
+        expected = {name: list(frame.columns) for name, frame in frames.items()}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=Path(tmpdir),
+                expected_columns=expected,
+                schema_version="data-bridge-v1",
+            )
+            bundle = compose_blackbox_input_bundle(snapshot)
+
+        self.assertEqual(bundle.combined_snapshot_id, snapshot.snapshot_id)
+        self.assertEqual(bundle.parent_snapshot_id, snapshot.snapshot_id)
+        self.assertIs(bundle.base_snapshot, snapshot)
+        self.assertEqual(bundle.platform_input_ids, ())
+        self.assertEqual(bundle.platform_input_artifacts, ())
+        self.assertEqual(bundle.expected_filenames, tuple(_frames()))
+
+    def test_bundle_identity_is_stable_across_source_provenance(self) -> None:
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+
+        frames = _frames()
+        expected = {name: list(frame.columns) for name, frame in frames.items()}
+        calendar = pd.DataFrame(
+            {
+                "rdate": ["2026-07-14", "2026-07-15"],
+                "week_id": [202628, 202628],
+            }
+        )
+        harness_artifact = freeze_platform_input(
+            "api-wind-date-v1",
+            calendar,
+            weekly_cutoff_key="202628",
+            audit_provenance={
+                "source_kind": "harness_database",
+                "captured_at": "2026-07-26T00:00:00Z",
+                "generation_id": None,
+                "temp_path": "/tmp/harness-a",
+            },
+        )
+        native_artifact = freeze_platform_input(
+            "api-wind-date-v1",
+            calendar,
+            weekly_cutoff_key="202628",
+            audit_provenance={
+                "source_kind": "scheduled_native_generation",
+                "captured_at": "2026-07-27T00:00:00Z",
+                "generation_id": "native-1",
+                "temp_path": "/tmp/native-b",
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=Path(tmpdir),
+                expected_columns=expected,
+                schema_version="data-bridge-v1",
+            )
+            harness_bundle = compose_blackbox_input_bundle(
+                snapshot,
+                platform_input_ids=("api-wind-date-v1",),
+                platform_input_artifacts=(harness_artifact,),
+            )
+            native_bundle = compose_blackbox_input_bundle(
+                snapshot,
+                platform_input_ids=("api-wind-date-v1",),
+                platform_input_artifacts=(native_artifact,),
+            )
+
+        self.assertEqual(
+            harness_bundle.combined_snapshot_id,
+            native_bundle.combined_snapshot_id,
+        )
+        self.assertEqual(
+            harness_bundle.identity_manifest,
+            native_bundle.identity_manifest,
+        )
+        json.dumps(harness_bundle.identity_manifest, sort_keys=True)
+        json.dumps(harness_bundle.audit_manifest, sort_keys=True)
+        mutated_identity = harness_bundle.identity_manifest
+        mutated_identity["parent_snapshot_id"] = "forged-parent"
+        mutated_identity["platform_inputs"][0]["sha256"] = "0" * 64
+        mutated_audit = harness_bundle.audit_manifest
+        mutated_audit["base_snapshot"]["generation_id"] = "forged-generation"
+        self.assertEqual(
+            harness_bundle.identity_manifest,
+            native_bundle.identity_manifest,
+        )
+        self.assertNotEqual(
+            harness_bundle.identity_manifest["parent_snapshot_id"],
+            "forged-parent",
+        )
+        self.assertNotEqual(
+            harness_bundle.audit_manifest["base_snapshot"]["generation_id"],
+            "forged-generation",
+        )
+        self.assertNotEqual(
+            harness_bundle.audit_manifest,
+            native_bundle.audit_manifest,
+        )
+        self.assertEqual(
+            harness_bundle.expected_filenames,
+            (
+                "daily_output.csv",
+                "weekly_output.csv",
+                "monthly_output.csv",
+                "api_wind_date.csv",
+            ),
+        )
+
+    def test_bundle_rejects_duplicate_or_mismatched_platform_artifacts(
+        self,
+    ) -> None:
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+
+        frames = _frames()
+        expected = {name: list(frame.columns) for name, frame in frames.items()}
+        artifact = freeze_platform_input(
+            "api-wind-date-v1",
+            pd.DataFrame(
+                {
+                    "rdate": ["2026-07-15"],
+                    "week_id": ["202628"],
+                }
+            ),
+            weekly_cutoff_key="202628",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=Path(tmpdir),
+                expected_columns=expected,
+                schema_version="data-bridge-v1",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                compose_blackbox_input_bundle(
+                    snapshot,
+                    platform_input_ids=(
+                        "api-wind-date-v1",
+                        "api-wind-date-v1",
+                    ),
+                    platform_input_artifacts=(artifact, artifact),
+                )
+            with self.assertRaisesRegex(ValueError, "must match"):
+                compose_blackbox_input_bundle(
+                    snapshot,
+                    platform_input_ids=("api-wind-date-v1",),
+                    platform_input_artifacts=(),
+                )
 
 
 def _frames() -> dict[str, pd.DataFrame]:

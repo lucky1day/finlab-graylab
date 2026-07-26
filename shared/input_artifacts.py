@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shutil
+import stat
 import tempfile
 from bisect import bisect_right
 from contextlib import contextmanager
@@ -19,8 +21,10 @@ from shared.artifact_paths import BACKTEST_ARTIFACT_ROOT, RUNTIME_INPUT_ROOT, sa
 from shared.blackbox_v2 import platform_inputs as _platform_inputs
 from shared.blackbox_v2.snapshot import (
     SNAPSHOT_FILENAMES,
+    BlackboxInputBundle,
     BlackboxSnapshot,
     CutoffKeys,
+    compose_blackbox_input_bundle,
     create_snapshot_from_frames,
     resolve_cutoffs,
 )
@@ -36,6 +40,7 @@ from shared.native_input_generation import (
 DEFAULT_OUTPUT_ROOT = RUNTIME_INPUT_ROOT
 BLACKBOX_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "snapshots"
 BLACKBOX_RUNTIME_SNAPSHOT_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_snapshots"
+BLACKBOX_RUNTIME_VIEW_ROOT = BACKTEST_ARTIFACT_ROOT / "blackbox_v2" / "runtime_views"
 BLACKBOX_SCHEMA_PATH = Path(__file__).with_name("blackbox_v2") / "data_bridge_v1_schema.json"
 DATA_BRIDGE_ROOT = Path(__file__).resolve().parents[1] / "data" / "data_bridge"
 DATA_BRIDGE_REFRESH_RUNTIME_ROOT = BACKTEST_ARTIFACT_ROOT / "data_bridge_refresh"
@@ -72,6 +77,8 @@ _NATIVE_GENERATION_ENV_FIELDS = {
     NATIVE_BUSINESS_DATE_ENV,
     NATIVE_FEATURE_DATE_ENV,
 }
+_BLACKBOX_RUNTIME_VIEW_PREFIX = "blackbox-runtime-"
+_BLACKBOX_DEBRIS_MARKER_SCHEMA = "blackbox-runtime-debris-v1"
 
 
 def create_input_engine(*, database_config: Any | None = None):
@@ -143,6 +150,562 @@ class InputArtifact:
     date_coverage: dict[str, Any]
     quality_flags: dict[str, Any]
     metadata: dict[str, Any]
+
+
+@dataclass
+class BlackboxRuntimeView:
+    """一次子进程可见的私有只读输入目录。"""
+
+    bundle: BlackboxInputBundle
+    data_dir: Path
+    debris_path: Path | None = None
+    _termination_uncertain: bool = False
+    _closed: bool = False
+
+    def mark_termination_uncertain(self) -> None:
+        """标记子进程可能仍读取目录，退出时转入受控 debris。"""
+        if self._closed:
+            raise RuntimeError("runtime view is already closed")
+        self._termination_uncertain = True
+
+
+@dataclass(frozen=True)
+class _StableSnapshotFile:
+    path: Path
+    fingerprint: tuple[int, int, int, int, int, int]
+    sha256: str
+
+
+@contextmanager
+def open_blackbox_runtime_view(
+    bundle: BlackboxInputBundle,
+    *,
+    runtime_root: str | Path = BLACKBOX_RUNTIME_VIEW_ROOT,
+):
+    """物化一次私有、精确、只读的组合输入视图并负责清理。"""
+    if not isinstance(bundle, BlackboxInputBundle):
+        raise ValueError("bundle must be a BlackboxInputBundle")
+    trusted_bundle = _validate_trusted_blackbox_input_bundle(bundle)
+    root = Path(runtime_root)
+    root.mkdir(parents=True, exist_ok=True)
+    root = root.resolve()
+    active_root = root / "active"
+    debris_root = root / "debris"
+    _ensure_private_runtime_directory(active_root)
+    _ensure_private_runtime_directory(debris_root)
+    temporary = Path(
+        tempfile.mkdtemp(prefix=_BLACKBOX_RUNTIME_VIEW_PREFIX, dir=active_root)
+    )
+    view = BlackboxRuntimeView(bundle=trusted_bundle, data_dir=temporary)
+    try:
+        _materialize_blackbox_runtime_view(view)
+    except BaseException:
+        try:
+            _remove_runtime_view(
+                temporary,
+                controlled_parent=active_root,
+            )
+        except Exception:
+            pass
+        view._closed = True
+        raise
+
+    try:
+        yield view
+    except BaseException:
+        try:
+            _finalize_blackbox_runtime_view(view, runtime_root=root)
+        except Exception:
+            pass
+        raise
+    else:
+        _finalize_blackbox_runtime_view(view, runtime_root=root)
+
+
+def cleanup_blackbox_runtime_debris(
+    debris_path: str | Path,
+    *,
+    runtime_root: str | Path = BLACKBOX_RUNTIME_VIEW_ROOT,
+) -> None:
+    """删除一个经过路径边界校验的受控 runtime debris 目录。"""
+    root = Path(runtime_root).resolve()
+    active_root = root / "active"
+    debris_root = root / "debris"
+    candidate = Path(debris_path)
+    if (
+        not candidate.is_absolute()
+        or candidate.name in {"", ".", ".."}
+        or not candidate.name.startswith(_BLACKBOX_RUNTIME_VIEW_PREFIX)
+    ):
+        raise ValueError("invalid Blackbox runtime debris path")
+    try:
+        resolved_parent = candidate.parent.resolve(strict=True)
+        resolved_active_root = active_root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("Blackbox runtime debris path does not exist") from exc
+    if resolved_parent != resolved_active_root or candidate.is_symlink():
+        raise ValueError("Blackbox runtime debris path is outside controlled root")
+    if not candidate.is_dir():
+        raise ValueError("Blackbox runtime debris path is not a directory")
+    marker_path = _blackbox_debris_marker_path(
+        debris_root,
+        candidate.name,
+    )
+    marker = _read_blackbox_debris_marker(marker_path)
+    if marker.get("active_path") != str(candidate):
+        raise ValueError("Blackbox runtime debris marker path mismatch")
+    _remove_runtime_view(
+        candidate,
+        controlled_parent=active_root,
+    )
+    marker_path.unlink()
+
+
+def _materialize_blackbox_runtime_view(view: BlackboxRuntimeView) -> None:
+    bundle = view.bundle
+    destination = view.data_dir
+    base_files, source_states = _validate_blackbox_snapshot(
+        bundle.base_snapshot
+    )
+
+    for filename in SNAPSHOT_FILENAMES:
+        source = bundle.base_snapshot.data_dir / filename
+        target = destination / filename
+        expected_sha256 = base_files[filename].get("sha256")
+        shutil.copyfile(source, target, follow_symlinks=False)
+        _require_regular_file(target, f"runtime view {filename}")
+        target_stat = target.stat()
+        if target_stat.st_nlink != 1:
+            raise ValueError(f"runtime view {filename} must not be a hardlink")
+        if (
+            source_states[filename].fingerprint[0] == target_stat.st_dev
+            and source_states[filename].fingerprint[1] == target_stat.st_ino
+        ):
+            raise ValueError(f"runtime view {filename} must be an independent file")
+        _verify_file_sha256(target, expected_sha256, filename)
+        after_state, _ = _read_stable_regular_file(
+            source,
+            f"parent snapshot {filename}",
+        )
+        if after_state != source_states[filename]:
+            raise ValueError(
+                f"parent snapshot {filename} changed during materialization"
+            )
+
+    for artifact in bundle.platform_input_artifacts:
+        target = destination / artifact.filename
+        target.write_bytes(artifact.content_bytes)
+        _require_regular_file(target, f"runtime view {artifact.filename}")
+        if target.stat().st_nlink != 1:
+            raise ValueError(
+                f"runtime view {artifact.filename} must not be a hardlink"
+            )
+        _verify_file_sha256(target, artifact.sha256, artifact.filename)
+
+    actual_filenames = tuple(
+        sorted(path.name for path in destination.iterdir())
+    )
+    if actual_filenames != tuple(sorted(bundle.expected_filenames)):
+        raise ValueError(
+            "runtime view files do not match bundle expected_filenames"
+        )
+    for filename in bundle.expected_filenames:
+        (destination / filename).chmod(0o444)
+    destination.chmod(0o555)
+
+
+def _validate_trusted_blackbox_input_bundle(
+    bundle: BlackboxInputBundle,
+) -> BlackboxInputBundle:
+    """从受信字段重算 bundle，拒绝 replace/手工构造的派生字段。"""
+    try:
+        trusted = compose_blackbox_input_bundle(
+            bundle.base_snapshot,
+            platform_input_ids=bundle.platform_input_ids,
+            platform_input_artifacts=bundle.platform_input_artifacts,
+        )
+        matches = (
+            bundle.combined_snapshot_id == trusted.combined_snapshot_id
+            and bundle.parent_snapshot_id == trusted.parent_snapshot_id
+            and bundle.platform_input_ids == trusted.platform_input_ids
+            and bundle.expected_filenames == trusted.expected_filenames
+            and bundle.identity_manifest == trusted.identity_manifest
+            and bundle.audit_manifest == trusted.audit_manifest
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Blackbox input bundle does not match trusted composition"
+        ) from exc
+    if not matches:
+        raise ValueError(
+            "Blackbox input bundle does not match trusted composition"
+        )
+    return trusted
+
+
+def _validate_blackbox_snapshot(
+    snapshot: BlackboxSnapshot,
+) -> tuple[dict[str, Any], dict[str, _StableSnapshotFile]]:
+    root = snapshot.root_dir
+    if (
+        snapshot.data_dir != root / "data"
+        or snapshot.manifest_path != root / "manifest.json"
+    ):
+        raise ValueError("parent snapshot path geometry is invalid")
+    _require_directory(root, "parent snapshot root")
+    _require_directory(snapshot.data_dir, "parent snapshot data directory")
+    try:
+        _, manifest_raw = _read_stable_regular_file(
+            snapshot.manifest_path,
+            "parent snapshot manifest",
+        )
+        manifest = json.loads(manifest_raw)
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("parent snapshot manifest is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("parent snapshot manifest must be an object")
+    schema_version = manifest.get("schema_version")
+    if (
+        not isinstance(schema_version, str)
+        or not schema_version
+        or schema_version != snapshot.schema_version
+    ):
+        raise ValueError("parent snapshot schema_version mismatch")
+    entries = manifest.get("files")
+    if not isinstance(entries, dict) or set(entries) != set(
+        SNAPSHOT_FILENAMES
+    ):
+        raise ValueError("parent snapshot manifest files must be exactly three")
+
+    has_simple_identity = "data_snapshot_id" in manifest
+    has_databridge_identity = "dataset_content_id" in manifest
+    if has_simple_identity == has_databridge_identity:
+        raise ValueError(
+            "parent snapshot manifest must use exactly one identity shape"
+        )
+    if has_simple_identity:
+        entry_fields = {"sha256", "row_count", "columns"}
+        identity_kind = "simple"
+    elif "dataset_content_id" in manifest:
+        entry_fields = {
+            "path",
+            "sha256",
+            "size_bytes",
+            "row_count",
+            "columns",
+        }
+        identity_kind = "databridge"
+    else:
+        raise ValueError("parent snapshot manifest identity is missing")
+
+    source_states: dict[str, _StableSnapshotFile] = {}
+    try:
+        actual_filenames = {
+            path.name
+            for path in snapshot.data_dir.iterdir()
+        }
+    except OSError as exc:
+        raise ValueError("parent snapshot data directory is unreadable") from exc
+    if actual_filenames != set(SNAPSHOT_FILENAMES):
+        raise ValueError("parent snapshot data files must be exactly three")
+
+    for filename in SNAPSHOT_FILENAMES:
+        entry = entries.get(filename)
+        if not isinstance(entry, dict) or set(entry) != entry_fields:
+            raise ValueError(
+                f"parent snapshot manifest entry is invalid: {filename}"
+            )
+        sha256 = entry.get("sha256")
+        row_count = entry.get("row_count")
+        columns = entry.get("columns")
+        if not _is_sha256(sha256):
+            raise ValueError(f"{filename} manifest sha256 is invalid")
+        if (
+            isinstance(row_count, bool)
+            or not isinstance(row_count, int)
+            or row_count < 0
+        ):
+            raise ValueError(f"{filename} manifest row_count is invalid")
+        if (
+            not isinstance(columns, list)
+            or not columns
+            or any(
+                not isinstance(column, str) or not column
+                for column in columns
+            )
+            or len(columns) != len(set(columns))
+        ):
+            raise ValueError(f"{filename} manifest columns are invalid")
+        if identity_kind == "databridge":
+            if entry.get("path") != f"data/{filename}":
+                raise ValueError(f"{filename} manifest path is invalid")
+            size_bytes = entry.get("size_bytes")
+            if (
+                isinstance(size_bytes, bool)
+                or not isinstance(size_bytes, int)
+                or size_bytes < 0
+            ):
+                raise ValueError(f"{filename} manifest size_bytes is invalid")
+
+        state, raw = _read_stable_regular_file(
+            snapshot.data_dir / filename,
+            f"parent snapshot {filename}",
+        )
+        if state.sha256 != sha256:
+            raise ValueError(f"{filename} sha256 does not match manifest")
+        if (
+            identity_kind == "databridge"
+            and len(raw) != entry["size_bytes"]
+        ):
+            raise ValueError(f"{filename} size does not match manifest")
+        actual_columns, actual_rows = _csv_profile(raw, filename)
+        if actual_columns != columns:
+            raise ValueError(f"{filename} columns do not match manifest")
+        if actual_rows != row_count:
+            raise ValueError(f"{filename} row_count does not match manifest")
+        source_states[filename] = state
+
+    identity = {
+        "schema_version": schema_version,
+        "files": entries,
+    }
+    content_id = hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    expected_snapshot_id = f"snapshot-{content_id[:24]}"
+    if identity_kind == "simple":
+        if manifest.get("data_snapshot_id") != expected_snapshot_id:
+            raise ValueError("parent snapshot simple identity mismatch")
+    elif manifest.get("dataset_content_id") != content_id:
+        raise ValueError("parent snapshot DataBridge identity mismatch")
+    if snapshot.snapshot_id != expected_snapshot_id:
+        raise ValueError("parent snapshot object identity mismatch")
+    return entries, source_states
+
+
+def _read_stable_regular_file(
+    path: Path,
+    label: str,
+) -> tuple[_StableSnapshotFile, bytes]:
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"{label} must be a readable regular file") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"{label} must be a regular non-symlink file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read()
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    fingerprint = _stat_fingerprint(after)
+    if _stat_fingerprint(before) != fingerprint:
+        raise ValueError(f"{label} changed while being read")
+    try:
+        path_state = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} changed while being read") from exc
+    if (
+        stat.S_ISLNK(path_state.st_mode)
+        or not stat.S_ISREG(path_state.st_mode)
+        or _stat_fingerprint(path_state) != fingerprint
+    ):
+        raise ValueError(f"{label} changed while being read")
+    return (
+        _StableSnapshotFile(
+            path=path,
+            fingerprint=fingerprint,
+            sha256=hashlib.sha256(raw).hexdigest(),
+        ),
+        raw,
+    )
+
+
+def _stat_fingerprint(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _csv_profile(raw: bytes, filename: str) -> tuple[list[str], int]:
+    try:
+        frame = pd.read_csv(io.BytesIO(raw))
+    except (UnicodeDecodeError, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+        raise ValueError(f"{filename} is not a valid CSV") from exc
+    return [str(column) for column in frame.columns], int(len(frame))
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _require_directory(path: Path, label: str) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"{label} is missing") from exc
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise ValueError(f"{label} must be a non-symlink directory")
+
+
+def _require_regular_file(path: Path, label: str) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"{label} is missing") from exc
+    if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+        raise ValueError(f"{label} must be a regular non-symlink file")
+
+
+def _verify_file_sha256(
+    path: Path,
+    expected_sha256: object,
+    filename: str,
+) -> None:
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+    ):
+        raise ValueError(f"{filename} manifest sha256 is invalid")
+    actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise ValueError(f"{filename} sha256 does not match manifest")
+
+
+def _finalize_blackbox_runtime_view(
+    view: BlackboxRuntimeView,
+    *,
+    runtime_root: Path,
+) -> None:
+    try:
+        if view._termination_uncertain:
+            active_root = runtime_root / "active"
+            debris_root = runtime_root / "debris"
+            if view.data_dir.parent != active_root:
+                raise ValueError(
+                    "uncertain runtime view is outside controlled active root"
+                )
+            marker_path = _blackbox_debris_marker_path(
+                debris_root,
+                view.data_dir.name,
+            )
+            marker = {
+                "schema_version": _BLACKBOX_DEBRIS_MARKER_SCHEMA,
+                "active_path": str(view.data_dir),
+                "combined_snapshot_id": view.bundle.combined_snapshot_id,
+            }
+            with marker_path.open("x", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(
+                        marker,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+            marker_path.chmod(0o400)
+            view.debris_path = view.data_dir
+        else:
+            _remove_runtime_view(
+                view.data_dir,
+                controlled_parent=runtime_root / "active",
+            )
+    finally:
+        view._closed = True
+
+
+def _remove_runtime_view(
+    path: Path,
+    *,
+    controlled_parent: Path,
+) -> None:
+    try:
+        parent = path.parent.resolve(strict=True)
+        expected_parent = controlled_parent.resolve(strict=True)
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        if not path.exists():
+            return
+        raise ValueError("runtime view cleanup path is invalid") from exc
+    if (
+        parent != expected_parent
+        or not path.name.startswith(_BLACKBOX_RUNTIME_VIEW_PREFIX)
+        or stat.S_ISLNK(mode)
+        or not stat.S_ISDIR(mode)
+    ):
+        raise ValueError("runtime view cleanup path is outside controlled root")
+    _make_tree_writable(path)
+    shutil.rmtree(path)
+
+
+def _ensure_private_runtime_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ValueError("runtime control directory is unavailable") from exc
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise ValueError("runtime control directory must be a non-symlink directory")
+    path.chmod(0o700)
+
+
+def _blackbox_debris_marker_path(
+    debris_root: Path,
+    view_name: str,
+) -> Path:
+    return debris_root / f"{view_name}.json"
+
+
+def _read_blackbox_debris_marker(path: Path) -> dict[str, Any]:
+    try:
+        _, raw = _read_stable_regular_file(
+            path,
+            "Blackbox runtime debris marker",
+        )
+        marker = json.loads(raw)
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Blackbox runtime debris marker is invalid") from exc
+    if (
+        not isinstance(marker, dict)
+        or set(marker)
+        != {"schema_version", "active_path", "combined_snapshot_id"}
+        or marker.get("schema_version") != _BLACKBOX_DEBRIS_MARKER_SCHEMA
+        or not isinstance(marker.get("active_path"), str)
+        or not isinstance(marker.get("combined_snapshot_id"), str)
+    ):
+        raise ValueError("Blackbox runtime debris marker is invalid")
+    canonical = (
+        json.dumps(
+            marker,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    if raw != canonical:
+        raise ValueError("Blackbox runtime debris marker is not canonical")
+    return marker
 
 
 def build_blackbox_input_snapshot(
@@ -293,13 +856,30 @@ def _required_current_state_text(state: dict | Any, field: str) -> str:
 
 
 def _make_tree_writable(root: Path) -> None:
-    if not root.exists():
+    try:
+        root_mode = root.lstat().st_mode
+    except OSError:
         return
-    for path in sorted(root.rglob("*"), reverse=True):
-        try:
-            path.chmod(0o755 if path.is_dir() else 0o644)
-        except OSError:
-            pass
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode):
+        raise ValueError("cleanup root must be a non-symlink directory")
+    for directory, directory_names, filenames in os.walk(
+        root,
+        topdown=False,
+        followlinks=False,
+    ):
+        directory_path = Path(directory)
+        for name in filenames + directory_names:
+            path = directory_path / name
+            try:
+                mode = path.lstat().st_mode
+                if stat.S_ISLNK(mode):
+                    continue
+                if stat.S_ISDIR(mode):
+                    path.chmod(0o755)
+                elif stat.S_ISREG(mode):
+                    path.chmod(0o644)
+            except OSError:
+                pass
     try:
         root.chmod(0o755)
     except OSError:

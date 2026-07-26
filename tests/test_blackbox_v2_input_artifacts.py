@@ -452,6 +452,476 @@ class BlackboxV2InputArtifactTests(unittest.TestCase):
         self.assertEqual(artifacts, ())
         read_calendar.assert_not_called()
 
+    def test_runtime_view_materializes_unique_read_only_regular_files_and_cleans_up(
+        self,
+    ) -> None:
+        import os
+        import stat
+
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        frames = _frames()
+        artifact = freeze_platform_input(
+            "api-wind-date-v1",
+            pd.DataFrame(
+                {
+                    "rdate": ["2026-07-14", "2026-07-15"],
+                    "week_id": [202628, 202628],
+                }
+            ),
+            weekly_cutoff_key="202628",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            bundle = compose_blackbox_input_bundle(
+                snapshot,
+                platform_input_ids=("api-wind-date-v1",),
+                platform_input_artifacts=(artifact,),
+            )
+            with open_blackbox_runtime_view(
+                bundle,
+                runtime_root=root / "runtime",
+            ) as first:
+                first_path = first.data_dir
+                self.assertEqual(
+                    tuple(sorted(path.name for path in first.data_dir.iterdir())),
+                    tuple(sorted(bundle.expected_filenames)),
+                )
+                self.assertEqual(
+                    stat.S_IMODE(first.data_dir.stat().st_mode),
+                    0o555,
+                )
+                for path in first.data_dir.iterdir():
+                    self.assertTrue(path.is_file())
+                    self.assertFalse(path.is_symlink())
+                    self.assertEqual(path.stat().st_nlink, 1)
+                    self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o444)
+                self.assertNotEqual(
+                    os.stat(
+                        snapshot.data_dir / "daily_output.csv"
+                    ).st_ino,
+                    os.stat(
+                        first.data_dir / "daily_output.csv"
+                    ).st_ino,
+                )
+                with open_blackbox_runtime_view(
+                    bundle,
+                    runtime_root=root / "runtime",
+                ) as second:
+                    self.assertNotEqual(first.data_dir, second.data_dir)
+            self.assertFalse(first_path.exists())
+            self.assertTrue(snapshot.root_dir.exists())
+
+    def test_runtime_view_cleans_up_after_body_exception_without_masking_it(
+        self,
+    ) -> None:
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        frames = _frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            bundle = compose_blackbox_input_bundle(snapshot)
+            with self.assertRaisesRegex(RuntimeError, "body failed"):
+                with open_blackbox_runtime_view(
+                    bundle,
+                    runtime_root=root / "runtime",
+                ) as view:
+                    runtime_path = view.data_dir
+                    raise RuntimeError("body failed")
+            self.assertFalse(runtime_path.exists())
+
+    def test_runtime_view_rejects_dataclass_replace_forged_bundle(self) -> None:
+        from dataclasses import replace
+
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        frames = _frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            bundle = compose_blackbox_input_bundle(snapshot)
+            forged = replace(
+                bundle,
+                combined_snapshot_id="snapshot-forged",
+            )
+
+            with self.assertRaisesRegex(ValueError, "trusted composition"):
+                with open_blackbox_runtime_view(
+                    forged,
+                    runtime_root=root / "runtime",
+                ):
+                    self.fail("forged bundle must not be yielded")
+
+    def test_runtime_view_uses_trusted_bundle_after_stateful_iterable_validation(
+        self,
+    ) -> None:
+        from dataclasses import replace
+
+        from shared.blackbox_v2.platform_inputs import freeze_platform_input
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        frames = _frames()
+        first = freeze_platform_input(
+            "api-wind-date-v1",
+            pd.DataFrame(
+                {
+                    "rdate": ["2026-07-14", "2026-07-15"],
+                    "week_id": [202628, 202628],
+                }
+            ),
+            weekly_cutoff_key="202628",
+        )
+        second = freeze_platform_input(
+            "api-wind-date-v1",
+            pd.DataFrame(
+                {
+                    "rdate": ["2026-07-14", "2026-07-15"],
+                    "week_id": [202627, 202628],
+                }
+            ),
+            weekly_cutoff_key="202628",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            bundle = compose_blackbox_input_bundle(
+                snapshot,
+                platform_input_ids=("api-wind-date-v1",),
+                platform_input_artifacts=(first,),
+            )
+            stateful = _StatefulArtifactIterable(first, second)
+            forged = replace(
+                bundle,
+                platform_input_artifacts=stateful,
+            )
+
+            with open_blackbox_runtime_view(
+                forged,
+                runtime_root=root / "runtime",
+            ) as view:
+                self.assertIsNot(view.bundle, forged)
+                self.assertEqual(
+                    (view.data_dir / "api_wind_date.csv").read_bytes(),
+                    first.content_bytes,
+                )
+            self.assertEqual(stateful.iteration_count, 1)
+
+    def test_runtime_view_preserves_uncertain_process_as_controlled_debris(
+        self,
+    ) -> None:
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import (
+            cleanup_blackbox_runtime_debris,
+            open_blackbox_runtime_view,
+        )
+
+        frames = _frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime_root = root / "runtime"
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            bundle = compose_blackbox_input_bundle(snapshot)
+            with open_blackbox_runtime_view(
+                bundle,
+                runtime_root=runtime_root,
+            ) as view:
+                original_path = view.data_dir
+                view.mark_termination_uncertain()
+
+            self.assertTrue(original_path.exists())
+            self.assertIsNotNone(view.debris_path)
+            assert view.debris_path is not None
+            self.assertEqual(view.debris_path, original_path)
+            self.assertTrue(view.debris_path.is_dir())
+            self.assertTrue(
+                (view.debris_path / "daily_output.csv").read_bytes()
+            )
+            self.assertEqual(
+                view.debris_path.parent,
+                (runtime_root / "active").resolve(),
+            )
+            markers = list((runtime_root / "debris").glob("*.json"))
+            self.assertEqual(len(markers), 1)
+            self.assertEqual(
+                view.bundle.identity_manifest,
+                bundle.identity_manifest,
+            )
+
+            cleanup_blackbox_runtime_debris(
+                view.debris_path,
+                runtime_root=runtime_root,
+            )
+            self.assertFalse(view.debris_path.exists())
+            self.assertFalse(markers[0].exists())
+
+    def test_runtime_view_rejects_parent_file_hash_mismatch_and_removes_staging(
+        self,
+    ) -> None:
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        frames = _frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            source = snapshot.data_dir / "daily_output.csv"
+            source.chmod(0o644)
+            source.write_text("date,daily_factor\n2026-07-15,999\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "sha256"):
+                with open_blackbox_runtime_view(
+                    compose_blackbox_input_bundle(snapshot),
+                    runtime_root=root / "runtime",
+                ):
+                    self.fail("corrupt snapshot must not be yielded")
+            self.assertEqual(
+                list((root / "runtime" / "active").iterdir()),
+                [],
+            )
+
+    def test_runtime_view_accepts_databridge_dataset_content_manifest(
+        self,
+    ) -> None:
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        frames = _frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            databridge_snapshot = _convert_to_databridge_snapshot(snapshot)
+            with open_blackbox_runtime_view(
+                compose_blackbox_input_bundle(databridge_snapshot),
+                runtime_root=root / "runtime",
+            ) as view:
+                self.assertEqual(
+                    set(path.name for path in view.data_dir.iterdir()),
+                    set(_frames()),
+                )
+
+    def test_runtime_view_rejects_forged_parent_geometry_schema_and_identity(
+        self,
+    ) -> None:
+        from dataclasses import replace
+
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        def build_snapshot(root: Path):
+            frames = _frames()
+            return create_snapshot_from_frames(
+                frames,
+                output_root=root,
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            snapshot = build_snapshot(root / "geometry")
+            for forged in (
+                replace(snapshot, data_dir=snapshot.root_dir),
+                replace(
+                    snapshot,
+                    manifest_path=snapshot.data_dir / "daily_output.csv",
+                ),
+                replace(snapshot, schema_version="forged-schema"),
+            ):
+                with self.assertRaises(ValueError):
+                    with open_blackbox_runtime_view(
+                        compose_blackbox_input_bundle(forged),
+                        runtime_root=root / "runtime",
+                    ):
+                        self.fail("forged snapshot must not be yielded")
+
+            snapshot = build_snapshot(root / "identity")
+            daily = snapshot.data_dir / "daily_output.csv"
+            daily.chmod(0o644)
+            daily.write_text(
+                "date,daily_factor\n2026-07-15,999\n",
+                encoding="utf-8",
+            )
+            manifest_path = snapshot.manifest_path
+            manifest_path.chmod(0o644)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["files"]["daily_output.csv"] = {
+                "sha256": _sha256(daily.read_bytes()),
+                "row_count": 1,
+                "columns": ["date", "daily_factor"],
+            }
+            manifest_path.write_text(
+                json.dumps(manifest, sort_keys=True),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "identity"):
+                with open_blackbox_runtime_view(
+                    compose_blackbox_input_bundle(snapshot),
+                    runtime_root=root / "runtime",
+                ):
+                    self.fail("self-consistent content cannot impersonate old ID")
+
+    def test_cleanup_rejects_active_view_without_debris_marker(self) -> None:
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import (
+            cleanup_blackbox_runtime_debris,
+            open_blackbox_runtime_view,
+        )
+
+        frames = _frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime_root = root / "runtime"
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            with open_blackbox_runtime_view(
+                compose_blackbox_input_bundle(snapshot),
+                runtime_root=runtime_root,
+            ) as view:
+                with self.assertRaisesRegex(ValueError, "marker"):
+                    cleanup_blackbox_runtime_debris(
+                        view.data_dir,
+                        runtime_root=runtime_root,
+                    )
+                self.assertTrue(view.data_dir.is_dir())
+
+    def test_cleanup_does_not_follow_nested_symlink_or_change_external_file(
+        self,
+    ) -> None:
+        import stat
+
+        from shared.blackbox_v2.snapshot import (
+            compose_blackbox_input_bundle,
+            create_snapshot_from_frames,
+        )
+        from shared.input_artifacts import open_blackbox_runtime_view
+
+        frames = _frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            external = root / "external.txt"
+            external.write_text("outside", encoding="utf-8")
+            external.chmod(0o400)
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=root / "snapshots",
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            with open_blackbox_runtime_view(
+                compose_blackbox_input_bundle(snapshot),
+                runtime_root=root / "runtime",
+            ) as view:
+                runtime_path = view.data_dir
+                runtime_path.chmod(0o755)
+                (runtime_path / "external-link").symlink_to(external)
+                runtime_path.chmod(0o555)
+
+            self.assertFalse(runtime_path.exists())
+            self.assertEqual(external.read_text(encoding="utf-8"), "outside")
+            self.assertEqual(stat.S_IMODE(external.stat().st_mode), 0o400)
+
 
 def _frames() -> dict[str, pd.DataFrame]:
     return {
@@ -465,6 +935,68 @@ def _frames() -> dict[str, pd.DataFrame]:
             {"month_id": ["202606", "202607"], "month_factor": [20.0, 21.0]}
         ),
     }
+
+
+def _sha256(content: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(content).hexdigest()
+
+
+class _StatefulArtifactIterable:
+    def __init__(self, first, second) -> None:
+        self._first = first
+        self._second = second
+        self.iteration_count = 0
+
+    def __iter__(self):
+        self.iteration_count += 1
+        if self.iteration_count == 1:
+            return iter((self._first,))
+        return iter((self._second,))
+
+
+def _convert_to_databridge_snapshot(snapshot):
+    from dataclasses import replace
+
+    manifest = json.loads(snapshot.manifest_path.read_text(encoding="utf-8"))
+    files = {
+        filename: {
+            "path": f"data/{filename}",
+            "sha256": entry["sha256"],
+            "size_bytes": (snapshot.data_dir / filename).stat().st_size,
+            "row_count": entry["row_count"],
+            "columns": entry["columns"],
+        }
+        for filename, entry in manifest["files"].items()
+    }
+    identity = {
+        "schema_version": manifest["schema_version"],
+        "files": files,
+    }
+    dataset_content_id = _sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    databridge_manifest = {
+        "schema_version": manifest["schema_version"],
+        "dataset_content_id": dataset_content_id,
+        "files": files,
+    }
+    snapshot.manifest_path.chmod(0o644)
+    snapshot.manifest_path.write_text(
+        json.dumps(databridge_manifest, sort_keys=True),
+        encoding="utf-8",
+    )
+    snapshot.manifest_path.chmod(0o444)
+    return replace(
+        snapshot,
+        snapshot_id=f"snapshot-{dataset_content_id[:24]}",
+    )
 
 
 def _factor_metadata() -> pd.DataFrame:
