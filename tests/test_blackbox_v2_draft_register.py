@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -243,6 +244,10 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         self.assertFalse(evidence["business_tables_written"])
         self.assertFalse(evidence["activation_performed"])
         self.assertEqual((self.cfg.path / "config.yaml").read_bytes(), config_before)
+        outcome = json.loads(result.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(outcome["status"], "passed")
+        self.assertEqual(outcome["database_outcome"], "committed")
+        self.assertTrue(outcome["authorization_consumed"])
 
     def test_repository_identity_conflict_fails_closed(self) -> None:
         from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
@@ -261,6 +266,92 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertIn("identity conflict", "\n".join(result.errors))
+
+    def test_audit_failure_does_not_consume_token_or_enter_repository(self) -> None:
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+
+        with (
+            patch(
+                "harness.blackbox_v2.draft_register._verify_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register.write_authorization_audit",
+                side_effect=OSError("audit unavailable"),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register.mark_token_used",
+            ) as consume,
+            patch(
+                "harness.blackbox_v2.draft_register.register_blackbox_draft_identity",
+            ) as register,
+        ):
+            result = BlackboxDraftRegisterGate().run(
+                self._ctx(self._token())
+            )
+
+        self.assertFalse(result.passed)
+        consume.assert_not_called()
+        register.assert_not_called()
+
+    def test_repository_failure_returns_structured_rollback_audit_and_disposes_engine(
+        self,
+    ) -> None:
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+
+        engine = SimpleNamespace(disposed=False)
+
+        def dispose() -> None:
+            engine.disposed = True
+
+        engine.dispose = dispose
+        ctx = replace(
+            self._ctx(self._token()),
+            engine_factory=lambda: engine,
+        )
+        with (
+            patch(
+                "harness.blackbox_v2.draft_register._verify_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register.register_blackbox_draft_identity",
+                side_effect=RuntimeError("registry insert failed"),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register.read_blackbox_lifecycle_state",
+                side_effect=RuntimeError("exact version not found"),
+                create=True,
+            ),
+        ):
+            result = BlackboxDraftRegisterGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertTrue(engine.disposed)
+        self.assertIsNotNone(result.report_path)
+        self.assertTrue(result.report_path.is_file())
+        outcome = json.loads(result.report_path.read_text(encoding="utf-8"))
+        self.assertEqual(outcome["action"], "draft_register")
+        self.assertEqual(outcome["status"], "failed")
+        self.assertTrue(outcome["authorization_consumed"])
+        self.assertEqual(
+            outcome["database_outcome"],
+            "rolled_back_or_not_started",
+        )
+        self.assertEqual(outcome["before"]["identity_exists"], False)
+        self.assertIsNone(outcome["after"])
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["outcome"], outcome)
+        self.assertEqual(
+            evidence["outcome_audit_path"],
+            str(result.report_path),
+        )
+        self.assertFalse(evidence["business_tables_written"])
+        self.assertFalse(evidence["activation_performed"])
+        replay = BlackboxDraftRegisterGate().run(ctx)
+        self.assertFalse(replay.passed)
+        self.assertEqual(replay.status.value, "blocked")
+        self.assertIn("already used", "\n".join(replay.errors))
 
 
 class _Result:

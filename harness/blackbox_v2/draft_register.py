@@ -6,7 +6,9 @@ from datetime import date
 from pathlib import Path
 
 from harness.authorization import (
+    _atomic_write_json,
     authorization_signing_enabled,
+    authorization_token_hash,
     mark_token_used,
     required_future_expiry_errors,
     used_tokens_path,
@@ -17,7 +19,11 @@ from harness.context import GateContext
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.discovery import SchemeConfig, load_scheme_config
-from scheduler.repository import register_blackbox_draft_identity
+from scheduler.repository import (
+    read_blackbox_lifecycle_state,
+    register_blackbox_draft_identity,
+    registry_scheme_id,
+)
 
 
 class BlackboxDraftRegisterGate(Gate):
@@ -70,6 +76,7 @@ class BlackboxDraftRegisterGate(Gate):
 
         engine = ctx.engine_factory() if ctx.engine_factory is not None else _create_engine()
         audit_path: Path | None = None
+        outcome_path: Path | None = None
         try:
             passed_run = _verify_passed_all(engine, cfg)
             passed_predict_date = _passed_run_predict_date(passed_run, cfg)
@@ -111,16 +118,113 @@ class BlackboxDraftRegisterGate(Gate):
                 environment_fingerprint=environment_fingerprint,
                 data_snapshot_id=data_snapshot_id,
             )
-            mark_token_used(auth, used_tokens_path(ctx.project_root))
-            audit_path = write_authorization_audit(
-                auth,
-                ctx.report_dir / "draft_register_authorization",
+            before = {
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "registry_scheme_ids": [
+                    registry_scheme_id(cfg.scheme_id, cfg.horizon, tenor)
+                    for tenor in cfg.tenors
+                ],
+                "identity_exists": False,
+            }
+            authorization_dir = (
+                ctx.report_dir / "draft_register_authorization"
             )
-            state = register_blackbox_draft_identity(
-                engine,
-                enriched_cfg,
-                expected_harness_run_id=passed_run.harness_run_id,
-            )
+            prepared_outcome = {
+                "action": "draft_register",
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "harness_run_id": passed_run.harness_run_id,
+                "predict_date": passed_predict_date,
+                "authorization_token_sha256": authorization_token_hash(auth),
+                "authorization_consumed": False,
+                "status": "prepared",
+                "database_outcome": "not_started",
+                "rollback_outcome": "not_required",
+                "before": before,
+                "after": None,
+                "error": None,
+                "business_tables_written": False,
+                "activation_performed": False,
+            }
+            try:
+                audit_path = write_authorization_audit(
+                    auth,
+                    authorization_dir,
+                )
+                outcome_path = authorization_dir / "outcome.json"
+                _write_outcome_audit(outcome_path, prepared_outcome)
+            except Exception as exc:  # noqa: BLE001
+                return _failed(
+                    started_at,
+                    [f"draft registration audit preparation failed: {exc}"],
+                    outcome=prepared_outcome,
+                    authorization_audit_path=audit_path,
+                    outcome_audit_path=outcome_path,
+                )
+
+            try:
+                mark_token_used(auth, used_tokens_path(ctx.project_root))
+            except Exception as exc:  # noqa: BLE001
+                outcome = {
+                    **prepared_outcome,
+                    "status": "failed",
+                    "error": _error_payload(exc),
+                }
+                audit_errors = _try_write_outcome(outcome_path, outcome)
+                return _failed(
+                    started_at,
+                    [f"draft registration authorization consumption failed: {exc}", *audit_errors],
+                    outcome=outcome,
+                    authorization_audit_path=audit_path,
+                    outcome_audit_path=outcome_path,
+                )
+
+            try:
+                state = register_blackbox_draft_identity(
+                    engine,
+                    enriched_cfg,
+                    expected_harness_run_id=passed_run.harness_run_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                database_outcome, rollback_outcome, after = (
+                    _database_failure_outcome(engine, enriched_cfg)
+                )
+                outcome = {
+                    **prepared_outcome,
+                    "authorization_consumed": True,
+                    "status": "failed",
+                    "database_outcome": database_outcome,
+                    "rollback_outcome": rollback_outcome,
+                    "after": after,
+                    "error": _error_payload(exc),
+                }
+                audit_errors = _try_write_outcome(outcome_path, outcome)
+                return _failed(
+                    started_at,
+                    [str(exc), *audit_errors],
+                    outcome=outcome,
+                    authorization_audit_path=audit_path,
+                    outcome_audit_path=outcome_path,
+                )
+
+            after = asdict(state)
+            outcome = {
+                **prepared_outcome,
+                "authorization_consumed": True,
+                "status": "passed",
+                "database_outcome": "committed",
+                "after": after,
+            }
+            audit_errors = _try_write_outcome(outcome_path, outcome)
+            if audit_errors:
+                return _failed(
+                    started_at,
+                    audit_errors,
+                    outcome=outcome,
+                    authorization_audit_path=audit_path,
+                    outcome_audit_path=outcome_path,
+                )
         finally:
             if hasattr(engine, "dispose"):
                 engine.dispose()
@@ -131,26 +235,20 @@ class BlackboxDraftRegisterGate(Gate):
             passed=True,
             evidence=[
                 Evidence("action", "draft_register"),
-                Evidence(
-                    "before",
-                    {
-                        "scheme_id": cfg.scheme_id,
-                        "scheme_version": cfg.scheme_version,
-                        "registry_scheme_ids": list(state.registry_scheme_ids),
-                        "identity_exists": False,
-                    },
-                ),
-                Evidence("after", asdict(state)),
+                Evidence("before", before),
+                Evidence("after", after),
+                Evidence("outcome", outcome),
                 Evidence("harness_run_id", passed_run.harness_run_id),
                 Evidence("predict_date", passed_predict_date),
                 Evidence("authorization_audit_path", str(audit_path)),
+                Evidence("outcome_audit_path", str(outcome_path)),
                 Evidence("business_tables_written", False),
                 Evidence("activation_performed", False),
             ],
             errors=[],
             started_at=started_at,
             finished_at=utc_now(),
-            report_path=audit_path,
+            report_path=outcome_path,
         )
 
 
@@ -201,6 +299,89 @@ def _create_engine():
     from scheduler.repository import create_engine_from_env
 
     return create_engine_from_env()
+
+
+def _write_outcome_audit(path: Path, outcome: dict[str, object]) -> None:
+    _atomic_write_json(path, outcome)
+
+
+def _try_write_outcome(
+    path: Path,
+    outcome: dict[str, object],
+) -> list[str]:
+    try:
+        _write_outcome_audit(path, outcome)
+    except Exception as exc:  # noqa: BLE001
+        return [f"draft registration outcome audit write failed: {exc}"]
+    return []
+
+
+def _database_failure_outcome(
+    engine,
+    cfg: SchemeConfig,
+) -> tuple[str, str, dict[str, object] | None]:
+    try:
+        state = read_blackbox_lifecycle_state(engine, cfg)
+    except Exception:  # noqa: BLE001
+        return "rolled_back_or_not_started", "rolled_back_or_not_started", None
+    return (
+        "identity_present_requires_reconciliation",
+        "not_confirmed_identity_present",
+        asdict(state),
+    )
+
+
+def _error_payload(exc: Exception) -> dict[str, str]:
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+
+
+def _failed(
+    started_at: str,
+    errors: list[str],
+    *,
+    outcome: dict[str, object],
+    authorization_audit_path: Path | None,
+    outcome_audit_path: Path | None,
+) -> GateResult:
+    return GateResult(
+        gate_name="draft-register",
+        status=GateStatus.FAILED,
+        passed=False,
+        evidence=[
+            Evidence("action", "draft_register"),
+            Evidence("outcome", outcome),
+            Evidence(
+                "authorization_audit_path",
+                (
+                    str(authorization_audit_path)
+                    if authorization_audit_path is not None
+                    else None
+                ),
+            ),
+            Evidence(
+                "outcome_audit_path",
+                (
+                    str(outcome_audit_path)
+                    if outcome_audit_path is not None
+                    else None
+                ),
+            ),
+            Evidence("business_tables_written", False),
+            Evidence("activation_performed", False),
+        ],
+        errors=errors,
+        started_at=started_at,
+        finished_at=utc_now(),
+        report_path=(
+            outcome_audit_path
+            if outcome_audit_path is not None
+            and outcome_audit_path.is_file()
+            else authorization_audit_path
+        ),
+    )
 
 
 def _blocked(started_at: str, errors: list[str]) -> GateResult:
