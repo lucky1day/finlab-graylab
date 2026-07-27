@@ -8,9 +8,10 @@ import sys
 import tempfile
 import unittest
 from collections.abc import Mapping
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from migrations import runner as migration_runner
 from migrations.runner import (
@@ -22,6 +23,14 @@ from scripts import apply_migrations as migration_cli
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIGRATIONS_DIR = PROJECT_ROOT / "migrations"
+EXPECTED_DATABASE_NAME = "bfl_identity_test"
+EXPECTED_SERVER_UUID = "12345678-1234-4abc-8def-123456789abc"
+EXPECTED_IDENTITY_ARGS = (
+    "--expected-database-name",
+    EXPECTED_DATABASE_NAME,
+    "--expected-server-uuid",
+    EXPECTED_SERVER_UUID,
+)
 
 
 class _RowsResult:
@@ -1701,6 +1710,21 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
 
 class MigrationRunnerSafetyTests(unittest.TestCase):
     @staticmethod
+    def _identity_engine(
+        *,
+        database_name: str = EXPECTED_DATABASE_NAME,
+        server_uuid: str = EXPECTED_SERVER_UUID,
+    ) -> tuple[Mock, Mock]:
+        engine = MagicMock()
+        connection = Mock()
+        connection.execute.return_value.one.return_value = (
+            database_name,
+            server_uuid,
+        )
+        engine.connect.return_value.__enter__.return_value = connection
+        return engine, connection
+
+    @staticmethod
     def _migration_file(
         directory: str,
         name: str,
@@ -2252,6 +2276,38 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         print_output.assert_called_once()
         engine.dispose.assert_called_once_with()
 
+    def test_applying_018_cli_inspect_does_not_require_identity(
+        self,
+    ) -> None:
+        engine = Mock()
+        inspection = {
+            "classification": "COMPATIBLE_PARTIAL",
+            "state_digest": "a" * 64,
+            "reason": None,
+        }
+        with (
+            patch.object(
+                migration_cli,
+                "create_engine_from_env",
+                return_value=engine,
+            ),
+            patch.object(
+                migration_cli,
+                "inspect_applying_migration_018",
+                return_value=inspection,
+            ) as inspect,
+            patch.object(
+                migration_cli,
+                "apply_pending_migration_files",
+            ) as apply_pending,
+            patch("builtins.print"),
+        ):
+            migration_cli.main(["--inspect-applying-018"])
+
+        inspect.assert_called_once()
+        apply_pending.assert_not_called()
+        engine.dispose.assert_called_once_with()
+
     def test_applying_017_cli_recovery_requires_apply_and_digest(
         self,
     ) -> None:
@@ -2277,7 +2333,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                 create_engine.assert_not_called()
 
     def test_applying_017_cli_routes_fenced_recovery(self) -> None:
-        engine = Mock()
+        engine, _connection = self._identity_engine()
         recovery = {
             "recovery_outcome": "APPLIED",
             "initial_classification": "COMPLETE",
@@ -2307,6 +2363,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                     "--apply",
                     "--state-digest",
                     digest,
+                    *EXPECTED_IDENTITY_ARGS,
                 ]
             )
 
@@ -2317,6 +2374,213 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         )
         apply_pending.assert_not_called()
         engine.dispose.assert_called_once_with()
+
+    def test_cli_write_modes_require_complete_identity_before_engine(
+        self,
+    ) -> None:
+        write_commands = (
+            ("apply", ["--apply"]),
+            (
+                "recover_017",
+                [
+                    "--recover-applying-017",
+                    "--apply",
+                    "--state-digest",
+                    "a" * 64,
+                ],
+            ),
+            (
+                "recover_018",
+                [
+                    "--recover-applying-018",
+                    "--apply",
+                    "--state-digest",
+                    "a" * 64,
+                ],
+            ),
+        )
+        incomplete_identities = (
+            (
+                "missing_database",
+                ["--expected-server-uuid", EXPECTED_SERVER_UUID],
+            ),
+            (
+                "empty_database",
+                [
+                    "--expected-database-name",
+                    "",
+                    "--expected-server-uuid",
+                    EXPECTED_SERVER_UUID,
+                ],
+            ),
+            (
+                "missing_server_uuid",
+                [
+                    "--expected-database-name",
+                    EXPECTED_DATABASE_NAME,
+                ],
+            ),
+        )
+        for mode, command in write_commands:
+            for identity_case, identity_args in incomplete_identities:
+                with (
+                    self.subTest(
+                        mode=mode,
+                        identity_case=identity_case,
+                    ),
+                    patch.object(
+                        migration_cli,
+                        "create_engine_from_env",
+                    ) as create_engine,
+                    patch("sys.stderr", new_callable=StringIO) as stderr,
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    migration_cli.main([*command, *identity_args])
+
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn(
+                    "write database identity requires",
+                    stderr.getvalue(),
+                )
+                create_engine.assert_not_called()
+
+    def test_cli_write_modes_require_canonical_lowercase_uuid_before_engine(
+        self,
+    ) -> None:
+        write_commands = (
+            ["--apply"],
+            [
+                "--recover-applying-017",
+                "--apply",
+                "--state-digest",
+                "a" * 64,
+            ],
+            [
+                "--recover-applying-018",
+                "--apply",
+                "--state-digest",
+                "a" * 64,
+            ],
+        )
+        malformed_uuids = (
+            EXPECTED_SERVER_UUID.upper(),
+            EXPECTED_SERVER_UUID.replace("-", ""),
+            "12345678-1234-4abc-8def-123456789abg",
+        )
+        for command in write_commands:
+            for malformed_uuid in malformed_uuids:
+                with (
+                    self.subTest(
+                        command=command,
+                        malformed_uuid=malformed_uuid,
+                    ),
+                    patch.object(
+                        migration_cli,
+                        "create_engine_from_env",
+                    ) as create_engine,
+                    patch("sys.stderr", new_callable=StringIO) as stderr,
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    migration_cli.main(
+                        [
+                            *command,
+                            "--expected-database-name",
+                            EXPECTED_DATABASE_NAME,
+                            "--expected-server-uuid",
+                            malformed_uuid,
+                        ]
+                    )
+
+                self.assertEqual(2, raised.exception.code)
+                self.assertIn(
+                    "canonical lowercase UUID",
+                    stderr.getvalue(),
+                )
+                create_engine.assert_not_called()
+
+    def test_cli_write_identity_mismatch_stops_before_all_write_routes(
+        self,
+    ) -> None:
+        write_commands = (
+            ("apply", ["--apply"]),
+            (
+                "recover_017",
+                [
+                    "--recover-applying-017",
+                    "--apply",
+                    "--state-digest",
+                    "a" * 64,
+                ],
+            ),
+            (
+                "recover_018",
+                [
+                    "--recover-applying-018",
+                    "--apply",
+                    "--state-digest",
+                    "a" * 64,
+                ],
+            ),
+        )
+        mismatches = (
+            (
+                "database_name",
+                "bfl_other_database",
+                EXPECTED_SERVER_UUID,
+            ),
+            (
+                "server_uuid",
+                EXPECTED_DATABASE_NAME,
+                "abcdefab-cdef-4abc-8def-abcdefabcdef",
+            ),
+        )
+        for mode, command in write_commands:
+            for mismatch, database_name, server_uuid in mismatches:
+                engine, connection = self._identity_engine(
+                    database_name=database_name,
+                    server_uuid=server_uuid,
+                )
+                with self.subTest(mode=mode, mismatch=mismatch):
+                    with (
+                        patch.object(
+                            migration_cli,
+                            "create_engine_from_env",
+                            return_value=engine,
+                        ),
+                        patch.object(
+                            migration_cli,
+                            "apply_pending_migration_files",
+                        ) as apply_pending,
+                        patch.object(
+                            migration_cli,
+                            "recover_applying_migration_017",
+                        ) as recover_017,
+                        patch.object(
+                            migration_cli,
+                            "recover_applying_migration_018",
+                        ) as recover_018,
+                        self.assertRaisesRegex(
+                            RuntimeError,
+                            "database identity",
+                        ),
+                    ):
+                        migration_cli.main(
+                            [*command, *EXPECTED_IDENTITY_ARGS]
+                        )
+
+                    connection.execute.assert_called_once()
+                    self.assertEqual(
+                        "SELECT DATABASE(), @@server_uuid",
+                        " ".join(
+                            str(
+                                connection.execute.call_args.args[0]
+                            ).split()
+                        ),
+                    )
+                    apply_pending.assert_not_called()
+                    recover_017.assert_not_called()
+                    recover_018.assert_not_called()
+                    engine.dispose.assert_called_once_with()
 
     def test_reviewed_migration_017_bytes_are_unchanged(self) -> None:
         path = MIGRATIONS_DIR / "017_daily_schedule_ledger.sql"
@@ -2351,7 +2615,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         scenarios = (
             (
                 "tampered_017_apply",
-                ["--apply"],
+                ["--apply", *EXPECTED_IDENTITY_ARGS],
                 lambda root: (
                     root / "017_daily_schedule_ledger.sql"
                 ).write_bytes(
@@ -2376,6 +2640,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                     "--apply",
                     "--state-digest",
                     "a" * 64,
+                    *EXPECTED_IDENTITY_ARGS,
                 ],
                 lambda root: (
                     root / "999_unreviewed.sql"
@@ -2383,7 +2648,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
             ),
             (
                 "missing_file_apply",
-                ["--apply"],
+                ["--apply", *EXPECTED_IDENTITY_ARGS],
                 lambda root: (root / "016_dual_runtime.sql").unlink(),
             ),
         )
@@ -2441,7 +2706,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         )
 
     def test_main_uses_pending_history_runner(self) -> None:
-        engine = Mock()
+        engine, _connection = self._identity_engine()
         with (
             patch.object(
                 migration_cli,
@@ -2453,7 +2718,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                 "apply_pending_migration_files",
             ) as apply_pending,
         ):
-            migration_cli.main(["--apply"])
+            migration_cli.main(["--apply", *EXPECTED_IDENTITY_ARGS])
 
         apply_pending.assert_called_once()
         self.assertIs(apply_pending.call_args.args[0], engine)

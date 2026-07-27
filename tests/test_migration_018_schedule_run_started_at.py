@@ -376,9 +376,22 @@ class ScheduleRunStartedAtMigrationTests(unittest.TestCase):
                 "--apply",
                 "--state-digest",
                 "a" * 64,
+                "--expected-database-name",
+                "bfl_identity_test",
+                "--expected-server-uuid",
+                "12345678-1234-4abc-8def-123456789abc",
             ]
         )
         self.assertTrue(recover_args.recover_applying_018)
+        with self.assertRaises(SystemExit):
+            migration_cli._parse_args(
+                [
+                    "--recover-applying-018",
+                    "--apply",
+                    "--state-digest",
+                    "a" * 64,
+                ]
+            )
         with self.assertRaises(SystemExit):
             migration_cli._parse_args(
                 ["--recover-applying-018", "--apply"]

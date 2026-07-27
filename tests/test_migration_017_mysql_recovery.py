@@ -350,8 +350,27 @@ def _assert_mysql_cleaned(
 def _run_isolated_migration_cli(
     engine,
     *arguments: str,
+    expected_database_name: str | None = None,
+    expected_server_uuid: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """仅把临时 replay Engine 的凭据注入 canonical CLI。"""
+    """把临时 Engine 凭据和精确写目标身份注入 canonical CLI。"""
+    if (expected_database_name is None) != (
+        expected_server_uuid is None
+    ):
+        raise AssertionError(
+            "isolated migration CLI write identity is incomplete"
+        )
+    identity_arguments = (
+        (
+            "--expected-database-name",
+            expected_database_name,
+            "--expected-server-uuid",
+            expected_server_uuid,
+        )
+        if expected_database_name is not None
+        and expected_server_uuid is not None
+        else ()
+    )
     url = engine.url
     environment = {
         key: value
@@ -372,6 +391,7 @@ def _run_isolated_migration_cli(
             sys.executable,
             str(PROJECT_ROOT / "scripts" / "apply_migrations.py"),
             *arguments,
+            *identity_arguments,
         ),
         cwd=PROJECT_ROOT,
         env=environment,
@@ -397,8 +417,15 @@ def _read_isolated_cli_json(
     testcase: unittest.TestCase,
     engine,
     *arguments: str,
+    expected_database_name: str | None = None,
+    expected_server_uuid: str | None = None,
 ) -> dict[str, object]:
-    result = _run_isolated_migration_cli(engine, *arguments)
+    result = _run_isolated_migration_cli(
+        engine,
+        *arguments,
+        expected_database_name=expected_database_name,
+        expected_server_uuid=expected_server_uuid,
+    )
     _assert_isolated_cli_succeeded(testcase, result)
     lines = [
         line for line in result.stdout.splitlines() if line.strip()
@@ -449,10 +476,15 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
         with isolated_replay_mysql() as server:
             retained_root = server.root
             process = server.process
-            _schema, engine = server.create_replay_database()
+            schema, engine = server.create_replay_database()
             _execute_legacy_016_without_history(engine)
 
-            first_apply = _run_isolated_migration_cli(engine, "--apply")
+            first_apply = _run_isolated_migration_cli(
+                engine,
+                "--apply",
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
+            )
             _assert_isolated_cli_succeeded(self, first_apply)
             first_history, first_fingerprint = (
                 _history_and_fingerprint_snapshot(engine)
@@ -462,7 +494,12 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
                 allow_missing=False,
             )
 
-            second_apply = _run_isolated_migration_cli(engine, "--apply")
+            second_apply = _run_isolated_migration_cli(
+                engine,
+                "--apply",
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
+            )
             _assert_isolated_cli_succeeded(self, second_apply)
             second_history, second_fingerprint = (
                 _history_and_fingerprint_snapshot(engine)
@@ -491,7 +528,7 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
         with isolated_replay_mysql() as server:
             retained_root = server.root
             process = server.process
-            _schema, engine = server.create_replay_database()
+            schema, engine = server.create_replay_database()
             _apply_until_mid_017_ddl(engine)
             _assert_exact_applying_017_history(self, engine)
 
@@ -513,6 +550,8 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
                 "--apply",
                 "--state-digest",
                 digest,
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
             )
             self.assertEqual("APPLIED", recovery["recovery_outcome"])
             self.assertEqual(
@@ -525,7 +564,12 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
                 [int(row["version"]) for row in _history_rows(engine)],
             )
 
-            apply_018 = _run_isolated_migration_cli(engine, "--apply")
+            apply_018 = _run_isolated_migration_cli(
+                engine,
+                "--apply",
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
+            )
             _assert_isolated_cli_succeeded(self, apply_018)
             rows = _history_rows(engine)
             self.assertEqual(
@@ -546,7 +590,7 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
         with isolated_replay_mysql() as server:
             retained_root = server.root
             process = server.process
-            _schema, engine = server.create_replay_database()
+            schema, engine = server.create_replay_database()
             _apply_until_before_018_ddl(engine)
 
             inspection = _read_isolated_cli_json(
@@ -565,6 +609,8 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
                 "--apply",
                 "--state-digest",
                 str(inspection["state_digest"]),
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
             )
 
             self.assertEqual("APPLIED", recovery["recovery_outcome"])
@@ -588,7 +634,7 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
         with isolated_replay_mysql() as server:
             retained_root = server.root
             process = server.process
-            _schema, engine = server.create_replay_database()
+            schema, engine = server.create_replay_database()
             _apply_until_after_018_ddl(engine)
 
             inspection = _read_isolated_cli_json(
@@ -604,6 +650,8 @@ class Migration017MySQLRecoveryTests(unittest.TestCase):
                 "--apply",
                 "--state-digest",
                 str(inspection["state_digest"]),
+                expected_database_name=schema,
+                expected_server_uuid=server.identity.server_uuid,
             )
 
             self.assertEqual("APPLIED", recovery["recovery_outcome"])

@@ -7,6 +7,8 @@ import re as _re
 import sys as _sys
 from typing import Iterable as _Iterable
 
+from sqlalchemy import text as _text
+
 
 PROJECT_ROOT = _Path(__file__).resolve().parents[1]
 _sys.path.insert(0, str(PROJECT_ROOT))
@@ -99,6 +101,14 @@ def _parse_args(
         "--state-digest",
         help="canonical 64-hex digest required by recovery",
     )
+    parser.add_argument(
+        "--expected-database-name",
+        help="exact DATABASE() value required by database-changing modes",
+    )
+    parser.add_argument(
+        "--expected-server-uuid",
+        help="exact lowercase canonical @@server_uuid required by writes",
+    )
     args = parser.parse_args(argv)
     if args.inspect_applying_017:
         if args.apply or args.state_digest:
@@ -107,7 +117,7 @@ def _parse_args(
                 "--state-digest"
             )
         return args
-    if args.recover_applying_017:
+    elif args.recover_applying_017:
         if not args.apply or not args.state_digest:
             parser.error(
                 "recovery requires both --apply and --state-digest"
@@ -116,15 +126,14 @@ def _parse_args(
             parser.error(
                 "--state-digest must be 64 lowercase hex characters"
             )
-        return args
-    if args.inspect_applying_018:
+    elif args.inspect_applying_018:
         if args.apply or args.state_digest:
             parser.error(
                 "read-only inspection does not accept --apply or "
                 "--state-digest"
             )
         return args
-    if args.recover_applying_018:
+    elif args.recover_applying_018:
         if not args.apply or not args.state_digest:
             parser.error(
                 "recovery requires both --apply and --state-digest"
@@ -133,15 +142,56 @@ def _parse_args(
             parser.error(
                 "--state-digest must be 64 lowercase hex characters"
             )
-        return args
-    if args.state_digest:
+    elif args.state_digest:
         parser.error(
             "--state-digest is only valid with "
             "--recover-applying-017 or --recover-applying-018"
         )
-    if not args.apply:
+    elif not args.apply:
         parser.error("--apply is required to change the database")
+    if (
+        not args.expected_database_name
+        or not args.expected_database_name.strip()
+        or not args.expected_server_uuid
+    ):
+        parser.error(
+            "write database identity requires non-empty "
+            "--expected-database-name and --expected-server-uuid"
+        )
+    if (
+        _re.fullmatch(
+            (
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                r"[0-9a-f]{4}-[0-9a-f]{12}"
+            ),
+            args.expected_server_uuid,
+        )
+        is None
+    ):
+        parser.error(
+            "--expected-server-uuid must be a canonical lowercase UUID"
+        )
     return args
+
+
+def _assert_write_database_identity(
+    engine,
+    *,
+    expected_database_name: str,
+    expected_server_uuid: str,
+) -> None:
+    """在任何 migration 写操作前精确核验连接目标。"""
+    with engine.connect() as connection:
+        database_name, server_uuid = connection.execute(
+            _text("SELECT DATABASE(), @@server_uuid")
+        ).one()
+    if (
+        database_name != expected_database_name
+        or server_uuid != expected_server_uuid
+    ):
+        raise RuntimeError(
+            "database identity mismatch; refusing migration write"
+        )
 
 
 def main(argv: _Iterable[str] | None = None) -> None:
@@ -154,6 +204,15 @@ def main(argv: _Iterable[str] | None = None) -> None:
     )
     engine = create_engine_from_env()
     try:
+        if not (
+            args.inspect_applying_017
+            or args.inspect_applying_018
+        ):
+            _assert_write_database_identity(
+                engine,
+                expected_database_name=args.expected_database_name,
+                expected_server_uuid=args.expected_server_uuid,
+            )
         if args.inspect_applying_017:
             result = inspect_applying_migration_017(  # noqa: F405
                 engine,
