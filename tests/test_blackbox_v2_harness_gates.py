@@ -359,6 +359,119 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "initialized"):
                 _ensure_input_state(ctx)
 
+    def test_monthly_persist_input_treats_predict_date_as_target_cutoff(
+        self,
+    ) -> None:
+        from harness.blackbox_v2.gates import _ensure_input_state
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+        from shared.blackbox_v2.snapshot import (
+            CutoffKeys,
+            create_snapshot_from_frames,
+        )
+
+        class Calendar:
+            requested: str | None = None
+
+            def previous_trading_day(self, value):
+                self.requested = value
+                return "2026-05-29"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _delivery(root / "incoming")
+            metadata_path = delivery / "trial_10y.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata.update(
+                {
+                    "task_type": "monthly",
+                    "horizon": 1,
+                    "target_rule": (
+                        "target_month_observation_yield_vs_"
+                        "feature_month_observation_yield"
+                    ),
+                }
+            )
+            metadata_path.write_text(
+                json.dumps(metadata),
+                encoding="utf-8",
+            )
+            scheme_dir = intake_delivery(
+                delivery,
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            snapshot = replace(
+                create_snapshot_from_frames(
+                    _snapshot_frames(),
+                    output_root=root / "snapshots",
+                    expected_columns={
+                        name: list(frame.columns)
+                        for name, frame in _snapshot_frames().items()
+                    },
+                    schema_version="data-bridge-v1",
+                ),
+                generation_id="generation-test",
+                refresh_date="2026-07-15",
+            )
+            cutoffs = CutoffKeys("2026-05-29", "202622", "202604")
+            calendar = Calendar()
+            engine = SimpleNamespace(dispose=lambda: None)
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-06-01",
+                project_root=root,
+                report_dir=root / "reports" / "persist",
+                config=config,
+                persist_backtest=True,
+                engine_factory=lambda: engine,
+            )
+            with (
+                patch(
+                    "harness.blackbox_v2.gates."
+                    "build_blackbox_input_snapshot",
+                    return_value=snapshot,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates."
+                    "resolve_blackbox_input_cutoffs",
+                    return_value=cutoffs,
+                ) as resolve_cutoffs,
+                patch(
+                    "harness.blackbox_v2.gates."
+                    "_data_bridge_provenance",
+                    return_value={
+                        "generation_id": "generation-test",
+                        "refresh_date": "2026-07-15",
+                        "refreshed_at": "2026-07-15T00:02:00+08:00",
+                        "business_digest": "digest",
+                        "runtime_profile": "blackbox-v2-v1",
+                        "environment_fingerprint": "e" * 64,
+                    },
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.get_calendar",
+                    return_value=calendar,
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.build_live_request",
+                    side_effect=AssertionError(
+                        "persist cutoff must not build a live Request"
+                    ),
+                ),
+            ):
+                state = _ensure_input_state(ctx)
+
+        self.assertEqual(calendar.requested, "2026-06-01")
+        resolve_cutoffs.assert_called_once_with(
+            snapshot,
+            feature_date="2026-05-29",
+            engine=engine,
+        )
+        self.assertEqual(state.request.predict_date, "2026-05-29")
+        self.assertEqual(state.request.feature_date, "2026-05-29")
+        self.assertEqual(state.request.target_date, "2026-06-01")
+
     def test_non_input_gate_fails_closed_on_missing_or_invalid_input_state(self) -> None:
         from harness.blackbox_v2.gates import (
             INPUT_STATE_INITIALIZED_SEAL,

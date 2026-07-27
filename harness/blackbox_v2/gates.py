@@ -51,7 +51,11 @@ from shared.blackbox_v2.contracts import (
     load_request_bytes,
 )
 from shared.blackbox_v2.history import CURRENT_SNAPSHOT_REPLAY, build_historical_cases
-from shared.blackbox_v2.requests import build_live_request, write_request
+from shared.blackbox_v2.requests import (
+    build_live_request,
+    build_request,
+    write_request,
+)
 from shared.blackbox_v2.platform_inputs import FrozenPlatformInput
 from shared.blackbox_v2.snapshot import (
     BlackboxInputBundle,
@@ -1179,17 +1183,32 @@ def _ensure_input_state(ctx: GateContext, *, force: bool = False) -> InputState:
             output_root=root / "runtime_snapshot",
             require_fresh=False,
         )
+        calendar = get_calendar(engine)
+        feature_date = (
+            str(calendar.previous_trading_day(ctx.predict_date))[:10]
+            if ctx.persist_backtest
+            else _feature_date(metadata, ctx.predict_date, engine)
+        )
         cutoffs = resolve_blackbox_input_cutoffs(
             snapshot,
-            feature_date=_feature_date(metadata, ctx.predict_date, engine),
+            feature_date=feature_date,
             engine=engine,
         )
-        request = build_live_request(
-            metadata,
-            predict_date=ctx.predict_date,
-            calendar=get_calendar(engine),
-            cutoffs=cutoffs,
-        )
+        if ctx.persist_backtest:
+            request = build_request(
+                scheme_id=metadata.scheme_id,
+                predict_date=feature_date,
+                feature_date=feature_date,
+                target_date=ctx.predict_date,
+                cutoffs=cutoffs,
+            )
+        else:
+            request = build_live_request(
+                metadata,
+                predict_date=ctx.predict_date,
+                calendar=calendar,
+                cutoffs=cutoffs,
+            )
         platform_input_ids = tuple(cfg.platform_inputs)
         if platform_input_ids:
             with engine.connect() as connection:

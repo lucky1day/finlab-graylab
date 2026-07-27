@@ -370,6 +370,38 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             "next_month_observation_yield_vs_feature_month_observation_yield",
         )
 
+    def test_monthly_persist_interval_has_sixteen_pre_gray_targets(self) -> None:
+        from shared.blackbox_v2.history import build_historical_cases
+
+        engine = _source_engine(
+            start="2024-12-01",
+            end="2026-06-01",
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = _snapshot(Path(tmpdir), engine)
+            with patch(
+                "shared.blackbox_v2.history."
+                "resolve_blackbox_input_cutoffs_bulk",
+                side_effect=_cutoffs_bulk,
+            ):
+                cases = build_historical_cases(
+                    _metadata("monthly"),
+                    snapshot,
+                    engine,
+                    limit=None,
+                    target_date_before="2026-06-01",
+                    predict_date_from="2025-01-01",
+                )
+
+        engine.dispose()
+        self.assertEqual(len(cases), 16)
+        self.assertTrue(
+            all(
+                case.request.target_date < "2026-06-01"
+                for case in cases
+            )
+        )
+
     def test_direct_metadata_must_use_fixed_task_contract(self) -> None:
         from shared.blackbox_v2.history import build_historical_cases
 

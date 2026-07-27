@@ -83,6 +83,36 @@ class BlackboxV2PersistedGateProvenanceTests(unittest.TestCase):
         self.assertTrue(attempt["audit_exists"])
         self.assertEqual(attempt["persist_calls"], 1)
 
+    def test_monthly_persist_binds_cutoff_and_builds_sixteen_historical_rows(
+        self,
+    ) -> None:
+        attempt = _run_attempt(
+            predict_date="2026-06-01",
+            case_count=16,
+            monthly=True,
+        )
+
+        self.assertTrue(
+            attempt["result"].passed,
+            attempt["result"].errors,
+        )
+        self.assertTrue(attempt["token_used"])
+        self.assertEqual(
+            attempt["build_kwargs"]["target_date_before"],
+            "2026-06-01",
+        )
+        self.assertEqual(
+            attempt["build_kwargs"]["predict_date_from"],
+            "2025-01-01",
+        )
+        evidence = {
+            item.key: item.value
+            for item in attempt["result"].evidence
+        }
+        self.assertEqual(evidence["target_date_before"], "2026-06-01")
+        self.assertEqual(evidence["requests"], 16)
+        self.assertEqual(evidence["records"], 16)
+
 
 def _assert_pre_execution_block(
     testcase: unittest.TestCase,
@@ -107,6 +137,9 @@ def _run_attempt(
     drift_on_reload: int | None = None,
     audit_failure: bool = False,
     persist_failure: bool = False,
+    predict_date: str = "2026-07-16",
+    case_count: int = 205,
+    monthly: bool = False,
 ) -> dict[str, object]:
     from harness.authorization import (
         authorization_token_hash,
@@ -129,7 +162,30 @@ def _run_attempt(
         {"HARNESS_AUTH_SECRET": "persisted-gate-test-secret"},
     ):
         root = Path(tmpdir)
-        scheme_dir = intake_delivery(_delivery(root / "incoming"), schemes_root=root / "schemes")
+        delivery = _delivery(root / "incoming")
+        if monthly:
+            metadata_path = delivery / "trial_10y.json"
+            metadata = json.loads(
+                metadata_path.read_text(encoding="utf-8")
+            )
+            metadata.update(
+                {
+                    "task_type": "monthly",
+                    "horizon": 1,
+                    "target_rule": (
+                        "target_month_observation_yield_vs_"
+                        "feature_month_observation_yield"
+                    ),
+                }
+            )
+            metadata_path.write_text(
+                json.dumps(metadata),
+                encoding="utf-8",
+            )
+        scheme_dir = intake_delivery(
+            delivery,
+            schemes_root=root / "schemes",
+        )
         config_path = scheme_dir / "config.yaml"
         config = real_load_scheme_config(config_path)
         frames = _snapshot_frames()
@@ -154,7 +210,7 @@ def _run_attempt(
         token = issue_token(
             config.scheme_id,
             "backtest_persist",
-            "2026-07-16",
+            predict_date,
             scheme_version=config.scheme_version,
             harness_run_id="hr_passed",
             ttl_seconds=300,
@@ -163,7 +219,7 @@ def _run_attempt(
         report_dir = root / "reports" / "persist"
         ctx = GateContext(
             scheme_id=config.scheme_id,
-            predict_date="2026-07-16",
+            predict_date=predict_date,
             project_root=root,
             report_dir=report_dir,
             config=config,
@@ -207,7 +263,6 @@ def _run_attempt(
                 raise RuntimeError("injected database failure")
             return 301
 
-        case_count = 205
         output = _output(case_count)
         counts = [
             {"t_backtest_runs": 10, "t_backtest_predictions": 1000, "t_backtest_monthly_metrics": 20},
@@ -238,7 +293,7 @@ def _run_attempt(
             token,
             scheme_id=config.scheme_id,
             action="backtest_persist",
-            predict_date="2026-07-16",
+            predict_date=predict_date,
             used_store_path=replay_path,
         )
         return {
