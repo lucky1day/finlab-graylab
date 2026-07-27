@@ -220,6 +220,7 @@ def _history_rows(engine):
                            sha256 AS sha256,
                            state AS state,
                            baseline_bootstrap AS baseline_bootstrap,
+                           started_at AS started_at,
                            applied_at AS applied_at
                     FROM t_schema_migrations
                     ORDER BY version
@@ -429,6 +430,8 @@ def _history_and_fingerprint_snapshot(engine):
             str(row["sha256"]),
             str(row["state"]),
             int(row["baseline_bootstrap"]),
+            row["started_at"],
+            row["applied_at"],
         )
         for row in _history_rows(engine)
     )
