@@ -32,7 +32,7 @@
 ## 已完成：Blackbox 自动调度防护 MVP
 
 版本化 `blackbox_scheduler_admission_v1` 已冻结当前 5 个正式 Blackbox
-身份为 `formal`、FengRL 五个月度身份为 `gray`。`gray` 方案可以继续
+身份为 `formal`、FengRL 五个月度与 10Y T+5 四个日频身份为 `gray`。`gray` 方案可以继续
 保持 Registry active、手工运行和前端可见，但会在 legacy scheduler
 注册、startup catch-up 和 scheduled wrapper 三个入口被拒绝；manual
 single、manual aggregate 和 legacy `--run-once predictions` 不受影响。
@@ -76,14 +76,14 @@ execution admission 通过后才可把以下已完成人工灰度的方案接入
 - `cgb_a4_fundseason_7y`
 - `cgb_a4_fundseason_10y`
 
-active 配置中的 `schedule_cron` 不构成调度授权。FengRL 五个月度方案
-已由当前静态 admission 明确冻结为 `gray`，可随开发版本同步但不能
-产生自动任务。10Y T+5 四方案代码仍保留在独立 integration 分支，
-尚未纳入当前开发版本；其 active daily discovery 为 25 item/29 target，
-而正式 policy 仍为闭世界 21 item/25 target，后续必须单独完成重基、
-全量回归和集成决策。`active` 不等于 scheduler 授权，禁止旧 generation
+active 配置中的 `schedule_cron` 不构成调度授权。上述九个灰度方案均
+已由当前静态 admission 以精确 `scheme_id + scheme_version` 冻结为
+`gray`，代码已安全同步到开发分支，但不能产生自动任务。仓库 active
+daily discovery 现在包含 25 item/29 target；daily policy、capacity
+candidate、真实 replay 和 DailyRuntime 只选择其中 21 item/25 target
+的正式身份。`active` 不等于 scheduler 授权，禁止旧 generation
 fallback。`formal` 的准入必须另行授权，不能由 `gray`、description
-豁免或手工入库结论推导。
+豁免、代码同步或手工入库结论推导。
 
 ## P3：正式晋级
 

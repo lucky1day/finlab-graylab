@@ -16,18 +16,18 @@ Add one version-controlled control file,
   scheduler registration, startup catch-up, and scheduled execution.
 - A Blackbox V2 identity absent from the file is denied automatic scheduling.
 - Native schemes keep their current behavior.
-- The control file must equal the code-owned closed set of ten exact
+- The control file must equal the code-owned closed set of fourteen exact
   `scheme_id + scheme_version -> mode` entries. Missing, extra, mode-drifted,
   or version-drifted entries invalidate the policy.
-- The ten base scheme IDs are reserved Blackbox identities. Reclassifying one
+- The fourteen base scheme IDs are reserved Blackbox identities. Reclassifying one
   as Native cannot bypass admission and is denied with a critical audit event.
 - A missing or invalid admission file fails closed for all automatic Blackbox
   execution while Native jobs, actuals, and health/watchdog jobs keep their
   current behavior.
 
 The current five production Blackbox schemes that were already scheduled before
-this batch are frozen as `formal`. The five FengRL monthly schemes are frozen as
-`gray`.
+this batch are frozen as `formal`. The five FengRL monthly schemes and four
+10Y/T+5 daily schemes are frozen as `gray`.
 
 ## Enforcement points
 
@@ -43,8 +43,10 @@ this batch are frozen as `formal`. The five FengRL monthly schemes are frozen as
 ## Acceptance
 
 - Existing formal Blackbox jobs remain present.
-- All five FengRL monthly schemes remain active in Registry/API but have no
+- All nine gray schemes remain active in Registry/API but have no
   scheduler job and cannot be executed through the scheduled wrapper.
+- Formal daily policy, capacity candidate, isolated replay, and DailyRuntime
+  select only the existing 21-item/25-target formal set from active discovery.
 - Version drift and missing identities are denied.
 - No migration, backend API, Registry mutation, scheduler restart, deployment,
   or BondProjectPro change is included.

@@ -1070,9 +1070,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
                 self.assertIn(marker, text)
 
         for marker in (
-            "integration",
+            "当前开发基线",
+            "scheduler admission",
             "25 item/29 target",
-            "闭世界 21 item/25 target",
+            "21 item/25 target",
             "fail-closed",
         ):
             self.assertIn(marker, current)

@@ -30,11 +30,11 @@
 - 四方案使用 DataBridge generation `full-20260724-062251-4977e502dadf` 与 runtime snapshot `snapshot-46ff3231de2c4a080c46ba56`，灰度日期范围为 `predict_date=2026-05-26..2026-07-20`、`feature_date=2026-05-25..2026-07-17`、`target_date=2026-06-01..2026-07-24`；本批共 156 条 `gray_live`，与历史无重叠。
 - `/api/schemes` 已返回四方案，前端 10Y/T+5 格子共有 8 个候选；每个新方案由 333 条 backtest 与 39 条 `gray_live` 组成，合计 372 条前端展示记录。
 - 本批 `scheduled_live=0`，三层 ledger 为 `0/0/0`；rollout=`legacy`、admission=`BLOCKED`，没有启动或修改 scheduler。手工灰度入库完成不授予自动调度或正式日批准入。
-- 四方案代码仍保留在独立
-  `codex/blackbox-v2-10y-t5-gray-integration-20260726`，尚未纳入当前
-  开发版本。该分支的 active daily discovery 为 25 item/29 target，而正式
-  policy 仍保持闭世界 21 item/25 target；后续必须单独重基、验证和决定
-  集成，不能因数据库已 active 推导为代码已同步。
+- 四方案代码已从授权提交按精确 bytes 重基到当前开发基线；四个
+  `scheme_id + scheme_version` 均在版本化 scheduler admission 中冻结为
+  `gray`。仓库 active daily discovery 为 25 item/29 target，但正式
+  daily policy、capacity candidate、真实 replay 和 DailyRuntime 仍只接收
+  21 item/25 target；四方案不进入正式 occurrence。
 - 四个 active 配置中的 `schedule_cron` 只是交付元数据，不构成 scheduler
   授权，也不授予 legacy scheduler 执行权限。
 - 自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止。
@@ -63,7 +63,7 @@
   rollout=`legacy`、admission=`BLOCKED`。本次手工灰度不授予定时调度、
   正式日批、推送或部署。
 - Blackbox 自动调度防护 MVP 已通过：精确 5 个既有正式身份为
-  `formal`、本批五个月度身份为 `gray`。五个月度方案不会注册 legacy
+  `formal`、本批五个月度与 10Y T+5 四个日频身份为 `gray`。九个灰度方案不会注册 legacy
   scheduler job、不会进入 startup catch-up，也不能通过 scheduled wrapper
   执行；手工运行与前端可见性保持不变。未知身份、版本/runtime 漂移和
   非 UTF-8/损坏策略均 fail-closed 于 Blackbox 自动调度域，不影响 Native、

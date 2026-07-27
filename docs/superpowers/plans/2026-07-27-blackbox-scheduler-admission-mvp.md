@@ -52,11 +52,11 @@ VALID_MODES = frozenset({"formal", "gray"})
 ```
 
 It must reject duplicate identities, empty fields, unsupported modes, and
-malformed JSON. The parsed entries must exactly equal the code-owned ten-entry
+malformed JSON. The parsed entries must exactly equal the code-owned fourteen-entry
 identity-to-mode manifest; empty, missing, extra, mode-drifted, and
 version-drifted policies are invalid. Native schemes return admitted;
 Blackbox identities must match both scheme ID and version, and only `formal`
-returns admitted. The ten base IDs are reserved: changing one to a Native
+returns admitted. The fourteen base IDs are reserved: changing one to a Native
 runtime is identity drift and must be denied. Invalid UTF-8 must be converted to
 the domain error so it cannot abort Native or actuals scheduling.
 

@@ -413,7 +413,7 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 **执行时间**：2026-07-26 15:25 至 15:26，`Asia/Shanghai`。
 
-**机器证据文件名**：`TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json`（未纳入本次纯文档 backport）。
+**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
 
 | 项目 | 实测结果 |
 |---|---|
@@ -437,7 +437,7 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 **执行时间**：2026-07-26 15:28 至 15:29，`Asia/Shanghai`。
 
-**机器证据文件名**：`TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json`（未纳入本次纯文档 backport）。
+**机器证据**：[TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json](TECHNICAL_ONBOARDING_10Y_T5_4SCHEMES_20260726.evidence.json)。
 
 | 项目 | 实测结果 |
 |---|---|
@@ -505,6 +505,23 @@ Registry 继续为 `weekly_10y_lgbm_point_v1__h1__10Y + paused`。本轮建立�
 
 本条只证明本批手工灰度入库、DB/API 和前端数据链路完成，不授予
 `scheduled_live`、formal、08:00 SLA 或通用生产权限。
+
+### 4.18 记录 003F：10Y T+5 四方案代码安全同步开发分支
+
+**最终核验日期**：2026-07-27，`Asia/Shanghai`。
+
+四个方案的 exact delivery/Metadata bytes、配置、技术证据和手工灰度验收
+记录已在最新开发基线上完成重基。版本化
+`blackbox_scheduler_admission_v1` 将四个 exact
+`scheme_id + scheme_version` 冻结为 `gray`；连同 FengRL 五个月度方案，
+当前 admission 为 5 个 `formal` 与 9 个 `gray`。
+
+active daily discovery 因四方案变为 25 item/29 target，但正式 daily
+policy、capacity candidate、真实 replay 和 DailyRuntime 均只选择原有
+21 item/25 target。legacy scheduler 注册、startup catch-up 和 scheduled
+wrapper 不会执行这四个方案；本次没有重启 scheduler、写入
+`scheduled_live`、修改 rollout/admission 状态或授予自动灰度权限。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。
