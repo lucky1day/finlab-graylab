@@ -572,10 +572,11 @@ def read_signal_gap_snapshot(
         connection,
         registry_targets,
         as_of_date=as_of_date,
-        expected_business_keys={
-            case.business_key
-            for case in (*canonical_cases, *live_cases)
-        },
+        expected_business_keys=_expected_business_keys_for_date_scope(
+            (*canonical_cases, *live_cases),
+            start_date=start_date,
+            as_of_date=as_of_date,
+        ),
     )
     generations = _read_input_generations(connection)
     identity = connection.execute(
@@ -1460,6 +1461,21 @@ def _observations_in_scope(
         if row.business_key in expected_business_keys
         or start_date <= row.predict_date <= as_of_date
     )
+
+
+def _expected_business_keys_for_date_scope(
+    cases: Sequence[ExpectedSignalCase],
+    *,
+    start_date: str,
+    as_of_date: str,
+) -> set[tuple[str, str, int, str]]:
+    normalized_start = _canonical_date(start_date, "start_date")
+    normalized_as_of = _canonical_date(as_of_date, "as_of_date")
+    return {
+        case.business_key
+        for case in cases
+        if normalized_start <= case.predict_date <= normalized_as_of
+    }
 
 
 def _validate_case_matches_target(

@@ -879,6 +879,28 @@ class SignalGapPlanTests(unittest.TestCase):
             "OBSERVED_SIGNAL_SEGMENT_OVERLAP",
         )
 
+    def test_expected_business_key_authority_uses_requested_dates(self) -> None:
+        from harness.signal_gap_plan import (
+            _expected_business_keys_for_date_scope,
+        )
+
+        snapshot = self._snapshot()
+        in_scope = snapshot.expected_cases[0]
+        future = replace(
+            snapshot.expected_cases[1],
+            predict_date="2026-08-03",
+            target_date="2026-08-10",
+        )
+
+        keys = _expected_business_keys_for_date_scope(
+            (in_scope, future),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(keys, {in_scope.business_key})
+        self.assertNotIn(future.business_key, keys)
+
     def test_registry_digest_binds_exact_execution_identity(self) -> None:
         from harness.signal_gap_plan import build_signal_gap_plan
 
