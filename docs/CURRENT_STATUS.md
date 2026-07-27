@@ -24,6 +24,15 @@
 | 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED` 仅指受控 recorder 的 21/25 ledger 功能验证；真实 17+4 尚未联跑，08:00 SLA 与 07:55 容量仍无证据 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 
+## 周度历史与月度 Actual 修复候选
+
+- 开发分支候选 `d81c512` 将三类 actual updater 的默认范围改为 active Registry；`91d3779` 增加周度正式窗口、coverage 诊断和 Blackbox persisted 起点门禁。
+- 定向回归为 `99 tests + 16 subtests`、`134 tests + 13 subtests`；最终全量为 `2928 passed / 26 skipped / 1008 subtests`。生产只读 Registry 范围为 daily/monthly=`1Y/3Y/5Y/7Y/10Y`、weekly=`1Y/5Y/7Y/10Y`。
+- 候选尚未部署且本轮未写生产库。现有 8 个月度方案仍为 `19 signal / 18 valid`，但旧 updater 的复发风险要到候选部署和幂等重建后才关闭。
+- 候选 dashboard 只读投影保留 21 条 2024 审计行但不计排行：`weekly_10y_lgbm_point_v1` 从 `101/101` 变为 `80/80`，`weekly_10y_d_overlay_0529` 仍为 `77/77`，其余五个为 `81/80`。
+- coverage 还识别出 `2025-01-24/02-07/04-25` 与 `2025-01-26/02-08/04-27` 的节假日 target_date 差异；必须用新的合规 persisted run 重建，不能裁剪共同交集或删除旧历史。
+- `7 个周度候选全部 81/80` 尚未达成；部署、actual 重建、受控回补和 DB/API/前端验收见 [TODO](TODO.md)。本轮未修改算法、scheduler cron、BondProjectPro、rollout 或 admission。
+
 ## 本轮 10Y T+5 入库状态
 
 - `ten_y_t5_maj3_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_yearly_v1` 和 `ten_y_t5_say_k5_sharpe_static_v1` 的 exact version 与 composite Registry 均为 `active`；每方案各有 1 个成功持久化回测 run、333 条历史 prediction、17 个月度指标和 39 条手工 `gray_live`。

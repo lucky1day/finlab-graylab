@@ -478,7 +478,9 @@ Token 必须绑定 exact scheme、action、predict date、version 和 Harness ru
 
 完整持久化回测由日期区间定义，不由单批样本数定义：
 
-- `--backtest-start-date` 默认 `2025-01-01`，也可以显式传入其它规范 ISO 日期；
+- `--backtest-start-date` 默认 `2025-01-01`；周度方案的持久化回测必须
+  精确使用该正式起点，其他频率只有在专项授权明确绑定时才可传入其它
+  规范 ISO 日期；
 - 生产授权前必须先在该方案的生命周期证据中登记 `gray_target_start`；当前生产灰度观察基线为 `2026-06-01`，即 `target_date >= gray_target_start` 全部属于实盘观察区；后续如使用不同起点，必须有方案级专项授权和证据，不得由算法 Metadata、部署日或操作当天自动推导；
 - Backtest Gate 的 `predict_date` 参数承担 target 日期 exclusive cutoff，生产持久化时必须传已批准的 `gray_target_start`，只选择 `target_date < gray_target_start` 的历史样本；不得把激活日、`deployed_at` 或操作当天直接当作回测 cutoff；
 - 最早样本是 `predict_date >= backtest_start_date` 的第一个合格站位日，起点本身不要求是交易日；
