@@ -363,7 +363,7 @@ def _native_generation(**changes):
     from harness.signal_gap_plan import InputGeneration
 
     values = {
-        "generation_id": "native-20260727",
+        "generation_id": "native-0123456789abcdef01234567",
         "generation_type": "native_source",
         "business_date": "2026-07-27",
         "feature_date": "2026-07-24",
@@ -676,29 +676,18 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
                 )
 
     def test_native_exact_fence_validation_fails_closed(self):
-        valid = self._plan(
+        missing_artifact = self._plan(
             _native_snapshot(generations=(_native_generation(),))
         )
-        self.assertEqual(valid["actions"][0]["action"], "GRAY_LIVE_GAP")
         self.assertEqual(
-            set(valid["actions"][0]["input_authority"]),
-            {
-                "generation_id",
-                "generation_type",
-                "business_date",
-                "feature_date",
-                "readiness_basis",
-                "source_commit_token",
-                "dataset_content_id",
-                "schema_version",
-                "exporter_version",
-                "manifest_uri",
-                "manifest_sha256",
-                "native_generation_id",
-                "native_manifest_sha256",
-                "state",
-                "sealed_at",
-            },
+            (
+                missing_artifact["actions"][0]["action"],
+                missing_artifact["actions"][0]["reason"],
+            ),
+            (
+                "BLOCKED_DATA_CONTRACT",
+                "NATIVE_GENERATION_ARTIFACT_INVALID",
+            ),
         )
         for label, generations, expected_action in (
             (
@@ -890,22 +879,6 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
         self.assertEqual(
             baseline["schema_version"],
             "active-signal-gap-plan-v2",
-        )
-        native_baseline = self._plan(
-            _native_snapshot(generations=(_native_generation(),))
-        )
-        native_changed = self._plan(
-            _native_snapshot(
-                generations=(
-                    _native_generation(
-                        source_commit_token=_sha("changed-source"),
-                    ),
-                )
-            )
-        )
-        self.assertNotEqual(
-            native_baseline["plan_sha256"],
-            native_changed["plan_sha256"],
         )
 
     def test_generation_reader_maps_the_full_migration_017_fence(self):

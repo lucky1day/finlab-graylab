@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from shared.data_bridge.refresh import (
     DataBridgeCurrentMissingError,
     DataBridgeRefreshConfig,
 )
+from shared.native_input_generation import open_native_generation
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -75,6 +77,26 @@ Action = Literal[
     "BLOCKED_DATA_CONTRACT",
 ]
 Segment = Literal["canonical", "live"]
+_NATIVE_GENERATION_ID_PATTERN = re.compile(
+    r"^native-[0-9a-f]{24}$"
+)
+_INPUT_GENERATION_FINGERPRINT_FIELDS = (
+    "generation_id",
+    "generation_type",
+    "business_date",
+    "feature_date",
+    "readiness_basis",
+    "source_commit_token",
+    "dataset_content_id",
+    "schema_version",
+    "exporter_version",
+    "manifest_uri",
+    "manifest_sha256",
+    "native_generation_id",
+    "native_manifest_sha256",
+    "state",
+    "sealed_at",
+)
 
 
 class SignalGapPlanError(RuntimeError):
@@ -185,6 +207,145 @@ class InputGeneration:
 
 
 @dataclass(frozen=True, slots=True)
+class _NativeArtifactVerification:
+    """单次 plan 内可安全复用的紧凑校验结果。"""
+
+    authority_json: str | None
+    failure_code: str | None
+
+    def authority(self) -> dict[str, Any] | None:
+        if self.authority_json is None:
+            return None
+        return json.loads(self.authority_json)
+
+
+class _NativeArtifactVerifier:
+    """逐 plan 重开 Native artifact；不保留 context 或 DataFrame。"""
+
+    def __init__(
+        self,
+        generations: Sequence[InputGeneration],
+    ) -> None:
+        self._memo: dict[
+            tuple[Any, ...],
+            _NativeArtifactVerification,
+        ] = {}
+        fingerprints_by_id: dict[
+            str,
+            set[tuple[Any, ...]],
+        ] = {}
+        for generation in generations:
+            if generation.generation_type != "native_source":
+                continue
+            fingerprints_by_id.setdefault(
+                generation.generation_id,
+                set(),
+            ).add(_input_generation_fingerprint(generation))
+        self._conflicting_ids = frozenset(
+            generation_id
+            for generation_id, fingerprints in fingerprints_by_id.items()
+            if len(fingerprints) > 1
+        )
+
+    def verify(
+        self,
+        generation: InputGeneration,
+    ) -> tuple[Mapping[str, Any] | None, str | None]:
+        fingerprint = _input_generation_fingerprint(generation)
+        cached = self._memo.get(fingerprint)
+        if cached is not None:
+            return cached.authority(), cached.failure_code
+        if generation.generation_id in self._conflicting_ids:
+            result = _NativeArtifactVerification(
+                authority_json=None,
+                failure_code="NATIVE_GENERATION_DB_CONTEXT_DRIFT",
+            )
+            self._memo[fingerprint] = result
+            return None, result.failure_code
+
+        context = None
+        try:
+            context = open_native_generation(
+                Path(generation.manifest_uri),
+                expected_generation_id=generation.generation_id,
+                expected_manifest_sha256=generation.manifest_sha256,
+                expected_business_date=generation.business_date,
+                expected_feature_date=generation.feature_date,
+            )
+            database_uri = str(
+                Path(generation.manifest_uri).resolve(strict=True)
+            )
+            artifact_uri = str(
+                context.manifest_path.resolve(strict=True)
+            )
+            artifact = {
+                "generation_id": context.generation_id,
+                "generation_type": context.generation_type,
+                "business_date": context.business_date,
+                "feature_date": context.feature_date,
+                "readiness_basis": context.readiness_basis,
+                "source_commit_token": context.source_commit_token,
+                "dataset_content_id": context.dataset_content_id,
+                "schema_version": context.schema_version,
+                "exporter_version": context.exporter_version,
+                "manifest_uri": artifact_uri,
+                "manifest_sha256": context.manifest_sha256,
+                "sealed_at": context.sealed_at,
+            }
+            expected = {
+                "generation_id": generation.generation_id,
+                "generation_type": generation.generation_type,
+                "business_date": generation.business_date,
+                "feature_date": generation.feature_date,
+                "readiness_basis": generation.readiness_basis,
+                "source_commit_token": generation.source_commit_token,
+                "dataset_content_id": generation.dataset_content_id,
+                "schema_version": generation.schema_version,
+                "exporter_version": generation.exporter_version,
+                "manifest_uri": database_uri,
+                "manifest_sha256": generation.manifest_sha256,
+            }
+            comparable_artifact = {
+                key: artifact[key]
+                for key in expected
+            }
+            if comparable_artifact != expected:
+                result = _NativeArtifactVerification(
+                    authority_json=None,
+                    failure_code=(
+                        "NATIVE_GENERATION_DB_CONTEXT_DRIFT"
+                    ),
+                )
+            else:
+                authority = {
+                    "database": _input_generation_authority(
+                        generation
+                    ),
+                    "artifact": artifact,
+                }
+                result = _NativeArtifactVerification(
+                    authority_json=json.dumps(
+                        authority,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    failure_code=None,
+                )
+        except (ValueError, OSError):
+            result = _NativeArtifactVerification(
+                authority_json=None,
+                failure_code="NATIVE_GENERATION_ARTIFACT_INVALID",
+            )
+        finally:
+            if context is not None:
+                context.dispose()
+                del context
+        self._memo[fingerprint] = result
+        return result.authority(), result.failure_code
+
+
+@dataclass(frozen=True, slots=True)
 class SignalGapSnapshot:
     registry_targets: tuple[RegistryTarget, ...]
     expected_cases: tuple[ExpectedSignalCase, ...]
@@ -284,6 +445,9 @@ def build_signal_gap_plan(
             str(blocker["base_scheme_id"]),
             set(),
         ).add(str(blocker["code"]))
+    native_artifact_verifier = _NativeArtifactVerifier(
+        snapshot.input_generations
+    )
     expected_keys = {
         (case.segment, case.business_key)
         for case in snapshot.expected_cases
@@ -369,6 +533,9 @@ def build_signal_gap_plan(
             databridge_authority=snapshot.databridge_authority,
             databridge_authority_error=(
                 snapshot.databridge_authority_error
+            ),
+            native_artifact_verifier=(
+                native_artifact_verifier.verify
             ),
         )
         if (
@@ -1867,6 +2034,10 @@ def _resolve_action(
     generations: Sequence[InputGeneration],
     databridge_authority: StableDataBridgeCurrentAuthority | None,
     databridge_authority_error: str | None,
+    native_artifact_verifier: Callable[
+        [InputGeneration],
+        tuple[Mapping[str, Any] | None, str | None],
+    ],
 ) -> tuple[Action, Mapping[str, Any] | None, str]:
     if item.data_contract_error:
         return (
@@ -1909,6 +2080,7 @@ def _resolve_action(
     return _native_generation_eligibility(
         item,
         generations,
+        artifact_verifier=native_artifact_verifier,
     )
 
 
@@ -1964,6 +2136,11 @@ def _blackbox_generation_eligibility(
 def _native_generation_eligibility(
     item: ExpectedSignalCase,
     generations: Sequence[InputGeneration],
+    *,
+    artifact_verifier: Callable[
+        [InputGeneration],
+        tuple[Mapping[str, Any] | None, str | None],
+    ],
 ) -> tuple[Action, Mapping[str, Any] | None, str]:
     candidates = [
         row
@@ -1985,21 +2162,35 @@ def _native_generation_eligibility(
             "DUPLICATE_EXACT_NATIVE_GENERATION",
         )
     selected = candidates[0]
-    if not _valid_native_generation_fence(selected):
+    if not _valid_native_generation_fence(
+        selected,
+        expected_business_date=item.predict_date,
+        expected_feature_date=item.feature_date,
+    ):
         return (
             "BLOCKED_DATA_CONTRACT",
             None,
             "GENERATION_CONTRACT_INVALID",
         )
+    authority, failure_code = artifact_verifier(selected)
+    if failure_code is not None:
+        return (
+            "BLOCKED_DATA_CONTRACT",
+            None,
+            failure_code,
+        )
     return (
         "GRAY_LIVE_GAP",
-        _input_generation_authority(selected),
+        authority,
         "LIVE_BUSINESS_KEY_MISSING",
     )
 
 
 def _valid_native_generation_fence(
     generation: InputGeneration,
+    *,
+    expected_business_date: str,
+    expected_feature_date: str,
 ) -> bool:
     try:
         business_date = _canonical_date(
@@ -2016,23 +2207,38 @@ def _valid_native_generation_fence(
     except (SignalGapPlanError, TypeError, ValueError):
         return False
     return (
-        bool(generation.generation_id.strip())
+        _NATIVE_GENERATION_ID_PATTERN.fullmatch(
+            generation.generation_id
+        )
+        is not None
         and generation.generation_type == "native_source"
         and business_date == generation.business_date
         and feature_date == generation.feature_date
+        and business_date == expected_business_date
+        and feature_date == expected_feature_date
         and generation.readiness_basis
         in {"UPSTREAM_SEAL", "CLOCK_CONTRACT"}
-        and bool(generation.source_commit_token.strip())
-        and bool(generation.dataset_content_id.strip())
+        and _is_sha256(generation.source_commit_token)
+        and _is_sha256(generation.dataset_content_id)
         and bool(generation.schema_version.strip())
         and bool(generation.exporter_version.strip())
         and Path(generation.manifest_uri).is_absolute()
+        and Path(generation.manifest_uri).name == "manifest.json"
         and _is_sha256(generation.manifest_sha256)
         and generation.native_generation_id is None
         and generation.native_manifest_sha256 is None
         and generation.state == "SEALED"
         and sealed_at.isoformat(timespec="microseconds")
         == str(generation.sealed_at)
+    )
+
+
+def _input_generation_fingerprint(
+    generation: InputGeneration,
+) -> tuple[Any, ...]:
+    return tuple(
+        getattr(generation, field)
+        for field in _INPUT_GENERATION_FINGERPRINT_FIELDS
     )
 
 
