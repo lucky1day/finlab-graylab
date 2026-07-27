@@ -183,6 +183,8 @@
   },
   "private_publication": {
     "validated_private_publication": true,
+    "db_generation_row_registered": false,
+    "registration_scope": "validated_filesystem_publication_not_t_input_generations_sealed",
     "generation_id": "full-20260724-062251-4977e502dadf",
     "refresh_date": "2026-07-24",
     "business_digest_sha256": "4977e502dadfae225b8ae25461b870b28213356b4bc6f8e52c16aa739ace573b",
@@ -194,8 +196,8 @@
     "permitted_use": "historical_gray_backfill_only"
   },
   "verification": {
-    "targeted_passed": 280,
-    "platform_parallel_passed": 145,
+    "controller_combined": {"passed": 280, "subtests": 145},
+    "parallel_groups": {"passed": 278, "subtests": 140},
     "full_pytest": {"passed": 2846, "skipped": 25, "subtests": 952},
     "final_review": "no P0/P1"
   },

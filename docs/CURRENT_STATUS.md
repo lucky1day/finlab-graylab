@@ -53,8 +53,8 @@
   `gray_live` 的 95 条总日期计划无重叠、无缺口。生产快照仍为
   migration 17、rollout=`legacy`、admission=`BLOCKED`；本批 Registry、
   version、prediction、run、backtest、ledger 与 generation 均未写入。
-  主 checkout DataBridge 根目录为 `0755` 且 fresh live 数为零，只能使用
-  已验证的私有 sealed publication 作后续受控回补。此状态仅为
+  主 checkout DataBridge 根目录为 `0755` 且 fresh live 数为零；当前仅有
+  已验证的私有文件系统 publication 可供后续受控回补。它不是数据库 `t_input_generations` 的 `SEALED` 记录。此状态仅为
   `INTEGRATION_PREFLIGHT_READY_NO_WRITE`，不代表激活、前端展示或入库
   完成；完整机器证据见
   [FengRL 月度预检](blackbox_v2/records/FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)。

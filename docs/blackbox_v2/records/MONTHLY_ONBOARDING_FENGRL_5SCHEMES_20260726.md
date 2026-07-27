@@ -205,8 +205,9 @@ Registry 写入、持久化回测、`gray_live`、`scheduled_live` 或 scheduler
 `gray_live`，本批合计 95 条，按 `target_date < 2026-06-01` 和
 `target_date >= 2026-06-01` 严格切分，零重叠、零缺口。当前主 checkout
 DataBridge 根目录权限为 `0755`，不存在 fresh live publication；因此
-只能使用已经验证的私有 sealed publication 进行后续受控历史/灰度回补，
-不能伪造 fresh live。
+当前只能使用已经验证的私有文件系统 publication 进行后续受控历史/灰度
+回补。它不是数据库 `t_input_generations` 的 `SEALED` 记录，也不能用于
+伪造 fresh live。
 
 机器可读预检证据见
 [FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json](FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)。

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import plistlib
 import re
 import unittest
 from pathlib import Path
 
+from scheduler.discovery import load_scheme_config
 from shared.blackbox_v2.contracts import (
     OPTIONAL_METADATA_FIELDS,
     REQUEST_FIELDS,
@@ -826,11 +828,29 @@ class OnboardingDocumentationTests(unittest.TestCase):
             list(expected_identities),
         )
         for item in evidence["schemes"]:
+            scheme_root = PROJECT_ROOT / "schemes" / item["scheme_id"]
+            config = load_scheme_config(scheme_root / "config.yaml")
             self.assertEqual(item["runtime_type"], "blackbox_v2")
             self.assertEqual(item["task_type"], "monthly")
             self.assertEqual(item["horizon"], 1)
-            self.assertEqual(len(item["delivery_sha256"]), 2)
-            self.assertTrue(all(len(value) == 64 for value in item["delivery_sha256"].values()))
+            self.assertEqual(config.scheme_id, item["scheme_id"])
+            self.assertEqual(config.scheme_version, item["scheme_version"])
+            self.assertEqual(config.runtime_type, item["runtime_type"])
+            self.assertEqual(config.task_type, item["task_type"])
+            self.assertEqual(config.horizon, item["horizon"])
+            self.assertEqual(config.tenors, [item["target_tenor"]])
+            expected_filenames = {
+                f"{item['scheme_id']}.py",
+                f"{item['scheme_id']}.json",
+            }
+            self.assertEqual(set(item["delivery_sha256"]), expected_filenames)
+            for filename, expected_sha256 in item["delivery_sha256"].items():
+                actual_sha256 = hashlib.sha256(
+                    (scheme_root / "delivery" / filename).read_bytes()
+                ).hexdigest()
+                self.assertEqual(actual_sha256, expected_sha256)
+        self.assertTrue(evidence["date_plan"]["zero_overlap"])
+        self.assertTrue(evidence["date_plan"]["zero_gap"])
         self.assertEqual(evidence["date_plan"]["per_scheme"], {
             "history": 16,
             "gray_live": 3,
@@ -842,10 +862,49 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "total": 95,
         })
         self.assertEqual(
+            evidence["date_plan"]["batch"],
+            {
+                key: value * len(FENGRL_MONTHLY_SCHEME_IDS)
+                for key, value in evidence["date_plan"]["per_scheme"].items()
+            },
+        )
+        self.assertEqual(
             evidence["date_plan"]["gray_predict_dates"],
             ["2026-05-15", "2026-06-15", "2026-07-15"],
         )
         dates = evidence["date_plan"]["dates"]
+        expected_dates = [
+            ("history", "2025-01-15", "2025-01-15", "2025-02-14"),
+            ("history", "2025-02-15", "2025-02-14", "2025-03-14"),
+            ("history", "2025-03-15", "2025-03-14", "2025-04-15"),
+            ("history", "2025-04-15", "2025-04-15", "2025-05-15"),
+            ("history", "2025-05-15", "2025-05-15", "2025-06-13"),
+            ("history", "2025-06-15", "2025-06-13", "2025-07-15"),
+            ("history", "2025-07-15", "2025-07-15", "2025-08-15"),
+            ("history", "2025-08-15", "2025-08-15", "2025-09-15"),
+            ("history", "2025-09-15", "2025-09-15", "2025-10-15"),
+            ("history", "2025-10-15", "2025-10-15", "2025-11-14"),
+            ("history", "2025-11-15", "2025-11-14", "2025-12-15"),
+            ("history", "2025-12-15", "2025-12-15", "2026-01-15"),
+            ("history", "2026-01-15", "2026-01-15", "2026-02-13"),
+            ("history", "2026-02-15", "2026-02-13", "2026-03-13"),
+            ("history", "2026-03-15", "2026-03-13", "2026-04-15"),
+            ("history", "2026-04-15", "2026-04-15", "2026-05-15"),
+            ("gray_live", "2026-05-15", "2026-05-15", "2026-06-15"),
+            ("gray_live", "2026-06-15", "2026-06-15", "2026-07-15"),
+            ("gray_live", "2026-07-15", "2026-07-15", "2026-08-14"),
+        ]
+        actual_dates = [
+            (
+                item["phase"],
+                item["predict_date"],
+                item["feature_date"],
+                item["target_date"],
+            )
+            for item in dates
+        ]
+        self.assertEqual(actual_dates, expected_dates)
+        self.assertEqual(len(actual_dates), len(set(actual_dates)))
         self.assertEqual(len(dates), evidence["date_plan"]["per_scheme"]["total"])
         self.assertEqual(sum(item["phase"] == "history" for item in dates), 16)
         self.assertEqual(sum(item["phase"] == "gray_live" for item in dates), 3)
@@ -869,12 +928,24 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertFalse(evidence["authorization"]["writes_performed"])
         self.assertFalse(evidence["authorization"]["scheduler_or_scheduled_live"])
         self.assertFalse(evidence["private_publication"]["main_checkout_root_permission_valid"])
+        self.assertFalse(
+            evidence["private_publication"]["db_generation_row_registered"]
+        )
         self.assertEqual(evidence["private_publication"]["fresh_live_count"], 0)
+        self.assertEqual(
+            evidence["verification"]["controller_combined"],
+            {"passed": 280, "subtests": 145},
+        )
+        self.assertEqual(
+            evidence["verification"]["parallel_groups"],
+            {"passed": 278, "subtests": 140},
+        )
         record = FENGRL_MONTHLY_RECORD.read_text(encoding="utf-8")
         current = CURRENT_STATUS.read_text(encoding="utf-8")
         for text in (record, current):
             self.assertIn("INTEGRATION_PREFLIGHT_READY_NO_WRITE", text)
             self.assertIn("FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json", text)
+            self.assertIn("不是数据库 `t_input_generations` 的 `SEALED` 记录", text)
 
     def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
         todo = TODO.read_text(encoding="utf-8")
