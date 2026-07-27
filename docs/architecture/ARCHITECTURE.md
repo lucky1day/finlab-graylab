@@ -376,7 +376,7 @@ entry_point: predict.run         # 入口函数
 
 历史回测命名边界:
 
-- `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（例如 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_avg_5y_lgbm_0529`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）和旧 point-backed 周平均方案（如 `weekly_avg_7y_cross_d_overlay_0529`）已退役或暂停。
+- `scheme_id`: 真实方案实例，只能使用当前在库的方案目录名（例如 `t1_daily`、`t5_daily`、`weekly_5y_direct_0529`、`weekly_avg_5y_lgbm_0529`）。早先示例中的周度方案（如 `weekly_10y_d_overlay`）已退役；旧 point-backed 周平均方案已从运行代码和 Registry 删除。
 - `benchmark_id`: 历史基准批次，例如 `model_muti_0529`；外部来源证据归档位于 `source_evidence/benchmark_batches/{benchmark_id}/`，平台 active runner 的默认输入真源必须来自 `shared.input_artifacts`。
 - `data_source`: 数据口径枚举，例如 `framework_db_aligned`；API 负责映射成中文展示名，例如“当前DB对齐回测”。
 - 运行期输入 artifact: `backtest_artifacts/runtime_inputs/{scheme_id}/`。

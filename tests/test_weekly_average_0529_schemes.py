@@ -70,6 +70,22 @@ SCHEME_SPECS = {
 
 
 class WeeklyAverage0529SchemeTests(unittest.TestCase):
+    def test_superseded_point_backed_identities_are_not_discoverable(self) -> None:
+        from scheduler.discovery import discover_schemes
+
+        discovered_ids = {
+            config.scheme_id
+            for config in discover_schemes(PROJECT_ROOT / "schemes", strict=True)
+        }
+
+        self.assertTrue(
+            {
+                "weekly_avg_5y_direct_0529",
+                "weekly_avg_7y_cross_d_overlay_0529",
+                "weekly_avg_10y_d_overlay_0529",
+            }.isdisjoint(discovered_ids)
+        )
+
     def test_weekly_average_0529_scheme_set_is_1y_5y_10y_only(self) -> None:
         from scripts import rebuild_weekly_average_0529_benchmarks as rebuild
 

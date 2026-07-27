@@ -90,7 +90,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertEqual(raw["policy_version"], "1.0")
         self.assertEqual(raw["new_scheme_runtime_type"], "blackbox_v2")
         self.assertEqual(raw["native_v1_mode"], "maintenance_only")
-        self.assertEqual(len(raw["legacy_native_scheme_ids"]), 29)
+        self.assertEqual(len(raw["legacy_native_scheme_ids"]), 26)
 
     def test_blackbox_sops_match_machine_contract(self) -> None:
         for path in (UPSTREAM_SOP, PLATFORM_SOP):

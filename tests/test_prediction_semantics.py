@@ -86,7 +86,7 @@ class PredictionSemanticsTests(unittest.TestCase):
 
         calendar = _Calendar()
         record = PredictionRecord(
-            scheme_id="weekly_avg_5y_direct_0529",
+            scheme_id="weekly_avg_5y_lgbm_0529",
             target_tenor="5Y",
             horizon=6,
             predict_date="2026-06-13",

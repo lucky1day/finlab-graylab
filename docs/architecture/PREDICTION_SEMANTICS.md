@@ -191,7 +191,7 @@ target_date  = T + horizon
 
 批准原因是这三个源算法家族的源文件历史评价均为 source-original batch reproduction，候选排行需要复现原始 benchmark 口径，而不是把源算法事后改造成逐周 PIT 口径。`weekly_10y_d_overlay_0529` 的冲突最明显：Model2 固定分段包含 `2025H2_2026`，逐周 PIT 切片在 2025H1 无法构造未来半年度测试段，会导致 2025 年上半年没有有效 D-overlay 当前周信号。`weekly_5y_direct_0529` 和 `weekly_7y_cross_d_overlay_0529` 虽然缺口较小，但逐周切片仍会改变源 benchmark 的样本覆盖和对比口径，因此同样按历史 batch 例外处理。
 
-旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 曾错误复用周度单点输出并生成 run_id=`131/132/133`，现已暂停，仅作为历史审计保留，不属于当前周平均入库口径。当前有效周平均 0529 方案来自 `/Users/macstudio0/Desktop/方案/0629/forecast_project/` 的独立 LGBM 原始周平均算法，只覆盖 `1Y/5Y/10Y`，没有 `7Y`：
+旧 point-backed 周平均 `weekly_avg_5y_direct_0529` / `weekly_avg_7y_cross_d_overlay_0529` / `weekly_avg_10y_d_overlay_0529` 曾错误复用周度单点输出并生成 run_id=`131/132/133`，已从运行代码、Registry 和历史结果表中删除，不属于当前周平均入库口径。当前有效周平均 0529 方案来自 `/Users/macstudio0/Desktop/方案/0629/forecast_project/` 的独立 LGBM 原始周平均算法，只覆盖 `1Y/5Y/10Y`，没有 `7Y`：
 
 - `weekly_avg_1y_lgbm_0529`，latest backtest run_id=`137`，72 行。
 - `weekly_avg_5y_lgbm_0529`，latest backtest run_id=`138`，72 行。
