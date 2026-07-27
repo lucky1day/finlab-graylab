@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 from scheduler.discovery import SchemeConfig, load_scheme_config
 from scheduler.repository import (
+    BlackboxLifecycleIdentityAbsent,
     read_blackbox_lifecycle_state,
     register_blackbox_draft_identity,
     registry_scheme_id,
@@ -149,6 +150,7 @@ class BlackboxDraftRegisterGate(Gate):
                 "before": before,
                 "after": None,
                 "error": None,
+                "readback_error": None,
                 "business_tables_written": False,
                 "activation_performed": False,
             }
@@ -201,18 +203,19 @@ class BlackboxDraftRegisterGate(Gate):
                     expected_harness_run_id=passed_run.harness_run_id,
                 )
             except Exception as exc:  # noqa: BLE001
-                database_outcome, rollback_outcome, after = (
-                    _database_failure_outcome(engine, enriched_cfg)
-                )
+                probe = _database_failure_outcome(engine, enriched_cfg)
                 outcome = {
                     **prepared_outcome,
                     "authorization_consumed": True,
                     "status": "failed",
-                    "database_outcome": database_outcome,
-                    "rollback_outcome": rollback_outcome,
-                    "reconciliation_required": after is not None,
-                    "after": after,
+                    "database_outcome": probe.database_outcome,
+                    "rollback_outcome": probe.rollback_outcome,
+                    "reconciliation_required": (
+                        probe.reconciliation_required
+                    ),
+                    "after": probe.after,
                     "error": _error_payload(exc),
+                    "readback_error": probe.readback_error,
                 }
                 audit_errors = _try_write_outcome(outcome_path, outcome)
                 return _failed(
@@ -411,18 +414,47 @@ def _try_write_fallback_outcome(
     return []
 
 
+@dataclass(frozen=True)
+class _DatabaseFailureProbe:
+    identity_state: str
+    database_outcome: str
+    rollback_outcome: str
+    reconciliation_required: bool
+    after: dict[str, object] | None
+    readback_error: dict[str, str] | None
+
+
 def _database_failure_outcome(
     engine,
     cfg: SchemeConfig,
-) -> tuple[str, str, dict[str, object] | None]:
+) -> _DatabaseFailureProbe:
     try:
         state = read_blackbox_lifecycle_state(engine, cfg)
-    except Exception:  # noqa: BLE001
-        return "rolled_back_or_not_started", "rolled_back_or_not_started", None
-    return (
-        "identity_present_requires_reconciliation",
-        "not_confirmed_identity_present",
-        _lifecycle_state_payload(state),
+    except BlackboxLifecycleIdentityAbsent:
+        return _DatabaseFailureProbe(
+            identity_state="absent",
+            database_outcome="rolled_back_or_not_started",
+            rollback_outcome="rolled_back_or_not_started",
+            reconciliation_required=False,
+            after=None,
+            readback_error=None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _DatabaseFailureProbe(
+            identity_state="unknown",
+            database_outcome="unknown",
+            rollback_outcome="not_confirmed",
+            reconciliation_required=True,
+            after=None,
+            readback_error=_error_payload(exc),
+        )
+    return _DatabaseFailureProbe(
+        identity_state="present",
+        database_outcome="identity_present_requires_reconciliation",
+        rollback_outcome="not_confirmed_identity_present",
+        reconciliation_required=True,
+        after=_lifecycle_state_payload(state),
+        readback_error=None,
     )
 
 

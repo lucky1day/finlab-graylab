@@ -177,6 +177,10 @@ class BlackboxDraftRegisterLockTimeout(RuntimeError):
     """首次生产 draft 登记未能取得方案级互斥锁。"""
 
 
+class BlackboxLifecycleIdentityAbsent(RuntimeError):
+    """精确 Blackbox version 与 Registry 身份均明确不存在。"""
+
+
 @dataclass(frozen=True)
 class BlackboxExecutionApproval:
     """Blackbox V2 精确版本与 Registry 的执行批准证据。"""
@@ -1475,15 +1479,23 @@ def read_blackbox_lifecycle_state(engine: Engine, cfg: SchemeConfig) -> Blackbox
     expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
     with engine.begin() as conn:
         version_row = _read_scheme_version_conn(conn, cfg, for_update=False)
-        if version_row is None:
-            raise RuntimeError(
-                f"exact version not found: scheme_id={cfg.scheme_id} scheme_version={cfg.scheme_version}"
-            )
         registry_rows = _read_blackbox_registry_rows_conn(
             conn,
             cfg,
             expected_registry_ids,
             for_update=False,
+        )
+    if version_row is None:
+        if not registry_rows:
+            raise BlackboxLifecycleIdentityAbsent(
+                "exact Blackbox lifecycle identity is absent: "
+                f"scheme_id={cfg.scheme_id} "
+                f"scheme_version={cfg.scheme_version}"
+            )
+        raise RuntimeError(
+            "partial Blackbox lifecycle identity found without exact version: "
+            f"scheme_id={cfg.scheme_id} "
+            f"scheme_version={cfg.scheme_version}"
         )
     statuses = {str(row.get("status")) for row in registry_rows}
     if len(statuses) != 1:

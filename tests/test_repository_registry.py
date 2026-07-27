@@ -664,6 +664,31 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
             ("demo_blackbox__h1__10Y",),
         )
 
+    def test_lifecycle_read_only_reports_absent_when_all_identity_rows_are_missing(
+        self,
+    ) -> None:
+        from scheduler.repository import (
+            BlackboxLifecycleIdentityAbsent,
+            read_blackbox_lifecycle_state,
+        )
+
+        with self.assertRaises(BlackboxLifecycleIdentityAbsent):
+            read_blackbox_lifecycle_state(
+                _CaptureEngine(),
+                _blackbox_config(),
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "partial Blackbox lifecycle identity",
+        ):
+            read_blackbox_lifecycle_state(
+                _CaptureEngine(
+                    registry_rows=[self._active_registry_row()],
+                ),
+                _blackbox_config(),
+            )
+
     def test_exact_approval_rejects_active_config_with_shadow_version(self) -> None:
         from scheduler.repository import read_blackbox_execution_approval
 

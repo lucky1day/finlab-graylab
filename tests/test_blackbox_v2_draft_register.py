@@ -339,6 +339,7 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         self,
     ) -> None:
         from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+        from scheduler.repository import BlackboxLifecycleIdentityAbsent
 
         engine = SimpleNamespace(disposed=False)
 
@@ -361,8 +362,9 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
             ),
             patch(
                 "harness.blackbox_v2.draft_register.read_blackbox_lifecycle_state",
-                side_effect=RuntimeError("exact version not found"),
-                create=True,
+                side_effect=BlackboxLifecycleIdentityAbsent(
+                    "exact identity absent"
+                ),
             ),
         ):
             result = BlackboxDraftRegisterGate().run(ctx)
@@ -381,6 +383,8 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         )
         self.assertEqual(outcome["before"]["identity_exists"], False)
         self.assertIsNone(outcome["after"])
+        self.assertIsNone(outcome["readback_error"])
+        self.assertFalse(outcome["reconciliation_required"])
         evidence = {item.key: item.value for item in result.evidence}
         self.assertEqual(evidence["outcome"], outcome)
         self.assertEqual(
@@ -393,6 +397,105 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         self.assertFalse(replay.passed)
         self.assertEqual(replay.status.value, "blocked")
         self.assertIn("already used", "\n".join(replay.errors))
+
+    def test_repository_failure_with_present_identity_requires_reconciliation(
+        self,
+    ) -> None:
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+        from scheduler.repository import BlackboxLifecycleState
+
+        state = BlackboxLifecycleState(
+            scheme_id=self.cfg.scheme_id,
+            scheme_version=self.cfg.scheme_version,
+            runtime_type="blackbox_v2",
+            version_status="draft",
+            registry_status="paused",
+            environment_fingerprint="e" * 64,
+            data_snapshot_id="snapshot-1",
+            code_hash=self.cfg.code_hash,
+            config_hash=self.cfg.config_hash,
+            manifest_hash=self.cfg.manifest_hash,
+            approved_by=None,
+            approved_at=None,
+            registry_scheme_ids=(f"{self.cfg.scheme_id}__h1__10Y",),
+        )
+        with (
+            patch(
+                "harness.blackbox_v2.draft_register._verify_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register."
+                "register_blackbox_draft_identity",
+                side_effect=RuntimeError("release failed"),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register."
+                "read_blackbox_lifecycle_state",
+                return_value=state,
+            ),
+        ):
+            result = BlackboxDraftRegisterGate().run(
+                self._ctx(self._token())
+            )
+
+        outcome = {item.key: item.value for item in result.evidence}[
+            "outcome"
+        ]
+        self.assertEqual(
+            outcome["database_outcome"],
+            "identity_present_requires_reconciliation",
+        )
+        self.assertEqual(
+            outcome["rollback_outcome"],
+            "not_confirmed_identity_present",
+        )
+        self.assertTrue(outcome["reconciliation_required"])
+        self.assertEqual(
+            outcome["after"]["registry_scheme_ids"],
+            [f"{self.cfg.scheme_id}__h1__10Y"],
+        )
+        self.assertIsNone(outcome["readback_error"])
+
+    def test_repository_failure_with_unknown_readback_requires_reconciliation(
+        self,
+    ) -> None:
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+
+        with (
+            patch(
+                "harness.blackbox_v2.draft_register._verify_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register."
+                "register_blackbox_draft_identity",
+                side_effect=RuntimeError("release failed"),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register."
+                "read_blackbox_lifecycle_state",
+                side_effect=OSError("database temporarily unavailable"),
+            ),
+        ):
+            result = BlackboxDraftRegisterGate().run(
+                self._ctx(self._token())
+            )
+
+        outcome = {item.key: item.value for item in result.evidence}[
+            "outcome"
+        ]
+        self.assertEqual(outcome["database_outcome"], "unknown")
+        self.assertEqual(outcome["rollback_outcome"], "not_confirmed")
+        self.assertTrue(outcome["reconciliation_required"])
+        self.assertIsNone(outcome["after"])
+        self.assertEqual(
+            outcome["readback_error"],
+            {
+                "type": "OSError",
+                "message": "database temporarily unavailable",
+            },
+        )
 
     def test_post_commit_audit_failure_requires_reconciliation_with_fallback_audit(
         self,
