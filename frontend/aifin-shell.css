@@ -637,7 +637,7 @@ button {
 }
 
 .factor-ranking-table {
-  min-width: 1120px;
+  min-width: 1340px;
 }
 
 .factor-task-table th,
@@ -764,6 +764,34 @@ button {
   width: 64px;
 }
 
+.factor-ranking-table th:nth-child(2) {
+  width: 260px;
+}
+
+.factor-ranking-table th:nth-child(3) {
+  width: 180px;
+}
+
+.factor-ranking-table th:nth-child(4) {
+  width: 120px;
+}
+
+.factor-ranking-table th:nth-child(5) {
+  width: 140px;
+}
+
+.factor-ranking-table th:nth-child(6) {
+  width: 140px;
+}
+
+.factor-ranking-table th:nth-child(7) {
+  width: 120px;
+}
+
+.factor-ranking-table th:nth-child(8) {
+  width: 300px;
+}
+
 .factor-ranking-table td:first-child,
 .factor-ranking-table th:first-child,
 .factor-ranking-table td:nth-child(2),
@@ -773,6 +801,20 @@ button {
 
 .factor-ranking-table td:nth-child(2) {
   color: var(--text);
+}
+
+.factor-scheme-name,
+.factor-remark-text {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.factor-scheme-name {
+  overflow-wrap: anywhere;
 }
 
 .factor-sample-badge {

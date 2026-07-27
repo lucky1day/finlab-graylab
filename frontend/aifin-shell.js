@@ -2102,15 +2102,17 @@
     var barWidth = clampPercent(metric.overall);
     var metricSamples = requireMetricSamples(metric, "ranking metric");
     var deploymentDate = requireSchemeDeploymentDate(scheme, "ranking scheme");
+    var schemeName = escapeHtml(scheme.name);
+    var remark = escapeHtml(getSchemeRemark(scheme));
     return '<tr' + selectedClass + ' data-factor-scheme-id="' + escapeHtml(scheme.id) + '">' +
       '<td>' + (index + 1) + '</td>' +
-      '<td><strong>' + escapeHtml(scheme.name) + '</strong></td>' +
+      '<td><strong class="factor-scheme-name" title="' + schemeName + '">' + schemeName + '</strong></td>' +
       '<td class="' + getMetricClass(metric.overall) + '"><div class="factor-score-cell"><span>' + formatPercent(metric.overall) + '（' + metric.correct + '/' + metricSamples + '）</span><span class="factor-score-bar" aria-hidden="true"><span style="width:' + barWidth.toFixed(1) + '%"></span></span></div></td>' +
       '<td><span class="factor-sample-count">' + metric.samples + '</span>' + lowSampleHtml + '</td>' +
       '<td class="' + getMetricClass(metric.upPrecision) + '">' + formatPercent(metric.upPrecision) + '</td>' +
       '<td class="' + getMetricClass(metric.downPrecision) + '">' + formatPercent(metric.downPrecision) + '</td>' +
       '<td class="mono">' + escapeHtml(deploymentDate) + '</td>' +
-      '<td class="factor-remark-cell">' + escapeHtml(getSchemeRemark(scheme)) + '</td>' +
+      '<td class="factor-remark-cell"><span class="factor-remark-text" title="' + remark + '">' + remark + '</span></td>' +
       '</tr>';
   }
 

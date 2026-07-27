@@ -7,6 +7,7 @@ import re
 import subprocess
 import textwrap
 import unittest
+from html import escape as escape_html
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -3178,6 +3179,121 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertIn("2026/06/01", result["weekly10YRowHtml"])
         self.assertNotIn("factor-status-pill", result["weeklyRowHtml"])
         self.assertNotIn("active", result["weeklyRowHtml"])
+
+    def test_candidate_ranking_contains_long_scheme_name_and_remark(self) -> None:
+        result = _run_factor_lab_hook(
+            """
+            const metric = {
+              overall: 80,
+              correct: 8,
+              samples: 10,
+              metricSamples: 10,
+              upPrecision: 75,
+              downPrecision: 70
+            };
+            const schemeName =
+              "MACRO_DIFFUSION_FUNDSEASON_TRENDKERNEL";
+            const remark =
+              "以日/周/月三频宏观指标按传导通道聚合成8维扩散指数及其3期动量,并叠加季末月资金利差(DR007-OMO)的因果z特征;" +
+              "全部取值以15日业务月桶观察日as-of对齐,标准化用扩展窗口并滞后一期;" +
+              "五个期限池化后按趋势状态核对历史月加权训练Logistic回归,取1Y行上行概率大于等于0.5记为收益率上行方向1,否则为-1。";
+            const unsafeSuffix = "\\\"<tag>&";
+            const renderedSchemeName = schemeName + unsafeSuffix;
+            const renderedRemark = remark + unsafeSuffix;
+            const rowHtml = hooks.renderSchemeRankingRowForTest(
+              {
+                id: "long-copy",
+                name: renderedSchemeName,
+                remark: renderedRemark,
+                deploymentDate: "2026/07/27"
+              },
+              0,
+              metric
+            );
+            return {
+              rowHtml,
+              schemeName,
+              remark,
+              renderedSchemeName,
+              renderedRemark
+            };
+            """
+        )
+
+        self.assertEqual(
+            result["schemeName"],
+            "MACRO_DIFFUSION_FUNDSEASON_TRENDKERNEL",
+        )
+        self.assertGreater(len(result["remark"]), 150)
+        escaped_scheme_name = escape_html(
+            result["renderedSchemeName"],
+            quote=True,
+        )
+        escaped_remark = escape_html(result["renderedRemark"], quote=True)
+        self.assertIn(
+            f'class="factor-scheme-name" title="{escaped_scheme_name}">'
+            f"{escaped_scheme_name}</strong>",
+            result["rowHtml"],
+        )
+        self.assertIn(
+            f'class="factor-remark-text" title="{escaped_remark}">'
+            f"{escaped_remark}</span>",
+            result["rowHtml"],
+        )
+
+        css = FRONTEND_CSS.read_text(encoding="utf-8")
+        ranking_table_rules = re.findall(
+            r"\.factor-ranking-table \{([^}]+)\}",
+            css,
+        )
+        self.assertIn("min-width: 1340px;", ranking_table_rules[-1])
+        rank_column_rule = _css_rule(
+            ".factor-ranking-table td:first-child,\n"
+            ".factor-ranking-table th:first-child"
+        )
+        scheme_column_rule = _css_rule(
+            ".factor-ranking-table th:nth-child(2)"
+        )
+        accuracy_column_rule = _css_rule(
+            ".factor-ranking-table th:nth-child(3)"
+        )
+        sample_column_rule = _css_rule(
+            ".factor-ranking-table th:nth-child(4)"
+        )
+        up_column_rule = _css_rule(
+            ".factor-ranking-table th:nth-child(5)"
+        )
+        down_column_rule = _css_rule(
+            ".factor-ranking-table th:nth-child(6)"
+        )
+        deployment_column_rule = _css_rule(
+            ".factor-ranking-table th:nth-child(7)"
+        )
+        remark_column_rule = _css_rule(
+            ".factor-ranking-table th:nth-child(8)"
+        )
+        clamped_text_rule = _css_rule(
+            ".factor-scheme-name,\n.factor-remark-text"
+        )
+        scheme_name_rule = _css_rule(".factor-scheme-name")
+        ranking_wrap_rule = _css_rule(
+            ".factor-task-wrap,\n.factor-ranking-wrap"
+        )
+
+        self.assertIn("width: 64px;", rank_column_rule)
+        self.assertIn("width: 260px;", scheme_column_rule)
+        self.assertIn("width: 180px;", accuracy_column_rule)
+        self.assertIn("width: 120px;", sample_column_rule)
+        self.assertIn("width: 140px;", up_column_rule)
+        self.assertIn("width: 140px;", down_column_rule)
+        self.assertIn("width: 120px;", deployment_column_rule)
+        self.assertIn("width: 300px;", remark_column_rule)
+        self.assertIn("display: -webkit-box;", clamped_text_rule)
+        self.assertIn("-webkit-box-orient: vertical;", clamped_text_rule)
+        self.assertIn("-webkit-line-clamp: 2;", clamped_text_rule)
+        self.assertIn("overflow: hidden;", clamped_text_rule)
+        self.assertIn("overflow-wrap: anywhere;", scheme_name_rule)
+        self.assertIn("overflow-x: auto;", ranking_wrap_rule)
 
     def test_scheme_ranking_hides_scheme_version_fingerprint(self) -> None:
         result = _run_factor_lab_hook(
