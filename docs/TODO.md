@@ -29,6 +29,20 @@
 本批没有 `scheduled_live`，也没有修改 rollout、admission 或 scheduler。时点证据见
 [FengRL 五个月度方案记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)。
 
+## 已完成：Blackbox 自动调度防护 MVP
+
+版本化 `blackbox_scheduler_admission_v1` 已冻结当前 5 个正式 Blackbox
+身份为 `formal`、FengRL 五个月度身份为 `gray`。`gray` 方案可以继续
+保持 Registry active、手工运行和前端可见，但会在 legacy scheduler
+注册、startup catch-up 和 scheduled wrapper 三个入口被拒绝；manual
+single、manual aggregate 和 legacy `--run-once predictions` 不受影响。
+
+该防护同时拒绝未知 Blackbox、版本漂移和保留 Blackbox ID 的 runtime
+重分类。策略缺失、非 UTF-8 或定义漂移时只关闭 Blackbox 自动调度，
+Native、actuals、health 和 watchdog 继续。它没有实现 automatic gray
+scheduling、没有写入 `scheduled_live`，也没有改变 rollout=`legacy`
+或 admission=`BLOCKED`。
+
 ## P1：日频平台前置依赖（严格顺序）
 
 本批自动调度只能在以下依赖全部通过后开始；每项均需有可审计证据，不能以 recorder、伪造 seal、生产库写入或其他替代物跳过。
@@ -45,7 +59,12 @@
 
 ## P2：独立 gray/formal admission 与本批自动灰度
 
-仅在 P1 全部通过、调度设计验收通过且获得新的专项授权后，才建设独立的 `scheduler_admission=gray|formal`（即 `gray/formal admission`）。它必须与既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray admission 通过后才可把以下已完成人工灰度的方案接入 `automatic gray scheduling`：
+当前静态 admission 只解决“active 不等于自动调度权限”的安全同步问题。
+仅在 P1 全部通过、调度设计验收通过且获得新的专项授权后，才扩展为
+可执行的 `scheduler_admission=gray|formal` 和独立 gray 队列。它必须与
+既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray
+execution admission 通过后才可把以下已完成人工灰度的方案接入
+`automatic gray scheduling`：
 
 - `ten_y_t5_maj3_k3_ic_static_v1`
 - `ten_y_t5_maj4_k3_ic_static_v1`
@@ -57,13 +76,14 @@
 - `cgb_a4_fundseason_7y`
 - `cgb_a4_fundseason_10y`
 
-active 配置中的 `schedule_cron` 不构成调度授权；在 gray admission 通过前，不得把本
-integration 合入或用于重启 legacy scheduler。该 integration 的 active daily
-discovery 为 25 item/29 target，而正式 policy 仍为闭世界 21 item/25 target；
-policy、coordinator 和 replay 全量测试继续按设计 fail-closed。`active` 不等于
-scheduler 授权，禁止旧
-generation fallback。`formal` 的准入必须另行授权，不能由 `gray`、description
-豁免或本批手工入库结论推导。
+active 配置中的 `schedule_cron` 不构成调度授权。FengRL 五个月度方案
+已由当前静态 admission 明确冻结为 `gray`，可随开发版本同步但不能
+产生自动任务。10Y T+5 四方案代码仍保留在独立 integration 分支，
+尚未纳入当前开发版本；其 active daily discovery 为 25 item/29 target，
+而正式 policy 仍为闭世界 21 item/25 target，后续必须单独完成重基、
+全量回归和集成决策。`active` 不等于 scheduler 授权，禁止旧 generation
+fallback。`formal` 的准入必须另行授权，不能由 `gray`、description
+豁免或手工入库结论推导。
 
 ## P3：正式晋级
 

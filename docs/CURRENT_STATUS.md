@@ -30,8 +30,14 @@
 - 四方案使用 DataBridge generation `full-20260724-062251-4977e502dadf` 与 runtime snapshot `snapshot-46ff3231de2c4a080c46ba56`，灰度日期范围为 `predict_date=2026-05-26..2026-07-20`、`feature_date=2026-05-25..2026-07-17`、`target_date=2026-06-01..2026-07-24`；本批共 156 条 `gray_live`，与历史无重叠。
 - `/api/schemes` 已返回四方案，前端 10Y/T+5 格子共有 8 个候选；每个新方案由 333 条 backtest 与 39 条 `gray_live` 组成，合计 372 条前端展示记录。
 - 本批 `scheduled_live=0`，三层 ledger 为 `0/0/0`；rollout=`legacy`、admission=`BLOCKED`，没有启动或修改 scheduler。手工灰度入库完成不授予自动调度或正式日批准入。
-- 四个 active 配置虽含 `schedule_cron`，在 gray admission 前不得把本 integration 合入或用于重启 legacy scheduler；自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止。
-- 本 integration 的 active daily discovery 为 25 item/29 target，而正式 policy 仍保持闭世界 21 item/25 target；policy、coordinator 和 replay 全量测试因此按设计 fail-closed。该结果是上线阻断证据，不是回归通过；gray admission 分离灰度 discovery 前必须继续隔离本分支。
+- 四方案代码仍保留在独立
+  `codex/blackbox-v2-10y-t5-gray-integration-20260726`，尚未纳入当前
+  开发版本。该分支的 active daily discovery 为 25 item/29 target，而正式
+  policy 仍保持闭世界 21 item/25 target；后续必须单独重基、验证和决定
+  集成，不能因数据库已 active 推导为代码已同步。
+- 四个 active 配置中的 `schedule_cron` 只是交付元数据，不构成 scheduler
+  授权，也不授予 legacy scheduler 执行权限。
+- 自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止。
 - 四个缺少 `description` 的不可变既有交付均为 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED`；exact version、摘要和来源证据见[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
 
 ## 本轮五个月度方案手工灰度状态
@@ -54,8 +60,14 @@
   generation `full-20260724-062251-4977e502dadf`。
 - 本批每方案 `scheduled_live=0`，全局既有 scheduled 基线仍为
   490 runs / 513 predictions，三层 ledger 为 `0/0/0`；
-  rollout=`legacy`、admission=`BLOCKED`。scheduler/backend 未重启且仍从
-  主仓库运行；本次手工灰度不授予定时调度、正式日批、合并、推送或部署。
+  rollout=`legacy`、admission=`BLOCKED`。本次手工灰度不授予定时调度、
+  正式日批、推送或部署。
+- Blackbox 自动调度防护 MVP 已通过：精确 5 个既有正式身份为
+  `formal`、本批五个月度身份为 `gray`。五个月度方案不会注册 legacy
+  scheduler job、不会进入 startup catch-up，也不能通过 scheduled wrapper
+  执行；手工运行与前端可见性保持不变。未知身份、版本/runtime 漂移和
+  非 UTF-8/损坏策略均 fail-closed 于 Blackbox 自动调度域，不影响 Native、
+  actuals、health 或 watchdog。该结论不等于 automatic gray scheduling。
 - 历史预检的 `INTEGRATION_PREFLIGHT_READY_NO_WRITE` 与
   [FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json](blackbox_v2/records/FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)
   仍保留为操作前时点证据；其中私有 publication

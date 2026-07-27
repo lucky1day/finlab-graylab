@@ -19,6 +19,8 @@ Add one version-controlled control file,
 - The control file must equal the code-owned closed set of ten exact
   `scheme_id + scheme_version -> mode` entries. Missing, extra, mode-drifted,
   or version-drifted entries invalidate the policy.
+- The ten base scheme IDs are reserved Blackbox identities. Reclassifying one
+  as Native cannot bypass admission and is denied with a critical audit event.
 - A missing or invalid admission file fails closed for all automatic Blackbox
   execution while Native jobs, actuals, and health/watchdog jobs keep their
   current behavior.
