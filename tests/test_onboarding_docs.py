@@ -529,15 +529,17 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertNotIn("migration017 namespace digest", text)
         self.assertIn("migration017 namespace digest", current)
         self.assertIn("f93b154", current)
+        self.assertNotIn("migration017 real MySQL recovery", text)
+        self.assertIn("migration017 real MySQL recovery", current)
+        self.assertIn("66e7a6b", current)
         self.assertIn("MySQL 8.0.45", current)
         self.assertIn("lower_case_table_names=2", current)
         self.assertIn(
-            "不替代下一项真实 MySQL recovery 演练",
+            "不代表下一项 canonical migration runner 已完成",
             current,
         )
 
         dependencies = (
-            "migration017 real MySQL recovery",
             "canonical migration runner",
             "execute-only replay",
             "real 17 Native + 4 formal V2 21/25",
