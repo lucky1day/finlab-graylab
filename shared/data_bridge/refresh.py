@@ -41,6 +41,18 @@ class DataBridgeRefreshError(RuntimeError):
     """A full refresh could not produce a stable valid dataset."""
 
 
+class DataBridgeCurrentReadError(DataBridgeRefreshError):
+    """严格只读 current 检查失败。"""
+
+
+class DataBridgeCurrentMissingError(DataBridgeCurrentReadError):
+    """严格只读 current 所需的已发布状态缺失。"""
+
+
+class DataBridgeCurrentInvalidError(DataBridgeCurrentReadError):
+    """严格只读 current 的目录、状态或内容无效。"""
+
+
 class DataBridgePublicationFenceError(DataBridgeRefreshError):
     """Occurrence-bound publication capability 已缺失或漂移。"""
 
@@ -521,16 +533,13 @@ def check_current_dataset(
     expected_publication_capability: (
         DailyCoordinatorPublicationCapability | None
     ) = None,
+    strict_read_only: bool = False,
 ) -> CurrentDataset:
     """在共享锁内验证 current 文件、状态及调用方拥有的发布身份。"""
     store = DataBridgeStore(data_root=config.data_root, runtime_root=config.runtime_root)
-    with store.lock(exclusive=False):
-        if not store.state_path.is_file():
-            raise DataBridgeRefreshError("DataBridge refresh state does not exist")
-        try:
-            state = json.loads(store.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise DataBridgeRefreshError("DataBridge refresh state is invalid") from exc
+    with store.current_read(
+        strict_read_only=strict_read_only,
+    ) as state:
         marker = _read_publication_manifest(store.current_dir)
         state_identity = _publication_identity_from_state(state)
         if marker != state_identity:
@@ -549,9 +558,13 @@ def check_current_dataset(
             expected_daily_date=expected_daily_date,
         )
         if state.get("schema_version") != dataset.schema_version:
-            raise DataBridgeRefreshError("DataBridge state schema_version does not match current files")
+            raise DataBridgeRefreshError(
+                "DataBridge state schema_version does not match current files"
+            )
         if state.get("business_digest") != dataset.business_digest:
-            raise DataBridgeRefreshError("DataBridge state digest does not match current files")
+            raise DataBridgeRefreshError(
+                "DataBridge state digest does not match current files"
+            )
         _validate_identity_against_dataset(
             marker,
             dataset=dataset,
@@ -585,17 +598,28 @@ def check_current_dataset(
                 f"expected {expected_business_digest}, "
                 f"got {dataset.business_digest}"
             )
-        if required_refresh_date is not None and state.get("refresh_date") != required_refresh_date:
+        if (
+            required_refresh_date is not None
+            and state.get("refresh_date") != required_refresh_date
+        ):
             raise DataBridgeRefreshError(
-                f"DataBridge refresh_date must be {required_refresh_date}, got {state.get('refresh_date')}"
+                f"DataBridge refresh_date must be {required_refresh_date}, "
+                f"got {state.get('refresh_date')}"
             )
         state_files = state.get("files")
         if not isinstance(state_files, dict):
-            raise DataBridgeRefreshError("DataBridge state files profile is missing")
+            raise DataBridgeRefreshError(
+                "DataBridge state files profile is missing"
+            )
         for filename, profile in dataset.files.items():
             item = state_files.get(filename)
-            if not isinstance(item, dict) or item.get("sha256") != profile.sha256:
-                raise DataBridgeRefreshError(f"DataBridge state hash mismatch for {filename}")
+            if (
+                not isinstance(item, dict)
+                or item.get("sha256") != profile.sha256
+            ):
+                raise DataBridgeRefreshError(
+                    f"DataBridge state hash mismatch for {filename}"
+                )
         return CurrentDataset(state=state, dataset=dataset)
 
 
@@ -1031,12 +1055,62 @@ class DataBridgeStore:
         self._thread_lock_state = threading.local()
 
     @contextmanager
+    def current_read(
+        self,
+        *,
+        strict_read_only: bool = False,
+    ) -> Iterator[Mapping[str, object]]:
+        """在一个 shared lock 范围内读取 state 并映射 current 错误。"""
+        with self.lock(
+            exclusive=False,
+            strict_read_only=strict_read_only,
+        ):
+            try:
+                if strict_read_only:
+                    state = _read_strict_current_state(self.state_path)
+                else:
+                    if not self.state_path.is_file():
+                        raise DataBridgeRefreshError(
+                            "DataBridge refresh state does not exist"
+                        )
+                    try:
+                        state = json.loads(
+                            self.state_path.read_text(encoding="utf-8")
+                        )
+                    except (OSError, json.JSONDecodeError) as exc:
+                        raise DataBridgeRefreshError(
+                            "DataBridge refresh state is invalid"
+                        ) from exc
+                yield state
+            except (
+                DataBridgeCurrentMissingError,
+                DataBridgeCurrentInvalidError,
+            ):
+                raise
+            except (
+                DataBridgeRefreshError,
+                DataBridgeValidationError,
+                OSError,
+                ValueError,
+            ) as exc:
+                if strict_read_only:
+                    raise DataBridgeCurrentInvalidError(
+                        "DataBridge current is invalid"
+                    ) from exc
+                raise
+
+    @contextmanager
     def lock(
         self,
         *,
         exclusive: bool,
         blocking: bool = True,
+        strict_read_only: bool = False,
     ) -> Iterator[None]:
+        if strict_read_only and exclusive:
+            raise ValueError(
+                "strict DataBridge read lock cannot be exclusive"
+            )
         depth = int(getattr(self._thread_lock_state, "depth", 0))
         held_exclusive = bool(
             getattr(self._thread_lock_state, "exclusive", False)
@@ -1053,15 +1127,31 @@ class DataBridgeStore:
                 self._thread_lock_state.depth -= 1
             return
 
-        _ensure_private_directory(
-            self.data_root,
-            label="DataBridge data root",
-        )
-        _ensure_private_directory(
-            self.runtime_root,
-            label="DataBridge runtime root",
-        )
-        with self.lock_path.open("a+b") as handle:
+        if strict_read_only:
+            _require_private_directory(
+                self.data_root,
+                label="DataBridge data root",
+                error_type=DataBridgeCurrentInvalidError,
+                missing_error_type=DataBridgeCurrentMissingError,
+            )
+            _require_private_directory(
+                self.runtime_root,
+                label="DataBridge runtime root",
+                error_type=DataBridgeCurrentInvalidError,
+                missing_error_type=DataBridgeCurrentMissingError,
+            )
+            handle = _open_strict_read_lock(self.lock_path)
+        else:
+            _ensure_private_directory(
+                self.data_root,
+                label="DataBridge data root",
+            )
+            _ensure_private_directory(
+                self.runtime_root,
+                label="DataBridge runtime root",
+            )
+            handle = self.lock_path.open("a+b")
+        with handle:
             operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
             if not blocking:
                 operation |= fcntl.LOCK_NB
@@ -1387,21 +1477,110 @@ def _fsync_regular_file(path: Path) -> None:
         os.close(descriptor)
 
 
-def _require_private_directory(path: Path, *, label: str) -> None:
+def _require_private_directory(
+    path: Path,
+    *,
+    label: str,
+    error_type: type[DataBridgeRefreshError] = DataBridgeRefreshError,
+    missing_error_type: (
+        type[DataBridgeRefreshError] | None
+    ) = None,
+) -> None:
     try:
         info = path.lstat()
     except FileNotFoundError as exc:
-        raise DataBridgeRefreshError(f"{label} is missing") from exc
+        raise (missing_error_type or error_type)(
+            f"{label} is missing"
+        ) from exc
     if stat.S_ISLNK(info.st_mode):
-        raise DataBridgeRefreshError(f"{label} must not be a symlink")
+        raise error_type(f"{label} must not be a symlink")
     if not stat.S_ISDIR(info.st_mode):
-        raise DataBridgeRefreshError(f"{label} must be a directory")
+        raise error_type(f"{label} must be a directory")
     if info.st_uid != os.getuid():
-        raise DataBridgeRefreshError(f"{label} has another owner")
+        raise error_type(f"{label} has another owner")
     if stat.S_IMODE(info.st_mode) & 0o077:
-        raise DataBridgeRefreshError(
+        raise error_type(
             f"{label} must be private (mode 0700 or stricter)"
         )
+
+
+def _open_strict_read_lock(path: Path):
+    """原子、无跟随地打开既有 lock，不创建任何目录或文件。"""
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except FileNotFoundError as exc:
+        raise DataBridgeCurrentMissingError(
+            "DataBridge refresh lock is missing"
+        ) from exc
+    except OSError as exc:
+        raise DataBridgeCurrentInvalidError(
+            "DataBridge refresh lock is invalid"
+        ) from exc
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o022
+        ):
+            raise DataBridgeCurrentInvalidError(
+                "DataBridge refresh lock is unsafe"
+            )
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_strict_current_state(path: Path) -> dict[str, object]:
+    """无跟随读取既有 state，缺失与损坏在 shared lock 内分类。"""
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except FileNotFoundError as exc:
+        raise DataBridgeCurrentMissingError(
+            "DataBridge refresh state does not exist"
+        ) from exc
+    except OSError as exc:
+        raise DataBridgeCurrentInvalidError(
+            "DataBridge refresh state is invalid"
+        ) from exc
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            info = os.fstat(handle.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                raise DataBridgeCurrentInvalidError(
+                    "DataBridge refresh state is not a regular file"
+                )
+            raw = handle.read(4 * 1024 * 1024 + 1)
+    except OSError as exc:
+        raise DataBridgeCurrentInvalidError(
+            "DataBridge refresh state is invalid"
+        ) from exc
+    if len(raw) > 4 * 1024 * 1024:
+        raise DataBridgeCurrentInvalidError(
+            "DataBridge refresh state is too large"
+        )
+    try:
+        state = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise DataBridgeCurrentInvalidError(
+            "DataBridge refresh state is invalid"
+        ) from exc
+    if not isinstance(state, dict):
+        raise DataBridgeCurrentInvalidError(
+            "DataBridge refresh state must be an object"
+        )
+    return state
 
 
 def _ensure_private_directory(path: Path, *, label: str) -> None:

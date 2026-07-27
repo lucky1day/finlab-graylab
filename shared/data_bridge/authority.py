@@ -7,6 +7,9 @@ from datetime import date
 from typing import Any, Iterable, Mapping
 
 from shared.data_bridge.refresh import (
+    DataBridgeCurrentInvalidError,
+    DataBridgeCurrentMissingError,
+    DataBridgeCurrentReadError,
     DataBridgeRefreshConfig,
     DataBridgeRefreshError,
     check_current_dataset,
@@ -20,16 +23,7 @@ from shared.input_artifacts import (
 AUTHORITY_SCHEMA_VERSION = "stable-databridge-current-authority-v1"
 
 
-class DataBridgeCurrentAuthorityError(RuntimeError):
-    """稳定 DataBridge current authority 无法建立。"""
-
-
-class DataBridgeCurrentMissingError(DataBridgeCurrentAuthorityError):
-    """DataBridge current 尚未发布。"""
-
-
-class DataBridgeCurrentInvalidError(DataBridgeCurrentAuthorityError):
-    """DataBridge current 或其稳定身份无效。"""
+DataBridgeCurrentAuthorityError = DataBridgeCurrentReadError
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,17 +81,21 @@ def resolve_stable_databridge_current_authority(
         for value in feature_dates
     }))
     try:
-        current = check_current_dataset(config)
+        current = check_current_dataset(
+            config,
+            strict_read_only=True,
+        )
+    except (
+        DataBridgeCurrentMissingError,
+        DataBridgeCurrentInvalidError,
+    ):
+        raise
     except (
         DataBridgeRefreshError,
         DataBridgeValidationError,
         OSError,
         ValueError,
     ) as exc:
-        if not (config.runtime_root / "state.json").is_file():
-            raise DataBridgeCurrentMissingError(
-                "DataBridge current is unavailable"
-            ) from exc
         raise DataBridgeCurrentInvalidError(
             "DataBridge current is invalid"
         ) from exc

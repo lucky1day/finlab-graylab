@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import dataclasses
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import call, patch
@@ -11,8 +10,9 @@ import pandas as pd
 from shared.blackbox_v2.snapshot import CutoffKeys
 from shared.data_bridge.refresh import (
     CurrentDataset,
+    DataBridgeCurrentInvalidError,
+    DataBridgeCurrentMissingError,
     DataBridgeRefreshConfig,
-    DataBridgeRefreshError,
 )
 from shared.data_bridge.validation import (
     DataBridgeFileProfile,
@@ -270,46 +270,28 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                     changed.stable_identity_sha256,
                 )
 
-    def test_missing_and_invalid_current_have_distinct_types(self) -> None:
+    def test_missing_and_invalid_checker_types_are_propagated(self) -> None:
         from shared.data_bridge.authority import (
-            DataBridgeCurrentInvalidError,
-            DataBridgeCurrentMissingError,
             resolve_stable_databridge_current_authority,
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            config = dataclasses.replace(
-                self.config,
-                data_root=root / "data",
-                runtime_root=root / "runtime",
-            )
-            with patch(
-                "shared.data_bridge.authority.check_current_dataset",
-                side_effect=DataBridgeRefreshError("missing"),
+        for error_type in (
+            DataBridgeCurrentMissingError,
+            DataBridgeCurrentInvalidError,
+        ):
+            with (
+                self.subTest(error_type=error_type.__name__),
+                patch(
+                    "shared.data_bridge.authority.check_current_dataset",
+                    side_effect=error_type("checker classification"),
+                ),
+                self.assertRaises(error_type),
             ):
-                with self.assertRaises(DataBridgeCurrentMissingError):
-                    resolve_stable_databridge_current_authority(
-                        config,
-                        feature_dates=("2026-07-15",),
-                        connection=self.connection,
-                    )
-
-            config.runtime_root.mkdir(parents=True)
-            (config.runtime_root / "state.json").write_text(
-                "{invalid",
-                encoding="utf-8",
-            )
-            with patch(
-                "shared.data_bridge.authority.check_current_dataset",
-                side_effect=DataBridgeRefreshError("invalid"),
-            ):
-                with self.assertRaises(DataBridgeCurrentInvalidError):
-                    resolve_stable_databridge_current_authority(
-                        config,
-                        feature_dates=("2026-07-15",),
-                        connection=self.connection,
-                    )
+                resolve_stable_databridge_current_authority(
+                    self.config,
+                    feature_dates=("2026-07-15",),
+                    connection=self.connection,
+                )
 
     def test_cutoff_sql_helpers_receive_the_caller_connection(self) -> None:
         from shared.input_artifacts import (
