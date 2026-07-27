@@ -950,7 +950,7 @@ if __name__ == "__main__":
             forbidden = root / "forbidden.txt"
             completed = subprocess.run(
                 [
-                    sys.executable,
+                    command[0],
                     "-I",
                     "-c",
                     bootstrap,
