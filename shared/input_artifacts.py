@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import pandas as pd
 
@@ -926,6 +926,34 @@ def resolve_blackbox_input_cutoffs_bulk(
     schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
 ) -> dict[str, CutoffKeys]:
     """一次读取平台来源与快照，为多个 feature_date 解析三频截止键。"""
+    normalized_dates = tuple(dict.fromkeys(
+        _normalize_feature_date(value) for value in feature_dates
+    ))
+    if not normalized_dates:
+        return {}
+    snapshot_keys = _load_snapshot_cutoff_keys(snapshot)
+    own_engine = engine is None
+    engine = engine or _data_service.create_sqlalchemy_engine()
+    try:
+        return _resolve_blackbox_input_cutoffs_bulk_from_keys(
+            snapshot_keys,
+            feature_dates=normalized_dates,
+            connection=engine,
+            schema_path=schema_path,
+        )
+    finally:
+        if own_engine:
+            engine.dispose()
+
+
+def _resolve_blackbox_input_cutoffs_bulk_from_keys(
+    snapshot_keys: Mapping[str, Any],
+    *,
+    feature_dates: Iterable[str],
+    connection: Any,
+    schema_path: str | Path = BLACKBOX_SCHEMA_PATH,
+) -> dict[str, CutoffKeys]:
+    """使用已冻结 key 集合和 caller Connection 批量解析截止键。"""
     normalized_dates = list(dict.fromkeys(
         _normalize_feature_date(value) for value in feature_dates
     ))
@@ -933,52 +961,52 @@ def resolve_blackbox_input_cutoffs_bulk(
         return {}
 
     _, expected_columns = _load_blackbox_schema(schema_path)
-    snapshot_keys = _load_snapshot_cutoff_keys(snapshot)
-    own_engine = engine is None
-    engine = engine or _data_service.create_sqlalchemy_engine()
-    try:
-        metadata = _data_service.read_factor_metadata_from_db(engine)
-        weekly_codes = expected_columns["weekly_output.csv"][1:]
-        weekly_raw = _data_service.read_weekly_long_from_db(
-            weekly_codes,
-            "api_wind_weekly",
-            engine,
-        )
-        weekly_derivative = _data_service.read_weekly_long_from_db(
-            weekly_codes,
-            "api_wind_derivative_weekly",
-            engine,
-        )
-        monthly_selected = _data_service.select_factor_metadata(metadata, "monthly")
-        monthly_codes = monthly_selected["indicators_code"].astype(str).str.strip().tolist()
-        monthly_raw = _data_service.read_monthly_long_from_db(
-            monthly_codes,
-            "api_wind_monthly",
-            engine,
-        )
-        monthly_derivative = _data_service.read_monthly_long_from_db(
-            monthly_codes,
-            "api_wind_derivative_monthly",
-            engine,
-            include_month_id=True,
-        )
-        max_date = max(normalized_dates)
-        weekly_index = _data_service.build_weekly_cutoff_index_from_frames(
-            expected_columns["weekly_output.csv"],
-            weekly_raw,
-            weekly_derivative,
-            end_date=max_date,
-        )
-        monthly_index = _data_service.build_monthly_cutoff_index_from_frames(
-            metadata,
-            monthly_raw,
-            monthly_derivative,
-            end_date=max_date,
-        )
-    finally:
-        if own_engine:
-            engine.dispose()
-
+    metadata = _data_service.read_factor_metadata_from_db(connection)
+    weekly_codes = expected_columns["weekly_output.csv"][1:]
+    weekly_raw = _data_service.read_weekly_long_from_db(
+        weekly_codes,
+        "api_wind_weekly",
+        connection,
+    )
+    weekly_derivative = _data_service.read_weekly_long_from_db(
+        weekly_codes,
+        "api_wind_derivative_weekly",
+        connection,
+    )
+    monthly_selected = _data_service.select_factor_metadata(
+        metadata,
+        "monthly",
+    )
+    monthly_codes = (
+        monthly_selected["indicators_code"]
+        .astype(str)
+        .str.strip()
+        .tolist()
+    )
+    monthly_raw = _data_service.read_monthly_long_from_db(
+        monthly_codes,
+        "api_wind_monthly",
+        connection,
+    )
+    monthly_derivative = _data_service.read_monthly_long_from_db(
+        monthly_codes,
+        "api_wind_derivative_monthly",
+        connection,
+        include_month_id=True,
+    )
+    max_date = max(normalized_dates)
+    weekly_index = _data_service.build_weekly_cutoff_index_from_frames(
+        expected_columns["weekly_output.csv"],
+        weekly_raw,
+        weekly_derivative,
+        end_date=max_date,
+    )
+    monthly_index = _data_service.build_monthly_cutoff_index_from_frames(
+        metadata,
+        monthly_raw,
+        monthly_derivative,
+        end_date=max_date,
+    )
     daily_dates = snapshot_keys["date"]
     weekly_by_date = _resolve_period_cutoffs_bulk(
         normalized_dates,
