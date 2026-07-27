@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -22,6 +25,14 @@ class _BreakBefore017DDL(RuntimeError):
 
 
 class _BreakAfter017DDL(RuntimeError):
+    pass
+
+
+class _BreakBefore018DDL(RuntimeError):
+    pass
+
+
+class _BreakAfter018DDL(RuntimeError):
     pass
 
 
@@ -139,6 +150,61 @@ def _apply_until_mid_017_ddl(engine) -> None:
         unittest.TestCase().assertRaises(
             migration_runner.MigrationPartialApplyError
         ),
+    ):
+        migration_runner.apply_migration_files(engine, MIGRATIONS)
+
+
+def _apply_until_before_018_ddl(engine) -> None:
+    """通过公开 runner 让 018 history=APPLYING 且尚未执行 DDL。"""
+    _execute_legacy_016_without_history(engine)
+    original_execute = (
+        migration_runner._execute_prepared_migration_files
+    )
+
+    def break_before_018(candidate_engine, prepared):
+        prepared_files = [
+            (path, tuple(statements))
+            for path, statements in prepared
+        ]
+        if any(
+            path.name.startswith("018_")
+            for path, _ in prepared_files
+        ):
+            raise _BreakBefore018DDL(
+                "break before migration 018 DDL"
+            )
+        return original_execute(candidate_engine, prepared_files)
+
+    with (
+        patch.object(
+            migration_runner,
+            "_execute_prepared_migration_files",
+            side_effect=break_before_018,
+        ),
+        unittest.TestCase().assertRaises(_BreakBefore018DDL),
+    ):
+        migration_runner.apply_migration_files(engine, MIGRATIONS)
+
+
+def _apply_until_after_018_ddl(engine) -> None:
+    """通过公开 runner 在 018 DDL 完成、history mark 前中断。"""
+    _execute_legacy_016_without_history(engine)
+    original_mark = migration_runner._mark_migration_applied
+
+    def break_after_018(candidate_engine, migration):
+        if migration.version == 18:
+            raise _BreakAfter018DDL(
+                "break after migration 018 DDL before history mark"
+            )
+        return original_mark(candidate_engine, migration)
+
+    with (
+        patch.object(
+            migration_runner,
+            "_mark_migration_applied",
+            side_effect=break_after_018,
+        ),
+        unittest.TestCase().assertRaises(_BreakAfter018DDL),
     ):
         migration_runner.apply_migration_files(engine, MIGRATIONS)
 
@@ -280,11 +346,275 @@ def _assert_mysql_cleaned(
     testcase.assertIsNotNone(process.poll())
 
 
+def _run_isolated_migration_cli(
+    engine,
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    """仅把临时 replay Engine 的凭据注入 canonical CLI。"""
+    url = engine.url
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("BOND_DB_")
+    }
+    environment.update(
+        {
+            "BOND_DB_HOST": str(url.host),
+            "BOND_DB_PORT": str(url.port),
+            "BOND_DB_USER": str(url.username),
+            "BOND_DB_PASSWORD": str(url.password),
+            "BOND_DB_NAME": str(url.database),
+        }
+    )
+    return subprocess.run(
+        (
+            sys.executable,
+            str(PROJECT_ROOT / "scripts" / "apply_migrations.py"),
+            *arguments,
+        ),
+        cwd=PROJECT_ROOT,
+        env=environment,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+
+def _assert_isolated_cli_succeeded(
+    testcase: unittest.TestCase,
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    """子进程失败时不把可能含凭据的输出写进测试日志。"""
+    testcase.assertEqual(
+        0,
+        result.returncode,
+        "isolated migration CLI failed",
+    )
+
+
+def _read_isolated_cli_json(
+    testcase: unittest.TestCase,
+    engine,
+    *arguments: str,
+) -> dict[str, object]:
+    result = _run_isolated_migration_cli(engine, *arguments)
+    _assert_isolated_cli_succeeded(testcase, result)
+    lines = [
+        line for line in result.stdout.splitlines() if line.strip()
+    ]
+    try:
+        payload = json.loads(lines[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise AssertionError(
+            "isolated migration CLI did not return JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise AssertionError(
+            "isolated migration CLI returned non-object JSON"
+        )
+    return payload
+
+
+def _history_and_fingerprint_snapshot(engine):
+    with engine.connect() as connection:
+        fingerprint = (
+            migration_runner.read_daily_ledger_schema_fingerprint(
+                connection
+            )
+        )
+    history = tuple(
+        (
+            int(row["version"]),
+            str(row["filename"]),
+            str(row["sha256"]),
+            str(row["state"]),
+            int(row["baseline_bootstrap"]),
+        )
+        for row in _history_rows(engine)
+    )
+    return history, fingerprint
+
+
 @unittest.skipUnless(
     os.environ.get("BFL_MIGRATION_017_MYSQL") == "1",
     "set BFL_MIGRATION_017_MYSQL=1 for migration 017 MySQL recovery",
 )
 class Migration017MySQLRecoveryTests(unittest.TestCase):
+    def test_canonical_cli_apply_is_idempotent_on_legacy_016(self) -> None:
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            _schema, engine = server.create_replay_database()
+            _execute_legacy_016_without_history(engine)
+
+            first_apply = _run_isolated_migration_cli(engine, "--apply")
+            _assert_isolated_cli_succeeded(self, first_apply)
+            first_history, first_fingerprint = (
+                _history_and_fingerprint_snapshot(engine)
+            )
+            migration_runner.validate_daily_ledger_schema_fingerprint(
+                first_fingerprint,
+                allow_missing=False,
+            )
+
+            second_apply = _run_isolated_migration_cli(engine, "--apply")
+            _assert_isolated_cli_succeeded(self, second_apply)
+            second_history, second_fingerprint = (
+                _history_and_fingerprint_snapshot(engine)
+            )
+
+            self.assertEqual("", second_apply.stdout.strip())
+            self.assertEqual(first_history, second_history)
+            self.assertEqual(first_fingerprint, second_fingerprint)
+            self.assertEqual(
+                list(range(1, 19)),
+                [row[0] for row in second_history],
+            )
+            self.assertTrue(
+                all(row[3] == "APPLIED" for row in second_history)
+            )
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
+    def test_canonical_cli_recovers_mid_017_then_applies_018(self) -> None:
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            _schema, engine = server.create_replay_database()
+            _apply_until_mid_017_ddl(engine)
+            _assert_exact_applying_017_history(self, engine)
+
+            inspection = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-017",
+            )
+            self.assertEqual(
+                "COMPATIBLE_PARTIAL",
+                inspection["classification"],
+            )
+            digest = str(inspection["state_digest"])
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            recovery = _read_isolated_cli_json(
+                self,
+                engine,
+                "--recover-applying-017",
+                "--apply",
+                "--state-digest",
+                digest,
+            )
+            self.assertEqual("APPLIED", recovery["recovery_outcome"])
+            self.assertEqual(
+                "COMPATIBLE_PARTIAL",
+                recovery["initial_classification"],
+            )
+            _assert_017_applied(self, engine)
+            self.assertEqual(
+                list(range(1, 18)),
+                [int(row["version"]) for row in _history_rows(engine)],
+            )
+
+            apply_018 = _run_isolated_migration_cli(engine, "--apply")
+            _assert_isolated_cli_succeeded(self, apply_018)
+            rows = _history_rows(engine)
+            self.assertEqual(
+                list(range(1, 19)),
+                [int(row["version"]) for row in rows],
+            )
+            self.assertEqual("APPLIED", rows[-1]["state"])
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
+    def test_canonical_cli_recovers_pre_ddl_018(self) -> None:
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            _schema, engine = server.create_replay_database()
+            _apply_until_before_018_ddl(engine)
+
+            inspection = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-018",
+            )
+            self.assertEqual(
+                "COMPATIBLE_PARTIAL",
+                inspection["classification"],
+            )
+            recovery = _read_isolated_cli_json(
+                self,
+                engine,
+                "--recover-applying-018",
+                "--apply",
+                "--state-digest",
+                str(inspection["state_digest"]),
+            )
+
+            self.assertEqual("APPLIED", recovery["recovery_outcome"])
+            self.assertEqual(
+                "COMPATIBLE_PARTIAL",
+                recovery["initial_classification"],
+            )
+            rows = _history_rows(engine)
+            self.assertEqual(18, len(rows))
+            self.assertEqual("APPLIED", rows[-1]["state"])
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
+    def test_canonical_cli_marks_ddl_complete_018_history(self) -> None:
+        retained_root = None
+        process = None
+        with isolated_replay_mysql() as server:
+            retained_root = server.root
+            process = server.process
+            _schema, engine = server.create_replay_database()
+            _apply_until_after_018_ddl(engine)
+
+            inspection = _read_isolated_cli_json(
+                self,
+                engine,
+                "--inspect-applying-018",
+            )
+            self.assertEqual("COMPLETE", inspection["classification"])
+            recovery = _read_isolated_cli_json(
+                self,
+                engine,
+                "--recover-applying-018",
+                "--apply",
+                "--state-digest",
+                str(inspection["state_digest"]),
+            )
+
+            self.assertEqual("APPLIED", recovery["recovery_outcome"])
+            self.assertEqual("COMPLETE", recovery["initial_classification"])
+            rows = _history_rows(engine)
+            self.assertEqual(18, len(rows))
+            self.assertEqual("APPLIED", rows[-1]["state"])
+
+        _assert_mysql_cleaned(
+            self,
+            retained_root=retained_root,
+            process=process,
+        )
+
     def test_normal_apply_reaches_complete_history(self) -> None:
         retained_root = None
         process = None
