@@ -1890,8 +1890,10 @@ def read_legacy_016_baseline(
                    c.check_clause AS check_clause
             FROM information_schema.table_constraints AS t
             JOIN information_schema.check_constraints AS c
-              ON c.constraint_schema = t.constraint_schema
-             AND c.constraint_name = t.constraint_name
+              ON BINARY c.constraint_schema =
+                 BINARY t.constraint_schema
+             AND BINARY c.constraint_name =
+                 BINARY t.constraint_name
             WHERE t.constraint_schema = DATABASE()
               AND t.table_name IN ({table_sql})
               AND t.constraint_type = 'CHECK'
@@ -2045,6 +2047,17 @@ def validate_mysql_session_contract(
         raise MigrationPreflightError(
             "migration requires foreign_key_checks=1"
         )
+    try:
+        lower_case_table_names = int(
+            facts.get("lower_case_table_names")
+        )
+    except (TypeError, ValueError):
+        lower_case_table_names = -1
+    if lower_case_table_names != 2:
+        raise MigrationPreflightError(
+            "migration requires lower_case_table_names=2 for the "
+            "reviewed constraint namespace semantics"
+        )
 
 
 def preflight_migration_session(connection: object) -> None:
@@ -2058,7 +2071,8 @@ def preflight_migration_session(connection: object) -> None:
                    @@version_comment AS version_comment,
                    @@SESSION.sql_mode AS sql_mode,
                    @@SESSION.time_zone AS session_time_zone,
-                   @@SESSION.foreign_key_checks AS foreign_key_checks
+                   @@SESSION.foreign_key_checks AS foreign_key_checks,
+                   @@lower_case_table_names AS lower_case_table_names
             """
         )
     ).mappings().one()
@@ -2853,8 +2867,10 @@ def read_daily_ledger_schema_fingerprint(
                    c.check_clause AS check_clause
             FROM information_schema.table_constraints AS t
             JOIN information_schema.check_constraints AS c
-              ON c.constraint_schema = t.constraint_schema
-             AND c.constraint_name = t.constraint_name
+              ON BINARY c.constraint_schema =
+                 BINARY t.constraint_schema
+             AND BINARY c.constraint_name =
+                 BINARY t.constraint_name
             WHERE t.constraint_schema = DATABASE()
               AND t.table_name IN ({table_names})
               AND t.constraint_type = 'CHECK'
@@ -3005,6 +3021,167 @@ def read_daily_ledger_schema_fingerprint(
         "foreign_keys": foreign_keys,
         "checks": checks,
     }
+
+
+def _daily_ledger_reserved_constraint_names(
+    constraint_type: str,
+) -> tuple[str, ...]:
+    """从 017 期望定义派生指定类型的 schema 级保留名称。"""
+    expected = expected_daily_ledger_schema_fingerprint()
+    category = {
+        "foreign_key": "foreign_keys",
+        "check": "checks",
+    }.get(constraint_type)
+    if category is None:
+        raise ValueError(
+            f"unsupported daily ledger constraint type: {constraint_type}"
+        )
+    definitions = expected[category]
+    assert isinstance(definitions, Mapping)
+    return tuple(sorted(str(name) for name in definitions))
+
+
+def read_daily_ledger_schema_global_constraints(
+    connection: object,
+) -> tuple[dict[str, object], ...]:
+    """读取 migration 017 保留名称在整个 schema 中的占用。"""
+    foreign_key_names = ",".join(
+        f"'{name}'"
+        for name in _daily_ledger_reserved_constraint_names("foreign_key")
+    )
+    check_names = ",".join(
+        f"'{name}'"
+        for name in _daily_ledger_reserved_constraint_names("check")
+    )
+    foreign_key_rows = connection.execute(
+        text(
+            f"""
+            SELECT k.constraint_name AS constraint_name,
+                   k.constraint_schema AS constraint_schema,
+                   k.table_name AS table_name,
+                   k.column_name AS column_name,
+                   k.ordinal_position AS ordinal_position,
+                   k.referenced_table_schema
+                       AS referenced_table_schema,
+                   k.referenced_table_name AS referenced_table_name,
+                   k.referenced_column_name
+                       AS referenced_column_name,
+                   r.update_rule AS update_rule,
+                   r.delete_rule AS delete_rule
+            FROM information_schema.key_column_usage AS k
+            JOIN information_schema.referential_constraints AS r
+              ON r.constraint_schema = k.constraint_schema
+             AND r.constraint_name = k.constraint_name
+             AND r.table_name = k.table_name
+            WHERE k.constraint_schema = DATABASE()
+              AND LOWER(k.constraint_name) IN ({foreign_key_names})
+              AND k.referenced_table_name IS NOT NULL
+            ORDER BY k.constraint_schema,
+                     k.constraint_name,
+                     k.table_name,
+                     k.ordinal_position
+            """
+        )
+    ).mappings().all()
+    check_rows = connection.execute(
+        text(
+            f"""
+            SELECT t.constraint_name AS constraint_name,
+                   t.constraint_schema AS constraint_schema,
+                   t.table_name AS table_name,
+                   t.enforced AS enforced,
+                   c.check_clause AS check_clause
+            FROM information_schema.table_constraints AS t
+            JOIN information_schema.check_constraints AS c
+              ON BINARY c.constraint_schema =
+                 BINARY t.constraint_schema
+             AND BINARY c.constraint_name =
+                 BINARY t.constraint_name
+            WHERE t.constraint_schema = DATABASE()
+              AND CONVERT(t.constraint_name USING utf8mb4)
+                  COLLATE utf8mb4_0900_as_ci IN ({check_names})
+              AND t.constraint_type = 'CHECK'
+            ORDER BY t.constraint_schema,
+                     t.constraint_name,
+                     t.table_name
+            """
+        )
+    ).mappings().all()
+
+    grouped_foreign_keys: dict[
+        tuple[str, str, str],
+        list[Mapping[str, object]],
+    ] = {}
+    for row in foreign_key_rows:
+        identity = (
+            str(row["constraint_schema"]),
+            str(row["constraint_name"]),
+            str(row["table_name"]).lower(),
+        )
+        grouped_foreign_keys.setdefault(identity, []).append(row)
+
+    constraints: list[dict[str, object]] = []
+    for (schema, name, table_name), rows in (
+        grouped_foreign_keys.items()
+    ):
+        ordered = sorted(
+            rows,
+            key=lambda item: int(item["ordinal_position"]),
+        )
+        constraints.append(
+            {
+                "constraint_name": name,
+                "constraint_type": "foreign_key",
+                "schema": schema,
+                "table": table_name,
+                "columns": tuple(
+                    str(row["column_name"]).lower()
+                    for row in ordered
+                ),
+                "referenced_schema": str(
+                    ordered[0]["referenced_table_schema"]
+                ),
+                "referenced_table": str(
+                    ordered[0]["referenced_table_name"]
+                ).lower(),
+                "referenced_columns": tuple(
+                    str(row["referenced_column_name"]).lower()
+                    for row in ordered
+                ),
+                "update_rule": str(
+                    ordered[0]["update_rule"]
+                ).lower(),
+                "delete_rule": str(
+                    ordered[0]["delete_rule"]
+                ).lower(),
+            }
+        )
+    for row in check_rows:
+        constraints.append(
+            {
+                "constraint_name": str(row["constraint_name"]),
+                "constraint_type": "check",
+                "schema": str(row["constraint_schema"]),
+                "table": str(row["table_name"]).lower(),
+                "clause": _canonical_check_clause(
+                    row["check_clause"]
+                ),
+                "enforced": (
+                    str(row["enforced"]).upper() == "YES"
+                ),
+            }
+        )
+    return tuple(
+        sorted(
+            constraints,
+            key=lambda item: (
+                str(item["constraint_name"]),
+                str(item["constraint_type"]),
+                str(item["schema"]),
+                str(item["table"]),
+            ),
+        )
+    )
 
 
 def read_daily_ledger_upgrade_state(
@@ -3309,6 +3486,9 @@ def read_daily_ledger_upgrade_state(
         "fingerprint": read_daily_ledger_schema_fingerprint(
             connection
         ),
+        "schema_global_constraints": (
+            read_daily_ledger_schema_global_constraints(connection)
+        ),
     }
 
 
@@ -3318,6 +3498,140 @@ def preflight_daily_ledger_upgrade(connection: object) -> None:
         return
     state = read_daily_ledger_upgrade_state(connection)
     validate_daily_ledger_upgrade_state(state)
+
+
+def _validate_daily_ledger_constraint_namespace(
+    fingerprint: Mapping[str, object],
+    constraints: object,
+) -> None:
+    """约束全域占用必须与目标表 fingerprint 精确对应。"""
+    if not isinstance(constraints, (list, tuple)):
+        raise MigrationPreflightError(
+            "daily ledger constraint namespace state is invalid"
+        )
+    foreign_keys = fingerprint.get("foreign_keys", {})
+    checks = fingerprint.get("checks", {})
+    if not isinstance(foreign_keys, Mapping):
+        raise MigrationPreflightError(
+            "daily ledger constraint namespace foreign keys are invalid"
+        )
+    if not isinstance(checks, Mapping):
+        raise MigrationPreflightError(
+            "daily ledger constraint namespace checks are invalid"
+        )
+
+    expected_names = {
+        "foreign_key": set(
+            _daily_ledger_reserved_constraint_names("foreign_key")
+        ),
+        "check": set(
+            _daily_ledger_reserved_constraint_names("check")
+        ),
+    }
+    observed_identities: set[tuple[str, str]] = set()
+    for raw_constraint in constraints:
+        if not isinstance(raw_constraint, Mapping):
+            raise MigrationPreflightError(
+                "daily ledger constraint namespace entry is invalid"
+            )
+        name = str(
+            raw_constraint.get("constraint_name") or ""
+        )
+        constraint_type = str(
+            raw_constraint.get("constraint_type") or ""
+        )
+        identity = (constraint_type, name)
+        if (
+            constraint_type not in expected_names
+            or name not in expected_names[constraint_type]
+            or identity in observed_identities
+        ):
+            raise MigrationPreflightError(
+                "daily ledger constraint namespace has an unexpected "
+                f"occupancy: {dict(raw_constraint)}"
+            )
+        observed_identities.add(identity)
+        schema = str(raw_constraint.get("schema") or "")
+        if not schema:
+            raise MigrationPreflightError(
+                "daily ledger constraint namespace schema is missing"
+            )
+
+        if constraint_type == "foreign_key":
+            referenced_schema = str(
+                raw_constraint.get("referenced_schema") or ""
+            )
+            raw_columns = raw_constraint.get("columns")
+            raw_referenced_columns = raw_constraint.get(
+                "referenced_columns"
+            )
+            if (
+                not isinstance(raw_columns, (list, tuple))
+                or not isinstance(
+                    raw_referenced_columns,
+                    (list, tuple),
+                )
+            ):
+                raise MigrationPreflightError(
+                    "daily ledger constraint namespace foreign key "
+                    "columns are invalid"
+                )
+            observed_definition = {
+                "table": str(raw_constraint.get("table") or ""),
+                "columns": tuple(str(item) for item in raw_columns),
+                "referenced_table": str(
+                    raw_constraint.get("referenced_table") or ""
+                ),
+                "referenced_columns": tuple(
+                    str(item) for item in raw_referenced_columns
+                ),
+                "delete_rule": str(
+                    raw_constraint.get("delete_rule") or ""
+                ),
+                "update_rule": str(
+                    raw_constraint.get("update_rule") or ""
+                ),
+            }
+            expected_definition = foreign_keys.get(name)
+            schema_is_valid = (
+                bool(referenced_schema)
+                and referenced_schema == schema
+            )
+        else:
+            observed_definition = {
+                "table": str(raw_constraint.get("table") or ""),
+                "clause": str(raw_constraint.get("clause") or ""),
+                "enforced": raw_constraint.get("enforced"),
+            }
+            expected_definition = checks.get(name)
+            schema_is_valid = isinstance(
+                raw_constraint.get("enforced"),
+                bool,
+            )
+        if (
+            not schema_is_valid
+            or not isinstance(expected_definition, Mapping)
+            or observed_definition != dict(expected_definition)
+        ):
+            raise MigrationPreflightError(
+                "daily ledger constraint namespace conflicts with "
+                f"migration 017: {dict(raw_constraint)}"
+            )
+
+    fingerprint_identities = {
+        ("foreign_key", str(name))
+        for name in foreign_keys
+        if str(name) in expected_names["foreign_key"]
+    } | {
+        ("check", str(name))
+        for name in checks
+        if str(name) in expected_names["check"]
+    }
+    if observed_identities != fingerprint_identities:
+        raise MigrationPreflightError(
+            "daily ledger constraint namespace does not match the "
+            "observed migration 017 fingerprint"
+        )
 
 
 def validate_daily_ledger_upgrade_state(
@@ -3343,6 +3657,10 @@ def validate_daily_ledger_upgrade_state(
         fingerprint,
         allow_missing=True,
         allow_nullable_transitions=True,
+    )
+    _validate_daily_ledger_constraint_namespace(
+        fingerprint,
+        state.get("schema_global_constraints"),
     )
     for required_table in (
         "t_scheme_runs",

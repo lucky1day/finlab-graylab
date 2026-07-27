@@ -240,15 +240,29 @@ class _UpgradeStateConnection:
         columns: dict[str, tuple[str, ...]],
         row_counts: dict[str, int] | None = None,
         violations: dict[str, int] | None = None,
+        schema_global_foreign_keys: (
+            list[dict[str, object]] | None
+        ) = None,
+        schema_global_checks: list[dict[str, object]] | None = None,
     ) -> None:
         self.dialect = SimpleNamespace(name="mysql")
         self._table_names = table_names
         self._columns = columns
         self._row_counts = row_counts or {}
         self._violations = violations or {}
+        self._schema_global_foreign_keys = (
+            schema_global_foreign_keys or []
+        )
+        self._schema_global_checks = schema_global_checks or []
+        self.executed_sql: list[str] = []
 
     def execute(self, statement: object) -> _RowsResult | _ScalarResult:
         sql = " ".join(str(statement).lower().split())
+        self.executed_sql.append(sql)
+        if "from information_schema.key_column_usage" in sql:
+            return _RowsResult(self._schema_global_foreign_keys)
+        if "from information_schema.table_constraints" in sql:
+            return _RowsResult(self._schema_global_checks)
         if "from information_schema.tables" in sql:
             key = (
                 "table_name"
@@ -289,6 +303,61 @@ class _UpgradeStateConnection:
             if f"from `{table_name}`" in sql:
                 return _ScalarResult(0)
         raise AssertionError(f"unexpected upgrade-state query: {sql}")
+
+
+def _schema_global_constraints_from_fingerprint(
+    fingerprint: Mapping[str, object],
+    *,
+    schema: str = "bfl_clone",
+) -> tuple[dict[str, object], ...]:
+    """把测试 fingerprint 转为 schema 全域约束占用。"""
+    constraints: list[dict[str, object]] = []
+    foreign_keys = fingerprint.get("foreign_keys", {})
+    checks = fingerprint.get("checks", {})
+    assert isinstance(foreign_keys, Mapping)
+    assert isinstance(checks, Mapping)
+    for name, raw_definition in foreign_keys.items():
+        assert isinstance(raw_definition, Mapping)
+        constraints.append(
+            {
+                "constraint_name": str(name),
+                "constraint_type": "foreign_key",
+                "schema": schema,
+                "table": raw_definition["table"],
+                "columns": tuple(raw_definition["columns"]),
+                "referenced_schema": schema,
+                "referenced_table":
+                    raw_definition["referenced_table"],
+                "referenced_columns": tuple(
+                    raw_definition["referenced_columns"]
+                ),
+                "update_rule": raw_definition["update_rule"],
+                "delete_rule": raw_definition["delete_rule"],
+            }
+        )
+    for name, raw_definition in checks.items():
+        assert isinstance(raw_definition, Mapping)
+        constraints.append(
+            {
+                "constraint_name": str(name),
+                "constraint_type": "check",
+                "schema": schema,
+                "table": raw_definition["table"],
+                "clause": raw_definition["clause"],
+                "enforced": raw_definition["enforced"],
+            }
+        )
+    return tuple(
+        sorted(
+            constraints,
+            key=lambda item: (
+                str(item["constraint_name"]),
+                str(item["constraint_type"]),
+                str(item["schema"]),
+                str(item["table"]),
+            ),
+        )
+    )
 
 
 class _FingerprintConnection:
@@ -621,6 +690,7 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
             ),
             "session_time_zone": "+00:00",
             "foreign_key_checks": 1,
+            "lower_case_table_names": 2,
         }
 
     @staticmethod
@@ -643,6 +713,7 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
                 "foreign_keys": {},
                 "checks": {},
             },
+            "schema_global_constraints": (),
         }
 
     def test_exposes_mysql_session_contract_validator(self) -> None:
@@ -712,6 +783,25 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "foreign_key_checks"):
             migration_runner.validate_mysql_session_contract(invalid_fk)
 
+    def test_mysql_session_contract_binds_constraint_name_semantics(
+        self,
+    ) -> None:
+        for lower_case_table_names in (0, 1, None):
+            with self.subTest(
+                lower_case_table_names=lower_case_table_names
+            ):
+                invalid = self._valid_session_facts()
+                invalid["lower_case_table_names"] = (
+                    lower_case_table_names
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "lower_case_table_names=2",
+                ):
+                    migration_runner.validate_mysql_session_contract(
+                        invalid
+                    )
+
     def test_exposes_connection_session_preflight(self) -> None:
         self.assertTrue(
             callable(
@@ -743,6 +833,8 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
         migration_runner.preflight_migration_session(connection)
 
         connection.execute.assert_called_once()
+        sql = str(connection.execute.call_args.args[0]).lower()
+        self.assertIn("@@lower_case_table_names", sql)
 
     def test_connection_session_preflight_propagates_unsafe_contract(
         self,
@@ -880,6 +972,20 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
 
         self.assertEqual(observed, expected)
         self.assertEqual(len(connection.executed_sql), 5)
+        check_query = next(
+            sql
+            for sql in connection.executed_sql
+            if "information_schema.check_constraints" in sql
+        )
+        normalized_check_query = " ".join(check_query.split())
+        self.assertIn(
+            "binary c.constraint_schema = binary t.constraint_schema",
+            normalized_check_query,
+        )
+        self.assertIn(
+            "binary c.constraint_name = binary t.constraint_name",
+            normalized_check_query,
+        )
 
     def test_daily_ledger_schema_fingerprint_rejects_missing_postcondition(
         self,
@@ -1106,6 +1212,9 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
             },
         }
         state["fingerprint"] = fingerprint
+        state["schema_global_constraints"] = (
+            _schema_global_constraints_from_fingerprint(fingerprint)
+        )
 
         with self.assertRaisesRegex(RuntimeError, "resource_class"):
             migration_runner.validate_daily_ledger_upgrade_state(state)
@@ -1133,6 +1242,11 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
                     },
                 }
                 state["fingerprint"] = fingerprint
+                state["schema_global_constraints"] = (
+                    _schema_global_constraints_from_fingerprint(
+                        fingerprint
+                    )
+                )
                 state["violations"][violation] = 1
                 with self.assertRaisesRegex(RuntimeError, violation):
                     migration_runner.validate_daily_ledger_upgrade_state(
@@ -1176,6 +1290,11 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
         del state["fingerprint"]["indexes"][
             "t_schedule_occurrences.uk_schedule_occurrence"
         ]
+        state["schema_global_constraints"] = (
+            _schema_global_constraints_from_fingerprint(
+                state["fingerprint"]
+            )
+        )
 
         with self.assertRaisesRegex(RuntimeError, "uk_schedule_occurrence"):
             migration_runner.validate_daily_ledger_upgrade_state(state)
@@ -1252,7 +1371,142 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
                 },
                 "violations": {},
                 "fingerprint": empty_fingerprint,
+                "schema_global_constraints": (),
             },
+        )
+
+    def test_reads_schema_global_daily_ledger_constraint_occupancy(
+        self,
+    ) -> None:
+        connection = _UpgradeStateConnection(
+            table_names=(),
+            columns={},
+            schema_global_foreign_keys=[
+                {
+                    "constraint_name": "fk_schedule_item_occurrence",
+                    "constraint_schema": "BFL_CLONE",
+                    "table_name": "EXTERNAL_CHILD",
+                    "column_name": "OCCURRENCE_ID_B",
+                    "ordinal_position": 2,
+                    "referenced_table_schema": "BFL_CLONE",
+                    "referenced_table_name": "EXTERNAL_PARENT",
+                    "referenced_column_name": "OCCURRENCE_ID_B",
+                    "update_rule": "NO ACTION",
+                    "delete_rule": "CASCADE",
+                },
+                {
+                    "constraint_name": "fk_schedule_item_occurrence",
+                    "constraint_schema": "BFL_CLONE",
+                    "table_name": "EXTERNAL_CHILD",
+                    "column_name": "OCCURRENCE_ID_A",
+                    "ordinal_position": 1,
+                    "referenced_table_schema": "BFL_CLONE",
+                    "referenced_table_name": "EXTERNAL_PARENT",
+                    "referenced_column_name": "OCCURRENCE_ID_A",
+                    "update_rule": "NO ACTION",
+                    "delete_rule": "CASCADE",
+                },
+            ],
+            schema_global_checks=[
+                {
+                    "constraint_name":
+                        "ck_schedule_item_failure_code",
+                    "constraint_schema": "BFL_CLONE",
+                    "table_name": "EXTERNAL_CHECK_TABLE",
+                    "enforced": "NO",
+                    "check_clause": " ((`FLAG` = 1)) ",
+                },
+            ],
+        )
+
+        constraints = (
+            migration_runner
+            .read_daily_ledger_schema_global_constraints(connection)
+        )
+
+        self.assertEqual(
+            constraints,
+            (
+                {
+                    "constraint_name":
+                        "ck_schedule_item_failure_code",
+                    "constraint_type": "check",
+                    "schema": "BFL_CLONE",
+                    "table": "external_check_table",
+                    "clause": "flag=1",
+                    "enforced": False,
+                },
+                {
+                    "constraint_name":
+                        "fk_schedule_item_occurrence",
+                    "constraint_type": "foreign_key",
+                    "schema": "BFL_CLONE",
+                    "table": "external_child",
+                    "columns": (
+                        "occurrence_id_a",
+                        "occurrence_id_b",
+                    ),
+                    "referenced_schema": "BFL_CLONE",
+                    "referenced_table": "external_parent",
+                    "referenced_columns": (
+                        "occurrence_id_a",
+                        "occurrence_id_b",
+                    ),
+                    "update_rule": "no action",
+                    "delete_rule": "cascade",
+                },
+            ),
+        )
+        namespace_queries = [
+            sql
+            for sql in connection.executed_sql
+            if (
+                "information_schema.key_column_usage" in sql
+                or "information_schema.table_constraints" in sql
+            )
+        ]
+        self.assertEqual(2, len(namespace_queries))
+        self.assertTrue(
+            all("table_name in" not in sql for sql in namespace_queries)
+        )
+        expected = (
+            migration_runner.expected_daily_ledger_schema_fingerprint()
+        )
+        foreign_key_names = set(expected["foreign_keys"])
+        check_names = set(expected["checks"])
+        self.assertEqual(10, len(foreign_key_names))
+        self.assertEqual(4, len(check_names))
+        foreign_key_query = next(
+            sql
+            for sql in namespace_queries
+            if "information_schema.key_column_usage" in sql
+        )
+        check_query = next(
+            sql
+            for sql in namespace_queries
+            if "information_schema.table_constraints" in sql
+        )
+        for name in foreign_key_names:
+            self.assertIn(f"'{name}'", foreign_key_query)
+            self.assertNotIn(f"'{name}'", check_query)
+        for name in check_names:
+            self.assertIn(f"'{name}'", check_query)
+            self.assertNotIn(f"'{name}'", foreign_key_query)
+        self.assertIn(
+            "lower(k.constraint_name)",
+            foreign_key_query,
+        )
+        self.assertIn(
+            "collate utf8mb4_0900_as_ci",
+            check_query,
+        )
+        self.assertIn(
+            "binary c.constraint_name = binary t.constraint_name",
+            check_query,
+        )
+        self.assertNotIn(
+            "lower(",
+            check_query,
         )
 
     def test_upgrade_state_digest_counts_every_relevant_table(
@@ -1303,6 +1557,77 @@ class MySQLMigrationSafetyTests(unittest.TestCase):
                 for table_name, definition in state["tables"].items()
             },
         )
+
+    def test_validate_upgrade_state_rejects_constraint_name_collision(
+        self,
+    ) -> None:
+        state = {
+            "tables": {
+                "t_scheme_runs": {
+                    "row_count": 0,
+                    "columns": {"run_id"},
+                },
+                "t_scheme_predictions": {
+                    "row_count": 0,
+                    "columns": {"id"},
+                },
+            },
+            "violations": {},
+            "fingerprint": {
+                "tables": {},
+                "columns": {},
+                "indexes": {},
+                "foreign_keys": {},
+                "checks": {},
+            },
+            "schema_global_constraints": (
+                {
+                    "constraint_name":
+                        "fk_schedule_item_occurrence",
+                    "constraint_type": "foreign_key",
+                    "schema": "bfl_clone",
+                    "table": "external_child",
+                    "columns": ("occurrence_id",),
+                    "referenced_schema": "bfl_clone",
+                    "referenced_table": "external_parent",
+                    "referenced_columns": ("occurrence_id",),
+                    "update_rule": "no action",
+                    "delete_rule": "cascade",
+                },
+            ),
+        }
+
+        with self.assertRaisesRegex(
+            migration_runner.MigrationPreflightError,
+            "constraint namespace",
+        ):
+            migration_runner.validate_daily_ledger_upgrade_state(state)
+
+    def test_validate_upgrade_state_rejects_invalid_namespace_shape(
+        self,
+    ) -> None:
+        state = self._valid_upgrade_state()
+        state["schema_global_constraints"] = (
+            {
+                "constraint_name":
+                    "fk_schedule_item_occurrence",
+                "constraint_type": "foreign_key",
+                "schema": "bfl_clone",
+                "table": "external_child",
+                "columns": 1,
+                "referenced_schema": "bfl_clone",
+                "referenced_table": "external_parent",
+                "referenced_columns": ("occurrence_id",),
+                "update_rule": "no action",
+                "delete_rule": "cascade",
+            },
+        )
+
+        with self.assertRaisesRegex(
+            migration_runner.MigrationPreflightError,
+            "constraint namespace",
+        ):
+            migration_runner.validate_daily_ledger_upgrade_state(state)
 
     def test_reads_daily_ledger_upgrade_data_violations(self) -> None:
         violation_names = (
@@ -1471,6 +1796,8 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
             "tables": tables,
             "violations": {},
             "fingerprint": fingerprint,
+            "schema_global_constraints":
+                _schema_global_constraints_from_fingerprint(fingerprint),
         }
 
     @staticmethod
@@ -1494,6 +1821,7 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
                 "foreign_keys": {},
                 "checks": {},
             },
+            "schema_global_constraints": (),
         }
 
     def _inspect_017_state(
@@ -1657,6 +1985,58 @@ class MigrationRunnerSafetyTests(unittest.TestCase):
         self.assertNotEqual(
             first["state_digest"],
             other_database["state_digest"],
+        )
+
+    def test_applying_017_digest_binds_schema_constraint_occupancy(
+        self,
+    ) -> None:
+        manifest, history = self._applying_017_history()
+        state = self._pre_ddl_017_upgrade_state()
+        occupied_state = copy.deepcopy(state)
+        occupied_state["schema_global_constraints"] = (
+            {
+                "constraint_name": "fk_schedule_item_occurrence",
+                "constraint_type": "foreign_key",
+                "schema": "bfl_clone",
+                "table": "external_child",
+                "columns": ("occurrence_id",),
+                "referenced_schema": "bfl_clone",
+                "referenced_table": "external_parent",
+                "referenced_columns": ("occurrence_id",),
+                "update_rule": "no action",
+                "delete_rule": "cascade",
+            },
+        )
+        unoccupied_state = copy.deepcopy(state)
+        unoccupied_state["schema_global_constraints"] = ()
+
+        def inspect(upgrade_state: dict[str, object]) -> dict[str, object]:
+            return migration_runner.build_applying_017_inspection(
+                manifest=manifest,
+                history=history,
+                database_identity={
+                    "database_name": "bfl_clone",
+                    "server_uuid": "server-a",
+                },
+                upgrade_state=upgrade_state,
+            )
+
+        occupied = inspect(occupied_state)
+        unoccupied = inspect(unoccupied_state)
+
+        self.assertEqual("UNSAFE", occupied["classification"])
+        self.assertIn(
+            "constraint namespace",
+            str(occupied["reason"]),
+        )
+        self.assertEqual(
+            "COMPATIBLE_PARTIAL",
+            unoccupied["classification"],
+        )
+        self.assertIsNone(unoccupied["reason"])
+        self.assertNotEqual(
+            occupied["state_digest"],
+            unoccupied["state_digest"],
         )
 
     def test_applying_017_recovery_rejects_stale_digest(self) -> None:
