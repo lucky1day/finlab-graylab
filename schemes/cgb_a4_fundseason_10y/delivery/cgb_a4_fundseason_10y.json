@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "cgb_a4_fundseason_10y",
+  "name": "MACRO_DIFFUSION_FUNDSEASON_TRENDKERNEL",
+  "description": "以日/周/月三频宏观指标按传导通道聚合成8维扩散指数及其3期动量,并叠加季末月资金利差(DR007-OMO)的因果z特征;全部取值以15日业务月桶观察日as-of对齐,标准化用扩展窗口并滞后一期;五个期限池化后按趋势状态核对历史月加权训练Logistic回归,取10Y行上行概率大于等于0.5记为收益率上行方向1,否则为-1。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "10Y",
+  "task_type": "monthly",
+  "horizon": 1,
+  "target_rule": "target_month_observation_yield_vs_feature_month_observation_yield"
+}

@@ -1,0 +1,16 @@
+scheme_id: cgb_a4_fundseason_10y
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+platform_inputs:
+  - api-wind-date-v1
+status: paused
+version_status: draft
+schedule:
+  cron: '0 18 15 * *'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+delivery:
+  script: delivery/cgb_a4_fundseason_10y.py
+  metadata: delivery/cgb_a4_fundseason_10y.json
