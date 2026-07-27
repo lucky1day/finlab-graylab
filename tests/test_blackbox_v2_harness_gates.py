@@ -1398,6 +1398,60 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertIn("backtest_start_date mismatch", "\n".join(result.errors))
         build_cases.assert_not_called()
 
+    def test_weekly_persist_backtest_requires_platform_history_start(self) -> None:
+        from harness.blackbox_v2.gates import BlackboxBacktestGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            delivery = _delivery(root / "incoming")
+            metadata_path = delivery / "trial_10y.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata.update(
+                {
+                    "task_type": "weekly_point",
+                    "horizon": 1,
+                    "target_rule": (
+                        "target_week_end_yield_vs_feature_week_end_yield"
+                    ),
+                }
+            )
+            metadata_path.write_text(
+                json.dumps(metadata),
+                encoding="utf-8",
+            )
+            scheme_dir = intake_delivery(
+                delivery,
+                schemes_root=root / "schemes",
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            engine_calls: list[bool] = []
+
+            def _engine_factory():
+                engine_calls.append(True)
+                raise AssertionError("weekly start guard must run before DB access")
+
+            ctx = GateContext(
+                scheme_id=config.scheme_id,
+                predict_date="2026-07-20",
+                project_root=root,
+                report_dir=root / "reports",
+                config=config,
+                persist_backtest=True,
+                backtest_start_date="2024-01-01",
+                engine_factory=_engine_factory,
+            )
+            with patch.dict(os.environ, {"HARNESS_AUTH_SECRET": "test-secret"}):
+                result = BlackboxBacktestGate().run(ctx)
+
+        self.assertFalse(result.passed)
+        self.assertIn(
+            "weekly persisted backtest requires backtest_start_date=2025-01-01",
+            "\n".join(result.errors),
+        )
+        self.assertEqual(engine_calls, [])
+
     def test_persist_backtest_blocks_unsigned_or_mismatched_token_before_business_work(self) -> None:
         from harness.authorization import issue_token
         from harness.blackbox_v2.gates import BlackboxBacktestGate

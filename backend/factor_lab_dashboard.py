@@ -4,7 +4,7 @@ import gzip
 import json
 import logging
 import time
-from collections import OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -47,6 +47,9 @@ MAX_LIVE_PREDICTION_SOURCE_ROWS = 20_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
 MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
 MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
+WEEKLY_BACKTEST_START_DATE = "2025-01-01"
+WEEKLY_TASK_TYPES = frozenset({"weekly_point", "weekly_average"})
+MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES = 128
 logger = logging.getLogger(__name__)
 _DIAGNOSTICS_LIMIT = 8
 _diagnostics_lock = Lock()
@@ -177,6 +180,7 @@ def build_factor_lab_dashboard(
     schemes: list[dict[str, Any]] = []
     live_row_count = 0
     backtest_row_count = 0
+    weekly_backtest_rows_excluded = 0
     for scheme in registry:
         selector = live_actual_selector(scheme["task_type"])
         live_rows: list[list[Any]] = []
@@ -228,6 +232,16 @@ def build_factor_lab_dashboard(
                         f"{scheme['scheme_id']}: "
                         f"detail={detail_horizon} registry={scheme['horizon']}"
                     )
+                if (
+                    scheme["task_type"] in WEEKLY_TASK_TYPES
+                    and _iso_date(
+                        detail_row.get("predict_date"),
+                        field="backtest detail predict_date",
+                    )
+                    < WEEKLY_BACKTEST_START_DATE
+                ):
+                    weekly_backtest_rows_excluded += 1
+                    continue
                 detail = dict(detail_row)
                 detail["prediction_phase"] = None
                 detail["actual_direction"] = detail.get("label")
@@ -267,6 +281,18 @@ def build_factor_lab_dashboard(
         )
 
     schemes.sort(key=lambda item: item["scheme_id"])
+    weekly_coverage = _weekly_coverage_diagnostics(schemes)
+    if weekly_coverage["drifts"]:
+        event = {
+            "event": "factor_lab_weekly_coverage_drift",
+            "drift_count": len(weekly_coverage["drifts"]),
+            "drifts": weekly_coverage["drifts"],
+        }
+        logger.warning(
+            "factor_lab_weekly_coverage_drift %s",
+            json.dumps(event, ensure_ascii=False, sort_keys=True),
+            extra={"dashboard_event": event},
+        )
     payload = {
         "schema_version": DASHBOARD_SCHEMA_VERSION,
         "snapshot_id": uuid4().hex,
@@ -305,6 +331,10 @@ def build_factor_lab_dashboard(
             "detail_row_count": live_row_count + backtest_row_count,
             "raw_bytes": encoding.raw_size,
             "gzip_bytes": encoding.gzip_size,
+            "weekly_backtest_rows_excluded_before_policy_start": (
+                weekly_backtest_rows_excluded
+            ),
+            "weekly_coverage": weekly_coverage,
             **actual_diagnostics,
         },
     )
@@ -316,6 +346,102 @@ def dashboard_build_diagnostics(snapshot_id: str) -> dict[str, Any] | None:
     with _diagnostics_lock:
         diagnostics = _diagnostics_by_snapshot_id.get(snapshot_id)
         return None if diagnostics is None else deepcopy(diagnostics)
+
+
+def _weekly_coverage_diagnostics(
+    schemes: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """返回当前周度格子的信号、有效样本与日期覆盖诊断。"""
+    candidates: dict[str, dict[str, Any]] = {}
+    target_dates_by_scheme: dict[str, set[str]] = {}
+    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+
+    for scheme in schemes:
+        task_type = str(scheme.get("task_type") or "")
+        if task_type not in WEEKLY_TASK_TYPES:
+            continue
+        scheme_id = _required_text(
+            scheme.get("scheme_id"),
+            field="weekly coverage scheme_id",
+        )
+        target_tenor = _required_text(
+            scheme.get("target_tenor"),
+            field="weekly coverage target_tenor",
+        )
+        backtest = scheme.get("backtest")
+        backtest_rows = (
+            list(backtest.get("rows") or [])
+            if isinstance(backtest, Mapping)
+            else []
+        )
+        live_rows = list(scheme.get("live_rows") or [])
+        rows = [*backtest_rows, *live_rows]
+        target_dates = [
+            _iso_date(row[2], field="weekly coverage target_date")
+            for row in rows
+        ]
+        target_date_set = set(target_dates)
+        target_date_counts = Counter(target_dates)
+        duplicates = sorted(
+            target_date
+            for target_date, count in target_date_counts.items()
+            if count > 1
+        )
+        candidates[scheme_id] = {
+            "task_type": task_type,
+            "target_tenor": target_tenor,
+            "signal_count": len(rows),
+            "valid_sample_count": sum(
+                1 for row in rows if row[5] is not None
+            ),
+            "duplicate_target_dates": duplicates[
+                :MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES
+            ],
+        }
+        target_dates_by_scheme[scheme_id] = target_date_set
+        groups[(target_tenor, task_type)].append(scheme_id)
+
+    drifts: list[dict[str, Any]] = []
+    for (target_tenor, task_type), scheme_ids in sorted(groups.items()):
+        reference_size = max(
+            len(target_dates_by_scheme[scheme_id])
+            for scheme_id in scheme_ids
+        )
+        reference_scheme_id = min(
+            scheme_id
+            for scheme_id in scheme_ids
+            if len(target_dates_by_scheme[scheme_id]) == reference_size
+        )
+        reference_dates = target_dates_by_scheme[reference_scheme_id]
+        for scheme_id in sorted(scheme_ids):
+            dates = target_dates_by_scheme[scheme_id]
+            missing = sorted(reference_dates - dates)
+            extra = sorted(dates - reference_dates)
+            duplicates = candidates[scheme_id]["duplicate_target_dates"]
+            if not missing and not extra and not duplicates:
+                continue
+            drifts.append(
+                {
+                    "target_tenor": target_tenor,
+                    "task_type": task_type,
+                    "reference_scheme_id": reference_scheme_id,
+                    "scheme_id": scheme_id,
+                    "missing_target_date_count": len(missing),
+                    "missing_target_dates": missing[
+                        :MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES
+                    ],
+                    "extra_target_date_count": len(extra),
+                    "extra_target_dates": extra[
+                        :MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES
+                    ],
+                    "duplicate_target_dates": duplicates,
+                }
+            )
+    return {
+        "policy_start_date": WEEKLY_BACKTEST_START_DATE,
+        "candidates": candidates,
+        "drifts": drifts,
+    }
 
 
 def _record_build_diagnostics(

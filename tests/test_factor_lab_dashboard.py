@@ -652,6 +652,173 @@ def test_builds_live_snapshot_from_active_registry_task_types(
     assert any("daily_t1" in str(parameters) for parameters in trace.parameters)
 
 
+def test_weekly_dashboard_excludes_pre_policy_rows_without_deleting_audit_data(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import (
+        build_factor_lab_dashboard,
+        dashboard_build_diagnostics,
+    )
+
+    engine, _trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (2010, 201, 'blackbox-new', 'weekly_point', '10Y', 1,
+                     '2024-12-27', '2024-12-27', '2025-01-03', 1, 1, NULL)
+                """
+            )
+        )
+
+    payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+    scheme = _schemes_by_id(payload)["weekly_point__h1__10Y"]
+    diagnostics = dashboard_build_diagnostics(payload["snapshot_id"])
+
+    assert all(row[0] >= "2025-01-01" for row in scheme["backtest"]["rows"])
+    assert diagnostics is not None
+    assert diagnostics["weekly_backtest_rows_excluded_before_policy_start"] == 1
+    with engine.connect() as connection:
+        stored = connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM t_backtest_predictions
+                WHERE run_id = 201
+                  AND predict_date < '2025-01-01'
+                """
+            )
+        ).scalar_one()
+    assert stored == 1
+
+
+def test_weekly_policy_filter_still_validates_excluded_audit_row_structure(
+    dashboard_db: tuple[Engine, SqlTrace],
+) -> None:
+    from backend.factor_lab_dashboard import build_factor_lab_dashboard
+    from backend.factor_lab_dashboard_semantics import DashboardDataError
+
+    engine, _trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (2010, 201, 'blackbox-new', 'weekly_point', '10Y', 99,
+                     '2024-12-27', '2024-12-27', '2025-01-03', 1, 1, NULL)
+                """
+            )
+        )
+
+    with pytest.raises(
+        DashboardDataError,
+        match="backtest detail horizon does not match Registry",
+    ):
+        build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+
+
+def test_weekly_coverage_drift_is_diagnostic_and_pending_counts_as_signal(
+    dashboard_db: tuple[Engine, SqlTrace],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from backend.factor_lab_dashboard import (
+        build_factor_lab_dashboard,
+        dashboard_build_diagnostics,
+    )
+
+    engine, _trace = dashboard_db
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_registry
+                    (scheme_id, base_scheme_id, runtime_type, name, description,
+                     horizon, task_type, frequency, target_tenor, schedule_cron,
+                     schedule_timezone, status, deployed_at, created_at, updated_at)
+                VALUES
+                    ('weekly_point_other__h1__10Y', 'weekly_point_other',
+                     'blackbox_v2', '周度单点缺口', '', 1, 'weekly_point',
+                     'weekly', '10Y', '0 7 * * 1', 'Asia/Shanghai', 'active',
+                     '2026-07-22', '2026-07-22T09:00:00',
+                     '2026-07-22T09:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_runs
+                    (id, benchmark_id, scheme_id, data_source, start_date,
+                     end_date, status, summary, report_path, created_at,
+                     updated_at)
+                VALUES
+                    (600, 'weekly-other', 'weekly_point_other',
+                     'blackbox_v2_current_snapshot_as_of', '2025-01-01',
+                     '2026-05-31', 'success', '{}', NULL,
+                     '2026-07-22T09:00:00', '2026-07-22T10:00:00')
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_backtest_predictions
+                    (id, run_id, benchmark_id, scheme_id, target_tenor,
+                     horizon, predict_date, feature_date, target_date, label,
+                     predicted_direction, confidence)
+                VALUES
+                    (6001, 600, 'weekly-other', 'weekly_point_other', '10Y', 1,
+                     '2026-05-21', '2026-05-21', '2026-05-28', 1, 1, NULL)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_predictions
+                    (id, scheme_id, target_tenor, horizon, predict_date,
+                     feature_date, target_date, prediction_phase,
+                     predicted_direction, extra)
+                VALUES
+                    (31, 'weekly_point', '10Y', 1, '2026-07-20',
+                     '2026-07-18', '2026-07-25', 'gray_live', -1,
+                     '{"frequency":"weekly"}')
+                """
+            )
+        )
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="backend.factor_lab_dashboard",
+    ):
+        payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
+    diagnostics = dashboard_build_diagnostics(payload["snapshot_id"])
+
+    assert diagnostics is not None
+    coverage = diagnostics["weekly_coverage"]
+    primary = coverage["candidates"]["weekly_point__h1__10Y"]
+    assert primary["signal_count"] == 3
+    assert primary["valid_sample_count"] == 2
+    drift = next(
+        item
+        for item in coverage["drifts"]
+        if item["scheme_id"] == "weekly_point_other__h1__10Y"
+    )
+    assert drift["reference_scheme_id"] == "weekly_point__h1__10Y"
+    assert drift["missing_target_dates"] == ["2026-07-18", "2026-07-25"]
+    assert drift["extra_target_dates"] == []
+    assert "factor_lab_weekly_coverage_drift" in caplog.text
+
+
 def test_choose_latest_backtest_runs_applies_two_stage_runtime_selection(
     dashboard_db: tuple[Engine, SqlTrace],
 ) -> None:

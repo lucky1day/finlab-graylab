@@ -19,6 +19,7 @@ import pandas as pd
 
 from harness.context import GateContext
 from harness.authorization import (
+    DEFAULT_BACKTEST_START_DATE,
     authorization_signing_enabled,
     authorization_token_hash,
     mark_token_used,
@@ -576,6 +577,19 @@ class BlackboxBacktestGate(_BlackboxGate):
 
     def _run_persist(self, ctx: GateContext, started_at: str) -> GateResult:
         cfg = _config(ctx)
+        metadata = _metadata(cfg)
+        if (
+            metadata.frequency == "weekly"
+            and ctx.backtest_start_date != DEFAULT_BACKTEST_START_DATE
+        ):
+            return _blocked(
+                self.name,
+                started_at,
+                [
+                    "weekly persisted backtest requires "
+                    f"backtest_start_date={DEFAULT_BACKTEST_START_DATE}"
+                ],
+            )
         if not authorization_signing_enabled():
             return _blocked(
                 self.name,
