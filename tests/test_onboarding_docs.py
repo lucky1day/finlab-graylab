@@ -51,6 +51,14 @@ TEN_Y_T5_SCHEME_IDS = (
     "ten_y_t5_maj4_k3_ic_yearly_v1",
     "ten_y_t5_say_k5_sharpe_static_v1",
 )
+FENGRL_MONTHLY_RECORD = (
+    BLACKBOX_RECORDS
+    / "MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md"
+)
+FENGRL_MONTHLY_EVIDENCE = (
+    BLACKBOX_RECORDS
+    / "MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.evidence.json"
+)
 
 
 class OnboardingDocumentationTests(unittest.TestCase):
@@ -696,6 +704,30 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("authorized/manual-onboarding-pending-revalidation", text)
         for scheme_id in TEN_Y_T5_SCHEME_IDS:
             self.assertIn(scheme_id, text)
+
+    def test_fengrl_monthly_record_binds_each_delivery_digest_to_its_section(
+        self,
+    ) -> None:
+        """每个 FengRL delivery 摘要必须在其自身技术证据小节可审计。"""
+        record = FENGRL_MONTHLY_RECORD.read_text(encoding="utf-8")
+        evidence = json.loads(FENGRL_MONTHLY_EVIDENCE.read_text(encoding="utf-8"))
+
+        self.assertEqual(len(evidence["schemes"]), 5)
+        for scheme in evidence["schemes"]:
+            with self.subTest(scheme_id=scheme["scheme_id"]):
+                self.assertEqual(
+                    scheme["source_sha256"],
+                    scheme["delivery_sha256"],
+                )
+                section_start = record.index(
+                    f"## {scheme['target_tenor']} 技术证据"
+                )
+                section_end = record.find("\n## ", section_start + 1)
+                section = record[section_start:]
+                if section_end != -1:
+                    section = record[section_start:section_end]
+                for digest in scheme["delivery_sha256"].values():
+                    self.assertIn(digest, section)
 
     def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
         todo = TODO.read_text(encoding="utf-8")

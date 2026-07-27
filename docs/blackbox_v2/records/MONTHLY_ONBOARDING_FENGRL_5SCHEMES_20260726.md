@@ -36,6 +36,11 @@ BondProjectPro 或日频 coordinator，不合并、不推送、不部署。
 
 - Intake 的私有临时目录恰好包含两个普通文件；入库后的 delivery
   字节与上游完全一致。
+- Delivery 的 Python/JSON SHA-256 分别为
+  `c97fbb4fb88e5b3d8965915d31f12937f201a377b62305f9fcebc41258029cb8`
+  和
+  `28a4ac990360f25da4ec3ca31488f42117490d17b9cad09d2f6030c9bbe70662`，
+  与上游逐字节一致。
 - Metadata 的 `description` 非空，`scheme_id`、`target_tenor=1Y`、
   `task_type=monthly` 和 `horizon=1` 均通过 StaticGate。
 - 配置保持 `status: paused`、`version_status: draft`、
