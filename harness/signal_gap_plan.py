@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from sqlalchemy import bindparam, text
@@ -15,6 +16,16 @@ from scheduler.discovery import discover_schemes
 from shared.actual_facts import build_week_calendar
 from shared.blackbox_v2.contracts import TASK_COMBINATIONS
 from shared.calendar_service import read_calendar_snapshot_from_connection
+from shared.data_bridge.authority import (
+    StableDataBridgeCurrentAuthority,
+    StableDataBridgeCutoff,
+    resolve_stable_databridge_current_authority,
+)
+from shared.data_bridge.refresh import (
+    DataBridgeCurrentInvalidError,
+    DataBridgeCurrentMissingError,
+    DataBridgeRefreshConfig,
+)
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -25,7 +36,7 @@ from shared.prediction_context import (
 )
 
 
-PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v1"
+PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v2"
 PLATFORM_LIVE_BOUNDARY_VERSION = "platform_live_boundary_v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
 EXPECTED_ACTIVE_TARGET_COUNT = 44
@@ -158,15 +169,19 @@ class ObservedSignal:
 class InputGeneration:
     generation_id: str
     generation_type: str
-    state: str
-    feature_date: str
     business_date: str
+    feature_date: str
+    readiness_basis: str
+    source_commit_token: str
+    dataset_content_id: str
+    schema_version: str
+    exporter_version: str
+    manifest_uri: str
     manifest_sha256: str
-    parent_generation_id: str | None = None
-    parent_manifest_sha256: str | None = None
-    dataset_content_id: str | None = None
-    source_commit_token: str | None = None
-    cutoff_feature_dates: tuple[str, ...] = ()
+    native_generation_id: str | None
+    native_manifest_sha256: str | None
+    state: str
+    sealed_at: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +197,12 @@ class SignalGapSnapshot:
     active_version_identity_sha256: str
     control_plane_blockers: tuple[Mapping[str, Any], ...] = ()
     canonical_authorities: tuple[Mapping[str, Any], ...] = ()
+    databridge_authority: (
+        StableDataBridgeCurrentAuthority | None
+    ) = None
+    databridge_authority_error: (
+        Literal["MISSING", "INVALID"] | None
+    ) = None
 
 
 SnapshotReader = Callable[..., SignalGapSnapshot]
@@ -330,7 +351,7 @@ def build_signal_gap_plan(
             observed=observed,
             opposite=opposite,
         )
-        action, generation, reason = _resolve_action(
+        action, input_authority, reason = _resolve_action(
             item,
             target=target,
             control_plane_error=(
@@ -343,7 +364,10 @@ def build_signal_gap_plan(
             valid_present=(len(observed) == 1 and observation_error is None),
             observation_error=observation_error,
             generations=snapshot.input_generations,
-            as_of_date=normalized_as_of,
+            databridge_authority=snapshot.databridge_authority,
+            databridge_authority_error=(
+                snapshot.databridge_authority_error
+            ),
         )
         if (
             business_key_present
@@ -361,7 +385,7 @@ def build_signal_gap_plan(
                 item,
                 action=action,
                 reason=reason,
-                generation=generation,
+                input_authority=input_authority,
                 business_key_present=business_key_present,
             )
         )
@@ -734,6 +758,34 @@ def read_signal_gap_snapshot(
         ),
     )
     generations = _read_input_generations(connection)
+    observed_live_keys = {
+        signal.business_key for signal in live_signals
+    }
+    required_databridge_feature_dates = tuple(
+        sorted(
+            {
+                case.feature_date
+                for case in live_cases
+                if case.runtime_type == "blackbox_v2"
+                and case.business_key not in observed_live_keys
+            }
+        )
+    )
+    databridge_authority = None
+    databridge_authority_error = None
+    if required_databridge_feature_dates:
+        try:
+            databridge_authority = (
+                resolve_stable_databridge_current_authority(
+                    DataBridgeRefreshConfig.from_env(),
+                    feature_dates=required_databridge_feature_dates,
+                    connection=connection,
+                )
+            )
+        except DataBridgeCurrentMissingError:
+            databridge_authority_error = "MISSING"
+        except DataBridgeCurrentInvalidError:
+            databridge_authority_error = "INVALID"
     identity = connection.execute(
         text(
             """
@@ -782,6 +834,8 @@ def read_signal_gap_snapshot(
             active_version_identity_sha256,
         control_plane_blockers=control_plane_blockers,
         canonical_authorities=canonical_authorities,
+        databridge_authority=databridge_authority,
+        databridge_authority_error=databridge_authority_error,
     )
 
 
@@ -1757,10 +1811,11 @@ def _read_input_generations(
     rows = connection.execute(
         text(
             """
-            SELECT generation_id, generation_type, state, feature_date,
-                   business_date, manifest_sha256, native_generation_id,
-                   native_manifest_sha256, dataset_content_id,
-                   source_commit_token
+            SELECT generation_id, generation_type, business_date,
+                   feature_date, readiness_basis, source_commit_token,
+                   dataset_content_id, schema_version, exporter_version,
+                   manifest_uri, manifest_sha256, native_generation_id,
+                   native_manifest_sha256, state, sealed_at
             FROM t_input_generations
             ORDER BY generation_type, feature_date, business_date,
                      generation_id
@@ -1771,23 +1826,29 @@ def _read_input_generations(
         InputGeneration(
             generation_id=str(row["generation_id"]),
             generation_type=str(row["generation_type"]),
-            state=str(row["state"]),
-            feature_date=str(row["feature_date"])[:10],
             business_date=str(row["business_date"])[:10],
+            feature_date=str(row["feature_date"])[:10],
+            readiness_basis=str(row["readiness_basis"] or ""),
+            source_commit_token=str(
+                row["source_commit_token"] or ""
+            ),
+            dataset_content_id=str(
+                row["dataset_content_id"] or ""
+            ),
+            schema_version=str(row["schema_version"] or ""),
+            exporter_version=str(row["exporter_version"] or ""),
+            manifest_uri=str(row["manifest_uri"] or ""),
             manifest_sha256=str(row["manifest_sha256"] or ""),
-            parent_generation_id=_optional_text(
+            native_generation_id=_optional_text(
                 row.get("native_generation_id")
             ),
-            parent_manifest_sha256=_optional_text(
+            native_manifest_sha256=_optional_text(
                 row.get("native_manifest_sha256")
             ),
-            dataset_content_id=_optional_text(
-                row.get("dataset_content_id")
+            state=str(row["state"]),
+            sealed_at=_optional_datetime_text(
+                row.get("sealed_at")
             ),
-            source_commit_token=_optional_text(
-                row.get("source_commit_token")
-            ),
-            cutoff_feature_dates=(),
         )
         for row in rows
     )
@@ -1801,8 +1862,9 @@ def _resolve_action(
     valid_present: bool,
     observation_error: str | None,
     generations: Sequence[InputGeneration],
-    as_of_date: str,
-) -> tuple[Action, InputGeneration | None, str]:
+    databridge_authority: StableDataBridgeCurrentAuthority | None,
+    databridge_authority_error: str | None,
+) -> tuple[Action, Mapping[str, Any] | None, str]:
     if item.data_contract_error:
         return (
             "BLOCKED_DATA_CONTRACT",
@@ -1830,105 +1892,97 @@ def _resolve_action(
             "CANONICAL_BUSINESS_KEY_MISSING",
         )
     if target.input_mode == "live_source_0629":
-        return "GRAY_LIVE_GAP", None, "LIVE_BUSINESS_KEY_MISSING"
+        return (
+            "BLOCKED_DATA_CONTRACT",
+            None,
+            "LIVE_SOURCE_0629_ATTESTATION_REQUIRED",
+        )
     if target.runtime_type == "blackbox_v2":
         return _blackbox_generation_eligibility(
             item,
-            generations,
-            as_of_date=as_of_date,
+            authority=databridge_authority,
+            authority_error=databridge_authority_error,
         )
     return _native_generation_eligibility(
         item,
         generations,
-        as_of_date=as_of_date,
     )
 
 
 def _blackbox_generation_eligibility(
     item: ExpectedSignalCase,
-    generations: Sequence[InputGeneration],
     *,
-    as_of_date: str,
-) -> tuple[Action, InputGeneration | None, str]:
-    candidates = [
-        row
-        for row in generations
-        if row.generation_type == "databridge_v1"
-    ]
-    if not candidates:
+    authority: StableDataBridgeCurrentAuthority | None,
+    authority_error: str | None,
+) -> tuple[Action, Mapping[str, Any] | None, str]:
+    if authority_error == "MISSING" or (
+        authority is None and authority_error is None
+    ):
         return (
             "BLOCKED_NO_GENERATION",
             None,
-            "NO_DATABRIDGE_GENERATION",
+            "NO_DATABRIDGE_CURRENT",
         )
-    valid_fences = [
-        row
-        for row in candidates
-        if row.state == "SEALED"
-        and _is_sha256(row.manifest_sha256)
-        and row.business_date <= as_of_date
-        and bool(row.parent_generation_id)
-        and _is_sha256(row.parent_manifest_sha256 or "")
-        and bool(row.dataset_content_id)
-        and bool(row.source_commit_token)
-    ]
-    if not valid_fences:
+    if authority_error == "INVALID" or authority is None:
         return (
             "BLOCKED_DATA_CONTRACT",
             None,
-            "GENERATION_CONTRACT_INVALID",
+            "DATABRIDGE_CURRENT_INVALID",
         )
-    eligible = [
-        row
-        for row in valid_fences
-        if row.feature_date >= item.feature_date
-        and item.feature_date in row.cutoff_feature_dates
-    ]
-    if not eligible:
+    try:
+        selected = _databridge_authority_payload(
+            authority,
+            feature_date=item.feature_date,
+        )
+    except (SignalGapPlanError, ValueError):
         return (
             "BLOCKED_DATA_CONTRACT",
             None,
-            "DATABRIDGE_CUTOFF_AUTHORITY_MISSING",
+            "DATABRIDGE_CURRENT_INVALID",
         )
-    selected = max(
-        eligible,
-        key=lambda row: (
-            row.feature_date,
-            row.business_date,
-            row.generation_id,
-        ),
-    )
+    if item.feature_date > authority.refresh_date:
+        return (
+            "BLOCKED_NO_GENERATION",
+            selected,
+            "DATABRIDGE_CURRENT_REFRESH_REQUIRED",
+        )
+    if (
+        selected["cutoff"]["daily_cutoff_key"]
+        != item.feature_date
+    ):
+        return (
+            "BLOCKED_DATA_CONTRACT",
+            selected,
+            "DATABRIDGE_CUTOFF_AUTHORITY_INVALID",
+        )
     return "GRAY_LIVE_GAP", selected, "LIVE_BUSINESS_KEY_MISSING"
 
 
 def _native_generation_eligibility(
     item: ExpectedSignalCase,
     generations: Sequence[InputGeneration],
-    *,
-    as_of_date: str,
-) -> tuple[Action, InputGeneration | None, str]:
+) -> tuple[Action, Mapping[str, Any] | None, str]:
     candidates = [
         row
         for row in generations
         if row.generation_type == "native_source"
+        and row.business_date == item.predict_date
+        and row.feature_date == item.feature_date
     ]
     if not candidates:
         return (
             "BLOCKED_NO_GENERATION",
             None,
-            "NO_NATIVE_GENERATION",
+            "NO_EXACT_NATIVE_GENERATION",
         )
-    eligible = [
-        row
-        for row in candidates
-        if row.state == "SEALED"
-        and _is_sha256(row.manifest_sha256)
-        and row.feature_date == item.feature_date
-        and row.business_date <= as_of_date
-        and bool(row.dataset_content_id)
-        and bool(row.source_commit_token)
-    ]
-    if not eligible:
+    if len(candidates) != 1:
+        return (
+            "BLOCKED_DATA_CONTRACT",
+            None,
+            "DUPLICATE_EXACT_NATIVE_GENERATION",
+        )
+    selected = candidates[0]
+    if not _valid_native_generation_fence(selected):
         return (
             "BLOCKED_DATA_CONTRACT",
             None,
@@ -1936,9 +1990,210 @@ def _native_generation_eligibility(
         )
     return (
         "GRAY_LIVE_GAP",
-        max(eligible, key=lambda row: (row.business_date, row.generation_id)),
+        _input_generation_authority(selected),
         "LIVE_BUSINESS_KEY_MISSING",
     )
+
+
+def _valid_native_generation_fence(
+    generation: InputGeneration,
+) -> bool:
+    try:
+        business_date = _canonical_date(
+            generation.business_date,
+            "generation.business_date",
+        )
+        feature_date = _canonical_date(
+            generation.feature_date,
+            "generation.feature_date",
+        )
+        sealed_at = datetime.fromisoformat(
+            str(generation.sealed_at)
+        )
+    except (SignalGapPlanError, TypeError, ValueError):
+        return False
+    return (
+        bool(generation.generation_id.strip())
+        and generation.generation_type == "native_source"
+        and business_date == generation.business_date
+        and feature_date == generation.feature_date
+        and generation.readiness_basis
+        in {"UPSTREAM_SEAL", "CLOCK_CONTRACT"}
+        and bool(generation.source_commit_token.strip())
+        and bool(generation.dataset_content_id.strip())
+        and bool(generation.schema_version.strip())
+        and bool(generation.exporter_version.strip())
+        and Path(generation.manifest_uri).is_absolute()
+        and _is_sha256(generation.manifest_sha256)
+        and generation.native_generation_id is None
+        and generation.native_manifest_sha256 is None
+        and generation.state == "SEALED"
+        and sealed_at.isoformat(timespec="microseconds")
+        == str(generation.sealed_at)
+    )
+
+
+def _input_generation_authority(
+    generation: InputGeneration,
+) -> dict[str, Any]:
+    return {
+        "generation_id": generation.generation_id,
+        "generation_type": generation.generation_type,
+        "business_date": generation.business_date,
+        "feature_date": generation.feature_date,
+        "readiness_basis": generation.readiness_basis,
+        "source_commit_token": generation.source_commit_token,
+        "dataset_content_id": generation.dataset_content_id,
+        "schema_version": generation.schema_version,
+        "exporter_version": generation.exporter_version,
+        "manifest_uri": generation.manifest_uri,
+        "manifest_sha256": generation.manifest_sha256,
+        "native_generation_id": generation.native_generation_id,
+        "native_manifest_sha256":
+            generation.native_manifest_sha256,
+        "state": generation.state,
+        "sealed_at": generation.sealed_at,
+    }
+
+
+def _databridge_authority_payload(
+    authority: StableDataBridgeCurrentAuthority,
+    *,
+    feature_date: str,
+) -> dict[str, Any]:
+    normalized_feature_date = _canonical_date(
+        feature_date,
+        "databridge feature_date",
+    )
+    refresh_date = _canonical_date(
+        authority.refresh_date,
+        "databridge refresh_date",
+    )
+    if (
+        authority.authority_schema_version
+        != "stable-databridge-current-authority-v1"
+        or not authority.generation_id.strip()
+        or not authority.schema_version.strip()
+        or not _is_sha256(authority.business_digest)
+        or not _is_sha256(authority.stable_identity_sha256)
+    ):
+        raise ValueError("DataBridge current authority fence is invalid")
+    files = sorted(
+        authority.files,
+        key=lambda row: row.filename,
+    )
+    if (
+        {row.filename for row in files}
+        != {
+            "daily_output.csv",
+            "weekly_output.csv",
+            "monthly_output.csv",
+        }
+        or len(files) != 3
+    ):
+        raise ValueError("DataBridge current file authority is invalid")
+    file_payload = []
+    for row in files:
+        if (
+            row.rows < 0
+            or row.columns <= 0
+            or not row.min_key
+            or not row.max_key
+            or not _is_sha256(row.sha256)
+            or not _is_sha256(row.business_hash)
+        ):
+            raise ValueError(
+                "DataBridge current file authority is invalid"
+            )
+        file_payload.append(
+            {
+                "filename": row.filename,
+                "rows": row.rows,
+                "columns": row.columns,
+                "min_key": row.min_key,
+                "max_key": row.max_key,
+                "sha256": row.sha256,
+                "business_hash": row.business_hash,
+            }
+        )
+    matching_cutoffs = [
+        row
+        for row in authority.cutoffs
+        if row.feature_date == normalized_feature_date
+    ]
+    if len(matching_cutoffs) != 1:
+        raise ValueError(
+            "DataBridge current cutoff authority is not unique"
+        )
+    cutoff = matching_cutoffs[0]
+    _validate_databridge_cutoff(cutoff)
+    capability_payload = None
+    if authority.publication_capability is not None:
+        capability = authority.publication_capability
+        if (
+            capability.occurrence_id <= 0
+            or _canonical_date(
+                capability.business_date,
+                "publication business_date",
+            )
+            != capability.business_date
+            or capability.epoch <= 0
+            or capability.mode != "ledger"
+            or not _is_sha256(capability.record_sha256)
+        ):
+            raise ValueError(
+                "DataBridge publication capability is invalid"
+            )
+        capability_payload = {
+            "occurrence_id": capability.occurrence_id,
+            "business_date": capability.business_date,
+            "daily_coordinator_epoch": {
+                "epoch": capability.epoch,
+                "mode": capability.mode,
+                "record_sha256": capability.record_sha256,
+            },
+        }
+    return {
+        "authority_type": "stable_databridge_current",
+        "authority_schema_version":
+            authority.authority_schema_version,
+        "stable_identity_sha256":
+            authority.stable_identity_sha256,
+        "generation_id": authority.generation_id,
+        "refresh_date": refresh_date,
+        "schema_version": authority.schema_version,
+        "business_digest": authority.business_digest,
+        "publication_capability": capability_payload,
+        "files": file_payload,
+        "cutoff": {
+            "feature_date": cutoff.feature_date,
+            "daily_cutoff_key": cutoff.daily_cutoff_key,
+            "weekly_cutoff_key": cutoff.weekly_cutoff_key,
+            "monthly_cutoff_key": cutoff.monthly_cutoff_key,
+        },
+    }
+
+
+def _validate_databridge_cutoff(
+    cutoff: StableDataBridgeCutoff,
+) -> None:
+    if (
+        _canonical_date(
+            cutoff.feature_date,
+            "cutoff.feature_date",
+        )
+        != cutoff.feature_date
+        or _canonical_date(
+            cutoff.daily_cutoff_key,
+            "cutoff.daily_cutoff_key",
+        )
+        != cutoff.daily_cutoff_key
+        or len(cutoff.weekly_cutoff_key) != 6
+        or not cutoff.weekly_cutoff_key.isdigit()
+        or len(cutoff.monthly_cutoff_key) != 6
+        or not cutoff.monthly_cutoff_key.isdigit()
+    ):
+        raise ValueError("DataBridge cutoff authority is invalid")
 
 
 def _validate_snapshot(
@@ -2236,7 +2491,7 @@ def _action_row(
     *,
     action: Action,
     reason: str,
-    generation: InputGeneration | None,
+    input_authority: Mapping[str, Any] | None,
     business_key_present: bool,
 ) -> dict[str, Any]:
     return {
@@ -2265,15 +2520,9 @@ def _action_row(
             if action == "FULL_CANONICAL_RUN_REQUIRED"
             else None
         ),
-        "generation": (
-            {
-                "generation_id": generation.generation_id,
-                "generation_type": generation.generation_type,
-                "feature_date": generation.feature_date,
-                "business_date": generation.business_date,
-                "manifest_sha256": generation.manifest_sha256,
-            }
-            if generation is not None
+        "input_authority": (
+            dict(input_authority)
+            if input_authority is not None
             else None
         ),
     }
@@ -2497,6 +2746,20 @@ def _canonical_date(value: Any, field: str) -> str:
 def _optional_text(value: Any) -> str | None:
     normalized = str(value).strip() if value is not None else ""
     return normalized or None
+
+
+def _optional_datetime_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = (
+            value
+            if isinstance(value, datetime)
+            else datetime.fromisoformat(str(value))
+        )
+    except (TypeError, ValueError):
+        return str(value)
+    return parsed.isoformat(timespec="microseconds")
 
 
 def _is_sha256(value: str) -> bool:

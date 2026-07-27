@@ -106,11 +106,62 @@ class SignalGapPlanTests(unittest.TestCase):
         (
             DiscoveredSchemeIdentity,
             ExpectedSignalCase,
-            InputGeneration,
+            _InputGeneration,
             ObservedSignal,
             RegistryTarget,
             SignalGapSnapshot,
         ) = self._types()
+        from shared.data_bridge.authority import (
+            StableDataBridgeCurrentAuthority,
+            StableDataBridgeCutoff,
+            StableDataBridgeFileIdentity,
+        )
+
+        files = tuple(
+            StableDataBridgeFileIdentity(
+                filename=filename,
+                rows=10,
+                columns=2,
+                min_key=min_key,
+                max_key=max_key,
+                sha256=hashlib.sha256(
+                    f"{filename}:bytes".encode("utf-8")
+                ).hexdigest(),
+                business_hash=hashlib.sha256(
+                    f"{filename}:business".encode("utf-8")
+                ).hexdigest(),
+            )
+            for filename, min_key, max_key in (
+                ("daily_output.csv", "2025-01-01", "2026-05-26"),
+                ("weekly_output.csv", "202501", "202622"),
+                ("monthly_output.csv", "202501", "202605"),
+            )
+        )
+        cutoffs = tuple(
+            StableDataBridgeCutoff(
+                feature_date=feature_date,
+                daily_cutoff_key=daily_cutoff,
+                weekly_cutoff_key="202622",
+                monthly_cutoff_key="202605",
+            )
+            for feature_date, daily_cutoff in (
+                ("2026-05-26", "2026-05-26"),
+                ("2026-05-27", "2026-05-26"),
+            )
+        )
+        databridge_authority = StableDataBridgeCurrentAuthority(
+            authority_schema_version=(
+                "stable-databridge-current-authority-v1"
+            ),
+            generation_id="current-20260526",
+            refresh_date="2026-05-26",
+            schema_version="data-bridge-v1",
+            business_digest="7" * 64,
+            publication_capability=None,
+            files=files,
+            cutoffs=cutoffs,
+            stable_identity_sha256="8" * 64,
+        )
         target = RegistryTarget(
             registry_scheme_id="demo__h5__10Y",
             base_scheme_id="demo",
@@ -211,21 +262,7 @@ class SignalGapPlanTests(unittest.TestCase):
                     run_status="success",
                 ),
             ),
-            input_generations=(
-                InputGeneration(
-                    generation_id="db-20260526",
-                    generation_type="databridge_v1",
-                    state="SEALED",
-                    feature_date="2026-05-26",
-                    business_date="2026-05-27",
-                    manifest_sha256="a" * 64,
-                    parent_generation_id="native-20260526",
-                    parent_manifest_sha256="c" * 64,
-                    dataset_content_id="dataset-1",
-                    source_commit_token="commit-1",
-                    cutoff_feature_dates=("2026-05-26",),
-                ),
-            ),
+            input_generations=(),
             input_watermarks={
                 "trade_calendar_max": "2026-07-31",
                 "daily_source_max": "2026-07-27",
@@ -233,6 +270,7 @@ class SignalGapPlanTests(unittest.TestCase):
             source_identity_sha256="b" * 64,
             discovery_identity_sha256="e" * 64,
             active_version_identity_sha256="f" * 64,
+            databridge_authority=databridge_authority,
         )
 
     def test_actions_use_business_key_and_fail_closed_readiness(self) -> None:
@@ -253,7 +291,7 @@ class SignalGapPlanTests(unittest.TestCase):
                 "2026-05-29": "FULL_CANONICAL_RUN_REQUIRED",
                 "2026-06-01": "SKIP_PRESENT",
                 "2026-06-02": "GRAY_LIVE_GAP",
-                "2026-06-03": "BLOCKED_DATA_CONTRACT",
+                "2026-06-03": "BLOCKED_NO_GENERATION",
                 "2026-06-04": "BLOCKED_DATA_CONTRACT",
             },
         )
@@ -313,7 +351,7 @@ class SignalGapPlanTests(unittest.TestCase):
             allow_nan=False,
         ).encode("utf-8")
         self.assertEqual(plan_sha256, hashlib.sha256(encoded).hexdigest())
-        self.assertEqual(first["schema_version"], "active-signal-gap-plan-v1")
+        self.assertEqual(first["schema_version"], "active-signal-gap-plan-v2")
 
     def test_duplicate_active_business_target_is_rejected(self) -> None:
         from harness.signal_gap_plan import SignalGapPlanError, build_signal_gap_plan
@@ -374,18 +412,18 @@ class SignalGapPlanTests(unittest.TestCase):
             plan["counts"]["present"] + plan["counts"]["open_gap"],
         )
 
-    def test_generation_present_but_invalid_is_data_contract_blocked(
+    def test_databridge_current_invalid_is_data_contract_blocked(
         self,
     ) -> None:
         from harness.signal_gap_plan import build_signal_gap_plan
 
         snapshot = self._snapshot()
-        invalid = replace(
-            snapshot.input_generations[0],
-            state="INVALIDATED",
-        )
         plan = build_signal_gap_plan(
-            replace(snapshot, input_generations=(invalid,)),
+            replace(
+                snapshot,
+                databridge_authority=None,
+                databridge_authority_error="INVALID",
+            ),
             start_date="2025-01-01",
             as_of_date="2026-07-27",
         )
@@ -397,17 +435,21 @@ class SignalGapPlanTests(unittest.TestCase):
         self.assertEqual(action["action"], "BLOCKED_DATA_CONTRACT")
         self.assertEqual(
             action["reason"],
-            "GENERATION_CONTRACT_INVALID",
+            "DATABRIDGE_CURRENT_INVALID",
         )
 
-    def test_missing_generation_is_distinct_from_invalid_generation(
+    def test_missing_current_is_distinct_from_invalid_current(
         self,
     ) -> None:
         from harness.signal_gap_plan import build_signal_gap_plan
 
         snapshot = self._snapshot()
         plan = build_signal_gap_plan(
-            replace(snapshot, input_generations=()),
+            replace(
+                snapshot,
+                databridge_authority=None,
+                databridge_authority_error="MISSING",
+            ),
             start_date="2025-01-01",
             as_of_date="2026-07-27",
         )
@@ -417,7 +459,7 @@ class SignalGapPlanTests(unittest.TestCase):
             if row["target_date"] == "2026-06-02"
         )
         self.assertEqual(action["action"], "BLOCKED_NO_GENERATION")
-        self.assertEqual(action["reason"], "NO_DATABRIDGE_GENERATION")
+        self.assertEqual(action["reason"], "NO_DATABRIDGE_CURRENT")
 
     def test_segment_date_semantics_and_platform_boundary_are_enforced(
         self,
