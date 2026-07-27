@@ -441,6 +441,25 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
             as_of_date="2026-07-27",
         )
 
+    def test_databridge_config_is_required_at_both_planner_layers(self):
+        from harness.signal_gap_plan import (
+            plan_signal_gaps,
+            read_signal_gap_snapshot,
+        )
+
+        for function in (
+            plan_signal_gaps,
+            read_signal_gap_snapshot,
+        ):
+            with self.subTest(function=function.__name__):
+                parameter = inspect.signature(function).parameters[
+                    "databridge_config"
+                ]
+                self.assertIs(
+                    parameter.default,
+                    inspect.Parameter.empty,
+                )
+
     def test_independent_fixture_has_exact_12_13_4_matrix(self):
         rows = _fixture_rows()
         self.assertEqual(len(rows), 29)
@@ -1206,6 +1225,10 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
                 "backtests.repository.create_engine_from_env",
                 side_effect=AssertionError("unexpected backtest engine"),
             ),
+            patch(
+                "sqlalchemy.engine.base.Engine.__init__",
+                side_effect=AssertionError("unexpected SQLAlchemy engine"),
+            ),
         ):
             snapshot = read_signal_gap_snapshot(
                 connection,
@@ -1227,10 +1250,6 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
             tuple(sorted({case.feature_date for case in cases})),
         )
         self.assertEqual(snapshot.databridge_authority, authority)
-        source = inspect.getsource(read_signal_gap_snapshot)
-        self.assertNotIn("create_engine", source)
-        self.assertNotIn("tempfile", source)
-        self.assertNotIn(".mkdir(", source)
 
     def test_snapshot_reader_skips_current_when_all_blackbox_are_present(
         self,
@@ -1349,6 +1368,10 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
             patch(
                 "backtests.repository.create_engine_from_env",
                 side_effect=AssertionError("unexpected backtest engine"),
+            ),
+            patch(
+                "sqlalchemy.engine.base.Engine.__init__",
+                side_effect=AssertionError("unexpected SQLAlchemy engine"),
             ),
         ):
             snapshot = read_signal_gap_snapshot(

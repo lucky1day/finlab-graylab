@@ -35,6 +35,7 @@ from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.contracts import load_metadata
 from shared.blackbox_v2.intake import intake_delivery, intake_warnings
+from shared.data_bridge.refresh import DataBridgeRefreshConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -142,12 +143,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "signal-gap-plan":
         try:
+            databridge_config = DataBridgeRefreshConfig.from_env()
             engine = create_engine_from_env()
             try:
                 plan = plan_signal_gaps(
                     engine,
                     start_date=args.start,
                     as_of_date=args.as_of,
+                    databridge_config=databridge_config,
                 )
             finally:
                 engine.dispose()

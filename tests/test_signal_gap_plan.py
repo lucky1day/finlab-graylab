@@ -1423,6 +1423,7 @@ class SignalGapPlanTests(unittest.TestCase):
             as_of_date="2026-07-27",
             snapshot_reader=reader,
             execution_authority=execution_authority,
+            databridge_config=Mock(),
         )
 
         self.assertEqual(result["counts"]["active_target"], 1)
@@ -1460,6 +1461,7 @@ class SignalGapPlanTests(unittest.TestCase):
                 as_of_date="2026-07-27",
                 snapshot_reader=Mock(side_effect=ValueError("bad calendar")),
                 execution_authority=_demo_execution_authority(),
+                databridge_config=Mock(),
             )
 
         self.assertEqual(connection.rollback_count, 1)
@@ -2008,6 +2010,7 @@ class SignalGapPlanTests(unittest.TestCase):
                     as_of_date="2025-01-08",
                     execution_authority=(),
                     discovery_identity_sha256="b" * 64,
+                    databridge_config=Mock(),
                 )
             return snapshot, build_signal_gap_plan(
                 snapshot,
@@ -2316,17 +2319,22 @@ class SignalGapPlanCliTests(unittest.TestCase):
             "plan_sha256": "a" * 64,
         }
         engine = Mock()
+        databridge_config = Mock()
         with (
             patch(
                 "harness.cli.create_engine_from_env",
                 return_value=engine,
             ),
             patch(
+                "harness.cli.DataBridgeRefreshConfig",
+            ) as config_type,
+            patch(
                 "harness.cli.plan_signal_gaps",
                 return_value=expected,
             ) as planner,
             patch("builtins.print") as output,
         ):
+            config_type.from_env.return_value = databridge_config
             result = main(
                 [
                     "signal-gap-plan",
@@ -2339,11 +2347,13 @@ class SignalGapPlanCliTests(unittest.TestCase):
                 ]
             )
 
+        config_type.from_env.assert_called_once_with()
         self.assertEqual(result, 0)
         planner.assert_called_once_with(
             engine,
             start_date="2025-01-01",
             as_of_date="2026-07-27",
+            databridge_config=databridge_config,
         )
         engine.dispose.assert_called_once_with()
         self.assertEqual(json.loads(output.call_args.args[0]), expected)
