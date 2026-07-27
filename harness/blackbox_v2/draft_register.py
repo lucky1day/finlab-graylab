@@ -113,8 +113,12 @@ class BlackboxDraftRegisterGate(Gate):
             if evidence_errors:
                 return _blocked(started_at, evidence_errors)
 
+            try:
+                pinned_cfg = _reload_pinned_canonical(cfg)
+            except ValueError as exc:
+                return _blocked(started_at, [str(exc)])
             enriched_cfg = replace(
-                cfg,
+                pinned_cfg,
                 environment_fingerprint=environment_fingerprint,
                 data_snapshot_id=data_snapshot_id,
             )
@@ -268,6 +272,52 @@ def _verify_passed_all(engine, cfg):
     from harness.blackbox_v2.gates import _verify_passed_all as verify
 
     return verify(engine, cfg)
+
+
+def _reload_pinned_canonical(cfg: SchemeConfig) -> SchemeConfig:
+    current = load_scheme_config(cfg.path / "config.yaml")
+    initial_identity = _canonical_identity(cfg)
+    current_identity = _canonical_identity(current)
+    mismatches = [
+        f"{field}: initial={initial_identity[field]!r}, "
+        f"current={current_identity[field]!r}"
+        for field in initial_identity
+        if initial_identity[field] != current_identity[field]
+    ]
+    if mismatches:
+        raise ValueError(
+            "Blackbox canonical delivery drift before draft registration: "
+            + "; ".join(mismatches)
+        )
+    return current
+
+
+def _canonical_identity(cfg: SchemeConfig) -> dict[str, object]:
+    return {
+        "scheme_id": cfg.scheme_id,
+        "scheme_version": cfg.scheme_version,
+        "code_hash": cfg.code_hash,
+        "config_hash": cfg.config_hash,
+        "manifest_hash": cfg.manifest_hash,
+        "runtime_type": cfg.runtime_type,
+        "status": cfg.status,
+        "version_status": cfg.version_status,
+        "name": cfg.name,
+        "description": cfg.description,
+        "algorithm_version": cfg.algorithm_version,
+        "contract_version": cfg.contract_version,
+        "runtime_profile": cfg.runtime_profile,
+        "data_schema_version": cfg.data_schema_version,
+        "input_source": cfg.input_source,
+        "platform_inputs": tuple(cfg.platform_inputs),
+        "horizon": cfg.horizon,
+        "task_type": cfg.task_type,
+        "tenors": tuple(cfg.tenors),
+        "frequency": cfg.frequency,
+        "target_rule": cfg.target_rule,
+        "schedule_cron": cfg.schedule.cron,
+        "schedule_timezone": cfg.schedule.timezone,
+    }
 
 
 def _passed_run_predict_date(passed_run, cfg: SchemeConfig) -> str:

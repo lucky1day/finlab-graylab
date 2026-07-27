@@ -267,6 +267,40 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("identity conflict", "\n".join(result.errors))
 
+    def test_delivery_drift_before_commit_is_rejected_without_token_consumption(
+        self,
+    ) -> None:
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+
+        def drift_delivery(_engine, _cfg):
+            assert self.cfg.delivery_script is not None
+            self.cfg.delivery_script.chmod(0o600)
+            with self.cfg.delivery_script.open("a", encoding="utf-8") as handle:
+                handle.write("# drift\n")
+            return self._passed_run()
+
+        with (
+            patch(
+                "harness.blackbox_v2.draft_register._verify_passed_all",
+                side_effect=drift_delivery,
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register.mark_token_used",
+            ) as consume,
+            patch(
+                "harness.blackbox_v2.draft_register.register_blackbox_draft_identity",
+                side_effect=RuntimeError("stale delivery reached repository"),
+            ) as register,
+        ):
+            result = BlackboxDraftRegisterGate().run(
+                self._ctx(self._token())
+            )
+
+        self.assertFalse(result.passed)
+        self.assertIn("canonical delivery drift", "\n".join(result.errors))
+        consume.assert_not_called()
+        register.assert_not_called()
+
     def test_audit_failure_does_not_consume_token_or_enter_repository(self) -> None:
         from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
 
