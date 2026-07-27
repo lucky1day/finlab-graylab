@@ -822,6 +822,7 @@ def register_blackbox_draft_identity(
                     "schedule_cron": cfg.schedule.cron,
                     "schedule_timezone": cfg.schedule.timezone,
                     "status": "paused",
+                    "deployed_at": None,
                 }
                 for target_tenor, registry_id in zip(
                     expected_tenors,
@@ -859,7 +860,9 @@ def register_blackbox_draft_identity(
                 "code_hash": cfg.code_hash,
                 "config_hash": cfg.config_hash,
                 "manifest_hash": cfg.manifest_hash,
+                "git_commit": None,
                 "status": "draft",
+                "created_by": "harness.draft-register",
                 "approved_by": None,
                 "approved_at": None,
             }
@@ -889,6 +892,34 @@ def register_blackbox_draft_identity(
             if registry_error is not None:
                 raise RuntimeError(
                     f"Blackbox draft registration Registry readback mismatch: {registry_error}"
+                )
+            registry_by_id = {
+                str(row["scheme_id"]): row
+                for row in readback_registry
+            }
+            registry_mismatches: list[str] = []
+            for expected_row in registry_rows:
+                actual_row = registry_by_id[expected_row["scheme_id"]]
+                expected_values = {
+                    **expected_row,
+                    "tenors": [expected_row["target_tenor"]],
+                }
+                actual_values = {
+                    **actual_row,
+                    "tenors": _normalize_registry_tenors(
+                        actual_row.get("tenors")
+                    ),
+                }
+                registry_mismatches.extend(
+                    f"{expected_row['scheme_id']}.{field}: "
+                    f"expected={expected!r}, got={actual_values.get(field)!r}"
+                    for field, expected in expected_values.items()
+                    if actual_values.get(field) != expected
+                )
+            if registry_mismatches:
+                raise RuntimeError(
+                    "Blackbox draft registration Registry readback mismatch: "
+                    + "; ".join(registry_mismatches)
                 )
 
     return BlackboxLifecycleState(
@@ -951,6 +982,18 @@ def _blackbox_draft_register_advisory_lock(
                     active_error.add_note(
                         f"draft registration advisory lock release failed: {release_error}"
                     )
+
+
+def _normalize_registry_tenors(value: object) -> object:
+    """规范化 MySQL JSON driver 或测试替身返回的 tenors。"""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return value
 
 
 @contextmanager
@@ -1407,7 +1450,7 @@ def _read_scheme_version_conn(
             text(
                 "SELECT scheme_id, scheme_version, runtime_type, algorithm_version, contract_version, "
                 "runtime_profile, environment_fingerprint, data_snapshot_id, code_hash, config_hash, "
-                "manifest_hash, git_commit, status, approved_by, approved_at "
+                "manifest_hash, git_commit, status, created_by, approved_by, approved_at "
                 "FROM t_scheme_versions "
                 "WHERE scheme_id = :scheme_id AND scheme_version = :scheme_version "
                 f"LIMIT 1{lock_clause}"
@@ -1638,7 +1681,9 @@ def _read_blackbox_registry_rows_conn(
     return (
         conn.execute(
             text(
-                "SELECT scheme_id, base_scheme_id, runtime_type, status, task_type, target_tenor, horizon "
+                "SELECT scheme_id, base_scheme_id, name, description, horizon, "
+                "task_type, runtime_type, tenors, frequency, target_tenor, "
+                "schedule_cron, schedule_timezone, status, deployed_at "
                 "FROM t_scheme_registry "
                 f"WHERE scheme_id IN ({placeholders}) "
                 "OR (base_scheme_id = :base_scheme_id AND status = 'active')"

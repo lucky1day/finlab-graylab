@@ -300,10 +300,14 @@ class _DraftRegisterEngine:
         latest_harness_run_id="hr_passed",
         version_conflicts=None,
         fail_registry_insert=False,
+        version_readback_overrides=None,
+        registry_readback_overrides=None,
     ) -> None:
         self.latest_harness_run_id = latest_harness_run_id
         self.version_conflicts = version_conflicts or []
         self.fail_registry_insert = fail_registry_insert
+        self.version_readback_overrides = version_readback_overrides or {}
+        self.registry_readback_overrides = registry_readback_overrides or {}
         self.version = None
         self.registry = []
         self.sql: list[str] = []
@@ -366,9 +370,15 @@ class _DraftRegisterEngine:
             row = dict(self.version)
             row["approved_by"] = None
             row["approved_at"] = None
+            row.update(self.version_readback_overrides)
             return _Result(row=row)
         if "FROM t_scheme_registry" in sql:
-            return _Result(rows=self.registry)
+            rows = []
+            for stored in self.registry:
+                row = dict(stored)
+                row.update(self.registry_readback_overrides)
+                rows.append(row)
+            return _Result(rows=rows)
         raise AssertionError(sql)
 
 
@@ -437,6 +447,61 @@ class BlackboxDraftRegisterRepositoryTests(unittest.TestCase):
         self.assertIsNone(engine.version)
         self.assertEqual(engine.registry, [])
         self.assertTrue(engine.released)
+
+    def test_version_readback_rejects_creator_and_git_commit_tampering(self) -> None:
+        from scheduler.repository import register_blackbox_draft_identity
+
+        cases = (
+            {"created_by": "unexpected-writer"},
+            {"git_commit": "unexpected-commit"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                engine = _DraftRegisterEngine(
+                    version_readback_overrides=overrides,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "version readback mismatch",
+                ):
+                    register_blackbox_draft_identity(
+                        engine,
+                        self._cfg(),
+                        expected_harness_run_id="hr_passed",
+                    )
+                self.assertIsNone(engine.version)
+                self.assertEqual(engine.registry, [])
+                self.assertTrue(engine.released)
+
+    def test_registry_readback_rejects_inserted_metadata_tampering(self) -> None:
+        from scheduler.repository import register_blackbox_draft_identity
+
+        cases = (
+            {"name": "Unexpected"},
+            {"description": "unexpected"},
+            {"tenors": '["5Y"]'},
+            {"frequency": "weekly"},
+            {"schedule_cron": "0 0 * * *"},
+            {"schedule_timezone": "UTC"},
+            {"deployed_at": "2026-07-27"},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides):
+                engine = _DraftRegisterEngine(
+                    registry_readback_overrides=overrides,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Registry readback mismatch",
+                ):
+                    register_blackbox_draft_identity(
+                        engine,
+                        self._cfg(),
+                        expected_harness_run_id="hr_passed",
+                    )
+                self.assertIsNone(engine.version)
+                self.assertEqual(engine.registry, [])
+                self.assertTrue(engine.released)
 
     def test_registry_failure_rolls_back_version_and_releases_lock(self) -> None:
         from scheduler.repository import register_blackbox_draft_identity
