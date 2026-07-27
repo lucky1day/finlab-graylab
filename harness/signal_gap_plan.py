@@ -810,6 +810,10 @@ class _FrozenCalendar:
             for day in self._trading_days
             if date.fromisoformat(day).weekday() < 5
         )
+        self._canonical_as_of_date = _canonical_date(
+            as_of_date,
+            "as_of_date",
+        )
         self._week_calendar = build_week_calendar(week_calendar_rows)
         self.daily_predict_dates = tuple(
             day
@@ -884,6 +888,8 @@ class _FrozenCalendar:
         """按历史算法 weekday-only 周历返回相邻实际周末。"""
         last_day_by_week: dict[int, str] = {}
         for day in self._canonical_daily_days:
+            if day > self._canonical_as_of_date:
+                continue
             week_id = self._week_calendar.week_id_for_date(day)
             if week_id is not None:
                 last_day_by_week[int(week_id)] = day

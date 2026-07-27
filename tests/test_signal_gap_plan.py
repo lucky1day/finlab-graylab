@@ -1764,6 +1764,174 @@ class SignalGapPlanTests(unittest.TestCase):
             [("2025-01-03", "2025-01-03", "2025-01-08")],
         )
 
+    def test_weekly_canonical_authority_excludes_future_week_pairs(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            build_expected_canonical_cases,
+        )
+
+        target = _weekly_asof_target()
+        calendar = _weekly_asof_calendar(
+            _FrozenCalendar,
+            include_future=True,
+        )
+
+        cases = build_expected_canonical_cases(
+            (target,),
+            calendar=calendar,
+            start_date="2024-12-20",
+        )
+
+        self.assertEqual(
+            [
+                (
+                    case.predict_date,
+                    case.feature_date,
+                    case.target_date,
+                )
+                for case in cases
+            ],
+            [
+                ("2024-12-27", "2024-12-27", "2025-01-03"),
+                ("2025-01-03", "2025-01-03", "2025-01-08"),
+            ],
+        )
+        self.assertNotIn(
+            "2025-01-10",
+            {case.predict_date for case in cases},
+        )
+        self.assertTrue(
+            all(case.target_date <= "2025-01-08" for case in cases)
+        )
+
+    def test_future_week_rows_do_not_change_canonical_authority_or_plan(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            SignalGapSnapshot,
+            _FrozenCalendar,
+            _calendar_canonical_authorities,
+            build_expected_canonical_cases,
+            build_signal_gap_plan,
+        )
+
+        target = _weekly_asof_target()
+
+        def plan(include_future):
+            cases = build_expected_canonical_cases(
+                (target,),
+                calendar=_weekly_asof_calendar(
+                    _FrozenCalendar,
+                    include_future=include_future,
+                ),
+                start_date="2024-12-20",
+            )
+            authorities = _calendar_canonical_authorities(cases)
+            snapshot = SignalGapSnapshot(
+                registry_targets=(target,),
+                expected_cases=cases,
+                canonical_signals=tuple(
+                    _canonical_observation(case) for case in cases
+                ),
+                live_signals=(),
+                input_generations=(),
+                input_watermarks={"as_of_date": "2025-01-08"},
+                source_identity_sha256="a" * 64,
+                discovery_identity_sha256="b" * 64,
+                active_version_identity_sha256="c" * 64,
+                canonical_authorities=authorities,
+            )
+            return authorities, build_signal_gap_plan(
+                snapshot,
+                start_date="2024-12-20",
+                as_of_date="2025-01-08",
+            )
+
+        base_authorities, base_plan = plan(False)
+        future_authorities, future_plan = plan(True)
+
+        self.assertEqual(base_authorities, future_authorities)
+        self.assertEqual(
+            base_authorities[0]["expected_count"],
+            future_authorities[0]["expected_count"],
+        )
+        self.assertEqual(
+            base_authorities[0]["digest_sha256"],
+            future_authorities[0]["digest_sha256"],
+        )
+        self.assertEqual(
+            base_plan["plan_sha256"],
+            future_plan["plan_sha256"],
+        )
+
+    def test_weekly_actual_query_range_stops_at_as_of(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            _read_canonical_actual_facts,
+            build_expected_canonical_cases,
+        )
+        from shared.prediction_context import WEEKLY_TARGET_RULE
+
+        target = _weekly_asof_target()
+        cases = build_expected_canonical_cases(
+            (target,),
+            calendar=_weekly_asof_calendar(
+                _FrozenCalendar,
+                include_future=True,
+            ),
+            start_date="2024-12-20",
+        )
+        connection = _ReaderConnection(
+            (
+                ("FROM t_scheme_actuals", []),
+                (
+                    "FROM t_scheme_weekly_actuals",
+                    [
+                        {
+                            "tenor": "10Y",
+                            "predict_date": "2024-12-28",
+                            "feature_date": "2024-12-27",
+                            "target_date": "2025-01-03",
+                            "direction_weekly": 1,
+                            "target_rule": WEEKLY_TARGET_RULE,
+                        },
+                        {
+                            "tenor": "10Y",
+                            "predict_date": "2025-01-04",
+                            "feature_date": "2025-01-03",
+                            "target_date": "2025-01-08",
+                            "direction_weekly": -1,
+                            "target_rule": WEEKLY_TARGET_RULE,
+                        },
+                    ],
+                ),
+                ("FROM t_scheme_monthly_actuals", []),
+            )
+        )
+
+        validated, _ = _read_canonical_actual_facts(
+            connection,
+            cases,
+        )
+
+        self.assertEqual(len(validated), 2)
+        self.assertTrue(
+            all(
+                case.data_contract_error is None
+                for case in validated
+            )
+        )
+        self.assertTrue(
+            all(
+                params["end_date"] <= "2025-01-08"
+                for params in connection.parameters
+            )
+        )
+
     def test_weekly_actual_predict_date_does_not_enumerate_canonical_key(
         self,
     ) -> None:
@@ -2466,3 +2634,71 @@ def _actual_rows_for_cases(cases):
                 "target_rule": MONTHLY_TARGET_RULE,
             }
     return list(daily.values()), list(weekly.values()), list(monthly.values())
+
+
+def _weekly_asof_target():
+    from harness.signal_gap_plan import RegistryTarget
+
+    return RegistryTarget(
+        registry_scheme_id="weekly_asof__h1__10Y",
+        base_scheme_id="weekly_asof",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        target_tenor="10Y",
+        horizon=1,
+        scheme_version="weekly-asof-version",
+        live_target_start_date="2026-06-01",
+        live_boundary_source="platform_live_boundary_v1",
+        input_mode="databridge_v1",
+        code_sha256="d" * 64,
+        config_sha256="e" * 64,
+    )
+
+
+def _weekly_asof_calendar(calendar_type, *, include_future):
+    rows = [
+        {"rdate": "2024-12-27", "trade_flag": "1", "week_id": 202452},
+        {"rdate": "2024-12-28", "trade_flag": "0", "week_id": 202452},
+        {"rdate": "2025-01-03", "trade_flag": "1", "week_id": 202501},
+        {"rdate": "2025-01-04", "trade_flag": "0", "week_id": 202501},
+        {"rdate": "2025-01-06", "trade_flag": "1", "week_id": 202502},
+        {"rdate": "2025-01-07", "trade_flag": "1", "week_id": 202502},
+        {"rdate": "2025-01-08", "trade_flag": "1", "week_id": 202502},
+    ]
+    if include_future:
+        rows.extend(
+            [
+                {
+                    "rdate": "2025-01-09",
+                    "trade_flag": "1",
+                    "week_id": 202502,
+                },
+                {
+                    "rdate": "2025-01-10",
+                    "trade_flag": "1",
+                    "week_id": 202502,
+                },
+                {
+                    "rdate": "2025-01-11",
+                    "trade_flag": "0",
+                    "week_id": 202502,
+                },
+                {
+                    "rdate": "2025-01-17",
+                    "trade_flag": "1",
+                    "week_id": 202503,
+                },
+                {
+                    "rdate": "2025-01-18",
+                    "trade_flag": "0",
+                    "week_id": 202503,
+                },
+            ]
+        )
+    return calendar_type(
+        trade_calendar_rows=rows,
+        week_calendar_rows=rows,
+        start_date="2024-12-20",
+        as_of_date="2025-01-08",
+    )
