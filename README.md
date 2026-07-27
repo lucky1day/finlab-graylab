@@ -34,6 +34,15 @@ curl -sS http://127.0.0.1:8100/api/backtests/factor-lab
 
 写库、activation、持久化回测和 live 命令必须按对应 SOP 获取授权，不以 README 示例代替操作门禁。
 
+## Canonical migration runner
+
+迁移的唯一行为实现是 `migrations.runner`；它只接受 caller-supplied `Engine`。
+`scripts/apply_migrations.py` 是唯一受控 operator CLI：写入 schema 时必须提供预期
+database name 与 server UUID，先以只读 inspect 或受控只读 identity query 取得这两个值，
+再按[部署运行手册](deploy/README.md)执行。不得用 `mysql` 直跑 migration SQL，也不得把
+隔离 MySQL 测试当作生产 migration 已应用的证据。当前 CLI 的 apply/no-op 结果还不是
+durable signed operator report。
+
 ## 目录说明
 
 ```text

@@ -24,6 +24,7 @@ DEPLOY_README = PROJECT_ROOT / "deploy" / "README.md"
 DAILY_SIGNAL_SLA = DOCS_ROOT / "architecture" / "DAILY_SIGNAL_SLA.md"
 TODO = DOCS_ROOT / "TODO.md"
 CURRENT_STATUS = DOCS_ROOT / "CURRENT_STATUS.md"
+CODE_ARCHITECTURE = DOCS_ROOT / "architecture" / "CODE_ARCHITECTURE.md"
 TEN_Y_T5_RECORD = (
     DOCS_ROOT
     / "blackbox_v2"
@@ -540,7 +541,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
         )
 
         dependencies = (
-            "canonical migration runner",
             "execute-only replay",
             "real 17 Native + 4 formal V2 21/25",
             "scheduler resource/recovery/atomic commit/capacity",
@@ -554,6 +554,44 @@ class OnboardingDocumentationTests(unittest.TestCase):
         )
         positions = [text.index(marker) for marker in dependencies]
         self.assertEqual(positions, sorted(positions))
+
+    def test_canonical_migration_runner_boundary_is_documented(self) -> None:
+        """迁移 CLI 的写库身份围栏与运维边界必须由当前文档锁定。"""
+        root_policy = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+        architecture = CODE_ARCHITECTURE.read_text(encoding="utf-8")
+        deploy = DEPLOY_README.read_text(encoding="utf-8")
+        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        todo = TODO.read_text(encoding="utf-8")
+
+        self.assertIn("`migrations.runner` 是迁移行为的唯一实现", root_policy)
+        self.assertIn("caller-supplied `Engine`", root_policy)
+        self.assertIn("`scripts/apply_migrations.py` 是唯一受控运维包装器", root_policy)
+        self.assertIn("## Canonical migration runner", readme)
+        self.assertIn("`migrations.runner`", architecture)
+        self.assertIn("caller-supplied `Engine`", architecture)
+        self.assertIn("`scripts/apply_migrations.py`", architecture)
+
+        for text in (deploy, sla):
+            self.assertIn("--expected-database-name <database-name>", text)
+            self.assertIn("--expected-server-uuid <server-uuid>", text)
+            self.assertIn("--inspect-applying-017", text)
+            self.assertIn("--inspect-applying-018", text)
+            self.assertIn("--recover-applying-017 --apply", text)
+            self.assertIn("--recover-applying-018 --apply", text)
+            self.assertRegex(
+                text,
+                r"恢复 017 后必须另行执行普通\s+`--apply`",
+            )
+
+        self.assertNotIn("canonical migration runner", todo)
+        self.assertIn("execute-only replay", todo)
+        for marker in ("f3a5720", "1f1019b", "8ee916f", "3c96f58"):
+            self.assertIn(marker, current)
+        self.assertIn("未应用生产 migration", current)
+        self.assertIn("不等于 production-shaped sanitized clone 演练", current)
+        self.assertIn("durable signed operator report", current)
 
     def test_10y_gray_onboarding_record_binds_the_exact_batch(self) -> None:
         self.assertTrue(TEN_Y_T5_RECORD.exists())

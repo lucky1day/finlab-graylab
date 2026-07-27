@@ -275,6 +275,20 @@ schemes/{id}/                     schemes/{id}/
 | **命名标识符** | `scheme_id`(方案) / `benchmark_id`(基准批次) / `data_source`(口径) 三者分离 | 维持；StaticGate 校验命名规范子集 |
 | **写库安全** | UPSERT 幂等；唯一键隔离 scheme | harness `table_guard` 行数保护 + 授权 token |
 
+### 7.1 数据库迁移的库层与 operator 边界
+
+`migrations.runner` 是迁移行为的唯一实现，并且只接受 caller-supplied `Engine`：
+manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在这里实现。
+它不读取环境变量、不解析 CLI 参数，也不决定某个连接是否有生产写权限。
+`scripts/apply_migrations.py` 是唯一受控运维包装器：它负责受限 CLI 参数、环境连接
+与写目标身份围栏；scheduler、harness 和其他 scripts 不得复制 apply/recovery 行为。
+
+所有 CLI 写路径（普通 `--apply`、017/018 recovery）都必须在建 Engine 前提供
+`--expected-database-name` 与 `--expected-server-uuid`，再以首次数据库语句
+`SELECT DATABASE(), @@server_uuid` 精确验证实际连接。`--inspect-applying-017` 与
+`--inspect-applying-018` 是只读模式，不要求这两个参数。UUID 只能来自 inspect JSON
+或受控只读 identity query；不得在仓库或运行手册中记录生产 UUID、DSN 或凭据。
+
 ---
 
 ## 8. 模块清单
@@ -303,6 +317,8 @@ schemes/{id}/                     schemes/{id}/
 | `harness/daily_real_replay_mysql.py` | L5 | 真实联跑专用的隔离 MySQL 生命周期；不读取生产 env，不应用 migration | `isolated_replay_mysql`、`IsolatedReplayMySQL.create_replay_database` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |
+| `migrations/runner.py` | 运维库层 | 唯一 migration 行为实现；caller-supplied `Engine` | manifest、inspect、apply、recovery |
+| `scripts/apply_migrations.py` | 受控 operator CLI | 唯一 migration 运维包装器与写目标身份围栏 | `--apply`、inspect/recover 017/018 |
 | `tests/` | L4 | 单元/集成验证 | unittest |
 | `harness/` | L5 | Gate / 编排 / 审计 | `python -m harness`、`GateResult` |
 | `scripts/` | 工具 | 审计/对比/受控 admin | 一次性命令 |

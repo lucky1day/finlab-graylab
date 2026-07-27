@@ -277,7 +277,9 @@ command hook 告警：generation 构建失败、07:00 ETA/进度异常、07:45 V
 切换 `BOND_DAILY_COORDINATOR_MODE=ledger` 前必须同时完成：
 
 1. 在生产同 minor、同 `sql_mode/time_zone/foreign_key_checks` 的脱敏 clone
-   仅通过 `scripts/apply_migrations.py --apply` 完成 `001→018`、重复执行、中段断连和
+   仅通过 `scripts/apply_migrations.py --apply` 并同时提供
+   `--expected-database-name <database-name>` 与
+   `--expected-server-uuid <server-uuid>` 完成 `001→018`、重复执行、中段断连和
    脏数据演练；禁止客户端直跑 017 SQL。迁移器必须在任何 DDL 前
    验证 MySQL `>=8.0.16`、strict/zero-date、UTC session 和 FK 开关。MySQL
    DDL 会 implicit commit，不能把 `engine.begin()` 当文件级回滚；应用 017 后
@@ -293,15 +295,26 @@ command hook 告警：generation 构建失败、07:00 ETA/进度异常、07:45 V
    history、固定 017 filename/checksum、MySQL server UUID/database、闭世界
    schema 和数据探针生成 canonical digest，并分类为 `COMPLETE`、
    `COMPATIBLE_PARTIAL` 或 `UNSAFE`。
-   recovery 必须同时提供 `--recover-applying-017 --apply --state-digest`，在
+   recovery 必须同时提供 `--recover-applying-017 --apply --state-digest`、
+   `--expected-database-name <database-name>` 和
+   `--expected-server-uuid <server-uuid>`，在
    owner lock 内重读并 exact compare；状态漂移或 `UNSAFE` 一律拒绝。
    `COMPLETE` 只原子提交 history mark；`COMPATIBLE_PARTIAL` 才允许幂等重放，
    且定义 drift 只放行 SQL 明确产生的四个 nullable 过渡列。任何失败继续保留
-   `APPLYING`，不得人工改 history 或复用旧 digest。018 使用相同的
+   `APPLYING`，不得人工改 history 或复用旧 digest。恢复 017 后必须另行执行普通
+   `--apply`（同样携带两个 expected identity 参数）才会推进 pending 018。018 使用相同的
    `--inspect-applying-018` / `--recover-applying-018 --apply
-   --state-digest` 协议，但闭世界状态只有审核过的 legacy source 定义与
+   --state-digest --expected-database-name <database-name>
+   --expected-server-uuid <server-uuid>` 协议，但闭世界状态只有审核过的 legacy source 定义与
    `DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)` target 定义；任何第三种
    定义均分类为 `UNSAFE`。
+
+   `--inspect-applying-017` 和 `--inspect-applying-018` 均为只读操作，不需要
+   expected identity 参数；operator 只可从 inspect 输出或受控只读 identity query 获取
+   UUID，绝不在文档、命令示例或报告记录生产 UUID/DSN/凭据。`migrations.runner` 是唯一
+   migration 行为实现并只接收 caller-supplied `Engine`；
+   `scripts/apply_migrations.py` 是唯一受控 operator wrapper。isolated MySQL 测试没有
+   应用生产 migration，且当前 CLI apply/no-op 尚无 durable signed operator report。
 2. 三个 0629 Native 的 `live_source_0629` 兼容桥完成隔离回放、唯一触发、
    原子提交和同机容量验证；正式切换前再完成 L0/L1 generation 输入适配，或
    从候选日批移除并走替代方案审批。
@@ -430,8 +443,10 @@ Python 常量或沿用旧签名。
 
 1. 阻断 admin/operator；bootout legacy preflight、scheduler 和 backend，核验
    所有 scheduled-live、refresh/API background 子进程退出。
-2. writer 全停后做一致性备份，只通过 pending-only migration runner 完成 schema
-   history、preflight、017 和闭世界 postcondition；失败时保持服务停止。
+2. writer 全停后做一致性备份，只通过[部署运行手册](../../deploy/README.md)定义的
+   canonical `scripts/apply_migrations.py` CLI 完成 schema history、preflight、017 和
+   闭世界 postcondition；普通 apply 与 recovery 均携带 expected database/server UUID，
+   失败时保持服务停止。不得使用另一个 pending-only runner 或直接执行 SQL。
 3. 仓库 rollout 继续保持 `legacy`，只把三份**已安装** plist 的 mode 一起改为
    `ledger`；服务仍停止。复核 signed candidate v2 后，从仓库 canonical template
    通过 root operator 向固定 machine-global append-only chain 原子发布 genesis

@@ -468,8 +468,18 @@ rollout、三份 plist 和 admission 仍分别保持 `legacy`/`BLOCKED`；以下
    background 子进程；不能只 `kickstart -k`。在 machine-global epoch 发布前，
    三者都不得重新启动。
 2. 确认 writer/refresh 均停止后制作一致性备份；只能通过
-   `conda run -n bond_factor_lab_service python scripts/apply_migrations.py --apply`
-   应用 pending migration，并保存 history、preflight 与 postcondition 报告。
+   `scripts/apply_migrations.py` 应用 pending migration，并保存 history、preflight 与
+   postcondition 报告。先从只读 inspect JSON 或受控只读 identity query 取得目标
+   database name 和 server UUID；不得把生产值、DSN 或凭据写入 shell history、文档或
+   报告。所有写命令都必须显式携带二者：
+
+   ```bash
+   conda run --no-capture-output -n bond_factor_lab_service \
+     python scripts/apply_migrations.py --apply \
+     --expected-database-name <database-name> \
+     --expected-server-uuid <server-uuid>
+   ```
+
    `--apply` 是不可省略的写库授权；help、空参数或未知参数必须在创建数据库
    engine 前退出，不能把参数错误静默解释成执行迁移。
    runner 会对无 history 的 v16 生产库先做完整 baseline 再登记 001..016，绝不
@@ -495,7 +505,9 @@ rollout、三份 plist 和 admission 仍分别保持 `legacy`/`BLOCKED`；以下
    conda run --no-capture-output -n bond_factor_lab_service \
      python scripts/apply_migrations.py \
        --recover-applying-017 --apply \
-       --state-digest <inspect-json中的64位state_digest>
+       --state-digest <inspect-json中的64位state_digest> \
+       --expected-database-name <database-name> \
+       --expected-server-uuid <server-uuid>
    ```
 
    recovery 会在同一 migration owner lock 内重读状态；任何 digest 漂移都拒绝。
@@ -504,7 +516,28 @@ rollout、三份 plist 和 admission 仍分别保持 `legacy`/`BLOCKED`；以下
    `feature_date/resource_class/internal_workers/release_offset_minutes` 四个精确
    nullable 过渡定义，随后幂等重放 017 并通过完整 postcondition 后才标记。
    replay、postcondition 或 mark 任一步失败都保留 `APPLYING`，必须重新 inspect，
-   不能复用旧 digest。
+   不能复用旧 digest。恢复 017 后必须另行执行普通 `--apply`，才会在已恢复的
+   history 基础上推进 pending 018；recover-017 本身不隐含推进 018。
+
+   018 的 inspect 同样只读且不需要 identity 参数；先保存新的 JSON，再用其中新的
+   digest 执行 recovery：
+
+   ```bash
+   conda run --no-capture-output -n bond_factor_lab_service \
+     python scripts/apply_migrations.py --inspect-applying-018
+
+   conda run --no-capture-output -n bond_factor_lab_service \
+     python scripts/apply_migrations.py \
+       --recover-applying-018 --apply \
+       --state-digest <inspect-json中的64位state_digest> \
+       --expected-database-name <database-name> \
+       --expected-server-uuid <server-uuid>
+   ```
+
+   `migrations.runner` 只接收 caller-supplied `Engine` 并实现迁移行为；
+   `scripts/apply_migrations.py` 是唯一受控 operator wrapper。不得用 `mysql`、
+   scheduler、harness 或临时脚本绕过该边界。isolated MySQL 回归只证明候选行为，
+   没有应用生产 migration；当前 CLI apply/no-op 也尚无 durable signed operator report。
 3. 仓库 `deploy/daily_coordinator_rollout_v1.json` **继续保持
    `legacy`**；它只服务“epoch directory 完全不存在”的初始 bootstrap，不能作为生产 cutover
    开关。只把**已安装的** scheduler、backend、V2 preflight 三份 plist 的
