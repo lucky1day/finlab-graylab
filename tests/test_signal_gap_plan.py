@@ -589,6 +589,85 @@ class SignalGapPlanTests(unittest.TestCase):
         self.assertEqual(plan["counts"]["open_gap"], 0)
         self.assertEqual(plan["status"], "BLOCKED")
 
+    def test_native_matching_summary_with_old_hashes_is_digest_drift(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import _canonical_run_version_error
+
+        target = self._snapshot().registry_targets[0]
+
+        self.assertEqual(
+            _canonical_run_version_error(
+                target,
+                {
+                    "code_hash": "a" * 64,
+                    "config_hash": "b" * 64,
+                },
+                {"scheme_version": target.scheme_version},
+            ),
+            "CANONICAL_VERSION_DIGEST_DRIFT",
+        )
+
+    def test_native_authority_digest_binds_persisted_run_identity(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import _native_manifest_authority
+
+        run = {
+            "benchmark_id": "benchmark-1",
+            "scheme_id": "native_demo",
+            "data_source": "framework_db_aligned",
+            "code_hash": "a" * 64,
+            "config_hash": "b" * 64,
+        }
+        summary = {
+            "scheme_version": "active-version",
+            "row_count": 1,
+        }
+        details = (
+            {
+                "target_tenor": "10Y",
+                "horizon": 5,
+                "predict_date": "2025-01-01",
+                "feature_date": "2025-01-01",
+                "target_date": "2025-01-08",
+            },
+        )
+
+        def digest(
+            *,
+            changed_run=run,
+            changed_summary=summary,
+        ):
+            return _native_manifest_authority(
+                "native_demo",
+                run_id=7,
+                run=changed_run,
+                summary=changed_summary,
+                details=details,
+                failure_code=None,
+            )["digest_sha256"]
+
+        baseline = digest()
+        variants = {
+            "benchmark_id": digest(
+                changed_run={**run, "benchmark_id": "benchmark-2"},
+            ),
+            "code_hash": digest(
+                changed_run={**run, "code_hash": "c" * 64},
+            ),
+            "config_hash": digest(
+                changed_run={**run, "config_hash": "d" * 64},
+            ),
+            "summary": digest(
+                changed_summary={**summary, "row_count": 2},
+            ),
+        }
+
+        for field, changed_digest in variants.items():
+            with self.subTest(field=field):
+                self.assertNotEqual(baseline, changed_digest)
+
     def test_run_149_manifest_accepts_all_approved_count_shapes(self) -> None:
         from harness.signal_gap_plan import (
             SignalGapPlanError,
@@ -1237,6 +1316,43 @@ class SignalGapPlanTests(unittest.TestCase):
         self.assertTrue(action["business_key_present"])
         self.assertEqual(plan["counts"]["present"], 1)
         self.assertEqual(plan["counts"]["open_gap"], 4)
+        self.assertEqual(plan["status"], "BLOCKED")
+
+    def test_direct_old_version_observation_is_present_but_blocked(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import build_signal_gap_plan
+
+        snapshot = self._snapshot()
+        live_case = next(
+            item
+            for item in snapshot.expected_cases
+            if item.target_date == "2026-06-01"
+        )
+        old_observation = replace(
+            snapshot.live_signals[0],
+            scheme_version="old-version",
+        )
+
+        plan = build_signal_gap_plan(
+            replace(
+                snapshot,
+                expected_cases=(live_case,),
+                canonical_signals=(),
+                live_signals=(old_observation,),
+                input_generations=(),
+            ),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(
+            plan["actions"][0]["action"],
+            "BLOCKED_DATA_CONTRACT",
+        )
+        self.assertTrue(plan["actions"][0]["business_key_present"])
+        self.assertEqual(plan["counts"]["present"], 1)
+        self.assertEqual(plan["counts"]["open_gap"], 0)
         self.assertEqual(plan["status"], "BLOCKED")
 
     def test_read_occurs_in_one_repeatable_read_only_snapshot_and_rolls_back(
