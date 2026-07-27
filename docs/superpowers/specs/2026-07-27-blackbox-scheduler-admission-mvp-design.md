@@ -40,6 +40,12 @@ this batch are frozen as `formal`. The five FengRL monthly schemes and four
    discovery race.
 4. Manual `run_prediction_job()` remains unchanged.
 
+The legacy aggregate `run_all_prediction_jobs()` and
+`--run-once predictions` remain outside this MVP admission fence. Operators
+must not use them for the active gray set because their default phase is
+`scheduled_live`; a dedicated aggregate/operator fence is required before
+that command is reopened.
+
 ## Acceptance
 
 - Existing formal Blackbox jobs remain present.

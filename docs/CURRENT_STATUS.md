@@ -37,6 +37,9 @@
   21 item/25 target；四方案不进入正式 occurrence。
 - 四个 active 配置中的 `schedule_cron` 只是交付元数据，不构成 scheduler
   授权，也不授予 legacy scheduler 执行权限。
+- legacy `run_all_prediction_jobs` / `--run-once predictions` 仍是绕过
+  admission 的手工聚合入口，在 operator fence 完成前禁止用于全量运行；
+  本次同步未调用该入口，受控手工灰度继续只走 harness。
 - 自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止。
 - 四个缺少 `description` 的不可变既有交付均为 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED`；exact version、摘要和来源证据见[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
 

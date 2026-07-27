@@ -35,7 +35,10 @@
 身份为 `formal`、FengRL 五个月度与 10Y T+5 四个日频身份为 `gray`。`gray` 方案可以继续
 保持 Registry active、手工运行和前端可见，但会在 legacy scheduler
 注册、startup catch-up 和 scheduled wrapper 三个入口被拒绝；manual
-single、manual aggregate 和 legacy `--run-once predictions` 不受影响。
+single 不受影响。manual aggregate 和 legacy `--run-once predictions`
+目前仍是绕过 admission 的既有运维入口，可能把 active gray 送入默认
+`scheduled_live` phase；在 operator fence 完成前禁止对全量方案运行，
+灰度手工写入只能使用受控 harness。
 
 该防护同时拒绝未知 Blackbox、版本漂移和保留 Blackbox ID 的 runtime
 重分类。策略缺失、非 UTF-8 或定义漂移时只关闭 Blackbox 自动调度，
@@ -84,6 +87,12 @@ candidate、真实 replay 和 DailyRuntime 只选择其中 21 item/25 target
 的正式身份。`active` 不等于 scheduler 授权，禁止旧 generation
 fallback。`formal` 的准入必须另行授权，不能由 `gray`、description
 豁免、代码同步或手工入库结论推导。
+
+该阶段还必须给 `run_all_prediction_jobs` / legacy
+`--run-once predictions` 增加 operator fence：聚合入口不得把
+`gray` 身份写为 `scheduled_live`，受控 `gray_live` 继续只走 harness。
+这是代码同步后的已知 P1，不影响当前 scheduler 自动入口，但在 ledger
+切换或开放聚合运维命令前必须关闭。
 
 ## P3：正式晋级
 
