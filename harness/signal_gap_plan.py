@@ -757,7 +757,11 @@ def read_signal_gap_snapshot(
         "raw_live_row_count": len(raw_live),
         "selected_live_row_count": len(live_signals),
         "trade_calendar_max": max(
-            calendar._trading_days,
+            (
+                day
+                for day in calendar._trading_days
+                if day <= calendar._canonical_as_of_date
+            ),
             default=None,
         ),
         "sealed_generation_count": sum(

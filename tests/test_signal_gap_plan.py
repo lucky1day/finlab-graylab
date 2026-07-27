@@ -50,6 +50,16 @@ class _Rows:
         return self._rows[0]
 
 
+class _RecordFrame:
+    def __init__(self, rows):
+        self._rows = list(rows)
+
+    def to_dict(self, orient):
+        if orient != "records":
+            raise AssertionError(f"unexpected orient: {orient}")
+        return list(self._rows)
+
+
 class _ReaderConnection:
     def __init__(self, responses):
         self.responses = responses
@@ -1866,6 +1876,130 @@ class SignalGapPlanTests(unittest.TestCase):
             future_plan["plan_sha256"],
         )
 
+    def test_reader_scopes_calendar_watermark_and_plan_to_as_of(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            read_signal_gap_snapshot,
+            build_signal_gap_plan,
+        )
+
+        target = _weekly_asof_target()
+        connection = _ReaderConnection(
+            (
+                (
+                    "SELECT DATABASE()",
+                    [
+                        {
+                            "database_name": "signal_gap_test",
+                            "server_uuid": "test-server",
+                            "server_port": 3306,
+                        }
+                    ],
+                ),
+            )
+        )
+
+        def read(include_future):
+            rows = _weekly_asof_rows(
+                include_future=include_future,
+            )
+            calendar_snapshot = {
+                "t_trade_calendar.csv": _RecordFrame(rows),
+                "api_wind_date.csv": _RecordFrame(rows),
+            }
+            with (
+                patch(
+                    "harness.signal_gap_plan._read_registry_versions",
+                    return_value=(
+                        (
+                            {
+                                "scheme_id": target.registry_scheme_id,
+                                "base_scheme_id":
+                                    target.base_scheme_id,
+                            },
+                        ),
+                        (target,),
+                        (),
+                        "c" * 64,
+                    ),
+                ),
+                patch(
+                    "harness.signal_gap_plan."
+                    "read_calendar_snapshot_from_connection",
+                    return_value=calendar_snapshot,
+                ),
+                patch(
+                    "harness.signal_gap_plan."
+                    "_read_canonical_actual_facts",
+                    side_effect=lambda _, cases: (
+                        tuple(cases),
+                        {
+                            "daily_actual_fact_count": 0,
+                            "weekly_actual_fact_count": 0,
+                            "monthly_actual_fact_count": 0,
+                        },
+                    ),
+                ),
+                patch(
+                    "harness.signal_gap_plan."
+                    "_read_persisted_canonical_observations",
+                    return_value=((), (), {}, (), ()),
+                ),
+                patch(
+                    "harness.signal_gap_plan.build_expected_live_cases",
+                    return_value=(),
+                ),
+                patch(
+                    "harness.signal_gap_plan._read_live_signals",
+                    return_value=([], ()),
+                ),
+                patch(
+                    "harness.signal_gap_plan._read_input_generations",
+                    return_value=(),
+                ),
+            ):
+                snapshot = read_signal_gap_snapshot(
+                    connection,
+                    start_date="2024-12-20",
+                    as_of_date="2025-01-08",
+                    execution_authority=(),
+                    discovery_identity_sha256="b" * 64,
+                )
+            return snapshot, build_signal_gap_plan(
+                snapshot,
+                start_date="2024-12-20",
+                as_of_date="2025-01-08",
+            )
+
+        base_snapshot, base_plan = read(False)
+        future_snapshot, future_plan = read(True)
+
+        self.assertEqual(
+            base_snapshot.expected_cases,
+            future_snapshot.expected_cases,
+        )
+        self.assertEqual(
+            base_plan["actions"],
+            future_plan["actions"],
+        )
+        self.assertEqual(
+            base_snapshot.canonical_authorities,
+            future_snapshot.canonical_authorities,
+        )
+        self.assertEqual(
+            base_snapshot.input_watermarks,
+            future_snapshot.input_watermarks,
+        )
+        self.assertEqual(
+            base_snapshot.input_watermarks["trade_calendar_max"],
+            "2025-01-08",
+        )
+        self.assertEqual(
+            base_plan["plan_sha256"],
+            future_plan["plan_sha256"],
+        )
+
     def test_weekly_actual_query_range_stops_at_as_of(
         self,
     ) -> None:
@@ -2657,6 +2791,16 @@ def _weekly_asof_target():
 
 
 def _weekly_asof_calendar(calendar_type, *, include_future):
+    rows = _weekly_asof_rows(include_future=include_future)
+    return calendar_type(
+        trade_calendar_rows=rows,
+        week_calendar_rows=rows,
+        start_date="2024-12-20",
+        as_of_date="2025-01-08",
+    )
+
+
+def _weekly_asof_rows(*, include_future):
     rows = [
         {"rdate": "2024-12-27", "trade_flag": "1", "week_id": 202452},
         {"rdate": "2024-12-28", "trade_flag": "0", "week_id": 202452},
@@ -2696,9 +2840,4 @@ def _weekly_asof_calendar(calendar_type, *, include_future):
                 },
             ]
         )
-    return calendar_type(
-        trade_calendar_rows=rows,
-        week_calendar_rows=rows,
-        start_date="2024-12-20",
-        as_of_date="2025-01-08",
-    )
+    return rows
