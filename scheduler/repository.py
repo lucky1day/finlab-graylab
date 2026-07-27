@@ -1527,6 +1527,7 @@ def read_blackbox_lifecycle_state(engine: Engine, cfg: SchemeConfig) -> Blackbox
         approved_at=(
             version_row["approved_at"] if isinstance(version_row.get("approved_at"), datetime) else None
         ),
+        registry_scheme_ids=expected_registry_ids,
     )
 
 

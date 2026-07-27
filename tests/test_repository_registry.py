@@ -639,6 +639,31 @@ class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             approval.reason = "mutated"
 
+    def test_lifecycle_read_returns_validated_registry_identities(self) -> None:
+        from scheduler.repository import read_blackbox_lifecycle_state
+
+        engine = _CaptureEngine(
+            version_row={
+                **self._approved_version_row(),
+                "environment_fingerprint": "e" * 64,
+                "data_snapshot_id": "snapshot-1",
+                "code_hash": "c" * 64,
+                "config_hash": "f" * 64,
+                "manifest_hash": "m" * 64,
+            },
+            registry_rows=[self._active_registry_row()],
+        )
+
+        state = read_blackbox_lifecycle_state(
+            engine,
+            _blackbox_config(),
+        )
+
+        self.assertEqual(
+            state.registry_scheme_ids,
+            ("demo_blackbox__h1__10Y",),
+        )
+
     def test_exact_approval_rejects_active_config_with_shadow_version(self) -> None:
         from scheduler.repository import read_blackbox_execution_approval
 
