@@ -52,8 +52,11 @@ VALID_MODES = frozenset({"formal", "gray"})
 ```
 
 It must reject duplicate identities, empty fields, unsupported modes, and
-malformed JSON. Native schemes return admitted; Blackbox identities must match
-both scheme ID and version, and only `formal` returns admitted.
+malformed JSON. The parsed entries must exactly equal the code-owned ten-entry
+identity-to-mode manifest; empty, missing, extra, mode-drifted, and
+version-drifted policies are invalid. Native schemes return admitted;
+Blackbox identities must match both scheme ID and version, and only `formal`
+returns admitted.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 
@@ -102,9 +105,12 @@ Expected: gray Blackbox is still registered or reaches execution.
 
 - [ ] **Step 3: Add minimal enforcement**
 
-Load the policy once when building scheduler jobs, filter startup catch-up with
-the same helper, and reload the policy in `run_scheduled_prediction_job()` as a
-revocation fence. Do not change `run_prediction_job()`.
+Load the policy once when building scheduler jobs and filter startup catch-up
+with the same helper. A missing or invalid policy denies automatic Blackbox
+execution only; Native, actuals, health, and watchdog work continue.
+`run_scheduled_prediction_job()` must discover once, reload the policy as a
+revocation fence against that exact config, and execute the same config. Do not
+change `run_prediction_job()` or the manual aggregate/CLI path.
 
 - [ ] **Step 4: Run targeted and related regression**
 
@@ -113,7 +119,7 @@ revocation fence. Do not change `run_prediction_job()`.
   tests/test_blackbox_scheduler_admission.py \
   tests/test_scheduler_main.py \
   tests/test_scheduler_capacity_admission.py \
-  tests/test_scheduler_mode_config.py
+  tests/test_daily_coordinator_mode.py
 ```
 
 Expected: zero failures.

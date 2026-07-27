@@ -16,8 +16,12 @@ Add one version-controlled control file,
   scheduler registration, startup catch-up, and scheduled execution.
 - A Blackbox V2 identity absent from the file is denied automatic scheduling.
 - Native schemes keep their current behavior.
-- Invalid admission files fail scheduler startup rather than silently widening
-  permission.
+- The control file must equal the code-owned closed set of ten exact
+  `scheme_id + scheme_version -> mode` entries. Missing, extra, mode-drifted,
+  or version-drifted entries invalidate the policy.
+- A missing or invalid admission file fails closed for all automatic Blackbox
+  execution while Native jobs, actuals, and health/watchdog jobs keep their
+  current behavior.
 
 The current five production Blackbox schemes that were already scheduled before
 this batch are frozen as `formal`. The five FengRL monthly schemes are frozen as
@@ -28,8 +32,10 @@ this batch are frozen as `formal`. The five FengRL monthly schemes are frozen as
 1. `build_scheduler()` filters automatic prediction jobs before APScheduler
    registration.
 2. `run_startup_prediction_catchup()` filters gray Blackbox schemes.
-3. `run_scheduled_prediction_job()` reloads and checks the exact identity before
-   execution, providing a stale-job/revocation fence.
+3. `run_scheduled_prediction_job()` performs one discovery, reloads and checks
+   that exact discovered identity, then executes the same immutable
+   `SchemeConfig`, providing a stale-job/revocation fence without a second
+   discovery race.
 4. Manual `run_prediction_job()` remains unchanged.
 
 ## Acceptance

@@ -7,8 +7,9 @@ covering accuracy metrics at customer-facing viewport widths.
 
 ## Design
 
-- Give rank, scheme, accuracy, sample, metric, deployment, and remark columns
-  explicit widths under the existing fixed table layout.
+- Give all eight ranking columns explicit widths under the existing fixed table
+  layout and raise the table minimum width to 1340px so those widths remain
+  usable.
 - Render scheme names and remarks in dedicated elements.
 - Clamp both scheme name and remark to two lines.
 - Permit long underscore-delimited names to break within the scheme cell.

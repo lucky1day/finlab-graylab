@@ -29,8 +29,9 @@ Assert the ranking row contains `.factor-scheme-name` and
 
 - [ ] **Step 2: Add a failing CSS contract**
 
-Assert the stylesheet contains explicit scheme/accuracy/remark column widths,
-`overflow-wrap: anywhere`, two-line clamping, and hidden overflow.
+Assert the stylesheet contains a 1340px minimum table width, explicit widths for
+all eight columns, `overflow-wrap: anywhere`, two-line clamping, and hidden
+overflow.
 
 - [ ] **Step 3: Run tests and verify RED**
 
