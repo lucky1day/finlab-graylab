@@ -19,7 +19,7 @@
 | 项目 | 当前结论 |
 |---|---|
 | Native V1 | 保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
-| Blackbox V2 技术入库 | Intake、统一 DataBridge 输入、七个 Gate、预测和 no-persist 回测已形成稳定路径 |
+| Blackbox V2 技术入库 | Intake、DataBridge 三文件父快照、显式平台输入、七个 Gate、零写库 check-only、预测和 no-persist 回测已形成稳定路径 |
 | Blackbox V2 生产路径 | 一个真实周频方案已完成专项生产灰度；同一上游批次四个日频方案已完成 exact active、历史入库和手工 `gray_live` 验收；尚未形成面向任意新方案的通用生产授权 |
 | 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED` 仅指受控 recorder 的 21/25 ledger 功能验证；真实 17+4 尚未联跑，08:00 SLA 与 07:55 容量仍无证据 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
@@ -33,6 +33,21 @@
 - 四个 active 配置虽含 `schedule_cron`，在 gray admission 前不得把本 integration 合入或用于重启 legacy scheduler；自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止。
 - 本 integration 的 active daily discovery 为 25 item/29 target，而正式 policy 仍保持闭世界 21 item/25 target；policy、coordinator 和 replay 全量测试因此按设计 fail-closed。该结果是上线阻断证据，不是回归通过；gray admission 分离灰度 discovery 前必须继续隔离本分支。
 - 四个缺少 `description` 的不可变既有交付均为 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED`；exact version、摘要和来源证据见[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
+
+## 本轮五个月度方案技术入库状态
+
+- `cgb_a4_fundseason_1y`、`cgb_a4_fundseason_3y`、
+  `cgb_a4_fundseason_5y`、`cgb_a4_fundseason_7y` 和
+  `cgb_a4_fundseason_10y` 已按顺序完成 Intake 与
+  `onboard --stage all --check-only`，每个方案七 Gate 7/7 passed。
+- 五个方案均保持 `paused/draft`，声明
+  `platform_inputs: [api-wind-date-v1]`；DataBridge 父快照仍严格只有
+  三个业务 CSV，平台日历以组合输入制品加入。
+- 五次 backtest 均为 100/100、`persist=false`；方案相关 Registry、
+  预测、run、backtest 和 Harness 控制面表的运行前后计数增量均为 0。
+- 该结论仅代表技术入库完成，不包含 Registry 激活、gray/scheduled
+  live、持久化回测、生产 API 或 scheduler 授权。逐方案证据见
+  [FengRL 五个月度方案技术入库记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)。
 
 ## 日频 08:00 整改状态
 
