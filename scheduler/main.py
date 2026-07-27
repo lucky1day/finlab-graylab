@@ -22,7 +22,9 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
 from scheduler.blackbox_scheduler_admission import (
+    RESERVED_BLACKBOX_SCHEME_IDS,
     BlackboxSchedulerAdmissionError,
+    BlackboxSchedulerAdmissionPolicy,
     load_blackbox_scheduler_admission,
 )
 from scheduler.capacity_admission import (
@@ -390,17 +392,12 @@ def _automatic_prediction_schemes(
 ) -> list[SchemeConfig]:
     """保留 Native，并仅放行 formal 精确身份的 Blackbox。"""
     configs = list(schemes)
-    blackbox_configs = [
+    controlled_configs = [
         config
         for config in configs
-        if getattr(
-            config,
-            "runtime_type",
-            "native_adapter",
-        )
-        == "blackbox_v2"
+        if _uses_blackbox_scheduler_admission(config)
     ]
-    if not blackbox_configs:
+    if not controlled_configs:
         return configs
     try:
         policy = load_blackbox_scheduler_admission()
@@ -413,18 +410,62 @@ def _automatic_prediction_schemes(
         return [
             config
             for config in configs
-            if getattr(
-                config,
-                "runtime_type",
-                "native_adapter",
-            )
-            != "blackbox_v2"
+            if not _uses_blackbox_scheduler_admission(config)
         ]
-    return [
-        config
-        for config in configs
-        if policy.is_scheduled(config)
-    ]
+    admitted: list[SchemeConfig] = []
+    for config in configs:
+        if policy.is_scheduled(config):
+            admitted.append(config)
+        else:
+            _log_blackbox_identity_drift(config, policy)
+    return admitted
+
+
+def _uses_blackbox_scheduler_admission(config: object) -> bool:
+    """Blackbox runtime 和冻结 base ID 都属于 admission 控制域。"""
+    return (
+        getattr(
+            config,
+            "runtime_type",
+            "native_adapter",
+        )
+        == "blackbox_v2"
+        or str(getattr(config, "scheme_id", "")).strip()
+        in RESERVED_BLACKBOX_SCHEME_IDS
+    )
+
+
+def _log_blackbox_identity_drift(
+    config: object,
+    policy: BlackboxSchedulerAdmissionPolicy,
+) -> None:
+    """对冻结身份的 runtime/version 漂移记录 critical 拒绝证据。"""
+    scheme_id = str(getattr(config, "scheme_id", "")).strip()
+    if scheme_id not in RESERVED_BLACKBOX_SCHEME_IDS:
+        return
+    runtime_type = getattr(
+        config,
+        "runtime_type",
+        "native_adapter",
+    )
+    if runtime_type != "blackbox_v2":
+        reason = (
+            "runtime_type drift: expected=blackbox_v2 "
+            f"actual={runtime_type}"
+        )
+    elif policy.mode(config) is None:
+        reason = (
+            "scheme_version drift: "
+            f"actual={getattr(config, 'scheme_version', '')}"
+        )
+    else:
+        return
+    logger.critical(
+        "Reserved Blackbox scheduler identity denied: "
+        "scheme=%s %s",
+        scheme_id,
+        reason,
+    )
 
 
 def _startup_prediction_catchup_due_jobs(
@@ -698,12 +739,9 @@ def run_scheduled_prediction_job(
         result = None
     if (
         scheduled_config is not None
-        and getattr(
-            scheduled_config,
-            "runtime_type",
-            "native_adapter",
+        and _uses_blackbox_scheduler_admission(
+            scheduled_config
         )
-        == "blackbox_v2"
     ):
         identity = (
             f"{scheduled_config.scheme_id}@"
@@ -724,6 +762,10 @@ def run_scheduled_prediction_job(
             ) from exc
         if not policy.is_scheduled(scheduled_config):
             mode = policy.mode(scheduled_config) or "unlisted"
+            _log_blackbox_identity_drift(
+                scheduled_config,
+                policy,
+            )
             raise BlackboxSchedulerAdmissionError(
                 "Blackbox automatic scheduling denied: "
                 f"{identity} mode={mode}"

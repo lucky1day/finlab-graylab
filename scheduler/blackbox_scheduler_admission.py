@@ -65,6 +65,10 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[tuple[str, str], str] = (
         }
     )
 )
+RESERVED_BLACKBOX_SCHEME_IDS = frozenset(
+    scheme_id
+    for scheme_id, _scheme_version in EXPECTED_EXACT_ADMISSIONS
+)
 
 
 class BlackboxSchedulerAdmissionError(ValueError):
@@ -89,8 +93,16 @@ class BlackboxSchedulerAdmissionPolicy:
 
     def is_scheduled(self, config: object) -> bool:
         """Native 保持原行为；Blackbox 仅 formal 精确身份可自动调度。"""
-        if getattr(config, "runtime_type", "native_adapter") != "blackbox_v2":
-            return True
+        runtime_type = getattr(
+            config,
+            "runtime_type",
+            "native_adapter",
+        )
+        if runtime_type != "blackbox_v2":
+            scheme_id = str(
+                getattr(config, "scheme_id", "")
+            ).strip()
+            return scheme_id not in RESERVED_BLACKBOX_SCHEME_IDS
         return self.mode(config) == "formal"
 
 

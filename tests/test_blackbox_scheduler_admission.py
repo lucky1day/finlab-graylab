@@ -67,6 +67,13 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
             dict(admission_module.EXPECTED_EXACT_ADMISSIONS),
             EXPECTED_MODES,
         )
+        self.assertEqual(
+            admission_module.RESERVED_BLACKBOX_SCHEME_IDS,
+            {
+                scheme_id
+                for scheme_id, _scheme_version in EXPECTED_MODES
+            },
+        )
         self.assertEqual(dict(policy.entries), EXPECTED_MODES)
         for identity, mode in EXPECTED_MODES.items():
             with self.subTest(identity=identity):
@@ -93,6 +100,18 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
                 )
             )
         )
+
+    def test_reserved_blackbox_id_cannot_reclassify_as_native(
+        self,
+    ) -> None:
+        policy = load_blackbox_scheduler_admission()
+        reclassified = _config(
+            "cgb_a4_fundseason_1y",
+            "04e7af163fb0",
+            runtime_type="native_adapter",
+        )
+
+        self.assertFalse(policy.is_scheduled(reclassified))
 
     def test_unknown_and_version_drift_are_not_scheduled(self) -> None:
         config = _config(

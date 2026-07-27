@@ -1082,6 +1082,72 @@ class SchedulerMainTests(unittest.TestCase):
         )
         sync_registry.assert_called_once_with(schemes)
 
+    def test_build_rejects_reserved_runtime_and_version_drift(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        native = _cfg("native_demo")
+        runtime_drift = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="native_adapter",
+            scheme_version="04e7af163fb0",
+        )
+        version_drift = _cfg(
+            "cgb_a4_fundseason_3y",
+            runtime_type="blackbox_v2",
+            scheme_version="version-drift",
+        )
+        schemes = [native, runtime_drift, version_drift]
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ) as sync_registry,
+            self.assertLogs(
+                scheduler_main.logger,
+                level=logging.CRITICAL,
+            ) as logs,
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            prediction_ids = {
+                job.id.removeprefix("predict:")
+                for job in scheduler.get_jobs()
+                if job.id.startswith("predict:")
+            }
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertEqual(prediction_ids, {"native_demo"})
+        self.assertTrue(
+            any(
+                "runtime_type drift" in message
+                and runtime_drift.scheme_id in message
+                for message in logs.output
+            )
+        )
+        self.assertTrue(
+            any(
+                "scheme_version drift" in message
+                and version_drift.scheme_id in message
+                for message in logs.output
+            )
+        )
+        sync_registry.assert_called_once_with(schemes)
+
     def test_native_only_scheduler_does_not_load_blackbox_policy(
         self,
     ) -> None:
@@ -1980,6 +2046,49 @@ class SchedulerMainTests(unittest.TestCase):
             force=False,
         )
 
+    def test_scheduled_wrapper_rejects_reserved_runtime_drift(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        runtime_drift = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="native_adapter",
+            scheme_version="04e7af163fb0",
+            frequency="weekly",
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[runtime_drift],
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+            ) as run_config,
+            self.assertLogs(
+                scheduler_main.logger,
+                level=logging.CRITICAL,
+            ) as logs,
+            self.assertRaisesRegex(
+                BlackboxSchedulerAdmissionError,
+                "automatic scheduling denied",
+            ),
+        ):
+            scheduler_main.run_scheduled_prediction_job(
+                runtime_drift.scheme_id,
+                run_date="2026-07-27",
+            )
+
+        run_config.assert_not_called()
+        self.assertTrue(
+            any(
+                "runtime_type drift" in message
+                for message in logs.output
+            )
+        )
+
     def test_native_scheduled_wrapper_does_not_load_blackbox_policy(
         self,
     ) -> None:
@@ -2457,6 +2566,82 @@ class SchedulerMainTests(unittest.TestCase):
             force=False,
         )
         self.assertEqual(results, [expected])
+
+    def test_startup_rejects_reserved_runtime_drift(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        now = datetime(
+            2026,
+            7,
+            9,
+            7,
+            15,
+            tzinfo=scheduler_main.ASIA_SHANGHAI,
+        )
+        runtime_drift = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="native_adapter",
+            scheme_version="04e7af163fb0",
+        )
+        native = _cfg("native_demo")
+        schemes = [runtime_drift, native]
+        expected = SchemeRunResult(
+            native.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ) as sync_registry,
+            patch.object(
+                scheduler_main,
+                "_prediction_run_exists",
+                return_value=False,
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                return_value=expected,
+            ) as run_config,
+            patch.object(
+                scheduler_main,
+                "create_engine_from_env",
+            ),
+            self.assertLogs(
+                scheduler_main.logger,
+                level=logging.CRITICAL,
+            ) as logs,
+        ):
+            results = scheduler_main.run_startup_prediction_catchup(
+                now=now,
+                algo_env="forecast_env",
+            )
+
+        sync_registry.assert_called_once_with(schemes)
+        run_config.assert_called_once_with(
+            native,
+            "2026-07-09",
+            algo_env="forecast_env",
+            force=False,
+        )
+        self.assertEqual(results, [expected])
+        self.assertTrue(
+            any(
+                "runtime_type drift" in message
+                for message in logs.output
+            )
+        )
 
     def test_startup_prediction_catchup_raises_after_attempting_all_due_jobs(self) -> None:
         from scheduler import main as scheduler_main
