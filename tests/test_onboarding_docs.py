@@ -715,10 +715,14 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertEqual(len(evidence["schemes"]), 5)
         for scheme in evidence["schemes"]:
             with self.subTest(scheme_id=scheme["scheme_id"]):
-                self.assertEqual(
-                    scheme["source_sha256"],
-                    scheme["delivery_sha256"],
-                )
+                expected_keys = {
+                    f"{scheme['scheme_id']}.py",
+                    f"{scheme['scheme_id']}.json",
+                }
+                self.assertEqual(set(scheme["source_sha256"]), expected_keys)
+                self.assertEqual(len(scheme["source_sha256"]), 2)
+                self.assertEqual(set(scheme["delivery_sha256"]), expected_keys)
+                self.assertEqual(len(scheme["delivery_sha256"]), 2)
                 section_start = record.index(
                     f"## {scheme['target_tenor']} 技术证据"
                 )
@@ -726,8 +730,12 @@ class OnboardingDocumentationTests(unittest.TestCase):
                 section = record[section_start:]
                 if section_end != -1:
                     section = record[section_start:section_end]
-                for digest in scheme["delivery_sha256"].values():
-                    self.assertIn(digest, section)
+                for filename in expected_keys:
+                    self.assertEqual(
+                        scheme["source_sha256"][filename],
+                        scheme["delivery_sha256"][filename],
+                    )
+                    self.assertIn(scheme["delivery_sha256"][filename], section)
 
     def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
         todo = TODO.read_text(encoding="utf-8")
