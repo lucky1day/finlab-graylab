@@ -8,7 +8,7 @@
 
 **工作树**：`/Users/macstudio0/.config/superpowers/worktrees/bond-factor-lab/blackbox-v2-monthly-fengrl-review-20260726`
 
-**批次状态**：`IN_PROGRESS_2_OF_5`
+**批次状态**：`IN_PROGRESS_3_OF_5`
 
 ## 固定边界
 
@@ -28,7 +28,7 @@ BondProjectPro 或日频 coordinator，不合并、不推送、不部署。
 |---:|---|---|---|---|
 | 1 | `cgb_a4_fundseason_1y` | passed | 7/7 passed | `TECHNICAL_GATES_PASSED_CHECK_ONLY` |
 | 2 | `cgb_a4_fundseason_3y` | passed | 7/7 passed | `TECHNICAL_GATES_PASSED_CHECK_ONLY` |
-| 3 | `cgb_a4_fundseason_5y` | 未执行 | 未执行 | `PENDING_NOT_INTAKEN` |
+| 3 | `cgb_a4_fundseason_5y` | passed | 7/7 passed | `TECHNICAL_GATES_PASSED_CHECK_ONLY` |
 | 4 | `cgb_a4_fundseason_7y` | 未执行 | 未执行 | `PENDING_NOT_INTAKEN` |
 | 5 | `cgb_a4_fundseason_10y` | 未执行 | 未执行 | `PENDING_NOT_INTAKEN` |
 
@@ -94,6 +94,29 @@ BondProjectPro 或日频 coordinator，不合并、不推送、不部署。
 成功报告：
 `reports/harness/cgb_a4_fundseason_3y/20260727T013903Z/`。
 
+## 5Y 技术证据
+
+- Delivery 的 Python/JSON SHA-256 分别为
+  `5c3d48908db898491637f51edf9f04d5969f6d64ef41529300c02c42fb02b080`
+  和
+  `a7eb84763b7b9f713facdcbd2a3efe717ac56636ac617f08905a3be4f858c7e5`，
+  与上游逐字节一致。
+- Metadata 的 description 非空并明确 5Y；配置保持
+  `paused/draft/blackbox_v2` 和
+  `platform_inputs: [api-wind-date-v1]`。
+- 成功 check-only run：
+  `hr_20260727T014817Z_e4e42e9ba3d8`；七 Gate 按固定顺序
+  7/7 passed。
+- 组合 ID、父 ID、三频文件和日历 SHA 与本批次冻结输入一致；
+  `weekly_cutoff_key=202628` 被权威日历覆盖。
+- CompareGate 六项隔离/确定性断言全部通过；no-persist backtest 为
+  100 requests / 100 records；structural API readiness 保持 paused、
+  scheduler 不可执行、API 不可见。
+- 运行前后，该方案 12 项方案级数据库计数均为 0，增量均为 0。
+
+成功报告：
+`reports/harness/cgb_a4_fundseason_5y/20260727T014817Z/`。
+
 ## 恢复与失败历史
 
 1. `hr_20260726T191201Z_fe2d9a05f052` 在 InputGate 因 fresh worktree
@@ -112,5 +135,5 @@ BondProjectPro 或日频 coordinator，不合并、不推送、不部署。
 
 ## 下一步
 
-只有在 3Y 方案状态/evidence 与三个方案文件完成独立提交、工作树恢复
-clean 后，才允许 Intake 5Y。
+只有在 5Y 方案状态/evidence 与三个方案文件完成独立提交、工作树恢复
+clean 后，才允许 Intake 7Y。
