@@ -29,49 +29,46 @@
 本批没有 `scheduled_live`，也没有修改 rollout、admission 或 scheduler。时点证据见
 [FengRL 五个月度方案记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)。
 
-## P0：周度历史与月度 Actual 生产对账
+## P0：周度剩余对账与后端启用
 
-开发候选分支 `codex/weekly-monthly-history-fixes-20260727` 已完成两个独立
-代码修复：
+已完成：
 
-- `d81c512`：daily/weekly/monthly actual updater 的默认期限范围改为
-  active Registry；本地 `schemes/` 只做
-  `ACTUAL_TENOR_SCOPE_DRIFT` 诊断。Registry 不可读时 fail-closed，空
-  active scope 零写入，显式 `--tenor` 仍是受控 override。
-- `91d3779`：周度 dashboard 仅让 `predict_date >= 2025-01-01` 的回测
-  行进入当前排行，保留旧 DB 审计行；增加同
-  `target_tenor + task_type` 的 coverage 诊断，并强制 Blackbox 周度
-  persisted backtest 使用 `backtest_start_date=2025-01-01`。
+- 开发分支已集成 Actual Registry 化、周度 coverage/持久化起点门禁，
+  以及全任务类型 backtest+live 的
+  `predict_date >= 2025-01-01` 前端展示策略。
+- 月度 updater 已按 active Registry 的
+  `1Y/3Y/5Y/7Y/10Y` 幂等运行，8 个 active 月度方案保持
+  `19 signal / 18 valid`。
+- 已删除 prediction/月度输出等价且已被审计摘要更完整的 canonical run
+  `174–177` 替代的非 canonical run `170–173`；API 和 dashboard
+  canonical 投影未变化。
+- `weekly_10y_lgbm_point_v1` 已写入合规 run `191`，72 条历史；
+  6/5–7/17 的 7 个灰度缺口已补齐，加原有 7/24 后为 `80/80`。旧 run
+  `165` 在确认 2025+ 目标全部被新历史+live 覆盖后已删除。
 
-上述代码尚未合并、推送、部署或重启服务，也没有执行生产写入。生产
-收口必须在取得新的写库与部署授权后按以下顺序执行：
+剩余步骤必须按顺序执行：
 
-1. 验收并集成两个代码 commit，部署 BFL 服务；不得修改
-   BondProjectPro、scheduler cron、算法文件、rollout 或 admission。
-2. 用修复后的 monthly actual updater 幂等刷新正式历史范围；Registry
-   必须解析出 `1Y/3Y/5Y/7Y/10Y`，8 个 active 月度方案继续保持
-   `19 signal / 18 valid`，`2026-08-14` 为 pending。
-3. 为 `weekly_10y_lgbm_point_v1` 通过受控 Gate 生成新的合规 persisted
-   run。旧 100 条 run 保留审计；新 run 必须从 `2025-01-01` 开始、
-   截止 gray 边界之前，并使用平台周历修正
-   `2025-01-24/02-07/04-25` 与旧 run
-   `2025-01-26/02-08/04-27` 的 target_date 差异。
-4. 为同方案受控补
-   `predict_date=2026-07-27 -> target_date=2026-07-31` 的
-   `gray_live`；不得使用旧 generation fallback。
-5. 为 `weekly_10y_d_overlay_0529` 分别 dry-run 并受控补
-   `2026-07-10/07-17/07-24/07-31` 四个 target 的 `gray_live`；每个
-   日期独立 run，禁止伪造 `scheduled_live`。
-6. 最终只读验收 7 个 active 周度候选均为
+1. 取得独立部署/重启授权后，在维护窗口重启 BFL Python 后端，使
+   Registry Actual 范围、统一展示起点和 coverage 诊断由服务端生效；
+   当前静态前端已使用 `aifin-shell.js?v=20260727b` 做同口径防护。
+2. 等待并校验 `refresh_date > 2026-07-25` 的合法新 DataBridge
+   generation，再为 `weekly_10y_lgbm_point_v1` 补
+   `target_date=2026-07-31`；旧 generation 禁止 fallback。
+3. 上游修复源周数据 `week_id=202625` 与交易日历的契约冲突后，重新
+   dry-run `weekly_10y_d_overlay_0529`。当前失败 run `1407` 只写入
+   run/log、未写 prediction；冲突未修复前不得修改算法或继续后三个日期。
+4. 冲突闭合后，逐点补该 Native 的
+   `2026-07-10/07-17/07-24/07-31`，每个点独立 run，均写
+   `gray_live`，不得伪造 `scheduled_live`。
+5. 最终只读验收 7 个 active 周度候选均为
    `81 signal / 80 valid`，10Y weekly_point 两候选 target_date 集合
-   完全一致；8 个月度候选均为 `19/18`，API 返回 200，且无重复
+   完全一致；8 个月度候选均为 `19/18`，相关 API 返回 200，且无重复
    prediction、actual、run 或 target_date。
 
-当前生产只读基线仍为：五个周度候选 `81/80`，
-`weekly_10y_d_overlay_0529=77/77`；新展示代码对
-`weekly_10y_lgbm_point_v1` 排除 21 条 2024 审计行后为 `80/80`，且两
-个 10Y weekly_point 候选尚未包含共同缺失的 `2026-07-31`。因此当前
-不能宣称周度已完成 `81/80` 对齐。
+当前生产数据为：五个周度候选 `81/80`，
+`weekly_10y_lgbm_point_v1=80/80`，
+`weekly_10y_d_overlay_0529=77/77`。因此不能宣称周度已完成
+`81/80` 对齐。
 
 ## 已完成：Blackbox 自动调度防护 MVP
 

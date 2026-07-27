@@ -24,14 +24,16 @@
 | 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED` 仅指受控 recorder 的 21/25 ledger 功能验证；真实 17+4 尚未联跑，08:00 SLA 与 07:55 容量仍无证据 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 
-## 周度历史与月度 Actual 修复候选
+## 周度历史与月度 Actual 对账状态
 
-- 开发分支候选 `d81c512` 将三类 actual updater 的默认范围改为 active Registry；`91d3779` 增加周度正式窗口、coverage 诊断和 Blackbox persisted 起点门禁。
-- 定向回归为 `99 tests + 16 subtests`、`134 tests + 13 subtests`；最终全量为 `2928 passed / 26 skipped / 1008 subtests`。生产只读 Registry 范围为 daily/monthly=`1Y/3Y/5Y/7Y/10Y`、weekly=`1Y/5Y/7Y/10Y`。
-- 候选尚未部署且本轮未写生产库。现有 8 个月度方案仍为 `19 signal / 18 valid`，但旧 updater 的复发风险要到候选部署和幂等重建后才关闭。
-- 候选 dashboard 只读投影保留 21 条 2024 审计行但不计排行：`weekly_10y_lgbm_point_v1` 从 `101/101` 变为 `80/80`，`weekly_10y_d_overlay_0529` 仍为 `77/77`，其余五个为 `81/80`。
-- coverage 还识别出 `2025-01-24/02-07/04-25` 与 `2025-01-26/02-08/04-27` 的节假日 target_date 差异；必须用新的合规 persisted run 重建，不能裁剪共同交集或删除旧历史。
-- `7 个周度候选全部 81/80` 尚未达成；部署、actual 重建、受控回补和 DB/API/前端验收见 [TODO](TODO.md)。本轮未修改算法、scheduler cron、BondProjectPro、rollout 或 admission。
+- 开发分支已包含 `d81c512`、`91d3779`、`7842955` 和 `3b5335a`：Actual 默认范围以 active Registry 为准；因子实验室所有前端路径统一只展示 `predict_date >= 2025-01-01`。展示门禁本身不删除数据库事实，仍保留的旧行可通过独立审计 API 查询；经受控核验删除的 obsolete runs 见下文。
+- 相关回归为 `183 passed / 71 subtests`，最终全量为 `2930 passed / 26 skipped / 1008 subtests`；前端资源版本为 `20260727b`。Python 后端进程尚未在授权维护窗口重启。
+- 月度 updater 已按 `1Y/3Y/5Y/7Y/10Y` 执行两次；2025+ 的 116 条事实摘要两次一致，8 个 active 月度方案继续为 `19 signal / 18 valid`。
+- 已删除 prediction/月度输出等价且已被审计摘要更完整的 canonical run `174–177` 替代的非 canonical run `170–173`；删除前后 API/dashboard canonical 投影摘要一致。
+- `weekly_10y_lgbm_point_v1` 已生成合规 run `191`（72 条历史、17 个月度指标），并补齐 7 条缺失 gray，加原有 7/24 共为 `80/80`；旧 run `165` 在确认新历史+live 完整覆盖后已受控删除。
+- 该 Blackbox 的 7/31 信号因 DataBridge 仍为 `refresh_date=2026-07-24` 被 Gate 拒绝，零写入；必须等待合法新 generation。
+- `weekly_10y_d_overlay_0529` 的首个回补 run `1407` 因源 `week_id=202625` 无交易日而 fail-closed，零 prediction，仍为 `77/77`；后续日期按规则停止。
+- `7 个周度候选全部 81/80` 尚未达成；本轮未修改算法、scheduler cron、BondProjectPro、rollout 或 admission，剩余步骤见 [TODO](TODO.md)。
 
 ## 本轮 10Y T+5 入库状态
 
