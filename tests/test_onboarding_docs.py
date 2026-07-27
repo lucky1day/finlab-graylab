@@ -76,6 +76,97 @@ FENGRL_MONTHLY_ACCEPTANCE_EVIDENCE = (
     BLACKBOX_RECORDS
     / "FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json"
 )
+DAILY_MVP_DESIGN = (
+    DOCS_ROOT
+    / "superpowers"
+    / "specs"
+    / "2026-07-28-all-active-signal-production-mvp-design.md"
+)
+DAILY_MVP_PLAN = (
+    DOCS_ROOT
+    / "superpowers"
+    / "plans"
+    / "2026-07-28-all-active-signal-production-mvp.md"
+)
+DAILY_MVP_EXECUTION_MATRIX = {
+    "daily_10y_lgbm_10y04_0629": (1, ("10Y",), "live_source_0629"),
+    "daily_1y_xgb_1y13_0629": (1, ("1Y",), "live_source_0629"),
+    "daily_5y_lgbm_5y10_0629": (1, ("5Y",), "live_source_0629"),
+    "t1_daily": (1, ("5Y", "10Y"), "generation_v1"),
+    "daily_5y_2_v28": (5, ("5Y",), "generation_v1"),
+    "daily_7y_1_v28": (5, ("7Y",), "generation_v1"),
+    "liwei_0616_10y01_cons_say_k3_div_k10": (
+        5,
+        ("10Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_10y01_full_oos_k3_div_k10": (
+        5,
+        ("10Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_10y02_cons_say_k3_div_k5": (
+        5,
+        ("10Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_5y01_full_oos_k3_div_k10": (
+        5,
+        ("5Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_5y_auc_static_all_k3_div_k10": (
+        5,
+        ("5Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_5y_auc_yearly_all_k3_div_k10": (
+        5,
+        ("5Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_5y_ic_yearly_all_k3_div_k10": (
+        5,
+        ("5Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_7y01_cons_say_k3_div_k10": (
+        5,
+        ("7Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_7y03_cons_all_k3_div_k8": (
+        5,
+        ("7Y",),
+        "generation_v1",
+    ),
+    "liwei_0616_cons_sda_k3_div_k10": (
+        5,
+        ("5Y",),
+        "generation_v1",
+    ),
+    "t5_daily": (5, ("3Y", "5Y", "7Y", "10Y"), "generation_v1"),
+    "one_y_t5_liq_excess_a_v1": (5, ("1Y",), "ledger_formal"),
+    "one_y_t5_liq_excess_a_w252_l7_v1": (
+        5,
+        ("1Y",),
+        "ledger_formal",
+    ),
+    "one_y_t5_liq_excess_a_w350_l7_v1": (
+        5,
+        ("1Y",),
+        "ledger_formal",
+    ),
+    "one_y_t5_liq_excess_b_w252_l7_v1": (
+        5,
+        ("1Y",),
+        "ledger_formal",
+    ),
+    **{
+        scheme_id: (5, ("10Y",), "ledger_gray")
+        for scheme_id in TEN_Y_T5_SCHEME_IDS
+    },
+}
 
 
 class OnboardingDocumentationTests(unittest.TestCase):
@@ -657,8 +748,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
         p0, _ = text.split("## P1", maxsplit=1)
         current = CURRENT_STATUS.read_text(encoding="utf-8")
 
-        for scheme_id in TEN_Y_T5_SCHEME_IDS:
-            self.assertIn(scheme_id, text)
         self.assertNotIn("one_y_t5_", p0)
         self.assertNotIn("migration017 namespace digest", text)
         self.assertIn("migration017 namespace digest", current)
@@ -674,19 +763,87 @@ class OnboardingDocumentationTests(unittest.TestCase):
         )
 
         dependencies = (
-            "execute-only replay",
-            "real 17 Native + 4 formal V2 21/25",
-            "scheduler resource/recovery/atomic commit/capacity",
-            "three 0629 generation adapters",
-            "migrations018/019/020",
-            "archive/disk",
-            "exact 20 forced-cold +20 revision/suffix",
-            "gray/formal admission",
-            "automatic gray scheduling",
-            "formal promotion",
+            "只读、内容寻址的信号gap plan",
+            "gray/formal准入",
+            "daily policy从21/25扩展为25/29",
+            "forced-cold 25/29",
+            "migration018",
+            "legacy切换ledger",
         )
         positions = [text.index(marker) for marker in dependencies]
         self.assertEqual(positions, sorted(positions))
+        self.assertIn("20次forced-cold", text)
+        self.assertIn("MVP 上线后增强", text)
+
+    def test_all_active_signal_mvp_preserves_control_plane_boundaries(self) -> None:
+        """新MVP不得通过全局gray开关、倒签或隔离DB admission绕过边界。"""
+        design = DAILY_MVP_DESIGN.read_text(encoding="utf-8")
+        plan = DAILY_MVP_PLAN.read_text(encoding="utf-8")
+        combined = design + plan
+
+        for marker in (
+            "25 execution / 29 target",
+            "日频 | 25 | 29",
+            "周频 | 7 | 7",
+            "月频 | 8 | 8",
+            "四个gray daily只允许进入ledger",
+            "五个gray monthly",
+            "production-identity execute-only observation",
+            "not_before/expires_at",
+            "首次获授权并完成 ledger epoch 切换后的交易日",
+            "scheduled_live`起点不早于实际machine-global ledger epoch",
+            "三个0629",
+        ):
+            self.assertIn(marker, combined)
+
+        self.assertNotIn("admission直接进入`ADMITTED`，无临时TTL", combined)
+        self.assertNotIn("2026-07-28 日频生产验收", combined)
+
+        matrix_section = design.split(
+            "## 日频精确身份矩阵",
+            maxsplit=1,
+        )[1].split("\n## ", maxsplit=1)[0]
+        rows = re.findall(
+            r"^\| `([^`]+)` \| ([0-9]+) \| `([^`]+)` \| `([^`]+)` \|$",
+            matrix_section,
+            flags=re.MULTILINE,
+        )
+        actual_matrix = {
+            scheme_id: (
+                int(horizon),
+                tuple(tenor.strip() for tenor in tenors.split(",")),
+                admission,
+            )
+            for scheme_id, horizon, tenors, admission in rows
+        }
+        self.assertEqual(actual_matrix, DAILY_MVP_EXECUTION_MATRIX)
+        self.assertEqual(len(actual_matrix), 25)
+        self.assertEqual(
+            sum(len(row[1]) for row in actual_matrix.values()),
+            29,
+        )
+        self.assertEqual(
+            {
+                scheme_id
+                for scheme_id, row in actual_matrix.items()
+                if row[2] == "ledger_gray"
+            },
+            set(TEN_Y_T5_SCHEME_IDS),
+        )
+        self.assertEqual(
+            {
+                scheme_id
+                for scheme_id, row in actual_matrix.items()
+                if row[2] == "live_source_0629"
+            },
+            {
+                "daily_10y_lgbm_10y04_0629",
+                "daily_1y_xgb_1y13_0629",
+                "daily_5y_lgbm_5y10_0629",
+            },
+        )
+        for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
+            self.assertIn(scheme_id, TODO.read_text(encoding="utf-8"))
 
     def test_todo_records_fengrl_manual_gray_complete_before_scheduler(self) -> None:
         """FengRL 手工灰度已完成，自动调度仍须等待独立 admission。"""
@@ -706,12 +863,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("不授予自动调度", p0)
         self.assertIn("scheduled_live", p0)
 
-        self.assertIn("日频平台前置依赖", remainder)
-        self.assertIn("独立 gray/formal admission", remainder)
-        self.assertIn("automatic gray scheduling", remainder)
-        for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
-            self.assertIn(scheme_id, remainder)
-        self.assertIn("正式晋级", remainder)
+        self.assertIn("周度剩余对账", remainder)
+        self.assertIn("按控制面隔离的gray/formal准入", text)
+        self.assertIn("MVP 上线后增强", remainder)
 
     def test_canonical_migration_runner_boundary_is_documented(self) -> None:
         """迁移 CLI 的写库身份围栏与运维边界必须由当前文档锁定。"""
@@ -744,7 +898,8 @@ class OnboardingDocumentationTests(unittest.TestCase):
             )
 
         self.assertNotIn("canonical migration runner", todo)
-        self.assertIn("execute-only replay", todo)
+        self.assertIn("migration018", todo)
+        self.assertIn("25/29", todo)
         for marker in ("f3a5720", "1f1019b", "8ee916f", "3c96f58"):
             self.assertIn(marker, current)
         self.assertIn("未应用生产 migration", current)
@@ -1020,7 +1175,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertFalse(boundaries["deployed"])
         self.assertFalse(boundaries["automatic_scheduler_authorized"])
 
-    def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
+    def test_10y_batch_scope_records_manual_history_and_new_scheduler_decision(self) -> None:
         todo = TODO.read_text(encoding="utf-8")
         record = TEN_Y_T5_RECORD.read_text(encoding="utf-8")
 
@@ -1039,7 +1194,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             0,
         )
         self.assertIn("本批不存在 `scheduled_live`", record)
-        self.assertIn("automatic gray scheduling", todo)
+        self.assertIn("按控制面隔离的gray/formal准入", todo)
+        self.assertIn("gray/formal", todo)
+        self.assertIn("scheduled_live", todo)
         self.assertIn("scheduled_live", record)
         self.assertIn("旧 generation fallback", record)
 
@@ -1078,11 +1235,14 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, current)
 
-        for text in (todo, current, record):
+        for text in (current, record):
             self.assertIn("25 item/29 target", text)
             self.assertIn("21 item/25 target", text)
             self.assertIn("schedule_cron", text)
             self.assertIn("legacy scheduler", text)
+        self.assertIn("25 item/29 target", todo)
+        self.assertIn("legacy切换ledger", todo)
+        self.assertIn("scheduled_live", todo)
 
         for text in (current, record):
             self.assertIn("rollout=`legacy`", text)
@@ -1199,7 +1359,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
 
     def test_current_status_is_a_concise_snapshot(self) -> None:
         text = (DOCS_ROOT / "CURRENT_STATUS.md").read_text(encoding="utf-8")
-        self.assertLessEqual(len(text.splitlines()), 120)
+        self.assertLessEqual(len(text.splitlines()), 140)
         self.assertIn("历史状态记录", text)
 
     def test_navigation_does_not_duplicate_dynamic_runtime_state(self) -> None:

@@ -1,5 +1,10 @@
 # Blackbox Scheduler Admission MVP Implementation Plan
 
+> **历史说明（2026-07-28）：** 本计划的“gray 禁止自动调度”目标已经被
+> 新业务决策取代。后续实施以
+> [全部 Active 方案实盘信号 MVP](2026-07-28-all-active-signal-production-mvp.md)
+> 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Separate Blackbox gray-lab visibility/manual execution from legacy scheduler permission.

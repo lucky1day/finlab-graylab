@@ -1,5 +1,11 @@
 # Blackbox Scheduler Admission MVP Design
 
+> **历史说明（2026-07-28）：** 本文记录“gray 只允许手工运行”的旧
+> 防护设计。用户已确认 gray 方案也承担自动实盘并写 `scheduled_live`；
+> 当前设计由
+> [全部 Active 方案实盘信号 MVP](2026-07-28-all-active-signal-production-mvp-design.md)
+> 取代。本文不得继续作为调度准入依据。
+
 ## Goal
 
 Allow an active Blackbox V2 scheme to remain visible in the gray lab and to be

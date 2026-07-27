@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-07-27
+**最后核验日期**：2026-07-28
 
 本文只保留当前已验证结论。较早的逐日状态、数据库快照和整改过程已冻结到[历史状态记录](records/status/README.md)；未完成工作的排序查看[TODO](TODO.md)。
 
@@ -21,7 +21,7 @@
 | Native V1 | 保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、DataBridge 三文件父快照、显式平台输入、七个 Gate、零写库 check-only、预测和 no-persist 回测已形成稳定路径 |
 | Blackbox V2 生产路径 | 一个真实周频方案、四个日频方案和本批五个月频方案已完成各自专项生产灰度；尚未形成面向任意新方案的通用生产授权 |
-| 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED` 仅指受控 recorder 的 21/25 ledger 功能验证；真实 17+4 尚未联跑，08:00 SLA 与 07:55 容量仍无证据 |
+| 日频 08:00 保障 | 用户已批准以现有 ledger 扩展到 25 execution / 29 target；当前仍是 21/25 recorder 证据，真实25/29和生产切换尚未完成 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 
 ## 周度历史与月度 Actual 对账状态
@@ -93,10 +93,31 @@
 
 ## 日频 08:00 整改状态
 
+- 2026-07-28已冻结新的MVP决策：全部44个active target按自然频率巡检；
+  日频25 execution/29 target每个交易日自动写`scheduled_live`，周频7和
+  月频8只在自然到期日新增。gray/formal业务标签均承担自动实盘和缺失
+  告警。
+- canonical回测10,309条已经完整，不做全量重跑；当前live应有1,343、
+  已有1,314、缺29，其中日频24、周频5、月频0。补历史缺口只能写
+  `gray_live`，新调度结果才写`scheduled_live`。
+- 用户明确取消20+20和连续观察作为MVP上线阻断；完整capacity admission
+  改为一次真实forced-cold 25/29隔离rehearsal加生产identity
+  execute-only observation，要求29/29、最后可见不晚于07:55、总耗时不
+  超过85分钟；最终admission继续保留签名和expiry。该证据不构成统计P95
+  声明。
+- 四个daily gray只允许进入ledger 25/29，不能在legacy回退时重新注册
+  per-scheme cron；五个monthly gray随后通过独立自然频率准入。正式
+  `scheduled_live`起点不得早于实际machine-global ledger epoch。
+- 权威设计和逐commit计划见
+  [全部 Active 方案实盘信号 MVP](superpowers/specs/2026-07-28-all-active-signal-production-mvp-design.md)
+  和[实施计划](superpowers/plans/2026-07-28-all-active-signal-production-mvp.md)。
+
 - `migration017 namespace digest` 已由开发提交 `f93b154` 闭合：migration preflight 和 `APPLYING` inspect 会读取同 schema 的 FK/CHECK 保留名占用，非法占用在业务 DDL 前 fail-closed，状态占用同时进入 recovery digest；该结论绑定当前 Mac 的 MySQL 8.0.45、`lower_case_table_names=2`。
 - `migration017 real MySQL recovery` 已由开发提交 `66e7a6b` 闭合：显式 opt-in 测试在本机隔离 MySQL 8.0.45、`lower_case_table_names=2` 上覆盖正常 public apply、首个 DDL 前中断、前两个 DDL 已 implicit commit 的中段恢复、DDL 完成但 history 未标记、定义漂移拒绝、FK/CHECK 大小写命名冲突 preflight 与 digest fence，以及 accent、跨约束类型和跨 schema 命名语义；8 个场景全部通过，临时进程和 datadir 均已回收。该结论没有应用生产迁移，不代表下一项 canonical migration runner 已完成。
 - `canonical migration runner` 已由 `f3a5720`、`1f1019b`、`8ee916f` 与 `3c96f58` 闭合：唯一行为实现是 caller-supplied `Engine` 的 `migrations.runner`，唯一受控 operator wrapper 是 `scripts/apply_migrations.py`。隔离 MySQL CLI 已证明 normal apply/no-op、017 中段 recovery 和 018 两类 recovery；所有 CLI 写路径在建 Engine 前要求 expected database/server UUID，并在首个写动作前精确核验连接身份。inspect 保持只读且无需 identity 参数。隔离测试未应用生产 migration，且不等于 production-shaped sanitized clone 演练；后者仍是 `migrations018/019/020` 的待办。当前 CLI apply/no-op 尚无 durable signed operator report。
-- 本轮日频生产化主线停在 canonical migration runner closure；下一项仍是 `execute-only replay`，其余真实 21/25、scheduler、0629、clone、归档与容量门禁均未启动。
+- 日频生产化主线已由用户重新排序为全部active日频25/29功能MVP；下一项是
+  exact gap plan、gray/formal自动准入、25/29 policy和真实同机replay。
+  0629 adapter、019/020、归档和20+20均转为MVP上线后增强项。
 - 受控 recorder 已在隔离 MySQL 验证 21 item/25 target 的账本、双 lane、幂等、claim、原子提交和 watchdog；该证据没有执行真实 17+4 算法。
 - 四个真实 V2 sealed delivery 的冻结输入、确定性、超时、generation fence、late 后继续执行和失败隔离已验证；隔离 replay 的 runtime/session/identity/process fence 和 `ProcessStartGuard` 已接线。
 - `python -m harness daily-real-replay --check-only` 只读预检可运行，但已安装 backend LaunchAgent 缺少合法 coordinator mode，当前仍 fail-closed 为 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
