@@ -232,6 +232,10 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         enriched = register.call_args.args[1]
         self.assertEqual(enriched.environment_fingerprint, "e" * 64)
         self.assertEqual(enriched.data_snapshot_id, "snapshot-1")
+        self.assertEqual(
+            register.call_args.kwargs["expected_harness_run_id"],
+            "hr_passed",
+        )
         evidence = {item.key: item.value for item in result.evidence}
         self.assertEqual(evidence["action"], "draft_register")
         self.assertEqual(evidence["before"]["identity_exists"], False)
@@ -290,7 +294,14 @@ class _Context:
 
 
 class _DraftRegisterEngine:
-    def __init__(self, *, version_conflicts=None, fail_registry_insert=False) -> None:
+    def __init__(
+        self,
+        *,
+        latest_harness_run_id="hr_passed",
+        version_conflicts=None,
+        fail_registry_insert=False,
+    ) -> None:
+        self.latest_harness_run_id = latest_harness_run_id
         self.version_conflicts = version_conflicts or []
         self.fail_registry_insert = fail_registry_insert
         self.version = None
@@ -329,6 +340,13 @@ class _DraftRegisterEngine:
     def _execute(self, statement, params=None):
         sql = " ".join(str(statement).split())
         self.sql.append(sql)
+        if "draft registration latest passed all-stage fence" in sql:
+            row = (
+                None
+                if self.latest_harness_run_id is None
+                else {"harness_run_id": self.latest_harness_run_id}
+            )
+            return _Result(row=row)
         if "draft registration version identity conflicts" in sql:
             return _Result(rows=self.version_conflicts)
         if "draft registration Registry identity conflicts" in sql:
@@ -391,7 +409,11 @@ class BlackboxDraftRegisterRepositoryTests(unittest.TestCase):
         from scheduler.repository import register_blackbox_draft_identity
 
         engine = _DraftRegisterEngine()
-        state = register_blackbox_draft_identity(engine, self._cfg())
+        state = register_blackbox_draft_identity(
+            engine,
+            self._cfg(),
+            expected_harness_run_id="hr_passed",
+        )
 
         self.assertEqual(engine.begin_count, 1)
         self.assertTrue(engine.released)
@@ -406,7 +428,11 @@ class BlackboxDraftRegisterRepositoryTests(unittest.TestCase):
             version_conflicts=[{"scheme_id": "trial_10y", "scheme_version": "old"}]
         )
         with self.assertRaisesRegex(ValueError, "identity conflict"):
-            register_blackbox_draft_identity(engine, self._cfg())
+            register_blackbox_draft_identity(
+                engine,
+                self._cfg(),
+                expected_harness_run_id="hr_passed",
+            )
 
         self.assertIsNone(engine.version)
         self.assertEqual(engine.registry, [])
@@ -417,7 +443,30 @@ class BlackboxDraftRegisterRepositoryTests(unittest.TestCase):
 
         engine = _DraftRegisterEngine(fail_registry_insert=True)
         with self.assertRaisesRegex(RuntimeError, "registry insert failed"):
-            register_blackbox_draft_identity(engine, self._cfg())
+            register_blackbox_draft_identity(
+                engine,
+                self._cfg(),
+                expected_harness_run_id="hr_passed",
+            )
+
+        self.assertIsNone(engine.version)
+        self.assertEqual(engine.registry, [])
+        self.assertTrue(engine.released)
+
+    def test_latest_all_stage_drift_is_rejected_before_any_insert(self) -> None:
+        from scheduler.repository import register_blackbox_draft_identity
+
+        engine = _DraftRegisterEngine(latest_harness_run_id="hr_newer")
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "latest passed all-stage harness run changed",
+        ):
+            register_blackbox_draft_identity(
+                engine,
+                self._cfg(),
+                expected_harness_run_id="hr_passed",
+            )
 
         self.assertIsNone(engine.version)
         self.assertEqual(engine.registry, [])

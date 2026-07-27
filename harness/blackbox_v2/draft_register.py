@@ -116,7 +116,11 @@ class BlackboxDraftRegisterGate(Gate):
                 auth,
                 ctx.report_dir / "draft_register_authorization",
             )
-            state = register_blackbox_draft_identity(engine, enriched_cfg)
+            state = register_blackbox_draft_identity(
+                engine,
+                enriched_cfg,
+                expected_harness_run_id=passed_run.harness_run_id,
+            )
         finally:
             if hasattr(engine, "dispose"):
                 engine.dispose()

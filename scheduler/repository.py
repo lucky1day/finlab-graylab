@@ -660,6 +660,7 @@ def register_blackbox_draft_identity(
     engine: Engine,
     cfg: SchemeConfig,
     *,
+    expected_harness_run_id: str,
     lock_timeout_sec: float = 5.0,
 ) -> BlackboxLifecycleState:
     """在非空生产 Schema 中 insert-only 登记全新 Blackbox draft 身份。"""
@@ -674,6 +675,13 @@ def register_blackbox_draft_identity(
         raise ValueError("Blackbox draft registration requires environment_fingerprint")
     if not str(getattr(cfg, "data_snapshot_id", "") or "").strip():
         raise ValueError("Blackbox draft registration requires data_snapshot_id")
+    if (
+        not isinstance(expected_harness_run_id, str)
+        or not expected_harness_run_id.strip()
+    ):
+        raise ValueError(
+            "Blackbox draft registration requires expected_harness_run_id"
+        )
 
     expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
     identity_ids = (cfg.scheme_id, *expected_registry_ids)
@@ -691,6 +699,42 @@ def register_blackbox_draft_identity(
         timeout_sec=lock_timeout_sec,
     ):
         with engine.begin() as conn:
+            latest_run = (
+                conn.execute(
+                    text(
+                        """
+                        /* draft registration latest passed all-stage fence */
+                        SELECT harness_run_id
+                        FROM t_harness_runs
+                        WHERE scheme_id = :scheme_id
+                          AND scheme_version = :scheme_version
+                          AND stage = 'all'
+                          AND status = 'passed'
+                        ORDER BY finished_at DESC, harness_run_id DESC
+                        LIMIT 1
+                        FOR UPDATE
+                        """
+                    ),
+                    {
+                        "scheme_id": cfg.scheme_id,
+                        "scheme_version": cfg.scheme_version,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+            actual_harness_run_id = (
+                str(latest_run["harness_run_id"])
+                if latest_run is not None
+                else None
+            )
+            if actual_harness_run_id != expected_harness_run_id:
+                raise RuntimeError(
+                    "latest passed all-stage harness run changed before draft "
+                    "registration: "
+                    f"expected={expected_harness_run_id}, "
+                    f"actual={actual_harness_run_id}"
+                )
             version_conflicts = (
                 conn.execute(
                     text(
