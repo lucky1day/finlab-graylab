@@ -327,6 +327,13 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         self.assertFalse(result.passed)
         consume.assert_not_called()
         register.assert_not_called()
+        evidence = {item.key: item.value for item in result.evidence}
+        self.assertEqual(evidence["outcome"]["status"], "failed")
+        self.assertEqual(
+            evidence["outcome"]["database_outcome"],
+            "not_started",
+        )
+        self.assertFalse(evidence["outcome"]["reconciliation_required"])
 
     def test_repository_failure_returns_structured_rollback_audit_and_disposes_engine(
         self,
@@ -386,6 +393,73 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         self.assertFalse(replay.passed)
         self.assertEqual(replay.status.value, "blocked")
         self.assertIn("already used", "\n".join(replay.errors))
+
+    def test_post_commit_audit_failure_requires_reconciliation_with_fallback_audit(
+        self,
+    ) -> None:
+        import harness.blackbox_v2.draft_register as draft_register
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+        from scheduler.repository import BlackboxLifecycleState
+
+        state = BlackboxLifecycleState(
+            scheme_id=self.cfg.scheme_id,
+            scheme_version=self.cfg.scheme_version,
+            runtime_type="blackbox_v2",
+            version_status="draft",
+            registry_status="paused",
+            environment_fingerprint="e" * 64,
+            data_snapshot_id="snapshot-1",
+            code_hash=self.cfg.code_hash,
+            config_hash=self.cfg.config_hash,
+            manifest_hash=self.cfg.manifest_hash,
+            approved_by=None,
+            approved_at=None,
+            registry_scheme_ids=(f"{self.cfg.scheme_id}__h1__10Y",),
+        )
+        real_write = draft_register._write_outcome_audit
+
+        def fail_terminal(path, outcome):
+            if outcome["status"] == "passed":
+                raise OSError("terminal audit unavailable")
+            return real_write(path, outcome)
+
+        with (
+            patch(
+                "harness.blackbox_v2.draft_register._verify_passed_all",
+                return_value=self._passed_run(),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register.register_blackbox_draft_identity",
+                return_value=state,
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register._write_outcome_audit",
+                side_effect=fail_terminal,
+            ),
+        ):
+            result = BlackboxDraftRegisterGate().run(
+                self._ctx(self._token())
+            )
+
+        self.assertFalse(result.passed)
+        evidence = {item.key: item.value for item in result.evidence}
+        outcome = evidence["outcome"]
+        self.assertEqual(outcome["status"], "failed")
+        self.assertEqual(
+            outcome["database_outcome"],
+            "committed_identity_present",
+        )
+        self.assertEqual(
+            outcome["rollback_outcome"],
+            "not_applicable_committed",
+        )
+        self.assertTrue(outcome["reconciliation_required"])
+        self.assertIsNotNone(result.report_path)
+        self.assertTrue(result.report_path.is_file())
+        persisted = json.loads(
+            result.report_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(persisted, outcome)
 
 
 class _Result:

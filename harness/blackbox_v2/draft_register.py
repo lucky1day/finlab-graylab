@@ -145,6 +145,7 @@ class BlackboxDraftRegisterGate(Gate):
                 "status": "prepared",
                 "database_outcome": "not_started",
                 "rollback_outcome": "not_required",
+                "reconciliation_required": False,
                 "before": before,
                 "after": None,
                 "error": None,
@@ -159,10 +160,17 @@ class BlackboxDraftRegisterGate(Gate):
                 outcome_path = authorization_dir / "outcome.json"
                 _write_outcome_audit(outcome_path, prepared_outcome)
             except Exception as exc:  # noqa: BLE001
+                outcome = {
+                    **prepared_outcome,
+                    "status": "failed",
+                    "database_outcome": "not_started",
+                    "reconciliation_required": False,
+                    "error": _error_payload(exc),
+                }
                 return _failed(
                     started_at,
                     [f"draft registration audit preparation failed: {exc}"],
-                    outcome=prepared_outcome,
+                    outcome=outcome,
                     authorization_audit_path=audit_path,
                     outcome_audit_path=outcome_path,
                 )
@@ -173,6 +181,8 @@ class BlackboxDraftRegisterGate(Gate):
                 outcome = {
                     **prepared_outcome,
                     "status": "failed",
+                    "database_outcome": "not_started",
+                    "reconciliation_required": False,
                     "error": _error_payload(exc),
                 }
                 audit_errors = _try_write_outcome(outcome_path, outcome)
@@ -200,6 +210,7 @@ class BlackboxDraftRegisterGate(Gate):
                     "status": "failed",
                     "database_outcome": database_outcome,
                     "rollback_outcome": rollback_outcome,
+                    "reconciliation_required": after is not None,
                     "after": after,
                     "error": _error_payload(exc),
                 }
@@ -212,22 +223,42 @@ class BlackboxDraftRegisterGate(Gate):
                     outcome_audit_path=outcome_path,
                 )
 
-            after = asdict(state)
+            after = _lifecycle_state_payload(state)
             outcome = {
                 **prepared_outcome,
                 "authorization_consumed": True,
                 "status": "passed",
                 "database_outcome": "committed",
+                "rollback_outcome": "not_applicable_committed",
+                "reconciliation_required": False,
                 "after": after,
             }
             audit_errors = _try_write_outcome(outcome_path, outcome)
             if audit_errors:
+                audit_error = OSError(audit_errors[0])
+                outcome = {
+                    **outcome,
+                    "status": "failed",
+                    "database_outcome": "committed_identity_present",
+                    "rollback_outcome": "not_applicable_committed",
+                    "reconciliation_required": True,
+                    "error": _error_payload(audit_error),
+                }
+                fallback_path = outcome_path.with_name(
+                    "outcome.reconciliation-required.json"
+                )
+                fallback_errors = _try_write_fallback_outcome(
+                    fallback_path,
+                    outcome,
+                )
                 return _failed(
                     started_at,
-                    audit_errors,
+                    [*audit_errors, *fallback_errors],
                     outcome=outcome,
                     authorization_audit_path=audit_path,
-                    outcome_audit_path=outcome_path,
+                    outcome_audit_path=(
+                        fallback_path if not fallback_errors else outcome_path
+                    ),
                 )
         finally:
             if hasattr(engine, "dispose"):
@@ -366,6 +397,20 @@ def _try_write_outcome(
     return []
 
 
+def _try_write_fallback_outcome(
+    path: Path,
+    outcome: dict[str, object],
+) -> list[str]:
+    try:
+        _atomic_write_json(path, outcome)
+    except Exception as exc:  # noqa: BLE001
+        return [
+            "draft registration reconciliation audit fallback write failed: "
+            f"{exc}"
+        ]
+    return []
+
+
 def _database_failure_outcome(
     engine,
     cfg: SchemeConfig,
@@ -377,8 +422,17 @@ def _database_failure_outcome(
     return (
         "identity_present_requires_reconciliation",
         "not_confirmed_identity_present",
-        asdict(state),
+        _lifecycle_state_payload(state),
     )
+
+
+def _lifecycle_state_payload(state) -> dict[str, object]:
+    payload = asdict(state)
+    payload["registry_scheme_ids"] = list(payload["registry_scheme_ids"])
+    approved_at = payload.get("approved_at")
+    if approved_at is not None:
+        payload["approved_at"] = approved_at.isoformat()
+    return payload
 
 
 def _error_payload(exc: Exception) -> dict[str, str]:
