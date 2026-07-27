@@ -3,7 +3,7 @@
   "record_date": "2026-07-26",
   "last_updated": "2026-07-27",
   "branch": "codex/blackbox-v2-monthly-fengrl-review-20260726",
-  "batch_status": "IN_PROGRESS_3_OF_5",
+  "batch_status": "IN_PROGRESS_4_OF_5",
   "constraints": {
     "check_only": true,
     "registry_activation": false,
@@ -501,7 +501,155 @@
       "order": 4,
       "scheme_id": "cgb_a4_fundseason_7y",
       "target_tenor": "7Y",
-      "status": "PENDING_NOT_INTAKEN"
+      "status": "TECHNICAL_GATES_PASSED_CHECK_ONLY",
+      "source_sha256": {
+        "cgb_a4_fundseason_7y.json": "dbeb9133734e43feb23aa6d201ed42d3ea9822e7ed465ffb78e54ccc030161ed",
+        "cgb_a4_fundseason_7y.py": "86c8c5d98120d872d3d5d15e303b3ee2b921266363cb774f785544625fd6b87d"
+      },
+      "delivery_sha256": {
+        "cgb_a4_fundseason_7y.json": "dbeb9133734e43feb23aa6d201ed42d3ea9822e7ed465ffb78e54ccc030161ed",
+        "cgb_a4_fundseason_7y.py": "86c8c5d98120d872d3d5d15e303b3ee2b921266363cb774f785544625fd6b87d"
+      },
+      "intake": {
+        "status": "passed",
+        "runtime_profile": "blackbox-v2-v1",
+        "data_schema_version": "data-bridge-v1",
+        "platform_inputs": [
+          "api-wind-date-v1"
+        ],
+        "excluded_upstream_entries": [
+          "api_wind_date.csv",
+          "交接文档.md"
+        ]
+      },
+      "config": {
+        "runtime_type": "blackbox_v2",
+        "status": "paused",
+        "version_status": "draft",
+        "description_nonempty": true
+      },
+      "onboard": {
+        "predict_date": "2026-07-15",
+        "stage": "all",
+        "check_only": true,
+        "algo_env": "forecast_env_blackbox_v1",
+        "timeout_sec": 1800,
+        "harness_run_id": "hr_20260727T015710Z_e737d5c08926",
+        "report_dir": "reports/harness/cgb_a4_fundseason_7y/20260727T015709Z",
+        "overall_passed": true,
+        "control_plane_persisted": false,
+        "business_tables_written": false,
+        "persist_backtest": false,
+        "gates": {
+          "static": "passed",
+          "input": "passed",
+          "unit": "passed",
+          "dry-run": "passed",
+          "compare": "passed",
+          "backtest": "passed",
+          "api-readiness": "passed"
+        },
+        "input_identity": {
+          "combined_snapshot_id": "snapshot-b24bd78475f367ed858c2658",
+          "parent_snapshot_id": "snapshot-46ff3231de2c4a080c46ba56",
+          "data_bridge_generation_id": "full-20260724-062251-4977e502dadf",
+          "data_bridge_refresh_date": "2026-07-24",
+          "base_snapshot_files": {
+            "daily_output.csv": {
+              "rows": 3882,
+              "sha256": "eedbcf3ffd479da4b67a4bebdf0b375913ae4eb5ddcde3cc55c079880a57cb9b"
+            },
+            "weekly_output.csv": {
+              "rows": 848,
+              "sha256": "b634aee8ff668b690b0d84e9998b0ad9692fd12b879cab51f56c610ef3646946"
+            },
+            "monthly_output.csv": {
+              "rows": 201,
+              "sha256": "b5f7c3a45740c2acc629b53b6a6ebe56c29c5cac9f8ee4e4048ff61c9ea7d740"
+            }
+          },
+          "platform_input": {
+            "artifact_id": "api-wind-date-v1",
+            "provider_version": "api-wind-date-provider-v1",
+            "filename": "api_wind_date.csv",
+            "columns": [
+              "rdate",
+              "week_id"
+            ],
+            "rows": 6064,
+            "sha256": "816d44d062af74c40fe6b7c8a7a0369a0813c1bfd46250b4c344d26206a92ef8",
+            "source_kind": "harness_database"
+          },
+          "weekly_cutoff_key": "202628",
+          "weekly_cutoff_covered": true,
+          "identity_consistent_across_input_and_later_gates": true,
+          "platform_hash_consistent_across_input_and_later_gates": true
+        },
+        "compare": {
+          "repeat_deterministic": true,
+          "predict_backtest_equal": true,
+          "batch_split_invariant": true,
+          "request_order_invariant": true,
+          "future_row_isolation": true,
+          "platform_input_hashes_unchanged": true
+        },
+        "backtest": {
+          "requests": 100,
+          "records": 100,
+          "sample_size": 100,
+          "persist": false,
+          "business_tables_written": false
+        },
+        "api_readiness": {
+          "structural_only": true,
+          "registry_status": "paused",
+          "lifecycle_mode": "pre_shadow",
+          "scheduler_eligible": false,
+          "api_visible": false
+        }
+      },
+      "database_counts_before": {
+        "t_scheme_registry": 0,
+        "t_scheme_versions": 0,
+        "t_input_artifacts": 0,
+        "t_scheme_runs": 0,
+        "t_scheme_predictions": 0,
+        "t_scheme_run_log": 0,
+        "t_scheme_serving_pointer": 0,
+        "t_backtest_runs": 0,
+        "t_backtest_predictions": 0,
+        "t_backtest_monthly_metrics": 0,
+        "t_harness_runs": 0,
+        "t_harness_gate_results": 0
+      },
+      "database_counts_after": {
+        "t_scheme_registry": 0,
+        "t_scheme_versions": 0,
+        "t_input_artifacts": 0,
+        "t_scheme_runs": 0,
+        "t_scheme_predictions": 0,
+        "t_scheme_run_log": 0,
+        "t_scheme_serving_pointer": 0,
+        "t_backtest_runs": 0,
+        "t_backtest_predictions": 0,
+        "t_backtest_monthly_metrics": 0,
+        "t_harness_runs": 0,
+        "t_harness_gate_results": 0
+      },
+      "database_count_deltas": {
+        "t_scheme_registry": 0,
+        "t_scheme_versions": 0,
+        "t_input_artifacts": 0,
+        "t_scheme_runs": 0,
+        "t_scheme_predictions": 0,
+        "t_scheme_run_log": 0,
+        "t_scheme_serving_pointer": 0,
+        "t_backtest_runs": 0,
+        "t_backtest_predictions": 0,
+        "t_backtest_monthly_metrics": 0,
+        "t_harness_runs": 0,
+        "t_harness_gate_results": 0
+      }
     },
     {
       "order": 5,
