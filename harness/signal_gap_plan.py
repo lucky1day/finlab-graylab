@@ -1527,13 +1527,42 @@ def _read_persisted_canonical_observations(
                 )
             )
             continue
+        version_error = next(
+            (
+                error
+                for error in (
+                    _canonical_run_version_error(
+                        target,
+                        run,
+                        summary,
+                    )
+                    for target in base_targets
+                )
+                if error is not None
+            ),
+            None,
+        )
+        if version_error is not None:
+            blockers.append(
+                {
+                    "code": "NATIVE_CANONICAL_VERSION_IDENTITY_INVALID",
+                    "base_scheme_id": base_scheme_id,
+                    "run_id": run_id,
+                    "reason": version_error,
+                }
+            )
         authorities.append(
             _native_manifest_authority(
                 base_scheme_id,
                 run_id=run_id,
+                run=run,
                 summary=summary,
                 details=run_details,
+                failure_code=version_error,
             )
+        )
+        persisted_scheme_version = (
+            _optional_text(summary.get("scheme_version")) or ""
         )
         for target in sorted(
             base_targets,
@@ -1557,7 +1586,8 @@ def _read_persisted_canonical_observations(
                     _canonical_observation_from_case(
                         case,
                         run_status=str(run["status"]),
-                        scheme_version=target.scheme_version,
+                        scheme_version=persisted_scheme_version,
+                        contract_error=version_error,
                     )
                 )
     for registry_id, run in sorted(selected_by_registry.items()):
@@ -1611,11 +1641,20 @@ def _native_manifest_authority(
     base_scheme_id: str,
     *,
     run_id: int,
+    run: Mapping[str, Any],
     summary: Mapping[str, Any],
     details: Sequence[Mapping[str, Any]],
+    failure_code: str | None,
 ) -> Mapping[str, Any]:
     payload = {
         "run_id": run_id,
+        "run_identity": {
+            "benchmark_id": str(run.get("benchmark_id") or ""),
+            "scheme_id": str(run.get("scheme_id") or ""),
+            "data_source": str(run.get("data_source") or ""),
+            "code_hash": str(run.get("code_hash") or ""),
+            "config_hash": str(run.get("config_hash") or ""),
+        },
         "summary": dict(summary),
         "canonical_keys": [
             {
@@ -1639,7 +1678,8 @@ def _native_manifest_authority(
     return {
         "base_scheme_id": base_scheme_id,
         "mode": "persisted_source_run_manifest_v1",
-        "status": "VALID",
+        "status": "BLOCKED" if failure_code else "VALID",
+        "failure_code": failure_code,
         "run_id": run_id,
         "expected_count": len(details),
         "digest_sha256": canonical_json_sha256(payload),
@@ -1685,6 +1725,7 @@ def _canonical_observation_from_case(
     *,
     run_status: str,
     scheme_version: str,
+    contract_error: str | None,
 ) -> ObservedSignal:
     return ObservedSignal(
         base_scheme_id=case.base_scheme_id,
@@ -1696,6 +1737,7 @@ def _canonical_observation_from_case(
         phase="canonical",
         scheme_version=scheme_version,
         run_status=run_status,
+        contract_error=contract_error,
     )
 
 
@@ -2043,6 +2085,7 @@ def _observation_contract_error(
         or row.feature_date != item.feature_date
         or row.phase not in expected_phase
         or row.run_status != "success"
+        or row.scheme_version != target.scheme_version
     ):
         return (
             "OBSERVED_SIGNAL_CONTRACT_DRIFT"
@@ -2286,20 +2329,30 @@ def _canonical_run_version_error(
     summary: Mapping[str, Any],
 ) -> str | None:
     summary_version = _optional_text(summary.get("scheme_version"))
-    if summary_version is not None:
-        return (
-            None
-            if summary_version == target.scheme_version
-            else "CANONICAL_SCHEME_VERSION_DRIFT"
-        )
+    if (
+        summary_version is not None
+        and summary_version != target.scheme_version
+    ):
+        return "CANONICAL_SCHEME_VERSION_DRIFT"
     if (
         target.code_sha256
         and target.config_sha256
-        and str(run.get("code_hash") or "") == target.code_sha256
-        and str(run.get("config_hash") or "") == target.config_sha256
+        and (
+            str(run.get("code_hash") or "") != target.code_sha256
+            or str(run.get("config_hash") or "")
+            != target.config_sha256
+        )
     ):
-        return None
-    return "CANONICAL_VERSION_AUTHORITY_UNAVAILABLE"
+        return "CANONICAL_VERSION_DIGEST_DRIFT"
+    if (
+        summary_version is None
+        and not (
+            target.code_sha256
+            and target.config_sha256
+        )
+    ):
+        return "CANONICAL_VERSION_AUTHORITY_UNAVAILABLE"
+    return None
 
 
 def _validate_canonical_run_manifest(
@@ -2688,6 +2741,8 @@ def _live_row_contract_error(
     if target is None:
         errors.append("LIVE_TARGET_NOT_ACTIVE")
     else:
+        if str(row.get("scheme_version") or "") != target.scheme_version:
+            errors.append("LIVE_SCHEME_VERSION_DRIFT")
         if str(row.get("run_runtime_type") or "") != target.runtime_type:
             errors.append("RUN_RUNTIME_TYPE_DRIFT")
     if row.get("run_id") is None:

@@ -485,6 +485,110 @@ class SignalGapPlanTests(unittest.TestCase):
                 expected_target_pairs={("5Y", 5)},
             )
 
+    def test_native_persisted_run_old_identity_is_present_but_blocked(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            RegistryTarget,
+            SignalGapSnapshot,
+            _read_persisted_canonical_observations,
+            build_signal_gap_plan,
+        )
+
+        target = RegistryTarget(
+            registry_scheme_id="native_demo__h5__10Y",
+            base_scheme_id="native_demo",
+            runtime_type="native_adapter",
+            frequency="daily",
+            task_type="T+5",
+            target_tenor="10Y",
+            horizon=5,
+            scheme_version="active-version",
+            live_target_start_date="2026-06-01",
+            live_boundary_source="platform_live_boundary_v1",
+            input_mode="generation_v1",
+            code_sha256="a" * 64,
+            config_sha256="b" * 64,
+        )
+        run = {
+            "id": 7,
+            "benchmark_id": "native-history",
+            "scheme_id": "native_demo",
+            "data_source": "framework_db_aligned",
+            "start_date": "2025-01-01",
+            "end_date": "2025-01-08",
+            "status": "success",
+            "summary": {
+                "row_count": 1,
+                "scheme_version": "old-version",
+            },
+            "code_hash": "c" * 64,
+            "config_hash": "d" * 64,
+            "created_at": "2026-07-01T00:00:00+08:00",
+            "updated_at": "2026-07-01T00:00:00+08:00",
+        }
+        detail = {
+            "run_id": 7,
+            "target_tenor": "10Y",
+            "horizon": 5,
+            "predict_date": "2025-01-01",
+            "feature_date": "2025-01-01",
+            "target_date": "2025-01-08",
+        }
+        connection = _ReaderConnection(
+            (
+                ("FROM t_backtest_runs", [run]),
+                ("FROM t_backtest_predictions", [detail]),
+            )
+        )
+
+        cases, signals, watermarks, blockers, authorities = (
+            _read_persisted_canonical_observations(
+                connection,
+                (
+                    {
+                        "scheme_id": target.registry_scheme_id,
+                        "base_scheme_id": target.base_scheme_id,
+                        "runtime_type": target.runtime_type,
+                        "status": "active",
+                    },
+                ),
+                (target,),
+            )
+        )
+        plan = build_signal_gap_plan(
+            SignalGapSnapshot(
+                registry_targets=(target,),
+                expected_cases=cases,
+                canonical_signals=signals,
+                live_signals=(),
+                input_generations=(),
+                input_watermarks=watermarks,
+                source_identity_sha256="e" * 64,
+                discovery_identity_sha256="f" * 64,
+                active_version_identity_sha256="1" * 64,
+                control_plane_blockers=blockers,
+                canonical_authorities=authorities,
+            ),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(authorities[0]["status"], "BLOCKED")
+        self.assertEqual(
+            authorities[0]["failure_code"],
+            "CANONICAL_SCHEME_VERSION_DRIFT",
+        )
+        self.assertEqual(signals[0].scheme_version, "old-version")
+        self.assertEqual(
+            plan["actions"][0]["action"],
+            "BLOCKED_DATA_CONTRACT",
+        )
+        self.assertTrue(plan["actions"][0]["business_key_present"])
+        self.assertEqual(plan["counts"]["present"], 1)
+        self.assertEqual(plan["counts"]["open_gap"], 0)
+        self.assertEqual(plan["status"], "BLOCKED")
+
     def test_run_149_manifest_accepts_all_approved_count_shapes(self) -> None:
         from harness.signal_gap_plan import (
             SignalGapPlanError,
@@ -1076,6 +1180,64 @@ class SignalGapPlanTests(unittest.TestCase):
             "run_predict_date",
         ):
             self.assertIn(field, sql)
+
+    def test_live_old_prediction_and_run_version_is_present_but_blocked(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _read_live_signals,
+            build_signal_gap_plan,
+        )
+
+        snapshot = self._snapshot()
+        target = snapshot.registry_targets[0]
+        row = {
+            "id": 1,
+            "scheme_id": target.base_scheme_id,
+            "target_tenor": target.target_tenor,
+            "horizon": target.horizon,
+            "target_date": "2026-06-01",
+            "feature_date": "2026-05-25",
+            "predict_date": "2026-05-26",
+            "prediction_phase": "gray_live",
+            "scheme_version": "old-version",
+            "run_id": 101,
+            "run_status": "success",
+            "run_scheme_id": target.base_scheme_id,
+            "run_scheme_version": "old-version",
+            "run_runtime_type": target.runtime_type,
+            "run_prediction_phase": "gray_live",
+            "run_predict_date": "2026-05-26",
+        }
+        connection = _ReaderConnection(
+            (("FROM t_scheme_predictions", [row]),)
+        )
+        _, signals = _read_live_signals(
+            connection,
+            (target,),
+            as_of_date="2026-07-27",
+            expected_business_keys={
+                (target.base_scheme_id, "10Y", 5, "2026-06-01"),
+            },
+        )
+
+        plan = build_signal_gap_plan(
+            replace(snapshot, live_signals=signals),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+        action = next(
+            item
+            for item in plan["actions"]
+            if item["target_date"] == "2026-06-01"
+        )
+
+        self.assertEqual(action["action"], "BLOCKED_DATA_CONTRACT")
+        self.assertIn("LIVE_SCHEME_VERSION_DRIFT", action["reason"])
+        self.assertTrue(action["business_key_present"])
+        self.assertEqual(plan["counts"]["present"], 1)
+        self.assertEqual(plan["counts"]["open_gap"], 4)
+        self.assertEqual(plan["status"], "BLOCKED")
 
     def test_read_occurs_in_one_repeatable_read_only_snapshot_and_rolls_back(
         self,
