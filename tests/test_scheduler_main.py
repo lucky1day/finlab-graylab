@@ -6,10 +6,12 @@ import io
 import json
 import logging
 import os
+import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -1009,6 +1011,76 @@ class SchedulerMainTests(unittest.TestCase):
                     }.issubset(job_ids)
                 )
                 sync_registry.assert_called_once_with(schemes)
+
+    def test_non_utf8_blackbox_policy_keeps_native_and_actuals_jobs(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+        from scheduler.blackbox_scheduler_admission import (
+            load_blackbox_scheduler_admission,
+        )
+
+        native = _cfg("native_demo")
+        blackbox = _cfg(
+            "one_y_t5_liq_excess_a_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
+        )
+        schemes = [native, blackbox]
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "admission.json"
+            policy_path.write_bytes(b"\xff\xfe\x80")
+            with (
+                patch.dict(
+                    os.environ,
+                    {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
+                ),
+                patch.object(
+                    scheduler_main,
+                    "discover_schemes",
+                    return_value=schemes,
+                ),
+                patch.object(
+                    scheduler_main,
+                    "_sync_registry",
+                    return_value=None,
+                ) as sync_registry,
+                patch.object(
+                    scheduler_main,
+                    "load_blackbox_scheduler_admission",
+                    side_effect=lambda: (
+                        load_blackbox_scheduler_admission(policy_path)
+                    ),
+                ),
+                self.assertLogs(
+                    scheduler_main.logger,
+                    level=logging.CRITICAL,
+                ),
+            ):
+                scheduler = scheduler_main.build_scheduler()
+
+        try:
+            job_ids = {
+                job.id
+                for job in scheduler.get_jobs()
+            }
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertIn("predict:native_demo", job_ids)
+        self.assertNotIn(
+            "predict:one_y_t5_liq_excess_a_v1",
+            job_ids,
+        )
+        self.assertTrue(
+            {
+                "actuals:0830",
+                "actuals:1900",
+                "actuals:2345",
+            }.issubset(job_ids)
+        )
+        sync_registry.assert_called_once_with(schemes)
 
     def test_native_only_scheduler_does_not_load_blackbox_policy(
         self,

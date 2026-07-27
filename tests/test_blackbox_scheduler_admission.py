@@ -192,6 +192,17 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
             ):
                 load_blackbox_scheduler_admission(path)
 
+    def test_non_utf8_policy_is_configuration_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "admission.json"
+            path.write_bytes(b"\xff\xfe\x80")
+
+            with self.assertRaisesRegex(
+                BlackboxSchedulerAdmissionError,
+                "UTF-8",
+            ):
+                load_blackbox_scheduler_admission(path)
+
     def test_missing_policy_is_configuration_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "missing-admission.json"

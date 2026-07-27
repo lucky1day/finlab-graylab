@@ -107,6 +107,11 @@ def load_blackbox_scheduler_admission(
         raise BlackboxSchedulerAdmissionError(
             f"Blackbox scheduler admission not found: {admission_path}"
         ) from exc
+    except UnicodeDecodeError as exc:
+        raise BlackboxSchedulerAdmissionError(
+            "Blackbox scheduler admission is not valid UTF-8: "
+            f"{admission_path}"
+        ) from exc
     except json.JSONDecodeError as exc:
         raise BlackboxSchedulerAdmissionError(
             "Blackbox scheduler admission is invalid JSON: "
