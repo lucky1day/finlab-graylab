@@ -21,13 +21,17 @@ from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
-from scheduler.daily_actuals_updater import update_actuals
+from scheduler.blackbox_scheduler_admission import (
+    BlackboxSchedulerAdmissionError,
+    load_blackbox_scheduler_admission,
+)
 from scheduler.capacity_admission import (
     CapacityAdmissionError,
 )
 from scheduler.capacity_runtime_admission import (
     require_current_capacity_admission,
 )
+from scheduler.daily_actuals_updater import update_actuals
 from scheduler.monthly_actuals_updater import update_monthly_actuals
 from scheduler.weekly_actuals_updater import update_weekly_actuals
 from scheduler.calendar import is_trading_day
@@ -381,6 +385,18 @@ def _staggered_prediction_jobs(
     return jobs
 
 
+def _automatic_prediction_schemes(
+    schemes: Iterable[SchemeConfig],
+) -> list[SchemeConfig]:
+    """保留 Native，并仅放行 formal 精确身份的 Blackbox。"""
+    policy = load_blackbox_scheduler_admission()
+    return [
+        config
+        for config in schemes
+        if policy.is_scheduled(config)
+    ]
+
+
 def _startup_prediction_catchup_due_jobs(
     schemes: Iterable[SchemeConfig],
     *,
@@ -433,7 +449,7 @@ def run_startup_prediction_catchup(
     schemes = discover_schemes()
     _sync_registry(schemes)
     due_jobs = _startup_prediction_catchup_due_jobs(
-        schemes,
+        _automatic_prediction_schemes(schemes),
         now=run_now,
         interval_minutes=stagger_minutes,
     )
@@ -637,6 +653,26 @@ def run_scheduled_prediction_job(
         ),
         None,
     )
+    if (
+        scheduled_config is not None
+        and getattr(
+            scheduled_config,
+            "runtime_type",
+            "native_adapter",
+        )
+        == "blackbox_v2"
+    ):
+        policy = load_blackbox_scheduler_admission()
+        if not policy.is_scheduled(scheduled_config):
+            identity = (
+                f"{scheduled_config.scheme_id}@"
+                f"{getattr(scheduled_config, 'scheme_version', '')}"
+            )
+            mode = policy.mode(scheduled_config) or "unlisted"
+            raise BlackboxSchedulerAdmissionError(
+                "Blackbox automatic scheduling denied: "
+                f"{identity} mode={mode}"
+            )
     if (
         scheduled_config is not None
         and scheduled_config.frequency == "daily"
@@ -910,10 +946,15 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
         },
     )
 
+    automatic_schemes = _automatic_prediction_schemes(schemes)
     prediction_schemes = (
-        schemes
+        automatic_schemes
         if coordinator_mode == "legacy"
-        else [cfg for cfg in schemes if cfg.frequency != "daily"]
+        else [
+            cfg
+            for cfg in automatic_schemes
+            if cfg.frequency != "daily"
+        ]
     )
     for job in _staggered_prediction_jobs(
         prediction_schemes,

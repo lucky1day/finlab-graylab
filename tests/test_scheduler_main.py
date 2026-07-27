@@ -13,8 +13,27 @@ from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from scheduler.blackbox_scheduler_admission import (
+    BlackboxSchedulerAdmissionError,
+)
 from scheduler.executor import SchemeRunResult
 from scheduler.v2_daily_gate import V2DailyGateBlocked
+
+
+FORMAL_BLACKBOX_IDENTITIES = {
+    "one_y_t5_liq_excess_a_v1": "8d583560c9f1",
+    "one_y_t5_liq_excess_a_w252_l7_v1": "103c93bbc913",
+    "one_y_t5_liq_excess_a_w350_l7_v1": "86b458c568a5",
+    "one_y_t5_liq_excess_b_w252_l7_v1": "ba00891cd179",
+    "weekly_10y_lgbm_point_v1": "0666a6989d6b",
+}
+GRAY_BLACKBOX_IDENTITIES = {
+    "cgb_a4_fundseason_1y": "04e7af163fb0",
+    "cgb_a4_fundseason_3y": "89d31f8bcb95",
+    "cgb_a4_fundseason_5y": "7d47e0328532",
+    "cgb_a4_fundseason_7y": "ddba87ece7ae",
+    "cgb_a4_fundseason_10y": "85a65700499b",
+}
 
 
 def _cfg(
@@ -25,9 +44,11 @@ def _cfg(
     status: str = "active",
     runtime_type: str = "native_adapter",
     input_source: str | None = None,
+    scheme_version: str = "version-1",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         scheme_id=scheme_id,
+        scheme_version=scheme_version,
         status=status,
         frequency=frequency,
         runtime_type=runtime_type,
@@ -859,6 +880,58 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(prediction_jobs, ["predict:t5_daily"])
 
+    def test_scheduler_keeps_five_formal_blackboxes_and_excludes_five_gray(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+        from scheduler.discovery import discover_schemes
+
+        selected_ids = (
+            set(FORMAL_BLACKBOX_IDENTITIES)
+            | set(GRAY_BLACKBOX_IDENTITIES)
+        )
+        schemes = [
+            config
+            for config in discover_schemes()
+            if config.scheme_id in selected_ids
+        ]
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ) as sync_registry,
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            prediction_ids = {
+                job.id.removeprefix("predict:")
+                for job in scheduler.get_jobs()
+                if job.id.startswith("predict:")
+            }
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertEqual(
+            prediction_ids,
+            set(FORMAL_BLACKBOX_IDENTITIES),
+        )
+        self.assertTrue(
+            set(GRAY_BLACKBOX_IDENTITIES).isdisjoint(prediction_ids)
+        )
+        sync_registry.assert_called_once_with(schemes)
+
     def test_scheduler_staggers_prediction_jobs_with_same_base_cron(self) -> None:
         from scheduler import main as scheduler_main
 
@@ -1385,6 +1458,135 @@ class SchedulerMainTests(unittest.TestCase):
 
                 self.assertIs(actual, result)
 
+    def test_scheduled_wrapper_rejects_gray_and_version_drift_before_manual_path(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        denied_configs = (
+            _cfg(
+                "cgb_a4_fundseason_1y",
+                runtime_type="blackbox_v2",
+                scheme_version="04e7af163fb0",
+            ),
+            _cfg(
+                "weekly_10y_lgbm_point_v1",
+                runtime_type="blackbox_v2",
+                scheme_version="version-drift",
+                frequency="weekly",
+            ),
+        )
+        for config in denied_configs:
+            with (
+                self.subTest(scheme_id=config.scheme_id),
+                patch.object(
+                    scheduler_main,
+                    "discover_schemes",
+                    return_value=[config],
+                ),
+                patch.object(
+                    scheduler_main,
+                    "run_prediction_job",
+                    return_value=SchemeRunResult(
+                        config.scheme_id,
+                        "success",
+                        1,
+                        0.1,
+                    ),
+                ) as manual_path,
+                self.assertRaisesRegex(
+                    BlackboxSchedulerAdmissionError,
+                    "automatic scheduling denied",
+                ),
+            ):
+                scheduler_main.run_scheduled_prediction_job(
+                    config.scheme_id
+                )
+
+            manual_path.assert_not_called()
+
+    def test_scheduled_wrapper_allows_exact_formal_blackbox_identity(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        config = _cfg(
+            "weekly_10y_lgbm_point_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="0666a6989d6b",
+            frequency="weekly",
+        )
+        expected = SchemeRunResult(
+            config.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[config],
+            ),
+            patch.object(
+                scheduler_main,
+                "run_prediction_job",
+                return_value=expected,
+            ) as manual_path,
+        ):
+            actual = scheduler_main.run_scheduled_prediction_job(
+                config.scheme_id
+            )
+
+        self.assertIs(actual, expected)
+        manual_path.assert_called_once_with(
+            config.scheme_id,
+            run_date=None,
+            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+            force=False,
+        )
+
+    def test_manual_prediction_path_keeps_gray_blackbox_executable(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        config = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="blackbox_v2",
+            scheme_version="04e7af163fb0",
+        )
+        expected = SchemeRunResult(
+            config.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[config],
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                return_value=expected,
+            ) as run_config,
+        ):
+            actual = scheduler_main.run_prediction_job(
+                config.scheme_id,
+                run_date="2026-07-27",
+            )
+
+        self.assertIs(actual, expected)
+        run_config.assert_called_once_with(
+            config,
+            "2026-07-27",
+            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+            force=False,
+        )
+
     def test_ledger_cutover_rejects_already_registered_legacy_daily_job(
         self,
     ) -> None:
@@ -1571,6 +1773,90 @@ class SchedulerMainTests(unittest.TestCase):
             ],
         )
         engine.dispose.assert_called_once()
+
+    def test_startup_prediction_catchup_excludes_gray_and_version_drift(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        now = datetime(
+            2026,
+            7,
+            9,
+            7,
+            15,
+            tzinfo=scheduler_main.ASIA_SHANGHAI,
+        )
+        formal = _cfg(
+            "one_y_t5_liq_excess_a_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
+        )
+        gray = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="blackbox_v2",
+            scheme_version="04e7af163fb0",
+        )
+        drift = _cfg(
+            "weekly_10y_lgbm_point_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="version-drift",
+        )
+        native = _cfg("native_demo")
+        schemes = [formal, gray, drift, native]
+
+        def run_config(config, *_args, **_kwargs):
+            return SchemeRunResult(
+                config.scheme_id,
+                "success",
+                1,
+                0.1,
+            )
+
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ) as sync_registry,
+            patch.object(
+                scheduler_main,
+                "_prediction_run_exists",
+                return_value=False,
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                side_effect=run_config,
+            ) as execute,
+            patch.object(
+                scheduler_main,
+                "create_engine_from_env",
+            ),
+            self.assertLogs(
+                scheduler_main.logger,
+                level=logging.WARNING,
+            ),
+        ):
+            results = scheduler_main.run_startup_prediction_catchup(
+                now=now,
+                algo_env="forecast_env",
+            )
+
+        sync_registry.assert_called_once_with(schemes)
+        self.assertEqual(
+            [call.args[0] for call in execute.call_args_list],
+            [native, formal],
+        )
+        self.assertEqual(
+            [result.scheme_id for result in results],
+            ["native_demo", formal.scheme_id],
+        )
 
     def test_startup_prediction_catchup_raises_after_attempting_all_due_jobs(self) -> None:
         from scheduler import main as scheduler_main
