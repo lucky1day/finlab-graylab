@@ -132,7 +132,7 @@ class SignalGapPlanTests(unittest.TestCase):
                 ).hexdigest(),
             )
             for filename, min_key, max_key in (
-                ("daily_output.csv", "2025-01-01", "2026-05-26"),
+                ("daily_output.csv", "2025-01-01", "2026-05-28"),
                 ("weekly_output.csv", "202501", "202622"),
                 ("monthly_output.csv", "202501", "202605"),
             )
@@ -153,8 +153,8 @@ class SignalGapPlanTests(unittest.TestCase):
             authority_schema_version=(
                 "stable-databridge-current-authority-v1"
             ),
-            generation_id="current-20260526",
-            refresh_date="2026-05-26",
+            generation_id="current-20260528",
+            refresh_date="2026-05-28",
             schema_version="data-bridge-v1",
             business_digest="7" * 64,
             publication_capability=None,
@@ -1432,6 +1432,7 @@ class SignalGapPlanTests(unittest.TestCase):
             as_of_date="2026-07-27",
             execution_authority=execution_authority,
             discovery_identity_sha256=unittest.mock.ANY,
+            databridge_config=unittest.mock.ANY,
         )
         self.assertEqual(
             connection.driver_sql,

@@ -215,6 +215,7 @@ def plan_signal_gaps(
     as_of_date: str,
     snapshot_reader: SnapshotReader | None = None,
     execution_authority: Sequence[DiscoveredSchemeIdentity] | None = None,
+    databridge_config: DataBridgeRefreshConfig | None = None,
 ) -> dict[str, Any]:
     """在一个 RR consistent snapshot/read-only 事务中规划全部缺口。"""
     normalized_start = _canonical_date(start_date, "start_date")
@@ -231,6 +232,11 @@ def plan_signal_gaps(
     )
     discovery_identity_sha256 = _discovery_identity_sha256(authority)
     reader = snapshot_reader or read_signal_gap_snapshot
+    resolved_databridge_config = (
+        databridge_config
+        if databridge_config is not None
+        else DataBridgeRefreshConfig.from_env()
+    )
     with engine.connect() as connection:
         connection.exec_driver_sql(
             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
@@ -246,6 +252,7 @@ def plan_signal_gaps(
                     as_of_date=normalized_as_of,
                     execution_authority=authority,
                     discovery_identity_sha256=discovery_identity_sha256,
+                    databridge_config=resolved_databridge_config,
                 )
             except SignalGapPlanError:
                 raise
@@ -655,6 +662,7 @@ def read_signal_gap_snapshot(
     as_of_date: str,
     execution_authority: Sequence[DiscoveredSchemeIdentity],
     discovery_identity_sha256: str,
+    databridge_config: DataBridgeRefreshConfig | None = None,
 ) -> SignalGapSnapshot:
     """读取真实 active/version/result 快照并建立可审计 authority。"""
     (
@@ -777,7 +785,11 @@ def read_signal_gap_snapshot(
         try:
             databridge_authority = (
                 resolve_stable_databridge_current_authority(
-                    DataBridgeRefreshConfig.from_env(),
+                    (
+                        databridge_config
+                        if databridge_config is not None
+                        else DataBridgeRefreshConfig.from_env()
+                    ),
                     feature_dates=required_databridge_feature_dates,
                     connection=connection,
                 )
@@ -1940,7 +1952,7 @@ def _blackbox_generation_eligibility(
             None,
             "DATABRIDGE_CURRENT_INVALID",
         )
-    if item.feature_date > authority.refresh_date:
+    if item.predict_date >= authority.refresh_date:
         return (
             "BLOCKED_NO_GENERATION",
             selected,
