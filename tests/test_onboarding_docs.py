@@ -674,15 +674,16 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("paused/draft", p0)
         self.assertIn("7/7 check-only", p0)
         self.assertIn("100/100 persist=false", p0)
-        self.assertIn(
-            "codex/blackbox-v2-monthly-fengrl-review-20260726",
-            p0,
-        )
+        source_branch = "codex/blackbox-v2-monthly-fengrl-review-20260726"
+        integration_branch = "codex/fengrl-monthly-gray-integration-20260727"
+        self.assertIn(f"source branch=`{source_branch}`", p0)
+        self.assertIn(f"integration branch=`{integration_branch}`", p0)
         for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
             self.assertIn(scheme_id, p0)
 
-        required_order = (
-            "production 只读冲突/日期计划",
+        read_only_marker = "production 只读冲突/日期计划"
+        write_authorization = "以下写入步骤须取得专项生产写授权"
+        write_steps = (
             "persisted all-stage",
             "shadow/register",
             "historical backtest",
@@ -690,8 +691,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "manual monthly gray_live",
             "DB/API/frontend",
         )
-        fengrl_steps = p0.split("尚无专项生产写授权。", maxsplit=1)[1]
-        positions = [fengrl_steps.index(marker) for marker in required_order]
+        self.assertLess(p0.index(read_only_marker), p0.index(write_authorization))
+        authorized_steps = p0.split(write_authorization, maxsplit=1)[1]
+        positions = [authorized_steps.index(marker) for marker in write_steps]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("尚无专项生产写授权", p0)
         self.assertIn("不在本批", p0)

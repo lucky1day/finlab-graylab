@@ -23,23 +23,26 @@
 - `cgb_a4_fundseason_10y`
 
 技术入库状态为 `TECHNICAL_ONBOARDING_COMPLETE_5_OF_5`：五项均为
-`paused/draft`、七段 `7/7 check-only` 通过、`100/100 persist=false`，当前
-integration 来源分支为
-`codex/blackbox-v2-monthly-fengrl-review-20260726`。这些结论仅代表技术 Gate
-完成，不代表已获得生产写入或前端可见资格。
+`paused/draft`、七段 `7/7 check-only` 通过、`100/100 persist=false`。技术来源
+source branch=`codex/blackbox-v2-monthly-fengrl-review-20260726`；当前整合实际
+integration branch=`codex/fengrl-monthly-gray-integration-20260727`。这些结论仅代表
+技术 Gate 完成，不代表已获得生产写入或前端可见资格。
 
-尚无专项生产写授权。取得授权后必须逐方案按以下严格顺序执行，并对每项单独
-记录证据与失败原因：
+尚无专项生产写授权；但仍须先逐方案执行以下只读预检并冻结证据：
 
 1. `production 只读冲突/日期计划`：冻结 Registry/version/target/run/
    prediction/backtest 的冲突快照与月度历史、灰度日期边界。
-2. `persisted all-stage`：以精确 identity 重新执行持久化前的全段 Gate。
-3. `shadow/register`：只经受控 harness 创建 shadow 与 Registry/version 身份。
-4. `historical backtest`：持久化完整历史回测，禁止与 gray 日期重叠。
-5. `controlled activate`：逐方案受控激活并核验 active Registry 只提供灰度实验室
+
+以下写入步骤须取得专项生产写授权；授权后必须逐方案按以下严格顺序执行，并对
+每项单独记录证据与失败原因：
+
+1. `persisted all-stage`：以精确 identity 重新执行持久化前的全段 Gate。
+2. `shadow/register`：只经受控 harness 创建 shadow 与 Registry/version 身份。
+3. `historical backtest`：持久化完整历史回测，禁止与 gray 日期重叠。
+4. `controlled activate`：逐方案受控激活并核验 active Registry 只提供灰度实验室
    前端可见性。
-6. `manual monthly gray_live`：按冻结日期计划手工补齐月度 gray 信号与 provenance。
-7. `DB/API/frontend`：逐方案核验数据库、API 和前端格子均显示截至最新合法输入的
+5. `manual monthly gray_live`：按冻结日期计划手工补齐月度 gray 信号与 provenance。
+6. `DB/API/frontend`：逐方案核验数据库、API 和前端格子均显示截至最新合法输入的
    全部信号。
 
 自动 scheduler 与 `scheduled_live` 不在本批。代码在 gray admission 前不得合入或用于重启 legacy scheduler；本批任何 `active` 结果都不等于 scheduler 授权，也不得
