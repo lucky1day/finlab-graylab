@@ -840,6 +840,45 @@ class SignalGapPlanTests(unittest.TestCase):
         self.assertEqual(action["action"], "BLOCKED_DATA_CONTRACT")
         self.assertIn("OBSERVED_SIGNAL_CONTRACT_DRIFT", action["reason"])
 
+    def test_cross_segment_same_key_is_preserved_before_date_pruning(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            ObservedSignal,
+            build_signal_gap_plan,
+        )
+
+        snapshot = self._snapshot()
+        canonical_case = snapshot.expected_cases[0]
+        wrong_segment = ObservedSignal(
+            base_scheme_id=canonical_case.base_scheme_id,
+            target_tenor=canonical_case.target_tenor,
+            horizon=canonical_case.horizon,
+            target_date=canonical_case.target_date,
+            predict_date="2024-12-31",
+            feature_date=canonical_case.feature_date,
+            phase="gray_live",
+            scheme_version="version-1",
+            run_status="success",
+        )
+
+        plan = build_signal_gap_plan(
+            replace(snapshot, live_signals=(wrong_segment,)),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        action = next(
+            item
+            for item in plan["actions"]
+            if item["target_date"] == canonical_case.target_date
+        )
+        self.assertEqual(action["action"], "BLOCKED_DATA_CONTRACT")
+        self.assertEqual(
+            action["reason"],
+            "OBSERVED_SIGNAL_SEGMENT_OVERLAP",
+        )
+
     def test_registry_digest_binds_exact_execution_identity(self) -> None:
         from harness.signal_gap_plan import build_signal_gap_plan
 
@@ -927,6 +966,33 @@ class SignalGapPlanTests(unittest.TestCase):
                 "run_prediction_phase": "scheduled_live",
                 "run_predict_date": "2026-05-23",
             },
+            {
+                **common,
+                "id": 3,
+                "predict_date": "2026-08-03",
+                "prediction_phase": "gray_live",
+                "run_id": 103,
+                "run_status": "success",
+                "run_scheme_id": "demo",
+                "run_scheme_version": "version-1",
+                "run_runtime_type": "blackbox_v2",
+                "run_prediction_phase": "gray_live",
+                "run_predict_date": "2026-08-03",
+            },
+            {
+                **common,
+                "id": 4,
+                "target_date": "2026-08-10",
+                "predict_date": "2026-08-03",
+                "prediction_phase": "gray_live",
+                "run_id": 104,
+                "run_status": "success",
+                "run_scheme_id": "demo",
+                "run_scheme_version": "version-1",
+                "run_runtime_type": "blackbox_v2",
+                "run_prediction_phase": "gray_live",
+                "run_predict_date": "2026-08-03",
+            },
         ]
         connection = _ReaderConnection(
             (("FROM t_scheme_predictions", rows),)
@@ -936,10 +1002,13 @@ class SignalGapPlanTests(unittest.TestCase):
             connection,
             (target,),
             as_of_date="2026-07-27",
+            expected_business_keys={
+                ("demo", "10Y", 5, "2026-06-01"),
+            },
         )
 
-        self.assertEqual(len(raw), 2)
-        self.assertEqual(len(signals), 2)
+        self.assertEqual(len(raw), 3)
+        self.assertEqual(len(signals), 3)
         self.assertIsNone(signals[0].contract_error)
         self.assertIn("LIVE_PHASE_INVALID", signals[1].contract_error or "")
         self.assertIn(
@@ -948,12 +1017,11 @@ class SignalGapPlanTests(unittest.TestCase):
         )
         sql = connection.statements[0]
         self.assertNotIn("prediction_phase IN", sql)
-        self.assertIn("p.predict_date <= :as_of_date", sql)
+        self.assertNotIn("p.predict_date <= :as_of_date", sql)
         self.assertEqual(
             connection.parameters[0],
             {
                 "scheme_ids": ["demo"],
-                "as_of_date": "2026-07-27",
             },
         )
         for field in (

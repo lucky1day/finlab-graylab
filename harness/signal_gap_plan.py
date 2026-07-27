@@ -263,11 +263,13 @@ def build_signal_gap_plan(
         if case.predict_date >= normalized_start
         and case.predict_date <= normalized_as_of
     }
+    expected_business_keys = {
+        business_key for _, business_key in expected_keys
+    }
     canonical = _index_observations(
         _observations_in_scope(
             snapshot.canonical_signals,
-            segment="canonical",
-            expected_keys=expected_keys,
+            expected_business_keys=expected_business_keys,
             start_date=normalized_start,
             as_of_date=normalized_as_of,
         )
@@ -275,8 +277,7 @@ def build_signal_gap_plan(
     live = _index_observations(
         _observations_in_scope(
             snapshot.live_signals,
-            segment="live",
-            expected_keys=expected_keys,
+            expected_business_keys=expected_business_keys,
             start_date=normalized_start,
             as_of_date=normalized_as_of,
         )
@@ -285,12 +286,12 @@ def build_signal_gap_plan(
         {
             ("canonical", key)
             for key in canonical
-            if ("canonical", key) not in expected_keys
+            if key not in expected_business_keys
         }
         | {
             ("live", key)
             for key in live
-            if ("live", key) not in expected_keys
+            if key not in expected_business_keys
         }
     )
     if unexpected:
@@ -526,11 +527,6 @@ def read_signal_gap_snapshot(
         connection,
         execution_authority=execution_authority,
     )
-    raw_live, live_signals = _read_live_signals(
-        connection,
-        registry_targets,
-        as_of_date=as_of_date,
-    )
     canonical_cases, canonical_signals, canonical_watermarks = (
         _read_persisted_canonical_authority(
             connection,
@@ -571,6 +567,15 @@ def read_signal_gap_snapshot(
         registry_targets,
         calendar=calendar,
         as_of_date=as_of_date,
+    )
+    raw_live, live_signals = _read_live_signals(
+        connection,
+        registry_targets,
+        as_of_date=as_of_date,
+        expected_business_keys={
+            case.business_key
+            for case in (*canonical_cases, *live_cases)
+        },
     )
     generations = _read_input_generations(connection)
     identity = connection.execute(
@@ -848,9 +853,10 @@ def _read_live_signals(
     targets: Sequence[RegistryTarget],
     *,
     as_of_date: str,
+    expected_business_keys: set[tuple[str, str, int, str]],
 ) -> tuple[list[dict[str, Any]], tuple[ObservedSignal, ...]]:
     base_ids = sorted({target.base_scheme_id for target in targets})
-    rows = [
+    raw_rows = [
         dict(row)
         for row in connection.execute(
             text(
@@ -867,18 +873,26 @@ def _read_live_signals(
                 FROM t_scheme_predictions p
                 LEFT JOIN t_scheme_runs r ON r.run_id = p.run_id
                 WHERE p.scheme_id IN :scheme_ids
-                  AND p.predict_date <= :as_of_date
                 ORDER BY p.scheme_id, p.target_tenor, p.horizon,
                          p.target_date, p.predict_date, p.id
                 """
             ).bindparams(bindparam("scheme_ids", expanding=True)),
-            {
-                "scheme_ids": base_ids,
-                "as_of_date": as_of_date,
-            },
+            {"scheme_ids": base_ids},
         ).mappings().all()
     ]
-    _canonical_date(as_of_date, "as_of_date")
+    normalized_as_of = _canonical_date(as_of_date, "as_of_date")
+    rows = [
+        row
+        for row in raw_rows
+        if (
+            str(row["scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+            str(row["target_date"])[:10],
+        )
+        in expected_business_keys
+        or str(row["predict_date"])[:10] <= normalized_as_of
+    ]
     target_by_identity = {
         target.business_identity: target for target in targets
     }
@@ -1436,17 +1450,14 @@ def _index_observations(
 def _observations_in_scope(
     rows: Sequence[ObservedSignal],
     *,
-    segment: Segment,
-    expected_keys: set[
-        tuple[str, tuple[str, str, int, str]]
-    ],
+    expected_business_keys: set[tuple[str, str, int, str]],
     start_date: str,
     as_of_date: str,
 ) -> tuple[ObservedSignal, ...]:
     return tuple(
         row
         for row in rows
-        if (segment, row.business_key) in expected_keys
+        if row.business_key in expected_business_keys
         or start_date <= row.predict_date <= as_of_date
     )
 
