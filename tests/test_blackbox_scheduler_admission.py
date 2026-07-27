@@ -36,6 +36,22 @@ EXPECTED_MODES = {
     ("cgb_a4_fundseason_5y", "7d47e0328532"): "gray",
     ("cgb_a4_fundseason_7y", "ddba87ece7ae"): "gray",
     ("cgb_a4_fundseason_10y", "85a65700499b"): "gray",
+    (
+        "ten_y_t5_maj3_k3_ic_static_v1",
+        "c54b90bcafa7",
+    ): "gray",
+    (
+        "ten_y_t5_maj4_k3_ic_static_v1",
+        "6bdabf86b4a6",
+    ): "gray",
+    (
+        "ten_y_t5_maj4_k3_ic_yearly_v1",
+        "af04567a19c3",
+    ): "gray",
+    (
+        "ten_y_t5_say_k5_sharpe_static_v1",
+        "e8137af4b655",
+    ): "gray",
 }
 
 
@@ -141,6 +157,31 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
 
         self.assertEqual(policy.mode(config), "gray")
         self.assertFalse(policy.is_scheduled(config))
+
+    def test_ten_year_t5_gray_identities_are_not_scheduled(self) -> None:
+        policy = load_blackbox_scheduler_admission()
+        identities = {
+            identity
+            for identity, mode in EXPECTED_MODES.items()
+            if identity[0].startswith("ten_y_t5_")
+            and mode == "gray"
+        }
+
+        self.assertEqual(len(identities), 4)
+        for scheme_id, scheme_version in identities:
+            with self.subTest(scheme_id=scheme_id):
+                config = _config(scheme_id, scheme_version)
+                self.assertEqual(policy.mode(config), "gray")
+                self.assertFalse(policy.is_scheduled(config))
+                self.assertFalse(
+                    policy.is_scheduled(
+                        _config(
+                            scheme_id,
+                            scheme_version,
+                            runtime_type="native_adapter",
+                        )
+                    )
+                )
 
     def test_empty_policy_is_rejected(self) -> None:
         with self.assertRaisesRegex(

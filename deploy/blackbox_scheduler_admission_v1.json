@@ -50,6 +50,26 @@
       "scheme_id": "cgb_a4_fundseason_10y",
       "scheme_version": "85a65700499b",
       "mode": "gray"
+    },
+    {
+      "scheme_id": "ten_y_t5_maj3_k3_ic_static_v1",
+      "scheme_version": "c54b90bcafa7",
+      "mode": "gray"
+    },
+    {
+      "scheme_id": "ten_y_t5_maj4_k3_ic_static_v1",
+      "scheme_version": "6bdabf86b4a6",
+      "mode": "gray"
+    },
+    {
+      "scheme_id": "ten_y_t5_maj4_k3_ic_yearly_v1",
+      "scheme_version": "af04567a19c3",
+      "mode": "gray"
+    },
+    {
+      "scheme_id": "ten_y_t5_say_k5_sharpe_static_v1",
+      "scheme_version": "e8137af4b655",
+      "mode": "gray"
     }
   ]
 }

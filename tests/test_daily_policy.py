@@ -8,6 +8,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from scheduler.blackbox_scheduler_admission import (
+    load_blackbox_scheduler_admission,
+)
 from scheduler.discovery import discover_schemes
 
 
@@ -58,14 +61,39 @@ class DailyPolicyTests(unittest.TestCase):
         self.assertEqual(policy.expected_item_count, 21)
         self.assertEqual(policy.expected_target_count, 25)
         self.assertEqual(len(policy.schemes), 21)
+        scheduler_admission = load_blackbox_scheduler_admission()
         self.assertEqual(
             set(policy.schemes),
-            {config.scheme_id for config in self.active_daily},
+            {
+                config.scheme_id
+                for config in self.active_daily
+                if scheduler_admission.is_scheduled(config)
+            }
         )
         self.assertEqual(
             sum(len(item.target_tenors) for item in policy.schemes.values()),
             25,
         )
+
+    def test_gray_blackbox_schemes_are_excluded_from_formal_daily_policy(
+        self,
+    ) -> None:
+        policy = self.module.load_daily_policy(
+            POLICY_PATH,
+            discovered=self.active_daily,
+        )
+        daily_gray_ids = {
+            "ten_y_t5_maj3_k3_ic_static_v1",
+            "ten_y_t5_maj4_k3_ic_static_v1",
+            "ten_y_t5_maj4_k3_ic_yearly_v1",
+            "ten_y_t5_say_k5_sharpe_static_v1",
+        }
+
+        self.assertTrue(daily_gray_ids.issubset(
+            {config.scheme_id for config in self.active_daily}
+        ))
+        self.assertTrue(daily_gray_ids.isdisjoint(policy.schemes))
+        self.assertEqual(len(policy.schemes), 21)
 
     def test_policy_freezes_approved_times_limits_and_no_auto_three(self) -> None:
         self.assertIsNotNone(self.module, "scheduler.daily_policy is missing")

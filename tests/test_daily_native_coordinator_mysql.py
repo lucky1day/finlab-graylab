@@ -699,7 +699,11 @@ def _real_policy_and_configs():
         POLICY_PATH,
         discovered=active_daily,
     )
-    return policy, {config.scheme_id: config for config in active_daily}
+    return policy, {
+        config.scheme_id: config
+        for config in active_daily
+        if config.scheme_id in policy.schemes
+    }
 
 
 def _seed_test_registry(engine, policy, configs) -> None:

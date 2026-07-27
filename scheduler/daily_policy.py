@@ -10,6 +10,10 @@ import re
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from scheduler.blackbox_scheduler_admission import (
+    BlackboxSchedulerAdmissionError,
+    load_blackbox_scheduler_admission,
+)
 from scheduler.discovery import SchemeConfig, discover_schemes
 
 
@@ -121,10 +125,22 @@ def load_daily_policy(
         raise DailyPolicyError("daily policy root must be an object")
 
     discovered_configs = tuple(discovered if discovered is not None else discover_schemes())
-    active_daily = tuple(
+    discovered_active_daily = tuple(
         config
         for config in discovered_configs
         if config.status == "active" and config.frequency == "daily"
+    )
+    try:
+        scheduler_admission = load_blackbox_scheduler_admission()
+    except BlackboxSchedulerAdmissionError as exc:
+        raise DailyPolicyError(
+            "Blackbox scheduler admission is invalid; daily policy "
+            "cannot select the formal occurrence set"
+        ) from exc
+    active_daily = tuple(
+        config
+        for config in discovered_active_daily
+        if scheduler_admission.is_scheduled(config)
     )
     discovered_by_id = _index_discovered(active_daily)
     scheme_rows = _require_list(payload, "schemes")

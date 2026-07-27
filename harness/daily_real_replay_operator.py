@@ -1116,6 +1116,7 @@ def _load_definition_snapshot(
         for config in discovered
         if config.status == "active"
         and config.frequency == "daily"
+        and config.scheme_id in policy.schemes
     }
     if (
         set(configs) != set(policy.schemes)

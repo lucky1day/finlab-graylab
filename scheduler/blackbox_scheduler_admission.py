@@ -62,6 +62,22 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[tuple[str, str], str] = (
                 "cgb_a4_fundseason_10y",
                 "85a65700499b",
             ): "gray",
+            (
+                "ten_y_t5_maj3_k3_ic_static_v1",
+                "c54b90bcafa7",
+            ): "gray",
+            (
+                "ten_y_t5_maj4_k3_ic_static_v1",
+                "6bdabf86b4a6",
+            ): "gray",
+            (
+                "ten_y_t5_maj4_k3_ic_yearly_v1",
+                "af04567a19c3",
+            ): "gray",
+            (
+                "ten_y_t5_say_k5_sharpe_static_v1",
+                "e8137af4b655",
+            ): "gray",
         }
     )
 )

@@ -361,7 +361,9 @@ class DefaultDailyRuntimeServices:
         self._configs = {
             item.scheme_id: item
             for item in discovered
-            if item.status == "active" and item.frequency == "daily"
+            if item.status == "active"
+            and item.frequency == "daily"
+            and item.scheme_id in policy.schemes
         }
         return policy
 

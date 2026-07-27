@@ -1675,7 +1675,9 @@ def _assert_deployed_real_replay_definitions(
     deployed_configs = {
         config.scheme_id: config
         for config in discovered
-        if config.status == "active" and config.frequency == "daily"
+        if config.status == "active"
+        and config.frequency == "daily"
+        and config.scheme_id in deployed_policy.schemes
     }
     if policy != deployed_policy or dict(configs) != deployed_configs:
         raise DailyRealReplayError(

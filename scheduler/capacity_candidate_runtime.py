@@ -229,7 +229,7 @@ def build_current_capacity_candidate(
 
     policy_bytes = _read_source_file(policy_file, "daily policy")
     _parse_json_object(policy_bytes, "daily policy")
-    current_discovered = tuple(
+    current_active_daily = tuple(
         config
         for config in discover_schemes(
             root / "schemes",
@@ -237,17 +237,24 @@ def build_current_capacity_candidate(
         )
         if config.status == "active" and config.frequency == "daily"
     )
+    policy = load_daily_policy(
+        policy_file,
+        discovered=current_active_daily,
+    )
+    current_discovered = tuple(
+        config
+        for config in current_active_daily
+        if config.scheme_id in policy.schemes
+    )
     if discovered is not None:
         supplied = tuple(
             config
             for config in discovered
-            if config.status == "active" and config.frequency == "daily"
+            if config.status == "active"
+            and config.frequency == "daily"
+            and config.scheme_id in policy.schemes
         )
         _require_same_discovery(supplied, current_discovered)
-    policy = load_daily_policy(
-        policy_file,
-        discovered=current_discovered,
-    )
     if _read_source_file(policy_file, "daily policy") != policy_bytes:
         raise CapacityCandidateRuntimeError(
             "daily policy changed while candidate was being built"

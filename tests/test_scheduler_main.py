@@ -35,6 +35,10 @@ GRAY_BLACKBOX_IDENTITIES = {
     "cgb_a4_fundseason_5y": "7d47e0328532",
     "cgb_a4_fundseason_7y": "ddba87ece7ae",
     "cgb_a4_fundseason_10y": "85a65700499b",
+    "ten_y_t5_maj3_k3_ic_static_v1": "c54b90bcafa7",
+    "ten_y_t5_maj4_k3_ic_static_v1": "6bdabf86b4a6",
+    "ten_y_t5_maj4_k3_ic_yearly_v1": "af04567a19c3",
+    "ten_y_t5_say_k5_sharpe_static_v1": "e8137af4b655",
 }
 
 
@@ -882,7 +886,7 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(prediction_jobs, ["predict:t5_daily"])
 
-    def test_scheduler_keeps_five_formal_blackboxes_and_excludes_five_gray(
+    def test_scheduler_keeps_five_formal_blackboxes_and_excludes_nine_gray(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -1924,6 +1928,11 @@ class SchedulerMainTests(unittest.TestCase):
                 "cgb_a4_fundseason_1y",
                 runtime_type="blackbox_v2",
                 scheme_version="04e7af163fb0",
+            ),
+            _cfg(
+                "ten_y_t5_maj3_k3_ic_static_v1",
+                runtime_type="blackbox_v2",
+                scheme_version="c54b90bcafa7",
             ),
             _cfg(
                 "weekly_10y_lgbm_point_v1",

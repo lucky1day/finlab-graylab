@@ -10,6 +10,7 @@ from unittest.mock import patch
 from scheduler.capacity_candidate_runtime import (
     CapacityCandidateRuntimeError,
 )
+from scheduler.daily_policy import load_daily_policy
 from scheduler.discovery import SchemeConfig, discover_schemes
 
 
@@ -19,10 +20,16 @@ SERVER_UUID = "11111111-2222-3333-4444-555555555555"
 
 
 def _active_daily() -> tuple[SchemeConfig, ...]:
-    return tuple(
+    active = tuple(
         config
         for config in discover_schemes(strict=True)
         if config.status == "active" and config.frequency == "daily"
+    )
+    policy = load_daily_policy(POLICY_PATH, discovered=active)
+    return tuple(
+        config
+        for config in active
+        if config.scheme_id in policy.schemes
     )
 
 
