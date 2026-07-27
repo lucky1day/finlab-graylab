@@ -30,6 +30,7 @@ from harness.gates.unit_gate import UnitGate
 from harness.orchestrator import onboard as run_onboard
 from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
+from harness.signal_gap_plan import SignalGapPlanError, plan_signal_gaps
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.contracts import load_metadata
@@ -139,6 +140,33 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "signal-gap-plan":
+        engine = create_engine_from_env()
+        try:
+            try:
+                plan = plan_signal_gaps(
+                    engine,
+                    start_date=args.start,
+                    as_of_date=args.as_of,
+                )
+            except SignalGapPlanError as exc:
+                print(
+                    json.dumps(
+                        {
+                            "schema_version":
+                                "active-signal-gap-plan-error-v1",
+                            "status": "BLOCKED",
+                            "failure_code": exc.code,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 2
+        finally:
+            engine.dispose()
+        print(json.dumps(plan, ensure_ascii=False, indent=2))
+        return 1 if int(plan.get("counts", {}).get("blocked", 0)) else 0
     parser.error("unsupported command")
     return 1
 
@@ -231,6 +259,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--databridge-manifest",
         type=Path,
         required=True,
+    )
+
+    gap_parser = subparsers.add_parser("signal-gap-plan")
+    gap_parser.add_argument("--start", required=True)
+    gap_parser.add_argument("--as-of", required=True, dest="as_of")
+    gap_parser.add_argument(
+        "--format",
+        choices=("json",),
+        default="json",
     )
 
     auth_parser = subparsers.add_parser("auth")
