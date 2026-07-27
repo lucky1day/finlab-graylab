@@ -377,6 +377,18 @@ class BlackboxV2HistoryTests(unittest.TestCase):
             start="2024-12-01",
             end="2026-06-01",
         )
+        makeup_weekends = {
+            "2025-01-26",
+            "2025-02-08",
+            "2025-04-27",
+        }
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE t_trade_calendar SET trade_flag='1' "
+                    "WHERE rdate IN ('2025-01-26', '2025-02-08', '2025-04-27')"
+                )
+            )
         with tempfile.TemporaryDirectory() as tmpdir:
             snapshot = _snapshot(Path(tmpdir), engine)
             with patch(
@@ -393,14 +405,60 @@ class BlackboxV2HistoryTests(unittest.TestCase):
                     predict_date_from="2025-01-01",
                 )
 
+        with engine.connect() as conn:
+            source_yield_by_date = {
+                str(row.rdate): float(row.indicators_value)
+                for row in conn.execute(
+                    text(
+                        "SELECT rdate, indicators_value FROM api_wind_daily "
+                        "WHERE indicators_code='TB0YWI0C'"
+                    )
+                )
+            }
         engine.dispose()
         self.assertEqual(len(cases), 16)
-        self.assertTrue(
-            all(
-                case.request.target_date < "2026-06-01"
-                for case in cases
-            )
+        self.assertEqual(
+            [case.request.target_date for case in cases],
+            [
+                "2025-02-14",
+                "2025-03-14",
+                "2025-04-15",
+                "2025-05-15",
+                "2025-06-13",
+                "2025-07-15",
+                "2025-08-15",
+                "2025-09-15",
+                "2025-10-15",
+                "2025-11-14",
+                "2025-12-15",
+                "2026-01-15",
+                "2026-02-13",
+                "2026-03-13",
+                "2026-04-15",
+                "2026-05-15",
+            ],
         )
+        for case in cases:
+            feature_date = case.request.feature_date
+            target_date = case.request.target_date
+            self.assertNotIn(feature_date, makeup_weekends)
+            self.assertNotIn(target_date, makeup_weekends)
+            self.assertEqual(
+                case.actual_extra["feature_yield"],
+                source_yield_by_date[feature_date],
+            )
+            self.assertEqual(
+                case.actual_extra["target_yield"],
+                source_yield_by_date[target_date],
+            )
+            expected_label = (
+                1
+                if source_yield_by_date[target_date] > source_yield_by_date[feature_date]
+                else -1
+                if source_yield_by_date[target_date] < source_yield_by_date[feature_date]
+                else 0
+            )
+            self.assertEqual(case.label, expected_label)
 
     def test_direct_metadata_must_use_fixed_task_contract(self) -> None:
         from shared.blackbox_v2.history import build_historical_cases
@@ -624,11 +682,17 @@ class BlackboxV2HistoryTests(unittest.TestCase):
     def test_missing_latest_actual_source_fact_fails_closed(self) -> None:
         from shared.blackbox_v2.history import build_historical_cases
 
-        for task_type in ("T+1", "monthly"):
+        for task_type, missing_date in (
+            ("T+1", "2026-02-27"),
+            ("monthly", "2026-02-13"),
+        ):
             with self.subTest(task_type=task_type):
                 engine = _source_engine(start="2024-01-01", end="2026-03-01")
                 with engine.begin() as conn:
-                    conn.execute(text("DELETE FROM api_wind_daily WHERE rdate='2026-02-27'"))
+                    conn.execute(
+                        text("DELETE FROM api_wind_daily WHERE rdate=:missing_date"),
+                        {"missing_date": missing_date},
+                    )
                 with tempfile.TemporaryDirectory() as tmpdir:
                     snapshot = _snapshot(Path(tmpdir), engine)
                     with patch(

@@ -89,6 +89,7 @@ def build_historical_cases(
             trade_calendar_rows,
             predict_date_from=predict_date_from,
             target_date_before=target_date_before,
+            weekday_only=True,
         )
 
     eligible = [
