@@ -66,6 +66,10 @@ FENGRL_MONTHLY_EVIDENCE = (
     BLACKBOX_RECORDS
     / "MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.evidence.json"
 )
+FENGRL_MONTHLY_PREFLIGHT_EVIDENCE = (
+    BLACKBOX_RECORDS
+    / "FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json"
+)
 
 
 class OnboardingDocumentationTests(unittest.TestCase):
@@ -783,6 +787,94 @@ class OnboardingDocumentationTests(unittest.TestCase):
                         scheme["delivery_sha256"][filename],
                     )
                     self.assertIn(scheme["delivery_sha256"][filename], section)
+
+    def test_fengrl_monthly_gray_preflight_is_explicitly_no_write_and_complete(
+        self,
+    ) -> None:
+        """月度批次预检必须冻结身份、日期计划与严格零写入边界。"""
+        self.assertTrue(FENGRL_MONTHLY_PREFLIGHT_EVIDENCE.exists())
+        evidence = json.loads(
+            FENGRL_MONTHLY_PREFLIGHT_EVIDENCE.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            evidence["candidate_head"],
+            "2ba93bbf94b0f07e2c1559cfc45afba59d905997",
+        )
+        self.assertEqual(
+            evidence["source"]["branch"],
+            "codex/blackbox-v2-monthly-fengrl-review-20260726",
+        )
+        self.assertEqual(evidence["source"]["head"], "48de613")
+        self.assertEqual(len(evidence["schemes"]), 5)
+        self.assertEqual(
+            [item["scheme_id"] for item in evidence["schemes"]],
+            list(FENGRL_MONTHLY_SCHEME_IDS),
+        )
+        expected_identities = (
+            ("cgb_a4_fundseason_1y", "cgb_a4_fundseason_1y__h1__1Y", "04e7af163fb0"),
+            ("cgb_a4_fundseason_3y", "cgb_a4_fundseason_3y__h1__3Y", "89d31f8bcb95"),
+            ("cgb_a4_fundseason_5y", "cgb_a4_fundseason_5y__h1__5Y", "7d47e0328532"),
+            ("cgb_a4_fundseason_7y", "cgb_a4_fundseason_7y__h1__7Y", "ddba87ece7ae"),
+            ("cgb_a4_fundseason_10y", "cgb_a4_fundseason_10y__h1__10Y", "85a65700499b"),
+        )
+        self.assertEqual(
+            [
+                (item["scheme_id"], item["composite_id"], item["scheme_version"])
+                for item in evidence["schemes"]
+            ],
+            list(expected_identities),
+        )
+        for item in evidence["schemes"]:
+            self.assertEqual(item["runtime_type"], "blackbox_v2")
+            self.assertEqual(item["task_type"], "monthly")
+            self.assertEqual(item["horizon"], 1)
+            self.assertEqual(len(item["delivery_sha256"]), 2)
+            self.assertTrue(all(len(value) == 64 for value in item["delivery_sha256"].values()))
+        self.assertEqual(evidence["date_plan"]["per_scheme"], {
+            "history": 16,
+            "gray_live": 3,
+            "total": 19,
+        })
+        self.assertEqual(evidence["date_plan"]["batch"], {
+            "history": 80,
+            "gray_live": 15,
+            "total": 95,
+        })
+        self.assertEqual(
+            evidence["date_plan"]["gray_predict_dates"],
+            ["2026-05-15", "2026-06-15", "2026-07-15"],
+        )
+        dates = evidence["date_plan"]["dates"]
+        self.assertEqual(len(dates), evidence["date_plan"]["per_scheme"]["total"])
+        self.assertEqual(sum(item["phase"] == "history" for item in dates), 16)
+        self.assertEqual(sum(item["phase"] == "gray_live" for item in dates), 3)
+        self.assertTrue(
+            all(item["target_date"] < "2026-06-01" for item in dates[:16])
+        )
+        self.assertTrue(
+            all(item["target_date"] >= "2026-06-01" for item in dates[16:])
+        )
+        self.assertTrue(evidence["production_snapshot"]["identity_conflict_free"])
+        per_scheme_counts = evidence["production_snapshot"][
+            "per_scheme_related_table_counts"
+        ]
+        self.assertEqual(set(per_scheme_counts), set(FENGRL_MONTHLY_SCHEME_IDS))
+        for counts in per_scheme_counts.values():
+            self.assertEqual(
+                set(counts), set(evidence["production_snapshot"]["related_tables"])
+            )
+            self.assertTrue(all(value == 0 for value in counts.values()))
+        self.assertFalse(evidence["authorization"]["production_write_authorized"])
+        self.assertFalse(evidence["authorization"]["writes_performed"])
+        self.assertFalse(evidence["authorization"]["scheduler_or_scheduled_live"])
+        self.assertFalse(evidence["private_publication"]["main_checkout_root_permission_valid"])
+        self.assertEqual(evidence["private_publication"]["fresh_live_count"], 0)
+        record = FENGRL_MONTHLY_RECORD.read_text(encoding="utf-8")
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        for text in (record, current):
+            self.assertIn("INTEGRATION_PREFLIGHT_READY_NO_WRITE", text)
+            self.assertIn("FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json", text)
 
     def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
         todo = TODO.read_text(encoding="utf-8")

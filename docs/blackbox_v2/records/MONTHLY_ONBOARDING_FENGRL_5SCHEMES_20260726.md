@@ -192,3 +192,23 @@ BondProjectPro 或日频 coordinator，不合并、不推送、不部署。
 
 分支和独立工作树保持 clean、未合并、未推送、未部署，交由主会话按
 提交顺序处理后续合并。
+
+## 2026-07-27 integration / production-readonly preflight
+
+当前 integration candidate 已冻结五个 exact scheme/version、composite
+Registry identity 和 delivery SHA。生产只读快照确认这五个 identity
+均无冲突，且每个相关业务与 Harness 表计数均为零；本次没有申请或执行
+Registry 写入、持久化回测、`gray_live`、`scheduled_live` 或 scheduler
+变更。
+
+按月频三日期语义，每方案日期计划为 16 条历史与 3 条待执行的
+`gray_live`，本批合计 95 条，按 `target_date < 2026-06-01` 和
+`target_date >= 2026-06-01` 严格切分，零重叠、零缺口。当前主 checkout
+DataBridge 根目录权限为 `0755`，不存在 fresh live publication；因此
+只能使用已经验证的私有 sealed publication 进行后续受控历史/灰度回补，
+不能伪造 fresh live。
+
+机器可读预检证据见
+[FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json](FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)。
+该结论仅为 `INTEGRATION_PREFLIGHT_READY_NO_WRITE`，不是激活、前端展示
+或入库完成声明。
