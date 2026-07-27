@@ -33,6 +33,36 @@ class _Engine:
         yield self.connection
 
 
+class _Rows:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def mappings(self):
+        return self
+
+    def all(self):
+        return self._rows
+
+    def one(self):
+        if len(self._rows) != 1:
+            raise AssertionError(f"expected one row, got {len(self._rows)}")
+        return self._rows[0]
+
+
+class _ReaderConnection:
+    def __init__(self, responses):
+        self.responses = responses
+        self.statements: list[str] = []
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        self.statements.append(sql)
+        for marker, rows in self.responses:
+            if marker in sql:
+                return _Rows(rows)
+        raise AssertionError(f"unexpected SQL: {sql}")
+
+
 class _Calendar:
     daily_predict_dates = ("2026-06-01",)
     weekly_predict_dates = ("2026-05-30",)
@@ -42,6 +72,7 @@ class _Calendar:
 class SignalGapPlanTests(unittest.TestCase):
     def _types(self):
         from harness.signal_gap_plan import (
+            DiscoveredSchemeIdentity,
             ExpectedSignalCase,
             InputGeneration,
             ObservedSignal,
@@ -50,6 +81,7 @@ class SignalGapPlanTests(unittest.TestCase):
         )
 
         return (
+            DiscoveredSchemeIdentity,
             ExpectedSignalCase,
             InputGeneration,
             ObservedSignal,
@@ -59,6 +91,7 @@ class SignalGapPlanTests(unittest.TestCase):
 
     def _snapshot(self):
         (
+            DiscoveredSchemeIdentity,
             ExpectedSignalCase,
             InputGeneration,
             ObservedSignal,
@@ -76,6 +109,9 @@ class SignalGapPlanTests(unittest.TestCase):
             scheme_version="version-1",
             live_target_start_date="2026-06-01",
             live_boundary_source="platform_live_boundary_v1",
+            input_mode="databridge_v1",
+            code_sha256="c" * 64,
+            config_sha256="d" * 64,
         )
         cases = (
             ExpectedSignalCase(
@@ -182,6 +218,7 @@ class SignalGapPlanTests(unittest.TestCase):
                 "daily_source_max": "2026-07-27",
             },
             source_identity_sha256="b" * 64,
+            discovery_identity_sha256="e" * 64,
         )
 
     def test_actions_use_business_key_and_fail_closed_readiness(self) -> None:
@@ -433,6 +470,378 @@ class SignalGapPlanTests(unittest.TestCase):
                 expected_target_pairs={("5Y", 5)},
             )
 
+    def test_run_149_manifest_accepts_all_approved_count_shapes(self) -> None:
+        from harness.signal_gap_plan import (
+            SignalGapPlanError,
+            _validate_canonical_run_manifest,
+        )
+
+        details = [
+            {
+                "target_tenor": "1Y",
+                "horizon": 30,
+                "target_date": f"2025-{month:02d}-14",
+            }
+            for month in range(1, 10)
+        ]
+        details.extend(
+            {
+                "target_tenor": "1Y",
+                "horizon": 30,
+                "target_date": f"2025-{month:02d}-14",
+            }
+            for month in range(10, 13)
+        )
+        details.extend(
+            {
+                "target_tenor": "1Y",
+                "horizon": 30,
+                "target_date": f"2026-{month:02d}-14",
+            }
+            for month in range(1, 7)
+        )
+        self.assertEqual(len(details), 18)
+
+        for field in (
+            "persisted_prediction_count",
+            "row_count",
+            "written_predictions",
+            "rows",
+        ):
+            _validate_canonical_run_manifest(
+                run_id=149,
+                summary={field: 18},
+                details=details,
+                expected_target_pairs={("1Y", 30)},
+            )
+        _validate_canonical_run_manifest(
+            run_id=149,
+            summary={
+                "persisted_prediction_count": 18,
+                "row_count": 18,
+                "written_predictions": 18,
+                "rows": 18,
+            },
+            details=details,
+            expected_target_pairs={("1Y", 30)},
+        )
+        with self.assertRaisesRegex(
+            SignalGapPlanError,
+            "manifest count fields disagree",
+        ):
+            _validate_canonical_run_manifest(
+                run_id=149,
+                summary={"written_predictions": 18, "rows": 17},
+                details=details,
+                expected_target_pairs={("1Y", 30)},
+            )
+
+    def test_runtime_specific_native_task_contracts_are_accepted(self) -> None:
+        from harness.signal_gap_plan import (
+            RegistryTarget,
+            _validate_registry_target,
+        )
+
+        for task_type, frequency, horizon in (
+            ("weekly_point", "weekly", 6),
+            ("weekly_average", "weekly", 6),
+            ("monthly", "monthly", 30),
+        ):
+            target = RegistryTarget(
+                registry_scheme_id=f"native_{frequency}__h{horizon}__10Y",
+                base_scheme_id=f"native_{frequency}",
+                runtime_type="native_adapter",
+                frequency=frequency,
+                task_type=task_type,
+                target_tenor="10Y",
+                horizon=horizon,
+                scheme_version="native-version",
+                live_target_start_date="2026-06-01",
+                live_boundary_source="platform_live_boundary_v1",
+                input_mode="generation_v1",
+                code_sha256="1" * 64,
+                config_sha256="2" * 64,
+            )
+            _validate_registry_target(target)
+
+    def test_registry_and_version_authorities_freeze_44_targets(self) -> None:
+        from harness.signal_gap_plan import _read_registry_versions
+
+        registry_rows, version_rows = _production_registry_rows()
+        execution_authority = _execution_authority(version_rows)
+        connection = _ReaderConnection(
+            (
+                ("FROM t_scheme_registry", registry_rows),
+                ("FROM t_scheme_versions", version_rows),
+            )
+        )
+
+        raw, targets, blockers = _read_registry_versions(
+            connection,
+            execution_authority=execution_authority,
+        )
+
+        self.assertEqual(len(raw), 44)
+        self.assertEqual(len(targets), 44)
+        self.assertEqual(blockers, ())
+        self.assertEqual(
+            len({target.base_scheme_id for target in targets}),
+            40,
+        )
+        self.assertEqual(
+            {
+                frequency: sum(
+                    target.frequency == frequency for target in targets
+                )
+                for frequency in ("daily", "weekly", "monthly")
+            },
+            {"daily": 29, "weekly": 7, "monthly": 8},
+        )
+        self.assertEqual(len(connection.statements), 2)
+        self.assertNotIn("JOIN", connection.statements[0].upper())
+        self.assertNotIn("JOIN", connection.statements[1].upper())
+        self.assertTrue(
+            all(target.input_mode == "generation_v1" for target in targets)
+        )
+
+    def test_active_registry_blockers_preserve_the_complete_plan(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _read_registry_versions,
+        )
+
+        registry_rows, version_rows = _production_registry_rows()
+        execution_authority = _execution_authority(version_rows)
+        cases = (
+            (
+                version_rows[:-1],
+                "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
+            ),
+            ((
+                *version_rows,
+                {
+                    **version_rows[0],
+                    "scheme_version": "second-active-version",
+                },
+            ), "ACTIVE_VERSION_CARDINALITY_INVALID"),
+            ((
+                {
+                    **version_rows[0],
+                    "runtime_type": "blackbox_v2",
+                },
+                *version_rows[1:],
+            ), "REGISTRY_VERSION_RUNTIME_DRIFT"),
+        )
+        for rows, expected_code in cases:
+            connection = _ReaderConnection(
+                (
+                    ("FROM t_scheme_registry", registry_rows),
+                    ("FROM t_scheme_versions", rows),
+                )
+            )
+            raw, targets, blockers = _read_registry_versions(
+                connection,
+                execution_authority=execution_authority,
+            )
+            self.assertEqual(len(raw), 44)
+            self.assertEqual(len(targets), 44)
+            self.assertIn(
+                expected_code,
+                {blocker["code"] for blocker in blockers},
+            )
+
+    def test_control_plane_blocker_blocks_every_affected_base_action(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import build_signal_gap_plan
+
+        snapshot = replace(
+            self._snapshot(),
+            control_plane_blockers=(
+                {
+                    "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
+                    "base_scheme_id": "demo",
+                    "active_version_count": 2,
+                },
+            ),
+        )
+
+        plan = build_signal_gap_plan(
+            snapshot,
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(plan["status"], "BLOCKED")
+        self.assertEqual(
+            plan["control_plane"]["blockers"],
+            [
+                {
+                    "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
+                    "base_scheme_id": "demo",
+                    "active_version_count": 2,
+                }
+            ],
+        )
+        self.assertTrue(
+            all(
+                action["action"] == "BLOCKED_DATA_CONTRACT"
+                for action in plan["actions"]
+            )
+        )
+        self.assertEqual(plan["counts"]["present"], 0)
+
+        empty_plan = build_signal_gap_plan(
+            replace(
+                snapshot,
+                expected_cases=(),
+                canonical_signals=(),
+                live_signals=(),
+            ),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+        self.assertEqual(empty_plan["status"], "BLOCKED")
+
+    def test_discovery_digest_is_bound_into_plan_sha(self) -> None:
+        from harness.signal_gap_plan import build_signal_gap_plan
+
+        snapshot = self._snapshot()
+        first = build_signal_gap_plan(
+            snapshot,
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+        second = build_signal_gap_plan(
+            replace(snapshot, discovery_identity_sha256="f" * 64),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(
+            first["source_snapshot"]["discovery_identity_sha256"],
+            "e" * 64,
+        )
+        self.assertNotEqual(first["plan_sha256"], second["plan_sha256"])
+
+    def test_registry_digest_binds_exact_execution_identity(self) -> None:
+        from harness.signal_gap_plan import build_signal_gap_plan
+
+        snapshot = self._snapshot()
+        first = build_signal_gap_plan(
+            snapshot,
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+        changed_target = replace(
+            snapshot.registry_targets[0],
+            code_sha256="e" * 64,
+        )
+        second = build_signal_gap_plan(
+            replace(snapshot, registry_targets=(changed_target,)),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertRegex(
+            first["source_snapshot"]["registry_digest_sha256"],
+            r"^[0-9a-f]{64}$",
+        )
+        self.assertNotEqual(first["plan_sha256"], second["plan_sha256"])
+        self.assertNotEqual(
+            first["source_snapshot"]["registry_digest_sha256"],
+            second["source_snapshot"]["registry_digest_sha256"],
+        )
+
+    def test_live_reader_preserves_invalid_rows_and_validates_run_identity(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            RegistryTarget,
+            _read_live_signals,
+        )
+
+        target = RegistryTarget(
+            registry_scheme_id="demo__h5__10Y",
+            base_scheme_id="demo",
+            runtime_type="blackbox_v2",
+            frequency="daily",
+            task_type="T+5",
+            target_tenor="10Y",
+            horizon=5,
+            scheme_version="version-1",
+            live_target_start_date="2026-06-01",
+            live_boundary_source="platform_live_boundary_v1",
+            input_mode="databridge_v1",
+            code_sha256="a" * 64,
+            config_sha256="b" * 64,
+        )
+        common = {
+            "scheme_id": "demo",
+            "target_tenor": "10Y",
+            "horizon": 5,
+            "target_date": "2026-06-01",
+            "feature_date": "2026-05-25",
+            "scheme_version": "version-1",
+        }
+        rows = [
+            {
+                **common,
+                "id": 1,
+                "predict_date": "2026-05-26",
+                "prediction_phase": "gray_live",
+                "run_id": 101,
+                "run_status": "success",
+                "run_scheme_id": "demo",
+                "run_scheme_version": "version-1",
+                "run_runtime_type": "blackbox_v2",
+                "run_prediction_phase": "gray_live",
+                "run_predict_date": "2026-05-26",
+            },
+            {
+                **common,
+                "id": 2,
+                "predict_date": "2026-05-24",
+                "prediction_phase": "shadow",
+                "run_id": 102,
+                "run_status": "failed",
+                "run_scheme_id": "other",
+                "run_scheme_version": "old-version",
+                "run_runtime_type": "native_adapter",
+                "run_prediction_phase": "scheduled_live",
+                "run_predict_date": "2026-05-23",
+            },
+        ]
+        connection = _ReaderConnection(
+            (("FROM t_scheme_predictions", rows),)
+        )
+
+        raw, signals = _read_live_signals(
+            connection,
+            (target,),
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(len(raw), 2)
+        self.assertEqual(len(signals), 2)
+        self.assertIsNone(signals[0].contract_error)
+        self.assertIn("LIVE_PHASE_INVALID", signals[1].contract_error or "")
+        self.assertIn(
+            "RUN_SCHEME_ID_DRIFT",
+            signals[1].contract_error or "",
+        )
+        sql = connection.statements[0]
+        self.assertNotIn("prediction_phase IN", sql)
+        for field in (
+            "run_scheme_id",
+            "run_scheme_version",
+            "run_runtime_type",
+            "run_prediction_phase",
+            "run_predict_date",
+        ):
+            self.assertIn(field, sql)
+
     def test_read_occurs_in_one_repeatable_read_only_snapshot_and_rolls_back(
         self,
     ) -> None:
@@ -442,11 +851,13 @@ class SignalGapPlanTests(unittest.TestCase):
         engine = _Engine(connection)
         reader = Mock(return_value=self._snapshot())
 
+        execution_authority = _demo_execution_authority()
         result = plan_signal_gaps(
             engine,
             start_date="2025-01-01",
             as_of_date="2026-07-27",
             snapshot_reader=reader,
+            execution_authority=execution_authority,
         )
 
         self.assertEqual(result["counts"]["active_target"], 1)
@@ -454,6 +865,8 @@ class SignalGapPlanTests(unittest.TestCase):
             connection,
             start_date="2025-01-01",
             as_of_date="2026-07-27",
+            execution_authority=execution_authority,
+            discovery_identity_sha256=unittest.mock.ANY,
         )
         self.assertEqual(
             connection.driver_sql,
@@ -480,6 +893,7 @@ class SignalGapPlanTests(unittest.TestCase):
                 start_date="2025-01-01",
                 as_of_date="2026-07-27",
                 snapshot_reader=Mock(side_effect=ValueError("bad calendar")),
+                execution_authority=_demo_execution_authority(),
             )
 
         self.assertEqual(connection.rollback_count, 1)
@@ -695,3 +1109,165 @@ class SignalGapPlanCliTests(unittest.TestCase):
             )
 
         self.assertEqual(result, 1)
+
+    def test_cli_returns_one_for_control_plane_blocked_empty_plan(self) -> None:
+        from harness.cli import main
+
+        expected = {
+            "schema_version": "active-signal-gap-plan-v1",
+            "status": "BLOCKED",
+            "plan_sha256": "a" * 64,
+            "counts": {"blocked": 0},
+        }
+        engine = Mock()
+        with (
+            patch(
+                "harness.cli.create_engine_from_env",
+                return_value=engine,
+            ),
+            patch(
+                "harness.cli.plan_signal_gaps",
+                return_value=expected,
+            ),
+            patch("builtins.print"),
+        ):
+            result = main(
+                [
+                    "signal-gap-plan",
+                    "--start",
+                    "2025-01-01",
+                    "--as-of",
+                    "2026-07-27",
+                ]
+            )
+
+        self.assertEqual(result, 1)
+
+    def test_cli_structures_engine_and_transaction_setup_failures(self) -> None:
+        from harness.cli import main
+
+        for failure in (
+            RuntimeError("secret-dsn-password"),
+            None,
+        ):
+            engine = Mock()
+            if failure is None:
+                engine.connect.side_effect = RuntimeError(
+                    "secret-transaction-password"
+                )
+            with (
+                patch(
+                    "harness.cli.create_engine_from_env",
+                    side_effect=failure,
+                    return_value=engine,
+                ),
+                patch("builtins.print") as output,
+            ):
+                result = main(
+                    [
+                        "signal-gap-plan",
+                        "--start",
+                        "2025-01-01",
+                        "--as-of",
+                        "2026-07-27",
+                        "--format",
+                        "json",
+                    ]
+                )
+
+            self.assertEqual(result, 2)
+            payload = json.loads(output.call_args.args[0])
+            self.assertEqual(payload["status"], "ERROR")
+            self.assertEqual(
+                payload["failure_code"],
+                "SIGNAL_GAP_PLAN_INTERNAL_ERROR",
+            )
+            self.assertNotIn("secret", json.dumps(payload))
+
+
+def _production_registry_rows():
+    registry_rows = []
+    version_rows = []
+    tenors = ("1Y", "3Y", "5Y", "7Y", "10Y")
+    for index in range(25):
+        base_id = f"daily_{index}"
+        target_tenors = tenors if index == 0 else ("1Y",)
+        for tenor in target_tenors:
+            registry_rows.append(
+                {
+                    "scheme_id": f"{base_id}__h5__{tenor}",
+                    "base_scheme_id": base_id,
+                    "runtime_type": "native_adapter",
+                    "frequency": "daily",
+                    "task_type": "T+5",
+                    "target_tenor": tenor,
+                    "horizon": 5,
+                }
+            )
+        version_rows.append(
+            {
+                "scheme_id": base_id,
+                "scheme_version": f"version-{index}",
+                "runtime_type": "native_adapter",
+                "code_hash": f"{index + 1:064x}",
+                "config_hash": f"{index + 101:064x}",
+            }
+        )
+    for frequency, count, task_type, horizon, offset in (
+        ("weekly", 7, "weekly_point", 6, 100),
+        ("monthly", 8, "monthly", 30, 200),
+    ):
+        for index in range(count):
+            base_id = f"{frequency}_{index}"
+            registry_rows.append(
+                {
+                    "scheme_id": f"{base_id}__h{horizon}__10Y",
+                    "base_scheme_id": base_id,
+                    "runtime_type": "native_adapter",
+                    "frequency": frequency,
+                    "task_type": task_type,
+                    "target_tenor": "10Y",
+                    "horizon": horizon,
+                }
+            )
+            version_rows.append(
+                {
+                    "scheme_id": base_id,
+                    "scheme_version": f"version-{index}",
+                    "runtime_type": "native_adapter",
+                    "code_hash": f"{index + offset:064x}",
+                    "config_hash": f"{index + offset + 50:064x}",
+                }
+            )
+    return registry_rows, version_rows
+
+
+def _execution_authority(version_rows):
+    from harness.signal_gap_plan import DiscoveredSchemeIdentity
+
+    return tuple(
+        DiscoveredSchemeIdentity(
+            base_scheme_id=str(row["scheme_id"]),
+            scheme_version=str(row["scheme_version"]),
+            runtime_type=str(row["runtime_type"]),
+            code_sha256=str(row["code_hash"]),
+            config_sha256=str(row["config_hash"]),
+            status="active",
+        )
+        for row in version_rows
+    )
+
+
+def _demo_execution_authority():
+    from harness.signal_gap_plan import DiscoveredSchemeIdentity
+
+    return (
+        DiscoveredSchemeIdentity(
+            base_scheme_id="demo",
+            scheme_version="version-1",
+            runtime_type="blackbox_v2",
+            code_sha256="c" * 64,
+            config_sha256="d" * 64,
+            status="active",
+        ),
+    )

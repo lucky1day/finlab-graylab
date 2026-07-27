@@ -141,32 +141,52 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "signal-gap-plan":
-        engine = create_engine_from_env()
         try:
+            engine = create_engine_from_env()
             try:
                 plan = plan_signal_gaps(
                     engine,
                     start_date=args.start,
                     as_of_date=args.as_of,
                 )
-            except SignalGapPlanError as exc:
-                print(
-                    json.dumps(
-                        {
-                            "schema_version":
-                                "active-signal-gap-plan-error-v1",
-                            "status": "BLOCKED",
-                            "failure_code": exc.code,
-                        },
-                        ensure_ascii=False,
-                        indent=2,
-                    )
+            finally:
+                engine.dispose()
+        except SignalGapPlanError as exc:
+            print(
+                json.dumps(
+                    {
+                        "schema_version":
+                            "active-signal-gap-plan-error-v1",
+                        "status": "BLOCKED",
+                        "failure_code": exc.code,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
                 )
-                return 2
-        finally:
-            engine.dispose()
+            )
+            return 2
+        except Exception:
+            print(
+                json.dumps(
+                    {
+                        "schema_version":
+                            "active-signal-gap-plan-error-v1",
+                        "status": "ERROR",
+                        "failure_code":
+                            "SIGNAL_GAP_PLAN_INTERNAL_ERROR",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 2
         print(json.dumps(plan, ensure_ascii=False, indent=2))
-        return 1 if int(plan.get("counts", {}).get("blocked", 0)) else 0
+        return (
+            1
+            if plan.get("status") == "BLOCKED"
+            or int(plan.get("counts", {}).get("blocked", 0))
+            else 0
+        )
     parser.error("unsupported command")
     return 1
 

@@ -9,9 +9,9 @@ from sqlalchemy import bindparam, text
 
 from backend.factor_lab_dashboard_semantics import (
     choose_latest_backtest_runs,
-    choose_live_prediction_rows,
 )
 from scheduler.capacity_attestation import canonical_json_sha256
+from scheduler.discovery import discover_schemes
 from shared.actual_facts import build_week_calendar
 from shared.blackbox_v2.contracts import TASK_COMBINATIONS
 from shared.calendar_service import read_calendar_snapshot_from_connection
@@ -25,6 +25,20 @@ from shared.prediction_context import (
 PLAN_SCHEMA_VERSION = "active-signal-gap-plan-v1"
 PLATFORM_LIVE_BOUNDARY_VERSION = "platform_live_boundary_v1"
 PLATFORM_LIVE_TARGET_START_DATE = "2026-06-01"
+EXPECTED_ACTIVE_TARGET_COUNT = 44
+EXPECTED_ACTIVE_EXECUTION_COUNT = 40
+EXPECTED_ACTIVE_FREQUENCY_COUNTS = {
+    "daily": 29,
+    "weekly": 7,
+    "monthly": 8,
+}
+NATIVE_TASK_COMBINATIONS = {
+    "T+1": (1, "daily"),
+    "T+5": (5, "daily"),
+    "weekly_point": (6, "weekly"),
+    "weekly_average": (6, "weekly"),
+    "monthly": (30, "monthly"),
+}
 VALID_ACTIONS = (
     "SKIP_PRESENT",
     "GRAY_LIVE_GAP",
@@ -56,6 +70,16 @@ class SignalGapPlanError(RuntimeError):
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredSchemeIdentity:
+    base_scheme_id: str
+    scheme_version: str
+    runtime_type: str
+    code_sha256: str
+    config_sha256: str
+    status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +175,8 @@ class SignalGapSnapshot:
     input_generations: tuple[InputGeneration, ...]
     input_watermarks: Mapping[str, str | int | None]
     source_identity_sha256: str
+    discovery_identity_sha256: str
+    control_plane_blockers: tuple[Mapping[str, Any], ...] = ()
 
 
 SnapshotReader = Callable[..., SignalGapSnapshot]
@@ -162,6 +188,7 @@ def plan_signal_gaps(
     start_date: str,
     as_of_date: str,
     snapshot_reader: SnapshotReader | None = None,
+    execution_authority: Sequence[DiscoveredSchemeIdentity] | None = None,
 ) -> dict[str, Any]:
     """在一个 RR consistent snapshot/read-only 事务中规划全部缺口。"""
     normalized_start = _canonical_date(start_date, "start_date")
@@ -171,6 +198,12 @@ def plan_signal_gaps(
             "INVALID_DATE_RANGE",
             "start_date must not be after as_of_date",
         )
+    authority = (
+        tuple(execution_authority)
+        if execution_authority is not None
+        else _discover_execution_authority()
+    )
+    discovery_identity_sha256 = _discovery_identity_sha256(authority)
     reader = snapshot_reader or read_signal_gap_snapshot
     with engine.connect() as connection:
         connection.exec_driver_sql(
@@ -185,6 +218,8 @@ def plan_signal_gaps(
                     connection,
                     start_date=normalized_start,
                     as_of_date=normalized_as_of,
+                    execution_authority=authority,
+                    discovery_identity_sha256=discovery_identity_sha256,
                 )
             except SignalGapPlanError:
                 raise
@@ -212,6 +247,15 @@ def build_signal_gap_plan(
     normalized_start = _canonical_date(start_date, "start_date")
     normalized_as_of = _canonical_date(as_of_date, "as_of_date")
     target_by_registry = _validate_snapshot(snapshot)
+    control_plane_blockers = _normalized_control_plane_blockers(
+        snapshot.control_plane_blockers
+    )
+    blocker_codes_by_base: dict[str, set[str]] = {}
+    for blocker in control_plane_blockers:
+        blocker_codes_by_base.setdefault(
+            str(blocker["base_scheme_id"]),
+            set(),
+        ).add(str(blocker["code"]))
     canonical = _index_observations(
         tuple(
             row
@@ -275,6 +319,13 @@ def build_signal_gap_plan(
         action, generation, reason = _resolve_action(
             item,
             target=target,
+            control_plane_error=(
+                ",".join(
+                    sorted(blocker_codes_by_base[item.base_scheme_id])
+                )
+                if item.base_scheme_id in blocker_codes_by_base
+                else None
+            ),
             valid_present=(len(observed) == 1 and observation_error is None),
             observation_error=observation_error,
             generations=snapshot.input_generations,
@@ -305,6 +356,11 @@ def build_signal_gap_plan(
     )
     unsigned: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
+        "status": (
+            "BLOCKED"
+            if blocked or control_plane_blockers
+            else "READY"
+        ),
         "start_date": normalized_start,
         "as_of_date": normalized_as_of,
         "scope": {
@@ -334,9 +390,15 @@ def build_signal_gap_plan(
                 "horizon",
                 "target_date",
             ],
+            "blockers": control_plane_blockers,
         },
         "source_snapshot": {
             "identity_sha256": snapshot.source_identity_sha256,
+            "discovery_identity_sha256":
+                snapshot.discovery_identity_sha256,
+            "registry_digest_sha256": _registry_digest_sha256(
+                snapshot.registry_targets
+            ),
             "watermarks": dict(
                 sorted(snapshot.input_watermarks.items())
             ),
@@ -444,9 +506,18 @@ def read_signal_gap_snapshot(
     *,
     start_date: str,
     as_of_date: str,
+    execution_authority: Sequence[DiscoveredSchemeIdentity],
+    discovery_identity_sha256: str,
 ) -> SignalGapSnapshot:
     """读取真实 active/version/result 快照并建立可审计 authority。"""
-    raw_registry, registry_targets = _read_registry_versions(connection)
+    (
+        raw_registry,
+        registry_targets,
+        control_plane_blockers,
+    ) = _read_registry_versions(
+        connection,
+        execution_authority=execution_authority,
+    )
     raw_live, live_signals = _read_live_signals(
         connection,
         registry_targets,
@@ -532,6 +603,8 @@ def read_signal_gap_snapshot(
         input_generations=generations,
         input_watermarks=watermarks,
         source_identity_sha256=source_identity_sha256,
+        discovery_identity_sha256=discovery_identity_sha256,
+        control_plane_blockers=control_plane_blockers,
     )
 
 
@@ -610,49 +683,137 @@ class _FrozenCalendar:
 
 def _read_registry_versions(
     connection: Any,
-) -> tuple[list[dict[str, Any]], tuple[RegistryTarget, ...]]:
-    rows = [
+    *,
+    execution_authority: Sequence[DiscoveredSchemeIdentity],
+) -> tuple[
+    list[dict[str, Any]],
+    tuple[RegistryTarget, ...],
+    tuple[Mapping[str, Any], ...],
+]:
+    registry_rows = [
         dict(row)
         for row in connection.execute(
             text(
                 """
                 SELECT r.scheme_id, r.base_scheme_id, r.runtime_type,
-                       r.frequency, r.task_type, r.target_tenor, r.horizon,
-                       v.scheme_version, v.code_hash, v.config_hash
+                       r.frequency, r.task_type, r.target_tenor, r.horizon
                 FROM t_scheme_registry r
-                JOIN t_scheme_versions v
-                  ON v.scheme_id = r.base_scheme_id
-                 AND v.status = 'active'
                 WHERE r.status = 'active'
-                ORDER BY r.scheme_id, v.scheme_version
+                ORDER BY r.scheme_id
                 """
             )
         ).mappings().all()
     ]
-    targets = tuple(
-        RegistryTarget(
-            registry_scheme_id=str(row["scheme_id"]),
-            base_scheme_id=str(row["base_scheme_id"]),
-            runtime_type=str(row["runtime_type"]),
-            frequency=str(row["frequency"]),
-            task_type=str(row["task_type"]),
-            target_tenor=str(row["target_tenor"]),
-            horizon=int(row["horizon"]),
-            scheme_version=str(row["scheme_version"]),
-            live_target_start_date=PLATFORM_LIVE_TARGET_START_DATE,
-            live_boundary_source=PLATFORM_LIVE_BOUNDARY_VERSION,
-            input_mode=(
-                "live_source_0629"
-                if str(row["base_scheme_id"])
-                in APPROVED_0629_LIVE_SOURCE_SCHEMES
-                else None
-            ),
-            code_sha256=_optional_text(row.get("code_hash")),
-            config_sha256=_optional_text(row.get("config_hash")),
+    version_rows = [
+        dict(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT v.scheme_id, v.scheme_version, v.runtime_type,
+                       v.code_hash, v.config_hash
+                FROM t_scheme_versions v
+                WHERE v.status = 'active'
+                ORDER BY v.scheme_id, v.scheme_version
+                """
+            )
+        ).mappings().all()
+    ]
+    authority_by_base = _authority_by_base(execution_authority)
+    active_base_ids = {str(row["base_scheme_id"]) for row in registry_rows}
+    versions_by_base: dict[str, list[dict[str, Any]]] = {}
+    for row in version_rows:
+        scheme_id = str(row["scheme_id"])
+        if scheme_id in active_base_ids:
+            versions_by_base.setdefault(scheme_id, []).append(row)
+    resolved_targets: list[RegistryTarget] = []
+    blockers: list[dict[str, Any]] = []
+    for registry_row in registry_rows:
+        base_scheme_id = str(registry_row["base_scheme_id"])
+        authority = authority_by_base.get(base_scheme_id)
+        if authority is None:
+            raise SignalGapPlanError(
+                "DISCOVERY_IDENTITY_MISSING",
+                base_scheme_id,
+            )
+        active_versions = versions_by_base.get(base_scheme_id, [])
+        exact_versions = [
+            version
+            for version in active_versions
+            if str(version["scheme_version"])
+            == authority.scheme_version
+        ]
+        if len(active_versions) != 1:
+            blockers.append(
+                {
+                    "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
+                    "base_scheme_id": base_scheme_id,
+                    "active_version_count": len(active_versions),
+                }
+            )
+        if len(exact_versions) != 1:
+            blockers.append(
+                {
+                    "code": "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
+                    "base_scheme_id": base_scheme_id,
+                    "expected_scheme_version":
+                        authority.scheme_version,
+                }
+            )
+        exact_version = exact_versions[0] if len(exact_versions) == 1 else None
+        if str(registry_row["runtime_type"]) != authority.runtime_type:
+            blockers.append(
+                {
+                    "code": "REGISTRY_DISCOVERY_RUNTIME_DRIFT",
+                    "base_scheme_id": base_scheme_id,
+                }
+            )
+        if exact_version is not None:
+            if str(exact_version["runtime_type"]) != authority.runtime_type:
+                blockers.append(
+                    {
+                        "code": "REGISTRY_VERSION_RUNTIME_DRIFT",
+                        "base_scheme_id": base_scheme_id,
+                    }
+                )
+            if (
+                str(exact_version.get("code_hash") or "")
+                != authority.code_sha256
+                or str(exact_version.get("config_hash") or "")
+                != authority.config_sha256
+            ):
+                blockers.append(
+                    {
+                        "code": "ACTIVE_VERSION_DIGEST_DRIFT",
+                        "base_scheme_id": base_scheme_id,
+                    }
+                )
+        resolved_targets.append(
+            RegistryTarget(
+                registry_scheme_id=str(registry_row["scheme_id"]),
+                base_scheme_id=base_scheme_id,
+                runtime_type=authority.runtime_type,
+                frequency=str(registry_row["frequency"]),
+                task_type=str(registry_row["task_type"]),
+                target_tenor=str(registry_row["target_tenor"]),
+                horizon=int(registry_row["horizon"]),
+                scheme_version=authority.scheme_version,
+                live_target_start_date=PLATFORM_LIVE_TARGET_START_DATE,
+                live_boundary_source=PLATFORM_LIVE_BOUNDARY_VERSION,
+                input_mode=_input_mode_for_identity(
+                    base_scheme_id,
+                    authority.runtime_type,
+                ),
+                code_sha256=authority.code_sha256,
+                config_sha256=authority.config_sha256,
+            )
         )
-        for row in rows
+    targets = tuple(resolved_targets)
+    _validate_active_scope(targets)
+    return (
+        registry_rows,
+        targets,
+        tuple(_normalized_control_plane_blockers(blockers)),
     )
-    return rows, targets
 
 
 def _read_live_signals(
@@ -670,12 +831,15 @@ def _read_live_signals(
                 SELECT p.id, p.scheme_id, p.target_tenor, p.horizon,
                        p.predict_date, p.feature_date, p.target_date,
                        p.prediction_phase, p.scheme_version, p.run_id,
-                       r.status AS run_status
+                       r.status AS run_status,
+                       r.scheme_id AS run_scheme_id,
+                       r.scheme_version AS run_scheme_version,
+                       r.runtime_type AS run_runtime_type,
+                       r.prediction_phase AS run_prediction_phase,
+                       r.predict_date AS run_predict_date
                 FROM t_scheme_predictions p
                 LEFT JOIN t_scheme_runs r ON r.run_id = p.run_id
                 WHERE p.scheme_id IN :scheme_ids
-                  AND p.prediction_phase IN
-                      ('gray_live', 'scheduled_live')
                 ORDER BY p.scheme_id, p.target_tenor, p.horizon,
                          p.target_date, p.predict_date, p.id
                 """
@@ -683,21 +847,9 @@ def _read_live_signals(
             {"scheme_ids": base_ids},
         ).mappings().all()
     ]
-    selected = choose_live_prediction_rows(
-        rows,
-        display_until=as_of_date,
-    )
-    multiplicity: dict[tuple[str, str, int, str], int] = {}
-    for row in rows:
-        key = (
-            str(row["scheme_id"]),
-            str(row["target_tenor"]),
-            int(row["horizon"]),
-            str(row["target_date"])[:10],
-        )
-        multiplicity[key] = multiplicity.get(key, 0) + 1
-    target_keys = {
-        target.business_identity for target in targets
+    _canonical_date(as_of_date, "as_of_date")
+    target_by_identity = {
+        target.business_identity: target for target in targets
     }
     signals = tuple(
         ObservedSignal(
@@ -710,27 +862,18 @@ def _read_live_signals(
             phase=str(row["prediction_phase"]),
             scheme_version=str(row["scheme_version"] or ""),
             run_status=str(row["run_status"] or ""),
-            contract_error=(
-                "DUPLICATE_LIVE_BUSINESS_KEY"
-                if multiplicity[
+            contract_error=_live_row_contract_error(
+                row,
+                target_by_identity.get(
                     (
                         str(row["scheme_id"]),
                         str(row["target_tenor"]),
                         int(row["horizon"]),
-                        str(row["target_date"])[:10],
                     )
-                ]
-                > 1
-                else None
+                ),
             ),
         )
-        for row in selected
-        if (
-            str(row["scheme_id"]),
-            str(row["target_tenor"]),
-            int(row["horizon"]),
-        )
-        in target_keys
+        for row in rows
     )
     return rows, signals
 
@@ -930,11 +1073,18 @@ def _resolve_action(
     item: ExpectedSignalCase,
     *,
     target: RegistryTarget,
+    control_plane_error: str | None,
     valid_present: bool,
     observation_error: str | None,
     generations: Sequence[InputGeneration],
     as_of_date: str,
 ) -> tuple[Action, InputGeneration | None, str]:
+    if control_plane_error:
+        return (
+            "BLOCKED_DATA_CONTRACT",
+            None,
+            f"CONTROL_PLANE_BLOCKER:{control_plane_error}",
+        )
     if valid_present:
         return "SKIP_PRESENT", None, "BUSINESS_KEY_PRESENT"
     if observation_error:
@@ -1075,6 +1225,11 @@ def _validate_snapshot(
             "SOURCE_IDENTITY_INVALID",
             "source identity must be a SHA-256 digest",
         )
+    if not _is_sha256(snapshot.discovery_identity_sha256):
+        raise SignalGapPlanError(
+            "DISCOVERY_IDENTITY_INVALID",
+            "discovery identity must be a SHA-256 digest",
+        )
     by_registry: dict[str, RegistryTarget] = {}
     seen_business: set[tuple[str, str, int]] = set()
     for target in sorted(
@@ -1113,22 +1268,21 @@ def _validate_registry_target(target: RegistryTarget) -> None:
             "INVALID_REGISTRY_TARGET",
             f"unsupported runtime_type={target.runtime_type!r}",
         )
-    expected = TASK_COMBINATIONS.get(target.task_type)
+    expected = (
+        NATIVE_TASK_COMBINATIONS.get(target.task_type)
+        if target.runtime_type == "native_adapter"
+        else _blackbox_task_contract(target.task_type)
+    )
     if expected is None:
         raise SignalGapPlanError(
             "INVALID_REGISTRY_TARGET",
             f"unsupported task_type={target.task_type!r}",
         )
-    expected_horizon, _, expected_frequency = expected
-    valid_horizon = (
-        target.horizon == expected_horizon
-        or (
-            target.runtime_type == "native_adapter"
-            and target.frequency == "weekly"
-            and target.horizon == 6
-        )
-    )
-    if not valid_horizon or target.frequency != expected_frequency:
+    expected_horizon, expected_frequency = expected
+    if (
+        target.horizon != expected_horizon
+        or target.frequency != expected_frequency
+    ):
         raise SignalGapPlanError(
             "INVALID_REGISTRY_TARGET",
             f"task contract drift for {target.registry_scheme_id}",
@@ -1147,6 +1301,25 @@ def _validate_registry_target(target: RegistryTarget) -> None:
         raise SignalGapPlanError(
             "INVALID_REGISTRY_TARGET",
             "active target has empty scheme_version",
+        )
+    if not _is_sha256(target.code_sha256 or ""):
+        raise SignalGapPlanError(
+            "INVALID_REGISTRY_TARGET",
+            "active target has invalid code SHA-256",
+        )
+    if not _is_sha256(target.config_sha256 or ""):
+        raise SignalGapPlanError(
+            "INVALID_REGISTRY_TARGET",
+            "active target has invalid config SHA-256",
+        )
+    if target.input_mode not in {
+        "generation_v1",
+        "live_source_0629",
+        "databridge_v1",
+    }:
+        raise SignalGapPlanError(
+            "INVALID_REGISTRY_TARGET",
+            "active target has invalid input_mode",
         )
     _canonical_date(
         target.live_target_start_date,
@@ -1383,16 +1556,31 @@ def _validate_canonical_run_manifest(
     expected_target_pairs: set[tuple[str, int]],
 ) -> None:
     """校验 persisted run manifest 的总数和 target 多重性。"""
-    expected_count = summary.get(
+    count_fields = (
         "persisted_prediction_count",
-        summary.get("row_count"),
+        "row_count",
+        "written_predictions",
+        "rows",
     )
-    if (
-        isinstance(expected_count, bool)
-        or not isinstance(expected_count, int)
-        or expected_count < 1
-        or expected_count != len(details)
+    declared_counts = [
+        summary[field] for field in count_fields if field in summary
+    ]
+    if not declared_counts or any(
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 1
+        for value in declared_counts
     ):
+        raise SignalGapPlanError(
+            "CANONICAL_CASE_AUTHORITY_UNAVAILABLE",
+            f"run={run_id} manifest/detail count mismatch",
+        )
+    if len(set(declared_counts)) != 1:
+        raise SignalGapPlanError(
+            "CANONICAL_CASE_AUTHORITY_UNAVAILABLE",
+            f"run={run_id} manifest count fields disagree",
+        )
+    if declared_counts[0] != len(details):
         raise SignalGapPlanError(
             "CANONICAL_CASE_AUTHORITY_UNAVAILABLE",
             f"run={run_id} manifest/detail count mismatch",
@@ -1500,3 +1688,217 @@ def _is_sha256(value: str) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _blackbox_task_contract(
+    task_type: str,
+) -> tuple[int, str] | None:
+    contract = TASK_COMBINATIONS.get(task_type)
+    if contract is None:
+        return None
+    horizon, _, frequency = contract
+    return horizon, frequency
+
+
+def _discover_execution_authority(
+) -> tuple[DiscoveredSchemeIdentity, ...]:
+    identities = tuple(
+        DiscoveredSchemeIdentity(
+            base_scheme_id=str(config.scheme_id),
+            scheme_version=str(config.scheme_version),
+            runtime_type=str(config.runtime_type),
+            code_sha256=str(config.code_hash),
+            config_sha256=str(config.config_hash),
+            status=str(config.status),
+        )
+        for config in discover_schemes(strict=True)
+    )
+    _authority_by_base(identities)
+    return tuple(
+        sorted(identities, key=lambda item: item.base_scheme_id)
+    )
+
+
+def _authority_by_base(
+    identities: Sequence[DiscoveredSchemeIdentity],
+) -> dict[str, DiscoveredSchemeIdentity]:
+    by_base: dict[str, DiscoveredSchemeIdentity] = {}
+    for identity in identities:
+        if not identity.base_scheme_id.strip():
+            raise SignalGapPlanError(
+                "DISCOVERY_IDENTITY_INVALID",
+                "discovery identity has empty scheme ID",
+            )
+        if identity.base_scheme_id in by_base:
+            raise SignalGapPlanError(
+                "DISCOVERY_IDENTITY_DUPLICATE",
+                identity.base_scheme_id,
+            )
+        if (
+            not identity.scheme_version.strip()
+            or identity.runtime_type
+            not in {"native_adapter", "blackbox_v2"}
+            or identity.status != "active"
+            or not _is_sha256(identity.code_sha256)
+            or not _is_sha256(identity.config_sha256)
+        ):
+            raise SignalGapPlanError(
+                "DISCOVERY_IDENTITY_INVALID",
+                identity.base_scheme_id,
+            )
+        by_base[identity.base_scheme_id] = identity
+    return by_base
+
+
+def _discovery_identity_sha256(
+    identities: Sequence[DiscoveredSchemeIdentity],
+) -> str:
+    _authority_by_base(identities)
+    return canonical_json_sha256(
+        [
+            {
+                "base_scheme_id": identity.base_scheme_id,
+                "scheme_version": identity.scheme_version,
+                "runtime_type": identity.runtime_type,
+                "code_sha256": identity.code_sha256,
+                "config_sha256": identity.config_sha256,
+                "status": identity.status,
+            }
+            for identity in sorted(
+                identities,
+                key=lambda item: item.base_scheme_id,
+            )
+        ]
+    )
+
+
+def _normalized_control_plane_blockers(
+    blockers: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in blockers:
+        blocker = dict(raw)
+        code = str(blocker.get("code") or "").strip()
+        base_scheme_id = str(
+            blocker.get("base_scheme_id") or ""
+        ).strip()
+        if not code or not base_scheme_id:
+            raise SignalGapPlanError(
+                "CONTROL_PLANE_BLOCKER_INVALID",
+                "blocker requires code and base_scheme_id",
+            )
+        blocker["code"] = code
+        blocker["base_scheme_id"] = base_scheme_id
+        digest = canonical_json_sha256(blocker)
+        if digest not in seen:
+            seen.add(digest)
+            normalized.append(blocker)
+    return sorted(
+        normalized,
+        key=lambda item: (
+            str(item["base_scheme_id"]),
+            str(item["code"]),
+            canonical_json_sha256(item),
+        ),
+    )
+
+
+def _input_mode_for_identity(
+    base_scheme_id: str,
+    runtime_type: str,
+) -> str:
+    if runtime_type == "blackbox_v2":
+        return "databridge_v1"
+    if base_scheme_id in APPROVED_0629_LIVE_SOURCE_SCHEMES:
+        return "live_source_0629"
+    return "generation_v1"
+
+
+def _validate_active_scope(
+    targets: Sequence[RegistryTarget],
+) -> None:
+    actual_frequency_counts = {
+        frequency: sum(
+            target.frequency == frequency for target in targets
+        )
+        for frequency in ("daily", "weekly", "monthly")
+    }
+    actual_execution_count = len(
+        {target.base_scheme_id for target in targets}
+    )
+    if (
+        len(targets) != EXPECTED_ACTIVE_TARGET_COUNT
+        or actual_execution_count != EXPECTED_ACTIVE_EXECUTION_COUNT
+        or actual_frequency_counts != EXPECTED_ACTIVE_FREQUENCY_COUNTS
+    ):
+        raise SignalGapPlanError(
+            "ACTIVE_REGISTRY_SCOPE_DRIFT",
+            "active Registry must be exactly 44 targets/40 executions "
+            "with daily=29, weekly=7, monthly=8",
+        )
+
+
+def _registry_digest_sha256(
+    targets: Sequence[RegistryTarget],
+) -> str:
+    return canonical_json_sha256(
+        [
+            {
+                "registry_scheme_id": target.registry_scheme_id,
+                "base_scheme_id": target.base_scheme_id,
+                "runtime_type": target.runtime_type,
+                "frequency": target.frequency,
+                "task_type": target.task_type,
+                "target_tenor": target.target_tenor,
+                "horizon": target.horizon,
+                "scheme_version": target.scheme_version,
+                "code_sha256": target.code_sha256,
+                "config_sha256": target.config_sha256,
+                "live_target_start_date":
+                    target.live_target_start_date,
+                "live_boundary_source": target.live_boundary_source,
+                "input_mode": target.input_mode,
+            }
+            for target in sorted(
+                targets,
+                key=lambda item: item.registry_scheme_id,
+            )
+        ]
+    )
+
+
+def _live_row_contract_error(
+    row: Mapping[str, Any],
+    target: RegistryTarget | None,
+) -> str | None:
+    errors: list[str] = []
+    phase = str(row.get("prediction_phase") or "")
+    if phase not in {"gray_live", "scheduled_live"}:
+        errors.append("LIVE_PHASE_INVALID")
+    if target is None:
+        errors.append("LIVE_TARGET_NOT_ACTIVE")
+    else:
+        if str(row.get("scheme_version") or "") != target.scheme_version:
+            errors.append("LIVE_SCHEME_VERSION_DRIFT")
+        if str(row.get("run_runtime_type") or "") != target.runtime_type:
+            errors.append("RUN_RUNTIME_TYPE_DRIFT")
+    if row.get("run_id") is None:
+        errors.append("RUN_LINK_MISSING")
+    if str(row.get("run_status") or "") != "success":
+        errors.append("RUN_STATUS_NOT_SUCCESS")
+    if str(row.get("run_scheme_id") or "") != str(
+        row.get("scheme_id") or ""
+    ):
+        errors.append("RUN_SCHEME_ID_DRIFT")
+    if str(row.get("run_scheme_version") or "") != str(
+        row.get("scheme_version") or ""
+    ):
+        errors.append("RUN_SCHEME_VERSION_DRIFT")
+    if str(row.get("run_prediction_phase") or "") != phase:
+        errors.append("RUN_PHASE_DRIFT")
+    if str(row.get("run_predict_date") or "")[:10] != str(
+        row.get("predict_date") or ""
+    )[:10]:
+        errors.append("RUN_PREDICT_DATE_DRIFT")
+    return ",".join(errors) or None
