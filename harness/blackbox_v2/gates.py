@@ -1980,8 +1980,8 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
             raise ValueError(
                 f"no passed all-stage harness run for {cfg.scheme_id} version {cfg.scheme_version}"
             )
-        statuses = {
-            str(item[0]): str(item[1])
+        gate_rows = [
+            (str(item[0]), str(item[1]))
             for item in connection.execute(
                 text(
                     """
@@ -1992,10 +1992,28 @@ def _verify_passed_all(engine, cfg: SchemeConfig) -> PassedAllRun:
                 ),
                 {"harness_run_id": row["harness_run_id"]},
             ).fetchall()
-        }
-    missing = sorted(name for name in required if statuses.get(name) != "passed")
-    if missing:
-        raise ValueError(f"all-stage run has missing or non-passed Blackbox V2 gates: {missing}")
+        ]
+    names = [name for name, _status in gate_rows]
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    missing = sorted(required - set(names))
+    extra = sorted(set(names) - required)
+    non_passed = sorted(
+        f"{name}={status}"
+        for name, status in gate_rows
+        if status != "passed"
+    )
+    if (
+        len(gate_rows) != len(required)
+        or duplicates
+        or missing
+        or extra
+        or non_passed
+    ):
+        raise ValueError(
+            "all-stage run must have exact persisted Blackbox V2 gate set: "
+            f"row_count={len(gate_rows)}, duplicates={duplicates}, "
+            f"missing={missing}, extra={extra}, non_passed={non_passed}"
+        )
     report_uri = Path(str(row["report_uri"]))
     report_dir = report_uri.parent if report_uri.is_file() or report_uri.suffix == ".json" else report_uri
     state_path = report_dir / "blackbox_v2" / "input_state.json"

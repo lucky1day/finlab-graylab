@@ -77,6 +77,92 @@ class BlackboxApiGateTests(unittest.TestCase):
         self.assertEqual(passed.harness_run_id, "hr_z")
         self.assertEqual(passed.data_snapshot_id, "snapshot-hr_z")
 
+    def test_passed_all_requires_exactly_one_of_each_canonical_gate(self) -> None:
+        from harness.blackbox_v2.gates import _verify_passed_all
+
+        required = (
+            "static",
+            "input",
+            "unit",
+            "dry-run",
+            "compare",
+            "backtest",
+            "api-readiness",
+        )
+        variants = {
+            "duplicate": [*required, "static"],
+            "extra": [*required, "unexpected"],
+            "missing": list(required[:-1]),
+            "non_passed": [
+                *[(name, "passed") for name in required[:-1]],
+                ("api-readiness", "skipped"),
+            ],
+        }
+        for label, variant in variants.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                cfg = self._scaffold(root)
+                report_dir = root / "report"
+                state_dir = report_dir / "blackbox_v2"
+                state_dir.mkdir(parents=True)
+                (state_dir / "input_state.json").write_text(
+                    json.dumps(
+                        {
+                            "snapshot_id": "snapshot",
+                            "environment_fingerprint": "e" * 64,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+                with engine.begin() as connection:
+                    connection.execute(
+                        text(
+                            "CREATE TABLE t_harness_runs "
+                            "(harness_run_id TEXT, scheme_id TEXT, scheme_version TEXT, "
+                            "stage TEXT, status TEXT, finished_at TEXT, report_uri TEXT)"
+                        )
+                    )
+                    connection.execute(
+                        text(
+                            "CREATE TABLE t_harness_gate_results "
+                            "(harness_run_id TEXT, gate_name TEXT, status TEXT)"
+                        )
+                    )
+                    connection.execute(
+                        text(
+                            "INSERT INTO t_harness_runs VALUES "
+                            "('hr_exact', :scheme, :version, 'all', 'passed', "
+                            "'2026-07-20T10:00:00', :report_uri)"
+                        ),
+                        {
+                            "scheme": cfg.scheme_id,
+                            "version": cfg.scheme_version,
+                            "report_uri": str(report_dir),
+                        },
+                    )
+                    rows = [
+                        (
+                            {"gate_name": item[0], "status": item[1]}
+                            if isinstance(item, tuple)
+                            else {"gate_name": item, "status": "passed"}
+                        )
+                        for item in variant
+                    ]
+                    connection.execute(
+                        text(
+                            "INSERT INTO t_harness_gate_results VALUES "
+                            "('hr_exact', :gate_name, :status)"
+                        ),
+                        rows,
+                    )
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "exact persisted Blackbox V2 gate set",
+                ):
+                    _verify_passed_all(engine, cfg)
+
     def test_certification_evidence_selects_exact_latest_harness_backtest_and_live_run(self) -> None:
         from harness.blackbox_v2.api_gate import (
             _read_expected_backtest_evidence,
