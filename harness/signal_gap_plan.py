@@ -16,6 +16,9 @@ from shared.actual_facts import build_week_calendar
 from shared.blackbox_v2.contracts import TASK_COMBINATIONS
 from shared.calendar_service import read_calendar_snapshot_from_connection
 from shared.prediction_context import (
+    MONTHLY_TARGET_RULE,
+    WEEKLY_AVERAGE_TARGET_RULE,
+    WEEKLY_TARGET_RULE,
     build_daily_live_context,
     build_monthly_live_context,
     build_weekly_live_context,
@@ -178,6 +181,7 @@ class SignalGapSnapshot:
     discovery_identity_sha256: str
     active_version_identity_sha256: str
     control_plane_blockers: tuple[Mapping[str, Any], ...] = ()
+    canonical_authorities: tuple[Mapping[str, Any], ...] = ()
 
 
 SnapshotReader = Callable[..., SignalGapSnapshot]
@@ -294,11 +298,14 @@ def build_signal_gap_plan(
             if key not in expected_business_keys
         }
     )
-    if unexpected:
-        raise SignalGapPlanError(
-            "OBSERVED_SIGNAL_OUTSIDE_AUTHORITY",
-            f"observed rows are outside expected authority: {unexpected[:3]}",
-        )
+    observed_contract_anomalies = [
+        {
+            "segment": segment,
+            "business_key": list(business_key),
+            "reason": "OBSERVED_SIGNAL_OUTSIDE_AUTHORITY",
+        }
+        for segment, business_key in unexpected
+    ]
 
     actions: list[dict[str, Any]] = []
     for item in sorted(snapshot.expected_cases, key=_case_sort_key):
@@ -316,6 +323,7 @@ def build_signal_gap_plan(
         opposite_source = live if item.segment == "canonical" else canonical
         observed = expected_source.get(item.business_key, ())
         opposite = opposite_source.get(item.business_key, ())
+        business_key_present = bool(observed)
         observation_error = _observation_contract_error(
             item,
             target,
@@ -337,12 +345,24 @@ def build_signal_gap_plan(
             generations=snapshot.input_generations,
             as_of_date=normalized_as_of,
         )
+        if (
+            business_key_present
+            and action == "BLOCKED_DATA_CONTRACT"
+        ):
+            observed_contract_anomalies.append(
+                {
+                    "segment": item.segment,
+                    "business_key": list(item.business_key),
+                    "reason": reason,
+                }
+            )
         actions.append(
             _action_row(
                 item,
                 action=action,
                 reason=reason,
                 generation=generation,
+                business_key_present=business_key_present,
             )
         )
 
@@ -350,7 +370,7 @@ def build_signal_gap_plan(
         action: sum(row["action"] == action for row in actions)
         for action in VALID_ACTIONS
     }
-    present = action_counts["SKIP_PRESENT"]
+    present = sum(row["business_key_present"] for row in actions)
     open_gap = len(actions) - present
     actionable = (
         action_counts["GRAY_LIVE_GAP"]
@@ -360,11 +380,19 @@ def build_signal_gap_plan(
         action_counts["BLOCKED_NO_GENERATION"]
         + action_counts["BLOCKED_DATA_CONTRACT"]
     )
+    canonical_rebuild_groups = _canonical_rebuild_groups(
+        actions,
+        snapshot.registry_targets,
+    )
     unsigned: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "status": (
             "BLOCKED"
-            if blocked or control_plane_blockers
+            if (
+                blocked
+                or control_plane_blockers
+                or observed_contract_anomalies
+            )
             else "READY"
         ),
         "start_date": normalized_start,
@@ -413,6 +441,13 @@ def build_signal_gap_plan(
             "canonical_row_count": len(snapshot.canonical_signals),
             "live_row_count": len(snapshot.live_signals),
             "generation_row_count": len(snapshot.input_generations),
+            "canonical_authorities": [
+                dict(item)
+                for item in sorted(
+                    snapshot.canonical_authorities,
+                    key=lambda row: str(row["base_scheme_id"]),
+                )
+            ],
         },
         "counts": {
             "active_target": len(snapshot.registry_targets),
@@ -428,8 +463,12 @@ def build_signal_gap_plan(
             "open_gap": open_gap,
             "actionable": actionable,
             "blocked": blocked,
+            "observed_contract_anomaly":
+                len(observed_contract_anomalies),
             **action_counts,
         },
+        "observed_contract_anomalies": observed_contract_anomalies,
+        "canonical_rebuild_groups": canonical_rebuild_groups,
         "actions": actions,
     }
     return {
@@ -509,6 +548,82 @@ def build_expected_live_cases(
     return tuple(sorted(cases, key=_case_sort_key))
 
 
+def build_expected_canonical_cases(
+    registry_targets: Sequence[RegistryTarget],
+    *,
+    calendar: Any,
+    start_date: str,
+) -> tuple[ExpectedSignalCase, ...]:
+    """仅由 Registry、逐 target 边界和冻结日历枚举历史应有集合。"""
+    normalized_start = _canonical_date(start_date, "start_date")
+    cases: list[ExpectedSignalCase] = []
+    weekly_pairs = tuple(calendar.canonical_week_pairs())
+    for target in registry_targets:
+        boundary = _canonical_date(
+            target.live_target_start_date,
+            "live_target_start_date",
+        )
+        if target.frequency == "daily":
+            for feature_date in calendar.canonical_daily_feature_dates:
+                if feature_date < normalized_start:
+                    continue
+                target_date = calendar.canonical_nth_trading_day_after(
+                    feature_date,
+                    target.horizon,
+                )
+                if target_date >= boundary:
+                    continue
+                cases.append(
+                    _case_from_target(
+                        target,
+                        predict_date=feature_date,
+                        feature_date=feature_date,
+                        target_date=target_date,
+                        segment="canonical",
+                    )
+                )
+        elif target.frequency == "weekly":
+            for feature_date, target_date in weekly_pairs:
+                if feature_date < normalized_start:
+                    continue
+                if target_date >= boundary:
+                    continue
+                cases.append(
+                    _case_from_target(
+                        target,
+                        predict_date=feature_date,
+                        feature_date=feature_date,
+                        target_date=target_date,
+                        segment="canonical",
+                    )
+                )
+        elif target.frequency == "monthly":
+            for predict_date in calendar.monthly_predict_dates:
+                if predict_date < normalized_start:
+                    continue
+                context = build_monthly_live_context(
+                    calendar,
+                    predict_date,
+                )
+                if str(context.target_date) >= boundary:
+                    continue
+                cases.append(
+                    _case_from_target(
+                        target,
+                        predict_date=predict_date,
+                        feature_date=str(context.feature_date),
+                        target_date=str(context.target_date),
+                        segment="canonical",
+                    )
+                )
+        else:
+            raise SignalGapPlanError(
+                "INVALID_REGISTRY_TARGET",
+                f"unsupported frequency={target.frequency!r}",
+            )
+    return tuple(sorted(cases, key=_case_sort_key))
+
+
 def read_signal_gap_snapshot(
     connection: Any,
     *,
@@ -526,13 +641,6 @@ def read_signal_gap_snapshot(
     ) = _read_registry_versions(
         connection,
         execution_authority=execution_authority,
-    )
-    canonical_cases, canonical_signals, canonical_watermarks = (
-        _read_persisted_canonical_authority(
-            connection,
-            raw_registry,
-            registry_targets,
-        )
     )
     calendar_snapshot = read_calendar_snapshot_from_connection(connection)
     calendar = _FrozenCalendar(
@@ -562,6 +670,53 @@ def read_signal_gap_snapshot(
         ],
         start_date=start_date,
         as_of_date=as_of_date,
+    )
+    blackbox_targets = tuple(
+        target
+        for target in registry_targets
+        if target.runtime_type == "blackbox_v2"
+    )
+    blackbox_cases = build_expected_canonical_cases(
+        blackbox_targets,
+        calendar=calendar,
+        start_date=start_date,
+    )
+    blackbox_cases, actual_watermarks = _read_canonical_actual_facts(
+        connection,
+        blackbox_cases,
+    )
+    (
+        native_cases,
+        canonical_signals,
+        canonical_watermarks,
+        native_blockers,
+        native_authorities,
+    ) = (
+        _read_persisted_canonical_observations(
+            connection,
+            raw_registry,
+            registry_targets,
+        )
+    )
+    canonical_cases = tuple(
+        sorted(
+            (*native_cases, *blackbox_cases),
+            key=_case_sort_key,
+        )
+    )
+    canonical_authorities = tuple(
+        sorted(
+            (
+                *native_authorities,
+                *_calendar_canonical_authorities(blackbox_cases),
+            ),
+            key=lambda row: str(row["base_scheme_id"]),
+        )
+    )
+    control_plane_blockers = tuple(
+        _normalized_control_plane_blockers(
+            (*control_plane_blockers, *native_blockers)
+        )
     )
     live_cases = build_expected_live_cases(
         registry_targets,
@@ -597,6 +752,7 @@ def read_signal_gap_snapshot(
     )
     watermarks = {
         **canonical_watermarks,
+        **actual_watermarks,
         "active_registry_count": len(registry_targets),
         "raw_live_row_count": len(raw_live),
         "selected_live_row_count": len(live_signals),
@@ -621,6 +777,7 @@ def read_signal_gap_snapshot(
         active_version_identity_sha256=
             active_version_identity_sha256,
         control_plane_blockers=control_plane_blockers,
+        canonical_authorities=canonical_authorities,
     )
 
 
@@ -648,10 +805,20 @@ class _FrozenCalendar:
                 "trade calendar has no trading days",
             )
         self._trading_day_set = frozenset(self._trading_days)
+        self._canonical_daily_days = tuple(
+            day
+            for day in self._trading_days
+            if date.fromisoformat(day).weekday() < 5
+        )
         self._week_calendar = build_week_calendar(week_calendar_rows)
         self.daily_predict_dates = tuple(
             day
             for day in self._trading_days
+            if start_date <= day <= as_of_date
+        )
+        self.canonical_daily_feature_dates = tuple(
+            day
+            for day in self._canonical_daily_days
             if start_date <= day <= as_of_date
         )
         self.weekly_predict_dates = tuple(
@@ -690,11 +857,38 @@ class _FrozenCalendar:
             )
         return days[-1]
 
+    def canonical_nth_trading_day_after(
+        self,
+        value: str,
+        n: int,
+    ) -> str:
+        days = [
+            day
+            for day in self._canonical_daily_days
+            if day > str(value)[:10]
+        ][:n]
+        if len(days) != n:
+            raise ValueError(
+                f"not enough canonical trading days after {value} "
+                f"for horizon={n}"
+            )
+        return days[-1]
+
     def week_id_for_date(self, value: str) -> int | None:
         return self._week_calendar.week_id_for_date(value)
 
     def week_id_to_last_trading_day(self, week_id: int) -> str:
         return self._week_calendar.week_id_to_last_trading_day(week_id)
+
+    def canonical_week_pairs(self) -> tuple[tuple[str, str], ...]:
+        """按历史算法 weekday-only 周历返回相邻实际周末。"""
+        last_day_by_week: dict[int, str] = {}
+        for day in self._canonical_daily_days:
+            week_id = self._week_calendar.week_id_for_date(day)
+            if week_id is not None:
+                last_day_by_week[int(week_id)] = day
+        last_days = sorted(last_day_by_week.values())
+        return tuple(zip(last_days, last_days[1:]))
 
 
 def _read_registry_versions(
@@ -924,7 +1118,284 @@ def _read_live_signals(
     return rows, signals
 
 
-def _read_persisted_canonical_authority(
+def _read_canonical_actual_facts(
+    connection: Any,
+    cases: Sequence[ExpectedSignalCase],
+) -> tuple[tuple[ExpectedSignalCase, ...], dict[str, int]]:
+    """从同一 connection 读取 Actual，仅校验而不枚举 expected。"""
+    if not cases:
+        return (), {
+            "daily_actual_fact_count": 0,
+            "weekly_actual_fact_count": 0,
+            "monthly_actual_fact_count": 0,
+        }
+    tenors = sorted({case.target_tenor for case in cases})
+    min_target_date = min(case.target_date for case in cases)
+    max_target_date = max(case.target_date for case in cases)
+    daily_rows = [
+        dict(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT tenor, trade_date, direction_1d, direction_5d
+                FROM t_scheme_actuals
+                WHERE tenor IN :tenors
+                  AND trade_date BETWEEN :start_date AND :end_date
+                ORDER BY tenor, trade_date
+                """
+            ).bindparams(bindparam("tenors", expanding=True)),
+            {
+                "tenors": tenors,
+                "start_date": min_target_date,
+                "end_date": max_target_date,
+            },
+        ).mappings().all()
+    ]
+    weekly_rows = [
+        dict(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT tenor, predict_date, feature_date, target_date,
+                       direction_weekly, target_rule
+                FROM t_scheme_weekly_actuals
+                WHERE tenor IN :tenors
+                  AND target_date BETWEEN :start_date AND :end_date
+                ORDER BY tenor, predict_date, target_rule, target_date
+                """
+            ).bindparams(bindparam("tenors", expanding=True)),
+            {
+                "tenors": tenors,
+                "start_date": min_target_date,
+                "end_date": max_target_date,
+            },
+        ).mappings().all()
+    ]
+    monthly_rows = [
+        dict(row)
+        for row in connection.execute(
+            text(
+                """
+                SELECT tenor, predict_date, feature_date, target_date,
+                       direction_monthly, target_rule
+                FROM t_scheme_monthly_actuals
+                WHERE tenor IN :tenors
+                  AND target_date BETWEEN :start_date AND :end_date
+                ORDER BY tenor, predict_date, target_rule, target_date
+                """
+            ).bindparams(bindparam("tenors", expanding=True)),
+            {
+                "tenors": tenors,
+                "start_date": min_target_date,
+                "end_date": max_target_date,
+            },
+        ).mappings().all()
+    ]
+    return (
+        _validate_canonical_actual_facts(
+            cases,
+            daily_actual_rows=daily_rows,
+            weekly_actual_rows=weekly_rows,
+            monthly_actual_rows=monthly_rows,
+        ),
+        {
+            "daily_actual_fact_count": len(daily_rows),
+            "weekly_actual_fact_count": len(weekly_rows),
+            "monthly_actual_fact_count": len(monthly_rows),
+        },
+    )
+
+
+def _validate_canonical_actual_facts(
+    cases: Sequence[ExpectedSignalCase],
+    *,
+    daily_actual_rows: Sequence[Mapping[str, Any]],
+    weekly_actual_rows: Sequence[Mapping[str, Any]],
+    monthly_actual_rows: Sequence[Mapping[str, Any]],
+) -> tuple[ExpectedSignalCase, ...]:
+    """将 Actual 契约错误附着到既有 Calendar authority case。"""
+    daily = _group_rows(
+        daily_actual_rows,
+        lambda row: (
+            str(row["tenor"]),
+            str(row["trade_date"])[:10],
+        ),
+    )
+    weekly = _group_rows(
+        weekly_actual_rows,
+        lambda row: (
+            str(row["tenor"]),
+            str(row["feature_date"])[:10],
+            str(row["target_date"])[:10],
+            str(row["target_rule"]),
+        ),
+    )
+    monthly = _group_rows(
+        monthly_actual_rows,
+        lambda row: (
+            str(row["tenor"]),
+            str(row["predict_date"])[:10],
+            str(row["target_rule"]),
+        ),
+    )
+    validated: list[ExpectedSignalCase] = []
+    for case in cases:
+        error: str | None
+        if case.frequency == "daily":
+            rows = daily.get((case.target_tenor, case.target_date), ())
+            direction_field = (
+                "direction_1d"
+                if case.task_type == "T+1"
+                else "direction_5d"
+            )
+            error = _actual_fact_error(
+                rows,
+                prefix="DAILY_ACTUAL",
+                expected_dates={
+                    "trade_date": case.target_date,
+                },
+                direction_field=direction_field,
+            )
+        elif case.frequency == "weekly":
+            target_rule = (
+                WEEKLY_AVERAGE_TARGET_RULE
+                if case.task_type == "weekly_average"
+                else WEEKLY_TARGET_RULE
+            )
+            rows = weekly.get(
+                (
+                    case.target_tenor,
+                    case.feature_date,
+                    case.target_date,
+                    target_rule,
+                ),
+                (),
+            )
+            error = _actual_fact_error(
+                rows,
+                prefix="WEEKLY_ACTUAL",
+                expected_dates={
+                    "feature_date": case.feature_date,
+                    "target_date": case.target_date,
+                },
+                direction_field="direction_weekly",
+            )
+        else:
+            rows = monthly.get(
+                (
+                    case.target_tenor,
+                    case.predict_date,
+                    MONTHLY_TARGET_RULE,
+                ),
+                (),
+            )
+            error = _actual_fact_error(
+                rows,
+                prefix="MONTHLY_ACTUAL",
+                expected_dates={
+                    "predict_date": case.predict_date,
+                    "feature_date": case.feature_date,
+                    "target_date": case.target_date,
+                },
+                direction_field="direction_monthly",
+            )
+        validated.append(
+            ExpectedSignalCase(
+                registry_scheme_id=case.registry_scheme_id,
+                base_scheme_id=case.base_scheme_id,
+                runtime_type=case.runtime_type,
+                frequency=case.frequency,
+                task_type=case.task_type,
+                target_tenor=case.target_tenor,
+                horizon=case.horizon,
+                predict_date=case.predict_date,
+                feature_date=case.feature_date,
+                target_date=case.target_date,
+                segment=case.segment,
+                data_contract_error=error or case.data_contract_error,
+            )
+        )
+    return tuple(sorted(validated, key=_case_sort_key))
+
+
+def _calendar_canonical_authorities(
+    cases: Sequence[ExpectedSignalCase],
+) -> tuple[Mapping[str, Any], ...]:
+    by_base: dict[str, list[ExpectedSignalCase]] = {}
+    for case in cases:
+        by_base.setdefault(case.base_scheme_id, []).append(case)
+    return tuple(
+        {
+            "base_scheme_id": base_scheme_id,
+            "mode": "calendar_weekday_actual_validated_v1",
+            "status": (
+                "BLOCKED"
+                if any(
+                    case.data_contract_error
+                    for case in by_base[base_scheme_id]
+                )
+                else "VALID"
+            ),
+            "expected_count": len(by_base[base_scheme_id]),
+            "digest_sha256": canonical_json_sha256(
+                [
+                    {
+                        "registry_scheme_id": case.registry_scheme_id,
+                        "business_key": list(case.business_key),
+                        "predict_date": case.predict_date,
+                        "feature_date": case.feature_date,
+                        "data_contract_error":
+                            case.data_contract_error,
+                    }
+                    for case in sorted(
+                        by_base[base_scheme_id],
+                        key=_case_sort_key,
+                    )
+                ]
+            ),
+        }
+        for base_scheme_id in sorted(by_base)
+    )
+
+
+def _group_rows(
+    rows: Sequence[Mapping[str, Any]],
+    key_builder: Callable[[Mapping[str, Any]], tuple[Any, ...]],
+) -> dict[tuple[Any, ...], tuple[Mapping[str, Any], ...]]:
+    grouped: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(key_builder(row), []).append(row)
+    return {key: tuple(value) for key, value in grouped.items()}
+
+
+def _actual_fact_error(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    prefix: str,
+    expected_dates: Mapping[str, str],
+    direction_field: str,
+) -> str | None:
+    if not rows:
+        return f"{prefix}_FACT_MISSING"
+    if len(rows) != 1:
+        return f"{prefix}_FACT_DUPLICATE"
+    row = rows[0]
+    if any(
+        str(row.get(field) or "")[:10] != expected
+        for field, expected in expected_dates.items()
+    ):
+        return f"{prefix}_DATE_CONTRACT_INVALID"
+    direction = row.get(direction_field)
+    if (
+        isinstance(direction, bool)
+        or direction is None
+        or int(direction) not in {-1, 0, 1}
+    ):
+        return f"{prefix}_DIRECTION_CONTRACT_INVALID"
+    return None
+
+
+def _read_persisted_canonical_observations(
     connection: Any,
     raw_registry: Sequence[Mapping[str, Any]],
     targets: Sequence[RegistryTarget],
@@ -932,6 +1403,8 @@ def _read_persisted_canonical_authority(
     tuple[ExpectedSignalCase, ...],
     tuple[ObservedSignal, ...],
     dict[str, int],
+    tuple[Mapping[str, Any], ...],
+    tuple[Mapping[str, Any], ...],
 ]:
     runs = [
         dict(row)
@@ -958,67 +1431,139 @@ def _read_persisted_canonical_authority(
         runs,
         raw_registry,
     )
-    if set(selected_by_registry) != {
-        target.registry_scheme_id for target in targets
-    }:
-        missing = sorted(
-            {
-                target.registry_scheme_id for target in targets
-            }
-            - set(selected_by_registry)
-        )
-        raise SignalGapPlanError(
-            "CANONICAL_CASE_AUTHORITY_UNAVAILABLE",
-            f"missing latest persisted run for {missing[:5]}",
-        )
     unique_runs = {
         int(row["id"]): dict(row)
         for row in selected_by_registry.values()
     }
-    details = [
-        dict(row)
-        for row in connection.execute(
-            text(
-                """
-                SELECT run_id, target_tenor, horizon, predict_date,
-                       feature_date, target_date
-                FROM t_backtest_predictions
-                WHERE run_id IN :run_ids
-                ORDER BY run_id, target_tenor, horizon,
-                         target_date, predict_date
-                """
-            ).bindparams(bindparam("run_ids", expanding=True)),
-            {"run_ids": sorted(unique_runs)},
-        ).mappings().all()
-    ]
+    details = []
+    if unique_runs:
+        details = [
+            dict(row)
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT run_id, target_tenor, horizon, predict_date,
+                           feature_date, target_date
+                    FROM t_backtest_predictions
+                    WHERE run_id IN :run_ids
+                    ORDER BY run_id, target_tenor, horizon,
+                             target_date, predict_date
+                    """
+                ).bindparams(bindparam("run_ids", expanding=True)),
+                {"run_ids": sorted(unique_runs)},
+            ).mappings().all()
+        ]
     details_by_run: dict[int, list[dict[str, Any]]] = {}
     for row in details:
         details_by_run.setdefault(int(row["run_id"]), []).append(row)
     target_by_registry = {
         target.registry_scheme_id: target for target in targets
     }
-    registry_ids_by_run: dict[int, list[str]] = {}
-    for registry_id, run in selected_by_registry.items():
-        registry_ids_by_run.setdefault(int(run["id"]), []).append(
-            registry_id
-        )
-    for run_id, run in sorted(unique_runs.items()):
-        _validate_canonical_run_manifest(
-            run_id=run_id,
-            summary=_json_object(run.get("summary")),
-            details=details_by_run.get(run_id, ()),
-            expected_target_pairs={
-                (
-                    target_by_registry[registry_id].target_tenor,
-                    target_by_registry[registry_id].horizon,
-                )
-                for registry_id in registry_ids_by_run.get(run_id, ())
-            },
-        )
-    cases: list[ExpectedSignalCase] = []
+    native_targets_by_base: dict[str, list[RegistryTarget]] = {}
+    for target in targets:
+        if target.runtime_type == "native_adapter":
+            native_targets_by_base.setdefault(
+                target.base_scheme_id,
+                [],
+            ).append(target)
+    native_cases: list[ExpectedSignalCase] = []
     signals: list[ObservedSignal] = []
+    blockers: list[Mapping[str, Any]] = []
+    authorities: list[Mapping[str, Any]] = []
+    for base_scheme_id, base_targets in sorted(
+        native_targets_by_base.items()
+    ):
+        selected = {
+            int(selected_by_registry[target.registry_scheme_id]["id"]):
+                selected_by_registry[target.registry_scheme_id]
+            for target in base_targets
+            if target.registry_scheme_id in selected_by_registry
+        }
+        if len(selected) != 1 or any(
+            target.registry_scheme_id not in selected_by_registry
+            for target in base_targets
+        ):
+            blockers.append(
+                {
+                    "code": "NATIVE_CANONICAL_RUN_MISSING",
+                    "base_scheme_id": base_scheme_id,
+                }
+            )
+            authorities.append(
+                _blocked_native_authority(
+                    base_scheme_id,
+                    "NATIVE_CANONICAL_RUN_MISSING",
+                )
+            )
+            continue
+        run_id, run = next(iter(selected.items()))
+        run_details = details_by_run.get(run_id, ())
+        summary = _json_object(run.get("summary"))
+        try:
+            _validate_canonical_run_manifest(
+                run_id=run_id,
+                summary=summary,
+                details=run_details,
+                expected_target_pairs={
+                    (target.target_tenor, target.horizon)
+                    for target in base_targets
+                },
+            )
+        except SignalGapPlanError:
+            blockers.append(
+                {
+                    "code": "NATIVE_CANONICAL_MANIFEST_INVALID",
+                    "base_scheme_id": base_scheme_id,
+                    "run_id": run_id,
+                }
+            )
+            authorities.append(
+                _blocked_native_authority(
+                    base_scheme_id,
+                    "NATIVE_CANONICAL_MANIFEST_INVALID",
+                    run_id=run_id,
+                    summary=summary,
+                    details=run_details,
+                )
+            )
+            continue
+        authorities.append(
+            _native_manifest_authority(
+                base_scheme_id,
+                run_id=run_id,
+                summary=summary,
+                details=run_details,
+            )
+        )
+        for target in sorted(
+            base_targets,
+            key=lambda item: item.registry_scheme_id,
+        ):
+            for row in run_details:
+                if (
+                    str(row["target_tenor"]),
+                    int(row["horizon"]),
+                ) != (target.target_tenor, target.horizon):
+                    continue
+                case = _case_from_target(
+                    target,
+                    predict_date=str(row["predict_date"])[:10],
+                    feature_date=str(row["feature_date"])[:10],
+                    target_date=str(row["target_date"])[:10],
+                    segment="canonical",
+                )
+                native_cases.append(case)
+                signals.append(
+                    _canonical_observation_from_case(
+                        case,
+                        run_status=str(run["status"]),
+                        scheme_version=target.scheme_version,
+                    )
+                )
     for registry_id, run in sorted(selected_by_registry.items()):
         target = target_by_registry[registry_id]
+        if target.runtime_type != "blackbox_v2":
+            continue
         run_details = [
             row
             for row in details_by_run.get(int(run["id"]), ())
@@ -1028,11 +1573,6 @@ def _read_persisted_canonical_authority(
             )
             == (target.target_tenor, target.horizon)
         ]
-        if not run_details:
-            raise SignalGapPlanError(
-                "CANONICAL_CASE_AUTHORITY_UNAVAILABLE",
-                f"run={run['id']} has no target details for {registry_id}",
-            )
         summary = _json_object(run.get("summary"))
         version_error = _canonical_run_version_error(
             target,
@@ -1040,22 +1580,14 @@ def _read_persisted_canonical_authority(
             summary,
         )
         for row in run_details:
-            case = _case_from_target(
-                target,
-                predict_date=str(row["predict_date"])[:10],
-                feature_date=str(row["feature_date"])[:10],
-                target_date=str(row["target_date"])[:10],
-                segment="canonical",
-            )
-            cases.append(case)
             signals.append(
                 ObservedSignal(
                     base_scheme_id=target.base_scheme_id,
                     target_tenor=target.target_tenor,
                     horizon=target.horizon,
-                    target_date=case.target_date,
-                    predict_date=case.predict_date,
-                    feature_date=case.feature_date,
+                    target_date=str(row["target_date"])[:10],
+                    predict_date=str(row["predict_date"])[:10],
+                    feature_date=str(row["feature_date"])[:10],
                     phase="canonical",
                     scheme_version=target.scheme_version,
                     run_status=str(run["status"]),
@@ -1063,13 +1595,107 @@ def _read_persisted_canonical_authority(
                 )
             )
     return (
-        tuple(sorted(cases, key=_case_sort_key)),
+        tuple(sorted(native_cases, key=_case_sort_key)),
         tuple(sorted(signals, key=_observed_sort_key)),
         {
             "candidate_backtest_run_count": len(runs),
             "selected_backtest_run_count": len(unique_runs),
             "selected_backtest_detail_count": len(details),
         },
+        tuple(blockers),
+        tuple(authorities),
+    )
+
+
+def _native_manifest_authority(
+    base_scheme_id: str,
+    *,
+    run_id: int,
+    summary: Mapping[str, Any],
+    details: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    payload = {
+        "run_id": run_id,
+        "summary": dict(summary),
+        "canonical_keys": [
+            {
+                "target_tenor": str(row["target_tenor"]),
+                "horizon": int(row["horizon"]),
+                "predict_date": str(row["predict_date"])[:10],
+                "feature_date": str(row["feature_date"])[:10],
+                "target_date": str(row["target_date"])[:10],
+            }
+            for row in sorted(
+                details,
+                key=lambda item: (
+                    str(item["target_tenor"]),
+                    int(item["horizon"]),
+                    str(item["target_date"])[:10],
+                    str(item["predict_date"])[:10],
+                ),
+            )
+        ],
+    }
+    return {
+        "base_scheme_id": base_scheme_id,
+        "mode": "persisted_source_run_manifest_v1",
+        "status": "VALID",
+        "run_id": run_id,
+        "expected_count": len(details),
+        "digest_sha256": canonical_json_sha256(payload),
+    }
+
+
+def _blocked_native_authority(
+    base_scheme_id: str,
+    failure_code: str,
+    *,
+    run_id: int | None = None,
+    summary: Mapping[str, Any] | None = None,
+    details: Sequence[Mapping[str, Any]] = (),
+) -> Mapping[str, Any]:
+    payload = {
+        "failure_code": failure_code,
+        "run_id": run_id,
+        "summary": dict(summary or {}),
+        "details": [
+            {
+                "target_tenor": str(row["target_tenor"]),
+                "horizon": int(row["horizon"]),
+                "predict_date": str(row["predict_date"])[:10],
+                "feature_date": str(row["feature_date"])[:10],
+                "target_date": str(row["target_date"])[:10],
+            }
+            for row in details
+        ],
+    }
+    return {
+        "base_scheme_id": base_scheme_id,
+        "mode": "persisted_source_run_manifest_v1",
+        "status": "BLOCKED",
+        "failure_code": failure_code,
+        "run_id": run_id,
+        "expected_count": 0,
+        "digest_sha256": canonical_json_sha256(payload),
+    }
+
+
+def _canonical_observation_from_case(
+    case: ExpectedSignalCase,
+    *,
+    run_status: str,
+    scheme_version: str,
+) -> ObservedSignal:
+    return ObservedSignal(
+        base_scheme_id=case.base_scheme_id,
+        target_tenor=case.target_tenor,
+        horizon=case.horizon,
+        target_date=case.target_date,
+        predict_date=case.predict_date,
+        feature_date=case.feature_date,
+        phase="canonical",
+        scheme_version=scheme_version,
+        run_status=run_status,
     )
 
 
@@ -1125,11 +1751,11 @@ def _resolve_action(
     generations: Sequence[InputGeneration],
     as_of_date: str,
 ) -> tuple[Action, InputGeneration | None, str]:
-    if control_plane_error:
+    if item.data_contract_error:
         return (
             "BLOCKED_DATA_CONTRACT",
             None,
-            f"CONTROL_PLANE_BLOCKER:{control_plane_error}",
+            item.data_contract_error,
         )
     if valid_present:
         return "SKIP_PRESENT", None, "BUSINESS_KEY_PRESENT"
@@ -1139,17 +1765,17 @@ def _resolve_action(
             None,
             observation_error,
         )
+    if control_plane_error:
+        return (
+            "BLOCKED_DATA_CONTRACT",
+            None,
+            f"CONTROL_PLANE_BLOCKER:{control_plane_error}",
+        )
     if item.segment == "canonical":
         return (
             "FULL_CANONICAL_RUN_REQUIRED",
             None,
             "CANONICAL_BUSINESS_KEY_MISSING",
-        )
-    if item.data_contract_error:
-        return (
-            "BLOCKED_DATA_CONTRACT",
-            None,
-            item.data_contract_error,
         )
     if target.input_mode == "live_source_0629":
         return "GRAY_LIVE_GAP", None, "LIVE_BUSINESS_KEY_MISSING"
@@ -1417,7 +2043,6 @@ def _observation_contract_error(
         or row.feature_date != item.feature_date
         or row.phase not in expected_phase
         or row.run_status != "success"
-        or row.scheme_version != target.scheme_version
     ):
         return (
             "OBSERVED_SIGNAL_CONTRACT_DRIFT"
@@ -1511,11 +2136,21 @@ def _validate_case_matches_target(
         _canonical_date(value, f"case.{field}")
     if (
         item.segment == "canonical"
+        and item.task_type != "monthly"
         and item.predict_date != item.feature_date
     ):
         raise SignalGapPlanError(
             "CASE_CONTRACT_INVALID",
-            "canonical predict_date must equal feature_date",
+            f"{item.task_type} canonical predict_date must equal feature_date",
+        )
+    if (
+        item.segment == "canonical"
+        and item.task_type == "monthly"
+        and not item.predict_date.endswith("-15")
+    ):
+        raise SignalGapPlanError(
+            "CASE_CONTRACT_INVALID",
+            "monthly canonical predict_date must be natural month 15",
         )
     if not (
         item.feature_date <= item.predict_date <= item.target_date
@@ -1549,6 +2184,7 @@ def _action_row(
     action: Action,
     reason: str,
     generation: InputGeneration | None,
+    business_key_present: bool,
 ) -> dict[str, Any]:
     return {
         "registry_scheme_id": item.registry_scheme_id,
@@ -1570,6 +2206,12 @@ def _action_row(
         ],
         "action": action,
         "reason": reason,
+        "business_key_present": business_key_present,
+        "rebuild_group_id": (
+            item.base_scheme_id
+            if action == "FULL_CANONICAL_RUN_REQUIRED"
+            else None
+        ),
         "generation": (
             {
                 "generation_id": generation.generation_id,
@@ -1582,6 +2224,37 @@ def _action_row(
             else None
         ),
     }
+
+
+def _canonical_rebuild_groups(
+    actions: Sequence[Mapping[str, Any]],
+    targets: Sequence[RegistryTarget],
+) -> list[dict[str, Any]]:
+    missing_by_base: dict[str, list[list[Any]]] = {}
+    for row in actions:
+        if row["action"] != "FULL_CANONICAL_RUN_REQUIRED":
+            continue
+        missing_by_base.setdefault(
+            str(row["base_scheme_id"]),
+            [],
+        ).append(list(row["business_key"]))
+    registry_ids_by_base: dict[str, list[str]] = {}
+    for target in targets:
+        registry_ids_by_base.setdefault(
+            target.base_scheme_id,
+            [],
+        ).append(target.registry_scheme_id)
+    return [
+        {
+            "base_scheme_id": base_scheme_id,
+            "persistence_mode": "FULL_RUN_ONLY",
+            "registry_scheme_ids": sorted(
+                registry_ids_by_base[base_scheme_id]
+            ),
+            "missing_business_keys": sorted(missing_by_base[base_scheme_id]),
+        }
+        for base_scheme_id in sorted(missing_by_base)
+    ]
 
 
 def _case_from_target(
@@ -2015,8 +2688,6 @@ def _live_row_contract_error(
     if target is None:
         errors.append("LIVE_TARGET_NOT_ACTIVE")
     else:
-        if str(row.get("scheme_version") or "") != target.scheme_version:
-            errors.append("LIVE_SCHEME_VERSION_DRIFT")
         if str(row.get("run_runtime_type") or "") != target.runtime_type:
             errors.append("RUN_RUNTIME_TYPE_DRIFT")
     if row.get("run_id") is None:

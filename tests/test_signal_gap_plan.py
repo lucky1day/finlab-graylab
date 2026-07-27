@@ -5,6 +5,7 @@ import json
 import unittest
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import date, timedelta
 from unittest.mock import Mock, patch
 
 
@@ -351,6 +352,17 @@ class SignalGapPlanTests(unittest.TestCase):
         )
         self.assertEqual(action["action"], "BLOCKED_DATA_CONTRACT")
         self.assertIn("OBSERVED_SIGNAL_CONTRACT_DRIFT", action["reason"])
+        self.assertTrue(action["business_key_present"])
+        self.assertEqual(plan["counts"]["present"], 1)
+        self.assertEqual(plan["counts"]["open_gap"], 4)
+        self.assertEqual(
+            plan["counts"]["observed_contract_anomaly"],
+            1,
+        )
+        self.assertEqual(
+            plan["counts"]["expected"],
+            plan["counts"]["present"] + plan["counts"]["open_gap"],
+        )
 
     def test_generation_present_but_invalid_is_data_contract_blocked(
         self,
@@ -764,13 +776,23 @@ class SignalGapPlanTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(
+            [
+                action["action"]
+                for action in plan["actions"]
+                if action["target_date"] == "2026-06-01"
+            ],
+            ["SKIP_PRESENT"],
+        )
         self.assertTrue(
             all(
                 action["action"] == "BLOCKED_DATA_CONTRACT"
                 for action in plan["actions"]
+                if action["target_date"] != "2026-06-01"
             )
         )
-        self.assertEqual(plan["counts"]["present"], 0)
+        self.assertEqual(plan["counts"]["present"], 1)
+        self.assertEqual(plan["counts"]["BLOCKED_DATA_CONTRACT"], 4)
 
         empty_plan = build_signal_gap_plan(
             replace(
@@ -1207,6 +1229,420 @@ class SignalGapPlanTests(unittest.TestCase):
         weekly.assert_called_once_with(unittest.mock.ANY, "2026-05-30")
         monthly.assert_called_once_with(unittest.mock.ANY, "2026-05-15")
 
+    def test_calendar_authority_naturally_enumerates_production_shape(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            build_expected_canonical_cases,
+            build_signal_gap_plan,
+        )
+
+        targets = _production_shape_targets()
+        calendar = _production_shape_calendar(_FrozenCalendar)
+        cases = build_expected_canonical_cases(
+            targets,
+            calendar=calendar,
+            start_date="2025-01-01",
+        )
+        observed = tuple(_canonical_observation(case) for case in cases)
+        snapshot = _production_shape_snapshot(
+            targets=targets,
+            cases=cases,
+            observations=observed,
+        )
+
+        plan = build_signal_gap_plan(
+            snapshot,
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(len(targets), 44)
+        self.assertEqual(
+            {
+                frequency: sum(
+                    case.frequency == frequency for case in cases
+                )
+                for frequency in ("daily", "weekly", "monthly")
+            },
+            {"daily": 9677, "weekly": 504, "monthly": 128},
+        )
+        self.assertEqual(len(cases), 10309)
+        self.assertEqual(plan["counts"]["expected"], 10309)
+        self.assertEqual(plan["counts"]["SKIP_PRESENT"], 10309)
+        self.assertEqual(plan["counts"]["open_gap"], 0)
+
+        monthly = next(
+            case
+            for case in cases
+            if case.frequency == "monthly"
+            and case.predict_date == "2025-02-15"
+        )
+        self.assertEqual(monthly.feature_date, "2025-02-14")
+        self.assertEqual(monthly.target_date, "2025-03-14")
+        native_weekly = next(
+            case
+            for case in cases
+            if case.base_scheme_id == "weekly_native_point_0"
+        )
+        blackbox_weekly = next(
+            case
+            for case in cases
+            if case.base_scheme_id == "weekly_blackbox_0"
+            and case.feature_date == native_weekly.feature_date
+        )
+        self.assertEqual(
+            (
+                native_weekly.predict_date,
+                native_weekly.feature_date,
+                native_weekly.target_date,
+            ),
+            (
+                blackbox_weekly.predict_date,
+                blackbox_weekly.feature_date,
+                blackbox_weekly.target_date,
+            ),
+        )
+        self.assertEqual(native_weekly.horizon, 6)
+        self.assertEqual(blackbox_weekly.horizon, 1)
+
+    def test_actual_facts_validate_but_never_enumerate_expected_cases(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            _validate_canonical_actual_facts,
+            build_expected_canonical_cases,
+            build_signal_gap_plan,
+        )
+
+        targets = _production_shape_targets()
+        calendar = _production_shape_calendar(_FrozenCalendar)
+        cases = build_expected_canonical_cases(
+            targets,
+            calendar=calendar,
+            start_date="2025-01-01",
+        )
+        daily, weekly, monthly = _actual_rows_for_cases(cases)
+        missing = next(
+            case
+            for case in cases
+            if case.frequency == "daily"
+            and case.target_tenor == "3Y"
+        )
+        daily = [
+            row
+            for row in daily
+            if not (
+                row["tenor"] == missing.target_tenor
+                and row["trade_date"] == missing.target_date
+            )
+        ]
+
+        validated = _validate_canonical_actual_facts(
+            cases,
+            daily_actual_rows=daily,
+            weekly_actual_rows=weekly,
+            monthly_actual_rows=monthly,
+        )
+
+        self.assertEqual(len(validated), len(cases))
+        blocked_cases = [
+            case
+            for case in validated
+            if case.data_contract_error is not None
+        ]
+        self.assertGreater(len(blocked_cases), 0)
+        self.assertTrue(
+            all(
+                case.target_tenor == "3Y"
+                and case.target_date == missing.target_date
+                for case in blocked_cases
+            )
+        )
+        observed = tuple(
+            _canonical_observation(case) for case in validated
+        )
+        plan = build_signal_gap_plan(
+            _production_shape_snapshot(
+                targets=targets,
+                cases=validated,
+                observations=observed,
+            ),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+        blocked = [
+            row
+            for row in plan["actions"]
+            if row["action"] == "BLOCKED_DATA_CONTRACT"
+        ]
+        self.assertEqual(len(blocked), len(blocked_cases))
+        self.assertTrue(
+            all("DAILY_ACTUAL" in row["reason"] for row in blocked)
+        )
+
+    def test_blackbox_canonical_daily_excludes_trade_flagged_weekends(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            build_expected_canonical_cases,
+        )
+
+        target = replace(
+            next(
+            target
+            for target in _production_shape_targets()
+                if target.base_scheme_id == "daily_blackbox_t5_0"
+            ),
+            registry_scheme_id="daily_blackbox_t5_0__h1__10Y",
+            task_type="T+1",
+            horizon=1,
+        )
+        rows = [
+            {"rdate": "2025-01-03", "trade_flag": "1"},
+            {"rdate": "2025-01-04", "trade_flag": "1"},
+            {"rdate": "2025-01-05", "trade_flag": "0"},
+            {"rdate": "2025-01-06", "trade_flag": "1"},
+            {"rdate": "2025-01-07", "trade_flag": "1"},
+            {"rdate": "2025-01-08", "trade_flag": "1"},
+        ]
+        calendar = _FrozenCalendar(
+            trade_calendar_rows=rows,
+            week_calendar_rows=[
+                {**row, "week_id": 202501} for row in rows[:3]
+            ]
+            + [{**row, "week_id": 202502} for row in rows[3:]],
+            start_date="2025-01-03",
+            as_of_date="2025-01-07",
+        )
+
+        cases = build_expected_canonical_cases(
+            (replace(target, live_target_start_date="2025-01-08"),),
+            calendar=calendar,
+            start_date="2025-01-03",
+        )
+
+        self.assertEqual(
+            [
+                (
+                    case.predict_date,
+                    case.feature_date,
+                    case.target_date,
+                )
+                for case in cases
+            ],
+            [
+                ("2025-01-03", "2025-01-03", "2025-01-06"),
+                ("2025-01-06", "2025-01-06", "2025-01-07"),
+            ],
+        )
+
+    def test_blackbox_canonical_week_uses_last_weekday_trade(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            build_expected_canonical_cases,
+        )
+
+        target = next(
+            target
+            for target in _production_shape_targets()
+            if target.base_scheme_id == "weekly_blackbox_0"
+        )
+        rows = [
+            {"rdate": "2025-01-03", "trade_flag": "1", "week_id": 202501},
+            {"rdate": "2025-01-04", "trade_flag": "1", "week_id": 202501},
+            {"rdate": "2025-01-05", "trade_flag": "0", "week_id": 202501},
+            {"rdate": "2025-01-06", "trade_flag": "1", "week_id": 202502},
+            {"rdate": "2025-01-07", "trade_flag": "1", "week_id": 202502},
+            {"rdate": "2025-01-08", "trade_flag": "1", "week_id": 202502},
+        ]
+        calendar = _FrozenCalendar(
+            trade_calendar_rows=rows,
+            week_calendar_rows=rows,
+            start_date="2025-01-03",
+            as_of_date="2025-01-08",
+        )
+
+        cases = build_expected_canonical_cases(
+            (replace(target, live_target_start_date="2025-01-09"),),
+            calendar=calendar,
+            start_date="2025-01-03",
+        )
+
+        self.assertEqual(
+            [
+                (
+                    case.predict_date,
+                    case.feature_date,
+                    case.target_date,
+                )
+                for case in cases
+            ],
+            [("2025-01-03", "2025-01-03", "2025-01-08")],
+        )
+
+    def test_weekly_actual_predict_date_does_not_enumerate_canonical_key(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            _validate_canonical_actual_facts,
+            build_expected_canonical_cases,
+        )
+        from shared.prediction_context import WEEKLY_TARGET_RULE
+
+        target = next(
+            target
+            for target in _production_shape_targets()
+            if target.base_scheme_id == "weekly_blackbox_0"
+        )
+        calendar = _production_shape_calendar(_FrozenCalendar)
+        case = build_expected_canonical_cases(
+            (target,),
+            calendar=calendar,
+            start_date="2025-01-01",
+        )[0]
+        actual_predict_date = (
+            date.fromisoformat(case.feature_date) + timedelta(days=1)
+        ).isoformat()
+
+        validated = _validate_canonical_actual_facts(
+            (case,),
+            daily_actual_rows=(),
+            weekly_actual_rows=(
+                {
+                    "tenor": case.target_tenor,
+                    "predict_date": actual_predict_date,
+                    "feature_date": case.feature_date,
+                    "target_date": case.target_date,
+                    "direction_weekly": 1,
+                    "target_rule": WEEKLY_TARGET_RULE,
+                },
+            ),
+            monthly_actual_rows=(),
+        )
+
+        self.assertIsNone(validated[0].data_contract_error)
+
+    def test_missing_one_backtest_detail_requires_exact_full_run_group(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            _FrozenCalendar,
+            build_expected_canonical_cases,
+            build_signal_gap_plan,
+        )
+
+        targets = _production_shape_targets()
+        calendar = _production_shape_calendar(_FrozenCalendar)
+        cases = build_expected_canonical_cases(
+            targets,
+            calendar=calendar,
+            start_date="2025-01-01",
+        )
+        missing = next(
+            case
+            for case in cases
+            if case.base_scheme_id == "daily_native_t1_0"
+            and case.target_tenor == "1Y"
+        )
+        observed = tuple(
+            _canonical_observation(case)
+            for case in cases
+            if case != missing
+        )
+
+        plan = build_signal_gap_plan(
+            _production_shape_snapshot(
+                targets=targets,
+                cases=cases,
+                observations=observed,
+            ),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        missing_actions = [
+            row
+            for row in plan["actions"]
+            if row["action"] == "FULL_CANONICAL_RUN_REQUIRED"
+        ]
+        self.assertEqual(len(missing_actions), 1)
+        self.assertEqual(missing_actions[0]["business_key"], [
+            missing.base_scheme_id,
+            missing.target_tenor,
+            missing.horizon,
+            missing.target_date,
+        ])
+        self.assertEqual(
+            missing_actions[0]["rebuild_group_id"],
+            missing.base_scheme_id,
+        )
+        self.assertEqual(
+            plan["canonical_rebuild_groups"],
+            [
+                {
+                    "base_scheme_id": missing.base_scheme_id,
+                    "persistence_mode": "FULL_RUN_ONLY",
+                    "registry_scheme_ids": [
+                        "daily_native_t1_0__h1__1Y",
+                        "daily_native_t1_0__h1__5Y",
+                    ],
+                    "missing_business_keys": [
+                        [
+                            missing.base_scheme_id,
+                            missing.target_tenor,
+                            missing.horizon,
+                            missing.target_date,
+                        ]
+                    ],
+                }
+            ],
+        )
+
+    def test_observed_outside_calendar_authority_is_reported_not_enumerated(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import build_signal_gap_plan
+
+        snapshot = self._snapshot()
+        extra = replace(
+            snapshot.live_signals[0],
+            target_date="2026-06-08",
+        )
+
+        plan = build_signal_gap_plan(
+            replace(
+                snapshot,
+                canonical_signals=(extra,),
+                live_signals=snapshot.live_signals,
+            ),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        self.assertEqual(plan["status"], "BLOCKED")
+        self.assertEqual(plan["counts"]["expected"], 5)
+        self.assertEqual(
+            plan["counts"]["observed_contract_anomaly"],
+            1,
+        )
+        self.assertEqual(
+            plan["observed_contract_anomalies"],
+            [
+                {
+                    "segment": "canonical",
+                    "business_key": ["demo", "10Y", 5, "2026-06-08"],
+                    "reason": "OBSERVED_SIGNAL_OUTSIDE_AUTHORITY",
+                }
+            ],
+        )
+
 
 class SignalGapPlanCliTests(unittest.TestCase):
     def test_production_reader_source_contains_no_write_or_lock_primitive(
@@ -1484,3 +1920,271 @@ def _demo_execution_authority():
             status="active",
         ),
     )
+
+
+def _production_shape_targets():
+    from harness.signal_gap_plan import RegistryTarget
+
+    targets = []
+
+    def add(
+        base_scheme_id,
+        *,
+        runtime_type,
+        frequency,
+        task_type,
+        horizon,
+        tenors,
+    ):
+        input_mode = (
+            "databridge_v1"
+            if runtime_type == "blackbox_v2"
+            else "generation_v1"
+        )
+        for tenor in tenors:
+            targets.append(
+                RegistryTarget(
+                    registry_scheme_id=(
+                        f"{base_scheme_id}__h{horizon}__{tenor}"
+                    ),
+                    base_scheme_id=base_scheme_id,
+                    runtime_type=runtime_type,
+                    frequency=frequency,
+                    task_type=task_type,
+                    target_tenor=tenor,
+                    horizon=horizon,
+                    scheme_version=f"{base_scheme_id}-version",
+                    live_target_start_date="2026-06-01",
+                    live_boundary_source="platform_live_boundary_v1",
+                    input_mode=input_mode,
+                    code_sha256=hashlib.sha256(
+                        f"{base_scheme_id}:code".encode()
+                    ).hexdigest(),
+                    config_sha256=hashlib.sha256(
+                        f"{base_scheme_id}:config".encode()
+                    ).hexdigest(),
+                )
+            )
+
+    for index in range(4):
+        add(
+            f"daily_native_t1_{index}",
+            runtime_type="native_adapter",
+            frequency="daily",
+            task_type="T+1",
+            horizon=1,
+            tenors=("1Y", "5Y") if index == 0 else ("1Y",),
+        )
+    for index in range(13):
+        add(
+            f"daily_native_t5_{index}",
+            runtime_type="native_adapter",
+            frequency="daily",
+            task_type="T+5",
+            horizon=5,
+            tenors=(
+                ("1Y", "3Y", "5Y", "7Y")
+                if index == 0
+                else ("1Y",)
+            ),
+        )
+    for index in range(8):
+        add(
+            f"daily_blackbox_t5_{index}",
+            runtime_type="blackbox_v2",
+            frequency="daily",
+            task_type="T+5",
+            horizon=5,
+            tenors=("10Y",),
+        )
+    for index in range(3):
+        add(
+            f"weekly_native_point_{index}",
+            runtime_type="native_adapter",
+            frequency="weekly",
+            task_type="weekly_point",
+            horizon=6,
+            tenors=(("5Y", "7Y", "10Y")[index],),
+        )
+        add(
+            f"weekly_native_average_{index}",
+            runtime_type="native_adapter",
+            frequency="weekly",
+            task_type="weekly_average",
+            horizon=6,
+            tenors=(("1Y", "5Y", "10Y")[index],),
+        )
+    add(
+        "weekly_blackbox_0",
+        runtime_type="blackbox_v2",
+        frequency="weekly",
+        task_type="weekly_point",
+        horizon=1,
+        tenors=("10Y",),
+    )
+    for index, tenor in enumerate(("1Y", "5Y", "10Y")):
+        add(
+            f"monthly_native_{index}",
+            runtime_type="native_adapter",
+            frequency="monthly",
+            task_type="monthly",
+            horizon=30,
+            tenors=(tenor,),
+        )
+    for index, tenor in enumerate(("1Y", "3Y", "5Y", "7Y", "10Y")):
+        add(
+            f"monthly_blackbox_{index}",
+            runtime_type="blackbox_v2",
+            frequency="monthly",
+            task_type="monthly",
+            horizon=1,
+            tenors=(tenor,),
+        )
+    return tuple(targets)
+
+
+def _production_shape_calendar(calendar_type):
+    closed_weekdays = {
+        "2025-01-01",
+        "2025-01-28",
+        "2025-01-29",
+        "2025-01-30",
+        "2025-01-31",
+        "2025-02-03",
+        "2025-02-04",
+        "2025-04-04",
+        "2025-05-01",
+        "2025-05-02",
+        "2025-05-05",
+        "2025-06-02",
+        "2025-10-01",
+        "2025-10-02",
+        "2025-10-03",
+        "2025-10-06",
+        "2025-10-07",
+        "2025-10-08",
+        "2026-01-01",
+        "2026-01-02",
+        "2026-02-16",
+        "2026-02-17",
+        "2026-02-18",
+        "2026-02-19",
+        "2026-02-20",
+        "2026-02-23",
+        "2026-04-06",
+        "2026-05-01",
+        "2026-05-04",
+        "2026-05-05",
+    }
+    rows = []
+    current = date(2025, 1, 1)
+    end = date(2026, 8, 31)
+    while current <= end:
+        value = current.isoformat()
+        is_trade = current.weekday() < 5 and value not in closed_weekdays
+        rows.append(
+            {
+                "rdate": value,
+                "trade_flag": "1" if is_trade else "0",
+            }
+        )
+        current += timedelta(days=1)
+    week_rows = [
+        {
+            **row,
+            "week_id": (
+                date.fromisoformat(row["rdate"]).isocalendar().year * 100
+                + date.fromisoformat(row["rdate"]).isocalendar().week
+            ),
+        }
+        for row in rows
+    ]
+    return calendar_type(
+        trade_calendar_rows=rows,
+        week_calendar_rows=week_rows,
+        start_date="2025-01-01",
+        as_of_date="2026-07-27",
+    )
+
+
+def _canonical_observation(case):
+    from harness.signal_gap_plan import ObservedSignal
+
+    return ObservedSignal(
+        base_scheme_id=case.base_scheme_id,
+        target_tenor=case.target_tenor,
+        horizon=case.horizon,
+        target_date=case.target_date,
+        predict_date=case.predict_date,
+        feature_date=case.feature_date,
+        phase="canonical",
+        scheme_version=f"{case.base_scheme_id}-version",
+        run_status="success",
+    )
+
+
+def _production_shape_snapshot(*, targets, cases, observations):
+    from harness.signal_gap_plan import SignalGapSnapshot
+
+    return SignalGapSnapshot(
+        registry_targets=tuple(targets),
+        expected_cases=tuple(cases),
+        canonical_signals=tuple(observations),
+        live_signals=(),
+        input_generations=(),
+        input_watermarks={"trade_calendar_max": "2026-08-31"},
+        source_identity_sha256="a" * 64,
+        discovery_identity_sha256="b" * 64,
+        active_version_identity_sha256="c" * 64,
+    )
+
+
+def _actual_rows_for_cases(cases):
+    from shared.prediction_context import (
+        MONTHLY_TARGET_RULE,
+        WEEKLY_AVERAGE_TARGET_RULE,
+        WEEKLY_TARGET_RULE,
+    )
+
+    daily = {}
+    weekly = {}
+    monthly = {}
+    for case in cases:
+        if case.frequency == "daily":
+            key = (case.target_tenor, case.target_date)
+            daily[key] = {
+                "tenor": case.target_tenor,
+                "trade_date": case.target_date,
+                "direction_1d": 1,
+                "direction_5d": -1,
+            }
+        elif case.frequency == "weekly":
+            target_rule = (
+                WEEKLY_AVERAGE_TARGET_RULE
+                if case.task_type == "weekly_average"
+                else WEEKLY_TARGET_RULE
+            )
+            key = (case.target_tenor, case.predict_date, target_rule)
+            weekly[key] = {
+                "tenor": case.target_tenor,
+                "predict_date": case.predict_date,
+                "feature_date": case.feature_date,
+                "target_date": case.target_date,
+                "direction_weekly": 1,
+                "target_rule": target_rule,
+            }
+        else:
+            key = (
+                case.target_tenor,
+                case.predict_date,
+                MONTHLY_TARGET_RULE,
+            )
+            monthly[key] = {
+                "tenor": case.target_tenor,
+                "predict_date": case.predict_date,
+                "feature_date": case.feature_date,
+                "target_date": case.target_date,
+                "direction_monthly": 0,
+                "target_rule": MONTHLY_TARGET_RULE,
+            }
+    return list(daily.values()), list(weekly.values()), list(monthly.values())
