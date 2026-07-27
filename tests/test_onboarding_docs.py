@@ -521,13 +521,22 @@ class OnboardingDocumentationTests(unittest.TestCase):
     def test_todo_prioritizes_platform_after_completed_manual_gray(self) -> None:
         text = TODO.read_text(encoding="utf-8")
         p0, _ = text.split("## P1", maxsplit=1)
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
 
         for scheme_id in TEN_Y_T5_SCHEME_IDS:
             self.assertIn(scheme_id, text)
         self.assertNotIn("one_y_t5_", p0)
+        self.assertNotIn("migration017 namespace digest", text)
+        self.assertIn("migration017 namespace digest", current)
+        self.assertIn("f93b154", current)
+        self.assertIn("MySQL 8.0.45", current)
+        self.assertIn("lower_case_table_names=2", current)
+        self.assertIn(
+            "不替代下一项真实 MySQL recovery 演练",
+            current,
+        )
 
         dependencies = (
-            "migration017 namespace digest",
             "migration017 real MySQL recovery",
             "canonical migration runner",
             "execute-only replay",

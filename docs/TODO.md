@@ -16,16 +16,15 @@
 
 本批自动调度只能在以下依赖全部通过后开始；每项均需有可审计证据，不能以 recorder、伪造 seal、生产库写入或其他替代物跳过。
 
-1. `migration017 namespace digest`：完成 namespace digest 的生产前置闭合。
-2. `migration017 real MySQL recovery`：完成真实 MySQL 恢复演练。
-3. `canonical migration runner`：完成 canonical runner 的 apply、重复执行与恢复边界。
-4. `execute-only replay`：提供并核验 production audit-readonly 的 execute-only 入口。
-5. `real 17 Native + 4 formal V2 21/25`：在获准独占维护窗口完成同轮真实联跑。
-6. `scheduler resource/recovery/atomic commit/capacity`：通过资源、恢复、原子提交和容量门禁。
-7. `three 0629 generation adapters`：三个 0629 方案逐个完成公共 generation adapter、CompareGate 与独立提交；触及 L2 即停止并改走 Blackbox V2 replacement。
-8. `migrations018/019/020`：完成生产同构脱敏 clone 的迁移、断连与 `APPLYING` 恢复演练。
-9. `archive/disk`：完成 generation 长期归档、去重、磁盘上限与回收策略。
-10. `exact 20 forced-cold +20 revision/suffix`：完成精确 20 次 forced-cold、20 次 revision/suffix、故障注入、07:55 门禁和连续十个交易日观察。
+1. `migration017 real MySQL recovery`：完成真实 MySQL 恢复演练。
+2. `canonical migration runner`：完成 canonical runner 的 apply、重复执行与恢复边界。
+3. `execute-only replay`：提供并核验 production audit-readonly 的 execute-only 入口。
+4. `real 17 Native + 4 formal V2 21/25`：在获准独占维护窗口完成同轮真实联跑。
+5. `scheduler resource/recovery/atomic commit/capacity`：通过资源、恢复、原子提交和容量门禁。
+6. `three 0629 generation adapters`：三个 0629 方案逐个完成公共 generation adapter、CompareGate 与独立提交；触及 L2 即停止并改走 Blackbox V2 replacement。
+7. `migrations018/019/020`：完成生产同构脱敏 clone 的迁移、断连与 `APPLYING` 恢复演练。
+8. `archive/disk`：完成 generation 长期归档、去重、磁盘上限与回收策略。
+9. `exact 20 forced-cold +20 revision/suffix`：完成精确 20 次 forced-cold、20 次 revision/suffix、故障注入、07:55 门禁和连续十个交易日观察。
 
 前置事项的架构门禁见[日频信号 08:00 SLA 架构](architecture/DAILY_SIGNAL_SLA.md)；已验证进展只记录在[当前状态](CURRENT_STATUS.md)。
 
