@@ -53,10 +53,12 @@ class _ReaderConnection:
     def __init__(self, responses):
         self.responses = responses
         self.statements: list[str] = []
+        self.parameters: list[object] = []
 
     def execute(self, statement, params=None):
         sql = str(statement)
         self.statements.append(sql)
+        self.parameters.append(params)
         for marker, rows in self.responses:
             if marker in sql:
                 return _Rows(rows)
@@ -219,6 +221,7 @@ class SignalGapPlanTests(unittest.TestCase):
             },
             source_identity_sha256="b" * 64,
             discovery_identity_sha256="e" * 64,
+            active_version_identity_sha256="f" * 64,
         )
 
     def test_actions_use_business_key_and_fail_closed_readiness(self) -> None:
@@ -576,14 +579,17 @@ class SignalGapPlanTests(unittest.TestCase):
             )
         )
 
-        raw, targets, blockers = _read_registry_versions(
+        raw, targets, blockers, active_version_digest = (
+            _read_registry_versions(
             connection,
             execution_authority=execution_authority,
+        )
         )
 
         self.assertEqual(len(raw), 44)
         self.assertEqual(len(targets), 44)
         self.assertEqual(blockers, ())
+        self.assertRegex(active_version_digest, r"^[0-9a-f]{64}$")
         self.assertEqual(
             len({target.base_scheme_id for target in targets}),
             40,
@@ -640,7 +646,7 @@ class SignalGapPlanTests(unittest.TestCase):
                     ("FROM t_scheme_versions", rows),
                 )
             )
-            raw, targets, blockers = _read_registry_versions(
+            raw, targets, blockers, _ = _read_registry_versions(
                 connection,
                 execution_authority=execution_authority,
             )
@@ -650,6 +656,80 @@ class SignalGapPlanTests(unittest.TestCase):
                 expected_code,
                 {blocker["code"] for blocker in blockers},
             )
+
+    def test_discovery_and_registry_active_bases_form_a_closed_set(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import _read_registry_versions
+
+        registry_rows, version_rows = _production_registry_rows()
+        authority = _execution_authority(version_rows)
+        missing_base = authority[-1].base_scheme_id
+        extra = replace(
+            authority[0],
+            base_scheme_id="discovery_only",
+            scheme_version="discovery-only-version",
+            code_sha256="a" * 64,
+            config_sha256="b" * 64,
+        )
+        connection = _ReaderConnection(
+            (
+                ("FROM t_scheme_registry", registry_rows),
+                ("FROM t_scheme_versions", version_rows),
+            )
+        )
+
+        raw, targets, blockers, _ = _read_registry_versions(
+            connection,
+            execution_authority=(*authority[:-1], extra),
+        )
+
+        self.assertEqual(len(raw), 44)
+        self.assertEqual(len(targets), 44)
+        self.assertEqual(
+            {
+                (blocker["code"], blocker["base_scheme_id"])
+                for blocker in blockers
+            },
+            {
+                ("DISCOVERY_IDENTITY_MISSING", missing_base),
+                ("DISCOVERY_IDENTITY_NOT_REGISTERED", "discovery_only"),
+            },
+        )
+
+    def test_all_active_version_bytes_are_bound_into_plan_identity(self) -> None:
+        from harness.signal_gap_plan import _read_registry_versions
+
+        registry_rows, version_rows = _production_registry_rows()
+        authority = _execution_authority(version_rows)
+        extra = {
+            **version_rows[0],
+            "scheme_version": "extra-active-version",
+            "code_hash": "a" * 64,
+            "config_hash": "b" * 64,
+        }
+
+        def digest_for(extra_row):
+            connection = _ReaderConnection(
+                (
+                    ("FROM t_scheme_registry", registry_rows),
+                    (
+                        "FROM t_scheme_versions",
+                        (*version_rows, extra_row),
+                    ),
+                )
+            )
+            _, _, _, digest = _read_registry_versions(
+                connection,
+                execution_authority=authority,
+            )
+            return digest
+
+        first = digest_for(extra)
+        second = digest_for({**extra, "config_hash": "c" * 64})
+
+        self.assertRegex(first, r"^[0-9a-f]{64}$")
+        self.assertNotEqual(first, second)
 
     def test_control_plane_blocker_blocks_every_affected_base_action(
         self,
@@ -724,6 +804,41 @@ class SignalGapPlanTests(unittest.TestCase):
             "e" * 64,
         )
         self.assertNotEqual(first["plan_sha256"], second["plan_sha256"])
+        third = build_signal_gap_plan(
+            replace(snapshot, active_version_identity_sha256="1" * 64),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+        self.assertEqual(
+            first["source_snapshot"]["active_version_identity_sha256"],
+            "f" * 64,
+        )
+        self.assertNotEqual(first["plan_sha256"], third["plan_sha256"])
+
+    def test_same_business_key_drift_is_not_pruned_by_observed_date(self) -> None:
+        from harness.signal_gap_plan import build_signal_gap_plan
+
+        snapshot = self._snapshot()
+        invalid = replace(
+            snapshot.live_signals[0],
+            predict_date="2024-12-31",
+            phase="invalid_phase",
+            run_status="failed",
+        )
+
+        plan = build_signal_gap_plan(
+            replace(snapshot, live_signals=(invalid,)),
+            start_date="2025-01-01",
+            as_of_date="2026-07-27",
+        )
+
+        action = next(
+            item
+            for item in plan["actions"]
+            if item["target_date"] == "2026-06-01"
+        )
+        self.assertEqual(action["action"], "BLOCKED_DATA_CONTRACT")
+        self.assertIn("OBSERVED_SIGNAL_CONTRACT_DRIFT", action["reason"])
 
     def test_registry_digest_binds_exact_execution_identity(self) -> None:
         from harness.signal_gap_plan import build_signal_gap_plan
@@ -833,6 +948,14 @@ class SignalGapPlanTests(unittest.TestCase):
         )
         sql = connection.statements[0]
         self.assertNotIn("prediction_phase IN", sql)
+        self.assertIn("p.predict_date <= :as_of_date", sql)
+        self.assertEqual(
+            connection.parameters[0],
+            {
+                "scheme_ids": ["demo"],
+                "as_of_date": "2026-07-27",
+            },
+        )
         for field in (
             "run_scheme_id",
             "run_scheme_version",

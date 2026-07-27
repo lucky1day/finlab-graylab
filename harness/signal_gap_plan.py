@@ -176,6 +176,7 @@ class SignalGapSnapshot:
     input_watermarks: Mapping[str, str | int | None]
     source_identity_sha256: str
     discovery_identity_sha256: str
+    active_version_identity_sha256: str
     control_plane_blockers: tuple[Mapping[str, Any], ...] = ()
 
 
@@ -256,26 +257,30 @@ def build_signal_gap_plan(
             str(blocker["base_scheme_id"]),
             set(),
         ).add(str(blocker["code"]))
-    canonical = _index_observations(
-        tuple(
-            row
-            for row in snapshot.canonical_signals
-            if normalized_start <= row.predict_date <= normalized_as_of
-        )
-    )
-    live = _index_observations(
-        tuple(
-            row
-            for row in snapshot.live_signals
-            if normalized_start <= row.predict_date <= normalized_as_of
-        )
-    )
     expected_keys = {
         (case.segment, case.business_key)
         for case in snapshot.expected_cases
         if case.predict_date >= normalized_start
         and case.predict_date <= normalized_as_of
     }
+    canonical = _index_observations(
+        _observations_in_scope(
+            snapshot.canonical_signals,
+            segment="canonical",
+            expected_keys=expected_keys,
+            start_date=normalized_start,
+            as_of_date=normalized_as_of,
+        )
+    )
+    live = _index_observations(
+        _observations_in_scope(
+            snapshot.live_signals,
+            segment="live",
+            expected_keys=expected_keys,
+            start_date=normalized_start,
+            as_of_date=normalized_as_of,
+        )
+    )
     unexpected = sorted(
         {
             ("canonical", key)
@@ -396,6 +401,8 @@ def build_signal_gap_plan(
             "identity_sha256": snapshot.source_identity_sha256,
             "discovery_identity_sha256":
                 snapshot.discovery_identity_sha256,
+            "active_version_identity_sha256":
+                snapshot.active_version_identity_sha256,
             "registry_digest_sha256": _registry_digest_sha256(
                 snapshot.registry_targets
             ),
@@ -514,6 +521,7 @@ def read_signal_gap_snapshot(
         raw_registry,
         registry_targets,
         control_plane_blockers,
+        active_version_identity_sha256,
     ) = _read_registry_versions(
         connection,
         execution_authority=execution_authority,
@@ -604,6 +612,8 @@ def read_signal_gap_snapshot(
         input_watermarks=watermarks,
         source_identity_sha256=source_identity_sha256,
         discovery_identity_sha256=discovery_identity_sha256,
+        active_version_identity_sha256=
+            active_version_identity_sha256,
         control_plane_blockers=control_plane_blockers,
     )
 
@@ -689,6 +699,7 @@ def _read_registry_versions(
     list[dict[str, Any]],
     tuple[RegistryTarget, ...],
     tuple[Mapping[str, Any], ...],
+    str,
 ]:
     registry_rows = [
         dict(row)
@@ -720,21 +731,36 @@ def _read_registry_versions(
     ]
     authority_by_base = _authority_by_base(execution_authority)
     active_base_ids = {str(row["base_scheme_id"]) for row in registry_rows}
+    active_version_identity_sha256 = (
+        _active_version_identity_sha256(version_rows)
+    )
     versions_by_base: dict[str, list[dict[str, Any]]] = {}
     for row in version_rows:
         scheme_id = str(row["scheme_id"])
         if scheme_id in active_base_ids:
             versions_by_base.setdefault(scheme_id, []).append(row)
     resolved_targets: list[RegistryTarget] = []
-    blockers: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = [
+        {
+            "code": "DISCOVERY_IDENTITY_NOT_REGISTERED",
+            "base_scheme_id": base_scheme_id,
+        }
+        for base_scheme_id in sorted(
+            set(authority_by_base) - active_base_ids
+        )
+    ]
     for registry_row in registry_rows:
         base_scheme_id = str(registry_row["base_scheme_id"])
         authority = authority_by_base.get(base_scheme_id)
-        if authority is None:
-            raise SignalGapPlanError(
-                "DISCOVERY_IDENTITY_MISSING",
-                base_scheme_id,
+        authority_missing = authority is None
+        if authority_missing:
+            blockers.append(
+                {
+                    "code": "DISCOVERY_IDENTITY_MISSING",
+                    "base_scheme_id": base_scheme_id,
+                }
             )
+            authority = _missing_discovery_identity(registry_row)
         active_versions = versions_by_base.get(base_scheme_id, [])
         exact_versions = [
             version
@@ -750,7 +776,7 @@ def _read_registry_versions(
                     "active_version_count": len(active_versions),
                 }
             )
-        if len(exact_versions) != 1:
+        if not authority_missing and len(exact_versions) != 1:
             blockers.append(
                 {
                     "code": "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
@@ -813,6 +839,7 @@ def _read_registry_versions(
         registry_rows,
         targets,
         tuple(_normalized_control_plane_blockers(blockers)),
+        active_version_identity_sha256,
     )
 
 
@@ -840,11 +867,15 @@ def _read_live_signals(
                 FROM t_scheme_predictions p
                 LEFT JOIN t_scheme_runs r ON r.run_id = p.run_id
                 WHERE p.scheme_id IN :scheme_ids
+                  AND p.predict_date <= :as_of_date
                 ORDER BY p.scheme_id, p.target_tenor, p.horizon,
                          p.target_date, p.predict_date, p.id
                 """
             ).bindparams(bindparam("scheme_ids", expanding=True)),
-            {"scheme_ids": base_ids},
+            {
+                "scheme_ids": base_ids,
+                "as_of_date": as_of_date,
+            },
         ).mappings().all()
     ]
     _canonical_date(as_of_date, "as_of_date")
@@ -1230,6 +1261,11 @@ def _validate_snapshot(
             "DISCOVERY_IDENTITY_INVALID",
             "discovery identity must be a SHA-256 digest",
         )
+    if not _is_sha256(snapshot.active_version_identity_sha256):
+        raise SignalGapPlanError(
+            "ACTIVE_VERSION_IDENTITY_INVALID",
+            "active version identity must be a SHA-256 digest",
+        )
     by_registry: dict[str, RegistryTarget] = {}
     seen_business: set[tuple[str, str, int]] = set()
     for target in sorted(
@@ -1395,6 +1431,24 @@ def _index_observations(
         key: tuple(sorted(value, key=_observed_sort_key))
         for key, value in grouped.items()
     }
+
+
+def _observations_in_scope(
+    rows: Sequence[ObservedSignal],
+    *,
+    segment: Segment,
+    expected_keys: set[
+        tuple[str, tuple[str, str, int, str]]
+    ],
+    start_date: str,
+    as_of_date: str,
+) -> tuple[ObservedSignal, ...]:
+    return tuple(
+        row
+        for row in rows
+        if (segment, row.business_key) in expected_keys
+        or start_date <= row.predict_date <= as_of_date
+    )
 
 
 def _validate_case_matches_target(
@@ -1801,6 +1855,61 @@ def _normalized_control_plane_blockers(
             str(item["code"]),
             canonical_json_sha256(item),
         ),
+    )
+
+
+def _missing_discovery_identity(
+    registry_row: Mapping[str, Any],
+) -> DiscoveredSchemeIdentity:
+    base_scheme_id = str(registry_row["base_scheme_id"])
+    marker = canonical_json_sha256(
+        {
+            "authority": "missing_discovery_identity",
+            "base_scheme_id": base_scheme_id,
+        }
+    )
+    return DiscoveredSchemeIdentity(
+        base_scheme_id=base_scheme_id,
+        scheme_version=f"missing-{marker[:12]}",
+        runtime_type=str(registry_row["runtime_type"]),
+        code_sha256=marker,
+        config_sha256=marker,
+        status="active",
+    )
+
+
+def _active_version_identity_sha256(
+    version_rows: Sequence[Mapping[str, Any]],
+) -> str:
+    return canonical_json_sha256(
+        [
+            {
+                "scheme_id": str(row.get("scheme_id") or ""),
+                "scheme_version":
+                    str(row.get("scheme_version") or ""),
+                "runtime_type": str(row.get("runtime_type") or ""),
+                "code_hash": (
+                    None
+                    if row.get("code_hash") is None
+                    else str(row["code_hash"])
+                ),
+                "config_hash": (
+                    None
+                    if row.get("config_hash") is None
+                    else str(row["config_hash"])
+                ),
+            }
+            for row in sorted(
+                version_rows,
+                key=lambda item: (
+                    str(item.get("scheme_id") or ""),
+                    str(item.get("scheme_version") or ""),
+                    str(item.get("runtime_type") or ""),
+                    str(item.get("code_hash") or ""),
+                    str(item.get("config_hash") or ""),
+                ),
+            )
+        ]
     )
 
 
