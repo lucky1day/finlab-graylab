@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime
 from typing import Iterable
@@ -19,9 +20,19 @@ from shared.tenor_mapping import TENOR_TO_INDICATOR, indicator_map_for_tenors, n
 
 logger = logging.getLogger(__name__)
 
+ACTUAL_TASK_TYPES_BY_FREQUENCY: dict[str, tuple[str, ...]] = {
+    "daily": ("T+1", "T+5"),
+    "weekly": ("weekly_point", "weekly_average"),
+    "monthly": ("monthly",),
+}
+_TENOR_ORDER = {tenor: index for index, tenor in enumerate(TENOR_TO_INDICATOR)}
 
-def active_scheme_tenors(schemes_root=SCHEMES_ROOT, frequency: str | None = None) -> list[str]:
-    """读取 active 方案配置中的期限列表。"""
+
+def configured_active_scheme_tenors(
+    schemes_root=SCHEMES_ROOT,
+    frequency: str | None = None,
+) -> list[str]:
+    """读取本地 active 配置期限，仅用于 Registry 漂移诊断。"""
     selected: set[str] = set()
     for cfg in discover_schemes(schemes_root):
         if cfg.status != "active":
@@ -30,6 +41,119 @@ def active_scheme_tenors(schemes_root=SCHEMES_ROOT, frequency: str | None = None
             continue
         selected.update(normalize_tenor(tenor) for tenor in cfg.tenors)
     return sorted(selected)
+
+
+def _normalize_supported_tenors(tenors: Iterable[object]) -> list[str]:
+    selected = {normalize_tenor(tenor) for tenor in tenors}
+    unsupported = sorted(selected - TENOR_TO_INDICATOR.keys())
+    if unsupported:
+        raise ValueError(
+            "unsupported actual tenor scope: "
+            + ", ".join(unsupported)
+        )
+    return sorted(selected, key=_TENOR_ORDER.__getitem__)
+
+
+def active_registry_tenors(
+    engine: Engine,
+    task_types: Iterable[str],
+) -> list[str]:
+    """从 active Registry 查询 actual 需要覆盖的期限。"""
+    selected_task_types = tuple(dict.fromkeys(str(value) for value in task_types))
+    if not selected_task_types:
+        raise ValueError("actual task_types cannot be empty")
+    sql = text(
+        """
+        SELECT DISTINCT target_tenor
+        FROM t_scheme_registry
+        WHERE status = 'active'
+          AND task_type IN :task_types
+        """
+    ).bindparams(bindparam("task_types", expanding=True))
+    with engine.begin() as conn:
+        rows = conn.execute(
+            sql,
+            {"task_types": selected_task_types},
+        ).scalars().all()
+    return _normalize_supported_tenors(rows)
+
+
+def resolve_actual_tenors(
+    engine: Engine,
+    *,
+    frequency: str,
+    tenors: Iterable[str] | None = None,
+    schemes_root=SCHEMES_ROOT,
+) -> list[str]:
+    """解析 updater 期限范围；显式 override 之外以 Registry 为权威。"""
+    if tenors is not None:
+        return _normalize_supported_tenors(tenors)
+    try:
+        task_types = ACTUAL_TASK_TYPES_BY_FREQUENCY[frequency]
+    except KeyError as exc:
+        raise ValueError(f"unsupported actual frequency: {frequency}") from exc
+
+    registry_tenors = active_registry_tenors(engine, task_types)
+    try:
+        configured_tenors = sorted(
+            {
+                normalize_tenor(tenor)
+                for tenor in configured_active_scheme_tenors(
+                    schemes_root,
+                    frequency=frequency,
+                )
+            },
+            key=lambda tenor: (
+                _TENOR_ORDER.get(tenor, len(_TENOR_ORDER)),
+                tenor,
+            ),
+        )
+    except Exception as exc:
+        event = {
+            "event": "ACTUAL_TENOR_SCOPE_DIAGNOSTIC_FAILED",
+            "frequency": frequency,
+            "error_type": type(exc).__name__,
+        }
+        logger.warning(
+            "actual_tenor_scope_diagnostic_failed %s",
+            json.dumps(event, ensure_ascii=False, sort_keys=True),
+            extra={"actual_tenor_scope_event": event},
+        )
+        configured_tenors = None
+    registry_set = set(registry_tenors)
+    configured_set = set(configured_tenors or [])
+    if configured_tenors is not None and registry_set != configured_set:
+        event = {
+            "event": "ACTUAL_TENOR_SCOPE_DRIFT",
+            "frequency": frequency,
+            "registry_tenors": registry_tenors,
+            "configured_tenors": configured_tenors,
+            "missing_from_config": sorted(
+                registry_set - configured_set,
+                key=_TENOR_ORDER.__getitem__,
+            ),
+            "missing_from_registry": sorted(
+                configured_set - registry_set,
+                key=lambda tenor: _TENOR_ORDER.get(tenor, len(_TENOR_ORDER)),
+            ),
+        }
+        logger.warning(
+            "actual_tenor_scope_drift %s",
+            json.dumps(event, ensure_ascii=False, sort_keys=True),
+            extra={"actual_tenor_scope_event": event},
+        )
+    if not registry_tenors:
+        event = {
+            "event": "ACTUAL_TENOR_SCOPE_EMPTY",
+            "frequency": frequency,
+            "registry_tenors": [],
+        }
+        logger.warning(
+            "actual_tenor_scope_empty %s",
+            json.dumps(event, ensure_ascii=False, sort_keys=True),
+            extra={"actual_tenor_scope_event": event},
+        )
+    return registry_tenors
 
 
 def _normalize_date(value: str | date | datetime | None) -> str | None:
@@ -106,7 +230,13 @@ def update_actuals(
     """从行情表刷新 t_scheme_actuals。"""
     engine = create_engine_from_env()
     try:
-        selected_tenors = list(tenors) if tenors is not None else active_scheme_tenors(frequency="daily")
+        selected_tenors = resolve_actual_tenors(
+            engine,
+            frequency="daily",
+            tenors=tenors,
+        )
+        if not selected_tenors:
+            return 0
         records = build_actual_records(engine, start_date=start_date, end_date=end_date, tenors=selected_tenors)
         written = upsert_actuals(engine, records)
         source_watermarks = read_source_watermarks(engine, tenors=selected_tenors, end_date=end_date)

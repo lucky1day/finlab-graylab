@@ -1,11 +1,118 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, text
 
 
 class MonthlyActualsTests(unittest.TestCase):
+    def test_update_monthly_actuals_uses_all_active_registry_tenors(self) -> None:
+        from scheduler.monthly_actuals_updater import update_monthly_actuals
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_scheme_registry (
+                        scheme_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        task_type TEXT NOT NULL,
+                        target_tenor TEXT NOT NULL
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, status, task_type, target_tenor)
+                    VALUES
+                        (:scheme_id, 'active', 'monthly', :target_tenor)
+                    """
+                ),
+                [
+                    {"scheme_id": f"monthly-{tenor}", "target_tenor": tenor}
+                    for tenor in ("1Y", "3Y", "5Y", "7Y", "10Y")
+                ],
+            )
+
+        captured: dict[str, list[str]] = {}
+
+        def _build(_engine, **kwargs):
+            captured["tenors"] = kwargs["tenors"]
+            return []
+
+        try:
+            with (
+                patch(
+                    "scheduler.monthly_actuals_updater.create_engine_from_env",
+                    return_value=engine,
+                ),
+                patch(
+                    "scheduler.daily_actuals_updater.configured_active_scheme_tenors",
+                    return_value=["1Y", "5Y", "10Y"],
+                ),
+                patch(
+                    "scheduler.monthly_actuals_updater.build_monthly_actual_records",
+                    side_effect=_build,
+                ),
+                patch(
+                    "scheduler.monthly_actuals_updater.upsert_monthly_actuals",
+                    return_value=0,
+                ),
+            ):
+                self.assertEqual(update_monthly_actuals(), 0)
+        finally:
+            engine.dispose()
+
+        self.assertEqual(captured["tenors"], ["1Y", "3Y", "5Y", "7Y", "10Y"])
+
+    def test_update_monthly_actuals_with_no_active_registry_scope_writes_nothing(self) -> None:
+        from scheduler.monthly_actuals_updater import update_monthly_actuals
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE t_scheme_registry (
+                        scheme_id TEXT PRIMARY KEY,
+                        status TEXT NOT NULL,
+                        task_type TEXT NOT NULL,
+                        target_tenor TEXT NOT NULL
+                    )
+                    """
+                )
+            )
+
+        try:
+            with (
+                patch(
+                    "scheduler.monthly_actuals_updater.create_engine_from_env",
+                    return_value=engine,
+                ),
+                patch(
+                    "scheduler.monthly_actuals_updater.build_monthly_actual_records",
+                ) as build_records,
+                patch(
+                    "scheduler.monthly_actuals_updater.upsert_monthly_actuals",
+                ) as upsert_records,
+                self.assertLogs(
+                    "scheduler.daily_actuals_updater",
+                    level="WARNING",
+                ) as captured,
+            ):
+                self.assertEqual(update_monthly_actuals(), 0)
+        finally:
+            engine.dispose()
+
+        build_records.assert_not_called()
+        upsert_records.assert_not_called()
+        self.assertIn("ACTUAL_TENOR_SCOPE_EMPTY", "\n".join(captured.output))
+
     def test_build_monthly_actual_records_uses_target_month_observation_vs_feature_month(self) -> None:
         from scheduler.monthly_actuals_updater import build_monthly_actual_records_from_rows
         from shared.prediction_context import MONTHLY_TARGET_RULE
