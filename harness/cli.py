@@ -151,8 +151,8 @@ def _build_parser() -> argparse.ArgumentParser:
     gate_subparsers = gate_parser.add_subparsers(dest="gate_name", required=True)
     for gate_name in (
         "static", "input", "unit", "dry-run", "compare", "backtest",
-        "api-readiness", "shadow-register", "api", "live", "gray-backfill",
-        "lifecycle-reconcile", "bootstrap",
+        "api-readiness", "draft-register", "shadow-register", "api", "live",
+        "gray-backfill", "lifecycle-reconcile", "bootstrap",
     ):
         item = gate_subparsers.add_parser(gate_name)
         item.add_argument("--scheme-id", required=True)
@@ -254,6 +254,7 @@ def _run_gate(args: argparse.Namespace) -> GateResult:
     if args.gate_name in {
         "input",
         "dry-run",
+        "draft-register",
         "shadow-register",
         "live",
         "gray-backfill",

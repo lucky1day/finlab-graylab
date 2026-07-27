@@ -33,10 +33,12 @@ def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
         from harness.blackbox_v2.activation import BlackboxLifecycleReconcileGate
         from harness.blackbox_v2.api_gate import BlackboxApiGate
         from harness.blackbox_v2.bootstrap import BlackboxBootstrapGate
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
         from harness.gates.gray_backfill_gate import GrayBackfillGate
 
         common_post_activation_gates = {
             "bootstrap": BlackboxBootstrapGate,
+            "draft-register": BlackboxDraftRegisterGate,
             "api": BlackboxApiGate,
             "live": LiveGate,
             "gray-backfill": GrayBackfillGate,

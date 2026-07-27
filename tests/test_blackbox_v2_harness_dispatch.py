@@ -9,6 +9,20 @@ from harness.context import GateContext
 
 
 class BlackboxV2HarnessDispatchTests(unittest.TestCase):
+    def test_draft_register_cli_is_exposed_as_explicit_gate(self) -> None:
+        from harness.cli import _build_parser
+
+        args = _build_parser().parse_args([
+            "gate",
+            "draft-register",
+            "--scheme-id",
+            "blackbox_trial",
+            "--predict-date",
+            "2026-07-20",
+        ])
+
+        self.assertEqual(args.gate_name, "draft-register")
+
     def test_check_only_cli_is_available_only_for_zero_side_effect_all_stage(self) -> None:
         from harness.cli import _build_parser, _run_onboard_command
 

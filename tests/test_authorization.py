@@ -164,6 +164,18 @@ class AuthorizationTest(unittest.TestCase):
                 self.assertTrue(errors)
                 self.assertIn("predict_date", "\n".join(errors))
 
+    def test_draft_register_token_requires_canonical_predict_date(self) -> None:
+        for value in (None, "", "2026-7-20", " 2026-07-20"):
+            with self.subTest(value=value), self.assertRaisesRegex(
+                ValueError,
+                "draft_register predict_date",
+            ):
+                issue_token(
+                    "trial",
+                    "draft_register",
+                    predict_date=value,
+                )
+
     def test_non_backtest_token_schema_is_unchanged(self) -> None:
         envelope = self._decode_token(issue_token("trial", "blackbox_activate"))
 

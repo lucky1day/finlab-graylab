@@ -403,7 +403,39 @@ ORDER BY id;
 
 第一条必须恰好一行且为 exact scheme/version、`stage=all`、`status=passed`；第二条必须恰好覆盖七个固定 Gate，并且全部为 `passed`。
 
-### 5.2 签发并使用授权
+### 5.2 首次 Draft 登记
+
+生产 Schema 已包含其它方案、但当前 Blackbox 的 base/composite 身份完全不存在
+时，先使用独立的 insert-only Gate 登记 `draft + paused`。必须启用
+`HARNESS_AUTH_SECRET`，并使用非空 operator、最长 900 秒且绑定 latest persisted all-stage exact scheme/version/run/predict date 的一次性 token：
+
+```bash
+TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness auth issue \
+    --scheme-id {scheme_id} \
+    --action draft_register \
+    --predict-date {latest_all_stage_predict_date} \
+    --scheme-version {passed_scheme_version} \
+    --harness-run-id {passed_harness_run_id} \
+    --issued-by {operator} \
+    --expires-in 900)
+
+conda run --no-capture-output -n bond_factor_lab_service \
+  python -m harness gate draft-register \
+    --scheme-id {scheme_id} \
+    --predict-date {latest_all_stage_predict_date} \
+    --authorize "$TOKEN"
+```
+
+`draft-register` 只允许 `blackbox_v2` 的 `paused + draft` config。它在
+scheme-scoped MySQL advisory lock 下重检 exact base/composite/version/Registry
+全部不存在，再在单事务中 insert-only 写入 `t_scheme_versions` draft 与
+composite `t_scheme_registry` paused，并精确 readback；任何冲突或 readback
+不一致均回滚，禁止覆盖或 upsert。环境指纹和 snapshot ID 只取自该 latest
+passed all-stage。此 Gate 不改 config，不写 run/prediction/backtest，不激活，
+也不产生 scheduler 可执行身份。
+
+### 5.3 签发并使用 Shadow 授权
 
 ```bash
 TOKEN=$(conda run --no-capture-output -n bond_factor_lab_service \
@@ -424,7 +456,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 Token 必须绑定 exact scheme、action、predict date、version 和 Harness run，且使用短有效期，不得跨方案或跨 run 复用。
 
-### 5.3 登记后独立检查
+### 5.4 登记后独立检查
 
 | 检查面 | 通过条件 |
 |---|---|

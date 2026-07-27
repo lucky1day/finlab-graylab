@@ -19,7 +19,7 @@ DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
 BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS = 60
 EXACT_PREDICT_DATE_ACTIONS = frozenset(
-    {"backtest_persist", "gray_backfill_write"}
+    {"backtest_persist", "draft_register", "gray_backfill_write"}
 )
 _AUTHORIZATION_BASE_PAYLOAD_FIELDS = frozenset(
     {

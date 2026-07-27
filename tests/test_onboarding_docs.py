@@ -310,6 +310,20 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertIn(marker, platform)
 
+    def test_blackbox_platform_sop_defines_insert_only_draft_registration(self) -> None:
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+        for marker in (
+            "draft-register",
+            "draft_register",
+            "HARNESS_AUTH_SECRET",
+            "scheme-scoped MySQL advisory lock",
+            "insert-only",
+            "latest persisted all-stage",
+            "不改 config",
+            "不写 run/prediction/backtest",
+        ):
+            self.assertIn(marker, platform)
+
     def test_blackbox_formal_delivery_requires_description(self) -> None:
         upstream = UPSTREAM_SOP.read_text(encoding="utf-8")
         platform = PLATFORM_SOP.read_text(encoding="utf-8")

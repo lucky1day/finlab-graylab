@@ -173,6 +173,10 @@ class BlackboxBootstrapLockTimeout(RuntimeError):
     """隔离 Schema bootstrap 互斥锁未在限定时间内取得。"""
 
 
+class BlackboxDraftRegisterLockTimeout(RuntimeError):
+    """首次生产 draft 登记未能取得方案级互斥锁。"""
+
+
 @dataclass(frozen=True)
 class BlackboxExecutionApproval:
     """Blackbox V2 精确版本与 Registry 的执行批准证据。"""
@@ -204,6 +208,7 @@ class BlackboxLifecycleState:
     manifest_hash: str | None
     approved_by: str | None
     approved_at: datetime | None
+    registry_scheme_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -649,6 +654,259 @@ def bootstrap_blackbox_control_plane(
         table_counts=table_counts,
         target_registry_baseline=target_registry_baseline,
     )
+
+
+def register_blackbox_draft_identity(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    lock_timeout_sec: float = 5.0,
+) -> BlackboxLifecycleState:
+    """在非空生产 Schema 中 insert-only 登记全新 Blackbox draft 身份。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError("Blackbox draft registration requires runtime_type=blackbox_v2")
+    if cfg.status != "paused" or cfg.version_status != "draft":
+        raise ValueError(
+            "Blackbox draft registration requires config paused+draft: "
+            f"got={cfg.status}+{cfg.version_status}"
+        )
+    if not str(getattr(cfg, "environment_fingerprint", "") or "").strip():
+        raise ValueError("Blackbox draft registration requires environment_fingerprint")
+    if not str(getattr(cfg, "data_snapshot_id", "") or "").strip():
+        raise ValueError("Blackbox draft registration requires data_snapshot_id")
+
+    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    identity_ids = (cfg.scheme_id, *expected_registry_ids)
+    identity_placeholders = ", ".join(
+        f":identity_id_{index}" for index, _ in enumerate(identity_ids)
+    )
+    identity_params = {
+        f"identity_id_{index}": identity_id
+        for index, identity_id in enumerate(identity_ids)
+    }
+
+    with _blackbox_draft_register_advisory_lock(
+        engine,
+        scheme_id=cfg.scheme_id,
+        timeout_sec=lock_timeout_sec,
+    ):
+        with engine.begin() as conn:
+            version_conflicts = (
+                conn.execute(
+                    text(
+                        f"""
+                        /* draft registration version identity conflicts */
+                        SELECT scheme_id, scheme_version, runtime_type, status
+                        FROM t_scheme_versions
+                        WHERE scheme_id IN ({identity_placeholders})
+                        FOR UPDATE
+                        """
+                    ),
+                    identity_params,
+                )
+                .mappings()
+                .all()
+            )
+            registry_conflicts = (
+                conn.execute(
+                    text(
+                        f"""
+                        /* draft registration Registry identity conflicts */
+                        SELECT scheme_id, base_scheme_id, runtime_type, status
+                        FROM t_scheme_registry
+                        WHERE scheme_id IN ({identity_placeholders})
+                           OR base_scheme_id IN ({identity_placeholders})
+                        FOR UPDATE
+                        """
+                    ),
+                    identity_params,
+                )
+                .mappings()
+                .all()
+            )
+            if version_conflicts or registry_conflicts:
+                raise ValueError(
+                    "Blackbox draft registration identity conflict: "
+                    f"versions={len(version_conflicts)}, registry={len(registry_conflicts)}"
+                )
+
+            version_params = {
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "runtime_type": "blackbox_v2",
+                "algorithm_version": cfg.algorithm_version,
+                "contract_version": cfg.contract_version,
+                "runtime_profile": cfg.runtime_profile,
+                "environment_fingerprint": cfg.environment_fingerprint,
+                "data_snapshot_id": cfg.data_snapshot_id,
+                "code_hash": cfg.code_hash,
+                "config_hash": cfg.config_hash,
+                "manifest_hash": cfg.manifest_hash,
+                "git_commit": None,
+                "status": "draft",
+                "created_by": "harness.draft-register",
+            }
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_versions
+                        (scheme_id, scheme_version, runtime_type, algorithm_version,
+                         contract_version, runtime_profile, environment_fingerprint,
+                         data_snapshot_id, code_hash, config_hash, manifest_hash,
+                         git_commit, status, created_by, approved_by, approved_at)
+                    VALUES
+                        (:scheme_id, :scheme_version, :runtime_type, :algorithm_version,
+                         :contract_version, :runtime_profile, :environment_fingerprint,
+                         :data_snapshot_id, :code_hash, :config_hash, :manifest_hash,
+                         :git_commit, :status, :created_by, NULL, NULL)
+                    """
+                ),
+                version_params,
+            )
+            registry_rows = [
+                {
+                    "scheme_id": registry_id,
+                    "base_scheme_id": cfg.scheme_id,
+                    "name": cfg.name,
+                    "description": cfg.description,
+                    "horizon": cfg.horizon,
+                    "task_type": cfg.task_type,
+                    "runtime_type": "blackbox_v2",
+                    "tenors": json.dumps([target_tenor], ensure_ascii=False),
+                    "frequency": cfg.frequency,
+                    "target_tenor": target_tenor,
+                    "schedule_cron": cfg.schedule.cron,
+                    "schedule_timezone": cfg.schedule.timezone,
+                    "status": "paused",
+                }
+                for target_tenor, registry_id in zip(
+                    expected_tenors,
+                    expected_registry_ids,
+                )
+            ]
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, name, description, horizon,
+                         task_type, runtime_type, tenors, frequency, target_tenor,
+                         schedule_cron, schedule_timezone, status, deployed_at)
+                    VALUES
+                        (:scheme_id, :base_scheme_id, :name, :description, :horizon,
+                         :task_type, :runtime_type, CAST(:tenors AS JSON), :frequency,
+                         :target_tenor, :schedule_cron, :schedule_timezone, :status, NULL)
+                    """
+                ),
+                registry_rows,
+            )
+
+            version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
+            if version_row is None:
+                raise RuntimeError("Blackbox draft registration version readback is missing")
+            expected_version = {
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": cfg.scheme_version,
+                "runtime_type": "blackbox_v2",
+                "algorithm_version": cfg.algorithm_version,
+                "contract_version": cfg.contract_version,
+                "runtime_profile": cfg.runtime_profile,
+                "environment_fingerprint": cfg.environment_fingerprint,
+                "data_snapshot_id": cfg.data_snapshot_id,
+                "code_hash": cfg.code_hash,
+                "config_hash": cfg.config_hash,
+                "manifest_hash": cfg.manifest_hash,
+                "status": "draft",
+                "approved_by": None,
+                "approved_at": None,
+            }
+            version_mismatches = [
+                f"{field}: expected={expected!r}, got={version_row.get(field)!r}"
+                for field, expected in expected_version.items()
+                if version_row.get(field) != expected
+            ]
+            if version_mismatches:
+                raise RuntimeError(
+                    "Blackbox draft registration version readback mismatch: "
+                    + "; ".join(version_mismatches)
+                )
+            readback_registry = _read_blackbox_registry_rows_conn(
+                conn,
+                cfg,
+                expected_registry_ids,
+                for_update=True,
+            )
+            registry_error = _blackbox_registry_identity_error(
+                cfg,
+                expected_tenors,
+                expected_registry_ids,
+                readback_registry,
+                expected_status="paused",
+            )
+            if registry_error is not None:
+                raise RuntimeError(
+                    f"Blackbox draft registration Registry readback mismatch: {registry_error}"
+                )
+
+    return BlackboxLifecycleState(
+        scheme_id=str(version_row["scheme_id"]),
+        scheme_version=str(version_row["scheme_version"]),
+        runtime_type=str(version_row["runtime_type"]),
+        version_status=str(version_row["status"]),
+        registry_status="paused",
+        environment_fingerprint=str(version_row["environment_fingerprint"]),
+        data_snapshot_id=str(version_row["data_snapshot_id"]),
+        code_hash=str(version_row["code_hash"]),
+        config_hash=str(version_row["config_hash"]),
+        manifest_hash=str(version_row["manifest_hash"]),
+        approved_by=None,
+        approved_at=None,
+        registry_scheme_ids=expected_registry_ids,
+    )
+
+
+@contextmanager
+def _blackbox_draft_register_advisory_lock(
+    engine: Engine,
+    *,
+    scheme_id: str,
+    timeout_sec: float,
+) -> Iterator[None]:
+    """用 scheme-scoped MySQL advisory lock 消除首次 absent-row 竞争。"""
+    if timeout_sec < 0:
+        raise ValueError("draft register lock_timeout_sec must be non-negative")
+    scheme_digest = hashlib.sha256(scheme_id.encode("utf-8")).hexdigest()[:32]
+    lock_name = f"bfl:bbv2-draft:{scheme_digest}"
+    with engine.connect() as lock_conn:
+        acquired = lock_conn.execute(
+            text("SELECT GET_LOCK(:lock_name, :timeout_sec)"),
+            {"lock_name": lock_name, "timeout_sec": float(timeout_sec)},
+        ).scalar_one()
+        if int(acquired or 0) != 1:
+            raise BlackboxDraftRegisterLockTimeout(
+                "timed out waiting for Blackbox draft registration advisory lock: "
+                f"scheme_hash={scheme_digest} timeout_sec={timeout_sec:g}"
+            )
+        try:
+            yield
+        finally:
+            active_error = sys.exc_info()[1]
+            try:
+                released = lock_conn.execute(
+                    text("SELECT RELEASE_LOCK(:lock_name)"),
+                    {"lock_name": lock_name},
+                ).scalar_one()
+                if int(released or 0) != 1:
+                    raise RuntimeError(
+                        "failed to release Blackbox draft registration advisory lock: "
+                        f"scheme_hash={scheme_digest}"
+                    )
+            except BaseException as release_error:
+                if active_error is None:
+                    raise
+                if hasattr(active_error, "add_note"):
+                    active_error.add_note(
+                        f"draft registration advisory lock release failed: {release_error}"
+                    )
 
 
 @contextmanager
