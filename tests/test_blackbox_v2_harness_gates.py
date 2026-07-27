@@ -167,14 +167,18 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 platform_inputs=["api-wind-date-v1"],
             )
             config = load_scheme_config(scheme_dir / "config.yaml")
-            snapshot = create_snapshot_from_frames(
-                _snapshot_frames(),
-                output_root=root / "snapshots",
-                expected_columns={
-                    name: list(frame.columns)
-                    for name, frame in _snapshot_frames().items()
-                },
-                schema_version="data-bridge-v1",
+            snapshot = replace(
+                create_snapshot_from_frames(
+                    _snapshot_frames(),
+                    output_root=root / "snapshots",
+                    expected_columns={
+                        name: list(frame.columns)
+                        for name, frame in _snapshot_frames().items()
+                    },
+                    schema_version="data-bridge-v1",
+                ),
+                generation_id="generation-test",
+                refresh_date="2026-07-15",
             )
             cutoffs = CutoffKeys("2026-07-15", "202627", "202606")
             request = BlackboxRequest(
@@ -281,6 +285,18 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 raw_state["platform_input_artifacts"][0]["sha256"],
                 artifact.sha256,
             )
+            self.assertEqual(
+                raw_state["audit_manifest"]["base_snapshot"][
+                    "generation_id"
+                ],
+                "generation-test",
+            )
+            self.assertEqual(
+                raw_state["audit_manifest"]["base_snapshot"][
+                    "refresh_date"
+                ],
+                "2026-07-15",
+            )
             self.assertTrue(
                 (
                     root
@@ -317,6 +333,14 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             self.assertEqual(
                 reloaded.bundle.audit_manifest,
                 state.bundle.audit_manifest,
+            )
+            self.assertEqual(
+                reloaded.bundle.base_snapshot.generation_id,
+                "generation-test",
+            )
+            self.assertEqual(
+                reloaded.bundle.base_snapshot.refresh_date,
+                "2026-07-15",
             )
             state.request_path.write_text("{}\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "Request"):

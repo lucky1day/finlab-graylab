@@ -1516,12 +1516,25 @@ def _read_input_state(path: Path) -> InputState:
         label="Blackbox V2 input state",
     )
     raw = json.loads(stable_state.content_bytes.decode("utf-8"))
+    generation_id = raw.get("generation_id")
+    refresh_date = raw.get("refresh_date")
+    if (
+        not isinstance(generation_id, str)
+        or not generation_id.strip()
+        or not isinstance(refresh_date, str)
+        or not refresh_date.strip()
+    ):
+        raise ValueError(
+            "Blackbox V2 input state snapshot provenance is invalid"
+        )
     snapshot = BlackboxSnapshot(
         snapshot_id=str(raw["snapshot_id"]),
         root_dir=Path(raw["snapshot_root"]),
         data_dir=Path(raw["data_dir"]),
         manifest_path=Path(raw["manifest_path"]),
         schema_version=str(raw["schema_version"]),
+        generation_id=generation_id,
+        refresh_date=refresh_date,
     )
     request_path = Path(raw["request_path"])
     if not snapshot.manifest_path.is_file() or not snapshot.data_dir.is_dir() or not request_path.is_file():
