@@ -109,6 +109,12 @@ def issue_token(
     """
     if action in EXACT_PREDICT_DATE_ACTIONS:
         predict_date = _normalize_action_predict_date(action, predict_date)
+    if action == "draft_register" and (
+        not isinstance(issued_by, str) or not issued_by.strip()
+    ):
+        raise ValueError(
+            "draft_register issued_by must be a non-empty string"
+        )
     issued_at_dt = datetime.now(timezone.utc).replace(microsecond=0)
     expires_at = None
     if ttl_seconds is not None:
@@ -252,6 +258,14 @@ def verify_authorization(
         return None, [f"invalid authorization token: {exc}"]
 
     errors: list[str] = []
+    raw_payload = envelope["payload"]
+    if action == "draft_register" and (
+        not isinstance(raw_payload.get("issued_by"), str)
+        or not raw_payload["issued_by"].strip()
+    ):
+        errors.append(
+            "draft_register issued_by must be a non-empty string"
+        )
 
     if signing_enabled:
         digest = hmac.new(

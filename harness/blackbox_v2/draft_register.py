@@ -50,9 +50,10 @@ class BlackboxDraftRegisterGate(Gate):
         )
         if auth is not None:
             errors.extend(required_future_expiry_errors(auth.issued_at, auth.expires_at))
-            if not auth.issued_by.strip():
+            if not isinstance(auth.issued_by, str) or not auth.issued_by.strip():
                 errors.append(
-                    "Blackbox draft registration authorization requires non-empty issued_by"
+                    "Blackbox draft registration authorization requires issued_by "
+                    "to be a non-empty string"
                 )
             if auth.scheme_version != cfg.scheme_version:
                 errors.append(

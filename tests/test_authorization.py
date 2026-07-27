@@ -176,6 +176,47 @@ class AuthorizationTest(unittest.TestCase):
                     predict_date=value,
                 )
 
+    def test_draft_register_issue_requires_real_nonempty_operator(self) -> None:
+        for issued_by in (None, "", "   "):
+            with self.subTest(issued_by=issued_by), self.assertRaisesRegex(
+                ValueError,
+                "issued_by must be a non-empty string",
+            ):
+                issue_token(
+                    "trial",
+                    "draft_register",
+                    predict_date="2026-07-20",
+                    issued_by=issued_by,
+                )
+
+    def test_draft_register_verify_rejects_non_string_operator_payload(self) -> None:
+        from harness.authorization import _sign
+
+        envelope = self._decode_token(
+            issue_token(
+                "trial",
+                "draft_register",
+                predict_date="2026-07-20",
+                issued_by="operator",
+            )
+        )
+        envelope["payload"]["issued_by"] = None
+        envelope["sig"] = _sign(envelope["payload"])
+        token = self._encode_token(envelope)
+
+        _auth, errors = verify_authorization(
+            token,
+            scheme_id="trial",
+            action="draft_register",
+            predict_date="2026-07-20",
+            used_store_path=self._used_path(),
+        )
+
+        self.assertIn(
+            "draft_register issued_by must be a non-empty string",
+            errors,
+        )
+
     def test_non_backtest_token_schema_is_unchanged(self) -> None:
         envelope = self._decode_token(issue_token("trial", "blackbox_activate"))
 

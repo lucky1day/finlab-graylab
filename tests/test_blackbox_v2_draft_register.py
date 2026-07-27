@@ -119,6 +119,31 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("signing mode", "\n".join(result.errors))
 
+    def test_gate_rejects_non_string_operator_before_database_use(self) -> None:
+        from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
+
+        malformed_auth = SimpleNamespace(
+            issued_at="2026-07-20T00:00:00+00:00",
+            expires_at="2026-07-20T00:01:00+00:00",
+            issued_by=None,
+            scheme_version=self.cfg.scheme_version,
+        )
+        with (
+            patch(
+                "harness.blackbox_v2.draft_register.verify_authorization",
+                return_value=(malformed_auth, []),
+            ),
+            patch(
+                "harness.blackbox_v2.draft_register.required_future_expiry_errors",
+                return_value=[],
+            ),
+        ):
+            result = BlackboxDraftRegisterGate().run(self._ctx("signed-token"))
+
+        self.assertFalse(result.passed)
+        self.assertEqual(result.status.value, "blocked")
+        self.assertIn("non-empty string", "\n".join(result.errors))
+
     def test_rejects_wrong_version_and_latest_run(self) -> None:
         from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
 
@@ -133,7 +158,7 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
                 result = BlackboxDraftRegisterGate().run(self._ctx(token))
             self.assertFalse(result.passed)
 
-    def test_rejects_wrong_latest_predict_date_and_overlong_or_empty_operator_token(self) -> None:
+    def test_rejects_wrong_latest_predict_date_and_overlong_token(self) -> None:
         from harness.blackbox_v2.draft_register import BlackboxDraftRegisterGate
 
         cases = (
@@ -161,7 +186,6 @@ class BlackboxDraftRegisterGateTests(unittest.TestCase):
                 ),
                 self._passed_run(),
             ),
-            (self._token(issued_by=""), self._passed_run()),
         )
         for token, passed in cases:
             with self.subTest(token=token[-12:]), patch(
