@@ -17,6 +17,7 @@ from shared.prediction_context import (
 
 
 DASHBOARD_SCHEMA_VERSION = "factor-lab-dashboard-v1"
+FACTOR_LAB_HISTORY_START_DATE = "2025-01-01"
 ROW_FIELDS = (
     "predict_date",
     "feature_date",
@@ -127,6 +128,11 @@ class DashboardDataError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.diagnostics = dict(diagnostics or {})
+
+
+def is_factor_lab_history_visible(predict_date: str) -> bool:
+    """判断信号是否位于当前因子实验室展示窗口。"""
+    return predict_date >= FACTOR_LAB_HISTORY_START_DATE
 
 
 @dataclass(frozen=True, slots=True)

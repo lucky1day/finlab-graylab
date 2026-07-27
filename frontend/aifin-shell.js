@@ -8,6 +8,7 @@
     "/factor-lab": "factor-lab"
   };
   var PUBLIC_BASE_PATH = "/bond-factor-lab";
+  var FACTOR_LAB_HISTORY_START_DATE = "2025-01-01";
 
   var viewToRoute = {
     "factor-lab": "/"
@@ -536,6 +537,7 @@
   function dailyRowsByMonth(rows, frequency, horizon) {
     var grouped = {};
     (rows || []).forEach(function (row) {
+      if (!isFactorLabDisplayRow(row)) return;
       var month = detailGroupMonth(row, frequency, horizon);
       if (!month) return;
       if (!grouped[month]) grouped[month] = [];
@@ -563,6 +565,14 @@
       });
     });
     return grouped;
+  }
+
+  function isFactorLabDisplayRow(row) {
+    var predictDate = normalizeIsoDate(
+      row && (row.predictDate || row.predict_date || "")
+    );
+    return Boolean(predictDate) &&
+      predictDate >= FACTOR_LAB_HISTORY_START_DATE;
   }
 
   function directionCounts(rows, key, metricOnly) {
@@ -1007,6 +1017,39 @@
     }).filter(Boolean);
   }
 
+  function factorLabVisiblePhaseRanges(phaseRanges, visibleDailyRows) {
+    var derivedByPhase = Object.create(null);
+    deriveDashboardPhaseRanges(
+      visibleDailyRows.map(function (row) {
+        return {
+          predictionPhase: row.prediction_phase || "",
+          predictDate: row.predict_date || "",
+          targetDate: row.target_date || ""
+        };
+      })
+    ).forEach(function (range) {
+      derivedByPhase[range.prediction_phase] = range;
+    });
+    (phaseRanges || []).forEach(function (range) {
+      var phase = String(range.prediction_phase || "");
+      var startPredictDate = normalizeIsoDate(range.start_predict_date);
+      var endPredictDate = normalizeIsoDate(range.end_predict_date);
+      if (DASHBOARD_LIVE_PHASES.indexOf(phase) === -1 ||
+          !startPredictDate ||
+          !endPredictDate ||
+          endPredictDate < FACTOR_LAB_HISTORY_START_DATE ||
+          derivedByPhase[phase]) {
+        return;
+      }
+      if (startPredictDate >= FACTOR_LAB_HISTORY_START_DATE) {
+        derivedByPhase[phase] = range;
+      }
+    });
+    return DASHBOARD_LIVE_PHASES.map(function (phase) {
+      return derivedByPhase[phase] || null;
+    }).filter(Boolean);
+  }
+
   function appendDashboardGroupedRows(destination, grouped) {
     Object.keys(grouped).sort().forEach(function (month) {
       if (!destination[month]) destination[month] = [];
@@ -1022,8 +1065,10 @@
       var taskKey = getTaskKey(scheme.targetTenor, column);
       if (!tasks[taskKey]) tasks[taskKey] = [];
 
-      var liveRows = scheme.liveRows.slice();
-      var backtestRows = scheme.backtest ? scheme.backtest.rows.slice() : [];
+      var liveRows = scheme.liveRows.filter(isFactorLabDisplayRow);
+      var backtestRows = scheme.backtest
+        ? scheme.backtest.rows.filter(isFactorLabDisplayRow)
+        : [];
       var liveGrouped = groupDashboardDetails(liveRows);
       var livePredictDates = liveRows.map(function (row) { return row.predictDate; }).sort();
       var phaseRanges = deriveDashboardPhaseRanges(liveRows);
@@ -1235,21 +1280,34 @@
       if (!targetTenor) return;
       var metrics = metricsByKey[scheme.scheme_id] || {};
       if (metrics.target_label) factorTargetLabels[targetTenor] = String(metrics.target_label);
-      var groupedDailyRows = dailyRowsByMonth(metrics.daily_rows || [], scheme.frequency, scheme.horizon);
+      var visibleDailyRows = (metrics.daily_rows || []).filter(
+        isFactorLabDisplayRow
+      );
+      var groupedDailyRows = dailyRowsByMonth(
+        visibleDailyRows,
+        scheme.frequency,
+        scheme.horizon
+      );
       if ((!metrics.daily_rows || !metrics.daily_rows.length) && metrics.monthly_metrics && metrics.monthly_metrics.length) {
         throw new Error("live scheme " + (scheme.scheme_id || "") + " has monthly_metrics but no detail rows");
       }
       var monthlyRows = monthlyRowsFromGroupedDetails(groupedDailyRows);
       var liveSinceDate = "";
       var liveMetricSinceDate = "";
-      if (metrics.daily_rows && metrics.daily_rows.length) {
-        var dates = metrics.daily_rows.map(function (r) { return r.predict_date || ""; }).filter(Boolean).sort();
+      if (visibleDailyRows.length) {
+        var dates = visibleDailyRows.map(function (r) {
+          return r.predict_date || "";
+        }).filter(Boolean).sort();
         liveSinceDate = dates[0] || "";
-        var metricDates = metrics.daily_rows.map(function (r) {
+        var metricDates = visibleDailyRows.map(function (r) {
           return r.predict_date || r.target_date || "";
         }).filter(Boolean).sort();
         liveMetricSinceDate = metricDates[0] || liveSinceDate;
       }
+      var phaseRanges = factorLabVisiblePhaseRanges(
+        metrics.phase_ranges || [],
+        visibleDailyRows
+      );
       var taskKey = getTaskKey(targetTenor, column);
       if (!tasks[taskKey]) tasks[taskKey] = [];
       tasks[taskKey].push({
@@ -1260,14 +1318,14 @@
         column: column.id,
         name: scheme.name,
         status: normalizeBackendSchemeStatus(scheme.status),
-        latestRun: latestRunFromMetricRows(metrics.daily_rows || []),
+        latestRun: latestRunFromMetricRows(visibleDailyRows),
         deploymentDate: requireSchemeDeploymentDate(scheme, "live scheme"),
         remark: getSchemeRemark(scheme),
         monthlyRows: monthlyRows,
         dailyRowsByMonth: groupedDailyRows,
         liveSinceDate: liveSinceDate,
         liveMetricSinceDate: liveMetricSinceDate,
-        phaseRanges: metrics.phase_ranges || []
+        phaseRanges: phaseRanges
       });
     });
     return tasks;

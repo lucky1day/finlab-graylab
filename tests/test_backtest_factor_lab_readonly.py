@@ -123,6 +123,81 @@ def _create_minimal_factor_lab_backtest_schema(engine) -> None:
 
 
 class BacktestFactorLabReadonlyTests(unittest.TestCase):
+    def test_factor_lab_history_filters_pre_2025_rows_but_preserves_audit_data(
+        self,
+    ) -> None:
+        from backend.services import backtest_factor_lab_results
+
+        engine = create_engine("sqlite+pysqlite:///:memory:", future=True)
+        _create_minimal_factor_lab_backtest_schema(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, runtime_type, name,
+                         description, horizon, task_type, frequency,
+                         target_tenor, schedule_cron, schedule_timezone,
+                         status, deployed_at, created_at, updated_at)
+                    VALUES
+                        ('monthly_trial__h1__10Y', 'monthly_trial',
+                         'blackbox_v2', 'Monthly Trial', 'Blackbox V2', 1,
+                         'monthly', 'monthly', '10Y', '0 7 15 * *',
+                         'Asia/Shanghai', 'active', '2026-07-20', NULL, NULL)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_runs
+                        (id, benchmark_id, scheme_id, data_source, start_date,
+                         end_date, status, summary, report_path, created_at,
+                         updated_at)
+                    VALUES
+                        (940, 'bbv2-monthly-trial', 'monthly_trial',
+                         'blackbox_v2_current_snapshot_as_of', '2024-12-15',
+                         '2025-01-15', 'success', '{}', NULL, NULL,
+                         '2026-07-20T10:00:00')
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_backtest_predictions
+                        (run_id, target_tenor, horizon, predict_date,
+                         feature_date, target_date, label,
+                         predicted_direction, confidence)
+                    VALUES
+                        (940, '10Y', 1, '2024-12-15', '2024-12-15',
+                         '2025-01-15', 1, -1, NULL),
+                        (940, '10Y', 1, '2025-01-15', '2025-01-15',
+                         '2025-02-15', 1, 1, NULL)
+                    """
+                )
+            )
+
+        result = backtest_factor_lab_results(engine)
+
+        self.assertEqual(len(result["schemes"]), 1)
+        self.assertEqual(
+            [row["predict_date"] for row in result["schemes"][0]["daily_rows"]],
+            ["2025-01-15"],
+        )
+        with engine.connect() as conn:
+            stored = conn.execute(
+                text(
+                    """
+                    SELECT COUNT(*)
+                    FROM t_backtest_predictions
+                    WHERE run_id = 940
+                      AND predict_date < '2025-01-01'
+                    """
+                )
+            ).scalar_one()
+        self.assertEqual(stored, 1)
+
     def test_default_factor_lab_returns_only_latest_successful_run_with_provenance(self) -> None:
         from backend.services import backtest_factor_lab_results
 

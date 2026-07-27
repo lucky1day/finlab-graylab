@@ -20,6 +20,7 @@ from sqlalchemy.engine import Connection, Engine
 from backend.factor_lab_dashboard_semantics import (
     BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
     DASHBOARD_SCHEMA_VERSION,
+    FACTOR_LAB_HISTORY_START_DATE,
     ROW_FIELDS,
     DashboardDataError,
     backtest_benchmark_label,
@@ -28,6 +29,7 @@ from backend.factor_lab_dashboard_semantics import (
     choose_live_prediction_rows,
     collapse_actual_facts_with_diagnostics,
     compact_detail_row,
+    is_factor_lab_history_visible,
     live_actual_selector,
     validate_dashboard_payload,
 )
@@ -47,7 +49,6 @@ MAX_LIVE_PREDICTION_SOURCE_ROWS = 20_000
 MAX_ACTUAL_SOURCE_ROWS = 80_000
 MAX_BACKTEST_RUN_SOURCE_ROWS = 100_000
 MAX_BACKTEST_DETAIL_SOURCE_ROWS = 20_000
-WEEKLY_BACKTEST_START_DATE = "2025-01-01"
 WEEKLY_TASK_TYPES = frozenset({"weekly_point", "weekly_average"})
 MAX_WEEKLY_COVERAGE_DIAGNOSTIC_DATES = 128
 logger = logging.getLogger(__name__)
@@ -149,10 +150,18 @@ def build_factor_lab_dashboard(
         prediction_rows,
         display_until=display_until,
     )
+    history_live_rows_excluded = 0
     predictions_by_scheme: dict[tuple[str, str, int], list[Mapping[str, Any]]] = (
         defaultdict(list)
     )
     for row in canonical_predictions:
+        predict_date = _iso_date(
+            row.get("predict_date"),
+            field="prediction predict_date",
+        )
+        if not is_factor_lab_history_visible(predict_date):
+            history_live_rows_excluded += 1
+            continue
         predictions_by_scheme[
             (
                 _required_text(row.get("scheme_id"), field="prediction scheme_id"),
@@ -180,7 +189,7 @@ def build_factor_lab_dashboard(
     schemes: list[dict[str, Any]] = []
     live_row_count = 0
     backtest_row_count = 0
-    weekly_backtest_rows_excluded = 0
+    history_backtest_rows_excluded = 0
     for scheme in registry:
         selector = live_actual_selector(scheme["task_type"])
         live_rows: list[list[Any]] = []
@@ -232,15 +241,12 @@ def build_factor_lab_dashboard(
                         f"{scheme['scheme_id']}: "
                         f"detail={detail_horizon} registry={scheme['horizon']}"
                     )
-                if (
-                    scheme["task_type"] in WEEKLY_TASK_TYPES
-                    and _iso_date(
-                        detail_row.get("predict_date"),
-                        field="backtest detail predict_date",
-                    )
-                    < WEEKLY_BACKTEST_START_DATE
-                ):
-                    weekly_backtest_rows_excluded += 1
+                predict_date = _iso_date(
+                    detail_row.get("predict_date"),
+                    field="backtest detail predict_date",
+                )
+                if not is_factor_lab_history_visible(predict_date):
+                    history_backtest_rows_excluded += 1
                     continue
                 detail = dict(detail_row)
                 detail["prediction_phase"] = None
@@ -331,8 +337,11 @@ def build_factor_lab_dashboard(
             "detail_row_count": live_row_count + backtest_row_count,
             "raw_bytes": encoding.raw_size,
             "gzip_bytes": encoding.gzip_size,
-            "weekly_backtest_rows_excluded_before_policy_start": (
-                weekly_backtest_rows_excluded
+            "history_backtest_rows_excluded_before_policy_start": (
+                history_backtest_rows_excluded
+            ),
+            "history_live_rows_excluded_before_policy_start": (
+                history_live_rows_excluded
             ),
             "weekly_coverage": weekly_coverage,
             **actual_diagnostics,
@@ -438,7 +447,7 @@ def _weekly_coverage_diagnostics(
                 }
             )
     return {
-        "policy_start_date": WEEKLY_BACKTEST_START_DATE,
+        "policy_start_date": FACTOR_LAB_HISTORY_START_DATE,
         "candidates": candidates,
         "drifts": drifts,
     }

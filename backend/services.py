@@ -18,6 +18,7 @@ from backend.factor_lab_dashboard_semantics import (
     backtest_data_source_label,
     choose_latest_backtest_runs,
     choose_live_prediction_rows,
+    is_factor_lab_history_visible,
 )
 from scheduler.discovery import discover_schemes
 from scheduler.repository import sync_scheme_registry
@@ -866,8 +867,19 @@ def backtest_factor_lab_results(
     schemes: list[dict[str, Any]] = []
     for row in run_rows:
         run = _backtest_run_row(row)
-        daily_rows = _backtest_frontend_daily_rows(engine, run["id"])
-        _validate_backtest_prediction_details(run, daily_rows)
+        audit_daily_rows = _backtest_frontend_daily_rows(engine, run["id"])
+        _validate_backtest_prediction_details(run, audit_daily_rows)
+        daily_rows = {
+            tenor: [
+                detail
+                for detail in details
+                if is_factor_lab_history_visible(str(detail["predict_date"]))
+            ]
+            for tenor, details in audit_daily_rows.items()
+        }
+        daily_rows = {
+            tenor: details for tenor, details in daily_rows.items() if details
+        }
         metrics = _backtest_frontend_monthly_metrics_from_daily_rows(daily_rows)
         tenors = sorted(metrics, key=_tenor_sort_key)
         for tenor in tenors:

@@ -748,7 +748,7 @@ class FactorLabRankingTests(unittest.TestCase):
             f"""
             const payload = {json.dumps(payload)};
             function isoDay(index) {{
-              return new Date(Date.UTC(1990, 0, 1 + index)).toISOString().slice(0, 10);
+              return new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10);
             }}
             for (let index = 0; index < 10000; index += 1) {{
               const date = isoDay(index);
@@ -1561,6 +1561,187 @@ class FactorLabRankingTests(unittest.TestCase):
         self.assertEqual(
             [(row["month"], row["source"]) for row in monthly["months"]],
             [("2026-05", "backtest"), ("2026-06", "live"), ("2026-07", "live")],
+        )
+
+    def test_factor_lab_view_models_hide_pre_2025_rows_in_all_frontend_paths(
+        self,
+    ) -> None:
+        dashboard = _dashboard_payload(
+            schemes=[
+                _dashboard_scheme(
+                    live_rows=[
+                        [
+                            "2024-12-31",
+                            "2024-12-30",
+                            "2025-01-02",
+                            "gray_live",
+                            1,
+                            1,
+                        ],
+                        [
+                            "2025-01-02",
+                            "2024-12-31",
+                            "2025-01-03",
+                            "gray_live",
+                            -1,
+                            -1,
+                        ],
+                    ],
+                    backtest={
+                        "benchmark_id": "demo",
+                        "benchmark_label": "Demo",
+                        "data_source": "framework_db_aligned",
+                        "data_source_label": "当前DB对齐回测",
+                        "latest_run_date": "2025-01-02",
+                        "rows": [
+                            [
+                                "2024-12-30",
+                                "2024-12-30",
+                                "2024-12-31",
+                                None,
+                                1,
+                                1,
+                            ],
+                            [
+                                "2025-01-01",
+                                "2025-01-01",
+                                "2025-01-02",
+                                None,
+                                -1,
+                                -1,
+                            ],
+                        ],
+                    },
+                )
+            ]
+        )
+        legacy = _minimal_legacy_responses()
+        legacy["/api/metrics/demo__h1__5Y"]["daily_rows"] = [
+            {
+                "predict_date": "not-a-date",
+                "feature_date": "2024-12-30",
+                "target_date": "2025-01-01",
+                "prediction_phase": "gray_live",
+                "predicted_direction": 1,
+                "actual_direction": 1,
+            },
+            {
+                "predict_date": "2024-12-31",
+                "feature_date": "2024-12-30",
+                "target_date": "2025-01-02",
+                "prediction_phase": "gray_live",
+                "predicted_direction": 1,
+                "actual_direction": 1,
+            },
+            {
+                "predict_date": "2025-01-02",
+                "feature_date": "2024-12-31",
+                "target_date": "2025-01-03",
+                "prediction_phase": "gray_live",
+                "predicted_direction": -1,
+                "actual_direction": -1,
+            },
+        ]
+        legacy["/api/metrics/demo__h1__5Y"]["phase_ranges"] = [
+            {
+                "prediction_phase": "gray_live",
+                "start_predict_date": "2024-12-31",
+                "end_predict_date": "2025-01-02",
+                "start_target_date": "2025-01-02",
+                "end_target_date": "2025-01-03",
+                "rows": 2,
+            }
+        ]
+        legacy["/api/backtests/factor-lab"]["schemes"] = [
+            {
+                "id": "bt:demo",
+                "scheme_id": "demo__h1__5Y",
+                "base_scheme_id": "demo",
+                "scheme_name": "Demo",
+                "target_tenor": "5Y",
+                "horizon": 1,
+                "task_type": "T+1",
+                "frequency": "daily",
+                "status": "active",
+                "deployed_at": "2026-06-04",
+                "benchmark_label": "Demo",
+                "data_source_label": "当前DB对齐回测",
+                "end_date": "2025-01-02",
+                "monthly_metrics": [],
+                "daily_rows": [
+                    {
+                        "predict_date": "",
+                        "feature_date": "2024-12-29",
+                        "target_date": "2024-12-30",
+                        "predicted_direction": 1,
+                        "actual_direction": 1,
+                    },
+                    {
+                        "predict_date": "2024-12-30",
+                        "feature_date": "2024-12-30",
+                        "target_date": "2024-12-31",
+                        "predicted_direction": 1,
+                        "actual_direction": 1,
+                    },
+                    {
+                        "predict_date": "2025-01-01",
+                        "feature_date": "2025-01-01",
+                        "target_date": "2025-01-02",
+                        "predicted_direction": -1,
+                        "actual_direction": -1,
+                    },
+                ],
+            }
+        ]
+
+        result = _run_factor_lab_hook(
+            f"""
+            const modern = hooks.buildFactorLabViewModel(
+              hooks.decodeDashboardPayload({json.dumps(dashboard)})
+            ).tasks["5Y|T+1"][0];
+            const legacy = hooks.buildLegacyFactorLabViewModelForTest(
+              {json.dumps(legacy)}
+            ).tasks["5Y|T+1"][0];
+            function dates(scheme) {{
+              return Object.keys(scheme.dailyRowsByMonth).sort().reduce(
+                function (values, month) {{
+                  return values.concat(
+                    scheme.dailyRowsByMonth[month].map(function (row) {{
+                      return row.predictDate;
+                    }})
+                  );
+                }},
+                []
+              ).sort();
+            }}
+            return {{
+              modern: dates(modern),
+              legacy: dates(legacy),
+              legacyLatestRun: legacy.latestRun,
+              legacyLiveSinceDate: legacy.liveSinceDate,
+              legacyLiveMetricSinceDate: legacy.liveMetricSinceDate,
+              legacyPhaseRanges: legacy.phaseRanges
+            }};
+            """
+        )
+
+        self.assertEqual(result["modern"], ["2025-01-01", "2025-01-02"])
+        self.assertEqual(result["legacy"], ["2025-01-01", "2025-01-02"])
+        self.assertEqual(result["legacyLatestRun"], "01-02")
+        self.assertEqual(result["legacyLiveSinceDate"], "2025-01-02")
+        self.assertEqual(result["legacyLiveMetricSinceDate"], "2025-01-02")
+        self.assertEqual(
+            result["legacyPhaseRanges"],
+            [
+                {
+                    "prediction_phase": "gray_live",
+                    "start_predict_date": "2025-01-02",
+                    "end_predict_date": "2025-01-02",
+                    "start_target_date": "2025-01-03",
+                    "end_target_date": "2025-01-03",
+                    "rows": 1,
+                }
+            ],
         )
 
     def test_load_dashboard_uses_one_path_derived_get_and_commits_after_build(self) -> None:

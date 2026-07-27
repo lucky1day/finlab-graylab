@@ -652,7 +652,7 @@ def test_builds_live_snapshot_from_active_registry_task_types(
     assert any("daily_t1" in str(parameters) for parameters in trace.parameters)
 
 
-def test_weekly_dashboard_excludes_pre_policy_rows_without_deleting_audit_data(
+def test_dashboard_excludes_all_pre_policy_rows_without_deleting_audit_data(
     dashboard_db: tuple[Engine, SqlTrace],
 ) -> None:
     from backend.factor_lab_dashboard import (
@@ -670,31 +670,73 @@ def test_weekly_dashboard_excludes_pre_policy_rows_without_deleting_audit_data(
                      horizon, predict_date, feature_date, target_date, label,
                      predicted_direction, confidence)
                 VALUES
+                    (1010, 101, 'native-old', 'daily_t1', '5Y', 5,
+                     '2024-12-27', '2024-12-27', '2025-01-03', 1, 1, NULL),
                     (2010, 201, 'blackbox-new', 'weekly_point', '10Y', 1,
-                     '2024-12-27', '2024-12-27', '2025-01-03', 1, 1, NULL)
+                     '2024-12-27', '2024-12-27', '2025-01-03', 1, 1, NULL),
+                    (4010, 400, 'monthly-current', 'monthly', '10Y', 1,
+                     '2024-12-15', '2024-12-15', '2025-01-15', 1, 1, NULL)
+                """
+            )
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO t_scheme_predictions
+                    (id, scheme_id, target_tenor, horizon, predict_date,
+                     feature_date, target_date, prediction_phase,
+                     predicted_direction, extra)
+                VALUES
+                    (70, 'daily_t1', '5Y', 5, '2024-12-27', '2024-12-26',
+                     '2025-01-03', 'gray_live', 1, '{}'),
+                    (71, 'weekly_point', '10Y', 1, '2024-12-29',
+                     '2024-12-27', '2025-01-03', 'gray_live', 1,
+                     '{"frequency":"weekly"}'),
+                    (72, 'monthly', '10Y', 1, '2024-12-15', '2024-12-15',
+                     '2025-01-15', 'gray_live', 1,
+                     '{"frequency":"monthly"}')
                 """
             )
         )
 
     payload = build_factor_lab_dashboard(engine, captured_at=CAPTURED_AT)
-    scheme = _schemes_by_id(payload)["weekly_point__h1__10Y"]
+    schemes = _schemes_by_id(payload)
     diagnostics = dashboard_build_diagnostics(payload["snapshot_id"])
 
-    assert all(row[0] >= "2025-01-01" for row in scheme["backtest"]["rows"])
+    assert all(
+        row[0] >= "2025-01-01"
+        for scheme in schemes.values()
+        for row in (
+            list(scheme["live_rows"])
+            + list((scheme["backtest"] or {}).get("rows") or [])
+        )
+    )
     assert diagnostics is not None
-    assert diagnostics["weekly_backtest_rows_excluded_before_policy_start"] == 1
+    assert diagnostics["history_backtest_rows_excluded_before_policy_start"] == 3
+    assert diagnostics["history_live_rows_excluded_before_policy_start"] == 3
     with engine.connect() as connection:
-        stored = connection.execute(
+        stored_backtest = connection.execute(
             text(
                 """
                 SELECT COUNT(*)
                 FROM t_backtest_predictions
-                WHERE run_id = 201
+                WHERE run_id IN (101, 201, 400)
                   AND predict_date < '2025-01-01'
                 """
             )
         ).scalar_one()
-    assert stored == 1
+        stored_live = connection.execute(
+            text(
+                """
+                SELECT COUNT(*)
+                FROM t_scheme_predictions
+                WHERE id IN (70, 71, 72)
+                  AND predict_date < '2025-01-01'
+                """
+            )
+        ).scalar_one()
+    assert stored_backtest == 3
+    assert stored_live == 3
 
 
 def test_weekly_policy_filter_still_validates_excluded_audit_row_structure(
