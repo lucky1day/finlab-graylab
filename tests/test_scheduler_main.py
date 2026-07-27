@@ -1355,6 +1355,133 @@ class SchedulerMainTests(unittest.TestCase):
         sync_registry.assert_not_called()
         self.assertEqual(execute_scheme.call_count, 2)
 
+    def test_run_all_prediction_jobs_ignores_scheduler_admission_for_gray(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        gray = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="blackbox_v2",
+            scheme_version="04e7af163fb0",
+            frequency="monthly",
+        )
+        expected = SchemeRunResult(
+            gray.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[gray],
+            ),
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=BlackboxSchedulerAdmissionError(
+                    "invalid policy"
+                ),
+            ) as load_admission,
+            patch.object(
+                scheduler_main,
+                "execute_scheme",
+                return_value=expected,
+            ) as execute_scheme,
+        ):
+            results = scheduler_main.run_all_prediction_jobs(
+                run_date="2026-07-27",
+            )
+
+        self.assertEqual(results, [expected])
+        load_admission.assert_not_called()
+        execute_scheme.assert_called_once_with(
+            gray,
+            "2026-07-27",
+            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+        )
+
+    def test_legacy_run_once_predictions_uses_manual_gray_aggregate(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        gray = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="blackbox_v2",
+            scheme_version="04e7af163fb0",
+            frequency="monthly",
+        )
+        expected = SchemeRunResult(
+            gray.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        stdout = io.StringIO()
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[gray],
+            ),
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=BlackboxSchedulerAdmissionError(
+                    "invalid policy"
+                ),
+            ) as load_admission,
+            patch.object(
+                scheduler_main,
+                "execute_scheme",
+                return_value=expected,
+            ) as execute_scheme,
+            patch.object(
+                scheduler_main,
+                "run_all_prediction_jobs",
+                wraps=scheduler_main.run_all_prediction_jobs,
+            ) as manual_aggregate,
+            redirect_stdout(stdout),
+        ):
+            code = scheduler_main.main(
+                [
+                    "--run-once",
+                    "predictions",
+                    "--date",
+                    "2026-07-27",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        manual_aggregate.assert_called_once_with(
+            run_date="2026-07-27",
+            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+            force=False,
+        )
+        load_admission.assert_not_called()
+        execute_scheme.assert_called_once_with(
+            gray,
+            "2026-07-27",
+            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+        )
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {
+                "counts": {
+                    "failed": 0,
+                    "partial": 0,
+                    "skipped": 0,
+                    "success": 1,
+                },
+                "event": "prediction_run_summary",
+                "exit_code": 0,
+                "total": 1,
+            },
+        )
+
     def test_main_returns_one_for_failed_run_once_prediction(self) -> None:
         from scheduler import main as scheduler_main
 

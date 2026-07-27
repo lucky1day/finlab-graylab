@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from scheduler import blackbox_scheduler_admission as admission_module
 from scheduler.blackbox_scheduler_admission import (
     BlackboxSchedulerAdmissionError,
     load_blackbox_scheduler_admission,
@@ -62,6 +63,10 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
             if config.runtime_type == "blackbox_v2"
         }
 
+        self.assertEqual(
+            dict(admission_module.EXPECTED_EXACT_ADMISSIONS),
+            EXPECTED_MODES,
+        )
         self.assertEqual(dict(policy.entries), EXPECTED_MODES)
         for identity, mode in EXPECTED_MODES.items():
             with self.subTest(identity=identity):
@@ -77,12 +82,7 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
     def test_native_is_scheduled_without_blackbox_policy_identity(
         self,
     ) -> None:
-        policy = self._load(
-            {
-                "schema_version": "blackbox-scheduler-admission-v1",
-                "schemes": [],
-            }
-        )
+        policy = load_blackbox_scheduler_admission()
 
         self.assertTrue(
             policy.is_scheduled(
@@ -95,16 +95,11 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         )
 
     def test_unknown_and_version_drift_are_not_scheduled(self) -> None:
-        config = _config("formal_demo", "version-1")
-        policy = self._load(
-            self._payload(
-                {
-                    "scheme_id": config.scheme_id,
-                    "scheme_version": config.scheme_version,
-                    "mode": "formal",
-                }
-            )
+        config = _config(
+            "one_y_t5_liq_excess_a_v1",
+            "8d583560c9f1",
         )
+        policy = load_blackbox_scheduler_admission()
 
         self.assertTrue(policy.is_scheduled(config))
         self.assertFalse(
@@ -114,24 +109,77 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         )
         self.assertFalse(
             policy.is_scheduled(
-                _config(config.scheme_id, "version-2")
+                _config(config.scheme_id, "version-drift")
             )
         )
 
     def test_gray_identity_is_not_scheduled(self) -> None:
-        config = _config("gray_demo", "version-1")
-        policy = self._load(
-            self._payload(
-                {
-                    "scheme_id": config.scheme_id,
-                    "scheme_version": config.scheme_version,
-                    "mode": "gray",
-                }
-            )
+        config = _config(
+            "cgb_a4_fundseason_1y",
+            "04e7af163fb0",
         )
+        policy = load_blackbox_scheduler_admission()
 
         self.assertEqual(policy.mode(config), "gray")
         self.assertFalse(policy.is_scheduled(config))
+
+    def test_empty_policy_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "exact frozen admissions",
+        ):
+            self._load(self._payload())
+
+    def test_unknown_formal_identity_is_rejected(self) -> None:
+        payload = self._expected_payload()
+        payload["schemes"].append(
+            {
+                "scheme_id": "unknown_formal",
+                "scheme_version": "unknown-version",
+                "mode": "formal",
+            }
+        )
+
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "exact frozen admissions",
+        ):
+            self._load(payload)
+
+    def test_missing_exact_identity_is_rejected(self) -> None:
+        payload = self._expected_payload()
+        payload["schemes"].pop()
+
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "exact frozen admissions",
+        ):
+            self._load(payload)
+
+    def test_mode_drift_is_rejected(self) -> None:
+        payload = self._expected_payload()
+        formal_row = next(
+            row
+            for row in payload["schemes"]
+            if row["mode"] == "formal"
+        )
+        formal_row["mode"] = "gray"
+
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "exact frozen admissions",
+        ):
+            self._load(payload)
+
+    def test_version_drift_is_rejected(self) -> None:
+        payload = self._expected_payload()
+        payload["schemes"][0]["scheme_version"] = "version-drift"
+
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "exact frozen admissions",
+        ):
+            self._load(payload)
 
     def test_malformed_json_is_configuration_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -244,6 +292,20 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
             "schema_version": "blackbox-scheduler-admission-v1",
             "schemes": list(rows),
         }
+
+    @staticmethod
+    def _expected_payload() -> dict[str, object]:
+        rows = [
+            {
+                "scheme_id": scheme_id,
+                "scheme_version": scheme_version,
+                "mode": mode,
+            }
+            for (scheme_id, scheme_version), mode in sorted(
+                EXPECTED_MODES.items()
+            )
+        ]
+        return BlackboxSchedulerAdmissionTests._payload(*rows)
 
     @staticmethod
     def _load(payload: object):

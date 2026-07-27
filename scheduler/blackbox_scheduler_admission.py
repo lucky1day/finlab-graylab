@@ -19,6 +19,52 @@ _ROOT_FIELDS = frozenset({"schema_version", "schemes"})
 _SCHEME_FIELDS = frozenset(
     {"scheme_id", "scheme_version", "mode"}
 )
+EXPECTED_EXACT_ADMISSIONS: Mapping[tuple[str, str], str] = (
+    MappingProxyType(
+        {
+            (
+                "one_y_t5_liq_excess_a_v1",
+                "8d583560c9f1",
+            ): "formal",
+            (
+                "one_y_t5_liq_excess_a_w252_l7_v1",
+                "103c93bbc913",
+            ): "formal",
+            (
+                "one_y_t5_liq_excess_a_w350_l7_v1",
+                "86b458c568a5",
+            ): "formal",
+            (
+                "one_y_t5_liq_excess_b_w252_l7_v1",
+                "ba00891cd179",
+            ): "formal",
+            (
+                "weekly_10y_lgbm_point_v1",
+                "0666a6989d6b",
+            ): "formal",
+            (
+                "cgb_a4_fundseason_1y",
+                "04e7af163fb0",
+            ): "gray",
+            (
+                "cgb_a4_fundseason_3y",
+                "89d31f8bcb95",
+            ): "gray",
+            (
+                "cgb_a4_fundseason_5y",
+                "7d47e0328532",
+            ): "gray",
+            (
+                "cgb_a4_fundseason_7y",
+                "ddba87ece7ae",
+            ): "gray",
+            (
+                "cgb_a4_fundseason_10y",
+                "85a65700499b",
+            ): "gray",
+        }
+    )
+)
 
 
 class BlackboxSchedulerAdmissionError(ValueError):
@@ -121,6 +167,23 @@ def load_blackbox_scheduler_admission(
                 f"{scheme_id}@{scheme_version}"
             )
         entries[identity] = mode
+
+    if entries != EXPECTED_EXACT_ADMISSIONS:
+        expected_ids = set(EXPECTED_EXACT_ADMISSIONS)
+        actual_ids = set(entries)
+        missing = sorted(expected_ids - actual_ids)
+        extra = sorted(actual_ids - expected_ids)
+        mode_drift = sorted(
+            identity
+            for identity in expected_ids & actual_ids
+            if entries[identity]
+            != EXPECTED_EXACT_ADMISSIONS[identity]
+        )
+        raise BlackboxSchedulerAdmissionError(
+            "Blackbox scheduler admission must equal exact frozen "
+            f"admissions: missing={missing} extra={extra} "
+            f"mode_drift={mode_drift}"
+        )
 
     return BlackboxSchedulerAdmissionPolicy(
         entries=MappingProxyType(entries)
