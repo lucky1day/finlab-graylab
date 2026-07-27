@@ -30,6 +30,7 @@
 - 相关回归为 `183 passed / 71 subtests`，最终全量为 `2930 passed / 26 skipped / 1008 subtests`；前端资源版本为 `20260727b`。Python 后端进程尚未在授权维护窗口重启。
 - 月度 updater 已按 `1Y/3Y/5Y/7Y/10Y` 执行两次；2025+ 的 116 条事实摘要两次一致，8 个 active 月度方案继续为 `19 signal / 18 valid`。
 - 已删除早期 100 条技术 Gate run `166–169`、非 canonical run `170–173`，以及跨过 gray 边界且已被替代的旧全量 run `174–177`。当前四个 1Y/T+5 方案分别只保留一条 canonical run `178–181`；每轮删除前后 API/dashboard canonical 投影摘要均一致。
+- 三个错误复用周度单点算法的 point-backed 周平均身份已彻底删除：代码侧只剩 40 个 active execution /44 个 target，数据库 Registry 同样为 40/44 且无 paused。受控事务删除了 3 个 Registry、12 个 version、15 个 run、14 个 live prediction、6 个 backtest run、422 个 backtest prediction、23 个 harness run 及其 136 个 Gate result；删除前后 `/api/schemes` 和 dashboard 投影摘要一致。
 - `weekly_10y_lgbm_point_v1` 已生成合规 run `191`（72 条历史、17 个月度指标），并补齐 7 条缺失 gray，加原有 7/24 共为 `80/80`；旧 run `165` 在确认新历史+live 完整覆盖后已受控删除。
 - 该 Blackbox 的 7/31 信号因 DataBridge 仍为 `refresh_date=2026-07-24` 被 Gate 拒绝，零写入；必须等待合法新 generation。
 - `weekly_10y_d_overlay_0529` 的首个回补 run `1407` 因源 `week_id=202625` 无交易日而 fail-closed，零 prediction，仍为 `77/77`；后续日期按规则停止。
