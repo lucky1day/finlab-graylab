@@ -29,7 +29,7 @@
 - 开发分支已包含 `d81c512`、`91d3779`、`7842955` 和 `3b5335a`：Actual 默认范围以 active Registry 为准；因子实验室所有前端路径统一只展示 `predict_date >= 2025-01-01`。展示门禁本身不删除数据库事实，仍保留的旧行可通过独立审计 API 查询；经受控核验删除的 obsolete runs 见下文。
 - 相关回归为 `183 passed / 71 subtests`，最终全量为 `2930 passed / 26 skipped / 1008 subtests`；前端资源版本为 `20260727b`。Python 后端进程尚未在授权维护窗口重启。
 - 月度 updater 已按 `1Y/3Y/5Y/7Y/10Y` 执行两次；2025+ 的 116 条事实摘要两次一致，8 个 active 月度方案继续为 `19 signal / 18 valid`。
-- 已删除 prediction/月度输出等价且已被审计摘要更完整的 canonical run `174–177` 替代的非 canonical run `170–173`；删除前后 API/dashboard canonical 投影摘要一致。
+- 已删除早期 100 条技术 Gate run `166–169`、非 canonical run `170–173`，以及跨过 gray 边界且已被替代的旧全量 run `174–177`。当前四个 1Y/T+5 方案分别只保留一条 canonical run `178–181`；每轮删除前后 API/dashboard canonical 投影摘要均一致。
 - `weekly_10y_lgbm_point_v1` 已生成合规 run `191`（72 条历史、17 个月度指标），并补齐 7 条缺失 gray，加原有 7/24 共为 `80/80`；旧 run `165` 在确认新历史+live 完整覆盖后已受控删除。
 - 该 Blackbox 的 7/31 信号因 DataBridge 仍为 `refresh_date=2026-07-24` 被 Gate 拒绝，零写入；必须等待合法新 generation。
 - `weekly_10y_d_overlay_0529` 的首个回补 run `1407` 因源 `week_id=202625` 无交易日而 fail-closed，零 prediction，仍为 `77/77`；后续日期按规则停止。

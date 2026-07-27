@@ -39,9 +39,10 @@
 - 月度 updater 已按 active Registry 的
   `1Y/3Y/5Y/7Y/10Y` 幂等运行，8 个 active 月度方案保持
   `19 signal / 18 valid`。
-- 已删除 prediction/月度输出等价且已被审计摘要更完整的 canonical run
-  `174–177` 替代的非 canonical run `170–173`；API 和 dashboard
-  canonical 投影未变化。
+- 已删除早期 100 条技术 Gate run `166–169`、非 canonical run
+  `170–173`，以及跨过 gray 边界且已被替代的旧全量 run `174–177`。
+  当前四个 1Y/T+5 方案分别只保留一条 canonical run `178–181`；API 和
+  dashboard canonical 投影未变化。
 - `weekly_10y_lgbm_point_v1` 已写入合规 run `191`，72 条历史；
   6/5–7/17 的 7 个灰度缺口已补齐，加原有 7/24 后为 `80/80`。旧 run
   `165` 在确认 2025+ 目标全部被新历史+live 覆盖后已删除。
