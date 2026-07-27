@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from scheduler.blackbox_scheduler_admission import (
-    DEFAULT_ADMISSION_PATH,
     BlackboxSchedulerAdmissionError,
     load_blackbox_scheduler_admission,
 )
@@ -145,6 +144,28 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
             ):
                 load_blackbox_scheduler_admission(path)
 
+    def test_missing_policy_is_configuration_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "missing-admission.json"
+
+            with self.assertRaisesRegex(
+                BlackboxSchedulerAdmissionError,
+                "not found",
+            ):
+                load_blackbox_scheduler_admission(path)
+
+    def test_schema_drift_is_configuration_error(self) -> None:
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "schema_version",
+        ):
+            self._load(
+                {
+                    "schema_version": "future-version",
+                    "schemes": [],
+                }
+            )
+
     def test_policy_rejects_invalid_root_and_entry_shapes(self) -> None:
         invalid_payloads = (
             [],
@@ -155,10 +176,6 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
             {
                 "schema_version": "blackbox-scheduler-admission-v1",
                 "schemes": ["not-an-object"],
-            },
-            {
-                "schema_version": "wrong-version",
-                "schemes": [],
             },
             {
                 "schema_version": "blackbox-scheduler-admission-v1",

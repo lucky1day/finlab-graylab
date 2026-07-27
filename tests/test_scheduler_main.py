@@ -932,6 +932,174 @@ class SchedulerMainTests(unittest.TestCase):
         )
         sync_registry.assert_called_once_with(schemes)
 
+    def test_invalid_blackbox_policy_keeps_native_and_actuals_jobs(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        native = _cfg("native_demo")
+        blackbox = _cfg(
+            "one_y_t5_liq_excess_a_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
+        )
+        schemes = [native, blackbox]
+        policy_errors = (
+            "admission not found",
+            "admission is invalid JSON",
+            "unsupported schema_version",
+        )
+
+        for policy_error in policy_errors:
+            with self.subTest(policy_error=policy_error):
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "BOND_SCHEDULER_STARTUP_CATCHUP": (
+                                "false"
+                            )
+                        },
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "discover_schemes",
+                        return_value=schemes,
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "_sync_registry",
+                        return_value=None,
+                    ) as sync_registry,
+                    patch.object(
+                        scheduler_main,
+                        "load_blackbox_scheduler_admission",
+                        side_effect=(
+                            BlackboxSchedulerAdmissionError(
+                                policy_error
+                            )
+                        ),
+                    ),
+                    self.assertLogs(
+                        scheduler_main.logger,
+                        level=logging.CRITICAL,
+                    ),
+                ):
+                    scheduler = scheduler_main.build_scheduler()
+
+                try:
+                    job_ids = {
+                        job.id
+                        for job in scheduler.get_jobs()
+                    }
+                finally:
+                    if scheduler.running:
+                        scheduler.shutdown(wait=False)
+
+                self.assertIn("predict:native_demo", job_ids)
+                self.assertNotIn(
+                    "predict:one_y_t5_liq_excess_a_v1",
+                    job_ids,
+                )
+                self.assertTrue(
+                    {
+                        "actuals:0830",
+                        "actuals:1900",
+                        "actuals:2345",
+                    }.issubset(job_ids)
+                )
+                sync_registry.assert_called_once_with(schemes)
+
+    def test_native_only_scheduler_does_not_load_blackbox_policy(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        native = _cfg("native_demo")
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[native],
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=AssertionError(
+                    "Native-only scheduler must not load Blackbox policy"
+                ),
+            ) as load_policy,
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            self.assertIsNotNone(
+                scheduler.get_job("predict:native_demo")
+            )
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        load_policy.assert_not_called()
+
+    def test_gray_blackbox_does_not_consume_stagger_slot(self) -> None:
+        from scheduler import main as scheduler_main
+
+        gray = _cfg(
+            "cgb_a4_fundseason_1y",
+            runtime_type="blackbox_v2",
+            scheme_version="04e7af163fb0",
+        )
+        formal = _cfg(
+            "one_y_t5_liq_excess_a_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BOND_SCHEDULER_STARTUP_CATCHUP": "false",
+                    "BOND_SCHEDULER_STAGGER_MINUTES": "2",
+                },
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[gray, formal],
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            formal_job = scheduler.get_job(
+                f"predict:{formal.scheme_id}"
+            )
+            gray_job = scheduler.get_job(
+                f"predict:{gray.scheme_id}"
+            )
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertIsNotNone(formal_job)
+        self.assertIn("minute='3'", str(formal_job.trigger))
+        self.assertIsNone(gray_job)
+
     def test_scheduler_staggers_prediction_jobs_with_same_base_cron(self) -> None:
         from scheduler import main as scheduler_main
 
@@ -1437,7 +1605,18 @@ class SchedulerMainTests(unittest.TestCase):
             )
             for result in results:
                 with self.subTest(status=result.status):
-                    with patch.object(scheduler_main, "run_prediction_job", return_value=result):
+                    with (
+                        patch.object(
+                            scheduler_main,
+                            "discover_schemes",
+                            return_value=[cfg],
+                        ),
+                        patch.object(
+                            scheduler_main,
+                            "_run_prediction_config",
+                            return_value=result,
+                        ),
+                    ):
                         with self.assertRaisesRegex(RuntimeError, result.status):
                             job.func("scheduled_demo")
         finally:
@@ -1447,13 +1626,25 @@ class SchedulerMainTests(unittest.TestCase):
     def test_scheduled_prediction_wrapper_passes_through_success_and_skipped_results(self) -> None:
         from scheduler import main as scheduler_main
 
+        config = _cfg("scheduled_demo")
         results = (
             SchemeRunResult("scheduled_demo", "success", 1, 0.1),
             SchemeRunResult("scheduled_demo", "skipped", 0, 0.0, "non-trading day"),
         )
         for result in results:
             with self.subTest(status=result.status):
-                with patch.object(scheduler_main, "run_prediction_job", return_value=result):
+                with (
+                    patch.object(
+                        scheduler_main,
+                        "discover_schemes",
+                        return_value=[config],
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "_run_prediction_config",
+                        return_value=result,
+                    ),
+                ):
                     actual = scheduler_main.run_scheduled_prediction_job("scheduled_demo")
 
                 self.assertIs(actual, result)
@@ -1486,14 +1677,8 @@ class SchedulerMainTests(unittest.TestCase):
                 ),
                 patch.object(
                     scheduler_main,
-                    "run_prediction_job",
-                    return_value=SchemeRunResult(
-                        config.scheme_id,
-                        "success",
-                        1,
-                        0.1,
-                    ),
-                ) as manual_path,
+                    "_run_prediction_config",
+                ) as run_config,
                 self.assertRaisesRegex(
                     BlackboxSchedulerAdmissionError,
                     "automatic scheduling denied",
@@ -1503,7 +1688,7 @@ class SchedulerMainTests(unittest.TestCase):
                     config.scheme_id
                 )
 
-            manual_path.assert_not_called()
+            run_config.assert_not_called()
 
     def test_scheduled_wrapper_allows_exact_formal_blackbox_identity(
         self,
@@ -1530,21 +1715,160 @@ class SchedulerMainTests(unittest.TestCase):
             ),
             patch.object(
                 scheduler_main,
-                "run_prediction_job",
+                "_run_prediction_config",
                 return_value=expected,
-            ) as manual_path,
+            ) as run_config,
         ):
             actual = scheduler_main.run_scheduled_prediction_job(
-                config.scheme_id
+                config.scheme_id,
+                run_date="2026-07-27",
             )
 
         self.assertIs(actual, expected)
-        manual_path.assert_called_once_with(
-            config.scheme_id,
-            run_date=None,
+        run_config.assert_called_once_with(
+            config,
+            "2026-07-27",
             algo_env=scheduler_main.DEFAULT_ALGO_ENV,
             force=False,
         )
+
+    def test_scheduled_wrapper_uses_one_discovery_and_same_admitted_config(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        admitted = _cfg(
+            "weekly_10y_lgbm_point_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="0666a6989d6b",
+            frequency="weekly",
+        )
+        drifted = _cfg(
+            admitted.scheme_id,
+            runtime_type="blackbox_v2",
+            scheme_version="version-drift",
+            frequency="weekly",
+        )
+        expected = SchemeRunResult(
+            admitted.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                side_effect=[[admitted], [drifted]],
+            ) as discovery,
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                return_value=expected,
+            ) as run_config,
+        ):
+            actual = scheduler_main.run_scheduled_prediction_job(
+                admitted.scheme_id,
+                run_date="2026-07-27",
+            )
+
+        self.assertIs(actual, expected)
+        discovery.assert_called_once_with()
+        run_config.assert_called_once_with(
+            admitted,
+            "2026-07-27",
+            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+            force=False,
+        )
+
+    def test_native_scheduled_wrapper_does_not_load_blackbox_policy(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        native = _cfg(
+            "native_demo",
+            frequency="weekly",
+        )
+        expected = SchemeRunResult(
+            native.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[native],
+            ) as discovery,
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=AssertionError(
+                    "Native wrapper must not load Blackbox policy"
+                ),
+            ) as load_policy,
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                return_value=expected,
+            ) as run_config,
+        ):
+            actual = scheduler_main.run_scheduled_prediction_job(
+                native.scheme_id,
+                run_date="2026-07-27",
+            )
+
+        self.assertIs(actual, expected)
+        discovery.assert_called_once_with()
+        load_policy.assert_not_called()
+        run_config.assert_called_once_with(
+            native,
+            "2026-07-27",
+            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+            force=False,
+        )
+
+    def test_blackbox_scheduled_wrapper_rejects_invalid_policy(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        blackbox = _cfg(
+            "weekly_10y_lgbm_point_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="0666a6989d6b",
+            frequency="weekly",
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[blackbox],
+            ),
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=BlackboxSchedulerAdmissionError(
+                    "invalid policy"
+                ),
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+            ) as run_config,
+            self.assertRaisesRegex(
+                BlackboxSchedulerAdmissionError,
+                "invalid policy",
+            ),
+        ):
+            scheduler_main.run_scheduled_prediction_job(
+                blackbox.scheme_id,
+                run_date="2026-07-27",
+            )
+
+        run_config.assert_not_called()
 
     def test_manual_prediction_path_keeps_gray_blackbox_executable(
         self,
@@ -1605,7 +1929,7 @@ class SchedulerMainTests(unittest.TestCase):
             ),
             patch.object(
                 scheduler_main,
-                "run_prediction_job",
+                "_run_prediction_config",
                 return_value=SchemeRunResult(
                     "daily_demo",
                     "success",
@@ -1857,6 +2181,83 @@ class SchedulerMainTests(unittest.TestCase):
             [result.scheme_id for result in results],
             ["native_demo", formal.scheme_id],
         )
+
+    def test_startup_invalid_blackbox_policy_keeps_native_catchup(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        now = datetime(
+            2026,
+            7,
+            9,
+            7,
+            15,
+            tzinfo=scheduler_main.ASIA_SHANGHAI,
+        )
+        native = _cfg("native_demo")
+        blackbox = _cfg(
+            "one_y_t5_liq_excess_a_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
+        )
+        schemes = [native, blackbox]
+        expected = SchemeRunResult(
+            native.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ) as sync_registry,
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=BlackboxSchedulerAdmissionError(
+                    "invalid policy"
+                ),
+            ),
+            patch.object(
+                scheduler_main,
+                "_prediction_run_exists",
+                return_value=False,
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                return_value=expected,
+            ) as run_config,
+            patch.object(
+                scheduler_main,
+                "create_engine_from_env",
+            ),
+            self.assertLogs(
+                scheduler_main.logger,
+                level=logging.CRITICAL,
+            ),
+        ):
+            results = scheduler_main.run_startup_prediction_catchup(
+                now=now,
+                algo_env="forecast_env",
+            )
+
+        sync_registry.assert_called_once_with(schemes)
+        run_config.assert_called_once_with(
+            native,
+            "2026-07-09",
+            algo_env="forecast_env",
+            force=False,
+        )
+        self.assertEqual(results, [expected])
 
     def test_startup_prediction_catchup_raises_after_attempting_all_due_jobs(self) -> None:
         from scheduler import main as scheduler_main

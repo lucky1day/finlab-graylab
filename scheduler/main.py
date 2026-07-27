@@ -389,10 +389,40 @@ def _automatic_prediction_schemes(
     schemes: Iterable[SchemeConfig],
 ) -> list[SchemeConfig]:
     """保留 Native，并仅放行 formal 精确身份的 Blackbox。"""
-    policy = load_blackbox_scheduler_admission()
+    configs = list(schemes)
+    blackbox_configs = [
+        config
+        for config in configs
+        if getattr(
+            config,
+            "runtime_type",
+            "native_adapter",
+        )
+        == "blackbox_v2"
+    ]
+    if not blackbox_configs:
+        return configs
+    try:
+        policy = load_blackbox_scheduler_admission()
+    except BlackboxSchedulerAdmissionError as exc:
+        logger.critical(
+            "Blackbox automatic scheduling denied for all discovered "
+            "Blackbox schemes because admission is invalid: %s",
+            exc,
+        )
+        return [
+            config
+            for config in configs
+            if getattr(
+                config,
+                "runtime_type",
+                "native_adapter",
+            )
+            != "blackbox_v2"
+        ]
     return [
         config
-        for config in schemes
+        for config in configs
         if policy.is_scheduled(config)
     ]
 
@@ -645,6 +675,7 @@ def run_scheduled_prediction_job(
     force: bool = False,
 ) -> SchemeRunResult:
     """执行 APScheduler 预测任务，并向调度器暴露失败状态。"""
+    predict_date = _normalize_run_date(run_date)
     scheduled_config = next(
         (
             config
@@ -653,6 +684,18 @@ def run_scheduled_prediction_job(
         ),
         None,
     )
+    if scheduled_config is None:
+        logger.error("Scheme not found: %s", scheme_id)
+        result = SchemeRunResult(
+            scheme_id,
+            "failed",
+            0,
+            0.0,
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+            f"scheme not found: {scheme_id}",
+        )
+    else:
+        result = None
     if (
         scheduled_config is not None
         and getattr(
@@ -662,12 +705,24 @@ def run_scheduled_prediction_job(
         )
         == "blackbox_v2"
     ):
-        policy = load_blackbox_scheduler_admission()
-        if not policy.is_scheduled(scheduled_config):
-            identity = (
-                f"{scheduled_config.scheme_id}@"
-                f"{getattr(scheduled_config, 'scheme_version', '')}"
+        identity = (
+            f"{scheduled_config.scheme_id}@"
+            f"{getattr(scheduled_config, 'scheme_version', '')}"
+        )
+        try:
+            policy = load_blackbox_scheduler_admission()
+        except BlackboxSchedulerAdmissionError as exc:
+            logger.critical(
+                "Blackbox automatic scheduling denied because admission "
+                "is invalid: identity=%s error=%s",
+                identity,
+                exc,
             )
+            raise BlackboxSchedulerAdmissionError(
+                "Blackbox automatic scheduling denied: "
+                f"{identity}; invalid admission: {exc}"
+            ) from exc
+        if not policy.is_scheduled(scheduled_config):
             mode = policy.mode(scheduled_config) or "unlisted"
             raise BlackboxSchedulerAdmissionError(
                 "Blackbox automatic scheduling denied: "
@@ -681,12 +736,14 @@ def run_scheduled_prediction_job(
         raise RuntimeError(
             "legacy scheduled daily prediction is disabled in ledger mode"
         )
-    result = run_prediction_job(
-        scheme_id,
-        run_date=run_date,
-        algo_env=algo_env,
-        force=force,
-    )
+    if scheduled_config is not None:
+        result = _run_prediction_config(
+            scheduled_config,
+            predict_date,
+            algo_env=algo_env,
+            force=force,
+        )
+    assert result is not None
     if result.status in {"failed", "partial"}:
         detail = f": {result.error_msg}" if result.error_msg else ""
         raise RuntimeError(f"Scheduled prediction {result.status}: {scheme_id}{detail}")
