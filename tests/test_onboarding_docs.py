@@ -51,6 +51,13 @@ TEN_Y_T5_SCHEME_IDS = (
     "ten_y_t5_maj4_k3_ic_yearly_v1",
     "ten_y_t5_say_k5_sharpe_static_v1",
 )
+FENGRL_MONTHLY_SCHEME_IDS = (
+    "cgb_a4_fundseason_1y",
+    "cgb_a4_fundseason_3y",
+    "cgb_a4_fundseason_5y",
+    "cgb_a4_fundseason_7y",
+    "cgb_a4_fundseason_10y",
+)
 FENGRL_MONTHLY_RECORD = (
     BLACKBOX_RECORDS
     / "MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md"
@@ -656,6 +663,44 @@ class OnboardingDocumentationTests(unittest.TestCase):
         )
         positions = [text.index(marker) for marker in dependencies]
         self.assertEqual(positions, sorted(positions))
+
+    def test_todo_makes_fengrl_monthly_manual_gray_the_current_p0(self) -> None:
+        """FengRL 五方案必须先完成手工灰度，不得被调度工作抢占。"""
+        text = TODO.read_text(encoding="utf-8")
+        p0, remainder = text.split("## P1", maxsplit=1)
+
+        self.assertIn("FengRL 五个月度方案手工灰度入库", p0)
+        self.assertIn("TECHNICAL_ONBOARDING_COMPLETE_5_OF_5", p0)
+        self.assertIn("paused/draft", p0)
+        self.assertIn("7/7 check-only", p0)
+        self.assertIn("100/100 persist=false", p0)
+        self.assertIn(
+            "codex/blackbox-v2-monthly-fengrl-review-20260726",
+            p0,
+        )
+        for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
+            self.assertIn(scheme_id, p0)
+
+        required_order = (
+            "production 只读冲突/日期计划",
+            "persisted all-stage",
+            "shadow/register",
+            "historical backtest",
+            "controlled activate",
+            "manual monthly gray_live",
+            "DB/API/frontend",
+        )
+        fengrl_steps = p0.split("尚无专项生产写授权。", maxsplit=1)[1]
+        positions = [fengrl_steps.index(marker) for marker in required_order]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn("尚无专项生产写授权", p0)
+        self.assertIn("不在本批", p0)
+        self.assertIn("scheduled_live", p0)
+        self.assertIn("gray admission 前不得合入或用于重启 legacy scheduler", p0)
+
+        self.assertIn("日频平台前置依赖", remainder)
+        self.assertIn("独立 gray/formal admission", remainder)
+        self.assertIn("正式晋级", remainder)
 
     def test_canonical_migration_runner_boundary_is_documented(self) -> None:
         """迁移 CLI 的写库身份围栏与运维边界必须由当前文档锁定。"""

@@ -12,7 +12,40 @@
 `manual gray_live` 和前端验收已经完成，不再列为待办；终态见
 [10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
 
-## P0：日频平台前置依赖（严格顺序）
+## P0：FengRL 五个月度方案手工灰度入库（当前最高优先级）
+
+本批只处理下列五个精确 Blackbox V2 月度方案：
+
+- `cgb_a4_fundseason_1y`
+- `cgb_a4_fundseason_3y`
+- `cgb_a4_fundseason_5y`
+- `cgb_a4_fundseason_7y`
+- `cgb_a4_fundseason_10y`
+
+技术入库状态为 `TECHNICAL_ONBOARDING_COMPLETE_5_OF_5`：五项均为
+`paused/draft`、七段 `7/7 check-only` 通过、`100/100 persist=false`，当前
+integration 来源分支为
+`codex/blackbox-v2-monthly-fengrl-review-20260726`。这些结论仅代表技术 Gate
+完成，不代表已获得生产写入或前端可见资格。
+
+尚无专项生产写授权。取得授权后必须逐方案按以下严格顺序执行，并对每项单独
+记录证据与失败原因：
+
+1. `production 只读冲突/日期计划`：冻结 Registry/version/target/run/
+   prediction/backtest 的冲突快照与月度历史、灰度日期边界。
+2. `persisted all-stage`：以精确 identity 重新执行持久化前的全段 Gate。
+3. `shadow/register`：只经受控 harness 创建 shadow 与 Registry/version 身份。
+4. `historical backtest`：持久化完整历史回测，禁止与 gray 日期重叠。
+5. `controlled activate`：逐方案受控激活并核验 active Registry 只提供灰度实验室
+   前端可见性。
+6. `manual monthly gray_live`：按冻结日期计划手工补齐月度 gray 信号与 provenance。
+7. `DB/API/frontend`：逐方案核验数据库、API 和前端格子均显示截至最新合法输入的
+   全部信号。
+
+自动 scheduler 与 `scheduled_live` 不在本批。代码在 gray admission 前不得合入或用于重启 legacy scheduler；本批任何 `active` 结果都不等于 scheduler 授权，也不得
+进入正式 21/25。
+
+## P1：日频平台前置依赖（严格顺序）
 
 本批自动调度只能在以下依赖全部通过后开始；每项均需有可审计证据，不能以 recorder、伪造 seal、生产库写入或其他替代物跳过。
 
@@ -26,9 +59,9 @@
 
 前置事项的架构门禁见[日频信号 08:00 SLA 架构](architecture/DAILY_SIGNAL_SLA.md)；已验证进展只记录在[当前状态](CURRENT_STATUS.md)。
 
-## P1：独立 gray/formal admission 与本批自动灰度
+## P2：独立 gray/formal admission 与本批自动灰度
 
-仅在 P0 全部通过、调度设计验收通过且获得新的专项授权后，才建设独立的 `scheduler_admission=gray|formal`（即 `gray/formal admission`）。它必须与既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray admission 通过后才可把以下四个方案接入 `automatic gray scheduling`：
+仅在 P1 全部通过、调度设计验收通过且获得新的专项授权后，才建设独立的 `scheduler_admission=gray|formal`（即 `gray/formal admission`）。它必须与既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray admission 通过后才可把以下四个方案接入 `automatic gray scheduling`：
 
 - `ten_y_t5_maj3_k3_ic_static_v1`
 - `ten_y_t5_maj4_k3_ic_static_v1`
@@ -43,6 +76,6 @@ scheduler 授权，禁止旧
 generation fallback。`formal` 的准入必须另行授权，不能由 `gray`、description
 豁免或本批手工入库结论推导。
 
-## P2：正式晋级
+## P3：正式晋级
 
 只有本批自动灰度完成专项观察、actual/API/前端证据齐全并取得新的逐方案授权后，才可讨论 `formal promotion`；不得把手工入库、前端可见性或 gray admission 混称为正式生产。
