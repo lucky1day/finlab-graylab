@@ -1,4 +1,4 @@
-# FengRL 五个月度方案技术入库记录
+# FengRL 五个月度方案入库与手工灰度记录
 
 **批次开始日期**：2026-07-26
 
@@ -8,14 +8,15 @@
 
 **工作树**：`/Users/macstudio0/.config/superpowers/worktrees/bond-factor-lab/blackbox-v2-monthly-fengrl-review-20260726`
 
-**批次状态**：`TECHNICAL_ONBOARDING_COMPLETE_5_OF_5`
+**批次状态**：`MANUAL_GRAY_ACCEPTED_5_OF_5`
 
-## 固定边界
+## 技术入库阶段的原始边界
 
-本批次只做 Blackbox V2 技术入库准备。所有 Gate 使用
+2026-07-26 的原始阶段只做 Blackbox V2 技术入库准备。所有 Gate 使用
 `onboard --stage all --check-only`；不激活 Registry，不运行
 gray/scheduled live，不执行持久化 backtest，不修改 rollout/admission、
-BondProjectPro 或日频 coordinator，不合并、不推送、不部署。
+BondProjectPro 或日频 coordinator，不合并、不推送、不部署。该段是时点
+事实，已由后文 2026-07-27 的专项授权和手工灰度终验继续推进。
 
 正式交付仅接收每个方案同名的 `.py + .json`。上游随包
 `api_wind_date.csv`、样例、开发检查和交接文档均不进入方案目录；
@@ -213,3 +214,60 @@ DataBridge 根目录权限为 `0755`，不存在 fresh live publication；因此
 [FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json](FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)。
 该结论仅为 `INTEGRATION_PREFLIGHT_READY_NO_WRITE`，不是激活、前端展示
 或入库完成声明。
+
+## 2026-07-27 手工灰度终验
+
+专项授权后，五个 exact scheme/version/delivery SHA 均完成 persisted
+all-stage 7/7、受控 Registry/version 注册与激活、持久化历史、手工
+`gray_live`、DB/API/前端验收。最终 integration branch 为
+`codex/fengrl-monthly-gray-integration-20260727`，候选代码 HEAD 为
+`fea4e7bd5a3ff77154ee1b49ca31e634a4912422`。
+
+| 方案 | exact version | 历史 run | 历史 prediction / 月度指标 | 手工 gray run / prediction / log | 前端信号 |
+|---|---|---:|---:|---:|---:|
+| `cgb_a4_fundseason_1y` | `04e7af163fb0` | 186 | 16 / 16 | 3 / 3 / 3 | 19 |
+| `cgb_a4_fundseason_3y` | `89d31f8cb95` | 188 | 16 / 16 | 3 / 3 / 3 | 19 |
+| `cgb_a4_fundseason_5y` | `7d47e0328532` | 187 | 16 / 16 | 3 / 3 / 3 | 19 |
+| `cgb_a4_fundseason_7y` | `ddba87ece7ae` | 189 | 16 / 16 | 3 / 3 / 3 | 19 |
+| `cgb_a4_fundseason_10y` | `85a65700499b` | 190 | 16 / 16 | 3 / 3 / 3 | 19 |
+
+1Y persisted all-stage 的已知 run 为
+`hr_20260727T065944Z_cfd3aff124ec`。其余方案不在本文填入未经终验证据
+明确给出的 Harness run ID；7/7 结论由终验计数与精确 identity 绑定。
+
+每方案历史边界为 `target_date < 2026-06-01`，恰好 16 条；每方案手工
+gray 日期严格为：
+
+- `predict_date=2026-05-15`、`feature_date=2026-05-15`、
+  `target_date=2026-06-15`
+- `predict_date=2026-06-15`、`feature_date=2026-06-15`、
+  `target_date=2026-07-15`
+- `predict_date=2026-07-15`、`feature_date=2026-07-15`、
+  `target_date=2026-08-14`
+
+因此每方案是 `16 + 3 = 19` 条，不是 18 条；全批历史 80 条、手工
+`gray_live` 15 条，总计 `80 + 15 = 95` 条。历史与灰度零重叠、零缺口，
+全部绑定 DataBridge generation
+`full-20260724-062251-4977e502dadf`。
+
+五个 composite Registry 与 exact version 均为 `active`。DB、API 和前端
+均已确认每个方案展示 19 条。本批每方案
+`scheduled_live=0`，全局既有 scheduled 基线仍为 490 runs / 513
+predictions，三层 ledger 仍为 `0/0/0`，rollout=`legacy`、
+admission=`BLOCKED`。scheduler/backend 未重启，运行目录仍为主仓库；
+本批没有合并、推送、部署或修改 BondProjectPro。
+
+执行中发现并保留了两个平台修复审计：
+
+- `2150f0a`：将月度历史的 target cutoff 与自然 15 日 trigger
+  date 分离，避免边界月被错误排除。
+- `4b0c7e5`：月度历史忽略补班周末，避免非交易自然日错误进入历史
+  请求集合。
+
+这两个修复没有改写上游算法逻辑。本次 `active` 和手工 `gray_live`
+只提供灰度实验室可见性，不授予定时调度、`scheduled_live`、正式 21/25
+或部署权限；未来只能在独立 `gray/formal admission` 与调度设计通过后
+另行接入。
+
+最终机器可读未签名摘要见
+[FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json](FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json)。

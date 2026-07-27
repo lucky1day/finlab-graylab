@@ -12,9 +12,10 @@
 `manual gray_live` 和前端验收已经完成，不再列为待办；终态见
 [10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
 
-## P0：FengRL 五个月度方案手工灰度入库（当前最高优先级）
+## FengRL 五个月度方案手工灰度入库已完成
 
-本批只处理下列五个精确 Blackbox V2 月度方案：
+下列五个精确 Blackbox V2 月度方案已完成
+`MANUAL_GRAY_ACCEPTED_5_OF_5`：
 
 - `cgb_a4_fundseason_1y`
 - `cgb_a4_fundseason_3y`
@@ -22,31 +23,11 @@
 - `cgb_a4_fundseason_7y`
 - `cgb_a4_fundseason_10y`
 
-技术入库状态为 `TECHNICAL_ONBOARDING_COMPLETE_5_OF_5`：五项均为
-`paused/draft`、七段 `7/7 check-only` 通过、`100/100 persist=false`。技术来源
-source branch=`codex/blackbox-v2-monthly-fengrl-review-20260726`；当前整合实际
-integration branch=`codex/fengrl-monthly-gray-integration-20260727`。这些结论仅代表
-技术 Gate 完成，不代表已获得生产写入或前端可见资格。
-
-尚无专项生产写授权；但仍须先逐方案执行以下只读预检并冻结证据：
-
-1. `production 只读冲突/日期计划`：冻结 Registry/version/target/run/
-   prediction/backtest 的冲突快照与月度历史、灰度日期边界。
-
-以下写入步骤须取得专项生产写授权；授权后必须逐方案按以下严格顺序执行，并对
-每项单独记录证据与失败原因：
-
-1. `persisted all-stage`：以精确 identity 重新执行持久化前的全段 Gate。
-2. `shadow/register`：只经受控 harness 创建 shadow 与 Registry/version 身份。
-3. `historical backtest`：持久化完整历史回测，禁止与 gray 日期重叠。
-4. `controlled activate`：逐方案受控激活并核验 active Registry 只提供灰度实验室
-   前端可见性。
-5. `manual monthly gray_live`：按冻结日期计划手工补齐月度 gray 信号与 provenance。
-6. `DB/API/frontend`：逐方案核验数据库、API 和前端格子均显示截至最新合法输入的
-   全部信号。
-
-自动 scheduler 与 `scheduled_live` 不在本批。代码在 gray admission 前不得合入或用于重启 legacy scheduler；本批任何 `active` 结果都不等于 scheduler 授权，也不得
-进入正式 21/25。
+五方案 persisted all-stage 均为 7/7；每方案 16 条历史和 3 条手工
+`gray_live` 已通过 DB/API/frontend 验收，每方案共 19 条，本批为
+`80 + 15 = 95` 条。Registry/version 已 active，但完成手工灰度不授予自动调度；
+本批没有 `scheduled_live`，也没有修改 rollout、admission 或 scheduler。时点证据见
+[FengRL 五个月度方案记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)。
 
 ## P1：日频平台前置依赖（严格顺序）
 
@@ -64,14 +45,19 @@ integration branch=`codex/fengrl-monthly-gray-integration-20260727`。这些结�
 
 ## P2：独立 gray/formal admission 与本批自动灰度
 
-仅在 P1 全部通过、调度设计验收通过且获得新的专项授权后，才建设独立的 `scheduler_admission=gray|formal`（即 `gray/formal admission`）。它必须与既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray admission 通过后才可把以下四个方案接入 `automatic gray scheduling`：
+仅在 P1 全部通过、调度设计验收通过且获得新的专项授权后，才建设独立的 `scheduler_admission=gray|formal`（即 `gray/formal admission`）。它必须与既有 21/25 occurrence 的 admission、账本和生产写入边界分离；gray admission 通过后才可把以下已完成人工灰度的方案接入 `automatic gray scheduling`：
 
 - `ten_y_t5_maj3_k3_ic_static_v1`
 - `ten_y_t5_maj4_k3_ic_static_v1`
 - `ten_y_t5_maj4_k3_ic_yearly_v1`
 - `ten_y_t5_say_k5_sharpe_static_v1`
+- `cgb_a4_fundseason_1y`
+- `cgb_a4_fundseason_3y`
+- `cgb_a4_fundseason_5y`
+- `cgb_a4_fundseason_7y`
+- `cgb_a4_fundseason_10y`
 
-四个 active 配置均含 `schedule_cron`；在 gray admission 通过前，不得把本
+active 配置中的 `schedule_cron` 不构成调度授权；在 gray admission 通过前，不得把本
 integration 合入或用于重启 legacy scheduler。该 integration 的 active daily
 discovery 为 25 item/29 target，而正式 policy 仍为闭世界 21 item/25 target；
 policy、coordinator 和 replay 全量测试继续按设计 fail-closed。`active` 不等于

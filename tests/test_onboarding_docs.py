@@ -72,6 +72,10 @@ FENGRL_MONTHLY_PREFLIGHT_EVIDENCE = (
     BLACKBOX_RECORDS
     / "FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json"
 )
+FENGRL_MONTHLY_ACCEPTANCE_EVIDENCE = (
+    BLACKBOX_RECORDS
+    / "FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json"
+)
 
 
 class OnboardingDocumentationTests(unittest.TestCase):
@@ -684,44 +688,29 @@ class OnboardingDocumentationTests(unittest.TestCase):
         positions = [text.index(marker) for marker in dependencies]
         self.assertEqual(positions, sorted(positions))
 
-    def test_todo_makes_fengrl_monthly_manual_gray_the_current_p0(self) -> None:
-        """FengRL 五方案必须先完成手工灰度，不得被调度工作抢占。"""
+    def test_todo_records_fengrl_manual_gray_complete_before_scheduler(self) -> None:
+        """FengRL 手工灰度已完成，自动调度仍须等待独立 admission。"""
         text = TODO.read_text(encoding="utf-8")
         p0, remainder = text.split("## P1", maxsplit=1)
 
-        self.assertIn("FengRL 五个月度方案手工灰度入库", p0)
-        self.assertIn("TECHNICAL_ONBOARDING_COMPLETE_5_OF_5", p0)
-        self.assertIn("paused/draft", p0)
-        self.assertIn("7/7 check-only", p0)
-        self.assertIn("100/100 persist=false", p0)
-        source_branch = "codex/blackbox-v2-monthly-fengrl-review-20260726"
-        integration_branch = "codex/fengrl-monthly-gray-integration-20260727"
-        self.assertIn(f"source branch=`{source_branch}`", p0)
-        self.assertIn(f"integration branch=`{integration_branch}`", p0)
+        self.assertIn("FengRL 五个月度方案手工灰度入库已完成", p0)
+        self.assertIn("MANUAL_GRAY_ACCEPTED_5_OF_5", p0)
+        self.assertIn("80", p0)
+        self.assertIn("15", p0)
+        self.assertIn("95", p0)
+        self.assertNotIn("paused/draft", p0)
+        self.assertNotIn("尚无专项生产写授权", p0)
         for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
             self.assertIn(scheme_id, p0)
 
-        read_only_marker = "production 只读冲突/日期计划"
-        write_authorization = "以下写入步骤须取得专项生产写授权"
-        write_steps = (
-            "persisted all-stage",
-            "shadow/register",
-            "historical backtest",
-            "controlled activate",
-            "manual monthly gray_live",
-            "DB/API/frontend",
-        )
-        self.assertLess(p0.index(read_only_marker), p0.index(write_authorization))
-        authorized_steps = p0.split(write_authorization, maxsplit=1)[1]
-        positions = [authorized_steps.index(marker) for marker in write_steps]
-        self.assertEqual(positions, sorted(positions))
-        self.assertIn("尚无专项生产写授权", p0)
-        self.assertIn("不在本批", p0)
+        self.assertIn("不授予自动调度", p0)
         self.assertIn("scheduled_live", p0)
-        self.assertIn("gray admission 前不得合入或用于重启 legacy scheduler", p0)
 
         self.assertIn("日频平台前置依赖", remainder)
         self.assertIn("独立 gray/formal admission", remainder)
+        self.assertIn("automatic gray scheduling", remainder)
+        for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
+            self.assertIn(scheme_id, remainder)
         self.assertIn("正式晋级", remainder)
 
     def test_canonical_migration_runner_boundary_is_documented(self) -> None:
@@ -960,6 +949,76 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn("INTEGRATION_PREFLIGHT_READY_NO_WRITE", text)
             self.assertIn("FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json", text)
             self.assertIn("不是数据库 `t_input_generations` 的 `SEALED` 记录", text)
+
+    def test_fengrl_monthly_gray_acceptance_records_exact_terminal_state(
+        self,
+    ) -> None:
+        """终验证据必须锁定 80+15=95 及零 scheduled 边界。"""
+        self.assertTrue(FENGRL_MONTHLY_ACCEPTANCE_EVIDENCE.exists())
+        evidence = json.loads(
+            FENGRL_MONTHLY_ACCEPTANCE_EVIDENCE.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(evidence["status"], "MANUAL_GRAY_ACCEPTED_5_OF_5")
+        self.assertEqual(
+            [item["scheme_id"] for item in evidence["schemes"]],
+            list(FENGRL_MONTHLY_SCHEME_IDS),
+        )
+        self.assertEqual(
+            [item["scheme_version"] for item in evidence["schemes"]],
+            [
+                "04e7af163fb0",
+                "89d31f8bcb95",
+                "7d47e0328532",
+                "ddba87ece7ae",
+                "85a65700499b",
+            ],
+        )
+        for item in evidence["schemes"]:
+            self.assertEqual(item["persisted_all_stage"]["passed_gates"], 7)
+            self.assertEqual(item["persisted_all_stage"]["expected_gates"], 7)
+            self.assertEqual(item["history"]["predictions"], 16)
+            self.assertEqual(item["history"]["monthly_metrics"], 16)
+            self.assertEqual(item["gray"], {
+                "runs": 3,
+                "predictions": 3,
+                "logs": 3,
+            })
+            self.assertEqual(item["frontend_samples"], 19)
+
+        self.assertEqual(evidence["batch_totals"], {
+            "persisted_all_stage_passed": 5,
+            "history_runs": 5,
+            "history_predictions": 80,
+            "history_monthly_metrics": 80,
+            "gray_runs": 15,
+            "gray_predictions": 15,
+            "gray_logs": 15,
+            "frontend_samples": 95,
+        })
+        self.assertEqual(evidence["date_contract"]["history_per_scheme"], 16)
+        self.assertEqual(evidence["date_contract"]["gray_per_scheme"], 3)
+        self.assertEqual(evidence["date_contract"]["total_per_scheme"], 19)
+        self.assertEqual(
+            evidence["input_provenance"]["databridge_generation_id"],
+            "full-20260724-062251-4977e502dadf",
+        )
+        self.assertEqual(evidence["acceptance"]["registry_active"], 5)
+        self.assertEqual(evidence["acceptance"]["versions_active"], 5)
+        self.assertEqual(evidence["acceptance"]["database"], "passed")
+        self.assertEqual(evidence["acceptance"]["api"], "passed")
+        self.assertEqual(evidence["acceptance"]["frontend"], "passed")
+        boundaries = evidence["production_boundaries"]
+        self.assertEqual(boundaries["scheduled_live_per_scheme"], 0)
+        self.assertEqual(boundaries["rollout"], "legacy")
+        self.assertEqual(boundaries["admission"], "BLOCKED")
+        self.assertFalse(boundaries["scheduler_restarted"])
+        self.assertFalse(boundaries["backend_restarted"])
+        self.assertFalse(boundaries["bondprojectpro_modified"])
+        self.assertFalse(boundaries["merged"])
+        self.assertFalse(boundaries["pushed"])
+        self.assertFalse(boundaries["deployed"])
+        self.assertFalse(boundaries["automatic_scheduler_authorized"])
 
     def test_10y_batch_scope_allows_manual_gray_phases_but_not_scheduler(self) -> None:
         todo = TODO.read_text(encoding="utf-8")

@@ -20,7 +20,7 @@
 |---|---|
 | Native V1 | 保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、DataBridge 三文件父快照、显式平台输入、七个 Gate、零写库 check-only、预测和 no-persist 回测已形成稳定路径 |
-| Blackbox V2 生产路径 | 一个真实周频方案已完成专项生产灰度；同一上游批次四个日频方案已完成 exact active、历史入库和手工 `gray_live` 验收；尚未形成面向任意新方案的通用生产授权 |
+| Blackbox V2 生产路径 | 一个真实周频方案、四个日频方案和本批五个月频方案已完成各自专项生产灰度；尚未形成面向任意新方案的通用生产授权 |
 | 日频 08:00 保障 | `FUNCTIONAL_MVP_VERIFIED` 仅指受控 recorder 的 21/25 ledger 功能验证；真实 17+4 尚未联跑，08:00 SLA 与 07:55 容量仍无证据 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 
@@ -34,30 +34,35 @@
 - 本 integration 的 active daily discovery 为 25 item/29 target，而正式 policy 仍保持闭世界 21 item/25 target；policy、coordinator 和 replay 全量测试因此按设计 fail-closed。该结果是上线阻断证据，不是回归通过；gray admission 分离灰度 discovery 前必须继续隔离本分支。
 - 四个缺少 `description` 的不可变既有交付均为 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED`；exact version、摘要和来源证据见[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
 
-## 本轮五个月度方案技术入库状态
+## 本轮五个月度方案手工灰度状态
 
 - `cgb_a4_fundseason_1y`、`cgb_a4_fundseason_3y`、
   `cgb_a4_fundseason_5y`、`cgb_a4_fundseason_7y` 和
-  `cgb_a4_fundseason_10y` 已按顺序完成 Intake 与
-  `onboard --stage all --check-only`，每个方案七 Gate 7/7 passed。
-- 五个方案均保持 `paused/draft`，声明
-  `platform_inputs: [api-wind-date-v1]`；DataBridge 父快照仍严格只有
-  三个业务 CSV，平台日历以组合输入制品加入。
-- 五次 backtest 均为 100/100、`persist=false`；方案相关 Registry、
-  预测、run、backtest 和 Harness 控制面表的运行前后计数增量均为 0。
-- 该结论仅代表技术入库完成，不包含 Registry 激活、gray/scheduled
-  live、持久化回测、生产 API 或 scheduler 授权。逐方案证据见
-  [FengRL 五个月度方案技术入库记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)。
-- 本轮 integration / production-readonly preflight 已冻结五个 exact
-  identity、版本与 delivery SHA，并确认每方案 16 条历史和 3 条待执行
-  `gray_live` 的 95 条总日期计划无重叠、无缺口。生产快照仍为
-  migration 17、rollout=`legacy`、admission=`BLOCKED`；本批 Registry、
-  version、prediction、run、backtest、ledger 与 generation 均未写入。
-  主 checkout DataBridge 根目录为 `0755` 且 fresh live 数为零；当前仅有
-  已验证的私有文件系统 publication 可供后续受控回补。它不是数据库 `t_input_generations` 的 `SEALED` 记录。此状态仅为
-  `INTEGRATION_PREFLIGHT_READY_NO_WRITE`，不代表激活、前端展示或入库
-  完成；完整机器证据见
-  [FengRL 月度预检](blackbox_v2/records/FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)。
+  `cgb_a4_fundseason_10y` 的 exact version 与 composite Registry 均为
+  `active`；版本依次为 `04e7af163fb0`、`89d31f8cb95`、
+  `7d47e0328532`、`ddba87ece7ae` 和 `85a65700499b`。
+- 五个方案的 persisted all-stage 均为 7/7 passed；每方案持久化 1 个
+  backtest run、16 条历史 prediction 和 16 条月度指标，历史
+  `target_date < 2026-06-01`。本批历史合计 80 条。
+- 每方案手工写入 3 条 `gray_live`，日期严格为
+  `2026-05-15 → 2026-05-15 → 2026-06-15`、
+  `2026-06-15 → 2026-06-15 → 2026-07-15` 和
+  `2026-07-15 → 2026-07-15 → 2026-08-14`
+  （依次为 predict/feature/target）；本批灰度合计 15 条。
+- DB、API 和前端已验收：每方案显示 `16 + 3 = 19` 条信号，不是 18
+  条；五方案合计 `80 + 15 = 95` 条。所有结果绑定同一 DataBridge
+  generation `full-20260724-062251-4977e502dadf`。
+- 本批每方案 `scheduled_live=0`，全局既有 scheduled 基线仍为
+  490 runs / 513 predictions，三层 ledger 为 `0/0/0`；
+  rollout=`legacy`、admission=`BLOCKED`。scheduler/backend 未重启且仍从
+  主仓库运行；本次手工灰度不授予定时调度、正式日批、合并、推送或部署。
+- 历史预检的 `INTEGRATION_PREFLIGHT_READY_NO_WRITE` 与
+  [FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json](blackbox_v2/records/FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)
+  仍保留为操作前时点证据；其中私有 publication
+  不是数据库 `t_input_generations` 的 `SEALED` 记录。终验详见
+  [FengRL 五个月度方案记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)
+  和
+  [机器可读终验证据](blackbox_v2/records/FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json)。
 
 ## 日频 08:00 整改状态
 
