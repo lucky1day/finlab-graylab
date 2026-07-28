@@ -664,6 +664,117 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
             "2026-07-03",
         )
 
+    def test_combined_daily_and_effective_revisions_use_earliest_cutoff(
+        self,
+    ) -> None:
+        proven = PhaseACacheSpec(
+            **{
+                **self.spec.__dict__,
+                "daily_dependency_lookback_rows": 0,
+                "daily_dependency_proof": "causal daily rows",
+            }
+        )
+        input_change = {
+            "native_generation_changed": False,
+            "change_type": "revision",
+            "projection_status": "valid",
+            "frames": {
+                "daily": {
+                    "change_type": "revision",
+                    "earliest_changed_key": "2026-07-24",
+                    "schema_changed": False,
+                },
+                "weekly": {"change_type": "revision"},
+                "monthly": {"change_type": "revision"},
+            },
+            "effective_auxiliary": {
+                "change_type": "revision",
+                "earliest_changed_key": "2026-07-03",
+                "schema_changed": False,
+            },
+            "_daily_union_keys": ["2026-07-03", "2026-07-24"],
+            "suffix_start_date": None,
+        }
+
+        mode, reason, cutoff = cache_module._projection_build_decision(
+            spec=proven,
+            input_change=copy.deepcopy(input_change),
+        )
+        self.assertEqual((mode, reason, cutoff), (
+            "suffix",
+            "combined_daily_effective_revision",
+            "2026-07-03",
+        ))
+
+        replay_change = copy.deepcopy(input_change)
+        self.assertEqual(
+            cache_module._lineage_build_mode(
+                parent=SimpleNamespace(
+                    manifest={"spec_fingerprint": "same"},
+                    caches={"STD": {}},
+                ),
+                generation=SimpleNamespace(
+                    manifest={"spec_fingerprint": "same"},
+                    caches={"STD": {}},
+                ),
+                input_change=replay_change,
+                qualification={
+                    "daily_dependency_lookback_rows": 0,
+                    "daily_dependency_proof": "causal daily rows",
+                },
+            ),
+            "suffix",
+        )
+        self.assertEqual(
+            replay_change["suffix_start_date"],
+            "2026-07-03",
+        )
+
+    def test_combined_revision_remains_full_when_either_proof_is_invalid(
+        self,
+    ) -> None:
+        input_change = {
+            "native_generation_changed": False,
+            "change_type": "revision",
+            "projection_status": "valid",
+            "frames": {
+                "daily": {
+                    "change_type": "revision",
+                    "earliest_changed_key": "2026-07-24",
+                    "schema_changed": False,
+                },
+                "weekly": {"change_type": "unchanged"},
+                "monthly": {"change_type": "unchanged"},
+            },
+            "effective_auxiliary": {
+                "change_type": "revision",
+                "earliest_changed_key": "2026-07-03",
+                "schema_changed": False,
+            },
+            "_daily_union_keys": ["2026-07-03", "2026-07-24"],
+            "suffix_start_date": None,
+        }
+        mode, _reason, cutoff = cache_module._projection_build_decision(
+            spec=self.spec,
+            input_change=copy.deepcopy(input_change),
+        )
+        self.assertEqual((mode, cutoff), ("full", None))
+
+        unproven_effective = copy.deepcopy(input_change)
+        unproven_effective["effective_auxiliary"]["schema_changed"] = True
+        proven = PhaseACacheSpec(
+            **{
+                **self.spec.__dict__,
+                "daily_dependency_lookback_rows": 0,
+                "daily_dependency_proof": "causal daily rows",
+            }
+        )
+        mode, _reason, cutoff = cache_module._projection_build_decision(
+            spec=proven,
+            input_change=unproven_effective,
+        )
+        self.assertEqual((mode, cutoff), ("full", None))
+
     def test_projection_state_tamper_is_rejected(self) -> None:
         projection = self._projection(
             ["2026-07-01", "2026-07-02"],

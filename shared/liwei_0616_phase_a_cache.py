@@ -1943,19 +1943,39 @@ def _projection_build_decision(
     if status != "valid":
         return "full", "effective_auxiliary_projection_unknown", None
     daily = input_change["frames"]["daily"]
+    effective = input_change["effective_auxiliary"]
+    effective_cutoff: str | None = None
+    if effective["change_type"] == "revision":
+        effective_cutoff = effective["earliest_changed_key"]
+        if (
+            effective["schema_changed"]
+            or not isinstance(effective_cutoff, str)
+        ):
+            return "full", "effective_auxiliary_revision_unknown", None
     if daily["change_type"] in {"revision", "unknown"}:
-        return _revision_build_decision(
+        daily_decision = _revision_build_decision(
             spec=spec,
             input_change=input_change,
             ignore_raw_auxiliary=True,
         )
-    effective = input_change["effective_auxiliary"]
-    if effective["change_type"] == "revision":
-        earliest = effective["earliest_changed_key"]
-        if not isinstance(earliest, str):
-            return "full", "effective_auxiliary_revision_unknown", None
-        input_change["suffix_start_date"] = earliest
-        return "suffix", "effective_auxiliary_revision", earliest
+        if daily_decision[0] != "suffix":
+            return daily_decision
+        if effective_cutoff is None:
+            return daily_decision
+        combined_cutoff = min(daily_decision[2], effective_cutoff)
+        input_change["suffix_start_date"] = combined_cutoff
+        return (
+            "suffix",
+            "combined_daily_effective_revision",
+            combined_cutoff,
+        )
+    if effective_cutoff is not None:
+        input_change["suffix_start_date"] = effective_cutoff
+        return (
+            "suffix",
+            "effective_auxiliary_revision",
+            effective_cutoff,
+        )
     if effective["change_type"] not in {"unchanged", "append"}:
         return "full", "effective_auxiliary_projection_unknown", None
     if input_change["native_generation_changed"]:
@@ -3096,18 +3116,49 @@ def _lineage_build_mode(
             return "full"
         daily = frames["daily"]
         effective = input_change["effective_auxiliary"]
-        if daily["change_type"] not in {"revision", "unknown"}:
-            if effective["change_type"] == "revision":
-                earliest = effective["earliest_changed_key"]
-                if not isinstance(earliest, str):
-                    return "full"
-                input_change["suffix_start_date"] = earliest
-                return "suffix"
-            if effective["change_type"] not in {"unchanged", "append"}:
+        effective_cutoff: str | None = None
+        if effective["change_type"] == "revision":
+            effective_cutoff = effective["earliest_changed_key"]
+            if (
+                effective["schema_changed"]
+                or not isinstance(effective_cutoff, str)
+            ):
                 return "full"
-            if input_change["native_generation_changed"]:
-                return "rebind"
-            return "append"
+        elif effective["change_type"] not in {"unchanged", "append"}:
+            return "full"
+        if daily["change_type"] in {"revision", "unknown"}:
+            rows = qualification.get("daily_dependency_lookback_rows")
+            proof = qualification.get("daily_dependency_proof")
+            earliest = daily["earliest_changed_key"]
+            union_keys = input_change.get("_daily_union_keys")
+            if (
+                daily["change_type"] != "revision"
+                or daily["schema_changed"]
+                or isinstance(rows, bool)
+                or not isinstance(rows, int)
+                or rows < 0
+                or not isinstance(proof, str)
+                or not proof.strip()
+                or not isinstance(earliest, str)
+                or not isinstance(union_keys, list)
+                or earliest not in union_keys
+            ):
+                return "full"
+            position = union_keys.index(earliest)
+            daily_cutoff = union_keys[max(0, position - rows)]
+            if not isinstance(daily_cutoff, str):
+                return "full"
+            input_change["suffix_start_date"] = min(
+                daily_cutoff,
+                effective_cutoff or daily_cutoff,
+            )
+            return "suffix"
+        if effective_cutoff is not None:
+            input_change["suffix_start_date"] = effective_cutoff
+            return "suffix"
+        if input_change["native_generation_changed"]:
+            return "rebind"
+        return "append"
     else:
         if any(
             frames[name]["change_type"] in {"revision", "unknown"}
