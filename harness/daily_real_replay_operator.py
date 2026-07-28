@@ -702,8 +702,18 @@ def run_real_replay_preflight(
     *,
     native_manifest: str | Path,
     databridge_manifest: str | Path,
+    policy_version: str = "v1",
 ) -> DailyRealReplayPreflightReport:
     """在全局 session lock 内完成只读检查，并在返回前二次验明身份。"""
+    policy_paths = {
+        "v1": DEFAULT_POLICY_PATH,
+        "v2": POLICY_V2_PATH,
+    }
+    policy_path = policy_paths.get(policy_version)
+    if policy_path is None:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_POLICY_VERSION_UNSUPPORTED"
+        )
     service_uid = _require_operator_service_uid()
     try:
         session_context = _preflight_session()
@@ -717,6 +727,7 @@ def run_real_replay_preflight(
             service_uid=service_uid,
             native_manifest=native_manifest,
             databridge_manifest=databridge_manifest,
+            policy_path=policy_path,
         )
 
 

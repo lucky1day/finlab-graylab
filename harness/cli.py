@@ -45,6 +45,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if (
+        args.command == "daily-real-replay"
+        and args.execute_only
+        and args.policy_version is not None
+    ):
+        parser.error(
+            "daily-real-replay --policy-version is only valid with "
+            "--check-only"
+        )
     if args.command == "auth" and args.auth_command == "issue":
         if args.action in EXACT_PREDICT_DATE_ACTIONS and args.predict_date is None:
             parser.error(
@@ -113,9 +122,16 @@ def main(argv: list[str] | None = None) -> int:
                 if execute_only
                 else run_real_replay_preflight
             )
+            runner_kwargs = {
+                "native_manifest": args.native_manifest,
+                "databridge_manifest": args.databridge_manifest,
+            }
+            if not execute_only:
+                runner_kwargs["policy_version"] = (
+                    args.policy_version or "v1"
+                )
             report = runner(
-                native_manifest=args.native_manifest,
-                databridge_manifest=args.databridge_manifest,
+                **runner_kwargs,
             )
         except DailyRealReplayPreflightError as exc:
             print(
@@ -302,6 +318,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--databridge-manifest",
         type=Path,
         required=True,
+    )
+    replay_parser.add_argument(
+        "--policy-version",
+        choices=("v1", "v2"),
+        default=None,
+        help="check-only policy identity; execute-only is fixed to v2",
     )
 
     gap_parser = subparsers.add_parser("signal-gap-plan")
