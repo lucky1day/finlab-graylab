@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import plistlib
 import pwd
+import shlex
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -148,12 +149,16 @@ def read_installed_launchagent_modes(
 def probe_daily_transition_quiescence(
     service_uid: int,
     business_date: date,
+    *,
+    allow_backend: bool = False,
 ) -> dict[str, int]:
-    """联合生产账本和进程表验证全日期静默。"""
+    """联合账本和进程表验证静默，可仅忽略展示后端。"""
     from scheduler.repository import create_engine_from_env
 
     if not isinstance(business_date, date):
         raise TypeError("business_date must be a date")
+    if not isinstance(allow_backend, bool):
+        raise TypeError("allow_backend must be bool")
     engine = create_engine_from_env()
     try:
         database_report, registered_rows = (
@@ -188,7 +193,15 @@ def probe_daily_transition_quiescence(
     project_process_count = sum(
         1
         for row in service_processes
-        if _is_daily_platform_process(str(row["command"]))
+        if (
+            _is_daily_platform_process(str(row["command"]))
+            and not (
+                allow_backend
+                and _is_backend_service_process(
+                    str(row["command"])
+                )
+            )
+        )
     )
     report = {
         **database_report,
@@ -205,6 +218,7 @@ def probe_isolated_replay_process_boundary(
     service_uid: int,
     occurrence_id: int,
     active_item_ids: Iterable[int],
+    allow_backend: bool = False,
 ) -> ReplayProcessBoundaryReport:
     """只允许当前 operator 与隔离账本证明的 replay 进程组。"""
     from scheduler.repository import (
@@ -219,6 +233,8 @@ def probe_isolated_replay_process_boundary(
         occurrence_id,
         field="occurrence_id",
     )
+    if not isinstance(allow_backend, bool):
+        raise TypeError("allow_backend must be bool")
     normalized_item_ids = tuple(
         sorted(
             {
@@ -348,6 +364,26 @@ def probe_isolated_replay_process_boundary(
                     row,
                     classification=(
                         "unregistered_replay_descendant"
+                    ),
+                )
+            )
+            continue
+        if (
+            allow_backend
+            and _is_backend_service_process(str(row["command"]))
+        ):
+            destination = (
+                allowed
+                if uid == normalized_service_uid
+                else blocked
+            )
+            destination.append(
+                _replay_process_observation(
+                    row,
+                    classification=(
+                        "display_backend"
+                        if uid == normalized_service_uid
+                        else "display_backend_uid_mismatch"
                     ),
                 )
             )
@@ -774,6 +810,37 @@ def _is_daily_platform_process(command: str) -> bool:
         "/schemes/",
     )
     return any(token in normalized for token in tokens)
+
+
+def _is_backend_service_process(command: str) -> bool:
+    try:
+        tokens = tuple(shlex.split(command))
+    except ValueError:
+        return False
+    normalized = tuple(token.casefold() for token in tokens)
+    disallowed = (
+        "scheduler.main",
+        "scheduler.scheme_runner",
+        "scheduler.v2_daily_preflight",
+    )
+    if any(
+        marker in token
+        for token in normalized
+        for marker in disallowed
+    ) or any("/schemes/" in token for token in normalized):
+        return False
+    for index, token in enumerate(normalized[:-1]):
+        if (
+            Path(token).name == "uvicorn"
+            and normalized[index + 1] == "backend.main:app"
+        ):
+            return True
+        if (
+            token == "-m"
+            and normalized[index + 1] == "backend.main"
+        ):
+            return True
+    return False
 
 
 def _read_bounded(descriptor: int, *, limit: int) -> bytes:

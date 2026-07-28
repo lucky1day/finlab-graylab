@@ -409,6 +409,7 @@ class RealReplayRuntime:
                 service_uid=service_uid,
                 occurrence_id=self._occurrence_id,
                 active_item_ids=active_item_ids,
+                allow_backend=True,
             )
             if type(report) is not ReplayProcessBoundaryReport:
                 raise RuntimeError(

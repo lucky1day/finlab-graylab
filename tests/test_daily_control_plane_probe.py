@@ -27,6 +27,7 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
         operator_pgid=None,
         operator_uid=501,
         include_operator=True,
+        allow_backend=False,
     ):
         from scheduler import daily_control_plane_probe as probe_module
 
@@ -79,6 +80,7 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
                     service_uid=501,
                     occurrence_id=31,
                     active_item_ids=active_item_ids,
+                    allow_backend=allow_backend,
                 )
             )
         return report, read_registered
@@ -158,6 +160,61 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
             "unregistered_daily_platform_process",
         )
         self.assertFalse(hasattr(finding, "command"))
+
+    def test_allows_exact_backend_entrypoint_when_explicit(self) -> None:
+        report, _read_registered = self._probe(
+            processes=(
+                {
+                    "pid": 4100,
+                    "ppid": 1,
+                    "pgid": 4100,
+                    "uid": 501,
+                    "command": (
+                        "/usr/bin/python /usr/bin/conda run "
+                        "uvicorn backend.main:app --port 8100"
+                    ),
+                },
+            ),
+            allow_backend=True,
+        )
+
+        self.assertTrue(report.boundary_clear)
+        self.assertEqual(
+            tuple(
+                (row.process_id, row.classification)
+                for row in report.allowed_processes
+            ),
+            (
+                (4100, "display_backend"),
+                (9000, "operator"),
+            ),
+        )
+
+    def test_backend_marker_cannot_hide_scheduler_process(self) -> None:
+        report, _read_registered = self._probe(
+            processes=(
+                {
+                    "pid": 4300,
+                    "ppid": 1,
+                    "pgid": 4300,
+                    "uid": 501,
+                    "command": (
+                        "python -m scheduler.scheme_runner "
+                        "--note backend.main"
+                    ),
+                },
+            ),
+            allow_backend=True,
+        )
+
+        self.assertFalse(report.boundary_clear)
+        self.assertEqual(
+            tuple(
+                (row.process_id, row.classification)
+                for row in report.blocked_processes
+            ),
+            ((4300, "unregistered_daily_platform_process"),),
+        )
 
     def test_blocks_old_or_other_occurrence_process_not_returned_by_ledger(
         self,
@@ -740,6 +797,66 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
 
 
 class ProductionQuiescenceCompatibilityTests(unittest.TestCase):
+    def test_replay_probe_excludes_only_backend_processes(self) -> None:
+        from scheduler import daily_control_plane_probe as probe_module
+
+        engine = SimpleNamespace(dispose=Mock())
+        database_report = {
+            "active_occurrence_count": 0,
+            "nonterminal_item_count": 0,
+            "running_ledger_run_count": 0,
+            "cleanup_pending_count": 0,
+            "running_legacy_scheduled_live_run_count": 0,
+        }
+        processes = (
+            {
+                "pid": 4100,
+                "ppid": 1,
+                "pgid": 4100,
+                "uid": 501,
+                "command": "python -m backend.main",
+            },
+            {
+                "pid": 4200,
+                "ppid": 1,
+                "pgid": 4200,
+                "uid": 501,
+                "command": "python -m scheduler.scheme_runner",
+            },
+        )
+        with (
+            patch(
+                "scheduler.repository.create_engine_from_env",
+                return_value=engine,
+            ),
+            patch.object(
+                probe_module,
+                "_read_database_quiescence",
+                return_value=(database_report, ()),
+            ),
+            patch.object(
+                probe_module,
+                "_read_process_table",
+                return_value=list(processes),
+            ),
+            patch.object(probe_module.os, "getpid", return_value=9000),
+        ):
+            production_report = (
+                probe_module.probe_daily_transition_quiescence(
+                    501,
+                    date(2026, 7, 27),
+                )
+            )
+            replay_report = probe_module.probe_daily_transition_quiescence(
+                501,
+                date(2026, 7, 27),
+                allow_backend=True,
+            )
+
+        self.assertEqual(production_report["project_process_count"], 2)
+        self.assertEqual(replay_report["project_process_count"], 1)
+        self.assertEqual(engine.dispose.call_count, 2)
+
     def test_production_probe_keeps_global_zero_tolerance_counts(
         self,
     ) -> None:

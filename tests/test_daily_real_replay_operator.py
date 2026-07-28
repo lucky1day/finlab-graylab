@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from contextlib import nullcontext, redirect_stdout
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
@@ -1221,6 +1221,75 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, "PLATFORM_NOT_QUIESCENT")
         self.assertEqual(str(raised.exception), "PLATFORM_NOT_QUIESCENT")
+
+    def test_backend_can_remain_loaded_during_isolated_replay(self) -> None:
+        from harness.daily_real_replay_operator import (
+            ReplayQuiescenceSnapshot,
+            validate_replay_quiescence,
+        )
+
+        snapshot = ReplayQuiescenceSnapshot(
+            loaded_launchagent_labels=("com.bond-factor-lab.backend",),
+            counters=MappingProxyType(
+                {
+                    "active_occurrence_count": 0,
+                    "nonterminal_item_count": 0,
+                    "running_ledger_run_count": 0,
+                    "cleanup_pending_count": 0,
+                    "running_legacy_scheduled_live_run_count": 0,
+                    "registered_process_alive_count": 0,
+                    "project_process_count": 0,
+                }
+            ),
+            digest="3" * 64,
+        )
+
+        validate_replay_quiescence(snapshot)
+
+    def test_replay_probe_excludes_loaded_backend_processes(self) -> None:
+        from harness.daily_real_replay_operator import (
+            _probe_replay_quiescence,
+        )
+
+        counters = {
+            "active_occurrence_count": 0,
+            "nonterminal_item_count": 0,
+            "running_ledger_run_count": 0,
+            "cleanup_pending_count": 0,
+            "running_legacy_scheduled_live_run_count": 0,
+            "registered_process_alive_count": 0,
+            "project_process_count": 0,
+        }
+        with (
+            patch(
+                "harness.daily_real_replay_operator."
+                "probe_launchagent_service_states",
+                return_value={
+                    "com.bond-factor-lab.backend": True,
+                    "com.bond-factor-lab.scheduler": False,
+                    "com.bond-factor-lab.v2-preflight": False,
+                },
+            ),
+            patch(
+                "harness.daily_real_replay_operator."
+                "probe_daily_transition_quiescence",
+                return_value=counters,
+            ) as probe,
+        ):
+            snapshot = _probe_replay_quiescence(
+                "2026-07-27",
+                service_uid=501,
+            )
+
+        self.assertEqual(
+            snapshot.loaded_launchagent_labels,
+            ("com.bond-factor-lab.backend",),
+        )
+        probe.assert_called_once_with(
+            501,
+            date(2026, 7, 27),
+            allow_backend=True,
+        )
 
     def test_database_or_process_counter_alone_blocks_check_only(self) -> None:
         from harness.daily_real_replay_operator import (

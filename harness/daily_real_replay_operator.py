@@ -77,6 +77,9 @@ LAUNCHAGENT_LABELS = (
     "com.bond-factor-lab.scheduler",
     "com.bond-factor-lab.v2-preflight",
 )
+_REPLAY_ALLOWED_LOADED_LABELS = frozenset(
+    {"com.bond-factor-lab.backend"}
+)
 _RUNTIME_CODE_ROOTS = (
     "harness",
     "scheduler",
@@ -1747,7 +1750,7 @@ def validate_production_daily_snapshot(
 def validate_replay_quiescence(
     snapshot: ReplayQuiescenceSnapshot,
 ) -> None:
-    """真实算法联跑只能在 BFL 控制面和算法进程完全静默时开始。"""
+    """真实联跑允许展示后端在线，其余控制面和算法必须静默。"""
     if (
         set(snapshot.counters) != _QUIESCENCE_FIELDS
         or any(
@@ -1760,8 +1763,11 @@ def validate_replay_quiescence(
         raise DailyRealReplayPreflightError(
             "QUIESCENCE_EVIDENCE_INVALID"
         )
-    if snapshot.loaded_launchagent_labels or any(
-        snapshot.counters.values()
+    if (
+        not set(snapshot.loaded_launchagent_labels).issubset(
+            _REPLAY_ALLOWED_LOADED_LABELS
+        )
+        or any(snapshot.counters.values())
     ):
         raise DailyRealReplayPreflightError(
             "PLATFORM_NOT_QUIESCENT"
@@ -2469,6 +2475,7 @@ def _probe_replay_quiescence(
         counters = probe_daily_transition_quiescence(
             service_uid,
             normalized_date,
+            allow_backend=True,
         )
     except DailyRealReplayPreflightError:
         raise

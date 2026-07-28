@@ -2930,6 +2930,7 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
             self.assertEqual(call["occurrence_id"], 41)
             self.assertIsInstance(call["active_item_ids"], tuple)
             self.assertEqual(call["active_item_ids"], (item_id,))
+            self.assertIs(call["allow_backend"], True)
         self.assertEqual(runtime._active_item_ids, set())
 
     def test_process_boundary_report_identity_is_exact_before_claim(
