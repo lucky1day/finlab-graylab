@@ -54,7 +54,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                 else:
                     os.environ[variable] = previous
 
-    def test_capacity_projection_uses_db_visible_and_parallel_input_durations(
+    def test_capacity_projection_keeps_native_and_v2_pools_parallel(
         self,
     ) -> None:
         from harness.daily_real_replay_operator import (
@@ -76,11 +76,20 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
 
         evidence = _build_replay_timing_evidence(
             inputs,
-            runtime_started_at=datetime(
+            native_pool_started_at=datetime(
                 2026, 7, 28, 8, 30, tzinfo=timezone.utc
             ),
+            native_pool_last_visible_at=datetime(
+                2026, 7, 28, 9, 30, tzinfo=timezone.utc
+            ),
+            v2_pool_started_at=datetime(
+                2026, 7, 28, 9, 15, tzinfo=timezone.utc
+            ),
+            v2_pool_last_visible_at=datetime(
+                2026, 7, 28, 9, 45, tzinfo=timezone.utc
+            ),
             db_last_visible_at=datetime(
-                2026, 7, 28, 9, 0, tzinfo=timezone.utc
+                2026, 7, 28, 9, 45, tzinfo=timezone.utc
             ),
             max_v2_release_offset_minutes=14,
         )
@@ -92,23 +101,45 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         )
         self.assertEqual(evidence.parallel_readiness_seconds, 1200.0)
         self.assertEqual(
-            evidence.runtime_to_last_visible_seconds,
-            1800.0,
+            evidence.native_pool_observed_seconds,
+            3600.0,
         )
+        self.assertEqual(evidence.v2_pool_observed_seconds, 1800.0)
         self.assertEqual(evidence.release_guard_seconds, 840.0)
-        self.assertEqual(evidence.end_to_end_seconds, 3840.0)
+        self.assertEqual(evidence.end_to_end_seconds, 4200.0)
         self.assertEqual(
             evidence.projected_readiness_at,
             "2026-07-28T06:50:00+08:00",
         )
         self.assertEqual(
-            evidence.projected_last_visible_at,
+            evidence.projected_native_last_visible_at,
+            "2026-07-28T07:40:00+08:00",
+        )
+        self.assertEqual(
+            evidence.projected_v2_last_visible_at,
             "2026-07-28T07:34:00+08:00",
         )
         self.assertEqual(
-            evidence.db_last_visible_at,
-            "2026-07-28T09:00:00+00:00",
+            evidence.projected_last_visible_at,
+            "2026-07-28T07:40:00+08:00",
         )
+        self.assertEqual(
+            evidence.db_last_visible_at,
+            "2026-07-28T09:45:00+00:00",
+        )
+        old_serial_projection_seconds = (
+            1200.0
+            + 840.0
+            + (
+                datetime(
+                    2026, 7, 28, 9, 45, tzinfo=timezone.utc
+                )
+                - datetime(
+                    2026, 7, 28, 8, 30, tzinfo=timezone.utc
+                )
+            ).total_seconds()
+        )
+        self.assertGreater(old_serial_projection_seconds, 5100.0)
         self.assertTrue(evidence.within_capacity_limit)
         self.assertTrue(evidence.within_visibility_deadline)
 
@@ -136,19 +167,28 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
 
         evidence = _build_replay_timing_evidence(
             inputs,
-            runtime_started_at=datetime(
+            native_pool_started_at=datetime(
                 2026, 7, 28, 8, 30, tzinfo=timezone.utc
             ),
-            db_last_visible_at=datetime(
+            native_pool_last_visible_at=datetime(
+                2026, 7, 28, 9, 6, tzinfo=timezone.utc
+            ),
+            v2_pool_started_at=datetime(
+                2026, 7, 28, 8, 45, tzinfo=timezone.utc
+            ),
+            v2_pool_last_visible_at=datetime(
                 2026, 7, 28, 9, 0, tzinfo=timezone.utc
+            ),
+            db_last_visible_at=datetime(
+                2026, 7, 28, 9, 6, tzinfo=timezone.utc
             ),
             max_v2_release_offset_minutes=14,
         )
 
-        self.assertEqual(evidence.end_to_end_seconds, 5640.0)
+        self.assertEqual(evidence.end_to_end_seconds, 5160.0)
         self.assertEqual(
             evidence.projected_last_visible_at,
-            "2026-07-28T08:04:00+08:00",
+            "2026-07-28T07:56:00+08:00",
         )
         self.assertFalse(evidence.within_capacity_limit)
         self.assertFalse(evidence.within_visibility_deadline)
@@ -183,8 +223,17 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
 
         evidence = _build_replay_timing_evidence(
             inputs,
-            runtime_started_at=datetime(
+            native_pool_started_at=datetime(
                 2026, 7, 28, 8, 30, tzinfo=timezone.utc
+            ),
+            native_pool_last_visible_at=datetime(
+                2026, 7, 28, 8, 40, tzinfo=timezone.utc
+            ),
+            v2_pool_started_at=datetime(
+                2026, 7, 28, 8, 30, tzinfo=timezone.utc
+            ),
+            v2_pool_last_visible_at=datetime(
+                2026, 7, 28, 8, 52, tzinfo=timezone.utc
             ),
             db_last_visible_at=datetime(
                 2026, 7, 28, 8, 52, tzinfo=timezone.utc
@@ -226,10 +275,66 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         ) as raised:
             _build_replay_timing_evidence(
                 inputs,
-                runtime_started_at=datetime(
+                native_pool_started_at=datetime(
                     2026, 7, 28, 8, 30, tzinfo=timezone.utc
                 ),
-                db_last_visible_at=None,
+                native_pool_last_visible_at=datetime(
+                    2026, 7, 28, 8, 40, tzinfo=timezone.utc
+                ),
+                v2_pool_started_at=datetime(
+                    2026, 7, 28, 8, 45, tzinfo=timezone.utc
+                ),
+                v2_pool_last_visible_at=None,
+                db_last_visible_at=datetime(
+                    2026, 7, 28, 8, 40, tzinfo=timezone.utc
+                ),
+                max_v2_release_offset_minutes=14,
+            )
+        self.assertEqual(
+            raised.exception.code,
+            "REPLAY_TIMING_EVIDENCE_INVALID",
+        )
+
+    def test_capacity_projection_rejects_pool_visible_before_start(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            _build_replay_timing_evidence,
+        )
+
+        inputs = SimpleNamespace(
+            business_date="2026-07-28",
+            native_generation=SimpleNamespace(
+                created_at="2026-07-28T08:00:00+00:00",
+                sealed_at="2026-07-28T08:10:00+00:00",
+            ),
+            databridge_generation=SimpleNamespace(
+                refresh_started_at="2026-07-28T12:00:00+08:00",
+                published_at="2026-07-28T12:20:00+08:00",
+                sealed_at="2026-07-28T12:20:00+08:00",
+            ),
+        )
+        with self.assertRaises(
+            DailyRealReplayPreflightError
+        ) as raised:
+            _build_replay_timing_evidence(
+                inputs,
+                native_pool_started_at=datetime(
+                    2026, 7, 28, 9, 0, tzinfo=timezone.utc
+                ),
+                native_pool_last_visible_at=datetime(
+                    2026, 7, 28, 8, 59, tzinfo=timezone.utc
+                ),
+                v2_pool_started_at=datetime(
+                    2026, 7, 28, 8, 45, tzinfo=timezone.utc
+                ),
+                v2_pool_last_visible_at=datetime(
+                    2026, 7, 28, 9, 0, tzinfo=timezone.utc
+                ),
+                db_last_visible_at=datetime(
+                    2026, 7, 28, 9, 0, tzinfo=timezone.utc
+                ),
                 max_v2_release_offset_minutes=14,
             )
         self.assertEqual(
@@ -255,6 +360,18 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             "valid_receipt_count": 29,
             "duplicate_prediction_count": 0,
             "nonterminal_run_count": 0,
+            "native_pool_started_at": datetime(
+                2026, 7, 28, 0, 30
+            ),
+            "native_pool_last_visible_at": datetime(
+                2026, 7, 28, 0, 50
+            ),
+            "v2_pool_started_at": datetime(
+                2026, 7, 28, 0, 45
+            ),
+            "v2_pool_last_visible_at": datetime(
+                2026, 7, 28, 1, 0
+            ),
             "db_last_visible_at": visible_at,
         }
         result = Mock()
@@ -275,8 +392,27 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             audit["db_last_visible_at"],
             visible_at.replace(tzinfo=timezone.utc),
         )
+        self.assertEqual(
+            audit["native_pool_started_at"],
+            datetime(2026, 7, 28, 0, 30, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            audit["native_pool_last_visible_at"],
+            datetime(2026, 7, 28, 0, 50, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            audit["v2_pool_started_at"],
+            datetime(2026, 7, 28, 0, 45, tzinfo=timezone.utc),
+        )
+        self.assertEqual(
+            audit["v2_pool_last_visible_at"],
+            datetime(2026, 7, 28, 1, 0, tzinfo=timezone.utc),
+        )
         statement = str(connection.execute.call_args.args[0])
         self.assertIn("MAX(t.visible_at)", statement)
+        self.assertIn("MIN(r.started_at)", statement)
+        self.assertIn("i.runtime_type = 'native_adapter'", statement)
+        self.assertIn("i.runtime_type = 'blackbox_v2'", statement)
         self.assertIn(
             "p.id = t.accepted_prediction_id",
             statement,

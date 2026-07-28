@@ -326,9 +326,17 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
         self.assertTrue(report.liwei_cache_environment_restored)
         self.assertIsNotNone(report.db_last_visible_at)
         self.assertGreaterEqual(
-            report.runtime_to_last_visible_seconds,
+            report.native_pool_observed_seconds,
             0,
         )
+        self.assertGreaterEqual(
+            report.v2_pool_observed_seconds,
+            0,
+        )
+        self.assertIsNotNone(
+            report.projected_native_last_visible_at
+        )
+        self.assertIsNotNone(report.projected_v2_last_visible_at)
         self.assertGreaterEqual(
             report.parallel_readiness_seconds,
             0,

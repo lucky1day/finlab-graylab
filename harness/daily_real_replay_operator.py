@@ -432,15 +432,21 @@ class DailyRealReplayExecutionReport:
     within_visibility_deadline: bool
     forced_cold_cache_qualification: str
     liwei_cache_environment_restored: bool
-    runtime_started_at: str
     db_last_visible_at: str
     native_prepare_seconds: float
     databridge_prepare_seconds: float
     parallel_readiness_seconds: float
-    runtime_to_last_visible_seconds: float
+    native_pool_started_at: str
+    native_pool_last_visible_at: str
+    native_pool_observed_seconds: float
+    v2_pool_started_at: str
+    v2_pool_last_visible_at: str
+    v2_pool_observed_seconds: float
     release_guard_seconds: float
     end_to_end_seconds: float
     projected_readiness_at: str
+    projected_native_last_visible_at: str
+    projected_v2_last_visible_at: str
     production_identity_unchanged: bool
 
 
@@ -451,12 +457,18 @@ class _ReplayTimingEvidence:
     native_prepare_seconds: float
     databridge_prepare_seconds: float
     parallel_readiness_seconds: float
-    runtime_to_last_visible_seconds: float
+    native_pool_started_at: str
+    native_pool_last_visible_at: str
+    native_pool_observed_seconds: float
+    v2_pool_started_at: str
+    v2_pool_last_visible_at: str
+    v2_pool_observed_seconds: float
     release_guard_seconds: float
     end_to_end_seconds: float
-    runtime_started_at: str
     db_last_visible_at: str
     projected_readiness_at: str
+    projected_native_last_visible_at: str
+    projected_v2_last_visible_at: str
     projected_last_visible_at: str
     within_capacity_limit: bool
     within_visibility_deadline: bool
@@ -500,11 +512,14 @@ def _liwei_forced_cold_cache_environment(
 def _build_replay_timing_evidence(
     inputs: object,
     *,
-    runtime_started_at: datetime,
+    native_pool_started_at: datetime,
+    native_pool_last_visible_at: datetime,
+    v2_pool_started_at: datetime,
+    v2_pool_last_visible_at: datetime,
     db_last_visible_at: datetime,
     max_v2_release_offset_minutes: int,
 ) -> _ReplayTimingEvidence:
-    """用真实时长而非运行发生时的绝对时钟计算 06:30 投影。"""
+    """按 Native/V2 两个并行池分别平移到 06:30 投影。"""
     native_created = _iso_utc_datetime(
         inputs.native_generation.created_at,
         field="native.created_at",
@@ -525,9 +540,21 @@ def _build_replay_timing_evidence(
         inputs.databridge_generation.sealed_at,
         field="databridge.sealed_at",
     )
-    runtime_started = _aware_utc_datetime(
-        runtime_started_at,
-        field="runtime_started_at",
+    native_pool_started = _aware_utc_datetime(
+        native_pool_started_at,
+        field="native_pool_started_at",
+    )
+    native_pool_last_visible = _aware_utc_datetime(
+        native_pool_last_visible_at,
+        field="native_pool_last_visible_at",
+    )
+    v2_pool_started = _aware_utc_datetime(
+        v2_pool_started_at,
+        field="v2_pool_started_at",
+    )
+    v2_pool_last_visible = _aware_utc_datetime(
+        v2_pool_last_visible_at,
+        field="v2_pool_last_visible_at",
     )
     last_visible = _aware_utc_datetime(
         db_last_visible_at,
@@ -537,15 +564,21 @@ def _build_replay_timing_evidence(
     databridge_seconds = (
         databridge_sealed - databridge_started
     ).total_seconds()
-    runtime_seconds = (
-        last_visible - runtime_started
+    native_pool_seconds = (
+        native_pool_last_visible - native_pool_started
+    ).total_seconds()
+    v2_pool_seconds = (
+        v2_pool_last_visible - v2_pool_started
     ).total_seconds()
     if (
         native_seconds < 0
         or databridge_seconds < 0
         or databridge_published < databridge_started
         or databridge_sealed < databridge_published
-        or runtime_seconds < 0
+        or native_pool_seconds < 0
+        or v2_pool_seconds < 0
+        or last_visible
+        != max(native_pool_last_visible, v2_pool_last_visible)
         or isinstance(max_v2_release_offset_minutes, bool)
         or not isinstance(max_v2_release_offset_minutes, int)
         or max_v2_release_offset_minutes < 0
@@ -555,8 +588,15 @@ def _build_replay_timing_evidence(
         )
     readiness_seconds = max(native_seconds, databridge_seconds)
     release_seconds = float(max_v2_release_offset_minutes * 60)
-    end_to_end_seconds = (
-        readiness_seconds + release_seconds + runtime_seconds
+    native_end_to_end_seconds = (
+        native_seconds + native_pool_seconds
+    )
+    v2_end_to_end_seconds = (
+        databridge_seconds + release_seconds + v2_pool_seconds
+    )
+    end_to_end_seconds = max(
+        native_end_to_end_seconds,
+        v2_end_to_end_seconds,
     )
     business_date = date.fromisoformat(str(inputs.business_date))
     anchor = datetime.combine(
@@ -567,8 +607,15 @@ def _build_replay_timing_evidence(
     projected_readiness = anchor + timedelta(
         seconds=readiness_seconds
     )
-    projected_last_visible = anchor + timedelta(
-        seconds=end_to_end_seconds
+    projected_native_last_visible = anchor + timedelta(
+        seconds=native_end_to_end_seconds
+    )
+    projected_v2_last_visible = anchor + timedelta(
+        seconds=v2_end_to_end_seconds
+    )
+    projected_last_visible = max(
+        projected_native_last_visible,
+        projected_v2_last_visible,
     )
     deadline = datetime.combine(
         business_date,
@@ -585,15 +632,29 @@ def _build_replay_timing_evidence(
             readiness_seconds,
             6,
         ),
-        runtime_to_last_visible_seconds=round(
-            runtime_seconds,
+        native_pool_started_at=native_pool_started.isoformat(),
+        native_pool_last_visible_at=(
+            native_pool_last_visible.isoformat()
+        ),
+        native_pool_observed_seconds=round(
+            native_pool_seconds,
             6,
         ),
+        v2_pool_started_at=v2_pool_started.isoformat(),
+        v2_pool_last_visible_at=(
+            v2_pool_last_visible.isoformat()
+        ),
+        v2_pool_observed_seconds=round(v2_pool_seconds, 6),
         release_guard_seconds=round(release_seconds, 6),
         end_to_end_seconds=round(end_to_end_seconds, 6),
-        runtime_started_at=runtime_started.isoformat(),
         db_last_visible_at=last_visible.isoformat(),
         projected_readiness_at=projected_readiness.isoformat(),
+        projected_native_last_visible_at=(
+            projected_native_last_visible.isoformat()
+        ),
+        projected_v2_last_visible_at=(
+            projected_v2_last_visible.isoformat()
+        ),
         projected_last_visible_at=(
             projected_last_visible.isoformat()
         ),
@@ -874,7 +935,6 @@ def _execute_real_replay_on_isolated_database(
     with _liwei_forced_cold_cache_environment(
         forced_cold_cache_root
     ):
-        runtime_started_at = datetime.now(timezone.utc)
         started = time_module.monotonic()
         first = _run_real_replay_runtime(runtime, session=session)
         elapsed_seconds = time_module.monotonic() - started
@@ -900,7 +960,18 @@ def _execute_real_replay_on_isolated_database(
     )
     timing = _build_replay_timing_evidence(
         inputs,
-        runtime_started_at=runtime_started_at,
+        native_pool_started_at=after_reentry[
+            "native_pool_started_at"
+        ],
+        native_pool_last_visible_at=after_reentry[
+            "native_pool_last_visible_at"
+        ],
+        v2_pool_started_at=after_reentry[
+            "v2_pool_started_at"
+        ],
+        v2_pool_last_visible_at=after_reentry[
+            "v2_pool_last_visible_at"
+        ],
         db_last_visible_at=after_reentry["db_last_visible_at"],
         max_v2_release_offset_minutes=max(v2_release_offsets),
     )
@@ -981,7 +1052,6 @@ def _execute_real_replay_on_isolated_database(
             "PRIVATE_EMPTY_OWNER_ONLY"
         ),
         liwei_cache_environment_restored=True,
-        runtime_started_at=timing.runtime_started_at,
         db_last_visible_at=timing.db_last_visible_at,
         native_prepare_seconds=timing.native_prepare_seconds,
         databridge_prepare_seconds=(
@@ -990,12 +1060,27 @@ def _execute_real_replay_on_isolated_database(
         parallel_readiness_seconds=(
             timing.parallel_readiness_seconds
         ),
-        runtime_to_last_visible_seconds=(
-            timing.runtime_to_last_visible_seconds
+        native_pool_started_at=timing.native_pool_started_at,
+        native_pool_last_visible_at=(
+            timing.native_pool_last_visible_at
+        ),
+        native_pool_observed_seconds=(
+            timing.native_pool_observed_seconds
+        ),
+        v2_pool_started_at=timing.v2_pool_started_at,
+        v2_pool_last_visible_at=timing.v2_pool_last_visible_at,
+        v2_pool_observed_seconds=(
+            timing.v2_pool_observed_seconds
         ),
         release_guard_seconds=timing.release_guard_seconds,
         end_to_end_seconds=timing.end_to_end_seconds,
         projected_readiness_at=timing.projected_readiness_at,
+        projected_native_last_visible_at=(
+            timing.projected_native_last_visible_at
+        ),
+        projected_v2_last_visible_at=(
+            timing.projected_v2_last_visible_at
+        ),
         production_identity_unchanged=False,
     )
 
@@ -1163,6 +1248,68 @@ def _read_replay_execution_audit(
                        OR r.finished_at IS NULL
                      ))
                     AS nonterminal_run_count,
+                  (SELECT MIN(r.started_at)
+                   FROM t_scheme_runs r
+                   JOIN t_schedule_items i
+                     ON i.item_id = r.schedule_item_id
+                   WHERE i.occurrence_id = :occurrence_id
+                     AND i.runtime_type = 'native_adapter'
+                     AND r.status = 'success'
+                     AND r.started_at IS NOT NULL
+                     AND r.finished_at IS NOT NULL)
+                    AS native_pool_started_at,
+                  (SELECT MAX(t.visible_at)
+                   FROM t_schedule_item_targets t
+                   JOIN t_schedule_items i
+                     ON i.item_id = t.item_id
+                    AND i.occurrence_id = t.occurrence_id
+                   JOIN t_scheme_runs r
+                     ON r.run_id = t.accepted_run_id
+                    AND r.schedule_item_id = i.item_id
+                   JOIN t_scheme_predictions p
+                     ON p.id = t.accepted_prediction_id
+                    AND p.run_id = r.run_id
+                    AND p.scheme_id = t.base_scheme_id
+                    AND p.target_tenor = t.target_tenor
+                    AND p.horizon = t.horizon
+                    AND p.target_date = t.target_date
+                   WHERE t.occurrence_id = :occurrence_id
+                     AND i.runtime_type = 'native_adapter'
+                     AND t.status = 'ACCEPTED'
+                     AND t.accepted_at IS NOT NULL
+                     AND t.visible_at IS NOT NULL)
+                    AS native_pool_last_visible_at,
+                  (SELECT MIN(r.started_at)
+                   FROM t_scheme_runs r
+                   JOIN t_schedule_items i
+                     ON i.item_id = r.schedule_item_id
+                   WHERE i.occurrence_id = :occurrence_id
+                     AND i.runtime_type = 'blackbox_v2'
+                     AND r.status = 'success'
+                     AND r.started_at IS NOT NULL
+                     AND r.finished_at IS NOT NULL)
+                    AS v2_pool_started_at,
+                  (SELECT MAX(t.visible_at)
+                   FROM t_schedule_item_targets t
+                   JOIN t_schedule_items i
+                     ON i.item_id = t.item_id
+                    AND i.occurrence_id = t.occurrence_id
+                   JOIN t_scheme_runs r
+                     ON r.run_id = t.accepted_run_id
+                    AND r.schedule_item_id = i.item_id
+                   JOIN t_scheme_predictions p
+                     ON p.id = t.accepted_prediction_id
+                    AND p.run_id = r.run_id
+                    AND p.scheme_id = t.base_scheme_id
+                    AND p.target_tenor = t.target_tenor
+                    AND p.horizon = t.horizon
+                    AND p.target_date = t.target_date
+                   WHERE t.occurrence_id = :occurrence_id
+                     AND i.runtime_type = 'blackbox_v2'
+                     AND t.status = 'ACCEPTED'
+                     AND t.accepted_at IS NOT NULL
+                     AND t.visible_at IS NOT NULL)
+                    AS v2_pool_last_visible_at,
                   (SELECT MAX(t.visible_at)
                    FROM t_schedule_item_targets t
                    JOIN t_schedule_items i
@@ -1187,17 +1334,25 @@ def _read_replay_execution_audit(
             ),
             {"occurrence_id": int(occurrence_id)},
         ).mappings().one()
+    timestamp_fields = (
+        "native_pool_started_at",
+        "native_pool_last_visible_at",
+        "v2_pool_started_at",
+        "v2_pool_last_visible_at",
+        "db_last_visible_at",
+    )
     audit: dict[str, object] = {
         key: int(value)
         for key, value in row.items()
-        if key != "db_last_visible_at"
+        if key not in timestamp_fields
     }
-    visible_at = row.get("db_last_visible_at")
-    audit["db_last_visible_at"] = (
-        _stored_database_utc_datetime(visible_at)
-        if visible_at is not None
-        else None
-    )
+    for field_name in timestamp_fields:
+        value = row.get(field_name)
+        audit[field_name] = (
+            _stored_database_utc_datetime(value)
+            if value is not None
+            else None
+        )
     return audit
 
 
