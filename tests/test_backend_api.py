@@ -11,6 +11,10 @@ from fastapi import BackgroundTasks, HTTPException, Response
 from sqlalchemy import create_engine
 
 from backend import main
+from scheduler.blackbox_scheduler_admission import (
+    EXPECTED_EXACT_ADMISSIONS,
+    BlackboxSchedulerAdmissionError,
+)
 
 
 def _clear_admin_token() -> None:
@@ -710,6 +714,523 @@ class SchemesLifecycleRemovedTests(unittest.TestCase):
 class TriggerEndpointTests(unittest.TestCase):
     """trigger 端点本体（auth 由 Depends 单独覆盖）：未知方案 404 / 已知方案 202。"""
 
+    @staticmethod
+    def _canonical(
+        scheme_id: str,
+        scheme_version: str,
+        *,
+        runtime_type: str = "blackbox_v2",
+    ) -> SimpleNamespace:
+        admission = EXPECTED_EXACT_ADMISSIONS[
+            (scheme_id, scheme_version)
+        ]
+        return SimpleNamespace(
+            scheme_id=scheme_id,
+            scheme_version=scheme_version,
+            status="active",
+            version_status="active",
+            runtime_type=runtime_type,
+            frequency=admission.frequency,
+            task_type=admission.task_type,
+            horizon=admission.horizon,
+            tenors=[admission.target_tenor],
+        )
+
+    @staticmethod
+    def _coordinator_identity(
+        mode: str,
+    ) -> SimpleNamespace:
+        payload = {
+            "epoch": 2,
+            "mode": mode,
+            "record_sha256": "2" * 64,
+        }
+        return SimpleNamespace(
+            mode=mode,
+            policy_payload=lambda: dict(payload),
+        )
+
+    @staticmethod
+    def _occurrence_snapshot(
+        config: SimpleNamespace,
+        identity: SimpleNamespace,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            occurrence=SimpleNamespace(
+                policy_json={
+                    "daily_coordinator_epoch":
+                        identity.policy_payload(),
+                }
+            ),
+            items=(
+                SimpleNamespace(
+                    item=SimpleNamespace(
+                        base_scheme_id=config.scheme_id,
+                        runtime_type=config.runtime_type,
+                        scheme_version=config.scheme_version,
+                    )
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _registry_row(
+        config: SimpleNamespace,
+        *,
+        registry_scheme_id: str | None = None,
+        **overrides,
+    ) -> dict:
+        row = {
+            "scheme_id": (
+                registry_scheme_id
+                or (
+                    f"{config.scheme_id}__h{config.horizon}"
+                    f"__{config.tenors[0]}"
+                )
+            ),
+            "base_scheme_id": config.scheme_id,
+            "runtime_type": config.runtime_type,
+            "frequency": config.frequency,
+            "task_type": config.task_type,
+            "horizon": config.horizon,
+            "target_tenor": config.tenors[0],
+            "status": "active",
+        }
+        row.update(overrides)
+        return row
+
+    def test_trigger_preflight_denies_ungranted_control_plane_before_enqueue(
+        self,
+    ) -> None:
+        scenarios = (
+            (
+                self._canonical(
+                    "cgb_a4_fundseason_1y",
+                    "04e7af163fb0",
+                ),
+                "legacy",
+            ),
+            (
+                self._canonical(
+                    "ten_y_t5_maj3_k3_ic_static_v1",
+                    "c54b90bcafa7",
+                ),
+                "legacy",
+            ),
+        )
+        for config, mode in scenarios:
+            background = BackgroundTasks()
+            registry = self._registry_row(config)
+            with (
+                self.subTest(scheme_id=config.scheme_id),
+                patch.object(main, "get_engine", return_value=object()),
+                patch.object(
+                    main,
+                    "list_schemes",
+                    return_value=[registry],
+                ),
+                patch.object(
+                    main,
+                    "_daily_coordinator_mode",
+                    return_value=mode,
+                ),
+                patch(
+                    "scheduler.main.discover_schemes",
+                    return_value=[config],
+                ),
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    main.api_trigger_scheme(
+                        registry["scheme_id"],
+                        main.TriggerRequest(
+                            predict_date="2026-07-27"
+                        ),
+                        background,
+                    )
+
+            self.assertEqual(raised.exception.status_code, 409)
+            self.assertEqual(background.tasks, [])
+
+    def test_trigger_preflight_fails_closed_when_admission_unavailable(
+        self,
+    ) -> None:
+        config = self._canonical(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        registry = self._registry_row(config)
+        background = BackgroundTasks()
+        with (
+            patch.object(main, "get_engine", return_value=object()),
+            patch.object(
+                main,
+                "list_schemes",
+                return_value=[registry],
+            ),
+            patch(
+                "scheduler.main.discover_schemes",
+                return_value=[config],
+            ),
+            patch(
+                "scheduler.main.load_blackbox_scheduler_admission",
+                side_effect=BlackboxSchedulerAdmissionError(
+                    "policy unavailable"
+                ),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.api_trigger_scheme(
+                    registry["scheme_id"],
+                    main.TriggerRequest(
+                        predict_date="2026-07-27"
+                    ),
+                    background,
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(background.tasks, [])
+
+    def test_trigger_preflight_rejects_registry_config_route_drift(
+        self,
+    ) -> None:
+        config = self._canonical(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        registry = self._registry_row(
+            config,
+            frequency="daily",
+        )
+        background = BackgroundTasks()
+        with (
+            patch.object(main, "get_engine", return_value=object()),
+            patch.object(
+                main,
+                "list_schemes",
+                return_value=[registry],
+            ),
+            patch(
+                "scheduler.main.discover_schemes",
+                return_value=[config],
+            ),
+            patch.object(
+                main,
+                "find_schedule_occurrence_id",
+            ) as occurrence,
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.api_trigger_scheme(
+                    registry["scheme_id"],
+                    main.TriggerRequest(
+                        predict_date="2026-07-27"
+                    ),
+                    background,
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(background.tasks, [])
+        occurrence.assert_not_called()
+
+    def test_trigger_preflight_rejects_composite_and_runtime_drift(
+        self,
+    ) -> None:
+        config = self._canonical(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        scenarios = (
+            self._registry_row(
+                config,
+                registry_scheme_id=(
+                    f"{config.scheme_id}__h5__10Y"
+                ),
+            ),
+            self._registry_row(
+                config,
+                runtime_type="native_adapter",
+            ),
+        )
+        for registry in scenarios:
+            background = BackgroundTasks()
+            with (
+                self.subTest(registry=registry),
+                patch.object(main, "get_engine", return_value=object()),
+                patch.object(
+                    main,
+                    "list_schemes",
+                    return_value=[registry],
+                ),
+                patch(
+                    "scheduler.main.discover_schemes",
+                    return_value=[config],
+                ),
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    main.api_trigger_scheme(
+                        registry["scheme_id"],
+                        main.TriggerRequest(
+                            predict_date="2026-07-27"
+                        ),
+                        background,
+                    )
+
+            self.assertEqual(raised.exception.status_code, 503)
+            self.assertEqual(background.tasks, [])
+
+    def test_ledger_daily_force_and_missing_occurrence_identity_are_conflicts(
+        self,
+    ) -> None:
+        config = self._canonical(
+            "ten_y_t5_maj3_k3_ic_static_v1",
+            "c54b90bcafa7",
+        )
+        registry = self._registry_row(config)
+        identity = self._coordinator_identity("ledger")
+        missing_snapshot = SimpleNamespace(
+            occurrence=SimpleNamespace(
+                policy_json={
+                    "daily_coordinator_epoch":
+                        identity.policy_payload(),
+                }
+            ),
+            items=(),
+        )
+        scenarios = (
+            (
+                True,
+                self._occurrence_snapshot(config, identity),
+                409,
+            ),
+            (False, missing_snapshot, 503),
+        )
+        for force, snapshot, status_code in scenarios:
+            background = BackgroundTasks()
+            with (
+                self.subTest(force=force),
+                patch.object(main, "get_engine", return_value=object()),
+                patch.object(
+                    main,
+                    "list_schemes",
+                    return_value=[registry],
+                ),
+                patch(
+                    "scheduler.main.discover_schemes",
+                    return_value=[config],
+                ),
+                patch.object(
+                    main,
+                    "_daily_coordinator_mode",
+                    return_value="ledger",
+                ),
+                patch.object(
+                    main,
+                    "require_current_daily_coordinator_identity",
+                    return_value=identity,
+                ),
+                patch.object(
+                    main,
+                    "find_schedule_occurrence_id",
+                    return_value=42,
+                ),
+                patch.object(
+                    main,
+                    "read_schedule_occurrence_snapshot",
+                    return_value=snapshot,
+                ),
+                patch.object(
+                    main,
+                    "assert_daily_coordinator_epoch_matches_policy",
+                    return_value=identity,
+                ),
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    main.api_trigger_scheme(
+                        registry["scheme_id"],
+                        main.TriggerRequest(
+                            predict_date="2026-07-27",
+                            force=force,
+                        ),
+                        background,
+                    )
+
+            self.assertEqual(
+                raised.exception.status_code,
+                status_code,
+            )
+            self.assertEqual(background.tasks, [])
+
+    def test_trigger_preflight_maps_infrastructure_failures_to_503(
+        self,
+    ) -> None:
+        background = BackgroundTasks()
+        with patch.object(
+            main,
+            "get_engine",
+            side_effect=RuntimeError("engine unavailable"),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.api_trigger_scheme(
+                    "any__h1__1Y",
+                    main.TriggerRequest(),
+                    background,
+                )
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(background.tasks, [])
+
+        config = self._canonical(
+            "one_y_t5_liq_excess_a_v1",
+            "8d583560c9f1",
+        )
+        registry = self._registry_row(config)
+        for failing_call in ("mode", "occurrence"):
+            background = BackgroundTasks()
+            identity = self._coordinator_identity("ledger")
+            with (
+                self.subTest(failing_call=failing_call),
+                patch.object(
+                    main,
+                    "get_engine",
+                    return_value=object(),
+                ),
+                patch.object(
+                    main,
+                    "list_schemes",
+                    return_value=[registry],
+                ),
+                patch(
+                    "scheduler.main.discover_schemes",
+                    return_value=[config],
+                ),
+                patch.object(
+                    main,
+                    "_daily_coordinator_mode",
+                    return_value="ledger",
+                    side_effect=(
+                        RuntimeError("mode unavailable")
+                        if failing_call == "mode"
+                        else None
+                    ),
+                ),
+                patch.object(
+                    main,
+                    "require_current_daily_coordinator_identity",
+                    return_value=identity,
+                ),
+                patch.object(
+                    main,
+                    "find_schedule_occurrence_id",
+                    return_value=42,
+                    side_effect=(
+                        RuntimeError("occurrence unavailable")
+                        if failing_call == "occurrence"
+                        else None
+                    ),
+                ),
+            ):
+                with self.assertRaises(HTTPException) as raised:
+                    main.api_trigger_scheme(
+                        registry["scheme_id"],
+                        main.TriggerRequest(
+                            predict_date="2026-07-27"
+                        ),
+                        background,
+                    )
+
+            self.assertEqual(raised.exception.status_code, 503)
+            self.assertEqual(background.tasks, [])
+
+    def test_trigger_preflight_maps_identity_drift_to_503(
+        self,
+    ) -> None:
+        canonical = self._canonical(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        drifted = SimpleNamespace(
+            **{
+                **vars(canonical),
+                "scheme_version": "drifted-version",
+            }
+        )
+        registry = self._registry_row(canonical)
+        background = BackgroundTasks()
+        with (
+            patch.object(main, "get_engine", return_value=object()),
+            patch.object(
+                main,
+                "list_schemes",
+                return_value=[registry],
+            ),
+            patch(
+                "scheduler.main.discover_schemes",
+                return_value=[drifted],
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                main.api_trigger_scheme(
+                    registry["scheme_id"],
+                    main.TriggerRequest(
+                        predict_date="2026-07-27"
+                    ),
+                    background,
+                )
+
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(background.tasks, [])
+
+    def test_trigger_background_revalidates_exact_identity_before_execution(
+        self,
+    ) -> None:
+        config = self._canonical(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        drifted = SimpleNamespace(
+            **{
+                **vars(config),
+                "scheme_version": "drifted-version",
+            }
+        )
+        registry = self._registry_row(config)
+        background = BackgroundTasks()
+        with (
+            patch.object(main, "get_engine", return_value=object()),
+            patch.object(
+                main,
+                "list_schemes",
+                return_value=[registry],
+            ),
+            patch(
+                "scheduler.main.discover_schemes",
+                side_effect=[[config], [drifted]],
+            ),
+            patch.object(main, "run_prediction_job") as prediction,
+            patch.object(
+                main,
+                "run_daily_operator_recovery_job",
+            ) as recovery,
+            self.assertLogs(main.logger, level="ERROR") as logs,
+        ):
+            main.api_trigger_scheme(
+                registry["scheme_id"],
+                main.TriggerRequest(
+                    predict_date="2026-07-27",
+                ),
+                background,
+            )
+            task = background.tasks[0]
+            task.func(*task.args, **task.kwargs)
+
+        prediction.assert_not_called()
+        recovery.assert_not_called()
+        self.assertTrue(
+            any(
+                "admission revalidation failed" in message
+                and registry["scheme_id"] in message
+                for message in logs.output
+            )
+        )
+
     def test_trigger_unknown_scheme_is_404(self) -> None:
         with patch.object(main, "get_engine", return_value=object()), patch.object(
             main, "list_schemes", return_value=[{"scheme_id": "demo_daily__h1__10Y", "base_scheme_id": "demo_daily"}]
@@ -950,26 +1471,47 @@ class TriggerEndpointTests(unittest.TestCase):
         self.assertEqual(background.tasks, [])
 
     def test_trigger_known_scheme_is_accepted(self) -> None:
+        config = self._canonical(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        registry = self._registry_row(config)
         background = BackgroundTasks()
-        with patch.object(main, "get_engine", return_value=object()), patch.object(
-            main,
-            "list_schemes",
-            return_value=[
-                {"scheme_id": "demo_daily__h1__10Y", "base_scheme_id": "demo_daily", "status": "active"}
-            ],
+        with (
+            patch.object(main, "get_engine", return_value=object()),
+            patch.object(
+                main,
+                "list_schemes",
+                return_value=[registry],
+            ),
+            patch(
+                "scheduler.main.discover_schemes",
+                return_value=[config],
+            ),
         ):
             result = main.api_trigger_scheme(
-                "demo_daily__h1__10Y",
+                registry["scheme_id"],
                 main.TriggerRequest(predict_date="2026-06-09"),
                 background,
             )
         self.assertTrue(result["accepted"])
-        self.assertEqual(result["scheme_id"], "demo_daily__h1__10Y")
-        self.assertEqual(result["base_scheme_id"], "demo_daily")
+        self.assertEqual(result["scheme_id"], registry["scheme_id"])
+        self.assertEqual(
+            result["base_scheme_id"],
+            config.scheme_id,
+        )
         # 已排入后台任务（_run_trigger）。
         self.assertEqual(len(background.tasks), 1)
         task = background.tasks[0]
-        self.assertEqual(task.args[0], "demo_daily")
+        self.assertEqual(
+            task.args,
+            (
+                registry["scheme_id"],
+                "2026-06-09",
+                False,
+                None,
+            ),
+        )
 
     def test_trigger_non_active_scheme_is_404(self) -> None:
         with patch.object(main, "get_engine", return_value=object()), patch.object(
@@ -996,19 +1538,81 @@ class TriggerEndpointTests(unittest.TestCase):
         self.assertEqual(archived_ctx.exception.status_code, 404)
 
     def test_run_trigger_invokes_prediction_job(self) -> None:
-        with patch.object(main, "run_prediction_job") as job_mock:
-            main._run_trigger("demo_daily", main.TriggerRequest(force=True))
+        config = self._canonical(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        registry = self._registry_row(config)
+        with (
+            patch.object(main, "get_engine", return_value=object()),
+            patch.object(
+                main,
+                "list_schemes",
+                return_value=[registry],
+            ),
+            patch(
+                "scheduler.main.discover_schemes",
+                return_value=[config],
+            ),
+            patch.object(main, "run_prediction_job") as job_mock,
+        ):
+            main._run_trigger(
+                registry["scheme_id"],
+                "2026-07-27",
+                True,
+                None,
+            )
         job_mock.assert_called_once()
         self.assertEqual(job_mock.call_args.kwargs.get("force"), True)
 
     def test_run_trigger_routes_daily_recovery_through_ledger_coordinator(
         self,
     ) -> None:
+        config = self._canonical(
+            "ten_y_t5_maj3_k3_ic_static_v1",
+            "c54b90bcafa7",
+        )
+        registry = self._registry_row(config)
+        identity = self._coordinator_identity("ledger")
+        snapshot = self._occurrence_snapshot(
+            config,
+            identity,
+        )
         with (
+            patch.object(main, "get_engine", return_value=object()),
+            patch.object(
+                main,
+                "list_schemes",
+                return_value=[registry],
+            ),
+            patch(
+                "scheduler.main.discover_schemes",
+                return_value=[config],
+            ),
             patch.object(
                 main,
                 "_daily_coordinator_mode",
                 return_value="ledger",
+            ),
+            patch.object(
+                main,
+                "require_current_daily_coordinator_identity",
+                return_value=identity,
+            ),
+            patch.object(
+                main,
+                "find_schedule_occurrence_id",
+                return_value=42,
+            ),
+            patch.object(
+                main,
+                "read_schedule_occurrence_snapshot",
+                return_value=snapshot,
+            ),
+            patch.object(
+                main,
+                "assert_daily_coordinator_epoch_matches_policy",
+                return_value=identity,
             ),
             patch.object(
                 main,
@@ -1017,16 +1621,14 @@ class TriggerEndpointTests(unittest.TestCase):
             patch.object(main, "run_prediction_job") as legacy,
         ):
             main._run_trigger(
-                "demo_daily",
-                main.TriggerRequest(
-                    predict_date="2026-07-24",
-                    force=True,
-                ),
-                frequency="daily",
+                registry["scheme_id"],
+                "2026-07-24",
+                False,
+                None,
             )
 
         recovery.assert_called_once_with(
-            "demo_daily",
+            config.scheme_id,
             run_date="2026-07-24",
             algo_env=main.DEFAULT_ALGO_ENV,
         )

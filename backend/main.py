@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, time as wall_time, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -59,12 +60,20 @@ from backend.services import (
     sync_registry_from_configs,
 )
 from scheduler.executor import DEFAULT_ALGO_ENV
+from scheduler.blackbox_scheduler_admission import (
+    DAILY_LEDGER,
+    DIRECT_SCHEDULED,
+)
 from scheduler.daily_health import (
     project_daily_health,
     project_scheduler_heartbeat,
 )
 from scheduler.main import (
+    ScheduledPredictionConfigurationError,
+    ScheduledPredictionControlPlaneDenied,
     _daily_coordinator_mode,
+    require_scheduled_prediction_control_plane,
+    resolve_scheduled_prediction_config,
     run_daily_operator_recovery_job,
     run_prediction_job,
 )
@@ -401,6 +410,27 @@ class TriggerRequest(BaseModel):
     predict_date: str | None = Field(default=None, description="YYYY-MM-DD; omitted means today")
     force: bool = Field(default=False, description="Run even when the date is not a trading day")
     algo_env: str | None = Field(default=None, description="Override algorithm conda env")
+
+
+class _TriggerValidationError(RuntimeError):
+    """手工 scheduled trigger 同步或后台重验失败。"""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+@dataclass(frozen=True)
+class _TriggerAuthorization:
+    """从 active Registry 与 canonical config 重新推导的执行路由。"""
+
+    registry_scheme_id: str
+    base_scheme_id: str
+    runtime_type: str
+    scheme_version: str
+    frequency: str
+    plane: str
 
 
 @app.get("/api/health")
@@ -1321,124 +1351,324 @@ def api_backtest_factor_lab(
     return backtest_factor_lab_results(get_engine(), benchmark_id=benchmark_id, data_source=data_source)
 
 
-def _run_trigger(
-    scheme_id: str,
-    request: TriggerRequest,
-    frequency: str | None = None,
-) -> None:
-    logger.info("Manual trigger started for %s (triggered_by=admin_api)", scheme_id)
+def _resolve_trigger_authorization(
+    engine,
+    registry_scheme_id: str,
+) -> _TriggerAuthorization:
+    """从 active Registry 与部署 config 推导本次控制面。"""
     try:
-        algo_env = request.algo_env or os.getenv(
+        registry_row = next(
+            (
+                row
+                for row in list_schemes(engine)
+                if row.get("scheme_id") == registry_scheme_id
+                and row.get("status") == "active"
+            ),
+            None,
+        )
+    except Exception as exc:
+        raise _TriggerValidationError(
+            503,
+            "active scheme Registry is unavailable",
+        ) from exc
+    if registry_row is None:
+        raise _TriggerValidationError(
+            404,
+            f"scheme not found: {registry_scheme_id}",
+        )
+
+    base_scheme_id = str(
+        registry_row.get("base_scheme_id") or ""
+    )
+    try:
+        config = resolve_scheduled_prediction_config(
+            base_scheme_id
+        )
+    except ScheduledPredictionConfigurationError as exc:
+        raise _TriggerValidationError(
+            503,
+            "active Registry does not match a runnable canonical "
+            f"config: registry_scheme_id={registry_scheme_id} "
+            f"error={exc}",
+        ) from exc
+
+    registry_contract = {
+        "base_scheme_id": base_scheme_id,
+        "runtime_type": str(
+            registry_row.get("runtime_type") or ""
+        ),
+        "frequency": str(
+            registry_row.get("frequency") or ""
+        ),
+        "task_type": str(
+            registry_row.get("task_type") or ""
+        ),
+        "horizon": registry_row.get("horizon"),
+        "target_tenor": str(
+            registry_row.get("target_tenor") or ""
+        ),
+    }
+    canonical_contract = {
+        "base_scheme_id": config.scheme_id,
+        "runtime_type": config.runtime_type,
+        "frequency": config.frequency,
+        "task_type": config.task_type,
+        "horizon": config.horizon,
+        "target_tenor": registry_contract["target_tenor"],
+    }
+    target_tenor = registry_contract["target_tenor"]
+    expected_registry_scheme_id = (
+        f"{config.scheme_id}__h{config.horizon}"
+        f"__{target_tenor}"
+    )
+    if (
+        registry_contract != canonical_contract
+        or target_tenor not in tuple(config.tenors)
+        or registry_scheme_id != expected_registry_scheme_id
+    ):
+        raise _TriggerValidationError(
+            503,
+            "active Registry and canonical config drift: "
+            f"registry_scheme_id={registry_scheme_id}",
+        )
+
+    if config.frequency == "daily":
+        try:
+            coordinator_mode = _daily_coordinator_mode()
+        except Exception as exc:
+            raise _TriggerValidationError(
+                503,
+                "daily coordinator mode is unavailable",
+            ) from exc
+    else:
+        coordinator_mode = "legacy"
+    plane = (
+        DAILY_LEDGER
+        if config.frequency == "daily"
+        and coordinator_mode == "ledger"
+        else DIRECT_SCHEDULED
+    )
+    try:
+        require_scheduled_prediction_control_plane(
+            config,
+            plane=plane,
+        )
+    except ScheduledPredictionControlPlaneDenied as exc:
+        raise _TriggerValidationError(409, str(exc)) from exc
+    except ScheduledPredictionConfigurationError as exc:
+        raise _TriggerValidationError(
+            503,
+            str(exc),
+        ) from exc
+    return _TriggerAuthorization(
+        registry_scheme_id=registry_scheme_id,
+        base_scheme_id=config.scheme_id,
+        runtime_type=config.runtime_type,
+        scheme_version=config.scheme_version,
+        frequency=config.frequency,
+        plane=plane,
+    )
+
+
+def _require_daily_trigger_context(
+    engine,
+    authorization: _TriggerAuthorization,
+    predict_date: str | None,
+    *,
+    force: bool,
+) -> None:
+    """校验日频 epoch；ledger 还必须绑定真实 occurrence。"""
+    if authorization.frequency != "daily":
+        return
+    if (
+        authorization.plane == DAILY_LEDGER
+        and force
+    ):
+        raise _TriggerValidationError(
+            409,
+            "force is not supported by the ledger daily coordinator",
+        )
+    try:
+        current_identity = (
+            require_current_daily_coordinator_identity()
+        )
+    except Exception as exc:
+        raise _TriggerValidationError(
+            503,
+            "daily coordinator epoch is unavailable",
+        ) from exc
+    expected_mode = (
+        "ledger"
+        if authorization.plane == DAILY_LEDGER
+        else "legacy"
+    )
+    if current_identity.mode != expected_mode:
+        raise _TriggerValidationError(
+            503,
+            "daily coordinator epoch mode mismatch",
+        )
+    if authorization.plane != DAILY_LEDGER:
+        return
+
+    requested_date = date.fromisoformat(
+        predict_date
+        or datetime.now(_DAILY_TIMEZONE).date().isoformat()
+    )
+    try:
+        occurrence_id = find_schedule_occurrence_id(
+            engine,
+            schedule_key=_DAILY_SCHEDULE_KEY,
+            predict_date=requested_date.isoformat(),
+        )
+    except Exception as exc:
+        raise _TriggerValidationError(
+            503,
+            "daily schedule occurrence is unavailable",
+        ) from exc
+    if occurrence_id is None:
+        raise _TriggerValidationError(
+            503,
+            "daily schedule occurrence is unavailable",
+        )
+    try:
+        snapshot = read_schedule_occurrence_snapshot(
+            engine,
+            occurrence_id=occurrence_id,
+        )
+        frozen_identity = (
+            assert_daily_coordinator_epoch_matches_policy(
+                snapshot.occurrence.policy_json
+            )
+        )
+    except Exception as exc:
+        raise _TriggerValidationError(
+            503,
+            "daily schedule coordinator epoch mismatch",
+        ) from exc
+    if (
+        frozen_identity.policy_payload()
+        != current_identity.policy_payload()
+    ):
+        raise _TriggerValidationError(
+            503,
+            "daily schedule coordinator epoch mismatch",
+        )
+    if not any(
+        summary.item.base_scheme_id
+        == authorization.base_scheme_id
+        and summary.item.runtime_type
+        == authorization.runtime_type
+        and summary.item.scheme_version
+        == authorization.scheme_version
+        for summary in snapshot.items
+    ):
+        raise _TriggerValidationError(
+            503,
+            "scheme is not frozen in the daily schedule occurrence: "
+            f"identity={authorization.base_scheme_id}@"
+            f"{authorization.scheme_version}",
+        )
+
+
+def _preflight_trigger(
+    registry_scheme_id: str,
+    *,
+    predict_date: str | None,
+    force: bool,
+) -> _TriggerAuthorization:
+    """执行同步或后台均相同的完整 trigger 重验。"""
+    try:
+        engine = get_engine()
+    except Exception as exc:
+        raise _TriggerValidationError(
+            503,
+            "trigger database is unavailable",
+        ) from exc
+    authorization = _resolve_trigger_authorization(
+        engine,
+        registry_scheme_id,
+    )
+    _require_daily_trigger_context(
+        engine,
+        authorization,
+        predict_date,
+        force=force,
+    )
+    return authorization
+
+
+def _run_trigger(
+    registry_scheme_id: str,
+    predict_date: str | None = None,
+    force: bool = False,
+    algo_env: str | None = None,
+) -> None:
+    logger.info(
+        "Manual trigger started for %s (triggered_by=admin_api)",
+        registry_scheme_id,
+    )
+    try:
+        authorization = _preflight_trigger(
+            registry_scheme_id,
+            predict_date=predict_date,
+            force=force,
+        )
+        effective_algo_env = algo_env or os.getenv(
             "BOND_ALGO_CONDA_ENV",
             DEFAULT_ALGO_ENV,
         )
-        if _daily_coordinator_mode() == "ledger" and frequency in {
-            None,
-            "daily",
-        }:
+        if authorization.plane == DAILY_LEDGER:
             run_daily_operator_recovery_job(
-                scheme_id,
-                run_date=request.predict_date,
-                algo_env=algo_env,
+                authorization.base_scheme_id,
+                run_date=predict_date,
+                algo_env=effective_algo_env,
             )
             return
         run_prediction_job(
-            scheme_id,
-            run_date=request.predict_date,
-            algo_env=algo_env,
-            force=request.force,
+            authorization.base_scheme_id,
+            run_date=predict_date,
+            algo_env=effective_algo_env,
+            force=force,
+        )
+    except _TriggerValidationError as exc:
+        logger.error(
+            "Manual trigger admission revalidation failed: "
+            "registry_scheme_id=%s status_code=%s error=%s",
+            registry_scheme_id,
+            exc.status_code,
+            exc.detail,
         )
     except Exception:
-        logger.exception("Manual trigger failed for %s", scheme_id)
+        logger.exception(
+            "Manual trigger failed for %s",
+            registry_scheme_id,
+        )
 
 
 @app.post("/api/schemes/{scheme_id}/trigger", status_code=202, dependencies=[Depends(require_admin_token)])
 def api_trigger_scheme(scheme_id: str, request: TriggerRequest, background_tasks: BackgroundTasks) -> dict:
-    engine = get_engine()
-    known = {
-        item["scheme_id"]: (
-            item["base_scheme_id"],
-            item.get("frequency"),
+    try:
+        authorization = _preflight_trigger(
+            scheme_id,
+            predict_date=request.predict_date,
+            force=request.force,
         )
-        for item in list_schemes(engine)
-        if item.get("status") == "active"
-    }
-    identity = known.get(scheme_id)
-    if identity is None:
-        raise HTTPException(status_code=404, detail=f"scheme not found: {scheme_id}")
-    base_scheme_id, frequency = identity
-    if frequency in {None, "daily"}:
-        try:
-            coordinator_mode = _daily_coordinator_mode()
-            current_identity = (
-                require_current_daily_coordinator_identity()
-            )
-        except Exception:
-            raise HTTPException(
-                status_code=503,
-                detail="daily coordinator epoch is unavailable",
-            )
-        if (
-            coordinator_mode == "ledger"
-            and current_identity.mode != "ledger"
-        ):
-            raise HTTPException(
-                status_code=503,
-                detail="daily coordinator epoch mode mismatch",
-            )
-        if coordinator_mode == "ledger":
-            requested_date = date.fromisoformat(
-                request.predict_date
-                or datetime.now(_DAILY_TIMEZONE).date().isoformat()
-            )
-            occurrence_id = find_schedule_occurrence_id(
-                engine,
-                schedule_key=_DAILY_SCHEDULE_KEY,
-                predict_date=requested_date.isoformat(),
-            )
-            if occurrence_id is None:
-                raise HTTPException(
-                    status_code=503,
-                    detail="daily schedule occurrence is unavailable",
-                )
-            else:
-                try:
-                    snapshot = read_schedule_occurrence_snapshot(
-                        engine,
-                        occurrence_id=occurrence_id,
-                    )
-                    frozen_identity = (
-                        assert_daily_coordinator_epoch_matches_policy(
-                            snapshot.occurrence.policy_json
-                        )
-                    )
-                except Exception:
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(
-                            "daily schedule coordinator epoch mismatch"
-                        ),
-                    )
-                if (
-                    frozen_identity.policy_payload()
-                    != current_identity.policy_payload()
-                ):
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(
-                            "daily schedule coordinator epoch mismatch"
-                        ),
-                    )
+    except _TriggerValidationError as exc:
+        raise HTTPException(
+            status_code=exc.status_code,
+            detail=exc.detail,
+        ) from exc
     background_tasks.add_task(
         _run_trigger,
-        base_scheme_id,
-        request,
-        frequency,
+        scheme_id,
+        request.predict_date,
+        request.force,
+        request.algo_env,
     )
     return {
         "accepted": True,
         "scheme_id": scheme_id,
-        "base_scheme_id": base_scheme_id,
+        "base_scheme_id": authorization.base_scheme_id,
         "predict_date": request.predict_date,
         "force": request.force,
     }

@@ -283,7 +283,7 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
     """
     sql = text(
         """
-        SELECT r.scheme_id, r.base_scheme_id, r.name, r.description, r.horizon, r.task_type, r.frequency,
+        SELECT r.scheme_id, r.base_scheme_id, r.runtime_type, r.name, r.description, r.horizon, r.task_type, r.frequency,
                r.target_tenor, r.schedule_cron, r.schedule_timezone, r.status,
                r.deployed_at, r.created_at, r.updated_at
         FROM t_scheme_registry r
@@ -297,6 +297,10 @@ def list_schemes(engine: Engine) -> list[dict[str, Any]]:
         {
             "scheme_id": row["scheme_id"],
             "base_scheme_id": row["base_scheme_id"],
+            "runtime_type": _require_runtime_type(
+                row,
+                context="active registry row",
+            ),
             "name": row["name"],
             "description": row["description"],
             "horizon": row["horizon"],

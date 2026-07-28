@@ -14,6 +14,7 @@ def _create_schema(engine) -> None:
                 CREATE TABLE t_scheme_registry (
                     scheme_id TEXT PRIMARY KEY,
                     base_scheme_id TEXT,
+                    runtime_type TEXT,
                     name TEXT,
                     description TEXT,
                     horizon INTEGER,
@@ -110,6 +111,7 @@ def _register_scheme(
     horizon: int,
     frequency: str = "daily",
     task_type: str | None = None,
+    runtime_type: str = "native_adapter",
     status: str = "active",
     deployed_at: str | None = "2026-06-09",
 ) -> None:
@@ -129,16 +131,17 @@ def _register_scheme(
             text(
                 """
                 INSERT INTO t_scheme_registry
-                    (scheme_id, base_scheme_id, name, description, horizon, task_type, frequency, target_tenor,
+                    (scheme_id, base_scheme_id, runtime_type, name, description, horizon, task_type, frequency, target_tenor,
                      schedule_cron, schedule_timezone, status, deployed_at)
                 VALUES
-                    (:scheme_id, :base_scheme_id, :scheme_id, '', :horizon, :task_type, :frequency, :target_tenor,
+                    (:scheme_id, :base_scheme_id, :runtime_type, :scheme_id, '', :horizon, :task_type, :frequency, :target_tenor,
                      '3 7 * * 1-5', 'Asia/Shanghai', :status, :deployed_at)
                 """
             ),
             {
                 "scheme_id": scheme_id,
                 "base_scheme_id": base_scheme_id,
+                "runtime_type": runtime_type,
                 "horizon": horizon,
                 "task_type": task_type,
                 "frequency": frequency,

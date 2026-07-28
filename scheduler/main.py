@@ -25,6 +25,7 @@ from scheduler.blackbox_scheduler_admission import (
     DIRECT_SCHEDULED,
     LEGACY_AUTOMATIC,
     RESERVED_BLACKBOX_SCHEME_IDS,
+    VALID_CONTROL_PLANES,
     BlackboxSchedulerAdmissionError,
     BlackboxSchedulerAdmissionPolicy,
     load_blackbox_scheduler_admission,
@@ -94,6 +95,14 @@ class StaggeredPredictionJob:
 
 class DirectScheduledPredictionDenied(RuntimeError):
     """直接 ``scheduled_live`` 入口未通过精确控制面准入。"""
+
+
+class ScheduledPredictionConfigurationError(RuntimeError):
+    """部署身份、生命周期或 admission 配置不可验证。"""
+
+
+class ScheduledPredictionControlPlaneDenied(RuntimeError):
+    """精确身份有效，但未获准进入请求的控制面。"""
 
 
 def _today() -> str:
@@ -510,6 +519,36 @@ def require_direct_scheduled_prediction_config(
     scheme_id: str,
 ) -> SchemeConfig:
     """解析并校验直接 ``scheduled_live`` 单方案入口。"""
+    try:
+        return require_scheduled_prediction_config(
+            scheme_id,
+            plane=DIRECT_SCHEDULED,
+        )
+    except (
+        ScheduledPredictionConfigurationError,
+        ScheduledPredictionControlPlaneDenied,
+    ) as exc:
+        raise DirectScheduledPredictionDenied(str(exc)) from exc
+
+
+def require_scheduled_prediction_config(
+    scheme_id: str,
+    *,
+    plane: str,
+) -> SchemeConfig:
+    """按精确身份校验指定 scheduled 控制面并返回 canonical config。"""
+    config = resolve_scheduled_prediction_config(scheme_id)
+    require_scheduled_prediction_control_plane(
+        config,
+        plane=plane,
+    )
+    return config
+
+
+def resolve_scheduled_prediction_config(
+    scheme_id: str,
+) -> SchemeConfig:
+    """发现 active canonical config，并验证版本生命周期。"""
     config = next(
         (
             candidate
@@ -519,13 +558,59 @@ def require_direct_scheduled_prediction_config(
         None,
     )
     if config is None:
-        raise DirectScheduledPredictionDenied(
+        raise ScheduledPredictionConfigurationError(
             f"scheme not found: {scheme_id}"
         )
-    denial = _direct_scheduled_denial(config)
-    if denial is not None:
-        raise DirectScheduledPredictionDenied(denial)
+    lifecycle_denial = _direct_scheduled_lifecycle_denial(
+        config
+    )
+    if lifecycle_denial is not None:
+        raise ScheduledPredictionConfigurationError(
+            lifecycle_denial
+        )
     return config
+
+
+def require_scheduled_prediction_control_plane(
+    config: SchemeConfig,
+    *,
+    plane: str,
+) -> None:
+    """验证 canonical config 是否获准进入指定 scheduled 控制面。"""
+    if plane not in VALID_CONTROL_PLANES:
+        raise ScheduledPredictionConfigurationError(
+            f"unknown scheduled control plane: {plane}"
+        )
+    lifecycle_denial = _direct_scheduled_lifecycle_denial(
+        config
+    )
+    if lifecycle_denial is not None:
+        raise ScheduledPredictionConfigurationError(
+            lifecycle_denial
+        )
+    if not _uses_blackbox_scheduler_admission(config):
+        return
+    try:
+        policy = load_blackbox_scheduler_admission()
+    except BlackboxSchedulerAdmissionError as exc:
+        raise ScheduledPredictionConfigurationError(
+            "Blackbox admission is invalid: "
+            f"identity={config.scheme_id}@"
+            f"{getattr(config, 'scheme_version', '')} error={exc}"
+        ) from exc
+    mode = policy.mode(config)
+    if mode is None:
+        raise ScheduledPredictionConfigurationError(
+            "Blackbox admission identity or execution metadata drift: "
+            f"identity={config.scheme_id}@"
+            f"{getattr(config, 'scheme_version', '')}"
+        )
+    if not policy.allows(config, plane=plane):
+        raise ScheduledPredictionControlPlaneDenied(
+            f"{plane} denied by exact Blackbox admission: "
+            f"identity={config.scheme_id}@"
+            f"{getattr(config, 'scheme_version', '')} mode={mode}"
+        )
 
 
 def _platform_configuration_failure(
