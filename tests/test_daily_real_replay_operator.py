@@ -1713,6 +1713,98 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         connection.rollback.assert_called_once_with()
         engine.dispose.assert_called_once_with()
 
+    def test_production_snapshot_reader_keeps_only_exact_daily_versions(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            _read_production_daily_snapshot,
+            _expected_production_migrations,
+        )
+
+        class _Result:
+            def __init__(self, *, rows=()):
+                self._rows = rows
+
+            def mappings(self):
+                return self
+
+            def __iter__(self):
+                return iter(self._rows)
+
+            def one(self):
+                if len(self._rows) != 1:
+                    raise AssertionError("expected exactly one row")
+                return self._rows[0]
+
+        exact = {
+            "scheme_id": "daily",
+            "scheme_version": "v2",
+            "runtime_type": "blackbox_v2",
+            "code_sha256": "1" * 64,
+            "config_sha256": "2" * 64,
+            "manifest_sha256": "3" * 64,
+            "algorithm_version": "algorithm-v2",
+            "contract_version": "1.0",
+            "runtime_profile": "blackbox-v2-v1",
+            "environment_fingerprint": "4" * 64,
+            "data_snapshot_id": "snapshot-v2",
+            "status": "active",
+        }
+        stale = {**exact, "scheme_version": "v1"}
+        unrelated = {
+            **exact,
+            "scheme_id": "weekly",
+            "scheme_version": "weekly-v1",
+        }
+        connection = Mock()
+        connection.execute.side_effect = (
+            _Result(
+                rows=(
+                    {
+                        "database_name": "bond_db",
+                        "server_uuid":
+                            "11111111-1111-1111-1111-111111111111",
+                        "server_port": 3306,
+                    },
+                )
+            ),
+            _Result(
+                rows=tuple(
+                    {
+                        "version": version,
+                        "filename": filename,
+                        "checksum_sha256": checksum,
+                        "state": state,
+                    }
+                    for version, filename, checksum, state
+                    in _expected_production_migrations()
+                )
+            ),
+            _Result(rows=()),
+            _Result(rows=(exact, stale, unrelated)),
+        )
+        connection.__enter__ = Mock(return_value=connection)
+        connection.__exit__ = Mock(return_value=False)
+        engine = Mock()
+        engine.connect.return_value = connection
+
+        with patch(
+            "harness.daily_real_replay_operator.create_engine_from_env",
+            return_value=engine,
+        ):
+            snapshot = _read_production_daily_snapshot(
+                expected_scheme_versions={"daily": "v2"},
+            )
+
+        self.assertEqual(snapshot.version_rows, (exact,))
+        version_statement = str(
+            connection.execute.call_args_list[3].args[0]
+        ).casefold()
+        self.assertIn("exists", version_statement)
+        self.assertIn("frequency = 'daily'", version_statement)
+        connection.rollback.assert_called_once_with()
+        engine.dispose.assert_called_once_with()
+
     def test_production_snapshot_reader_rolls_back_and_disposes_on_failure(
         self,
     ) -> None:

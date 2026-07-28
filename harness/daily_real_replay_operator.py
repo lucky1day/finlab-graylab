@@ -1411,7 +1411,12 @@ def _run_real_replay_preflight_locked(
         )
 
         try:
-            production = _read_production_daily_snapshot()
+            production = _read_production_daily_snapshot(
+                expected_scheme_versions={
+                    row.scheme_id: row.scheme_version
+                    for row in definitions.version_rows
+                },
+            )
         except DailyRealReplayPreflightError:
             raise
         except Exception:
@@ -1458,7 +1463,12 @@ def _run_real_replay_preflight_locked(
             _read_source_database_preflight(current_inputs)
         )
         try:
-            current_production = _read_production_daily_snapshot()
+            current_production = _read_production_daily_snapshot(
+                expected_scheme_versions={
+                    row.scheme_id: row.scheme_version
+                    for row in current_definitions.version_rows
+                },
+            )
             current_registry_digest = (
                 validate_production_daily_snapshot(
                     current_production,
@@ -2276,8 +2286,20 @@ def _load_definition_snapshot(
     )
 
 
-def _read_production_daily_snapshot() -> ProductionDailySnapshot:
+def _read_production_daily_snapshot(
+    *,
+    expected_scheme_versions: Mapping[str, str] | None = None,
+) -> ProductionDailySnapshot:
     """只在单个 RR consistent snapshot/read-only 事务读取生产控制面。"""
+    expected_version_pairs = (
+        None
+        if expected_scheme_versions is None
+        else frozenset(
+            (str(scheme_id), str(scheme_version))
+            for scheme_id, scheme_version
+            in expected_scheme_versions.items()
+        )
+    )
     engine = create_engine_from_env()
     try:
         with engine.connect() as connection:
@@ -2340,7 +2362,7 @@ def _read_production_daily_snapshot() -> ProductionDailySnapshot:
                         )
                     ).mappings()
                 )
-                version_rows = tuple(
+                raw_version_rows = tuple(
                     dict(row)
                     for row in connection.execute(
                         text(
@@ -2356,12 +2378,32 @@ def _read_production_daily_snapshot() -> ProductionDailySnapshot:
                                    environment_fingerprint,
                                    data_snapshot_id,
                                    status
-                            FROM t_scheme_versions
-                            WHERE status = 'active'
-                            ORDER BY scheme_id, scheme_version
+                            FROM t_scheme_versions v
+                            WHERE v.status = 'active'
+                              AND EXISTS (
+                                  SELECT 1
+                                  FROM t_scheme_registry r
+                                  WHERE r.base_scheme_id = v.scheme_id
+                                    AND r.status = 'active'
+                                    AND r.frequency = 'daily'
+                              )
+                            ORDER BY v.scheme_id, v.scheme_version
                             """
                         )
                     ).mappings()
+                )
+                version_rows = (
+                    raw_version_rows
+                    if expected_version_pairs is None
+                    else tuple(
+                        row
+                        for row in raw_version_rows
+                        if (
+                            str(row["scheme_id"]),
+                            str(row["scheme_version"]),
+                        )
+                        in expected_version_pairs
+                    )
                 )
             finally:
                 connection.rollback()
@@ -2541,7 +2583,12 @@ def assert_real_replay_dispatch_identity_current(
         control_plane = _read_control_plane_boundary(
             baseline.service_uid
         )
-        production = _read_production_daily_snapshot()
+        production = _read_production_daily_snapshot(
+            expected_scheme_versions={
+                row.scheme_id: row.scheme_version
+                for row in definitions.version_rows
+            },
+        )
         registry_digest = validate_production_daily_snapshot(
             production,
             definitions=definitions,
