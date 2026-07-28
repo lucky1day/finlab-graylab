@@ -22,6 +22,9 @@ POLICY_V1_PATH = (
 POLICY_V2_PATH = (
     PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
 )
+CAPACITY_ADMISSION_V2_PATH = (
+    PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
+)
 POLICY_V1_SHA256 = (
     "e6b660a292ea07cd9b08637c8756df5c"
     "d787be3bd4fd45a9d550add088a92091"
@@ -77,6 +80,19 @@ class DailyPolicyV2Tests(unittest.TestCase):
         self.assertEqual(
             (policy.expected_item_count, policy.expected_target_count),
             (21, 25),
+        )
+
+    def test_blocked_capacity_admission_binds_current_v2_policy(
+        self,
+    ) -> None:
+        admission = json.loads(
+            CAPACITY_ADMISSION_V2_PATH.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(admission["status"], "BLOCKED")
+        self.assertEqual(
+            admission["policy_sha256"],
+            hashlib.sha256(POLICY_V2_PATH.read_bytes()).hexdigest(),
         )
 
     def test_v2_covers_exact_daily_ledger_25_items_29_targets(
