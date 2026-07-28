@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Mapping
 
@@ -323,3 +324,32 @@ def test_repeated_projection_build_is_deterministic(tmp_path: Path) -> None:
         str(first.frame[column].dtype) for column in first.frame.columns
     ]
     assert first.proof["daily_grid_sha256"]
+
+
+def test_projection_frame_read_cannot_mutate_hashed_evidence(
+    tmp_path: Path,
+) -> None:
+    projection = _build(tmp_path=tmp_path)
+    original_frame = projection.frame.copy(deep=True)
+    original_sha256 = projection.content_sha256
+
+    exposed_frame = projection.frame
+    exposed_frame.loc[0, "wk_used_weekly_val"] = 999.0
+
+    pd.testing.assert_frame_equal(projection.frame, original_frame)
+    assert projection.content_sha256 == original_sha256
+
+
+def test_projection_proof_read_cannot_mutate_nested_hashed_evidence(
+    tmp_path: Path,
+) -> None:
+    projection = _build(tmp_path=tmp_path)
+    original_proof = deepcopy(projection.proof)
+    original_sha256 = projection.content_sha256
+
+    exposed_proof = projection.proof
+    exposed_proof["columns"].append("forged")
+    exposed_proof["proof_files"][0]["sha256"] = "0" * 64
+
+    assert projection.proof == original_proof
+    assert projection.content_sha256 == original_sha256

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from types import MappingProxyType
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -16,13 +18,33 @@ import pandas as pd
 PROJECTION_SCHEMA_VERSION = "liwei-0616-auxiliary-dependency-projection-v1"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AuxiliaryDependencyProjection:
     """绑定有效辅助输入帧及其可复核证明。"""
 
-    frame: pd.DataFrame
-    proof: Mapping[str, object]
+    _frame: pd.DataFrame = field(repr=False)
+    _proof: Mapping[str, object] = field(repr=False)
     content_sha256: str
+
+    def __init__(
+        self,
+        frame: pd.DataFrame,
+        proof: Mapping[str, object],
+        content_sha256: str,
+    ) -> None:
+        object.__setattr__(self, "_frame", frame.copy(deep=True))
+        object.__setattr__(self, "_proof", _deep_freeze(proof))
+        object.__setattr__(self, "content_sha256", content_sha256)
+
+    @property
+    def frame(self) -> pd.DataFrame:
+        """返回与内部已哈希帧隔离的副本。"""
+        return self._frame.copy(deep=True)
+
+    @property
+    def proof(self) -> Mapping[str, object]:
+        """返回与内部递归冻结证明隔离的可读副本。"""
+        return cast(dict[str, object], _deep_thaw(self._proof))
 
 
 def build_auxiliary_dependency_projection(
@@ -210,3 +232,27 @@ def _sha256_json(value: object) -> str:
     except (TypeError, ValueError) as exc:
         raise ValueError("projection proof is not canonical JSON data") from exc
     return hashlib.sha256(payload).hexdigest()
+
+
+def _deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {
+                deepcopy(key): _deep_freeze(item)
+                for key, item in value.items()
+            }
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_deep_freeze(item) for item in value)
+    return deepcopy(value)
+
+
+def _deep_thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            deepcopy(key): _deep_thaw(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, tuple):
+        return [_deep_thaw(item) for item in value]
+    return deepcopy(value)
