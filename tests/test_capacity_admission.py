@@ -310,7 +310,7 @@ class DailyCapacityAdmissionTests(unittest.TestCase):
         from scheduler.capacity_admission import (
             DEFAULT_ADMISSION_PATH,
         )
-        from scheduler.daily_policy import DEFAULT_POLICY_PATH
+        from scheduler.daily_policy import POLICY_V2_PATH
 
         admission = json.loads(
             DEFAULT_ADMISSION_PATH.read_text(encoding="utf-8")
@@ -318,7 +318,11 @@ class DailyCapacityAdmissionTests(unittest.TestCase):
         self.assertEqual(admission["status"], "BLOCKED")
         self.assertEqual(
             admission["policy_sha256"],
-            hashlib.sha256(DEFAULT_POLICY_PATH.read_bytes()).hexdigest(),
+            hashlib.sha256(POLICY_V2_PATH.read_bytes()).hexdigest(),
+        )
+        self.assertEqual(
+            admission["policy_version"],
+            "daily-scheduler-policy-v2",
         )
         for field in (
             "decision_id",

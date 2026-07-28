@@ -46,6 +46,69 @@ TEST_COORDINATOR_EPOCH = {
 
 
 class DailyRuntimeDefaultServiceTests(unittest.TestCase):
+    def test_default_service_loads_policy_v2_explicitly(self) -> None:
+        from scheduler import daily_runtime as module
+        from scheduler.daily_policy import POLICY_V2_PATH
+
+        services = DefaultDailyRuntimeServices(
+            engine=create_engine("sqlite://")
+        )
+        policy = SimpleNamespace(schemes={})
+        with (
+            patch.object(module, "discover_schemes", return_value=()),
+            patch.object(
+                module,
+                "load_daily_policy",
+                return_value=policy,
+            ) as load_policy,
+        ):
+            self.assertIs(services.load_policy(), policy)
+
+        load_policy.assert_called_once_with(
+            POLICY_V2_PATH,
+            discovered=(),
+        )
+
+    def test_production_authority_uses_policy_v2_for_both_branches(
+        self,
+    ) -> None:
+        from scheduler import daily_runtime as module
+        from scheduler.daily_policy import POLICY_V2_PATH
+
+        engine = object()
+        with (
+            patch(
+                "shared.daily_coordinator_mode."
+                "bootstrap_deployment_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch(
+                "scheduler.capacity_runtime_admission."
+                "require_current_capacity_admission",
+                return_value={"status": "ADMITTED"},
+            ) as current,
+            patch(
+                "scheduler.capacity_admission."
+                "require_daily_capacity_admission",
+                return_value={"status": "ADMITTED"},
+            ) as signed,
+        ):
+            module._require_production_entry_authority(
+                engine=engine,
+                verify_current=True,
+            )
+            module._require_production_entry_authority(
+                engine=engine,
+                verify_current=False,
+            )
+
+        current.assert_called_once_with(
+            engine,
+            policy_path=POLICY_V2_PATH,
+            algo_env="forecast_env",
+        )
+        signed.assert_called_once_with(policy_path=POLICY_V2_PATH)
+
     def test_execute_item_reuses_canonical_process_start_guard(
         self,
     ) -> None:

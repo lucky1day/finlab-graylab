@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine, text
 
@@ -16,6 +18,71 @@ class SimulatedCrash(BaseException):
 
 
 class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
+    def test_capacity_probes_bind_policy_v2_in_process_and_child(
+        self,
+    ) -> None:
+        from scheduler.daily_policy import POLICY_V2_PATH
+        from scripts import daily_coordinator_epoch_operator as module
+
+        engine = SimpleNamespace(dispose=Mock())
+        with (
+            patch(
+                "scheduler.repository.create_engine_from_env",
+                return_value=engine,
+            ),
+            patch(
+                "scheduler.capacity_runtime_admission."
+                "require_current_capacity_admission",
+                return_value={"status": "ADMITTED"},
+            ) as current,
+        ):
+            module._require_capacity_admission_in_current_process()
+
+        current.assert_called_once_with(
+            engine,
+            policy_path=POLICY_V2_PATH,
+        )
+        engine.dispose.assert_called_once_with()
+
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "status": "ADMITTED",
+                    "candidate_fingerprint": "a" * 64,
+                }
+            ),
+            stderr="",
+        )
+        with (
+            patch.object(module.os, "geteuid", return_value=0),
+            patch.object(
+                module.pwd,
+                "getpwuid",
+                return_value=SimpleNamespace(
+                    pw_name="bond-factor-lab",
+                    pw_gid=501,
+                ),
+            ),
+            patch.object(
+                module.subprocess,
+                "run",
+                return_value=completed,
+            ) as run,
+        ):
+            module.require_trusted_current_capacity_admission(502)
+
+        child_code = run.call_args.args[0][2]
+        self.assertIn(
+            "from scheduler.daily_policy import POLICY_V2_PATH;",
+            child_code,
+        )
+        self.assertIn(
+            "require_current_capacity_admission("
+            "engine,policy_path=POLICY_V2_PATH)",
+            child_code,
+        )
+
     def setUp(self) -> None:
         from shared import daily_coordinator_mode as mode_contract
 

@@ -4,8 +4,8 @@
   "decision_id": null,
   "decision_sequence": null,
   "candidate_fingerprint": null,
-  "policy_version": "daily-scheduler-policy-v1",
-  "policy_sha256": "e6b660a292ea07cd9b08637c8756df5cd787be3bd4fd45a9d550add088a92091",
+  "policy_version": "daily-scheduler-policy-v2",
+  "policy_sha256": "92537951c5815af123f351485741a4a81e4dfe9777f18b3608508aaf3de3f68b",
   "machine_id": null,
   "evidence_uri": null,
   "evidence_sha256": null,
@@ -15,5 +15,5 @@
   "not_before": null,
   "expires_at": null,
   "admitted_by": null,
-  "reason": "The three approved 0629 live-source compatibility paths are not yet production-qualified, and the required same-Mac forced-cold, revision, fault-injection, and stability evidence is incomplete."
+  "reason": "The daily-scheduler-policy-v2 25-item/29-target production capacity candidate has not been signed and installed."
 }

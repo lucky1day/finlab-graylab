@@ -41,6 +41,7 @@ from scheduler.capacity_runtime_admission import (
 )
 from scheduler.daily_actuals_updater import update_actuals
 from scheduler.monthly_actuals_updater import update_monthly_actuals
+from scheduler.daily_policy import POLICY_V2_PATH
 from scheduler.weekly_actuals_updater import update_weekly_actuals
 from scheduler.calendar import is_trading_day
 from scheduler.discovery import SchemeConfig, discover_schemes
@@ -1207,6 +1208,7 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
         try:
             require_current_capacity_admission(
                 admission_engine,
+                policy_path=POLICY_V2_PATH,
                 discovered=schemes,
                 algo_env=algo_env,
             )

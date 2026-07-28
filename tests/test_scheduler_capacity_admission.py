@@ -61,6 +61,7 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
         discovery.assert_called_once_with()
         admission.assert_called_once_with(
             engine,
+            policy_path=scheduler_main.POLICY_V2_PATH,
             discovered=schemes,
             algo_env="forecast_env",
         )
@@ -162,6 +163,7 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
                 scheduler.shutdown(wait=False)
         admission.assert_called_once_with(
             engine,
+            policy_path=scheduler_main.POLICY_V2_PATH,
             discovered=schemes,
             algo_env="forecast_env",
         )

@@ -19,7 +19,7 @@ from scheduler.capacity_candidate_runtime import (
     NATIVE_ENV_NAME,
     build_current_capacity_candidate,
 )
-from scheduler.daily_policy import DEFAULT_POLICY_PATH
+from scheduler.daily_policy import POLICY_V2_PATH
 from scheduler.discovery import SchemeConfig
 
 
@@ -30,7 +30,7 @@ def require_current_capacity_admission(
     engine: object,
     *,
     project_root: str | Path = PROJECT_ROOT,
-    policy_path: str | Path = DEFAULT_POLICY_PATH,
+    policy_path: str | Path = POLICY_V2_PATH,
     discovered: Iterable[SchemeConfig] | None = None,
     algo_env: str = NATIVE_ENV_NAME,
 ) -> Mapping[str, object]:

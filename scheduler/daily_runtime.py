@@ -30,7 +30,7 @@ from scheduler.daily_coordinator import (
     OccurrenceFileLock,
     plan_dispatches,
 )
-from scheduler.daily_policy import load_daily_policy
+from scheduler.daily_policy import POLICY_V2_PATH, load_daily_policy
 from scheduler.data_contract import (
     detect_late_source_writes,
     inspect_native_input_readiness,
@@ -356,7 +356,10 @@ class DefaultDailyRuntimeServices:
 
     def load_policy(self):
         discovered = discover_schemes(strict=True)
-        policy = load_daily_policy(discovered=discovered)
+        policy = load_daily_policy(
+            POLICY_V2_PATH,
+            discovered=discovered,
+        )
         self._policy = policy
         self._configs = {
             item.scheme_id: item
@@ -5557,6 +5560,9 @@ def _require_production_entry_authority(
     if verify_current:
         return require_current_capacity_admission(
             engine,
+            policy_path=POLICY_V2_PATH,
             algo_env=algo_env,
         )
-    return require_daily_capacity_admission()
+    return require_daily_capacity_admission(
+        policy_path=POLICY_V2_PATH,
+    )

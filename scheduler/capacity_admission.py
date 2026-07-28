@@ -39,7 +39,7 @@ from scheduler.capacity_gate import (
     CapacityObservationError,
     evaluate_capacity_observations,
 )
-from scheduler.daily_policy import DEFAULT_POLICY_PATH
+from scheduler.daily_policy import POLICY_V2_PATH
 from shared.liwei_0616_cache_contract import (
     TRUSTED_CACHE_USE_QUALIFICATION_SCHEMA_VERSION,
     cache_use_qualification_sha256,
@@ -332,7 +332,7 @@ class MacOSCmsVerifier:
 
 def require_daily_capacity_admission(
     *,
-    policy_path: str | Path = DEFAULT_POLICY_PATH,
+    policy_path: str | Path = POLICY_V2_PATH,
     admission_path: str | Path = DEFAULT_ADMISSION_PATH,
     trust_config_path: str | Path = DEFAULT_TRUST_CONFIG_PATH,
     expected_machine_id: str | None = None,

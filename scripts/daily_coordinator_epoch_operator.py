@@ -53,6 +53,7 @@ from scheduler.daily_control_plane_probe import (
     probe_launchagent_service_states,
     read_installed_launchagent_modes,
 )
+from scheduler.daily_policy import POLICY_V2_PATH
 
 
 _STAGING_DIRECTORY_NAME = "staging"
@@ -559,9 +560,11 @@ def require_trusted_current_capacity_admission(
         "import json;"
         "from scheduler.capacity_runtime_admission import "
         "require_current_capacity_admission;"
+        "from scheduler.daily_policy import POLICY_V2_PATH;"
         "from scheduler.repository import create_engine_from_env;"
         "engine=create_engine_from_env();"
-        "result=require_current_capacity_admission(engine);"
+        "result=require_current_capacity_admission("
+        "engine,policy_path=POLICY_V2_PATH);"
         "engine.dispose();"
         "print(json.dumps({'status':result.get('status'),"
         "'candidate_fingerprint':result.get('candidate_fingerprint')},"
@@ -607,7 +610,10 @@ def _require_capacity_admission_in_current_process() -> Mapping[str, object]:
 
     engine = create_engine_from_env()
     try:
-        return require_current_capacity_admission(engine)
+        return require_current_capacity_admission(
+            engine,
+            policy_path=POLICY_V2_PATH,
+        )
     finally:
         engine.dispose()
 

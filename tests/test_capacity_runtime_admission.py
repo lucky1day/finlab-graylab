@@ -6,6 +6,54 @@ from unittest.mock import Mock, patch
 
 
 class CapacityRuntimeAdmissionTests(unittest.TestCase):
+    def test_default_runtime_admission_uses_policy_v2_for_both_probes(
+        self,
+    ) -> None:
+        from scheduler.capacity_runtime_admission import (
+            require_current_capacity_admission,
+        )
+        from scheduler.daily_policy import POLICY_V2_PATH
+
+        admission = {
+            "status": "ADMITTED",
+            "candidate": {"schema_version": "candidate"},
+            "candidate_fingerprint": "a" * 64,
+        }
+        current = SimpleNamespace(
+            payload={"schema_version": "candidate"},
+            fingerprint="a" * 64,
+        )
+        verified = SimpleNamespace(
+            payload=current.payload,
+            fingerprint="a" * 64,
+        )
+        with (
+            patch(
+                "scheduler.capacity_runtime_admission."
+                "require_daily_capacity_admission",
+                return_value=admission,
+            ) as require_signed,
+            patch(
+                "scheduler.capacity_runtime_admission."
+                "build_current_capacity_candidate",
+                return_value=current,
+            ) as build_current,
+            patch(
+                "scheduler.capacity_runtime_admission."
+                "verify_current_candidate",
+                return_value=verified,
+            ),
+        ):
+            require_current_capacity_admission(object())
+
+        require_signed.assert_called_once_with(
+            policy_path=POLICY_V2_PATH,
+        )
+        self.assertEqual(
+            build_current.call_args.kwargs["policy_path"],
+            POLICY_V2_PATH,
+        )
+
     def test_signed_candidate_must_equal_current_runtime_candidate(
         self,
     ) -> None:
