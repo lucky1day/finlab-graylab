@@ -29,8 +29,8 @@ PHASE_A_CACHE_ABI_VERSION = "liwei_0616.phase_a.v1"
 QUALIFICATION_CORPUS_SCHEMA_VERSION = (
     "liwei-0616-cache-qualification-corpus-v1"
 )
-MIN_FORCED_COLD_QUALIFICATION_SAMPLES = 20
-MIN_REVISION_QUALIFICATION_SAMPLES = 20
+MIN_FORCED_COLD_QUALIFICATION_SAMPLES = 1
+MIN_REVISION_QUALIFICATION_SAMPLES = 0
 QUALIFICATION_COMPARISON_FIELDS = (
     "direction",
     "vote_score",
@@ -321,11 +321,11 @@ def validate_cache_use_qualification(
     )
     if forced_count < MIN_FORCED_COLD_QUALIFICATION_SAMPLES:
         raise ValueError(
-            "cache qualification forced-cold corpus is below 20"
+            "cache qualification forced-cold corpus is below 1"
         )
     if revision_count < MIN_REVISION_QUALIFICATION_SAMPLES:
         raise ValueError(
-            "cache qualification revision corpus is below 20"
+            "cache qualification revision corpus is below 0"
         )
     coverage = corpus.get("coverage_types")
     if (

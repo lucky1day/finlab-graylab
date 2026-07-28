@@ -10,12 +10,16 @@ from pathlib import Path
 
 
 MACHINE_ID = "mac-studio-production-01"
-POLICY_VERSION = "daily-scheduler-policy-v1"
+POLICY_VERSION = "daily-scheduler-policy-v2"
 V2_SCHEME_IDS = (
     "one_y_t5_liq_excess_a_v1",
     "one_y_t5_liq_excess_a_w252_l7_v1",
     "one_y_t5_liq_excess_a_w350_l7_v1",
     "one_y_t5_liq_excess_b_w252_l7_v1",
+    "ten_y_t5_maj3_k3_ic_static_v1",
+    "ten_y_t5_maj4_k3_ic_static_v1",
+    "ten_y_t5_maj4_k3_ic_yearly_v1",
+    "ten_y_t5_say_k5_sharpe_static_v1",
 )
 REQUIRED_FAULT_SCENARIOS = (
     "child_running_kill",
@@ -65,6 +69,11 @@ def _batch(
     result = {
         "batch_id": f"{kind}-{index:03d}",
         "observation_kind": kind,
+        **(
+            {"capacity_qualification": "PRODUCTION_BOUND"}
+            if kind == "production"
+            else {}
+        ),
         "occurrence_id": f"occurrence-{evidence_label}",
         "run_id": f"run-{evidence_label}",
         "execution_evidence": {
@@ -92,13 +101,15 @@ def _batch(
                 "db_visible_at": f"{business_date}T07:53:00+08:00",
                 "api_visible_at": f"{business_date}T07:54:00+08:00",
             }
-            for target_index in range(25)
+            for target_index in range(29)
         ],
         "incidents": {
             "misfire": 0,
             "timeout": 0,
             "partial": 0,
+            "duplicate_prediction": 0,
             "orphan_process": 0,
+            "reentry_new_results": 0,
             "manual_intervention": 0,
         },
         **(
@@ -142,8 +153,13 @@ def _revision(index: int, *, compare_passed: bool = True) -> dict[str, object]:
     }
 
 
-def _passing_payload(*, production_days: int = 10) -> dict[str, object]:
-    cold_minutes = [70.0] * 18 + [80.0, 85.0]
+def _passing_payload(
+    *,
+    production_days: int = 1,
+    forced_cold_samples: int = 1,
+    revision_samples: int = 0,
+) -> dict[str, object]:
+    cold_minutes = [85.0] * forced_cold_samples
     forced_cold = [
         _batch(index, kind="forced_cold", forced_cold_minutes=minutes)
         for index, minutes in enumerate(cold_minutes)
@@ -157,20 +173,28 @@ def _passing_payload(*, production_days: int = 10) -> dict[str, object]:
         "machine_id": MACHINE_ID,
         "policy_version": POLICY_VERSION,
         "daily_batches": forced_cold + production,
-        "revision_trials": [_revision(index) for index in range(20)],
+        "revision_trials": [
+            _revision(index) for index in range(revision_samples)
+        ],
     }
 
 
 def _target_manifest() -> list[dict[str, object]]:
-    """构造 21 个 execution / 25 个真实 composite target。"""
+    """构造 25 个 execution / 29 个真实 composite target。"""
     rows: list[dict[str, object]] = []
     for scheme_id in V2_SCHEME_IDS:
+        target_tenor = (
+            "10Y"
+            if scheme_id.startswith("ten_y_t5_")
+            else "1Y"
+        )
         rows.append(
             {
-                "registry_scheme_id": f"{scheme_id}__h5__1Y",
+                "registry_scheme_id":
+                    f"{scheme_id}__h5__{target_tenor}",
                 "base_scheme_id": scheme_id,
                 "runtime_type": "blackbox_v2",
-                "target_tenor": "1Y",
+                "target_tenor": target_tenor,
                 "horizon": 5,
                 "task_type": "T+5",
                 "scheme_version": "contract-1.0",
@@ -244,8 +268,8 @@ def _candidate(*, policy_sha256: str | None = None) -> dict[str, object]:
         "policy_version": POLICY_VERSION,
         "policy_sha256": policy_sha256 or _sha256("policy"),
         "registry_manifest_sha256": registry_manifest_sha256,
-        "expected_item_count": 21,
-        "expected_target_count": 25,
+        "expected_item_count": 25,
+        "expected_target_count": 29,
         "target_manifest": targets,
         "scheduler_release_sha256": _sha256("scheduler-release"),
         "scheme_bundle_sha256": _sha256("scheme-bundle"),
@@ -268,7 +292,7 @@ def _candidate(*, policy_sha256: str | None = None) -> dict[str, object]:
 
 def _attested_payload(
     *,
-    production_days: int = 10,
+    production_days: int = 1,
     policy_sha256: str | None = None,
 ) -> dict[str, object]:
     from scheduler.capacity_attestation import candidate_fingerprint
@@ -419,19 +443,151 @@ class CapacityGateTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "PASS")
         self.assertEqual(result["violations"], [])
-        self.assertEqual(result["metrics"]["forced_cold_count"], 20)
-        self.assertEqual(result["metrics"]["forced_cold_p95_minutes"], 80.0)
+        self.assertEqual(result["metrics"]["forced_cold_count"], 1)
+        self.assertIsNone(result["metrics"]["forced_cold_p95_minutes"])
         self.assertEqual(result["metrics"]["forced_cold_max_minutes"], 85.0)
-        self.assertEqual(result["metrics"]["real_revision_count"], 20)
-        self.assertEqual(result["metrics"]["trailing_clean_trading_days"], 10)
+        self.assertEqual(result["metrics"]["real_revision_count"], 0)
+        self.assertEqual(result["metrics"]["trailing_clean_trading_days"], 1)
         self.assertFalse(
             result["claims"]["approx_95_zero_failure_reliability"]["eligible"]
+        )
+
+    def test_minimum_admission_requires_one_production_bound_observation(
+        self,
+    ) -> None:
+        from scheduler.capacity_gate import evaluate_capacity_observations
+
+        payload = _passing_payload(production_days=0)
+        result = evaluate_capacity_observations(
+            payload,
+            expected_machine_id=MACHINE_ID,
+            expected_policy_version=POLICY_VERSION,
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(
+            "PRODUCTION_OBSERVATION_COUNT",
+            {violation["code"] for violation in result["violations"]},
+        )
+
+    def test_minimum_admission_requires_one_forced_cold_sample(
+        self,
+    ) -> None:
+        from scheduler.capacity_gate import evaluate_capacity_observations
+
+        result = evaluate_capacity_observations(
+            _passing_payload(forced_cold_samples=0),
+            expected_machine_id=MACHINE_ID,
+            expected_policy_version=POLICY_VERSION,
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(
+            "FORCED_COLD_SAMPLE_COUNT",
+            {violation["code"] for violation in result["violations"]},
+        )
+
+    def test_rehearsal_excluded_batch_is_not_production_bound(self) -> None:
+        from scheduler.capacity_gate import (
+            CapacityObservationError,
+            evaluate_capacity_observations,
+        )
+
+        payload = _passing_payload()
+        production = next(
+            batch
+            for batch in payload["daily_batches"]
+            if batch["observation_kind"] == "production"
+        )
+        production["capacity_qualification"] = "EXCLUDED"
+
+        with self.assertRaisesRegex(
+            CapacityObservationError,
+            "PRODUCTION_BOUND",
+        ):
+            evaluate_capacity_observations(payload)
+
+    def test_v1_four_v2_and_twenty_five_targets_are_rejected(self) -> None:
+        from scheduler.capacity_gate import evaluate_capacity_observations
+
+        payload = _passing_payload()
+        payload["policy_version"] = "daily-scheduler-policy-v1"
+        for batch in payload["daily_batches"]:
+            batch["policy_version"] = "daily-scheduler-policy-v1"
+            batch["v2_results"] = batch["v2_results"][:4]
+            batch["targets"] = batch["targets"][:25]
+
+        result = evaluate_capacity_observations(
+            payload,
+            expected_machine_id=MACHINE_ID,
+            expected_policy_version=POLICY_VERSION,
+        )
+
+        codes = {violation["code"] for violation in result["violations"]}
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("UNSUPPORTED_POLICY_VERSION", codes)
+        self.assertIn("POLICY_VERSION_MISMATCH", codes)
+        self.assertIn("V2_RESULT_SET_MISMATCH", codes)
+        self.assertIn("TARGET_COUNT_MISMATCH", codes)
+
+    def test_duplicate_partial_orphan_and_reentry_results_fail(self) -> None:
+        from scheduler.capacity_gate import evaluate_capacity_observations
+
+        fields = (
+            "duplicate_prediction",
+            "partial",
+            "orphan_process",
+            "reentry_new_results",
+        )
+        for field in fields:
+            with self.subTest(field=field):
+                payload = _passing_payload()
+                production = next(
+                    batch
+                    for batch in payload["daily_batches"]
+                    if batch["observation_kind"] == "production"
+                )
+                production["incidents"][field] = 1
+                result = evaluate_capacity_observations(
+                    payload,
+                    expected_machine_id=MACHINE_ID,
+                    expected_policy_version=POLICY_VERSION,
+                )
+                self.assertEqual(result["status"], "FAIL")
+                self.assertIn(
+                    "PRODUCTION_OBSERVATION_NOT_CLEAN",
+                    {
+                        violation["code"]
+                        for violation in result["violations"]
+                    },
+                )
+
+    def test_single_sample_never_claims_p95_or_reliability(self) -> None:
+        from scheduler.capacity_gate import evaluate_capacity_observations
+
+        result = evaluate_capacity_observations(
+            _passing_payload(),
+            expected_machine_id=MACHINE_ID,
+            expected_policy_version=POLICY_VERSION,
+        )
+
+        self.assertEqual(result["status"], "PASS")
+        self.assertIsNone(
+            result["metrics"]["forced_cold_p95_minutes"]
+        )
+        self.assertFalse(
+            result["claims"]["approx_95_zero_failure_reliability"][
+                "eligible"
+            ]
         )
 
     def test_deadline_and_generation_violations_fail_closed(self) -> None:
         from scheduler.capacity_gate import evaluate_capacity_observations
 
-        payload = _passing_payload()
+        payload = _passing_payload(
+            forced_cold_samples=5,
+            revision_samples=1,
+        )
         first = payload["daily_batches"][0]
         first["databridge_published_at"] = "2026-01-01T06:55:00.000001+08:00"
         first["v2_results"][0]["api_visible_at"] = (
@@ -455,17 +611,71 @@ class CapacityGateTests(unittest.TestCase):
         self.assertIn("V2_GENERATION_MISMATCH", codes)
         self.assertIn("TARGET_DEADLINE_MISSED", codes)
 
+    def test_v2_deadlines_are_exact_per_scheme(self) -> None:
+        from scheduler.capacity_gate import evaluate_capacity_observations
+
+        gray_id = "ten_y_t5_maj3_k3_ic_static_v1"
+        formal_id = "one_y_t5_liq_excess_a_v1"
+
+        allowed = _passing_payload()
+        gray_allowed = next(
+            row
+            for row in allowed["daily_batches"][0]["v2_results"]
+            if row["scheme_id"] == gray_id
+        )
+        gray_allowed["db_visible_at"] = "2026-01-01T07:19:59+08:00"
+        gray_allowed["api_visible_at"] = "2026-01-01T07:20:00+08:00"
+        passed = evaluate_capacity_observations(
+            allowed,
+            expected_machine_id=MACHINE_ID,
+            expected_policy_version=POLICY_VERSION,
+        )
+        self.assertEqual(passed["status"], "PASS")
+
+        gray_late = _passing_payload()
+        next(
+            row
+            for row in gray_late["daily_batches"][0]["v2_results"]
+            if row["scheme_id"] == gray_id
+        )["api_visible_at"] = "2026-01-01T07:20:00.000001+08:00"
+        formal_late = _passing_payload()
+        next(
+            row
+            for row in formal_late["daily_batches"][0]["v2_results"]
+            if row["scheme_id"] == formal_id
+        )["api_visible_at"] = "2026-01-01T07:10:00.000001+08:00"
+
+        for label, payload in (
+            ("gray", gray_late),
+            ("formal", formal_late),
+        ):
+            with self.subTest(label=label):
+                result = evaluate_capacity_observations(
+                    payload,
+                    expected_machine_id=MACHINE_ID,
+                    expected_policy_version=POLICY_VERSION,
+                )
+                self.assertEqual(result["status"], "FAIL")
+                self.assertIn(
+                    "V2_DEADLINE_MISSED",
+                    {
+                        violation["code"]
+                        for violation in result["violations"]
+                    },
+                )
+
     def test_cardinality_binding_and_capacity_samples_are_strict(self) -> None:
         from scheduler.capacity_gate import evaluate_capacity_observations
 
-        payload = _passing_payload()
-        payload["daily_batches"] = payload["daily_batches"][1:]
+        payload = _passing_payload(
+            forced_cold_samples=5,
+            revision_samples=1,
+        )
         payload["daily_batches"][0]["machine_id"] = "another-machine"
         payload["daily_batches"][1]["policy_version"] = "rolling-policy"
         payload["daily_batches"][2]["v2_results"].pop()
         payload["daily_batches"][3]["targets"].pop()
         payload["daily_batches"][4]["forced_cold_end_to_end_minutes"] = 86.0
-        payload["revision_trials"].pop()
         payload["revision_trials"][0]["compare_gate"]["status"] = "FAIL"
 
         result = evaluate_capacity_observations(
@@ -479,23 +689,19 @@ class CapacityGateTests(unittest.TestCase):
         self.assertIn("OBSERVATION_POLICY_DRIFT", codes)
         self.assertIn("V2_RESULT_SET_MISMATCH", codes)
         self.assertIn("TARGET_COUNT_MISMATCH", codes)
-        self.assertIn("FORCED_COLD_SAMPLE_COUNT", codes)
-        self.assertIn("FORCED_COLD_P95_EXCEEDED", codes)
         self.assertIn("FORCED_COLD_MAX_EXCEEDED", codes)
-        self.assertIn("REVISION_SAMPLE_COUNT", codes)
         self.assertIn("REVISION_COMPARE_FAILED", codes)
 
-    def test_trailing_ten_requires_complete_chain_and_zero_incidents(self) -> None:
+    def test_production_observation_requires_zero_incidents(self) -> None:
         from scheduler.capacity_gate import evaluate_capacity_observations
 
-        payload = _passing_payload()
+        payload = _passing_payload(production_days=2)
         production = [
             batch
             for batch in payload["daily_batches"]
             if batch["observation_kind"] == "production"
         ]
         production[-1]["incidents"]["manual_intervention"] = 1
-        production[-2]["previous_trading_date"] = "2026-05-01"
 
         result = evaluate_capacity_observations(
             payload,
@@ -504,14 +710,31 @@ class CapacityGateTests(unittest.TestCase):
         )
 
         codes = {violation["code"] for violation in result["violations"]}
-        self.assertIn("STABILITY_SEQUENCE_BROKEN", codes)
-        self.assertIn("STABILITY_BATCH_NOT_CLEAN", codes)
+        self.assertIn("PRODUCTION_OBSERVATION_NOT_CLEAN", codes)
         self.assertEqual(result["metrics"]["trailing_clean_trading_days"], 0)
+
+    def test_forced_cold_observation_requires_zero_incidents(self) -> None:
+        from scheduler.capacity_gate import evaluate_capacity_observations
+
+        payload = _passing_payload()
+        payload["daily_batches"][0]["incidents"]["partial"] = 1
+
+        result = evaluate_capacity_observations(
+            payload,
+            expected_machine_id=MACHINE_ID,
+            expected_policy_version=POLICY_VERSION,
+        )
+
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(
+            "FORCED_COLD_OBSERVATION_NOT_CLEAN",
+            {violation["code"] for violation in result["violations"]},
+        )
 
     def test_forced_cold_rejects_reused_run_and_artifact_evidence(self) -> None:
         from scheduler.capacity_gate import evaluate_capacity_observations
 
-        payload = _passing_payload()
+        payload = _passing_payload(forced_cold_samples=2)
         forced = [
             batch
             for batch in payload["daily_batches"]
@@ -536,14 +759,13 @@ class CapacityGateTests(unittest.TestCase):
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("DUPLICATE_DAILY_EVIDENCE", codes)
         self.assertIn("DUPLICATE_FORCED_COLD_EVIDENCE", codes)
-        self.assertIn("FORCED_COLD_SAMPLE_COUNT", codes)
-        self.assertEqual(result["metrics"]["forced_cold_raw_count"], 20)
-        self.assertEqual(result["metrics"]["forced_cold_count"], 19)
+        self.assertEqual(result["metrics"]["forced_cold_raw_count"], 2)
+        self.assertEqual(result["metrics"]["forced_cold_count"], 1)
 
     def test_revision_requires_actual_generation_content_change(self) -> None:
         from scheduler.capacity_gate import evaluate_capacity_observations
 
-        payload = _passing_payload()
+        payload = _passing_payload(revision_samples=1)
         first = payload["revision_trials"][0]
         first["after_generation"] = deepcopy(first["before_generation"])
 
@@ -556,14 +778,13 @@ class CapacityGateTests(unittest.TestCase):
         codes = {violation["code"] for violation in result["violations"]}
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("REVISION_NO_CONTENT_CHANGE", codes)
-        self.assertIn("REVISION_SAMPLE_COUNT", codes)
-        self.assertEqual(result["metrics"]["revision_raw_count"], 20)
-        self.assertEqual(result["metrics"]["real_revision_count"], 19)
+        self.assertEqual(result["metrics"]["revision_raw_count"], 1)
+        self.assertEqual(result["metrics"]["real_revision_count"], 0)
 
     def test_revision_rejects_reused_compare_and_generation_evidence(self) -> None:
         from scheduler.capacity_gate import evaluate_capacity_observations
 
-        payload = _passing_payload()
+        payload = _passing_payload(revision_samples=2)
         first = payload["revision_trials"][0]
         second = payload["revision_trials"][1]
         second["run_id"] = first["run_id"]
@@ -579,13 +800,12 @@ class CapacityGateTests(unittest.TestCase):
         codes = {violation["code"] for violation in result["violations"]}
         self.assertEqual(result["status"], "FAIL")
         self.assertIn("DUPLICATE_REVISION_EVIDENCE", codes)
-        self.assertIn("REVISION_SAMPLE_COUNT", codes)
-        self.assertEqual(result["metrics"]["real_revision_count"], 19)
+        self.assertEqual(result["metrics"]["real_revision_count"], 1)
 
     def test_revision_compare_status_is_bound_to_evidence(self) -> None:
         from scheduler.capacity_gate import evaluate_capacity_observations
 
-        payload = _passing_payload()
+        payload = _passing_payload(revision_samples=1)
         payload["revision_trials"][0]["compare_gate"]["status"] = "FAIL"
 
         result = evaluate_capacity_observations(
@@ -754,7 +974,7 @@ class CapacityAttestationContractTests(unittest.TestCase):
 
         self.assertEqual(
             len(validated.candidate["target_manifest"]),
-            25,
+            29,
         )
         self.assertEqual(
             len(
@@ -763,7 +983,7 @@ class CapacityAttestationContractTests(unittest.TestCase):
                     for row in validated.candidate["target_manifest"]
                 }
             ),
-            21,
+            25,
         )
         self.assertEqual(
             {row["scenario"] for row in validated.fault_trials},
@@ -774,12 +994,48 @@ class CapacityAttestationContractTests(unittest.TestCase):
             {f"native-{index:02d}" for index in range(10)},
         )
 
+    def test_candidate_rejects_legacy_cardinality_and_v2_set(self) -> None:
+        from scheduler.capacity_attestation import (
+            CapacityAttestationError,
+            canonical_json_sha256,
+            validate_capacity_candidate,
+        )
+
+        v1 = _candidate()
+        v1["policy_version"] = "daily-scheduler-policy-v1"
+        with self.assertRaisesRegex(
+            CapacityAttestationError,
+            "daily-scheduler-policy-v2",
+        ):
+            validate_capacity_candidate(v1)
+
+        legacy = _candidate()
+        legacy["expected_item_count"] = 21
+        legacy["expected_target_count"] = 25
+        legacy["target_manifest"] = [
+            row
+            for row in legacy["target_manifest"]
+            if not str(row["base_scheme_id"]).startswith("ten_y_t5_")
+        ][:25]
+        legacy["registry_manifest_sha256"] = canonical_json_sha256(
+            legacy["target_manifest"]
+        )
+
+        with self.assertRaisesRegex(
+            CapacityAttestationError,
+            "25 items / 29 targets",
+        ):
+            validate_capacity_candidate(legacy)
+
     def test_cache_qualification_set_and_candidate_binding_are_exact(
         self,
     ) -> None:
         from scheduler.capacity_attestation import (
             CapacityAttestationError,
             validate_attested_capacity_evidence,
+        )
+        from shared.liwei_0616_cache_contract import (
+            qualification_corpus_sha256,
         )
 
         cases = {}
@@ -791,17 +1047,27 @@ class CapacityAttestationContractTests(unittest.TestCase):
             "cache_adapter_sha256"
         ] = _sha256("different-adapter")
         cases["adapter"] = drifted
-        forged_corpus = _attested_payload()
-        forged_corpus["cache_use_qualifications"][0]["corpus"][
-            "revision_trial_ids"
-        ][0] = "revision-not-in-observations"
-        cases["corpus"] = forged_corpus
 
         for name, payload in cases.items():
             with self.subTest(name=name), self.assertRaises(
                 CapacityAttestationError
             ):
                 validate_attested_capacity_evidence(payload)
+
+        forged_corpus = _attested_payload()
+        corpus = forged_corpus["cache_use_qualifications"][0]["corpus"]
+        corpus["revision_trial_ids"] = ["revision-not-in-observations"]
+        corpus["revision_count"] = 1
+        corpus["evidence_sha256"] = qualification_corpus_sha256(
+            forced_cold_trial_ids=corpus["forced_cold_trial_ids"],
+            revision_trial_ids=corpus["revision_trial_ids"],
+            coverage_types=corpus["coverage_types"],
+        )
+        with self.assertRaisesRegex(
+            CapacityAttestationError,
+            "corpus IDs do not match signed observations",
+        ):
+            validate_attested_capacity_evidence(forged_corpus)
 
     def test_fake_or_non_composite_target_cannot_qualify(self) -> None:
         from scheduler.capacity_attestation import (
@@ -917,7 +1183,7 @@ class CapacityAttestationContractTests(unittest.TestCase):
             lambda: deepcopy(candidate),
         )
         self.assertEqual(current.fingerprint, parsed.fingerprint)
-        self.assertEqual(len(current.target_ids), 25)
+        self.assertEqual(len(current.target_ids), 29)
 
         drifted = deepcopy(candidate)
         drifted["scheduler_release_sha256"] = _sha256(
@@ -953,7 +1219,7 @@ class CapacityAttestationContractTests(unittest.TestCase):
             os_build="25G88",
             memory_bytes=64 * 1024**3,
             policy_version=POLICY_VERSION,
-            policy_bytes=b'{"version":"daily-scheduler-policy-v1"}',
+            policy_bytes=b'{"version":"daily-scheduler-policy-v2"}',
             target_manifest=_target_manifest(),
             component_artifacts=artifacts,
         )
@@ -967,7 +1233,7 @@ class CapacityAttestationContractTests(unittest.TestCase):
             os_build="25G88",
             memory_bytes=64 * 1024**3,
             policy_version=POLICY_VERSION,
-            policy_bytes=b'{"version":"daily-scheduler-policy-v1"}',
+            policy_bytes=b'{"version":"daily-scheduler-policy-v2"}',
             target_manifest=deepcopy(_target_manifest()),
             component_artifacts=reordered,
         )

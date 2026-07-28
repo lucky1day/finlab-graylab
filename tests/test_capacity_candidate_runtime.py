@@ -15,7 +15,7 @@ from scheduler.discovery import SchemeConfig, discover_schemes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-POLICY_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v1.json"
+POLICY_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
 SERVER_UUID = "11111111-2222-3333-4444-555555555555"
 
 
@@ -349,8 +349,8 @@ class CurrentCapacityCandidateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.discovered = _active_daily()
-        if len(cls.discovered) != 21:
-            raise AssertionError("test fixture requires current 21-item policy")
+        if len(cls.discovered) != 25:
+            raise AssertionError("test fixture requires current 25-item policy")
 
     def _build(
         self,
@@ -382,14 +382,14 @@ class CurrentCapacityCandidateTests(unittest.TestCase):
                 command_runner=runner or _CommandRunner(),
             )
 
-    def test_builds_exact_live_21_item_25_target_candidate(self) -> None:
+    def test_builds_exact_live_25_item_29_target_candidate(self) -> None:
         candidate = self._build()
 
-        self.assertEqual(candidate.payload["expected_item_count"], 21)
-        self.assertEqual(candidate.payload["expected_target_count"], 25)
+        self.assertEqual(candidate.payload["expected_item_count"], 25)
+        self.assertEqual(candidate.payload["expected_target_count"], 29)
         self.assertEqual(candidate.payload["memory_bytes"], 137438953472)
         targets = candidate.payload["target_manifest"]
-        self.assertEqual(len(targets), 25)
+        self.assertEqual(len(targets), 29)
         self.assertEqual(
             [row["registry_scheme_id"] for row in targets],
             sorted(row["registry_scheme_id"] for row in targets),

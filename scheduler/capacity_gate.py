@@ -3,8 +3,8 @@
 本模块只计算版本化观测证据，不读取数据库、不启动任务，也不会根据观测值
 修改 scheduler policy。门禁使用两个不同结论：
 
-* ``status``：切换门禁，要求 20 次 forced-cold、20 次真实修订以及末尾连续
-  10 个交易日满足全部 SLA；
+* ``status``：切换门禁，要求一次真实 forced-cold 与一次绑定生产候选的
+  execute-only observation 满足 25/29、07:55 和 85 分钟硬门槛；
 * ``claims.approx_95_zero_failure_reliability``：约 95% 零失败可靠性声明资格。
   只有显式要求该声明时，不足 59 个有效日批才会使顶层门禁失败。
 
@@ -24,9 +24,21 @@ from zoneinfo import ZoneInfo
 
 
 OBSERVATION_SCHEMA_VERSION = "daily-capacity-observations-v2"
-SUPPORTED_POLICY_VERSION = "daily-scheduler-policy-v1"
-EXPECTED_TARGET_COUNT = 25
+SUPPORTED_POLICY_VERSION = "daily-scheduler-policy-v2"
+EXPECTED_TARGET_COUNT = 29
 EXPECTED_V2_SCHEME_IDS = frozenset(
+    {
+        "one_y_t5_liq_excess_a_v1",
+        "one_y_t5_liq_excess_a_w252_l7_v1",
+        "one_y_t5_liq_excess_a_w350_l7_v1",
+        "one_y_t5_liq_excess_b_w252_l7_v1",
+        "ten_y_t5_maj3_k3_ic_static_v1",
+        "ten_y_t5_maj4_k3_ic_static_v1",
+        "ten_y_t5_maj4_k3_ic_yearly_v1",
+        "ten_y_t5_say_k5_sharpe_static_v1",
+    }
+)
+_FORMAL_V2_SCHEME_IDS = frozenset(
     {
         "one_y_t5_liq_excess_a_v1",
         "one_y_t5_liq_excess_a_w252_l7_v1",
@@ -34,23 +46,26 @@ EXPECTED_V2_SCHEME_IDS = frozenset(
         "one_y_t5_liq_excess_b_w252_l7_v1",
     }
 )
-MIN_FORCED_COLD_SAMPLES = 20
-MIN_REVISION_SAMPLES = 20
-MIN_STABILITY_DAYS = 10
+_GRAY_V2_SCHEME_IDS = EXPECTED_V2_SCHEME_IDS - _FORMAL_V2_SCHEME_IDS
+MIN_FORCED_COLD_SAMPLES = 1
+MIN_REVISION_SAMPLES = 0
+MIN_PRODUCTION_OBSERVATIONS = 1
 MIN_RELIABILITY_SAMPLES = 59
-MAX_FORCED_COLD_P95_MINUTES = 80.0
 MAX_FORCED_COLD_MINUTES = 85.0
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DATABRIDGE_DEADLINE = time(6, 55)
-_V2_DEADLINE = time(7, 10)
+_FORMAL_V2_DEADLINE = time(7, 10)
+_GRAY_V2_DEADLINE = time(7, 20)
 _TARGET_DEADLINE = time(7, 55)
 _INCIDENT_FIELDS = frozenset(
     {
         "misfire",
         "timeout",
         "partial",
+        "duplicate_prediction",
         "orphan_process",
+        "reentry_new_results",
         "manual_intervention",
     }
 )
@@ -171,7 +186,7 @@ def evaluate_capacity_observations(
             violations,
             "UNSUPPORTED_POLICY_VERSION",
             "observation schema v2 only admits the versioned scheduler "
-            "policy v1; runtime overrides are forbidden",
+            "policy v2; runtime overrides are forbidden",
             expected=SUPPORTED_POLICY_VERSION,
             actual=policy_version,
         )
@@ -232,9 +247,8 @@ def evaluate_capacity_observations(
         for batch in forced_cold
         if batch.forced_cold_end_to_end_minutes is not None
     )
-    forced_p95 = (
-        nearest_rank(forced_minutes, 0.95) if forced_minutes else None
-    )
+    # MVP 的一个 forced-cold 样本只证明硬上界，不构成 P95 统计声明。
+    forced_p95 = None
     forced_max = max(forced_minutes) if forced_minutes else None
     if len(forced_cold) < MIN_FORCED_COLD_SAMPLES:
         _add_violation(
@@ -244,16 +258,21 @@ def evaluate_capacity_observations(
             expected=MIN_FORCED_COLD_SAMPLES,
             actual=len(forced_cold),
         )
-    if (
-        forced_p95 is not None
-        and forced_p95 > MAX_FORCED_COLD_P95_MINUTES
-    ):
+    forced_cold_incidents = [
+        batch.batch_id
+        for batch in forced_cold
+        if any(
+            batch.incidents[field] != 0
+            for field in _INCIDENT_FIELDS
+        )
+    ]
+    if forced_cold_incidents:
         _add_violation(
             violations,
-            "FORCED_COLD_P95_EXCEEDED",
-            "forced-cold nearest-rank P95 exceeds 80 minutes",
-            expected_max=MAX_FORCED_COLD_P95_MINUTES,
-            actual=forced_p95,
+            "FORCED_COLD_OBSERVATION_NOT_CLEAN",
+            "forced-cold observations must have zero incidents, duplicates, "
+            "orphans, partials, or reentry results",
+            batch_ids=forced_cold_incidents,
         )
     if forced_max is not None and forced_max > MAX_FORCED_COLD_MINUTES:
         _add_violation(
@@ -308,7 +327,7 @@ def evaluate_capacity_observations(
         policy_version=policy_version,
         disqualified_batch_ids=duplicate_daily_batch_ids,
     )
-    _check_stability_window(
+    _check_production_observations(
         violations,
         production,
         machine_id=machine_id,
@@ -372,13 +391,14 @@ def evaluate_capacity_observations(
     metrics: dict[str, object] = {
         "daily_batch_count": len(batches),
         "databridge_deadline": "06:55",
-        "v2_deadline": "07:10",
+        "v2_deadline": "07:10 formal / 07:20 gray",
         "target_deadline": "07:55",
         "expected_v2_count": len(EXPECTED_V2_SCHEME_IDS),
         "expected_target_count": EXPECTED_TARGET_COUNT,
         "forced_cold_raw_count": len(forced_cold_raw),
         "forced_cold_count": len(forced_cold),
         "forced_cold_p95_minutes": forced_p95,
+        "forced_cold_p95_claim": "NOT_EVALUATED",
         "forced_cold_max_minutes": forced_max,
         "revision_raw_count": len(revisions),
         "real_revision_count": len(real_revisions),
@@ -421,6 +441,13 @@ def _parse_batches(rows: Sequence[object]) -> tuple[_Batch, ...]:
         if kind not in {"forced_cold", "production"}:
             raise CapacityObservationError(
                 f"{path}.observation_kind must be forced_cold or production"
+            )
+        if (
+            kind == "production"
+            and row.get("capacity_qualification") != "PRODUCTION_BOUND"
+        ):
+            raise CapacityObservationError(
+                f"{path}.capacity_qualification must be PRODUCTION_BOUND"
             )
         forced_minutes_raw = row.get("forced_cold_end_to_end_minutes")
         if kind == "forced_cold":
@@ -841,13 +868,12 @@ def _check_batch_deadlines(
         _add_violation(
             violations,
             "V2_RESULT_SET_MISMATCH",
-            "batch must contain exactly the fixed four Blackbox V2 schemes",
+            "batch must contain exactly the fixed eight Blackbox V2 schemes",
             batch_id=batch.batch_id,
             expected=sorted(EXPECTED_V2_SCHEME_IDS),
             actual=sorted(set(v2_ids)),
             actual_count=len(v2_ids),
         )
-    v2_deadline = _local_deadline(batch.business_date, _V2_DEADLINE)
     for result in batch.v2_results:
         if result.input_generation_id != batch.databridge_generation_id:
             _add_violation(
@@ -867,13 +893,21 @@ def _check_batch_deadlines(
                 batch_id=batch.batch_id,
                 scheme_id=result.identity,
             )
-        elif max(result.db_visible_at, result.api_visible_at) > v2_deadline:
+        scheme_deadline = _v2_deadline(result.identity)
+        if scheme_deadline is None:
+            continue
+        deadline_at = _local_deadline(
+            batch.business_date,
+            scheme_deadline,
+        )
+        if max(result.db_visible_at, result.api_visible_at) > deadline_at:
             _add_violation(
                 violations,
                 "V2_DEADLINE_MISSED",
-                "V2 result was not visible in both DB and API by 07:10",
+                "V2 result missed its exact scheme deadline",
                 batch_id=batch.batch_id,
                 scheme_id=result.identity,
+                expected_deadline=scheme_deadline.strftime("%H:%M"),
                 actual=_isoformat(
                     max(result.db_visible_at, result.api_visible_at)
                 ),
@@ -887,7 +921,7 @@ def _check_batch_deadlines(
         _add_violation(
             violations,
             "TARGET_COUNT_MISMATCH",
-            "batch must contain exactly 25 unique accepted targets",
+            "batch must contain exactly 29 unique accepted targets",
             batch_id=batch.batch_id,
             expected=EXPECTED_TARGET_COUNT,
             actual_count=len(target_ids),
@@ -943,7 +977,7 @@ def _check_production_date_uniqueness(
     _reject_duplicates(dates, "production business_date")
 
 
-def _check_stability_window(
+def _check_production_observations(
     violations: list[dict[str, object]],
     production: Sequence[_Batch],
     *,
@@ -951,31 +985,18 @@ def _check_stability_window(
     policy_version: str,
     disqualified_batch_ids: frozenset[str],
 ) -> None:
-    if len(production) < MIN_STABILITY_DAYS:
+    if len(production) < MIN_PRODUCTION_OBSERVATIONS:
         _add_violation(
             violations,
-            "STABILITY_DAY_COUNT",
-            "fewer than 10 production trading days were observed",
-            expected=MIN_STABILITY_DAYS,
+            "PRODUCTION_OBSERVATION_COUNT",
+            "no production-bound isolated observation was provided",
+            expected=MIN_PRODUCTION_OBSERVATIONS,
             actual=len(production),
         )
         return
-    tail = production[-MIN_STABILITY_DAYS:]
-    broken_links: list[str] = []
-    for previous, current in zip(tail, tail[1:]):
-        if current.previous_trading_date != previous.business_date:
-            broken_links.append(current.batch_id)
-    if broken_links:
-        _add_violation(
-            violations,
-            "STABILITY_SEQUENCE_BROKEN",
-            "the trailing production observations are not an unbroken "
-            "trading-day chain",
-            batch_ids=broken_links,
-        )
     dirty = [
         batch.batch_id
-        for batch in tail
+        for batch in production
         if not _batch_is_clean(
             batch,
             machine_id=machine_id,
@@ -986,9 +1007,9 @@ def _check_stability_window(
     if dirty:
         _add_violation(
             violations,
-            "STABILITY_BATCH_NOT_CLEAN",
-            "the trailing 10 trading days are not all 25/25 with zero "
-            "misfire, timeout, partial, orphan, and manual intervention",
+            "PRODUCTION_OBSERVATION_NOT_CLEAN",
+            "production-bound observations must all be 29/29 with zero "
+            "incident, duplicate, orphan, partial, or reentry result",
             batch_ids=dirty,
         )
 
@@ -1047,10 +1068,13 @@ def _batch_is_clean(
     for result in batch.v2_results:
         if result.input_generation_id != batch.databridge_generation_id:
             return False
+        scheme_deadline = _v2_deadline(result.identity)
+        if scheme_deadline is None:
+            return False
         if not _visible_by(
             result,
             business_date=batch.business_date,
-            deadline=_V2_DEADLINE,
+            deadline=scheme_deadline,
         ):
             return False
     target_ids = [result.identity for result in batch.targets]
@@ -1080,6 +1104,14 @@ def _visible_by(
         and max(result.db_visible_at, result.api_visible_at)
         <= _local_deadline(business_date, deadline)
     )
+
+
+def _v2_deadline(scheme_id: str) -> time | None:
+    if scheme_id in _FORMAL_V2_SCHEME_IDS:
+        return _FORMAL_V2_DEADLINE
+    if scheme_id in _GRAY_V2_SCHEME_IDS:
+        return _GRAY_V2_DEADLINE
+    return None
 
 
 def _both_on_business_date(

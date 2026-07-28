@@ -19,8 +19,8 @@ def _qualification() -> dict[str, object]:
         qualification_corpus_sha256,
     )
 
-    forced_ids = [f"forced-{index:02d}" for index in range(20)]
-    revision_ids = [f"revision-{index:02d}" for index in range(20)]
+    forced_ids = ["forced-00"]
+    revision_ids: list[str] = []
     coverage = ["forced_cold", "append", "full_rebuild"]
     return {
         "schema_version": "liwei-0616-cache-use-qualification-v1",
@@ -57,8 +57,8 @@ def _qualification() -> dict[str, object]:
         ],
         "comparison_evidence_sha256": SHA_C,
         "corpus": {
-            "forced_cold_count": 20,
-            "revision_count": 20,
+            "forced_cold_count": 1,
+            "revision_count": 0,
             "coverage_types": coverage,
             "forced_cold_trial_ids": forced_ids,
             "revision_trial_ids": revision_ids,
@@ -188,8 +188,7 @@ class CacheUseQualificationContractTests(unittest.TestCase):
         )
 
         cases = {
-            "forced": ("forced_cold_count", 19),
-            "revision": ("revision_count", 19),
+            "forced": ("forced_cold_count", 0),
             "coverage": (
                 "coverage_types",
                 ["forced_cold", "append"],

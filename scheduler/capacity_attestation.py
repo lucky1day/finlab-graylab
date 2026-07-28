@@ -20,6 +20,7 @@ from scheduler.capacity_gate import (
     EXPECTED_TARGET_COUNT,
     EXPECTED_V2_SCHEME_IDS,
     OBSERVATION_SCHEMA_VERSION,
+    SUPPORTED_POLICY_VERSION,
 )
 from shared.liwei_0616_cache_contract import (
     PHASE_A_CACHE_ABI_VERSION,
@@ -36,7 +37,7 @@ ATTESTED_EVIDENCE_SCHEMA_VERSION = (
 )
 CANDIDATE_SCHEMA_VERSION = "daily-capacity-candidate-v3"
 ARTIFACT_SET_SCHEMA_VERSION = "daily-capacity-artifact-set-v1"
-EXPECTED_ITEM_COUNT = 21
+EXPECTED_ITEM_COUNT = 25
 COMPONENT_DIGEST_FIELDS = (
     "scheduler_release_sha256",
     "scheme_bundle_sha256",
@@ -519,6 +520,11 @@ def _validate_candidate(
         "policy_version",
     ):
         _text(candidate, field, "candidate")
+    if candidate["policy_version"] != SUPPORTED_POLICY_VERSION:
+        raise CapacityAttestationError(
+            "candidate policy_version must be "
+            f"{SUPPORTED_POLICY_VERSION}"
+        )
     for field in (
         "policy_sha256",
         "registry_manifest_sha256",
@@ -552,7 +558,7 @@ def _validate_candidate(
         or expected_targets != EXPECTED_TARGET_COUNT
     ):
         raise CapacityAttestationError(
-            "candidate cardinality must be exactly 21 items / 25 targets"
+            "candidate cardinality must be exactly 25 items / 29 targets"
         )
 
     raw_targets = candidate.get("target_manifest")
