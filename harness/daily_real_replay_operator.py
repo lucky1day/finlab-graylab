@@ -1675,8 +1675,6 @@ def validate_production_daily_snapshot(
                 row.algorithm_version,
                 row.contract_version,
                 row.runtime_profile,
-                row.environment_fingerprint,
-                row.data_snapshot_id,
                 "active",
             )
             for row in definitions.version_rows
@@ -1710,10 +1708,52 @@ def validate_production_daily_snapshot(
         raise DailyRealReplayPreflightError(
             "PRODUCTION_VERSION_DRIFT"
         ) from None
-    if actual_versions != expected_versions:
+    actual_version_identities = tuple(
+        (*row[:9], row[11])
+        for row in actual_versions
+    )
+    if actual_version_identities != expected_versions:
         raise DailyRealReplayPreflightError(
             "PRODUCTION_VERSION_DRIFT"
         )
+    for row in actual_versions:
+        runtime_type = row[2]
+        environment_fingerprint = row[9]
+        data_snapshot_id = row[10]
+        if (
+            environment_fingerprint is not None
+            and (
+                not _is_hex_digest(
+                    environment_fingerprint,
+                    length=64,
+                )
+                or environment_fingerprint
+                != environment_fingerprint.strip()
+            )
+        ):
+            raise DailyRealReplayPreflightError(
+                "PRODUCTION_VERSION_DRIFT"
+            )
+        if (
+            data_snapshot_id is not None
+            and (
+                not data_snapshot_id.strip()
+                or data_snapshot_id != data_snapshot_id.strip()
+            )
+        ):
+            raise DailyRealReplayPreflightError(
+                "PRODUCTION_VERSION_DRIFT"
+            )
+        if (
+            runtime_type == "blackbox_v2"
+            and (
+                environment_fingerprint is None
+                or data_snapshot_id is None
+            )
+        ):
+            raise DailyRealReplayPreflightError(
+                "PRODUCTION_VERSION_DRIFT"
+            )
     return _canonical_sha256(
         {
             "registry": actual_registry,

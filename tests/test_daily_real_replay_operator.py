@@ -692,8 +692,23 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                     "contract_version": row.contract_version,
                     "runtime_profile": row.runtime_profile,
                     "environment_fingerprint":
-                        row.environment_fingerprint,
-                    "data_snapshot_id": row.data_snapshot_id,
+                        (
+                            row.environment_fingerprint
+                            or (
+                                "9" * 64
+                                if row.runtime_type == "blackbox_v2"
+                                else None
+                            )
+                        ),
+                    "data_snapshot_id":
+                        (
+                            row.data_snapshot_id
+                            or (
+                                "snapshot-v2"
+                                if row.runtime_type == "blackbox_v2"
+                                else None
+                            )
+                        ),
                     "status": "active",
                 }
                 for row in definition.version_rows
@@ -955,6 +970,88 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                 ) as raised:
                     validate_production_daily_snapshot(
                         drifted,
+                        definitions=definitions,
+                    )
+                self.assertEqual(
+                    raised.exception.code,
+                    "PRODUCTION_VERSION_DRIFT",
+                )
+
+    def test_blackbox_activation_evidence_is_bound_without_repo_fields(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            validate_production_daily_snapshot,
+        )
+
+        definitions = self._definitions()
+        production = self._production_snapshot(definitions)
+        rows = []
+        for row in production.version_rows:
+            current = dict(row)
+            if current["runtime_type"] == "blackbox_v2":
+                current["environment_fingerprint"] = "9" * 64
+                current["data_snapshot_id"] = "snapshot-v2"
+            rows.append(current)
+
+        digest = validate_production_daily_snapshot(
+            replace(production, version_rows=tuple(rows)),
+            definitions=definitions,
+        )
+        drifted_rows = [dict(row) for row in rows]
+        drifted_rows[-1]["environment_fingerprint"] = "8" * 64
+        drifted_digest = validate_production_daily_snapshot(
+            replace(
+                production,
+                version_rows=tuple(drifted_rows),
+            ),
+            definitions=definitions,
+        )
+
+        self.assertEqual(len(digest), 64)
+        self.assertNotEqual(digest, drifted_digest)
+
+    def test_blackbox_activation_evidence_must_be_complete(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            validate_production_daily_snapshot,
+        )
+
+        definitions = self._definitions()
+        production = self._production_snapshot(definitions)
+        valid_rows = []
+        for row in production.version_rows:
+            current = dict(row)
+            if current["runtime_type"] == "blackbox_v2":
+                current["environment_fingerprint"] = "9" * 64
+                current["data_snapshot_id"] = "snapshot-v2"
+            valid_rows.append(current)
+        for field, value in (
+            ("environment_fingerprint", None),
+            ("environment_fingerprint", "not-a-sha"),
+            ("data_snapshot_id", None),
+            ("data_snapshot_id", ""),
+        ):
+            with self.subTest(field=field, value=value):
+                rows = [dict(row) for row in valid_rows]
+                changed = False
+                for current in rows:
+                    if (
+                        not changed
+                        and current["runtime_type"] == "blackbox_v2"
+                    ):
+                        current[field] = value
+                        changed = True
+                with self.assertRaises(
+                    DailyRealReplayPreflightError
+                ) as raised:
+                    validate_production_daily_snapshot(
+                        replace(
+                            production,
+                            version_rows=tuple(rows),
+                        ),
                         definitions=definitions,
                     )
                 self.assertEqual(
