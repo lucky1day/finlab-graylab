@@ -2619,7 +2619,7 @@ class _FakeServices:
             v2_release_offset_min=0,
         )
         self.policy = SimpleNamespace(
-            version="test-v1",
+            version="daily-scheduler-policy-v2",
             expected_item_count=2,
             expected_target_count=2,
             timezone="Asia/Shanghai",
@@ -2648,6 +2648,12 @@ class _FakeServices:
             ),
             schemes={"native": native_policy, "v2": v2_policy},
         )
+        self.snapshot_policy_version = self.policy.version
+        self.snapshot_policy_json_version = self.policy.version
+        self.snapshot_expected_item_count = 2
+        self.snapshot_expected_target_count = 2
+        self.snapshot_actual_item_count = 2
+        self.snapshot_actual_target_count = 2
 
     def now(self) -> datetime:
         return self.current_time
@@ -2774,13 +2780,15 @@ class _FakeServices:
                 occurrence_id=occurrence_id,
                 predict_date="2026-07-24",
                 feature_date="2026-07-23",
-                expected_item_count=2,
-                expected_target_count=2,
+                policy_version=self.snapshot_policy_version,
+                expected_item_count=self.snapshot_expected_item_count,
+                expected_target_count=self.snapshot_expected_target_count,
                 completion_state=(
                     "SUCCESS" if completed == 2 else "RUNNING"
                 ),
                 sla_outcome=self.sla_outcome,
                 policy_json={
+                    "version": self.snapshot_policy_json_version,
                     "daily_coordinator_epoch":
                         dict(TEST_COORDINATOR_EPOCH),
                     "times": {
@@ -2789,8 +2797,8 @@ class _FakeServices:
                 },
             ),
             items=tuple(items),
-            actual_item_count=2,
-            actual_target_count=2,
+            actual_item_count=self.snapshot_actual_item_count,
+            actual_target_count=self.snapshot_actual_target_count,
             actual_accepted_target_count=completed,
         )
 
@@ -3199,6 +3207,100 @@ class _FakeServices:
     def wait_for_progress(self, seconds: float) -> None:
         self.events.append(("wait", seconds))
         Event().wait(min(max(float(seconds), 0.0), 0.001))
+
+
+class DailyRuntimeFrozenPolicyVersionTests(unittest.TestCase):
+    @staticmethod
+    def _legacy_snapshot_services() -> _FakeServices:
+        services = _FakeServices(
+            now=datetime(2026, 7, 24, 7, 20, tzinfo=SHANGHAI),
+        )
+        services.existing_occurrence_id = 41
+        services.policy.expected_item_count = 25
+        services.policy.expected_target_count = 29
+        services.snapshot_expected_item_count = 25
+        services.snapshot_expected_target_count = 29
+        services.snapshot_actual_item_count = 25
+        services.snapshot_actual_target_count = 29
+        services.snapshot_policy_version = "daily-scheduler-policy-v1"
+        services.snapshot_policy_json_version = (
+            "daily-scheduler-policy-v1"
+        )
+        return services
+
+    def test_occurrence_rejects_legacy_version_before_side_effects(
+        self,
+    ) -> None:
+        services = self._legacy_snapshot_services()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "frozen occurrence policy version differs from runtime policy",
+        ):
+            DailyRuntime(services).run_occurrence(
+                run_date="2026-07-24",
+            )
+
+        self.assertEqual(services.attempts, Counter())
+        self.assertEqual(services.bindings, {})
+        self.assertEqual(services.heartbeat_calls, [])
+        self.assertFalse(
+            any(
+                event == "prepare"
+                or (
+                    isinstance(event, tuple)
+                    and event[0]
+                    in {
+                        "execute",
+                        "fence",
+                        "cleanup-orphan",
+                        "reconcile-visibility",
+                        "read-frozen-inputs",
+                    }
+                )
+                or (
+                    isinstance(event, tuple)
+                    and isinstance(event[0], str)
+                    and (
+                        "generation" in event[0]
+                        or "databridge" in event[0]
+                    )
+                )
+                for event in services.events
+            )
+        )
+
+    def test_operator_recovery_rejects_legacy_version_before_side_effects(
+        self,
+    ) -> None:
+        services = self._legacy_snapshot_services()
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "frozen occurrence policy version differs from runtime policy",
+        ):
+            DailyRuntime(services).run_operator_recovery(
+                scheme_id="native",
+                run_date="2026-07-24",
+            )
+
+        self.assertEqual(services.attempts, Counter())
+        self.assertEqual(services.bindings, {})
+        self.assertEqual(services.heartbeat_calls, [])
+        self.assertFalse(
+            any(
+                isinstance(event, tuple)
+                and event[0]
+                in {
+                    "execute",
+                    "fence",
+                    "cleanup-orphan",
+                    "reconcile-visibility",
+                    "read-frozen-inputs",
+                }
+                for event in services.events
+            )
+        )
 
 
 class DailyRuntimeProcessCleanupBoundaryTests(unittest.TestCase):
@@ -4089,7 +4191,7 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
             services.events,
         )
 
-    def test_completed_occurrence_skips_all_generation_and_execution_work(self) -> None:
+    def test_completed_v2_occurrence_reentry_is_idempotent(self) -> None:
         services = _FakeServices(
             now=datetime(2026, 7, 24, 7, 1, tzinfo=SHANGHAI),
         )
@@ -4102,13 +4204,27 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
             "completed occurrence must not refresh DataBridge"
         )
 
-        result = DailyRuntime(services).run_occurrence(
+        runtime = DailyRuntime(services)
+        first = runtime.run_occurrence(
+            run_date="2026-07-24",
+            trigger_origin="startup_catchup",
+        )
+        second = runtime.run_occurrence(
             run_date="2026-07-24",
             trigger_origin="startup_catchup",
         )
 
-        self.assertEqual(result.status, "complete")
-        self.assertEqual(result.dispatched_scheme_ids, ())
+        self.assertEqual(first.status, "complete")
+        self.assertEqual(second.status, "complete")
+        self.assertEqual(first.dispatched_scheme_ids, ())
+        self.assertEqual(second.dispatched_scheme_ids, ())
+        self.assertEqual(services.attempts, Counter())
+        self.assertFalse(
+            any(
+                isinstance(event, tuple) and event[0] == "execute"
+                for event in services.events
+            )
+        )
         self.assertNotIn(
             ("native-generation", "started"),
             services.events,

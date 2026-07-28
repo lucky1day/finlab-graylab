@@ -1619,6 +1619,26 @@ class DailyRuntime:
     def __init__(self, services: Any) -> None:
         self._services = services
 
+    @staticmethod
+    def _require_frozen_occurrence_policy_version(
+        *,
+        snapshot: Any,
+        policy: Any,
+    ) -> None:
+        """在任何副作用前校验冻结账本与当前 runtime 的 policy 版本。"""
+        occurrence = snapshot.occurrence
+        runtime_version = getattr(policy, "version", None)
+        policy_json = getattr(occurrence, "policy_json", None)
+        if (
+            getattr(occurrence, "policy_version", None)
+            != runtime_version
+            or not isinstance(policy_json, Mapping)
+            or policy_json.get("version") != runtime_version
+        ):
+            raise RuntimeError(
+                "frozen occurrence policy version differs from runtime policy"
+            )
+
     def run_occurrence(
         self,
         *,
@@ -1659,6 +1679,10 @@ class DailyRuntime:
             )
             if occurrence_id is not None:
                 snapshot = self._services.read_snapshot(occurrence_id)
+                self._require_frozen_occurrence_policy_version(
+                    snapshot=snapshot,
+                    policy=policy,
+                )
                 _validate_snapshot_cardinality(snapshot, policy=policy)
                 self._services.validate_occurrence_policy(
                     snapshot=snapshot,
@@ -3213,6 +3237,10 @@ class DailyRuntime:
                     status="occurrence_missing",
                 )
             snapshot = self._services.read_snapshot(occurrence_id)
+            self._require_frozen_occurrence_policy_version(
+                snapshot=snapshot,
+                policy=policy,
+            )
             _validate_snapshot_cardinality(snapshot, policy=policy)
             self._services.validate_occurrence_policy(
                 snapshot=snapshot,
