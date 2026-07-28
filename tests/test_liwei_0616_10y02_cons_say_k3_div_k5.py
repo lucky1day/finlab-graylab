@@ -353,6 +353,11 @@ class Liwei061610Y02InferenceTests(unittest.TestCase):
         caches = {"STD": {"test_dates": ["2026-06-03"], "results": []}}
         audit = {"status": "hit", "watermark": "2026-06-03", "missing_dates": []}
         with (
+            patch.object(
+                inference,
+                "build_auxiliary_dependency_projection",
+                return_value=object(),
+            ),
             patch.object(inference, "prepare_phase_a_caches", return_value=(caches, audit)),
             patch.object(inference, "run_10y02_for_feature_window", return_value=detail) as mock_run,
         ):

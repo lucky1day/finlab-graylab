@@ -532,6 +532,11 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                     patch.object(inference, "model_config", return_value={}) as config,
                     patch.object(
                         inference,
+                        "build_auxiliary_dependency_projection",
+                        return_value=object(),
+                    ),
+                    patch.object(
+                        inference,
                         "run_prediction",
                         return_value=(np.zeros(1, dtype=np.int32), {"phase_a_cache": phase_a_cache}),
                     ),

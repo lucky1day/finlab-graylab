@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import importlib
 import json
+from pathlib import Path
 import unittest
+from unittest.mock import patch
+
+import pandas as pd
 
 
 SHA_A = "a" * 64
@@ -12,6 +17,43 @@ SHA_C = "c" * 64
 SHA_D = "d" * 64
 SHA_E = "e" * 64
 SHA_F = "f" * 64
+
+SCHEME_MODULES = (
+    "schemes.liwei_0616_10y01_cons_say_k3_div_k10.inference",
+    "schemes.liwei_0616_10y01_full_oos_k3_div_k10.inference",
+    "schemes.liwei_0616_10y02_cons_say_k3_div_k5.inference",
+    "schemes.liwei_0616_5y01_full_oos_k3_div_k10.inference",
+    "schemes.liwei_0616_5y_auc_static_all_k3_div_k10.inference",
+    "schemes.liwei_0616_5y_auc_yearly_all_k3_div_k10.inference",
+    "schemes.liwei_0616_5y_ic_yearly_all_k3_div_k10.inference",
+    "schemes.liwei_0616_7y01_cons_say_k3_div_k10.inference",
+    "schemes.liwei_0616_7y03_cons_all_k3_div_k8.inference",
+    "schemes.liwei_0616_cons_sda_k3_div_k10.inference",
+)
+
+EXPECTED_CACHE_PUBLISHERS = {
+    "liwei_0616_10y_v61": (
+        "liwei_0616_10y01_full_oos_k3_div_k10"
+    ),
+    "liwei_0616_5y_v31": (
+        "liwei_0616_5y01_full_oos_k3_div_k10"
+    ),
+    "liwei_0616_5y_allk10_auc_static_v1": (
+        "liwei_0616_5y_auc_static_all_k3_div_k10"
+    ),
+    "liwei_0616_5y_allk10_auc_yearly_v1": (
+        "liwei_0616_5y_auc_yearly_all_k3_div_k10"
+    ),
+    "liwei_0616_5y_allk10_ic_yearly_v1": (
+        "liwei_0616_5y_ic_yearly_all_k3_div_k10"
+    ),
+    "liwei_0616_7y01_v31": (
+        "liwei_0616_7y01_cons_say_k3_div_k10"
+    ),
+    "liwei_0616_7y03_v31": (
+        "liwei_0616_7y03_cons_all_k3_div_k8"
+    ),
+}
 
 
 def _qualification() -> dict[str, object]:
@@ -370,6 +412,129 @@ class CacheUseQualificationContractTests(unittest.TestCase):
                     forged["unexpected"] = True
                 with self.assertRaises(ValueError):
                     validate_generation_acceptance_record(forged)
+
+
+class CacheAdapterProjectionContractTests(unittest.TestCase):
+    def test_all_inference_adapters_bind_exact_projection_dependencies(
+        self,
+    ) -> None:
+        daily = pd.DataFrame(
+            {"date": pd.to_datetime(["2026-07-27"])}
+        )
+        weekly = pd.DataFrame({"week_id": [202630]})
+        monthly = pd.DataFrame({"month_id": ["202607"]})
+        date_to_week = {"2026-07-27": 202630}
+
+        for module_name in SCHEME_MODULES:
+            with self.subTest(module=module_name):
+                module = importlib.import_module(module_name)
+                projection = object()
+                with (
+                    patch.object(
+                        module,
+                        "build_auxiliary_dependency_projection",
+                        return_value=projection,
+                    ) as build_projection,
+                    patch.object(
+                        module,
+                        "prepare_phase_a_caches",
+                        return_value=({}, {}),
+                    ) as prepare,
+                ):
+                    module._prepare_incremental_phase_a_caches(
+                        daily_df=daily,
+                        weekly_df=weekly,
+                        monthly_df=monthly,
+                        date_to_week=date_to_week,
+                        test_ranges=(("2026-07-27", "2026-07-27"),),
+                        n_workers=1,
+                        cache_root=None,
+                    )
+
+                projection_kwargs = build_projection.call_args.kwargs
+                self.assertIs(projection_kwargs["daily_df"], daily)
+                self.assertIs(projection_kwargs["weekly_df"], weekly)
+                self.assertIs(projection_kwargs["monthly_df"], monthly)
+                self.assertIs(
+                    projection_kwargs["date_to_week"],
+                    date_to_week,
+                )
+                self.assertIs(
+                    projection_kwargs["prepare_model_frames"],
+                    module.v31_common.prepare_model_frames,
+                )
+                self.assertIs(
+                    projection_kwargs["build_wkmo_features"],
+                    module.v31_common.build_wkmo_features,
+                )
+                self.assertEqual(
+                    projection_kwargs["proof_files"],
+                    (
+                        Path(module.v31_common.__file__),
+                        Path(module.data_alignment.__file__),
+                    ),
+                )
+                self.assertIs(
+                    prepare.call_args.kwargs[
+                        "auxiliary_dependency_projection"
+                    ],
+                    projection,
+                )
+
+    def test_cache_families_share_exact_publisher_and_spec(
+        self,
+    ) -> None:
+        from shared.liwei_0616_phase_a_cache import _spec_fingerprint
+
+        observed: dict[str, dict[str, set[str]]] = {}
+        for module_name in SCHEME_MODULES:
+            module = importlib.import_module(module_name)
+            with (
+                patch.object(
+                    module,
+                    "build_auxiliary_dependency_projection",
+                    return_value=object(),
+                ),
+                patch.object(
+                    module,
+                    "prepare_phase_a_caches",
+                    return_value=({}, {}),
+                ) as prepare,
+            ):
+                module._prepare_incremental_phase_a_caches(
+                    daily_df=pd.DataFrame(
+                        {"date": pd.to_datetime(["2026-07-27"])}
+                    ),
+                    weekly_df=pd.DataFrame({"week_id": [202630]}),
+                    monthly_df=pd.DataFrame(
+                        {"month_id": ["202607"]}
+                    ),
+                    date_to_week={"2026-07-27": 202630},
+                    test_ranges=(("2026-07-27", "2026-07-27"),),
+                    n_workers=1,
+                    cache_root=None,
+                )
+            spec = prepare.call_args.kwargs["spec"]
+            family = observed.setdefault(
+                module.CACHE_FAMILY,
+                {"publishers": set(), "fingerprints": set()},
+            )
+            family["publishers"].add(spec.publisher_consumer_id)
+            family["fingerprints"].add(_spec_fingerprint(spec))
+
+        self.assertEqual(set(observed), set(EXPECTED_CACHE_PUBLISHERS))
+        for cache_family, expected_publisher in (
+            EXPECTED_CACHE_PUBLISHERS.items()
+        ):
+            with self.subTest(cache_family=cache_family):
+                self.assertEqual(
+                    observed[cache_family]["publishers"],
+                    {expected_publisher},
+                )
+                self.assertEqual(
+                    len(observed[cache_family]["fingerprints"]),
+                    1,
+                )
 
 
 if __name__ == "__main__":

@@ -279,11 +279,18 @@ class FiveYearAllK10CoreAuditTests(unittest.TestCase):
                 cache_families.append(cache_family)
                 cache_roots.append(cache_root)
 
-                with patch.object(
-                    inference,
-                    "prepare_phase_a_caches",
-                    return_value=({}, {"status": "hit"}),
-                ) as prepare:
+                with (
+                    patch.object(
+                        inference,
+                        "build_auxiliary_dependency_projection",
+                        return_value=object(),
+                    ),
+                    patch.object(
+                        inference,
+                        "prepare_phase_a_caches",
+                        return_value=({}, {"status": "hit"}),
+                    ) as prepare,
+                ):
                     inference._prepare_incremental_phase_a_caches(
                         daily_df=pd.DataFrame(),
                         weekly_df=pd.DataFrame(),

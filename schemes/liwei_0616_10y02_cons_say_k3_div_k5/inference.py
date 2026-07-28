@@ -9,12 +9,16 @@ from typing import Any, Callable, Mapping
 
 import pandas as pd
 
+from shared.liwei_0616_cache_projection import (
+    build_auxiliary_dependency_projection,
+)
 from shared.liwei_0616_phase_a_cache import (
     PhaseACacheSpec,
     prepare_phase_a_caches,
     runtime_compare_gate_callbacks,
 )
 
+from .core import data_alignment, v31_common
 from .core.v31_common import (
     BASELINE_CONFIGS,
     HORIZON,
@@ -207,6 +211,20 @@ def _prepare_incremental_phase_a_caches(
         train_phase_a=train_missing,
         run_full_output=full_output_compare_runner,
     )
+    auxiliary_dependency_projection = (
+        build_auxiliary_dependency_projection(
+            daily_df=daily_df,
+            weekly_df=weekly_df,
+            monthly_df=monthly_df,
+            date_to_week=date_to_week,
+            prepare_model_frames=v31_common.prepare_model_frames,
+            build_wkmo_features=v31_common.build_wkmo_features,
+            proof_files=(
+                Path(v31_common.__file__),
+                Path(data_alignment.__file__),
+            ),
+        )
+    )
     return prepare_phase_a_caches(
         spec=spec,
         daily_df=daily_df,
@@ -217,6 +235,9 @@ def _prepare_incremental_phase_a_caches(
         compare_cold=compare_cold,
         compare_full_output=compare_full_output,
         cache_consumer_id=CACHE_CONSUMER_ID,
+        auxiliary_dependency_projection=(
+            auxiliary_dependency_projection
+        ),
         cache_root=cache_root,
     )
 

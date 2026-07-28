@@ -302,6 +302,11 @@ class Liwei0616InferenceTests(unittest.TestCase):
             "baselines": {},
         }
         with (
+            patch.object(
+                inference,
+                "build_auxiliary_dependency_projection",
+                return_value=object(),
+            ),
             patch.object(inference, "prepare_phase_a_caches", return_value=(phase_a_caches, audit)),
             patch.object(inference, "run_5y01_for_feature_window", return_value=detail) as mock_run,
         ):

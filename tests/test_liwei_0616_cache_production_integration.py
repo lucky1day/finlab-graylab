@@ -53,6 +53,7 @@ class Liwei0616CacheProductionIntegrationTests(unittest.TestCase):
             with self.subTest(module=module_name):
                 module = importlib.import_module(module_name)
                 seen_modes: list[object] = []
+                projection = object()
 
                 def full_output_runner(caches):
                     seen_modes.append(caches)
@@ -64,6 +65,11 @@ class Liwei0616CacheProductionIntegrationTests(unittest.TestCase):
                         os.environ,
                         {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
                         clear=False,
+                    ),
+                    patch.object(
+                        module,
+                        "build_auxiliary_dependency_projection",
+                        return_value=projection,
                     ),
                     patch.object(
                         module,
@@ -88,6 +94,10 @@ class Liwei0616CacheProductionIntegrationTests(unittest.TestCase):
                 self.assertEqual(
                     kwargs["cache_consumer_id"],
                     module_name.split(".")[-2],
+                )
+                self.assertIs(
+                    kwargs["auxiliary_dependency_projection"],
+                    projection,
                 )
                 self.assertEqual(seen_modes, [])
 
@@ -138,8 +148,14 @@ class Liwei0616CacheProductionIntegrationTests(unittest.TestCase):
         for module_name in ALL_K10_MODULES:
             with self.subTest(module=module_name):
                 module = importlib.import_module(module_name)
+                projection = object()
                 with (
                     tempfile.TemporaryDirectory() as directory,
+                    patch.object(
+                        module,
+                        "build_auxiliary_dependency_projection",
+                        return_value=projection,
+                    ),
                     patch.object(
                         module,
                         "prepare_phase_a_caches",
@@ -160,6 +176,12 @@ class Liwei0616CacheProductionIntegrationTests(unittest.TestCase):
                 self.assertEqual(
                     prepare.call_args.kwargs["cache_root"],
                     root,
+                )
+                self.assertIs(
+                    prepare.call_args.kwargs[
+                        "auxiliary_dependency_projection"
+                    ],
+                    projection,
                 )
 
 
