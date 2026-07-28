@@ -504,7 +504,32 @@ def require_scheduled_prediction_control_plane(
         )
     if not uses_blackbox_scheduler_admission(config):
         return
+    try:
+        policy = load_blackbox_scheduler_admission()
+    except BlackboxSchedulerAdmissionError as exc:
+        raise ScheduledPredictionConfigurationError(
+            "Blackbox admission is invalid"
+        ) from exc
+    require_scheduled_prediction_control_plane_with_policy_snapshot(
+        config,
+        plane=plane,
+        policy=policy,
+    )
 
+
+def require_scheduled_prediction_control_plane_with_policy_snapshot(
+    config: object,
+    *,
+    plane: str,
+    policy: BlackboxSchedulerAdmissionPolicy,
+) -> None:
+    """使用调用方冻结的 policy snapshot 校验单个受控身份。"""
+    if plane not in VALID_CONTROL_PLANES:
+        raise ScheduledPredictionConfigurationError(
+            f"unknown scheduled control plane: {plane}"
+        )
+    if not uses_blackbox_scheduler_admission(config):
+        return
     scheme_id = str(getattr(config, "scheme_id", "")).strip()
     scheme_version = str(
         getattr(config, "scheme_version", "")
@@ -524,12 +549,6 @@ def require_scheduled_prediction_control_plane(
             f"version_status={version_status}"
         )
 
-    try:
-        policy = load_blackbox_scheduler_admission()
-    except BlackboxSchedulerAdmissionError as exc:
-        raise ScheduledPredictionConfigurationError(
-            "Blackbox admission is invalid"
-        ) from exc
     mode = policy.mode(config)
     if mode is None:
         raise ScheduledPredictionConfigurationError(
