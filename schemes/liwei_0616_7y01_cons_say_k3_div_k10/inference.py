@@ -31,6 +31,7 @@ from .core.v31_common import (
 DEFAULT_N_WORKERS = 10
 CACHE_FAMILY = "liwei_0616_7y01_v31"
 CACHE_CONSUMER_ID = "liwei_0616_7y01_cons_say_k3_div_k10"
+CACHE_PUBLISHER_CONSUMER_ID = CACHE_CONSUMER_ID
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,7 @@ def _prepare_incremental_phase_a_caches(
     spec = PhaseACacheSpec(
         cache_family=CACHE_FAMILY,
         tenor="7Y",
+        publisher_consumer_id=CACHE_PUBLISHER_CONSUMER_ID,
         baselines=baselines,
         baseline_configs={name: dict(BASELINE_CONFIGS[name]) for name in baselines},
         source_ic_screen_start=SOURCE_IC_SCREEN_START,

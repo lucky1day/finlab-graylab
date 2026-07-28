@@ -328,6 +328,7 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
         spec = PhaseACacheSpec(
             cache_family="liwei_0616_5y_v31",
             tenor="5Y",
+            publisher_consumer_id="daily_demo",
             baselines=("STD",),
             baseline_configs={"STD": {"window": 200}},
             source_ic_screen_start="2024-01-01",

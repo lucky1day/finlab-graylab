@@ -30,6 +30,9 @@ from .core.v31_common import (
 DEFAULT_N_WORKERS = 10
 CACHE_FAMILY = "liwei_0616_5y_v31"
 CACHE_CONSUMER_ID = "liwei_0616_cons_sda_k3_div_k10"
+CACHE_PUBLISHER_CONSUMER_ID = (
+    "liwei_0616_5y01_full_oos_k3_div_k10"
+)
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,7 @@ def _prepare_incremental_phase_a_caches(
     spec = PhaseACacheSpec(
         cache_family=CACHE_FAMILY,
         tenor="5Y",
+        publisher_consumer_id=CACHE_PUBLISHER_CONSUMER_ID,
         baselines=baselines,
         baseline_configs={name: model_config(name) for name in baselines},
         source_ic_screen_start=SOURCE_IC_SCREEN_START,

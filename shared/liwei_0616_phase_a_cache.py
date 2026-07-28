@@ -155,6 +155,7 @@ class PhaseACacheSpec:
 
     cache_family: str
     tenor: str
+    publisher_consumer_id: str
     baselines: tuple[str, ...]
     baseline_configs: Mapping[str, Mapping[str, Any]]
     source_ic_screen_start: str
@@ -162,6 +163,15 @@ class PhaseACacheSpec:
     purge_gap: int
     daily_dependency_lookback_rows: int | None = None
     daily_dependency_proof: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.publisher_consumer_id, str)
+            or not self.publisher_consumer_id.strip()
+        ):
+            raise ValueError(
+                "publisher_consumer_id must be a non-empty string"
+            )
 
 
 @dataclass(frozen=True)
@@ -257,6 +267,12 @@ def prepare_phase_a_caches(
     runtime callback 自行生成资格。
     """
     _validate_daily_dependency_proof(spec)
+    if (
+        not isinstance(cache_consumer_id, str)
+        or not cache_consumer_id.strip()
+    ):
+        raise ValueError("cache_consumer_id must be a non-empty string")
+    cache_consumer_id = cache_consumer_id.strip()
     if compare_cold is not None and compare_cold is train_missing:
         raise ValueError(
             "compare_cold must be independent from train_missing"
@@ -294,13 +310,6 @@ def prepare_phase_a_caches(
                 "signed per-consumer cache use qualification is required "
                 "for ledger/SLA cache use"
             )
-        if (
-            not isinstance(cache_consumer_id, str)
-            or not cache_consumer_id.strip()
-        ):
-            raise RuntimeError(
-                "cache_consumer_id is required for ledger/SLA cache use"
-            )
         if native_generation_binding is None:
             raise RuntimeError(
                 "Native generation provenance is required for ledger/SLA "
@@ -323,6 +332,31 @@ def prepare_phase_a_caches(
         )
     root = _cache_root(cache_root)
     family_root = _family_cache_root(root, spec)
+    is_publisher = (
+        cache_consumer_id == spec.publisher_consumer_id
+    )
+    if not is_publisher:
+        return _prepare_under_family_lock(
+            spec=spec,
+            cache_consumer_id=cache_consumer_id,
+            is_publisher=False,
+            root=root,
+            family_root=family_root,
+            daily_df=daily_df,
+            weekly_df=weekly_df,
+            monthly_df=monthly_df,
+            auxiliary_dependency_projection=(
+                auxiliary_dependency_projection
+            ),
+            test_ranges=test_ranges,
+            train_missing=train_missing,
+            compare_cold=compare_cold,
+            qualify_compare_gate=qualify_compare_gate,
+            compare_full_output=compare_full_output,
+            qualification_required=qualification_required,
+            trusted_qualification=trusted_qualification,
+            native_generation_binding=native_generation_binding,
+        )
     family_root.mkdir(parents=True, exist_ok=True)
     if qualification_required:
         _require_secure_directory(root, "cache root")
@@ -336,6 +370,8 @@ def prepare_phase_a_caches(
         )
         return _prepare_under_family_lock(
             spec=spec,
+            cache_consumer_id=cache_consumer_id,
+            is_publisher=is_publisher,
             root=root,
             family_root=family_root,
             daily_df=daily_df,
@@ -358,6 +394,8 @@ def prepare_phase_a_caches(
 def _prepare_under_family_lock(
     *,
     spec: PhaseACacheSpec,
+    cache_consumer_id: str,
+    is_publisher: bool,
     root: Path,
     family_root: Path,
     daily_df: pd.DataFrame,
@@ -418,8 +456,30 @@ def _prepare_under_family_lock(
     )
     current, current_error = _load_current_generation(
         family_root,
-        secure=qualification_required,
+        secure=qualification_required or not is_publisher,
     )
+    input_change = _input_change_analysis(
+        (
+            current.manifest.get("input_state")
+            if current is not None
+            else None
+        ),
+        input_state,
+    )
+    if not is_publisher:
+        return _validated_consumer_hit(
+            spec=spec,
+            cache_consumer_id=cache_consumer_id,
+            current=current,
+            current_error=current_error,
+            requested_by_baseline=requested_by_baseline,
+            input_state=input_state,
+            input_change=input_change,
+            family_root=family_root,
+            qualification_required=qualification_required,
+            trusted_qualification=trusted_qualification,
+            native_generation_binding=native_generation_binding,
+        )
     legacy_caches = None
     if (
         current is None
@@ -433,14 +493,6 @@ def _prepare_under_family_lock(
             weekly_df=weekly_df,
             monthly_df=monthly_df,
         )
-    input_change = _input_change_analysis(
-        (
-            current.manifest.get("input_state")
-            if current is not None
-            else None
-        ),
-        input_state,
-    )
     if (
         current is not None
         and current.manifest.get("spec_fingerprint")
@@ -560,17 +612,22 @@ def _prepare_under_family_lock(
             if previous is not None
             else set()
         )
+        parent_dates = (
+            set(parent_cache["test_dates"])
+            if parent_cache is not None
+            else set()
+        )
+        desired_dates = sorted(
+            parent_dates | set(requested_dates)
+        )
         if build_mode == "full":
-            missing_dates = requested_dates
+            missing_dates = desired_dates
             preserved = None
         elif build_mode == "suffix":
             if previous is None or suffix_start_date is None:
                 raise RuntimeError(
                     "suffix rebuild requires a previous cache and cutoff"
                 )
-            desired_dates = sorted(
-                cached_dates | set(requested_dates)
-            )
             missing_dates = [
                 day
                 for day in desired_dates
@@ -583,7 +640,7 @@ def _prepare_under_family_lock(
         else:
             missing_dates = [
                 day
-                for day in requested_dates
+                for day in desired_dates
                 if day not in cached_dates
             ]
             preserved = previous
@@ -610,6 +667,10 @@ def _prepare_under_family_lock(
                 )
             merged = previous
             authoritative = None
+        if not parent_dates.issubset(set(merged["test_dates"])):
+            raise RuntimeError(
+                "cache generation coverage cannot shrink below its parent"
+            )
         caches[baseline] = merged
         acceptance_scopes[baseline] = _generation_acceptance_scope(
             parent_cache=parent_cache,
@@ -759,6 +820,104 @@ def _prepare_under_family_lock(
             )
         raise
     return generation.caches, audit
+
+
+def _validated_consumer_hit(
+    *,
+    spec: PhaseACacheSpec,
+    cache_consumer_id: str,
+    current: _LoadedGeneration | None,
+    current_error: str | None,
+    requested_by_baseline: Mapping[str, list[str]],
+    input_state: Mapping[str, Any],
+    input_change: Mapping[str, Any],
+    family_root: Path,
+    qualification_required: bool,
+    trusted_qualification: Mapping[str, object] | None,
+    native_generation_binding: Mapping[str, object] | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """非发布者只能读取同输入、完整覆盖且谱系可信的 current。"""
+    if current is None:
+        raise RuntimeError(
+            "CACHE_PUBLISHER_REQUIRED: "
+            f"{cache_consumer_id} cannot prepare cache "
+            f"({current_error or 'no_current_generation'})"
+        )
+    if (
+        current.manifest.get("spec_fingerprint")
+        != _spec_fingerprint(spec)
+        or set(current.caches) != set(spec.baselines)
+        or current.manifest.get("input_state") != dict(input_state)
+    ):
+        raise RuntimeError(
+            "CACHE_PUBLISHER_REQUIRED: "
+            f"{cache_consumer_id} requires publisher refresh"
+        )
+    baseline_audits: dict[str, dict[str, Any]] = {}
+    for baseline in spec.baselines:
+        requested = set(requested_by_baseline[baseline])
+        available = set(current.caches[baseline]["test_dates"])
+        if not requested.issubset(available):
+            raise RuntimeError(
+                "CACHE_PUBLISHER_REQUIRED: "
+                f"{cache_consumer_id} requires publisher coverage"
+            )
+        baseline_audits[baseline] = {
+            "status": "hit",
+            "watermark": max(current.caches[baseline]["test_dates"]),
+            "missing_dates": [],
+            "fingerprint": _baseline_fingerprint(spec, baseline),
+            "preserved_newer_watermark": False,
+        }
+    lineage_qualification = (
+        trusted_qualification
+        if trusted_qualification is not None
+        else _lineage_qualification_for_spec(spec)
+    )
+    try:
+        _verify_generation_acceptance_lineage(
+            current,
+            trusted_qualification=lineage_qualification,
+        )
+        if qualification_required:
+            _validate_generation_acceptance_for_use(
+                current,
+                native_generation_binding=native_generation_binding,
+            )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise RuntimeError(
+            "CACHE_PUBLISHER_REQUIRED: "
+            f"{cache_consumer_id} cannot validate publisher lineage"
+        ) from exc
+    return current.caches, _generation_audit(
+        spec=spec,
+        generation=current,
+        baseline_audits=baseline_audits,
+        status="hit",
+        build_mode="hit",
+        build_reason="consumer_validated_hit",
+        family_root=family_root,
+        published=True,
+        input_change=dict(input_change),
+        trusted_qualification=trusted_qualification,
+    )
+
+
+def _lineage_qualification_for_spec(
+    spec: PhaseACacheSpec,
+) -> dict[str, object]:
+    return {
+        "qualification": {
+            "cache_abi_version": PHASE_A_CACHE_ABI_VERSION,
+            "cache_family": spec.cache_family,
+            "tenor": spec.tenor,
+            "spec_fingerprint": _spec_fingerprint(spec),
+            "daily_dependency_lookback_rows": (
+                spec.daily_dependency_lookback_rows
+            ),
+            "daily_dependency_proof": spec.daily_dependency_proof,
+        }
+    }
 
 
 def _cache_root(cache_root: str | Path | None) -> Path:
@@ -1037,6 +1196,7 @@ def _spec_fingerprint(spec: PhaseACacheSpec) -> str:
         "abi": PHASE_A_CACHE_ABI_VERSION,
         "cache_family": spec.cache_family,
         "tenor": spec.tenor,
+        "publisher_consumer_id": spec.publisher_consumer_id,
         "baselines": list(spec.baselines),
         "baseline_fingerprints": {
             baseline: _baseline_fingerprint(spec, baseline)

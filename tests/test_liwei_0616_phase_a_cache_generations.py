@@ -40,6 +40,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
             source_ic_screen_start="2024-01-01",
             horizon=5,
             purge_gap=5,
+            publisher_consumer_id="consumer-a",
         )
         self.daily = pd.DataFrame(
             {
@@ -154,6 +155,204 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                 cache["STD"]["test_dates"],
                 ["2026-07-01", "2026-07-02", "2026-07-03"],
             )
+
+    def test_narrow_consumer_hit_preserves_618_date_publisher_generation(
+        self,
+    ) -> None:
+        daily = self._long_daily()
+        all_dates = daily["date"].dt.strftime("%Y-%m-%d").tolist()
+        trained: list[tuple[str, list[str]]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache, first = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=daily,
+                start=all_dates[0],
+                end=all_dates[-1],
+            )
+            pointer = Path(first["current_pointer"])
+            pointer_before = pointer.read_bytes()
+            trained.clear()
+
+            cache, second = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=daily,
+                start=all_dates[-42],
+                end=all_dates[-1],
+                cache_consumer_id="consumer-b",
+            )
+
+            self.assertEqual(second["status"], "hit")
+            self.assertEqual(second["generation_id"], first["generation_id"])
+            self.assertEqual(pointer.read_bytes(), pointer_before)
+            self.assertEqual(trained, [])
+            self.assertEqual(cache["STD"]["test_dates"], all_dates)
+
+    def test_consumer_before_publisher_fails_without_training_or_current(
+        self,
+    ) -> None:
+        trained: list[tuple[str, list[str]]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "CACHE_PUBLISHER_REQUIRED",
+            ):
+                self._prepare(
+                    root,
+                    trainer=self._trainer(trained),
+                    daily=self.daily.iloc[:2].copy(),
+                    end="2026-07-02",
+                    cache_consumer_id="consumer-b",
+                )
+
+            self.assertEqual(trained, [])
+            family_root = (
+                root
+                / self.spec.cache_family
+                / self.spec.tenor.lower()
+            )
+            self.assertFalse(family_root.exists())
+
+    def test_publisher_full_revision_rebuilds_parent_union_not_narrow_request(
+        self,
+    ) -> None:
+        daily = self._long_daily()
+        all_dates = daily["date"].dt.strftime("%Y-%m-%d").tolist()
+        trained: list[tuple[str, list[str]]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=daily,
+                start=all_dates[0],
+                end=all_dates[-1],
+            )
+            trained.clear()
+            revised = daily.copy()
+            revised.loc[0, "TB5YWI0C"] += 0.01
+
+            cache, audit = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=revised,
+                start=all_dates[-42],
+                end=all_dates[-1],
+            )
+
+            self.assertEqual(audit["build_mode"], "full")
+            self.assertEqual(trained, [("STD", all_dates)])
+            self.assertEqual(cache["STD"]["test_dates"], all_dates)
+            self.assertEqual(
+                audit["generation_acceptance"]["baselines"]["STD"][
+                    "affected_dates"
+                ],
+                all_dates,
+            )
+            self.assertEqual(
+                audit["generation_acceptance"]["baselines"]["STD"][
+                    "preserved_dates"
+                ],
+                [],
+            )
+
+    def test_publisher_identity_changes_spec_fingerprint_and_rebuilds_union(
+        self,
+    ) -> None:
+        trained: list[tuple[str, list[str]]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _cache, first = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+            )
+            alternate = PhaseACacheSpec(
+                **{
+                    **self.spec.__dict__,
+                    "publisher_consumer_id": "publisher-b",
+                }
+            )
+            trained.clear()
+
+            cache, second = self._prepare(
+                root,
+                spec=alternate,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                start="2026-07-03",
+                end="2026-07-03",
+                cache_consumer_id="publisher-b",
+            )
+
+            first_manifest = json.loads(
+                (
+                    Path(first["generation_path"]) / "manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            second_manifest = json.loads(
+                (
+                    Path(second["generation_path"]) / "manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertNotEqual(
+                first_manifest["spec_fingerprint"],
+                second_manifest["spec_fingerprint"],
+            )
+            self.assertEqual(second["build_reason"], "spec_changed")
+            self.assertEqual(
+                trained,
+                [("STD", ["2026-07-01", "2026-07-02", "2026-07-03"])],
+            )
+            self.assertEqual(
+                cache["STD"]["test_dates"],
+                ["2026-07-01", "2026-07-02", "2026-07-03"],
+            )
+
+    def test_consumer_replays_parent_lineage_before_accepting_hit(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _cache, first = self._prepare(
+                root,
+                trainer=self._trainer([]),
+                daily=self.daily.iloc[:2].copy(),
+                end="2026-07-02",
+            )
+            _cache, current = self._prepare(
+                root,
+                trainer=self._trainer([]),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+            )
+            parent_path = Path(first["generation_path"])
+            parent_path.rename(
+                parent_path.with_name(parent_path.name + ".missing")
+            )
+            pointer = Path(current["current_pointer"])
+            pointer_before = pointer.read_bytes()
+            trained: list[tuple[str, list[str]]] = []
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "CACHE_PUBLISHER_REQUIRED",
+            ):
+                self._prepare(
+                    root,
+                    trainer=self._trainer(trained),
+                    daily=self.daily.iloc[:3].copy(),
+                    end="2026-07-03",
+                    cache_consumer_id="consumer-b",
+                )
+
+            self.assertEqual(pointer.read_bytes(), pointer_before)
+            self.assertEqual(trained, [])
 
     def test_appended_input_without_new_requested_date_still_rebinds_generation(
         self,
@@ -1673,6 +1872,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                     monthly_df=self.monthly,
                     test_ranges=(("2026-07-01", "2026-07-02"),),
                     train_missing=slow_trainer,
+                    cache_consumer_id=spec.publisher_consumer_id,
                     cache_root=root,
                 )
 
@@ -2101,6 +2301,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
         trainer,
         daily: pd.DataFrame,
         end: str,
+        start: str = "2026-07-01",
         spec: PhaseACacheSpec | None = None,
         weekly: pd.DataFrame | None = None,
         monthly: pd.DataFrame | None = None,
@@ -2108,7 +2309,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
         qualify_compare_gate=None,
         compare_full_output=None,
         require_compare_gate: bool | None = None,
-        cache_consumer_id: str = "consumer-a",
+        cache_consumer_id: str | None = None,
         cache_use_qualification=None,
         native_generation=None,
         auxiliary_dependency_projection=None,
@@ -2118,17 +2319,30 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
             daily_df=daily,
             weekly_df=self.weekly if weekly is None else weekly,
             monthly_df=self.monthly if monthly is None else monthly,
-            test_ranges=(("2026-07-01", end),),
+            test_ranges=((start, end),),
             train_missing=trainer,
             compare_cold=compare_cold,
             qualify_compare_gate=qualify_compare_gate,
             compare_full_output=compare_full_output,
             require_compare_gate=require_compare_gate,
-            cache_consumer_id=cache_consumer_id,
+            cache_consumer_id=(
+                cache_consumer_id
+                or (spec or self.spec).publisher_consumer_id
+            ),
             cache_use_qualification=cache_use_qualification,
             native_generation=native_generation,
             auxiliary_dependency_projection=auxiliary_dependency_projection,
             cache_root=root,
+        )
+
+    @staticmethod
+    def _long_daily() -> pd.DataFrame:
+        dates = pd.bdate_range(end="2026-07-03", periods=618)
+        return pd.DataFrame(
+            {
+                "date": dates,
+                "TB5YWI0C": np.linspace(1.0, 2.0, len(dates)),
+            }
         )
 
     @staticmethod

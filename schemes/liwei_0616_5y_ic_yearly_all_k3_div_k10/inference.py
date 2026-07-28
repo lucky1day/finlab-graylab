@@ -33,6 +33,7 @@ DEFAULT_N_WORKERS = 10
 SOURCE_OOS_START = "2024-01-01"
 CACHE_FAMILY = "liwei_0616_5y_allk10_ic_yearly_v1"
 CACHE_CONSUMER_ID = "liwei_0616_5y_ic_yearly_all_k3_div_k10"
+CACHE_PUBLISHER_CONSUMER_ID = CACHE_CONSUMER_ID
 MODEL_VERSION = "liwei_5y_allk10_ic_yearly_v1"
 
 
@@ -188,6 +189,7 @@ def _prepare_incremental_phase_a_caches(
     spec = PhaseACacheSpec(
         cache_family=CACHE_FAMILY,
         tenor="5Y",
+        publisher_consumer_id=CACHE_PUBLISHER_CONSUMER_ID,
         baselines=baselines,
         baseline_configs={name: model_config(name) for name in baselines},
         source_ic_screen_start=SOURCE_IC_SCREEN_START,

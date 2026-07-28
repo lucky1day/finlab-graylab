@@ -24,6 +24,7 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
         self.spec = PhaseACacheSpec(
             cache_family="liwei_0616_5y_v31",
             tenor="5Y",
+            publisher_consumer_id="consumer-a",
             baselines=("STD",),
             baseline_configs={"STD": {"close": "TB5YWI0C", "window": 200}},
             source_ic_screen_start="2024-01-01",
@@ -73,6 +74,7 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 "weekly_df": self.weekly_df,
                 "monthly_df": self.monthly_df,
                 "train_missing": trainer,
+                "cache_consumer_id": "consumer-a",
                 "cache_root": Path(tmp),
             }
             cold, cold_audit = prepare_phase_a_caches(
@@ -204,6 +206,7 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 auxiliary_dependency_projection=initial_projection,
                 test_ranges=(("2026-07-23", "2026-07-23"),),
                 train_missing=trainer,
+                cache_consumer_id="consumer-a",
                 cache_root=Path(tmp),
             )
             trained_batches.clear()
@@ -216,6 +219,7 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 auxiliary_dependency_projection=current_projection,
                 test_ranges=(("2026-07-23", "2026-07-27"),),
                 train_missing=trainer,
+                cache_consumer_id="consumer-a",
                 cache_root=Path(tmp),
             )
 
@@ -554,6 +558,7 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
             "weekly_df": self.weekly_df,
             "monthly_df": self.monthly_df,
             "train_missing": trainer,
+            "cache_consumer_id": "consumer-a",
             "cache_root": root,
         }
 
