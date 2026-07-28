@@ -4848,7 +4848,7 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
             23,
             40,
             0,
-            500_001,
+            500_000,
         )
         with self.engine.begin() as conn:
             conn.execute(
@@ -4914,7 +4914,7 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
                         23,
                         23,
                         40,
-                        2,
+                        1,
                     ),
                     "run_id": run_id,
                 },
@@ -4942,8 +4942,36 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
                         23,
                         40,
                         0,
-                        500_001,
+                        499_999,
                     )
+                ),
+            )
+
+    def test_visibility_receipt_does_not_bridge_precise_future_time(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "visible_at cannot be before run finished_at",
+        ):
+            self._function("_visibility_time_after_run_finish")(
+                datetime(
+                    2026,
+                    7,
+                    23,
+                    23,
+                    40,
+                    0,
+                    500_001,
+                ),
+                datetime(
+                    2026,
+                    7,
+                    23,
+                    23,
+                    40,
+                    1,
+                    1,
                 ),
             )
 

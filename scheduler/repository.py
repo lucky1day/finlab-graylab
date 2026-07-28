@@ -6162,7 +6162,8 @@ def _visibility_time_after_run_finish(
     if visible_at >= normalized_finished_at:
         return visible_at
     if (
-        normalized_finished_at - visible_at
+        normalized_finished_at.microsecond == 0
+        and normalized_finished_at - visible_at
         <= timedelta(microseconds=500_000)
     ):
         return normalized_finished_at
