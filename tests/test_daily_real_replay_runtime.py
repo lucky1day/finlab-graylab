@@ -136,6 +136,11 @@ def _runtime_snapshot(
     projection.update(projection_overrides or {})
     state_by_scheme = dict(states or {})
     generation_overrides = dict(input_generation_overrides or {})
+    expected_item_count = len(policy.schemes)
+    expected_target_count = sum(
+        len(item.target_tenors)
+        for item in policy.schemes.values()
+    )
     item_summaries = []
     envelope_parts: dict[int, tuple[object, tuple[object, ...]]] = {}
     registry_rows: list[dict[str, object]] = []
@@ -287,7 +292,7 @@ def _runtime_snapshot(
         )
     completion_state = (
         "SUCCESS"
-        if accepted_target_count == 25
+        if accepted_target_count == expected_target_count
         else (
             "FAILED"
             if any(
@@ -317,8 +322,8 @@ def _runtime_snapshot(
             registry_rows
         ).registry_digest,
         completion_state=completion_state,
-        expected_item_count=21,
-        expected_target_count=25,
+        expected_item_count=expected_item_count,
+        expected_target_count=expected_target_count,
         accepted_target_count=accepted_target_count,
         sla_accepted_target_count=None,
         sla_deadline_at=cutoff,
@@ -329,8 +334,8 @@ def _runtime_snapshot(
     snapshot = SimpleNamespace(
         occurrence=occurrence,
         items=tuple(item_summaries),
-        actual_item_count=21,
-        actual_target_count=25,
+        actual_item_count=expected_item_count,
+        actual_target_count=expected_target_count,
         actual_accepted_target_count=accepted_target_count,
         item_state_counts=tuple(sorted(state_counts.items())),
     )
@@ -1788,13 +1793,17 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
         canonical.assert_not_called()
         self.assertFalse(owner.acquired)
 
-    def test_disallowed_native_heavy_pair_never_overlaps(
+    def test_admitted_native_heavy_pair_uses_both_lanes(
         self,
     ) -> None:
-        from harness.daily_real_replay import RealReplayRuntime
+        from harness.daily_real_replay import (
+            RealReplayRuntime,
+            _iso_utc_datetime,
+        )
         from scheduler.daily_coordinator import dispatch_order
+        from scheduler.daily_policy import POLICY_V2_PATH
 
-        policy, configs = _real_policy_and_configs()
+        policy, configs = _real_policy_and_configs(POLICY_V2_PATH)
         selected = tuple(
             scheme_id
             for scheme_id in dispatch_order(policy, policy.schemes)
@@ -1822,7 +1831,10 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
         max_active = 0
         state_lock = threading.Lock()
         with _replay_inputs() as inputs:
-            observed_at = datetime.now(timezone.utc)
+            observed_at = _iso_utc_datetime(
+                inputs.databridge_generation.sealed_at,
+                field="databridge.sealed_at",
+            ) + timedelta(minutes=15)
 
             def read_snapshot(*_args, **_kwargs):
                 with state_lock:
@@ -1882,7 +1894,7 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
                 ).run()
 
         self.assertEqual(result.status, "complete")
-        self.assertEqual(max_active, 1)
+        self.assertEqual(max_active, 2)
         self.assertEqual(
             result.dispatched_scheme_ids,
             selected,

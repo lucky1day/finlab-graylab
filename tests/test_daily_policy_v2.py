@@ -149,6 +149,127 @@ class DailyPolicyV2Tests(unittest.TestCase):
         self.assertFalse(policy.native_auto_scale)
         self.assertEqual(policy.retry_max, 1)
 
+    def test_v2_admits_exact_two_heavy_lane_residency_signatures(
+        self,
+    ) -> None:
+        policy = self.module.load_daily_policy(
+            POLICY_V2_PATH,
+            discovered=self.active_daily,
+        )
+        required = {
+            ("native_heavy", "native_heavy"),
+            (
+                "blackbox_v2",
+                "native_heavy",
+                "native_heavy",
+            ),
+            (
+                "blackbox_v2",
+                "blackbox_v2",
+                "native_heavy",
+                "native_heavy",
+            ),
+            (
+                "databridge_refresh",
+                "native_heavy",
+                "native_heavy",
+            ),
+            (
+                "databridge_pack",
+                "native_heavy",
+                "native_heavy",
+            ),
+        }
+
+        self.assertTrue(
+            required.issubset(policy.allowed_resource_combinations)
+        )
+        self.assertFalse(
+            any(
+                signature.count("native_heavy") > 2
+                for signature in policy.allowed_resource_combinations
+            )
+        )
+
+    def test_v2_governor_admits_only_exact_two_heavy_residency(
+        self,
+    ) -> None:
+        from scheduler.daily_coordinator import ResourceGovernor
+
+        policy = self.module.load_daily_policy(
+            POLICY_V2_PATH,
+            discovered=self.active_daily,
+        )
+        governor = ResourceGovernor(policy)
+        heavy = tuple(
+            item.scheme_id
+            for item in policy.schemes.values()
+            if item.resource_class == "native_heavy"
+        )
+        medium = next(
+            item.scheme_id
+            for item in policy.schemes.values()
+            if item.resource_class == "native_medium"
+        )
+        v2 = tuple(
+            item.scheme_id
+            for item in policy.schemes.values()
+            if item.resource_class == "blackbox_v2"
+        )
+
+        cases = (
+            ((heavy[0],), (), heavy[1]),
+            (
+                (heavy[0], v2[0]),
+                (),
+                heavy[1],
+            ),
+            (
+                (heavy[0], v2[0], v2[1]),
+                (),
+                heavy[1],
+            ),
+            (
+                (heavy[0],),
+                ("databridge_refresh",),
+                heavy[1],
+            ),
+            (
+                (heavy[0],),
+                ("databridge_pack",),
+                heavy[1],
+            ),
+        )
+        for running, background, candidate in cases:
+            with self.subTest(
+                running=running,
+                background=background,
+            ):
+                self.assertTrue(
+                    governor.can_start(
+                        running_scheme_ids=running,
+                        running_resource_classes=background,
+                        candidate_scheme_id=candidate,
+                    ).allowed
+                )
+
+        third = governor.can_start(
+            running_scheme_ids=heavy[:2],
+            candidate_scheme_id=heavy[2],
+        )
+        undeclared_pair = governor.can_start(
+            running_scheme_ids=(heavy[0],),
+            candidate_scheme_id=medium,
+        )
+
+        self.assertFalse(third.allowed)
+        self.assertEqual(third.reason, "NATIVE_POOL_LIMIT")
+        self.assertFalse(undeclared_pair.allowed)
+        self.assertEqual(
+            undeclared_pair.reason,
+            "UNAPPROVED_RESOURCE_COMBINATION",
+        )
+
     def test_v2_preserves_native_input_modes_and_blackbox_generation(
         self,
     ) -> None:
