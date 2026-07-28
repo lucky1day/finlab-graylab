@@ -626,6 +626,9 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                 ),
                 code_sha256=f"{index + 1:064x}",
                 config_sha256=f"{index + 101:064x}",
+                environment_fingerprint=(
+                    "9" * 64 if index >= 17 else None
+                ),
             )
             for index in range(21)
         )
@@ -704,7 +707,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                         (
                             row.data_snapshot_id
                             or (
-                                "snapshot-v2"
+                                "snapshot-" + "a" * 24
                                 if row.runtime_type == "blackbox_v2"
                                 else None
                             )
@@ -991,7 +994,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             current = dict(row)
             if current["runtime_type"] == "blackbox_v2":
                 current["environment_fingerprint"] = "9" * 64
-                current["data_snapshot_id"] = "snapshot-v2"
+                current["data_snapshot_id"] = "snapshot-" + "a" * 24
             rows.append(current)
 
         digest = validate_production_daily_snapshot(
@@ -999,7 +1002,9 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             definitions=definitions,
         )
         drifted_rows = [dict(row) for row in rows]
-        drifted_rows[-1]["environment_fingerprint"] = "8" * 64
+        drifted_rows[-1]["data_snapshot_id"] = (
+            "snapshot-" + "b" * 24
+        )
         drifted_digest = validate_production_daily_snapshot(
             replace(
                 production,
@@ -1026,7 +1031,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             current = dict(row)
             if current["runtime_type"] == "blackbox_v2":
                 current["environment_fingerprint"] = "9" * 64
-                current["data_snapshot_id"] = "snapshot-v2"
+                current["data_snapshot_id"] = "snapshot-" + "a" * 24
             valid_rows.append(current)
         for field, value in (
             ("environment_fingerprint", None),
@@ -1058,6 +1063,111 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                     raised.exception.code,
                     "PRODUCTION_VERSION_DRIFT",
                 )
+
+    def test_blackbox_environment_mismatch_is_rejected(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            validate_production_daily_snapshot,
+        )
+
+        definitions = replace(
+            self._definitions(),
+            version_rows=tuple(
+                replace(
+                    row,
+                    environment_fingerprint=(
+                        "8" * 64
+                        if row.runtime_type == "blackbox_v2"
+                        else None
+                    ),
+                )
+                for row in self._definitions().version_rows
+            ),
+        )
+        production = self._production_snapshot(definitions)
+        first = dict(production.version_rows[17])
+        first["environment_fingerprint"] = "9" * 64
+
+        with self.assertRaises(
+            DailyRealReplayPreflightError
+        ) as raised:
+            validate_production_daily_snapshot(
+                replace(
+                    production,
+                    version_rows=(
+                        *production.version_rows[:17],
+                        first,
+                        *production.version_rows[18:],
+                    ),
+                ),
+                definitions=definitions,
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "PRODUCTION_VERSION_DRIFT",
+        )
+
+    def test_blackbox_snapshot_id_must_be_canonical(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            validate_production_daily_snapshot,
+        )
+
+        definitions = self._definitions()
+        production = self._production_snapshot(definitions)
+        rows = [dict(row) for row in production.version_rows]
+        rows[17]["data_snapshot_id"] = "snapshot-v2"
+
+        with self.assertRaises(
+            DailyRealReplayPreflightError
+        ) as raised:
+            validate_production_daily_snapshot(
+                replace(production, version_rows=tuple(rows)),
+                definitions=definitions,
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "PRODUCTION_VERSION_DRIFT",
+        )
+
+    def test_native_activation_evidence_is_rejected(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            validate_production_daily_snapshot,
+        )
+
+        definitions = self._definitions()
+        production = self._production_snapshot(definitions)
+        first = dict(production.version_rows[0])
+        first["environment_fingerprint"] = "9" * 64
+        first["data_snapshot_id"] = "snapshot-" + "a" * 24
+
+        with self.assertRaises(
+            DailyRealReplayPreflightError
+        ) as raised:
+            validate_production_daily_snapshot(
+                replace(
+                    production,
+                    version_rows=(
+                        first,
+                        *production.version_rows[1:],
+                    ),
+                ),
+                definitions=definitions,
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "PRODUCTION_VERSION_DRIFT",
+        )
 
     def test_production_snapshot_requires_exact_applied_001_to_017_prefix(
         self,
@@ -1786,7 +1896,9 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             "harness.daily_real_replay_operator.create_engine_from_env",
             return_value=engine,
         ):
-            snapshot = _read_production_daily_snapshot()
+            snapshot = _read_production_daily_snapshot(
+                expected_scheme_versions={"daily": "v2"},
+            )
 
         self.assertEqual(snapshot.database_name, "bond_db")
         for call in connection.exec_driver_sql.call_args_list:
@@ -1810,7 +1922,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         connection.rollback.assert_called_once_with()
         engine.dispose.assert_called_once_with()
 
-    def test_production_snapshot_reader_keeps_only_exact_daily_versions(
+    def test_production_snapshot_reader_returns_all_active_daily_versions(
         self,
     ) -> None:
         from harness.daily_real_replay_operator import (
@@ -1848,11 +1960,6 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             "status": "active",
         }
         stale = {**exact, "scheme_version": "v1"}
-        unrelated = {
-            **exact,
-            "scheme_id": "weekly",
-            "scheme_version": "weekly-v1",
-        }
         connection = Mock()
         connection.execute.side_effect = (
             _Result(
@@ -1878,7 +1985,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
                 )
             ),
             _Result(rows=()),
-            _Result(rows=(exact, stale, unrelated)),
+            _Result(rows=(exact, stale)),
         )
         connection.__enter__ = Mock(return_value=connection)
         connection.__exit__ = Mock(return_value=False)
@@ -1889,11 +1996,9 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             "harness.daily_real_replay_operator.create_engine_from_env",
             return_value=engine,
         ):
-            snapshot = _read_production_daily_snapshot(
-                expected_scheme_versions={"daily": "v2"},
-            )
+            snapshot = _read_production_daily_snapshot()
 
-        self.assertEqual(snapshot.version_rows, (exact,))
+        self.assertEqual(snapshot.version_rows, (exact, stale))
         version_statement = str(
             connection.execute.call_args_list[3].args[0]
         ).casefold()

@@ -1675,6 +1675,7 @@ def validate_production_daily_snapshot(
                 row.algorithm_version,
                 row.contract_version,
                 row.runtime_profile,
+                row.environment_fingerprint,
                 "active",
             )
             for row in definitions.version_rows
@@ -1709,7 +1710,7 @@ def validate_production_daily_snapshot(
             "PRODUCTION_VERSION_DRIFT"
         ) from None
     actual_version_identities = tuple(
-        (*row[:9], row[11])
+        (*row[:10], row[11])
         for row in actual_versions
     )
     if actual_version_identities != expected_versions:
@@ -1720,36 +1721,17 @@ def validate_production_daily_snapshot(
         runtime_type = row[2]
         environment_fingerprint = row[9]
         data_snapshot_id = row[10]
-        if (
-            environment_fingerprint is not None
-            and (
-                not _is_hex_digest(
-                    environment_fingerprint,
-                    length=64,
-                )
-                or environment_fingerprint
-                != environment_fingerprint.strip()
-            )
-        ):
-            raise DailyRealReplayPreflightError(
-                "PRODUCTION_VERSION_DRIFT"
-            )
-        if (
-            data_snapshot_id is not None
-            and (
-                not data_snapshot_id.strip()
-                or data_snapshot_id != data_snapshot_id.strip()
-            )
-        ):
-            raise DailyRealReplayPreflightError(
-                "PRODUCTION_VERSION_DRIFT"
-            )
-        if (
-            runtime_type == "blackbox_v2"
-            and (
+        if runtime_type == "blackbox_v2":
+            if (
                 environment_fingerprint is None
-                or data_snapshot_id is None
-            )
+                or not _is_blackbox_snapshot_id(data_snapshot_id)
+            ):
+                raise DailyRealReplayPreflightError(
+                    "PRODUCTION_VERSION_DRIFT"
+                )
+        elif (
+            environment_fingerprint is not None
+            or data_snapshot_id is not None
         ):
             raise DailyRealReplayPreflightError(
                 "PRODUCTION_VERSION_DRIFT"
@@ -2226,6 +2208,18 @@ def _load_definition_snapshot(
     input_mode_counts: dict[str, int] = {}
     registry_rows: list[ReplayExpectedRegistryRow] = []
     version_rows: list[ReplayExpectedVersionRow] = []
+    try:
+        from harness.blackbox_v2.gates import (
+            _environment_fingerprint,
+        )
+
+        blackbox_environment_fingerprint = (
+            _environment_fingerprint(PROJECT_ROOT)
+        )
+    except (OSError, TypeError, ValueError):
+        raise DailyRealReplayPreflightError(
+            "DEPLOYED_DEFINITION_INVALID"
+        ) from None
     native_item_count = 0
     v2_item_count = 0
     for scheme_id in sorted(policy.schemes):
@@ -2276,7 +2270,9 @@ def _load_definition_snapshot(
                 contract_version=config.contract_version,
                 runtime_profile=config.runtime_profile,
                 environment_fingerprint=(
-                    config.environment_fingerprint
+                    blackbox_environment_fingerprint
+                    if config.runtime_type == "blackbox_v2"
+                    else None
                 ),
                 data_snapshot_id=config.data_snapshot_id,
             )
@@ -2331,13 +2327,12 @@ def _read_production_daily_snapshot(
     expected_scheme_versions: Mapping[str, str] | None = None,
 ) -> ProductionDailySnapshot:
     """只在单个 RR consistent snapshot/read-only 事务读取生产控制面。"""
-    expected_version_pairs = (
+    expected_scheme_ids = (
         None
         if expected_scheme_versions is None
         else frozenset(
-            (str(scheme_id), str(scheme_version))
-            for scheme_id, scheme_version
-            in expected_scheme_versions.items()
+            str(scheme_id)
+            for scheme_id in expected_scheme_versions
         )
     )
     engine = create_engine_from_env()
@@ -2434,15 +2429,12 @@ def _read_production_daily_snapshot(
                 )
                 version_rows = (
                     raw_version_rows
-                    if expected_version_pairs is None
+                    if expected_scheme_ids is None
                     else tuple(
                         row
                         for row in raw_version_rows
-                        if (
-                            str(row["scheme_id"]),
-                            str(row["scheme_version"]),
-                        )
-                        in expected_version_pairs
+                        if str(row["scheme_id"])
+                        in expected_scheme_ids
                     )
                 )
             finally:
@@ -2821,6 +2813,16 @@ def _is_hex_digest(value: str, *, length: int) -> bool:
     return (
         len(value) == length
         and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_blackbox_snapshot_id(value: str | None) -> bool:
+    prefix = "snapshot-"
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and value.startswith(prefix)
+        and _is_hex_digest(value[len(prefix):], length=24)
     )
 
 
