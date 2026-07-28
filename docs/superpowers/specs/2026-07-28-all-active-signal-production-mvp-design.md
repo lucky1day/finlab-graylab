@@ -70,24 +70,45 @@ execution：
   `gray_live` 并保留原失约事实。
 - 禁止旧 Native/DataBridge generation fallback。
 
-## 当前数据基线
+## 当前数据基线与缺口计划器
 
-截至 2026-07-27 的只读快照：
+只读 `signal-gap-plan` 已实现。`--as-of` 是包含当日的确定性上界：
+只纳入 `predict_date <= as_of_date` 的应有和已观测事实，不表达数据 vintage，
+也不会产生任何数据库写入。
 
+以 `--start 2025-01-01 --as-of 2026-07-27` 冻结 44 个 active target
+后，当前权威快照为：
+
+- `44 active / 11,652 expected / 11,623 present / 29 open`；
 - canonical 回测完整，共 10,309 条，无需全量重跑；
 - live 应有 1,343 条、已有 1,314 条，共缺 29 条；
 - 缺口为日频 24、周频 5、月频 0；
-- 现有 backtest/live 无日期重叠、重复业务键、孤儿 run 或 phase 漂移；
-- 当前 DataBridge current 为 2026-07-24，不能作为新的 scheduled
-  generation，也不能覆盖全部缺口。
+- 现有 backtest/live 无日期重叠、重复业务键、孤儿 run 或 phase 漂移。
+
+在合法 DataBridge current 更新至 `refresh_date=2026-07-28` 后，同一冻结
+缺口重新分类为：
+
+- 25 `GRAY_LIVE_GAP`；
+- 0 `BLOCKED_NO_GENERATION`；
+- 4 `BLOCKED_DATA_CONTRACT`。
+
+这 29 个 gap 尚未写入。计划器只生成内容寻址的只读执行计划；业务实施
+阶段 6（本计划 Task 7）才执行受控补缺，且不得把历史漏跑倒签为
+`scheduled_live`。
 
 补缺以业务唯一键
 `base_scheme_id + target_tenor + horizon + target_date` 判断：
 
 - 已存在：`SKIP_PRESENT`；
-- 历史 canonical 段缺失：重新生成完整 canonical run，禁止原地插一行；
-- live 段缺失：执行精确单点受控补缺；
-- 没有合法 generation：`BLOCKED_NO_GENERATION`，禁止降级。
+- live 段缺失且输入权威完整：`GRAY_LIVE_GAP`；
+- 历史 canonical 段缺失：`FULL_CANONICAL_RUN_REQUIRED`，重新生成完整
+  canonical run，禁止原地插一行；
+- 没有合法 generation：`BLOCKED_NO_GENERATION`，禁止降级；
+- 数据、Registry、观测或输入 authority 违反契约：
+  `BLOCKED_DATA_CONTRACT`，必须先修根因。
+
+完整 action 闭集为：
+`SKIP_PRESENT|GRAY_LIVE_GAP|FULL_CANONICAL_RUN_REQUIRED|BLOCKED_NO_GENERATION|BLOCKED_DATA_CONTRACT`。
 
 ## 唯一执行架构
 

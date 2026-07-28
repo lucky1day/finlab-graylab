@@ -54,6 +54,8 @@ docs: define all-active signal production mvp
 
 ### Task 1：建立只读缺口计划器
 
+**实施状态：** Task 1：`COMPLETED`
+
 **Files:**
 
 - Create: `harness/signal_gap_plan.py`
@@ -61,21 +63,36 @@ docs: define all-active signal production mvp
 - Create: `tests/test_signal_gap_plan.py`
 - Modify: `tests/test_harness_cli.py`
 
-- [ ] 先写红测，覆盖 active Registry、canonical case builder、gray边界、
+- [x] 先写红测，覆盖 active Registry、canonical case builder、gray边界、
   target业务唯一键和 `SKIP_PRESENT`。
-- [ ] 计划器必须在一个只读一致性事务中生成 versioned JSON plan 和 SHA。
-- [ ] 计划器不得按简单工作日制造假缺口；必须复用日/周/月既有日期构造器。
-- [ ] 输出 action：
-  `SKIP_PRESENT|GRAY_LIVE_GAP|FULL_CANONICAL_RUN_REQUIRED|BLOCKED_NO_GENERATION`。
-- [ ] 默认只读，禁止携带任何写库能力。
-- [ ] 固化当前验收：backtest 10,309、live 1,314、open gap 29。
-- [ ] 提交：
+- [x] 计划器在一个只读一致性事务中生成 versioned JSON plan 和 SHA。
+- [x] 计划器不按简单工作日制造假缺口；复用日/周/月既有日期构造器。
+- [x] 输出 action：
+  `SKIP_PRESENT|GRAY_LIVE_GAP|FULL_CANONICAL_RUN_REQUIRED|BLOCKED_NO_GENERATION|BLOCKED_DATA_CONTRACT`。
+- [x] `--as-of` 是包含当日的确定性上界，即
+  `predict_date <= as_of_date`；它不是历史数据 vintage 声明。
+- [x] 默认只读，禁止携带任何写库能力。
+- [x] Native/DataBridge authority 均在产生 action 前按执行侧同口径校验；
+  Native artifact 在单次 plan 内按完整 DB envelope 去重重开和重哈希。
+- [x] 当前生产只读验收：
+  `44 active / 11,652 expected / 11,623 present / 29 open`；当
+  `refresh_date=2026-07-28` 时为 25 `GRAY_LIVE_GAP`、
+  0 `BLOCKED_NO_GENERATION`、4 `BLOCKED_DATA_CONTRACT`。
+- [x] 29 个 gap 尚未写入；业务实施阶段 6（本计划 Task 7）才执行受控
+  补缺。
+- [x] 已形成独立实现提交：
 
 ```text
 feat: plan exact active signal gaps
+fix: plan gaps from exact input authorities
+fix: align gap planning with databridge execution fence
+fix: require explicit databridge authority config
+fix: verify native gap artifacts before action
 ```
 
 ### Task 2：建立按控制面隔离的 gray 自动准入
+
+**实施状态：** Task 2：`NOT_STARTED`
 
 **Files:**
 
@@ -197,6 +214,8 @@ fix: admit exact daily capacity from candidate replay
 
 ### Task 7：补齐现有信号缺口
 
+**业务阶段：** 原总体计划的阶段 6；仅在 Task 1 只读计划完成后执行。
+
 **Files:**
 
 - Existing controlled Blackbox gate:
@@ -206,9 +225,9 @@ fix: admit exact daily capacity from candidate replay
 - Create: `tests/test_native_gray_gap_gate.py`
 - Update: `docs/CURRENT_STATUS.md`
 
-- [ ] 使用Task 1冻结plan，已有键全部`SKIP_PRESENT`。
-- [ ] 当前DataBridge合法覆盖的12个Blackbox点逐点并行计算、串行原子写入。
-- [ ] 新同日generation就绪后补其余13个Blackbox点。
+- [ ] 使用Task 1冻结plan，已有键全部`SKIP_PRESENT`。当前29个gap仅已
+  规划、尚未写入；业务实施阶段 6（本计划 Task 7）才执行受控补缺。
+- [ ] `refresh_date=2026-07-28` 已合法覆盖全部25个Blackbox gap；在业务阶段6逐点并行计算、串行原子写入，当前仍为零写入。
 - [ ] Native周频4点必须等待week/calendar契约修复并绑定合法Native
   generation；不得回退live DB。
 - [ ] 全部补缺写`gray_live`，不得倒签`scheduled_live`。

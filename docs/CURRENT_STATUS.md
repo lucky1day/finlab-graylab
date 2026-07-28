@@ -32,7 +32,7 @@
 - 已删除早期 100 条技术 Gate run `166–169`、非 canonical run `170–173`，以及跨过 gray 边界且已被替代的旧全量 run `174–177`。当前四个 1Y/T+5 方案分别只保留一条 canonical run `178–181`；每轮删除前后 API/dashboard canonical 投影摘要均一致。
 - 三个错误复用周度单点算法的 point-backed 周平均身份已彻底删除：代码侧只剩 40 个 active execution /44 个 target，数据库 Registry 同样为 40/44 且无 paused。受控事务删除了 3 个 Registry、12 个 version、15 个 run、14 个 live prediction、6 个 backtest run、422 个 backtest prediction、23 个 harness run 及其 136 个 Gate result；删除前后 `/api/schemes` 和 dashboard 投影摘要一致。
 - `weekly_10y_lgbm_point_v1` 已生成合规 run `191`（72 条历史、17 个月度指标），并补齐 7 条缺失 gray，加原有 7/24 共为 `80/80`；旧 run `165` 在确认新历史+live 完整覆盖后已受控删除。
-- 该 Blackbox 的 7/31 信号因 DataBridge 仍为 `refresh_date=2026-07-24` 被 Gate 拒绝，零写入；必须等待合法新 generation。
+- DataBridge 已更新至合法的 `refresh_date=2026-07-28`；该 Blackbox 的 7/31 缺口现归类为 `GRAY_LIVE_GAP`，当前仍为零写入，后续仅在业务阶段 6（实施计划 Task 7）通过受控 Gate 补齐，禁止旧 generation fallback。
 - `weekly_10y_d_overlay_0529` 的首个回补 run `1407` 因源 `week_id=202625` 无交易日而 fail-closed，零 prediction，仍为 `77/77`；后续日期按规则停止。
 - `7 个周度候选全部 81/80` 尚未达成；本轮未修改算法、scheduler cron、BondProjectPro、rollout 或 admission，剩余步骤见 [TODO](TODO.md)。
 
@@ -93,13 +93,9 @@
 
 ## 日频 08:00 整改状态
 
-- 2026-07-28已冻结新的MVP决策：全部44个active target按自然频率巡检；
-  日频25 execution/29 target每个交易日自动写`scheduled_live`，周频7和
-  月频8只在自然到期日新增。gray/formal业务标签均承担自动实盘和缺失
-  告警。
-- canonical回测10,309条已经完整，不做全量重跑；当前live应有1,343、
-  已有1,314、缺29，其中日频24、周频5、月频0。补历史缺口只能写
-  `gray_live`，新调度结果才写`scheduled_live`。
+- 2026-07-28已冻结新的MVP决策：全部44个active target按自然频率巡检；日频25 execution/29 target每个交易日自动写`scheduled_live`，周频7和月频8只在自然到期日新增。gray/formal业务标签均承担自动实盘和缺失告警。
+- Task 1 只读 `signal-gap-plan` 已实现；`--as-of` 是包含当日的确定性上界。当前生产只读冻结结果为 `44 active / 11,652 expected / 11,623 present / 29 open`，其中 canonical 10,309条完整、live应有1,343条、已有1,314条。
+- 当 DataBridge current 为 `refresh_date=2026-07-28` 时，29个open gap分类为25 `GRAY_LIVE_GAP`、0 `BLOCKED_NO_GENERATION` 和4 `BLOCKED_DATA_CONTRACT`。这些gap尚未写入；业务实施阶段 6（本计划 Task 7）才执行受控补缺。补历史缺口只能写`gray_live`，新调度结果才写`scheduled_live`。
 - 用户明确取消20+20和连续观察作为MVP上线阻断；完整capacity admission
   改为一次真实forced-cold 25/29隔离rehearsal加生产identity
   execute-only observation，要求29/29、最后可见不晚于07:55、总耗时不
@@ -115,13 +111,16 @@
 - `migration017 namespace digest` 已由开发提交 `f93b154` 闭合：migration preflight 和 `APPLYING` inspect 会读取同 schema 的 FK/CHECK 保留名占用，非法占用在业务 DDL 前 fail-closed，状态占用同时进入 recovery digest；该结论绑定当前 Mac 的 MySQL 8.0.45、`lower_case_table_names=2`。
 - `migration017 real MySQL recovery` 已由开发提交 `66e7a6b` 闭合：显式 opt-in 测试在本机隔离 MySQL 8.0.45、`lower_case_table_names=2` 上覆盖正常 public apply、首个 DDL 前中断、前两个 DDL 已 implicit commit 的中段恢复、DDL 完成但 history 未标记、定义漂移拒绝、FK/CHECK 大小写命名冲突 preflight 与 digest fence，以及 accent、跨约束类型和跨 schema 命名语义；8 个场景全部通过，临时进程和 datadir 均已回收。该结论没有应用生产迁移，不代表下一项 canonical migration runner 已完成。
 - `canonical migration runner` 已由 `f3a5720`、`1f1019b`、`8ee916f` 与 `3c96f58` 闭合：唯一行为实现是 caller-supplied `Engine` 的 `migrations.runner`，唯一受控 operator wrapper 是 `scripts/apply_migrations.py`。隔离 MySQL CLI 已证明 normal apply/no-op、017 中段 recovery 和 018 两类 recovery；所有 CLI 写路径在建 Engine 前要求 expected database/server UUID，并在首个写动作前精确核验连接身份。inspect 保持只读且无需 identity 参数。隔离测试未应用生产 migration，且不等于 production-shaped sanitized clone 演练；后者仍是 `migrations018/019/020` 的待办。当前 CLI apply/no-op 尚无 durable signed operator report。
-- 日频生产化主线已由用户重新排序为全部active日频25/29功能MVP；下一项是
-  exact gap plan、gray/formal自动准入、25/29 policy和真实同机replay。
+- 日频生产化主线已由用户重新排序为全部active日频25/29功能MVP；exact
+  gap plan 已完成，下一项是尚未开始的 Task 2 gray/formal自动准入，
+  随后才是25/29 policy和真实同机replay。
   0629 adapter、019/020、归档和20+20均转为MVP上线后增强项。
 - 受控 recorder 已在隔离 MySQL 验证 21 item/25 target 的账本、双 lane、幂等、claim、原子提交和 watchdog；该证据没有执行真实 17+4 算法。
 - 四个真实 V2 sealed delivery 的冻结输入、确定性、超时、generation fence、late 后继续执行和失败隔离已验证；隔离 replay 的 runtime/session/identity/process fence 和 `ProcessStartGuard` 已接线。
 - `python -m harness daily-real-replay --check-only` 只读预检可运行，但已安装 backend LaunchAgent 缺少合法 coordinator mode，当前仍 fail-closed 为 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
 - production 仍为 migration 017、rollout=`legacy`、admission=`BLOCKED`；ledger 三层账本和 generation 计数均为 0，未发生变化。
+- Task 2、25/29生产policy、production capacity admission和生产切换均未
+  完成；不得把只读缺口计划器表述为自动调度或生产MVP已经上线。
 - execute-only replay、真实 21 算法同轮、07:55 容量、生产同构 clone migration、generation 长期归档、故障注入和连续 10 日均未通过；详细前置排序见[TODO](TODO.md)。
 
 ## Native V1 当前摘要

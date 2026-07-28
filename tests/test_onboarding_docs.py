@@ -845,6 +845,54 @@ class OnboardingDocumentationTests(unittest.TestCase):
         for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
             self.assertIn(scheme_id, TODO.read_text(encoding="utf-8"))
 
+    def test_exact_active_signal_gap_planner_completion_is_documented(
+        self,
+    ) -> None:
+        """Task 1 已完成，但缺口写入和 Task 2 仍须保持未完成。"""
+        design = DAILY_MVP_DESIGN.read_text(encoding="utf-8")
+        plan = DAILY_MVP_PLAN.read_text(encoding="utf-8")
+        todo = TODO.read_text(encoding="utf-8")
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        combined = "\n".join((design, plan, todo, current))
+
+        self.assertIn(
+            "SKIP_PRESENT|GRAY_LIVE_GAP|"
+            "FULL_CANONICAL_RUN_REQUIRED|BLOCKED_NO_GENERATION|"
+            "BLOCKED_DATA_CONTRACT",
+            combined,
+        )
+        self.assertIn(
+            "`--as-of` 是包含当日的确定性上界",
+            combined,
+        )
+        self.assertIn(
+            "44 active / 11,652 expected / 11,623 present / 29 open",
+            combined,
+        )
+        self.assertIn("refresh_date=2026-07-28", combined)
+        for marker in (
+            "25 `GRAY_LIVE_GAP`",
+            "0 `BLOCKED_NO_GENERATION`",
+            "4 `BLOCKED_DATA_CONTRACT`",
+        ):
+            self.assertIn(marker, combined)
+        self.assertIn("Task 1：`COMPLETED`", plan)
+        self.assertIn("Task 2：`NOT_STARTED`", plan)
+        self.assertIn(
+            "业务实施阶段 6（本计划 Task 7）才执行受控补缺",
+            combined,
+        )
+        self.assertIn("尚未写入", combined)
+        self.assertNotIn("Task 2：`COMPLETED`", combined)
+        self.assertNotIn("生产切换已完成", combined)
+        for obsolete in (
+            "DataBridge 仍为 `refresh_date=2026-07-24`",
+            "等待并校验 `refresh_date > 2026-07-25`",
+            "当前DataBridge合法覆盖的12个Blackbox点",
+            "新同日generation就绪后补其余13个Blackbox点",
+        ):
+            self.assertNotIn(obsolete, combined)
+
     def test_todo_records_fengrl_manual_gray_complete_before_scheduler(self) -> None:
         """FengRL 手工灰度已完成，自动调度仍须等待独立 admission。"""
         text = TODO.read_text(encoding="utf-8")

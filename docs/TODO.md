@@ -48,8 +48,14 @@
 和
 [实施计划](superpowers/plans/2026-07-28-all-active-signal-production-mvp.md)：
 
-1. 建立只读、内容寻址的信号gap plan；
-2. 建立按控制面隔离的gray/formal准入：daily gray只进ledger，monthly
+1. **已完成 Task 1**：建立只读、内容寻址的信号gap plan
+   （`signal-gap-plan`）；当前只读快照为
+   `44 active / 11,652 expected / 11,623 present / 29 open`。
+   `--as-of` 是包含当日的确定性上界；当
+   `refresh_date=2026-07-28` 时，29个gap精确分为
+   25 `GRAY_LIVE_GAP`、0 `BLOCKED_NO_GENERATION` 和
+   4 `BLOCKED_DATA_CONTRACT`。
+2. **尚未开始 Task 2**：建立按控制面隔离的gray/formal准入：daily gray只进ledger，monthly
    gray随后只进自然频率recurring scheduling，同时关闭aggregate绕过；
 3. daily policy从21/25扩展为25/29；
 4. 在临时MySQL证明25/29账本、失败隔离、重入和08:00 write-once；
@@ -62,7 +68,8 @@
 10. 随后收口周频5个缺口和周/月自然调度验收。
 
 当前只读基线为 canonical backtest 10,309条且完整；live应有1,343、
-已有1,314、缺29，其中日频24、周频5、月频0。历史漏跑只能补
+已有1,314、缺29，其中日频24、周频5、月频0。29个gap尚未写入，
+业务实施阶段 6（本计划 Task 7）才执行受控补缺。历史漏跑只能补
 `gray_live`，不得倒签`scheduled_live`；新调度结果统一写
 `scheduled_live`。2026-07-28是决策/目标日期；实际scheduled起点不得
 早于machine-global ledger epoch。
@@ -94,9 +101,9 @@
 1. 取得独立部署/重启授权后，在维护窗口重启 BFL Python 后端，使
    Registry Actual 范围、统一展示起点和 coverage 诊断由服务端生效；
    当前静态前端已使用 `aifin-shell.js?v=20260727b` 做同口径防护。
-2. 等待并校验 `refresh_date > 2026-07-25` 的合法新 DataBridge
-   generation，再为 `weekly_10y_lgbm_point_v1` 补
-   `target_date=2026-07-31`；旧 generation 禁止 fallback。
+2. 当前合法 DataBridge 已达到 `refresh_date=2026-07-28`，
+   `weekly_10y_lgbm_point_v1` 的 `target_date=2026-07-31` 缺口已可执行但尚未写入；
+   仅在业务阶段 6（实施计划 Task 7）通过受控 Gate 补齐，禁止旧 generation fallback。
 3. 上游修复源周数据 `week_id=202625` 与交易日历的契约冲突后，重新
    dry-run `weekly_10y_d_overlay_0529`。当前失败 run `1407` 只写入
    run/log、未写 prediction；冲突未修复前不得修改算法或继续后三个日期。
