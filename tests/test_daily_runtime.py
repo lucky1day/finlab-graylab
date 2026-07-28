@@ -5450,8 +5450,8 @@ class DailyRuntimeWatchdogTests(unittest.TestCase):
             services.events.append(("evaluate-sla-explicit", 41))
             return SimpleNamespace(
                 status="BREACHED",
-                accepted_target_count=1,
-                expected_target_count=2,
+                accepted_target_count=28,
+                expected_target_count=29,
                 reason="TARGETS_MISSING_AT_DEADLINE",
             )
 
@@ -5466,6 +5466,15 @@ class DailyRuntimeWatchdogTests(unittest.TestCase):
         self.assertIn(
             ("alert", "DAILY_TARGET_SLA_BREACHED"),
             services.events,
+        )
+        breach_alert = next(
+            call
+            for call in services.alert_calls
+            if call["code"] == "DAILY_TARGET_SLA_BREACHED"
+        )
+        self.assertEqual(
+            breach_alert["message"],
+            "Daily occurrence accepted 28/29 targets at 08:00",
         )
         self.assertLess(
             services.events.index(("reconcile-visibility", 41)),

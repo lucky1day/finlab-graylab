@@ -689,14 +689,14 @@ class Step6EpochFixtureContractTests(unittest.TestCase):
             foreign_engine.dispose()
 
 
-def _real_policy_and_configs():
+def _real_policy_and_configs(policy_path=POLICY_PATH):
     active_daily = tuple(
         config
         for config in discover_schemes(strict=True)
         if config.status == "active" and config.frequency == "daily"
     )
     policy = load_daily_policy(
-        POLICY_PATH,
+        policy_path,
         discovered=active_daily,
     )
     return policy, {
@@ -707,6 +707,10 @@ def _real_policy_and_configs():
 
 
 def _seed_test_registry(engine, policy, configs) -> None:
+    expected_blackbox_count = sum(
+        item.runtime_type == "blackbox_v2"
+        for item in policy.schemes.values()
+    )
     sync_scheme_registry(
         engine,
         tuple(configs[scheme_id] for scheme_id in policy.schemes),
@@ -723,10 +727,11 @@ def _seed_test_registry(engine, policy, configs) -> None:
                 """
             )
         )
-        if int(approved.rowcount) != 4:
+        if int(approved.rowcount) != expected_blackbox_count:
             raise AssertionError(
-                "isolated test metadata did not approve exactly four V2 "
-                f"versions: {approved.rowcount}"
+                "isolated test metadata did not approve the frozen V2 "
+                "version count: "
+                f"{approved.rowcount}/{expected_blackbox_count}"
             )
         activated = connection.execute(
             text(
@@ -742,10 +747,11 @@ def _seed_test_registry(engine, policy, configs) -> None:
                 """
             )
         )
-        if int(activated.rowcount) != 4:
+        if int(activated.rowcount) != expected_blackbox_count:
             raise AssertionError(
-                "isolated test Registry did not activate exactly four V2 "
-                f"targets: {activated.rowcount}"
+                "isolated test Registry did not activate the frozen V2 "
+                "target count: "
+                f"{activated.rowcount}/{expected_blackbox_count}"
             )
 
 

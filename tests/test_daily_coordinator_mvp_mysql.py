@@ -85,7 +85,12 @@ def _mvp_occurrence_args(policy, configs, *, schedule_key: str):
             "MVP fixture must not bypass capacity admission"
         )
     policy_json["daily_mvp_test_projection"] = {
-        "purpose": "complete_21_25_ledger_function_verification",
+        "purpose": (
+            "complete_"
+            f"{policy.expected_item_count}_"
+            f"{policy.expected_target_count}_"
+            "ledger_function_verification"
+        ),
         "algorithm_execution": "controlled_canonical_recorder",
         "cache_completion_qualification": "EXCLUDED",
         "exclusion_reason": "CAPACITY_ADMISSION_BLOCKED",
@@ -122,10 +127,16 @@ def _create_mvp_occurrence(
         occurrence_id=occurrence_id,
     )
     if (
-        snapshot.actual_item_count != 21
-        or snapshot.actual_target_count != 25
+        snapshot.actual_item_count != policy.expected_item_count
+        or snapshot.actual_target_count != policy.expected_target_count
     ):
-        raise AssertionError("MVP occurrence is not the real 21/25 matrix")
+        raise AssertionError(
+            "MVP occurrence cardinality differs from the frozen policy: "
+            f"{snapshot.actual_item_count}/"
+            f"{snapshot.actual_target_count} != "
+            f"{policy.expected_item_count}/"
+            f"{policy.expected_target_count}"
+        )
 
     suffix = schedule_key.rsplit("-", 1)[-1]
     native_generation_id = f"native-mvp-{suffix}"
@@ -198,9 +209,19 @@ def _create_mvp_occurrence(
             _clock=clock,
         )
     )
+    expected_native_count = sum(
+        item.runtime_type == "native_adapter"
+        for item in policy.schemes.values()
+    )
+    expected_blackbox_count = sum(
+        item.runtime_type == "blackbox_v2"
+        for item in policy.schemes.values()
+    )
     if (
-        native_binding != (native_generation_id, 17)
-        or databridge_binding != (databridge_generation_id, 4)
+        native_binding
+        != (native_generation_id, expected_native_count)
+        or databridge_binding
+        != (databridge_generation_id, expected_blackbox_count)
     ):
         raise AssertionError(
             "MVP generation binding cardinality drifted: "

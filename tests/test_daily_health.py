@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -39,9 +40,110 @@ V2_SCHEME_IDS = (
     "v2_gamma",
     "v2_delta",
 )
+V2_POLICY_SCHEME_IDS = V2_SCHEME_IDS + (
+    "v2_epsilon",
+    "v2_zeta",
+    "v2_eta",
+    "v2_theta",
+)
 
 
 class DailyHealthProjectionTests(unittest.TestCase):
+    def test_0745_projects_all_v2_policy_items_and_missing_target(
+        self,
+    ) -> None:
+        missing_ids = {
+            "v2_alpha__h5__1Y",
+            "v2_beta__h5__1Y",
+            "v2_gamma__h5__1Y",
+        }
+        snapshot, heartbeat, envelopes = _fixture(
+            missing_registry_ids=missing_ids,
+            sla_outcome="PENDING",
+            v2_scheme_ids=V2_POLICY_SCHEME_IDS,
+            item_state_by_scheme={
+                "v2_alpha": "PENDING",
+                "v2_beta": "RUNNING",
+                "v2_gamma": "FAILED_TERMINAL",
+            },
+            failure_code_by_scheme={
+                "v2_gamma": "ALGORITHM",
+            },
+        )
+        guardrail_now = datetime(
+            2026,
+            7,
+            23,
+            23,
+            45,
+            tzinfo=UTC,
+        )
+        heartbeat = replace(
+            heartbeat,
+            heartbeat_at=guardrail_now - timedelta(seconds=15),
+            details={
+                **dict(heartbeat.details),
+                "last_progress_at":
+                    guardrail_now - timedelta(seconds=20),
+            },
+        )
+
+        result = daily_health.project_daily_health(
+            snapshot,
+            heartbeat,
+            execution_envelopes=envelopes,
+            now=guardrail_now,
+        )
+
+        self.assertEqual(
+            (
+                result["items"]["expected"],
+                result["items"]["actual"],
+                result["items"]["completed"],
+            ),
+            (25, 25, 22),
+        )
+        self.assertEqual(result["items"]["failed"], 1)
+        self.assertEqual(
+            result["items"]["failed_base_scheme_ids"],
+            ["v2_gamma"],
+        )
+        self.assertEqual(
+            Counter(
+                item["state"] for item in result["items"]["details"]
+            ),
+            Counter(
+                {
+                    "SUCCESS": 22,
+                    "PENDING": 1,
+                    "RUNNING": 1,
+                    "FAILED_TERMINAL": 1,
+                }
+            ),
+        )
+        self.assertEqual(
+            (
+                result["targets"]["expected"],
+                result["targets"]["actual"],
+                result["targets"]["accepted"],
+                result["targets"]["missing"],
+            ),
+            (29, 29, 26, 3),
+        )
+        self.assertEqual(
+            result["targets"]["missing_registry_ids"],
+            sorted(missing_ids),
+        )
+        self.assertEqual(len(result["blackbox_v2"]), 8)
+        self.assertEqual(
+            [
+                item["base_scheme_id"]
+                for item in result["blackbox_v2"]
+                if item["accepted_at"] is None
+            ],
+            ["v2_alpha", "v2_beta", "v2_gamma"],
+        )
+
     def test_public_heartbeat_exposes_coordinator_mode(self) -> None:
         snapshot, heartbeat, envelopes = _fixture()
         heartbeat = replace(
@@ -841,6 +943,9 @@ def _fixture(
     missing_registry_ids: set[str] | None = None,
     late_registry_ids: set[str] | None = None,
     sla_outcome: str = "MET",
+    v2_scheme_ids: tuple[str, ...] = V2_SCHEME_IDS,
+    item_state_by_scheme: dict[str, str] | None = None,
+    failure_code_by_scheme: dict[str, str] | None = None,
 ) -> tuple[
     ScheduleOccurrenceSnapshot,
     SchedulerHeartbeat,
@@ -848,6 +953,8 @@ def _fixture(
 ]:
     missing_registry_ids = missing_registry_ids or set()
     late_registry_ids = late_registry_ids or set()
+    item_state_by_scheme = item_state_by_scheme or {}
+    failure_code_by_scheme = failure_code_by_scheme or {}
     native_generation = ScheduleInputGenerationEnvelope(
         generation_id="native-20260724-g1",
         generation_type="native_source",
@@ -892,8 +999,14 @@ def _fixture(
         item_specs.append(
             (f"native_{index:02d}", "native_adapter", tenors, 0)
         )
-    for index, scheme_id in enumerate(V2_SCHEME_IDS):
+    for index, scheme_id in enumerate(v2_scheme_ids):
         item_specs.append((scheme_id, "blackbox_v2", ("1Y",), index * 2))
+    expected_item_count = len(item_specs)
+    expected_target_count = sum(
+        len(tenors)
+        for _scheme_id, _runtime_type, tenors, _release_offset
+        in item_specs
+    )
 
     occurrence = ScheduleOccurrenceEnvelope(
         occurrence_id=101,
@@ -914,11 +1027,15 @@ def _fixture(
             if not missing_registry_ids
             else "RUNNING"
         ),
-        expected_item_count=21,
-        expected_target_count=25,
-        accepted_target_count=25 - len(missing_registry_ids),
+        expected_item_count=expected_item_count,
+        expected_target_count=expected_target_count,
+        accepted_target_count=(
+            expected_target_count - len(missing_registry_ids)
+        ),
         sla_accepted_target_count=(
-            25 - len(missing_registry_ids) - len(late_registry_ids)
+            expected_target_count
+            - len(missing_registry_ids)
+            - len(late_registry_ids)
         ),
         sla_deadline_at=SLA_DEADLINE,
         recovery_cutoff_at=datetime(2026, 7, 24, 0, 30, tzinfo=UTC),
@@ -988,6 +1105,10 @@ def _fixture(
                 )
             )
         accepted_count = sum(target.status == "ACCEPTED" for target in targets)
+        item_state = item_state_by_scheme.get(
+            scheme_id,
+            "SUCCESS" if accepted_count == len(targets) else "RUNNING",
+        )
         item = ScheduleItemEnvelope(
             item_id=item_id,
             occurrence_id=occurrence.occurrence_id,
@@ -1009,23 +1130,28 @@ def _fixture(
             deadline_at=datetime(2026, 7, 23, 23, 55, tzinfo=UTC),
             recovery_cutoff_at=occurrence.recovery_cutoff_at,
             occurrence_sla_deadline_at=occurrence.sla_deadline_at,
-            state="SUCCESS" if accepted_count == len(targets) else "RUNNING",
+            state=item_state,
             sla_status="ON_TIME",
             late_reason=None,
             sla_evaluated_at=datetime(2026, 7, 23, 23, 30, tzinfo=UTC),
-            attempt_no=1,
-            current_run_id=item_id * 100,
-            started_at=release_at,
+            attempt_no=0 if item_state == "PENDING" else 1,
+            current_run_id=(
+                None if item_state == "PENDING" else item_id * 100
+            ),
+            started_at=(
+                None if item_state == "PENDING" else release_at
+            ),
             completed_at=(
                 max(
                     target.accepted_at
                     for target in targets
                     if target.accepted_at is not None
                 )
-                if accepted_count == len(targets)
+                if item_state == "SUCCESS"
+                and accepted_count == len(targets)
                 else None
             ),
-            failure_code=None,
+            failure_code=failure_code_by_scheme.get(scheme_id),
             failure_message=None,
         )
         summaries.append(

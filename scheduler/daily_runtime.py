@@ -3144,7 +3144,12 @@ class DailyRuntime:
                     severity="critical",
                     business_date=business_date,
                     occurrence_id=snapshot.occurrence.occurrence_id,
-                    message="Daily occurrence was not 25/25 at 08:00",
+                    message=(
+                        "Daily occurrence accepted "
+                        f"{target_projection.accepted_target_count}/"
+                        f"{target_projection.expected_target_count}"
+                        " targets at 08:00"
+                    ),
                     details={
                         "accepted_target_count":
                             target_projection.accepted_target_count,
