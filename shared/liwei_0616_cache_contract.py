@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 from copy import deepcopy
+from types import MappingProxyType
 from typing import Any, Mapping
 
 
@@ -26,6 +27,36 @@ CACHE_USE_QUALIFICATION_ENV = (
     "BOND_LIWEI_0616_CACHE_USE_QUALIFICATION"
 )
 PHASE_A_CACHE_ABI_VERSION = "liwei_0616.phase_a.v1"
+APPROVED_PHASE_A_CACHE_PUBLISHERS = MappingProxyType({
+    "liwei_0616_10y_v61": (
+        "10Y",
+        "liwei_0616_10y01_full_oos_k3_div_k10",
+    ),
+    "liwei_0616_5y_v31": (
+        "5Y",
+        "liwei_0616_5y01_full_oos_k3_div_k10",
+    ),
+    "liwei_0616_5y_allk10_auc_static_v1": (
+        "5Y",
+        "liwei_0616_5y_auc_static_all_k3_div_k10",
+    ),
+    "liwei_0616_5y_allk10_auc_yearly_v1": (
+        "5Y",
+        "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+    ),
+    "liwei_0616_5y_allk10_ic_yearly_v1": (
+        "5Y",
+        "liwei_0616_5y_ic_yearly_all_k3_div_k10",
+    ),
+    "liwei_0616_7y01_v31": (
+        "7Y",
+        "liwei_0616_7y01_cons_say_k3_div_k10",
+    ),
+    "liwei_0616_7y03_v31": (
+        "7Y",
+        "liwei_0616_7y03_cons_all_k3_div_k8",
+    ),
+})
 QUALIFICATION_CORPUS_SCHEMA_VERSION = (
     "liwei-0616-cache-qualification-corpus-v1"
 )

@@ -30,6 +30,7 @@ from shared.input_artifacts import (
     NATIVE_MANIFEST_SHA256_ENV,
 )
 from shared.liwei_0616_cache_contract import (
+    APPROVED_PHASE_A_CACHE_PUBLISHERS,
     CACHE_USE_QUALIFICATION_ENV,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
@@ -266,6 +267,7 @@ def prepare_phase_a_caches(
     corpus 双签名生成的逐 consumer qualification，且禁止在日批内通过
     runtime callback 自行生成资格。
     """
+    _validate_cache_publisher_identity(spec)
     _validate_daily_dependency_proof(spec)
     if (
         not isinstance(cache_consumer_id, str)
@@ -1238,7 +1240,6 @@ def _spec_fingerprint(spec: PhaseACacheSpec) -> str:
         "abi": PHASE_A_CACHE_ABI_VERSION,
         "cache_family": spec.cache_family,
         "tenor": spec.tenor,
-        "publisher_consumer_id": spec.publisher_consumer_id,
         "baselines": list(spec.baselines),
         "baseline_fingerprints": {
             baseline: _baseline_fingerprint(spec, baseline)
@@ -1785,6 +1786,20 @@ def _validate_daily_dependency_proof(
             "daily_dependency_lookback_rows must be a "
             "non-negative integer"
         )
+
+
+def _validate_cache_publisher_identity(spec: PhaseACacheSpec) -> None:
+    expected = APPROVED_PHASE_A_CACHE_PUBLISHERS.get(
+        spec.cache_family
+    )
+    if expected is None:
+        return
+    expected_tenor, expected_publisher = expected
+    if (
+        spec.tenor.upper() != expected_tenor
+        or spec.publisher_consumer_id != expected_publisher
+    ):
+        raise RuntimeError("CACHE_PUBLISHER_IDENTITY_DRIFT")
 
 
 def _compare_gate_required(explicit: bool | None) -> bool:

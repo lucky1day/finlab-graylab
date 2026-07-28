@@ -22,7 +22,7 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.spec = PhaseACacheSpec(
-            cache_family="liwei_0616_5y_v31",
+            cache_family="test_liwei_0616_5y_v31",
             tenor="5Y",
             publisher_consumer_id="consumer-a",
             baselines=("STD",),

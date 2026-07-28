@@ -33,7 +33,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.spec = PhaseACacheSpec(
-            cache_family="liwei_0616_5y_v31",
+            cache_family="test_liwei_0616_5y_v31",
             tenor="5Y",
             baselines=("STD",),
             baseline_configs={"STD": {"close": "TB5YWI0C", "window": 200}},
@@ -440,7 +440,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                 [],
             )
 
-    def test_publisher_identity_changes_spec_fingerprint_and_rebuilds_union(
+    def test_publisher_identity_does_not_change_mathematical_cache_identity(
         self,
     ) -> None:
         trained: list[tuple[str, list[str]]] = []
@@ -480,19 +480,46 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                     Path(second["generation_path"]) / "manifest.json"
                 ).read_text(encoding="utf-8")
             )
-            self.assertNotEqual(
+            self.assertEqual(
                 first_manifest["spec_fingerprint"],
                 second_manifest["spec_fingerprint"],
             )
-            self.assertEqual(second["build_reason"], "spec_changed")
-            self.assertEqual(
-                trained,
-                [("STD", ["2026-07-01", "2026-07-02", "2026-07-03"])],
-            )
+            self.assertEqual(second["status"], "hit")
+            self.assertEqual(second["generation_id"], first["generation_id"])
+            self.assertEqual(trained, [])
             self.assertEqual(
                 cache["STD"]["test_dates"],
                 ["2026-07-01", "2026-07-02", "2026-07-03"],
             )
+
+    def test_known_family_rejects_self_declared_publisher_before_io(
+        self,
+    ) -> None:
+        production_spec = PhaseACacheSpec(
+            **{
+                **self.spec.__dict__,
+                "cache_family": "liwei_0616_5y_v31",
+                "publisher_consumer_id": "consumer-b",
+            }
+        )
+        trained: list[tuple[str, list[str]]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "CACHE_PUBLISHER_IDENTITY_DRIFT",
+            ):
+                self._prepare(
+                    root,
+                    spec=production_spec,
+                    trainer=self._trainer(trained),
+                    daily=self.daily.iloc[:2].copy(),
+                    end="2026-07-02",
+                    cache_consumer_id="consumer-b",
+                )
+
+            self.assertEqual(trained, [])
+            self.assertEqual(list(root.iterdir()), [])
 
     def test_consumer_replays_parent_lineage_before_accepting_hit(
         self,
