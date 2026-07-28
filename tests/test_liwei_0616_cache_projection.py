@@ -263,6 +263,52 @@ def test_date_to_week_mapping_order_does_not_change_sha256(
     assert first.content_sha256 == second.content_sha256
 
 
+def test_mapping_proof_distinguishes_tail_append_from_historical_revision(
+    tmp_path: Path,
+) -> None:
+    proof_files = _proof_files(tmp_path)
+    baseline = _build(
+        tmp_path=tmp_path,
+        date_to_week={
+            "2026-07-24": 202630,
+            "2026-07-27": 202630,
+        },
+        proof_files=proof_files,
+    )
+    appended = _build(
+        tmp_path=tmp_path,
+        daily_df=_daily(
+            "2026-07-24",
+            "2026-07-27",
+            "2026-07-28",
+        ),
+        date_to_week={
+            "2026-07-24": 202630,
+            "2026-07-27": 202630,
+            "2026-07-28": 202631,
+        },
+        proof_files=proof_files,
+    )
+    revised = _build(
+        tmp_path=tmp_path,
+        date_to_week={
+            "2026-07-24": 202629,
+            "2026-07-27": 202630,
+        },
+        proof_files=proof_files,
+    )
+
+    baseline_state = baseline.proof["date_to_week_entries"]
+    appended_state = appended.proof["date_to_week_entries"]
+    revised_state = revised.proof["date_to_week_entries"]
+    assert appended_state[: len(baseline_state)] == baseline_state
+    assert appended_state[len(baseline_state) :] == [
+        {"date": "2026-07-28", "week_id": 202631}
+    ]
+    assert revised_state[0] != baseline_state[0]
+    assert revised_state[1:] == baseline_state[1:]
+
+
 def test_proof_file_byte_change_changes_projection_sha256(
     tmp_path: Path,
 ) -> None:

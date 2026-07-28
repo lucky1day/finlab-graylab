@@ -105,10 +105,15 @@ def build_auxiliary_dependency_projection(
             for key in sorted(normalized_date_to_week)
         ]
     )
+    mapping_entries = [
+        {"date": key, "week_id": week_id}
+        for key, week_id in mapping_payload
+    ]
     proof: dict[str, object] = {
         "schema_version": PROJECTION_SCHEMA_VERSION,
         "date_to_week_mode": date_to_week_mode,
         "date_to_week_sha256": _sha256_json(mapping_payload),
+        "date_to_week_entries": mapping_entries,
         "proof_files": _proof_file_records(proof_files),
         "columns": list(frame.columns),
         "dtypes": [str(frame[column].dtype) for column in frame.columns],
