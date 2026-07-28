@@ -247,6 +247,8 @@ class CurrentReplayAttemptProcess:
     execution_token: str
     process_id: int
     process_group_id: int
+    base_scheme_id: str
+    input_compatibility: str
 
 
 @dataclass(frozen=True)
@@ -2855,7 +2857,8 @@ def read_current_replay_attempt_processes(
             text(
                 f"""
                 SELECT i.item_id, r.run_id, r.execution_token,
-                       r.process_id, r.process_group_id
+                       r.process_id, r.process_group_id,
+                       i.base_scheme_id, o.policy_json
                 FROM t_schedule_occurrences o
                 JOIN t_schedule_items i
                   ON i.occurrence_id = o.occurrence_id
@@ -2892,16 +2895,49 @@ def read_current_replay_attempt_processes(
             ),
             parameters,
         ).mappings().all()
-    return tuple(
-        CurrentReplayAttemptProcess(
-            item_id=int(row["item_id"]),
-            run_id=int(row["run_id"]),
-            execution_token=str(row["execution_token"]),
-            process_id=int(row["process_id"]),
-            process_group_id=int(row["process_group_id"]),
+    processes: list[CurrentReplayAttemptProcess] = []
+    for row in rows:
+        base_scheme_id = str(row["base_scheme_id"])
+        policy = _stored_json_mapping(row, "policy_json")
+        raw_schemes = policy.get("schemes")
+        matches = (
+            [
+                entry
+                for entry in raw_schemes
+                if (
+                    isinstance(entry, Mapping)
+                    and entry.get("scheme_id") == base_scheme_id
+                )
+            ]
+            if isinstance(raw_schemes, list)
+            else []
         )
-        for row in rows
-    )
+        if len(matches) != 1:
+            raise RuntimeError(
+                "replay process frozen input mode is missing"
+            )
+        input_compatibility = matches[0].get(
+            "input_compatibility"
+        )
+        if (
+            not isinstance(input_compatibility, str)
+            or not input_compatibility
+        ):
+            raise RuntimeError(
+                "replay process frozen input mode is invalid"
+            )
+        processes.append(
+            CurrentReplayAttemptProcess(
+                item_id=int(row["item_id"]),
+                run_id=int(row["run_id"]),
+                execution_token=str(row["execution_token"]),
+                process_id=int(row["process_id"]),
+                process_group_id=int(row["process_group_id"]),
+                base_scheme_id=base_scheme_id,
+                input_compatibility=input_compatibility,
+            )
+        )
+    return tuple(processes)
 
 
 def read_schedule_execution_envelope(

@@ -8,13 +8,21 @@ from unittest.mock import MagicMock, Mock, patch
 
 
 class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
-    def _registered_process(self, process_id: int) -> SimpleNamespace:
+    def _registered_process(
+        self,
+        process_id: int,
+        *,
+        base_scheme_id: str = "native-test-scheme",
+        input_compatibility: str = "generation_v1",
+    ) -> SimpleNamespace:
         return SimpleNamespace(
             item_id=11,
             run_id=21,
             execution_token="opaque-token",
             process_id=process_id,
             process_group_id=process_id,
+            base_scheme_id=base_scheme_id,
+            input_compatibility=input_compatibility,
         )
 
     def _probe(
@@ -512,6 +520,189 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
             "unregistered_replay_descendant",
         )
         self.assertFalse(hasattr(finding, "command"))
+
+    def test_allows_new_session_descendant_for_approved_0629_item(
+        self,
+    ) -> None:
+        from scheduler.daily_policy import (
+            APPROVED_0629_LIVE_SOURCE_SCHEMES,
+        )
+
+        approved_scheme_id = sorted(
+            APPROVED_0629_LIVE_SOURCE_SCHEMES
+        )[0]
+        registered = self._registered_process(
+            4200,
+            base_scheme_id=approved_scheme_id,
+            input_compatibility="live_source_0629",
+        )
+        report, _read_registered = self._probe(
+            registered_processes=(registered,),
+            processes=(
+                {
+                    "pid": 4200,
+                    "ppid": 9000,
+                    "pgid": 4200,
+                    "uid": 501,
+                    "command": "python registered-0629-leader",
+                },
+                {
+                    "pid": 7100,
+                    "ppid": 4200,
+                    "pgid": 7100,
+                    "uid": 501,
+                    "command": "python source-parent-watchdog",
+                },
+                {
+                    "pid": 7101,
+                    "ppid": 7100,
+                    "pgid": 7100,
+                    "uid": 501,
+                    "command": "bash daily_project/src/run_daily.sh",
+                },
+            ),
+        )
+
+        self.assertTrue(report.boundary_clear)
+        self.assertEqual(report.blocked_processes, ())
+        self.assertEqual(
+            tuple(
+                (row.process_id, row.classification)
+                for row in report.allowed_processes
+            ),
+            (
+                (4200, "registered_leader"),
+                (7100, "approved_live_source_descendant"),
+                (7101, "approved_live_source_descendant"),
+                (9000, "operator"),
+            ),
+        )
+
+    def test_does_not_allow_new_session_descendant_for_unapproved_item(
+        self,
+    ) -> None:
+        registered = self._registered_process(
+            4200,
+            base_scheme_id="not-approved-0629",
+            input_compatibility="live_source_0629",
+        )
+        report, _read_registered = self._probe(
+            registered_processes=(registered,),
+            processes=(
+                {
+                    "pid": 4200,
+                    "ppid": 9000,
+                    "pgid": 4200,
+                    "uid": 501,
+                    "command": "python registered-leader",
+                },
+                {
+                    "pid": 7100,
+                    "ppid": 4200,
+                    "pgid": 7100,
+                    "uid": 501,
+                    "command": "python unexpected-new-session",
+                },
+            ),
+        )
+
+        self.assertFalse(report.boundary_clear)
+        self.assertEqual(
+            tuple(
+                (row.process_id, row.classification)
+                for row in report.blocked_processes
+            ),
+            ((7100, "unregistered_replay_descendant"),),
+        )
+
+    def test_requires_live_source_mode_for_approved_0629_descendant(
+        self,
+    ) -> None:
+        from scheduler.daily_policy import (
+            APPROVED_0629_LIVE_SOURCE_SCHEMES,
+        )
+
+        registered = self._registered_process(
+            4200,
+            base_scheme_id=sorted(
+                APPROVED_0629_LIVE_SOURCE_SCHEMES
+            )[0],
+            input_compatibility="generation_v1",
+        )
+        report, _read_registered = self._probe(
+            registered_processes=(registered,),
+            processes=(
+                {
+                    "pid": 4200,
+                    "ppid": 9000,
+                    "pgid": 4200,
+                    "uid": 501,
+                    "command": "python registered-leader",
+                },
+                {
+                    "pid": 7100,
+                    "ppid": 4200,
+                    "pgid": 7100,
+                    "uid": 501,
+                    "command": "python unexpected-new-session",
+                },
+            ),
+        )
+
+        self.assertFalse(report.boundary_clear)
+        self.assertEqual(
+            report.blocked_processes[0].classification,
+            "unregistered_replay_descendant",
+        )
+
+    def test_blocks_other_uid_approved_0629_descendant(
+        self,
+    ) -> None:
+        from scheduler.daily_policy import (
+            APPROVED_0629_LIVE_SOURCE_SCHEMES,
+        )
+
+        registered = self._registered_process(
+            4200,
+            base_scheme_id=sorted(
+                APPROVED_0629_LIVE_SOURCE_SCHEMES
+            )[0],
+            input_compatibility="live_source_0629",
+        )
+        report, _read_registered = self._probe(
+            registered_processes=(registered,),
+            processes=(
+                {
+                    "pid": 4200,
+                    "ppid": 9000,
+                    "pgid": 4200,
+                    "uid": 501,
+                    "command": "python registered-leader",
+                },
+                {
+                    "pid": 7100,
+                    "ppid": 4200,
+                    "pgid": 7100,
+                    "uid": 502,
+                    "command": "python wrong-uid-new-session",
+                },
+            ),
+        )
+
+        self.assertFalse(report.boundary_clear)
+        self.assertEqual(
+            tuple(
+                (row.process_id, row.uid, row.classification)
+                for row in report.blocked_processes
+            ),
+            (
+                (
+                    7100,
+                    502,
+                    "approved_live_source_descendant_uid_mismatch",
+                ),
+            ),
+        )
 
     def test_allows_same_uid_operator_process_group_descendant(
         self,

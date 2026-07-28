@@ -13,9 +13,13 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable, Mapping
 
+from scheduler.daily_policy import (
+    APPROVED_0629_LIVE_SOURCE_SCHEMES,
+)
 from shared.daily_coordinator_mode import (
     DAILY_COORDINATOR_MODE_ENV,
 )
+from shared.input_artifacts import LIVE_SOURCE_INPUT_MODE
 
 
 LAUNCHAGENT_LABELS = (
@@ -254,6 +258,9 @@ def probe_isolated_replay_process_boundary(
     registered_pids, registered_pgids = (
         _normalize_registered_replay_processes(registered_rows)
     )
+    approved_live_source_pids = (
+        _approved_live_source_process_ids(registered_rows)
+    )
     process_rows = _normalize_process_rows(
         _read_process_table(fail_on_malformed=True)
     )
@@ -289,6 +296,12 @@ def probe_isolated_replay_process_boundary(
             operator_pid,
             *registered_pids,
         },
+    )
+    approved_live_source_descendant_pids = (
+        _read_replay_descendant_pids(
+            process_rows,
+            root_process_ids=set(approved_live_source_pids),
+        )
     )
     allowed: list[ReplayProcessBoundaryObservation] = []
     blocked: list[ReplayProcessBoundaryObservation] = []
@@ -358,6 +371,26 @@ def probe_isolated_replay_process_boundary(
                     )
                 )
                 continue
+        if pid in approved_live_source_descendant_pids:
+            destination = (
+                allowed
+                if uid == normalized_service_uid
+                else blocked
+            )
+            destination.append(
+                _replay_process_observation(
+                    row,
+                    classification=(
+                        "approved_live_source_descendant"
+                        if uid == normalized_service_uid
+                        else (
+                            "approved_live_source_descendant_"
+                            "uid_mismatch"
+                        )
+                    ),
+                )
+            )
+            continue
         if pid in replay_descendant_pids:
             blocked.append(
                 _replay_process_observation(
@@ -673,6 +706,39 @@ def _normalize_registered_replay_processes(
         tuple(sorted(registered_pids)),
         tuple(sorted(registered_pgids)),
     )
+
+
+def _approved_live_source_process_ids(
+    rows: Iterable[object],
+) -> tuple[int, ...]:
+    """只信任精确 allowlist 兼容项的已登记外层进程。"""
+    approved: set[int] = set()
+    for row in rows:
+        try:
+            process_id = row.process_id
+            base_scheme_id = row.base_scheme_id
+            input_compatibility = row.input_compatibility
+        except AttributeError:
+            raise RuntimeError(
+                "registered replay process identity is invalid"
+            ) from None
+        if (
+            not _is_safe_process_identity(process_id)
+            or not isinstance(base_scheme_id, str)
+            or not base_scheme_id
+            or not isinstance(input_compatibility, str)
+            or not input_compatibility
+        ):
+            raise RuntimeError(
+                "registered replay process identity is invalid"
+            )
+        if (
+            input_compatibility == LIVE_SOURCE_INPUT_MODE
+            and base_scheme_id
+            in APPROVED_0629_LIVE_SOURCE_SCHEMES
+        ):
+            approved.add(process_id)
+    return tuple(sorted(approved))
 
 
 def _normalize_process_rows(

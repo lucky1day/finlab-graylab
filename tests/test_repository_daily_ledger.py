@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -3243,15 +3244,36 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
             targets=(("5Y", 1),),
         )
         with self.engine.begin() as connection:
+            policy_json = json.loads(
+                connection.execute(
+                    text(
+                        "SELECT policy_json "
+                        "FROM t_schedule_occurrences "
+                        "WHERE occurrence_id = :occurrence_id"
+                    ),
+                    {"occurrence_id": occurrence_id},
+                ).scalar_one()
+            )
+            policy_json["schemes"] = [
+                {
+                    "scheme_id": "alpha",
+                    "input_compatibility": "generation_v1",
+                }
+            ]
             connection.execute(
                 text(
                     "UPDATE t_schedule_occurrences "
-                    "SET schedule_key = :schedule_key "
+                    "SET schedule_key = :schedule_key, "
+                    "policy_json = :policy_json "
                     "WHERE occurrence_id = :occurrence_id"
                 ),
                 {
                     "schedule_key":
                         "isolated-real-replay-v1-test",
+                    "policy_json": json.dumps(
+                        policy_json,
+                        sort_keys=True,
+                    ),
                     "occurrence_id": occurrence_id,
                 },
             )
@@ -3289,6 +3311,11 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(rows[0].process_id, 9500)
         self.assertEqual(rows[0].process_group_id, 9500)
+        self.assertEqual(rows[0].base_scheme_id, "alpha")
+        self.assertEqual(
+            rows[0].input_compatibility,
+            "generation_v1",
+        )
         self.assertEqual(
             read_current_replay_attempt_processes(
                 self.engine,
