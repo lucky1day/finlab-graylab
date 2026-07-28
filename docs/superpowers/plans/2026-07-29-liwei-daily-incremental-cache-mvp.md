@@ -4,7 +4,7 @@
 
 **Goal:** Make ordinary Liwei daily execution reuse existing Phase A results and train only new or genuinely affected dates, without changing Native algorithm semantics or blocking unrelated daily schemes.
 
-**Architecture:** Each Liwei inference adapter uses its own core alignment functions to build a dated weekly/monthly effective-input projection. The shared immutable cache compares that projection, enforces a single publisher and monotonic coverage, and retains family-local full rebuild as a recovery fallback. Existing cache generations are adopted through an explicit evidence-producing path rather than a forced-cold prewarm.
+**Architecture:** Each Liwei inference adapter uses its own core alignment functions to build a dated weekly/monthly effective-input projection. The shared immutable cache compares that projection, enforces a single publisher and monotonic coverage, and retains family-local full rebuild as a recovery fallback. Legacy schema 2 generations without projection/mapping proof are not adopted; the affected family performs one automatic full fallback and then uses schema 3 incremental generations.
 
 **Tech Stack:** Python 3.12, pandas, immutable JSON/pickle cache generations, pytest, existing daily ledger and temporary MySQL 8.0.45 harness.
 
@@ -15,12 +15,9 @@
 - Create `shared/liwei_0616_cache_projection.py`: build and validate the dated effective auxiliary projection without importing any Native core.
 - Modify `shared/liwei_0616_phase_a_cache.py`: persist projection state, decide append/suffix/full, enforce publisher-only writes and monotonic coverage.
 - Modify the ten `schemes/liwei_0616_*/inference.py` adapters: supply exact core callbacks, proof files and publisher identity.
-- Create `harness/liwei_cache_adoption.py`: validate and adopt a retained legacy generation without retraining historical dates.
-- Modify `harness/cli.py`: expose an explicit `adopt-liwei-cache --check-only|--execute` operator entry point.
 - Create `tests/test_liwei_0616_cache_projection.py`: projection and dependency-state unit tests.
 - Modify `tests/test_liwei_0616_phase_a_cache.py`: real false-invalidation and append tests.
 - Modify `tests/test_liwei_0616_phase_a_cache_generations.py`: publisher, monotonic coverage, suffix and atomicity tests.
-- Create `tests/test_liwei_0616_cache_adoption.py`: retained-generation adoption and fail-closed tests.
 - Modify `tests/test_liwei_0616_cache_contract.py`: all ten adapters declare the exact projection and publisher contract.
 - Modify `docs/CURRENT_STATUS.md` and `docs/TODO.md` only after the final candidate passes.
 
@@ -294,56 +291,15 @@ git add schemes/liwei_0616_*/inference.py \
 git commit -m "feat: use effective cache inputs for liwei schemes"
 ```
 
-### Task 5: Adopt retained cache generations without full prewarm
+### Task 5: Legacy cache decision
 
-**Files:**
-- Create: `harness/liwei_cache_adoption.py`
-- Modify: `harness/cli.py`
-- Create: `tests/test_liwei_0616_cache_adoption.py`
-
-- [ ] **Step 1: Write RED adoption tests**
-
-Cover:
-
-- selecting the widest valid generation in current lineage;
-- verifying manifest/file hashes;
-- exact overlap equality for `config/test_dates/preds/probs`;
-- old/current effective projection equality on the preserved prefix;
-- building a metadata/merge generation without trainer calls;
-- `--check-only` zero writes;
-- missing input evidence, overlap mismatch or lineage mismatch fail-closed;
-- kill before pointer swap leaves current unchanged.
-
-- [ ] **Step 2: Run the adoption test and verify RED**
-
-Expected: import/CLI command missing.
-
-- [ ] **Step 3: Implement the adoption harness**
-
-Expose:
-
-```bash
-python -m harness adopt-liwei-cache \
-  --scheme-id <publisher-id> \
-  --old-input-root <frozen-runtime-input-root> \
-  --current-input-root <frozen-runtime-input-root> \
-  --cache-root <isolated-cache-root> \
-  --check-only
-```
-
-`--execute` must require an explicit output cache root, reject symlinks/non-owner-only roots, never connect to MySQL, never invoke the trainer, write a machine-readable evidence file, and atomically publish only after all proof checks pass.
-
-- [ ] **Step 4: Run adoption and existing harness safety tests**
-
-Expected: all pass with no external writes.
-
-- [ ] **Step 5: Commit Task 5**
-
-```bash
-git add harness/liwei_cache_adoption.py harness/cli.py \
-  tests/test_liwei_0616_cache_adoption.py
-git commit -m "feat: adopt existing liwei cache generations"
-```
+- [x] The no-training adoption experiment was timeboxed and reverted.
+- [x] Real schema 2 generations were confirmed to lack effective projection and
+  `date_to_week` proof, so automatic adoption is fail-closed.
+- [x] Keep family-local automatic full fallback for the first schema 3 build;
+  do not add a generic adoption CLI or a centralized prewarm step.
+- [ ] A future adoption design may proceed only for generations carrying
+  complete projection, mapping and lineage evidence.
 
 ### Task 6: Minimal candidate verification
 
@@ -352,7 +308,7 @@ git commit -m "feat: adopt existing liwei cache generations"
 
 - [ ] **Step 1: Run focused unit and contract tests**
 
-Run all Liwei cache/projection/adoption tests. Expected: zero failures.
+Run all Liwei cache/projection tests. Expected: zero failures.
 
 - [ ] **Step 2: Run seven-family warm incremental validation**
 

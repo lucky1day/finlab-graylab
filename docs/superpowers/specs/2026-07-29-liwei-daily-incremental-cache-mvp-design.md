@@ -124,24 +124,20 @@ weekly/monthly 投影必须：
 该 generation 最早缓存日期，等价于该家族 full rebuild。不能为了命中缓存
 忽略真实输入修订。
 
-## 现有缓存接管
+## 旧缓存迁移边界
 
-部署缓存 ABI 后不执行全量预热。每个家族按以下顺序接管现有缓存：
+不执行集中式全量预热，也不对旧缓存做不可证明的无训练接管。现存 schema 2
+generation 没有记录有效周/月投影和 `date_to_week` 证明，单凭原始 frame
+前缀或结果重叠不足以证明可复用。
 
-1. 校验 current 及保留 generation 的 manifest、文件 SHA 和内部结构；
-2. 在同一 lineage 中选择覆盖范围最宽的可信 generation；
-3. 若 current 比可信 parent 窄，校验重叠日期的
-   `config/test_dates/preds/probs` 完全一致；
-4. 使用留存的冻结输入证据生成 parent/current 有效投影，证明被保留前缀
-   未受输入变化影响；
-5. 复用 parent 的历史缓存，叠加 current 已验证日期及当天新增日期；
-6. 创建新的不可变 generation，完成校验后原子切换 current。
-
-该过程不重新训练已有日期。任一证明缺失或不一致时，只允许受影响家族走
-自动 full rebuild；其他家族和日频任务继续运行。
+因此首次由新代码处理某个旧 family 时，该 family 单独执行一次自动 full
+rebuild 并告警；其他 family 和无依赖日频任务继续运行。新 schema 3
+generation 发布后，后续日批才按有效投影执行 append/suffix。未来只有在
+source generation 自带完整投影、mapping 和 lineage 证明时，才可另行设计
+无训练 adoption；它不属于本次 MVP。
 
 缓存覆盖范围必须单调：新 generation 对相同 spec 和输入 lineage 的
-`test_dates` 必须包含已接管 parent 的全部有效日期。窄请求只能读取子集，
+`test_dates` 必须包含 parent 的全部有效日期。窄请求只能读取子集，
 不得发布窄 generation。
 
 ## 失败与恢复
@@ -168,7 +164,7 @@ weekly/monthly 投影必须：
 - 有效 weekly/monthly 历史修订从最早投影变化日期 suffix；
 - projection proof 或 schema 漂移时 full；
 - 618 日期缓存不能被 42 日期 consumer 缩小；
-- merge/接管被 kill 时旧 current 不变；
+- generation 构建或原子切换被 kill 时旧 current 不变；
 - 缓存缺失或损坏时只有该家族 full rebuild。
 
 ### 2. 七家族增量验证
