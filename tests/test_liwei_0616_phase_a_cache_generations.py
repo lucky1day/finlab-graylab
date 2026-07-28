@@ -190,6 +190,186 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
             self.assertEqual(trained, [])
             self.assertEqual(cache["STD"]["test_dates"], all_dates)
 
+    def test_consumer_accepts_same_effective_input_from_own_core_proof(
+        self,
+    ) -> None:
+        dates = ["2026-07-01", "2026-07-02"]
+        publisher_projection = self._projection(
+            dates,
+            [1.0, 2.0],
+            proof_file_sha256="a" * 64,
+            content_sha256="b" * 64,
+        )
+        consumer_projection = self._projection(
+            dates,
+            [1.0, 2.0],
+            proof_file_sha256="c" * 64,
+            content_sha256="d" * 64,
+        )
+        trained: list[tuple[str, list[str]]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _cache, first = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:2].copy(),
+                end="2026-07-02",
+                auxiliary_dependency_projection=publisher_projection,
+            )
+            pointer = Path(first["current_pointer"])
+            pointer_before = pointer.read_bytes()
+            trained.clear()
+
+            cache, second = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:2].copy(),
+                end="2026-07-02",
+                cache_consumer_id="consumer-b",
+                auxiliary_dependency_projection=consumer_projection,
+            )
+
+            self.assertEqual(second["status"], "hit")
+            self.assertEqual(second["generation_id"], first["generation_id"])
+            self.assertEqual(pointer.read_bytes(), pointer_before)
+            self.assertEqual(trained, [])
+            self.assertEqual(
+                cache["STD"]["test_dates"],
+                dates,
+            )
+
+    def test_consumer_rejects_any_effective_raw_mapping_or_native_drift(
+        self,
+    ) -> None:
+        dates = ["2026-07-01", "2026-07-02"]
+        publisher_projection = self._projection(
+            dates,
+            [1.0, 2.0],
+            proof_file_sha256="a" * 64,
+            content_sha256="b" * 64,
+        )
+        native = self._native_generation_binding(
+            generation_id="native-a",
+            manifest_sha256="1" * 64,
+        )
+        cases = {
+            "effective_frame": {
+                "projection": self._projection(
+                    dates,
+                    [1.0, 9.0],
+                    proof_file_sha256="c" * 64,
+                    content_sha256="d" * 64,
+                ),
+            },
+            "mapping": {
+                "projection": self._projection(
+                    dates,
+                    [1.0, 2.0],
+                    proof_file_sha256="c" * 64,
+                    week_ids=[202630, 202631],
+                    content_sha256="d" * 64,
+                ),
+            },
+            "mapping_mode": {
+                "projection": self._projection(
+                    dates,
+                    [1.0, 2.0],
+                    proof_file_sha256="c" * 64,
+                    date_to_week_mode="fallback",
+                    content_sha256="d" * 64,
+                ),
+            },
+            "raw_weekly": {
+                "projection": self._projection(
+                    dates,
+                    [1.0, 2.0],
+                    proof_file_sha256="c" * 64,
+                    content_sha256="d" * 64,
+                ),
+                "weekly": pd.DataFrame(
+                    {
+                        "week_id": [202626, 202627],
+                        "weekly_x": [9.9, 1.0],
+                    }
+                ),
+            },
+            "raw_daily": {
+                "projection": self._projection(
+                    dates,
+                    [1.0, 2.0],
+                    proof_file_sha256="c" * 64,
+                    content_sha256="d" * 64,
+                ),
+                "daily": self.daily.iloc[:2].assign(
+                    TB5YWI0C=[9.9, 1.61]
+                ),
+            },
+            "raw_monthly": {
+                "projection": self._projection(
+                    dates,
+                    [1.0, 2.0],
+                    proof_file_sha256="c" * 64,
+                    content_sha256="d" * 64,
+                ),
+                "monthly": pd.DataFrame(
+                    {
+                        "month_id": ["202606", "202607"],
+                        "monthly_x": [9.9, 2.0],
+                    }
+                ),
+            },
+            "native": {
+                "projection": self._projection(
+                    dates,
+                    [1.0, 2.0],
+                    proof_file_sha256="c" * 64,
+                    content_sha256="d" * 64,
+                ),
+                "native": self._native_generation_binding(
+                    generation_id="native-b",
+                    manifest_sha256="2" * 64,
+                ),
+            },
+        }
+        for label, case in cases.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                _cache, first = self._prepare(
+                    root,
+                    trainer=self._trainer([]),
+                    daily=self.daily.iloc[:2].copy(),
+                    end="2026-07-02",
+                    native_generation=native,
+                    auxiliary_dependency_projection=publisher_projection,
+                )
+                pointer = Path(first["current_pointer"])
+                pointer_before = pointer.read_bytes()
+                trained: list[tuple[str, list[str]]] = []
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "CACHE_PUBLISHER_REQUIRED",
+                ):
+                    self._prepare(
+                        root,
+                        trainer=self._trainer(trained),
+                        daily=case.get(
+                            "daily",
+                            self.daily.iloc[:2].copy(),
+                        ),
+                        end="2026-07-02",
+                        weekly=case.get("weekly"),
+                        monthly=case.get("monthly"),
+                        cache_consumer_id="consumer-b",
+                        native_generation=case.get("native", native),
+                        auxiliary_dependency_projection=case[
+                            "projection"
+                        ],
+                    )
+
+                self.assertEqual(trained, [])
+                self.assertEqual(pointer.read_bytes(), pointer_before)
+
     def test_consumer_before_publisher_fails_without_training_or_current(
         self,
     ) -> None:
@@ -2393,6 +2573,8 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
         *,
         proof_file_sha256: str = "a" * 64,
         week_ids: list[int] | None = None,
+        date_to_week_mode: str = "explicit",
+        content_sha256: str | None = None,
     ) -> AuxiliaryDependencyProjection:
         frame = pd.DataFrame(
             {
@@ -2400,14 +2582,18 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                 "effective_aux": values,
             }
         )
-        mapping_entries = [
-            {"date": day, "week_id": week_id}
-            for day, week_id in zip(
-                dates,
-                week_ids or [202630] * len(dates),
-                strict=True,
-            )
-        ]
+        mapping_entries = (
+            []
+            if date_to_week_mode == "fallback"
+            else [
+                {"date": day, "week_id": week_id}
+                for day, week_id in zip(
+                    dates,
+                    week_ids or [202630] * len(dates),
+                    strict=True,
+                )
+            ]
+        )
         mapping_payload = [
             [entry["date"], entry["week_id"]]
             for entry in mapping_entries
@@ -2415,7 +2601,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
         proof = {
             "schema_version":
                 "liwei-0616-auxiliary-dependency-projection-v1",
-            "date_to_week_mode": "explicit",
+            "date_to_week_mode": date_to_week_mode,
             "date_to_week_sha256": hashlib.sha256(
                 json.dumps(
                     mapping_payload,
@@ -2441,9 +2627,12 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
         return AuxiliaryDependencyProjection(
             frame=frame,
             proof=proof,
-            content_sha256=hashlib.sha256(
-                frame.to_json(orient="split").encode("utf-8")
-            ).hexdigest(),
+            content_sha256=(
+                content_sha256
+                or hashlib.sha256(
+                    frame.to_json(orient="split").encode("utf-8")
+                ).hexdigest()
+            ),
         )
 
     @staticmethod

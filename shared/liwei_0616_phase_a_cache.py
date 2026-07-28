@@ -847,7 +847,10 @@ def _validated_consumer_hit(
         current.manifest.get("spec_fingerprint")
         != _spec_fingerprint(spec)
         or set(current.caches) != set(spec.baselines)
-        or current.manifest.get("input_state") != dict(input_state)
+        or not _consumer_input_states_equivalent(
+            current.manifest.get("input_state"),
+            input_state,
+        )
     ):
         raise RuntimeError(
             "CACHE_PUBLISHER_REQUIRED: "
@@ -901,6 +904,45 @@ def _validated_consumer_hit(
         input_change=dict(input_change),
         trusted_qualification=trusted_qualification,
     )
+
+
+def _consumer_input_states_equivalent(
+    publisher_state: Any,
+    consumer_state: Any,
+) -> bool:
+    """比较共享 family 的有效输入，忽略各 adapter 自身 proof 文件身份。"""
+    try:
+        publisher = _validate_input_generation_state_record(
+            publisher_state
+        )
+        consumer = _validate_input_generation_state_record(
+            consumer_state
+        )
+    except (TypeError, ValueError):
+        return False
+    if (
+        publisher["schema_version"]
+        != INPUT_GENERATION_STATE_SCHEMA_VERSION
+        or consumer["schema_version"]
+        != INPUT_GENERATION_STATE_SCHEMA_VERSION
+    ):
+        return publisher == consumer
+
+    def comparable(state: Mapping[str, Any]) -> dict[str, Any]:
+        effective = dict(state["effective_auxiliary"])
+        proof = dict(effective["proof"])
+        proof.pop("proof_files")
+        effective["proof"] = proof
+        effective.pop("proof_identity_sha256")
+        effective.pop("content_sha256")
+        return {
+            "schema_version": state["schema_version"],
+            "frames": state["frames"],
+            "effective_auxiliary": effective,
+            "native_generation": state["native_generation"],
+        }
+
+    return comparable(publisher) == comparable(consumer)
 
 
 def _lineage_qualification_for_spec(
