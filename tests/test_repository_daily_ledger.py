@@ -4830,6 +4830,123 @@ class DailyLedgerRepositoryTests(unittest.TestCase):
             ).scalar_one()
         self.assertEqual(str(visible_at), "2026-07-24 00:03:00")
 
+    def test_visibility_receipt_bridges_subsecond_storage_rounding(
+        self,
+    ) -> None:
+        (
+            _occurrence_id,
+            item_id,
+            run_id,
+            _prediction_id,
+            _registry_id,
+        ) = self._create_completed_single_target()
+        rounded_finished_at = datetime(2026, 7, 23, 23, 40, 1)
+        observed_at = datetime(
+            2026,
+            7,
+            23,
+            23,
+            40,
+            0,
+            500_001,
+        )
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE t_scheme_runs SET finished_at = :finished_at "
+                    "WHERE run_id = :run_id"
+                ),
+                {
+                    "finished_at": rounded_finished_at,
+                    "run_id": run_id,
+                },
+            )
+            conn.execute(
+                text(
+                    "UPDATE t_schedule_item_targets SET visible_at = NULL "
+                    "WHERE item_id = :item_id"
+                ),
+                {"item_id": item_id},
+            )
+
+        visible_at = self._function(
+            "record_schedule_attempt_visibility"
+        )(
+            self.engine,
+            run_id=run_id,
+            _clock=self._clock(observed_at),
+        )
+
+        self.assertEqual(visible_at, rounded_finished_at)
+        with self.engine.connect() as conn:
+            stored = conn.execute(
+                text(
+                    "SELECT visible_at FROM t_schedule_item_targets "
+                    "WHERE item_id = :item_id"
+                ),
+                {"item_id": item_id},
+            ).scalar_one()
+        self.assertEqual(
+            str(stored),
+            rounded_finished_at.isoformat(sep=" "),
+        )
+
+    def test_visibility_receipt_rejects_material_future_finished_at(
+        self,
+    ) -> None:
+        (
+            _occurrence_id,
+            item_id,
+            run_id,
+            _prediction_id,
+            _registry_id,
+        ) = self._create_completed_single_target()
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE t_scheme_runs SET finished_at = :finished_at "
+                    "WHERE run_id = :run_id"
+                ),
+                {
+                    "finished_at": datetime(
+                        2026,
+                        7,
+                        23,
+                        23,
+                        40,
+                        2,
+                    ),
+                    "run_id": run_id,
+                },
+            )
+            conn.execute(
+                text(
+                    "UPDATE t_schedule_item_targets SET visible_at = NULL "
+                    "WHERE item_id = :item_id"
+                ),
+                {"item_id": item_id},
+            )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "visible_at cannot be before run finished_at",
+        ):
+            self._function("record_schedule_attempt_visibility")(
+                self.engine,
+                run_id=run_id,
+                _clock=self._clock(
+                    datetime(
+                        2026,
+                        7,
+                        23,
+                        23,
+                        40,
+                        0,
+                        500_001,
+                    )
+                ),
+            )
+
     def test_multi_target_item_missing_one_record_cannot_succeed(self) -> None:
         occurrence_id, item_id = self._create_occurrence(generation_status="SEALED")
         attempt = self._function("start_schedule_attempt")(

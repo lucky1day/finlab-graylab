@@ -5653,11 +5653,9 @@ def record_schedule_attempt_visibility(
             field="visible_at",
             clock=_clock,
         )
-        _require_not_before(
+        visible_at = _visibility_time_after_run_finish(
             visible_at,
             run.get("finished_at"),
-            event_field="visible_at",
-            lower_field="run finished_at",
         )
         for target in relationship_targets:
             _require_not_before(
@@ -6148,6 +6146,29 @@ def _require_not_before(
         raise RuntimeError(
             f"{event_field} cannot be before {lower_field}"
         )
+
+
+def _visibility_time_after_run_finish(
+    visible_at: datetime,
+    finished_at: object,
+) -> datetime:
+    """桥接旧 ``DATETIME(0)`` 对完成时刻最多半秒的向上舍入。"""
+    if finished_at is None:
+        raise RuntimeError("run finished_at is required")
+    normalized_finished_at = _as_datetime(
+        finished_at,
+        "run finished_at",
+    )
+    if visible_at >= normalized_finished_at:
+        return visible_at
+    if (
+        normalized_finished_at - visible_at
+        <= timedelta(microseconds=500_000)
+    ):
+        return normalized_finished_at
+    raise RuntimeError(
+        "visible_at cannot be before run finished_at"
+    )
 
 
 def _require_run_lifecycle_time(
