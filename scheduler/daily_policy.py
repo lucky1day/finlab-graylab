@@ -11,15 +11,20 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from scheduler.blackbox_scheduler_admission import (
+    DAILY_LEDGER,
     LEGACY_AUTOMATIC,
     BlackboxSchedulerAdmissionError,
+    ScheduledPredictionConfigurationError,
+    ScheduledPredictionControlPlaneDenied,
     load_blackbox_scheduler_admission,
+    require_scheduled_prediction_control_plane_with_policy_snapshot,
 )
 from scheduler.discovery import SchemeConfig, discover_schemes
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_POLICY_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v1.json"
+POLICY_V2_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
 DAILY_TASK_TYPES = {"T+1", "T+5"}
 RUNTIME_TYPES = {"native_adapter", "blackbox_v2"}
 INPUT_COMPATIBILITIES = {
@@ -36,6 +41,16 @@ APPROVED_0629_LIVE_SOURCE_SCHEMES = frozenset(
     }
 )
 EXPECTED_V2_RELEASE_OFFSETS = (0, 2, 4, 6)
+EXPECTED_POLICY_V2_RELEASE_OFFSETS = (
+    0,
+    2,
+    4,
+    6,
+    8,
+    10,
+    12,
+    14,
+)
 APPROVED_V2_HARD_RUNTIME_SEC = 120
 DEFAULT_NATIVE_HARD_RUNTIME_SEC = 600
 REQUIRED_INPUT_STARTUP_RESOURCE_COMBINATION = tuple(
@@ -47,8 +62,23 @@ EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME = {
     "one_y_t5_liq_excess_a_w350_l7_v1": 4,
     "one_y_t5_liq_excess_b_w252_l7_v1": 6,
 }
+EXPECTED_POLICY_V2_RELEASE_OFFSETS_BY_SCHEME = {
+    **EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME,
+    "ten_y_t5_maj3_k3_ic_static_v1": 8,
+    "ten_y_t5_maj4_k3_ic_static_v1": 10,
+    "ten_y_t5_maj4_k3_ic_yearly_v1": 12,
+    "ten_y_t5_say_k5_sharpe_static_v1": 14,
+}
 EXPECTED_V1_ITEM_COUNT = 21
 EXPECTED_V1_TARGET_COUNT = 25
+EXPECTED_V2_ITEM_COUNT = 25
+EXPECTED_V2_TARGET_COUNT = 29
+SUPPORTED_POLICY_VERSIONS = frozenset(
+    {
+        "daily-scheduler-policy-v1",
+        "daily-scheduler-policy-v2",
+    }
+)
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -124,6 +154,16 @@ def load_daily_policy(
         raise DailyPolicyError(f"daily policy is invalid JSON: {policy_path}") from exc
     if not isinstance(payload, dict):
         raise DailyPolicyError("daily policy root must be an object")
+    policy_version = _required_text(payload, "version")
+    if policy_version not in SUPPORTED_POLICY_VERSIONS:
+        raise DailyPolicyError(
+            f"unsupported daily policy version: {policy_version}"
+        )
+    admission_plane = (
+        LEGACY_AUTOMATIC
+        if policy_version == "daily-scheduler-policy-v1"
+        else DAILY_LEDGER
+    )
 
     discovered_configs = tuple(discovered if discovered is not None else discover_schemes())
     discovered_active_daily = tuple(
@@ -138,14 +178,31 @@ def load_daily_policy(
             "Blackbox scheduler admission is invalid; daily policy "
             "cannot select the formal occurrence set"
         ) from exc
-    active_daily = tuple(
+    selected_active_daily = tuple(
         config
         for config in discovered_active_daily
         if scheduler_admission.allows(
             config,
-            plane=LEGACY_AUTOMATIC,
+            plane=admission_plane,
         )
     )
+    for config in selected_active_daily:
+        try:
+            require_scheduled_prediction_control_plane_with_policy_snapshot(
+                config,
+                plane=admission_plane,
+                policy=scheduler_admission,
+            )
+        except (
+            ScheduledPredictionConfigurationError,
+            ScheduledPredictionControlPlaneDenied,
+        ) as exc:
+            raise DailyPolicyError(
+                "daily policy selected a Blackbox version that is not "
+                f"active or drifted: {config.scheme_id}@"
+                f"{config.scheme_version}; {exc}"
+            ) from exc
+    active_daily = selected_active_daily
     discovered_by_id = _index_discovered(active_daily)
     scheme_rows = _require_list(payload, "schemes")
     if any(not isinstance(row, dict) for row in scheme_rows):
@@ -183,7 +240,7 @@ def load_daily_policy(
         for row in scheme_rows
     }
     policy = DailySchedulerPolicy(
-        version=_required_text(payload, "version"),
+        version=policy_version,
         evidence_version=_required_text(payload, "evidence_version"),
         evidence_note=_required_text(payload, "evidence_note"),
         timezone=_required_text(payload, "timezone"),
@@ -362,7 +419,7 @@ def _validate_global_policy(
     policy: DailySchedulerPolicy,
     discovered: tuple[SchemeConfig, ...],
 ) -> None:
-    if policy.version != "daily-scheduler-policy-v1":
+    if policy.version not in SUPPORTED_POLICY_VERSIONS:
         raise DailyPolicyError(f"unsupported daily policy version: {policy.version}")
     if policy.timezone != "Asia/Shanghai":
         raise DailyPolicyError("daily policy timezone must be Asia/Shanghai")
@@ -413,13 +470,25 @@ def _validate_global_policy(
         raise DailyPolicyError("v2_timeout_sec must be 120")
     if policy.retry_max != 1:
         raise DailyPolicyError("retry max_retries must be 1")
+    expected_cardinality = {
+        "daily-scheduler-policy-v1": (
+            EXPECTED_V1_ITEM_COUNT,
+            EXPECTED_V1_TARGET_COUNT,
+        ),
+        "daily-scheduler-policy-v2": (
+            EXPECTED_V2_ITEM_COUNT,
+            EXPECTED_V2_TARGET_COUNT,
+        ),
+    }[policy.version]
     if (
-        policy.expected_item_count != EXPECTED_V1_ITEM_COUNT
-        or policy.expected_target_count != EXPECTED_V1_TARGET_COUNT
+        policy.expected_item_count != expected_cardinality[0]
+        or policy.expected_target_count != expected_cardinality[1]
     ):
+        version_label = policy.version.rsplit("-", 1)[-1]
         raise DailyPolicyError(
-            "daily-scheduler-policy-v1 cardinality must remain exactly "
-            f"{EXPECTED_V1_ITEM_COUNT} items/{EXPECTED_V1_TARGET_COUNT} targets; "
+            f"{version_label} cardinality must remain exactly "
+            f"{expected_cardinality[0]} items/"
+            f"{expected_cardinality[1]} targets; "
             "a changed active set requires a new capacity-admitted policy version"
         )
 
@@ -508,20 +577,30 @@ def _validate_global_policy(
             and item.v2_release_offset_min is not None
         )
     )
-    if v2_offsets != EXPECTED_V2_RELEASE_OFFSETS:
+    expected_offsets = (
+        EXPECTED_V2_RELEASE_OFFSETS
+        if policy.version == "daily-scheduler-policy-v1"
+        else EXPECTED_POLICY_V2_RELEASE_OFFSETS
+    )
+    if v2_offsets != expected_offsets:
         raise DailyPolicyError(
             "Blackbox V2 release offsets must be exactly "
-            f"{EXPECTED_V2_RELEASE_OFFSETS}, got {v2_offsets}"
+            f"{expected_offsets}, got {v2_offsets}"
         )
     actual_v2_mapping = {
         item.scheme_id: item.v2_release_offset_min
         for item in policy.schemes.values()
         if item.runtime_type == "blackbox_v2"
     }
-    if actual_v2_mapping != EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME:
+    expected_offset_mapping = (
+        EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME
+        if policy.version == "daily-scheduler-policy-v1"
+        else EXPECTED_POLICY_V2_RELEASE_OFFSETS_BY_SCHEME
+    )
+    if actual_v2_mapping != expected_offset_mapping:
         raise DailyPolicyError(
             "Blackbox V2 release offset mapping must be exactly "
-            f"{EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME}, "
+            f"{expected_offset_mapping}, "
             f"got {actual_v2_mapping}"
         )
     supported_classes = {
