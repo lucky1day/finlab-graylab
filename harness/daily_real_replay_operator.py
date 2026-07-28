@@ -978,7 +978,6 @@ def _execute_real_replay_on_isolated_database(
         db_last_visible_at=after_reentry["db_last_visible_at"],
         max_v2_release_offset_minutes=max(v2_release_offsets),
     )
-    _require_replay_timing_evidence(timing)
     expected_counts = {
         "successful_item_count": 25,
         "accepted_target_count": 29,
@@ -1001,8 +1000,6 @@ def _execute_real_replay_on_isolated_database(
         and run_delta == 0
         and prediction_delta == 0
         and cache_environment_restored
-        and timing.within_capacity_limit
-        and timing.within_visibility_deadline
     )
     if not passed:
         raise DailyRealReplayPreflightError(
@@ -1049,8 +1046,10 @@ def _execute_real_replay_on_isolated_database(
         v2_release_schedule_qualification=(
             "SEALED_AT_PLUS_EXACT_POLICY_OFFSET"
         ),
-        within_capacity_limit=True,
-        within_visibility_deadline=True,
+        within_capacity_limit=timing.within_capacity_limit,
+        within_visibility_deadline=(
+            timing.within_visibility_deadline
+        ),
         forced_cold_cache_qualification=(
             "PRIVATE_EMPTY_OWNER_ONLY"
         ),

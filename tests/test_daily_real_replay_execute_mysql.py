@@ -5,6 +5,7 @@ import os
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,7 +49,7 @@ def _assert_replay_epoch(frozen, *, label: str, engine=None) -> None:
     "set BFL_DAILY_REAL_REPLAY_EXECUTE_MYSQL=1 for isolated execute proof",
 )
 class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
-    def test_controlled_execute_proves_25_29_receipts_and_reentry(
+    def test_controlled_execute_proves_25_29_when_capacity_is_late(
         self,
     ) -> None:
         from harness.daily_real_replay_mysql import (
@@ -56,6 +57,7 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
         )
         from harness.daily_real_replay_operator import (
             _ReplayDispatchIdentity,
+            _build_replay_timing_evidence,
             _execute_real_replay_on_isolated_database,
             _preflight_session,
             _read_replay_execution_audit,
@@ -263,6 +265,22 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
                     )
                     or audits[-1],
                 ),
+                patch(
+                    "harness.daily_real_replay_operator."
+                    "_build_replay_timing_evidence",
+                    side_effect=lambda *args, **kwargs: replace(
+                        _build_replay_timing_evidence(
+                            *args,
+                            **kwargs,
+                        ),
+                        end_to_end_seconds=6_000.0,
+                        projected_last_visible_at=(
+                            "2026-07-28T08:10:00+08:00"
+                        ),
+                        within_capacity_limit=False,
+                        within_visibility_deadline=False,
+                    ),
+                ),
             ):
                 session.bind_dispatch_identity(identity)
                 try:
@@ -317,8 +335,8 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
         self.assertTrue(
             all(result.status == "success" for result in worker_results)
         )
-        self.assertTrue(report.within_capacity_limit)
-        self.assertTrue(report.within_visibility_deadline)
+        self.assertFalse(report.within_capacity_limit)
+        self.assertFalse(report.within_visibility_deadline)
         self.assertEqual(
             report.forced_cold_cache_qualification,
             "PRIVATE_EMPTY_OWNER_ONLY",
@@ -341,9 +359,10 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
             report.parallel_readiness_seconds,
             0,
         )
-        self.assertLessEqual(report.end_to_end_seconds, 5_100)
-        self.assertTrue(
-            report.projected_last_visible_at.endswith("+08:00")
+        self.assertEqual(report.end_to_end_seconds, 6_000.0)
+        self.assertEqual(
+            report.projected_last_visible_at,
+            "2026-07-28T08:10:00+08:00",
         )
         self.assertEqual(
             report.v2_release_offsets_minutes,
