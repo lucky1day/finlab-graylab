@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scheduler.blackbox_scheduler_admission import (
+    EXPECTED_EXACT_ADMISSIONS,
     BlackboxSchedulerAdmissionError,
 )
 from scheduler.executor import SchemeRunResult
@@ -45,21 +46,48 @@ GRAY_BLACKBOX_IDENTITIES = {
 def _cfg(
     scheme_id: str,
     *,
-    frequency: str = "daily",
+    frequency: str | None = None,
     cron: str = "3 7 * * 1-5",
     status: str = "active",
     runtime_type: str = "native_adapter",
     input_source: str | None = None,
     scheme_version: str = "version-1",
 ) -> SimpleNamespace:
+    admission = EXPECTED_EXACT_ADMISSIONS.get(
+        (scheme_id, scheme_version)
+    )
+    effective_frequency = (
+        frequency
+        or (
+            admission.frequency
+            if admission is not None
+            else "daily"
+        )
+    )
     return SimpleNamespace(
         scheme_id=scheme_id,
         scheme_version=scheme_version,
         status=status,
-        frequency=frequency,
+        frequency=effective_frequency,
+        task_type=(
+            admission.task_type
+            if admission is not None
+            else "T+1"
+        ),
+        horizon=(
+            admission.horizon
+            if admission is not None
+            else 1
+        ),
         runtime_type=runtime_type,
         input_source=input_source,
-        tenors=["5Y"],
+        tenors=[
+            (
+                admission.target_tenor
+                if admission is not None
+                else "5Y"
+            )
+        ],
         schedule=SimpleNamespace(cron=cron, timezone="Asia/Shanghai"),
     )
 

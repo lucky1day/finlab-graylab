@@ -4,72 +4,184 @@
     {
       "scheme_id": "one_y_t5_liq_excess_a_v1",
       "scheme_version": "8d583560c9f1",
-      "mode": "formal"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": [
+        "legacy_automatic",
+        "daily_ledger",
+        "direct_scheduled"
+      ]
     },
     {
       "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
       "scheme_version": "103c93bbc913",
-      "mode": "formal"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": [
+        "legacy_automatic",
+        "daily_ledger",
+        "direct_scheduled"
+      ]
     },
     {
       "scheme_id": "one_y_t5_liq_excess_a_w350_l7_v1",
       "scheme_version": "86b458c568a5",
-      "mode": "formal"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": [
+        "legacy_automatic",
+        "daily_ledger",
+        "direct_scheduled"
+      ]
     },
     {
       "scheme_id": "one_y_t5_liq_excess_b_w252_l7_v1",
       "scheme_version": "ba00891cd179",
-      "mode": "formal"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": [
+        "legacy_automatic",
+        "daily_ledger",
+        "direct_scheduled"
+      ]
     },
     {
       "scheme_id": "weekly_10y_lgbm_point_v1",
       "scheme_version": "0666a6989d6b",
-      "mode": "formal"
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_point",
+      "horizon": 1,
+      "target_tenor": "10Y",
+      "mode": "formal",
+      "capabilities": [
+        "legacy_automatic",
+        "recurring",
+        "direct_scheduled"
+      ]
     },
     {
       "scheme_id": "cgb_a4_fundseason_1y",
       "scheme_version": "04e7af163fb0",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "monthly",
+      "task_type": "monthly",
+      "horizon": 1,
+      "target_tenor": "1Y",
+      "mode": "gray",
+      "capabilities": []
     },
     {
       "scheme_id": "cgb_a4_fundseason_3y",
       "scheme_version": "89d31f8bcb95",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "monthly",
+      "task_type": "monthly",
+      "horizon": 1,
+      "target_tenor": "3Y",
+      "mode": "gray",
+      "capabilities": []
     },
     {
       "scheme_id": "cgb_a4_fundseason_5y",
       "scheme_version": "7d47e0328532",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "monthly",
+      "task_type": "monthly",
+      "horizon": 1,
+      "target_tenor": "5Y",
+      "mode": "gray",
+      "capabilities": []
     },
     {
       "scheme_id": "cgb_a4_fundseason_7y",
       "scheme_version": "ddba87ece7ae",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "monthly",
+      "task_type": "monthly",
+      "horizon": 1,
+      "target_tenor": "7Y",
+      "mode": "gray",
+      "capabilities": []
     },
     {
       "scheme_id": "cgb_a4_fundseason_10y",
       "scheme_version": "85a65700499b",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "monthly",
+      "task_type": "monthly",
+      "horizon": 1,
+      "target_tenor": "10Y",
+      "mode": "gray",
+      "capabilities": []
     },
     {
       "scheme_id": "ten_y_t5_maj3_k3_ic_static_v1",
       "scheme_version": "c54b90bcafa7",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "10Y",
+      "mode": "gray",
+      "capabilities": [
+        "daily_ledger"
+      ]
     },
     {
       "scheme_id": "ten_y_t5_maj4_k3_ic_static_v1",
       "scheme_version": "6bdabf86b4a6",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "10Y",
+      "mode": "gray",
+      "capabilities": [
+        "daily_ledger"
+      ]
     },
     {
       "scheme_id": "ten_y_t5_maj4_k3_ic_yearly_v1",
       "scheme_version": "af04567a19c3",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "10Y",
+      "mode": "gray",
+      "capabilities": [
+        "daily_ledger"
+      ]
     },
     {
       "scheme_id": "ten_y_t5_say_k5_sharpe_static_v1",
       "scheme_version": "e8137af4b655",
-      "mode": "gray"
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenor": "10Y",
+      "mode": "gray",
+      "capabilities": [
+        "daily_ledger"
+      ]
     }
   ]
 }

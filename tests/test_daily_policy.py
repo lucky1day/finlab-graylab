@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from scheduler.blackbox_scheduler_admission import (
+    LEGACY_AUTOMATIC,
     load_blackbox_scheduler_admission,
 )
 from scheduler.discovery import discover_schemes
@@ -67,7 +68,10 @@ class DailyPolicyTests(unittest.TestCase):
             {
                 config.scheme_id
                 for config in self.active_daily
-                if scheduler_admission.is_scheduled(config)
+                if scheduler_admission.allows(
+                    config,
+                    plane=LEGACY_AUTOMATIC,
+                )
             }
         )
         self.assertEqual(

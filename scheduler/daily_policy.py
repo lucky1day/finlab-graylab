@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 
 from scheduler.blackbox_scheduler_admission import (
+    LEGACY_AUTOMATIC,
     BlackboxSchedulerAdmissionError,
     load_blackbox_scheduler_admission,
 )
@@ -140,7 +141,10 @@ def load_daily_policy(
     active_daily = tuple(
         config
         for config in discovered_active_daily
-        if scheduler_admission.is_scheduled(config)
+        if scheduler_admission.allows(
+            config,
+            plane=LEGACY_AUTOMATIC,
+        )
     )
     discovered_by_id = _index_discovered(active_daily)
     scheme_rows = _require_list(payload, "schemes")

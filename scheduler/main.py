@@ -22,6 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
 from scheduler.blackbox_scheduler_admission import (
+    LEGACY_AUTOMATIC,
     RESERVED_BLACKBOX_SCHEME_IDS,
     BlackboxSchedulerAdmissionError,
     BlackboxSchedulerAdmissionPolicy,
@@ -414,7 +415,10 @@ def _automatic_prediction_schemes(
         ]
     admitted: list[SchemeConfig] = []
     for config in configs:
-        if policy.is_scheduled(config):
+        if policy.allows(
+            config,
+            plane=LEGACY_AUTOMATIC,
+        ):
             admitted.append(config)
         else:
             _log_blackbox_identity_drift(config, policy)
@@ -760,7 +764,10 @@ def run_scheduled_prediction_job(
                 "Blackbox automatic scheduling denied: "
                 f"{identity}; invalid admission: {exc}"
             ) from exc
-        if not policy.is_scheduled(scheduled_config):
+        if not policy.allows(
+            scheduled_config,
+            plane=LEGACY_AUTOMATIC,
+        ):
             mode = policy.mode(scheduled_config) or "unlisted"
             _log_blackbox_identity_drift(
                 scheduled_config,
