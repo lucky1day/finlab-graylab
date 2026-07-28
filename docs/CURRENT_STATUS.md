@@ -21,7 +21,7 @@
 | Native V1 | 保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
 | Blackbox V2 技术入库 | Intake、DataBridge 三文件父快照、显式平台输入、七个 Gate、零写库 check-only、预测和 no-persist 回测已形成稳定路径 |
 | Blackbox V2 生产路径 | 一个真实周频方案、四个日频方案和本批五个月频方案已完成各自专项生产灰度；尚未形成面向任意新方案的通用生产授权 |
-| 日频 08:00 保障 | 用户已批准以现有 ledger 扩展到 25 execution / 29 target；当前仍是 21/25 recorder 证据，真实25/29和生产切换尚未完成 |
+| 日频 08:00 保障 | 25 execution / 29 target（17 Native + 8 V2）代码候选已完成到实施分支`8ee1f52`、开发分支等价`f8df6f4`；真实forced-cold replay、production-bound admission与生产切换待独立维护授权 |
 | 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
 
 ## 周度历史与月度 Actual 对账状态
@@ -44,9 +44,9 @@
 - 本批 `scheduled_live=0`，三层 ledger 为 `0/0/0`；rollout=`legacy`、admission=`BLOCKED`，没有启动或修改 scheduler。手工灰度入库完成不授予自动调度或正式日批准入。
 - 四方案代码已从授权提交按精确 bytes 重基到当前开发基线；四个
   `scheme_id + scheme_version` 均在版本化 scheduler admission 中冻结为
-  `gray`。仓库 active daily discovery 为 25 item/29 target，但正式
-  daily policy、capacity candidate、真实 replay 和 DailyRuntime 仍只接收
-  21 item/25 target；四方案不进入正式 occurrence。
+  `gray`。代码候选已将daily policy、capacity contract和DailyRuntime统一为
+  25 item/29 target；历史21 item/25 target recorder仅为旧证据。生产仍为
+  legacy/BLOCKED，四方案尚未进入真实ledger occurrence。
 - 四个 active 配置中的 `schedule_cron` 只是交付元数据，不构成 scheduler
   授权，也不授予 legacy scheduler 执行权限。
 - legacy `run_all_prediction_jobs` / `--run-once predictions` 仍是绕过
@@ -107,21 +107,22 @@
 - 权威设计和逐commit计划见
   [全部 Active 方案实盘信号 MVP](superpowers/specs/2026-07-28-all-active-signal-production-mvp-design.md)
   和[实施计划](superpowers/plans/2026-07-28-all-active-signal-production-mvp.md)。
+- **当前结论：代码候选完成，真实 replay/切换待授权。** 实施分支`8ee1f52`、开发分支等价`f8df6f4`已闭合gray/formal隔离、25/29 policy v2、临时MySQL、容量契约、生产入口绑定和
+  旧occurrence拒绝；这不等于真实25/29联跑或生产MVP通过。
 
 - `migration017 namespace digest` 已由开发提交 `f93b154` 闭合：migration preflight 和 `APPLYING` inspect 会读取同 schema 的 FK/CHECK 保留名占用，非法占用在业务 DDL 前 fail-closed，状态占用同时进入 recovery digest；该结论绑定当前 Mac 的 MySQL 8.0.45、`lower_case_table_names=2`。
 - `migration017 real MySQL recovery` 已由开发提交 `66e7a6b` 闭合：显式 opt-in 测试在本机隔离 MySQL 8.0.45、`lower_case_table_names=2` 上覆盖正常 public apply、首个 DDL 前中断、前两个 DDL 已 implicit commit 的中段恢复、DDL 完成但 history 未标记、定义漂移拒绝、FK/CHECK 大小写命名冲突 preflight 与 digest fence，以及 accent、跨约束类型和跨 schema 命名语义；8 个场景全部通过，临时进程和 datadir 均已回收。该结论没有应用生产迁移，不代表下一项 canonical migration runner 已完成。
 - `canonical migration runner` 已由 `f3a5720`、`1f1019b`、`8ee916f` 与 `3c96f58` 闭合：唯一行为实现是 caller-supplied `Engine` 的 `migrations.runner`，唯一受控 operator wrapper 是 `scripts/apply_migrations.py`。隔离 MySQL CLI 已证明 normal apply/no-op、017 中段 recovery 和 018 两类 recovery；所有 CLI 写路径在建 Engine 前要求 expected database/server UUID，并在首个写动作前精确核验连接身份。inspect 保持只读且无需 identity 参数。隔离测试未应用生产 migration，且不等于 production-shaped sanitized clone 演练；后者仍是 `migrations018/019/020` 的待办。当前 CLI apply/no-op 尚无 durable signed operator report。
-- 日频生产化主线已由用户重新排序为全部active日频25/29功能MVP；exact
-  gap plan 已完成，下一项是尚未开始的 Task 2 gray/formal自动准入，
-  随后才是25/29 policy和真实同机replay。
-  0629 adapter、019/020、归档和20+20均转为MVP上线后增强项。
-- 受控 recorder 已在隔离 MySQL 验证 21 item/25 target 的账本、双 lane、幂等、claim、原子提交和 watchdog；该证据没有执行真实 17+4 算法。
+- 21 item/25 target recorder仅是历史基线；临时MySQL已验证policy v2的
+  25 item/29 target功能，尚未执行真实17 Native+8 V2同机联跑。
 - 四个真实 V2 sealed delivery 的冻结输入、确定性、超时、generation fence、late 后继续执行和失败隔离已验证；隔离 replay 的 runtime/session/identity/process fence 和 `ProcessStartGuard` 已接线。
-- `python -m harness daily-real-replay --check-only` 只读预检可运行，但已安装 backend LaunchAgent 缺少合法 coordinator mode，当前仍 fail-closed 为 `CONTROL_PLANE_BOUNDARY_UNAVAILABLE`。
+- replay preflight以`CONTROL_PLANE_BOUNDARY_UNAVAILABLE` fail-closed：三份BFL plist缺coordinator mode，scheduler cache root为`0755`且crash-loop，
+  source配置缺键。需独立授权且只操作BFL三服务，不得触碰BondProjectPro。
 - production 仍为 migration 017、rollout=`legacy`、admission=`BLOCKED`；ledger 三层账本和 generation 计数均为 0，未发生变化。
-- Task 2、25/29生产policy、production capacity admission和生产切换均未
-  完成；不得把只读缺口计划器表述为自动调度或生产MVP已经上线。
-- execute-only replay、真实 21 算法同轮、07:55 容量、生产同构 clone migration、generation 长期归档、故障注入和连续 10 日均未通过；详细前置排序见[TODO](TODO.md)。
+- 最前顺序：仅BFL三服务维护→真实forced-cold 25/29→production-bound
+  admission→ledger switch→首日29/29；execute-only、07:55和migration018
+  尚未通过，不能声称MVP上线。
+- 周/月调度、29个live缺口、`week_id=202625`、20+20/十日、019/020、归档、0629 adapter和统计P95均后置；详见[TODO](TODO.md)。
 
 ## Native V1 当前摘要
 

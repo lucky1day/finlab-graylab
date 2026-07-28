@@ -48,28 +48,30 @@
 和
 [实施计划](superpowers/plans/2026-07-28-all-active-signal-production-mvp.md)：
 
-1. **已完成 Task 1**：建立只读、内容寻址的信号gap plan
-   （`signal-gap-plan`）；当前只读快照为
-   `44 active / 11,652 expected / 11,623 present / 29 open`。
-   `--as-of` 是包含当日的确定性上界；当
-   `refresh_date=2026-07-28` 时，29个gap精确分为
-   25 `GRAY_LIVE_GAP`、0 `BLOCKED_NO_GENERATION` 和
-   4 `BLOCKED_DATA_CONTRACT`。
-2. **尚未开始 Task 2**：建立按控制面隔离的gray/formal准入：daily gray只进ledger，monthly
-   gray随后只进自然频率recurring scheduling，同时关闭aggregate绕过；
-3. daily policy从21/25扩展为25/29；
-4. 在临时MySQL证明25/29账本、失败隔离、重入和08:00 write-once；
-5. 以一次同机真实forced-cold 25/29隔离rehearsal和生产identity
-   execute-only observation形成保留expiry的完整`ADMITTED`；
-6. 演练migration018、storage、plist和epoch控制面；
-7. 只补当前29个live缺口；没有合法generation时fail-closed；
-8. 前置全部通过并取得部署授权后，单次从legacy切换ledger；
-9. 首个合法ledger交易日验收29/29，07:55前可见、08:00 SLA=`MET`；
-10. 随后收口周频5个缺口和周/月自然调度验收。
+**当前状态：代码候选完成，真实 replay/切换待授权。** 开发代码已完成到
+实施分支`8ee1f52`、开发分支等价`f8df6f4`：只读、内容寻址的信号gap plan、按控制面隔离的gray/formal准入、
+daily policy从21/25扩展为25/29、
+临时MySQL账本验证、forced-cold 25/29容量候选契约、policy v2生产入口绑定和旧
+occurrence拒绝均已落地。权威日频口径为25 execution/29 target（17 Native +
+8 V2）。生产仍为rollout=`legacy`、admission=`BLOCKED`，未部署、未切换epoch。
+
+当前最前执行顺序固定为：
+
+1. 取得独立维护授权后，仅维护BFL的backend、scheduler、v2-preflight三项服务：
+   补齐三份已安装plist的coordinator mode，修复scheduler cache root为`0755`
+   导致的crash-loop，并补齐source配置缺失键；不得修改或重启BondProjectPro。
+   public replay preflight在这些条件闭合前继续以
+   `CONTROL_PLANE_BOUNDARY_UNAVAILABLE` fail-closed。
+2. 在同一台Mac Studio执行真实forced-cold 25/29联跑，验收17 Native +
+   8 V2、29/29原子提交、无duplicate/partial/orphan及重入零新增。
+3. 完成绑定生产MySQL identity的execute-only observation，生成有签名、expiry
+   和replay floor的production-bound `ADMITTED`。
+4. 演练并应用migration018及控制面前置后，取得部署授权，单次从legacy切换ledger。
+5. 首个合法ledger交易日验收29/29，07:55前可见、08:00 SLA=`MET`。
 
 当前只读基线为 canonical backtest 10,309条且完整；live应有1,343、
 已有1,314、缺29，其中日频24、周频5、月频0。29个gap尚未写入，
-业务实施阶段 6（本计划 Task 7）才执行受控补缺。历史漏跑只能补
+待上述日频切换主线闭合后再执行受控补缺。历史漏跑只能补
 `gray_live`，不得倒签`scheduled_live`；新调度结果统一写
 `scheduled_live`。2026-07-28是决策/目标日期；实际scheduled起点不得
 早于machine-global ledger epoch。
@@ -138,11 +140,13 @@ Native、actuals、health 和 watchdog 继续。
 
 以下工作不再阻断本次功能MVP，但必须继续逐项完成：
 
-1. 三个0629公共generation adapter和逐方案CompareGate；
-2. migrations019/020、generation归档、去重、磁盘上限和恢复；
-3. 20次forced-cold、20次revision/suffix与扩展故障注入；
-4. 连续生产统计和P95可靠性证据；
-5. 周频/月频统一迁入未来的多频率occurrence账本。
+1. 周/月自动调度及独立recurring admission；
+2. 当前29个历史live缺口与`week_id=202625`上游日历契约冲突；
+3. 三个0629公共generation adapter和逐方案CompareGate；
+4. migrations019/020、generation归档、去重、磁盘上限和恢复；
+5. 20次forced-cold、20次revision/suffix、连续十日与扩展故障注入；
+6. 连续生产统计和P95可靠性证据；
+7. 周频/月频统一迁入未来的多频率occurrence账本。
 
 一次forced-cold admission只能证明当前精确候选达到工程发布条件，不能
 表述为已取得统计P95或长期稳定性证明。
