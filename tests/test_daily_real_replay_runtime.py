@@ -430,6 +430,68 @@ def _runtime_repository(snapshot_or_provider):
 
 
 class DailyRealReplayRuntimeContractTests(unittest.TestCase):
+    def test_occurrence_builder_accepts_explicit_policy_v2_matrix(
+        self,
+    ) -> None:
+        from harness.daily_real_replay import (
+            _build_real_replay_occurrence_args,
+        )
+        from scheduler.daily_policy import POLICY_V2_PATH
+
+        policy, configs = _real_policy_and_configs(POLICY_V2_PATH)
+        with _replay_inputs() as inputs:
+            occurrence = _build_real_replay_occurrence_args(
+                policy=policy,
+                configs=configs,
+                inputs=inputs,
+                schedule_key="isolated-real-replay-v1-policy-v2",
+                opened_at=datetime.now(timezone.utc),
+                epoch_payload=TEST_EPOCH,
+            )
+
+        projection = occurrence["policy_json"][
+            "real_replay_projection"
+        ]
+        self.assertEqual(
+            (
+                len(occurrence["item_policy_by_base"]),
+                len(occurrence["target_dates"]),
+            ),
+            (25, 29),
+        )
+        self.assertEqual(
+            sorted(
+                int(item.v2_release_offset_min or 0)
+                for item in policy.schemes.values()
+                if item.runtime_type == "blackbox_v2"
+            ),
+            [0, 2, 4, 6, 8, 10, 12, 14],
+        )
+        self.assertEqual(
+            projection["expected_item_count"],
+            25,
+        )
+        self.assertEqual(
+            projection["expected_target_count"],
+            29,
+        )
+        self.assertEqual(
+            projection["native_item_count"],
+            17,
+        )
+        self.assertEqual(
+            projection["blackbox_v2_item_count"],
+            8,
+        )
+        self.assertEqual(
+            projection["qualification"],
+            "REHEARSAL",
+        )
+        self.assertEqual(
+            projection["capacity_qualification"],
+            "EXCLUDED",
+        )
+
     def test_public_surface_has_no_dependency_injection_seams(
         self,
     ) -> None:

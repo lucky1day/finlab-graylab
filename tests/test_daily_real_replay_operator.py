@@ -13,6 +13,74 @@ from unittest.mock import MagicMock, Mock, patch
 
 
 class DailyRealReplayOperatorTests(unittest.TestCase):
+    def test_execute_only_keeps_preflight_session_and_fixed_v2_policy(
+        self,
+    ) -> None:
+        import inspect
+
+        from harness.daily_real_replay_operator import (
+            run_real_replay_execute,
+        )
+        from scheduler.daily_policy import POLICY_V2_PATH
+
+        session = MagicMock()
+        report = SimpleNamespace(
+            qualification="EXCLUDED",
+            expected_item_count=25,
+            expected_target_count=29,
+        )
+        execution = SimpleNamespace(
+            status="REHEARSAL_PASSED",
+            qualification="REHEARSAL",
+            capacity_qualification="EXCLUDED",
+        )
+        with (
+            patch(
+                "harness.daily_real_replay_operator."
+                "_require_operator_service_uid",
+                return_value=501,
+            ),
+            patch(
+                "harness.daily_real_replay_operator."
+                "_preflight_session",
+                return_value=nullcontext(session),
+            ),
+            patch(
+                "harness.daily_real_replay_operator."
+                "_run_real_replay_preflight_locked",
+                return_value=report,
+            ) as preflight,
+            patch(
+                "harness.daily_real_replay_operator."
+                "_execute_real_replay_candidate",
+                return_value=execution,
+            ) as execute,
+        ):
+            result = run_real_replay_execute(
+                native_manifest="/tmp/native.json",
+                databridge_manifest="/tmp/databridge.json",
+            )
+
+        self.assertIs(result, execution)
+        self.assertEqual(
+            tuple(inspect.signature(run_real_replay_execute).parameters),
+            ("native_manifest", "databridge_manifest"),
+        )
+        preflight.assert_called_once_with(
+            session,
+            service_uid=501,
+            native_manifest="/tmp/native.json",
+            databridge_manifest="/tmp/databridge.json",
+            policy_path=POLICY_V2_PATH,
+        )
+        execute.assert_called_once_with(
+            session,
+            preflight_report=report,
+            native_manifest="/tmp/native.json",
+            databridge_manifest="/tmp/databridge.json",
+            policy_path=POLICY_V2_PATH,
+        )
+
     def _candidate(self):
         from harness.daily_real_replay_operator import ReplayCandidateIdentity
 
@@ -88,7 +156,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             for index in range(21)
         )
         return ReplayDefinitionSnapshot(
-            policy_version="daily-policy-v1",
+            policy_version="daily-scheduler-policy-v1",
             policy_sha256="c" * 64,
             expected_item_count=21,
             expected_target_count=25,
@@ -1235,6 +1303,71 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         )
         self.assertNotIn("message", payload)
         self.assertNotIn("password", stdout.getvalue().casefold())
+
+    def test_cli_requires_exactly_one_replay_action(self) -> None:
+        from harness.cli import main
+
+        common = [
+            "daily-real-replay",
+            "--native-manifest",
+            "/private/native/manifest.json",
+            "--databridge-manifest",
+            "/private/databridge/manifest.json",
+        ]
+        for action_flags in ((), ("--check-only", "--execute-only")):
+            with (
+                self.subTest(action_flags=action_flags),
+                self.assertRaises(SystemExit) as raised,
+            ):
+                main([*common, *action_flags])
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_cli_execute_only_emits_rehearsal_report(self) -> None:
+        from harness.cli import main
+
+        report = {
+            "schema_version": "daily-real-replay-execution-v1",
+            "status": "REHEARSAL_PASSED",
+            "qualification": "REHEARSAL",
+            "capacity_qualification": "EXCLUDED",
+        }
+        stdout = io.StringIO()
+        with (
+            patch(
+                "harness.cli.run_real_replay_execute",
+                return_value=report,
+            ) as execute,
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(
+                [
+                    "daily-real-replay",
+                    "--execute-only",
+                    "--native-manifest",
+                    "/private/native/manifest.json",
+                    "--databridge-manifest",
+                    "/private/databridge/manifest.json",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            json.loads(stdout.getvalue()),
+            {
+                "schema_version": "daily-real-replay-execution-v1",
+                "status": "REHEARSAL_PASSED",
+                "qualification": "REHEARSAL",
+                "capacity_qualification": "EXCLUDED",
+            },
+        )
+        execute.assert_called_once_with(
+            native_manifest=__import__("pathlib").Path(
+                "/private/native/manifest.json"
+            ),
+            databridge_manifest=__import__("pathlib").Path(
+                "/private/databridge/manifest.json"
+            ),
+        )
 
 
 if __name__ == "__main__":

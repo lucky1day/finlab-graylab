@@ -14,6 +14,7 @@ from harness.authorization import (
 )
 from harness.daily_real_replay_operator import (
     DailyRealReplayPreflightError,
+    run_real_replay_execute,
     run_real_replay_preflight,
 )
 from harness.context import GateContext
@@ -100,8 +101,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "daily-real-replay":
+        execute_only = bool(args.execute_only)
+        schema_version = (
+            "daily-real-replay-execution-v1"
+            if execute_only
+            else "daily-real-replay-preflight-v1"
+        )
         try:
-            report = run_real_replay_preflight(
+            runner = (
+                run_real_replay_execute
+                if execute_only
+                else run_real_replay_preflight
+            )
+            report = runner(
                 native_manifest=args.native_manifest,
                 databridge_manifest=args.databridge_manifest,
             )
@@ -109,8 +121,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 json.dumps(
                     {
-                        "schema_version":
-                            "daily-real-replay-preflight-v1",
+                        "schema_version": schema_version,
                         "status": "BLOCKED",
                         "failure_code": exc.code,
                     },
@@ -123,10 +134,13 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 json.dumps(
                     {
-                        "schema_version":
-                            "daily-real-replay-preflight-v1",
+                        "schema_version": schema_version,
                         "status": "ERROR",
-                        "failure_code": "PREFLIGHT_INTERNAL_ERROR",
+                        "failure_code": (
+                            "REPLAY_EXECUTION_INTERNAL_ERROR"
+                            if execute_only
+                            else "PREFLIGHT_INTERNAL_ERROR"
+                        ),
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -268,10 +282,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     replay_parser = subparsers.add_parser("daily-real-replay")
-    replay_parser.add_argument(
+    replay_action = replay_parser.add_mutually_exclusive_group(
+        required=True,
+    )
+    replay_action.add_argument(
         "--check-only",
         action="store_true",
-        required=True,
+    )
+    replay_action.add_argument(
+        "--execute-only",
+        action="store_true",
     )
     replay_parser.add_argument(
         "--native-manifest",

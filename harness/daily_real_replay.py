@@ -33,12 +33,18 @@ from scheduler.daily_control_plane_probe import (
 from scheduler.daily_ledger import freeze_active_daily_registry
 from scheduler.daily_policy import (
     APPROVED_0629_LIVE_SOURCE_SCHEMES,
+    DEFAULT_POLICY_PATH,
+    EXPECTED_POLICY_V2_RELEASE_OFFSETS_BY_SCHEME,
     EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME,
+    POLICY_V2_PATH,
     load_daily_policy,
 )
 from scheduler.daily_runtime import _policy_payload
 from scheduler.discovery import discover_schemes
 from scheduler.process_control import ProcessStartGuard
+from scheduler.repository import (
+    create_input_generation as _repository_create_input_generation,
+)
 from scheduler.repository import (
     create_schedule_occurrence as _repository_create_schedule_occurrence,
 )
@@ -53,6 +59,10 @@ from scheduler.repository import (
 from scheduler.repository import (
     register_seal_and_bind_schedule_occurrence_generation
     as _repository_register_generation,
+)
+from scheduler.repository import (
+    seal_and_bind_schedule_occurrence_generation
+    as _repository_seal_and_bind_generation,
 )
 from shared.calendar_service import FrozenCalendarService
 from shared.daily_coordinator_mode import (
@@ -97,6 +107,17 @@ class _RealReplayDispatchIdentityDrift(DailyRealReplayError):
 
 
 @dataclass(frozen=True)
+class _RealReplayPolicyShape:
+    """受支持 replay policy 的精确、不可变基数与 V2 身份。"""
+
+    item_count: int
+    target_count: int
+    native_count: int
+    v2_count: int
+    v2_offsets_by_scheme: Mapping[str, int]
+
+
+@dataclass(frozen=True)
 class DailyRealReplayInputs:
     """一组已重新打开并交叉验证的真实联跑 generation。"""
 
@@ -104,6 +125,84 @@ class DailyRealReplayInputs:
     databridge_generation: DataBridgeGenerationContext
     business_date: str
     feature_date: str
+
+
+def _real_replay_policy_shape(policy: Any) -> _RealReplayPolicyShape:
+    """只接受仓库明确支持的 V1/V2 日频 policy 形状。"""
+    version = str(getattr(policy, "version", ""))
+    if version == "daily-scheduler-policy-v1":
+        expected_items = EXPECTED_ITEM_COUNT
+        expected_targets = EXPECTED_TARGET_COUNT
+        expected_v2 = dict(EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME)
+    elif version == "daily-scheduler-policy-v2":
+        expected_items = 25
+        expected_targets = 29
+        expected_v2 = dict(
+            EXPECTED_POLICY_V2_RELEASE_OFFSETS_BY_SCHEME
+        )
+    else:
+        raise DailyRealReplayError(
+            "real replay policy version is unsupported"
+        )
+    schemes = getattr(policy, "schemes", None)
+    if not isinstance(schemes, Mapping):
+        raise DailyRealReplayError(
+            "real replay policy schemes are unavailable"
+        )
+    native_ids = {
+        scheme_id
+        for scheme_id, item in schemes.items()
+        if getattr(item, "runtime_type", None) == "native_adapter"
+    }
+    v2_ids = {
+        scheme_id
+        for scheme_id, item in schemes.items()
+        if getattr(item, "runtime_type", None) == "blackbox_v2"
+    }
+    actual_offsets = {
+        scheme_id: int(
+            getattr(schemes[scheme_id], "v2_release_offset_min", 0)
+            or 0
+        )
+        for scheme_id in v2_ids
+    }
+    target_count = sum(
+        len(tuple(getattr(item, "target_tenors", ())))
+        for item in schemes.values()
+    )
+    if (
+        len(schemes) != expected_items
+        or int(getattr(policy, "expected_item_count", -1))
+        != expected_items
+        or target_count != expected_targets
+        or int(getattr(policy, "expected_target_count", -1))
+        != expected_targets
+        or len(native_ids) != EXPECTED_NATIVE_COUNT
+        or v2_ids != set(expected_v2)
+        or actual_offsets != expected_v2
+    ):
+        raise DailyRealReplayError(
+            "real replay policy cardinality or V2 identity drifted"
+        )
+    return _RealReplayPolicyShape(
+        item_count=expected_items,
+        target_count=expected_targets,
+        native_count=len(native_ids),
+        v2_count=len(v2_ids),
+        v2_offsets_by_scheme=expected_v2,
+    )
+
+
+def _real_replay_policy_path(policy: Any) -> Path:
+    """把受支持 policy version 映射到唯一仓库文件。"""
+    version = str(getattr(policy, "version", ""))
+    if version == "daily-scheduler-policy-v1":
+        return DEFAULT_POLICY_PATH
+    if version == "daily-scheduler-policy-v2":
+        return POLICY_V2_PATH
+    raise DailyRealReplayError(
+        "real replay policy version is unsupported"
+    )
 
 
 DailyRealReplayDatabaseIdentity = VerifiedIsolatedDailyDatabase
@@ -357,6 +456,7 @@ class RealReplayRuntime:
         operator_session: object | None = None,
     ) -> RealReplayRuntimeResult:
         """使用自有锁或已验证 operator 会话运行同一执行循环。"""
+        shape = _real_replay_policy_shape(self._policy)
         if operator_session is not None:
             operator_session = self._require_operator_session(
                 operator_session
@@ -452,7 +552,7 @@ class RealReplayRuntime:
                     continue
                 if (
                     snapshot.actual_accepted_target_count
-                    == EXPECTED_TARGET_COUNT
+                    == shape.target_count
                     and not active
                 ):
                     if stop_status in {
@@ -922,7 +1022,9 @@ class RealReplayRuntime:
             accepted_target_count=int(
                 snapshot.actual_accepted_target_count
             ),
-            expected_target_count=EXPECTED_TARGET_COUNT,
+            expected_target_count=_real_replay_policy_shape(
+                self._policy
+            ).target_count,
             dispatched_scheme_ids=dispatched_scheme_ids,
             failed_scheme_ids=failed,
             blocked_scheme_ids=blocked_scheme_ids,
@@ -1056,10 +1158,7 @@ def _build_real_replay_occurrence_args(
         raise DailyRealReplayError(
             "real replay config identities differ from policy"
         )
-    if len(policy.schemes) != EXPECTED_ITEM_COUNT:
-        raise DailyRealReplayError(
-            "real replay policy does not contain 21 items"
-        )
+    shape = _real_replay_policy_shape(policy)
 
     calendar = FrozenCalendarService(inputs.native_generation)
     if not calendar.is_trading_day(inputs.business_date):
@@ -1081,12 +1180,15 @@ def _build_real_replay_occurrence_args(
         for item in policy.schemes.values()
         if item.runtime_type == "blackbox_v2"
     ]
-    if sorted(release_offsets) != [0, 2, 4, 6]:
+    if sorted(release_offsets) != sorted(
+        shape.v2_offsets_by_scheme.values()
+    ):
         raise DailyRealReplayError(
-            "real replay V2 release offsets differ from 0/2/4/6"
+            "real replay V2 release offsets drifted"
         )
-    release_base = normalized_opened_at - timedelta(
-        minutes=max(release_offsets)
+    databridge_release_base = _iso_utc_datetime(
+        inputs.databridge_generation.sealed_at,
+        field="databridge.sealed_at",
     )
     replay_cutoff = _next_shanghai_midnight(normalized_opened_at)
 
@@ -1105,7 +1207,8 @@ def _build_real_replay_occurrence_args(
             scheme_policy.v2_release_offset_min or 0
         )
         release_at = (
-            release_base + timedelta(minutes=release_offset)
+            databridge_release_base
+            + timedelta(minutes=release_offset)
             if scheme_policy.runtime_type == "blackbox_v2"
             else normalized_opened_at
         )
@@ -1121,9 +1224,9 @@ def _build_real_replay_occurrence_args(
             "deadline_at": replay_cutoff,
         }
 
-    if len(target_dates) != EXPECTED_TARGET_COUNT:
+    if len(target_dates) != shape.target_count:
         raise DailyRealReplayError(
-            "real replay policy does not contain 25 targets"
+            "real replay policy target cardinality drifted"
         )
     policy_json = _policy_payload(
         policy,
@@ -1137,12 +1240,12 @@ def _build_real_replay_occurrence_args(
             "live_source_0629",
             "databridge_v1",
         }
-        or input_modes.get("databridge_v1", 0) != EXPECTED_V2_COUNT
+        or input_modes.get("databridge_v1", 0) != shape.v2_count
         or (
             input_modes.get("generation_v1", 0)
             + input_modes.get("live_source_0629", 0)
         )
-        != EXPECTED_NATIVE_COUNT
+        != shape.native_count
     ):
         raise DailyRealReplayError(
             "real replay input compatibility matrix drifted: "
@@ -1152,6 +1255,7 @@ def _build_real_replay_occurrence_args(
         policy_json,
         expected_policy_schemes=policy.schemes,
         expected_configs=configs,
+        expected_v2_offsets=shape.v2_offsets_by_scheme,
     )
     cache_scheme_ids = sorted(
         str(row["scheme_id"])
@@ -1162,15 +1266,25 @@ def _build_real_replay_occurrence_args(
         row["cache_spec_fingerprint"] = None
     policy_json["real_replay_projection"] = {
         "schema_version": REAL_REPLAY_SCHEMA_VERSION,
-        "purpose": "isolated_21_item_25_target_function_replay",
-        "algorithm_execution":
-            "real_17_native_plus_4_blackbox_v2",
+        "purpose": (
+            f"isolated_{shape.item_count}_item_"
+            f"{shape.target_count}_target_function_replay"
+        ),
+        "algorithm_execution": (
+            f"real_{shape.native_count}_native_plus_"
+            f"{shape.v2_count}_blackbox_v2"
+        ),
         "persistence": "isolated_mysql_only",
+        "qualification": "REHEARSAL",
         "capacity_qualification": "EXCLUDED",
         "sla_qualification": "EXCLUDED",
         "cache_completion_qualification": "EXCLUDED",
         "exclusion_reason": "FUNCTION_REPLAY_NOT_PRODUCTION_ADMISSION",
         "excluded_cache_scheme_ids": cache_scheme_ids,
+        "expected_item_count": shape.item_count,
+        "expected_target_count": shape.target_count,
+        "native_item_count": shape.native_count,
+        "blackbox_v2_item_count": shape.v2_count,
         "native_generation_id":
             inputs.native_generation.generation_id,
         "native_manifest_sha256":
@@ -1199,49 +1313,91 @@ def register_real_replay_generations(
     occurrence_id: int,
     inputs: DailyRealReplayInputs,
     isolation: DailyRealReplayDatabaseIdentity,
+    policy: Any | None = None,
+    preserve_manifest_sealed_at: bool = False,
 ) -> dict[str, tuple[str, int]]:
     """按 Native 父、DataBridge 子顺序登记并绑定真实 manifest。"""
     _recheck_real_replay_database(engine, isolation)
     inputs = _revalidate_real_replay_inputs(inputs)
     native = inputs.native_generation
     databridge = inputs.databridge_generation
-    native_binding = _repository_register_generation(
-        engine,
-        occurrence_id=int(occurrence_id),
-        generation_id=native.generation_id,
-        generation_type=native.generation_type,
-        business_date=native.business_date,
-        feature_date=native.feature_date,
-        readiness_basis=native.readiness_basis,
-        source_commit_token=native.source_commit_token,
-        dataset_content_id=native.dataset_content_id,
-        schema_version=native.schema_version,
-        exporter_version=native.exporter_version,
-        manifest_uri=str(native.manifest_path),
-        manifest_sha256=native.manifest_sha256,
-        expected_feature_date=inputs.feature_date,
+    shape = (
+        _real_replay_policy_shape(policy)
+        if policy is not None
+        else _RealReplayPolicyShape(
+            item_count=EXPECTED_ITEM_COUNT,
+            target_count=EXPECTED_TARGET_COUNT,
+            native_count=EXPECTED_NATIVE_COUNT,
+            v2_count=EXPECTED_V2_COUNT,
+            v2_offsets_by_scheme=dict(
+                EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME
+            ),
+        )
     )
-    databridge_binding = _repository_register_generation(
-        engine,
-        occurrence_id=int(occurrence_id),
-        generation_id=databridge.generation_id,
-        generation_type=databridge.generation_type,
-        business_date=databridge.business_date,
-        feature_date=databridge.feature_date,
-        readiness_basis=databridge.readiness_basis,
-        source_commit_token=databridge.source_commit_token,
-        dataset_content_id=databridge.dataset_content_id,
-        schema_version=databridge.schema_version,
-        exporter_version=databridge.exporter_version,
-        manifest_uri=str(databridge.manifest_path),
-        manifest_sha256=databridge.manifest_sha256,
-        native_generation_id=native.generation_id,
-        native_manifest_sha256=native.manifest_sha256,
-        expected_feature_date=inputs.feature_date,
+    generation_rows = (
+        (native, {}),
+        (
+            databridge,
+            {
+                "native_generation_id": native.generation_id,
+                "native_manifest_sha256": native.manifest_sha256,
+            },
+        ),
     )
+    bindings: list[tuple[str, int]] = []
+    for generation, parent_fields in generation_rows:
+        registration = {
+            "generation_id": generation.generation_id,
+            "generation_type": generation.generation_type,
+            "business_date": generation.business_date,
+            "feature_date": generation.feature_date,
+            "readiness_basis": generation.readiness_basis,
+            "source_commit_token": generation.source_commit_token,
+            "dataset_content_id": generation.dataset_content_id,
+            "schema_version": generation.schema_version,
+            "exporter_version": generation.exporter_version,
+            "manifest_uri": str(generation.manifest_path),
+            "manifest_sha256": generation.manifest_sha256,
+            **parent_fields,
+        }
+        if preserve_manifest_sealed_at:
+            _repository_create_input_generation(
+                engine,
+                **registration,
+            )
+            bindings.append(
+                _repository_seal_and_bind_generation(
+                    engine,
+                    occurrence_id=int(occurrence_id),
+                    generation_id=generation.generation_id,
+                    expected_feature_date=inputs.feature_date,
+                    sealed_at=_iso_utc_datetime(
+                        generation.sealed_at,
+                        field=(
+                            f"{generation.generation_type}.sealed_at"
+                        ),
+                    ),
+                )
+            )
+        else:
+            bindings.append(
+                _repository_register_generation(
+                    engine,
+                    occurrence_id=int(occurrence_id),
+                    **registration,
+                    expected_feature_date=inputs.feature_date,
+                )
+            )
+    native_binding, databridge_binding = bindings
     expected = {
-        "native_source": (native.generation_id, 17),
-        "databridge_v1": (databridge.generation_id, 4),
+        "native_source": (
+            native.generation_id,
+            shape.native_count,
+        ),
+        "databridge_v1": (
+            databridge.generation_id,
+            shape.v2_count,
+        ),
     }
     actual = {
         "native_source": native_binding,
@@ -1339,6 +1495,7 @@ def _assert_real_replay_runtime_snapshot(
     inputs: DailyRealReplayInputs,
 ) -> None:
     """拒绝任何会把功能回放冒充 SLA/容量证据的冻结账本。"""
+    shape = _real_replay_policy_shape(policy)
     occurrence = getattr(snapshot, "occurrence", None)
     if (
         occurrence is None
@@ -1353,15 +1510,15 @@ def _assert_real_replay_runtime_snapshot(
         )
     if (
         int(getattr(occurrence, "expected_item_count", -1))
-        != EXPECTED_ITEM_COUNT
+        != shape.item_count
         or int(getattr(occurrence, "expected_target_count", -1))
-        != EXPECTED_TARGET_COUNT
+        != shape.target_count
         or int(getattr(snapshot, "actual_item_count", -1))
-        != EXPECTED_ITEM_COUNT
+        != shape.item_count
         or int(getattr(snapshot, "actual_target_count", -1))
-        != EXPECTED_TARGET_COUNT
+        != shape.target_count
         or len(tuple(getattr(snapshot, "items", ())))
-        != EXPECTED_ITEM_COUNT
+        != shape.item_count
     ):
         raise DailyRealReplayError(
             "real replay runtime ledger cardinality drifted"
@@ -1374,15 +1531,25 @@ def _assert_real_replay_runtime_snapshot(
     )
     expected_projection = {
         "schema_version": REAL_REPLAY_SCHEMA_VERSION,
-        "purpose": "isolated_21_item_25_target_function_replay",
-        "algorithm_execution":
-            "real_17_native_plus_4_blackbox_v2",
+        "purpose": (
+            f"isolated_{shape.item_count}_item_"
+            f"{shape.target_count}_target_function_replay"
+        ),
+        "algorithm_execution": (
+            f"real_{shape.native_count}_native_plus_"
+            f"{shape.v2_count}_blackbox_v2"
+        ),
         "persistence": "isolated_mysql_only",
+        "qualification": "REHEARSAL",
         "capacity_qualification": "EXCLUDED",
         "sla_qualification": "EXCLUDED",
         "cache_completion_qualification": "EXCLUDED",
         "exclusion_reason":
             "FUNCTION_REPLAY_NOT_PRODUCTION_ADMISSION",
+        "expected_item_count": shape.item_count,
+        "expected_target_count": shape.target_count,
+        "native_item_count": shape.native_count,
+        "blackbox_v2_item_count": shape.v2_count,
         "native_generation_id":
             inputs.native_generation.generation_id,
         "native_manifest_sha256":
@@ -1630,7 +1797,7 @@ def _assert_real_replay_runtime_snapshot(
             "real replay runtime item identities drifted"
         )
     if (
-        target_total != EXPECTED_TARGET_COUNT
+        target_total != shape.target_count
         or accepted_total
         != int(snapshot.actual_accepted_target_count)
         or accepted_total
@@ -1642,10 +1809,10 @@ def _assert_real_replay_runtime_snapshot(
             "real replay runtime target cardinality drifted"
         )
     if (
-        accepted_total == EXPECTED_TARGET_COUNT
+        accepted_total == shape.target_count
         and getattr(occurrence, "completion_state", None) != "SUCCESS"
     ) or (
-        accepted_total != EXPECTED_TARGET_COUNT
+        accepted_total != shape.target_count
         and getattr(occurrence, "completion_state", None)
         not in {"PENDING", "RUNNING", "FAILED"}
     ):
@@ -1671,7 +1838,10 @@ def _assert_deployed_real_replay_definitions(
 ) -> None:
     """要求 caller 传入的定义就是当前仓库严格 discovery 的结果。"""
     discovered = tuple(discover_schemes(strict=True))
-    deployed_policy = load_daily_policy(discovered=discovered)
+    deployed_policy = load_daily_policy(
+        _real_replay_policy_path(policy),
+        discovered=discovered,
+    )
     deployed_configs = {
         config.scheme_id: config
         for config in discovered
@@ -1708,10 +1878,9 @@ def _assert_real_replay_execution_envelopes(
             "real replay Native initial release identity drifted"
         )
     initial_opened_at = next(iter(native_release_times))
-    max_v2_offset = max(
-        int(item.v2_release_offset_min or 0)
-        for item in policy.schemes.values()
-        if item.runtime_type == "blackbox_v2"
+    databridge_sealed_at = _iso_utc_datetime(
+        inputs.databridge_generation.sealed_at,
+        field="databridge.sealed_at",
     )
     for summary in snapshot.items:
         item = summary.item
@@ -1753,8 +1922,7 @@ def _assert_real_replay_execution_envelopes(
                 f"{scheme_id}"
             )
         initial_release_at = (
-            initial_opened_at
-            - timedelta(minutes=max_v2_offset)
+            databridge_sealed_at
             + timedelta(
                 minutes=int(
                     scheme_policy.v2_release_offset_min or 0
@@ -1764,17 +1932,14 @@ def _assert_real_replay_execution_envelopes(
             else initial_opened_at
         )
         expected_release_at = (
-            max(
-                initial_release_at,
-                _stored_utc_datetime(
-                    envelope.generation.sealed_at,
-                    field="databridge ledger sealed_at",
+            _stored_utc_datetime(
+                envelope.generation.sealed_at,
+                field="databridge ledger sealed_at",
+            )
+            + timedelta(
+                minutes=int(
+                    scheme_policy.v2_release_offset_min or 0
                 )
-                + timedelta(
-                    minutes=int(
-                        scheme_policy.v2_release_offset_min or 0
-                    )
-                ),
             )
             if scheme_policy.runtime_type == "blackbox_v2"
             else initial_release_at
@@ -2059,6 +2224,9 @@ def _assert_input_compatibility_identities(
     *,
     expected_policy_schemes: Mapping[str, Any],
     expected_configs: Mapping[str, Any],
+    expected_v2_offsets: Mapping[str, int] = (
+        EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME
+    ),
 ) -> None:
     """要求 17 个 Native 的动态模式和四个 V2 身份完全一致。"""
     rows = policy_json.get("schemes")
@@ -2108,9 +2276,7 @@ def _assert_input_compatibility_identities(
             strict=True,
         )
     }
-    expected_v2_offsets = dict(
-        EXPECTED_V2_RELEASE_OFFSETS_BY_SCHEME
-    )
+    expected_v2_offsets = dict(expected_v2_offsets)
     expected_v2_ids = set(expected_v2_offsets)
     if not expected_v2_ids < expected_ids:
         raise DailyRealReplayError(

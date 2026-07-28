@@ -391,8 +391,15 @@ class DailyRealReplayGateTests(unittest.TestCase):
             [row["release_offset_minutes"] for row in v2_rows],
             [0, 2, 4, 6],
         )
-        self.assertTrue(
-            all(row["release_at"] <= opened_at for row in v2_rows)
+        databridge_sealed_at = datetime.fromisoformat(
+            databridge.sealed_at.replace("Z", "+00:00")
+        )
+        self.assertEqual(
+            [row["release_at"] for row in v2_rows],
+            [
+                databridge_sealed_at + timedelta(minutes=offset)
+                for offset in (0, 2, 4, 6)
+            ],
         )
 
     def test_guarded_create_rejects_mutated_generation_context(
@@ -938,7 +945,7 @@ class DailyRealReplayGateTests(unittest.TestCase):
                 ) as create,
                 self.assertRaisesRegex(
                     DailyRealReplayError,
-                    "compatibility identities",
+                    "V2 identity drifted",
                 ),
             ):
                 create_real_replay_occurrence(

@@ -7,20 +7,29 @@ import json
 import os
 import stat
 import subprocess
+import time as time_module
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
 from harness.daily_real_replay import (
+    RealReplayRuntime,
     DailyRealReplayInputs,
+    _iso_utc_datetime,
     _real_replay_lock_root,
+    bind_real_replay_epoch,
+    create_real_replay_occurrence,
     open_real_replay_generations,
+    register_real_replay_generations,
 )
+from harness.daily_real_replay_mysql import IsolatedReplayMySQL
+from migrations.runner import MIGRATIONS_DIR, apply_migration_files
 from scheduler.daily_coordinator import (
     OccurrenceFileLock,
     OccurrenceLockUnavailable,
@@ -28,10 +37,16 @@ from scheduler.daily_coordinator import (
 from scheduler.daily_policy import (
     APPROVED_0629_LIVE_SOURCE_SCHEMES,
     DEFAULT_POLICY_PATH,
+    POLICY_V2_PATH,
     load_daily_policy,
 )
 from scheduler.discovery import discover_schemes
-from scheduler.repository import create_engine_from_env
+from scheduler.repository import (
+    apply_blackbox_lifecycle_state,
+    create_engine_from_env,
+    read_schedule_occurrence_snapshot,
+    sync_scheme_registry,
+)
 from scheduler.daily_control_plane_probe import (
     probe_daily_transition_quiescence,
     probe_launchagent_service_states,
@@ -87,6 +102,26 @@ _QUIESCENCE_FIELDS = frozenset(
         "project_process_count",
     }
 )
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _validated_replay_policy_path(path: Path) -> Path:
+    """只允许仓库内固定 V1/V2 policy 文件，拒绝任意路径。"""
+    try:
+        candidate = Path(path).resolve(strict=True)
+        allowed = {
+            DEFAULT_POLICY_PATH.resolve(strict=True),
+            POLICY_V2_PATH.resolve(strict=True),
+        }
+    except OSError:
+        raise DailyRealReplayPreflightError(
+            "CANDIDATE_POLICY_UNREADABLE"
+        ) from None
+    if candidate not in allowed:
+        raise DailyRealReplayPreflightError(
+            "CANDIDATE_POLICY_PATH_UNSUPPORTED"
+        )
+    return candidate
 
 
 class DailyRealReplayPreflightError(RuntimeError):
@@ -112,6 +147,7 @@ class _ReplayDispatchIdentity:
     production_digest: str
     source_database_digest: str
     source_watermark_digest: str
+    policy_version: str = "daily-scheduler-policy-v1"
 
     def __post_init__(self) -> None:
         try:
@@ -143,6 +179,11 @@ class _ReplayDispatchIdentity:
                     and set(value) <= set("0123456789abcdef")
                     for value in digests
                 )
+                and self.policy_version
+                in {
+                    "daily-scheduler-policy-v1",
+                    "daily-scheduler-policy-v2",
+                }
             )
         except Exception:
             valid = False
@@ -358,6 +399,38 @@ class DailyRealReplayPreflightReport:
     preflight_digest: str
 
 
+@dataclass(frozen=True)
+class DailyRealReplayExecutionReport:
+    """25/29 隔离执行证据；固定为 rehearsal，不能用于生产准入。"""
+
+    schema_version: str
+    status: str
+    qualification: str
+    capacity_qualification: str
+    preflight_digest: str
+    policy_version: str
+    policy_sha256: str
+    occurrence_id: int
+    expected_item_count: int
+    expected_target_count: int
+    successful_item_count: int
+    accepted_target_count: int
+    scheduled_live_run_count: int
+    scheduled_live_prediction_count: int
+    valid_receipt_count: int
+    duplicate_prediction_count: int
+    nonterminal_run_count: int
+    reentry_run_delta: int
+    reentry_prediction_delta: int
+    elapsed_seconds: float
+    projected_last_visible_at: str
+    databridge_sealed_at: str
+    v2_release_offsets_minutes: tuple[int, ...]
+    v2_release_schedule_qualification: str
+    within_capacity_limit: bool
+    within_visibility_deadline: bool
+
+
 def run_real_replay_preflight(
     *,
     native_manifest: str | Path,
@@ -380,22 +453,502 @@ def run_real_replay_preflight(
         )
 
 
+def run_real_replay_execute(
+    *,
+    native_manifest: str | Path,
+    databridge_manifest: str | Path,
+) -> object:
+    """在同一双锁会话内预检并执行固定 V2 policy 隔离回放。"""
+    service_uid = _require_operator_service_uid()
+    try:
+        session_context = _preflight_session()
+    except Exception:
+        raise DailyRealReplayPreflightError(
+            "PREFLIGHT_SESSION_UNAVAILABLE"
+        ) from None
+    with session_context as session:
+        report = _run_real_replay_preflight_locked(
+            session,
+            service_uid=service_uid,
+            native_manifest=native_manifest,
+            databridge_manifest=databridge_manifest,
+            policy_path=POLICY_V2_PATH,
+        )
+        return _execute_real_replay_candidate(
+            session,
+            preflight_report=report,
+            native_manifest=native_manifest,
+            databridge_manifest=databridge_manifest,
+            policy_path=POLICY_V2_PATH,
+        )
+
+
+def _execute_real_replay_candidate(
+    session: _ReplayOperatorSession,
+    *,
+    preflight_report: DailyRealReplayPreflightReport,
+    native_manifest: str | Path,
+    databridge_manifest: str | Path,
+    policy_path: Path,
+) -> DailyRealReplayExecutionReport:
+    """固定 V2 policy 的 execute-only 实现入口。"""
+    session.assert_held()
+    resolved_policy_path = _validated_replay_policy_path(
+        policy_path
+    )
+    if resolved_policy_path != POLICY_V2_PATH.resolve(strict=True):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_EXECUTION_POLICY_NOT_V2"
+        )
+    if (
+        preflight_report.qualification != "EXCLUDED"
+        or preflight_report.expected_item_count != 25
+        or preflight_report.expected_target_count != 29
+        or preflight_report.v2_item_count != 8
+    ):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_EXECUTION_PREFLIGHT_INVALID"
+        )
+    with IsolatedReplayMySQL() as server:
+        _schema, engine = server.create_replay_database()
+        return _execute_real_replay_on_isolated_database(
+            session,
+            preflight_report=preflight_report,
+            native_manifest=native_manifest,
+            databridge_manifest=databridge_manifest,
+            policy_path=resolved_policy_path,
+            engine=engine,
+            isolation=server.database_isolation,
+        )
+
+
+def _execute_real_replay_on_isolated_database(
+    session: _ReplayOperatorSession,
+    *,
+    preflight_report: DailyRealReplayPreflightReport,
+    native_manifest: str | Path,
+    databridge_manifest: str | Path,
+    policy_path: Path,
+    engine: Any,
+    isolation: object,
+) -> DailyRealReplayExecutionReport:
+    """仅在已验证隔离 Engine 上迁移、初始化、运行和审计。"""
+    session.assert_held()
+    resolved_policy_path = _validated_replay_policy_path(
+        policy_path
+    )
+    if resolved_policy_path != POLICY_V2_PATH.resolve(strict=True):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_EXECUTION_POLICY_NOT_V2"
+        )
+    inputs = _stable_generation_inputs(
+        native_manifest=native_manifest,
+        databridge_manifest=databridge_manifest,
+    )
+    if (
+        inputs.business_date != preflight_report.business_date
+        or inputs.feature_date != preflight_report.feature_date
+        or inputs.native_generation.generation_id
+        != preflight_report.native_generation_id
+        or inputs.native_generation.manifest_sha256
+        != preflight_report.native_manifest_sha256
+        or inputs.databridge_generation.generation_id
+        != preflight_report.databridge_generation_id
+        or inputs.databridge_generation.manifest_sha256
+        != preflight_report.databridge_manifest_sha256
+    ):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_EXECUTION_GENERATION_DRIFT"
+        )
+    discovered = tuple(discover_schemes(strict=True))
+    policy = load_daily_policy(
+        resolved_policy_path,
+        discovered=discovered,
+    )
+    configs = {
+        config.scheme_id: config
+        for config in discovered
+        if config.status == "active"
+        and config.frequency == "daily"
+        and config.scheme_id in policy.schemes
+    }
+    definitions = _load_definition_snapshot(
+        inputs,
+        policy_path=resolved_policy_path,
+    )
+    if (
+        definitions.policy_version
+        != preflight_report.policy_version
+        or definitions.policy_sha256
+        != preflight_report.policy_sha256
+        or definitions.expected_item_count != 25
+        or definitions.expected_target_count != 29
+        or definitions.v2_item_count != 8
+    ):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_EXECUTION_DEFINITION_DRIFT"
+        )
+
+    apply_migration_files(
+        engine,
+        sorted(MIGRATIONS_DIR.glob("*.sql")),
+    )
+    _initialize_isolated_replay_registry(
+        engine,
+        configs=configs,
+    )
+    epoch_payload = {
+        "epoch": 999_999,
+        "mode": "ledger",
+        "record_sha256": preflight_report.preflight_digest,
+    }
+    bind_real_replay_epoch(
+        engine,
+        isolation=isolation,
+        epoch_payload=epoch_payload,
+    )
+    v2_release_offsets = tuple(
+        sorted(
+            int(item.v2_release_offset_min or 0)
+            for item in policy.schemes.values()
+            if item.runtime_type == "blackbox_v2"
+        )
+    )
+    databridge_sealed_at = _iso_utc_datetime(
+        inputs.databridge_generation.sealed_at,
+        field="databridge.sealed_at",
+    )
+    opened_at = datetime.now(timezone.utc)
+    schedule_key = (
+        "isolated-real-replay-v1-execute-"
+        f"{preflight_report.preflight_digest[:16]}"
+    )
+    occurrence_id = create_real_replay_occurrence(
+        engine,
+        isolation=isolation,
+        policy=policy,
+        configs=configs,
+        inputs=inputs,
+        schedule_key=schedule_key,
+        opened_at=opened_at,
+        epoch_payload=epoch_payload,
+    )
+    register_real_replay_generations(
+        engine,
+        occurrence_id=occurrence_id,
+        inputs=inputs,
+        isolation=isolation,
+        policy=policy,
+        preserve_manifest_sealed_at=True,
+    )
+    _assert_isolated_v2_release_schedule(
+        engine,
+        occurrence_id=occurrence_id,
+        databridge_sealed_at=databridge_sealed_at,
+        expected_offsets=v2_release_offsets,
+    )
+    runtime = RealReplayRuntime(
+        engine,
+        isolation=isolation,
+        occurrence_id=occurrence_id,
+        policy=policy,
+        configs=configs,
+        inputs=inputs,
+    )
+    started = time_module.monotonic()
+    first = _run_real_replay_runtime(runtime, session=session)
+    elapsed_seconds = time_module.monotonic() - started
+    before_reentry = _read_replay_execution_audit(
+        engine,
+        occurrence_id=occurrence_id,
+    )
+    second = _run_real_replay_runtime(runtime, session=session)
+    after_reentry = _read_replay_execution_audit(
+        engine,
+        occurrence_id=occurrence_id,
+    )
+    run_delta = (
+        after_reentry["run_count"] - before_reentry["run_count"]
+    )
+    prediction_delta = (
+        after_reentry["prediction_count"]
+        - before_reentry["prediction_count"]
+    )
+    projected_last_visible = datetime.combine(
+        date.fromisoformat(inputs.business_date),
+        datetime.min.time(),
+        tzinfo=_SHANGHAI,
+    ) + timedelta(hours=6, minutes=30, seconds=elapsed_seconds)
+    visibility_deadline = datetime.combine(
+        date.fromisoformat(inputs.business_date),
+        datetime.min.time(),
+        tzinfo=_SHANGHAI,
+    ) + timedelta(hours=7, minutes=55)
+    passed = (
+        first.status == "complete"
+        and second.status == "complete"
+        and second.dispatched_scheme_ids == ()
+        and after_reentry
+        == {
+            "successful_item_count": 25,
+            "accepted_target_count": 29,
+            "run_count": 25,
+            "scheduled_live_run_count": 25,
+            "prediction_count": 29,
+            "scheduled_live_prediction_count": 29,
+            "valid_receipt_count": 29,
+            "duplicate_prediction_count": 0,
+            "nonterminal_run_count": 0,
+        }
+        and run_delta == 0
+        and prediction_delta == 0
+        and elapsed_seconds <= 5_100
+        and projected_last_visible <= visibility_deadline
+    )
+    if not passed:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_EXECUTION_ACCEPTANCE_FAILED"
+        )
+    return DailyRealReplayExecutionReport(
+        schema_version="daily-real-replay-execution-v1",
+        status="REHEARSAL_PASSED",
+        qualification="REHEARSAL",
+        capacity_qualification="EXCLUDED",
+        preflight_digest=preflight_report.preflight_digest,
+        policy_version=definitions.policy_version,
+        policy_sha256=definitions.policy_sha256,
+        occurrence_id=occurrence_id,
+        expected_item_count=25,
+        expected_target_count=29,
+        successful_item_count=after_reentry[
+            "successful_item_count"
+        ],
+        accepted_target_count=after_reentry[
+            "accepted_target_count"
+        ],
+        scheduled_live_run_count=after_reentry[
+            "scheduled_live_run_count"
+        ],
+        scheduled_live_prediction_count=after_reentry[
+            "scheduled_live_prediction_count"
+        ],
+        valid_receipt_count=after_reentry[
+            "valid_receipt_count"
+        ],
+        duplicate_prediction_count=after_reentry[
+            "duplicate_prediction_count"
+        ],
+        nonterminal_run_count=after_reentry[
+            "nonterminal_run_count"
+        ],
+        reentry_run_delta=run_delta,
+        reentry_prediction_delta=prediction_delta,
+        elapsed_seconds=round(elapsed_seconds, 6),
+        projected_last_visible_at=(
+            projected_last_visible.isoformat()
+        ),
+        databridge_sealed_at=databridge_sealed_at.isoformat(),
+        v2_release_offsets_minutes=v2_release_offsets,
+        v2_release_schedule_qualification=(
+            "SEALED_AT_PLUS_EXACT_POLICY_OFFSET"
+        ),
+        within_capacity_limit=True,
+        within_visibility_deadline=True,
+    )
+
+
+def _run_real_replay_runtime(
+    runtime: RealReplayRuntime,
+    *,
+    session: _ReplayOperatorSession,
+) -> object:
+    """单一不可注入入口，测试只在此替换真实算法执行。"""
+    return runtime._run_with_operator_session(session)
+
+
+def _assert_isolated_v2_release_schedule(
+    engine: Any,
+    *,
+    occurrence_id: int,
+    databridge_sealed_at: datetime,
+    expected_offsets: tuple[int, ...],
+) -> None:
+    """证明八个 V2 只按 DataBridge sealed_at 加固定偏移释放。"""
+    snapshot = read_schedule_occurrence_snapshot(
+        engine,
+        occurrence_id=occurrence_id,
+    )
+    observed = []
+    for summary in snapshot.items:
+        item = summary.item
+        if item.runtime_type != "blackbox_v2":
+            continue
+        release_at = item.release_at
+        if not isinstance(release_at, datetime):
+            raise DailyRealReplayPreflightError(
+                "REPLAY_V2_RELEASE_SCHEDULE_DRIFT"
+            )
+        if release_at.tzinfo is None:
+            release_at = release_at.replace(tzinfo=timezone.utc)
+        else:
+            release_at = release_at.astimezone(timezone.utc)
+        offset = int(item.release_offset_minutes)
+        if release_at != databridge_sealed_at + timedelta(
+            minutes=offset
+        ):
+            raise DailyRealReplayPreflightError(
+                "REPLAY_V2_RELEASE_SCHEDULE_DRIFT"
+            )
+        observed.append(offset)
+    if tuple(sorted(observed)) != expected_offsets:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_V2_RELEASE_SCHEDULE_DRIFT"
+        )
+
+
+def _initialize_isolated_replay_registry(
+    engine: Any,
+    *,
+    configs: Mapping[str, Any],
+) -> None:
+    """仅经 repository 初始化隔离 sink 的 exact active Registry。"""
+    native = [
+        config
+        for config in configs.values()
+        if config.runtime_type == "native_adapter"
+    ]
+    blackbox = [
+        config
+        for config in configs.values()
+        if config.runtime_type == "blackbox_v2"
+    ]
+    sync_scheme_registry(engine, native)
+    approved_at = datetime.now(timezone.utc)
+    for config in sorted(blackbox, key=lambda item: item.scheme_id):
+        apply_blackbox_lifecycle_state(
+            engine,
+            config,
+            version_status="active",
+            registry_status="active",
+            approved_by="harness.daily-real-replay.rehearsal",
+            approved_at=approved_at,
+        )
+
+
+def _read_replay_execution_audit(
+    engine: Any,
+    *,
+    occurrence_id: int,
+) -> dict[str, int]:
+    """只读闭合 receipt、phase、重复键与终态 run。"""
+    with engine.connect() as connection:
+        row = connection.execute(
+            text(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM t_schedule_items
+                   WHERE occurrence_id = :occurrence_id
+                     AND state = 'SUCCESS')
+                    AS successful_item_count,
+                  (SELECT COUNT(*) FROM t_schedule_item_targets
+                   WHERE occurrence_id = :occurrence_id
+                     AND status = 'ACCEPTED')
+                    AS accepted_target_count,
+                  (SELECT COUNT(*) FROM t_scheme_runs r
+                   JOIN t_schedule_items i
+                     ON i.item_id = r.schedule_item_id
+                   WHERE i.occurrence_id = :occurrence_id)
+                    AS run_count,
+                  (SELECT COUNT(*) FROM t_scheme_runs r
+                   JOIN t_schedule_items i
+                     ON i.item_id = r.schedule_item_id
+                   WHERE i.occurrence_id = :occurrence_id
+                     AND r.prediction_phase = 'scheduled_live')
+                    AS scheduled_live_run_count,
+                  (SELECT COUNT(*) FROM t_scheme_predictions p
+                   JOIN t_scheme_runs r ON r.run_id = p.run_id
+                   JOIN t_schedule_items i
+                     ON i.item_id = r.schedule_item_id
+                   WHERE i.occurrence_id = :occurrence_id)
+                    AS prediction_count,
+                  (SELECT COUNT(*) FROM t_scheme_predictions p
+                   JOIN t_scheme_runs r ON r.run_id = p.run_id
+                   JOIN t_schedule_items i
+                     ON i.item_id = r.schedule_item_id
+                   WHERE i.occurrence_id = :occurrence_id
+                     AND p.prediction_phase = 'scheduled_live')
+                    AS scheduled_live_prediction_count,
+                  (SELECT COUNT(*)
+                   FROM t_schedule_item_targets t
+                   JOIN t_schedule_items i
+                     ON i.item_id = t.item_id
+                    AND i.occurrence_id = t.occurrence_id
+                   JOIN t_scheme_runs r
+                     ON r.run_id = t.accepted_run_id
+                    AND r.schedule_item_id = i.item_id
+                   JOIN t_scheme_predictions p
+                     ON p.id = t.accepted_prediction_id
+                    AND p.run_id = r.run_id
+                    AND p.scheme_id = t.base_scheme_id
+                    AND p.target_tenor = t.target_tenor
+                    AND p.horizon = t.horizon
+                    AND p.target_date = t.target_date
+                   WHERE t.occurrence_id = :occurrence_id
+                     AND t.status = 'ACCEPTED'
+                     AND t.accepted_at IS NOT NULL
+                     AND t.visible_at IS NOT NULL)
+                    AS valid_receipt_count,
+                  (SELECT COALESCE(SUM(duplicates - 1), 0)
+                   FROM (
+                     SELECT COUNT(*) AS duplicates
+                     FROM t_scheme_predictions p
+                     JOIN t_scheme_runs r ON r.run_id = p.run_id
+                     JOIN t_schedule_items i
+                       ON i.item_id = r.schedule_item_id
+                     WHERE i.occurrence_id = :occurrence_id
+                     GROUP BY p.scheme_id, p.target_tenor,
+                              p.horizon, p.target_date
+                     HAVING COUNT(*) > 1
+                   ) d)
+                    AS duplicate_prediction_count,
+                  (SELECT COUNT(*) FROM t_scheme_runs r
+                   JOIN t_schedule_items i
+                     ON i.item_id = r.schedule_item_id
+                   WHERE i.occurrence_id = :occurrence_id
+                     AND (
+                       r.status <> 'success'
+                       OR r.finished_at IS NULL
+                     ))
+                    AS nonterminal_run_count
+                """
+            ),
+            {"occurrence_id": int(occurrence_id)},
+        ).mappings().one()
+    return {key: int(value) for key, value in row.items()}
+
+
 def _run_real_replay_preflight_locked(
     session: _ReplayOperatorSession,
     *,
     service_uid: int,
     native_manifest: str | Path,
     databridge_manifest: str | Path,
+    policy_path: Path = DEFAULT_POLICY_PATH,
 ) -> DailyRealReplayPreflightReport:
     """只在调用方持续持有同一双锁时执行完整预检。"""
     with session as locked_session:
         locked_session.assert_held()
-        candidate = _stable_candidate_identity()
+        candidate = _stable_candidate_identity(
+            policy_path=policy_path
+        )
         inputs = _stable_generation_inputs(
             native_manifest=native_manifest,
             databridge_manifest=databridge_manifest,
         )
-        definitions = _stable_definition_snapshot(inputs)
+        definitions = _stable_definition_snapshot(
+            inputs,
+            policy_path=policy_path,
+        )
         if candidate.policy_sha256 != definitions.policy_sha256:
             raise DailyRealReplayPreflightError(
                 "CANDIDATE_POLICY_IDENTITY_DRIFT"
@@ -434,12 +987,17 @@ def _run_real_replay_preflight_locked(
             ) from None
         validate_replay_quiescence(quiescence)
 
-        current_candidate = _stable_candidate_identity()
+        current_candidate = _stable_candidate_identity(
+            policy_path=policy_path
+        )
         current_inputs = _stable_generation_inputs(
             native_manifest=native_manifest,
             databridge_manifest=databridge_manifest,
         )
-        current_definitions = _stable_definition_snapshot(current_inputs)
+        current_definitions = _stable_definition_snapshot(
+            current_inputs,
+            policy_path=policy_path,
+        )
         current_control_plane = _read_control_plane_boundary(
             service_uid
         )
@@ -881,9 +1439,14 @@ def _lock_file_identity(path: Path) -> tuple[int, int]:
     return details.st_dev, details.st_ino
 
 
-def _stable_candidate_identity() -> ReplayCandidateIdentity:
+def _stable_candidate_identity(
+    *,
+    policy_path: Path = DEFAULT_POLICY_PATH,
+) -> ReplayCandidateIdentity:
     try:
-        return _freeze_candidate_identity()
+        return _freeze_candidate_identity(
+            policy_path=policy_path
+        )
     except DailyRealReplayPreflightError:
         raise
     except Exception:
@@ -912,9 +1475,14 @@ def _stable_generation_inputs(
 
 def _stable_definition_snapshot(
     inputs: DailyRealReplayInputs,
+    *,
+    policy_path: Path = DEFAULT_POLICY_PATH,
 ) -> ReplayDefinitionSnapshot:
     try:
-        return _load_definition_snapshot(inputs)
+        return _load_definition_snapshot(
+            inputs,
+            policy_path=policy_path,
+        )
     except DailyRealReplayPreflightError:
         raise
     except Exception:
@@ -1001,7 +1569,10 @@ def _read_source_input_evidence(
             engine.dispose()
 
 
-def _freeze_candidate_identity() -> ReplayCandidateIdentity:
+def _freeze_candidate_identity(
+    *,
+    policy_path: Path = DEFAULT_POLICY_PATH,
+) -> ReplayCandidateIdentity:
     """拒绝脏工作区和被忽略的运行代码，再按实际 bytes 计算闭包摘要。"""
     root = _git_output(("rev-parse", "--show-toplevel")).decode().strip()
     if Path(root).resolve(strict=True) != PROJECT_ROOT:
@@ -1092,7 +1663,7 @@ def _freeze_candidate_identity() -> ReplayCandidateIdentity:
         digest.update(b"\0")
     try:
         policy_sha256 = hashlib.sha256(
-            DEFAULT_POLICY_PATH.read_bytes()
+            _validated_replay_policy_path(policy_path).read_bytes()
         ).hexdigest()
     except OSError:
         raise DailyRealReplayPreflightError(
@@ -1108,9 +1679,17 @@ def _freeze_candidate_identity() -> ReplayCandidateIdentity:
 
 def _load_definition_snapshot(
     inputs: DailyRealReplayInputs,
+    *,
+    policy_path: Path = DEFAULT_POLICY_PATH,
 ) -> ReplayDefinitionSnapshot:
     discovered = tuple(discover_schemes(strict=True))
-    policy = load_daily_policy(discovered=discovered)
+    resolved_policy_path = _validated_replay_policy_path(
+        policy_path
+    )
+    policy = load_daily_policy(
+        resolved_policy_path,
+        discovered=discovered,
+    )
     configs = {
         config.scheme_id: config
         for config in discovered
@@ -1118,11 +1697,19 @@ def _load_definition_snapshot(
         and config.frequency == "daily"
         and config.scheme_id in policy.schemes
     }
+    expected_shape = {
+        "daily-scheduler-policy-v1": (21, 25, 17, 4),
+        "daily-scheduler-policy-v2": (25, 29, 17, 8),
+    }.get(policy.version)
+    if expected_shape is None:
+        raise DailyRealReplayPreflightError(
+            "DEPLOYED_CARDINALITY_DRIFT"
+        )
     if (
         set(configs) != set(policy.schemes)
-        or len(configs) != 21
-        or policy.expected_item_count != 21
-        or policy.expected_target_count != 25
+        or len(configs) != expected_shape[0]
+        or policy.expected_item_count != expected_shape[0]
+        or policy.expected_target_count != expected_shape[1]
     ):
         raise DailyRealReplayPreflightError(
             "DEPLOYED_CARDINALITY_DRIFT"
@@ -1196,14 +1783,14 @@ def _load_definition_snapshot(
             )
         )
     if (
-        native_item_count != 17
-        or v2_item_count != 4
-        or len(registry_rows) != 25
+        native_item_count != expected_shape[2]
+        or v2_item_count != expected_shape[3]
+        or len(registry_rows) != expected_shape[1]
         or input_mode_counts
         != {
             "generation_v1": 14,
             "live_source_0629": 3,
-            "databridge_v1": 4,
+            "databridge_v1": expected_shape[3],
         }
         or {
             scheme_id
@@ -1216,7 +1803,7 @@ def _load_definition_snapshot(
             "DEPLOYED_INPUT_MATRIX_DRIFT"
         )
     policy_sha256 = hashlib.sha256(
-        DEFAULT_POLICY_PATH.read_bytes()
+        resolved_policy_path.read_bytes()
     ).hexdigest()
     return ReplayDefinitionSnapshot(
         policy_version=policy.version,
@@ -1469,6 +2056,7 @@ def _build_replay_dispatch_identity(
                 },
             }
         ),
+        policy_version=definitions.policy_version,
     )
 
 
@@ -1482,14 +2070,25 @@ def assert_real_replay_dispatch_identity_current(
         )
     baseline = session.require_dispatch_identity()
     try:
-        candidate = _stable_candidate_identity()
+        policy_path = (
+            POLICY_V2_PATH
+            if baseline.policy_version
+            == "daily-scheduler-policy-v2"
+            else DEFAULT_POLICY_PATH
+        )
+        candidate = _stable_candidate_identity(
+            policy_path=policy_path
+        )
         inputs = _stable_generation_inputs(
             native_manifest=baseline.native_manifest_path,
             databridge_manifest=(
                 baseline.databridge_manifest_path
             ),
         )
-        definitions = _stable_definition_snapshot(inputs)
+        definitions = _stable_definition_snapshot(
+            inputs,
+            policy_path=policy_path,
+        )
         control_plane = _read_control_plane_boundary(
             baseline.service_uid
         )
