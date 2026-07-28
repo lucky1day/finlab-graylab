@@ -817,30 +817,102 @@ def _is_backend_service_process(command: str) -> bool:
         tokens = tuple(shlex.split(command))
     except ValueError:
         return False
-    normalized = tuple(token.casefold() for token in tokens)
-    disallowed = (
-        "scheduler.main",
-        "scheduler.scheme_runner",
-        "scheduler.v2_daily_preflight",
-    )
-    if any(
-        marker in token
-        for token in normalized
-        for marker in disallowed
-    ) or any("/schemes/" in token for token in normalized):
+    effective = _unwrap_backend_command(tokens)
+    if not effective:
         return False
-    for index, token in enumerate(normalized[:-1]):
+    executable = Path(effective[0]).name.casefold()
+    arguments = tuple(
+        token.casefold()
+        for token in effective[1:]
+    )
+    if executable == "uvicorn":
+        return bool(
+            arguments
+            and arguments[0] == "backend.main:app"
+        )
+    if not executable.startswith("python"):
+        return False
+    if (
+        len(arguments) >= 2
+        and Path(arguments[0]).name == "uvicorn"
+        and arguments[1] == "backend.main:app"
+    ):
+        return True
+    return bool(
+        len(arguments) >= 2
+        and arguments[0] == "-m"
+        and (
+            arguments[1] == "backend.main"
+            or (
+                arguments[1] == "uvicorn"
+                and len(arguments) >= 3
+                and arguments[2] == "backend.main:app"
+            )
+        )
+    )
+
+
+def _unwrap_backend_command(
+    tokens: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not tokens:
+        return ()
+    executable = Path(tokens[0]).name.casefold()
+    if (
+        executable.startswith("python")
+        and len(tokens) >= 2
+        and Path(tokens[1]).name.casefold() == "conda"
+    ):
+        return _unwrap_conda_run(tokens[1:])
+    if executable == "conda":
+        return _unwrap_conda_run(tokens)
+    return tokens
+
+
+def _unwrap_conda_run(
+    tokens: tuple[str, ...],
+) -> tuple[str, ...]:
+    if len(tokens) < 3 or tokens[1].casefold() != "run":
+        return ()
+    index = 2
+    no_value_options = {
+        "--debug-wrapper-scripts",
+        "--dev",
+        "--live-stream",
+        "--no-capture-output",
+    }
+    value_options = {
+        "--cwd",
+        "--name",
+        "--prefix",
+        "-n",
+        "-p",
+    }
+    while index < len(tokens):
+        token = tokens[index]
+        normalized = token.casefold()
+        if token == "--":
+            index += 1
+            break
+        if normalized in no_value_options:
+            index += 1
+            continue
+        if normalized in value_options:
+            if index + 1 >= len(tokens):
+                return ()
+            index += 2
+            continue
         if (
-            Path(token).name == "uvicorn"
-            and normalized[index + 1] == "backend.main:app"
+            normalized.startswith("--name=")
+            or normalized.startswith("--prefix=")
+            or normalized.startswith("--cwd=")
         ):
-            return True
-        if (
-            token == "-m"
-            and normalized[index + 1] == "backend.main"
-        ):
-            return True
-    return False
+            index += 1
+            continue
+        if normalized.startswith("-"):
+            return ()
+        break
+    return tokens[index:]
 
 
 def _read_bounded(descriptor: int, *, limit: int) -> bytes:

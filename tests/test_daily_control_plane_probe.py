@@ -171,7 +171,18 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
                     "uid": 501,
                     "command": (
                         "/usr/bin/python /usr/bin/conda run "
+                        "--no-capture-output -n bfl_service "
                         "uvicorn backend.main:app --port 8100"
+                    ),
+                },
+                {
+                    "pid": 4101,
+                    "ppid": 4100,
+                    "pgid": 4100,
+                    "uid": 501,
+                    "command": (
+                        "/opt/bfl/bin/python /opt/bfl/bin/uvicorn "
+                        "backend.main:app --port 8100"
                     ),
                 },
             ),
@@ -186,6 +197,7 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
             ),
             (
                 (4100, "display_backend"),
+                (4101, "display_backend"),
                 (9000, "operator"),
             ),
         )
@@ -214,6 +226,48 @@ class IsolatedReplayProcessBoundaryProbeTests(unittest.TestCase):
                 for row in report.blocked_processes
             ),
             ((4300, "unregistered_daily_platform_process"),),
+        )
+
+    def test_backend_tokens_in_arguments_cannot_hide_project_process(
+        self,
+    ) -> None:
+        report, _read_registered = self._probe(
+            processes=(
+                {
+                    "pid": 4300,
+                    "ppid": 1,
+                    "pgid": 4300,
+                    "uid": 501,
+                    "command": (
+                        "python /opt/bond-factor-lab/harness/"
+                        "not_backend.py --note uvicorn "
+                        "backend.main:app"
+                    ),
+                },
+                {
+                    "pid": 4400,
+                    "ppid": 1,
+                    "pgid": 4400,
+                    "uid": 501,
+                    "command": (
+                        "python /opt/bond-factor-lab/harness/"
+                        "not_backend.py --note -m backend.main"
+                    ),
+                },
+            ),
+            allow_backend=True,
+        )
+
+        self.assertFalse(report.boundary_clear)
+        self.assertEqual(
+            tuple(
+                (row.process_id, row.classification)
+                for row in report.blocked_processes
+            ),
+            (
+                (4300, "unregistered_daily_platform_process"),
+                (4400, "unregistered_daily_platform_process"),
+            ),
         )
 
     def test_blocks_old_or_other_occurrence_process_not_returned_by_ledger(
