@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台开发、运维和审计人员
 
-**最后核验日期**：2026-07-28
+**最后核验日期**：2026-07-29
 
 本文是当前未完成工作的唯一权威排序。它不替代[当前状态](CURRENT_STATUS.md)的已验证结论，也不替代专项记录的时点证据。
 
@@ -48,8 +48,8 @@
 和
 [实施计划](superpowers/plans/2026-07-28-all-active-signal-production-mvp.md)：
 
-**当前状态：代码候选完成，真实 replay/切换待授权。** 开发代码已完成到
-实施分支`8ee1f52`、开发分支等价`f8df6f4`：只读、内容寻址的信号gap plan、按控制面隔离的gray/formal准入、
+**当前状态：25/29 功能 rehearsal 已通过，容量与生产切换未通过。**
+开发代码已完成到开发分支`a4a9940`：只读、内容寻址的信号gap plan、按控制面隔离的gray/formal准入、
 daily policy从21/25扩展为25/29、
 临时MySQL账本验证、forced-cold 25/29容量候选契约、policy v2生产入口绑定和旧
 occurrence拒绝均已落地。权威日频口径为25 execution/29 target（17 Native +
@@ -57,13 +57,16 @@ occurrence拒绝均已落地。权威日频口径为25 execution/29 target（17 
 
 当前最前执行顺序固定为：
 
-1. 取得独立维护授权后，仅维护BFL的backend、scheduler、v2-preflight三项服务：
-   补齐三份已安装plist的coordinator mode，修复scheduler cache root为`0755`
-   导致的crash-loop，并补齐source配置缺失键；不得修改或重启BondProjectPro。
-   public replay preflight在这些条件闭合前继续以
-   `CONTROL_PLANE_BOUNDARY_UNAVAILABLE` fail-closed。
-2. 在同一台Mac Studio执行真实forced-cold 25/29联跑，验收17 Native +
-   8 V2、29/29原子提交、无duplicate/partial/orphan及重入零新增。
+1. 已完成真实 forced-cold 功能 rehearsal：真实 17 Native + 8 V2 在隔离
+   MySQL 中为 25/25 item、29/29 target，duplicate/nonterminal 均为 0，
+   重入零新增；7/7 Liwei family 完成 schema3 原子发布，shared consumer
+   已证明复用缓存。总耗时约 95.8 分钟、最后可见投影 08:02:44，故容量
+   和 07:55 门禁未通过。
+2. 不再重复整轮数小时 forced-cold。只完成明日日频必需的最小前置：
+   在生产候选 cache root 做一次性、可审计的 7 family schema3 安全
+   bootstrap，并用 T-1 append/suffix 针对性运行证明 publisher 不重训、
+   consumer 不写 cache、cached/cold 结果等价。失败仅回退对应 family，
+   不扩大架构范围。
 3. 完成绑定生产MySQL identity的execute-only observation，生成有签名、expiry
    和replay floor的production-bound `ADMITTED`。
 4. 演练并应用migration018及控制面前置后，取得部署授权，单次从legacy切换ledger。
