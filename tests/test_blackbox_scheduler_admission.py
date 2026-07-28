@@ -324,13 +324,14 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         )
 
         for config in drifted:
-            with self.subTest(config=config):
-                self.assertFalse(
-                    policy.allows(
-                        config,
-                        plane="legacy_automatic",
+            for plane in CONTROL_PLANES:
+                with self.subTest(config=config, plane=plane):
+                    self.assertFalse(
+                        policy.allows(
+                            config,
+                            plane=plane,
+                        )
                     )
-                )
 
     def test_non_reserved_native_remains_outside_control_planes(
         self,
@@ -697,6 +698,21 @@ class BlackboxSchedulerAdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(
             BlackboxSchedulerAdmissionError,
             "duplicate scheme_id",
+        ):
+            self._load(payload)
+
+    def test_policy_rejects_duplicate_capability(self) -> None:
+        payload = self._expected_payload()
+        row = next(
+            item
+            for item in payload["schemes"]
+            if item["capabilities"]
+        )
+        row["capabilities"].append(row["capabilities"][0])
+
+        with self.assertRaisesRegex(
+            BlackboxSchedulerAdmissionError,
+            "duplicate capability",
         ):
             self._load(payload)
 
