@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import pickle
 import tempfile
 import time
@@ -11,6 +13,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
+from shared.liwei_0616_cache_projection import AuxiliaryDependencyProjection
 from shared.liwei_0616_phase_a_cache import PhaseACacheSpec, prepare_phase_a_caches
 
 
@@ -159,6 +162,84 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 trained_batches,
                 [["2026-07-01", "2026-07-02", "2026-07-03"]],
             )
+
+    def test_effective_projection_append_ignores_unrelated_raw_auxiliary_revision(
+        self,
+    ) -> None:
+        trained_batches: list[list[str]] = []
+        trainer = self._trainer(trained_batches)
+        initial_daily = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2026-07-23"]),
+                "TB5YWI0C": [1.60],
+            }
+        )
+        current_daily = pd.DataFrame(
+            {
+                "date": pd.to_datetime(
+                    ["2026-07-23", "2026-07-24", "2026-07-27"]
+                ),
+                "TB5YWI0C": [1.60, 1.61, 1.62],
+            }
+        )
+        initial_projection = self._projection(
+            ["2026-07-23"],
+            [0.10],
+        )
+        current_projection = self._projection(
+            ["2026-07-23", "2026-07-24", "2026-07-27"],
+            [0.10, 0.20, 0.30],
+        )
+        revised_weekly = self.weekly_df.copy()
+        revised_weekly.loc[0, "weekly_x"] = 9.90
+        revised_monthly = self.monthly_df.copy()
+        revised_monthly.loc[0, "monthly_x"] = 8.80
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_phase_a_caches(
+                spec=self.spec,
+                daily_df=initial_daily,
+                weekly_df=self.weekly_df,
+                monthly_df=self.monthly_df,
+                auxiliary_dependency_projection=initial_projection,
+                test_ranges=(("2026-07-23", "2026-07-23"),),
+                train_missing=trainer,
+                cache_root=Path(tmp),
+            )
+            trained_batches.clear()
+
+            _cache, audit = prepare_phase_a_caches(
+                spec=self.spec,
+                daily_df=current_daily,
+                weekly_df=revised_weekly,
+                monthly_df=revised_monthly,
+                auxiliary_dependency_projection=current_projection,
+                test_ranges=(("2026-07-23", "2026-07-27"),),
+                train_missing=trainer,
+                cache_root=Path(tmp),
+            )
+
+        self.assertEqual(audit["build_mode"], "append")
+        self.assertEqual(
+            audit["build_reason"],
+            "effective_auxiliary_append",
+        )
+        self.assertEqual(
+            audit["input_change"]["frames"]["weekly"]["change_type"],
+            "revision",
+        )
+        self.assertEqual(
+            audit["input_change"]["frames"]["monthly"]["change_type"],
+            "revision",
+        )
+        self.assertEqual(
+            audit["input_change"]["effective_auxiliary"]["change_type"],
+            "append",
+        )
+        self.assertEqual(
+            trained_batches,
+            [["2026-07-24", "2026-07-27"]],
+        )
 
     def test_current_week_and_month_revisions_force_full_rebuild(self) -> None:
         trained_batches: list[list[str]] = []
@@ -494,6 +575,61 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
             }
 
         return trainer
+
+    @staticmethod
+    def _projection(
+        dates: list[str],
+        values: list[float],
+        *,
+        proof_file_sha256: str = "a" * 64,
+    ) -> AuxiliaryDependencyProjection:
+        frame = pd.DataFrame(
+            {
+                "date": dates,
+                "effective_aux": values,
+            }
+        )
+        mapping_entries = [
+            {"date": day, "week_id": 202630}
+            for day in dates
+        ]
+        mapping_payload = [
+            [entry["date"], entry["week_id"]]
+            for entry in mapping_entries
+        ]
+        proof = {
+            "schema_version":
+                "liwei-0616-auxiliary-dependency-projection-v1",
+            "date_to_week_mode": "explicit",
+            "date_to_week_sha256": hashlib.sha256(
+                json.dumps(
+                    mapping_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "date_to_week_entries": mapping_entries,
+            "proof_files": [
+                {"name": "data_alignment.py", "sha256": proof_file_sha256}
+            ],
+            "columns": list(frame.columns),
+            "dtypes": [
+                str(frame[column].dtype) for column in frame.columns
+            ],
+            "daily_grid_sha256": hashlib.sha256(
+                "|".join(dates).encode("utf-8")
+            ).hexdigest(),
+            "feature_cutoff": dates[-1],
+        }
+        return AuxiliaryDependencyProjection(
+            frame=frame,
+            proof=proof,
+            content_sha256=hashlib.sha256(
+                frame.to_json(orient="split").encode("utf-8")
+            ).hexdigest(),
+        )
 
 
 if __name__ == "__main__":

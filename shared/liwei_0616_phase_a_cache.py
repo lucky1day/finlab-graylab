@@ -37,6 +37,10 @@ from shared.liwei_0616_cache_contract import (
     validate_generation_acceptance_record,
     validate_trusted_cache_use_qualification,
 )
+from shared.liwei_0616_cache_projection import (
+    PROJECTION_SCHEMA_VERSION,
+    AuxiliaryDependencyProjection,
+)
 from shared.native_input_generation import (
     NATIVE_GENERATION_EXPORTER_VERSION,
     NATIVE_GENERATION_SCHEMA_VERSION,
@@ -47,7 +51,8 @@ CACHE_SCHEMA_VERSION = 2
 LEGACY_CACHE_SCHEMA_VERSION = 1
 GENERATION_MANIFEST_SCHEMA_VERSION = 3
 CURRENT_POINTER_SCHEMA_VERSION = 1
-INPUT_GENERATION_STATE_SCHEMA_VERSION = 2
+LEGACY_INPUT_GENERATION_STATE_SCHEMA_VERSION = 2
+INPUT_GENERATION_STATE_SCHEMA_VERSION = 3
 DEFAULT_CACHE_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_cache" / "liwei_0616"
 CACHE_GENERATION_RETENTION = 3
 MAX_CACHE_FAMILY_BYTES = 512 * 1024 * 1024
@@ -235,6 +240,9 @@ def prepare_phase_a_caches(
     cache_use_qualification: Mapping[str, object] | None = None,
     cache_consumer_id: str | None = None,
     native_generation: Mapping[str, object] | None = None,
+    auxiliary_dependency_projection: (
+        AuxiliaryDependencyProjection | None
+    ) = None,
     cache_root: str | Path | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """读取或生成不可变 Phase A cache generation。
@@ -242,7 +250,8 @@ def prepare_phase_a_caches(
     同一 ``cache_family + tenor`` 只有一个 prewarmer。只有完整 generation
     写入、校验且通过容量门禁后，才会原子替换 ``current.json``。历史修订
     仅在 spec 同时声明可审计的 daily 依赖窗口与证明时重算保守 suffix；
-    weekly/monthly 修订或证明不足一律 full rebuild。自哈希只用于完整性，
+    有效辅助投影可证明的 append/suffix 只训练受影响日期；投影缺失或
+    证明漂移仍 fail-closed full rebuild。自哈希只用于完整性，
     ``compare_cold`` 只用于非生产诊断。ledger/SLA 路径必须传入 capacity
     corpus 双签名生成的逐 consumer qualification，且禁止在日批内通过
     runtime callback 自行生成资格。
@@ -332,6 +341,9 @@ def prepare_phase_a_caches(
             daily_df=daily_df,
             weekly_df=weekly_df,
             monthly_df=monthly_df,
+            auxiliary_dependency_projection=(
+                auxiliary_dependency_projection
+            ),
             test_ranges=test_ranges,
             train_missing=train_missing,
             compare_cold=compare_cold,
@@ -351,6 +363,9 @@ def _prepare_under_family_lock(
     daily_df: pd.DataFrame,
     weekly_df: pd.DataFrame,
     monthly_df: pd.DataFrame,
+    auxiliary_dependency_projection: (
+        AuxiliaryDependencyProjection | None
+    ),
     test_ranges: tuple[tuple[str, str], ...],
     train_missing: Callable[
         [str, tuple[tuple[str, str], ...]],
@@ -396,6 +411,9 @@ def _prepare_under_family_lock(
         daily_df=daily_df,
         weekly_df=weekly_df,
         monthly_df=monthly_df,
+        auxiliary_dependency_projection=(
+            auxiliary_dependency_projection
+        ),
         native_generation_binding=native_generation_binding,
     )
     current, current_error = _load_current_generation(
@@ -494,59 +512,23 @@ def _prepare_under_family_lock(
             build_reason = "spec_changed"
         elif set(current.caches) != set(spec.baselines):
             build_reason = "baseline_set_changed"
-        elif any(
-            input_change["frames"][name]["change_type"]
-            in {"revision", "unknown"}
-            for name in ("weekly", "monthly")
-        ):
+        elif input_change["projection_status"] != "absent":
             build_mode, build_reason, suffix_start_date = (
-                _revision_build_decision(
+                _projection_build_decision(
                     spec=spec,
                     input_change=input_change,
                 )
             )
-        elif any(
-            input_change["frames"][name]["change_type"]
-            == "append"
-            for name in ("weekly", "monthly")
-        ):
-            appended_auxiliary = next(
-                name
-                for name in ("weekly", "monthly")
-                if input_change["frames"][name][
-                    "change_type"
-                ]
-                == "append"
-            )
-            build_mode = "full"
-            build_reason = (
-                f"{appended_auxiliary}_input_append_unmappable"
-            )
-        elif input_change["native_generation_changed"] and (
-            input_change["change_type"] in {"unchanged", "append"}
-        ):
-            build_mode = "rebind"
-            build_reason = "native_generation_rebound"
-            cached = current.caches
-        elif input_change["change_type"] in {
-            "unchanged",
-            "append",
-        }:
-            build_mode = "append"
-            build_reason = (
-                "cache_complete"
-                if input_change["change_type"] == "unchanged"
-                else "append_only"
-            )
-            cached = current.caches
+            if build_mode != "full":
+                cached = current.caches
         else:
             build_mode, build_reason, suffix_start_date = (
-                _revision_build_decision(
+                _legacy_build_decision(
                     spec=spec,
                     input_change=input_change,
                 )
             )
-            if build_mode == "suffix":
+            if build_mode != "full":
                 cached = current.caches
 
     caches: dict[str, dict[str, Any]] = {}
@@ -557,7 +539,12 @@ def _prepare_under_family_lock(
         or legacy_caches is not None
         or (
             current is not None
-            and input_change["change_type"] == "append"
+            and (
+                current.manifest.get("input_state", {}).get(
+                    "content_id"
+                )
+                != input_state["content_id"]
+            )
         )
     )
     for baseline in spec.baselines:
@@ -1073,6 +1060,9 @@ def _input_generation_state(
     daily_df: pd.DataFrame,
     weekly_df: pd.DataFrame,
     monthly_df: pd.DataFrame,
+    auxiliary_dependency_projection: (
+        AuxiliaryDependencyProjection | None
+    ),
     native_generation_binding: Mapping[str, object] | None,
 ) -> dict[str, Any]:
     frames = {
@@ -1080,17 +1070,37 @@ def _input_generation_state(
         "weekly": _frame_generation_state(weekly_df, "week_id"),
         "monthly": _frame_generation_state(monthly_df, "month_id"),
     }
+    native_generation = (
+        dict(native_generation_binding)
+        if native_generation_binding is not None
+        else None
+    )
+    if auxiliary_dependency_projection is None:
+        legacy_basis = {
+            "frames": frames,
+            "native_generation": native_generation,
+        }
+        return {
+            "schema_version":
+                LEGACY_INPUT_GENERATION_STATE_SCHEMA_VERSION,
+            "frames": frames,
+            "native_generation": native_generation,
+            "content_id": hashlib.sha256(
+                _canonical_json(legacy_basis).encode("utf-8")
+            ).hexdigest(),
+        }
+    effective_auxiliary = _effective_auxiliary_generation_state(
+        auxiliary_dependency_projection
+    )
     basis = {
         "frames": frames,
-        "native_generation": (
-            dict(native_generation_binding)
-            if native_generation_binding is not None
-            else None
-        ),
+        "effective_auxiliary": effective_auxiliary,
+        "native_generation": native_generation,
     }
     return {
         "schema_version": INPUT_GENERATION_STATE_SCHEMA_VERSION,
         "frames": frames,
+        "effective_auxiliary": effective_auxiliary,
         "native_generation": basis["native_generation"],
         "content_id": hashlib.sha256(
             _canonical_json(basis).encode("utf-8")
@@ -1100,15 +1110,24 @@ def _input_generation_state(
 
 def _validate_input_generation_state_record(raw: Any) -> dict[str, Any]:
     """校验 manifest 内输入状态的完整结构及 self content id。"""
-    if not isinstance(raw, Mapping) or set(raw) != {
+    if not isinstance(raw, Mapping):
+        raise ValueError("cache input generation state fields mismatch")
+    schema_version = raw.get("schema_version")
+    if schema_version not in {
+        LEGACY_INPUT_GENERATION_STATE_SCHEMA_VERSION,
+        INPUT_GENERATION_STATE_SCHEMA_VERSION,
+    }:
+        raise ValueError("cache input generation state schema mismatch")
+    expected_fields = {
         "schema_version",
         "frames",
         "native_generation",
         "content_id",
-    }:
+    }
+    if schema_version == INPUT_GENERATION_STATE_SCHEMA_VERSION:
+        expected_fields.add("effective_auxiliary")
+    if set(raw) != expected_fields:
         raise ValueError("cache input generation state fields mismatch")
-    if raw.get("schema_version") != INPUT_GENERATION_STATE_SCHEMA_VERSION:
-        raise ValueError("cache input generation state schema mismatch")
     frames = raw.get("frames")
     if not isinstance(frames, Mapping) or set(frames) != {
         "daily",
@@ -1123,86 +1142,11 @@ def _validate_input_generation_state_record(raw: Any) -> dict[str, Any]:
     }
     normalized_frames: dict[str, dict[str, Any]] = {}
     for name, expected_key in expected_keys.items():
-        frame = frames.get(name)
-        if not isinstance(frame, Mapping) or set(frame) != {
-            "key",
-            "bound",
-            "row_count",
-            "columns",
-            "dtypes",
-            "key_fingerprints",
-            "fingerprint",
-        }:
-            raise ValueError(
-                f"cache input generation {name} frame fields mismatch"
-            )
-        if frame.get("key") != expected_key:
-            raise ValueError(
-                f"cache input generation {name} key mismatch"
-            )
-        row_count = frame.get("row_count")
-        if (
-            isinstance(row_count, bool)
-            or not isinstance(row_count, int)
-            or row_count < 0
-        ):
-            raise ValueError(
-                f"cache input generation {name} row_count is invalid"
-            )
-        columns = frame.get("columns")
-        dtypes = frame.get("dtypes")
-        if (
-            not isinstance(columns, list)
-            or any(not isinstance(item, str) for item in columns)
-            or columns != sorted(set(columns))
-            or not isinstance(dtypes, Mapping)
-            or set(dtypes) != set(columns)
-            or any(
-                not isinstance(value, str) or not value
-                for value in dtypes.values()
-            )
-        ):
-            raise ValueError(
-                f"cache input generation {name} schema is invalid"
-            )
-        key_fingerprints = frame.get("key_fingerprints")
-        if not isinstance(key_fingerprints, list):
-            raise ValueError(
-                f"cache input generation {name} key fingerprints are invalid"
-            )
-        fingerprint_rows = 0
-        for entry in key_fingerprints:
-            if not isinstance(entry, Mapping) or set(entry) != {
-                "key",
-                "row_count",
-                "fingerprint",
-            }:
-                raise ValueError(
-                    f"cache input generation {name} key entry is invalid"
-                )
-            entry_rows = entry.get("row_count")
-            if (
-                isinstance(entry_rows, bool)
-                or not isinstance(entry_rows, int)
-                or entry_rows < 0
-            ):
-                raise ValueError(
-                    f"cache input generation {name} key row_count is invalid"
-                )
-            _require_cache_sha256(
-                entry.get("fingerprint"),
-                f"{name}.key_fingerprint",
-            )
-            fingerprint_rows += entry_rows
-        if fingerprint_rows != row_count:
-            raise ValueError(
-                f"cache input generation {name} row_count mismatch"
-            )
-        _require_cache_sha256(
-            frame.get("fingerprint"),
-            f"{name}.fingerprint",
+        normalized_frames[name] = _validate_frame_generation_state(
+            frames.get(name),
+            expected_key=expected_key,
+            label=f"cache input generation {name}",
         )
-        normalized_frames[name] = dict(frame)
     native = raw.get("native_generation")
     normalized_native = (
         _validate_native_generation_binding(native)
@@ -1215,22 +1159,340 @@ def _validate_input_generation_state_record(raw: Any) -> dict[str, Any]:
         raw.get("content_id"),
         "input_state.content_id",
     )
+    basis: dict[str, object] = {
+        "frames": normalized_frames,
+        "native_generation": normalized_native,
+    }
+    normalized_effective: dict[str, Any] | None = None
+    if schema_version == INPUT_GENERATION_STATE_SCHEMA_VERSION:
+        normalized_effective = _validate_effective_auxiliary_state(
+            raw.get("effective_auxiliary")
+        )
+        basis["effective_auxiliary"] = normalized_effective
     expected_content_id = hashlib.sha256(
-        _canonical_json(
-            {
-                "frames": normalized_frames,
-                "native_generation": normalized_native,
-            }
-        ).encode("utf-8")
+        _canonical_json(basis).encode("utf-8")
     ).hexdigest()
     if content_id != expected_content_id:
         raise ValueError("cache input generation content digest mismatch")
-    return {
-        "schema_version": INPUT_GENERATION_STATE_SCHEMA_VERSION,
+    validated = {
+        "schema_version": schema_version,
         "frames": normalized_frames,
         "native_generation": normalized_native,
         "content_id": content_id,
     }
+    if normalized_effective is not None:
+        validated["effective_auxiliary"] = normalized_effective
+    return validated
+
+
+def _validate_frame_generation_state(
+    raw: Any,
+    *,
+    expected_key: str,
+    label: str,
+) -> dict[str, Any]:
+    fields = {
+        "key",
+        "bound",
+        "row_count",
+        "columns",
+        "dtypes",
+        "key_fingerprints",
+        "fingerprint",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        raise ValueError(f"{label} frame fields mismatch")
+    if raw.get("key") != expected_key:
+        raise ValueError(f"{label} key mismatch")
+    row_count = raw.get("row_count")
+    if (
+        isinstance(row_count, bool)
+        or not isinstance(row_count, int)
+        or row_count < 0
+    ):
+        raise ValueError(f"{label} row_count is invalid")
+    columns = raw.get("columns")
+    dtypes = raw.get("dtypes")
+    if (
+        not isinstance(columns, list)
+        or any(not isinstance(item, str) for item in columns)
+        or columns != sorted(set(columns))
+        or not isinstance(dtypes, Mapping)
+        or set(dtypes) != set(columns)
+        or any(
+            not isinstance(value, str) or not value
+            for value in dtypes.values()
+        )
+    ):
+        raise ValueError(f"{label} schema is invalid")
+    key_fingerprints = raw.get("key_fingerprints")
+    if not isinstance(key_fingerprints, list):
+        raise ValueError(f"{label} key fingerprints are invalid")
+    fingerprint_rows = 0
+    for entry in key_fingerprints:
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "key",
+            "row_count",
+            "fingerprint",
+        }:
+            raise ValueError(f"{label} key entry is invalid")
+        entry_rows = entry.get("row_count")
+        if (
+            isinstance(entry_rows, bool)
+            or not isinstance(entry_rows, int)
+            or entry_rows < 0
+        ):
+            raise ValueError(f"{label} key row_count is invalid")
+        _require_cache_sha256(
+            entry.get("fingerprint"),
+            f"{label}.key_fingerprint",
+        )
+        fingerprint_rows += entry_rows
+    if fingerprint_rows != row_count:
+        raise ValueError(f"{label} row_count mismatch")
+    _require_cache_sha256(
+        raw.get("fingerprint"),
+        f"{label}.fingerprint",
+    )
+    return dict(raw)
+
+
+def _effective_auxiliary_generation_state(
+    projection: AuxiliaryDependencyProjection,
+) -> dict[str, Any]:
+    if not isinstance(projection, AuxiliaryDependencyProjection):
+        raise TypeError(
+            "auxiliary_dependency_projection must be an "
+            "AuxiliaryDependencyProjection"
+        )
+    frame = projection.frame
+    proof = projection.proof
+    frame_state = _frame_generation_state(frame, "date")
+    normalized_proof = _validate_effective_auxiliary_proof(
+        proof,
+        frame_state=frame_state,
+    )
+    return {
+        "schema_version": PROJECTION_SCHEMA_VERSION,
+        "frame": frame_state,
+        "proof": normalized_proof,
+        "proof_identity_sha256": _effective_auxiliary_proof_identity(
+            normalized_proof
+        ),
+        "content_sha256": _require_cache_sha256(
+            projection.content_sha256,
+            "effective_auxiliary.content_sha256",
+        ),
+    }
+
+
+def _validate_effective_auxiliary_state(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, Mapping) or set(raw) != {
+        "schema_version",
+        "frame",
+        "proof",
+        "proof_identity_sha256",
+        "content_sha256",
+    }:
+        raise ValueError("effective auxiliary input state fields mismatch")
+    if raw.get("schema_version") != PROJECTION_SCHEMA_VERSION:
+        raise ValueError("effective auxiliary input schema mismatch")
+    frame = raw.get("frame")
+    if not isinstance(frame, Mapping):
+        raise ValueError("effective auxiliary frame state is invalid")
+    normalized_frame = _validate_frame_generation_state(
+        frame,
+        expected_key="date",
+        label="effective auxiliary",
+    )
+    normalized_proof = _validate_effective_auxiliary_proof(
+        raw.get("proof"),
+        frame_state=normalized_frame,
+    )
+    proof_identity = _require_cache_sha256(
+        raw.get("proof_identity_sha256"),
+        "effective_auxiliary.proof_identity_sha256",
+    )
+    if proof_identity != _effective_auxiliary_proof_identity(
+        normalized_proof
+    ):
+        raise ValueError("effective auxiliary proof identity mismatch")
+    return {
+        "schema_version": PROJECTION_SCHEMA_VERSION,
+        "frame": normalized_frame,
+        "proof": normalized_proof,
+        "proof_identity_sha256": proof_identity,
+        "content_sha256": _require_cache_sha256(
+            raw.get("content_sha256"),
+            "effective_auxiliary.content_sha256",
+        ),
+    }
+
+
+def _validate_effective_auxiliary_proof(
+    raw: Any,
+    *,
+    frame_state: Mapping[str, Any],
+) -> dict[str, Any]:
+    fields = {
+        "schema_version",
+        "date_to_week_mode",
+        "date_to_week_sha256",
+        "date_to_week_entries",
+        "proof_files",
+        "columns",
+        "dtypes",
+        "daily_grid_sha256",
+        "feature_cutoff",
+    }
+    if not isinstance(raw, Mapping) or set(raw) != fields:
+        raise ValueError("effective auxiliary proof fields mismatch")
+    if raw.get("schema_version") != PROJECTION_SCHEMA_VERSION:
+        raise ValueError("effective auxiliary proof schema mismatch")
+    if raw.get("date_to_week_mode") not in {"explicit", "fallback"}:
+        raise ValueError("effective auxiliary date_to_week mode is invalid")
+    date_to_week_entries = _validate_date_to_week_entries(
+        raw.get("date_to_week_entries")
+    )
+    date_to_week_sha = _require_cache_sha256(
+        raw.get("date_to_week_sha256"),
+        "effective_auxiliary.date_to_week_sha256",
+    )
+    expected_mapping_sha = hashlib.sha256(
+        _canonical_json(
+            [
+                [entry["date"], entry["week_id"]]
+                for entry in date_to_week_entries
+            ]
+        ).encode("utf-8")
+    ).hexdigest()
+    if date_to_week_sha != expected_mapping_sha:
+        raise ValueError("effective auxiliary date_to_week digest mismatch")
+    daily_grid_sha = _require_cache_sha256(
+        raw.get("daily_grid_sha256"),
+        "effective_auxiliary.daily_grid_sha256",
+    )
+    proof_files = raw.get("proof_files")
+    if not isinstance(proof_files, list) or not proof_files:
+        raise ValueError("effective auxiliary proof files are invalid")
+    normalized_files: list[dict[str, str]] = []
+    for record in proof_files:
+        if (
+            not isinstance(record, Mapping)
+            or set(record) != {"name", "sha256"}
+            or not isinstance(record.get("name"), str)
+            or not str(record["name"]).strip()
+        ):
+            raise ValueError("effective auxiliary proof file is invalid")
+        normalized_files.append(
+            {
+                "name": str(record["name"]),
+                "sha256": _require_cache_sha256(
+                    record.get("sha256"),
+                    "effective_auxiliary.proof_file_sha256",
+                ),
+            }
+        )
+    columns = raw.get("columns")
+    dtypes = raw.get("dtypes")
+    frame_columns = list(frame_state.get("columns") or [])
+    frame_dtypes = frame_state.get("dtypes")
+    expected_dtypes = (
+        [frame_dtypes[column] for column in columns]
+        if isinstance(columns, list)
+        and isinstance(frame_dtypes, Mapping)
+        and all(column in frame_dtypes for column in columns)
+        else None
+    )
+    if (
+        not isinstance(columns, list)
+        or any(not isinstance(column, str) for column in columns)
+        or set(columns) != set(frame_columns)
+        or not isinstance(dtypes, list)
+        or dtypes != expected_dtypes
+    ):
+        raise ValueError("effective auxiliary proof frame schema mismatch")
+    feature_cutoff = raw.get("feature_cutoff")
+    if (
+        not isinstance(feature_cutoff, str)
+        or feature_cutoff != frame_state.get("bound")
+    ):
+        raise ValueError("effective auxiliary feature cutoff mismatch")
+    return {
+        "schema_version": PROJECTION_SCHEMA_VERSION,
+        "date_to_week_mode": raw["date_to_week_mode"],
+        "date_to_week_sha256": date_to_week_sha,
+        "date_to_week_entries": date_to_week_entries,
+        "proof_files": normalized_files,
+        "columns": list(columns),
+        "dtypes": list(dtypes),
+        "daily_grid_sha256": daily_grid_sha,
+        "feature_cutoff": feature_cutoff,
+    }
+
+
+def _effective_auxiliary_proof_identity(
+    proof: Mapping[str, Any],
+) -> str:
+    stable_proof = {
+        key: proof[key]
+        for key in (
+            "schema_version",
+            "date_to_week_mode",
+            "proof_files",
+            "columns",
+            "dtypes",
+        )
+    }
+    return hashlib.sha256(
+        _canonical_json(stable_proof).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_date_to_week_entries(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        raise ValueError("effective auxiliary date_to_week entries are invalid")
+    normalized: list[dict[str, Any]] = []
+    previous_date: str | None = None
+    for entry in raw:
+        if not isinstance(entry, Mapping) or set(entry) != {
+            "date",
+            "week_id",
+        }:
+            raise ValueError(
+                "effective auxiliary date_to_week entry is invalid"
+            )
+        date_value = entry.get("date")
+        week_id = entry.get("week_id")
+        if (
+            not isinstance(date_value, str)
+            or isinstance(week_id, bool)
+            or not isinstance(week_id, int)
+        ):
+            raise ValueError(
+                "effective auxiliary date_to_week entry is invalid"
+            )
+        try:
+            normalized_date = pd.Timestamp(date_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(
+                "effective auxiliary date_to_week entry is invalid"
+            ) from exc
+        if (
+            pd.isna(normalized_date)
+            or normalized_date.tzinfo is not None
+            or normalized_date.strftime("%Y-%m-%d") != date_value
+            or (
+                previous_date is not None
+                and date_value <= previous_date
+            )
+        ):
+            raise ValueError(
+                "effective auxiliary date_to_week entries are not canonical"
+            )
+        normalized.append({"date": date_value, "week_id": week_id})
+        previous_date = date_value
+    return normalized
 
 
 def _frame_generation_state(
@@ -1360,22 +1622,10 @@ def _input_change_analysis(
             prior,
             latest,
         )
-    change_types = {
+    raw_change_type = _aggregate_input_change_type(
         str(item["change_type"])
         for item in frame_changes.values()
-    }
-    if "unknown" in change_types:
-        change_type = "unknown"
-    elif "revision" in change_types:
-        change_type = "revision"
-    elif "append" in change_types:
-        change_type = "append"
-    elif change_types == {"initial"}:
-        change_type = "initial"
-    elif change_types <= {"unchanged", "initial"} and "initial" in change_types:
-        change_type = "initial"
-    else:
-        change_type = "unchanged"
+    )
     daily_union_keys: list[str | int] = []
     if isinstance(previous_frames, Mapping):
         prior_daily = previous_frames.get("daily")
@@ -1397,14 +1647,144 @@ def _input_change_analysis(
         else None
     )
     current_native = current.get("native_generation")
+    previous_effective = (
+        previous.get("effective_auxiliary")
+        if isinstance(previous, Mapping)
+        else None
+    )
+    current_effective = current.get("effective_auxiliary")
+    projection_status = "absent"
+    mapping_change = {
+        "change_type": "unavailable",
+        "earliest_changed_key": None,
+    }
+    effective_change = {
+        "change_type": "unavailable",
+        "earliest_changed_key": None,
+        "schema_changed": False,
+    }
+    if isinstance(previous_effective, Mapping) and isinstance(
+        current_effective,
+        Mapping,
+    ):
+        prior_identity = previous_effective.get(
+            "proof_identity_sha256"
+        )
+        current_identity = current_effective.get(
+            "proof_identity_sha256"
+        )
+        if (
+            previous_effective.get("schema_version")
+            != current_effective.get("schema_version")
+        ):
+            projection_status = "schema_changed"
+        elif prior_identity != current_identity:
+            projection_status = "proof_changed"
+        else:
+            mapping_change = _date_to_week_change_analysis(
+                previous_effective,
+                current_effective,
+            )
+            if mapping_change["change_type"] in {
+                "revision",
+                "unknown",
+            }:
+                projection_status = "mapping_changed"
+            else:
+                projection_status = "valid"
+                effective_change = _frame_change_analysis(
+                    previous_effective.get("frame"),
+                    current_effective.get("frame"),
+                )
+    elif previous_effective is None and current_effective is None:
+        projection_status = "absent"
+    elif previous_effective is None:
+        projection_status = "missing_from_parent"
+    else:
+        projection_status = "missing_current"
+    if projection_status == "valid":
+        change_type = _aggregate_input_change_type(
+            (
+                str(frame_changes["daily"]["change_type"]),
+                str(effective_change["change_type"]),
+            )
+        )
+    elif projection_status == "absent":
+        change_type = raw_change_type
+    else:
+        change_type = "unknown"
     return {
         "change_type": change_type,
+        "raw_change_type": raw_change_type,
         "frames": frame_changes,
+        "effective_auxiliary": effective_change,
+        "date_to_week": mapping_change,
+        "projection_status": projection_status,
         "suffix_start_date": None,
         "native_generation_changed": (
             previous_native != current_native
         ),
         "_daily_union_keys": daily_union_keys,
+    }
+
+
+def _aggregate_input_change_type(change_types: Any) -> str:
+    normalized = {str(item) for item in change_types}
+    if "unknown" in normalized:
+        return "unknown"
+    if "revision" in normalized:
+        return "revision"
+    if "append" in normalized:
+        return "append"
+    if normalized == {"initial"}:
+        return "initial"
+    if normalized <= {"unchanged", "initial"} and "initial" in normalized:
+        return "initial"
+    return "unchanged"
+
+
+def _date_to_week_change_analysis(
+    previous: Mapping[str, Any],
+    current: Mapping[str, Any],
+) -> dict[str, Any]:
+    try:
+        previous_entries = {
+            str(item["date"]): int(item["week_id"])
+            for item in previous["proof"]["date_to_week_entries"]
+        }
+        current_entries = {
+            str(item["date"]): int(item["week_id"])
+            for item in current["proof"]["date_to_week_entries"]
+        }
+    except (KeyError, TypeError, ValueError):
+        return {
+            "change_type": "unknown",
+            "earliest_changed_key": None,
+        }
+    changed = {
+        day
+        for day in set(previous_entries) | set(current_entries)
+        if previous_entries.get(day) != current_entries.get(day)
+    }
+    if not changed:
+        return {
+            "change_type": "unchanged",
+            "earliest_changed_key": None,
+        }
+    added = set(current_entries) - set(previous_entries)
+    removed = set(previous_entries) - set(current_entries)
+    only_tail_append = (
+        bool(added)
+        and not removed
+        and changed == added
+        and (
+            not previous_entries
+            or all(day > max(previous_entries) for day in added)
+        )
+    )
+    return {
+        "change_type": "append" if only_tail_append else "revision",
+        "earliest_changed_key": min(changed),
     }
 
 
@@ -1538,28 +1918,121 @@ def _frame_key_sort_value(value: Any) -> tuple[int, Any]:
     return (1, str(value))
 
 
+def _projection_build_decision(
+    *,
+    spec: PhaseACacheSpec,
+    input_change: dict[str, Any],
+) -> tuple[str, str, str | None]:
+    status = input_change["projection_status"]
+    if status == "missing_from_parent":
+        return (
+            "full",
+            "effective_auxiliary_projection_missing_from_parent",
+            None,
+        )
+    if status == "missing_current":
+        return (
+            "full",
+            "effective_auxiliary_projection_missing_current",
+            None,
+        )
+    if status == "proof_changed":
+        return "full", "effective_auxiliary_proof_changed", None
+    if status == "mapping_changed":
+        return "full", "date_to_week_history_changed", None
+    if status != "valid":
+        return "full", "effective_auxiliary_projection_unknown", None
+    daily = input_change["frames"]["daily"]
+    if daily["change_type"] in {"revision", "unknown"}:
+        return _revision_build_decision(
+            spec=spec,
+            input_change=input_change,
+            ignore_raw_auxiliary=True,
+        )
+    effective = input_change["effective_auxiliary"]
+    if effective["change_type"] == "revision":
+        earliest = effective["earliest_changed_key"]
+        if not isinstance(earliest, str):
+            return "full", "effective_auxiliary_revision_unknown", None
+        input_change["suffix_start_date"] = earliest
+        return "suffix", "effective_auxiliary_revision", earliest
+    if effective["change_type"] not in {"unchanged", "append"}:
+        return "full", "effective_auxiliary_projection_unknown", None
+    if input_change["native_generation_changed"]:
+        return "rebind", "native_generation_rebound", None
+    return (
+        "append",
+        (
+            "effective_auxiliary_append"
+            if (
+                effective["change_type"] == "append"
+                or input_change["date_to_week"]["change_type"]
+                == "append"
+            )
+            else "cache_complete"
+        ),
+        None,
+    )
+
+
+def _legacy_build_decision(
+    *,
+    spec: PhaseACacheSpec,
+    input_change: dict[str, Any],
+) -> tuple[str, str, str | None]:
+    for name in ("weekly", "monthly"):
+        change_type = input_change["frames"][name]["change_type"]
+        if change_type in {"revision", "unknown"}:
+            return _revision_build_decision(
+                spec=spec,
+                input_change=input_change,
+            )
+        if change_type == "append":
+            return "full", f"{name}_input_append_unmappable", None
+    if input_change["native_generation_changed"] and (
+        input_change["change_type"] in {"unchanged", "append"}
+    ):
+        return "rebind", "native_generation_rebound", None
+    if input_change["change_type"] in {"unchanged", "append"}:
+        return (
+            "append",
+            (
+                "cache_complete"
+                if input_change["change_type"] == "unchanged"
+                else "append_only"
+            ),
+            None,
+        )
+    return _revision_build_decision(
+        spec=spec,
+        input_change=input_change,
+    )
+
+
 def _revision_build_decision(
     *,
     spec: PhaseACacheSpec,
     input_change: dict[str, Any],
+    ignore_raw_auxiliary: bool = False,
 ) -> tuple[str, str, str | None]:
     frames = input_change["frames"]
     has_daily_proof = (
         spec.daily_dependency_lookback_rows is not None
         and bool(str(spec.daily_dependency_proof or "").strip())
     )
-    for name in ("weekly", "monthly"):
-        change = frames[name]
-        if change["change_type"] in {"revision", "unknown"}:
-            return (
-                "full",
-                (
-                    f"{name}_input_revision_unmappable"
-                    if has_daily_proof
-                    else "input_revision"
-                ),
-                None,
-            )
+    if not ignore_raw_auxiliary:
+        for name in ("weekly", "monthly"):
+            change = frames[name]
+            if change["change_type"] in {"revision", "unknown"}:
+                return (
+                    "full",
+                    (
+                        f"{name}_input_revision_unmappable"
+                        if has_daily_proof
+                        else "input_revision"
+                    ),
+                    None,
+                )
     daily = frames["daily"]
     if (
         daily["change_type"] != "revision"
@@ -1596,6 +2069,11 @@ def _is_safe_truncated_input(
     if not isinstance(previous_frames, Mapping) or not isinstance(
         current_frames,
         Mapping,
+    ):
+        return False
+    if (
+        previous.get("effective_auxiliary") is not None
+        or current.get("effective_auxiliary") is not None
     ):
         return False
     for name in ("daily", "weekly", "monthly"):
@@ -2612,16 +3090,35 @@ def _lineage_build_mode(
     ):
         return "full"
     frames = input_change["frames"]
-    if any(
-        frames[name]["change_type"] in {"revision", "unknown"}
-        for name in ("weekly", "monthly")
-    ):
-        return "full"
-    if any(
-        frames[name]["change_type"] == "append"
-        for name in ("weekly", "monthly")
-    ):
-        return "full"
+    projection_status = input_change.get("projection_status")
+    if projection_status != "absent":
+        if projection_status != "valid":
+            return "full"
+        daily = frames["daily"]
+        effective = input_change["effective_auxiliary"]
+        if daily["change_type"] not in {"revision", "unknown"}:
+            if effective["change_type"] == "revision":
+                earliest = effective["earliest_changed_key"]
+                if not isinstance(earliest, str):
+                    return "full"
+                input_change["suffix_start_date"] = earliest
+                return "suffix"
+            if effective["change_type"] not in {"unchanged", "append"}:
+                return "full"
+            if input_change["native_generation_changed"]:
+                return "rebind"
+            return "append"
+    else:
+        if any(
+            frames[name]["change_type"] in {"revision", "unknown"}
+            for name in ("weekly", "monthly")
+        ):
+            return "full"
+        if any(
+            frames[name]["change_type"] == "append"
+            for name in ("weekly", "monthly")
+        ):
+            return "full"
     if input_change["native_generation_changed"] and (
         input_change["change_type"] in {"unchanged", "append"}
     ):

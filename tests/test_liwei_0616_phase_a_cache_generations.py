@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 import shared.liwei_0616_phase_a_cache as cache_module
+from shared.liwei_0616_cache_projection import AuxiliaryDependencyProjection
 from shared.liwei_0616_phase_a_cache import (
     PhaseACacheSpec,
     prepare_phase_a_caches,
@@ -486,6 +487,275 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                         )
                     ],
                 )
+
+    def test_effective_auxiliary_revision_rebuilds_from_earliest_daily_date(
+        self,
+    ) -> None:
+        trained: list[tuple[str, list[str]]] = []
+        initial_projection = self._projection(
+            ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-06"],
+            [1.0, 2.0, 3.0, 4.0],
+        )
+        revised_projection = self._projection(
+            ["2026-07-01", "2026-07-02", "2026-07-03", "2026-07-06"],
+            [1.0, 2.0, 30.0, 40.0],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.copy(),
+                end="2026-07-06",
+                auxiliary_dependency_projection=initial_projection,
+            )
+            trained.clear()
+
+            cache, audit = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.copy(),
+                end="2026-07-06",
+                auxiliary_dependency_projection=revised_projection,
+            )
+
+        self.assertEqual(audit["build_mode"], "suffix")
+        self.assertEqual(
+            audit["build_reason"],
+            "effective_auxiliary_revision",
+        )
+        self.assertEqual(
+            audit["input_change"]["effective_auxiliary"][
+                "earliest_changed_key"
+            ],
+            "2026-07-03",
+        )
+        self.assertEqual(
+            audit["input_change"]["suffix_start_date"],
+            "2026-07-03",
+        )
+        self.assertEqual(
+            trained,
+            [("STD", ["2026-07-03", "2026-07-06"])],
+        )
+        self.assertEqual(
+            cache["STD"]["test_dates"],
+            [
+                "2026-07-01",
+                "2026-07-02",
+                "2026-07-03",
+                "2026-07-06",
+            ],
+        )
+
+    def test_effective_auxiliary_proof_change_forces_full_rebuild(
+        self,
+    ) -> None:
+        trained: list[tuple[str, list[str]]] = []
+        dates = ["2026-07-01", "2026-07-02", "2026-07-03"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+                auxiliary_dependency_projection=self._projection(
+                    dates,
+                    [1.0, 2.0, 3.0],
+                    proof_file_sha256="a" * 64,
+                ),
+            )
+            trained.clear()
+
+            _cache, audit = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+                auxiliary_dependency_projection=self._projection(
+                    dates,
+                    [1.0, 2.0, 3.0],
+                    proof_file_sha256="c" * 64,
+                ),
+            )
+
+        self.assertEqual(audit["build_mode"], "full")
+        self.assertEqual(
+            audit["build_reason"],
+            "effective_auxiliary_proof_changed",
+        )
+        self.assertEqual(
+            trained,
+            [("STD", ["2026-07-01", "2026-07-02", "2026-07-03"])],
+        )
+
+    def test_projection_cannot_hide_daily_revision(self) -> None:
+        trained: list[tuple[str, list[str]]] = []
+        dates = ["2026-07-01", "2026-07-02", "2026-07-03"]
+        projection = self._projection(dates, [1.0, 2.0, 3.0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+                auxiliary_dependency_projection=projection,
+            )
+            trained.clear()
+            revised = self.daily.iloc[:3].copy()
+            revised.loc[0, "TB5YWI0C"] = 9.9
+
+            _cache, audit = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=revised,
+                end="2026-07-03",
+                auxiliary_dependency_projection=projection,
+            )
+
+        self.assertEqual(audit["build_mode"], "full")
+        self.assertEqual(audit["build_reason"], "input_revision")
+        self.assertEqual(
+            trained,
+            [("STD", ["2026-07-01", "2026-07-02", "2026-07-03"])],
+        )
+
+    def test_projection_lineage_replays_effective_suffix_decision(self) -> None:
+        parent = SimpleNamespace(
+            manifest={"spec_fingerprint": "same"},
+            caches={"STD": {}},
+        )
+        generation = SimpleNamespace(
+            manifest={"spec_fingerprint": "same"},
+            caches={"STD": {}},
+        )
+        input_change = {
+            "native_generation_changed": False,
+            "change_type": "revision",
+            "projection_status": "valid",
+            "frames": {
+                "daily": {
+                    "change_type": "unchanged",
+                    "schema_changed": False,
+                },
+                "weekly": {"change_type": "revision"},
+                "monthly": {"change_type": "revision"},
+            },
+            "effective_auxiliary": {
+                "change_type": "revision",
+                "earliest_changed_key": "2026-07-03",
+                "schema_changed": False,
+            },
+        }
+
+        self.assertEqual(
+            cache_module._lineage_build_mode(
+                parent=parent,
+                generation=generation,
+                input_change=input_change,
+                qualification={},
+            ),
+            "suffix",
+        )
+        self.assertEqual(
+            input_change["suffix_start_date"],
+            "2026-07-03",
+        )
+
+    def test_projection_state_tamper_is_rejected(self) -> None:
+        projection = self._projection(
+            ["2026-07-01", "2026-07-02"],
+            [1.0, 2.0],
+        )
+        state = cache_module._effective_auxiliary_generation_state(
+            projection
+        )
+        tampered = copy.deepcopy(state)
+        tampered["proof"]["date_to_week_entries"][0]["week_id"] = 202699
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "date_to_week digest mismatch",
+        ):
+            cache_module._validate_effective_auxiliary_state(tampered)
+
+    def test_historical_date_to_week_change_forces_full_rebuild(self) -> None:
+        trained: list[tuple[str, list[str]]] = []
+        dates = ["2026-07-01", "2026-07-02", "2026-07-03"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+                auxiliary_dependency_projection=self._projection(
+                    dates,
+                    [1.0, 2.0, 3.0],
+                    week_ids=[202626, 202626, 202627],
+                ),
+            )
+            trained.clear()
+
+            _cache, audit = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+                auxiliary_dependency_projection=self._projection(
+                    dates,
+                    [1.0, 2.0, 3.0],
+                    week_ids=[202625, 202626, 202627],
+                ),
+            )
+
+        self.assertEqual(audit["build_mode"], "full")
+        self.assertEqual(
+            audit["build_reason"],
+            "date_to_week_history_changed",
+        )
+        self.assertEqual(
+            trained,
+            [("STD", ["2026-07-01", "2026-07-02", "2026-07-03"])],
+        )
+
+    def test_generation_without_projection_remains_readable_and_rebuilds_full(
+        self,
+    ) -> None:
+        trained: list[tuple[str, list[str]]] = []
+        dates = ["2026-07-01", "2026-07-02", "2026-07-03"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+            )
+            trained.clear()
+
+            _cache, audit = self._prepare(
+                root,
+                trainer=self._trainer(trained),
+                daily=self.daily.iloc[:3].copy(),
+                end="2026-07-03",
+                auxiliary_dependency_projection=self._projection(
+                    dates,
+                    [1.0, 2.0, 3.0],
+                ),
+            )
+
+        self.assertEqual(audit["build_mode"], "full")
+        self.assertEqual(
+            audit["build_reason"],
+            "effective_auxiliary_projection_missing_from_parent",
+        )
+        self.assertEqual(
+            trained,
+            [("STD", ["2026-07-01", "2026-07-02", "2026-07-03"])],
+        )
 
     def test_ledger_mode_rejects_unqualified_generation_before_publish(
         self,
@@ -1730,6 +2000,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
         cache_consumer_id: str = "consumer-a",
         cache_use_qualification=None,
         native_generation=None,
+        auxiliary_dependency_projection=None,
     ):
         return prepare_phase_a_caches(
             spec=spec or self.spec,
@@ -1745,6 +2016,7 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
             cache_consumer_id=cache_consumer_id,
             cache_use_qualification=cache_use_qualification,
             native_generation=native_generation,
+            auxiliary_dependency_projection=auxiliary_dependency_projection,
             cache_root=root,
         )
 
@@ -1788,6 +2060,66 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
             "schema_version": "native-generation-v1",
             "exporter_version": "native-generation-exporter-v1",
         }
+
+    @staticmethod
+    def _projection(
+        dates: list[str],
+        values: list[float],
+        *,
+        proof_file_sha256: str = "a" * 64,
+        week_ids: list[int] | None = None,
+    ) -> AuxiliaryDependencyProjection:
+        frame = pd.DataFrame(
+            {
+                "date": dates,
+                "effective_aux": values,
+            }
+        )
+        mapping_entries = [
+            {"date": day, "week_id": week_id}
+            for day, week_id in zip(
+                dates,
+                week_ids or [202630] * len(dates),
+                strict=True,
+            )
+        ]
+        mapping_payload = [
+            [entry["date"], entry["week_id"]]
+            for entry in mapping_entries
+        ]
+        proof = {
+            "schema_version":
+                "liwei-0616-auxiliary-dependency-projection-v1",
+            "date_to_week_mode": "explicit",
+            "date_to_week_sha256": hashlib.sha256(
+                json.dumps(
+                    mapping_payload,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "date_to_week_entries": mapping_entries,
+            "proof_files": [
+                {"name": "data_alignment.py", "sha256": proof_file_sha256}
+            ],
+            "columns": list(frame.columns),
+            "dtypes": [
+                str(frame[column].dtype) for column in frame.columns
+            ],
+            "daily_grid_sha256": hashlib.sha256(
+                "|".join(dates).encode("utf-8")
+            ).hexdigest(),
+            "feature_cutoff": dates[-1],
+        }
+        return AuxiliaryDependencyProjection(
+            frame=frame,
+            proof=proof,
+            content_sha256=hashlib.sha256(
+                frame.to_json(orient="split").encode("utf-8")
+            ).hexdigest(),
+        )
 
     @staticmethod
     def _native_generation() -> dict[str, object]:

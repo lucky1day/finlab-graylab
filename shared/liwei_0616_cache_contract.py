@@ -140,12 +140,21 @@ _PARENT_FIELDS = frozenset(
         "generation_content_id",
     }
 )
-_INPUT_CHANGE_FIELDS = frozenset(
+_LEGACY_INPUT_CHANGE_FIELDS = frozenset(
     {
         "change_type",
         "frames",
         "suffix_start_date",
         "native_generation_changed",
+    }
+)
+_INPUT_CHANGE_FIELDS = frozenset(
+    set(_LEGACY_INPUT_CHANGE_FIELDS)
+    | {
+        "raw_change_type",
+        "effective_auxiliary",
+        "date_to_week",
+        "projection_status",
     }
 )
 _FRAME_CHANGE_FIELDS = frozenset(
@@ -535,11 +544,14 @@ def validate_generation_acceptance_record(
         value.get("input_change"),
         "generation acceptance input_change",
     )
-    _exact_fields(
-        input_change,
+    input_change_fields = frozenset(input_change)
+    if input_change_fields not in (
+        _LEGACY_INPUT_CHANGE_FIELDS,
         _INPUT_CHANGE_FIELDS,
-        "generation acceptance input_change",
-    )
+    ):
+        raise ValueError(
+            "generation acceptance input_change fields mismatch"
+        )
     _text(input_change.get("change_type"), "input_change.change_type")
     if not isinstance(
         input_change.get("native_generation_changed"),
@@ -591,6 +603,32 @@ def validate_generation_acceptance_record(
         if not isinstance(frame.get("schema_changed"), bool):
             raise ValueError(
                 f"{frame_name}.schema_changed must be boolean"
+            )
+    if input_change_fields == _INPUT_CHANGE_FIELDS:
+        _text(
+            input_change.get("raw_change_type"),
+            "input_change.raw_change_type",
+        )
+        _text(
+            input_change.get("projection_status"),
+            "input_change.projection_status",
+        )
+        effective = _mapping(
+            input_change.get("effective_auxiliary"),
+            "generation acceptance effective auxiliary",
+        )
+        _exact_fields(
+            effective,
+            _FRAME_CHANGE_FIELDS,
+            "generation acceptance effective auxiliary",
+        )
+        mapping = _mapping(
+            input_change.get("date_to_week"),
+            "generation acceptance date_to_week",
+        )
+        if set(mapping) != {"change_type", "earliest_changed_key"}:
+            raise ValueError(
+                "generation acceptance date_to_week fields mismatch"
             )
     baselines = _mapping(
         value.get("baselines"),
