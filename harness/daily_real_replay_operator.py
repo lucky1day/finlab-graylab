@@ -9,7 +9,7 @@ import stat
 import subprocess
 import time as time_module
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import MappingProxyType
@@ -103,6 +103,7 @@ _QUIESCENCE_FIELDS = frozenset(
     }
 )
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
+_LIWEI_CACHE_ROOT_ENV = "LIWEI_0616_PHASE_A_CACHE_ROOT"
 
 
 def _validated_replay_policy_path(path: Path) -> Path:
@@ -429,6 +430,208 @@ class DailyRealReplayExecutionReport:
     v2_release_schedule_qualification: str
     within_capacity_limit: bool
     within_visibility_deadline: bool
+    forced_cold_cache_qualification: str
+    liwei_cache_environment_restored: bool
+    runtime_started_at: str
+    db_last_visible_at: str
+    native_prepare_seconds: float
+    databridge_prepare_seconds: float
+    parallel_readiness_seconds: float
+    runtime_to_last_visible_seconds: float
+    release_guard_seconds: float
+    end_to_end_seconds: float
+    projected_readiness_at: str
+    production_identity_unchanged: bool
+
+
+@dataclass(frozen=True)
+class _ReplayTimingEvidence:
+    """把真实准备/receipt 时长平移到 06:30 的保守投影。"""
+
+    native_prepare_seconds: float
+    databridge_prepare_seconds: float
+    parallel_readiness_seconds: float
+    runtime_to_last_visible_seconds: float
+    release_guard_seconds: float
+    end_to_end_seconds: float
+    runtime_started_at: str
+    db_last_visible_at: str
+    projected_readiness_at: str
+    projected_last_visible_at: str
+    within_capacity_limit: bool
+    within_visibility_deadline: bool
+
+
+@contextmanager
+def _liwei_forced_cold_cache_environment(
+    cache_root: Path,
+) -> Iterator[None]:
+    """运行期只暴露隔离空 cache，并精确恢复调用前环境。"""
+    candidate = Path(cache_root)
+    try:
+        direct_details = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+        details = resolved.lstat()
+        valid = (
+            not stat.S_ISLNK(direct_details.st_mode)
+            and stat.S_ISDIR(details.st_mode)
+            and not stat.S_ISLNK(details.st_mode)
+            and details.st_uid == os.getuid()
+            and stat.S_IMODE(details.st_mode) == 0o700
+            and not any(resolved.iterdir())
+        )
+    except OSError:
+        valid = False
+    if not valid:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_FORCED_COLD_CACHE_UNSAFE"
+        )
+    previous = os.environ.get(_LIWEI_CACHE_ROOT_ENV)
+    os.environ[_LIWEI_CACHE_ROOT_ENV] = str(resolved)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(_LIWEI_CACHE_ROOT_ENV, None)
+        else:
+            os.environ[_LIWEI_CACHE_ROOT_ENV] = previous
+
+
+def _build_replay_timing_evidence(
+    inputs: object,
+    *,
+    runtime_started_at: datetime,
+    db_last_visible_at: datetime,
+    max_v2_release_offset_minutes: int,
+) -> _ReplayTimingEvidence:
+    """用真实时长而非运行发生时的绝对时钟计算 06:30 投影。"""
+    native_created = _iso_utc_datetime(
+        inputs.native_generation.created_at,
+        field="native.created_at",
+    )
+    native_sealed = _iso_utc_datetime(
+        inputs.native_generation.sealed_at,
+        field="native.sealed_at",
+    )
+    databridge_started = _iso_utc_datetime(
+        inputs.databridge_generation.refresh_started_at,
+        field="databridge.refresh_started_at",
+    )
+    databridge_published = _iso_utc_datetime(
+        inputs.databridge_generation.published_at,
+        field="databridge.published_at",
+    )
+    databridge_sealed = _iso_utc_datetime(
+        inputs.databridge_generation.sealed_at,
+        field="databridge.sealed_at",
+    )
+    runtime_started = _aware_utc_datetime(
+        runtime_started_at,
+        field="runtime_started_at",
+    )
+    last_visible = _aware_utc_datetime(
+        db_last_visible_at,
+        field="db_last_visible_at",
+    )
+    native_seconds = (native_sealed - native_created).total_seconds()
+    databridge_seconds = (
+        databridge_sealed - databridge_started
+    ).total_seconds()
+    runtime_seconds = (
+        last_visible - runtime_started
+    ).total_seconds()
+    if (
+        native_seconds < 0
+        or databridge_seconds < 0
+        or databridge_published < databridge_started
+        or databridge_sealed < databridge_published
+        or runtime_seconds < 0
+        or isinstance(max_v2_release_offset_minutes, bool)
+        or not isinstance(max_v2_release_offset_minutes, int)
+        or max_v2_release_offset_minutes < 0
+    ):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_TIMING_EVIDENCE_INVALID"
+        )
+    readiness_seconds = max(native_seconds, databridge_seconds)
+    release_seconds = float(max_v2_release_offset_minutes * 60)
+    end_to_end_seconds = (
+        readiness_seconds + release_seconds + runtime_seconds
+    )
+    business_date = date.fromisoformat(str(inputs.business_date))
+    anchor = datetime.combine(
+        business_date,
+        datetime.min.time(),
+        tzinfo=_SHANGHAI,
+    ) + timedelta(hours=6, minutes=30)
+    projected_readiness = anchor + timedelta(
+        seconds=readiness_seconds
+    )
+    projected_last_visible = anchor + timedelta(
+        seconds=end_to_end_seconds
+    )
+    deadline = datetime.combine(
+        business_date,
+        datetime.min.time(),
+        tzinfo=_SHANGHAI,
+    ) + timedelta(hours=7, minutes=55)
+    return _ReplayTimingEvidence(
+        native_prepare_seconds=round(native_seconds, 6),
+        databridge_prepare_seconds=round(
+            databridge_seconds,
+            6,
+        ),
+        parallel_readiness_seconds=round(
+            readiness_seconds,
+            6,
+        ),
+        runtime_to_last_visible_seconds=round(
+            runtime_seconds,
+            6,
+        ),
+        release_guard_seconds=round(release_seconds, 6),
+        end_to_end_seconds=round(end_to_end_seconds, 6),
+        runtime_started_at=runtime_started.isoformat(),
+        db_last_visible_at=last_visible.isoformat(),
+        projected_readiness_at=projected_readiness.isoformat(),
+        projected_last_visible_at=(
+            projected_last_visible.isoformat()
+        ),
+        within_capacity_limit=end_to_end_seconds <= 5_100,
+        within_visibility_deadline=(
+            projected_last_visible <= deadline
+        ),
+    )
+
+
+def _aware_utc_datetime(
+    value: datetime,
+    *,
+    field: str,
+) -> datetime:
+    """规范化调用方提供的 aware wall clock。"""
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_TIMING_EVIDENCE_INVALID"
+        )
+    return value.astimezone(timezone.utc)
+
+
+def _require_replay_timing_evidence(
+    evidence: _ReplayTimingEvidence,
+) -> None:
+    """容量或 07:55 投影超线时拒绝形成通过报告。"""
+    if (
+        not evidence.within_capacity_limit
+        or not evidence.within_visibility_deadline
+    ):
+        raise DailyRealReplayPreflightError(
+            "REPLAY_EXECUTION_ACCEPTANCE_FAILED"
+        )
 
 
 def run_real_replay_preflight(
@@ -511,7 +714,10 @@ def _execute_real_replay_candidate(
         )
     with IsolatedReplayMySQL() as server:
         _schema, engine = server.create_replay_database()
-        return _execute_real_replay_on_isolated_database(
+        forced_cold_cache_root = (
+            server.create_forced_cold_cache_root()
+        )
+        report = _execute_real_replay_on_isolated_database(
             session,
             preflight_report=preflight_report,
             native_manifest=native_manifest,
@@ -519,7 +725,13 @@ def _execute_real_replay_candidate(
             policy_path=resolved_policy_path,
             engine=engine,
             isolation=server.database_isolation,
+            forced_cold_cache_root=forced_cold_cache_root,
         )
+    assert_real_replay_dispatch_identity_current(session)
+    return replace(
+        report,
+        production_identity_unchanged=True,
+    )
 
 
 def _execute_real_replay_on_isolated_database(
@@ -531,6 +743,7 @@ def _execute_real_replay_on_isolated_database(
     policy_path: Path,
     engine: Any,
     isolation: object,
+    forced_cold_cache_root: Path,
 ) -> DailyRealReplayExecutionReport:
     """仅在已验证隔离 Engine 上迁移、初始化、运行和审计。"""
     session.assert_held()
@@ -655,17 +868,28 @@ def _execute_real_replay_on_isolated_database(
         configs=configs,
         inputs=inputs,
     )
-    started = time_module.monotonic()
-    first = _run_real_replay_runtime(runtime, session=session)
-    elapsed_seconds = time_module.monotonic() - started
-    before_reentry = _read_replay_execution_audit(
-        engine,
-        occurrence_id=occurrence_id,
+    previous_cache_environment = os.environ.get(
+        _LIWEI_CACHE_ROOT_ENV
     )
-    second = _run_real_replay_runtime(runtime, session=session)
-    after_reentry = _read_replay_execution_audit(
-        engine,
-        occurrence_id=occurrence_id,
+    with _liwei_forced_cold_cache_environment(
+        forced_cold_cache_root
+    ):
+        runtime_started_at = datetime.now(timezone.utc)
+        started = time_module.monotonic()
+        first = _run_real_replay_runtime(runtime, session=session)
+        elapsed_seconds = time_module.monotonic() - started
+        before_reentry = _read_replay_execution_audit(
+            engine,
+            occurrence_id=occurrence_id,
+        )
+        second = _run_real_replay_runtime(runtime, session=session)
+        after_reentry = _read_replay_execution_audit(
+            engine,
+            occurrence_id=occurrence_id,
+        )
+    cache_environment_restored = (
+        os.environ.get(_LIWEI_CACHE_ROOT_ENV)
+        == previous_cache_environment
     )
     run_delta = (
         after_reentry["run_count"] - before_reentry["run_count"]
@@ -674,36 +898,37 @@ def _execute_real_replay_on_isolated_database(
         after_reentry["prediction_count"]
         - before_reentry["prediction_count"]
     )
-    projected_last_visible = datetime.combine(
-        date.fromisoformat(inputs.business_date),
-        datetime.min.time(),
-        tzinfo=_SHANGHAI,
-    ) + timedelta(hours=6, minutes=30, seconds=elapsed_seconds)
-    visibility_deadline = datetime.combine(
-        date.fromisoformat(inputs.business_date),
-        datetime.min.time(),
-        tzinfo=_SHANGHAI,
-    ) + timedelta(hours=7, minutes=55)
+    timing = _build_replay_timing_evidence(
+        inputs,
+        runtime_started_at=runtime_started_at,
+        db_last_visible_at=after_reentry["db_last_visible_at"],
+        max_v2_release_offset_minutes=max(v2_release_offsets),
+    )
+    _require_replay_timing_evidence(timing)
+    expected_counts = {
+        "successful_item_count": 25,
+        "accepted_target_count": 29,
+        "run_count": 25,
+        "scheduled_live_run_count": 25,
+        "prediction_count": 29,
+        "scheduled_live_prediction_count": 29,
+        "valid_receipt_count": 29,
+        "duplicate_prediction_count": 0,
+        "nonterminal_run_count": 0,
+    }
     passed = (
         first.status == "complete"
         and second.status == "complete"
         and second.dispatched_scheme_ids == ()
-        and after_reentry
-        == {
-            "successful_item_count": 25,
-            "accepted_target_count": 29,
-            "run_count": 25,
-            "scheduled_live_run_count": 25,
-            "prediction_count": 29,
-            "scheduled_live_prediction_count": 29,
-            "valid_receipt_count": 29,
-            "duplicate_prediction_count": 0,
-            "nonterminal_run_count": 0,
-        }
+        and all(
+            after_reentry[key] == value
+            for key, value in expected_counts.items()
+        )
         and run_delta == 0
         and prediction_delta == 0
-        and elapsed_seconds <= 5_100
-        and projected_last_visible <= visibility_deadline
+        and cache_environment_restored
+        and timing.within_capacity_limit
+        and timing.within_visibility_deadline
     )
     if not passed:
         raise DailyRealReplayPreflightError(
@@ -744,9 +969,7 @@ def _execute_real_replay_on_isolated_database(
         reentry_run_delta=run_delta,
         reentry_prediction_delta=prediction_delta,
         elapsed_seconds=round(elapsed_seconds, 6),
-        projected_last_visible_at=(
-            projected_last_visible.isoformat()
-        ),
+        projected_last_visible_at=timing.projected_last_visible_at,
         databridge_sealed_at=databridge_sealed_at.isoformat(),
         v2_release_offsets_minutes=v2_release_offsets,
         v2_release_schedule_qualification=(
@@ -754,6 +977,26 @@ def _execute_real_replay_on_isolated_database(
         ),
         within_capacity_limit=True,
         within_visibility_deadline=True,
+        forced_cold_cache_qualification=(
+            "PRIVATE_EMPTY_OWNER_ONLY"
+        ),
+        liwei_cache_environment_restored=True,
+        runtime_started_at=timing.runtime_started_at,
+        db_last_visible_at=timing.db_last_visible_at,
+        native_prepare_seconds=timing.native_prepare_seconds,
+        databridge_prepare_seconds=(
+            timing.databridge_prepare_seconds
+        ),
+        parallel_readiness_seconds=(
+            timing.parallel_readiness_seconds
+        ),
+        runtime_to_last_visible_seconds=(
+            timing.runtime_to_last_visible_seconds
+        ),
+        release_guard_seconds=timing.release_guard_seconds,
+        end_to_end_seconds=timing.end_to_end_seconds,
+        projected_readiness_at=timing.projected_readiness_at,
+        production_identity_unchanged=False,
     )
 
 
@@ -839,7 +1082,7 @@ def _read_replay_execution_audit(
     engine: Any,
     *,
     occurrence_id: int,
-) -> dict[str, int]:
+) -> dict[str, object]:
     """只读闭合 receipt、phase、重复键与终态 run。"""
     with engine.connect() as connection:
         row = connection.execute(
@@ -919,12 +1162,63 @@ def _read_replay_execution_audit(
                        r.status <> 'success'
                        OR r.finished_at IS NULL
                      ))
-                    AS nonterminal_run_count
+                    AS nonterminal_run_count,
+                  (SELECT MAX(t.visible_at)
+                   FROM t_schedule_item_targets t
+                   JOIN t_schedule_items i
+                     ON i.item_id = t.item_id
+                    AND i.occurrence_id = t.occurrence_id
+                   JOIN t_scheme_runs r
+                     ON r.run_id = t.accepted_run_id
+                    AND r.schedule_item_id = i.item_id
+                   JOIN t_scheme_predictions p
+                     ON p.id = t.accepted_prediction_id
+                    AND p.run_id = r.run_id
+                    AND p.scheme_id = t.base_scheme_id
+                    AND p.target_tenor = t.target_tenor
+                    AND p.horizon = t.horizon
+                    AND p.target_date = t.target_date
+                   WHERE t.occurrence_id = :occurrence_id
+                     AND t.status = 'ACCEPTED'
+                     AND t.accepted_at IS NOT NULL
+                     AND t.visible_at IS NOT NULL)
+                    AS db_last_visible_at
                 """
             ),
             {"occurrence_id": int(occurrence_id)},
         ).mappings().one()
-    return {key: int(value) for key, value in row.items()}
+    audit: dict[str, object] = {
+        key: int(value)
+        for key, value in row.items()
+        if key != "db_last_visible_at"
+    }
+    visible_at = row.get("db_last_visible_at")
+    audit["db_last_visible_at"] = (
+        _stored_database_utc_datetime(visible_at)
+        if visible_at is not None
+        else None
+    )
+    return audit
+
+
+def _stored_database_utc_datetime(value: object) -> datetime:
+    """MySQL UTC session 的 naive DATETIME 按 UTC 规范化。"""
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            raise DailyRealReplayPreflightError(
+                "REPLAY_TIMING_EVIDENCE_INVALID"
+            ) from None
+    else:
+        raise DailyRealReplayPreflightError(
+            "REPLAY_TIMING_EVIDENCE_INVALID"
+        )
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _run_real_replay_preflight_locked(

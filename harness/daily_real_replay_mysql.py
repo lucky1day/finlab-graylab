@@ -40,6 +40,7 @@ _START_TIMEOUT_SECONDS = 30
 _INITIALIZE_TIMEOUT_SECONDS = 45
 _SHUTDOWN_TIMEOUT_SECONDS = 15
 _CONNECTION_MARKER_KEY = "daily-real-replay-v1"
+_FORCED_COLD_CACHE_DIRNAME = "liwei-phase-a-cache"
 
 
 class IsolatedReplayMySQLError(RuntimeError):
@@ -372,6 +373,50 @@ class IsolatedReplayMySQL:
                 "MYSQL_DATABASE_NOT_CREATED"
             )
         return self._database_isolation
+
+    def create_forced_cold_cache_root(self) -> Path:
+        """在本次隔离 root 内创建唯一、初始为空的 Liwei cache。"""
+        if self._paths is None or self._root_identity is None:
+            raise IsolatedReplayMySQLError("MYSQL_NOT_STARTED")
+        root = self._paths.root
+        try:
+            root_details = root.lstat()
+        except OSError:
+            raise IsolatedReplayMySQLError(
+                "MYSQL_FORCED_COLD_CACHE_UNSAFE"
+            ) from None
+        if (
+            not stat.S_ISDIR(root_details.st_mode)
+            or stat.S_ISLNK(root_details.st_mode)
+            or root_details.st_uid != os.getuid()
+            or stat.S_IMODE(root_details.st_mode) != 0o700
+            or (
+                root_details.st_dev,
+                root_details.st_ino,
+            )
+            != self._root_identity
+        ):
+            raise IsolatedReplayMySQLError(
+                "MYSQL_FORCED_COLD_CACHE_UNSAFE"
+            )
+        cache_root = root / _FORCED_COLD_CACHE_DIRNAME
+        try:
+            cache_root.mkdir(mode=0o700)
+            details = cache_root.lstat()
+            valid = (
+                stat.S_ISDIR(details.st_mode)
+                and not stat.S_ISLNK(details.st_mode)
+                and details.st_uid == os.getuid()
+                and stat.S_IMODE(details.st_mode) == 0o700
+                and not any(cache_root.iterdir())
+            )
+        except (FileExistsError, OSError):
+            valid = False
+        if not valid:
+            raise IsolatedReplayMySQLError(
+                "MYSQL_FORCED_COLD_CACHE_UNSAFE"
+            )
+        return cache_root
 
     def _start(self) -> IsolatedReplayMySQL:
         """创建私有 datadir，启动并交叉验证临时服务。"""

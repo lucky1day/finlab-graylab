@@ -8,11 +8,349 @@ import tempfile
 import unittest
 from contextlib import nullcontext, redirect_stdout
 from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 
 class DailyRealReplayOperatorTests(unittest.TestCase):
+    def test_forced_cold_cache_environment_hides_warm_cache_and_restores(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            _liwei_forced_cold_cache_environment,
+        )
+
+        variable = "LIWEI_0616_PHASE_A_CACHE_ROOT"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            warm = root / "warm"
+            warm.mkdir(mode=0o700)
+            (warm / "global-cache-sentinel").write_text(
+                "must-not-be-visible",
+                encoding="utf-8",
+            )
+            cold = root / "cold"
+            cold.mkdir(mode=0o700)
+            previous = os.environ.get(variable)
+            os.environ[variable] = str(warm)
+            try:
+                with _liwei_forced_cold_cache_environment(cold):
+                    self.assertEqual(
+                        os.environ[variable],
+                        str(cold.resolve()),
+                    )
+                    self.assertFalse(
+                        (
+                            Path(os.environ[variable])
+                            / "global-cache-sentinel"
+                        ).exists()
+                    )
+                self.assertEqual(os.environ[variable], str(warm))
+            finally:
+                if previous is None:
+                    os.environ.pop(variable, None)
+                else:
+                    os.environ[variable] = previous
+
+    def test_capacity_projection_uses_db_visible_and_parallel_input_durations(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            _build_replay_timing_evidence,
+        )
+
+        inputs = SimpleNamespace(
+            business_date="2026-07-28",
+            native_generation=SimpleNamespace(
+                created_at="2026-07-28T08:00:00+00:00",
+                sealed_at="2026-07-28T08:10:00+00:00",
+            ),
+            databridge_generation=SimpleNamespace(
+                refresh_started_at="2026-07-28T12:00:00+08:00",
+                published_at="2026-07-28T12:20:00+08:00",
+                sealed_at="2026-07-28T12:20:00+08:00",
+            ),
+        )
+
+        evidence = _build_replay_timing_evidence(
+            inputs,
+            runtime_started_at=datetime(
+                2026, 7, 28, 8, 30, tzinfo=timezone.utc
+            ),
+            db_last_visible_at=datetime(
+                2026, 7, 28, 9, 0, tzinfo=timezone.utc
+            ),
+            max_v2_release_offset_minutes=14,
+        )
+
+        self.assertEqual(evidence.native_prepare_seconds, 600.0)
+        self.assertEqual(
+            evidence.databridge_prepare_seconds,
+            1200.0,
+        )
+        self.assertEqual(evidence.parallel_readiness_seconds, 1200.0)
+        self.assertEqual(
+            evidence.runtime_to_last_visible_seconds,
+            1800.0,
+        )
+        self.assertEqual(evidence.release_guard_seconds, 840.0)
+        self.assertEqual(evidence.end_to_end_seconds, 3840.0)
+        self.assertEqual(
+            evidence.projected_readiness_at,
+            "2026-07-28T06:50:00+08:00",
+        )
+        self.assertEqual(
+            evidence.projected_last_visible_at,
+            "2026-07-28T07:34:00+08:00",
+        )
+        self.assertEqual(
+            evidence.db_last_visible_at,
+            "2026-07-28T09:00:00+00:00",
+        )
+        self.assertTrue(evidence.within_capacity_limit)
+        self.assertTrue(evidence.within_visibility_deadline)
+
+    def test_capacity_projection_rejects_input_preparation_overrun(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            _build_replay_timing_evidence,
+            _require_replay_timing_evidence,
+            DailyRealReplayPreflightError,
+        )
+
+        inputs = SimpleNamespace(
+            business_date="2026-07-28",
+            native_generation=SimpleNamespace(
+                created_at="2026-07-28T08:00:00+00:00",
+                sealed_at="2026-07-28T08:50:00+00:00",
+            ),
+            databridge_generation=SimpleNamespace(
+                refresh_started_at="2026-07-28T12:00:00+08:00",
+                published_at="2026-07-28T12:20:00+08:00",
+                sealed_at="2026-07-28T12:20:00+08:00",
+            ),
+        )
+
+        evidence = _build_replay_timing_evidence(
+            inputs,
+            runtime_started_at=datetime(
+                2026, 7, 28, 8, 30, tzinfo=timezone.utc
+            ),
+            db_last_visible_at=datetime(
+                2026, 7, 28, 9, 0, tzinfo=timezone.utc
+            ),
+            max_v2_release_offset_minutes=14,
+        )
+
+        self.assertEqual(evidence.end_to_end_seconds, 5640.0)
+        self.assertEqual(
+            evidence.projected_last_visible_at,
+            "2026-07-28T08:04:00+08:00",
+        )
+        self.assertFalse(evidence.within_capacity_limit)
+        self.assertFalse(evidence.within_visibility_deadline)
+        with self.assertRaises(
+            DailyRealReplayPreflightError
+        ) as raised:
+            _require_replay_timing_evidence(evidence)
+        self.assertEqual(
+            raised.exception.code,
+            "REPLAY_EXECUTION_ACCEPTANCE_FAILED",
+        )
+
+    def test_capacity_projection_includes_databridge_publish_to_seal(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            _build_replay_timing_evidence,
+        )
+
+        inputs = SimpleNamespace(
+            business_date="2026-07-28",
+            native_generation=SimpleNamespace(
+                created_at="2026-07-28T08:00:00+00:00",
+                sealed_at="2026-07-28T08:10:00+00:00",
+            ),
+            databridge_generation=SimpleNamespace(
+                refresh_started_at="2026-07-28T12:00:00+08:00",
+                published_at="2026-07-28T12:20:00+08:00",
+                sealed_at="2026-07-28T12:50:00+08:00",
+            ),
+        )
+
+        evidence = _build_replay_timing_evidence(
+            inputs,
+            runtime_started_at=datetime(
+                2026, 7, 28, 8, 30, tzinfo=timezone.utc
+            ),
+            db_last_visible_at=datetime(
+                2026, 7, 28, 8, 52, tzinfo=timezone.utc
+            ),
+            max_v2_release_offset_minutes=14,
+        )
+
+        self.assertEqual(evidence.databridge_prepare_seconds, 3000.0)
+        self.assertEqual(evidence.end_to_end_seconds, 5160.0)
+        self.assertEqual(
+            evidence.projected_last_visible_at,
+            "2026-07-28T07:56:00+08:00",
+        )
+        self.assertFalse(evidence.within_capacity_limit)
+        self.assertFalse(evidence.within_visibility_deadline)
+
+    def test_capacity_projection_rejects_missing_db_visible_receipt(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            _build_replay_timing_evidence,
+        )
+
+        inputs = SimpleNamespace(
+            business_date="2026-07-28",
+            native_generation=SimpleNamespace(
+                created_at="2026-07-28T08:00:00+00:00",
+                sealed_at="2026-07-28T08:10:00+00:00",
+            ),
+            databridge_generation=SimpleNamespace(
+                refresh_started_at="2026-07-28T12:00:00+08:00",
+                published_at="2026-07-28T12:20:00+08:00",
+                sealed_at="2026-07-28T12:20:00+08:00",
+            ),
+        )
+        with self.assertRaises(
+            DailyRealReplayPreflightError
+        ) as raised:
+            _build_replay_timing_evidence(
+                inputs,
+                runtime_started_at=datetime(
+                    2026, 7, 28, 8, 30, tzinfo=timezone.utc
+                ),
+                db_last_visible_at=None,
+                max_v2_release_offset_minutes=14,
+            )
+        self.assertEqual(
+            raised.exception.code,
+            "REPLAY_TIMING_EVIDENCE_INVALID",
+        )
+
+    def test_execution_audit_preserves_linked_max_visible_as_utc(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            _read_replay_execution_audit,
+        )
+
+        visible_at = datetime(2026, 7, 28, 1, 2, 3)
+        row = {
+            "successful_item_count": 25,
+            "accepted_target_count": 29,
+            "run_count": 25,
+            "scheduled_live_run_count": 25,
+            "prediction_count": 29,
+            "scheduled_live_prediction_count": 29,
+            "valid_receipt_count": 29,
+            "duplicate_prediction_count": 0,
+            "nonterminal_run_count": 0,
+            "db_last_visible_at": visible_at,
+        }
+        result = Mock()
+        result.mappings.return_value.one.return_value = row
+        connection = Mock()
+        connection.execute.return_value = result
+        connection.__enter__ = Mock(return_value=connection)
+        connection.__exit__ = Mock(return_value=False)
+        engine = Mock()
+        engine.connect.return_value = connection
+
+        audit = _read_replay_execution_audit(
+            engine,
+            occurrence_id=41,
+        )
+
+        self.assertEqual(
+            audit["db_last_visible_at"],
+            visible_at.replace(tzinfo=timezone.utc),
+        )
+        statement = str(connection.execute.call_args.args[0])
+        self.assertIn("MAX(t.visible_at)", statement)
+        self.assertIn(
+            "p.id = t.accepted_prediction_id",
+            statement,
+        )
+
+    def test_candidate_creates_cold_cache_and_final_identity_drift_blocks(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_operator import (
+            DailyRealReplayPreflightError,
+            _execute_real_replay_candidate,
+        )
+        from scheduler.daily_policy import POLICY_V2_PATH
+
+        cache_root = Path("/private/tmp/replay/liwei-phase-a-cache")
+        server = MagicMock()
+        server.__enter__.return_value = server
+        server.__exit__.return_value = None
+        server.create_replay_database.return_value = (
+            "bfl_real_replay_0123456789abcdef0123",
+            Mock(),
+        )
+        server.create_forced_cold_cache_root.return_value = cache_root
+        session = SimpleNamespace(assert_held=Mock())
+        preflight = SimpleNamespace(
+            qualification="EXCLUDED",
+            expected_item_count=25,
+            expected_target_count=29,
+            v2_item_count=8,
+        )
+        execution = SimpleNamespace(status="REHEARSAL_PASSED")
+        with (
+            patch(
+                "harness.daily_real_replay_operator."
+                "IsolatedReplayMySQL",
+                return_value=server,
+            ),
+            patch(
+                "harness.daily_real_replay_operator."
+                "_execute_real_replay_on_isolated_database",
+                return_value=execution,
+            ) as isolated_execute,
+            patch(
+                "harness.daily_real_replay_operator."
+                "assert_real_replay_dispatch_identity_current",
+                side_effect=DailyRealReplayPreflightError(
+                    "REPLAY_DISPATCH_IDENTITY_DRIFT"
+                ),
+            ) as final_recheck,
+            self.assertRaises(
+                DailyRealReplayPreflightError
+            ) as raised,
+        ):
+            _execute_real_replay_candidate(
+                session,
+                preflight_report=preflight,
+                native_manifest="/private/native.json",
+                databridge_manifest="/private/databridge.json",
+                policy_path=POLICY_V2_PATH,
+            )
+
+        self.assertEqual(
+            raised.exception.code,
+            "REPLAY_DISPATCH_IDENTITY_DRIFT",
+        )
+        server.create_forced_cold_cache_root.assert_called_once_with()
+        self.assertEqual(
+            isolated_execute.call_args.kwargs[
+                "forced_cold_cache_root"
+            ],
+            cache_root,
+        )
+        final_recheck.assert_called_once_with(session)
+
     def test_execute_only_keeps_preflight_session_and_fixed_v2_policy(
         self,
     ) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import inspect
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,87 @@ from unittest.mock import Mock, patch
 
 
 class DailyRealReplayMySQLLifecycleTests(unittest.TestCase):
+    def test_forced_cold_cache_root_is_empty_owner_only_and_single_use(
+        self,
+    ) -> None:
+        from harness.daily_real_replay_mysql import (
+            IsolatedReplayMySQL,
+            IsolatedReplayMySQLError,
+            _ReplayMySQLPaths,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            parent.chmod(0o700)
+            root = parent / (
+                "bfl-real-replay-mysql-0123456789abcdef0123"
+            )
+            root.mkdir(mode=0o700)
+            server = IsolatedReplayMySQL(root_parent=parent)
+            server._paths = _ReplayMySQLPaths.from_root(root)
+            details = root.lstat()
+            server._root_identity = (
+                details.st_dev,
+                details.st_ino,
+            )
+
+            cache_root = server.create_forced_cold_cache_root()
+
+            cache_details = cache_root.lstat()
+            self.assertEqual(cache_root.parent, root)
+            self.assertTrue(stat.S_ISDIR(cache_details.st_mode))
+            self.assertFalse(stat.S_ISLNK(cache_details.st_mode))
+            self.assertEqual(cache_details.st_uid, os.getuid())
+            self.assertEqual(stat.S_IMODE(cache_details.st_mode), 0o700)
+            self.assertEqual(tuple(cache_root.iterdir()), ())
+            with self.assertRaises(
+                IsolatedReplayMySQLError
+            ) as raised:
+                server.create_forced_cold_cache_root()
+            self.assertEqual(
+                raised.exception.code,
+                "MYSQL_FORCED_COLD_CACHE_UNSAFE",
+            )
+
+    def test_forced_cold_cache_root_rejects_symlink(self) -> None:
+        from harness.daily_real_replay_mysql import (
+            IsolatedReplayMySQL,
+            IsolatedReplayMySQLError,
+            _ReplayMySQLPaths,
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary).resolve()
+            parent.chmod(0o700)
+            root = parent / (
+                "bfl-real-replay-mysql-0123456789abcdef0123"
+            )
+            root.mkdir(mode=0o700)
+            external = parent / "external-cache"
+            external.mkdir()
+            (root / "liwei-phase-a-cache").symlink_to(
+                external,
+                target_is_directory=True,
+            )
+            server = IsolatedReplayMySQL(root_parent=parent)
+            server._paths = _ReplayMySQLPaths.from_root(root)
+            details = root.lstat()
+            server._root_identity = (
+                details.st_dev,
+                details.st_ino,
+            )
+
+            with self.assertRaises(
+                IsolatedReplayMySQLError
+            ) as raised:
+                server.create_forced_cold_cache_root()
+
+            self.assertEqual(
+                raised.exception.code,
+                "MYSQL_FORCED_COLD_CACHE_UNSAFE",
+            )
+            self.assertTrue(external.is_dir())
+
     def test_server_command_is_loopback_private_and_non_production(
         self,
     ) -> None:

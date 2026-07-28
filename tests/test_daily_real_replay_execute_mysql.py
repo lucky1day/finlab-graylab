@@ -66,14 +66,33 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
         policy_sha = hashlib.sha256(
             POLICY_V2_PATH.read_bytes()
         ).hexdigest()
+        cache_variable = "LIWEI_0616_PHASE_A_CACHE_ROOT"
         with (
             tempfile.TemporaryDirectory() as generation_root,
+            tempfile.TemporaryDirectory() as warm_cache_root,
             IsolatedReplayMySQL() as server,
         ):
-            native, databridge = fixture._delivery_generation(
-                Path(generation_root)
+            warm_cache = Path(warm_cache_root)
+            (warm_cache / "global-warm-cache").write_text(
+                "must-not-be-visible",
+                encoding="utf-8",
             )
+            previous_cache_root = os.environ.get(cache_variable)
+            os.environ[cache_variable] = str(warm_cache)
+            with patch(
+                "shared.databridge_input_generation._utc_now",
+                side_effect=(
+                    "2026-07-23T22:50:02.000000Z",
+                    "2026-07-23T22:50:03.000000Z",
+                ),
+            ):
+                native, databridge = fixture._delivery_generation(
+                    Path(generation_root)
+                )
             _schema, engine = server.create_replay_database()
+            forced_cold_cache_root = (
+                server.create_forced_cold_cache_root()
+            )
             preflight = SimpleNamespace(
                 qualification="EXCLUDED",
                 expected_item_count=25,
@@ -117,14 +136,32 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
             worker_results = []
 
             def controlled_runtime(runtime, *, session):
+                self.assertEqual(
+                    os.environ[cache_variable],
+                    str(forced_cold_cache_root.resolve()),
+                )
+                self.assertFalse(
+                    (
+                        Path(os.environ[cache_variable])
+                        / "global-warm-cache"
+                    ).exists()
+                )
                 sealed_at = datetime.fromisoformat(
                     databridge.sealed_at.replace("Z", "+00:00")
                 )
                 release_clock.set(
-                    sealed_at + timedelta(minutes=15)
+                    max(
+                        sealed_at + timedelta(minutes=15),
+                        datetime.now(timezone.utc)
+                        + timedelta(minutes=15),
+                    )
                 )
                 event_clock = _AdvancingClock(
                     release_clock.now_utc()
+                )
+                visibility_clock = _AdvancingClock(
+                    release_clock.now_utc()
+                    + timedelta(minutes=1)
                 )
                 services = _MVPMySQLServices(
                     engine=engine,
@@ -133,11 +170,21 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
                     occurrence_id=runtime._occurrence_id,
                 )
                 real_execute = runtime._execute_owned_item
+                from scheduler import repository as replay_repository
+
+                real_record_visibility = (
+                    replay_repository.
+                    record_schedule_attempt_visibility
+                )
 
                 def execute_checked(*args, **kwargs):
                     result = real_execute(*args, **kwargs)
                     worker_results.append(result)
                     return result
+
+                def record_visibility(*args, **kwargs):
+                    kwargs["_clock"] = visibility_clock
+                    return real_record_visibility(*args, **kwargs)
 
                 with (
                     _controlled_executor_patches(
@@ -166,6 +213,11 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
                         "assert_real_replay_dispatch_identity_current",
                         return_value=identity,
                         create=True,
+                    ),
+                    patch(
+                        "scheduler.repository."
+                        "record_schedule_attempt_visibility",
+                        side_effect=record_visibility,
                     ),
                     patch(
                         "scheduler.repository."
@@ -222,6 +274,9 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
                         policy_path=POLICY_V2_PATH,
                         engine=engine,
                         isolation=server.database_isolation,
+                        forced_cold_cache_root=(
+                            forced_cold_cache_root
+                        ),
                     )
                 except Exception as exc:
                     self.fail(
@@ -229,6 +284,17 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
                         f"audits={audits}; "
                         f"worker_results={worker_results}"
                     )
+                finally:
+                    self.assertEqual(
+                        os.environ.get(cache_variable),
+                        str(warm_cache),
+                    )
+                    if previous_cache_root is None:
+                        os.environ.pop(cache_variable, None)
+                    else:
+                        os.environ[cache_variable] = (
+                            previous_cache_root
+                        )
 
         self.assertEqual(report.status, "REHEARSAL_PASSED")
         self.assertEqual(report.qualification, "REHEARSAL")
@@ -253,6 +319,21 @@ class DailyRealReplayExecuteMySQLTests(unittest.TestCase):
         )
         self.assertTrue(report.within_capacity_limit)
         self.assertTrue(report.within_visibility_deadline)
+        self.assertEqual(
+            report.forced_cold_cache_qualification,
+            "PRIVATE_EMPTY_OWNER_ONLY",
+        )
+        self.assertTrue(report.liwei_cache_environment_restored)
+        self.assertIsNotNone(report.db_last_visible_at)
+        self.assertGreaterEqual(
+            report.runtime_to_last_visible_seconds,
+            0,
+        )
+        self.assertGreaterEqual(
+            report.parallel_readiness_seconds,
+            0,
+        )
+        self.assertLessEqual(report.end_to_end_seconds, 5_100)
         self.assertTrue(
             report.projected_last_visible_at.endswith("+08:00")
         )
