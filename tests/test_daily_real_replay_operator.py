@@ -1922,7 +1922,7 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
         connection.rollback.assert_called_once_with()
         engine.dispose.assert_called_once_with()
 
-    def test_production_snapshot_reader_returns_all_active_daily_versions(
+    def test_production_snapshot_reader_keeps_only_exact_daily_versions(
         self,
     ) -> None:
         from harness.daily_real_replay_operator import (
@@ -1996,9 +1996,11 @@ class DailyRealReplayOperatorTests(unittest.TestCase):
             "harness.daily_real_replay_operator.create_engine_from_env",
             return_value=engine,
         ):
-            snapshot = _read_production_daily_snapshot()
+            snapshot = _read_production_daily_snapshot(
+                expected_scheme_versions={"daily": "v2"},
+            )
 
-        self.assertEqual(snapshot.version_rows, (exact, stale))
+        self.assertEqual(snapshot.version_rows, (exact,))
         version_statement = str(
             connection.execute.call_args_list[3].args[0]
         ).casefold()

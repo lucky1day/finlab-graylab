@@ -2327,12 +2327,13 @@ def _read_production_daily_snapshot(
     expected_scheme_versions: Mapping[str, str] | None = None,
 ) -> ProductionDailySnapshot:
     """只在单个 RR consistent snapshot/read-only 事务读取生产控制面。"""
-    expected_scheme_ids = (
+    expected_version_pairs = (
         None
         if expected_scheme_versions is None
         else frozenset(
-            str(scheme_id)
-            for scheme_id in expected_scheme_versions
+            (str(scheme_id), str(scheme_version))
+            for scheme_id, scheme_version
+            in expected_scheme_versions.items()
         )
     )
     engine = create_engine_from_env()
@@ -2429,12 +2430,15 @@ def _read_production_daily_snapshot(
                 )
                 version_rows = (
                     raw_version_rows
-                    if expected_scheme_ids is None
+                    if expected_version_pairs is None
                     else tuple(
                         row
                         for row in raw_version_rows
-                        if str(row["scheme_id"])
-                        in expected_scheme_ids
+                        if (
+                            str(row["scheme_id"]),
+                            str(row["scheme_version"]),
+                        )
+                        in expected_version_pairs
                     )
                 )
             finally:
