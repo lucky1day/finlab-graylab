@@ -1388,7 +1388,12 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                             with patch("scheduler.executor.insert_run_predictions", return_value=2) as insert_predictions:
                                 with patch("scheduler.executor.finish_scheme_run") as finish_run:
                                     with patch("scheduler.executor.write_run_log") as write_run_log:
-                                        result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
+                                        result = execute_scheme(
+                                            cfg,
+                                            "2026-06-05",
+                                            algo_env="test_env",
+                                            prediction_phase="gray_live",
+                                        )
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.records_written, 2)
@@ -1401,12 +1406,12 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             scheme_version="abc123",
             runtime_type="native_adapter",
             run_type="active",
-            prediction_phase="scheduled_live",
+            prediction_phase="gray_live",
             records_expected=2,
         )
         written_records = insert_predictions.call_args.args[2]
-        self.assertEqual([record.prediction_phase for record in written_records], ["scheduled_live", "scheduled_live"])
-        self.assertEqual([record.extra["prediction_phase"] for record in written_records], ["scheduled_live", "scheduled_live"])
+        self.assertEqual([record.prediction_phase for record in written_records], ["gray_live", "gray_live"])
+        self.assertEqual([record.extra["prediction_phase"] for record in written_records], ["gray_live", "gray_live"])
         insert_predictions.assert_called_once()
         self.assertEqual(insert_predictions.call_args.args[:2], (engine, 101))
         self.assertEqual(insert_predictions.call_args.kwargs["scheme_version"], "abc123")
@@ -1451,7 +1456,12 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                             with patch("scheduler.executor.insert_run_predictions", return_value=1):
                                 with patch("scheduler.executor.finish_scheme_run"):
                                     with patch("scheduler.executor.write_run_log"):
-                                        result = execute_scheme(cfg, "2026-07-03", algo_env="test_env")
+                                        result = execute_scheme(
+                                            cfg,
+                                            "2026-07-03",
+                                            algo_env="test_env",
+                                            prediction_phase="gray_live",
+                                        )
 
         self.assertEqual(result.status, "success")
         runner.assert_called_once_with(
@@ -1478,7 +1488,7 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             patch(
                 "scheduler.executor.create_engine_from_env",
                 return_value=engine,
-            ),
+            ) as create_engine,
             patch(
                 "scheduler.executor._verify_scheme_activation",
                 return_value=(True, "ok"),
@@ -1487,9 +1497,14 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                 "scheduler.executor._active_registry_targets",
                 return_value={("5Y", 1)},
             ),
-            patch.dict(
-                os.environ,
-                {"BOND_DAILY_COORDINATOR_MODE": "ledger"},
+            patch(
+                "scheduler.executor."
+                "bootstrap_deployment_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch(
+                "scheduler.executor.discover_schemes",
+                return_value=[cfg],
             ),
             patch(
                 "scheduler.executor.create_scheme_run",
@@ -1510,18 +1525,14 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             )
 
         self.assertEqual(result.status, "failed")
-        self.assertIn("daily ledger item", result.error_msg or "")
-        self.assertTrue(
-            create_run.call_args.kwargs[
-                "enforce_scheduled_live_ledger"
-            ]
+        self.assertIn(
+            "direct daily scheduled_live execution is disabled",
+            result.error_msg or "",
         )
-        self.assertEqual(
-            create_run.call_args.kwargs["schedule_frequency"],
-            "daily",
-        )
+        create_engine.assert_not_called()
+        create_run.assert_not_called()
         algorithm.assert_not_called()
-        self.assertTrue(engine.disposed)
+        self.assertFalse(engine.disposed)
 
     def test_daily_executor_without_explicit_mode_fails_before_run_creation(
         self,
@@ -1541,6 +1552,15 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             patch(
                 "scheduler.executor.create_engine_from_env",
                 return_value=engine,
+            ) as create_engine,
+            patch(
+                "scheduler.executor."
+                "bootstrap_deployment_daily_coordinator_mode",
+                side_effect=ValueError("invalid mode"),
+            ),
+            patch(
+                "scheduler.executor.discover_schemes",
+                return_value=[cfg],
             ),
             patch(
                 "scheduler.executor._verify_scheme_activation",
@@ -1565,10 +1585,14 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             )
 
         self.assertEqual(result.status, "failed")
-        self.assertIn("must be explicitly set", result.error_msg or "")
+        self.assertIn(
+            "daily coordinator mode is unavailable",
+            result.error_msg or "",
+        )
+        create_engine.assert_not_called()
         create_run.assert_not_called()
         algorithm.assert_not_called()
-        self.assertTrue(engine.disposed)
+        self.assertFalse(engine.disposed)
 
     def test_execute_scheme_rejects_records_outside_active_registry_targets(self) -> None:
         from scheduler.executor import execute_scheme
@@ -1597,7 +1621,12 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                             with patch("scheduler.executor.insert_run_predictions") as insert_predictions:
                                 with patch("scheduler.executor.finish_scheme_run") as finish_run:
                                     with patch("scheduler.executor.write_run_log") as write_run_log:
-                                        result = execute_scheme(cfg, "2026-06-05", algo_env="test_env")
+                                        result = execute_scheme(
+                                            cfg,
+                                            "2026-06-05",
+                                            algo_env="test_env",
+                                            prediction_phase="gray_live",
+                                        )
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.records_written, 0)
@@ -1651,7 +1680,12 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                                 with patch("scheduler.executor.insert_run_predictions") as insert_predictions:
                                     with patch("scheduler.executor.finish_scheme_run") as finish_run:
                                         with patch("scheduler.executor.write_run_log") as write_run_log:
-                                            result = execute_scheme(cfg, "2026-07-07", algo_env="test_env")
+                                            result = execute_scheme(
+                                                cfg,
+                                                "2026-07-07",
+                                                algo_env="test_env",
+                                                prediction_phase="gray_live",
+                                            )
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.records_written, 0)
@@ -1798,7 +1832,12 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                     patch("scheduler.executor.finish_scheme_run"),
                     patch("scheduler.executor.write_run_log") as write_run_log,
                 ):
-                    result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+                    result = execute_scheme(
+                        cfg,
+                        "2026-07-20",
+                        algo_env="test_env",
+                        prediction_phase="gray_live",
+                    )
 
                 self.assertEqual(result.status, "failed")
                 self.assertEqual(result.records_written, 0)
@@ -1836,7 +1875,12 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                 patch("scheduler.executor.read_blackbox_execution_approval") as approval_reader,
                 patch("scheduler.executor.write_run_log") as write_run_log,
             ):
-                result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+                result = execute_scheme(
+                    cfg,
+                    "2026-07-20",
+                    algo_env="test_env",
+                    prediction_phase="gray_live",
+                )
         finally:
             path.unlink(missing_ok=True)
             (path.parent / ".lock").unlink(missing_ok=True)
@@ -1870,7 +1914,12 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
             patch("scheduler.executor.finish_scheme_run"),
             patch("scheduler.executor.write_run_log") as write_run_log,
         ):
-            result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+            result = execute_scheme(
+                cfg,
+                "2026-07-20",
+                algo_env="test_env",
+                prediction_phase="gray_live",
+            )
 
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.records_written, 0)
@@ -1919,7 +1968,12 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
             patch("scheduler.executor.finish_scheme_run"),
             patch("scheduler.executor.write_run_log"),
         ):
-            result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+            result = execute_scheme(
+                cfg,
+                "2026-07-20",
+                algo_env="test_env",
+                prediction_phase="gray_live",
+            )
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.records_written, 1)
@@ -1932,7 +1986,7 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
             scheme_version="blackbox-version-1",
             runtime_type="blackbox_v2",
             run_type="active",
-            prediction_phase="scheduled_live",
+            prediction_phase="gray_live",
             records_expected=1,
         )
         runner.assert_called_once_with(
@@ -2042,7 +2096,12 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                     patch("scheduler.executor.fail_scheme_run_atomic") as fail_run,
                     patch("scheduler.executor.write_run_log"),
                 ):
-                    result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+                    result = execute_scheme(
+                        cfg,
+                        "2026-07-20",
+                        algo_env="test_env",
+                        prediction_phase="gray_live",
+                    )
 
                 self.assertEqual(result.status, "failed")
                 self.assertEqual(result.records_written, 0)
@@ -2093,11 +2152,325 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
             patch("scheduler.executor.finish_scheme_run"),
             patch("scheduler.executor.write_run_log"),
         ):
-            result = execute_scheme(cfg, "2026-07-20", algo_env="test_env")
+            result = execute_scheme(
+                cfg,
+                "2026-07-20",
+                algo_env="test_env",
+                prediction_phase="gray_live",
+            )
 
         self.assertEqual(result.status, "success")
         approval_reader.assert_not_called()
         native_gate.assert_called_once_with(engine, "native_scheme", "native-version-1")
+
+
+class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
+    @staticmethod
+    def _blackbox_config(
+        scheme_id: str,
+        scheme_version: str,
+    ) -> SimpleNamespace:
+        from scheduler.blackbox_scheduler_admission import (
+            EXPECTED_EXACT_ADMISSIONS,
+        )
+
+        admission = EXPECTED_EXACT_ADMISSIONS[
+            (scheme_id, scheme_version)
+        ]
+        return SimpleNamespace(
+            scheme_id=scheme_id,
+            scheme_version=scheme_version,
+            status="active",
+            version_status="active",
+            runtime_type="blackbox_v2",
+            frequency=admission.frequency,
+            task_type=admission.task_type,
+            horizon=admission.horizon,
+            tenors=[admission.target_tenor],
+        )
+
+    def _assert_rejected_before_side_effect(
+        self,
+        config: SimpleNamespace,
+    ):
+        from scheduler.executor import execute_scheme
+
+        with (
+            patch(
+                "scheduler.executor.create_engine_from_env",
+            ) as create_engine,
+            patch(
+                "scheduler.executor._verify_scheme_activation",
+            ) as activation,
+            patch(
+                "scheduler.executor.read_blackbox_execution_approval",
+            ) as approval,
+            patch(
+                "scheduler.executor._active_registry_targets",
+            ) as registry_targets,
+            patch(
+                "scheduler.executor.create_scheme_run",
+            ) as create_run,
+            patch(
+                "scheduler.executor.insert_run_predictions",
+            ) as insert_predictions,
+            patch(
+                "scheduler.executor.finish_scheme_run",
+            ) as finish_run,
+            patch(
+                "scheduler.executor.fail_scheme_run_atomic",
+            ) as fail_run,
+            patch(
+                "scheduler.executor.write_run_log",
+            ) as write_log,
+            patch(
+                "scheduler.executor.run_configured_scheme",
+            ) as algorithm,
+        ):
+            result = execute_scheme(
+                config,
+                "2026-07-27",
+                prediction_phase="scheduled_live",
+            )
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.records_written, 0)
+        self.assertIsNone(result.run_id)
+        self.assertTrue(
+            (result.error_msg or "").startswith(
+                "platform configuration error:"
+            )
+        )
+        create_engine.assert_not_called()
+        activation.assert_not_called()
+        approval.assert_not_called()
+        registry_targets.assert_not_called()
+        create_run.assert_not_called()
+        insert_predictions.assert_not_called()
+        finish_run.assert_not_called()
+        fail_run.assert_not_called()
+        write_log.assert_not_called()
+        algorithm.assert_not_called()
+        return result
+
+    def test_scheduled_live_rejects_identity_and_lifecycle_drift_pre_engine(
+        self,
+    ) -> None:
+        formal = self._blackbox_config(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        cases = (
+            self._blackbox_config(
+                "cgb_a4_fundseason_1y",
+                "04e7af163fb0",
+            ),
+            self._blackbox_config(
+                "ten_y_t5_maj3_k3_ic_static_v1",
+                "c54b90bcafa7",
+            ),
+            SimpleNamespace(
+                **{
+                    **vars(formal),
+                    "scheme_id": "unknown_blackbox",
+                }
+            ),
+            SimpleNamespace(
+                **{
+                    **vars(formal),
+                    "scheme_version": "drifted-version",
+                }
+            ),
+            SimpleNamespace(
+                **{
+                    **vars(formal),
+                    "runtime_type": "native_adapter",
+                }
+            ),
+            SimpleNamespace(
+                **{
+                    **vars(formal),
+                    "frequency": "monthly",
+                }
+            ),
+            SimpleNamespace(
+                **{
+                    **vars(formal),
+                    "version_status": "shadow",
+                }
+            ),
+        )
+        for config in cases:
+            with self.subTest(
+                scheme_id=config.scheme_id,
+                version=config.scheme_version,
+                runtime=config.runtime_type,
+            ):
+                self._assert_rejected_before_side_effect(config)
+
+    def test_scheduled_live_invalid_policy_is_sanitized_pre_engine(
+        self,
+    ) -> None:
+        from scheduler import blackbox_scheduler_admission
+        from scheduler.blackbox_scheduler_admission import (
+            BlackboxSchedulerAdmissionError,
+        )
+
+        config = self._blackbox_config(
+            "weekly_10y_lgbm_point_v1",
+            "0666a6989d6b",
+        )
+        with patch.object(
+            blackbox_scheduler_admission,
+            "load_blackbox_scheduler_admission",
+            side_effect=BlackboxSchedulerAdmissionError(
+                "invalid policy at /private/secret/admission.json"
+            ),
+        ):
+            result = self._assert_rejected_before_side_effect(
+                config
+            )
+        self.assertNotIn(
+            "/private/secret",
+            result.error_msg or "",
+        )
+
+    def test_ledger_daily_scheduled_live_rejects_native_and_formal_pre_engine(
+        self,
+    ) -> None:
+        from scheduler.discovery import discover_schemes
+
+        formal = self._blackbox_config(
+            "one_y_t5_liq_excess_a_v1",
+            "8d583560c9f1",
+        )
+        native = next(
+            config
+            for config in discover_schemes()
+            if config.scheme_id
+            == "daily_10y_lgbm_10y04_0629"
+        )
+        with patch(
+            "scheduler.executor."
+            "bootstrap_deployment_daily_coordinator_mode",
+            return_value="ledger",
+        ):
+            for config in (native, formal):
+                with self.subTest(scheme_id=config.scheme_id):
+                    self._assert_rejected_before_side_effect(
+                        config
+                    )
+
+    def test_ledger_missing_frequency_is_daily_like_and_rejected_pre_engine(
+        self,
+    ) -> None:
+        from scheduler.discovery import discover_schemes
+
+        canonical = next(
+            config
+            for config in discover_schemes()
+            if config.scheme_id
+            == "daily_10y_lgbm_10y04_0629"
+        )
+        config = SimpleNamespace(
+            **{
+                key: value
+                for key, value in vars(canonical).items()
+                if key != "frequency"
+            }
+        )
+        with patch(
+            "scheduler.executor."
+            "bootstrap_deployment_daily_coordinator_mode",
+            return_value="ledger",
+        ):
+            self._assert_rejected_before_side_effect(config)
+
+    def test_authoritative_ledger_overrides_legacy_env_pre_engine(
+        self,
+    ) -> None:
+        from scheduler.discovery import discover_schemes
+
+        config = next(
+            candidate
+            for candidate in discover_schemes()
+            if candidate.scheme_id
+            == "daily_10y_lgbm_10y04_0629"
+        )
+        with (
+            patch.dict(
+                os.environ,
+                {"BOND_DAILY_COORDINATOR_MODE": "legacy"},
+            ),
+            patch(
+                "scheduler.executor."
+                "bootstrap_deployment_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+        ):
+            self._assert_rejected_before_side_effect(config)
+
+    def test_canonical_daily_native_cannot_masquerade_as_weekly(
+        self,
+    ) -> None:
+        from scheduler.discovery import discover_schemes
+
+        canonical = next(
+            config
+            for config in discover_schemes()
+            if config.scheme_id
+            == "daily_10y_lgbm_10y04_0629"
+        )
+        masquerade = SimpleNamespace(
+            **{
+                **vars(canonical),
+                "frequency": "weekly",
+            }
+        )
+        with patch(
+            "scheduler.executor."
+            "bootstrap_deployment_daily_coordinator_mode",
+            return_value="ledger",
+        ):
+            self._assert_rejected_before_side_effect(masquerade)
+
+    def test_canonical_weekly_native_reaches_existing_engine_path(
+        self,
+    ) -> None:
+        from scheduler.discovery import discover_schemes
+        from scheduler.executor import execute_scheme
+
+        class EngineReached(RuntimeError):
+            pass
+
+        canonical = next(
+            config
+            for config in discover_schemes()
+            if config.scheme_id == "weekly_10y_d_overlay_0529"
+        )
+        with (
+            patch(
+                "scheduler.executor."
+                "bootstrap_deployment_daily_coordinator_mode",
+                side_effect=AssertionError(
+                    "weekly must not read daily coordinator mode"
+                ),
+            ),
+            patch(
+                "scheduler.executor.create_engine_from_env",
+                side_effect=EngineReached("engine reached"),
+            ) as create_engine,
+            self.assertRaisesRegex(
+                EngineReached,
+                "engine reached",
+            ),
+        ):
+            execute_scheme(
+                canonical,
+                "2026-07-27",
+                prediction_phase="scheduled_live",
+            )
+        create_engine.assert_called_once_with()
 
 
 class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
@@ -2159,7 +2532,12 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             patch("scheduler.executor.write_run_log", side_effect=write_log_side_effect) as write_run_log,
             patch("scheduler.executor.logger.exception") as logger_exception,
         ):
-            result = execute_scheme(cfg, "2026-07-03", algo_env="test_env")
+            result = execute_scheme(
+                cfg,
+                "2026-07-03",
+                algo_env="test_env",
+                prediction_phase="gray_live",
+            )
         return SimpleNamespace(
             result=result,
             create_run=create_run,
@@ -2242,7 +2620,7 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             scheme_version="version-1",
             runtime_type="native_adapter",
             run_type="active",
-            prediction_phase="scheduled_live",
+            prediction_phase="gray_live",
             records_expected=0,
         )
         self.assertIsNone(execution.finish_run.call_args.kwargs["records_returned"])

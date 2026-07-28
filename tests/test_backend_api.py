@@ -872,7 +872,8 @@ class TriggerEndpointTests(unittest.TestCase):
                 return_value=[config],
             ),
             patch(
-                "scheduler.main.load_blackbox_scheduler_admission",
+                "scheduler.blackbox_scheduler_admission."
+                "load_blackbox_scheduler_admission",
                 side_effect=BlackboxSchedulerAdmissionError(
                     "policy unavailable"
                 ),

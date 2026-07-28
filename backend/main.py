@@ -63,16 +63,16 @@ from scheduler.executor import DEFAULT_ALGO_ENV
 from scheduler.blackbox_scheduler_admission import (
     DAILY_LEDGER,
     DIRECT_SCHEDULED,
+    ScheduledPredictionConfigurationError,
+    ScheduledPredictionControlPlaneDenied,
+    require_scheduled_prediction_control_plane,
 )
 from scheduler.daily_health import (
     project_daily_health,
     project_scheduler_heartbeat,
 )
 from scheduler.main import (
-    ScheduledPredictionConfigurationError,
-    ScheduledPredictionControlPlaneDenied,
     _daily_coordinator_mode,
-    require_scheduled_prediction_control_plane,
     resolve_scheduled_prediction_config,
     run_daily_operator_recovery_job,
     run_prediction_job,

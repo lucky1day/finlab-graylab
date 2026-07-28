@@ -67,7 +67,11 @@ from shared.databridge_input_generation import (
     DataBridgeGenerationContext,
     open_databridge_generation,
 )
-from shared.daily_coordinator_mode import require_daily_coordinator_mode
+from shared.daily_coordinator_mode import (
+    DailyCoordinatorModeMissingError,
+    bootstrap_deployment_daily_coordinator_mode,
+    require_daily_coordinator_mode,
+)
 from shared.models import PredictionRecord
 from shared.native_input_generation import (
     NativeGenerationContext,
@@ -109,6 +113,7 @@ _SAFE_EXECUTION_TOKEN_CHARACTERS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
 )
 logger = logging.getLogger(__name__)
+PLATFORM_CONFIGURATION_ERROR_PREFIX = "platform configuration error:"
 
 _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
     {
@@ -1071,6 +1076,18 @@ def execute_scheme(
     """
     if prediction_phase not in VALID_PREDICTION_PHASES:
         raise ValueError(f"prediction_phase must be one of {sorted(VALID_PREDICTION_PHASES)}, got {prediction_phase}")
+    if prediction_phase == "scheduled_live":
+        configuration_error = (
+            _scheduled_live_execution_configuration_error(cfg)
+        )
+        if configuration_error is not None:
+            return SchemeRunResult(
+                cfg.scheme_id,
+                "failed",
+                0,
+                0.0,
+                configuration_error,
+            )
     engine = create_engine_from_env()
     started = time.monotonic()
     if cfg.status != "active":
@@ -1288,6 +1305,116 @@ def execute_scheme(
         return SchemeRunResult(cfg.scheme_id, "failed", records_written, duration, error_msg, run_id)
     finally:
         engine.dispose()
+
+
+def _scheduled_live_execution_configuration_error(
+    cfg: SchemeConfig,
+) -> str | None:
+    """在任何数据库或子进程副作用前校验低层 scheduled_live 入口。"""
+    from scheduler.blackbox_scheduler_admission import (
+        DIRECT_SCHEDULED,
+        ScheduledPredictionConfigurationError,
+        ScheduledPredictionControlPlaneDenied,
+        require_scheduled_prediction_control_plane,
+    )
+
+    canonical_error = _scheduled_live_canonical_configuration_error(
+        cfg
+    )
+    if canonical_error is not None:
+        return canonical_error
+
+    try:
+        require_scheduled_prediction_control_plane(
+            cfg,
+            plane=DIRECT_SCHEDULED,
+        )
+    except ScheduledPredictionControlPlaneDenied:
+        return (
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+            "scheduled_live direct control plane denied: "
+            f"scheme_id={cfg.scheme_id}"
+        )
+    except ScheduledPredictionConfigurationError:
+        return (
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+            "scheduled_live admission configuration is invalid: "
+            f"scheme_id={cfg.scheme_id}"
+        )
+
+    if getattr(cfg, "frequency", None) in {"weekly", "monthly"}:
+        return None
+    try:
+        coordinator_mode = (
+            bootstrap_deployment_daily_coordinator_mode()
+        )
+    except (
+        DailyCoordinatorModeMissingError,
+        RuntimeError,
+        ValueError,
+    ):
+        return (
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+            "daily coordinator mode is unavailable: "
+            f"scheme_id={cfg.scheme_id}"
+        )
+    if coordinator_mode == "ledger":
+        return (
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+            "direct daily scheduled_live execution is disabled in "
+            f"ledger mode: scheme_id={cfg.scheme_id}"
+        )
+    return None
+
+
+def _scheduled_live_canonical_configuration_error(
+    cfg: SchemeConfig,
+) -> str | None:
+    """拒绝调用方伪造或漂移的 scheduled config。"""
+    scheme_id = str(getattr(cfg, "scheme_id", "")).strip()
+    try:
+        matches = [
+            candidate
+            for candidate in discover_schemes()
+            if candidate.scheme_id == scheme_id
+        ]
+    except (OSError, RuntimeError, ValueError):
+        matches = []
+    if len(matches) != 1:
+        return (
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+            "scheduled_live canonical configuration is unavailable: "
+            f"scheme_id={scheme_id}"
+        )
+
+    canonical = matches[0]
+    fields = (
+        "scheme_id",
+        "scheme_version",
+        "runtime_type",
+        "frequency",
+        "task_type",
+        "horizon",
+        "status",
+        "version_status",
+    )
+    if any(
+        getattr(cfg, field, None)
+        != getattr(canonical, field, None)
+        for field in fields
+    ) or tuple(
+        str(tenor)
+        for tenor in getattr(cfg, "tenors", ())
+    ) != tuple(
+        str(tenor)
+        for tenor in getattr(canonical, "tenors", ())
+    ):
+        return (
+            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} "
+            "scheduled_live canonical configuration drift: "
+            f"scheme_id={scheme_id}"
+        )
+    return None
 
 
 def _append_audit_error(error_msg: str, operation: str, exc: Exception) -> str:

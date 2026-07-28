@@ -259,6 +259,14 @@ class BlackboxSchedulerAdmissionError(ValueError):
     """Blackbox 自动调度 admission 配置无效。"""
 
 
+class ScheduledPredictionConfigurationError(RuntimeError):
+    """部署身份、生命周期或 admission 配置不可验证。"""
+
+
+class ScheduledPredictionControlPlaneDenied(RuntimeError):
+    """精确身份有效，但未获准进入请求的控制面。"""
+
+
 @dataclass(frozen=True)
 class BlackboxSchedulerAdmissionPolicy:
     """按 ``scheme_id + scheme_version`` 冻结的自动调度权限。"""
@@ -468,6 +476,71 @@ def load_blackbox_scheduler_admission(
     return BlackboxSchedulerAdmissionPolicy(
         entries=MappingProxyType(entries)
     )
+
+
+def uses_blackbox_scheduler_admission(config: object) -> bool:
+    """Blackbox runtime 和冻结 base ID 都属于 admission 控制域。"""
+    return (
+        getattr(
+            config,
+            "runtime_type",
+            "native_adapter",
+        )
+        == "blackbox_v2"
+        or str(getattr(config, "scheme_id", "")).strip()
+        in RESERVED_BLACKBOX_SCHEME_IDS
+    )
+
+
+def require_scheduled_prediction_control_plane(
+    config: object,
+    *,
+    plane: str,
+) -> None:
+    """在无数据库副作用下校验精确 scheduled 控制面。"""
+    if plane not in VALID_CONTROL_PLANES:
+        raise ScheduledPredictionConfigurationError(
+            f"unknown scheduled control plane: {plane}"
+        )
+    if not uses_blackbox_scheduler_admission(config):
+        return
+
+    scheme_id = str(getattr(config, "scheme_id", "")).strip()
+    scheme_version = str(
+        getattr(config, "scheme_version", "")
+    ).strip()
+    identity = f"{scheme_id}@{scheme_version}"
+    status = getattr(config, "status", None)
+    if status != "active":
+        raise ScheduledPredictionConfigurationError(
+            "scheduled prediction denied because scheme is not active: "
+            f"scheme_id={scheme_id} status={status}"
+        )
+    version_status = getattr(config, "version_status", None)
+    if version_status != "active":
+        raise ScheduledPredictionConfigurationError(
+            "scheduled prediction denied because Blackbox version is not "
+            f"active: identity={identity} "
+            f"version_status={version_status}"
+        )
+
+    try:
+        policy = load_blackbox_scheduler_admission()
+    except BlackboxSchedulerAdmissionError as exc:
+        raise ScheduledPredictionConfigurationError(
+            "Blackbox admission is invalid"
+        ) from exc
+    mode = policy.mode(config)
+    if mode is None:
+        raise ScheduledPredictionConfigurationError(
+            "Blackbox admission identity or execution metadata drift: "
+            f"identity={identity}"
+        )
+    if not policy.allows(config, plane=plane):
+        raise ScheduledPredictionControlPlaneDenied(
+            f"{plane} denied by exact Blackbox admission: "
+            f"identity={identity} mode={mode}"
+        )
 
 
 def _required_text(
