@@ -22,6 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
 from scheduler.blackbox_scheduler_admission import (
+    DIRECT_SCHEDULED,
     LEGACY_AUTOMATIC,
     RESERVED_BLACKBOX_SCHEME_IDS,
     BlackboxSchedulerAdmissionError,
@@ -89,6 +90,10 @@ class StaggeredPredictionJob:
     base_cron: str
     effective_cron: str
     offset_minutes: int
+
+
+class DirectScheduledPredictionDenied(RuntimeError):
+    """直接 ``scheduled_live`` 入口未通过精确控制面准入。"""
 
 
 def _today() -> str:
@@ -439,6 +444,103 @@ def _uses_blackbox_scheduler_admission(config: object) -> bool:
     )
 
 
+def _direct_scheduled_lifecycle_denial(
+    config: SchemeConfig,
+) -> str | None:
+    """拒绝 inactive 方案或 Blackbox 版本，不读取 admission。"""
+    if config.status != "active":
+        return (
+            "direct_scheduled denied because scheme is not active: "
+            f"scheme_id={config.scheme_id} status={config.status}"
+        )
+    if (
+        _uses_blackbox_scheduler_admission(config)
+        and getattr(config, "version_status", None) != "active"
+    ):
+        return (
+            "direct_scheduled denied because Blackbox version is not "
+            f"active: identity={config.scheme_id}@"
+            f"{getattr(config, 'scheme_version', '')} "
+            f"version_status={getattr(config, 'version_status', None)}"
+        )
+    return None
+
+
+def _direct_scheduled_denial(
+    config: SchemeConfig,
+    *,
+    policy: BlackboxSchedulerAdmissionPolicy | None = None,
+    policy_error: BlackboxSchedulerAdmissionError | None = None,
+) -> str | None:
+    """返回 direct-scheduled 拒绝原因；非受控 Native 不读取 policy。"""
+    lifecycle_denial = _direct_scheduled_lifecycle_denial(
+        config
+    )
+    if lifecycle_denial is not None:
+        return lifecycle_denial
+    if not _uses_blackbox_scheduler_admission(config):
+        return None
+    identity = (
+        f"{config.scheme_id}@"
+        f"{getattr(config, 'scheme_version', '')}"
+    )
+    if policy_error is not None:
+        return (
+            "direct_scheduled denied because Blackbox admission is "
+            f"invalid: identity={identity} error={policy_error}"
+        )
+    if policy is None:
+        try:
+            policy = load_blackbox_scheduler_admission()
+        except BlackboxSchedulerAdmissionError as exc:
+            return (
+                "direct_scheduled denied because Blackbox admission is "
+                f"invalid: identity={identity} error={exc}"
+            )
+    if policy.allows(config, plane=DIRECT_SCHEDULED):
+        return None
+    mode = policy.mode(config) or "unlisted"
+    return (
+        "direct_scheduled denied by exact Blackbox admission: "
+        f"identity={identity} mode={mode}"
+    )
+
+
+def require_direct_scheduled_prediction_config(
+    scheme_id: str,
+) -> SchemeConfig:
+    """解析并校验直接 ``scheduled_live`` 单方案入口。"""
+    config = next(
+        (
+            candidate
+            for candidate in discover_schemes()
+            if candidate.scheme_id == scheme_id
+        ),
+        None,
+    )
+    if config is None:
+        raise DirectScheduledPredictionDenied(
+            f"scheme not found: {scheme_id}"
+        )
+    denial = _direct_scheduled_denial(config)
+    if denial is not None:
+        raise DirectScheduledPredictionDenied(denial)
+    return config
+
+
+def _platform_configuration_failure(
+    scheme_id: str,
+    detail: str,
+) -> SchemeRunResult:
+    return SchemeRunResult(
+        scheme_id,
+        "failed",
+        0,
+        0.0,
+        f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} {detail}",
+    )
+
+
 def _log_blackbox_identity_drift(
     config: object,
     policy: BlackboxSchedulerAdmissionPolicy,
@@ -686,17 +788,19 @@ def run_prediction_job(
 ) -> SchemeRunResult:
     """执行单个方案调度任务。"""
     predict_date = _normalize_run_date(run_date)
-    schemes = discover_schemes()
-    configs = {cfg.scheme_id: cfg for cfg in schemes}
-    cfg = configs.get(scheme_id)
-    if cfg is None:
-        logger.error("Scheme not found: %s", scheme_id)
-        return SchemeRunResult(
+    try:
+        cfg = require_direct_scheduled_prediction_config(
+            scheme_id
+        )
+    except DirectScheduledPredictionDenied as exc:
+        logger.error(
+            "Direct scheduled prediction denied: scheme=%s error=%s",
             scheme_id,
-            "failed",
-            0,
-            0.0,
-            f"{PLATFORM_CONFIGURATION_ERROR_PREFIX} scheme not found: {scheme_id}",
+            exc,
+        )
+        return _platform_configuration_failure(
+            scheme_id,
+            str(exc),
         )
     if (
         cfg.frequency == "daily"
@@ -910,10 +1014,58 @@ def run_all_prediction_jobs(
 ) -> list[SchemeRunResult]:
     """执行全部 active 方案调度任务。"""
     predict_date = _normalize_run_date(run_date)
-    schemes = discover_schemes()
+    schemes = [
+        config
+        for config in discover_schemes()
+        if config.status == "active"
+    ]
+    ledger_mode = _daily_coordinator_mode() != "legacy"
+    preliminary_denials: dict[int, str] = {}
+    for config in schemes:
+        lifecycle_denial = _direct_scheduled_lifecycle_denial(
+            config
+        )
+        if lifecycle_denial is not None:
+            preliminary_denials[id(config)] = lifecycle_denial
+        elif ledger_mode and config.frequency == "daily":
+            preliminary_denials[id(config)] = (
+                "direct_scheduled daily prediction is disabled in ledger "
+                f"mode: scheme_id={config.scheme_id}"
+            )
+    controlled = [
+        config
+        for config in schemes
+        if id(config) not in preliminary_denials
+        if _uses_blackbox_scheduler_admission(config)
+    ]
+    policy: BlackboxSchedulerAdmissionPolicy | None = None
+    policy_error: BlackboxSchedulerAdmissionError | None = None
+    if controlled:
+        try:
+            policy = load_blackbox_scheduler_admission()
+        except BlackboxSchedulerAdmissionError as exc:
+            policy_error = exc
     results: list[SchemeRunResult] = []
     for cfg in schemes:
-        if cfg.status != "active":
+        denial = preliminary_denials.get(id(cfg))
+        if denial is None:
+            denial = _direct_scheduled_denial(
+                cfg,
+                policy=policy,
+                policy_error=policy_error,
+            )
+        if denial is not None:
+            logger.error(
+                "Direct scheduled prediction denied: scheme=%s error=%s",
+                cfg.scheme_id,
+                denial,
+            )
+            results.append(
+                _platform_configuration_failure(
+                    cfg.scheme_id,
+                    denial,
+                )
+            )
             continue
         results.append(
             _run_prediction_config(

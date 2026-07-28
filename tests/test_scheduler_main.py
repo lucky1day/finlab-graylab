@@ -49,6 +49,7 @@ def _cfg(
     frequency: str | None = None,
     cron: str = "3 7 * * 1-5",
     status: str = "active",
+    version_status: str = "active",
     runtime_type: str = "native_adapter",
     input_source: str | None = None,
     scheme_version: str = "version-1",
@@ -68,6 +69,7 @@ def _cfg(
         scheme_id=scheme_id,
         scheme_version=scheme_version,
         status=status,
+        version_status=version_status,
         frequency=effective_frequency,
         task_type=(
             admission.task_type
@@ -1424,8 +1426,9 @@ class SchedulerMainTests(unittest.TestCase):
         from scheduler import main as scheduler_main
 
         cfg = _cfg(
-            "blackbox_demo",
+            "one_y_t5_liq_excess_a_v1",
             runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
             input_source="data_bridge_current",
         )
         with (
@@ -1441,7 +1444,7 @@ class SchedulerMainTests(unittest.TestCase):
             self.assertLogs(scheduler_main.logger, level=logging.ERROR),
         ):
             result = scheduler_main.run_prediction_job(
-                "blackbox_demo",
+                cfg.scheme_id,
                 run_date="2026-07-22",
             )
 
@@ -1525,7 +1528,7 @@ class SchedulerMainTests(unittest.TestCase):
         sync_registry.assert_not_called()
         self.assertEqual(execute_scheme.call_count, 2)
 
-    def test_run_all_prediction_jobs_ignores_scheduler_admission_for_gray(
+    def test_run_all_prediction_jobs_rejects_invalid_blackbox_admission(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -1535,12 +1538,6 @@ class SchedulerMainTests(unittest.TestCase):
             runtime_type="blackbox_v2",
             scheme_version="04e7af163fb0",
             frequency="monthly",
-        )
-        expected = SchemeRunResult(
-            gray.scheme_id,
-            "success",
-            1,
-            0.1,
         )
         with (
             patch.object(
@@ -1558,22 +1555,94 @@ class SchedulerMainTests(unittest.TestCase):
             patch.object(
                 scheduler_main,
                 "execute_scheme",
-                return_value=expected,
             ) as execute_scheme,
         ):
             results = scheduler_main.run_all_prediction_jobs(
                 run_date="2026-07-27",
             )
 
-        self.assertEqual(results, [expected])
-        load_admission.assert_not_called()
-        execute_scheme.assert_called_once_with(
-            gray,
-            "2026-07-27",
-            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].scheme_id, gray.scheme_id)
+        self.assertEqual(results[0].status, "failed")
+        self.assertIn(
+            scheduler_main.PLATFORM_CONFIGURATION_ERROR_PREFIX,
+            results[0].error_msg or "",
+        )
+        self.assertIn("invalid policy", results[0].error_msg or "")
+        load_admission.assert_called_once_with()
+        execute_scheme.assert_not_called()
+
+    def test_invalid_admission_rejects_all_blackbox_but_native_continues(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        native_a = _cfg("native_a")
+        formal = _cfg(
+            "one_y_t5_liq_excess_a_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
+        )
+        gray = _cfg(
+            "ten_y_t5_maj3_k3_ic_static_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="c54b90bcafa7",
+        )
+        native_b = _cfg("native_b")
+        configs = [native_a, formal, gray, native_b]
+
+        def execute_native(config, *_args, **_kwargs):
+            self.assertEqual(config.runtime_type, "native_adapter")
+            return SchemeRunResult(
+                config.scheme_id,
+                "success",
+                1,
+                0.1,
+            )
+
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=configs,
+            ),
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=BlackboxSchedulerAdmissionError(
+                    "invalid policy"
+                ),
+            ) as load_admission,
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                side_effect=execute_native,
+            ) as execute,
+        ):
+            results = scheduler_main.run_all_prediction_jobs(
+                run_date="2026-07-27",
+            )
+
+        self.assertEqual(
+            [result.scheme_id for result in results],
+            [config.scheme_id for config in configs],
+        )
+        self.assertEqual(
+            [result.status for result in results],
+            ["success", "failed", "failed", "success"],
+        )
+        for result in results[1:3]:
+            self.assertIn(
+                scheduler_main.PLATFORM_CONFIGURATION_ERROR_PREFIX,
+                result.error_msg or "",
+            )
+        load_admission.assert_called_once_with()
+        self.assertEqual(
+            [call.args[0] for call in execute.call_args_list],
+            [native_a, native_b],
         )
 
-    def test_legacy_run_once_predictions_uses_manual_gray_aggregate(
+    def test_legacy_run_once_predictions_rejects_invalid_admission(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -1583,12 +1652,6 @@ class SchedulerMainTests(unittest.TestCase):
             runtime_type="blackbox_v2",
             scheme_version="04e7af163fb0",
             frequency="monthly",
-        )
-        expected = SchemeRunResult(
-            gray.scheme_id,
-            "success",
-            1,
-            0.1,
         )
         stdout = io.StringIO()
         with (
@@ -1607,7 +1670,6 @@ class SchedulerMainTests(unittest.TestCase):
             patch.object(
                 scheduler_main,
                 "execute_scheme",
-                return_value=expected,
             ) as execute_scheme,
             patch.object(
                 scheduler_main,
@@ -1625,29 +1687,25 @@ class SchedulerMainTests(unittest.TestCase):
                 ]
             )
 
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
         manual_aggregate.assert_called_once_with(
             run_date="2026-07-27",
             algo_env=scheduler_main.DEFAULT_ALGO_ENV,
             force=False,
         )
-        load_admission.assert_not_called()
-        execute_scheme.assert_called_once_with(
-            gray,
-            "2026-07-27",
-            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
-        )
+        load_admission.assert_called_once_with()
+        execute_scheme.assert_not_called()
         self.assertEqual(
             json.loads(stdout.getvalue()),
             {
                 "counts": {
-                    "failed": 0,
+                    "failed": 1,
                     "partial": 0,
                     "skipped": 0,
-                    "success": 1,
+                    "success": 0,
                 },
                 "event": "prediction_run_summary",
-                "exit_code": 0,
+                "exit_code": 2,
                 "total": 1,
             },
         )
@@ -1662,6 +1720,40 @@ class SchedulerMainTests(unittest.TestCase):
             )
 
         self.assertEqual(code, 1)
+
+    def test_legacy_run_once_single_rejects_daily_gray(self) -> None:
+        from scheduler import main as scheduler_main
+
+        gray = _cfg(
+            "ten_y_t5_maj3_k3_ic_static_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="c54b90bcafa7",
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[gray],
+            ),
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+            ) as run_config,
+            redirect_stdout(io.StringIO()),
+        ):
+            code = scheduler_main.main(
+                [
+                    "--run-once",
+                    "predictions",
+                    "--scheme-id",
+                    gray.scheme_id,
+                    "--date",
+                    "2026-07-27",
+                ]
+            )
+
+        self.assertEqual(code, 2)
+        run_config.assert_not_called()
 
     def test_main_returns_one_for_partial_run_once_prediction(self) -> None:
         from scheduler import main as scheduler_main
@@ -2215,46 +2307,346 @@ class SchedulerMainTests(unittest.TestCase):
 
         run_config.assert_not_called()
 
-    def test_manual_prediction_path_keeps_gray_blackbox_executable(
+    def test_direct_prediction_rejects_every_gray_blackbox_before_readiness(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
 
-        config = _cfg(
-            "cgb_a4_fundseason_1y",
-            runtime_type="blackbox_v2",
-            scheme_version="04e7af163fb0",
+        for scheme_id, scheme_version in (
+            GRAY_BLACKBOX_IDENTITIES.items()
+        ):
+            config = _cfg(
+                scheme_id,
+                runtime_type="blackbox_v2",
+                scheme_version=scheme_version,
+            )
+            with (
+                self.subTest(scheme_id=scheme_id),
+                patch.object(
+                    scheduler_main,
+                    "discover_schemes",
+                    return_value=[config],
+                ),
+                patch.object(
+                    scheduler_main,
+                    "_is_trading_day",
+                ) as trading_day,
+                patch.object(
+                    scheduler_main,
+                    "require_v2_daily_ready",
+                ) as readiness,
+                patch.object(
+                    scheduler_main,
+                    "_run_prediction_config",
+                ) as run_config,
+            ):
+                actual = scheduler_main.run_prediction_job(
+                    config.scheme_id,
+                    run_date="2026-07-27",
+                )
+
+            self.assertEqual(actual.status, "failed")
+            self.assertIn(
+                scheduler_main.PLATFORM_CONFIGURATION_ERROR_PREFIX,
+                actual.error_msg or "",
+            )
+            self.assertIn("direct_scheduled", actual.error_msg or "")
+            trading_day.assert_not_called()
+            readiness.assert_not_called()
+            run_config.assert_not_called()
+
+    def test_direct_prediction_allows_formal_daily_and_weekly(self) -> None:
+        from scheduler import main as scheduler_main
+
+        identities = (
+            (
+                "one_y_t5_liq_excess_a_v1",
+                "8d583560c9f1",
+            ),
+            (
+                "weekly_10y_lgbm_point_v1",
+                "0666a6989d6b",
+            ),
         )
-        expected = SchemeRunResult(
-            config.scheme_id,
-            "success",
-            1,
-            0.1,
-        )
+        for scheme_id, scheme_version in identities:
+            config = _cfg(
+                scheme_id,
+                runtime_type="blackbox_v2",
+                scheme_version=scheme_version,
+            )
+            expected = SchemeRunResult(
+                config.scheme_id,
+                "success",
+                1,
+                0.1,
+            )
+            with (
+                self.subTest(scheme_id=scheme_id),
+                patch.object(
+                    scheduler_main,
+                    "discover_schemes",
+                    return_value=[config],
+                ),
+                patch.object(
+                    scheduler_main,
+                    "_run_prediction_config",
+                    return_value=expected,
+                ) as run_config,
+            ):
+                actual = scheduler_main.run_prediction_job(
+                    config.scheme_id,
+                    run_date="2026-07-27",
+                )
+
+            self.assertIs(actual, expected)
+            run_config.assert_called_once_with(
+                config,
+                "2026-07-27",
+                algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+                force=False,
+            )
+
+    def test_valid_policy_aggregate_executes_only_formal_blackbox(self) -> None:
+        from scheduler import main as scheduler_main
+
+        configs = [
+            _cfg(
+                scheme_id,
+                runtime_type="blackbox_v2",
+                scheme_version=scheme_version,
+            )
+            for scheme_id, scheme_version in (
+                FORMAL_BLACKBOX_IDENTITIES
+                | GRAY_BLACKBOX_IDENTITIES
+            ).items()
+        ]
+
+        def execute_formal(config, *_args, **_kwargs):
+            self.assertIn(
+                config.scheme_id,
+                FORMAL_BLACKBOX_IDENTITIES,
+            )
+            return SchemeRunResult(
+                config.scheme_id,
+                "success",
+                1,
+                0.1,
+            )
+
+        stdout = io.StringIO()
         with (
             patch.object(
                 scheduler_main,
                 "discover_schemes",
-                return_value=[config],
+                return_value=configs,
             ),
             patch.object(
                 scheduler_main,
                 "_run_prediction_config",
-                return_value=expected,
-            ) as run_config,
+                side_effect=execute_formal,
+            ) as execute,
+            redirect_stdout(stdout),
         ):
-            actual = scheduler_main.run_prediction_job(
+            code = scheduler_main.main(
+                [
+                    "--run-once",
+                    "predictions",
+                    "--date",
+                    "2026-07-27",
+                ]
+            )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            [call.args[0].scheme_id for call in execute.call_args_list],
+            list(FORMAL_BLACKBOX_IDENTITIES),
+        )
+        self.assertEqual(
+            json.loads(stdout.getvalue())["counts"],
+            {
+                "failed": len(GRAY_BLACKBOX_IDENTITIES),
+                "partial": 0,
+                "skipped": 0,
+                "success": len(FORMAL_BLACKBOX_IDENTITIES),
+            },
+        )
+
+    def test_native_direct_paths_never_load_blackbox_policy(self) -> None:
+        from scheduler import main as scheduler_main
+
+        single = _cfg("native_single")
+        aggregate = _cfg("native_aggregate", frequency="weekly")
+
+        def execute_native(config, *_args, **_kwargs):
+            return SchemeRunResult(
                 config.scheme_id,
+                "success",
+                1,
+                0.1,
+            )
+
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                side_effect=[[single], [aggregate]],
+            ),
+            patch.object(
+                scheduler_main,
+                "load_blackbox_scheduler_admission",
+                side_effect=AssertionError(
+                    "Native direct path must not load Blackbox policy"
+                ),
+            ) as load_policy,
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                side_effect=execute_native,
+            ) as execute,
+        ):
+            single_result = scheduler_main.run_prediction_job(
+                single.scheme_id,
+                run_date="2026-07-27",
+            )
+            aggregate_results = scheduler_main.run_all_prediction_jobs(
                 run_date="2026-07-27",
             )
 
-        self.assertIs(actual, expected)
-        run_config.assert_called_once_with(
-            config,
-            "2026-07-27",
-            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
-            force=False,
+        self.assertEqual(single_result.status, "success")
+        self.assertEqual(
+            [result.status for result in aggregate_results],
+            ["success"],
         )
+        load_policy.assert_not_called()
+        self.assertEqual(execute.call_count, 2)
+
+    def test_direct_prediction_rejects_inactive_scheme_or_version(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        configs = (
+            _cfg("paused_native", status="paused"),
+            _cfg(
+                "one_y_t5_liq_excess_a_v1",
+                runtime_type="blackbox_v2",
+                scheme_version="8d583560c9f1",
+                version_status="shadow",
+            ),
+        )
+        for config in configs:
+            with (
+                self.subTest(scheme_id=config.scheme_id),
+                patch.object(
+                    scheduler_main,
+                    "discover_schemes",
+                    return_value=[config],
+                ),
+                patch.object(
+                    scheduler_main,
+                    "load_blackbox_scheduler_admission",
+                ) as load_policy,
+                patch.object(
+                    scheduler_main,
+                    "_is_trading_day",
+                ) as trading_day,
+                patch.object(
+                    scheduler_main,
+                    "require_v2_daily_ready",
+                ) as readiness,
+                patch.object(
+                    scheduler_main,
+                    "_run_prediction_config",
+                ) as run_config,
+            ):
+                actual = scheduler_main.run_prediction_job(
+                    config.scheme_id,
+                    run_date="2026-07-27",
+                )
+
+            self.assertEqual(actual.status, "failed")
+            self.assertIn(
+                scheduler_main.PLATFORM_CONFIGURATION_ERROR_PREFIX,
+                actual.error_msg or "",
+            )
+            load_policy.assert_not_called()
+            trading_day.assert_not_called()
+            readiness.assert_not_called()
+            run_config.assert_not_called()
+
+    def test_ledger_aggregate_rejects_daily_and_runs_weekly_monthly(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        daily_native = _cfg("daily_native")
+        weekly_native = _cfg("weekly_native", frequency="weekly")
+        daily_blackbox = _cfg(
+            "one_y_t5_liq_excess_a_v1",
+            runtime_type="blackbox_v2",
+            scheme_version="8d583560c9f1",
+        )
+        monthly_native = _cfg("monthly_native", frequency="monthly")
+        configs = [
+            daily_native,
+            weekly_native,
+            daily_blackbox,
+            monthly_native,
+        ]
+
+        def execute_recurring(config, *_args, **_kwargs):
+            self.assertIn(config.frequency, {"weekly", "monthly"})
+            return SchemeRunResult(
+                config.scheme_id,
+                "success",
+                1,
+                0.1,
+            )
+
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=configs,
+            ),
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch.object(
+                scheduler_main,
+                "_is_trading_day",
+            ) as trading_day,
+            patch.object(
+                scheduler_main,
+                "require_v2_daily_ready",
+            ) as readiness,
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                side_effect=execute_recurring,
+            ) as execute,
+        ):
+            results = scheduler_main.run_all_prediction_jobs(
+                run_date="2026-07-27",
+            )
+
+        self.assertEqual(
+            [result.scheme_id for result in results],
+            [config.scheme_id for config in configs],
+        )
+        self.assertEqual(
+            [result.status for result in results],
+            ["failed", "success", "failed", "success"],
+        )
+        self.assertEqual(scheduler_main._prediction_exit_code(results), 2)
+        self.assertEqual(
+            [call.args[0] for call in execute.call_args_list],
+            [weekly_native, monthly_native],
+        )
+        trading_day.assert_not_called()
+        readiness.assert_not_called()
 
     def test_ledger_cutover_rejects_already_registered_legacy_daily_job(
         self,
