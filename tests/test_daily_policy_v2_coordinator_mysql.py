@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import os
+import threading
 import unittest
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from sqlalchemy import text
 
+from scheduler import repository
 from scheduler.daily_policy import POLICY_V2_PATH
 from scheduler.daily_runtime import DailyRuntime
 from scheduler.repository import (
+    complete_scheduled_attempt,
     create_schedule_occurrence,
     read_schedule_occurrence_snapshot,
+    register_schedule_attempt_process,
+    start_schedule_attempt,
 )
 from scheduler.scheduled_executor import execute_scheduled_item
 from tests.test_daily_coordinator_mvp_mysql import (
@@ -30,6 +36,7 @@ from tests.test_daily_native_coordinator_mysql import (
     _ExpectationVerifier,
     _assert_test_epoch,
     _real_policy_and_configs,
+    _records_for_item,
     _run_count,
     _seed_test_registry,
     _temporary_mysql,
@@ -119,6 +126,145 @@ def _scheduled_live_phase_counts(
     "set BFL_DAILY_POLICY_V2_MYSQL=1 to run isolated 25/29 proof",
 )
 class DailyPolicyV2CoordinatorMySQLTests(unittest.TestCase):
+    def test_concurrent_final_completions_keep_occurrence_aggregate_current(
+        self,
+    ) -> None:
+        policy, configs = _real_policy_and_configs(POLICY_V2_PATH)
+        clock = _clock()
+        with (
+            _temporary_mysql() as server,
+            patch(
+                "scheduler.repository."
+                "assert_daily_coordinator_epoch_payload_matches_current",
+                side_effect=_assert_test_epoch,
+            ),
+        ):
+            schema, engine = server.create_schema("aggregate")
+            worker_engines = []
+            try:
+                occurrence_id, _native, _databridge = (
+                    _create_v2_occurrence(
+                        server,
+                        engine,
+                        policy,
+                        configs,
+                        schedule_key=(
+                            f"daily-v2-aggregate-{schema[-10:]}"
+                        ),
+                        clock=clock,
+                    )
+                )
+                clock.set(
+                    datetime(
+                        2026,
+                        7,
+                        23,
+                        23,
+                        5,
+                        tzinfo=timezone.utc,
+                    )
+                )
+                frozen = read_schedule_occurrence_snapshot(
+                    engine,
+                    occurrence_id=occurrence_id,
+                )
+                attempts = []
+                records_by_run = {}
+                for summary in frozen.items:
+                    attempt = start_schedule_attempt(
+                        engine,
+                        item_id=summary.item.item_id,
+                        execution_token=(
+                            f"aggregate-{summary.item.item_id}"
+                        ),
+                        _clock=clock,
+                    )
+                    register_schedule_attempt_process(
+                        engine,
+                        run_id=attempt.run_id,
+                        execution_token=attempt.execution_token,
+                        process_id=900_000 + attempt.run_id,
+                        process_group_id=900_000 + attempt.run_id,
+                        _clock=clock,
+                    )
+                    attempts.append(attempt)
+                    records_by_run[attempt.run_id] = _records_for_item(
+                        engine,
+                        attempt.item_id,
+                    )
+
+                for attempt in attempts[:-2]:
+                    complete_scheduled_attempt(
+                        engine,
+                        run_id=attempt.run_id,
+                        records=records_by_run[attempt.run_id],
+                        trusted_verifier=_ExpectationVerifier(),
+                        _clock=clock,
+                    )
+
+                real_resolve = (
+                    repository._resolve_schedule_item_id_for_run
+                )
+                snapshot_barrier = threading.Barrier(2)
+
+                def resolve_after_snapshot(conn, *, run_id):
+                    item_id = real_resolve(conn, run_id=run_id)
+                    snapshot_barrier.wait(timeout=10)
+                    return item_id
+
+                worker_engines = [
+                    server.engine(schema),
+                    server.engine(schema),
+                ]
+
+                def complete_final(index: int) -> None:
+                    attempt = attempts[-2 + index]
+                    complete_scheduled_attempt(
+                        worker_engines[index],
+                        run_id=attempt.run_id,
+                        records=records_by_run[attempt.run_id],
+                        trusted_verifier=_ExpectationVerifier(),
+                        _clock=clock,
+                    )
+
+                with (
+                    patch.object(
+                        repository,
+                        "_resolve_schedule_item_id_for_run",
+                        side_effect=resolve_after_snapshot,
+                    ),
+                    ThreadPoolExecutor(max_workers=2) as pool,
+                ):
+                    list(pool.map(complete_final, (0, 1)))
+
+                completed = read_schedule_occurrence_snapshot(
+                    engine,
+                    occurrence_id=occurrence_id,
+                )
+                self.assertEqual(
+                    completed.actual_accepted_target_count,
+                    29,
+                )
+                self.assertEqual(
+                    completed.occurrence.accepted_target_count,
+                    29,
+                )
+                self.assertEqual(
+                    completed.occurrence.completion_state,
+                    "SUCCESS",
+                )
+                self.assertEqual(
+                    Counter(
+                        summary.item.state
+                        for summary in completed.items
+                    ),
+                    Counter({"SUCCESS": 25}),
+                )
+            finally:
+                for worker_engine in worker_engines:
+                    worker_engine.dispose()
+                engine.dispose()
+
     def test_policy_v2_happy_path_and_late_fill_share_one_mysql(
         self,
     ) -> None:

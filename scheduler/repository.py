@@ -5477,18 +5477,17 @@ def complete_scheduled_attempt(
         accepted_count = _count_accepted_schedule_targets(
             conn,
             occurrence_id=int(item["occurrence_id"]),
+            for_update=True,
         )
-        successful_items = int(
-            conn.execute(
-                text(
-                    "SELECT COUNT(*) FROM t_schedule_items "
-                    "WHERE occurrence_id = :occurrence_id AND state = :success"
-                ),
-                {
-                    "occurrence_id": int(item["occurrence_id"]),
-                    "success": ITEM_SUCCESS,
-                },
-            ).scalar_one()
+        current_siblings = _read_schedule_items_for_occurrence_conn(
+            conn,
+            occurrence_id=int(item["occurrence_id"]),
+            for_update=True,
+        )
+        successful_items = sum(
+            1
+            for sibling in current_siblings
+            if str(sibling["state"]) == ITEM_SUCCESS
         )
         occurrence_success = (
             accepted_count == int(occurrence["expected_target_count"])
@@ -6570,6 +6569,7 @@ def _read_schedule_target_relationships_conn(
     *,
     item_id: int | None = None,
     occurrence_id: int | None = None,
+    for_update: bool = False,
 ) -> list[Mapping[str, object]]:
     """读取 target 及其完整 item/run/prediction 关系判定。"""
     if (item_id is None) == (occurrence_id is None):
@@ -6587,6 +6587,11 @@ def _read_schedule_target_relationships_conn(
         )
         order_clause = "t.item_id, t.target_id"
         identity = int(occurrence_id)
+    lock = (
+        ""
+        if not for_update or _dialect_name(conn) == "sqlite"
+        else " FOR UPDATE"
+    )
     return list(
         (
             conn.execute(
@@ -6611,6 +6616,7 @@ def _read_schedule_target_relationships_conn(
                       ON p.id = t.accepted_prediction_id
                     WHERE {where_clause}
                     ORDER BY {order_clause}
+                    {lock}
                     """
                 ),
                 {"identity": identity},
@@ -6665,10 +6671,12 @@ def _read_schedule_targets_for_occurrence_conn(
     conn: Connection,
     *,
     occurrence_id: int,
+    for_update: bool = False,
 ) -> list[Mapping[str, object]]:
     return _read_schedule_target_relationships_conn(
         conn,
         occurrence_id=int(occurrence_id),
+        for_update=for_update,
     )
 
 
@@ -6895,6 +6903,7 @@ def _count_accepted_schedule_targets(
     rows = _read_schedule_targets_for_occurrence_conn(
         conn,
         occurrence_id=int(occurrence_id),
+        for_update=for_update,
     )
     return sum(
         1 for row in rows if _is_valid_accepted_schedule_target(row)
@@ -6926,6 +6935,7 @@ def _count_schedule_target_availability(
     rows = _read_schedule_targets_for_occurrence_conn(
         conn,
         occurrence_id=int(occurrence_id),
+        for_update=for_update,
     )
     accepted_count = 0
     visible_count = 0
