@@ -398,7 +398,11 @@ def create_databridge_generation(
         _fsync_directory(data_dir)
         _fsync_directory(staging)
         try:
-            _publish_sealed_generation(staging, destination)
+            _publish_sealed_generation(
+                staging,
+                destination,
+                remove_tree=_remove_tree,
+            )
         except OSError:
             if not os.path.lexists(destination):
                 raise

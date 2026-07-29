@@ -728,6 +728,12 @@ class DataBridgeGenerationDurabilityAndRetentionTests(unittest.TestCase):
                 try:
                     staging = parent / ".building-x"
                     staging.mkdir()
+                    data = staging / "data"
+                    data.mkdir()
+                    (data / "daily_output.csv").write_text(
+                        "date,value\n2026-07-28,1\n",
+                        encoding="utf-8",
+                    )
                     (staging / "manifest.json").write_text(
                         "{}", encoding="utf-8"
                     )
@@ -735,7 +741,9 @@ class DataBridgeGenerationDurabilityAndRetentionTests(unittest.TestCase):
                     with patch.object(module.os, name, side_effect=error):
                         with self.assertRaises(type(error)):
                             module._publish_sealed_generation(
-                                staging, destination
+                                staging,
+                                destination,
+                                remove_tree=module._remove_tree,
                             )
                     self.assertFalse(
                         os.path.lexists(destination),

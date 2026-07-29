@@ -2097,7 +2097,12 @@ def _sealed_rename_supported(parent: Path) -> bool:
     return supported
 
 
-def _publish_sealed_generation(staging: Path, destination: Path) -> None:
+def _publish_sealed_generation(
+    staging: Path,
+    destination: Path,
+    *,
+    remove_tree: Callable[[Path], None] | None = None,
+) -> None:
     """原子发布 generation，并保证发布后目录为 ``0o555``。
 
     平台允许重命名只读目录时走既有语义：``staging`` 在 ``os.replace``
@@ -2115,8 +2120,11 @@ def _publish_sealed_generation(staging: Path, destination: Path) -> None:
     存在，因此必须由本函数按已持有 fd 的 dev/ino 校验身份后移除 destination
     并 fsync 父目录，绝不留下可见且可写的 generation。
 
-    两条路径都只对真实 generation 执行一次 ``os.replace``。
+    ``remove_tree`` 必须与 generation 的真实目录结构匹配；Native 默认使用
+    本模块的扁平目录清理器，DataBridge 显式传入支持 ``data/`` 子目录的
+    清理器。两条发布路径都只对真实 generation 执行一次 ``os.replace``。
     """
+    cleanup = _remove_tree if remove_tree is None else remove_tree
     if _sealed_rename_supported(destination.parent):
         os.chmod(staging, 0o555, follow_symlinks=False)
         os.replace(staging, destination)
@@ -2138,7 +2146,12 @@ def _publish_sealed_generation(staging: Path, destination: Path) -> None:
                     f"{destination} mode={sealed_mode:o}"
                 )
         except BaseException:
-            _withdraw_unsealed_publication(destination, identity)
+            _withdraw_unsealed_publication(
+                destination,
+                identity,
+                directory_fd=staging_fd,
+                remove_tree=cleanup,
+            )
             raise
     finally:
         os.close(staging_fd)
@@ -2177,6 +2190,9 @@ def _rename_with_temporarily_writable_source(
 def _withdraw_unsealed_publication(
     destination: Path,
     identity: os.stat_result,
+    *,
+    directory_fd: int,
+    remove_tree: Callable[[Path], None],
 ) -> None:
     """封存失败时撤回刚发布的 generation，保证不留下可写残留。
 
@@ -2197,11 +2213,31 @@ def _withdraw_unsealed_publication(
             "refusing to withdraw an unsealed publication that is no longer "
             f"the generation just published: {destination}"
         )
-    _remove_tree(destination)
-    if os.path.lexists(destination):
+    try:
+        remove_tree(destination)
+        if os.path.lexists(destination):
+            raise RuntimeError(
+                f"unsealed generation remains published: {destination}"
+            )
+    except BaseException as withdraw_error:
+        try:
+            os.fchmod(directory_fd, 0o555)
+            os.fsync(directory_fd)
+            restored = stat.S_IMODE(os.fstat(directory_fd).st_mode)
+        except OSError as reseal_error:
+            raise RuntimeError(
+                "failed to withdraw or reseal an unsealed generation: "
+                f"{destination}"
+            ) from reseal_error
+        if restored != 0o555:
+            raise RuntimeError(
+                "failed to withdraw an unsealed generation and its mode "
+                f"could not be restored: {destination} mode={restored:o}"
+            ) from withdraw_error
         raise RuntimeError(
-            f"unsealed generation remains published: {destination}"
-        )
+            "failed to withdraw an unsealed generation; the generation "
+            f"directory was resealed: {destination}"
+        ) from withdraw_error
     _fsync_directory(destination.parent)
 
 

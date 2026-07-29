@@ -1426,6 +1426,57 @@ class NativeInputGenerationDurabilityAndRetentionTests(unittest.TestCase):
             finally:
                 module._SEALED_RENAME_SUPPORT.pop(str(parent), None)
 
+    def test_publish_reseals_generation_when_withdrawal_fails(self) -> None:
+        """撤回清理失败时，可见目录必须恢复 0o555 后再报错。"""
+        module = importlib.import_module("shared.native_input_generation")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            module._SEALED_RENAME_SUPPORT[str(parent)] = False
+            destination = parent / "native-abc"
+            try:
+                staging = parent / ".building-x"
+                staging.mkdir()
+                (staging / "manifest.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                real_fsync = os.fsync
+                fsync_calls = 0
+
+                def fail_first_fsync(descriptor: int) -> None:
+                    nonlocal fsync_calls
+                    fsync_calls += 1
+                    if fsync_calls == 1:
+                        raise OSError(5, "injected seal fsync failure")
+                    real_fsync(descriptor)
+
+                def fail_withdrawal(path: Path) -> None:
+                    os.chmod(path, 0o755, follow_symlinks=False)
+                    raise OSError(5, "injected withdrawal failure")
+
+                with patch.object(
+                    module.os,
+                    "fsync",
+                    side_effect=fail_first_fsync,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "generation directory was resealed",
+                    ):
+                        module._publish_sealed_generation(
+                            staging,
+                            destination,
+                            remove_tree=fail_withdrawal,
+                        )
+                self.assertTrue(destination.is_dir())
+                self.assertEqual(
+                    stat.S_IMODE(os.lstat(destination).st_mode),
+                    0o555,
+                )
+            finally:
+                module._SEALED_RENAME_SUPPORT.pop(str(parent), None)
+                if destination.exists():
+                    os.chmod(destination, 0o755)
+
     def test_retention_rename_restores_sealed_mode_when_retry_fails(
         self,
     ) -> None:
