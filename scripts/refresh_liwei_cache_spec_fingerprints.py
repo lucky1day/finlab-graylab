@@ -2,7 +2,7 @@
 
 ## 为什么需要这个工具
 
-`deploy/daily_scheduler_policy_v{1,2}.json` 为每个 liwei cache_group 钉了一个
+`deploy/daily_scheduler_policy_v2.json` 为每个 liwei cache_group 钉了一个
 ``cache_spec_fingerprint``。ledger 模式在资格校验层把钉值与运行期实算值逐一比对，
 不一致即 fail-closed（不是回退重建）。而 ``_spec_fingerprint`` 的 payload 里掺入了
 ``python``/``numpy``/``pandas``/``lightgbm`` 版本（``shared.liwei_0616_phase_a_cache``
@@ -304,6 +304,24 @@ def _rebind_capacity_admission() -> bool:
     return True
 
 
+def _require_capacity_admission_rebindable() -> None:
+    """在改写 policy 前确认 admission 允许重新绑定。"""
+    payload = json.loads(ADMISSION_PATH.read_text(encoding="utf-8"))
+    status = payload.get("status")
+    if status != "BLOCKED":
+        raise FingerprintRefreshError(
+            f"capacity admission 当前为 {status!r} 而非 BLOCKED；"
+            "改写 policy 会使既有签名失配，请由 operator 重走容量准入流程"
+        )
+    current = payload.get("policy_sha256")
+    needle = f'"policy_sha256": "{current}"'
+    text = ADMISSION_PATH.read_text(encoding="utf-8")
+    if text.count(needle) != 1:
+        raise FingerprintRefreshError(
+            f"{ADMISSION_PATH.name} 中 policy_sha256 字面量不唯一，无法安全替换"
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -360,6 +378,7 @@ def main() -> int:
         mismatched += 1
 
     if args.write:
+        _require_capacity_admission_rebindable()
         changed = _rewrite_pins(POLICY_PATH, computed)
         rebound = _rebind_capacity_admission()
         print(

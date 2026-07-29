@@ -4,8 +4,10 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -65,7 +67,7 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
         self.assertIn("必须在算法环境中计算", result.stderr)
 
     def test_every_registered_cache_group_is_pinned(self) -> None:
-        """publisher 注册表里的每个 cache_group 都必须在两份 policy 中有钉值。"""
+        """publisher 注册表里的每个 cache_group 都必须在 v2 policy 中有钉值。"""
         from shared.liwei_0616_cache_contract import (
             APPROVED_PHASE_A_CACHE_PUBLISHERS,
         )
@@ -109,6 +111,67 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
                     if len(values) != 1
                 }
                 self.assertEqual(divergent, {})
+
+    def test_write_refuses_signed_admission_without_changing_files(self) -> None:
+        """已签名 admission 必须在 policy 改写前被拒绝。"""
+        import scripts.refresh_liwei_cache_spec_fingerprints as refresh
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = root / "policy.json"
+            admission = root / "admission.json"
+            policy.write_text(
+                json.dumps(
+                    {
+                        "schemes": [
+                            {
+                                "cache_group": "family:5Y",
+                                "cache_spec_fingerprint": "old",
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            admission.write_text(
+                json.dumps(
+                    {
+                        "status": "ADMITTED",
+                        "policy_sha256": "old-digest",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before_policy = policy.read_bytes()
+            before_admission = admission.read_bytes()
+
+            with (
+                patch.object(refresh, "POLICY_PATH", policy),
+                patch.object(refresh, "ADMISSION_PATH", admission),
+                patch.object(
+                    refresh,
+                    "_require_algo_environment",
+                    return_value="forecast_env",
+                ),
+                patch.object(
+                    refresh,
+                    "compute_fingerprints",
+                    return_value={"family:5Y": "new"},
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    ["refresh_liwei_cache_spec_fingerprints.py", "--write"],
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    refresh.FingerprintRefreshError,
+                    "而非 BLOCKED",
+                ):
+                    refresh.main()
+
+            self.assertEqual(policy.read_bytes(), before_policy)
+            self.assertEqual(admission.read_bytes(), before_admission)
 
 
 if __name__ == "__main__":
