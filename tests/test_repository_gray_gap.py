@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import tempfile
@@ -35,7 +36,6 @@ TARGET_DATE_T1 = "2026-06-02"
 PLAN_SHA256 = "a" * 64
 DIRECT_CACHE_SPEC = "d" * 64
 DIRECT_CACHE_MANIFEST = "e" * 64
-DIRECT_CACHE_PROJECTION = "f" * 64
 
 
 def _cfg(
@@ -1366,6 +1366,64 @@ class GrayGapRepositoryTests(unittest.TestCase):
                         records=[tampered["record"]],
                     )
 
+    def test_direct_cache_real_shared_consumer_closes_by_equivalence(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._real_direct_cache_fixture(
+            "shared-proof",
+            shared_consumer=True,
+        )
+        cold_audit = fixture["audit"]
+        warm_audit = fixture["warm_record"].extra["phase_a_cache"]
+        read_only_audit = fixture["read_only_record"].extra[
+            "phase_a_cache"
+        ]
+        self.assertNotEqual(
+            cold_audit["input_change"],
+            warm_audit["input_change"],
+        )
+        self.assertNotEqual(
+            warm_audit["input_change"],
+            read_only_audit["input_change"],
+        )
+        self.assertEqual(
+            warm_audit["consumer_input_equivalence_sha256"],
+            read_only_audit["consumer_input_equivalence_sha256"],
+        )
+        self.assertNotEqual(
+            fixture["publisher_projection_sha256"],
+            fixture["consumer_projection_sha256"],
+        )
+
+        repository._validate_cache_qualified_completion(
+            occurrence={"policy_json": fixture["policy"]},
+            item=fixture["item"],
+            generation=fixture["generation"],
+            records=[fixture["warm_record"]],
+        )
+        repository._validate_cache_qualified_completion(
+            occurrence={"policy_json": fixture["policy"]},
+            item=fixture["read_only_item"],
+            generation=fixture["generation"],
+            records=[fixture["read_only_record"]],
+        )
+        forged_record = copy.deepcopy(fixture["read_only_record"])
+        forged_record.extra["phase_a_cache"]["input_change"][
+            "unexpected_field"
+        ] = "forged"
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "input-change audit fields mismatch",
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["read_only_item"],
+                generation=fixture["generation"],
+                records=[forged_record],
+            )
+
     def test_direct_cache_read_only_requires_validated_published_hit(
         self,
     ) -> None:
@@ -1818,12 +1876,20 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "cache_family": "wrong_family",
             "tenor": "10Y",
             "input_content_id": "0" * 64,
-            "input_change": {"change_type": "revision"},
+            "input_change": None,
+            "consumer_input_equivalence_sha256": "0" * 64,
         }
         for field, value in mutations.items():
             with self.subTest(field=field):
                 fixture = self._direct_cache_fixture()
-                fixture["audit"][field] = value
+                if field == "input_change":
+                    changed_input = copy.deepcopy(
+                        fixture["manifest"]["input_change"]
+                    )
+                    changed_input["change_type"] = "revision"
+                    fixture["audit"][field] = changed_input
+                else:
+                    fixture["audit"][field] = value
                 loaded = SimpleNamespace(
                     generation_id=fixture["generation_id"],
                     path=Path(fixture["audit"]["generation_path"]),
@@ -1858,7 +1924,11 @@ class GrayGapRepositoryTests(unittest.TestCase):
                     ),
                     self.assertRaisesRegex(
                         RuntimeError,
-                        "audit identity",
+                        (
+                            "publisher build input-change"
+                            if field == "input_change"
+                            else "audit identity"
+                        ),
                     ),
                 ):
                     repository._validate_cache_qualified_completion(
@@ -2052,8 +2122,11 @@ class GrayGapRepositoryTests(unittest.TestCase):
     def _real_direct_cache_fixture(
         self,
         suffix: str,
+        *,
+        shared_consumer: bool = False,
     ) -> dict[str, object]:
         scheme_id = f"real_cache_consumer_{suffix}"
+        read_only_id = f"{scheme_id}_read_only"
         cache_family = f"real_direct_cache_{suffix}"
         storage_root = (
             Path(self._tmpdir.name) / f"real-cache-root-{suffix}"
@@ -2172,18 +2245,56 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 ],
             }
 
+        prepare_kwargs = {
+            "spec": spec,
+            "daily_df": daily,
+            "weekly_df": weekly,
+            "monthly_df": monthly,
+            "test_ranges": ((FEATURE_DATE, FEATURE_DATE),),
+            "train_missing": train_missing,
+            "native_generation": native_binding,
+            "cache_root": storage_root,
+        }
         _caches, audit = prepare_phase_a_caches(
-            spec=spec,
-            daily_df=daily,
-            weekly_df=weekly,
-            monthly_df=monthly,
-            test_ranges=((FEATURE_DATE, FEATURE_DATE),),
-            train_missing=train_missing,
+            **prepare_kwargs,
             cache_consumer_id=scheme_id,
-            native_generation=native_binding,
             auxiliary_dependency_projection=projection,
-            cache_root=storage_root,
         )
+        _warm_caches, warm_audit = prepare_phase_a_caches(
+            **prepare_kwargs,
+            cache_consumer_id=scheme_id,
+            auxiliary_dependency_projection=projection,
+        )
+        consumer_audit = None
+        consumer_projection_sha256 = None
+        if shared_consumer:
+            consumer_proof = copy.deepcopy(projection.proof)
+            consumer_proof["proof_files"] = [
+                {
+                    "name": "consumer_alignment.py",
+                    "sha256": "8" * 64,
+                }
+            ]
+            consumer_projection = AuxiliaryDependencyProjection(
+                frame=projection.frame,
+                proof=consumer_proof,
+                content_sha256="7" * 64,
+            )
+            _consumer_caches, consumer_audit = prepare_phase_a_caches(
+                **prepare_kwargs,
+                cache_consumer_id=read_only_id,
+                auxiliary_dependency_projection=consumer_projection,
+            )
+            consumer_state = cache_module._input_generation_state(
+                daily_df=daily,
+                weekly_df=weekly,
+                monthly_df=monthly,
+                native_generation_binding=native_binding,
+                auxiliary_dependency_projection=consumer_projection,
+            )
+            consumer_projection_sha256 = consumer_state[
+                "effective_auxiliary"
+            ]["proof_identity_sha256"]
         generation_path = Path(audit["generation_path"])
         manifest = json.loads(
             (generation_path / "manifest.json").read_text(
@@ -2194,34 +2305,68 @@ class GrayGapRepositoryTests(unittest.TestCase):
         projection_sha256 = manifest["input_state"][
             "effective_auxiliary"
         ]["proof_identity_sha256"]
-        consumer = {
-            "base_scheme_id": scheme_id,
-            "cache_consumer_id": scheme_id,
-            "scheme_version": f"{scheme_id}-version",
-            "code_sha256": "3" * 64,
-            "config_sha256": "4" * 64,
-            "cache_group": f"{cache_family}:5Y",
-            "spec_fingerprint": spec_fingerprint,
-            "publisher_consumer_id": scheme_id,
-            "cache_family": cache_family,
-            "tenor": "5Y",
-            "access_mode": "publisher",
-            "cache_adapter_sha256": "5" * 64,
-            "cache_core_sha256": "6" * 64,
-            "projection_proof_identity_sha256": projection_sha256,
-            "daily_dependency_lookback_rows": None,
-            "daily_dependency_proof": None,
+        def consumer(
+            consumer_id: str,
+            *,
+            access_mode: str,
+            code_sha256: str,
+            config_sha256: str,
+        ) -> dict[str, object]:
+            return {
+                "base_scheme_id": consumer_id,
+                "cache_consumer_id": consumer_id,
+                "scheme_version": f"{consumer_id}-version",
+                "code_sha256": code_sha256,
+                "config_sha256": config_sha256,
+                "cache_group": f"{cache_family}:5Y",
+                "spec_fingerprint": spec_fingerprint,
+                "publisher_consumer_id": scheme_id,
+                "cache_family": cache_family,
+                "tenor": "5Y",
+                "access_mode": access_mode,
+                "cache_adapter_sha256": "5" * 64,
+                "cache_core_sha256": "6" * 64,
+                "publisher_projection_proof_identity_sha256": (
+                    projection_sha256
+                ),
+                "daily_dependency_lookback_rows": None,
+                "daily_dependency_proof": None,
+            }
+        consumers = {
+            scheme_id: consumer(
+                scheme_id,
+                access_mode="publisher",
+                code_sha256="3" * 64,
+                config_sha256="4" * 64,
+            )
         }
-        policy = {
-            "schemes": [
+        schemes = [
+            {
+                "scheme_id": scheme_id,
+                "cache_group": f"{cache_family}:5Y",
+                "cache_spec_fingerprint": spec_fingerprint,
+                "cache_adapter_sha256": "5" * 64,
+                "cache_core_sha256": "6" * 64,
+            }
+        ]
+        if shared_consumer:
+            consumers[read_only_id] = consumer(
+                read_only_id,
+                access_mode="read_only",
+                code_sha256="a" * 64,
+                config_sha256="b" * 64,
+            )
+            schemes.append(
                 {
-                    "scheme_id": scheme_id,
+                    "scheme_id": read_only_id,
                     "cache_group": f"{cache_family}:5Y",
                     "cache_spec_fingerprint": spec_fingerprint,
                     "cache_adapter_sha256": "5" * 64,
                     "cache_core_sha256": "6" * 64,
                 }
-            ],
+            )
+        policy = {
+            "schemes": schemes,
             "direct_cache_authorities": {
                 "schema_version":
                     "daily-direct-cache-authorities-v1",
@@ -2239,7 +2384,7 @@ class GrayGapRepositoryTests(unittest.TestCase):
                     "native_exporter_version":
                         "native-generation-exporter-v1",
                 },
-                "consumers": {scheme_id: consumer},
+                "consumers": consumers,
             },
         }
         item = {
@@ -2265,13 +2410,48 @@ class GrayGapRepositoryTests(unittest.TestCase):
             prediction_phase="scheduled_live",
             extra={"phase_a_cache": audit},
         )
-        return {
+        result = {
             "policy": policy,
             "item": item,
             "generation": generation,
             "record": record,
             "audit": audit,
+            "publisher_projection_sha256": projection_sha256,
+            "consumer_projection_sha256": (
+                consumer_projection_sha256
+            ),
+            "warm_record": PredictionRecord(
+                scheme_id=scheme_id,
+                target_tenor="5Y",
+                horizon=5,
+                predict_date=PREDICT_DATE,
+                feature_date=FEATURE_DATE,
+                target_date=TARGET_DATE_T5,
+                predicted_direction=1,
+                prediction_phase="scheduled_live",
+                extra={"phase_a_cache": warm_audit},
+            ),
         }
+        if shared_consumer:
+            result["read_only_item"] = {
+                "base_scheme_id": read_only_id,
+                "scheme_version": f"{read_only_id}-version",
+                "code_sha256": "a" * 64,
+                "config_sha256": "b" * 64,
+                "cache_group": f"{cache_family}:5Y",
+            }
+            result["read_only_record"] = PredictionRecord(
+                scheme_id=read_only_id,
+                target_tenor="5Y",
+                horizon=5,
+                predict_date=PREDICT_DATE,
+                feature_date=FEATURE_DATE,
+                target_date=TARGET_DATE_T5,
+                predicted_direction=1,
+                prediction_phase="scheduled_live",
+                extra={"phase_a_cache": consumer_audit},
+            )
+        return result
 
     def _direct_cache_fixture(
         self,
@@ -2293,6 +2473,81 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "schema_version": "native-generation-v1",
             "exporter_version": "native-generation-exporter-v1",
         }
+        input_daily = pd.DataFrame(
+            {
+                "date": pd.to_datetime([FEATURE_DATE]),
+                "TB5YWI0C": [1.61],
+            }
+        )
+        input_weekly = pd.DataFrame(
+            {"week_id": [202623], "weekly_x": [1.0]}
+        )
+        input_monthly = pd.DataFrame(
+            {"month_id": ["202606"], "monthly_x": [2.0]}
+        )
+        input_projection_frame = pd.DataFrame(
+            {
+                "date": [FEATURE_DATE],
+                "effective_aux": [0.2],
+            }
+        )
+        mapping_entries = [
+            {"date": FEATURE_DATE, "week_id": 202623}
+        ]
+        mapping_payload = [[FEATURE_DATE, 202623]]
+        input_projection = AuxiliaryDependencyProjection(
+            frame=input_projection_frame,
+            proof={
+                "schema_version":
+                    "liwei-0616-auxiliary-dependency-projection-v1",
+                "date_to_week_mode": "explicit",
+                "date_to_week_sha256": hashlib.sha256(
+                    json.dumps(
+                        mapping_payload,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "date_to_week_entries": mapping_entries,
+                "proof_files": [
+                    {"name": "projection.py", "sha256": "f" * 64}
+                ],
+                "columns": list(input_projection_frame.columns),
+                "dtypes": [
+                    str(input_projection_frame[column].dtype)
+                    for column in input_projection_frame.columns
+                ],
+                "daily_grid_sha256": hashlib.sha256(
+                    FEATURE_DATE.encode("utf-8")
+                ).hexdigest(),
+                "feature_cutoff": FEATURE_DATE,
+            },
+            content_sha256=hashlib.sha256(
+                input_projection_frame.to_json(
+                    orient="split"
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+        input_state = cache_module._input_generation_state(
+            daily_df=input_daily,
+            weekly_df=input_weekly,
+            monthly_df=input_monthly,
+            auxiliary_dependency_projection=input_projection,
+            native_generation_binding=native_binding,
+        )
+        input_change = cache_module._public_input_change(
+            cache_module._input_change_analysis(None, input_state)
+        )
+        projection_sha256 = input_state["effective_auxiliary"][
+            "proof_identity_sha256"
+        ]
+        input_equivalence_sha256 = (
+            cache_module.consumer_input_state_equivalence_sha256(
+                input_state
+            )
+        )
 
         def consumer(
             base_scheme_id: str,
@@ -2313,8 +2568,8 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 "access_mode": access_mode,
                 "cache_adapter_sha256": "5" * 64,
                 "cache_core_sha256": "6" * 64,
-                "projection_proof_identity_sha256":
-                    DIRECT_CACHE_PROJECTION,
+                "publisher_projection_proof_identity_sha256":
+                    projection_sha256,
                 "daily_dependency_lookback_rows": 21,
                 "daily_dependency_proof":
                     "daily_window_is_bounded_by_21_rows",
@@ -2384,8 +2639,10 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "version": "liwei_0616.phase_a.v1",
             "cache_family": "liwei_test_family",
             "tenor": "5Y",
-            "input_content_id": "7" * 64,
-            "input_change": {"change_type": "initial"},
+            "input_content_id": input_state["content_id"],
+            "consumer_input_equivalence_sha256":
+                input_equivalence_sha256,
+            "input_change": input_change,
             "compare_gate_evidence": {
                 "schema_version": "phase-a-compare-gate-v1",
                 "status": "passed",
@@ -2408,21 +2665,12 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "tenor": "5Y",
             "spec_fingerprint": DIRECT_CACHE_SPEC,
             "build_mode": "full",
-            "input_change": {"change_type": "initial"},
+            "input_change": input_change,
             "compare_gate_evidence": {
                 "schema_version": "phase-a-compare-gate-v1",
                 "status": "passed",
             },
-            "input_state": {
-                "schema_version": 3,
-                "content_id": "7" * 64,
-                "native_generation": dict(native_binding),
-                "effective_auxiliary": {
-                    "schema_version":
-                        "liwei-0616-auxiliary-dependency-projection-v1",
-                    "proof_identity_sha256": DIRECT_CACHE_PROJECTION,
-                },
-            },
+            "input_state": input_state,
             "parent_generation_id": None,
             "generation_acceptance_evidence": dict(acceptance),
         }

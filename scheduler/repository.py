@@ -7618,7 +7618,7 @@ _DIRECT_CACHE_CONSUMER_FIELDS = frozenset(
         "access_mode",
         "cache_adapter_sha256",
         "cache_core_sha256",
-        "projection_proof_identity_sha256",
+        "publisher_projection_proof_identity_sha256",
         "daily_dependency_lookback_rows",
         "daily_dependency_proof",
     }
@@ -7855,7 +7855,7 @@ def _normalize_direct_cache_consumers(
             "spec_fingerprint",
             "cache_adapter_sha256",
             "cache_core_sha256",
-            "projection_proof_identity_sha256",
+            "publisher_projection_proof_identity_sha256",
         ):
             normalized[field] = _require_lower_sha256(
                 normalized[field],
@@ -7922,7 +7922,7 @@ def _validate_direct_cache_publisher_graph(
             "cache_family",
             "tenor",
             "spec_fingerprint",
-            "projection_proof_identity_sha256",
+            "publisher_projection_proof_identity_sha256",
             "daily_dependency_lookback_rows",
             "daily_dependency_proof",
         )
@@ -8041,6 +8041,8 @@ def _verify_direct_cache_record(
         _load_generation_directory,
         _validate_generation_acceptance_for_use,
         _verify_generation_acceptance_lineage,
+        consumer_input_state_equivalence_sha256,
+        validate_phase_a_cache_input_change_audit,
     )
 
     extra = record.extra
@@ -8125,7 +8127,7 @@ def _verify_direct_cache_record(
         or effective_auxiliary.get("schema_version")
         != contract["projection_schema_version"]
         or effective_auxiliary.get("proof_identity_sha256")
-        != consumer["projection_proof_identity_sha256"]
+        != consumer["publisher_projection_proof_identity_sha256"]
     ):
         drift.append("input_state")
     acceptance = manifest.get("generation_acceptance_evidence")
@@ -8141,12 +8143,21 @@ def _verify_direct_cache_record(
             "direct cache manifest identity mismatch: "
             + ",".join(sorted(set(drift)))
         )
+    publisher_input_equivalence_sha256 = (
+        consumer_input_state_equivalence_sha256(input_state)
+    )
     _validate_direct_cache_audit_identity(
         audit,
         manifest=manifest,
         consumer=consumer,
         generation_id=str(loaded.generation_id),
         manifest_sha256=str(loaded.manifest_sha256),
+        publisher_input_equivalence_sha256=(
+            publisher_input_equivalence_sha256
+        ),
+        input_change_validator=(
+            validate_phase_a_cache_input_change_audit
+        ),
     )
     _validate_direct_cache_audit_state(
         audit,
@@ -8186,6 +8197,8 @@ def _validate_direct_cache_audit_identity(
     consumer: Mapping[str, object],
     generation_id: str,
     manifest_sha256: str,
+    publisher_input_equivalence_sha256: str,
+    input_change_validator: Callable[[object], dict[str, object]],
 ) -> None:
     input_state = manifest.get("input_state")
     if not isinstance(input_state, Mapping):
@@ -8195,7 +8208,8 @@ def _validate_direct_cache_audit_identity(
         "cache_family": consumer["cache_family"],
         "tenor": consumer["tenor"],
         "input_content_id": input_state.get("content_id"),
-        "input_change": manifest.get("input_change"),
+        "consumer_input_equivalence_sha256":
+            publisher_input_equivalence_sha256,
     }
     drift = sorted(
         field
@@ -8206,6 +8220,19 @@ def _validate_direct_cache_audit_identity(
         raise ValueError(
             "direct cache audit identity mismatch: "
             + ",".join(drift)
+        )
+    audit_input_change = input_change_validator(
+        audit.get("input_change")
+    )
+    if (
+        consumer["access_mode"] == "publisher"
+        and audit.get("build_mode") != "hit"
+        and audit_input_change
+        != input_change_validator(manifest.get("input_change"))
+    ):
+        raise ValueError(
+            "direct cache publisher build input-change does not match "
+            "manifest"
         )
     manifest_compare_gate = manifest.get("compare_gate_evidence")
     if not isinstance(manifest_compare_gate, Mapping):
