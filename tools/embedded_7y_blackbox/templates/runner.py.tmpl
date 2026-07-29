@@ -404,7 +404,12 @@ def _open_existing_payload_parent(
 def _open_verified_manifest_file(
     root_descriptor: int,
     entry: dict[str, object],
-) -> tuple[str, int, tuple[int, int, int, int, str]]:
+) -> tuple[
+    str,
+    int,
+    tuple[int, int, int, int, str],
+    bytes | None,
+]:
     open_flags = (
         os.O_RDONLY
         | os.O_NOFOLLOW
@@ -441,8 +446,13 @@ def _open_verified_manifest_file(
             ) from error
         installed = os.fstat(descriptor)
         digest = hashlib.sha256()
+        source_chunks: list[bytes] | None = (
+            [] if relative_path.endswith(".py") else None
+        )
         while chunk := os.read(descriptor, 1024 * 1024):
             digest.update(chunk)
+            if source_chunks is not None:
+                source_chunks.append(chunk)
         actual_hash = digest.hexdigest()
         if (
             not stat.S_ISREG(installed.st_mode)
@@ -461,7 +471,12 @@ def _open_verified_manifest_file(
             installed.st_size,
             actual_hash,
         )
-        return relative_path, descriptor, identity
+        frozen_source = (
+            b"".join(source_chunks)
+            if source_chunks is not None
+            else None
+        )
+        return relative_path, descriptor, identity, frozen_source
     except BaseException:
         if descriptor >= 0:
             os.close(descriptor)
@@ -476,10 +491,12 @@ def _verified_payload_identities(
     """Verify every manifest file through no-follow descriptors."""
     identities: dict[str, tuple[int, int, int, int, str]] = {}
     for entry in _PAYLOAD_MANIFEST:
-        relative_path, descriptor, identity = _open_verified_manifest_file(
-            root_descriptor,
-            entry,
-        )
+        (
+            relative_path,
+            descriptor,
+            identity,
+            _frozen_source,
+        ) = _open_verified_manifest_file(root_descriptor, entry)
         try:
             identities[relative_path] = identity
         finally:
@@ -495,15 +512,19 @@ def _open_verified_payload_files(
 ) -> tuple[
     dict[str, int],
     dict[str, tuple[int, int, int, int, str]],
+    dict[str, bytes],
 ]:
     descriptors: dict[str, int] = {}
     identities: dict[str, tuple[int, int, int, int, str]] = {}
+    frozen_sources: dict[str, bytes] = {}
     try:
         for entry in _PAYLOAD_MANIFEST:
-            relative_path, descriptor, identity = _open_verified_manifest_file(
-                root_descriptor,
-                entry,
-            )
+            (
+                relative_path,
+                descriptor,
+                identity,
+                frozen_source,
+            ) = _open_verified_manifest_file(root_descriptor, entry)
             if relative_path in descriptors:
                 os.close(descriptor)
                 raise ValueError(
@@ -511,9 +532,11 @@ def _open_verified_payload_files(
                 )
             descriptors[relative_path] = descriptor
             identities[relative_path] = identity
+            if frozen_source is not None:
+                frozen_sources[relative_path] = frozen_source
         if len(descriptors) != len(_PAYLOAD_MANIFEST):
             raise ValueError("payload load-time integrity mismatch: manifest")
-        return descriptors, identities
+        return descriptors, identities, frozen_sources
     except BaseException:
         for descriptor in descriptors.values():
             os.close(descriptor)
@@ -654,10 +677,12 @@ def _verified_extension_identities(
                 or not relative_path.endswith(".cpython-313-darwin.so")
             ):
                 continue
-            path, descriptor, identity = _open_verified_manifest_file(
-                root_descriptor,
-                entry,
-            )
+            (
+                path,
+                descriptor,
+                identity,
+                _frozen_source,
+            ) = _open_verified_manifest_file(root_descriptor, entry)
             try:
                 identities[path] = identity
             finally:
@@ -671,12 +696,12 @@ class _VerifiedPythonLoader(importlib.abc.Loader):
     def __init__(
         self,
         fullname: str,
-        descriptor: int,
+        frozen_source: bytes,
         relative_path: str,
         is_package: bool,
     ) -> None:
         self.fullname = fullname
-        self.descriptor = descriptor
+        self.frozen_source = frozen_source
         self.relative_path = relative_path
         self.is_package = is_package
 
@@ -685,10 +710,9 @@ class _VerifiedPythonLoader(importlib.abc.Loader):
         return None
 
     def exec_module(self, module: ModuleType) -> None:
-        source = _read_retained_descriptor(self.descriptor)
         origin = f"<embedded-payload:{self.relative_path}>"
         compiler = codeop.Compile()
-        code = compiler(source, origin, "exec")
+        code = compiler(self.frozen_source, origin, "exec")
         module.__file__ = origin
         module.__cached__ = None
         if self.is_package:
@@ -735,9 +759,11 @@ class _VerifiedPayloadFinder(importlib.abc.MetaPathFinder):
     def __init__(
         self,
         descriptors: dict[str, int],
+        frozen_sources: dict[str, bytes],
         extension_root: Path,
     ) -> None:
         self.extension_root = Path(extension_root)
+        self.frozen_sources = frozen_sources
         self.bindings: dict[
             str,
             tuple[str, int, bool, str],
@@ -746,6 +772,11 @@ class _VerifiedPayloadFinder(importlib.abc.MetaPathFinder):
             fullname, is_package, module_type = _payload_module_name(
                 relative_path
             )
+            if (
+                module_type == "python"
+                and relative_path not in frozen_sources
+            ):
+                raise ValueError("payload Python source is not frozen")
             if fullname in self.bindings:
                 raise ValueError(
                     "payload module mapping contains a duplicate"
@@ -809,7 +840,7 @@ class _VerifiedPayloadFinder(importlib.abc.MetaPathFinder):
         if module_type == "python":
             loader = _VerifiedPythonLoader(
                 fullname,
-                descriptor,
+                self.frozen_sources[relative_path],
                 relative_path,
                 is_package,
             )
@@ -841,6 +872,7 @@ def _anchor_modules(payload_root: Path) -> tuple[ModuleType, ModuleType]:
         (
             retained_descriptors,
             retained_identities,
+            frozen_sources,
         ) = _open_verified_payload_files(root_descriptor)
         path_identities = _verified_payload_identities(root_descriptor)
         if path_identities != retained_identities:
@@ -855,6 +887,7 @@ def _anchor_modules(payload_root: Path) -> tuple[ModuleType, ModuleType]:
         )
         finder = _VerifiedPayloadFinder(
             retained_descriptors,
+            frozen_sources,
             extension_root,
         )
         previous_sys_path = list(sys.path)

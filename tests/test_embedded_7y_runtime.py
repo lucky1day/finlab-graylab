@@ -1698,6 +1698,47 @@ class EmbeddedRuntimeTests(unittest.TestCase):
 
         self.assertFalse(marker.exists())
 
+    def test_anchor_import_never_executes_python_truncated_after_validation(
+        self,
+    ) -> None:
+        module = self.load_generated_module()
+        relative_path = "daily_project/src/daily/selected_models/5y10/run.py"
+        marker = self.tempdir / "malicious-python-truncate-executed"
+        with chdir(self.tempdir):
+            payload_root = module._extract_payload(Path("fd-python-truncate"))
+            target = payload_root / relative_path
+            original_verify = module._verified_payload_identities
+            validation_calls = 0
+
+            def validate_then_truncate(root_descriptor: int):
+                nonlocal validation_calls
+                identities = original_verify(root_descriptor)
+                validation_calls += 1
+                if validation_calls == 1:
+                    malicious = (
+                        "from pathlib import Path as _TamperPath\n"
+                        f"_TamperPath({str(marker)!r}).write_text("
+                        "'executed', encoding='utf-8')\n"
+                    ).encode("utf-8")
+                    with target.open("wb") as stream:
+                        stream.write(malicious)
+                return identities
+
+            with (
+                patch.object(
+                    module,
+                    "_verified_payload_identities",
+                    side_effect=validate_then_truncate,
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "payload load-time",
+                ),
+            ):
+                module._anchor_modules(payload_root)
+
+        self.assertFalse(marker.exists())
+
     def test_anchor_import_does_not_open_so_replaced_after_validation(
         self,
     ) -> None:
