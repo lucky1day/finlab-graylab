@@ -412,6 +412,7 @@ def create_native_generation(
             )
             _require_same_stable_provenance(existing, candidate)
             return existing
+        _seal_generation_root(destination)
         _fsync_directory(root)
         return open_native_generation(
             destination / "manifest.json",
@@ -2060,6 +2061,15 @@ def _make_generation_read_only(root: Path) -> None:
     for path in root.iterdir():
         path.chmod(0o444)
         _fsync_regular_file(path)
+
+
+def _seal_generation_root(root: Path) -> None:
+    """在原子发布之后收紧 generation 目录位。
+
+    目录自身的写位必须保留到 ``os.replace`` 之后：重命名目录需要更新它的
+    ``..`` 项，因此对该目录有写权限是前提，提前 ``chmod 0o555`` 会让发布
+    必然失败于 ``EACCES``。
+    """
     root.chmod(0o555)
 
 
@@ -2138,6 +2148,10 @@ def _delete_native_generation(
     )
     if os.path.lexists(tombstone):
         raise ValueError("Native generation retention tombstone collision")
+    # 已发布 generation 目录是 0o555；重命名目录需要对该目录自身有写权限，
+    # 因此先解开写位再挪入 tombstone。上方已确认它是 dev/ino 匹配的真目录，
+    # 且随后 `_remove_tree` 也会做同样的放宽。
+    os.chmod(source, 0o755, follow_symlinks=False)
     os.rename(source, tombstone)
     _fsync_directory(root)
     tombstone_info = tombstone.lstat()
