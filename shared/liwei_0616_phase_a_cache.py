@@ -308,6 +308,7 @@ def prepare_phase_a_caches(
     direct_runtime_context = (
         _resolve_direct_cache_runtime_context()
     )
+    validated_direct_runtime_context: dict[str, object] | None = None
     if (
         trusted_qualification is not None
         and direct_runtime_context is not None
@@ -350,15 +351,17 @@ def prepare_phase_a_caches(
                 native_generation=native_generation_binding,
             )
         else:
-            _validate_direct_context_for_cache_use(
-                direct_runtime_context,
-                cache_consumer_id=cache_consumer_id,
-                spec=spec,
-                native_generation=native_generation_binding,
-                cache_root=_cache_root(cache_root),
-                auxiliary_dependency_projection=(
-                    auxiliary_dependency_projection
-                ),
+            validated_direct_runtime_context = (
+                _validate_direct_context_for_cache_use(
+                    direct_runtime_context,
+                    cache_consumer_id=cache_consumer_id,
+                    spec=spec,
+                    native_generation=native_generation_binding,
+                    cache_root=_cache_root(cache_root),
+                    auxiliary_dependency_projection=(
+                        auxiliary_dependency_projection
+                    ),
+                )
             )
     root = _cache_root(cache_root)
     family_root = _family_cache_root(root, spec)
@@ -385,6 +388,9 @@ def prepare_phase_a_caches(
             compare_full_output=compare_full_output,
             qualification_required=qualification_required,
             trusted_qualification=trusted_qualification,
+            direct_runtime_context=(
+                validated_direct_runtime_context
+            ),
             native_generation_binding=native_generation_binding,
         )
     family_root.mkdir(parents=True, exist_ok=True)
@@ -417,6 +423,9 @@ def prepare_phase_a_caches(
             compare_full_output=compare_full_output,
             qualification_required=qualification_required,
             trusted_qualification=trusted_qualification,
+            direct_runtime_context=(
+                validated_direct_runtime_context
+            ),
             native_generation_binding=native_generation_binding,
         )
 
@@ -462,6 +471,7 @@ def _prepare_under_family_lock(
     ),
     qualification_required: bool,
     trusted_qualification: Mapping[str, object] | None,
+    direct_runtime_context: Mapping[str, object] | None,
     native_generation_binding: Mapping[str, object] | None,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     requested_by_baseline: dict[str, list[str]] = {}
@@ -488,6 +498,15 @@ def _prepare_under_family_lock(
         family_root,
         secure=qualification_required or not is_publisher,
     )
+    if direct_runtime_context is not None:
+        if current is None:
+            raise RuntimeError(
+                "direct cache frozen current generation is unavailable"
+            )
+        _validate_direct_current_generation_authority(
+            current,
+            direct_runtime_context,
+        )
     input_change = _input_change_analysis(
         (
             current.manifest.get("input_state")
@@ -1216,7 +1235,7 @@ def _validate_direct_context_for_cache_use(
     auxiliary_dependency_projection: (
         AuxiliaryDependencyProjection | None
     ),
-) -> None:
+) -> dict[str, object]:
     if context is None:
         raise RuntimeError("direct cache runtime context is missing")
     validated = validate_direct_cache_runtime_context(context)
@@ -1257,14 +1276,53 @@ def _validate_direct_context_for_cache_use(
         if (
             effective.get("schema_version")
             != contract["projection_schema_version"]
-            or effective.get("proof_identity_sha256")
-            != consumer["projection_proof_identity_sha256"]
+            or (
+                consumer["access_mode"] == "publisher"
+                and effective.get("proof_identity_sha256")
+                != consumer[
+                    "publisher_projection_proof_identity_sha256"
+                ]
+            )
         ):
             drift.append("effective_projection")
     if drift:
         raise RuntimeError(
             "direct cache runtime context identity drift: "
             + ", ".join(sorted(set(drift)))
+        )
+    return validated
+
+
+def _validate_direct_current_generation_authority(
+    current: object,
+    context: Mapping[str, object],
+) -> None:
+    """要求本次实际读取的 current 仍匹配冻结 publisher proof。"""
+    validated = validate_direct_cache_runtime_context(context)
+    contract = validated["contract"]
+    consumer = validated["consumer"]
+    manifest = getattr(current, "manifest", None)
+    input_state = (
+        manifest.get("input_state")
+        if isinstance(manifest, Mapping)
+        else None
+    )
+    effective = (
+        input_state.get("effective_auxiliary")
+        if isinstance(input_state, Mapping)
+        else None
+    )
+    if (
+        not isinstance(effective, Mapping)
+        or effective.get("schema_version")
+        != contract["projection_schema_version"]
+        or effective.get("proof_identity_sha256")
+        != consumer[
+            "publisher_projection_proof_identity_sha256"
+        ]
+    ):
+        raise RuntimeError(
+            "direct cache current publisher projection identity drift"
         )
 
 

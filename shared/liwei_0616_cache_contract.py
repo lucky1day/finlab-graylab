@@ -250,7 +250,7 @@ _DIRECT_RUNTIME_CONSUMER_FIELDS = frozenset(
         "access_mode",
         "cache_adapter_sha256",
         "cache_core_sha256",
-        "projection_proof_identity_sha256",
+        "publisher_projection_proof_identity_sha256",
         "daily_dependency_lookback_rows",
         "daily_dependency_proof",
     }
@@ -337,7 +337,7 @@ def validate_direct_cache_runtime_context(
         "spec_fingerprint",
         "cache_adapter_sha256",
         "cache_core_sha256",
-        "projection_proof_identity_sha256",
+        "publisher_projection_proof_identity_sha256",
     ):
         normalized_consumer[field] = _sha256(
             normalized_consumer.get(field),

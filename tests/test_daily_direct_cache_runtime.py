@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import os
 import tempfile
 import unittest
@@ -9,6 +10,9 @@ from unittest.mock import patch
 
 import pandas as pd
 
+from shared.liwei_0616_cache_projection import (
+    build_auxiliary_dependency_projection,
+)
 from shared.liwei_0616_phase_a_cache import PhaseACacheSpec
 
 
@@ -72,6 +76,85 @@ def _direct_registry_row(
     return row
 
 
+def _real_projection_inputs(
+    inference: object,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    dict[str, int],
+]:
+    core = inference.v31_common
+    daily = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                ["2026-01-02", "2026-01-05"]
+            )
+        }
+    )
+    weekly = pd.DataFrame(
+        {
+            "week_id": [202601, 202602],
+            **{
+                column: [float(index), float(index + 1)]
+                for index, column in enumerate(
+                    core.WEEKLY_COLS,
+                    start=1,
+                )
+            },
+        }
+    )
+    monthly = pd.DataFrame(
+        {
+            "month_id": ["202512"],
+            **{
+                column: [float(index)]
+                for index, column in enumerate(
+                    core.MONTHLY_COLS,
+                    start=1,
+                )
+            },
+        }
+    )
+    return (
+        daily,
+        weekly,
+        monthly,
+        {
+            "2026-01-02": 202601,
+            "2026-01-05": 202602,
+        },
+    )
+
+
+def _build_real_projection(
+    inference: object,
+    *,
+    daily: pd.DataFrame,
+    weekly: pd.DataFrame,
+    monthly: pd.DataFrame,
+    date_to_week: dict[str, int],
+    build_wkmo_features: object | None = None,
+):
+    core = inference.v31_common
+    return build_auxiliary_dependency_projection(
+        daily_df=daily,
+        weekly_df=weekly,
+        monthly_df=monthly,
+        date_to_week=date_to_week,
+        prepare_model_frames=core.prepare_model_frames,
+        build_wkmo_features=(
+            build_wkmo_features
+            if build_wkmo_features is not None
+            else core.build_wkmo_features
+        ),
+        proof_files=(
+            Path(core.__file__),
+            Path(inference.data_alignment.__file__),
+        ),
+    )
+
+
 class DailyDirectCacheRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -125,7 +208,8 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 "access_mode": "publisher",
                 "cache_adapter_sha256": "3" * 64,
                 "cache_core_sha256": "4" * 64,
-                "projection_proof_identity_sha256": "5" * 64,
+                "publisher_projection_proof_identity_sha256":
+                    "5" * 64,
                 "daily_dependency_lookback_rows": None,
                 "daily_dependency_proof": None,
             },
@@ -250,6 +334,337 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 auxiliary_dependency_projection=object(),
                 cache_root=self.cache_root,
             )
+
+    def test_read_only_direct_context_allows_own_projection_identity(
+        self,
+    ) -> None:
+        from shared import liwei_0616_phase_a_cache as module
+
+        daily, weekly, monthly = _frames()
+        context = self._context()
+        context["consumer"].update(
+            {
+                "base_scheme_id": "reader",
+                "cache_consumer_id": "reader",
+                "scheme_version": "reader-v1",
+                "access_mode": "read_only",
+            }
+        )
+        expected = ({"STD": {"test_dates": ["2026-07-29"]}}, {"ok": True})
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    module.DAILY_COORDINATOR_MODE_ENV: "ledger",
+                    module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
+                        module._canonical_json(context),
+                },
+                clear=False,
+            ),
+            patch.object(
+                module,
+                "_prepare_under_family_lock",
+                return_value=expected,
+            ) as prepare,
+            patch.object(
+                module,
+                "_effective_auxiliary_generation_state",
+                return_value={
+                    "schema_version":
+                        "liwei-0616-auxiliary-dependency-projection-v1",
+                    "proof_identity_sha256": "6" * 64,
+                },
+            ),
+        ):
+            result = module.prepare_phase_a_caches(
+                spec=self.spec,
+                daily_df=daily,
+                weekly_df=weekly,
+                monthly_df=monthly,
+                test_ranges=(("2026-07-29", "2026-07-29"),),
+                train_missing=lambda _baseline, _ranges: {},
+                cache_consumer_id="reader",
+                native_generation=self._native(),
+                auxiliary_dependency_projection=object(),
+                cache_root=self.cache_root,
+            )
+
+        self.assertEqual(result, expected)
+        self.assertEqual(
+            prepare.call_args.kwargs["cache_consumer_id"],
+            "reader",
+        )
+
+    def test_publisher_direct_context_requires_own_projection_identity(
+        self,
+    ) -> None:
+        from shared import liwei_0616_phase_a_cache as module
+
+        daily, weekly, monthly = _frames()
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    module.DAILY_COORDINATOR_MODE_ENV: "ledger",
+                    module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
+                        module._canonical_json(self._context()),
+                },
+                clear=False,
+            ),
+            patch.object(
+                module,
+                "_effective_auxiliary_generation_state",
+                return_value={
+                    "schema_version":
+                        "liwei-0616-auxiliary-dependency-projection-v1",
+                    "proof_identity_sha256": "6" * 64,
+                },
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "effective_projection",
+            ),
+        ):
+            module.prepare_phase_a_caches(
+                spec=self.spec,
+                daily_df=daily,
+                weekly_df=weekly,
+                monthly_df=monthly,
+                test_ranges=(("2026-07-29", "2026-07-29"),),
+                train_missing=lambda _baseline, _ranges: {},
+                cache_consumer_id="publisher",
+                native_generation=self._native(),
+                auxiliary_dependency_projection=object(),
+                cache_root=self.cache_root,
+            )
+
+    def test_current_manifest_must_match_frozen_publisher_projection(
+        self,
+    ) -> None:
+        from shared.liwei_0616_cache_contract import (
+            validate_direct_cache_runtime_context,
+        )
+        from shared.liwei_0616_phase_a_cache import (
+            _validate_direct_current_generation_authority,
+        )
+
+        context = validate_direct_cache_runtime_context(
+            self._context()
+        )
+        current = SimpleNamespace(
+            manifest={
+                "input_state": {
+                    "effective_auxiliary": {
+                        "schema_version":
+                            "liwei-0616-auxiliary-dependency-projection-v1",
+                        "proof_identity_sha256": "5" * 64,
+                    }
+                }
+            }
+        )
+        _validate_direct_current_generation_authority(
+            current,
+            context,
+        )
+
+        current.manifest["input_state"]["effective_auxiliary"][
+            "proof_identity_sha256"
+        ] = "6" * 64
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "publisher projection",
+        ):
+            _validate_direct_current_generation_authority(
+                current,
+                context,
+            )
+
+    def test_real_shared_consumers_ignore_only_own_proof_files(
+        self,
+    ) -> None:
+        from shared.liwei_0616_phase_a_cache import (
+            _input_generation_state,
+            consumer_input_state_equivalence_sha256,
+        )
+
+        module_pairs = (
+            (
+                "schemes.liwei_0616_10y01_full_oos_k3_div_k10."
+                "inference",
+                "schemes.liwei_0616_10y02_cons_say_k3_div_k5."
+                "inference",
+            ),
+            (
+                "schemes.liwei_0616_5y01_full_oos_k3_div_k10."
+                "inference",
+                "schemes.liwei_0616_cons_sda_k3_div_k10.inference",
+            ),
+        )
+        for publisher_name, consumer_name in module_pairs:
+            with self.subTest(consumer=consumer_name):
+                publisher = importlib.import_module(publisher_name)
+                consumer = importlib.import_module(consumer_name)
+                daily, weekly, monthly, mapping = (
+                    _real_projection_inputs(publisher)
+                )
+                publisher_projection = _build_real_projection(
+                    publisher,
+                    daily=daily,
+                    weekly=weekly,
+                    monthly=monthly,
+                    date_to_week=mapping,
+                )
+                consumer_projection = _build_real_projection(
+                    consumer,
+                    daily=daily,
+                    weekly=weekly,
+                    monthly=monthly,
+                    date_to_week=mapping,
+                )
+                publisher_state = _input_generation_state(
+                    daily_df=daily,
+                    weekly_df=weekly,
+                    monthly_df=monthly,
+                    auxiliary_dependency_projection=(
+                        publisher_projection
+                    ),
+                    native_generation_binding=self._native(),
+                )
+                consumer_state = _input_generation_state(
+                    daily_df=daily,
+                    weekly_df=weekly,
+                    monthly_df=monthly,
+                    auxiliary_dependency_projection=(
+                        consumer_projection
+                    ),
+                    native_generation_binding=self._native(),
+                )
+
+                self.assertNotEqual(
+                    publisher_state["effective_auxiliary"][
+                        "proof_identity_sha256"
+                    ],
+                    consumer_state["effective_auxiliary"][
+                        "proof_identity_sha256"
+                    ],
+                )
+                self.assertEqual(
+                    consumer_input_state_equivalence_sha256(
+                        publisher_state
+                    ),
+                    consumer_input_state_equivalence_sha256(
+                        consumer_state
+                    ),
+                )
+
+    def test_consumer_equivalence_rejects_real_input_projection_drift(
+        self,
+    ) -> None:
+        from shared.liwei_0616_phase_a_cache import (
+            _input_generation_state,
+            consumer_input_state_equivalence_sha256,
+        )
+
+        publisher = importlib.import_module(
+            "schemes.liwei_0616_10y01_full_oos_k3_div_k10."
+            "inference"
+        )
+        consumer = importlib.import_module(
+            "schemes.liwei_0616_10y02_cons_say_k3_div_k5."
+            "inference"
+        )
+        daily, weekly, monthly, mapping = _real_projection_inputs(
+            publisher
+        )
+
+        def input_state(
+            *,
+            projection: object,
+            weekly_frame: pd.DataFrame = weekly,
+        ) -> dict[str, object]:
+            return _input_generation_state(
+                daily_df=daily,
+                weekly_df=weekly_frame,
+                monthly_df=monthly,
+                auxiliary_dependency_projection=projection,
+                native_generation_binding=self._native(),
+            )
+
+        publisher_projection = _build_real_projection(
+            publisher,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            date_to_week=mapping,
+        )
+        publisher_digest = (
+            consumer_input_state_equivalence_sha256(
+                input_state(projection=publisher_projection)
+            )
+        )
+
+        drifted_weekly = weekly.copy()
+        drifted_weekly.loc[
+            0,
+            publisher.v31_common.WEEKLY_COLS[0],
+        ] += 10.0
+        data_projection = _build_real_projection(
+            consumer,
+            daily=daily,
+            weekly=drifted_weekly,
+            monthly=monthly,
+            date_to_week=mapping,
+        )
+
+        def renamed_features(
+            weekly_frame: pd.DataFrame,
+            monthly_frame: pd.DataFrame,
+        ) -> pd.DataFrame:
+            features = consumer.v31_common.build_wkmo_features(
+                weekly_frame,
+                monthly_frame,
+            )
+            return features.rename(
+                columns={features.columns[0]: "renamed_feature"}
+            )
+
+        columns_projection = _build_real_projection(
+            consumer,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            date_to_week=mapping,
+            build_wkmo_features=renamed_features,
+        )
+        mapping_projection = _build_real_projection(
+            consumer,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            date_to_week={
+                **mapping,
+                "2026-01-05": 202601,
+            },
+        )
+        cases = (
+            (
+                "data",
+                input_state(
+                    projection=data_projection,
+                    weekly_frame=drifted_weekly,
+                ),
+            ),
+            ("columns", input_state(projection=columns_projection)),
+            ("date_mapping", input_state(projection=mapping_projection)),
+        )
+        for label, consumer_state in cases:
+            with self.subTest(label=label):
+                self.assertNotEqual(
+                    publisher_digest,
+                    consumer_input_state_equivalence_sha256(
+                        consumer_state
+                    ),
+                )
 
     def test_scheduled_executor_selects_direct_consumer_context(
         self,
@@ -429,6 +844,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             },
             {"publisher", "read_only"},
         )
+        publisher_proofs_by_group: dict[str, set[str]] = {}
         for scheme_id, consumer in authority["consumers"].items():
             self.assertEqual(consumer["base_scheme_id"], scheme_id)
             self.assertEqual(consumer["cache_consumer_id"], scheme_id)
@@ -436,6 +852,30 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 consumer["daily_dependency_lookback_rows"]
             )
             self.assertIsNone(consumer["daily_dependency_proof"])
+            self.assertIn(
+                "publisher_projection_proof_identity_sha256",
+                consumer,
+            )
+            self.assertNotIn(
+                "projection_proof_identity_sha256",
+                consumer,
+            )
+            publisher_proofs_by_group.setdefault(
+                str(consumer["cache_group"]),
+                set(),
+            ).add(
+                str(
+                    consumer[
+                        "publisher_projection_proof_identity_sha256"
+                    ]
+                )
+            )
+        self.assertTrue(
+            all(
+                len(proofs) == 1
+                for proofs in publisher_proofs_by_group.values()
+            )
+        )
         from scheduler.daily_runtime import _policy_payload
 
         frozen = _policy_payload(
@@ -503,25 +943,36 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             family_root.parent,
             family_root,
         ):
-            path.chmod(0o700)
+            path.chmod(
+                0o700 if path == storage_root else 0o755
+            )
         _require_direct_cache_ancestry(storage_root, family_root)
 
+        storage_root.chmod(0o755)
+        with self.assertRaisesRegex(
+            DailyDirectAuthorityError,
+            "mode 0700",
+        ):
+            _require_direct_cache_ancestry(
+                storage_root,
+                family_root,
+            )
+        storage_root.chmod(0o700)
+
         for insecure_path in (
-            storage_root,
             family_root.parent,
             family_root,
         ):
-            for insecure_mode in (0o755, 0o750):
-                insecure_path.chmod(insecure_mode)
-                with self.assertRaisesRegex(
-                    DailyDirectAuthorityError,
-                    "mode 0700",
-                ):
-                    _require_direct_cache_ancestry(
-                        storage_root,
-                        family_root,
-                    )
-                insecure_path.chmod(0o700)
+            insecure_path.chmod(0o775)
+            with self.assertRaisesRegex(
+                DailyDirectAuthorityError,
+                "group/world writable",
+            ):
+                _require_direct_cache_ancestry(
+                    storage_root,
+                    family_root,
+                )
+            insecure_path.chmod(0o755)
 
     def test_direct_cache_ancestry_rejects_symlink_and_owner_drift(
         self,
@@ -565,6 +1016,44 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             _require_direct_cache_ancestry(
                 target_root,
                 family_root,
+            )
+
+    def test_direct_cache_directory_rejects_mode_change_while_opening(
+        self,
+    ) -> None:
+        from scheduler.daily_direct_authority import (
+            DailyDirectAuthorityError,
+            _require_direct_cache_directory,
+        )
+
+        family_root = Path(self.cache_root) / "namespace" / "5y"
+        family_root.mkdir(parents=True)
+        family_root.chmod(0o755)
+        actual_fstat = os.fstat
+
+        def changed_mode(descriptor: int) -> SimpleNamespace:
+            opened = actual_fstat(descriptor)
+            return SimpleNamespace(
+                st_dev=opened.st_dev,
+                st_ino=opened.st_ino,
+                st_mode=(opened.st_mode & ~0o777) | 0o700,
+                st_uid=opened.st_uid,
+            )
+
+        with (
+            patch(
+                "scheduler.daily_direct_authority.os.fstat",
+                side_effect=changed_mode,
+            ),
+            self.assertRaisesRegex(
+                DailyDirectAuthorityError,
+                "changed while opening",
+            ),
+        ):
+            _require_direct_cache_directory(
+                family_root,
+                "direct cache family",
+                exact_mode_0700=False,
             )
 
     def test_direct_authority_rejects_migration_017_shape(self) -> None:

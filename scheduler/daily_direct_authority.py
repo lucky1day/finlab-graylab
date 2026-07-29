@@ -324,22 +324,27 @@ def _require_direct_cache_ancestry(
     _require_direct_cache_directory(
         storage_root,
         "direct cache storage root",
+        exact_mode_0700=True,
     )
     _require_direct_cache_directory(
         family_root.parent,
         "direct cache family namespace",
+        exact_mode_0700=False,
     )
     _require_direct_cache_directory(
         family_root,
         "direct cache family",
+        exact_mode_0700=False,
     )
 
 
 def _require_direct_cache_directory(
     path: Path,
     label: str,
+    *,
+    exact_mode_0700: bool,
 ) -> tuple[int, int]:
-    """要求 direct authority 控制目录为当前 uid 的真实 0700 目录。"""
+    """校验 direct authority 控制目录 owner、mode 与真实 inode。"""
     try:
         metadata = os.lstat(path)
     except OSError as exc:
@@ -356,9 +361,14 @@ def _require_direct_cache_directory(
     expected_uid = os.geteuid()
     if metadata.st_uid != expected_uid:
         raise DailyDirectAuthorityError(f"{label} owner mismatch")
-    if stat.S_IMODE(metadata.st_mode) != 0o700:
+    mode = stat.S_IMODE(metadata.st_mode)
+    if exact_mode_0700 and mode != 0o700:
         raise DailyDirectAuthorityError(
             f"{label} must have exact mode 0700"
+        )
+    if not exact_mode_0700 and mode & 0o022:
+        raise DailyDirectAuthorityError(
+            f"{label} must not be group/world writable"
         )
 
     flags = (
@@ -379,7 +389,15 @@ def _require_direct_cache_directory(
             or opened.st_ino != metadata.st_ino
             or not stat.S_ISDIR(opened.st_mode)
             or opened.st_uid != expected_uid
-            or stat.S_IMODE(opened.st_mode) != 0o700
+            or stat.S_IMODE(opened.st_mode) != mode
+            or (
+                exact_mode_0700
+                and stat.S_IMODE(opened.st_mode) != 0o700
+            )
+            or (
+                not exact_mode_0700
+                and stat.S_IMODE(opened.st_mode) & 0o022
+            )
         ):
             raise DailyDirectAuthorityError(
                 f"{label} changed while opening"
@@ -561,7 +579,8 @@ def _build_direct_cache_authorities(
             "cache_adapter_sha256":
                 target["cache_adapter_sha256"],
             "cache_core_sha256": target["cache_core_sha256"],
-            "projection_proof_identity_sha256": proof_identity,
+            "publisher_projection_proof_identity_sha256":
+                proof_identity,
             "daily_dependency_lookback_rows": None,
             "daily_dependency_proof": None,
         }
