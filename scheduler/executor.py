@@ -80,7 +80,9 @@ from shared.native_input_generation import (
 )
 from shared.liwei_0616_cache_contract import (
     CACHE_USE_QUALIFICATION_ENV,
+    DIRECT_CACHE_RUNTIME_CONTEXT_ENV,
     canonical_json_bytes as canonical_cache_contract_json_bytes,
+    validate_direct_cache_runtime_context,
     validate_trusted_cache_use_qualification,
 )
 from shared.prediction_context import (
@@ -226,6 +228,7 @@ def run_scheme_subprocess(
     live_source_compatibility: bool = False,
     live_source_package_sha256: str | None = None,
     cache_use_qualification: dict[str, object] | None = None,
+    direct_cache_runtime_context: dict[str, object] | None = None,
     execution_token: str | None = None,
     source_database_config: (
         SourceRuntimeDatabaseConfig | None
@@ -269,6 +272,7 @@ def run_scheme_subprocess(
     for name in live_source_environment_names:
         env.pop(name, None)
     env.pop(CACHE_USE_QUALIFICATION_ENV, None)
+    env.pop(DIRECT_CACHE_RUNTIME_CONTEXT_ENV, None)
     env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
     validated_execution_token = _validated_execution_token(
         execution_token
@@ -383,6 +387,42 @@ def run_scheme_subprocess(
                 trusted_cache_qualification
             ).decode("ascii")
         )
+    if direct_cache_runtime_context is not None:
+        if cache_use_qualification is not None:
+            raise ValueError(
+                "legacy cache qualification and direct cache runtime "
+                "context are mutually exclusive"
+            )
+        if live_source_compatibility:
+            raise ValueError(
+                "live source compatibility cannot use direct cache "
+                "runtime context"
+            )
+        try:
+            validated_direct_context = (
+                validate_direct_cache_runtime_context(
+                    direct_cache_runtime_context
+                )
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "direct_cache_runtime_context is invalid"
+            ) from exc
+        if (
+            native_generation is None
+            or validated_direct_context["consumer"][
+                "base_scheme_id"
+            ] != scheme_id
+        ):
+            raise ValueError(
+                "direct_cache_runtime_context requires the exact Native "
+                "scheme and generation"
+            )
+        env[DIRECT_CACHE_RUNTIME_CONTEXT_ENV] = (
+            canonical_cache_contract_json_bytes(
+                validated_direct_context
+            ).decode("ascii")
+        )
     cmd = [
         "conda",
         "run",
@@ -475,6 +515,7 @@ def run_configured_scheme(
     live_source_compatibility: bool = False,
     live_source_package_sha256: str | None = None,
     cache_use_qualification: dict[str, object] | None = None,
+    direct_cache_runtime_context: dict[str, object] | None = None,
     databridge_generation: DataBridgeGenerationContext | None = None,
     calendar_generation: NativeGenerationContext | None = None,
     execution_token: str | None = None,
@@ -514,6 +555,10 @@ def run_configured_scheme(
             native_kwargs["cache_use_qualification"] = (
                 cache_use_qualification
             )
+        if direct_cache_runtime_context is not None:
+            native_kwargs["direct_cache_runtime_context"] = (
+                direct_cache_runtime_context
+            )
         if live_source_compatibility:
             native_kwargs["live_source_compatibility"] = True
             native_kwargs["live_source_package_sha256"] = (
@@ -551,6 +596,10 @@ def run_configured_scheme(
         if cache_use_qualification is not None:
             raise ValueError(
                 "cache_use_qualification is not valid for blackbox_v2"
+            )
+        if direct_cache_runtime_context is not None:
+            raise ValueError(
+                "direct_cache_runtime_context is not valid for blackbox_v2"
             )
         if native_generation is not None:
             raise ValueError(

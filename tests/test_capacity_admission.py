@@ -290,7 +290,7 @@ class DailyCapacityAdmissionTests(unittest.TestCase):
                 )
             )
 
-    def test_repository_admission_is_blocked_by_default(self) -> None:
+    def test_repository_admission_default_is_retired_fail_closed(self) -> None:
         from scheduler.capacity_admission import (
             CapacityAdmissionError,
             require_daily_capacity_admission,
@@ -298,47 +298,18 @@ class DailyCapacityAdmissionTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             CapacityAdmissionError,
-            "BLOCKED",
+            "unavailable",
         ):
             require_daily_capacity_admission()
 
-    def test_repository_blocked_record_binds_exact_raw_policy_bytes(
+    def test_repository_admission_control_file_is_absent(
         self,
     ) -> None:
-        import hashlib
-
         from scheduler.capacity_admission import (
             DEFAULT_ADMISSION_PATH,
         )
-        from scheduler.daily_policy import POLICY_V2_PATH
 
-        admission = json.loads(
-            DEFAULT_ADMISSION_PATH.read_text(encoding="utf-8")
-        )
-        self.assertEqual(admission["status"], "BLOCKED")
-        self.assertEqual(
-            admission["policy_sha256"],
-            hashlib.sha256(POLICY_V2_PATH.read_bytes()).hexdigest(),
-        )
-        self.assertEqual(
-            admission["policy_version"],
-            "daily-scheduler-policy-v2",
-        )
-        for field in (
-            "decision_id",
-            "decision_sequence",
-            "candidate_fingerprint",
-            "machine_id",
-            "evidence_uri",
-            "evidence_sha256",
-            "collector_signature_uri",
-            "operator_signature_uri",
-            "issued_at",
-            "not_before",
-            "expires_at",
-            "admitted_by",
-        ):
-            self.assertIsNone(admission[field], field)
+        self.assertFalse(DEFAULT_ADMISSION_PATH.exists())
 
     def test_runtime_admission_requires_two_independent_cms_signatures(
         self,

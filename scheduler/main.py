@@ -33,11 +33,9 @@ from scheduler.blackbox_scheduler_admission import (
     require_scheduled_prediction_control_plane,
     uses_blackbox_scheduler_admission,
 )
-from scheduler.capacity_admission import (
-    CapacityAdmissionError,
-)
-from scheduler.capacity_runtime_admission import (
-    require_current_capacity_admission,
+from scheduler.daily_direct_authority import (
+    DailyDirectAuthorityError,
+    build_daily_direct_cache_authorities,
 )
 from scheduler.daily_actuals_updater import update_actuals
 from scheduler.monthly_actuals_updater import update_monthly_actuals
@@ -1219,16 +1217,16 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     schemes = discover_schemes()
     _preflight_source_runtime_database(schemes)
     if coordinator_mode == "ledger":
-        admission_engine = create_engine_from_env()
+        authority_engine = create_engine_from_env()
         try:
-            require_current_capacity_admission(
-                admission_engine,
+            build_daily_direct_cache_authorities(
+                authority_engine,
                 policy_path=POLICY_V2_PATH,
                 discovered=schemes,
                 algo_env=algo_env,
             )
         finally:
-            admission_engine.dispose()
+            authority_engine.dispose()
     else:
         _sync_registry(schemes)
     scheduler = BlockingScheduler(
@@ -1510,7 +1508,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         scheduler = build_scheduler(algo_env=args.algo_env)
     except (
         ValueError,
-        CapacityAdmissionError,
+        DailyDirectAuthorityError,
         DailyStoragePreflightError,
         SourceRuntimeDatabasePreflightError,
     ) as exc:

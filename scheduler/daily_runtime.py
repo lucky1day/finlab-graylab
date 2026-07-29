@@ -23,7 +23,6 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
-from migrations.runner import preflight_schedule_run_started_at_nullable
 from scheduler.alerts import AlertDispatcher, AlertEvent, AlertSettings
 from scheduler.daily_coordinator import OccurrenceLockUnavailable
 from scheduler.daily_coordinator import (
@@ -94,9 +93,6 @@ from shared.native_input_generation import (
     find_published_native_generation,
     open_native_generation,
     preflight_native_generation_storage,
-)
-from shared.liwei_0616_cache_contract import (
-    validate_trusted_cache_use_qualification,
 )
 
 
@@ -280,76 +276,41 @@ class DefaultDailyRuntimeServices:
         self._algo_env = algo_env
         self._policy: Any | None = None
         self._configs: dict[str, Any] = {}
-        self._capacity_candidate_fingerprint: str | None = None
-        self._capacity_admission: dict[str, object] | None = None
-        self._capacity_admission_identity: dict[str, object] | None = None
-        self._capacity_cache_use_qualifications: dict[
-            str, dict[str, object]
-        ] = {}
+        self._direct_cache_authorities: dict[str, object] | None = None
         self._process_start_guard = ProcessStartGuard()
         self._alert_dispatcher = AlertDispatcher(
             AlertSettings.from_env()
         )
 
-    def bind_capacity_admission(
+    def bind_direct_cache_authorities(
         self,
-        admission: Mapping[str, object],
+        authorities: Mapping[str, object],
     ) -> None:
-        """把已验证的当前 capacity candidate 写入 occurrence 冻结上下文。"""
-        fingerprint = admission.get("candidate_fingerprint")
-        if (
-            not isinstance(fingerprint, str)
-            or len(fingerprint) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in fingerprint
-            )
-        ):
-            raise RuntimeError(
-                "capacity admission candidate_fingerprint is invalid"
-            )
-        if (
-            self._capacity_candidate_fingerprint is not None
-            and self._capacity_candidate_fingerprint != fingerprint
-        ):
-            raise RuntimeError(
-                "capacity admission candidate_fingerprint changed"
-            )
-        normalized_qualifications = (
-            _normalize_capacity_cache_use_qualifications(
-                admission.get("cache_use_qualifications"),
-                candidate_fingerprint=fingerprint,
-                required=(
-                    admission.get("status") == "ADMITTED"
-                    and admission.get("evidence_sha256") is not None
-                ),
+        """绑定只读重算且完整校验的 cache authority。"""
+        normalized = json.loads(
+            json.dumps(
+                authorities,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
             )
         )
-        stable_identity = _capacity_admission_stable_identity(
-            admission,
-            candidate_fingerprint=fingerprint,
-            cache_use_qualifications=normalized_qualifications,
-        )
         if (
-            self._capacity_admission_identity is not None
-            and self._capacity_admission_identity != stable_identity
+            self._direct_cache_authorities is not None
+            and self._direct_cache_authorities != normalized
         ):
-            raise RuntimeError("capacity admission stable identity changed")
-        self._capacity_candidate_fingerprint = fingerprint
-        self._capacity_admission = dict(admission)
-        self._capacity_admission_identity = stable_identity
-        self._capacity_cache_use_qualifications = normalized_qualifications
+            raise RuntimeError("direct cache authority changed")
+        self._direct_cache_authorities = normalized
 
-    def revalidate_capacity_admission(self) -> None:
-        """冻结 occurrence 后再次绑定当前 candidate，封死 DB 冻结竞态。"""
-        if self._capacity_admission is None:
-            raise RuntimeError("capacity admission has not been bound")
+    def revalidate_direct_authority(self) -> None:
+        """冻结 occurrence 后再次重算 direct authority，封死 DB 冻结竞态。"""
+        if self._direct_cache_authorities is None:
+            raise RuntimeError("direct cache authority has not been bound")
         current = _require_production_entry_authority(
             engine=self.engine,
-            verify_current=True,
             algo_env=self._algo_env,
         )
-        self.bind_capacity_admission(current)
+        self.bind_direct_cache_authorities(current)
 
     def close(self) -> None:
         if self._owns_engine:
@@ -375,13 +336,12 @@ class DefaultDailyRuntimeServices:
         return policy
 
     def load_current_audit_policy(self):
-        """审计落盘后 best-effort 复核当前 policy/admission。"""
-        admission = _require_production_entry_authority(
+        """审计落盘后 best-effort 复核当前 policy/direct authority。"""
+        authorities = _require_production_entry_authority(
             engine=self.engine,
-            verify_current=False,
             algo_env=self._algo_env,
         )
-        self.bind_capacity_admission(admission)
+        self.bind_direct_cache_authorities(authorities)
         return self.load_policy()
 
     def occurrence_lock(self, business_date: date) -> OccurrenceFileLock:
@@ -754,6 +714,19 @@ class DefaultDailyRuntimeServices:
                 "release_at": release_at,
                 "deadline_at": deadline_at,
             }
+            direct_consumer = _direct_cache_consumer(
+                self._direct_cache_authorities,
+                scheme_id,
+            )
+            if direct_consumer is not None:
+                item_policy_by_base[scheme_id].update(
+                    {
+                        "cache_adapter_sha256":
+                            direct_consumer["cache_adapter_sha256"],
+                        "cache_core_sha256":
+                            direct_consumer["cache_core_sha256"],
+                    }
+                )
         if (
             len(item_policy_by_base) != policy.expected_item_count
             or len(target_dates) != policy.expected_target_count
@@ -771,21 +744,7 @@ class DefaultDailyRuntimeServices:
                     require_current_daily_coordinator_identity()
                     .policy_payload()
                 ),
-                capacity_candidate_fingerprint=(
-                    self._capacity_candidate_fingerprint
-                ),
-                cache_use_qualifications=(
-                    _validated_policy_cache_use_qualifications(
-                        policy=policy,
-                        configs=self._configs,
-                        candidate_fingerprint=(
-                            self._capacity_candidate_fingerprint
-                        ),
-                        qualifications=(
-                            self._capacity_cache_use_qualifications
-                        ),
-                    )
-                ),
+                direct_cache_authorities=self._direct_cache_authorities,
             ),
         )
 
@@ -907,21 +866,7 @@ class DefaultDailyRuntimeServices:
         if dict(occurrence.policy_json) != _policy_payload(
             policy,
             daily_coordinator_epoch=current_identity.policy_payload(),
-            capacity_candidate_fingerprint=(
-                self._capacity_candidate_fingerprint
-            ),
-            cache_use_qualifications=(
-                _validated_policy_cache_use_qualifications(
-                    policy=policy,
-                    configs=self._configs,
-                    candidate_fingerprint=(
-                        self._capacity_candidate_fingerprint
-                    ),
-                    qualifications=(
-                        self._capacity_cache_use_qualifications
-                    ),
-                )
-            ),
+            direct_cache_authorities=self._direct_cache_authorities,
         ):
             raise RuntimeError(
                 "frozen occurrence policy payload differs from runtime policy"
@@ -1797,7 +1742,7 @@ class DailyRuntime:
                     snapshot=snapshot,
                     policy=policy,
                 )
-                self._services.revalidate_capacity_admission()
+                self._services.revalidate_direct_authority()
             else:
                 inputs = None
             if inputs is None:
@@ -2915,7 +2860,7 @@ class DailyRuntime:
                 business_date=business_date,
                 occurrence_id=occurrence_id,
                 message=(
-                    "Current policy or capacity admission differs from "
+                    "Current policy or direct authority differs from "
                     "the frozen occurrence"
                 ),
                 details={
@@ -4480,177 +4425,52 @@ def _generation_failure_code(message: str) -> str:
     return "GENERATION_BUILD_FAILED"
 
 
-def _normalize_capacity_cache_use_qualifications(
-    raw: object,
-    *,
-    candidate_fingerprint: str,
-    required: bool,
-) -> dict[str, dict[str, object]]:
-    """校验 admission 派生的逐 consumer qualification，禁止弱绑定。"""
-    if raw is None:
-        if required:
-            raise RuntimeError(
-                "ADMITTED capacity admission is missing "
-                "cache_use_qualifications"
-            )
-        return {}
-    if not isinstance(raw, Mapping):
+def _direct_cache_consumer(
+    authorities: Mapping[str, object] | None,
+    scheme_id: str,
+) -> Mapping[str, object] | None:
+    if authorities is None:
+        return None
+    consumers = authorities.get("consumers")
+    if not isinstance(consumers, Mapping):
+        raise RuntimeError("direct cache authority consumers are invalid")
+    consumer = consumers.get(scheme_id)
+    if consumer is None:
+        return None
+    if not isinstance(consumer, Mapping):
         raise RuntimeError(
-            "capacity admission cache_use_qualifications must be an object"
+            f"direct cache consumer is invalid: {scheme_id}"
         )
-    normalized: dict[str, dict[str, object]] = {}
-    for raw_scheme_id, raw_envelope in raw.items():
-        if (
-            not isinstance(raw_scheme_id, str)
-            or not raw_scheme_id.strip()
-            or not isinstance(raw_envelope, Mapping)
-        ):
-            raise RuntimeError(
-                "capacity admission cache qualification entry is invalid"
-            )
-        scheme_id = raw_scheme_id.strip()
-        if scheme_id in normalized:
-            raise RuntimeError(
-                "capacity admission contains duplicate cache consumer"
-            )
-        try:
-            normalized[scheme_id] = (
-                validate_trusted_cache_use_qualification(
-                    raw_envelope,
-                    expected_base_scheme_id=scheme_id,
-                    expected_candidate_fingerprint=(
-                        candidate_fingerprint
-                    ),
-                )
-            )
-        except ValueError as exc:
-            raise RuntimeError(
-                "capacity admission cache qualification is invalid for "
-                f"{scheme_id}: {exc}"
-            ) from exc
-    return {
-        scheme_id: normalized[scheme_id]
-        for scheme_id in sorted(normalized)
-    }
-
-
-def _capacity_admission_stable_identity(
-    admission: Mapping[str, object],
-    *,
-    candidate_fingerprint: str,
-    cache_use_qualifications: Mapping[str, Mapping[str, object]],
-) -> dict[str, object]:
-    """提取可重复 revalidate 的身份；明确排除每次检查生成的 checked_at。"""
-    identity: dict[str, object] = {
-        "candidate_fingerprint": candidate_fingerprint,
-        "cache_use_qualifications": {
-            scheme_id: dict(cache_use_qualifications[scheme_id])
-            for scheme_id in sorted(cache_use_qualifications)
-        },
-    }
-    for field in (
-        "status",
-        "decision_id",
-        "decision_sequence",
-        "policy_version",
-        "policy_sha256",
-        "machine_id",
-        "evidence_sha256",
-        "collector_signer_sha256",
-        "operator_signer_sha256",
-        "issued_at",
-        "not_before",
-        "expires_at",
-        "admitted_by",
-    ):
-        if field in admission:
-            identity[field] = admission[field]
-    return json.loads(
-        json.dumps(
-            identity,
-            ensure_ascii=True,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
-
-
-def _validated_policy_cache_use_qualifications(
-    *,
-    policy: Any,
-    configs: Mapping[str, Any],
-    candidate_fingerprint: str | None,
-    qualifications: Mapping[str, Mapping[str, object]],
-) -> dict[str, dict[str, object]]:
-    """把 qualification exact-set 绑定到当前 policy/config consumer。"""
-    expected_ids = {
-        scheme_id
-        for scheme_id, scheme_policy in policy.schemes.items()
-        if scheme_policy.cache_spec_fingerprint is not None
-    }
-    if not qualifications:
-        # 仅保留旧单元测试/非生产构造器兼容；真实 ADMITTED admission 在
-        # bind_capacity_admission() 已经强制携带 qualification map。
-        return {}
-    actual_ids = set(qualifications)
-    if actual_ids != expected_ids:
-        raise RuntimeError(
-            "capacity cache qualification consumer set differs from "
-            f"daily policy: missing={sorted(expected_ids - actual_ids)} "
-            f"unknown={sorted(actual_ids - expected_ids)}"
-        )
-    if candidate_fingerprint is None:
-        raise RuntimeError(
-            "cache qualifications require capacity candidate fingerprint"
-        )
-    normalized: dict[str, dict[str, object]] = {}
-    for scheme_id in sorted(expected_ids):
-        config = configs.get(scheme_id)
-        if config is None:
-            raise RuntimeError(
-                f"cache-qualified daily config is unavailable: {scheme_id}"
-            )
-        scheme_policy = policy.schemes[scheme_id]
-        try:
-            trusted = validate_trusted_cache_use_qualification(
-                qualifications[scheme_id],
-                expected_base_scheme_id=scheme_id,
-                expected_candidate_fingerprint=candidate_fingerprint,
-            )
-        except ValueError as exc:
-            raise RuntimeError(
-                f"cache qualification is invalid for {scheme_id}: {exc}"
-            ) from exc
-        qualification = trusted["qualification"]
-        expected_fields = {
-            "scheme_version": config.scheme_version,
-            "cache_group": scheme_policy.cache_group,
-            "spec_fingerprint":
-                scheme_policy.cache_spec_fingerprint,
-        }
-        mismatches = [
-            field
-            for field, expected in expected_fields.items()
-            if qualification.get(field) != expected
-        ]
-        if mismatches:
-            raise RuntimeError(
-                "cache qualification differs from frozen daily consumer "
-                f"{scheme_id}: {','.join(sorted(mismatches))}"
-            )
-        normalized[scheme_id] = trusted
-    return normalized
+    return consumer
 
 
 def _policy_payload(
     policy: Any,
     *,
     daily_coordinator_epoch: Mapping[str, object] | None = None,
-    capacity_candidate_fingerprint: str | None = None,
-    cache_use_qualifications: (
-        Mapping[str, Mapping[str, object]] | None
-    ) = None,
+    direct_cache_authorities: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
+    scheme_rows: list[dict[str, object]] = []
+    for scheme_id in sorted(policy.schemes):
+        row = {
+            **asdict(policy.schemes[scheme_id]),
+            "absolute_deadline":
+                policy.schemes[
+                    scheme_id
+                ].absolute_deadline.strftime("%H:%M"),
+        }
+        consumer = _direct_cache_consumer(
+            direct_cache_authorities,
+            scheme_id,
+        )
+        if consumer is not None:
+            row["cache_adapter_sha256"] = consumer[
+                "cache_adapter_sha256"
+            ]
+            row["cache_core_sha256"] = consumer[
+                "cache_core_sha256"
+            ]
+        scheme_rows.append(row)
     payload = {
         "version": policy.version,
         "evidence_version": policy.evidence_version,
@@ -4695,30 +4515,16 @@ def _policy_payload(
                 policy.allowed_resource_combinations
             )
         ],
-        "schemes": [
-            {
-                **asdict(policy.schemes[scheme_id]),
-                "absolute_deadline":
-                    policy.schemes[
-                        scheme_id
-                    ].absolute_deadline.strftime("%H:%M"),
-            }
-            for scheme_id in sorted(policy.schemes)
-        ],
+        "schemes": scheme_rows,
     }
-    if capacity_candidate_fingerprint is not None:
-        payload["capacity_candidate_fingerprint"] = (
-            capacity_candidate_fingerprint
-        )
     if daily_coordinator_epoch is not None:
         payload["daily_coordinator_epoch"] = dict(
             daily_coordinator_epoch
         )
-    if cache_use_qualifications:
-        payload["cache_use_qualifications"] = {
-            scheme_id: dict(cache_use_qualifications[scheme_id])
-            for scheme_id in sorted(cache_use_qualifications)
-        }
+    if direct_cache_authorities is not None:
+        payload["direct_cache_authorities"] = dict(
+            direct_cache_authorities
+        )
     return json.loads(
         json.dumps(
             payload,
@@ -5429,7 +5235,7 @@ def run_daily_occurrence(
     services, dispose = _runtime_services(
         _services,
         algo_env=algo_env,
-        verify_current_capacity=True,
+        verify_direct_authority=True,
     )
     try:
         if _services is None:
@@ -5451,7 +5257,7 @@ def run_daily_watchdog(
     """隔离 executor 使用的 07:00/07:45/08:00/08:30 控制入口。"""
     services, dispose = _runtime_services(
         _services,
-        verify_current_capacity=False,
+        verify_direct_authority=stage == "progress",
         audit_only=stage != "progress",
     )
     try:
@@ -5474,7 +5280,7 @@ def run_operator_recovery(
     services, dispose = _runtime_services(
         _services,
         algo_env=algo_env,
-        verify_current_capacity=True,
+        verify_direct_authority=True,
     )
     try:
         if _services is None:
@@ -5495,7 +5301,7 @@ def run_scheduler_heartbeat(
     """快速刷新独立 heartbeat；不持有 occurrence owner 锁。"""
     services, dispose = _runtime_services(
         _services,
-        verify_current_capacity=False,
+        verify_direct_authority=False,
     )
     try:
         heartbeat_tick = getattr(services, "heartbeat_tick", None)
@@ -5542,7 +5348,7 @@ def _runtime_services(
     injected: Any | None,
     *,
     algo_env: str = "forecast_env",
-    verify_current_capacity: bool = False,
+    verify_direct_authority: bool = False,
     audit_only: bool = False,
 ) -> tuple[Any, Any]:
     if injected is not None:
@@ -5551,13 +5357,14 @@ def _runtime_services(
     try:
         if audit_only:
             _require_ledger_runtime_mode()
-        else:
-            admission = _require_production_entry_authority(
+        elif verify_direct_authority:
+            authorities = _require_production_entry_authority(
                 engine=services.engine,
-                verify_current=verify_current_capacity,
                 algo_env=algo_env,
             )
-            services.bind_capacity_admission(admission)
+            services.bind_direct_cache_authorities(authorities)
+        else:
+            _require_ledger_runtime_mode()
     except BaseException:
         services.close()
         raise
@@ -5565,7 +5372,7 @@ def _runtime_services(
 
 
 def _require_ledger_runtime_mode() -> None:
-    """审计入口只校验 rollout，不以前置 admission 阻断冻结账本。"""
+    """审计/心跳入口只校验本机 ledger rollout。"""
     from shared.daily_coordinator_mode import (
         bootstrap_deployment_daily_coordinator_mode,
     )
@@ -5579,31 +5386,16 @@ def _require_ledger_runtime_mode() -> None:
 def _require_production_entry_authority(
     *,
     engine: Any,
-    verify_current: bool,
     algo_env: str = "forecast_env",
 ) -> Mapping[str, object]:
-    """最内层拒绝 legacy mode 或未通过容量准入的直接 runtime 调用。"""
-    from scheduler.capacity_admission import (
-        require_daily_capacity_admission,
-    )
-    from scheduler.capacity_runtime_admission import (
-        require_current_capacity_admission,
-    )
-    from shared.daily_coordinator_mode import (
-        bootstrap_deployment_daily_coordinator_mode,
+    """最内层只接受 ledger mode 与当前 exact direct authority。"""
+    from scheduler.daily_direct_authority import (
+        build_daily_direct_cache_authorities,
     )
 
-    if bootstrap_deployment_daily_coordinator_mode() != "ledger":
-        raise RuntimeError(
-            "daily runtime requires ledger coordinator mode"
-        )
-    if verify_current:
-        preflight_schedule_run_started_at_nullable(engine)
-        return require_current_capacity_admission(
-            engine,
-            policy_path=POLICY_V2_PATH,
-            algo_env=algo_env,
-        )
-    return require_daily_capacity_admission(
+    _require_ledger_runtime_mode()
+    return build_daily_direct_cache_authorities(
+        engine,
         policy_path=POLICY_V2_PATH,
+        algo_env=algo_env,
     )

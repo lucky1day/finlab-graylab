@@ -32,9 +32,11 @@ from shared.input_artifacts import (
 from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
     CACHE_USE_QUALIFICATION_ENV,
+    DIRECT_CACHE_RUNTIME_CONTEXT_ENV,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
     PHASE_A_CACHE_ABI_VERSION,
     trusted_qualification_audit_binding,
+    validate_direct_cache_runtime_context,
     validate_generation_acceptance_record,
     validate_trusted_cache_use_qualification,
 )
@@ -303,14 +305,28 @@ def prepare_phase_a_caches(
     trusted_qualification = _resolve_cache_use_qualification(
         cache_use_qualification
     )
+    direct_runtime_context = (
+        _resolve_direct_cache_runtime_context()
+    )
+    if (
+        trusted_qualification is not None
+        and direct_runtime_context is not None
+    ):
+        raise RuntimeError(
+            "legacy cache qualification and direct cache runtime "
+            "context are mutually exclusive"
+        )
     native_generation_binding = _resolve_native_generation_binding(
         native_generation
     )
     if qualification_required:
-        if trusted_qualification is None:
+        if (
+            trusted_qualification is None
+            and direct_runtime_context is None
+        ):
             raise RuntimeError(
-                "signed per-consumer cache use qualification is required "
-                "for ledger/SLA cache use"
+                "trusted qualification or direct cache runtime context "
+                "is required for ledger/SLA cache use"
             )
         if native_generation_binding is None:
             raise RuntimeError(
@@ -326,12 +342,24 @@ def prepare_phase_a_caches(
                 "ordinary ledger execution cannot self-sign cache "
                 "qualification with runtime compare callbacks"
             )
-        _validate_qualification_for_cache_use(
-            trusted_qualification,
-            cache_consumer_id=cache_consumer_id,
-            spec=spec,
-            native_generation=native_generation_binding,
-        )
+        if trusted_qualification is not None:
+            _validate_qualification_for_cache_use(
+                trusted_qualification,
+                cache_consumer_id=cache_consumer_id,
+                spec=spec,
+                native_generation=native_generation_binding,
+            )
+        else:
+            _validate_direct_context_for_cache_use(
+                direct_runtime_context,
+                cache_consumer_id=cache_consumer_id,
+                spec=spec,
+                native_generation=native_generation_binding,
+                cache_root=_cache_root(cache_root),
+                auxiliary_dependency_projection=(
+                    auxiliary_dependency_projection
+                ),
+            )
     root = _cache_root(cache_root)
     family_root = _family_cache_root(root, spec)
     is_publisher = (
@@ -1010,6 +1038,28 @@ def _resolve_cache_use_qualification(
     return validate_trusted_cache_use_qualification(payload)
 
 
+def _resolve_direct_cache_runtime_context(
+) -> dict[str, object] | None:
+    encoded = os.getenv(DIRECT_CACHE_RUNTIME_CONTEXT_ENV)
+    if encoded is None:
+        return None
+    if not encoded.strip():
+        raise ValueError(
+            f"{DIRECT_CACHE_RUNTIME_CONTEXT_ENV} cannot be empty"
+        )
+    try:
+        payload = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{DIRECT_CACHE_RUNTIME_CONTEXT_ENV} must be valid JSON"
+        ) from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError(
+            f"{DIRECT_CACHE_RUNTIME_CONTEXT_ENV} must contain an object"
+        )
+    return validate_direct_cache_runtime_context(payload)
+
+
 def _resolve_native_generation_binding(
     explicit: Mapping[str, object] | None,
 ) -> dict[str, object] | None:
@@ -1153,6 +1203,68 @@ def _validate_qualification_for_cache_use(
         raise RuntimeError(
             "cache use qualification identity drift: "
             + ", ".join(drift)
+        )
+
+
+def _validate_direct_context_for_cache_use(
+    context: Mapping[str, object] | None,
+    *,
+    cache_consumer_id: str,
+    spec: PhaseACacheSpec,
+    native_generation: Mapping[str, object],
+    cache_root: Path,
+    auxiliary_dependency_projection: (
+        AuxiliaryDependencyProjection | None
+    ),
+) -> None:
+    if context is None:
+        raise RuntimeError("direct cache runtime context is missing")
+    validated = validate_direct_cache_runtime_context(context)
+    consumer = validated["consumer"]
+    contract = validated["contract"]
+    expected = {
+        "base_scheme_id": cache_consumer_id,
+        "cache_consumer_id": cache_consumer_id,
+        "cache_group": f"{spec.cache_family}:{spec.tenor}",
+        "cache_family": spec.cache_family,
+        "tenor": spec.tenor,
+        "publisher_consumer_id": spec.publisher_consumer_id,
+        "spec_fingerprint": _spec_fingerprint(spec),
+        "daily_dependency_lookback_rows":
+            spec.daily_dependency_lookback_rows,
+        "daily_dependency_proof": spec.daily_dependency_proof,
+    }
+    drift = sorted(
+        field
+        for field, expected_value in expected.items()
+        if consumer.get(field) != expected_value
+    )
+    if (
+        Path(str(validated["storage_root"])) != cache_root
+        or contract["native_generation_schema_version"]
+        != native_generation["schema_version"]
+        or contract["native_exporter_version"]
+        != native_generation["exporter_version"]
+        or contract["cache_abi_version"] != PHASE_A_CACHE_ABI_VERSION
+    ):
+        drift.append("runtime_contract")
+    if auxiliary_dependency_projection is None:
+        drift.append("effective_projection")
+    else:
+        effective = _effective_auxiliary_generation_state(
+            auxiliary_dependency_projection
+        )
+        if (
+            effective.get("schema_version")
+            != contract["projection_schema_version"]
+            or effective.get("proof_identity_sha256")
+            != consumer["projection_proof_identity_sha256"]
+        ):
+            drift.append("effective_projection")
+    if drift:
+        raise RuntimeError(
+            "direct cache runtime context identity drift: "
+            + ", ".join(sorted(set(drift)))
         )
 
 

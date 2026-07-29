@@ -66,6 +66,7 @@ from shared.models import PredictionRecord
 from shared.native_input_generation import open_native_generation
 from shared.liwei_0616_cache_contract import (
     validate_prediction_cache_audit,
+    validate_direct_cache_runtime_context,
     validate_trusted_cache_use_qualification,
 )
 from shared.liwei_0616_phase_a_cache import (
@@ -168,6 +169,8 @@ def _frozen_cache_use_qualification(
         raise ScheduledContractError(
             "frozen occurrence policy is unavailable"
         )
+    if "direct_cache_authorities" in policy:
+        return None
     raw_schemes = policy.get("schemes")
     if not isinstance(raw_schemes, list):
         raise ScheduledContractError(
@@ -237,6 +240,87 @@ def _frozen_cache_use_qualification(
             + ",".join(sorted(mismatches))
         )
     return trusted
+
+
+def _frozen_direct_cache_runtime_context(
+    envelope: ScheduleExecutionEnvelope,
+) -> dict[str, object] | None:
+    """为当前 item 选择 occurrence 冻结的 exact direct cache authority。"""
+    policy = getattr(envelope.occurrence, "policy_json", None)
+    if not isinstance(policy, dict):
+        raise ScheduledContractError(
+            "frozen occurrence policy is unavailable"
+        )
+    raw_authorities = policy.get("direct_cache_authorities")
+    if raw_authorities is None:
+        return None
+    if not isinstance(raw_authorities, dict):
+        raise ScheduledContractError(
+            "frozen direct cache authorities are invalid"
+        )
+    consumers = raw_authorities.get("consumers")
+    if not isinstance(consumers, dict):
+        raise ScheduledContractError(
+            "frozen direct cache consumers are invalid"
+        )
+    scheme_id = envelope.item.base_scheme_id
+    consumer = consumers.get(scheme_id)
+    frozen_scheme = _frozen_scheme_policy_row(envelope)
+    if consumer is None:
+        if frozen_scheme.get("cache_spec_fingerprint") is not None:
+            raise ScheduledContractError(
+                "cache-qualified consumer is missing direct authority"
+            )
+        return None
+    context = {
+        "schema_version":
+            "liwei-0616-direct-cache-runtime-context-v1",
+        "storage_root": raw_authorities.get("storage_root"),
+        "contract": raw_authorities.get("contract"),
+        "consumer": consumer,
+    }
+    try:
+        validated = validate_direct_cache_runtime_context(context)
+    except ValueError as exc:
+        raise ScheduledContractError(
+            "frozen direct cache runtime context is invalid"
+        ) from exc
+    expected = {
+        "base_scheme_id": scheme_id,
+        "scheme_version": envelope.item.scheme_version,
+        "code_sha256": envelope.item.code_sha256,
+        "config_sha256": envelope.item.config_sha256,
+        "cache_group": envelope.item.cache_group,
+    }
+    drift = [
+        field
+        for field, expected_value in expected.items()
+        if validated["consumer"].get(field) != expected_value
+    ]
+    if drift:
+        raise ScheduledContractError(
+            "frozen direct cache consumer drift: "
+            + ",".join(sorted(drift))
+        )
+    policy_expected = {
+        "cache_spec_fingerprint":
+            validated["consumer"]["spec_fingerprint"],
+        "cache_adapter_sha256":
+            validated["consumer"]["cache_adapter_sha256"],
+        "cache_core_sha256":
+            validated["consumer"]["cache_core_sha256"],
+    }
+    policy_drift = [
+        field
+        for field, expected_value in policy_expected.items()
+        if frozen_scheme.get(field) != expected_value
+    ]
+    if policy_drift:
+        raise ScheduledContractError(
+            "frozen direct cache policy digest drift: "
+            + ",".join(sorted(policy_drift))
+        )
+    return validated
 
 
 def _frozen_scheme_policy_row(
@@ -503,6 +587,9 @@ def execute_scheduled_item(
         cache_use_qualification = _frozen_cache_use_qualification(
             envelope,
         )
+        direct_cache_runtime_context = (
+            _frozen_direct_cache_runtime_context(envelope)
+        )
 
         def process_started(pid: int, pgid: int) -> None:
             try:
@@ -537,6 +624,9 @@ def execute_scheduled_item(
                     live_source_package_sha256
                 ),
                 cache_use_qualification=cache_use_qualification,
+                direct_cache_runtime_context=(
+                    direct_cache_runtime_context
+                ),
                 databridge_generation=databridge_generation,
                 calendar_generation=calendar_generation,
                 execution_token=attempt.execution_token,

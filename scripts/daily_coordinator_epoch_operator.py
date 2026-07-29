@@ -11,9 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pwd
 import stat
-import subprocess
 import sys
 import uuid
 from dataclasses import dataclass
@@ -53,9 +51,6 @@ from scheduler.daily_control_plane_probe import (
     probe_launchagent_service_states,
     read_installed_launchagent_modes,
 )
-from scheduler.daily_policy import POLICY_V2_PATH
-
-
 _STAGING_DIRECTORY_NAME = "staging"
 _MAX_RECORD_BYTES = 4096
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -87,9 +82,6 @@ def publish_daily_coordinator_epoch(
     installed_mode_probe: Callable[[int], Mapping[str, str]] | None = None,
     quiescence_probe: (
         Callable[[int, date], Mapping[str, int]] | None
-    ) = None,
-    capacity_admission_probe: (
-        Callable[[int], Mapping[str, object]] | None
     ) = None,
     phase_hook: Callable[[str], None] | None = None,
 ) -> EpochPublicationResult:
@@ -220,14 +212,6 @@ def publish_daily_coordinator_epoch(
             "daily coordinator transition is not quiescent: "
             f"{busy}"
         )
-
-    if mode == "ledger":
-        admission = (
-            require_trusted_current_capacity_admission(launchagent_uid)
-            if capacity_admission_probe is None
-            else capacity_admission_probe(launchagent_uid)
-        )
-        _validate_capacity_admission(admission)
 
     _contract_raw, genesis_raw, genesis_payload = (
         _read_epoch_contract_and_genesis(
@@ -537,107 +521,6 @@ def _require_exact_probe_labels(
     if set(rows) != set(LAUNCHAGENT_LABELS):
         raise RuntimeError(
             f"daily coordinator {label} probe did not cover all services"
-        )
-
-
-def require_trusted_current_capacity_admission(
-    service_uid: int,
-) -> Mapping[str, object]:
-    """以真实 LaunchAgent UID 重算并验证签名 capacity admission。"""
-    if os.geteuid() == service_uid:
-        return _require_capacity_admission_in_current_process()
-    if os.geteuid() != 0:
-        raise PermissionError(
-            "capacity admission UID switch requires root"
-        )
-    try:
-        account = pwd.getpwuid(service_uid)
-    except (KeyError, OSError) as exc:
-        raise RuntimeError(
-            f"service UID has no local account: {service_uid}"
-        ) from exc
-    child_code = (
-        "import json;"
-        "from scheduler.capacity_runtime_admission import "
-        "require_current_capacity_admission;"
-        "from scheduler.daily_policy import POLICY_V2_PATH;"
-        "from scheduler.repository import create_engine_from_env;"
-        "engine=create_engine_from_env();"
-        "result=require_current_capacity_admission("
-        "engine,policy_path=POLICY_V2_PATH);"
-        "engine.dispose();"
-        "print(json.dumps({'status':result.get('status'),"
-        "'candidate_fingerprint':result.get('candidate_fingerprint')},"
-        "sort_keys=True))"
-    )
-
-    def drop_to_service_uid() -> None:
-        os.initgroups(account.pw_name, account.pw_gid)
-        os.setgid(account.pw_gid)
-        os.setuid(service_uid)
-
-    completed = subprocess.run(
-        [sys.executable, "-c", child_code],
-        cwd=PROJECT_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-        preexec_fn=drop_to_service_uid,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "current capacity admission verification failed under the "
-            f"LaunchAgent UID: {completed.stderr[-2000:]}"
-        )
-    try:
-        payload = json.loads(completed.stdout)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "capacity admission verifier returned invalid JSON"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError(
-            "capacity admission verifier returned an invalid object"
-        )
-    return payload
-
-
-def _require_capacity_admission_in_current_process() -> Mapping[str, object]:
-    from scheduler.capacity_runtime_admission import (
-        require_current_capacity_admission,
-    )
-    from scheduler.repository import create_engine_from_env
-
-    engine = create_engine_from_env()
-    try:
-        return require_current_capacity_admission(
-            engine,
-            policy_path=POLICY_V2_PATH,
-        )
-    finally:
-        engine.dispose()
-
-
-def _validate_capacity_admission(
-    admission: Mapping[str, object],
-) -> None:
-    if not isinstance(admission, Mapping):
-        raise RuntimeError(
-            "daily coordinator target ledger capacity admission is invalid"
-        )
-    fingerprint = admission.get("candidate_fingerprint")
-    if (
-        admission.get("status") != "ADMITTED"
-        or not isinstance(fingerprint, str)
-        or len(fingerprint) != 64
-        or any(
-            character not in "0123456789abcdef"
-            for character in fingerprint
-        )
-    ):
-        raise RuntimeError(
-            "daily coordinator target ledger requires current trusted "
-            "capacity admission"
         )
 
 

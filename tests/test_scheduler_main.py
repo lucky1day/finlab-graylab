@@ -170,10 +170,15 @@ class SchedulerMainTests(unittest.TestCase):
         )
         self._mode_patcher.start()
         self._capacity_patcher = patch(
-            "scheduler.main.require_current_capacity_admission",
-            return_value={"status": "ADMITTED"},
+            "scheduler.main.build_daily_direct_cache_authorities",
+            return_value={
+                "schema_version": "daily-direct-cache-authorities-v1",
+                "storage_root": "/tmp/cache",
+                "contract": {},
+                "consumers": {},
+            },
         )
-        self._capacity_patcher.start()
+        self._direct_authority_mock = self._capacity_patcher.start()
         self._storage_patcher = patch(
             "scheduler.main.preflight_daily_storage",
         )
@@ -497,6 +502,7 @@ class SchedulerMainTests(unittest.TestCase):
                 scheduler.shutdown(wait=False)
 
         self.assertIn("daily:coordinator", jobs)
+        self._direct_authority_mock.assert_called_once()
         self.assertEqual(
             jobs["daily:coordinator"].func.__name__,
             "run_daily_coordinator_job",
