@@ -9,6 +9,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import types
 import unittest
 from unittest.mock import patch
@@ -30,10 +31,12 @@ SOURCE_ROOT = Path(
 class EmbeddedRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
+        payload = collect_payload(SOURCE_ROOT)
         cls.rendered_runner = render_runner(
             get_scheme("seven_y_t1_cfc_0084_embedded_v1"),
-            collect_payload(SOURCE_ROOT),
+            payload,
         )
+        cls.first_payload_path = payload[0].relative_path
 
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -215,6 +218,65 @@ class EmbeddedRuntimeTests(unittest.TestCase):
 
         first_path = module._PAYLOAD_MANIFEST[0]["relative_path"]
         self.assertFalse((run_root / first_path).exists())
+
+    def run_post_install_replacement(
+        self, replacement: str
+    ) -> subprocess.CompletedProcess[str]:
+        runner = self.tempdir / f"{replacement}_runner.py"
+        runner.write_text(self.rendered_runner, encoding="utf-8")
+        run_root = self.tempdir / f"{replacement}_private"
+        first_path = self.first_payload_path
+        replacement_statement = (
+            f"os.mkfifo({str(run_root / first_path)!r}, 0o600)"
+            if replacement == "fifo"
+            else "os.mkdir(target, 0o700, dir_fd=dst_dir_fd)"
+        )
+        command = textwrap.dedent(
+            f"""
+            import os
+            from pathlib import Path
+            import runpy
+            namespace = runpy.run_path({str(runner)!r})
+            original_rename = os.rename
+            replaced = False
+            def replace_after_rename(source, target, *, src_dir_fd, dst_dir_fd):
+                global replaced
+                original_rename(
+                    source,
+                    target,
+                    src_dir_fd=src_dir_fd,
+                    dst_dir_fd=dst_dir_fd,
+                )
+                if not replaced:
+                    replaced = True
+                    os.unlink(target, dir_fd=dst_dir_fd)
+                    {replacement_statement}
+            os.rename = replace_after_rename
+            namespace["_extract_payload"](Path({str(run_root)!r}))
+            """
+        )
+        try:
+            completed = subprocess.run(
+                [str(BLACKBOX_PYTHON), "-c", command],
+                text=True,
+                capture_output=True,
+                check=False,
+                timeout=3,
+            )
+        except subprocess.TimeoutExpired:
+            self.fail(f"post-install {replacement} verification blocked")
+        self.assertFalse((run_root / first_path).exists())
+        return completed
+
+    def test_post_install_fifo_replacement_is_nonblocking_and_removed(self) -> None:
+        completed = self.run_post_install_replacement("fifo")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("payload post-install mismatch", completed.stderr)
+
+    def test_post_install_directory_replacement_is_removed(self) -> None:
+        completed = self.run_post_install_replacement("directory")
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("payload post-install mismatch", completed.stderr)
 
     def test_extracted_tree_has_private_directory_and_file_modes(self) -> None:
         module = self.load_generated_module()

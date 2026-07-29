@@ -164,25 +164,48 @@ def _verify_installed_file(
     expected_sha256: str,
 ) -> None:
     """Verify the installed inode without following a replacement link."""
+    open_flags = (
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+        | getattr(os, "O_CLOEXEC", 0)
+    )
     descriptor = os.open(
         filename,
-        os.O_RDONLY | os.O_NOFOLLOW,
+        open_flags,
         dir_fd=parent_descriptor,
     )
     try:
         installed = os.fstat(descriptor)
+        if not stat.S_ISREG(installed.st_mode):
+            raise ValueError(f"payload post-install mismatch: {filename}")
         digest = hashlib.sha256()
         while chunk := os.read(descriptor, 1024 * 1024):
             digest.update(chunk)
         if (
-            not stat.S_ISREG(installed.st_mode)
-            or stat.S_IMODE(installed.st_mode) != 0o600
+            stat.S_IMODE(installed.st_mode) != 0o600
             or installed.st_size != expected_size
             or digest.hexdigest() != expected_sha256
         ):
             raise ValueError(f"payload post-install mismatch: {filename}")
     finally:
         os.close(descriptor)
+
+
+def _remove_installed_entry(parent_descriptor: int, filename: str) -> None:
+    """Remove an installed name by its no-follow entry type."""
+    try:
+        installed = os.stat(
+            filename,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(installed.st_mode):
+        os.rmdir(filename, dir_fd=parent_descriptor)
+    else:
+        os.unlink(filename, dir_fd=parent_descriptor)
 
 
 def _extract_payload(run_root: Path) -> Path:
@@ -252,9 +275,12 @@ def _extract_payload(run_root: Path) -> Path:
                     )
                 except BaseException as error:
                     try:
-                        os.unlink(filename, dir_fd=parent_descriptor)
-                    except FileNotFoundError:
-                        pass
+                        _remove_installed_entry(parent_descriptor, filename)
+                    except BaseException as cleanup_error:
+                        error.add_note(
+                            "post-install cleanup failed: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )
                     installed = False
                     if isinstance(error, ValueError):
                         raise
