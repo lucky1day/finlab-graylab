@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import base64
+import builtins
+from contextlib import contextmanager, redirect_stdout
 import hashlib
 import importlib
 import lzma
@@ -14,9 +17,22 @@ import stat
 import sys
 from types import ModuleType
 
+import numpy as np
+import pandas as pd
+
 
 FROZEN_SCHEME = __FROZEN_SCHEME_JSON__
 _PAYLOAD_MANIFEST = __PAYLOAD_JSON__
+open = builtins.open
+
+_PLATFORM_FILES = (
+    "daily_output.csv",
+    "weekly_output.csv",
+    "monthly_output.csv",
+    "api_wind_date.csv",
+)
+_DIRECT_YIELD_COLUMNS = ("TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
+_ANCHOR_REPLAY_START = pd.Timestamp("2024-07-01")
 
 
 def _validate_runtime() -> None:
@@ -351,3 +367,348 @@ def _anchor_modules(payload_root: Path) -> tuple[ModuleType, ModuleType]:
             sys.modules.pop(name, None)
         sys.modules.update(previous_daily)
         importlib.invalidate_caches()
+
+
+def _read_platform_csv(data_dir: Path, filename: str) -> pd.DataFrame:
+    """Read one required regular input file through the runtime audit hook."""
+    root = Path(data_dir)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("invalid platform data directory")
+    path = root / filename
+    if path.is_symlink():
+        raise ValueError(f"invalid platform input file: {filename}")
+    if not path.is_file():
+        raise FileNotFoundError(f"missing platform input file: {filename}")
+    if not path.resolve().is_relative_to(root.resolve()):
+        raise ValueError(f"platform input escaped data directory: {filename}")
+    with open(path, "rb") as handle:
+        return pd.read_csv(handle, low_memory=False)
+
+
+def _normalized_dates(
+    frame: pd.DataFrame,
+    column: str,
+    filename: str,
+) -> pd.Series:
+    """Parse a unique, increasing date column without silently reordering it."""
+    if column not in frame.columns:
+        raise ValueError(f"{filename}: missing required column {column}")
+    try:
+        dates = pd.to_datetime(frame[column], errors="raise").dt.normalize()
+    except Exception as error:
+        raise ValueError(f"{filename}: invalid {column}") from error
+    if (
+        dates.isna().any()
+        or dates.duplicated().any()
+        or not dates.is_monotonic_increasing
+    ):
+        raise ValueError(f"{filename}: {column} must be strictly monotonic")
+    return dates
+
+
+def _monotonic_integer_ids(
+    frame: pd.DataFrame,
+    column: str,
+    filename: str,
+    *,
+    unique: bool = True,
+) -> pd.Series:
+    """Parse unique, increasing integer period identifiers."""
+    if column not in frame.columns:
+        raise ValueError(f"{filename}: missing required column {column}")
+    try:
+        numeric = pd.to_numeric(frame[column], errors="raise")
+        values = numeric.astype("int64")
+    except Exception as error:
+        raise ValueError(f"{filename}: invalid {column}") from error
+    if (
+        not np.isfinite(numeric.to_numpy(dtype="float64")).all()
+        or not np.equal(numeric.to_numpy(), values.to_numpy()).all()
+        or (unique and values.duplicated().any())
+        or not values.is_monotonic_increasing
+    ):
+        raise ValueError(f"{filename}: {column} must be strictly monotonic")
+    return values
+
+
+def _write_private_csv(frame: pd.DataFrame, path: Path) -> None:
+    """Write one request-private input artifact with a private file mode."""
+    frame.to_csv(path, index=False)
+    path.chmod(0o600)
+
+
+def _materialize_cutoff_data(
+    data_dir: Path,
+    feature_date: pd.Timestamp,
+    work_dir: Path,
+) -> Path:
+    """Create the exact four causal input files for one request cutoff."""
+    cutoff = pd.Timestamp(feature_date).normalize()
+    if pd.isna(cutoff):
+        raise ValueError("invalid feature_date")
+
+    daily = _read_platform_csv(data_dir, "daily_output.csv")
+    calendar = _read_platform_csv(data_dir, "api_wind_date.csv")
+    weekly = _read_platform_csv(data_dir, "weekly_output.csv")
+    monthly = _read_platform_csv(data_dir, "monthly_output.csv")
+
+    daily_dates = _normalized_dates(daily, "date", "daily_output.csv")
+    calendar_dates = _normalized_dates(
+        calendar,
+        "rdate",
+        "api_wind_date.csv",
+    )
+    weekly_ids = _monotonic_integer_ids(
+        weekly,
+        "week_id",
+        "weekly_output.csv",
+    )
+    calendar_week_ids = _monotonic_integer_ids(
+        calendar,
+        "week_id",
+        "api_wind_date.csv",
+        unique=False,
+    )
+    monthly_ids = _monotonic_integer_ids(
+        monthly,
+        "month_id",
+        "monthly_output.csv",
+    )
+
+    missing_yields = [
+        column for column in _DIRECT_YIELD_COLUMNS if column not in daily.columns
+    ]
+    if missing_yields:
+        raise ValueError(
+            "daily_output.csv: missing required columns "
+            + ", ".join(missing_yields)
+        )
+    numeric_yields = daily.loc[:, _DIRECT_YIELD_COLUMNS].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+
+    daily = daily.loc[daily_dates <= cutoff].copy()
+    daily_dates = daily_dates.loc[daily.index]
+    calendar = calendar.loc[calendar_dates <= cutoff].copy()
+    calendar_dates = calendar_dates.loc[calendar.index]
+    calendar_week_ids = calendar_week_ids.loc[calendar.index]
+    cutoff_month = int(cutoff.strftime("%Y%m"))
+    authoritative_week_ids = set(calendar_week_ids.tolist())
+    weekly = weekly.loc[weekly_ids.isin(authoritative_week_ids)].copy()
+    weekly_ids = weekly_ids.loc[weekly.index]
+    monthly = monthly.loc[monthly_ids <= cutoff_month].copy()
+    monthly_ids = monthly_ids.loc[monthly.index]
+
+    retained_yields = numeric_yields.loc[daily.index]
+    if np.isinf(retained_yields.to_numpy(dtype="float64")).any():
+        raise ValueError("daily_output.csv: direct yields must be finite")
+    if daily.empty or daily_dates.iloc[-1] != cutoff:
+        raise ValueError("daily_output.csv: exact cutoff coverage is required")
+    if calendar.empty or calendar_dates.iloc[-1] != cutoff:
+        raise ValueError("api_wind_date.csv: exact cutoff coverage is required")
+    if (
+        weekly.empty
+        or weekly_ids.iloc[-1] != int(calendar_week_ids.iloc[-1])
+    ):
+        raise ValueError("weekly_output.csv: exact cutoff coverage is required")
+    if monthly.empty or monthly_ids.iloc[-1] != cutoff_month:
+        raise ValueError("monthly_output.csv: exact cutoff coverage is required")
+
+    cutoff_values = numeric_yields.loc[daily.index[-1]].to_numpy(
+        dtype="float64"
+    )
+    if not np.isfinite(cutoff_values).all():
+        raise ValueError("daily_output.csv: cutoff direct yields must be finite")
+
+    daily["date"] = daily_dates.dt.strftime("%Y-%m-%d")
+    calendar["rdate"] = calendar_dates.dt.strftime("%Y-%m-%d")
+    calendar["week_id"] = calendar_week_ids.astype("int64")
+    weekly["week_id"] = weekly_ids.astype("int64")
+    monthly["month_id"] = monthly_ids.astype("int64")
+
+    protected_root = Path(work_dir)
+    data_root = protected_root / "data"
+    data_root.mkdir(parents=True, mode=0o700, exist_ok=False)
+    data_root.chmod(0o700)
+    _write_private_csv(daily, data_root / "daily_output.csv")
+    _write_private_csv(weekly, data_root / "weekly_output.csv")
+    _write_private_csv(monthly, data_root / "monthly_output.csv")
+    _write_private_csv(calendar, data_root / "api_wind_date.csv")
+    return protected_root
+
+
+@contextmanager
+def _runtime_open_scope():
+    """Expose the generated runner's audited open hook to anchor code."""
+    original = builtins.open
+    builtins.open = open
+    try:
+        yield
+    finally:
+        builtins.open = original
+
+
+@contextmanager
+def _temporary_overrides(
+    entries: tuple[tuple[object, str, object], ...],
+):
+    """Temporarily set audited replay anchors and restore them on failure."""
+    originals: list[tuple[object, str, object]] = []
+    try:
+        for module, name, value in entries:
+            originals.append((module, name, getattr(module, name)))
+            setattr(module, name, value)
+        yield
+    finally:
+        for module, name, value in reversed(originals):
+            setattr(module, name, value)
+
+
+def _find_prediction_frame(output_dir: Path) -> pd.DataFrame:
+    """Return the longest dated CSV containing an authoritative score."""
+    candidates: list[tuple[int, pd.DataFrame]] = []
+    for path in Path(output_dir).rglob("*.csv"):
+        try:
+            with open(path, "rb") as handle:
+                frame = pd.read_csv(handle, low_memory=False)
+        except Exception:
+            continue
+        date_column = next(
+            (
+                column
+                for column in ("feature_date", "date", "predict_date")
+                if column in frame.columns
+            ),
+            None,
+        )
+        score_columns = {
+            "prob_up",
+            "model_prob_up",
+            "candidate_score",
+            "active_score",
+        }.intersection(frame.columns)
+        if date_column and score_columns:
+            candidates.append((len(frame), frame))
+    if not candidates:
+        raise RuntimeError(
+            f"anchor replay produced no dated score frame in {output_dir}"
+        )
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _run_5y10(
+    module: ModuleType,
+    protected_root: Path,
+    output_dir: Path,
+) -> pd.DataFrame:
+    """Run the embedded 5Y10 anchor with the audited replay contract."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+    overrides = (
+        (module.fixed_lgbm, "TEST_START", _ANCHOR_REPLAY_START),
+        (module.fixed_lgbm, "SCREEN_END", _ANCHOR_REPLAY_START),
+        (module.combo_overlay, "FULL_START", _ANCHOR_REPLAY_START),
+        (module.combo_overlay, "SIM_START", _ANCHOR_REPLAY_START),
+    )
+    with _runtime_open_scope(), _temporary_overrides(overrides):
+        with redirect_stdout(sys.stderr):
+            module.run(
+                Path(protected_root) / "data",
+                output_dir,
+                n_jobs=1,
+            )
+        return _find_prediction_frame(output_dir)
+
+
+def _run_10y04(
+    module: ModuleType,
+    protected_root: Path,
+    output_dir: Path,
+    feature_date: pd.Timestamp,
+) -> pd.DataFrame:
+    """Run the embedded 10Y04 anchor with the audited replay contract."""
+    cutoff = pd.Timestamp(feature_date).normalize()
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, mode=0o700, exist_ok=False)
+    overrides = (
+        (module._impl, "TEST_START", _ANCHOR_REPLAY_START),
+        (module._impl, "SCREEN_END", _ANCHOR_REPLAY_START),
+    )
+    arguments = argparse.Namespace(
+        data=Path(protected_root) / "data/daily_output.csv",
+        output_dir=output_dir,
+        test_end=cutoff.strftime("%Y-%m-%d"),
+        n_jobs=1,
+    )
+    with _runtime_open_scope(), _temporary_overrides(overrides):
+        with redirect_stdout(sys.stderr):
+            module.run(arguments)
+        return _find_prediction_frame(output_dir)
+
+
+def _anchor_score(
+    frame: pd.DataFrame,
+    anchor: str,
+    feature_date: pd.Timestamp,
+) -> pd.Series:
+    """Normalize one anchor's authoritative score history through cutoff."""
+    if anchor not in {"5Y10", "10Y04"}:
+        raise ValueError(f"unknown anchor: {anchor}")
+    date_column = next(
+        (
+            column
+            for column in ("feature_date", "date", "predict_date")
+            if column in frame.columns
+        ),
+        None,
+    )
+    score_column = next(
+        (
+            column
+            for column in (
+                "prob_up",
+                "model_prob_up",
+                "candidate_score",
+                "active_score",
+            )
+            if column in frame.columns
+        ),
+        None,
+    )
+    if date_column is None or score_column is None:
+        raise ValueError(f"{anchor}: no authoritative dated score")
+    try:
+        dates = pd.to_datetime(
+            frame[date_column],
+            errors="raise",
+        ).dt.normalize()
+    except Exception as error:
+        raise ValueError(f"{anchor}: invalid score dates") from error
+    raw = pd.to_numeric(frame[score_column], errors="coerce")
+    scores = 2.0 * raw - 1.0 if "prob" in score_column else raw
+    cutoff = pd.Timestamp(feature_date).normalize()
+    selected = pd.DataFrame(
+        {"feature_date": dates, "score": scores}
+    ).loc[
+        lambda values: values["feature_date"].between(
+            _ANCHOR_REPLAY_START,
+            cutoff,
+        )
+    ]
+    if (
+        selected.empty
+        or not np.isfinite(selected["score"].to_numpy(dtype="float64")).all()
+    ):
+        raise ValueError(f"{anchor}: score history must be finite")
+    selected = (
+        selected.sort_values("feature_date", kind="stable")
+        .drop_duplicates("feature_date", keep="last")
+        .set_index("feature_date")
+    )
+    if cutoff not in selected.index:
+        raise ValueError(f"{anchor}: exact cutoff score is required")
+    result = selected["score"].astype("float64")
+    result.name = anchor
+    result.index.name = "feature_date"
+    return result

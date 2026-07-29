@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import builtins
+from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
+import io
+import math
 import os
 from pathlib import Path
 import stat
@@ -15,6 +19,8 @@ import unittest
 from unittest.mock import patch
 import uuid
 
+import pandas as pd
+
 from tools.embedded_7y_blackbox.frozen_schemes import get_scheme
 from tools.embedded_7y_blackbox.payload import collect_payload
 from tools.embedded_7y_blackbox.renderer import render_runner
@@ -26,6 +32,24 @@ BLACKBOX_PYTHON = Path(
 SOURCE_ROOT = Path(
     "source_evidence/benchmark_batches/daily_0629/source_package/forecast_project"
 )
+REPLAY_DATA_ROOT = Path(
+    "/Users/macstudio0/Documents/liwei/outputs/"
+    "gray_lab_transfer_3Y_20260725_round6_rank_fusion/"
+    "source_replay_input_real/data"
+)
+PLATFORM_FILENAMES = (
+    "daily_output.csv",
+    "weekly_output.csv",
+    "monthly_output.csv",
+    "api_wind_date.csv",
+)
+FORBIDDEN_ROOTS = (
+    "/Users/macstudio0/bond-factor-lab/schemes/daily_5y_lgbm_5y10_0629",
+    "/Users/macstudio0/bond-factor-lab/schemes/daily_10y_lgbm_10y04_0629",
+    "/Users/macstudio0/bond-factor-lab/source_evidence/benchmark_batches/daily_0629",
+    "/Users/macstudio0/Desktop/方案/0629/forecast_project",
+)
+CUTOFF = pd.Timestamp("2025-07-15")
 
 
 class EmbeddedRuntimeTests(unittest.TestCase):
@@ -55,6 +79,227 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         self.addCleanup(sys.modules.pop, module_name, None)
         spec.loader.exec_module(module)
         return module
+
+    def write_replay_fixture(
+        self,
+        destination: Path,
+        *,
+        append_one_future_daily_row: bool,
+    ) -> None:
+        destination.mkdir(parents=True)
+        calendar = pd.read_csv(REPLAY_DATA_ROOT / "api_wind_date.csv")
+        calendar_dates = pd.to_datetime(calendar["rdate"], errors="raise")
+        calendar = calendar.loc[calendar_dates <= CUTOFF].copy()
+        calendar.to_csv(destination / "api_wind_date.csv", index=False)
+
+        daily = pd.read_csv(
+            REPLAY_DATA_ROOT / "daily_output.csv",
+            low_memory=False,
+        )
+        daily_dates = pd.to_datetime(daily["date"], errors="raise")
+        cutoff_mask = daily_dates <= CUTOFF
+        if append_one_future_daily_row:
+            first_future_index = daily_dates.loc[daily_dates > CUTOFF].index[0]
+            cutoff_mask.loc[first_future_index] = True
+        daily.loc[cutoff_mask].to_csv(
+            destination / "daily_output.csv",
+            index=False,
+        )
+
+        weekly = pd.read_csv(
+            REPLAY_DATA_ROOT / "weekly_output.csv",
+            low_memory=False,
+        )
+        weekly.loc[weekly["week_id"].isin(calendar["week_id"])].to_csv(
+            destination / "weekly_output.csv",
+            index=False,
+        )
+
+        monthly = pd.read_csv(
+            REPLAY_DATA_ROOT / "monthly_output.csv",
+            low_memory=False,
+        )
+        monthly.loc[monthly["month_id"] <= 202507].to_csv(
+            destination / "monthly_output.csv",
+            index=False,
+        )
+
+    def write_minimal_platform_fixture(self, destination: Path) -> None:
+        destination.mkdir(parents=True)
+        pd.DataFrame(
+            {
+                "date": ["2025-07-14", "2025-07-15"],
+                "TB5YWI0C": [1.5, 1.6],
+                "TB7YWI0C": [1.7, 1.8],
+                "TB0YWI0C": [1.9, 2.0],
+            }
+        ).to_csv(destination / "daily_output.csv", index=False)
+        pd.DataFrame(
+            {
+                "rdate": ["2025-07-14", "2025-07-15"],
+                "week_id": [202529, 202529],
+            }
+        ).to_csv(destination / "api_wind_date.csv", index=False)
+        pd.DataFrame(
+            {"week_id": [202528, 202529], "factor": [1.0, 2.0]}
+        ).to_csv(destination / "weekly_output.csv", index=False)
+        pd.DataFrame(
+            {"month_id": [202506, 202507], "factor": [1.0, 2.0]}
+        ).to_csv(destination / "monthly_output.csv", index=False)
+
+    def replay_anchor_scores(
+        self,
+        data_dir: Path,
+    ) -> tuple[pd.Series, pd.Series, list[str]]:
+        module = self.load_generated_module()
+        run_root = self.tempdir / f"run-{uuid.uuid4().hex}"
+        payload_root = module._extract_payload(run_root / "payload")
+        five, ten = module._anchor_modules(payload_root)
+        read_paths: list[str] = []
+        original_open = builtins.open
+
+        def audited_open(file: object, *args: object, **kwargs: object):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if (
+                isinstance(file, (str, os.PathLike))
+                and isinstance(mode, str)
+                and "r" in mode
+            ):
+                read_path = str(Path(file).resolve())
+                read_paths.append(read_path)
+                self.assertFalse(
+                    any(
+                        read_path.startswith(forbidden)
+                        for forbidden in FORBIDDEN_ROOTS
+                    ),
+                    read_path,
+                )
+            return original_open(file, *args, **kwargs)
+
+        diagnostics = io.StringIO()
+        with (
+            patch.object(module, "open", audited_open, create=True),
+            redirect_stdout(diagnostics),
+            redirect_stderr(diagnostics),
+        ):
+            protected_root = module._materialize_cutoff_data(
+                data_dir,
+                CUTOFF,
+                run_root / "request",
+            )
+            five_frame = module._run_5y10(
+                five,
+                protected_root,
+                run_root / "five",
+            )
+            ten_frame = module._run_10y04(
+                ten,
+                protected_root,
+                run_root / "ten",
+                CUTOFF,
+            )
+            five_scores = module._anchor_score(five_frame, "5Y10", CUTOFF)
+            ten_scores = module._anchor_score(ten_frame, "10Y04", CUTOFF)
+        return five_scores, ten_scores, read_paths
+
+    def test_materializes_exact_causal_platform_cutoff(self) -> None:
+        module = self.load_generated_module()
+        source = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(source)
+        future_daily = pd.DataFrame(
+            {
+                "date": ["2025-07-16"],
+                "TB5YWI0C": [99.0],
+                "TB7YWI0C": [math.inf],
+                "TB0YWI0C": [99.0],
+            }
+        )
+        future_daily.to_csv(
+            source / "daily_output.csv",
+            mode="a",
+            header=False,
+            index=False,
+        )
+
+        protected_root = module._materialize_cutoff_data(
+            source,
+            CUTOFF,
+            self.tempdir / "request",
+        )
+
+        data_root = protected_root / "data"
+        self.assertEqual(
+            sorted(path.name for path in data_root.iterdir()),
+            sorted(PLATFORM_FILENAMES),
+        )
+        daily = pd.read_csv(data_root / "daily_output.csv")
+        calendar = pd.read_csv(data_root / "api_wind_date.csv")
+        weekly = pd.read_csv(data_root / "weekly_output.csv")
+        monthly = pd.read_csv(data_root / "monthly_output.csv")
+        self.assertEqual(pd.to_datetime(daily["date"]).max(), CUTOFF)
+        self.assertEqual(pd.to_datetime(calendar["rdate"]).max(), CUTOFF)
+        self.assertEqual(weekly["week_id"].tolist(), [202529])
+        self.assertEqual(monthly["month_id"].tolist(), [202506, 202507])
+
+    def test_materialization_fails_closed_on_invalid_inputs(self) -> None:
+        module = self.load_generated_module()
+
+        source = self.tempdir / "missing"
+        self.write_minimal_platform_fixture(source)
+        (source / "weekly_output.csv").unlink()
+        with self.assertRaises((FileNotFoundError, ValueError)):
+            module._materialize_cutoff_data(
+                source,
+                CUTOFF,
+                self.tempdir / "missing-request",
+            )
+
+        source = self.tempdir / "nonmonotonic"
+        self.write_minimal_platform_fixture(source)
+        daily = pd.read_csv(source / "daily_output.csv").iloc[::-1]
+        daily.to_csv(source / "daily_output.csv", index=False)
+        with self.assertRaisesRegex(ValueError, "monotonic"):
+            module._materialize_cutoff_data(
+                source,
+                CUTOFF,
+                self.tempdir / "nonmonotonic-request",
+            )
+
+        source = self.tempdir / "nonfinite"
+        self.write_minimal_platform_fixture(source)
+        daily = pd.read_csv(source / "daily_output.csv")
+        daily.loc[daily.index[-1], "TB7YWI0C"] = math.inf
+        daily.to_csv(source / "daily_output.csv", index=False)
+        with self.assertRaisesRegex(ValueError, "finite"):
+            module._materialize_cutoff_data(
+                source,
+                CUTOFF,
+                self.tempdir / "nonfinite-request",
+            )
+
+    def test_future_rows_do_not_change_result(self) -> None:
+        without_future = self.tempdir / "without-future"
+        with_future = self.tempdir / "with-future"
+        self.write_replay_fixture(
+            without_future,
+            append_one_future_daily_row=False,
+        )
+        self.write_replay_fixture(
+            with_future,
+            append_one_future_daily_row=True,
+        )
+
+        baseline_five, baseline_ten, baseline_reads = self.replay_anchor_scores(
+            without_future
+        )
+        future_five, future_ten, future_reads = self.replay_anchor_scores(with_future)
+
+        pd.testing.assert_series_equal(baseline_five, future_five)
+        pd.testing.assert_series_equal(baseline_ten, future_ten)
+        self.assertTrue(math.isfinite(float(baseline_five.loc[CUTOFF])))
+        self.assertTrue(math.isfinite(float(baseline_ten.loc[CUTOFF])))
+        self.assertTrue(baseline_reads)
+        self.assertTrue(future_reads)
 
     def test_corrupted_payload_fails_before_extraction(self) -> None:
         script = self.rendered_runner.replace(
