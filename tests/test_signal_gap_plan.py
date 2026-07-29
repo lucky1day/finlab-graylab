@@ -873,13 +873,6 @@ class SignalGapPlanTests(unittest.TestCase):
                 "ACTIVE_VERSION_EXACT_IDENTITY_MISSING",
             ),
             ((
-                *version_rows,
-                {
-                    **version_rows[0],
-                    "scheme_version": "second-active-version",
-                },
-            ), "ACTIVE_VERSION_CARDINALITY_INVALID"),
-            ((
                 {
                     **version_rows[0],
                     "runtime_type": "blackbox_v2",
@@ -1009,6 +1002,7 @@ class SignalGapPlanTests(unittest.TestCase):
                     "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
                     "base_scheme_id": "demo",
                     "active_version_count": 2,
+                    "segment_scope": ["canonical", "live"],
                 }
             ],
         )

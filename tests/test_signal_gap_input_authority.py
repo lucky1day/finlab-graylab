@@ -408,6 +408,11 @@ def _native_snapshot(*, generations, input_mode="generation_v1"):
         input_mode=input_mode,
         code_sha256=_sha("native-code"),
         config_sha256=_sha("native-config"),
+        source_package_sha256=(
+            _sha("source-package")
+            if input_mode == "live_source_0629"
+            else None
+        ),
     )
     case = ExpectedSignalCase(
         registry_scheme_id=target.registry_scheme_id,
@@ -803,24 +808,26 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
                 )["actions"][0]
                 self.assertEqual(action["action"], expected_action)
 
-    def test_live_source_0629_is_never_automatically_actionable(self):
+    def test_live_source_0629_is_actionable_only_with_frozen_package(self):
         from harness.signal_gap_plan import ObservedSignal
 
         snapshot = _native_snapshot(
             generations=(_native_generation(),),
             input_mode="live_source_0629",
         )
-        plan = self._plan(
-            snapshot
-        )
+        with patch(
+            "harness.signal_gap_plan._NativeArtifactVerifier.verify",
+            return_value=({"artifact": "verified"}, None),
+        ):
+            plan = self._plan(snapshot)
 
         self.assertEqual(
             plan["actions"][0]["action"],
-            "BLOCKED_DATA_CONTRACT",
+            "GRAY_LIVE_GAP",
         )
         self.assertEqual(
-            plan["actions"][0]["reason"],
-            "LIVE_SOURCE_0629_ATTESTATION_REQUIRED",
+            plan["actions"][0]["source_package_sha256"],
+            _sha("source-package"),
         )
         case = snapshot.expected_cases[0]
         target = snapshot.registry_targets[0]
@@ -845,6 +852,25 @@ class SignalGapInputAuthorityTests(unittest.TestCase):
         self.assertEqual(
             present["actions"][0]["action"],
             "SKIP_PRESENT",
+        )
+
+        changed_target = replace(
+            snapshot.registry_targets[0],
+            source_package_sha256=_sha("changed-source-package"),
+        )
+        with patch(
+            "harness.signal_gap_plan._NativeArtifactVerifier.verify",
+            return_value=({"artifact": "verified"}, None),
+        ):
+            changed = self._plan(
+                replace(
+                    snapshot,
+                    registry_targets=(changed_target,),
+                )
+            )
+        self.assertNotEqual(
+            plan["plan_sha256"],
+            changed["plan_sha256"],
         )
 
     def test_action_authority_is_order_invariant_and_digest_sensitive(self):

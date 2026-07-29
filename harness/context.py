@@ -29,3 +29,6 @@ class GateContext:
     api_base_url: str = "http://127.0.0.1:8100"
     api_instance_nonce: str | None = None
     check_only: bool = False
+    signal_gap_plan_path: Path | None = None
+    signal_gap_authorizations: tuple[str, ...] = ()
+    signal_gap_databridge_config: Any | None = None

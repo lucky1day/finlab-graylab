@@ -19,7 +19,12 @@ DEFAULT_BACKTEST_START_DATE = "2025-01-01"
 BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS = 900
 BLACKBOX_PRIVILEGED_AUTH_MAX_FUTURE_SKEW_SECONDS = 60
 EXACT_PREDICT_DATE_ACTIONS = frozenset(
-    {"backtest_persist", "draft_register", "gray_backfill_write"}
+    {
+        "backtest_persist",
+        "draft_register",
+        "gray_backfill_write",
+        "signal_gap_fill_write",
+    }
 )
 _AUTHORIZATION_BASE_PAYLOAD_FIELDS = frozenset(
     {
@@ -32,6 +37,27 @@ _AUTHORIZATION_BASE_PAYLOAD_FIELDS = frozenset(
         "issued_at",
         "expires_at",
         "nonce",
+    }
+)
+_SIGNAL_GAP_FILL_PAYLOAD_FIELDS = frozenset(
+    {
+        "plan_sha256",
+        "base_scheme_id",
+        "target_keys",
+        "source_authority",
+    }
+)
+_SIGNAL_GAP_TARGET_FIELDS = frozenset(
+    {
+        "registry_scheme_id",
+        "base_scheme_id",
+        "target_tenor",
+        "horizon",
+        "task_type",
+        "predict_date",
+        "feature_date",
+        "target_date",
+        "prediction_phase",
     }
 )
 
@@ -49,6 +75,9 @@ class Authorization:
     harness_run_id: str | None = None
     expires_at: str | None = None
     backtest_start_date: str | None = None
+    plan_sha256: str | None = None
+    signal_gap_target_keys: tuple[dict[str, Any], ...] = ()
+    source_authority: dict[str, Any] | None = None
 
 
 class AuthorizationSecretError(RuntimeError):
@@ -101,12 +130,58 @@ def issue_token(
     ttl_seconds: int | None = None,
     issued_by: str = "harness",
     backtest_start_date: str | None = None,
+    plan_sha256: str | None = None,
+    base_scheme_id: str | None = None,
+    target_keys: Any = None,
+    source_authority: Any = None,
 ) -> str:
     """签发一次性授权 token（写库/激活前的确认闸）。
 
     配置了 HARNESS_AUTH_SECRET 时附带 HMAC 签名；未配置时退化为明文信封，
     token 仍承担一次性 + 作用域绑定的确认职责（软默认，单用户场景无需配置）。
     """
+    if action == "signal_gap_fill_write":
+        if _auth_secret() is None:
+            raise ValueError(
+                "signal_gap_fill_write authorization requires HMAC signing"
+            )
+        if ttl_seconds is None:
+            ttl_seconds = BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS
+        if (
+            isinstance(ttl_seconds, bool)
+            or int(ttl_seconds) <= 0
+            or int(ttl_seconds)
+            > BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS
+        ):
+            raise ValueError(
+                "signal_gap_fill_write authorization lifetime must be "
+                "at most 900 seconds"
+            )
+        normalized_plan_sha256 = _require_sha256(
+            plan_sha256,
+            "plan_sha256",
+        )
+        normalized_base = _require_text(
+            base_scheme_id,
+            "base_scheme_id",
+        )
+        if scheme_id != normalized_base:
+            raise ValueError(
+                "signal_gap_fill_write scheme_id must equal base_scheme_id"
+            )
+        normalized_targets = _normalize_signal_gap_target_keys(
+            target_keys,
+            expected_base_scheme_id=normalized_base,
+            expected_predict_date=predict_date,
+        )
+        normalized_authority = _normalize_signal_gap_source_authority(
+            source_authority
+        )
+    else:
+        normalized_plan_sha256 = None
+        normalized_base = None
+        normalized_targets = ()
+        normalized_authority = None
     if action in EXACT_PREDICT_DATE_ACTIONS:
         predict_date = _normalize_action_predict_date(action, predict_date)
     if action == "draft_register" and (
@@ -132,6 +207,15 @@ def issue_token(
     }
     if action == "backtest_persist":
         payload["backtest_start_date"] = normalize_backtest_start_date(backtest_start_date)
+    if action == "signal_gap_fill_write":
+        payload.update(
+            {
+                "plan_sha256": normalized_plan_sha256,
+                "base_scheme_id": normalized_base,
+                "target_keys": list(normalized_targets),
+                "source_authority": normalized_authority,
+            }
+        )
     signature = _sign(payload)
     envelope: dict[str, Any] = {"payload": payload}
     if signature is not None:
@@ -191,6 +275,10 @@ def _validate_token_schema(decoded: dict[str, Any]) -> None:
     expected_fields = _AUTHORIZATION_BASE_PAYLOAD_FIELDS
     if payload.get("action") == "backtest_persist":
         expected_fields = expected_fields | {"backtest_start_date"}
+    elif payload.get("action") == "signal_gap_fill_write":
+        expected_fields = (
+            expected_fields | _SIGNAL_GAP_FILL_PAYLOAD_FIELDS
+        )
     if frozenset(payload) != expected_fields:
         raise ValueError("authorization token schema is invalid")
 
@@ -216,6 +304,19 @@ def parse_token(token: str) -> Authorization:
         backtest_start_date=(
             str(payload["backtest_start_date"])
             if payload.get("backtest_start_date") is not None
+            else None
+        ),
+        plan_sha256=(
+            str(payload["plan_sha256"])
+            if payload.get("plan_sha256") is not None
+            else None
+        ),
+        signal_gap_target_keys=tuple(
+            dict(item) for item in payload.get("target_keys", ())
+        ),
+        source_authority=(
+            dict(payload["source_authority"])
+            if isinstance(payload.get("source_authority"), dict)
             else None
         ),
     )
@@ -334,6 +435,301 @@ def verify_authorization(
     except (OSError, ValueError, json.JSONDecodeError):
         errors.append("authorization replay store is invalid or unavailable")
     return auth, errors
+
+
+def issue_signal_gap_fill_token(
+    *,
+    plan_sha256: str,
+    base_scheme_id: str,
+    predict_date: str,
+    target_keys: Any,
+    scheme_version: str,
+    source_authority: Any,
+    ttl_seconds: int = BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS,
+    issued_by: str = "harness",
+) -> str:
+    """签发绑定冻结计划与一个原子算法组的短期 HMAC token。"""
+    return issue_token(
+        base_scheme_id,
+        "signal_gap_fill_write",
+        predict_date,
+        scheme_version=scheme_version,
+        ttl_seconds=ttl_seconds,
+        issued_by=issued_by,
+        plan_sha256=plan_sha256,
+        base_scheme_id=base_scheme_id,
+        target_keys=target_keys,
+        source_authority=source_authority,
+    )
+
+
+def verify_signal_gap_fill_authorization(
+    token: str | None,
+    *,
+    plan_sha256: str,
+    base_scheme_id: str,
+    predict_date: str,
+    target_keys: Any,
+    scheme_version: str,
+    source_authority: Any,
+    used_store_path: Path,
+) -> tuple[Authorization | None, list[str]]:
+    """验证 signal-gap-fill 的完整计划、目标集合、版本和输入权威。"""
+    auth, errors = verify_authorization(
+        token,
+        scheme_id=base_scheme_id,
+        action="signal_gap_fill_write",
+        predict_date=predict_date,
+        used_store_path=used_store_path,
+    )
+    if _auth_secret() is None:
+        errors.append(
+            "signal_gap_fill_write authorization requires HMAC signing"
+        )
+    try:
+        expected_plan = _require_sha256(
+            plan_sha256,
+            "plan_sha256",
+        )
+        expected_targets = _normalize_signal_gap_target_keys(
+            target_keys,
+            expected_base_scheme_id=base_scheme_id,
+            expected_predict_date=predict_date,
+        )
+        expected_authority = _normalize_signal_gap_source_authority(
+            source_authority
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        return auth, errors
+    if auth is None:
+        return None, errors
+    errors.extend(
+        required_future_expiry_errors(
+            auth.issued_at,
+            auth.expires_at,
+        )
+    )
+    if auth.plan_sha256 != expected_plan:
+        errors.append("plan_sha256 mismatch")
+    if auth.scheme_version != scheme_version:
+        errors.append(
+            "scheme_version mismatch: "
+            f"token={auth.scheme_version}, ctx={scheme_version}"
+        )
+    try:
+        token_targets = _normalize_signal_gap_target_keys(
+            auth.signal_gap_target_keys,
+            expected_base_scheme_id=base_scheme_id,
+            expected_predict_date=predict_date,
+        )
+    except ValueError:
+        token_targets = ()
+    if token_targets != expected_targets:
+        errors.append("target multiset mismatch")
+    try:
+        token_authority = _normalize_signal_gap_source_authority(
+            auth.source_authority
+        )
+    except ValueError:
+        token_authority = None
+    if token_authority != expected_authority:
+        errors.append("source authority mismatch")
+    return auth, errors
+
+
+def _normalize_signal_gap_target_keys(
+    value: Any,
+    *,
+    expected_base_scheme_id: str,
+    expected_predict_date: str | None,
+) -> tuple[dict[str, Any], ...]:
+    if (
+        not isinstance(value, (list, tuple))
+        or not value
+    ):
+        raise ValueError(
+            "signal gap target_keys must be a non-empty list"
+        )
+    normalized_predict_date = _normalize_action_predict_date(
+        "signal_gap_fill_write",
+        expected_predict_date,
+    )
+    rows: list[dict[str, Any]] = []
+    for raw in value:
+        if not isinstance(raw, dict) or frozenset(raw) != (
+            _SIGNAL_GAP_TARGET_FIELDS
+        ):
+            raise ValueError(
+                "signal gap target key schema is invalid"
+            )
+        horizon = raw["horizon"]
+        if isinstance(horizon, bool) or not isinstance(horizon, int):
+            raise ValueError(
+                "signal gap target horizon must be an integer"
+            )
+        row = {
+            "registry_scheme_id": _require_text(
+                raw["registry_scheme_id"],
+                "registry_scheme_id",
+            ),
+            "base_scheme_id": _require_text(
+                raw["base_scheme_id"],
+                "base_scheme_id",
+            ),
+            "target_tenor": _require_text(
+                raw["target_tenor"],
+                "target_tenor",
+            ),
+            "horizon": int(horizon),
+            "task_type": _require_text(
+                raw["task_type"],
+                "task_type",
+            ),
+            "predict_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                raw["predict_date"],
+            ),
+            "feature_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                raw["feature_date"],
+            ),
+            "target_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                raw["target_date"],
+            ),
+            "prediction_phase": str(raw["prediction_phase"]),
+        }
+        if (
+            row["base_scheme_id"] != expected_base_scheme_id
+            or row["predict_date"] != normalized_predict_date
+            or row["prediction_phase"] != "gray_live"
+        ):
+            raise ValueError(
+                "signal gap target key is outside authorization scope"
+            )
+        rows.append(row)
+    rows.sort(
+        key=lambda row: _canonical_payload_bytes(row)
+    )
+    encoded = [_canonical_payload_bytes(row) for row in rows]
+    if len(encoded) != len(set(encoded)):
+        raise ValueError("signal gap target multiset contains duplicates")
+    return tuple(rows)
+
+
+def _normalize_signal_gap_source_authority(
+    value: Any,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("signal gap source_authority must be an object")
+    authority_type = value.get("authority_type")
+    if authority_type == "native_current_snapshot_artifact":
+        expected = frozenset(
+            {
+                "authority_type",
+                "artifact_id",
+                "manifest_sha256",
+                "feature_date",
+                "cutoff_date",
+                "vintage_disclaimer",
+            }
+        )
+        if frozenset(value) != expected:
+            raise ValueError(
+                "Native signal gap source authority schema is invalid"
+            )
+        normalized = {
+            "authority_type": authority_type,
+            "artifact_id": _require_text(
+                value["artifact_id"],
+                "artifact_id",
+            ),
+            "manifest_sha256": _require_sha256(
+                value["manifest_sha256"],
+                "manifest_sha256",
+            ),
+            "feature_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                value["feature_date"],
+            ),
+            "cutoff_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                value["cutoff_date"],
+            ),
+            "vintage_disclaimer": str(value["vintage_disclaimer"]),
+        }
+    elif authority_type == "databridge_current_generation":
+        expected = frozenset(
+            {
+                "authority_type",
+                "generation_id",
+                "manifest_sha256",
+                "refresh_date",
+                "cutoff_date",
+                "replay_mode",
+                "vintage_disclaimer",
+            }
+        )
+        if frozenset(value) != expected:
+            raise ValueError(
+                "DataBridge signal gap source authority schema is invalid"
+            )
+        normalized = {
+            "authority_type": authority_type,
+            "generation_id": _require_text(
+                value["generation_id"],
+                "generation_id",
+            ),
+            "manifest_sha256": _require_sha256(
+                value["manifest_sha256"],
+                "manifest_sha256",
+            ),
+            "refresh_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                value["refresh_date"],
+            ),
+            "cutoff_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                value["cutoff_date"],
+            ),
+            "replay_mode": str(value["replay_mode"]),
+            "vintage_disclaimer": str(value["vintage_disclaimer"]),
+        }
+        if normalized["replay_mode"] != "historical_as_of_replay":
+            raise ValueError(
+                "DataBridge signal gap replay_mode is invalid"
+            )
+    else:
+        raise ValueError("signal gap source authority type is invalid")
+    if (
+        normalized["vintage_disclaimer"]
+        != "current_snapshot_as_of_not_historical_vintage"
+    ):
+        raise ValueError(
+            "signal gap source authority vintage disclaimer is invalid"
+        )
+    return normalized
+
+
+def _require_text(value: Any, field: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value.strip()
+        or value != value.strip()
+    ):
+        raise ValueError(f"{field} must be a non-empty string")
+    return value
+
+
+def _require_sha256(value: Any, field: str) -> str:
+    normalized = _require_text(value, field)
+    if (
+        len(normalized) != 64
+        or any(character not in "0123456789abcdef" for character in normalized)
+    ):
+        raise ValueError(f"{field} must be a lowercase SHA-256")
+    return normalized
 
 
 def normalize_backtest_start_date(value: str | None) -> str:

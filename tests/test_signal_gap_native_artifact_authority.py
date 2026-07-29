@@ -72,6 +72,11 @@ def _target(index: int, *, input_mode: str = "generation_v1"):
         input_mode=input_mode,
         code_sha256=_sha(f"{base}:code"),
         config_sha256=_sha(f"{base}:config"),
+        source_package_sha256=(
+            _sha(f"{base}:source-package")
+            if input_mode == "live_source_0629"
+            else None
+        ),
     )
 
 
@@ -642,6 +647,7 @@ class SignalGapNativeArtifactAuthorityTests(unittest.TestCase):
             with patch(
                 "harness.signal_gap_plan.open_native_generation"
             ) as opener:
+                opener.return_value = context
                 missing = _plan(_snapshot((), target_count=1))
                 duplicate = _plan(
                     _snapshot(
@@ -725,7 +731,7 @@ class SignalGapNativeArtifactAuthorityTests(unittest.TestCase):
                         live_signals=(drifted_present,),
                     )
                 )
-            opener.assert_not_called()
+            opener.assert_called_once()
             self.assertEqual(
                 [
                     missing["actions"][0]["reason"],
@@ -743,7 +749,7 @@ class SignalGapNativeArtifactAuthorityTests(unittest.TestCase):
                     "CANONICAL_BUSINESS_KEY_MISSING",
                     "CONTROL_PLANE_BLOCKER:POLICY_DRIFT",
                     "SOURCE_CONTRACT_INVALID",
-                    "LIVE_SOURCE_0629_ATTESTATION_REQUIRED",
+                    "LIVE_BUSINESS_KEY_MISSING",
                     "BUSINESS_KEY_PRESENT",
                     "OBSERVED_SIGNAL_CONTRACT_DRIFT",
                 ],
