@@ -7896,16 +7896,27 @@ def _normalize_direct_cache_consumers(
 def _validate_direct_cache_publisher_graph(
     consumers: Mapping[str, Mapping[str, object]],
 ) -> None:
+    groups: dict[str, list[tuple[str, Mapping[str, object]]]] = {}
     for scheme_id, consumer in consumers.items():
-        publisher_id = str(consumer["publisher_consumer_id"])
-        publisher = consumers.get(publisher_id)
-        if publisher is None:
-            raise RuntimeError(
-                f"direct cache publisher is missing: {publisher_id}"
-            )
-        expected_access = (
-            "publisher" if publisher_id == scheme_id else "read_only"
+        groups.setdefault(str(consumer["cache_group"]), []).append(
+            (scheme_id, consumer)
         )
+    for cache_group, members in groups.items():
+        self_publishers = [
+            scheme_id
+            for scheme_id, consumer in members
+            if (
+                consumer["access_mode"] == "publisher"
+                and consumer["publisher_consumer_id"] == scheme_id
+            )
+        ]
+        if len(self_publishers) != 1:
+            raise RuntimeError(
+                "direct cache group must have exactly one self-publisher: "
+                f"{cache_group}"
+            )
+        publisher_id = self_publishers[0]
+        publisher = consumers[publisher_id]
         shared_fields = (
             "cache_group",
             "cache_family",
@@ -7915,18 +7926,24 @@ def _validate_direct_cache_publisher_graph(
             "daily_dependency_lookback_rows",
             "daily_dependency_proof",
         )
-        if (
-            consumer["access_mode"] != expected_access
-            or publisher["access_mode"] != "publisher"
-            or publisher["publisher_consumer_id"] != publisher_id
-            or any(
-                publisher[field] != consumer[field]
-                for field in shared_fields
+        for scheme_id, consumer in members:
+            expected_access = (
+                "publisher"
+                if scheme_id == publisher_id
+                else "read_only"
             )
-        ):
-            raise RuntimeError(
-                f"direct cache publisher graph is invalid: {scheme_id}"
-            )
+            if (
+                consumer["publisher_consumer_id"] != publisher_id
+                or consumer["access_mode"] != expected_access
+                or any(
+                    publisher[field] != consumer[field]
+                    for field in shared_fields
+                )
+            ):
+                raise RuntimeError(
+                    "direct cache publisher graph is invalid: "
+                    f"{scheme_id}"
+                )
 
 
 def _direct_cache_policy_identity(
@@ -8128,6 +8145,8 @@ def _verify_direct_cache_record(
         audit,
         manifest=manifest,
         consumer=consumer,
+        generation_id=str(loaded.generation_id),
+        manifest_sha256=str(loaded.manifest_sha256),
     )
     _validate_direct_cache_audit_state(
         audit,
@@ -8165,6 +8184,8 @@ def _validate_direct_cache_audit_identity(
     *,
     manifest: Mapping[str, object],
     consumer: Mapping[str, object],
+    generation_id: str,
+    manifest_sha256: str,
 ) -> None:
     input_state = manifest.get("input_state")
     if not isinstance(input_state, Mapping):
@@ -8185,6 +8206,20 @@ def _validate_direct_cache_audit_identity(
         raise ValueError(
             "direct cache audit identity mismatch: "
             + ",".join(drift)
+        )
+    manifest_compare_gate = manifest.get("compare_gate_evidence")
+    if not isinstance(manifest_compare_gate, Mapping):
+        raise ValueError(
+            "direct cache manifest compare-gate evidence is missing"
+        )
+    expected_compare_gate = {
+        **dict(manifest_compare_gate),
+        "generation_id": generation_id,
+        "generation_manifest_sha256": manifest_sha256,
+    }
+    if audit.get("compare_gate_evidence") != expected_compare_gate:
+        raise ValueError(
+            "direct cache compare-gate audit does not match manifest"
         )
 
 

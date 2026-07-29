@@ -1094,6 +1094,44 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 records=[],
             )
 
+    def test_direct_cache_group_requires_exactly_one_self_publisher(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture()
+        authority = fixture["policy"]["direct_cache_authorities"]
+        second = dict(authority["consumers"][fixture["scheme_id"]])
+        second.update(
+            {
+                "base_scheme_id": "second_publisher",
+                "cache_consumer_id": "second_publisher",
+                "scheme_version": "second-publisher-version",
+                "publisher_consumer_id": "second_publisher",
+            }
+        )
+        authority["consumers"]["second_publisher"] = second
+        fixture["policy"]["schemes"].append(
+            {
+                "scheme_id": "second_publisher",
+                "cache_group": "liwei_test_family:5Y",
+                "cache_spec_fingerprint": DIRECT_CACHE_SPEC,
+                "cache_adapter_sha256": "5" * 64,
+                "cache_core_sha256": "6" * 64,
+            }
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "exactly one self-publisher",
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[],
+            )
+
     def test_direct_cache_non_full_lineage_receives_dependency_contract(
         self,
     ) -> None:
@@ -1499,6 +1537,58 @@ class GrayGapRepositoryTests(unittest.TestCase):
                         records=[record],
                     )
 
+    def test_direct_cache_authority_rejects_compare_gate_audit_drift(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture()
+        fixture["audit"]["compare_gate_evidence"]["status"] = "forged"
+        loaded = SimpleNamespace(
+            generation_id=fixture["generation_id"],
+            path=Path(fixture["audit"]["generation_path"]),
+            manifest=fixture["manifest"],
+            manifest_sha256=DIRECT_CACHE_MANIFEST,
+            caches={"STD": {"test_dates": ["2026-06-01"]}},
+        )
+        record = PredictionRecord(
+            scheme_id=fixture["scheme_id"],
+            target_tenor="5Y",
+            horizon=5,
+            predict_date=PREDICT_DATE,
+            feature_date=FEATURE_DATE,
+            target_date=TARGET_DATE_T5,
+            predicted_direction=1,
+            prediction_phase="scheduled_live",
+            extra={"phase_a_cache": fixture["audit"]},
+        )
+
+        with (
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_load_generation_directory",
+                return_value=loaded,
+            ),
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_verify_generation_acceptance_lineage",
+            ),
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_validate_generation_acceptance_for_use",
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "compare-gate audit",
+            ),
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[record],
+            )
+
     def test_direct_cache_monotonic_coverage_reopens_parent_securely(
         self,
     ) -> None:
@@ -1679,6 +1769,12 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "tenor": "5Y",
             "input_content_id": "7" * 64,
             "input_change": {"change_type": "initial"},
+            "compare_gate_evidence": {
+                "schema_version": "phase-a-compare-gate-v1",
+                "status": "passed",
+                "generation_id": generation_id,
+                "generation_manifest_sha256": DIRECT_CACHE_MANIFEST,
+            },
             "generation_id": generation_id,
             "generation_path": str(generation_path),
             "generation_manifest_sha256": DIRECT_CACHE_MANIFEST,
@@ -1696,6 +1792,10 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "spec_fingerprint": DIRECT_CACHE_SPEC,
             "build_mode": "full",
             "input_change": {"change_type": "initial"},
+            "compare_gate_evidence": {
+                "schema_version": "phase-a-compare-gate-v1",
+                "status": "passed",
+            },
             "input_state": {
                 "schema_version": 3,
                 "content_id": "7" * 64,
