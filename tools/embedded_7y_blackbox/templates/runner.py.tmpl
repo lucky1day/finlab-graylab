@@ -15,6 +15,7 @@ import platform
 import secrets
 import stat
 import sys
+import tempfile
 from types import ModuleType
 
 import numpy as np
@@ -728,3 +729,565 @@ def _anchor_score(
     result.name = anchor
     result.index.name = "feature_date"
     return result
+
+
+def causal_rolling_quantile_thresholds(
+    scores: pd.Series | np.ndarray,
+    *,
+    window: int,
+    active_rate: float,
+) -> np.ndarray:
+    """Calculate strict-prior absolute-score activation thresholds."""
+    values = np.asarray(scores, dtype=float)
+    history_window = int(window)
+    rate = float(active_rate)
+    if values.ndim != 1:
+        raise ValueError("quantile scores must be one-dimensional")
+    if history_window < 2:
+        raise ValueError("quantile window must be at least 2")
+    if not 0.0 < rate < 1.0:
+        raise ValueError("quantile active rate must be between 0 and 1")
+    return (
+        pd.Series(np.abs(values))
+        .shift(1)
+        .rolling(history_window, min_periods=history_window)
+        .quantile(1.0 - rate)
+        .to_numpy(dtype=float)
+    )
+
+
+def causal_anchor_transform(
+    values: pd.Series,
+    *,
+    transform: str,
+    history_rule: str,
+) -> pd.Series:
+    """Apply the frozen causal anchor transform."""
+    if history_rule != "strict_prior":
+        raise ValueError("anchor transform history rule is invalid")
+    numeric = pd.to_numeric(values, errors="coerce").astype(float)
+    if transform == "level":
+        return numeric - 0.5
+    if transform.startswith("delta"):
+        try:
+            lag = int(transform.removeprefix("delta"))
+        except ValueError as error:
+            raise ValueError("anchor delta transform is invalid") from error
+        if lag < 1:
+            raise ValueError("anchor delta lag must be positive")
+        return numeric - numeric.shift(lag)
+    if transform.startswith("z"):
+        try:
+            window = int(transform.removeprefix("z"))
+        except ValueError as error:
+            raise ValueError("anchor z transform is invalid") from error
+        if window < 2:
+            raise ValueError("anchor z window must be at least 2")
+        minimum_history = max(10, window // 3)
+        prior = numeric.shift(1)
+        prior_mean = prior.rolling(
+            window,
+            min_periods=minimum_history,
+        ).mean()
+        prior_std = prior.rolling(
+            window,
+            min_periods=minimum_history,
+        ).std(ddof=0)
+        return (numeric - prior_mean) / prior_std.replace(0.0, np.nan)
+    raise ValueError("anchor source transform is invalid")
+
+
+def causal_direction_edges(
+    raw_actions: pd.Series | np.ndarray,
+    labels: pd.Series | np.ndarray,
+    *,
+    window: int,
+    prior_strength: float,
+    minimum_history: int,
+) -> np.ndarray:
+    """Estimate rolling direction edge from labels known strictly earlier."""
+    actions = np.asarray(raw_actions, dtype=float)
+    targets = np.asarray(labels, dtype=float)
+    history_window = int(window)
+    required_history = int(minimum_history)
+    prior = float(prior_strength)
+    if (
+        actions.ndim != 1
+        or targets.ndim != 1
+        or len(actions) != len(targets)
+    ):
+        raise ValueError("direction actions and labels must be equal vectors")
+    if history_window < 2:
+        raise ValueError("direction edge window must be at least 2")
+    if required_history < 1 or required_history > history_window:
+        raise ValueError("direction edge minimum history is invalid")
+    if not np.isfinite(prior) or prior < 0.0:
+        raise ValueError(
+            "direction edge prior strength must be non-negative"
+        )
+    finite_label = np.isfinite(targets)
+    if not set(np.unique(targets[finite_label])).issubset({-1, 0, 1}):
+        raise ValueError("direction edge label is outside {-1,0,+1}")
+    finite_action = np.isfinite(actions)
+    if not set(np.unique(actions[finite_action])).issubset({-1, 0, 1}):
+        raise ValueError("direction edge action is outside {-1,0,+1}")
+
+    payoff = np.full(len(actions), np.nan, dtype=float)
+    active = np.full(len(actions), np.nan, dtype=float)
+    observed = finite_label & finite_action
+    payoff[observed] = 0.0
+    active[observed] = 0.0
+    traded = observed & (actions != 0.0)
+    payoff[traded] = np.where(
+        actions[traded] == targets[traded],
+        1.0,
+        -1.0,
+    )
+    active[traded] = 1.0
+    payoff_sum = (
+        pd.Series(payoff)
+        .shift(1)
+        .rolling(
+            history_window,
+            min_periods=required_history,
+        )
+        .sum()
+        .to_numpy(dtype=float)
+    )
+    active_count = (
+        pd.Series(active)
+        .shift(1)
+        .rolling(
+            history_window,
+            min_periods=required_history,
+        )
+        .sum()
+        .to_numpy(dtype=float)
+    )
+    denominator = active_count + prior
+    return np.divide(
+        payoff_sum,
+        denominator,
+        out=np.full(len(actions), np.nan, dtype=float),
+        where=np.isfinite(denominator) & (denominator > 0.0),
+    )
+
+
+def strict_prior_z(
+    values: pd.Series | np.ndarray,
+    *,
+    window: int,
+    minimum_history: int,
+) -> pd.Series:
+    """Standardize a vector against only its strictly prior history."""
+    series = pd.Series(values, dtype=float).reset_index(drop=True)
+    prior = series.shift(1)
+    mean = prior.rolling(window, min_periods=minimum_history).mean()
+    scale = prior.rolling(
+        window,
+        min_periods=minimum_history,
+    ).std(ddof=0)
+    return (series - mean) / scale.replace(0.0, np.nan)
+
+
+def fair_value_error_matrix(
+    daily: pd.DataFrame,
+    *,
+    direct_yield_columns: tuple[str, str, str],
+    fair_value_weights: tuple[float, float],
+    feature_mode: str,
+    z_window: int,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """Build the frozen causal 7Y fair-value error features."""
+    if feature_mode not in {
+        "error_correction",
+        "error_correction_momentum",
+    }:
+        raise ValueError(
+            f"unknown fair-value feature mode: {feature_mode}"
+        )
+    window = int(z_window)
+    if window < 20:
+        raise ValueError("fair-value z window must be at least 20")
+    front, target, back = direct_yield_columns
+    columns = ("date", front, target, back)
+    missing = set(columns).difference(daily.columns)
+    if missing:
+        raise ValueError(f"missing fair-value columns: {sorted(missing)}")
+    enriched = daily.loc[:, columns].copy()
+    enriched["date"] = pd.to_datetime(
+        enriched["date"],
+        errors="raise",
+    ).dt.normalize()
+    enriched = enriched.sort_values("date").reset_index(drop=True)
+    if enriched["date"].duplicated().any():
+        raise ValueError("fair-value dates must be unique")
+    for column in columns[1:]:
+        enriched[column] = pd.to_numeric(
+            enriched[column],
+            errors="coerce",
+        )
+    front_weight, back_weight = fair_value_weights
+    enriched["fair_value"] = (
+        front_weight * enriched[front]
+        + back_weight * enriched[back]
+    )
+    enriched["fair_value_gap"] = (
+        enriched[target] - enriched["fair_value"]
+    )
+
+    target_delta = enriched[target].diff()
+    front_delta = enriched[front].diff()
+    back_delta = enriched[back].diff()
+    fair_delta = enriched["fair_value"].diff()
+    gap_delta = enriched["fair_value_gap"].diff()
+
+    def prior_scale(values: pd.Series) -> pd.Series:
+        return (
+            values.shift(1)
+            .rolling(window, min_periods=window)
+            .std(ddof=0)
+            .replace(0.0, np.nan)
+        )
+
+    target_scale = prior_scale(target_delta)
+    fair_scale = prior_scale(fair_delta)
+    gap_scale = prior_scale(gap_delta)
+    gap_mean = (
+        enriched["fair_value_gap"]
+        .shift(1)
+        .rolling(window, min_periods=window)
+        .mean()
+    )
+    gap_level_scale = (
+        enriched["fair_value_gap"]
+        .shift(1)
+        .rolling(window, min_periods=window)
+        .std(ddof=0)
+        .replace(0.0, np.nan)
+    )
+    target_normalized = target_delta / target_scale
+    fair_normalized = fair_delta / fair_scale
+    gap_z = (
+        enriched["fair_value_gap"] - gap_mean
+    ) / gap_level_scale
+    parts: list[np.ndarray] = [
+        target_normalized.to_numpy(dtype=float),
+        (front_delta / prior_scale(front_delta)).to_numpy(dtype=float),
+        (back_delta / prior_scale(back_delta)).to_numpy(dtype=float),
+        fair_normalized.to_numpy(dtype=float),
+        gap_z.to_numpy(dtype=float),
+        (gap_delta / gap_scale).to_numpy(dtype=float),
+        (-gap_z).to_numpy(dtype=float),
+        (target_normalized - fair_normalized).to_numpy(dtype=float),
+    ]
+    if feature_mode == "error_correction_momentum":
+        for lookback in (3, 5, 10, 20):
+            parts.append(
+                (
+                    enriched[target].diff(lookback) / target_scale
+                ).to_numpy(dtype=float)
+            )
+        for lookback in (3, 10):
+            parts.append(
+                (
+                    enriched["fair_value"].diff(lookback) / fair_scale
+                ).to_numpy(dtype=float)
+            )
+        parts.extend(
+            [
+                (gap_z * np.sign(fair_delta)).to_numpy(dtype=float),
+                (target_normalized * gap_z).to_numpy(dtype=float),
+            ]
+        )
+    return enriched, np.column_stack(parts)
+
+
+def _historical_fair_value_state_mask(
+    matrix: np.ndarray,
+    *,
+    state_rule: str,
+) -> np.ndarray:
+    """Select the frozen fair-value state without reading target labels."""
+    gap_z = matrix[:, 4]
+    target_move = matrix[:, 0]
+    fair_move = matrix[:, 3]
+    if state_rule == "gap_positive":
+        return gap_z >= 0.0
+    if state_rule == "fair_up":
+        return fair_move >= 0.0
+    if state_rule == "target_up":
+        return target_move >= 0.0
+    if state_rule == "gap_fair_same":
+        return gap_z * fair_move >= 0.0
+    if state_rule == "gap_target_same":
+        return gap_z * target_move >= 0.0
+    if state_rule.startswith("gap_extreme_"):
+        cutoff = {
+            "gap_extreme_0_5": 0.5,
+            "gap_extreme_1_0": 1.0,
+            "gap_extreme_1_5": 1.5,
+        }.get(state_rule)
+        if cutoff is None:
+            raise ValueError(
+                "historical fair-value state rule is invalid"
+            )
+        return np.abs(gap_z) >= cutoff
+    if state_rule.startswith("momentum"):
+        momentum_column = {
+            "momentum3_up": 8,
+            "momentum5_up": 9,
+            "momentum10_up": 10,
+            "momentum20_up": 11,
+        }.get(state_rule)
+        if momentum_column is None or matrix.shape[1] <= momentum_column:
+            raise ValueError(
+                "historical fair-value momentum state is invalid"
+            )
+        return matrix[:, momentum_column] >= 0.0
+    if state_rule == "gap_x_fair_positive":
+        if matrix.shape[1] <= 14:
+            raise ValueError(
+                "historical fair-value interaction state is invalid"
+            )
+        return matrix[:, 14] >= 0.0
+    raise ValueError("historical fair-value state rule is invalid")
+
+
+def _normalized_score_history(
+    values: pd.Series,
+    *,
+    dates: pd.Series,
+    label: str,
+) -> pd.Series:
+    """Align one unique finite dated score history to the daily dates."""
+    if not isinstance(values, pd.Series):
+        raise TypeError(f"{label}: score history must be a Series")
+    score_dates = pd.to_datetime(
+        values.index,
+        errors="raise",
+    ).normalize()
+    if score_dates.duplicated().any():
+        raise ValueError(f"{label}: score dates must be unique")
+    numeric = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(numeric).all():
+        raise ValueError(f"{label}: score history must be finite")
+    history = pd.Series(numeric, index=score_dates)
+    if not history.index.is_monotonic_increasing:
+        history = history.sort_index()
+    return history.reindex(pd.DatetimeIndex(dates)).reset_index(drop=True)
+
+
+def _curve_orientation_actions(
+    daily: pd.DataFrame,
+    scheme: dict[str, object],
+) -> pd.Series:
+    """Return the scheme-specific frozen causal curve member actions."""
+    if scheme != FROZEN_SCHEME:
+        raise ValueError("curve scheme literal mismatch")
+    direct_columns = _DIRECT_YIELD_COLUMNS
+    missing = {"date", *direct_columns}.difference(daily.columns)
+    if missing:
+        raise ValueError(
+            f"curve-orientation source is missing {sorted(missing)}"
+        )
+    dates = pd.to_datetime(
+        daily["date"],
+        errors="raise",
+    ).dt.normalize()
+    if dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise ValueError(
+            "curve-orientation dates must be unique and increasing"
+        )
+    front = pd.to_numeric(
+        daily[direct_columns[0]],
+        errors="coerce",
+    ).astype(float)
+    target = pd.to_numeric(
+        daily[direct_columns[1]],
+        errors="coerce",
+    ).astype(float)
+    back = pd.to_numeric(
+        daily[direct_columns[2]],
+        errors="coerce",
+    ).astype(float)
+
+    fair = 0.6 * front + 0.4 * back
+    gap = target - fair
+    gap_z = strict_prior_z(
+        gap,
+        window=84,
+        minimum_history=42,
+    ).to_numpy(dtype=float)
+    spread = back - front
+    raw_scores = (spread - spread.shift(42)).to_numpy(dtype=float)
+    state_mask = np.abs(gap_z) >= 0.5
+    raw_scores *= np.where(state_mask, 1.0, -1.0)
+    labels = np.sign(
+        target.shift(-1).to_numpy(dtype=float)
+        - target.to_numpy(dtype=float)
+    )
+    raw_actions = np.sign(raw_scores)
+    raw_actions[~np.isfinite(raw_actions)] = 0.0
+    edges = causal_direction_edges(
+        raw_actions,
+        labels,
+        window=42,
+        prior_strength=0.0,
+        minimum_history=int(scheme["edge_minimum_history"]),
+    )
+    scores = raw_scores * np.sign(edges)
+    thresholds = causal_rolling_quantile_thresholds(
+        scores,
+        window=252,
+        active_rate=0.55,
+    )
+    actions = np.zeros(len(scores), dtype="int64")
+    actions[scores > thresholds] = 1
+    actions[scores < -thresholds] = -1
+    result = pd.Series(
+        actions,
+        index=pd.DatetimeIndex(dates),
+        name="curve_action",
+        dtype="int64",
+    )
+    result.index.name = "feature_date"
+    return result
+
+
+def _historical_anchor_actions(
+    daily: pd.DataFrame,
+    five: pd.Series,
+    ten: pd.Series,
+) -> pd.Series:
+    """Return the shared frozen historical anchor-state member actions."""
+    dates = pd.to_datetime(
+        daily["date"],
+        errors="raise",
+    ).dt.normalize()
+    if dates.duplicated().any() or not dates.is_monotonic_increasing:
+        raise ValueError(
+            "historical anchor dates must be unique and increasing"
+        )
+    five_score = _normalized_score_history(
+        five,
+        dates=dates,
+        label="5Y10",
+    )
+    ten_score = _normalized_score_history(
+        ten,
+        dates=dates,
+        label="10Y04",
+    )
+    anchor_score = causal_anchor_transform(
+        1.0 * five_score - 1.0 * ten_score,
+        transform="delta5",
+        history_rule="strict_prior",
+    ).to_numpy(dtype=float)
+    enriched, matrix = fair_value_error_matrix(
+        daily,
+        direct_yield_columns=_DIRECT_YIELD_COLUMNS,
+        fair_value_weights=(0.6, 0.4),
+        feature_mode="error_correction_momentum",
+        z_window=84,
+    )
+    state_mask = _historical_fair_value_state_mask(
+        matrix,
+        state_rule="gap_target_same",
+    )
+    scores = anchor_score * np.where(state_mask, 1, -1)
+    thresholds = causal_rolling_quantile_thresholds(
+        scores,
+        window=42,
+        active_rate=0.60,
+    )
+    actions = np.zeros(len(scores), dtype="int64")
+    actions[scores > thresholds] = 1
+    actions[scores < -thresholds] = -1
+    result = pd.Series(
+        actions,
+        index=pd.DatetimeIndex(enriched["date"]),
+        name="anchor_action",
+        dtype="int64",
+    )
+    result.index.name = "feature_date"
+    return result
+
+
+def _weighted_vote(curve: pd.Series, anchor: pd.Series) -> pd.Series:
+    """Apply the frozen 1:2 action vote; a zero total abstains."""
+    if not isinstance(curve, pd.Series) or not isinstance(anchor, pd.Series):
+        raise TypeError("consensus members must be Series")
+    if not curve.index.equals(anchor.index):
+        raise ValueError("consensus member dates must align exactly")
+    curve_values = pd.to_numeric(curve, errors="coerce").to_numpy(dtype=float)
+    anchor_values = pd.to_numeric(
+        anchor,
+        errors="coerce",
+    ).to_numpy(dtype=float)
+    if (
+        not np.isfinite(curve_values).all()
+        or not np.isfinite(anchor_values).all()
+        or not set(np.unique(curve_values)).issubset({-1, 0, 1})
+        or not set(np.unique(anchor_values)).issubset({-1, 0, 1})
+    ):
+        raise ValueError("consensus member actions must be finite ternary")
+    actions = np.sign(
+        1 * curve_values + 2 * anchor_values
+    ).astype("int64")
+    result = pd.Series(actions, index=curve.index, dtype="int64")
+    if curve.name == anchor.name:
+        result.name = curve.name
+    return result
+
+
+def _infer_one(
+    data_dir: Path,
+    feature_date: pd.Timestamp,
+) -> dict[str, object]:
+    """Run both embedded anchors and return one frozen consensus decision."""
+    cutoff = pd.Timestamp(feature_date).normalize()
+    if pd.isna(cutoff):
+        raise ValueError("feature date is invalid")
+    with tempfile.TemporaryDirectory(prefix="embedded-7y-") as temporary:
+        run_root = Path(temporary).resolve()
+        payload_root = _extract_payload(run_root / "payload")
+        five_module, ten_module = _anchor_modules(payload_root)
+        protected_root = _materialize_cutoff_data(
+            Path(data_dir),
+            cutoff,
+            run_root / "request",
+        )
+        five_frame = _run_5y10(
+            five_module,
+            protected_root,
+            run_root / "five",
+        )
+        ten_frame = _run_10y04(
+            ten_module,
+            protected_root,
+            run_root / "ten",
+            cutoff,
+        )
+        five_score = _anchor_score(five_frame, "5Y10", cutoff)
+        ten_score = _anchor_score(ten_frame, "10Y04", cutoff)
+        daily = _read_platform_csv(
+            protected_root / "data",
+            "daily_output.csv",
+        )
+        curve = _curve_orientation_actions(daily, FROZEN_SCHEME)
+        anchor = _historical_anchor_actions(daily, five_score, ten_score)
+        action = _weighted_vote(curve, anchor)
+        if cutoff not in action.index:
+            raise ValueError("exact cutoff consensus action is required")
+        curve_action = int(curve.loc[cutoff])
+        anchor_action = int(anchor.loc[cutoff])
+        vote = 1 * curve_action + 2 * anchor_action
+        return {
+            "scheme_id": str(FROZEN_SCHEME["scheme_id"]),
+            "feature_date": cutoff.strftime("%Y-%m-%d"),
+            "curve_action": curve_action,
+            "anchor_action": anchor_action,
+            "vote": vote,
+            "action": int(action.loc[cutoff]),
+        }

@@ -37,6 +37,13 @@ REPLAY_DATA_ROOT = Path(
     "gray_lab_transfer_3Y_20260725_round6_rank_fusion/"
     "source_replay_input_real/data"
 )
+REFERENCE_RESULTS_ROOT = Path(
+    "/Users/macstudio0/Documents/liwei/outputs/"
+    "gray_lab_t1_7y_cross_family_consensus_20260726"
+)
+REFERENCE_SIGNALS = Path(
+    "/Users/macstudio0/Documents/liwei/src/gray_state_gate/signals.py"
+)
 PLATFORM_FILENAMES = (
     "daily_output.csv",
     "weekly_output.csv",
@@ -56,10 +63,16 @@ class EmbeddedRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         payload = collect_payload(SOURCE_ROOT)
-        cls.rendered_runner = render_runner(
-            get_scheme("seven_y_t1_cfc_0084_embedded_v1"),
-            payload,
-        )
+        cls.rendered_runners = {
+            scheme_id: render_runner(get_scheme(scheme_id), payload)
+            for scheme_id in (
+                "seven_y_t1_cfc_0084_embedded_v1",
+                "seven_y_t1_cfc_0156_embedded_v1",
+            )
+        }
+        cls.rendered_runner = cls.rendered_runners[
+            "seven_y_t1_cfc_0084_embedded_v1"
+        ]
         cls.first_payload_path = payload[0].relative_path
 
     def setUp(self) -> None:
@@ -219,6 +232,218 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             five_scores = module._anchor_score(five_frame, "5Y10", CUTOFF)
             ten_scores = module._anchor_score(ten_frame, "10Y04", CUTOFF)
         return five_scores, ten_scores, read_paths
+
+    def reference_phase(
+        self,
+        phase: str,
+    ) -> tuple[pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]:
+        daily = pd.read_csv(
+            REFERENCE_RESULTS_ROOT
+            / f"protected_input_{phase}/data/daily_output.csv",
+            low_memory=False,
+        )
+
+        def anchor_scores(anchor: str) -> pd.Series:
+            frame = pd.read_csv(
+                REFERENCE_RESULTS_ROOT
+                / f"source_replay_{phase}/source_{anchor}/predictions.csv",
+                usecols=["date", "prob_up"],
+            )
+            dates = pd.to_datetime(frame["date"], errors="raise").dt.normalize()
+            scores = 2.0 * pd.to_numeric(
+                frame["prob_up"], errors="raise"
+            ) - 1.0
+            result = pd.Series(
+                scores.to_numpy(dtype="float64"),
+                index=dates,
+                name=anchor,
+            )
+            result = result.groupby(level=0).last().sort_index()
+            result.index.name = "feature_date"
+            return result
+
+        predictions = pd.read_csv(
+            REFERENCE_RESULTS_ROOT / f"{phase}_predictions.csv",
+            usecols=[
+                "candidate_id",
+                "feature_date",
+                "action",
+                "score",
+                "front_z",
+                "back_z",
+            ],
+        )
+        predictions["feature_date"] = pd.to_datetime(
+            predictions["feature_date"],
+            errors="raise",
+        ).dt.normalize()
+        return (
+            daily,
+            anchor_scores("5y10"),
+            anchor_scores("10y04"),
+            predictions,
+        )
+
+    def test_weighted_vote_is_one_to_two_with_abstain_ties(self) -> None:
+        module = self.load_generated_module()
+        curve = pd.Series([1, -1, 1, 0])
+        anchor = pd.Series([1, 1, -1, 0])
+        expected = pd.Series([1, 1, -1, 0], dtype="int64")
+
+        pd.testing.assert_series_equal(
+            module._weighted_vote(curve, anchor),
+            expected,
+        )
+
+    def test_scheme_curve_vectors_match_each_exact_audited_golden(
+        self,
+    ) -> None:
+        modules = {
+            scheme_id: self.load_generated_module(script)
+            for scheme_id, script in self.rendered_runners.items()
+        }
+        expected_ids = {
+            "seven_y_t1_cfc_0084_embedded_v1": "7y-cfc-0084",
+            "seven_y_t1_cfc_0156_embedded_v1": "7y-cfc-0156",
+        }
+        self.assertEqual(
+            modules["seven_y_t1_cfc_0084_embedded_v1"].FROZEN_SCHEME[
+                "edge_minimum_history"
+            ],
+            21,
+        )
+        self.assertEqual(
+            modules["seven_y_t1_cfc_0156_embedded_v1"].FROZEN_SCHEME[
+                "edge_minimum_history"
+            ],
+            14,
+        )
+        for phase in ("sim", "real"):
+            daily, _, _, predictions = self.reference_phase(phase)
+            phase_results: dict[str, pd.Series] = {}
+            for scheme_id, module in modules.items():
+                expected = predictions.loc[
+                    predictions["candidate_id"] == expected_ids[scheme_id],
+                    ["feature_date", "front_z"],
+                ].set_index("feature_date")["front_z"].astype("int64")
+                actual = module._curve_orientation_actions(
+                    daily,
+                    module.FROZEN_SCHEME,
+                ).reindex(expected.index)
+                pd.testing.assert_series_equal(
+                    actual.astype("int64"),
+                    expected,
+                    check_names=False,
+                )
+                phase_results[scheme_id] = actual
+            pd.testing.assert_series_equal(
+                phase_results["seven_y_t1_cfc_0084_embedded_v1"],
+                phase_results["seven_y_t1_cfc_0156_embedded_v1"],
+            )
+
+    def test_hfas_vote_and_action_vectors_match_audited_goldens(self) -> None:
+        modules = {
+            scheme_id: self.load_generated_module(script)
+            for scheme_id, script in self.rendered_runners.items()
+        }
+        expected_ids = {
+            "seven_y_t1_cfc_0084_embedded_v1": "7y-cfc-0084",
+            "seven_y_t1_cfc_0156_embedded_v1": "7y-cfc-0156",
+        }
+        for phase in ("sim", "real"):
+            daily, five, ten, predictions = self.reference_phase(phase)
+            for scheme_id, module in modules.items():
+                expected = predictions.loc[
+                    predictions["candidate_id"] == expected_ids[scheme_id]
+                ].set_index("feature_date")
+                curve = module._curve_orientation_actions(
+                    daily,
+                    module.FROZEN_SCHEME,
+                )
+                anchor = module._historical_anchor_actions(daily, five, ten)
+                vote = curve.astype("int64") + 2 * anchor.astype("int64")
+                action = module._weighted_vote(curve, anchor)
+                selected = expected.index
+                pd.testing.assert_series_equal(
+                    anchor.reindex(selected).astype("int64"),
+                    expected["back_z"].astype("int64"),
+                    check_names=False,
+                )
+                pd.testing.assert_series_equal(
+                    vote.reindex(selected).astype("int64"),
+                    expected["score"].astype("int64"),
+                    check_names=False,
+                )
+                pd.testing.assert_series_equal(
+                    action.reindex(selected).astype("int64"),
+                    expected["action"].astype("int64"),
+                    check_names=False,
+                )
+
+    def test_rendered_runner_contains_only_its_own_member_hashes(self) -> None:
+        own = {
+            "seven_y_t1_cfc_0084_embedded_v1": (
+                "7y-cfc-0084",
+                "69bf3a432784639d",
+                "7y-fcco-08756",
+                "e80445063865243d",
+            ),
+            "seven_y_t1_cfc_0156_embedded_v1": (
+                "7y-cfc-0156",
+                "ad0d94dc15febd8a",
+                "7y-cco-03620",
+                "182131092906070b",
+            ),
+        }
+        for scheme_id, script in self.rendered_runners.items():
+            other_id = next(value for value in own if value != scheme_id)
+            for literal in own[scheme_id]:
+                self.assertIn(literal, script)
+            for literal in own[other_id]:
+                self.assertNotIn(literal, script)
+            self.assertIn("7y-hfas-10173", script)
+            self.assertIn("a8cbf01f35327bb7", script)
+            self.assertNotIn(str(REFERENCE_SIGNALS), script)
+
+    def test_infer_one_matches_audited_cutoff_consensus(self) -> None:
+        module = self.load_generated_module()
+        source = self.tempdir / "infer-platform"
+        self.write_replay_fixture(
+            source,
+            append_one_future_daily_row=False,
+        )
+        reference = pd.read_csv(
+            REFERENCE_RESULTS_ROOT / "real_predictions.csv",
+            usecols=[
+                "candidate_id",
+                "feature_date",
+                "action",
+                "score",
+                "front_z",
+                "back_z",
+            ],
+        )
+        selected = reference.loc[
+            (reference["candidate_id"] == "7y-cfc-0084")
+            & (
+                pd.to_datetime(reference["feature_date"], errors="raise")
+                == CUTOFF
+            )
+        ].iloc[0]
+
+        result = module._infer_one(source, CUTOFF)
+
+        self.assertEqual(
+            result,
+            {
+                "scheme_id": "seven_y_t1_cfc_0084_embedded_v1",
+                "feature_date": CUTOFF.strftime("%Y-%m-%d"),
+                "curve_action": int(selected["front_z"]),
+                "anchor_action": int(selected["back_z"]),
+                "vote": int(selected["score"]),
+                "action": int(selected["action"]),
+            },
+        )
 
     def test_materializes_exact_causal_platform_cutoff(self) -> None:
         module = self.load_generated_module()
