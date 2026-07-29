@@ -13,3 +13,4 @@
 | [因子排行文本溢出修复](2026-07-27-factor-ranking-overflow.md) | 固定排行榜列宽并约束长方案名和备注 |
 | [全部 Active 方案实盘信号 MVP](2026-07-28-all-active-signal-production-mvp.md) | 补齐真实缺口并以现有 ledger 自动生产到期方案 |
 | [Liwei 日频增量缓存 MVP](2026-07-29-liwei-daily-incremental-cache-mvp.md) | 有效输入投影、family 单发布者、旧缓存首次 family-local fallback 与日常增量验证 |
+| [仓库文档保守清理](2026-07-29-conservative-document-cleanup.md) | 删除历史兼容页和 archive 副本，修正现行入口、索引和文档门禁 |
