@@ -87,17 +87,23 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         append_one_future_daily_row: bool,
     ) -> None:
         destination.mkdir(parents=True)
-        calendar = pd.read_csv(REPLAY_DATA_ROOT / "api_wind_date.csv")
-        calendar_dates = pd.to_datetime(calendar["rdate"], errors="raise")
-        calendar = calendar.loc[calendar_dates <= CUTOFF].copy()
-        calendar.to_csv(destination / "api_wind_date.csv", index=False)
-
         daily = pd.read_csv(
             REPLAY_DATA_ROOT / "daily_output.csv",
             low_memory=False,
         )
         daily_dates = pd.to_datetime(daily["date"], errors="raise")
-        cutoff_mask = daily_dates <= CUTOFF
+        direct_yields = daily.loc[
+            :,
+            ("TB5YWI0C", "TB7YWI0C", "TB0YWI0C"),
+        ].apply(pd.to_numeric, errors="coerce")
+        finite_rows = pd.Series(
+            direct_yields.notna().all(axis=1)
+            & direct_yields.apply(lambda values: values.map(math.isfinite)).all(axis=1),
+            index=daily.index,
+        )
+        last_nonfinite = finite_rows.loc[~finite_rows].index[-1]
+        history_start = daily_dates.iloc[last_nonfinite + 1]
+        cutoff_mask = daily_dates.between(history_start, CUTOFF)
         if append_one_future_daily_row:
             first_future_index = daily_dates.loc[daily_dates > CUTOFF].index[0]
             cutoff_mask.loc[first_future_index] = True
@@ -105,6 +111,13 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             destination / "daily_output.csv",
             index=False,
         )
+
+        calendar = pd.read_csv(REPLAY_DATA_ROOT / "api_wind_date.csv")
+        calendar_dates = pd.to_datetime(calendar["rdate"], errors="raise")
+        calendar = calendar.loc[
+            calendar_dates.between(history_start, CUTOFF)
+        ].copy()
+        calendar.to_csv(destination / "api_wind_date.csv", index=False)
 
         weekly = pd.read_csv(
             REPLAY_DATA_ROOT / "weekly_output.csv",
@@ -119,7 +132,12 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             REPLAY_DATA_ROOT / "monthly_output.csv",
             low_memory=False,
         )
-        monthly.loc[monthly["month_id"] <= 202507].to_csv(
+        monthly.loc[
+            monthly["month_id"].between(
+                int(history_start.strftime("%Y%m")),
+                202507,
+            )
+        ].to_csv(
             destination / "monthly_output.csv",
             index=False,
         )
@@ -241,6 +259,71 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         self.assertEqual(weekly["week_id"].tolist(), [202529])
         self.assertEqual(monthly["month_id"].tolist(), [202506, 202507])
 
+    def test_post_cutoff_disorder_in_each_stream_is_ignored(self) -> None:
+        module = self.load_generated_module()
+        baseline_source = self.tempdir / "baseline-platform"
+        self.write_minimal_platform_fixture(baseline_source)
+        baseline_root = module._materialize_cutoff_data(
+            baseline_source,
+            CUTOFF,
+            self.tempdir / "baseline-request",
+        )
+        baseline = {
+            filename: pd.read_csv(baseline_root / "data" / filename)
+            for filename in PLATFORM_FILENAMES
+        }
+        future_disorder = {
+            "daily_output.csv": pd.DataFrame(
+                {
+                    "date": ["2025-07-17", "2025-07-16", "2025-07-16"],
+                    "TB5YWI0C": [9.0, 9.0, 9.0],
+                    "TB7YWI0C": [math.inf, 9.0, 9.0],
+                    "TB0YWI0C": [9.0, 9.0, 9.0],
+                }
+            ),
+            "api_wind_date.csv": pd.DataFrame(
+                {
+                    "rdate": ["2025-07-17", "2025-07-16", "2025-07-16"],
+                    "week_id": [202530, 202530, 202530],
+                }
+            ),
+            "weekly_output.csv": pd.DataFrame(
+                {
+                    "week_id": [202531, 202530, 202530],
+                    "factor": [9.0, 9.0, 9.0],
+                }
+            ),
+            "monthly_output.csv": pd.DataFrame(
+                {
+                    "month_id": [202509, 202508, 202508],
+                    "factor": [9.0, 9.0, 9.0],
+                }
+            ),
+        }
+
+        for index, (filename, future_rows) in enumerate(
+            future_disorder.items()
+        ):
+            with self.subTest(filename=filename):
+                source = self.tempdir / f"future-disorder-{index}"
+                self.write_minimal_platform_fixture(source)
+                future_rows.to_csv(
+                    source / filename,
+                    mode="a",
+                    header=False,
+                    index=False,
+                )
+                protected = module._materialize_cutoff_data(
+                    source,
+                    CUTOFF,
+                    self.tempdir / f"future-disorder-request-{index}",
+                )
+                for output_filename in PLATFORM_FILENAMES:
+                    pd.testing.assert_frame_equal(
+                        pd.read_csv(protected / "data" / output_filename),
+                        baseline[output_filename],
+                    )
+
     def test_materialization_fails_closed_on_invalid_inputs(self) -> None:
         module = self.load_generated_module()
 
@@ -276,6 +359,25 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                 CUTOFF,
                 self.tempdir / "nonfinite-request",
             )
+
+    def test_materialization_rejects_nonfinite_retained_yield_history(self) -> None:
+        module = self.load_generated_module()
+        invalid_values = (float("nan"), "not-a-number")
+        for index, invalid in enumerate(invalid_values):
+            with self.subTest(invalid=invalid):
+                source = self.tempdir / f"retained-nonfinite-{index}"
+                self.write_minimal_platform_fixture(source)
+                daily = pd.read_csv(source / "daily_output.csv")
+                if isinstance(invalid, str):
+                    daily["TB5YWI0C"] = daily["TB5YWI0C"].astype(object)
+                daily.loc[daily.index[0], "TB5YWI0C"] = invalid
+                daily.to_csv(source / "daily_output.csv", index=False)
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    module._materialize_cutoff_data(
+                        source,
+                        CUTOFF,
+                        self.tempdir / f"retained-nonfinite-request-{index}",
+                    )
 
     def test_future_rows_do_not_change_result(self) -> None:
         without_future = self.tempdir / "without-future"

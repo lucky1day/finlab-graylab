@@ -390,30 +390,24 @@ def _normalized_dates(
     column: str,
     filename: str,
 ) -> pd.Series:
-    """Parse a unique, increasing date column without silently reordering it."""
+    """Parse normalized dates so the caller can apply its causal cutoff."""
     if column not in frame.columns:
         raise ValueError(f"{filename}: missing required column {column}")
     try:
         dates = pd.to_datetime(frame[column], errors="raise").dt.normalize()
     except Exception as error:
         raise ValueError(f"{filename}: invalid {column}") from error
-    if (
-        dates.isna().any()
-        or dates.duplicated().any()
-        or not dates.is_monotonic_increasing
-    ):
-        raise ValueError(f"{filename}: {column} must be strictly monotonic")
+    if dates.isna().any():
+        raise ValueError(f"{filename}: invalid {column}")
     return dates
 
 
-def _monotonic_integer_ids(
+def _integer_ids(
     frame: pd.DataFrame,
     column: str,
     filename: str,
-    *,
-    unique: bool = True,
 ) -> pd.Series:
-    """Parse unique, increasing integer period identifiers."""
+    """Parse integer period identifiers so causal filtering can happen first."""
     if column not in frame.columns:
         raise ValueError(f"{filename}: missing required column {column}")
     try:
@@ -424,11 +418,25 @@ def _monotonic_integer_ids(
     if (
         not np.isfinite(numeric.to_numpy(dtype="float64")).all()
         or not np.equal(numeric.to_numpy(), values.to_numpy()).all()
+    ):
+        raise ValueError(f"{filename}: invalid {column}")
+    return values
+
+
+def _validate_monotonic(
+    values: pd.Series,
+    column: str,
+    filename: str,
+    *,
+    unique: bool = True,
+) -> None:
+    """Validate ordering only after the request's causal view is selected."""
+    if (
+        values.isna().any()
         or (unique and values.duplicated().any())
         or not values.is_monotonic_increasing
     ):
         raise ValueError(f"{filename}: {column} must be strictly monotonic")
-    return values
 
 
 def _write_private_csv(frame: pd.DataFrame, path: Path) -> None:
@@ -458,18 +466,17 @@ def _materialize_cutoff_data(
         "rdate",
         "api_wind_date.csv",
     )
-    weekly_ids = _monotonic_integer_ids(
+    weekly_ids = _integer_ids(
         weekly,
         "week_id",
         "weekly_output.csv",
     )
-    calendar_week_ids = _monotonic_integer_ids(
+    calendar_week_ids = _integer_ids(
         calendar,
         "week_id",
         "api_wind_date.csv",
-        unique=False,
     )
-    monthly_ids = _monotonic_integer_ids(
+    monthly_ids = _integer_ids(
         monthly,
         "month_id",
         "monthly_output.csv",
@@ -483,11 +490,6 @@ def _materialize_cutoff_data(
             "daily_output.csv: missing required columns "
             + ", ".join(missing_yields)
         )
-    numeric_yields = daily.loc[:, _DIRECT_YIELD_COLUMNS].apply(
-        pd.to_numeric,
-        errors="coerce",
-    )
-
     daily = daily.loc[daily_dates <= cutoff].copy()
     daily_dates = daily_dates.loc[daily.index]
     calendar = calendar.loc[calendar_dates <= cutoff].copy()
@@ -500,8 +502,28 @@ def _materialize_cutoff_data(
     monthly = monthly.loc[monthly_ids <= cutoff_month].copy()
     monthly_ids = monthly_ids.loc[monthly.index]
 
-    retained_yields = numeric_yields.loc[daily.index]
-    if np.isinf(retained_yields.to_numpy(dtype="float64")).any():
+    _validate_monotonic(daily_dates, "date", "daily_output.csv")
+    _validate_monotonic(
+        calendar_dates,
+        "rdate",
+        "api_wind_date.csv",
+    )
+    _validate_monotonic(
+        calendar_week_ids,
+        "week_id",
+        "api_wind_date.csv",
+        unique=False,
+    )
+    _validate_monotonic(weekly_ids, "week_id", "weekly_output.csv")
+    _validate_monotonic(monthly_ids, "month_id", "monthly_output.csv")
+
+    retained_yields = daily.loc[:, _DIRECT_YIELD_COLUMNS].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+    if not np.isfinite(
+        retained_yields.to_numpy(dtype="float64")
+    ).all():
         raise ValueError("daily_output.csv: direct yields must be finite")
     if daily.empty or daily_dates.iloc[-1] != cutoff:
         raise ValueError("daily_output.csv: exact cutoff coverage is required")
@@ -514,12 +536,6 @@ def _materialize_cutoff_data(
         raise ValueError("weekly_output.csv: exact cutoff coverage is required")
     if monthly.empty or monthly_ids.iloc[-1] != cutoff_month:
         raise ValueError("monthly_output.csv: exact cutoff coverage is required")
-
-    cutoff_values = numeric_yields.loc[daily.index[-1]].to_numpy(
-        dtype="float64"
-    )
-    if not np.isfinite(cutoff_values).all():
-        raise ValueError("daily_output.csv: cutoff direct yields must be finite")
 
     daily["date"] = daily_dates.dt.strftime("%Y-%m-%d")
     calendar["rdate"] = calendar_dates.dt.strftime("%Y-%m-%d")
