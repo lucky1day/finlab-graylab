@@ -888,6 +888,75 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         self.assertFalse(output_path.exists())
         self.assertNotIn("native python diagnostic", completed.stderr)
 
+    def test_predict_rejects_duplicate_json_member_without_output(self) -> None:
+        runner = self.write_cli_test_runner()
+        data_dir = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(data_dir)
+        request_path = self.tempdir / "duplicate-member.json"
+        request_path.write_text(
+            (
+                '{"request_id":"duplicate-json",'
+                '"predict_date":"2025-07-15",'
+                '"predict_date":"2025-07-15",'
+                '"feature_date":"2025-07-15",'
+                '"target_date":"2025-07-16",'
+                '"daily_cutoff_key":"2025-07-15",'
+                '"weekly_cutoff_key":"202529",'
+                '"monthly_cutoff_key":"202507"}'
+            ),
+            encoding="utf-8",
+        )
+        output_path = self.tempdir / "must-not-exist.json"
+
+        completed = self.run_cli(
+            runner,
+            "predict",
+            "--request",
+            request_path,
+            "--data-dir",
+            data_dir,
+            "--output",
+            output_path,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "")
+        self.assertFalse(output_path.exists())
+        self.assertNotIn("native python diagnostic", completed.stderr)
+        self.assertNotIn("native fd diagnostic", completed.stderr)
+
+    def test_preexisting_output_is_rejected_before_inference_and_preserved(
+        self,
+    ) -> None:
+        runner = self.write_cli_test_runner()
+        data_dir = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(data_dir)
+        request_path = self.tempdir / "request.json"
+        request_path.write_text(
+            json.dumps(self.platform_request("existing-output")),
+            encoding="utf-8",
+        )
+        output_path = self.tempdir / "unrelated-existing.json"
+        original = b"unrelated pre-existing data\x00\xff"
+        output_path.write_bytes(original)
+
+        completed = self.run_cli(
+            runner,
+            "predict",
+            "--request",
+            request_path,
+            "--data-dir",
+            data_dir,
+            "--output",
+            output_path,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(output_path.read_bytes(), original)
+        self.assertNotIn("native python diagnostic", completed.stderr)
+        self.assertNotIn("native fd diagnostic", completed.stderr)
+
     def test_request_validation_is_strict_and_fail_closed(self) -> None:
         module = self.load_generated_module()
         data_dir = self.tempdir / "platform"

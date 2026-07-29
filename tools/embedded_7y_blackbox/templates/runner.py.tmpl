@@ -1374,7 +1374,7 @@ def _validate_request(
         request["daily_cutoff_key"],
         "daily_cutoff_key",
     )
-    weekly_cutoff = _strict_period(
+    _strict_period(
         request["weekly_cutoff_key"],
         "weekly_cutoff_key",
     )
@@ -1394,8 +1394,6 @@ def _validate_request(
         raise ValueError(
             "monthly_cutoff_key is inconsistent with feature_date"
         )
-    if not weekly_cutoff:
-        raise ValueError("weekly_cutoff_key is invalid")
     return request, feature_date
 
 
@@ -1535,10 +1533,25 @@ def _business_stdout_to_stderr():
         os.close(saved_stdout)
 
 
+def _strict_json_object(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    """Build one JSON object while rejecting every duplicate member name."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON member: {key}")
+        result[key] = value
+    return result
+
+
 def _read_predict_request(path: Path) -> list[dict[str, object]]:
     """Read one JSON Request without accepting a non-object payload."""
     with open(path, "r", encoding="utf-8") as handle:
-        payload = json.load(handle)
+        payload = json.load(
+            handle,
+            object_pairs_hook=_strict_json_object,
+        )
     if not isinstance(payload, dict):
         raise TypeError("predict Request must be one JSON object")
     return [payload]
@@ -1581,14 +1594,21 @@ def _csv_results(results: list[dict[str, object]]) -> bytes:
     return buffer.getvalue().encode("utf-8")
 
 
-def _atomic_write(output: Path, payload: bytes) -> None:
-    """Durably write a same-directory temporary file, then replace output."""
+def _validate_output_destination(output: Path) -> None:
+    """Require the SOP's absent output path without modifying existing data."""
     output = Path(output)
     if output.exists() or output.is_symlink():
         raise FileExistsError("output path must not already exist")
     parent = output.parent
     if parent.is_symlink() or not parent.is_dir():
         raise ValueError("output parent must be an existing directory")
+
+
+def _atomic_write(output: Path, payload: bytes) -> None:
+    """Durably write a same-directory temporary file, then replace output."""
+    output = Path(output)
+    _validate_output_destination(output)
+    parent = output.parent
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{output.name}.",
         suffix=".tmp",
@@ -1632,6 +1652,8 @@ def main(arguments: list[str] | None = None) -> int:
     parsed = _argument_parser().parse_args(arguments)
     try:
         with _business_stdout_to_stderr():
+            output = Path(parsed.output)
+            _validate_output_destination(output)
             if parsed.command == "predict":
                 requests = _read_predict_request(Path(parsed.request))
                 serializer = _json_result
@@ -1640,7 +1662,7 @@ def main(arguments: list[str] | None = None) -> int:
                 serializer = _csv_results
             results = _execute_requests(requests, Path(parsed.data_dir))
             payload = serializer(results)
-            _atomic_write(Path(parsed.output), payload)
+            _atomic_write(output, payload)
         return 0
     except Exception as error:
         print(
