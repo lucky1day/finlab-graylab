@@ -13,3 +13,4 @@
 | [因子排行文本溢出](2026-07-27-factor-ranking-overflow-design.md) | 方案名、准确率和备注列的稳定布局契约 |
 | [全部 Active 方案实盘信号 MVP](2026-07-28-all-active-signal-production-mvp-design.md) | 44 target 自然频率巡检、日频 25/29 ledger 与直接 capacity admission |
 | [Liwei 日频增量缓存 MVP](2026-07-29-liwei-daily-incremental-cache-mvp-design.md) | 有效输入投影、旧缓存首次 family-local fallback、唯一 prewarmer 与日常增量门禁 |
+| [仓库文档保守清理](2026-07-29-conservative-document-cleanup-design.md) | 第一阶段只删除历史兼容页和 archive 副本，并同步修正入口、索引与文档门禁 |
