@@ -25,7 +25,7 @@ https://bond.finailab.cn/bond-factor-lab/
 
 ## 当前状态权威与 operator guard
 
-production 的 migration、rollout、服务加载、epoch、cache、admission、逐日完成数、
+production 的 migration、rollout、服务加载、epoch、cache、direct authority、逐日完成数、
 历史缺口和 occurrence 证据只在[当前状态](../docs/CURRENT_STATUS.md)维护；本 runbook
 不复制任何动态值。operator 每次执行前必须读取该页，并以受控只读探针核对现场；
 若当前状态列出的任一待切换前置尚未闭合，必须 fail-closed，不得继续本手册的

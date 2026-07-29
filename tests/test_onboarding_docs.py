@@ -761,7 +761,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         ):
             self.assertNotIn(retired_gate, combined)
 
-    def test_legacy_capacity_admission_is_only_a_transition_blocker(
+    def test_daily_runtime_uses_direct_authority_without_legacy_admission(
         self,
     ) -> None:
         current = CURRENT_STATUS.read_text(encoding="utf-8")
@@ -774,30 +774,26 @@ class OnboardingDocumentationTests(unittest.TestCase):
         operator = (
             PROJECT_ROOT / "scripts" / "daily_coordinator_epoch_operator.py"
         ).read_text(encoding="utf-8")
-        admission = json.loads(
-            (
-                PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
-            ).read_text(encoding="utf-8")
+        admission_path = (
+            PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
         )
 
-        self.assertIn("services.bind_capacity_admission(admission)", runtime)
-        self.assertIn("require_current_capacity_admission", runtime)
-        self.assertIn("require_trusted_current_capacity_admission", operator)
-        self.assertIn("_validate_capacity_admission(admission)", operator)
-        self.assertEqual(admission["status"], "BLOCKED")
+        self.assertFalse(admission_path.exists())
+        self.assertNotIn("bind_capacity_admission", runtime)
+        self.assertNotIn("require_current_capacity_admission", runtime)
+        self.assertNotIn("require_trusted_current_capacity_admission", operator)
+        self.assertNotIn("_validate_capacity_admission", operator)
+        self.assertIn("bind_direct_cache_authorities", runtime)
+        self.assertIn("revalidate_direct_authority", runtime)
 
-        self.assertIn("旧 capacity admission 不得成为目标生产门禁", current)
-        self.assertIn("移除 `scheduler.daily_runtime` 的旧 capacity admission", todo)
-        self.assertIn("禁止 cutover", todo)
-        self.assertIn("cutover 代码门禁", deploy)
-        self.assertIn("测试\n证明这些依赖已经移除", deploy)
-        self.assertIn("本文不提供、也不授权旧 admission 的签名", deploy)
+        self.assertIn("开发分支已删除旧 capacity admission JSON", current)
+        self.assertIn("旧 admission 文件已删除", current)
+        self.assertNotIn("旧 capacity admission", todo)
+        self.assertIn("任一待切换前置尚未闭合", deploy)
+        self.assertIn("必须 fail-closed", deploy)
         self.assertNotIn("capacity admission", sla)
-        for text in (current, todo, deploy):
-            self.assertIn("旧", text)
-            self.assertIn("移除", text)
-            self.assertIn("目标", text)
-            self.assertIn("cutover", text)
+        self.assertIn("旧 admission 依赖虽已从开发代码移除", current)
+        self.assertIn("cutover 必须 fail-closed", current)
 
     def test_current_status_separates_target_from_installed_facts(self) -> None:
         current = CURRENT_STATUS.read_text(encoding="utf-8")

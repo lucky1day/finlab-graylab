@@ -20,24 +20,18 @@ signal。日常生产必须使用 warm cache；不新增冷启动压力门禁、
 
 按顺序完成：
 
-1. 在后续代码 PR 移除 `scheduler.daily_runtime` 的旧 capacity admission
-   binding/revalidation、epoch operator admission probe 和 admission cache
-   qualification 依赖，以冻结 policy、输入/cache identity、确定性和标准结果的
-   直接校验替代。`deploy/daily_capacity_admission_v2.json=BLOCKED` 期间及代码/
-   测试/状态未同步前必须 fail-closed，禁止 cutover；不得恢复旧签名仪式或把该
-   过渡阻塞写成目标门禁。
-2. 保留 2026-07-30 “尚无真实 ledger occurrence 证据”的事实；不得按日期补造
+1. 保留 2026-07-30 “尚无真实 ledger occurrence 证据”的事实；不得按日期补造
    25 item、29 target、receipt 或 `scheduled_live` provenance。完成切换后的未来
    首个交易日，才核对真实 occurrence 的 winning run fence、prediction linkage、
    target receipt、visibility 和 write-once SLA。
-3. 对 Liwei 7 个 schema 3 family 执行 production 一次性安全 bootstrap，再核验
+2. 对 Liwei 7 个 schema 3 family 执行 production 一次性安全 bootstrap，再核验
    exact spec/publisher/consumer、parent lineage、单调 coverage、
    manifest/payload hash、安全 root、`hit/append/suffix` 和 consumer 零写。当前
    production cache 尚未 bootstrap；隔离 replay cache 不得冒充生产 cache。
-4. 对 50 条历史日频缺口生成受控 insert-only 计划并分批复核：7/23 为 1、7/24
+3. 对 50 条历史日频缺口生成受控 insert-only 计划并分批复核：7/23 为 1、7/24
    为 1、7/27 为 2、7/28 为 17、7/29 为 29；T+1 共 5、T+5 共 45。全部只能
    写 `gray_live`，不得倒签 `scheduled_live`；这 50 条当前均尚未写入。
-5. production 当前停在 017；先经 canonical CLI 应用 migration 018，再在授权
+4. production 当前停在 017；先经 canonical CLI 应用 migration 018，再在授权
    维护窗口执行 machine-global epoch 与 ledger cutover。切换前 backend 保持 legacy/
    HTTP 200，scheduler 与 v2-preflight 保持未加载；切换成功后只启动一个
    scheduler，并核验 `current_run_id + attempt_no` fence、ProcessStartGuard、当天
