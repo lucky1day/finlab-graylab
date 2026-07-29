@@ -5,21 +5,28 @@ import json
 from typing import Any, Callable
 
 from scheduler.scheme_runner import run_scheme
+from shared.liwei_0616_cache_contract import (
+    APPROVED_PHASE_A_CACHE_PUBLISHERS,
+)
 
 
-# 每个 liwei_0616 cache family 取一个代表 adapter。预热按 family 而不是按 tenor
-# 组织：同一 tenor 下可以有多个互不共享 Phase-A cache 的 family，漏掉任何一个都会
-# 让该 family 只能在日频窗口内冷重建。
-# 该清单必须覆盖 `schemes/*/inference.py` 中出现的全部 CACHE_FAMILY，
-# 由 tests.test_prewarm_liwei_0616_phase_a_cache 静态守护。
-PREWARM_SCHEMES = (
-    "liwei_0616_cons_sda_k3_div_k10",           # liwei_0616_5y_v31
-    "liwei_0616_5y_auc_static_all_k3_div_k10",  # liwei_0616_5y_allk10_auc_static_v1
-    "liwei_0616_5y_auc_yearly_all_k3_div_k10",  # liwei_0616_5y_allk10_auc_yearly_v1
-    "liwei_0616_5y_ic_yearly_all_k3_div_k10",   # liwei_0616_5y_allk10_ic_yearly_v1
-    "liwei_0616_7y01_cons_say_k3_div_k10",      # liwei_0616_7y01_v31
-    "liwei_0616_7y03_cons_all_k3_div_k8",       # liwei_0616_7y03_v31
-    "liwei_0616_10y02_cons_say_k3_div_k5",      # liwei_0616_10y_v61
+# 预热必须逐 cache family 且用该 family 的 **publisher** 运行。
+#
+# 两条约束缺一不可：
+#   1. 按 family 而不是按 tenor —— 同一 tenor 下可以有多个互不共享 Phase-A cache
+#      的 family，漏掉任何一个都会让它只能在日频窗口内冷重建；
+#   2. 代表必须是 publisher —— 只有 publisher 能建并原子切换 current；消费者走
+#      `_validated_consumer_hit`，在 publisher 尚未刷新时直接抛
+#      `CACHE_PUBLISHER_REQUIRED` 硬失败，永远预热不出缓存。
+#
+# 因此清单直接由 `APPROVED_PHASE_A_CACHE_PUBLISHERS` 派生，杜绝手工维护漂移；
+# 顺序按 family 名固定，保证可复现。由
+# tests.test_prewarm_liwei_0616_phase_a_cache 静态守护。
+PREWARM_SCHEMES: tuple[str, ...] = tuple(
+    publisher
+    for _family, (_tenor, publisher) in sorted(
+        APPROVED_PHASE_A_CACHE_PUBLISHERS.items()
+    )
 )
 
 

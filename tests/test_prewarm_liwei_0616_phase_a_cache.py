@@ -66,6 +66,52 @@ class PrewarmLiwei0616PhaseACacheTests(unittest.TestCase):
             "每个 cache family 只应有一个预热代表，避免重复冷启动开销",
         )
 
+    def test_prewarm_representative_is_the_family_publisher(self) -> None:
+        """代表必须是该 family 注册的 publisher，消费者永远预热不出缓存。
+
+        只有 publisher 能建并原子切换 current；消费者走
+        `_validated_consumer_hit`，publisher 未刷新时直接抛
+        `CACHE_PUBLISHER_REQUIRED` 硬失败。用消费者当预热代表等于该 family
+        永远无法 bootstrap，只能在日频窗口内冷重建。
+        """
+        from shared.liwei_0616_cache_contract import (
+            APPROVED_PHASE_A_CACHE_PUBLISHERS,
+        )
+
+        families = _declared_cache_families()
+        expected = {
+            publisher: family
+            for family, (_tenor, publisher) in (
+                APPROVED_PHASE_A_CACHE_PUBLISHERS.items()
+            )
+        }
+
+        self.assertEqual(
+            sorted(PREWARM_SCHEMES),
+            sorted(expected),
+            "预热代表与注册 publisher 不一致",
+        )
+
+        for scheme_id in PREWARM_SCHEMES:
+            with self.subTest(scheme_id=scheme_id):
+                self.assertIn(
+                    scheme_id,
+                    expected,
+                    f"{scheme_id} 不是任何 family 的 publisher",
+                )
+                self.assertEqual(
+                    families.get(scheme_id),
+                    expected[scheme_id],
+                    f"{scheme_id} 声明的 CACHE_FAMILY 与其注册 publisher "
+                    "身份所属 family 不一致",
+                )
+
+        self.assertEqual(
+            set(APPROVED_PHASE_A_CACHE_PUBLISHERS),
+            set(families.values()),
+            "publisher 注册表与方案声明的 CACHE_FAMILY 集合不一致",
+        )
+
     def test_prewarm_runs_representative_schemes_without_repository(self) -> None:
         calls: list[tuple[str, str]] = []
 
