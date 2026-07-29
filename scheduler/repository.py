@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -7477,6 +7478,14 @@ def _validate_cache_qualified_completion(
 ) -> None:
     """在提交事务内二次复核冻结 qualification 与 cache acceptance 文件。"""
     policy = _stored_json_mapping(occurrence, "policy_json")
+    if "direct_cache_authorities" in policy:
+        _validate_direct_cache_authority_completion(
+            policy=policy,
+            item=item,
+            generation=generation,
+            records=records,
+        )
+        return
     scheme_id = str(item["base_scheme_id"])
     raw_qualifications = policy.get("cache_use_qualifications")
     raw_schemes = policy.get("schemes")
@@ -7579,6 +7588,729 @@ def _validate_cache_qualified_completion(
         raise RuntimeError(
             "cache-qualified completion contains no records"
         )
+
+
+_DIRECT_CACHE_AUTHORITY_FIELDS = frozenset(
+    {"schema_version", "storage_root", "contract", "consumers"}
+)
+_DIRECT_CACHE_CONTRACT = {
+    "manifest_schema_version": 3,
+    "input_state_schema_version": 3,
+    "cache_abi_version": "liwei_0616.phase_a.v1",
+    "projection_schema_version":
+        "liwei-0616-auxiliary-dependency-projection-v1",
+    "native_generation_type": "native_source",
+    "native_generation_schema_version": "native-generation-v1",
+    "native_exporter_version": "native-generation-exporter-v1",
+}
+_DIRECT_CACHE_CONSUMER_FIELDS = frozenset(
+    {
+        "base_scheme_id",
+        "cache_consumer_id",
+        "scheme_version",
+        "code_sha256",
+        "config_sha256",
+        "cache_group",
+        "spec_fingerprint",
+        "publisher_consumer_id",
+        "cache_family",
+        "tenor",
+        "access_mode",
+        "cache_adapter_sha256",
+        "cache_core_sha256",
+        "projection_proof_identity_sha256",
+        "daily_dependency_lookback_rows",
+        "daily_dependency_proof",
+    }
+)
+_DIRECT_CACHE_PUBLISHER_BUILD_STATES = {
+    "full": (
+        "cold_build",
+        frozenset(
+            {
+                "no_current_generation",
+                "current_generation_invalid",
+                "spec_changed",
+                "baseline_set_changed",
+                "input_revision",
+                "weekly_input_revision_unmappable",
+                "monthly_input_revision_unmappable",
+                "weekly_input_append_unmappable",
+                "monthly_input_append_unmappable",
+                "effective_auxiliary_projection_missing_from_parent",
+                "effective_auxiliary_projection_missing_current",
+                "effective_auxiliary_proof_changed",
+                "date_to_week_history_changed",
+                "effective_auxiliary_projection_unknown",
+                "effective_auxiliary_revision_unknown",
+            }
+        ),
+    ),
+    "suffix": (
+        "extended",
+        frozenset(
+            {
+                "proven_daily_input_revision",
+                "combined_daily_effective_revision",
+                "effective_auxiliary_revision",
+            }
+        ),
+    ),
+    "rebind": (
+        "extended",
+        frozenset({"native_generation_rebound"}),
+    ),
+    "append": (
+        "extended",
+        frozenset(
+            {
+                "append_only",
+                "cache_complete",
+                "effective_auxiliary_append",
+            }
+        ),
+    ),
+    "migration": (
+        "extended",
+        frozenset({"legacy_v1_migration"}),
+    ),
+    "qualification": (
+        "hit",
+        frozenset({"compare_gate_qualification"}),
+    ),
+}
+_DIRECT_CACHE_PUBLISHER_HIT_REASONS = frozenset(
+    {"cache_complete", "truncated_request_preserved"}
+)
+
+
+def _validate_direct_cache_authority_completion(
+    *,
+    policy: Mapping[str, object],
+    item: Mapping[str, object],
+    generation: Mapping[str, object],
+    records: Iterable[PredictionRecord],
+) -> None:
+    """按 occurrence 冻结的 direct authority 安全重开 cache generation。"""
+    raw_authority = policy.get("direct_cache_authorities")
+    if (
+        not isinstance(raw_authority, Mapping)
+        or set(raw_authority) != _DIRECT_CACHE_AUTHORITY_FIELDS
+        or raw_authority.get("schema_version")
+        != "daily-direct-cache-authorities-v1"
+    ):
+        raise RuntimeError("direct cache authority envelope is invalid")
+    raw_contract = raw_authority.get("contract")
+    if (
+        not isinstance(raw_contract, Mapping)
+        or dict(raw_contract) != _DIRECT_CACHE_CONTRACT
+    ):
+        raise RuntimeError("direct cache authority contract is invalid")
+    storage_root = _direct_cache_storage_root(
+        raw_authority.get("storage_root")
+    )
+    raw_consumers = raw_authority.get("consumers")
+    if not isinstance(raw_consumers, Mapping):
+        raise RuntimeError("direct cache authority consumers are invalid")
+    consumers = _normalize_direct_cache_consumers(raw_consumers)
+    expected_consumers = _direct_cache_expected_consumer_ids(policy)
+    if set(consumers) != expected_consumers:
+        raise RuntimeError(
+            "direct cache authority consumer set mismatch: "
+            f"expected={sorted(expected_consumers)}, "
+            f"actual={sorted(consumers)}"
+        )
+    _validate_direct_cache_publisher_graph(consumers)
+
+    scheme_id = str(item["base_scheme_id"])
+    consumer = consumers.get(scheme_id)
+    if consumer is None:
+        return
+    expected_item = {
+        "base_scheme_id": scheme_id,
+        "scheme_version": str(item["scheme_version"]),
+        "code_sha256": str(item["code_sha256"]),
+        "config_sha256": str(item["config_sha256"]),
+        "cache_group": str(item["cache_group"]),
+    }
+    item_drift = sorted(
+        field
+        for field, expected in expected_item.items()
+        if consumer[field] != expected
+    )
+    expected_policy_identity = _direct_cache_policy_identity(
+        policy,
+        scheme_id,
+    )
+    for field, expected in expected_policy_identity.items():
+        if consumer[field] != expected:
+            item_drift.append(field)
+    if item_drift:
+        raise RuntimeError(
+            "direct cache consumer identity mismatch: "
+            + ",".join(sorted(set(item_drift)))
+        )
+    expected_native = _direct_cache_native_generation(
+        generation,
+        contract=raw_contract,
+    )
+    # 当前 frozen daily policy 中一个 cache consumer 只对应一个 target。
+    # 事务锁内的 secure generation I/O 因而只允许执行一次；未来若放开
+    # 多 target，必须先按 generation identity 去重后再重开。
+    record_list = list(records)
+    if len(record_list) != 1:
+        raise RuntimeError(
+            "direct cache completion requires exactly one record"
+        )
+    try:
+        _verify_direct_cache_record(
+            record_list[0],
+            storage_root=storage_root,
+            consumer=consumer,
+            expected_native=expected_native,
+            contract=raw_contract,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "direct cache completion audit verification failed: "
+            f"{exc}"
+        ) from exc
+
+
+def _direct_cache_storage_root(value: object) -> Path:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("direct cache storage_root is invalid")
+    root = Path(value)
+    if (
+        not root.is_absolute()
+        or str(root) != value
+        or os.path.normpath(value) != value
+        or ".." in root.parts
+    ):
+        raise RuntimeError(
+            "direct cache storage_root must be absolute and normalized"
+        )
+    return root
+
+
+def _direct_cache_expected_consumer_ids(
+    policy: Mapping[str, object],
+) -> set[str]:
+    raw_schemes = policy.get("schemes")
+    if not isinstance(raw_schemes, list):
+        raise RuntimeError("direct cache frozen policy schemes are invalid")
+    expected: set[str] = set()
+    seen: set[str] = set()
+    for index, row in enumerate(raw_schemes):
+        if not isinstance(row, Mapping):
+            raise RuntimeError(
+                f"direct cache frozen policy scheme {index} is invalid"
+            )
+        scheme_id = row.get("scheme_id")
+        if not isinstance(scheme_id, str) or not scheme_id:
+            raise RuntimeError(
+                f"direct cache frozen policy scheme {index} has no id"
+            )
+        if scheme_id in seen:
+            raise RuntimeError(
+                "direct cache frozen policy scheme ids are duplicated"
+            )
+        seen.add(scheme_id)
+        if row.get("cache_spec_fingerprint") is not None:
+            expected.add(scheme_id)
+    return expected
+
+
+def _normalize_direct_cache_consumers(
+    raw_consumers: Mapping[object, object],
+) -> dict[str, dict[str, object]]:
+    consumers: dict[str, dict[str, object]] = {}
+    for raw_key, raw in raw_consumers.items():
+        if (
+            not isinstance(raw_key, str)
+            or not raw_key
+            or not isinstance(raw, Mapping)
+            or set(raw) != _DIRECT_CACHE_CONSUMER_FIELDS
+        ):
+            raise RuntimeError(
+                "direct cache consumer authority is invalid"
+            )
+        normalized = dict(raw)
+        for field in (
+            "base_scheme_id",
+            "cache_consumer_id",
+            "scheme_version",
+            "cache_group",
+            "publisher_consumer_id",
+            "cache_family",
+            "tenor",
+        ):
+            normalized[field] = _require_nonempty(
+                normalized[field],
+                f"direct_cache_authorities.consumers.{raw_key}.{field}",
+            )
+        for field in (
+            "code_sha256",
+            "config_sha256",
+            "spec_fingerprint",
+            "cache_adapter_sha256",
+            "cache_core_sha256",
+            "projection_proof_identity_sha256",
+        ):
+            normalized[field] = _require_lower_sha256(
+                normalized[field],
+                f"direct_cache_authorities.consumers.{raw_key}.{field}",
+            )
+        lookback_rows = normalized["daily_dependency_lookback_rows"]
+        dependency_proof = normalized["daily_dependency_proof"]
+        if lookback_rows is None and dependency_proof is None:
+            pass
+        elif (
+            isinstance(lookback_rows, bool)
+            or not isinstance(lookback_rows, int)
+            or lookback_rows < 0
+            or not isinstance(dependency_proof, str)
+            or not dependency_proof.strip()
+        ):
+            raise RuntimeError(
+                "direct cache consumer dependency proof is invalid: "
+                f"{raw_key}"
+            )
+        if (
+            normalized["base_scheme_id"] != raw_key
+            or normalized["cache_consumer_id"] != raw_key
+            or normalized["access_mode"] not in {"publisher", "read_only"}
+            or normalized["cache_group"]
+            != (
+                f"{normalized['cache_family']}:"
+                f"{normalized['tenor']}"
+            )
+        ):
+            raise RuntimeError(
+                f"direct cache consumer identity is invalid: {raw_key}"
+            )
+        consumers[raw_key] = normalized
+    return consumers
+
+
+def _validate_direct_cache_publisher_graph(
+    consumers: Mapping[str, Mapping[str, object]],
+) -> None:
+    groups: dict[str, list[tuple[str, Mapping[str, object]]]] = {}
+    for scheme_id, consumer in consumers.items():
+        groups.setdefault(str(consumer["cache_group"]), []).append(
+            (scheme_id, consumer)
+        )
+    for cache_group, members in groups.items():
+        self_publishers = [
+            scheme_id
+            for scheme_id, consumer in members
+            if (
+                consumer["access_mode"] == "publisher"
+                and consumer["publisher_consumer_id"] == scheme_id
+            )
+        ]
+        if len(self_publishers) != 1:
+            raise RuntimeError(
+                "direct cache group must have exactly one self-publisher: "
+                f"{cache_group}"
+            )
+        publisher_id = self_publishers[0]
+        publisher = consumers[publisher_id]
+        shared_fields = (
+            "cache_group",
+            "cache_family",
+            "tenor",
+            "spec_fingerprint",
+            "projection_proof_identity_sha256",
+            "daily_dependency_lookback_rows",
+            "daily_dependency_proof",
+        )
+        for scheme_id, consumer in members:
+            expected_access = (
+                "publisher"
+                if scheme_id == publisher_id
+                else "read_only"
+            )
+            if (
+                consumer["publisher_consumer_id"] != publisher_id
+                or consumer["access_mode"] != expected_access
+                or any(
+                    publisher[field] != consumer[field]
+                    for field in shared_fields
+                )
+            ):
+                raise RuntimeError(
+                    "direct cache publisher graph is invalid: "
+                    f"{scheme_id}"
+                )
+
+
+def _direct_cache_policy_identity(
+    policy: Mapping[str, object],
+    scheme_id: str,
+) -> dict[str, str]:
+    matches = [
+        row
+        for row in policy.get("schemes", [])
+        if (
+            isinstance(row, Mapping)
+            and row.get("scheme_id") == scheme_id
+        )
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"direct cache policy consumer is ambiguous: {scheme_id}"
+        )
+    row = matches[0]
+    identity = {
+        "cache_group": _require_nonempty(
+            row.get("cache_group"),
+            f"direct cache policy {scheme_id} cache_group",
+        ),
+        "spec_fingerprint": _require_lower_sha256(
+            row.get("cache_spec_fingerprint"),
+            f"direct cache policy {scheme_id} cache_spec_fingerprint",
+        ),
+        "cache_adapter_sha256": _require_lower_sha256(
+            row.get("cache_adapter_sha256"),
+            f"direct cache policy {scheme_id} cache_adapter_sha256",
+        ),
+        "cache_core_sha256": _require_lower_sha256(
+            row.get("cache_core_sha256"),
+            f"direct cache policy {scheme_id} cache_core_sha256",
+        ),
+    }
+    return identity
+
+
+def _direct_cache_native_generation(
+    generation: Mapping[str, object],
+    *,
+    contract: Mapping[str, object],
+) -> dict[str, object]:
+    if (
+        generation.get("state") != GENERATION_SEALED
+        or generation.get("generation_type")
+        != contract["native_generation_type"]
+        or generation.get("schema_version")
+        != contract["native_generation_schema_version"]
+        or generation.get("exporter_version")
+        != contract["native_exporter_version"]
+    ):
+        raise RuntimeError(
+            "direct cache Native generation identity is invalid"
+        )
+    expected = {
+        "generation_id": _require_nonempty(
+            generation.get("generation_id"),
+            "direct cache Native generation_id",
+        ),
+        "manifest_sha256": _require_lower_sha256(
+            generation.get("manifest_sha256"),
+            "direct cache Native manifest_sha256",
+        ),
+        "dataset_content_id": _require_lower_sha256(
+            generation.get("dataset_content_id"),
+            "direct cache Native dataset_content_id",
+        ),
+        "business_date": _stored_iso_date(
+            generation,
+            "business_date",
+        ),
+        "feature_date": _stored_iso_date(
+            generation,
+            "feature_date",
+        ),
+        "schema_version": str(generation["schema_version"]),
+        "exporter_version": str(generation["exporter_version"]),
+    }
+    return expected
+
+
+def _verify_direct_cache_record(
+    record: PredictionRecord,
+    *,
+    storage_root: Path,
+    consumer: Mapping[str, object],
+    expected_native: Mapping[str, object],
+    contract: Mapping[str, object],
+) -> None:
+    from shared.artifact_paths import safe_path_part
+    from shared.liwei_0616_phase_a_cache import (
+        _load_generation_directory,
+        _validate_generation_acceptance_for_use,
+        _verify_generation_acceptance_lineage,
+    )
+
+    extra = record.extra
+    if not isinstance(extra, Mapping):
+        raise ValueError("direct cache prediction extra is missing")
+    audit = extra.get("phase_a_cache")
+    if not isinstance(audit, Mapping):
+        raise ValueError("direct cache phase_a_cache audit is missing")
+    generation_id = _require_nonempty(
+        audit.get("generation_id"),
+        "direct cache generation_id",
+    )
+    if safe_path_part(generation_id) != generation_id:
+        raise ValueError("direct cache generation_id is unsafe")
+    manifest_sha256 = _require_lower_sha256(
+        audit.get("generation_manifest_sha256"),
+        "direct cache generation_manifest_sha256",
+    )
+    expected_family_root = (
+        storage_root
+        / safe_path_part(str(consumer["cache_family"]))
+        / safe_path_part(str(consumer["tenor"]).lower())
+    )
+    expected_generation_path = (
+        expected_family_root / "generations" / generation_id
+    )
+    generation_path = Path(
+        _require_nonempty(
+            audit.get("generation_path"),
+            "direct cache generation_path",
+        )
+    )
+    if (
+        generation_path != expected_generation_path
+        or audit.get("family_root") != str(expected_family_root)
+        or audit.get("current_pointer")
+        != str(expected_family_root / "current.json")
+        or audit.get("published") is not True
+    ):
+        raise ValueError("direct cache audit path is not canonical")
+    if consumer["access_mode"] == "read_only" and (
+        audit.get("status") != "hit"
+        or audit.get("build_mode") != "hit"
+        or audit.get("build_reason") != "consumer_validated_hit"
+    ):
+        raise ValueError(
+            "direct cache read_only audit must be a "
+            "consumer_validated_hit"
+        )
+    loaded = _load_generation_directory(
+        generation_path,
+        expected_generation_id=generation_id,
+        expected_manifest_sha256=manifest_sha256,
+        secure=True,
+    )
+    manifest = loaded.manifest
+    expected_manifest_identity = {
+        "schema_version": contract["manifest_schema_version"],
+        "abi_version": contract["cache_abi_version"],
+        "cache_family": consumer["cache_family"],
+        "tenor": consumer["tenor"],
+        "spec_fingerprint": consumer["spec_fingerprint"],
+    }
+    drift = [
+        field
+        for field, expected in expected_manifest_identity.items()
+        if manifest.get(field) != expected
+    ]
+    input_state = manifest.get("input_state")
+    effective_auxiliary = (
+        input_state.get("effective_auxiliary")
+        if isinstance(input_state, Mapping)
+        else None
+    )
+    if (
+        not isinstance(input_state, Mapping)
+        or input_state.get("schema_version")
+        != contract["input_state_schema_version"]
+        or input_state.get("native_generation")
+        != dict(expected_native)
+        or not isinstance(effective_auxiliary, Mapping)
+        or effective_auxiliary.get("schema_version")
+        != contract["projection_schema_version"]
+        or effective_auxiliary.get("proof_identity_sha256")
+        != consumer["projection_proof_identity_sha256"]
+    ):
+        drift.append("input_state")
+    acceptance = manifest.get("generation_acceptance_evidence")
+    if (
+        not isinstance(acceptance, Mapping)
+        or acceptance.get("native_generation")
+        != dict(expected_native)
+        or audit.get("generation_acceptance") != acceptance
+    ):
+        drift.append("generation_acceptance")
+    if drift:
+        raise ValueError(
+            "direct cache manifest identity mismatch: "
+            + ",".join(sorted(set(drift)))
+        )
+    _validate_direct_cache_audit_identity(
+        audit,
+        manifest=manifest,
+        consumer=consumer,
+        generation_id=str(loaded.generation_id),
+        manifest_sha256=str(loaded.manifest_sha256),
+    )
+    _validate_direct_cache_audit_state(
+        audit,
+        manifest=manifest,
+        consumer=consumer,
+    )
+    lineage_qualification = {
+        "qualification": {
+            "cache_abi_version": contract["cache_abi_version"],
+            "cache_family": consumer["cache_family"],
+            "tenor": consumer["tenor"],
+            "spec_fingerprint": consumer["spec_fingerprint"],
+            "daily_dependency_lookback_rows":
+                consumer["daily_dependency_lookback_rows"],
+            "daily_dependency_proof":
+                consumer["daily_dependency_proof"],
+        }
+    }
+    _verify_generation_acceptance_lineage(
+        loaded,
+        trusted_qualification=lineage_qualification,
+    )
+    _validate_generation_acceptance_for_use(
+        loaded,
+        native_generation_binding=dict(expected_native),
+    )
+    _validate_direct_cache_monotonic_coverage(
+        loaded,
+        loader=_load_generation_directory,
+    )
+
+
+def _validate_direct_cache_audit_identity(
+    audit: Mapping[str, object],
+    *,
+    manifest: Mapping[str, object],
+    consumer: Mapping[str, object],
+    generation_id: str,
+    manifest_sha256: str,
+) -> None:
+    input_state = manifest.get("input_state")
+    if not isinstance(input_state, Mapping):
+        raise ValueError("direct cache manifest input_state is missing")
+    expected = {
+        "version": manifest.get("abi_version"),
+        "cache_family": consumer["cache_family"],
+        "tenor": consumer["tenor"],
+        "input_content_id": input_state.get("content_id"),
+        "input_change": manifest.get("input_change"),
+    }
+    drift = sorted(
+        field
+        for field, expected_value in expected.items()
+        if audit.get(field) != expected_value
+    )
+    if drift:
+        raise ValueError(
+            "direct cache audit identity mismatch: "
+            + ",".join(drift)
+        )
+    manifest_compare_gate = manifest.get("compare_gate_evidence")
+    if not isinstance(manifest_compare_gate, Mapping):
+        raise ValueError(
+            "direct cache manifest compare-gate evidence is missing"
+        )
+    expected_compare_gate = {
+        **dict(manifest_compare_gate),
+        "generation_id": generation_id,
+        "generation_manifest_sha256": manifest_sha256,
+    }
+    if audit.get("compare_gate_evidence") != expected_compare_gate:
+        raise ValueError(
+            "direct cache compare-gate audit does not match manifest"
+        )
+
+
+def _validate_direct_cache_audit_state(
+    audit: Mapping[str, object],
+    *,
+    manifest: Mapping[str, object],
+    consumer: Mapping[str, object],
+) -> None:
+    status = audit.get("status")
+    build_mode = audit.get("build_mode")
+    build_reason = audit.get("build_reason")
+    if consumer["access_mode"] == "read_only":
+        expected = (
+            "hit",
+            "hit",
+            "consumer_validated_hit",
+        )
+        if (status, build_mode, build_reason) != expected:
+            raise ValueError(
+                "direct cache audit state is invalid for read_only"
+            )
+        return
+    if build_mode == "hit":
+        if (
+            status != "hit"
+            or build_reason not in _DIRECT_CACHE_PUBLISHER_HIT_REASONS
+        ):
+            raise ValueError(
+                "direct cache audit state is invalid for publisher hit"
+            )
+        return
+    manifest_mode = manifest.get("build_mode")
+    acceptance = manifest.get("generation_acceptance_evidence")
+    acceptance_mode = (
+        acceptance.get("build_mode")
+        if isinstance(acceptance, Mapping)
+        else None
+    )
+    expected_state = _DIRECT_CACHE_PUBLISHER_BUILD_STATES.get(
+        str(build_mode)
+    )
+    if (
+        build_mode != manifest_mode
+        or build_mode != acceptance_mode
+        or expected_state is None
+        or status != expected_state[0]
+        or build_reason not in expected_state[1]
+    ):
+        raise ValueError(
+            "direct cache audit state does not match reopened generation"
+        )
+
+
+def _validate_direct_cache_monotonic_coverage(
+    generation: object,
+    *,
+    loader: Callable[..., object],
+) -> None:
+    manifest = getattr(generation, "manifest")
+    parent_record = manifest.get("generation_acceptance_evidence", {}).get(
+        "parent"
+    )
+    if parent_record is None:
+        return
+    if not isinstance(parent_record, Mapping):
+        raise ValueError("direct cache parent authority is invalid")
+    parent_id = parent_record.get("generation_id")
+    if (
+        not isinstance(parent_id, str)
+        or not parent_id
+        or manifest.get("parent_generation_id") != parent_id
+    ):
+        raise ValueError("direct cache parent identity is invalid")
+    parent = loader(
+        getattr(generation, "path").parent / parent_id,
+        expected_generation_id=parent_id,
+        expected_manifest_sha256=parent_record.get("manifest_sha256"),
+        secure=True,
+    )
+    current_caches = getattr(generation, "caches")
+    parent_caches = getattr(parent, "caches")
+    if set(current_caches) != set(parent_caches):
+        raise ValueError("direct cache baseline set is not monotonic")
+    for baseline, parent_cache in parent_caches.items():
+        parent_dates = set(parent_cache["test_dates"])
+        current_dates = set(current_caches[baseline]["test_dates"])
+        if not parent_dates.issubset(current_dates):
+            raise ValueError(
+                f"direct cache {baseline} coverage is not monotonic"
+            )
 
 
 def _validate_stored_occurrence_cardinality(
@@ -8392,6 +9124,768 @@ def complete_approved_blackbox_run(
         if precommit_validator is not None:
             precommit_validator(conn)
         return records_written
+
+
+def complete_gray_gap_run(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    run_id: int,
+    records: Iterable[PredictionRecord],
+    expected_target_keys: list[Mapping[str, object]],
+    plan_sha256: str,
+    source_authority: Mapping[str, object],
+    records_returned: int,
+    run_date: str,
+    duration_sec: float,
+) -> int:
+    """原子提交一组 insert-only 的 ``gray_live`` 历史信号缺口。
+
+    该入口只接受未绑定 daily ledger 的普通 running run。目标集合、
+    活跃 Registry、输入 authority、prediction、run 成功状态与成功日志
+    在同一事务内复核或提交；任何一步失败都不保留部分结果。
+    """
+    normalized_plan_sha256 = _require_lower_sha256(
+        plan_sha256,
+        "plan_sha256",
+    )
+    normalized_targets = _normalize_gray_gap_target_keys(
+        cfg,
+        expected_target_keys,
+    )
+    record_list = list(records)
+    if records_returned != len(record_list):
+        raise RuntimeError(
+            "gray gap records_returned mismatch: "
+            f"returned={records_returned}, records={len(record_list)}"
+        )
+    normalized_run_date = _require_iso_date(run_date, "run_date")
+    normalized_duration = float(duration_sec)
+    if not math.isfinite(normalized_duration) or normalized_duration < 0:
+        raise ValueError("duration_sec must be a finite non-negative number")
+    execution_dates = _gray_gap_execution_dates(normalized_targets)
+    if normalized_run_date != execution_dates["predict_date"]:
+        raise ValueError(
+            "run_date must equal gray gap execution predict_date"
+        )
+    normalized_authority = _normalize_gray_gap_source_authority(
+        source_authority,
+        runtime_type=str(cfg.runtime_type),
+        feature_date=execution_dates["feature_date"],
+        predict_date=execution_dates["predict_date"],
+    )
+    _validate_gray_gap_records(
+        cfg,
+        records=record_list,
+        expected_targets=normalized_targets,
+    )
+    enriched_records = _enrich_gray_gap_records(
+        cfg,
+        records=record_list,
+        expected_targets=normalized_targets,
+        plan_sha256=normalized_plan_sha256,
+        source_authority=normalized_authority,
+    )
+
+    with engine.begin() as conn:
+        # Daily ledger 的锁序固定为 occurrence→ordered siblings→targets；
+        # gray-gap 必须先复用同一 guard，再锁普通 run，不能让 insert-only
+        # 绕过 migration 018 已冻结的 canonical prediction key。
+        _assert_prediction_keys_not_frozen_by_daily_ledger_conn(
+            conn,
+            (asdict(record) for record in enriched_records),
+        )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        _validate_gray_gap_run(
+            cfg,
+            run_id=int(run_id),
+            run=run,
+            expected_count=len(normalized_targets),
+            predict_date=execution_dates["predict_date"],
+        )
+        _validate_gray_gap_active_registry(
+            conn,
+            cfg,
+            normalized_targets,
+        )
+        _assert_gray_gap_business_keys_absent(
+            conn,
+            normalized_targets,
+        )
+        records_written = _insert_run_predictions_conn(
+            conn,
+            int(run_id),
+            enriched_records,
+            scheme_version=str(cfg.scheme_version),
+            insert_only=True,
+        )
+        if records_written != len(normalized_targets):
+            raise RuntimeError(
+                "gray gap records_written mismatch: "
+                f"expected={len(normalized_targets)}, "
+                f"written={records_written}"
+            )
+        finished = conn.execute(
+            text(
+                """
+                UPDATE t_scheme_runs
+                SET status = 'success',
+                    finished_at = CURRENT_TIMESTAMP,
+                    records_returned = :records_returned,
+                    records_written = :records_written,
+                    error_message = NULL
+                WHERE run_id = :run_id
+                  AND status = 'running'
+                  AND run_type = 'active'
+                  AND prediction_phase = 'gray_live'
+                  AND schedule_item_id IS NULL
+                  AND attempt_no IS NULL
+                  AND trigger_origin IS NULL
+                  AND execution_token IS NULL
+                  AND process_id IS NULL
+                  AND process_group_id IS NULL
+                """
+            ),
+            {
+                "run_id": int(run_id),
+                "records_returned": records_returned,
+                "records_written": records_written,
+            },
+        )
+        _require_rowcount(finished, 1, "gray gap run finish")
+        _write_run_log_conn(
+            conn,
+            str(cfg.scheme_id),
+            normalized_run_date,
+            "success",
+            normalized_duration,
+            None,
+            int(run_id),
+        )
+        return records_written
+
+
+_GRAY_GAP_TARGET_FIELDS = frozenset(
+    {
+        "registry_scheme_id",
+        "base_scheme_id",
+        "target_tenor",
+        "horizon",
+        "task_type",
+        "predict_date",
+        "feature_date",
+        "target_date",
+        "prediction_phase",
+    }
+)
+_GRAY_GAP_NATIVE_AUTHORITY_FIELDS = frozenset(
+    {
+        "authority_type",
+        "artifact_id",
+        "manifest_sha256",
+        "feature_date",
+        "cutoff_date",
+        "vintage_disclaimer",
+    }
+)
+_GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
+    {
+        "authority_type",
+        "generation_id",
+        "manifest_sha256",
+        "refresh_date",
+        "cutoff_date",
+        "replay_mode",
+        "vintage_disclaimer",
+    }
+)
+_GRAY_GAP_VINTAGE_DISCLAIMER = (
+    "current_snapshot_as_of_not_historical_vintage"
+)
+_GRAY_GAP_FIXED_ATOMIC_TARGETS = {
+    "t1_daily": frozenset({"5Y", "10Y"}),
+    "t5_daily": frozenset({"3Y", "5Y", "7Y", "10Y"}),
+}
+
+
+def _require_lower_sha256(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be a lowercase SHA256 digest")
+    normalized = _require_sha256(value, field)
+    if normalized != value:
+        raise ValueError(f"{field} must be a lowercase SHA256 digest")
+    return normalized
+
+
+def _require_iso_date(value: object, field: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} must be an ISO date")
+    try:
+        normalized = date.fromisoformat(value).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO date") from exc
+    if normalized != value:
+        raise ValueError(f"{field} must be an ISO date")
+    return normalized
+
+
+def _normalize_gray_gap_target_keys(
+    cfg: SchemeConfig,
+    expected_target_keys: list[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    if not isinstance(expected_target_keys, list) or not expected_target_keys:
+        raise ValueError(
+            "expected_target_keys must be a non-empty list of mappings"
+        )
+    if (
+        getattr(cfg, "status", None) != "active"
+        or getattr(cfg, "version_status", None) != "active"
+    ):
+        raise RuntimeError(
+            "gray gap config must be active with active version_status"
+        )
+    base_scheme_id = _require_nonempty(
+        getattr(cfg, "scheme_id", None),
+        "cfg.scheme_id",
+    )
+    scheme_version = _require_nonempty(
+        getattr(cfg, "scheme_version", None),
+        "cfg.scheme_version",
+    )
+    del scheme_version
+    runtime_type = getattr(cfg, "runtime_type", None)
+    if runtime_type not in {"native_adapter", "blackbox_v2"}:
+        raise ValueError(
+            "gray gap config runtime_type must be native_adapter or "
+            "blackbox_v2"
+        )
+    cfg_horizon = getattr(cfg, "horizon", None)
+    if isinstance(cfg_horizon, bool) or not isinstance(cfg_horizon, int):
+        raise ValueError("cfg.horizon must be an integer")
+    cfg_task_type = _require_nonempty(
+        getattr(cfg, "task_type", None),
+        "cfg.task_type",
+    )
+    cfg_frequency = _require_nonempty(
+        getattr(cfg, "frequency", None),
+        "cfg.frequency",
+    )
+    del cfg_frequency
+    raw_tenors = getattr(cfg, "tenors", None)
+    if not isinstance(raw_tenors, list) or not raw_tenors:
+        raise ValueError("cfg.tenors must be a non-empty list")
+    cfg_tenors = [
+        _require_nonempty(value, "cfg.tenors item")
+        for value in raw_tenors
+    ]
+    if len(cfg_tenors) != len(set(cfg_tenors)):
+        raise ValueError("cfg.tenors must not contain duplicates")
+    fixed_targets = _GRAY_GAP_FIXED_ATOMIC_TARGETS.get(base_scheme_id)
+    if (
+        fixed_targets is not None
+        and frozenset(cfg_tenors) != fixed_targets
+    ):
+        raise RuntimeError(
+            f"{base_scheme_id} fixed atomic target multiset mismatch: "
+            f"expected={sorted(fixed_targets)}, actual={sorted(cfg_tenors)}"
+        )
+
+    normalized: list[dict[str, object]] = []
+    for index, raw in enumerate(expected_target_keys):
+        if not isinstance(raw, Mapping):
+            raise ValueError(
+                f"expected_target_keys[{index}] must be a mapping"
+            )
+        if set(raw) != _GRAY_GAP_TARGET_FIELDS:
+            raise ValueError(
+                f"expected_target_keys[{index}] must contain exact fields "
+                f"{sorted(_GRAY_GAP_TARGET_FIELDS)}"
+            )
+        horizon = raw["horizon"]
+        if isinstance(horizon, bool) or not isinstance(horizon, int):
+            raise ValueError(
+                f"expected_target_keys[{index}].horizon must be an integer"
+            )
+        target_tenor = _require_nonempty(
+            raw["target_tenor"],
+            f"expected_target_keys[{index}].target_tenor",
+        )
+        row = {
+            "registry_scheme_id": _require_nonempty(
+                raw["registry_scheme_id"],
+                f"expected_target_keys[{index}].registry_scheme_id",
+            ),
+            "base_scheme_id": _require_nonempty(
+                raw["base_scheme_id"],
+                f"expected_target_keys[{index}].base_scheme_id",
+            ),
+            "target_tenor": target_tenor,
+            "horizon": horizon,
+            "task_type": _require_nonempty(
+                raw["task_type"],
+                f"expected_target_keys[{index}].task_type",
+            ),
+            "predict_date": _require_iso_date(
+                raw["predict_date"],
+                f"expected_target_keys[{index}].predict_date",
+            ),
+            "feature_date": _require_iso_date(
+                raw["feature_date"],
+                f"expected_target_keys[{index}].feature_date",
+            ),
+            "target_date": _require_iso_date(
+                raw["target_date"],
+                f"expected_target_keys[{index}].target_date",
+            ),
+            "prediction_phase": _require_nonempty(
+                raw["prediction_phase"],
+                f"expected_target_keys[{index}].prediction_phase",
+            ),
+        }
+        expected_registry_id = registry_scheme_id(
+            base_scheme_id,
+            cfg_horizon,
+            target_tenor,
+        )
+        exact_identity = {
+            "registry_scheme_id": expected_registry_id,
+            "base_scheme_id": base_scheme_id,
+            "horizon": cfg_horizon,
+            "task_type": cfg_task_type,
+            "prediction_phase": "gray_live",
+        }
+        mismatches = [
+            field
+            for field, expected in exact_identity.items()
+            if row[field] != expected
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "expected target identity does not match exact config: "
+                + ",".join(mismatches)
+            )
+        normalized.append(row)
+
+    actual_tenors = Counter(str(row["target_tenor"]) for row in normalized)
+    expected_tenors = Counter(cfg_tenors)
+    if actual_tenors != expected_tenors:
+        raise RuntimeError(
+            "expected target multiset does not match exact config: "
+            f"expected={dict(expected_tenors)}, actual={dict(actual_tenors)}"
+        )
+    identities = [
+        tuple(row[field] for field in sorted(_GRAY_GAP_TARGET_FIELDS))
+        for row in normalized
+    ]
+    if len(identities) != len(set(identities)):
+        raise RuntimeError("expected target multiset contains duplicates")
+    _gray_gap_execution_dates(normalized)
+    return sorted(
+        normalized,
+        key=lambda row: (
+            str(row["registry_scheme_id"]),
+            str(row["target_tenor"]),
+        ),
+    )
+
+
+def _gray_gap_execution_dates(
+    expected_targets: list[Mapping[str, object]],
+) -> dict[str, str]:
+    fields = ("predict_date", "feature_date", "target_date")
+    values = {
+        field: {str(row[field]) for row in expected_targets}
+        for field in fields
+    }
+    inconsistent = [
+        field for field, observed in values.items() if len(observed) != 1
+    ]
+    if inconsistent:
+        raise RuntimeError(
+            "gray gap execution group dates are inconsistent: "
+            + ",".join(inconsistent)
+        )
+    return {
+        field: next(iter(values[field]))
+        for field in fields
+    }
+
+
+def _normalize_gray_gap_source_authority(
+    source_authority: Mapping[str, object],
+    *,
+    runtime_type: str,
+    feature_date: str,
+    predict_date: str,
+) -> dict[str, object]:
+    if not isinstance(source_authority, Mapping):
+        raise ValueError("source_authority must be a mapping")
+    authority_type = source_authority.get("authority_type")
+    if authority_type == "native_current_snapshot_artifact":
+        expected_fields = _GRAY_GAP_NATIVE_AUTHORITY_FIELDS
+    elif authority_type == "databridge_current_generation":
+        expected_fields = _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS
+    else:
+        raise ValueError("source_authority authority_type is invalid")
+    expected_authority_type = {
+        "native_adapter": "native_current_snapshot_artifact",
+        "blackbox_v2": "databridge_current_generation",
+    }.get(runtime_type)
+    if authority_type != expected_authority_type:
+        raise ValueError(
+            "source_authority authority_type does not match cfg "
+            f"runtime_type={runtime_type}"
+        )
+    if set(source_authority) != expected_fields:
+        raise ValueError(
+            "source_authority must contain exact fields "
+            f"{sorted(expected_fields)}"
+        )
+    normalized = dict(source_authority)
+    normalized["manifest_sha256"] = _require_lower_sha256(
+        source_authority["manifest_sha256"],
+        "source_authority.manifest_sha256",
+    )
+    cutoff_date = _require_iso_date(
+        source_authority["cutoff_date"],
+        "source_authority.cutoff_date",
+    )
+    if cutoff_date != feature_date:
+        raise ValueError(
+            "source_authority cutoff_date must equal execution feature_date"
+        )
+    if (
+        source_authority["vintage_disclaimer"]
+        != _GRAY_GAP_VINTAGE_DISCLAIMER
+    ):
+        raise ValueError("source_authority vintage_disclaimer is invalid")
+    if authority_type == "native_current_snapshot_artifact":
+        normalized["artifact_id"] = _require_nonempty(
+            source_authority["artifact_id"],
+            "source_authority.artifact_id",
+        )
+        authority_feature_date = _require_iso_date(
+            source_authority["feature_date"],
+            "source_authority.feature_date",
+        )
+        if authority_feature_date != feature_date:
+            raise ValueError(
+                "source_authority feature_date must equal execution "
+                "feature_date"
+            )
+    else:
+        normalized["generation_id"] = _require_nonempty(
+            source_authority["generation_id"],
+            "source_authority.generation_id",
+        )
+        refresh_date = _require_iso_date(
+            source_authority["refresh_date"],
+            "source_authority.refresh_date",
+        )
+        if refresh_date <= predict_date:
+            raise ValueError(
+                "source_authority refresh_date must be after historical "
+                "predict_date"
+            )
+        if source_authority["replay_mode"] != "historical_as_of_replay":
+            raise ValueError("source_authority replay_mode is invalid")
+    return normalized
+
+
+def _validate_gray_gap_records(
+    cfg: SchemeConfig,
+    *,
+    records: list[PredictionRecord],
+    expected_targets: list[Mapping[str, object]],
+) -> None:
+    expected = Counter(
+        (
+            str(row["base_scheme_id"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+            str(row["predict_date"]),
+            str(row["feature_date"]),
+            str(row["target_date"]),
+            str(row["prediction_phase"]),
+        )
+        for row in expected_targets
+    )
+    actual: Counter[tuple[object, ...]] = Counter()
+    for record in records:
+        phase = record.prediction_phase or (
+            (record.extra or {}).get("prediction_phase")
+            if isinstance(record.extra, Mapping)
+            else None
+        )
+        feature_date = record.feature_date or (
+            (record.extra or {}).get("feature_date")
+            if isinstance(record.extra, Mapping)
+            else None
+        )
+        try:
+            identity = (
+                str(record.scheme_id),
+                str(record.target_tenor),
+                int(record.horizon),
+                _require_iso_date(record.predict_date, "record.predict_date"),
+                _require_iso_date(feature_date, "record.feature_date"),
+                _require_iso_date(record.target_date, "record.target_date"),
+                str(phase),
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "gray gap record identity mismatch"
+            ) from exc
+        if record.run_id is not None:
+            raise RuntimeError(
+                "gray gap records must not carry a pre-bound run_id"
+            )
+        if (
+            record.scheme_version is not None
+            and record.scheme_version != str(cfg.scheme_version)
+        ):
+            raise RuntimeError(
+                "gray gap record scheme_version identity mismatch"
+            )
+        actual[identity] += 1
+    if actual != expected:
+        raise RuntimeError(
+            "gray gap record target multiset or identity mismatch: "
+            f"expected={dict(expected)}, actual={dict(actual)}"
+        )
+
+
+def _enrich_gray_gap_records(
+    cfg: SchemeConfig,
+    *,
+    records: list[PredictionRecord],
+    expected_targets: list[Mapping[str, object]],
+    plan_sha256: str,
+    source_authority: Mapping[str, object],
+) -> list[PredictionRecord]:
+    targets = [
+        {
+            "registry_scheme_id": row["registry_scheme_id"],
+            "target_tenor": row["target_tenor"],
+            "horizon": row["horizon"],
+        }
+        for row in expected_targets
+    ]
+    dates = _gray_gap_execution_dates(expected_targets)
+    unsigned_group = {
+        "base_scheme_id": str(cfg.scheme_id),
+        "scheme_version": str(cfg.scheme_version),
+        "runtime_type": str(cfg.runtime_type),
+        "task_type": str(cfg.task_type),
+        "predict_date": dates["predict_date"],
+        "feature_date": dates["feature_date"],
+        "target_date": dates["target_date"],
+        "prediction_phase": "gray_live",
+        "record_count": len(targets),
+        "targets": targets,
+    }
+    group_digest = hashlib.sha256(
+        json.dumps(
+            unsigned_group,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    execution_group_identity = {
+        **unsigned_group,
+        "identity_sha256": group_digest,
+    }
+    backfilled_at = datetime.now(timezone.utc).isoformat(
+        timespec="seconds"
+    )
+    common_extra: dict[str, object] = {
+        "signal_gap_plan_sha256": plan_sha256,
+        "backfill_mode": "signal_gap_fill",
+        "backfilled_at": backfilled_at,
+        "source_authority": dict(source_authority),
+        "replay_semantics": _GRAY_GAP_VINTAGE_DISCLAIMER,
+        "execution_group_identity": execution_group_identity,
+    }
+    if source_authority["authority_type"] == (
+        "native_current_snapshot_artifact"
+    ):
+        common_extra.update(
+            {
+                "source_artifact_id": source_authority["artifact_id"],
+                "source_artifact_manifest_sha256":
+                    source_authority["manifest_sha256"],
+                "source_artifact_feature_date":
+                    source_authority["feature_date"],
+                "source_cutoff_date": source_authority["cutoff_date"],
+            }
+        )
+    else:
+        common_extra.update(
+            {
+                "source_generation_id": source_authority["generation_id"],
+                "source_generation_manifest_sha256":
+                    source_authority["manifest_sha256"],
+                "source_refresh_date": source_authority["refresh_date"],
+                "source_cutoff_date": source_authority["cutoff_date"],
+            }
+        )
+    return [
+        replace(
+            record,
+            prediction_phase="gray_live",
+            scheme_version=str(cfg.scheme_version),
+            extra={**dict(record.extra or {}), **common_extra},
+        )
+        for record in records
+    ]
+
+
+def _validate_gray_gap_run(
+    cfg: SchemeConfig,
+    *,
+    run_id: int,
+    run: Mapping[str, object] | None,
+    expected_count: int,
+    predict_date: str,
+) -> None:
+    if run is None:
+        raise RuntimeError(f"gray gap scheme run not found: {run_id}")
+    expected_fields = {
+        "scheme_id": str(cfg.scheme_id),
+        "scheme_version": str(cfg.scheme_version),
+        "runtime_type": str(cfg.runtime_type),
+        "run_type": "active",
+        "prediction_phase": "gray_live",
+        "predict_date": predict_date,
+        "status": "running",
+    }
+    ordinary = all(
+        str(run.get(field)) == expected
+        for field, expected in expected_fields.items()
+    ) and all(
+        run.get(field) is None
+        for field in (
+            "schedule_item_id",
+            "attempt_no",
+            "trigger_origin",
+            "execution_token",
+            "process_id",
+            "process_group_id",
+        )
+    )
+    if not ordinary:
+        raise RuntimeError(
+            "gray gap completion requires an ordinary gray_live running run "
+            f"with exact config identity: run_id={run_id}"
+        )
+    if int(run.get("records_expected") or 0) != expected_count:
+        raise RuntimeError(
+            "gray gap run records_expected mismatch: "
+            f"expected={expected_count}, actual={run.get('records_expected')}"
+        )
+
+
+def _validate_gray_gap_active_registry(
+    conn: Connection,
+    cfg: SchemeConfig,
+    expected_targets: list[Mapping[str, object]],
+) -> None:
+    lock = "" if _dialect_name(conn) == "sqlite" else " FOR UPDATE"
+    rows = list(
+        (
+            conn.execute(
+                text(
+                    """
+                    SELECT scheme_id, base_scheme_id, runtime_type, frequency,
+                           task_type, target_tenor, horizon
+                    FROM t_scheme_registry
+                    WHERE base_scheme_id = :base_scheme_id
+                      AND status = 'active'
+                    ORDER BY scheme_id
+                    """
+                    + lock
+                ),
+                {"base_scheme_id": str(cfg.scheme_id)},
+            )
+            .mappings()
+            .all()
+        )
+    )
+    actual = Counter(
+        (
+            str(row["scheme_id"]),
+            str(row["base_scheme_id"]),
+            str(row["runtime_type"]),
+            str(row["frequency"]),
+            str(row["task_type"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+        for row in rows
+    )
+    expected = Counter(
+        (
+            str(row["registry_scheme_id"]),
+            str(row["base_scheme_id"]),
+            str(cfg.runtime_type),
+            str(cfg.frequency),
+            str(row["task_type"]),
+            str(row["target_tenor"]),
+            int(row["horizon"]),
+        )
+        for row in expected_targets
+    )
+    if actual != expected:
+        raise RuntimeError(
+            "gray gap active Registry target multiset mismatch: "
+            f"expected={dict(expected)}, actual={dict(actual)}"
+        )
+
+
+def _assert_gray_gap_business_keys_absent(
+    conn: Connection,
+    expected_targets: list[Mapping[str, object]],
+) -> None:
+    for row in sorted(
+        expected_targets,
+        key=lambda item: (
+            str(item["base_scheme_id"]),
+            str(item["target_tenor"]),
+            int(item["horizon"]),
+            str(item["target_date"]),
+        ),
+    ):
+        existing = _select_mapping_one_or_none(
+            conn,
+            """
+            SELECT id, run_id
+            FROM t_scheme_predictions
+            WHERE scheme_id = :scheme_id
+              AND target_tenor = :target_tenor
+              AND horizon = :horizon
+              AND target_date = :target_date
+            """,
+            {
+                "scheme_id": str(row["base_scheme_id"]),
+                "target_tenor": str(row["target_tenor"]),
+                "horizon": int(row["horizon"]),
+                "target_date": str(row["target_date"]),
+            },
+            for_update=True,
+        )
+        if existing is not None:
+            raise RuntimeError(
+                "gray gap business key already exists; entire group "
+                "rejected: "
+                f"{row['base_scheme_id']}/{row['target_tenor']}/"
+                f"h{row['horizon']}/{row['target_date']}"
+            )
 
 
 def fail_scheme_run_atomic(
