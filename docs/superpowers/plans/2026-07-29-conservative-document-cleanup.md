@@ -250,8 +250,8 @@ Expected: 40 tests passed；同步检查和 diff 检查退出码均为 0。
 Run:
 
 ```bash
-/Users/macstudio0/miniconda3/envs/get_factor/bin/python -m pytest -q
-/Users/macstudio0/miniconda3/envs/get_factor/bin/python -m compileall -q \
+/tmp/bfl-test-conda-20260726/bin/python -m pytest -q
+/tmp/bfl-test-conda-20260726/bin/python -m compileall -q \
   backend backtests harness scheduler shared schemes tests
 ```
 
@@ -293,3 +293,16 @@ git push origin codex/audit-bugfixes-20260613
 ```
 
 Expected: 远程分支前进到本批最终提交；不修改 `master`。
+
+## 执行验证记录
+
+- 文档定点回归：`42 passed、14 subtests passed`。
+- 文档 `unittest`：`40 tests passed`。
+- `compileall`、`AGENTS.md`/`CLAUDE.md` 同步和 `git diff --check`：通过。
+- 完整 pytest：`3144 passed、29 failed、29 skipped、1303 subtests
+  passed`。29 个失败均来自既有 signal-gap 测试 fixture 未向
+  `StableDataBridgeCurrentAuthority` 传入新增的
+  `publication_identity_sha256`，不涉及本批改动文件。
+- 在未应用本批清理的 `HEAD` 归档快照中，代表性
+  `SignalGapPlanTests.test_actions_use_business_key_and_fail_closed_readiness`
+  以相同 `TypeError` 失败，确认不是本批删除或引用修正引入的新回归。

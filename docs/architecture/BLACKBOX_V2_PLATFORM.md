@@ -257,7 +257,7 @@ draft -> validated -> shadow -> active -> paused -> retired
 | 具体方案、generation、snapshot、run、版本和状态 | `docs/blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md` |
 | DataBridge V1 Schema 入口和脱敏结构样例 | `docs/blackbox_v2/data_bridge_v1/` |
 | 文档分类、迁移映射和维护规则 | `docs/blackbox_v2/README.md` |
-| 废弃规范和决策演进 | `docs/blackbox_v2/archive/` |
+| 废弃规范和决策演进 | Git 历史，不进入当前工作树 |
 | 机器契约 | `shared/blackbox_v2/` 与 `deploy/blackbox_v2/` |
 
-仓库文档是唯一事实源，外发副本只能由仓库现行文件生成。通用文档不得写入具体方案的当前状态；试验记录不得反向改变通用契约；历史档案不得作为验收依据。
+仓库文档是唯一事实源，外发副本只能由仓库现行文件生成。通用文档不得写入具体方案的当前状态；试验记录不得反向改变通用契约；Git 历史中的废弃规则不得作为验收依据。

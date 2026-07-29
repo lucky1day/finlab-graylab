@@ -29,10 +29,9 @@
 | [产品文档](product/README.md) | 用户手册和产品需求记录 | 以文档状态为准 |
 | [运维文档](operations/README.md) | 环境和部署资料 | 以文档状态为准 |
 | [Blackbox V2](blackbox_v2/README.md) | V2 专属数据、生产准备和试验记录 | 规范与记录分开 |
-| [Native V1](native_v1/README.md) | 存量方案维护及冻结前历史 | 仅存量维护 |
+| [Native V1](native_v1/README.md) | 存量方案维护 | 仅存量维护 |
 | [当前优先级与待办](TODO.md) | 未完成工作、前置依赖与排序 | 是 |
 | [审计与状态记录](records/README.md) | 带日期的状态、审计和系统检查 | 否 |
-| [历史入口](archive/README.md) | 已退出当前阅读路径的兼容页 | 否 |
 | [内部设计记录](internal/README.md) | 实施计划与设计过程 | 否 |
 | [Superpowers 设计与实施记录](superpowers/README.md) | 本批冻结设计与实施计划 | 否 |
 
@@ -50,6 +49,6 @@
 1. 每个包含 Markdown 的目录必须有 `README.md`，并登记本层文档和子目录。
 2. 已验证的动态状态只写入 `CURRENT_STATUS.md`；未完成工作的排序只写入 `TODO.md`；带日期的详情进入 `records/`。
 3. 通用 SOP 不记录具体方案、generation、snapshot 或 Harness run。
-4. 历史记录不反向定义当前规则；过期文档必须标明替代入口。
+4. 历史记录不反向定义当前规则；已被现行入口完整替代的过期文档从工作树删除，通过 Git 历史追溯。
 5. 文档移动必须同步更新相对链接，并通过文档门禁测试。
 6. `AGENTS.md` 与 `CLAUDE.md` 必须保持字节一致。

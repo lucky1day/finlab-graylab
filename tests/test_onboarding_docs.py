@@ -710,18 +710,37 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("整体原子发布", upstream)
         self.assertNotIn("v2-scheduler-gate-v1", upstream)
 
-    def test_old_native_entry_paths_are_redirect_only(self) -> None:
-        redirects = (
-            DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",
-            DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_SOP.md",
-            DOCS_ROOT / "sop" / "SCHEME_POST_ONBOARDING_TEST_SOP.md",
+    def test_retired_document_paths_are_absent(self) -> None:
+        retired = (
+            DOCS_ROOT / "archive" / "README.md",
             DOCS_ROOT / "archive" / "SCHEME_PARADIGM.md",
+            DOCS_ROOT / "blackbox_v2" / "archive" / "README.md",
+            DOCS_ROOT
+            / "blackbox_v2"
+            / "archive"
+            / "UPSTREAM_DELIVERY_SOP_EXCEL_DRAFT.md",
+            DOCS_ROOT / "native_v1" / "archive" / "README.md",
+            DOCS_ROOT
+            / "native_v1"
+            / "archive"
+            / "SCHEME_ONBOARDING_SOP_PRE_FREEZE.md",
+            DOCS_ROOT
+            / "native_v1"
+            / "archive"
+            / "SCHEME_ONBOARDING_T0_PRE_FREEZE.md",
+            DOCS_ROOT
+            / "native_v1"
+            / "archive"
+            / "SCHEME_PARADIGM_DRAFT.md",
+            DOCS_ROOT
+            / "native_v1"
+            / "archive"
+            / "SCHEME_POST_ONBOARDING_TEST_SOP_PRE_FREEZE.md",
+            DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_SOP.md",
+            DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",
+            DOCS_ROOT / "sop" / "SCHEME_POST_ONBOARDING_TEST_SOP.md",
         )
-        for path in redirects:
-            text = path.read_text(encoding="utf-8")
-            self.assertIn("HISTORICAL", text)
-            self.assertIn("禁止用于新增方案", text)
-            self.assertLess(len(text.splitlines()), 30)
+        self.assertTrue(all(not path.exists() for path in retired))
 
     def test_sop_index_covers_the_entire_directory(self) -> None:
         text = SOP_INDEX.read_text(encoding="utf-8")
@@ -734,8 +753,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
 
         self.assertEqual(indexed, actual)
         self.assertIn("算法侧只需要阅读这一份", text)
-        for status in ("CURRENT", "LEGACY_MAINTENANCE", "HISTORICAL"):
+        for status in ("CURRENT", "LEGACY_MAINTENANCE"):
             self.assertIn(f"`{status}`", text)
+        self.assertNotIn("`HISTORICAL`", text)
 
     def test_docs_root_contains_navigation_current_status_and_todo(self) -> None:
         self.assertEqual(
