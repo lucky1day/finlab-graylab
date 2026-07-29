@@ -147,8 +147,22 @@ class BlackboxStaticGate(_BlackboxGate):
         scheme_dir = cfg.path
         delivery_dir = scheme_dir / "delivery"
         errors: list[str] = []
-        scheme_entries = {path.name for path in scheme_dir.iterdir()}
-        delivery_entries = {path.name for path in delivery_dir.iterdir()} if delivery_dir.is_dir() else set()
+        # `__pycache__` 由 CPython 在 import delivery 模块时生成，不属于上游交付；
+        # 若纳入精确集合比较，任何执行过的方案在复验时都会误判为交付结构不合规。
+        # 与 harness.daily_0629_certification、harness.contracts.import_rules 和
+        # shared.source_runtime_database 中既有的忽略约定保持一致。
+        scheme_entries = {
+            path.name for path in scheme_dir.iterdir() if path.name != "__pycache__"
+        }
+        delivery_entries = (
+            {
+                path.name
+                for path in delivery_dir.iterdir()
+                if path.name != "__pycache__"
+            }
+            if delivery_dir.is_dir()
+            else set()
+        )
         expected_delivery = {f"{ctx.scheme_id}.py", f"{ctx.scheme_id}.json"}
         if scheme_entries != {"config.yaml", "delivery"}:
             errors.append(f"scheme directory must contain only config.yaml and delivery: {sorted(scheme_entries)}")
