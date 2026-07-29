@@ -57,6 +57,65 @@ FORBIDDEN_ROOTS = (
     "/Users/macstudio0/Desktop/方案/0629/forecast_project",
 )
 CUTOFF = pd.Timestamp("2025-07-15")
+REFERENCE_PHASE_COUNTS = {
+    "sim": 117,
+    "real": 203,
+}
+
+
+def validated_reference_candidate(
+    predictions: pd.DataFrame,
+    *,
+    phase: str,
+    candidate_id: str,
+    config_hash: str,
+) -> pd.DataFrame:
+    """Return one complete, identity-locked audited phase vector."""
+    missing = {
+        "candidate_id",
+        "config_hash",
+        "feature_date",
+    }.difference(predictions.columns)
+    if missing:
+        raise AssertionError(
+            f"reference candidate columns missing: {sorted(missing)}"
+        )
+    try:
+        expected_count = REFERENCE_PHASE_COUNTS[phase]
+    except KeyError as error:
+        raise AssertionError(f"unknown reference phase: {phase}") from error
+    selected = predictions.loc[
+        predictions["candidate_id"] == candidate_id
+    ].copy()
+    if selected.empty or len(selected) != expected_count:
+        raise AssertionError(
+            f"{phase} {candidate_id}: expected {expected_count} rows, "
+            f"found {len(selected)}"
+        )
+    if not selected["candidate_id"].eq(candidate_id).all():
+        raise AssertionError(f"{phase} {candidate_id}: identity mismatch")
+    if not selected["config_hash"].eq(config_hash).all():
+        raise AssertionError(f"{phase} {candidate_id}: config hash mismatch")
+    dates = pd.to_datetime(
+        selected["feature_date"],
+        errors="raise",
+    )
+    normalized = dates.dt.normalize()
+    if not dates.equals(normalized):
+        raise AssertionError(
+            f"{phase} {candidate_id}: feature dates must be normalized"
+        )
+    if (
+        normalized.duplicated().any()
+        or not normalized.is_monotonic_increasing
+        or normalized.nunique() != expected_count
+    ):
+        raise AssertionError(
+            f"{phase} {candidate_id}: feature dates must be unique "
+            "and strictly increasing"
+        )
+    selected["feature_date"] = normalized
+    return selected.set_index("feature_date")
 
 
 class EmbeddedRuntimeTests(unittest.TestCase):
@@ -266,6 +325,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             REFERENCE_RESULTS_ROOT / f"{phase}_predictions.csv",
             usecols=[
                 "candidate_id",
+                "config_hash",
                 "feature_date",
                 "action",
                 "score",
@@ -276,7 +336,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         predictions["feature_date"] = pd.to_datetime(
             predictions["feature_date"],
             errors="raise",
-        ).dt.normalize()
+        )
         return (
             daily,
             anchor_scores("5y10"),
@@ -295,6 +355,95 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             expected,
         )
 
+    def test_reference_candidate_validation_rejects_invalid_or_incomplete_rows(
+        self,
+    ) -> None:
+        dates = pd.bdate_range("2025-01-02", periods=117)
+        complete = pd.DataFrame(
+            {
+                "candidate_id": ["7y-cfc-0084"] * 117,
+                "config_hash": ["69bf3a432784639d"] * 117,
+                "feature_date": dates,
+            }
+        )
+        non_normalized = complete.copy()
+        non_normalized.loc[0, "feature_date"] += pd.Timedelta(hours=1)
+        non_increasing = complete.copy()
+        non_increasing.loc[
+            [115, 116],
+            "feature_date",
+        ] = non_increasing.loc[
+            [116, 115],
+            "feature_date",
+        ].to_numpy()
+        wrong_candidate = complete.copy()
+        wrong_candidate.loc[0, "candidate_id"] = "7y-cfc-0156"
+        wrong_hash = complete.copy()
+        wrong_hash.loc[0, "config_hash"] = "ad0d94dc15febd8a"
+        cases = {
+            "empty": complete.iloc[0:0].copy(),
+            "truncated": complete.iloc[:-1].copy(),
+            "duplicate": pd.concat(
+                [complete.iloc[:-1], complete.iloc[[0]]],
+                ignore_index=True,
+            ),
+            "non_normalized": non_normalized,
+            "non_increasing": non_increasing,
+            "wrong_candidate": wrong_candidate,
+            "wrong_hash": wrong_hash,
+        }
+        for name, invalid in cases.items():
+            with self.subTest(name=name):
+                with self.assertRaises(AssertionError):
+                    validated_reference_candidate(
+                        invalid,
+                        phase="sim",
+                        candidate_id="7y-cfc-0084",
+                        config_hash="69bf3a432784639d",
+                    )
+
+    def test_reference_phase_does_not_repair_non_normalized_dates(self) -> None:
+        root = self.tempdir / "audited-reference"
+        (root / "protected_input_sim/data").mkdir(parents=True)
+        pd.DataFrame({"date": ["2025-01-02"]}).to_csv(
+            root / "protected_input_sim/data/daily_output.csv",
+            index=False,
+        )
+        for anchor in ("5y10", "10y04"):
+            anchor_root = root / f"source_replay_sim/source_{anchor}"
+            anchor_root.mkdir(parents=True)
+            pd.DataFrame(
+                {"date": ["2025-01-02"], "prob_up": [0.5]}
+            ).to_csv(anchor_root / "predictions.csv", index=False)
+        dates = pd.bdate_range("2025-01-02", periods=117)
+        dates = dates.to_series(index=range(117))
+        dates.iloc[0] += pd.Timedelta(hours=12)
+        pd.DataFrame(
+            {
+                "candidate_id": ["7y-cfc-0084"] * 117,
+                "config_hash": ["69bf3a432784639d"] * 117,
+                "feature_date": dates,
+                "action": [0] * 117,
+                "score": [0.0] * 117,
+                "front_z": [0.0] * 117,
+                "back_z": [0.0] * 117,
+            }
+        ).to_csv(root / "sim_predictions.csv", index=False)
+
+        with patch(
+            f"{__name__}.REFERENCE_RESULTS_ROOT",
+            root,
+        ):
+            _, _, _, predictions = self.reference_phase("sim")
+
+        with self.assertRaisesRegex(AssertionError, "normalized"):
+            validated_reference_candidate(
+                predictions,
+                phase="sim",
+                candidate_id="7y-cfc-0084",
+                config_hash="69bf3a432784639d",
+            )
+
     def test_scheme_curve_vectors_match_each_exact_audited_golden(
         self,
     ) -> None:
@@ -302,9 +451,15 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             scheme_id: self.load_generated_module(script)
             for scheme_id, script in self.rendered_runners.items()
         }
-        expected_ids = {
-            "seven_y_t1_cfc_0084_embedded_v1": "7y-cfc-0084",
-            "seven_y_t1_cfc_0156_embedded_v1": "7y-cfc-0156",
+        expected_identities = {
+            "seven_y_t1_cfc_0084_embedded_v1": (
+                "7y-cfc-0084",
+                "69bf3a432784639d",
+            ),
+            "seven_y_t1_cfc_0156_embedded_v1": (
+                "7y-cfc-0156",
+                "ad0d94dc15febd8a",
+            ),
         }
         self.assertEqual(
             modules["seven_y_t1_cfc_0084_embedded_v1"].FROZEN_SCHEME[
@@ -322,10 +477,14 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             daily, _, _, predictions = self.reference_phase(phase)
             phase_results: dict[str, pd.Series] = {}
             for scheme_id, module in modules.items():
-                expected = predictions.loc[
-                    predictions["candidate_id"] == expected_ids[scheme_id],
-                    ["feature_date", "front_z"],
-                ].set_index("feature_date")["front_z"].astype("int64")
+                candidate_id, config_hash = expected_identities[scheme_id]
+                expected_frame = validated_reference_candidate(
+                    predictions,
+                    phase=phase,
+                    candidate_id=candidate_id,
+                    config_hash=config_hash,
+                )
+                expected = expected_frame["front_z"].astype("int64")
                 actual = module._curve_orientation_actions(
                     daily,
                     module.FROZEN_SCHEME,
@@ -346,16 +505,26 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             scheme_id: self.load_generated_module(script)
             for scheme_id, script in self.rendered_runners.items()
         }
-        expected_ids = {
-            "seven_y_t1_cfc_0084_embedded_v1": "7y-cfc-0084",
-            "seven_y_t1_cfc_0156_embedded_v1": "7y-cfc-0156",
+        expected_identities = {
+            "seven_y_t1_cfc_0084_embedded_v1": (
+                "7y-cfc-0084",
+                "69bf3a432784639d",
+            ),
+            "seven_y_t1_cfc_0156_embedded_v1": (
+                "7y-cfc-0156",
+                "ad0d94dc15febd8a",
+            ),
         }
         for phase in ("sim", "real"):
             daily, five, ten, predictions = self.reference_phase(phase)
             for scheme_id, module in modules.items():
-                expected = predictions.loc[
-                    predictions["candidate_id"] == expected_ids[scheme_id]
-                ].set_index("feature_date")
+                candidate_id, config_hash = expected_identities[scheme_id]
+                expected = validated_reference_candidate(
+                    predictions,
+                    phase=phase,
+                    candidate_id=candidate_id,
+                    config_hash=config_hash,
+                )
                 curve = module._curve_orientation_actions(
                     daily,
                     module.FROZEN_SCHEME,
@@ -416,6 +585,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             REFERENCE_RESULTS_ROOT / "real_predictions.csv",
             usecols=[
                 "candidate_id",
+                "config_hash",
                 "feature_date",
                 "action",
                 "score",
@@ -423,13 +593,12 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                 "back_z",
             ],
         )
-        selected = reference.loc[
-            (reference["candidate_id"] == "7y-cfc-0084")
-            & (
-                pd.to_datetime(reference["feature_date"], errors="raise")
-                == CUTOFF
-            )
-        ].iloc[0]
+        selected = validated_reference_candidate(
+            reference,
+            phase="real",
+            candidate_id="7y-cfc-0084",
+            config_hash="69bf3a432784639d",
+        ).loc[CUTOFF]
 
         result = module._infer_one(source, CUTOFF)
 
