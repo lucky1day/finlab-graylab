@@ -77,7 +77,16 @@ def write_delivery(
     delivery = output_root / scheme.scheme_id
     expected_names = {f"{scheme.scheme_id}.json", f"{scheme.scheme_id}.py"}
     if delivery.exists():
-        if not delivery.is_dir() or {path.name for path in delivery.iterdir()} != expected_names:
+        if not delivery.is_dir():
+            raise ValueError(f"unexpected existing delivery contents: {delivery}")
+        existing_entries = {path.name: path for path in delivery.iterdir()}
+        if (
+            set(existing_entries) != expected_names
+            or any(
+                not path.is_file() or path.is_symlink()
+                for path in existing_entries.values()
+            )
+        ):
             raise ValueError(f"unexpected existing delivery contents: {delivery}")
     else:
         delivery.mkdir(parents=True)

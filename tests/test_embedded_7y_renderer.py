@@ -67,6 +67,43 @@ class EmbeddedRendererTests(unittest.TestCase):
 
             self.assertEqual(list((root / scheme.scheme_id).iterdir()), [])
 
+    def test_rejects_expected_name_directory_without_touching_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scheme = get_scheme("seven_y_t1_cfc_0084_embedded_v1")
+            delivery = root / scheme.scheme_id
+            delivery.mkdir()
+            runner_directory = delivery / f"{scheme.scheme_id}.py"
+            runner_directory.mkdir()
+            metadata = delivery / f"{scheme.scheme_id}.json"
+            metadata.write_text("preserve", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "unexpected existing delivery contents"):
+                write_delivery(root, scheme, tiny_payload())
+
+            self.assertTrue(runner_directory.is_dir())
+            self.assertEqual(metadata.read_text(encoding="utf-8"), "preserve")
+
+    def test_rejects_expected_name_symlink_without_touching_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scheme = get_scheme("seven_y_t1_cfc_0084_embedded_v1")
+            delivery = root / scheme.scheme_id
+            delivery.mkdir()
+            target = root / "runner-target.py"
+            target.write_text("preserve", encoding="utf-8")
+            runner_link = delivery / f"{scheme.scheme_id}.py"
+            runner_link.symlink_to(target)
+            (delivery / f"{scheme.scheme_id}.json").write_text(
+                "preserve", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(ValueError, "unexpected existing delivery contents"):
+                write_delivery(root, scheme, tiny_payload())
+
+            self.assertTrue(runner_link.is_symlink())
+            self.assertEqual(target.read_text(encoding="utf-8"), "preserve")
+
 
 if __name__ == "__main__":
     unittest.main()
