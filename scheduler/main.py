@@ -170,7 +170,7 @@ def _daily_coordinator_mode() -> str:
 
 
 def _require_ledger_runtime_mode() -> None:
-    """外层只拒绝 mode 漂移；容量验证由不可绕过的 runtime 内层执行。"""
+    """外层只拒绝 mode 漂移；确定性 authority 由 runtime 内层执行。"""
     if _daily_coordinator_mode() != "ledger":
         raise RuntimeError(
             "daily ledger entry requires ledger coordinator mode"

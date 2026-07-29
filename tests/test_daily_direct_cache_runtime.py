@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib
 import os
 import tempfile
@@ -8,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 from shared.liwei_0616_cache_projection import (
@@ -166,7 +168,9 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             tenor="5Y",
             publisher_consumer_id="publisher",
             baselines=("STD",),
-            baseline_configs={"STD": {"window": 5}},
+            baseline_configs={
+                "STD": {"close": "value", "window": 5}
+            },
             source_ic_screen_start="2018-01-01",
             horizon=5,
             purge_gap=5,
@@ -225,6 +229,50 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             "schema_version": "native-generation-v1",
             "exporter_version": "native-generation-exporter-v1",
         }
+
+    def _current(self) -> SimpleNamespace:
+        from shared.liwei_0616_phase_a_cache import (
+            _baseline_fingerprint,
+            _spec_fingerprint,
+        )
+
+        return SimpleNamespace(
+            manifest={
+                "schema_version": 3,
+                "generation_id": "generation-direct",
+                "generation_content_id": "8" * 64,
+                "abi_version": "liwei_0616.phase_a.v1",
+                "cache_family": self.spec.cache_family,
+                "tenor": self.spec.tenor,
+                "spec_fingerprint": _spec_fingerprint(self.spec),
+                "input_state": {
+                    "schema_version": 3,
+                    "effective_auxiliary": {
+                        "schema_version":
+                            "liwei-0616-auxiliary-dependency-projection-v1",
+                        "proof_identity_sha256": "5" * 64,
+                    }
+                },
+                "parent_generation_id": None,
+                "build_mode": "append",
+                "input_change": {},
+                "created_at": "2026-07-30T00:00:00+00:00",
+                "baselines": {
+                    "STD": {
+                        "relative_path": "baselines/STD.pkl",
+                        "file_sha256": "1" * 64,
+                        "baseline_fingerprint":
+                            _baseline_fingerprint(self.spec, "STD"),
+                        "cache_content_sha256": "2" * 64,
+                        "watermark": "2026-07-29",
+                        "evidence": {},
+                    }
+                },
+                "compare_gate_evidence": {},
+                "generation_acceptance_evidence": {},
+            },
+            caches={"STD": {"test_dates": ["2026-07-29"]}},
+        )
 
     def test_direct_runtime_context_validates_exact_shape(self) -> None:
         from shared.liwei_0616_cache_contract import (
@@ -451,20 +499,11 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
         context = validate_direct_cache_runtime_context(
             self._context()
         )
-        current = SimpleNamespace(
-            manifest={
-                "input_state": {
-                    "effective_auxiliary": {
-                        "schema_version":
-                            "liwei-0616-auxiliary-dependency-projection-v1",
-                        "proof_identity_sha256": "5" * 64,
-                    }
-                }
-            }
-        )
+        current = self._current()
         _validate_direct_current_generation_authority(
             current,
             context,
+            self.spec,
         )
 
         current.manifest["input_state"]["effective_auxiliary"][
@@ -472,12 +511,413 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
         ] = "6" * 64
         with self.assertRaisesRegex(
             RuntimeError,
-            "publisher projection",
+            "DIRECT_CACHE_CURRENT_AUTHORITY_DRIFT",
         ):
             _validate_direct_current_generation_authority(
                 current,
                 context,
+                self.spec,
             )
+
+    def test_direct_current_manifest_identity_is_closed_world(
+        self,
+    ) -> None:
+        from shared.liwei_0616_cache_contract import (
+            validate_direct_cache_runtime_context,
+        )
+        from shared.liwei_0616_phase_a_cache import (
+            _validate_direct_current_generation_authority,
+        )
+
+        context = validate_direct_cache_runtime_context(
+            self._context()
+        )
+
+        def mutate_baselines(current: SimpleNamespace) -> None:
+            current.manifest["baselines"] = {
+                "OTHER": current.manifest["baselines"]["STD"]
+            }
+
+        def mutate_proof(current: SimpleNamespace) -> None:
+            current.manifest["input_state"]["effective_auxiliary"][
+                "proof_identity_sha256"
+            ] = "9" * 64
+
+        mutations = {
+            "schema": lambda current: current.manifest.update(
+                {"schema_version": 2}
+            ),
+            "input_schema": lambda current: current.manifest[
+                "input_state"
+            ].update({"schema_version": 2}),
+            "abi": lambda current: current.manifest.update(
+                {"abi_version": "drift"}
+            ),
+            "family": lambda current: current.manifest.update(
+                {"cache_family": "other"}
+            ),
+            "tenor": lambda current: current.manifest.update(
+                {"tenor": "10Y"}
+            ),
+            "spec": lambda current: current.manifest.update(
+                {"spec_fingerprint": "9" * 64}
+            ),
+            "baseline": mutate_baselines,
+            "proof": mutate_proof,
+            "unknown": lambda current: current.manifest.update(
+                {"unexpected": True}
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                current = copy.deepcopy(self._current())
+                mutate(current)
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "DIRECT_CACHE_CURRENT_AUTHORITY_DRIFT",
+                ):
+                    _validate_direct_current_generation_authority(
+                        current,
+                        context,
+                        self.spec,
+                    )
+
+    def test_direct_runtime_refuses_full_or_unproven_rebind(
+        self,
+    ) -> None:
+        from shared.liwei_0616_phase_a_cache import (
+            _require_direct_runtime_incremental_build_mode,
+        )
+
+        for build_mode, build_reason in (
+            ("full", "date_to_week_history_changed"),
+            ("full", "effective_auxiliary_projection_unknown"),
+            ("rebind", "native_generation_rebound"),
+        ):
+            with (
+                self.subTest(
+                    build_mode=build_mode,
+                    build_reason=build_reason,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "DIRECT_CACHE_OPERATOR_BOOTSTRAP_REQUIRED",
+                ),
+            ):
+                _require_direct_runtime_incremental_build_mode(
+                    self._context(),
+                    build_mode=build_mode,
+                    build_reason=build_reason,
+                )
+
+    def test_native_generation_change_with_proven_append_is_append(
+        self,
+    ) -> None:
+        from shared.liwei_0616_phase_a_cache import (
+            _projection_build_decision,
+        )
+
+        input_change = {
+            "projection_status": "valid",
+            "change_type": "append",
+            "native_generation_changed": True,
+            "frames": {
+                "daily": {
+                    "change_type": "append",
+                    "earliest_changed_key": "2026-07-30",
+                    "schema_changed": False,
+                }
+            },
+            "effective_auxiliary": {
+                "change_type": "append",
+                "earliest_changed_key": "2026-07-30",
+                "schema_changed": False,
+            },
+            "date_to_week": {
+                "change_type": "append",
+                "earliest_changed_key": "2026-07-30",
+            },
+        }
+
+        self.assertEqual(
+            _projection_build_decision(
+                spec=self.spec,
+                input_change=input_change,
+            ),
+            ("append", "effective_auxiliary_append", None),
+        )
+
+    def test_direct_native_generation_append_publishes_append_mode(
+        self,
+    ) -> None:
+        from shared import liwei_0616_phase_a_cache as module
+
+        publisher = importlib.import_module(
+            "schemes.liwei_0616_5y01_full_oos_k3_div_k10."
+            "inference"
+        )
+        daily, weekly, monthly, mapping = _real_projection_inputs(
+            publisher
+        )
+        daily["value"] = [1.0, 2.0]
+        projection = _build_real_projection(
+            publisher,
+            daily=daily,
+            weekly=weekly,
+            monthly=monthly,
+            date_to_week=mapping,
+        )
+
+        def trainer(
+            baseline: str,
+            ranges: tuple[tuple[str, str], ...],
+        ) -> dict[str, object]:
+            dates = [start for start, end in ranges if start == end]
+            values = np.arange(len(dates), dtype=np.int32)
+            return {
+                "test_dates": dates,
+                "results": [
+                    {
+                        "config": {"baseline": baseline},
+                        "preds": values,
+                        "probs": values.astype(np.float64),
+                    }
+                ],
+            }
+
+        _cache, first = module.prepare_phase_a_caches(
+            spec=self.spec,
+            daily_df=daily,
+            weekly_df=weekly,
+            monthly_df=monthly,
+            test_ranges=(("2026-01-02", "2026-01-05"),),
+            train_missing=trainer,
+            require_compare_gate=False,
+            cache_consumer_id="publisher",
+            native_generation=self._native(),
+            auxiliary_dependency_projection=projection,
+            cache_root=self.cache_root,
+        )
+        Path(self.cache_root).chmod(0o700)
+
+        next_daily = pd.concat(
+            [
+                daily,
+                pd.DataFrame(
+                    {
+                        "date": [pd.Timestamp("2026-01-06")],
+                        "value": [3.0],
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+        next_weekly = pd.concat(
+            [
+                weekly,
+                pd.DataFrame(
+                    {
+                        "week_id": [202603],
+                        **{
+                            column: [float(index)]
+                            for index, column in enumerate(
+                                publisher.v31_common.WEEKLY_COLS,
+                                start=10,
+                            )
+                        },
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+        next_mapping = {**mapping, "2026-01-06": 202603}
+        next_projection = _build_real_projection(
+            publisher,
+            daily=next_daily,
+            weekly=next_weekly,
+            monthly=monthly,
+            date_to_week=next_mapping,
+        )
+        first_proof = module._effective_auxiliary_generation_state(
+            projection
+        )["proof_identity_sha256"]
+        self.assertEqual(
+            first_proof,
+            module._effective_auxiliary_generation_state(
+                next_projection
+            )["proof_identity_sha256"],
+        )
+        context = self._context()
+        context["consumer"][
+            "publisher_projection_proof_identity_sha256"
+        ] = first_proof
+        next_native = {
+            **self._native(),
+            "generation_id": "native-direct-next",
+            "manifest_sha256": "a" * 64,
+            "dataset_content_id": "b" * 64,
+            "business_date": "2026-07-31",
+            "feature_date": "2026-07-30",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                module.DAILY_COORDINATOR_MODE_ENV: "ledger",
+                module.DIRECT_CACHE_RUNTIME_CONTEXT_ENV:
+                    module._canonical_json(context),
+            },
+            clear=False,
+        ):
+            _cache, second = module.prepare_phase_a_caches(
+                spec=self.spec,
+                daily_df=next_daily,
+                weekly_df=next_weekly,
+                monthly_df=monthly,
+                test_ranges=(
+                    ("2026-01-02", "2026-01-06"),
+                ),
+                train_missing=trainer,
+                cache_consumer_id="publisher",
+                native_generation=next_native,
+                auxiliary_dependency_projection=next_projection,
+                cache_root=self.cache_root,
+            )
+
+        self.assertNotEqual(
+            first["generation_id"],
+            second["generation_id"],
+        )
+        self.assertEqual(second["build_mode"], "append")
+        self.assertNotEqual(second["build_mode"], "rebind")
+        self.assertTrue(
+            second["input_change"]["native_generation_changed"]
+        )
+
+    def test_direct_mapping_unknown_and_native_drift_never_train(
+        self,
+    ) -> None:
+        from shared import liwei_0616_phase_a_cache as module
+
+        daily, weekly, monthly = _frames()
+        unchanged = {
+            "change_type": "unchanged",
+            "earliest_changed_key": None,
+            "schema_changed": False,
+        }
+        cases = {
+            "mapping": {
+                "change_type": "unknown",
+                "raw_change_type": "unchanged",
+                "frames": {
+                    "daily": unchanged,
+                    "weekly": unchanged,
+                    "monthly": unchanged,
+                },
+                "effective_auxiliary": unchanged,
+                "date_to_week": {
+                    "change_type": "revision",
+                    "earliest_changed_key": "2026-07-29",
+                },
+                "projection_status": "mapping_changed",
+                "suffix_start_date": None,
+                "native_generation_changed": False,
+            },
+            "unknown": {
+                "change_type": "unknown",
+                "raw_change_type": "unchanged",
+                "frames": {
+                    "daily": unchanged,
+                    "weekly": unchanged,
+                    "monthly": unchanged,
+                },
+                "effective_auxiliary": {
+                    "change_type": "unavailable",
+                    "earliest_changed_key": None,
+                    "schema_changed": False,
+                },
+                "date_to_week": {
+                    "change_type": "unavailable",
+                    "earliest_changed_key": None,
+                },
+                "projection_status": "schema_changed",
+                "suffix_start_date": None,
+                "native_generation_changed": False,
+            },
+            "native_unproven": {
+                "change_type": "unchanged",
+                "raw_change_type": "unchanged",
+                "frames": {
+                    "daily": unchanged,
+                    "weekly": unchanged,
+                    "monthly": unchanged,
+                },
+                "effective_auxiliary": unchanged,
+                "date_to_week": {
+                    "change_type": "unchanged",
+                    "earliest_changed_key": None,
+                },
+                "projection_status": "valid",
+                "suffix_start_date": None,
+                "native_generation_changed": True,
+            },
+        }
+        for label, input_change in cases.items():
+            trained: list[object] = []
+            with (
+                self.subTest(label=label),
+                patch.object(
+                    module,
+                    "_input_generation_state",
+                    return_value={"content_id": "9" * 64},
+                ),
+                patch.object(
+                    module,
+                    "_load_current_generation",
+                    return_value=(self._current(), None),
+                ),
+                patch.object(
+                    module,
+                    "_validate_direct_current_generation_authority",
+                ),
+                patch.object(
+                    module,
+                    "_input_change_analysis",
+                    return_value=copy.deepcopy(input_change),
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "DIRECT_CACHE_OPERATOR_BOOTSTRAP_REQUIRED",
+                ),
+            ):
+                module._prepare_under_family_lock(
+                    spec=self.spec,
+                    cache_consumer_id="publisher",
+                    is_publisher=True,
+                    root=Path(self.cache_root),
+                    family_root=(
+                        Path(self.cache_root)
+                        / self.spec.cache_family
+                        / self.spec.tenor.lower()
+                    ),
+                    daily_df=daily,
+                    weekly_df=weekly,
+                    monthly_df=monthly,
+                    auxiliary_dependency_projection=object(),
+                    test_ranges=(
+                        ("2026-07-29", "2026-07-29"),
+                    ),
+                    train_missing=lambda *_args: trained.append(
+                        object()
+                    ),
+                    compare_cold=None,
+                    qualify_compare_gate=None,
+                    compare_full_output=None,
+                    qualification_required=True,
+                    trusted_qualification=None,
+                    direct_runtime_context=self._context(),
+                    native_generation_binding=self._native(),
+                )
+            self.assertEqual(trained, [])
 
     def test_real_shared_consumers_ignore_only_own_proof_files(
         self,

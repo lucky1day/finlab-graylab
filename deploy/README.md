@@ -360,12 +360,10 @@ composite FK。禁止用 `mysql`、scheduler、harness 或临时脚本直跑 mig
 
 #### Epoch cutover 与单实例 owner
 
-cutover 代码门禁：后续代码 PR 必须移除 `scheduler.daily_runtime` 的旧 capacity
-admission binding/revalidation、epoch operator admission probe 和 admission cache
-qualification，以目标 policy/input/cache/result 的直接确定性校验替代。只有测试
-证明这些依赖已经移除，且[当前状态](../docs/CURRENT_STATUS.md)同步闭合全部前置后，
-才可执行本节；否则必须 fail-closed。本文不提供、也不授权旧 admission 的签名、
-安装或续期仪式。
+cutover 代码门禁已由目标 policy/input/cache/result 的直接确定性 authority
+承担；runtime、epoch operator 与 cache 路径不得恢复旧 capacity admission
+binding、probe 或 qualification。只有测试证明 direct authority 闭合且
+[当前状态](../docs/CURRENT_STATUS.md)同步闭合全部前置后，才可执行本节。
 
 切换必须在获准维护窗口一次完成：
 

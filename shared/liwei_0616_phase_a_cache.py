@@ -56,6 +56,35 @@ GENERATION_MANIFEST_SCHEMA_VERSION = 3
 CURRENT_POINTER_SCHEMA_VERSION = 1
 LEGACY_INPUT_GENERATION_STATE_SCHEMA_VERSION = 2
 INPUT_GENERATION_STATE_SCHEMA_VERSION = 3
+DIRECT_RUNTIME_MANIFEST_FIELDS = frozenset(
+    {
+        "schema_version",
+        "generation_id",
+        "generation_content_id",
+        "abi_version",
+        "cache_family",
+        "tenor",
+        "spec_fingerprint",
+        "input_state",
+        "parent_generation_id",
+        "build_mode",
+        "input_change",
+        "created_at",
+        "baselines",
+        "compare_gate_evidence",
+        "generation_acceptance_evidence",
+    }
+)
+DIRECT_RUNTIME_BASELINE_FIELDS = frozenset(
+    {
+        "relative_path",
+        "file_sha256",
+        "baseline_fingerprint",
+        "cache_content_sha256",
+        "watermark",
+        "evidence",
+    }
+)
 DEFAULT_CACHE_ROOT = BACKTEST_ARTIFACT_ROOT / "runtime_cache" / "liwei_0616"
 CACHE_GENERATION_RETENTION = 3
 MAX_CACHE_FAMILY_BYTES = 512 * 1024 * 1024
@@ -260,14 +289,11 @@ def prepare_phase_a_caches(
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
     """读取或生成不可变 Phase A cache generation。
 
-    同一 ``cache_family + tenor`` 只有一个 prewarmer。只有完整 generation
-    写入、校验且通过容量门禁后，才会原子替换 ``current.json``。历史修订
-    仅在 spec 同时声明可审计的 daily 依赖窗口与证明时重算保守 suffix；
-    有效辅助投影可证明的 append/suffix 只训练受影响日期；投影缺失或
-    证明漂移仍 fail-closed full rebuild。自哈希只用于完整性，
-    ``compare_cold`` 只用于非生产诊断。ledger/SLA 路径必须传入 capacity
-    corpus 双签名生成的逐 consumer qualification，且禁止在日批内通过
-    runtime callback 自行生成资格。
+    同一 ``cache_family + tenor`` 只有一个 publisher。完整 generation
+    写入并校验后才原子替换 ``current.json``。direct ledger runtime 只允许
+    可证明的 hit/append/suffix；任何需要 full rebuild 或无法证明的 Native
+    generation 变化都 fail-closed，full rebuild 仅允许无 direct context 的
+    显式 operator bootstrap。``compare_cold`` 只用于非生产诊断。
     """
     _validate_cache_publisher_identity(spec)
     _validate_daily_dependency_proof(spec)
@@ -501,11 +527,13 @@ def _prepare_under_family_lock(
     if direct_runtime_context is not None:
         if current is None:
             raise RuntimeError(
-                "direct cache frozen current generation is unavailable"
+                "DIRECT_CACHE_OPERATOR_BOOTSTRAP_REQUIRED: "
+                "direct runtime current generation is unavailable"
             )
         _validate_direct_current_generation_authority(
             current,
             direct_runtime_context,
+            spec,
         )
     input_change = _input_change_analysis(
         (
@@ -633,6 +661,11 @@ def _prepare_under_family_lock(
             if build_mode != "full":
                 cached = current.caches
 
+    _require_direct_runtime_incremental_build_mode(
+        direct_runtime_context,
+        build_mode=build_mode,
+        build_reason=build_reason,
+    )
     caches: dict[str, dict[str, Any]] = {}
     baseline_audits: dict[str, dict[str, Any]] = {}
     acceptance_scopes: dict[str, dict[str, Any]] = {}
@@ -802,6 +835,11 @@ def _prepare_under_family_lock(
         tenor=spec.tenor,
         spec_fingerprint=spec_fingerprint,
         input_content_id=str(input_state["content_id"]),
+    )
+    _require_direct_runtime_incremental_build_mode(
+        direct_runtime_context,
+        build_mode=build_mode,
+        build_reason=build_reason,
     )
     generation = _create_generation(
         spec=spec,
@@ -1296,12 +1334,19 @@ def _validate_direct_context_for_cache_use(
 def _validate_direct_current_generation_authority(
     current: object,
     context: Mapping[str, object],
+    spec: PhaseACacheSpec,
 ) -> None:
-    """要求本次实际读取的 current 仍匹配冻结 publisher proof。"""
+    """要求实际 current 闭世界匹配冻结 direct authority。"""
     validated = validate_direct_cache_runtime_context(context)
     contract = validated["contract"]
     consumer = validated["consumer"]
     manifest = getattr(current, "manifest", None)
+    baselines = (
+        manifest.get("baselines")
+        if isinstance(manifest, Mapping)
+        else None
+    )
+    caches = getattr(current, "caches", None)
     input_state = (
         manifest.get("input_state")
         if isinstance(manifest, Mapping)
@@ -1312,17 +1357,83 @@ def _validate_direct_current_generation_authority(
         if isinstance(input_state, Mapping)
         else None
     )
+    drift: list[str] = []
     if (
-        not isinstance(effective, Mapping)
-        or effective.get("schema_version")
-        != contract["projection_schema_version"]
-        or effective.get("proof_identity_sha256")
-        != consumer[
-            "publisher_projection_proof_identity_sha256"
-        ]
+        not isinstance(manifest, Mapping)
+        or set(manifest) != DIRECT_RUNTIME_MANIFEST_FIELDS
     ):
+        drift.append("manifest_fields")
+    expected_manifest = {
+        "schema_version": contract["manifest_schema_version"],
+        "abi_version": contract["cache_abi_version"],
+        "cache_family": consumer["cache_family"],
+        "tenor": consumer["tenor"],
+        "spec_fingerprint": consumer["spec_fingerprint"],
+    }
+    if isinstance(manifest, Mapping):
+        drift.extend(
+            field
+            for field, expected in expected_manifest.items()
+            if manifest.get(field) != expected
+        )
+    if (
+        not isinstance(input_state, Mapping)
+        or input_state.get("schema_version")
+        != contract["input_state_schema_version"]
+    ):
+        drift.append("input_state_schema")
+    expected_baselines = set(spec.baselines)
+    if (
+        not isinstance(baselines, Mapping)
+        or set(baselines) != expected_baselines
+        or not isinstance(caches, Mapping)
+        or set(caches) != expected_baselines
+    ):
+        drift.append("baselines")
+    elif any(
+        not isinstance(baselines[baseline], Mapping)
+        or set(baselines[baseline])
+        != DIRECT_RUNTIME_BASELINE_FIELDS
+        or baselines[baseline].get("baseline_fingerprint")
+        != _baseline_fingerprint(spec, baseline)
+        for baseline in spec.baselines
+    ):
+        drift.append("baseline_identity")
+    if not isinstance(effective, Mapping):
+        drift.append("effective_projection")
+    else:
+        if (
+            effective.get("schema_version")
+            != contract["projection_schema_version"]
+        ):
+            drift.append("projection_schema")
+        if (
+            effective.get("proof_identity_sha256")
+            != consumer[
+                "publisher_projection_proof_identity_sha256"
+            ]
+        ):
+            drift.append("publisher_projection")
+    if drift:
         raise RuntimeError(
-            "direct cache current publisher projection identity drift"
+            "DIRECT_CACHE_CURRENT_AUTHORITY_DRIFT: "
+            + ", ".join(sorted(set(drift)))
+        )
+
+
+def _require_direct_runtime_incremental_build_mode(
+    context: Mapping[str, object] | None,
+    *,
+    build_mode: str,
+    build_reason: str,
+) -> None:
+    """direct runtime 禁止隐式 full/rebind。"""
+    if context is None:
+        return
+    if build_mode not in {"hit", "append", "suffix"}:
+        raise RuntimeError(
+            "DIRECT_CACHE_OPERATOR_BOOTSTRAP_REQUIRED: "
+            f"direct runtime refuses {build_mode} ({build_reason})"
         )
 
 
@@ -2381,7 +2492,10 @@ def _projection_build_decision(
         )
     if effective["change_type"] not in {"unchanged", "append"}:
         return "full", "effective_auxiliary_projection_unknown", None
-    if input_change["native_generation_changed"]:
+    if (
+        input_change["native_generation_changed"]
+        and input_change["change_type"] != "append"
+    ):
         return "rebind", "native_generation_rebound", None
     return (
         "append",
@@ -3559,7 +3673,10 @@ def _lineage_build_mode(
         if effective_cutoff is not None:
             input_change["suffix_start_date"] = effective_cutoff
             return "suffix"
-        if input_change["native_generation_changed"]:
+        if (
+            input_change["native_generation_changed"]
+            and input_change["change_type"] != "append"
+        ):
             return "rebind"
         return "append"
     else:
