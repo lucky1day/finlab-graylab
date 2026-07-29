@@ -8,19 +8,15 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 
-class SchedulerCapacityAdmissionTests(unittest.TestCase):
-    def test_ledger_scheduler_checks_current_capacity_before_registry_mutation(
+class SchedulerDirectAuthorityTests(unittest.TestCase):
+    def test_ledger_scheduler_checks_direct_authority_before_registry_mutation(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
+        from scheduler.daily_direct_authority import DailyDirectAuthorityError
 
         engine = SimpleNamespace(dispose=Mock())
-        schemes = [
-            SimpleNamespace(
-                scheme_id="daily_native",
-                frequency="daily",
-            )
-        ]
+        schemes: list[object] = []
         with (
             patch.dict(
                 os.environ,
@@ -36,10 +32,11 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
             ),
             patch.object(
                 scheduler_main,
-                "require_current_capacity_admission",
-                side_effect=RuntimeError("capacity blocked"),
-                create=True,
-            ) as admission,
+                "build_daily_direct_cache_authorities",
+                side_effect=DailyDirectAuthorityError(
+                    "direct authority blocked"
+                ),
+            ) as authority,
             patch.object(
                 scheduler_main,
                 "discover_schemes",
@@ -54,12 +51,15 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
                 scheduler_main,
                 "_sync_registry",
             ) as sync_registry,
-            self.assertRaisesRegex(RuntimeError, "capacity blocked"),
+            self.assertRaisesRegex(
+                DailyDirectAuthorityError,
+                "direct authority blocked",
+            ),
         ):
             scheduler_main.build_scheduler()
 
         discovery.assert_called_once_with()
-        admission.assert_called_once_with(
+        authority.assert_called_once_with(
             engine,
             policy_path=scheduler_main.POLICY_V2_PATH,
             discovered=schemes,
@@ -68,7 +68,7 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
         engine.dispose.assert_called_once_with()
         sync_registry.assert_not_called()
 
-    def test_legacy_scheduler_does_not_require_capacity_admission(
+    def test_legacy_scheduler_does_not_require_direct_authority(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -83,16 +83,9 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
             ),
             patch.object(
                 scheduler_main,
-                "require_daily_capacity_admission",
+                "build_daily_direct_cache_authorities",
                 side_effect=AssertionError("must not be called"),
-                create=True,
-            ) as admission,
-            patch.object(
-                scheduler_main,
-                "require_current_capacity_admission",
-                side_effect=AssertionError("must not be called"),
-                create=True,
-            ) as current_admission,
+            ) as authority,
             patch.object(
                 scheduler_main,
                 "discover_schemes",
@@ -111,10 +104,9 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
         finally:
             if scheduler.running:
                 scheduler.shutdown(wait=False)
-        admission.assert_not_called()
-        current_admission.assert_not_called()
+        authority.assert_not_called()
 
-    def test_admitted_ledger_scheduler_never_auto_syncs_registry(
+    def test_direct_authority_ledger_scheduler_never_auto_syncs_registry(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -136,9 +128,9 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
             ),
             patch.object(
                 scheduler_main,
-                "require_current_capacity_admission",
-                return_value={"status": "ADMITTED"},
-            ) as admission,
+                "build_daily_direct_cache_authorities",
+                return_value={},
+            ) as authority,
             patch.object(
                 scheduler_main,
                 "discover_schemes",
@@ -161,7 +153,7 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
         finally:
             if scheduler.running:
                 scheduler.shutdown(wait=False)
-        admission.assert_called_once_with(
+        authority.assert_called_once_with(
             engine,
             policy_path=scheduler_main.POLICY_V2_PATH,
             discovered=schemes,
@@ -170,7 +162,7 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
         engine.dispose.assert_called_once_with()
         sync_registry.assert_not_called()
 
-    def test_direct_coordinator_delegates_admission_to_inner_runtime(
+    def test_direct_coordinator_delegates_authority_to_inner_runtime(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -187,9 +179,9 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
             ),
             patch(
                 "scheduler.daily_runtime.run_daily_occurrence",
-                side_effect=RuntimeError("capacity blocked"),
+                side_effect=RuntimeError("direct authority blocked"),
             ) as runtime,
-            self.assertRaisesRegex(RuntimeError, "capacity blocked"),
+            self.assertRaisesRegex(RuntimeError, "direct authority blocked"),
         ):
             scheduler_main.run_daily_coordinator_job(
                 run_date="2026-07-24",
@@ -197,7 +189,7 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
 
         runtime.assert_called_once()
 
-    def test_operator_recovery_delegates_admission_to_inner_runtime(
+    def test_operator_recovery_delegates_authority_to_inner_runtime(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -214,9 +206,9 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
             ),
             patch(
                 "scheduler.daily_runtime.run_operator_recovery",
-                side_effect=RuntimeError("capacity blocked"),
+                side_effect=RuntimeError("direct authority blocked"),
             ) as runtime,
-            self.assertRaisesRegex(RuntimeError, "capacity blocked"),
+            self.assertRaisesRegex(RuntimeError, "direct authority blocked"),
         ):
             scheduler_main.run_daily_operator_recovery_job(
                 "scheme-a",
@@ -276,11 +268,11 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
         watchdog.assert_not_called()
         heartbeat.assert_not_called()
 
-    def test_main_reports_blocked_admission_as_configuration_error(
+    def test_main_reports_blocked_direct_authority_as_configuration_error(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
-        from scheduler.capacity_admission import CapacityAdmissionError
+        from scheduler.daily_direct_authority import DailyDirectAuthorityError
 
         stdout = io.StringIO()
         with (
@@ -296,7 +288,9 @@ class SchedulerCapacityAdmissionTests(unittest.TestCase):
             patch.object(
                 scheduler_main,
                 "run_daily_coordinator_job",
-                side_effect=CapacityAdmissionError("capacity blocked"),
+                side_effect=DailyDirectAuthorityError(
+                    "direct authority blocked"
+                ),
             ),
             redirect_stdout(stdout),
         ):
