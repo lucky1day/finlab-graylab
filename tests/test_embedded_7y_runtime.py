@@ -1555,11 +1555,21 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             payload_root = module._extract_payload(Path("private"))
             five, ten = module._anchor_modules(payload_root)
 
-            self.assertTrue(
-                Path(five.__file__).resolve().is_relative_to(payload_root.resolve())
+            self.assertIsInstance(
+                five.__spec__.loader,
+                module._VerifiedPythonLoader,
             )
-            self.assertTrue(
-                Path(ten.__file__).resolve().is_relative_to(payload_root.resolve())
+            self.assertIsInstance(
+                ten.__spec__.loader,
+                module._VerifiedPythonLoader,
+            )
+            self.assertTrue(five.__file__.startswith("<embedded-payload:"))
+            self.assertTrue(ten.__file__.startswith("<embedded-payload:"))
+            self.assertFalse(
+                any(
+                    path.name.startswith(".embedded-extension-loader-")
+                    for path in self.tempdir.iterdir()
+                )
             )
         final_daily = {
             name: loaded
@@ -1644,6 +1654,87 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             },
             previous_daily,
         )
+
+    def test_anchor_import_never_executes_python_replaced_after_validation(
+        self,
+    ) -> None:
+        module = self.load_generated_module()
+        relative_path = "daily_project/src/daily/selected_models/5y10/run.py"
+        marker = self.tempdir / "malicious-python-executed"
+        with chdir(self.tempdir):
+            payload_root = module._extract_payload(Path("fd-python-import"))
+            target = payload_root / relative_path
+            original_verify = module._verified_payload_identities
+            validation_calls = 0
+
+            def validate_then_replace(root_descriptor: int):
+                nonlocal validation_calls
+                identities = original_verify(root_descriptor)
+                validation_calls += 1
+                if validation_calls == 1:
+                    malicious = (
+                        "from pathlib import Path as _TamperPath\n"
+                        f"_TamperPath({str(marker)!r}).write_text("
+                        "'executed', encoding='utf-8')\n"
+                    ).encode("utf-8")
+                    replacement = target.with_name(".malicious-run.py")
+                    replacement.write_bytes(malicious + target.read_bytes())
+                    replacement.chmod(0o600)
+                    replacement.replace(target)
+                return identities
+
+            with (
+                patch.object(
+                    module,
+                    "_verified_payload_identities",
+                    side_effect=validate_then_replace,
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "payload load-time",
+                ),
+            ):
+                module._anchor_modules(payload_root)
+
+        self.assertFalse(marker.exists())
+
+    def test_anchor_import_does_not_open_so_replaced_after_validation(
+        self,
+    ) -> None:
+        module = self.load_generated_module()
+        relative_path = (
+            "daily_project/src/daily/selected_models/5y10/"
+            "_run_impl.cpython-313-darwin.so"
+        )
+        with chdir(self.tempdir):
+            payload_root = module._extract_payload(Path("fd-extension-import"))
+            target = payload_root / relative_path
+            original_verify = module._verified_payload_identities
+            validation_calls = 0
+
+            def validate_then_replace(root_descriptor: int):
+                nonlocal validation_calls
+                identities = original_verify(root_descriptor)
+                validation_calls += 1
+                if validation_calls == 1:
+                    replacement = target.with_name(".untrusted-extension.so")
+                    replacement.write_bytes(b"untrusted replacement")
+                    replacement.chmod(0o600)
+                    replacement.replace(target)
+                return identities
+
+            with (
+                patch.object(
+                    module,
+                    "_verified_payload_identities",
+                    side_effect=validate_then_replace,
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "payload load-time",
+                ),
+            ):
+                module._anchor_modules(payload_root)
 
 
 if __name__ == "__main__":

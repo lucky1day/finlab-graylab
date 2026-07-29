@@ -5,11 +5,15 @@ from __future__ import annotations
 import argparse
 import base64
 import builtins
+import codeop
 from contextlib import contextmanager, redirect_stdout
 import csv
 from datetime import date, datetime
 import hashlib
 import importlib
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import io
 import json
 import lzma
@@ -22,7 +26,7 @@ import shutil
 import stat
 import sys
 import tempfile
-from types import ModuleType
+from types import FunctionType, ModuleType
 
 import numpy as np
 import pandas as pd
@@ -397,128 +401,502 @@ def _open_existing_payload_parent(
         raise
 
 
-def _verified_payload_identities(
+def _open_verified_manifest_file(
     root_descriptor: int,
-) -> dict[str, tuple[int, int, int, int, str]]:
-    """Verify every manifest file through no-follow descriptors."""
-    identities: dict[str, tuple[int, int, int, int, str]] = {}
+    entry: dict[str, object],
+) -> tuple[str, int, tuple[int, int, int, int, str]]:
     open_flags = (
         os.O_RDONLY
         | os.O_NOFOLLOW
         | os.O_NONBLOCK
         | getattr(os, "O_CLOEXEC", 0)
     )
-    for entry in _PAYLOAD_MANIFEST:
-        relative_path = entry.get("relative_path")
-        expected_size = entry.get("raw_size")
-        expected_hash = entry.get("raw_sha256")
-        if (
-            not isinstance(relative_path, str)
-            or isinstance(expected_size, bool)
-            or not isinstance(expected_size, int)
-            or not isinstance(expected_hash, str)
-        ):
-            raise ValueError("payload load-time integrity mismatch: manifest")
-        parts = _payload_parts(relative_path)
-        parent_descriptor = _open_existing_payload_parent(
-            root_descriptor,
-            parts[:-1],
-            relative_path,
-        )
-        descriptor = -1
+    relative_path = entry.get("relative_path")
+    expected_size = entry.get("raw_size")
+    expected_hash = entry.get("raw_sha256")
+    if (
+        not isinstance(relative_path, str)
+        or isinstance(expected_size, bool)
+        or not isinstance(expected_size, int)
+        or not isinstance(expected_hash, str)
+    ):
+        raise ValueError("payload load-time integrity mismatch: manifest")
+    parts = _payload_parts(relative_path)
+    parent_descriptor = _open_existing_payload_parent(
+        root_descriptor,
+        parts[:-1],
+        relative_path,
+    )
+    descriptor = -1
+    try:
         try:
-            try:
-                descriptor = os.open(
-                    parts[-1],
-                    open_flags,
-                    dir_fd=parent_descriptor,
-                )
-            except OSError as error:
-                raise ValueError(
-                    f"payload load-time integrity mismatch: {relative_path}"
-                ) from error
-            installed = os.fstat(descriptor)
-            digest = hashlib.sha256()
-            while chunk := os.read(descriptor, 1024 * 1024):
-                digest.update(chunk)
-            actual_hash = digest.hexdigest()
-            if (
-                not stat.S_ISREG(installed.st_mode)
-                or stat.S_IMODE(installed.st_mode) != 0o600
-                or installed.st_size != expected_size
-                or actual_hash != expected_hash
-            ):
-                raise ValueError(
-                    f"payload load-time integrity mismatch: {relative_path}"
-                )
-            identities[relative_path] = (
-                installed.st_dev,
-                installed.st_ino,
-                installed.st_mode,
-                installed.st_size,
-                actual_hash,
+            descriptor = os.open(
+                parts[-1],
+                open_flags,
+                dir_fd=parent_descriptor,
             )
+        except OSError as error:
+            raise ValueError(
+                f"payload load-time integrity mismatch: {relative_path}"
+            ) from error
+        installed = os.fstat(descriptor)
+        digest = hashlib.sha256()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            digest.update(chunk)
+        actual_hash = digest.hexdigest()
+        if (
+            not stat.S_ISREG(installed.st_mode)
+            or stat.S_IMODE(installed.st_mode) != 0o600
+            or installed.st_size != expected_size
+            or actual_hash != expected_hash
+        ):
+            raise ValueError(
+                f"payload load-time integrity mismatch: {relative_path}"
+            )
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        identity = (
+            installed.st_dev,
+            installed.st_ino,
+            installed.st_mode,
+            installed.st_size,
+            actual_hash,
+        )
+        return relative_path, descriptor, identity
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    finally:
+        os.close(parent_descriptor)
+
+
+def _verified_payload_identities(
+    root_descriptor: int,
+) -> dict[str, tuple[int, int, int, int, str]]:
+    """Verify every manifest file through no-follow descriptors."""
+    identities: dict[str, tuple[int, int, int, int, str]] = {}
+    for entry in _PAYLOAD_MANIFEST:
+        relative_path, descriptor, identity = _open_verified_manifest_file(
+            root_descriptor,
+            entry,
+        )
+        try:
+            identities[relative_path] = identity
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
-            os.close(parent_descriptor)
     if len(identities) != len(_PAYLOAD_MANIFEST):
         raise ValueError("payload load-time integrity mismatch: manifest")
     return identities
 
 
-def _module_is_within(module: ModuleType, root: Path) -> bool:
-    module_file = getattr(module, "__file__", None)
-    return (
-        isinstance(module_file, str)
-        and Path(module_file).resolve().is_relative_to(root.resolve())
+def _open_verified_payload_files(
+    root_descriptor: int,
+) -> tuple[
+    dict[str, int],
+    dict[str, tuple[int, int, int, int, str]],
+]:
+    descriptors: dict[str, int] = {}
+    identities: dict[str, tuple[int, int, int, int, str]] = {}
+    try:
+        for entry in _PAYLOAD_MANIFEST:
+            relative_path, descriptor, identity = _open_verified_manifest_file(
+                root_descriptor,
+                entry,
+            )
+            if relative_path in descriptors:
+                os.close(descriptor)
+                raise ValueError(
+                    "payload load-time integrity mismatch: manifest"
+                )
+            descriptors[relative_path] = descriptor
+            identities[relative_path] = identity
+        if len(descriptors) != len(_PAYLOAD_MANIFEST):
+            raise ValueError("payload load-time integrity mismatch: manifest")
+        return descriptors, identities
+    except BaseException:
+        for descriptor in descriptors.values():
+            os.close(descriptor)
+        raise
+
+
+def _payload_module_name(
+    relative_path: str,
+) -> tuple[str, bool, str]:
+    extension_suffix = ".cpython-313-darwin.so"
+    if relative_path.endswith(extension_suffix):
+        stem = relative_path[: -len(extension_suffix)]
+        module_type = "extension"
+        is_package = False
+    elif relative_path.endswith(".py"):
+        stem = relative_path[:-3]
+        module_type = "python"
+        package_suffix = "/" + "__init__"
+        is_package = stem.endswith(package_suffix)
+        if is_package:
+            stem = stem[: -len(package_suffix)]
+    else:
+        raise ValueError(
+            f"payload module path is unsupported: {relative_path}"
+        )
+    prefix = "daily_project/src/"
+    if stem.startswith(prefix):
+        stem = stem[len(prefix) :]
+    elif "/" in stem:
+        raise ValueError(
+            f"payload module path is unsupported: {relative_path}"
+        )
+    return stem.replace("/", "."), is_package, module_type
+
+
+def _read_retained_descriptor(descriptor: int) -> bytes:
+    installed = os.fstat(descriptor)
+    remaining = installed.st_size
+    offset = 0
+    chunks: list[bytes] = []
+    while remaining:
+        chunk = os.pread(
+            descriptor,
+            min(remaining, 1024 * 1024),
+            offset,
+        )
+        if not chunk:
+            raise ImportError("verified payload descriptor was truncated")
+        chunks.append(chunk)
+        offset += len(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _remove_private_tree(root: Path) -> None:
+    try:
+        shutil.rmtree(root)
+    except FileNotFoundError:
+        pass
+
+
+def _materialize_verified_extensions(
+    descriptors: dict[str, int],
+    source_identities: dict[str, tuple[int, int, int, int, str]],
+) -> tuple[Path, dict[str, tuple[int, int, int, int, str]]]:
+    absolute_root = Path(
+        tempfile.mkdtemp(
+            prefix=".embedded-extension-loader-",
+            dir=".",
+        )
     )
+    absolute_root.chmod(0o700)
+    load_root = absolute_root.relative_to(Path.cwd())
+    identities: dict[str, tuple[int, int, int, int, str]] = {}
+    try:
+        for relative_path, source_descriptor in descriptors.items():
+            if not relative_path.endswith(".cpython-313-darwin.so"):
+                continue
+            raw = _read_retained_descriptor(source_descriptor)
+            expected = source_identities[relative_path]
+            digest = hashlib.sha256(raw).hexdigest()
+            if len(raw) != expected[3] or digest != expected[4]:
+                raise ValueError(
+                    f"payload load-time integrity mismatch: {relative_path}"
+                )
+            destination = load_root / relative_path
+            destination.parent.mkdir(
+                parents=True,
+                mode=0o700,
+                exist_ok=True,
+            )
+            for parent in (
+                destination.parent,
+                *destination.parent.parents,
+            ):
+                if parent == Path(".") or parent == Path.cwd():
+                    break
+                if parent == load_root or load_root in parent.parents:
+                    parent.chmod(0o700)
+            descriptor = os.open(
+                destination,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_NOFOLLOW,
+                0o600,
+            )
+            try:
+                os.fchmod(descriptor, 0o600)
+                remaining = memoryview(raw)
+                while remaining:
+                    written = os.write(descriptor, remaining)
+                    if written <= 0:
+                        raise OSError(
+                            "extension materialization made no progress"
+                        )
+                    remaining = remaining[written:]
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        identities = _verified_extension_identities(load_root)
+        return load_root, identities
+    except BaseException:
+        _remove_private_tree(load_root)
+        raise
+
+
+def _verified_extension_identities(
+    load_root: Path,
+) -> dict[str, tuple[int, int, int, int, str]]:
+    root_descriptor = _open_existing_extraction_root(load_root)
+    identities: dict[str, tuple[int, int, int, int, str]] = {}
+    try:
+        for entry in _PAYLOAD_MANIFEST:
+            relative_path = entry.get("relative_path")
+            if (
+                not isinstance(relative_path, str)
+                or not relative_path.endswith(".cpython-313-darwin.so")
+            ):
+                continue
+            path, descriptor, identity = _open_verified_manifest_file(
+                root_descriptor,
+                entry,
+            )
+            try:
+                identities[path] = identity
+            finally:
+                os.close(descriptor)
+        return identities
+    finally:
+        os.close(root_descriptor)
+
+
+class _VerifiedPythonLoader(importlib.abc.Loader):
+    def __init__(
+        self,
+        fullname: str,
+        descriptor: int,
+        relative_path: str,
+        is_package: bool,
+    ) -> None:
+        self.fullname = fullname
+        self.descriptor = descriptor
+        self.relative_path = relative_path
+        self.is_package = is_package
+
+    def create_module(self, spec: object) -> None:
+        del spec
+        return None
+
+    def exec_module(self, module: ModuleType) -> None:
+        source = _read_retained_descriptor(self.descriptor)
+        origin = f"<embedded-payload:{self.relative_path}>"
+        compiler = codeop.Compile()
+        code = compiler(source, origin, "exec")
+        module.__file__ = origin
+        module.__cached__ = None
+        if self.is_package:
+            module.__path__ = []
+        module.__dict__.setdefault("__builtins__", builtins.__dict__)
+        FunctionType(code, module.__dict__)()
+
+
+class _VerifiedExtensionLoader(importlib.abc.Loader):
+    def __init__(
+        self,
+        fullname: str,
+        load_path: Path,
+        relative_path: str,
+    ) -> None:
+        self.delegate = importlib.machinery.ExtensionFileLoader(
+            fullname,
+            str(load_path),
+        )
+        self.delegate_spec = importlib.util.spec_from_file_location(
+            fullname,
+            str(load_path),
+            loader=self.delegate,
+        )
+        self.logical_origin = f"embedded-payload/{relative_path}"
+
+    def create_module(self, spec: object) -> ModuleType:
+        del spec
+        return self.delegate.create_module(self.delegate_spec)
+
+    def exec_module(self, module: ModuleType) -> None:
+        module.__file__ = self.logical_origin
+        self.delegate.exec_module(module)
+
+
+class _VerifiedPayloadFinder(importlib.abc.MetaPathFinder):
+    _NAMESPACES = frozenset(
+        {
+            "daily.selected_models",
+            "daily.selected_models.10y04",
+        }
+    )
+
+    def __init__(
+        self,
+        descriptors: dict[str, int],
+        extension_root: Path,
+    ) -> None:
+        self.extension_root = Path(extension_root)
+        self.bindings: dict[
+            str,
+            tuple[str, int, bool, str],
+        ] = {}
+        for relative_path, descriptor in descriptors.items():
+            fullname, is_package, module_type = _payload_module_name(
+                relative_path
+            )
+            if fullname in self.bindings:
+                raise ValueError(
+                    "payload module mapping contains a duplicate"
+                )
+            self.bindings[fullname] = (
+                relative_path,
+                descriptor,
+                is_package,
+                module_type,
+            )
+            basename = fullname.rsplit(".", 1)[-1]
+            if (
+                module_type == "extension"
+                and basename != "_run_impl"
+                and basename not in self.bindings
+            ):
+                self.bindings[basename] = (
+                    relative_path,
+                    descriptor,
+                    False,
+                    module_type,
+                )
+            common_prefix = "daily.selected_models."
+            if fullname.startswith(f"{common_prefix}common"):
+                common_alias = fullname[len(common_prefix) :]
+                self.bindings[common_alias] = (
+                    relative_path,
+                    descriptor,
+                    is_package,
+                    module_type,
+                )
+
+    def manages(self, fullname: str) -> bool:
+        return (
+            fullname in self._NAMESPACES
+            or fullname in self.bindings
+            or fullname == "daily"
+            or fullname.startswith("daily.")
+        )
+
+    def find_spec(
+        self,
+        fullname: str,
+        path: object = None,
+        target: object = None,
+    ) -> object:
+        del path, target
+        if fullname in self._NAMESPACES:
+            spec = importlib.machinery.ModuleSpec(
+                fullname,
+                loader=None,
+                is_package=True,
+            )
+            spec.origin = "embedded-payload-namespace"
+            spec.submodule_search_locations = []
+            return spec
+        binding = self.bindings.get(fullname)
+        if binding is None:
+            return None
+        relative_path, descriptor, is_package, module_type = binding
+        if module_type == "python":
+            loader = _VerifiedPythonLoader(
+                fullname,
+                descriptor,
+                relative_path,
+                is_package,
+            )
+            return importlib.util.spec_from_loader(
+                fullname,
+                loader,
+                origin=f"<embedded-payload:{relative_path}>",
+                is_package=is_package,
+            )
+        loader = _VerifiedExtensionLoader(
+            fullname,
+            self.extension_root / relative_path,
+            relative_path,
+        )
+        return importlib.util.spec_from_loader(
+            fullname,
+            loader,
+            origin=loader.logical_origin,
+        )
 
 
 def _anchor_modules(payload_root: Path) -> tuple[ModuleType, ModuleType]:
-    """Import both anchors only from the verified private extraction tree."""
+    """Import both anchors only through retained verified file descriptors."""
     payload_root = Path(payload_root)
     root_descriptor = _open_existing_extraction_root(payload_root)
+    retained_descriptors: dict[str, int] = {}
+    extension_root: Path | None = None
     try:
-        before_identities = _verified_payload_identities(root_descriptor)
-        source_root = _safe_payload_path(payload_root, "daily_project/src")
-        if not source_root.is_dir():
-            raise ValueError("embedded daily package is missing")
+        (
+            retained_descriptors,
+            retained_identities,
+        ) = _open_verified_payload_files(root_descriptor)
+        path_identities = _verified_payload_identities(root_descriptor)
+        if path_identities != retained_identities:
+            raise ValueError("payload load-time identity changed")
 
-        inserted = [str(source_root), str(payload_root)]
+        (
+            extension_root,
+            extension_identities,
+        ) = _materialize_verified_extensions(
+            retained_descriptors,
+            retained_identities,
+        )
+        finder = _VerifiedPayloadFinder(
+            retained_descriptors,
+            extension_root,
+        )
         previous_sys_path = list(sys.path)
-        previous_daily = {
+        previous_meta_path = list(sys.meta_path)
+        previous_payload_modules = {
             name: module
             for name, module in tuple(sys.modules.items())
-            if name == "daily" or name.startswith("daily.")
+            if finder.manages(name)
         }
-        for name in previous_daily:
+        for name in previous_payload_modules:
             sys.modules.pop(name, None)
-        sys.path[:0] = inserted
+        sys.meta_path.insert(0, finder)
         importlib.invalidate_caches()
         try:
             five = importlib.import_module("daily.selected_models.5y10.run")
             ten = importlib.import_module("daily.selected_models.10y04.run")
-            if not _module_is_within(five, payload_root):
-                raise ImportError("5Y10 anchor loaded outside private extraction root")
-            if not _module_is_within(ten, payload_root):
-                raise ImportError("10Y04 anchor loaded outside private extraction root")
             after_identities = _verified_payload_identities(root_descriptor)
-            if after_identities != before_identities:
+            if after_identities != retained_identities:
                 raise ValueError("payload load-time identity changed")
+            after_extension_identities = _verified_extension_identities(
+                extension_root
+            )
+            if after_extension_identities != extension_identities:
+                raise ValueError("payload extension load identity changed")
             return five, ten
         finally:
-            created_daily = {
+            created_payload_modules = {
                 name
                 for name in tuple(sys.modules)
-                if name == "daily" or name.startswith("daily.")
+                if finder.manages(name)
             }
             sys.path[:] = previous_sys_path
-            for name in created_daily:
+            sys.meta_path[:] = previous_meta_path
+            for name in created_payload_modules:
                 sys.modules.pop(name, None)
-            sys.modules.update(previous_daily)
+            sys.modules.update(previous_payload_modules)
             importlib.invalidate_caches()
     finally:
+        if extension_root is not None:
+            _remove_private_tree(extension_root)
+        for descriptor in retained_descriptors.values():
+            os.close(descriptor)
         os.close(root_descriptor)
 
 
@@ -849,10 +1227,7 @@ def _virtual_anchor_csv_scope(output_dir: Path):
 
 
 def _remove_anchor_output(output_dir: Path) -> None:
-    try:
-        shutil.rmtree(output_dir)
-    except FileNotFoundError:
-        pass
+    _remove_private_tree(output_dir)
 
 
 def _run_5y10(
