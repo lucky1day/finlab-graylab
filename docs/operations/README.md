@@ -9,6 +9,7 @@
 | 文档 | 状态 | 用途 |
 |---|---|---|
 | [PUBLIC_FACTOR_LAB_PERFORMANCE.md](PUBLIC_FACTOR_LAB_PERFORMANCE.md) | `CURRENT` | 公网 dashboard 的 API/真实 Chrome 性能验收、容量、排障、rollout/final/rollback 手册 |
+| [DAILY_LEDGER_CUTOVER_RUNBOOK.md](DAILY_LEDGER_CUTOVER_RUNBOOK.md) | `CURRENT` | 日频 legacy → daily_ledger 切换运行手册：25 方案单一调度的四道门禁解除与逐步 operator 命令 |
 | [CLOUD_ENVIRONMENT.md](CLOUD_ENVIRONMENT.md) | `HISTORICAL` | 2026-06-28 云端 Conda 环境复刻第一步记录，不是当前完整部署 SOP |
 
 当前 Mac Studio 部署和服务管理以仓库 `deploy/` 目录及实际运行配置为准。
