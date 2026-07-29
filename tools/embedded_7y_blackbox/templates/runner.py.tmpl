@@ -1,4 +1,198 @@
-"""Standalone deterministic literals for one embedded 7Y delivery."""
+"""Standalone embedded runtime for one deterministic 7Y delivery."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import importlib
+import lzma
+import os
+from pathlib import Path, PurePosixPath
+import platform
+import sys
+import tempfile
+from types import ModuleType
+
 
 FROZEN_SCHEME = __FROZEN_SCHEME_JSON__
-EMBEDDED_PAYLOAD = __PAYLOAD_JSON__
+_PAYLOAD_MANIFEST = __PAYLOAD_JSON__
+
+
+def _validate_runtime() -> None:
+    """Reject runtimes that cannot load the embedded native modules."""
+    if sys.version_info[:2] != (3, 13):
+        raise RuntimeError("requires CPython 3.13")
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise RuntimeError("requires macOS arm64")
+
+
+def _safe_payload_path(root: Path, relative_path: str) -> Path:
+    """Resolve one manifest path without permitting extraction-root escape."""
+    path = PurePosixPath(relative_path)
+    if (
+        not relative_path
+        or path.is_absolute()
+        or relative_path != path.as_posix()
+        or "\\" in relative_path
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError(f"unsafe payload path: {relative_path!r}")
+
+    root = Path(root)
+    if root.is_symlink():
+        raise ValueError(f"unsafe payload path: {relative_path!r}")
+    resolved_root = root.resolve(strict=False)
+    candidate = root.joinpath(*path.parts)
+    current = root
+    for part in path.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"unsafe payload path: {relative_path!r}")
+    if not candidate.resolve(strict=False).is_relative_to(resolved_root):
+        raise ValueError(f"unsafe payload path: {relative_path!r}")
+    return candidate
+
+
+def _decode_payload_entry(entry: dict[str, object]) -> tuple[str, bytes]:
+    """Validate and decode one embedded manifest entry entirely in memory."""
+    relative_path = entry.get("relative_path")
+    chunks = entry.get("encoded_chunks")
+    if not isinstance(relative_path, str) or not isinstance(chunks, list):
+        raise ValueError("invalid payload manifest entry")
+    if not all(isinstance(chunk, str) for chunk in chunks):
+        raise ValueError(f"invalid payload chunks: {relative_path}")
+
+    compressed = base64.b85decode("".join(chunks).encode("ascii"))
+    compressed_hash = hashlib.sha256(compressed).hexdigest()
+    if compressed_hash != entry.get("compressed_sha256"):
+        raise ValueError(f"compressed payload hash mismatch: {relative_path}")
+    raw = lzma.decompress(compressed)
+    if (
+        len(raw) != entry.get("raw_size")
+        or hashlib.sha256(raw).hexdigest() != entry.get("raw_sha256")
+    ):
+        raise ValueError(f"raw payload hash mismatch: {relative_path}")
+    return relative_path, raw
+
+
+def _make_private_parents(root: Path, parent: Path, relative_path: str) -> None:
+    """Create manifest parents while rejecting links and non-directories."""
+    current = root
+    relative_parent = parent.relative_to(root)
+    for part in relative_parent.parts:
+        current = current / part
+        if current.is_symlink():
+            raise ValueError(f"unsafe payload path: {relative_path!r}")
+        if current.exists():
+            if not current.is_dir():
+                raise ValueError(f"unsafe payload path: {relative_path!r}")
+        else:
+            current.mkdir(mode=0o700)
+        current.chmod(0o700)
+        if not current.resolve().is_relative_to(root.resolve()):
+            raise ValueError(f"unsafe payload path: {relative_path!r}")
+
+
+def _extract_payload(run_root: Path) -> Path:
+    """Integrity-check and atomically extract the private embedded payload."""
+    _validate_runtime()
+
+    decoded: list[tuple[str, bytes]] = []
+    seen_paths: set[str] = set()
+    for entry in _PAYLOAD_MANIFEST:
+        relative_path, raw = _decode_payload_entry(entry)
+        if relative_path in seen_paths:
+            raise ValueError(f"duplicate payload path: {relative_path}")
+        seen_paths.add(relative_path)
+        decoded.append((relative_path, raw))
+
+    payload_root = Path(run_root)
+    if payload_root.is_symlink():
+        raise ValueError("unsafe payload extraction root")
+    if payload_root.exists() and not payload_root.is_dir():
+        raise ValueError("unsafe payload extraction root")
+    payload_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload_root.chmod(0o700)
+    resolved_root = payload_root.resolve()
+
+    for relative_path, raw in decoded:
+        target = _safe_payload_path(payload_root, relative_path)
+        _make_private_parents(payload_root, target.parent, relative_path)
+        temporary_path: Path | None = None
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+        )
+        temporary_path = Path(temporary_name)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+            target = _safe_payload_path(payload_root, relative_path)
+            if not target.parent.resolve().is_relative_to(resolved_root):
+                raise ValueError(f"unsafe payload path: {relative_path!r}")
+            os.replace(temporary_path, target)
+            temporary_path = None
+            target.chmod(0o600)
+            if not target.resolve().is_relative_to(resolved_root):
+                raise ValueError(f"unsafe payload path: {relative_path!r}")
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+    return payload_root
+
+
+def _module_is_within(module: ModuleType, root: Path) -> bool:
+    module_file = getattr(module, "__file__", None)
+    return (
+        isinstance(module_file, str)
+        and Path(module_file).resolve().is_relative_to(root.resolve())
+    )
+
+
+def _anchor_modules(payload_root: Path) -> tuple[ModuleType, ModuleType]:
+    """Import both anchors only from the verified private extraction tree."""
+    payload_root = Path(payload_root)
+    if payload_root.is_symlink() or not payload_root.is_dir():
+        raise ValueError("unsafe payload extraction root")
+    source_root = _safe_payload_path(payload_root, "daily_project/src")
+    if not source_root.is_dir():
+        raise ValueError("embedded daily package is missing")
+
+    inserted = [str(source_root), str(payload_root)]
+    previous_daily = {
+        name: module
+        for name, module in tuple(sys.modules.items())
+        if name == "daily" or name.startswith("daily.")
+    }
+    for name in previous_daily:
+        sys.modules.pop(name, None)
+    sys.path[:0] = inserted
+    importlib.invalidate_caches()
+    try:
+        five = importlib.import_module("daily.selected_models.5y10.run")
+        ten = importlib.import_module("daily.selected_models.10y04.run")
+        if not _module_is_within(five, payload_root):
+            raise ImportError("5Y10 anchor loaded outside private extraction root")
+        if not _module_is_within(ten, payload_root):
+            raise ImportError("10Y04 anchor loaded outside private extraction root")
+        return five, ten
+    finally:
+        for path in inserted:
+            try:
+                sys.path.remove(path)
+            except ValueError:
+                pass
+        for name in tuple(sys.modules):
+            if name == "daily" or name.startswith("daily."):
+                module = sys.modules.get(name)
+                if isinstance(module, ModuleType) and _module_is_within(
+                    module, payload_root
+                ):
+                    sys.modules.pop(name, None)
+        sys.modules.update(previous_daily)
+        importlib.invalidate_caches()
