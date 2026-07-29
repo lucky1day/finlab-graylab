@@ -44,7 +44,25 @@ def _replay_inputs():
 
     fixture = _generation_fixture()
     with tempfile.TemporaryDirectory() as tmpdir:
-        native, databridge = fixture._delivery_generation(Path(tmpdir))
+        with (
+            patch(
+                "shared.native_input_generation._utc_now_text",
+                side_effect=(
+                    "2026-07-23T22:30:00.000000Z",
+                    "2026-07-23T22:31:00.000000Z",
+                ),
+            ),
+            patch(
+                "shared.databridge_input_generation._utc_now",
+                side_effect=(
+                    "2026-07-23T22:51:00.000000Z",
+                    "2026-07-23T22:51:01.000000Z",
+                ),
+            ),
+        ):
+            native, databridge = fixture._delivery_generation(
+                Path(tmpdir)
+            )
         yield open_real_replay_generations(
             native_manifest=native.manifest_path,
             databridge_manifest=databridge.manifest_path,
@@ -1010,7 +1028,9 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
             for scheme_id in policy.schemes
         }
         with _replay_inputs() as inputs:
-            observed_at = datetime.now(timezone.utc)
+            observed_at = datetime(
+                2026, 7, 23, 22, 52, tzinfo=timezone.utc
+            )
 
             def read_snapshot(*_args, **_kwargs):
                 return _runtime_snapshot(
@@ -1394,7 +1414,9 @@ class DailyRealReplayRuntimeContractTests(unittest.TestCase):
         finish_light = threading.Event()
 
         with _replay_inputs() as inputs:
-            before_release = datetime.now(timezone.utc)
+            before_release = datetime(
+                2026, 7, 23, 22, 52, tzinfo=timezone.utc
+            )
 
             def read_snapshot(*_args, **_kwargs):
                 with state_lock:
