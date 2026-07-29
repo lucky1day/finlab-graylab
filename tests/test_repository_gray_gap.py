@@ -7,6 +7,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from sqlalchemy import create_engine, event, text
 
@@ -20,6 +21,9 @@ FEATURE_DATE = "2026-06-01"
 TARGET_DATE_T5 = "2026-06-08"
 TARGET_DATE_T1 = "2026-06-02"
 PLAN_SHA256 = "a" * 64
+DIRECT_CACHE_SPEC = "d" * 64
+DIRECT_CACHE_MANIFEST = "e" * 64
+DIRECT_CACHE_PROJECTION = "f" * 64
 
 
 def _cfg(
@@ -870,6 +874,632 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 source_authority=bad_authority,
             )
         self.assertEqual(self._rows("t_scheme_predictions"), [])
+
+    def test_direct_cache_authority_reopens_without_legacy_qualification(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture()
+        loaded = SimpleNamespace(
+            generation_id=fixture["generation_id"],
+            path=Path(fixture["audit"]["generation_path"]),
+            manifest=fixture["manifest"],
+            manifest_sha256=DIRECT_CACHE_MANIFEST,
+            caches={
+                "STD": {
+                    "test_dates": ["2026-05-29", "2026-06-01"],
+                }
+            },
+        )
+        record = PredictionRecord(
+            scheme_id=fixture["scheme_id"],
+            target_tenor="5Y",
+            horizon=5,
+            predict_date=PREDICT_DATE,
+            feature_date=FEATURE_DATE,
+            target_date=TARGET_DATE_T5,
+            predicted_direction=1,
+            prediction_phase="scheduled_live",
+            extra={"phase_a_cache": fixture["audit"]},
+        )
+
+        with (
+            patch.object(
+                repository,
+                "validate_trusted_cache_use_qualification",
+                side_effect=AssertionError(
+                    "legacy qualification must not be used"
+                ),
+            ),
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_load_generation_directory",
+                return_value=loaded,
+            ) as loader,
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_verify_generation_acceptance_lineage",
+            ) as lineage,
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_validate_generation_acceptance_for_use",
+            ) as acceptance,
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[record],
+            )
+
+        loader.assert_called_once_with(
+            Path(fixture["audit"]["generation_path"]),
+            expected_generation_id=fixture["generation_id"],
+            expected_manifest_sha256=DIRECT_CACHE_MANIFEST,
+            secure=True,
+        )
+        lineage.assert_called_once()
+        qualification = lineage.call_args.kwargs[
+            "trusted_qualification"
+        ]["qualification"]
+        self.assertEqual(
+            {
+                key: qualification[key]
+                for key in (
+                    "cache_abi_version",
+                    "cache_family",
+                    "tenor",
+                    "spec_fingerprint",
+                )
+            },
+            {
+                "cache_abi_version": "liwei_0616.phase_a.v1",
+                "cache_family": "liwei_test_family",
+                "tenor": "5Y",
+                "spec_fingerprint": DIRECT_CACHE_SPEC,
+            },
+        )
+        self.assertEqual(
+            qualification["daily_dependency_lookback_rows"],
+            21,
+        )
+        self.assertEqual(
+            qualification["daily_dependency_proof"],
+            "daily_window_is_bounded_by_21_rows",
+        )
+        acceptance.assert_called_once_with(
+            loaded,
+            native_generation_binding=fixture["native_binding"],
+        )
+
+    def test_direct_cache_read_only_requires_validated_published_hit(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture(read_only=True)
+        record = PredictionRecord(
+            scheme_id=fixture["scheme_id"],
+            target_tenor="5Y",
+            horizon=5,
+            predict_date=PREDICT_DATE,
+            feature_date=FEATURE_DATE,
+            target_date=TARGET_DATE_T5,
+            predicted_direction=1,
+            prediction_phase="scheduled_live",
+            extra={
+                "phase_a_cache": {
+                    **fixture["audit"],
+                    "status": "cold_build",
+                    "build_mode": "full",
+                    "build_reason": "no_current_generation",
+                }
+            },
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "read_only.*consumer_validated_hit",
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[record],
+            )
+
+    def test_direct_cache_read_only_requires_publisher_lineage_contract(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture(read_only=True)
+        publisher = fixture["policy"]["direct_cache_authorities"][
+            "consumers"
+        ]["cache_publisher"]
+        publisher["daily_dependency_lookback_rows"] = 20
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "publisher graph",
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[],
+            )
+
+    def test_direct_cache_non_full_lineage_receives_dependency_contract(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture()
+        fixture["manifest"]["build_mode"] = "suffix"
+        loaded = SimpleNamespace(
+            generation_id=fixture["generation_id"],
+            path=Path(fixture["audit"]["generation_path"]),
+            manifest=fixture["manifest"],
+            manifest_sha256=DIRECT_CACHE_MANIFEST,
+            caches={
+                "STD": {
+                    "test_dates": ["2026-05-29", "2026-06-01"],
+                }
+            },
+        )
+        record = PredictionRecord(
+            scheme_id=fixture["scheme_id"],
+            target_tenor="5Y",
+            horizon=5,
+            predict_date=PREDICT_DATE,
+            feature_date=FEATURE_DATE,
+            target_date=TARGET_DATE_T5,
+            predicted_direction=1,
+            prediction_phase="scheduled_live",
+            extra={"phase_a_cache": fixture["audit"]},
+        )
+        observed: dict[str, object] = {}
+
+        def verify_lineage(
+            generation,
+            *,
+            trusted_qualification,
+        ) -> None:
+            observed["build_mode"] = generation.manifest["build_mode"]
+            observed["qualification"] = trusted_qualification[
+                "qualification"
+            ]
+
+        with (
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_load_generation_directory",
+                return_value=loaded,
+            ),
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_verify_generation_acceptance_lineage",
+                side_effect=verify_lineage,
+            ),
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_validate_generation_acceptance_for_use",
+            ),
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[record],
+            )
+
+        self.assertEqual(observed["build_mode"], "suffix")
+        qualification = observed["qualification"]
+        self.assertEqual(
+            qualification["daily_dependency_lookback_rows"],
+            21,
+        )
+        self.assertEqual(
+            qualification["daily_dependency_proof"],
+            "daily_window_is_bounded_by_21_rows",
+        )
+
+    def test_direct_cache_authority_allows_absent_dependency_proof(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture()
+        consumer = fixture["policy"]["direct_cache_authorities"][
+            "consumers"
+        ][fixture["scheme_id"]]
+        consumer["daily_dependency_lookback_rows"] = None
+        consumer["daily_dependency_proof"] = None
+        loaded = SimpleNamespace(
+            generation_id=fixture["generation_id"],
+            path=Path(fixture["audit"]["generation_path"]),
+            manifest=fixture["manifest"],
+            manifest_sha256=DIRECT_CACHE_MANIFEST,
+            caches={"STD": {"test_dates": ["2026-06-01"]}},
+        )
+        record = PredictionRecord(
+            scheme_id=fixture["scheme_id"],
+            target_tenor="5Y",
+            horizon=5,
+            predict_date=PREDICT_DATE,
+            feature_date=FEATURE_DATE,
+            target_date=TARGET_DATE_T5,
+            predicted_direction=1,
+            prediction_phase="scheduled_live",
+            extra={"phase_a_cache": fixture["audit"]},
+        )
+
+        with (
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_load_generation_directory",
+                return_value=loaded,
+            ),
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_verify_generation_acceptance_lineage",
+            ) as lineage,
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_validate_generation_acceptance_for_use",
+            ),
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[record],
+            )
+
+        qualification = lineage.call_args.kwargs[
+            "trusted_qualification"
+        ]["qualification"]
+        self.assertIsNone(
+            qualification["daily_dependency_lookback_rows"]
+        )
+        self.assertIsNone(
+            qualification["daily_dependency_proof"]
+        )
+
+    def test_direct_cache_authority_fails_closed_on_dynamic_drift(self) -> None:
+        from scheduler import repository
+
+        mutations = {
+            "projection": lambda fixture: fixture["manifest"][
+                "input_state"
+            ]["effective_auxiliary"].update(
+                {"proof_identity_sha256": "0" * 64}
+            ),
+            "native": lambda fixture: fixture["manifest"][
+                "generation_acceptance_evidence"
+            ]["native_generation"].update(
+                {"generation_id": "native-drift"}
+            ),
+            "path": lambda fixture: fixture["audit"].update(
+                {
+                    "generation_path": str(
+                        Path(fixture["storage_root"])
+                        / "wrong-family"
+                        / "5y"
+                        / "generations"
+                        / fixture["generation_id"]
+                    )
+                }
+            ),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                fixture = self._direct_cache_fixture()
+                mutate(fixture)
+                record = PredictionRecord(
+                    scheme_id=fixture["scheme_id"],
+                    target_tenor="5Y",
+                    horizon=5,
+                    predict_date=PREDICT_DATE,
+                    feature_date=FEATURE_DATE,
+                    target_date=TARGET_DATE_T5,
+                    predicted_direction=1,
+                    prediction_phase="scheduled_live",
+                    extra={"phase_a_cache": fixture["audit"]},
+                )
+                loaded = SimpleNamespace(
+                    generation_id=fixture["generation_id"],
+                    path=Path(fixture["audit"]["generation_path"]),
+                    manifest=fixture["manifest"],
+                    manifest_sha256=DIRECT_CACHE_MANIFEST,
+                    caches={
+                        "STD": {
+                            "test_dates": [
+                                "2026-05-29",
+                                "2026-06-01",
+                            ],
+                        }
+                    },
+                )
+                with (
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_load_generation_directory",
+                        return_value=loaded,
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_verify_generation_acceptance_lineage",
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_validate_generation_acceptance_for_use",
+                    ),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "direct cache",
+                    ),
+                ):
+                    repository._validate_cache_qualified_completion(
+                        occurrence={
+                            "policy_json": fixture["policy"]
+                        },
+                        item=fixture["item"],
+                        generation=fixture["generation"],
+                        records=[record],
+                    )
+
+    def test_direct_cache_authority_rejects_policy_cache_group_drift(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture()
+        fixture["policy"]["schemes"][0][
+            "cache_group"
+        ] = "other_family:5Y"
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "consumer identity mismatch.*cache_group",
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[],
+            )
+
+    def test_direct_cache_monotonic_coverage_reopens_parent_securely(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        generation_path = (
+            Path(self._tmpdir.name)
+            / "cache-root"
+            / "family"
+            / "5y"
+            / "generations"
+            / "current"
+        )
+        current = SimpleNamespace(
+            path=generation_path,
+            manifest={
+                "parent_generation_id": "parent",
+                "generation_acceptance_evidence": {
+                    "parent": {
+                        "generation_id": "parent",
+                        "manifest_sha256": "1" * 64,
+                    }
+                },
+            },
+            caches={
+                "STD": {
+                    "test_dates": [
+                        "2026-05-29",
+                        "2026-06-01",
+                    ]
+                }
+            },
+        )
+        parent = SimpleNamespace(
+            caches={"STD": {"test_dates": ["2026-05-29"]}},
+        )
+        calls: list[tuple[Path, dict[str, object]]] = []
+
+        def loader(path: Path, **kwargs):
+            calls.append((path, kwargs))
+            return parent
+
+        repository._validate_direct_cache_monotonic_coverage(
+            current,
+            loader=loader,
+        )
+        self.assertEqual(
+            calls,
+            [
+                (
+                    generation_path.parent / "parent",
+                    {
+                        "expected_generation_id": "parent",
+                        "expected_manifest_sha256": "1" * 64,
+                        "secure": True,
+                    },
+                )
+            ],
+        )
+
+        current.caches["STD"]["test_dates"] = ["2026-06-01"]
+        with self.assertRaisesRegex(ValueError, "not monotonic"):
+            repository._validate_direct_cache_monotonic_coverage(
+                current,
+                loader=loader,
+            )
+
+    def _direct_cache_fixture(
+        self,
+        *,
+        read_only: bool = False,
+    ) -> dict[str, object]:
+        scheme_id = "cache_consumer"
+        publisher_id = "cache_publisher" if read_only else scheme_id
+        storage_root = str(
+            (Path(self._tmpdir.name) / "cache-root").absolute()
+        )
+        generation_id = "generation-direct-cache-test"
+        native_binding = {
+            "generation_id": "native-0123456789abcdef01234567",
+            "manifest_sha256": "1" * 64,
+            "dataset_content_id": "2" * 64,
+            "business_date": PREDICT_DATE,
+            "feature_date": FEATURE_DATE,
+            "schema_version": "native-generation-v1",
+            "exporter_version": "native-generation-exporter-v1",
+        }
+
+        def consumer(
+            base_scheme_id: str,
+            *,
+            access_mode: str,
+        ) -> dict[str, object]:
+            return {
+                "base_scheme_id": base_scheme_id,
+                "cache_consumer_id": base_scheme_id,
+                "scheme_version": f"{base_scheme_id}-version",
+                "code_sha256": "3" * 64,
+                "config_sha256": "4" * 64,
+                "cache_group": "liwei_test_family:5Y",
+                "spec_fingerprint": DIRECT_CACHE_SPEC,
+                "publisher_consumer_id": publisher_id,
+                "cache_family": "liwei_test_family",
+                "tenor": "5Y",
+                "access_mode": access_mode,
+                "cache_adapter_sha256": "5" * 64,
+                "cache_core_sha256": "6" * 64,
+                "projection_proof_identity_sha256":
+                    DIRECT_CACHE_PROJECTION,
+                "daily_dependency_lookback_rows": 21,
+                "daily_dependency_proof":
+                    "daily_window_is_bounded_by_21_rows",
+            }
+
+        consumers = {
+            scheme_id: consumer(
+                scheme_id,
+                access_mode="read_only" if read_only else "publisher",
+            )
+        }
+        schemes = [
+            {
+                "scheme_id": scheme_id,
+                "cache_group": "liwei_test_family:5Y",
+                "cache_spec_fingerprint": DIRECT_CACHE_SPEC,
+            }
+        ]
+        if read_only:
+            consumers[publisher_id] = consumer(
+                publisher_id,
+                access_mode="publisher",
+            )
+            schemes.append(
+                {
+                    "scheme_id": publisher_id,
+                    "cache_group": "liwei_test_family:5Y",
+                    "cache_spec_fingerprint": DIRECT_CACHE_SPEC,
+                }
+            )
+        authority = {
+            "schema_version": "daily-direct-cache-authorities-v1",
+            "storage_root": storage_root,
+            "contract": {
+                "manifest_schema_version": 3,
+                "input_state_schema_version": 3,
+                "cache_abi_version": "liwei_0616.phase_a.v1",
+                "projection_schema_version":
+                    "liwei-0616-auxiliary-dependency-projection-v1",
+                "native_generation_type": "native_source",
+                "native_generation_schema_version":
+                    "native-generation-v1",
+                "native_exporter_version":
+                    "native-generation-exporter-v1",
+            },
+            "consumers": consumers,
+        }
+        acceptance = {
+            "native_generation": dict(native_binding),
+            "parent": None,
+        }
+        family_root = (
+            Path(storage_root) / "liwei_test_family" / "5y"
+        )
+        generation_path = (
+            family_root / "generations" / generation_id
+        )
+        audit = {
+            "status": "cold_build",
+            "build_mode": "full",
+            "build_reason": "no_current_generation",
+            "generation_id": generation_id,
+            "generation_path": str(generation_path),
+            "generation_manifest_sha256": DIRECT_CACHE_MANIFEST,
+            "family_root": str(family_root),
+            "current_pointer": str(family_root / "current.json"),
+            "published": True,
+            "generation_acceptance": dict(acceptance),
+        }
+        manifest = {
+            "schema_version": 3,
+            "generation_id": generation_id,
+            "abi_version": "liwei_0616.phase_a.v1",
+            "cache_family": "liwei_test_family",
+            "tenor": "5Y",
+            "spec_fingerprint": DIRECT_CACHE_SPEC,
+            "input_state": {
+                "schema_version": 3,
+                "native_generation": dict(native_binding),
+                "effective_auxiliary": {
+                    "schema_version":
+                        "liwei-0616-auxiliary-dependency-projection-v1",
+                    "proof_identity_sha256": DIRECT_CACHE_PROJECTION,
+                },
+            },
+            "parent_generation_id": None,
+            "generation_acceptance_evidence": dict(acceptance),
+        }
+        return {
+            "scheme_id": scheme_id,
+            "storage_root": storage_root,
+            "generation_id": generation_id,
+            "native_binding": native_binding,
+            "policy": {
+                "schemes": schemes,
+                "direct_cache_authorities": authority,
+            },
+            "item": {
+                "base_scheme_id": scheme_id,
+                "scheme_version": f"{scheme_id}-version",
+                "code_sha256": "3" * 64,
+                "config_sha256": "4" * 64,
+                "cache_group": "liwei_test_family:5Y",
+            },
+            "generation": {
+                "generation_id": native_binding["generation_id"],
+                "generation_type": "native_source",
+                "manifest_sha256": native_binding["manifest_sha256"],
+                "dataset_content_id":
+                    native_binding["dataset_content_id"],
+                "business_date": native_binding["business_date"],
+                "feature_date": native_binding["feature_date"],
+                "schema_version": native_binding["schema_version"],
+                "exporter_version": native_binding["exporter_version"],
+                "state": "SEALED",
+            },
+            "audit": audit,
+            "manifest": manifest,
+        }
 
 
 _SCHEMA = (

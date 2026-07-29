@@ -7478,6 +7478,14 @@ def _validate_cache_qualified_completion(
 ) -> None:
     """在提交事务内二次复核冻结 qualification 与 cache acceptance 文件。"""
     policy = _stored_json_mapping(occurrence, "policy_json")
+    if "direct_cache_authorities" in policy:
+        _validate_direct_cache_authority_completion(
+            policy=policy,
+            item=item,
+            generation=generation,
+            records=records,
+        )
+        return
     scheme_id = str(item["base_scheme_id"])
     raw_qualifications = policy.get("cache_use_qualifications")
     raw_schemes = policy.get("schemes")
@@ -7580,6 +7588,537 @@ def _validate_cache_qualified_completion(
         raise RuntimeError(
             "cache-qualified completion contains no records"
         )
+
+
+_DIRECT_CACHE_AUTHORITY_FIELDS = frozenset(
+    {"schema_version", "storage_root", "contract", "consumers"}
+)
+_DIRECT_CACHE_CONTRACT = {
+    "manifest_schema_version": 3,
+    "input_state_schema_version": 3,
+    "cache_abi_version": "liwei_0616.phase_a.v1",
+    "projection_schema_version":
+        "liwei-0616-auxiliary-dependency-projection-v1",
+    "native_generation_type": "native_source",
+    "native_generation_schema_version": "native-generation-v1",
+    "native_exporter_version": "native-generation-exporter-v1",
+}
+_DIRECT_CACHE_CONSUMER_FIELDS = frozenset(
+    {
+        "base_scheme_id",
+        "cache_consumer_id",
+        "scheme_version",
+        "code_sha256",
+        "config_sha256",
+        "cache_group",
+        "spec_fingerprint",
+        "publisher_consumer_id",
+        "cache_family",
+        "tenor",
+        "access_mode",
+        "cache_adapter_sha256",
+        "cache_core_sha256",
+        "projection_proof_identity_sha256",
+        "daily_dependency_lookback_rows",
+        "daily_dependency_proof",
+    }
+)
+
+
+def _validate_direct_cache_authority_completion(
+    *,
+    policy: Mapping[str, object],
+    item: Mapping[str, object],
+    generation: Mapping[str, object],
+    records: Iterable[PredictionRecord],
+) -> None:
+    """按 occurrence 冻结的 direct authority 安全重开 cache generation。"""
+    raw_authority = policy.get("direct_cache_authorities")
+    if (
+        not isinstance(raw_authority, Mapping)
+        or set(raw_authority) != _DIRECT_CACHE_AUTHORITY_FIELDS
+        or raw_authority.get("schema_version")
+        != "daily-direct-cache-authorities-v1"
+    ):
+        raise RuntimeError("direct cache authority envelope is invalid")
+    raw_contract = raw_authority.get("contract")
+    if (
+        not isinstance(raw_contract, Mapping)
+        or dict(raw_contract) != _DIRECT_CACHE_CONTRACT
+    ):
+        raise RuntimeError("direct cache authority contract is invalid")
+    storage_root = _direct_cache_storage_root(
+        raw_authority.get("storage_root")
+    )
+    raw_consumers = raw_authority.get("consumers")
+    if not isinstance(raw_consumers, Mapping):
+        raise RuntimeError("direct cache authority consumers are invalid")
+    consumers = _normalize_direct_cache_consumers(raw_consumers)
+    expected_consumers = _direct_cache_expected_consumer_ids(policy)
+    if set(consumers) != expected_consumers:
+        raise RuntimeError(
+            "direct cache authority consumer set mismatch: "
+            f"expected={sorted(expected_consumers)}, "
+            f"actual={sorted(consumers)}"
+        )
+    _validate_direct_cache_publisher_graph(consumers)
+
+    scheme_id = str(item["base_scheme_id"])
+    consumer = consumers.get(scheme_id)
+    if consumer is None:
+        return
+    expected_item = {
+        "base_scheme_id": scheme_id,
+        "scheme_version": str(item["scheme_version"]),
+        "code_sha256": str(item["code_sha256"]),
+        "config_sha256": str(item["config_sha256"]),
+        "cache_group": str(item["cache_group"]),
+    }
+    item_drift = sorted(
+        field
+        for field, expected in expected_item.items()
+        if consumer[field] != expected
+    )
+    expected_spec, expected_cache_group = _direct_cache_policy_identity(
+        policy,
+        scheme_id,
+    )
+    if consumer["spec_fingerprint"] != expected_spec:
+        item_drift.append("spec_fingerprint")
+    if consumer["cache_group"] != expected_cache_group:
+        item_drift.append("cache_group")
+    if item_drift:
+        raise RuntimeError(
+            "direct cache consumer identity mismatch: "
+            + ",".join(sorted(set(item_drift)))
+        )
+    expected_native = _direct_cache_native_generation(
+        generation,
+        contract=raw_contract,
+    )
+
+    saw_record = False
+    for record in records:
+        saw_record = True
+        try:
+            _verify_direct_cache_record(
+                record,
+                storage_root=storage_root,
+                consumer=consumer,
+                expected_native=expected_native,
+                contract=raw_contract,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "direct cache completion audit verification failed: "
+                f"{exc}"
+            ) from exc
+    if not saw_record:
+        raise RuntimeError(
+            "direct cache completion contains no records"
+        )
+
+
+def _direct_cache_storage_root(value: object) -> Path:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError("direct cache storage_root is invalid")
+    root = Path(value)
+    if (
+        not root.is_absolute()
+        or str(root) != value
+        or os.path.normpath(value) != value
+        or ".." in root.parts
+    ):
+        raise RuntimeError(
+            "direct cache storage_root must be absolute and normalized"
+        )
+    return root
+
+
+def _direct_cache_expected_consumer_ids(
+    policy: Mapping[str, object],
+) -> set[str]:
+    raw_schemes = policy.get("schemes")
+    if not isinstance(raw_schemes, list):
+        raise RuntimeError("direct cache frozen policy schemes are invalid")
+    expected: set[str] = set()
+    seen: set[str] = set()
+    for index, row in enumerate(raw_schemes):
+        if not isinstance(row, Mapping):
+            raise RuntimeError(
+                f"direct cache frozen policy scheme {index} is invalid"
+            )
+        scheme_id = row.get("scheme_id")
+        if not isinstance(scheme_id, str) or not scheme_id:
+            raise RuntimeError(
+                f"direct cache frozen policy scheme {index} has no id"
+            )
+        if scheme_id in seen:
+            raise RuntimeError(
+                "direct cache frozen policy scheme ids are duplicated"
+            )
+        seen.add(scheme_id)
+        if row.get("cache_spec_fingerprint") is not None:
+            expected.add(scheme_id)
+    return expected
+
+
+def _normalize_direct_cache_consumers(
+    raw_consumers: Mapping[object, object],
+) -> dict[str, dict[str, object]]:
+    consumers: dict[str, dict[str, object]] = {}
+    for raw_key, raw in raw_consumers.items():
+        if (
+            not isinstance(raw_key, str)
+            or not raw_key
+            or not isinstance(raw, Mapping)
+            or set(raw) != _DIRECT_CACHE_CONSUMER_FIELDS
+        ):
+            raise RuntimeError(
+                "direct cache consumer authority is invalid"
+            )
+        normalized = dict(raw)
+        for field in (
+            "base_scheme_id",
+            "cache_consumer_id",
+            "scheme_version",
+            "cache_group",
+            "publisher_consumer_id",
+            "cache_family",
+            "tenor",
+        ):
+            normalized[field] = _require_nonempty(
+                normalized[field],
+                f"direct_cache_authorities.consumers.{raw_key}.{field}",
+            )
+        for field in (
+            "code_sha256",
+            "config_sha256",
+            "spec_fingerprint",
+            "cache_adapter_sha256",
+            "cache_core_sha256",
+            "projection_proof_identity_sha256",
+        ):
+            normalized[field] = _require_lower_sha256(
+                normalized[field],
+                f"direct_cache_authorities.consumers.{raw_key}.{field}",
+            )
+        lookback_rows = normalized["daily_dependency_lookback_rows"]
+        dependency_proof = normalized["daily_dependency_proof"]
+        if lookback_rows is None and dependency_proof is None:
+            pass
+        elif (
+            isinstance(lookback_rows, bool)
+            or not isinstance(lookback_rows, int)
+            or lookback_rows < 0
+            or not isinstance(dependency_proof, str)
+            or not dependency_proof.strip()
+        ):
+            raise RuntimeError(
+                "direct cache consumer dependency proof is invalid: "
+                f"{raw_key}"
+            )
+        if (
+            normalized["base_scheme_id"] != raw_key
+            or normalized["cache_consumer_id"] != raw_key
+            or normalized["access_mode"] not in {"publisher", "read_only"}
+            or normalized["cache_group"]
+            != (
+                f"{normalized['cache_family']}:"
+                f"{normalized['tenor']}"
+            )
+        ):
+            raise RuntimeError(
+                f"direct cache consumer identity is invalid: {raw_key}"
+            )
+        consumers[raw_key] = normalized
+    return consumers
+
+
+def _validate_direct_cache_publisher_graph(
+    consumers: Mapping[str, Mapping[str, object]],
+) -> None:
+    for scheme_id, consumer in consumers.items():
+        publisher_id = str(consumer["publisher_consumer_id"])
+        publisher = consumers.get(publisher_id)
+        if publisher is None:
+            raise RuntimeError(
+                f"direct cache publisher is missing: {publisher_id}"
+            )
+        expected_access = (
+            "publisher" if publisher_id == scheme_id else "read_only"
+        )
+        shared_fields = (
+            "cache_group",
+            "cache_family",
+            "tenor",
+            "spec_fingerprint",
+            "projection_proof_identity_sha256",
+            "daily_dependency_lookback_rows",
+            "daily_dependency_proof",
+        )
+        if (
+            consumer["access_mode"] != expected_access
+            or publisher["access_mode"] != "publisher"
+            or publisher["publisher_consumer_id"] != publisher_id
+            or any(
+                publisher[field] != consumer[field]
+                for field in shared_fields
+            )
+        ):
+            raise RuntimeError(
+                f"direct cache publisher graph is invalid: {scheme_id}"
+            )
+
+
+def _direct_cache_policy_identity(
+    policy: Mapping[str, object],
+    scheme_id: str,
+) -> tuple[str, str]:
+    matches = [
+        row
+        for row in policy.get("schemes", [])
+        if (
+            isinstance(row, Mapping)
+            and row.get("scheme_id") == scheme_id
+        )
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"direct cache policy consumer is ambiguous: {scheme_id}"
+        )
+    row = matches[0]
+    spec = _require_lower_sha256(
+        row.get("cache_spec_fingerprint"),
+        f"direct cache policy {scheme_id} cache_spec_fingerprint",
+    )
+    cache_group = _require_nonempty(
+        row.get("cache_group"),
+        f"direct cache policy {scheme_id} cache_group",
+    )
+    return spec, cache_group
+
+
+def _direct_cache_native_generation(
+    generation: Mapping[str, object],
+    *,
+    contract: Mapping[str, object],
+) -> dict[str, object]:
+    if (
+        generation.get("state") != GENERATION_SEALED
+        or generation.get("generation_type")
+        != contract["native_generation_type"]
+        or generation.get("schema_version")
+        != contract["native_generation_schema_version"]
+        or generation.get("exporter_version")
+        != contract["native_exporter_version"]
+    ):
+        raise RuntimeError(
+            "direct cache Native generation identity is invalid"
+        )
+    expected = {
+        "generation_id": _require_nonempty(
+            generation.get("generation_id"),
+            "direct cache Native generation_id",
+        ),
+        "manifest_sha256": _require_lower_sha256(
+            generation.get("manifest_sha256"),
+            "direct cache Native manifest_sha256",
+        ),
+        "dataset_content_id": _require_lower_sha256(
+            generation.get("dataset_content_id"),
+            "direct cache Native dataset_content_id",
+        ),
+        "business_date": _stored_iso_date(
+            generation,
+            "business_date",
+        ),
+        "feature_date": _stored_iso_date(
+            generation,
+            "feature_date",
+        ),
+        "schema_version": str(generation["schema_version"]),
+        "exporter_version": str(generation["exporter_version"]),
+    }
+    return expected
+
+
+def _verify_direct_cache_record(
+    record: PredictionRecord,
+    *,
+    storage_root: Path,
+    consumer: Mapping[str, object],
+    expected_native: Mapping[str, object],
+    contract: Mapping[str, object],
+) -> None:
+    from shared.artifact_paths import safe_path_part
+    from shared.liwei_0616_phase_a_cache import (
+        _load_generation_directory,
+        _validate_generation_acceptance_for_use,
+        _verify_generation_acceptance_lineage,
+    )
+
+    extra = record.extra
+    if not isinstance(extra, Mapping):
+        raise ValueError("direct cache prediction extra is missing")
+    audit = extra.get("phase_a_cache")
+    if not isinstance(audit, Mapping):
+        raise ValueError("direct cache phase_a_cache audit is missing")
+    generation_id = _require_nonempty(
+        audit.get("generation_id"),
+        "direct cache generation_id",
+    )
+    if safe_path_part(generation_id) != generation_id:
+        raise ValueError("direct cache generation_id is unsafe")
+    manifest_sha256 = _require_lower_sha256(
+        audit.get("generation_manifest_sha256"),
+        "direct cache generation_manifest_sha256",
+    )
+    expected_family_root = (
+        storage_root
+        / safe_path_part(str(consumer["cache_family"]))
+        / safe_path_part(str(consumer["tenor"]).lower())
+    )
+    expected_generation_path = (
+        expected_family_root / "generations" / generation_id
+    )
+    generation_path = Path(
+        _require_nonempty(
+            audit.get("generation_path"),
+            "direct cache generation_path",
+        )
+    )
+    if (
+        generation_path != expected_generation_path
+        or audit.get("family_root") != str(expected_family_root)
+        or audit.get("current_pointer")
+        != str(expected_family_root / "current.json")
+        or audit.get("published") is not True
+    ):
+        raise ValueError("direct cache audit path is not canonical")
+    if consumer["access_mode"] == "read_only" and (
+        audit.get("status") != "hit"
+        or audit.get("build_mode") != "hit"
+        or audit.get("build_reason") != "consumer_validated_hit"
+    ):
+        raise ValueError(
+            "direct cache read_only audit must be a "
+            "consumer_validated_hit"
+        )
+    loaded = _load_generation_directory(
+        generation_path,
+        expected_generation_id=generation_id,
+        expected_manifest_sha256=manifest_sha256,
+        secure=True,
+    )
+    manifest = loaded.manifest
+    expected_manifest_identity = {
+        "schema_version": contract["manifest_schema_version"],
+        "abi_version": contract["cache_abi_version"],
+        "cache_family": consumer["cache_family"],
+        "tenor": consumer["tenor"],
+        "spec_fingerprint": consumer["spec_fingerprint"],
+    }
+    drift = [
+        field
+        for field, expected in expected_manifest_identity.items()
+        if manifest.get(field) != expected
+    ]
+    input_state = manifest.get("input_state")
+    effective_auxiliary = (
+        input_state.get("effective_auxiliary")
+        if isinstance(input_state, Mapping)
+        else None
+    )
+    if (
+        not isinstance(input_state, Mapping)
+        or input_state.get("schema_version")
+        != contract["input_state_schema_version"]
+        or input_state.get("native_generation")
+        != dict(expected_native)
+        or not isinstance(effective_auxiliary, Mapping)
+        or effective_auxiliary.get("schema_version")
+        != contract["projection_schema_version"]
+        or effective_auxiliary.get("proof_identity_sha256")
+        != consumer["projection_proof_identity_sha256"]
+    ):
+        drift.append("input_state")
+    acceptance = manifest.get("generation_acceptance_evidence")
+    if (
+        not isinstance(acceptance, Mapping)
+        or acceptance.get("native_generation")
+        != dict(expected_native)
+        or audit.get("generation_acceptance") != acceptance
+    ):
+        drift.append("generation_acceptance")
+    if drift:
+        raise ValueError(
+            "direct cache manifest identity mismatch: "
+            + ",".join(sorted(set(drift)))
+        )
+    lineage_qualification = {
+        "qualification": {
+            "cache_abi_version": contract["cache_abi_version"],
+            "cache_family": consumer["cache_family"],
+            "tenor": consumer["tenor"],
+            "spec_fingerprint": consumer["spec_fingerprint"],
+            "daily_dependency_lookback_rows":
+                consumer["daily_dependency_lookback_rows"],
+            "daily_dependency_proof":
+                consumer["daily_dependency_proof"],
+        }
+    }
+    _verify_generation_acceptance_lineage(
+        loaded,
+        trusted_qualification=lineage_qualification,
+    )
+    _validate_generation_acceptance_for_use(
+        loaded,
+        native_generation_binding=dict(expected_native),
+    )
+    _validate_direct_cache_monotonic_coverage(
+        loaded,
+        loader=_load_generation_directory,
+    )
+
+
+def _validate_direct_cache_monotonic_coverage(
+    generation: object,
+    *,
+    loader: Callable[..., object],
+) -> None:
+    manifest = getattr(generation, "manifest")
+    parent_record = manifest.get("generation_acceptance_evidence", {}).get(
+        "parent"
+    )
+    if parent_record is None:
+        return
+    if not isinstance(parent_record, Mapping):
+        raise ValueError("direct cache parent authority is invalid")
+    parent_id = parent_record.get("generation_id")
+    if (
+        not isinstance(parent_id, str)
+        or not parent_id
+        or manifest.get("parent_generation_id") != parent_id
+    ):
+        raise ValueError("direct cache parent identity is invalid")
+    parent = loader(
+        getattr(generation, "path").parent / parent_id,
+        expected_generation_id=parent_id,
+        expected_manifest_sha256=parent_record.get("manifest_sha256"),
+        secure=True,
+    )
+    current_caches = getattr(generation, "caches")
+    parent_caches = getattr(parent, "caches")
+    if set(current_caches) != set(parent_caches):
+        raise ValueError("direct cache baseline set is not monotonic")
+    for baseline, parent_cache in parent_caches.items():
+        parent_dates = set(parent_cache["test_dates"])
+        current_dates = set(current_caches[baseline]["test_dates"])
+        if not parent_dates.issubset(current_dates):
+            raise ValueError(
+                f"direct cache {baseline} coverage is not monotonic"
+            )
 
 
 def _validate_stored_occurrence_cardinality(
