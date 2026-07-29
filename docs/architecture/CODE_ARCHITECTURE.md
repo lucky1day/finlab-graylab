@@ -145,6 +145,22 @@ V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为�
 
 ### 5.1 预测路径（调度 / 手动触发）
 
+日频生产不再由 per-scheme APScheduler job 各自形成一批。唯一入口是：
+
+```text
+APScheduler tick
+  └─ daily occurrence coordinator（每交易日唯一）
+       ├─ 冻结 deploy/daily_scheduler_policy_v2.json
+       ├─ 17 Native / 8 Blackbox V2，Native max=2、V2 max=2
+       ├─ execution envelope → configured runtime
+       ├─ current_run_id + attempt_no 完成权 fence
+       └─ 25 item 原子提交 → 29 target receipt → 29/29 完成
+```
+
+coordinator、occurrence、generation、cache 与 phase 的完整约束见
+[DAILY_SIGNAL_SLA.md](DAILY_SIGNAL_SLA.md)。旧 per-scheme 路径只用于非日频、
+受控手工运行或 ledger 回滚诊断，不得产生第二个日频 occurrence：
+
 ```
 APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
   ├─ startup catch-up(DateTrigger) → 当天 cron 已过且无终态 run 时补跑
@@ -312,8 +328,8 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
 | `scheduler/main.py` | L3 | APScheduler 调度 | `build_scheduler` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
-| `harness/daily_real_replay.py` | L5 | 21/25 隔离联跑 gate/runtime；只接受已验证隔离 Engine 与冻结 generation | `open_real_replay_generations`、`RealReplayRuntime` |
-| `harness/daily_real_replay_operator.py` | L5 | 真实联跑只读预检及同进程 operator/runtime 双锁会话 | `run_real_replay_preflight` |
+| `harness/daily_real_replay.py` | L5 | 历史隔离诊断 runtime；只接受已验证隔离 Engine 与冻结 generation，不定义当前生产规模或准入 | `open_real_replay_generations`、`RealReplayRuntime` |
+| `harness/daily_real_replay_operator.py` | L5 | 隔离诊断的只读控制面预检与锁会话；不参与日常 production owner 判定 | `run_real_replay_preflight` |
 | `harness/daily_real_replay_mysql.py` | L5 | 真实联跑专用的隔离 MySQL 生命周期；不读取生产 env，不应用 migration | `isolated_replay_mysql`、`IsolatedReplayMySQL.create_replay_database` |
 | `backtests/{id}_reproduction.py` | L4 | 历史复现 | `run_<scheme>_reproduction` |
 | `backtests/repository.py` | L4 | 回测写库单点 | `t_backtest_*` 写入 |

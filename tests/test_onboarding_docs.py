@@ -76,98 +76,7 @@ FENGRL_MONTHLY_ACCEPTANCE_EVIDENCE = (
     BLACKBOX_RECORDS
     / "FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json"
 )
-DAILY_MVP_DESIGN = (
-    DOCS_ROOT
-    / "superpowers"
-    / "specs"
-    / "2026-07-28-all-active-signal-production-mvp-design.md"
-)
-DAILY_MVP_PLAN = (
-    DOCS_ROOT
-    / "superpowers"
-    / "plans"
-    / "2026-07-28-all-active-signal-production-mvp.md"
-)
-DAILY_MVP_EXECUTION_MATRIX = {
-    "daily_10y_lgbm_10y04_0629": (1, ("10Y",), "live_source_0629"),
-    "daily_1y_xgb_1y13_0629": (1, ("1Y",), "live_source_0629"),
-    "daily_5y_lgbm_5y10_0629": (1, ("5Y",), "live_source_0629"),
-    "t1_daily": (1, ("5Y", "10Y"), "generation_v1"),
-    "daily_5y_2_v28": (5, ("5Y",), "generation_v1"),
-    "daily_7y_1_v28": (5, ("7Y",), "generation_v1"),
-    "liwei_0616_10y01_cons_say_k3_div_k10": (
-        5,
-        ("10Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_10y01_full_oos_k3_div_k10": (
-        5,
-        ("10Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_10y02_cons_say_k3_div_k5": (
-        5,
-        ("10Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_5y01_full_oos_k3_div_k10": (
-        5,
-        ("5Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_5y_auc_static_all_k3_div_k10": (
-        5,
-        ("5Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_5y_auc_yearly_all_k3_div_k10": (
-        5,
-        ("5Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_5y_ic_yearly_all_k3_div_k10": (
-        5,
-        ("5Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_7y01_cons_say_k3_div_k10": (
-        5,
-        ("7Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_7y03_cons_all_k3_div_k8": (
-        5,
-        ("7Y",),
-        "generation_v1",
-    ),
-    "liwei_0616_cons_sda_k3_div_k10": (
-        5,
-        ("5Y",),
-        "generation_v1",
-    ),
-    "t5_daily": (5, ("3Y", "5Y", "7Y", "10Y"), "generation_v1"),
-    "one_y_t5_liq_excess_a_v1": (5, ("1Y",), "ledger_formal"),
-    "one_y_t5_liq_excess_a_w252_l7_v1": (
-        5,
-        ("1Y",),
-        "ledger_formal",
-    ),
-    "one_y_t5_liq_excess_a_w350_l7_v1": (
-        5,
-        ("1Y",),
-        "ledger_formal",
-    ),
-    "one_y_t5_liq_excess_b_w252_l7_v1": (
-        5,
-        ("1Y",),
-        "ledger_formal",
-    ),
-    **{
-        scheme_id: (5, ("10Y",), "ledger_gray")
-        for scheme_id in TEN_Y_T5_SCHEME_IDS
-    },
-}
-
+DAILY_POLICY = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
 
 class OnboardingDocumentationTests(unittest.TestCase):
     def test_root_agent_instructions_are_byte_identical(self) -> None:
@@ -306,32 +215,34 @@ class OnboardingDocumentationTests(unittest.TestCase):
         deploy = DEPLOY_README.read_text(encoding="utf-8")
         architecture = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
         platform = PLATFORM_SOP.read_text(encoding="utf-8")
+        operator = (
+            PROJECT_ROOT / "scripts" / "daily_coordinator_epoch_operator.py"
+        ).read_text(encoding="utf-8")
+        control_probe = (
+            PROJECT_ROOT / "scheduler" / "daily_control_plane_probe.py"
+        ).read_text(encoding="utf-8")
 
         for marker in (
-            "bootout legacy V2 preflight",
             "root-owned append-only epoch chain",
             "只能追加更高 epoch",
             "daily_coordinator_epoch_operator.py",
             "hard-link no-clobber",
-            "仓库 rollout",
-            "candidate v2",
+            "必须保持 bootout",
             "launchctl print",
-            "scripts/apply_migrations.py --apply",
+            "scripts/apply_migrations.py",
         ):
             self.assertIn(marker, deploy)
 
         for marker in (
-            "bootout legacy preflight",
-            "machine-global append-only chain",
-            "允许受控回滚",
-            "hard-link no-clobber",
-            "仓库 rollout",
-            "candidate v2",
-            "scripts/apply_migrations.py --apply",
+            "machine-global root-owned append-only epoch chain",
+            "追加更高 epoch",
+            "ledger 下 preflight 保持 bootout",
+            "单实例锁与 run fence",
+            "scripts/apply_migrations.py",
         ):
             self.assertIn(marker, architecture)
 
-        for text in (deploy, architecture, platform):
+        for text in (deploy, platform):
             self.assertIn(
                 "BOND_DAILY_COORDINATOR_MODE=ledger",
                 text,
@@ -339,10 +250,34 @@ class OnboardingDocumentationTests(unittest.TestCase):
             self.assertIn("--check-only", text)
             self.assertIn("--dry-run", text)
 
-        self.assertIn(
-            "BOND_DAILY_COORDINATOR_MODE=legacy",
-            platform,
+        self.assertIn("v2-preflight", platform)
+
+        labels = (
+            "com.bond-factor-lab.backend",
+            "com.bond-factor-lab.scheduler",
+            "com.bond-factor-lab.v2-preflight",
         )
+        for label in labels:
+            self.assertIn(label, deploy)
+            self.assertIn(label, control_probe)
+        for marker in (
+            "v2-preflight 三份 plist mode 一起改为 `ledger`",
+            "v2-preflight 服务继续\n   bootout/未加载",
+            "epoch 发布前",
+            "三份 installed plist 全部为 `ledger`",
+        ):
+            self.assertIn(marker, deploy)
+        for marker in (
+            "installed backend、scheduler、v2-preflight 三份 plist",
+            "epoch 发布前按精确 label 逐份核对",
+            "preflight 继续 bootout/未加载",
+        ):
+            self.assertIn(marker, architecture)
+        self.assertIn(
+            '_require_exact_probe_labels(installed_modes, "installed plist")',
+            operator,
+        )
+        self.assertIn("installed_modes[label] != mode", operator)
 
     def test_upstream_metadata_name_is_task_scoped_and_concise(self) -> None:
         text = UPSTREAM_SOP.read_text(encoding="utf-8")
@@ -662,23 +597,13 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "chmod 600 /Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json",
             "不得把用户名、密码或 DSN 写入 plist",
             "SHOW GRANTS FOR CURRENT_USER()",
-            "9 张必需源表",
-            "生产预检禁止执行 DDL/DML",
-            "7 个日频存储根",
+            "必需源表",
+            "不得执行生产 DDL/DML",
+            "安全存储与 cache",
             "backtest_artifacts/runtime_cache/liwei_0616",
-            "不会静默 chmod",
-            "certify_generation_native_daily.py",
-            "certify_daily_0629_source.py",
-            "BFL_DAILY_0629_CERTIFY_REAL=1",
-            "runner_persistence_tables_full_content",
-            "PYTHONPYCACHEPREFIX",
-            "live_source_no_persist_observed_watermark",
-            "提交后必须在 clean candidate",
-            "--no-persist",
-            "clean detached worktree",
-            "POSIX semaphore",
-            'pwd -P',
-            "伪造历史 snapshot clock",
+            "runtime 不静默 `chmod`",
+            "manifest/payload SHA-256",
+            "owner、mode、inode、symlink",
             "不得修改或重启 BondProjectPro",
         ):
             self.assertIn(marker, deploy)
@@ -691,7 +616,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "07:45",
             "08:00",
             "08:30",
-            "+0/+2/+4/+6",
+            "+0/+2/.../+14",
             "不重启 scheduler",
             "旧 generation",
             "scheduled_live",
@@ -739,6 +664,30 @@ class OnboardingDocumentationTests(unittest.TestCase):
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_SOP.md",
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",
             DOCS_ROOT / "sop" / "SCHEME_POST_ONBOARDING_TEST_SOP.md",
+            DOCS_ROOT
+            / "superpowers"
+            / "specs"
+            / "2026-07-27-blackbox-scheduler-admission-mvp-design.md",
+            DOCS_ROOT
+            / "superpowers"
+            / "plans"
+            / "2026-07-27-blackbox-scheduler-admission-mvp.md",
+            DOCS_ROOT
+            / "superpowers"
+            / "specs"
+            / "2026-07-28-all-active-signal-production-mvp-design.md",
+            DOCS_ROOT
+            / "superpowers"
+            / "plans"
+            / "2026-07-28-all-active-signal-production-mvp.md",
+            DOCS_ROOT
+            / "superpowers"
+            / "specs"
+            / "2026-07-29-liwei-daily-incremental-cache-mvp-design.md",
+            DOCS_ROOT
+            / "superpowers"
+            / "plans"
+            / "2026-07-29-liwei-daily-incremental-cache-mvp.md",
         )
         self.assertTrue(all(not path.exists() for path in retired))
 
@@ -763,177 +712,265 @@ class OnboardingDocumentationTests(unittest.TestCase):
             {"README.md", "CURRENT_STATUS.md", "TODO.md"},
         )
 
-    def test_todo_prioritizes_platform_after_completed_manual_gray(self) -> None:
-        text = TODO.read_text(encoding="utf-8")
-        p0, _ = text.split("## P1", maxsplit=1)
+    def test_current_daily_contract_matches_policy(self) -> None:
+        policy = json.loads(DAILY_POLICY.read_text(encoding="utf-8"))
+        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
         current = CURRENT_STATUS.read_text(encoding="utf-8")
+        todo = TODO.read_text(encoding="utf-8")
 
-        self.assertNotIn("one_y_t5_", p0)
-        self.assertNotIn("migration017 namespace digest", text)
-        self.assertIn("migration017 namespace digest", current)
-        self.assertIn("f93b154", current)
-        self.assertNotIn("migration017 real MySQL recovery", text)
-        self.assertIn("migration017 real MySQL recovery", current)
-        self.assertIn("66e7a6b", current)
-        self.assertIn("MySQL 8.0.45", current)
-        self.assertIn("lower_case_table_names=2", current)
-        self.assertIn(
-            "不代表下一项 canonical migration runner 已完成",
-            current,
-        )
-
-        dependencies = (
-            "只读、内容寻址的信号gap plan",
-            "gray/formal准入",
-            "daily policy从21/25扩展为25/29",
-            "forced-cold 25/29",
-            "migration018",
-            "legacy切换ledger",
-        )
-        positions = [text.index(marker) for marker in dependencies]
-        self.assertEqual(positions, sorted(positions))
-        self.assertIn("20次forced-cold", text)
-        self.assertIn("MVP 上线后增强", text)
-
-    def test_all_active_signal_mvp_preserves_control_plane_boundaries(self) -> None:
-        """新MVP不得通过全局gray开关、倒签或隔离DB admission绕过边界。"""
-        design = DAILY_MVP_DESIGN.read_text(encoding="utf-8")
-        plan = DAILY_MVP_PLAN.read_text(encoding="utf-8")
-        combined = design + plan
-
-        for marker in (
-            "25 execution / 29 target",
-            "日频 | 25 | 29",
-            "周频 | 7 | 7",
-            "月频 | 8 | 8",
-            "四个gray daily只允许进入ledger",
-            "五个gray monthly",
-            "production-identity execute-only observation",
-            "not_before/expires_at",
-            "首次获授权并完成 ledger epoch 切换后的交易日",
-            "scheduled_live`起点不早于实际machine-global ledger epoch",
-            "三个0629",
-        ):
-            self.assertIn(marker, combined)
-
-        self.assertNotIn("admission直接进入`ADMITTED`，无临时TTL", combined)
-        self.assertNotIn("2026-07-28 日频生产验收", combined)
-
-        matrix_section = design.split(
-            "## 日频精确身份矩阵",
-            maxsplit=1,
-        )[1].split("\n## ", maxsplit=1)[0]
-        rows = re.findall(
-            r"^\| `([^`]+)` \| ([0-9]+) \| `([^`]+)` \| `([^`]+)` \|$",
-            matrix_section,
-            flags=re.MULTILINE,
-        )
-        actual_matrix = {
-            scheme_id: (
-                int(horizon),
-                tuple(tenor.strip() for tenor in tenors.split(",")),
-                admission,
-            )
-            for scheme_id, horizon, tenors, admission in rows
-        }
-        self.assertEqual(actual_matrix, DAILY_MVP_EXECUTION_MATRIX)
-        self.assertEqual(len(actual_matrix), 25)
+        self.assertEqual(policy["version"], "daily-scheduler-policy-v2")
+        self.assertEqual(policy["expected_item_count"], 25)
+        self.assertEqual(policy["expected_target_count"], 29)
+        self.assertEqual(len(policy["schemes"]), 25)
         self.assertEqual(
-            sum(len(row[1]) for row in actual_matrix.values()),
+            sum(len(item["target_tenors"]) for item in policy["schemes"]),
             29,
         )
-        self.assertEqual(
-            {
-                scheme_id
-                for scheme_id, row in actual_matrix.items()
-                if row[2] == "ledger_gray"
-            },
-            set(TEN_Y_T5_SCHEME_IDS),
-        )
-        self.assertEqual(
-            {
-                scheme_id
-                for scheme_id, row in actual_matrix.items()
-                if row[2] == "live_source_0629"
-            },
-            {
-                "daily_10y_lgbm_10y04_0629",
-                "daily_1y_xgb_1y13_0629",
-                "daily_5y_lgbm_5y10_0629",
-            },
-        )
-        for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
-            self.assertIn(scheme_id, TODO.read_text(encoding="utf-8"))
+        runtime_counts = {
+            runtime: sum(
+                item["runtime_type"] == runtime for item in policy["schemes"]
+            )
+            for runtime in ("native_adapter", "blackbox_v2")
+        }
+        self.assertEqual(runtime_counts, {
+            "native_adapter": 17,
+            "blackbox_v2": 8,
+        })
+        self.assertEqual(policy["pools"]["native_max_concurrency"], 2)
+        self.assertEqual(policy["pools"]["v2_max_concurrency"], 2)
 
-    def test_exact_active_signal_gap_planner_completion_is_documented(
-        self,
-    ) -> None:
-        """Task 1 已完成，但缺口写入和 Task 2 仍须保持未完成。"""
-        design = DAILY_MVP_DESIGN.read_text(encoding="utf-8")
-        plan = DAILY_MVP_PLAN.read_text(encoding="utf-8")
-        todo = TODO.read_text(encoding="utf-8")
-        current = CURRENT_STATUS.read_text(encoding="utf-8")
-        combined = "\n".join((design, plan, todo, current))
-
-        self.assertIn(
-            "SKIP_PRESENT|GRAY_LIVE_GAP|"
-            "FULL_CANONICAL_RUN_REQUIRED|BLOCKED_NO_GENERATION|"
-            "BLOCKED_DATA_CONTRACT",
-            combined,
-        )
-        self.assertIn(
-            "`--as-of` 是包含当日的确定性上界",
-            combined,
-        )
-        self.assertIn(
-            "44 active / 11,652 expected / 11,623 present / 29 open",
-            combined,
-        )
-        self.assertIn("refresh_date=2026-07-28", combined)
+        combined = "\n".join((sla, current, todo))
         for marker in (
-            "25 `GRAY_LIVE_GAP`",
-            "0 `BLOCKED_NO_GENERATION`",
-            "4 `BLOCKED_DATA_CONTRACT`",
+            "1 个 coordinator",
+            "1 个 `daily-signals` occurrence",
+            "17 Native + 8",
+            "Native 最大并发 2",
+            "V2 最大并发 2",
+            "29/29",
+            "warm cache",
+            "v2-preflight 保持未加载",
+            "current_run_id + attempt_no",
+            "migration 018",
         ):
             self.assertIn(marker, combined)
-        self.assertIn("Task 1：`COMPLETED`", plan)
-        self.assertIn("Task 2：`NOT_STARTED`", plan)
-        self.assertIn(
-            "业务实施阶段 6（本计划 Task 7）才执行受控补缺",
-            combined,
-        )
-        self.assertIn("尚未写入", combined)
-        self.assertNotIn("Task 2：`COMPLETED`", combined)
-        self.assertNotIn("生产切换已完成", combined)
-        for obsolete in (
-            "DataBridge 仍为 `refresh_date=2026-07-24`",
-            "等待并校验 `refresh_date > 2026-07-25`",
-            "当前DataBridge合法覆盖的12个Blackbox点",
-            "新同日generation就绪后补其余13个Blackbox点",
+        for retired_gate in (
+            "21/25",
+            "forced-cold",
+            "CMS/Keychain",
+            "95.8",
         ):
-            self.assertNotIn(obsolete, combined)
+            self.assertNotIn(retired_gate, combined)
 
-    def test_todo_records_fengrl_manual_gray_complete_before_scheduler(self) -> None:
-        """FengRL 手工灰度已完成，自动调度仍须等待独立 admission。"""
+    def test_legacy_capacity_admission_is_only_a_transition_blocker(
+        self,
+    ) -> None:
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        todo = TODO.read_text(encoding="utf-8")
+        deploy = DEPLOY_README.read_text(encoding="utf-8")
+        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
+        runtime = (
+            PROJECT_ROOT / "scheduler" / "daily_runtime.py"
+        ).read_text(encoding="utf-8")
+        operator = (
+            PROJECT_ROOT / "scripts" / "daily_coordinator_epoch_operator.py"
+        ).read_text(encoding="utf-8")
+        admission = json.loads(
+            (
+                PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        self.assertIn("services.bind_capacity_admission(admission)", runtime)
+        self.assertIn("require_current_capacity_admission", runtime)
+        self.assertIn("require_trusted_current_capacity_admission", operator)
+        self.assertIn("_validate_capacity_admission(admission)", operator)
+        self.assertEqual(admission["status"], "BLOCKED")
+
+        self.assertIn("旧 capacity admission 不得成为目标生产门禁", current)
+        self.assertIn("移除 `scheduler.daily_runtime` 的旧 capacity admission", todo)
+        self.assertIn("禁止 cutover", todo)
+        self.assertIn("cutover 代码门禁", deploy)
+        self.assertIn("测试\n证明这些依赖已经移除", deploy)
+        self.assertIn("本文不提供、也不授权旧 admission 的签名", deploy)
+        self.assertNotIn("capacity admission", sla)
+        for text in (current, todo, deploy):
+            self.assertIn("旧", text)
+            self.assertIn("移除", text)
+            self.assertIn("目标", text)
+            self.assertIn("cutover", text)
+
+    def test_current_status_separates_target_from_installed_facts(self) -> None:
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        todo = TODO.read_text(encoding="utf-8")
+        deploy = DEPLOY_README.read_text(encoding="utf-8")
+
+        self.assertIn("## 已批准的日频目标合同", current)
+        self.assertIn("## 当前生产事实", current)
+        for marker in (
+            "production 仍为 migration 017；migration 018 尚未应用",
+            "`rollout=legacy`；ledger 尚未启用",
+            "backend 以 legacy mode 提供 HTTP 200；scheduler 与 v2-preflight 均未加载",
+            "production schema 3 cache 尚未 bootstrap",
+            "machine-global epoch 与 ledger cutover 尚未执行",
+            "2026-07-28 为 12/29，2026-07-29 为 0/29",
+            "50 条缺口尚未写入",
+            "尚无真实 ledger occurrence",
+        ):
+            self.assertIn(marker, current)
+
+        for marker in (
+            "## 当前状态权威与 operator guard",
+            "[当前状态](../docs/CURRENT_STATUS.md)",
+            "本 runbook\n不复制任何动态值",
+            "operator 每次执行前必须读取该页",
+            "任一待切换前置尚未闭合",
+            "必须 fail-closed",
+        ):
+            self.assertIn(marker, deploy)
+        for duplicated_dynamic_fact in (
+            "schema history 停在 migration 017",
+            "migration 018 尚未应用",
+            "`rollout=legacy`，ledger 尚未启用",
+            "scheduler 与 v2-preflight 均未加载",
+            "production schema 3 cache 尚未 bootstrap",
+            "machine-global epoch 和 ledger cutover 尚未执行",
+            "daily_capacity_admission_v2.json=BLOCKED",
+            "当前 admission JSON 为 `BLOCKED`",
+            "2026-07-28 日频为 12/29",
+            "2026-07-29 为 0/29",
+            "50 条历史缺口均尚未写入",
+        ):
+            self.assertNotIn(duplicated_dynamic_fact, deploy)
+
+        self.assertIn("已批准目标生产口径", todo)
+        self.assertNotIn("当前唯一生产口径", todo)
+        self.assertNotIn(
+            "machine-global epoch、单实例锁和 run fence 生效",
+            current,
+        )
+        self.assertNotIn("2026-07-30 日频 ledger 本地运行基线", deploy)
+
+    def test_scheduled_live_requires_future_real_occurrence_evidence(
+        self,
+    ) -> None:
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        deploy = DEPLOY_README.read_text(encoding="utf-8")
+        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
+        platform = PLATFORM_SOP.read_text(encoding="utf-8")
+
+        self.assertRegex(
+            current,
+            r"2026-07-30[^\n]*尚无真实 ledger occurrence",
+        )
+        self.assertRegex(current, r"日期标签本身\s+不构成证据")
+        self.assertIn("日期标签本身不构成起点证据", deploy)
+        self.assertNotIn("2026-07-30", deploy)
+        self.assertIn("2026-07-30 尚无真实 occurrence/receipt 证据", sla)
+        self.assertIn("日期本身不能", sla)
+        self.assertIn("2026-07-30 日期本身不构成起点证据", platform)
+        for text in (current, deploy, sla, platform):
+            self.assertIn("未来", text)
+            self.assertIn("真实", text)
+            self.assertIn("occurrence", text)
+            self.assertIn("scheduled_live", text)
+        for stale_claim in (
+            "2026-07-30 起真实 ledger occurrence",
+            "2026-07-30 真实 ledger occurrence 起",
+            "7/30 真实 ledger 才是",
+        ):
+            for text in (current, deploy, sla, platform):
+                self.assertNotIn(stale_claim, text)
+
+    def test_current_sla_binds_liwei_schema3_to_policy(self) -> None:
+        policy = json.loads(DAILY_POLICY.read_text(encoding="utf-8"))
+        sla = DAILY_SIGNAL_SLA.read_text(encoding="utf-8")
+        liwei_items = [
+            item
+            for item in policy["schemes"]
+            if item["scheme_id"].startswith("liwei_0616_")
+        ]
+        self.assertEqual(len(liwei_items), 10)
+        rows = re.findall(
+            r"^\| `([^`]+)` \| `([^`]+)` \| `([0-9a-f]{64})` "
+            r"\| `([^`]+)` \| `([^`]+)` \|$",
+            sla,
+            flags=re.MULTILINE,
+        )
+        actual = {
+            consumer: (family, tenor, fingerprint, publisher)
+            for family, tenor, fingerprint, publisher, consumer in rows
+        }
+        expected_publishers = {
+            "liwei_0616_10y_v61": (
+                "liwei_0616_10y01_full_oos_k3_div_k10"
+            ),
+            "liwei_0616_5y_v31": (
+                "liwei_0616_5y01_full_oos_k3_div_k10"
+            ),
+        }
+        expected = {}
+        for item in liwei_items:
+            family, tenor = item["cache_group"].split(":", maxsplit=1)
+            expected[item["scheme_id"]] = (
+                family,
+                tenor,
+                item["cache_spec_fingerprint"],
+                expected_publishers.get(family, item["scheme_id"]),
+            )
+        self.assertEqual(actual, expected)
+        for marker in (
+            "有效输入投影",
+            "parent lineage",
+            "覆盖范围单调",
+            "manifest schema 3",
+            "hit",
+            "append",
+            "suffix",
+            "CACHE_PUBLISHER_REQUIRED",
+            "非 publisher consumer 必须零写",
+            "不得是 symlink",
+            "SHA-256",
+        ):
+            self.assertIn(marker, sla)
+
+    def test_historical_daily_gaps_have_gray_only_phase(self) -> None:
+        combined = "\n".join((
+            DAILY_SIGNAL_SLA.read_text(encoding="utf-8"),
+            CURRENT_STATUS.read_text(encoding="utf-8"),
+            TODO.read_text(encoding="utf-8"),
+        ))
+        expected_daily = {
+            "2026-07-23": 1,
+            "2026-07-24": 1,
+            "2026-07-27": 2,
+            "2026-07-28": 17,
+            "2026-07-29": 29,
+        }
+        for day, count in expected_daily.items():
+            self.assertRegex(
+                combined,
+                rf"{re.escape(day)}[^\n]*\|?[^\n]*{count}",
+            )
+        for marker in (
+            "历史缺口共 50",
+            "T+1 共 5",
+            "T+5 共 45",
+            "只能通过受控",
+            "insert-only 补为",
+            "不得倒签 `scheduled_live`",
+            "当前全部尚未写入",
+            "未来真实",
+        ):
+            self.assertIn(marker, combined)
+
+    def test_todo_records_completed_manual_gray_batches(self) -> None:
         text = TODO.read_text(encoding="utf-8")
-        p0, remainder = text.split("## P1", maxsplit=1)
-
-        self.assertIn("FengRL 五个月度方案手工灰度入库已完成", p0)
-        self.assertIn("MANUAL_GRAY_ACCEPTED_5_OF_5", p0)
-        self.assertIn("80", p0)
-        self.assertIn("15", p0)
-        self.assertIn("95", p0)
-        self.assertNotIn("paused/draft", p0)
-        self.assertNotIn("尚无专项生产写授权", p0)
-        for scheme_id in FENGRL_MONTHLY_SCHEME_IDS:
-            self.assertIn(scheme_id, p0)
-
-        self.assertIn("不授予自动调度", p0)
-        self.assertIn("scheduled_live", p0)
-
-        self.assertIn("周度剩余对账", remainder)
-        self.assertIn("按控制面隔离的gray/formal准入", text)
-        self.assertIn("MVP 上线后增强", remainder)
+        self.assertIn("MANUAL_GRAY_ACCEPTED_5_OF_5", text)
+        self.assertIn("80 + 15 = 95", text)
+        self.assertIn("10Y T+5 四方案", text)
+        self.assertIn("manual gray_live", text)
+        self.assertIn("周度剩余对账", text)
+        self.assertIn("平台增强", text)
 
     def test_canonical_migration_runner_boundary_is_documented(self) -> None:
         """迁移 CLI 的写库身份围栏与运维边界必须由当前文档锁定。"""
@@ -966,12 +1003,15 @@ class OnboardingDocumentationTests(unittest.TestCase):
             )
 
         self.assertNotIn("canonical migration runner", todo)
-        self.assertIn("migration018", todo)
-        self.assertIn("25/29", todo)
+        self.assertIn("migration 018", todo)
+        self.assertIn("29/29", todo)
         for marker in ("f3a5720", "1f1019b", "8ee916f", "3c96f58"):
             self.assertIn(marker, current)
         self.assertIn("未应用生产 migration", current)
-        self.assertIn("不等于 production-shaped sanitized clone 演练", current)
+        self.assertRegex(
+            current,
+            r"不等于 production-shaped\s+sanitized clone 演练",
+        )
         self.assertIn("durable signed operator report", current)
 
     def test_10y_gray_onboarding_record_binds_the_exact_batch(self) -> None:
@@ -1167,11 +1207,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             {"passed": 278, "subtests": 140},
         )
         record = FENGRL_MONTHLY_RECORD.read_text(encoding="utf-8")
-        current = CURRENT_STATUS.read_text(encoding="utf-8")
-        for text in (record, current):
-            self.assertIn("INTEGRATION_PREFLIGHT_READY_NO_WRITE", text)
-            self.assertIn("FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json", text)
-            self.assertIn("不是数据库 `t_input_generations` 的 `SEALED` 记录", text)
+        self.assertIn("INTEGRATION_PREFLIGHT_READY_NO_WRITE", record)
+        self.assertIn("FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json", record)
+        self.assertIn("不是数据库 `t_input_generations` 的 `SEALED` 记录", record)
 
     def test_fengrl_monthly_gray_acceptance_records_exact_terminal_state(
         self,
@@ -1262,9 +1300,9 @@ class OnboardingDocumentationTests(unittest.TestCase):
             0,
         )
         self.assertIn("本批不存在 `scheduled_live`", record)
-        self.assertIn("按控制面隔离的gray/formal准入", todo)
-        self.assertIn("gray/formal", todo)
-        self.assertIn("scheduled_live", todo)
+        self.assertIn("已完成灰度批次", todo)
+        self.assertIn("10Y T+5 四方案", todo)
+        self.assertIn("manual gray_live", todo)
         self.assertIn("scheduled_live", record)
         self.assertIn("旧 generation fallback", record)
 
@@ -1282,40 +1320,24 @@ class OnboardingDocumentationTests(unittest.TestCase):
             )
             self.assertNotIn("GRAY_LIVE_WAITING_FOR_SAME_DAY_GENERATION", text)
 
-        for text in (current, record):
-            for marker in (
-                "333",
-                "17",
-                "39",
-                "372",
-                "156",
-                "10Y/T+5",
-                "8 个候选",
-            ):
-                self.assertIn(marker, text)
-
+        for marker in ("333", "17", "39", "372", "156", "10Y T+5"):
+            self.assertIn(marker, current)
         for marker in (
-            "当前开发基线",
-            "scheduler admission",
-            "25 item/29 target",
-            "21 item/25 target",
-            "fail-closed",
+            "25 base execution",
+            "17 Native + 8 Blackbox V2",
+            "29/29",
+            "schedule_cron",
+            "2026-07-30",
+            "尚无真实 ledger occurrence",
         ):
             self.assertIn(marker, current)
-
-        for text in (current, record):
-            self.assertIn("25 item/29 target", text)
-            self.assertIn("21 item/25 target", text)
-            self.assertIn("schedule_cron", text)
-            self.assertIn("legacy scheduler", text)
-        self.assertIn("25 item/29 target", todo)
-        self.assertIn("legacy切换ledger", todo)
-        self.assertIn("scheduled_live", todo)
-
-        for text in (current, record):
-            self.assertIn("rollout=`legacy`", text)
-            self.assertIn("admission=`BLOCKED`", text)
-            self.assertIn("scheduled_live=0", text)
+        for obsolete in (
+            "21 item/25 target",
+            "forced-cold",
+            "admission=`BLOCKED`",
+            "production-bound",
+        ):
+            self.assertNotIn(obsolete, current)
 
         self.assertIn(
             "**当前状态**：`four-schemes-gray-live-accepted`",

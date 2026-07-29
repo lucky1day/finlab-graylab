@@ -23,49 +23,15 @@ https://bond.finailab.cn/bond-factor-lab/
 | 本地 Mac | 后端、scheduler、SSH 反向隧道 | `deploy/launchd/*.plist` |
 | 任意可联公网点 | 验收 / 监控 | `scripts/check_public_access.sh`、`scripts/healthcheck_alert.sh` |
 
-## 当前运维基线
+## 当前状态权威与 operator guard
 
-2026-07-24 日频 SLA 架构复审后的本地运行基线：
+production 的 migration、rollout、服务加载、epoch、cache、admission、逐日完成数、
+历史缺口和 occurrence 证据只在[当前状态](../docs/CURRENT_STATUS.md)维护；本 runbook
+不复制任何动态值。operator 每次执行前必须读取该页，并以受控只读探针核对现场；
+若当前状态列出的任一待切换前置尚未闭合，必须 fail-closed，不得继续本手册的
+migration、bootstrap、epoch 或服务启动步骤。
 
-- backend 和 scheduler 均由 launchd 管理，服务端口仍为 `127.0.0.1:8100`。
-- scheduler 调整配置、方案 `config.yaml` 或代码后，必须先确认当前
-  `BOND_DAILY_COORDINATOR_MODE` 和 rollout 门禁；只有在获准的维护窗口内才能
-  kickstart。不得通过 07:00 自动重启修复日频调度。
-- scheduler 的 launchd 配置使用 `RunAtLoad=true` 与 `KeepAlive=true`：Mac 登录该用户会自动拉起，进程退出会被 launchd 重新拉起。若需要无人登录前启动，应另行制作 root `LaunchDaemon`，不能直接复用当前依赖用户 conda 环境的 `LaunchAgent`。
-- ledger 候选路径由一个 06:30 coordinator 冻结日批账本并检查 T-1 最小
-  readiness；未齐备时不创建算法 attempt，由 recovery tick 重试。就绪后立即
-  创建 Native RR generation 并启动当天 DataBridge generation；Native
-  snapshot 可在 08:30 recovery cutoff 前开启，且会在同一快照内复核 1Y/3Y/
-  5Y/7Y/10Y 五个曲线锚点；06:30 只是 hard not-before。
-  06:55 是 DataBridge readiness 审计点：未就绪即
-  `LATE`/告警，但 ledger 仍继续刷新当天新 generation 到 08:30；07:00 只做
-  watchdog，不重启 scheduler。
-- 17 个 Native 中 14 个固定使用 `generation_v1`；仅
-  `daily_1y_xgb_1y13_0629`、`daily_5y_lgbm_5y10_0629` 和
-  `daily_10y_lgbm_10y04_0629` 可使用 `live_source_0629` MVP 兼容桥。三者仍
-  绑定当天 Native generation fence，由 ledger `started_at` 记录启动；policy
-  冻结 source package hash，子进程复制后重验，prediction extra 记录并复核
-  source 输出水位。其它 Native 不得使用，generation 任务失败不得回退。平台
-  pre-run artifact 仅证明 readiness 观察，不冒充算法输入。该桥未取得切换资格。
-- 仓库中的 scheduler、backend 和 V2 preflight 三份 launchd 配置，以及
-  `deploy/daily_coordinator_rollout_v1.json`，均显式保持
-  `BOND_DAILY_COORDINATOR_MODE=legacy`/`mode=legacy`，表示生产切换尚未授权。
-  rollout 文件只兼容尚未补环境变量的旧 launchd 安装，不是 ledger 切换开关；
-  切换后必须以已安装 plist 的显式环境为准。legacy 模式下 preflight 的四个
-  calendar trigger 仍是每日 DataBridge refresh 的唯一 owner；提前禁用会让
-  跨日常驻 scheduler 在下一日没有新 DataBridge 数据。
-- ledger 切换时先 bootout legacy preflight、scheduler 和 backend，确认旧
-  refresh/writer 全部退出；再把三份**已安装** plist 一起改成 `ledger`。服务
-  仍停止时向 machine-global、root-owned append-only epoch chain 原子发布
-  genesis epoch，最后才按 backend、单一 scheduler 的顺序启动。受控回滚同样
-  必须全停服务、把三份已安装 plist 一起改为 `legacy`，并追加更高 epoch；
-  不得删除 chain 或复用旧 epoch。两种路径不得并行；仓库中的三份模板和 rollout
-  文件始终保持 `legacy`。
-- ledger 启动补偿只通过同一 occurrence coordinator：复用冻结 Registry 和
-  generation，跳过成功 item，08:30 后不再启动 attempt。legacy 模式仍保留旧
-  per-scheme catch-up，作为切换前的受控兼容路径。
-- actuals 每天 `08:30/19:00/23:45` 三档刷新；`23:45` 用于承接 BondPrediction `23:25` 左右的 Wind 日频导入。若源表在最后一档之后才补齐，非交易日 actuals job 会补刷上一交易日的 daily/weekly actual，避免前端 T+1 最新验证卡在上一交易日。
-- 慢速 source-backed 方案使用 `config.yaml.schedule.timeout_sec` 配置方案级 executor timeout，例如 10Y02 当前为 `3600` 秒；该配置只影响算法子进程等待预算，不改变业务 cron 或日期语义。
+下文只定义稳定的目标合同、步骤顺序和安全不变量，不能单独证明生产已上线。
 
 ## 访问控制（默认拒绝 + 精确展示白名单）
 
@@ -287,272 +253,133 @@ cp deploy/launchd/com.bond-factor-lab.backend.plist ~/Library/LaunchAgents/
 launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 ```
 
-### 4) 本地 Mac：日频 coordinator rollout
+### 4) 本地 Mac：日频 coordinator 待切换 rollout
 
-`deploy/launchd/com.bond-factor-lab.scheduler.plist` 当前默认设置：
+已经批准的日频目标机器 policy 是 `deploy/daily_scheduler_policy_v2.json`：1 个
+coordinator、每交易日 1 个 occurrence、25 个 base execution（17 Native + 8
+Blackbox V2）、Native 最大并发 2、V2 最大并发 2，最终必须有 29/29 target
+receipt。日常运行使用 warm cache；部署流程不增加额外的性能准入层或双重签名
+信任链。以下步骤在专项授权前不得执行；它们不是当前 production 安装态说明。
 
-- `BOND_DAILY_COORDINATOR_MODE=legacy`：切换门禁未通过，继续使用旧路径。
+#### 已安装服务与私有配置
+
+- **已安装的** `com.bond-factor-lab.backend`、
+  `com.bond-factor-lab.scheduler` 和 `com.bond-factor-lab.v2-preflight` 三份 plist
+  必须同时显式设置 `BOND_DAILY_COORDINATOR_MODE=ledger`；仓库 rollout 文件只
+  用于安全 bootstrap，不能覆盖 machine-global epoch。
+- ledger 下 `com.bond-factor-lab.v2-preflight` 必须保持 bootout。DataBridge refresh
+  由 coordinator 唯一拥有；不得保留第二个 calendar trigger 或 per-scheme daily
+  cron。
 - `BFL_SOURCE_DB_CONFIG_ROOT=/Users/macstudio0/.config/bond-factor-lab` 与
-  `BFL_SOURCE_DB_CONFIG_PATH=/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json`：
-  前者固定批准的 BFL 私有配置根，后者只注入 source-readonly 配置文件的位置；
-  不得把用户名、密码或 DSN 写入 plist。
-  安装或重启 scheduler 前必须确认私有目录和终端文件权限：
+  `BFL_SOURCE_DB_CONFIG_PATH=/Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json`
+  只定位 source-readonly 配置，不得把用户名、密码或 DSN 写入 plist。安装前核验：
 
   ```bash
   chmod 700 /Users/macstudio0/.config/bond-factor-lab
   chmod 600 /Users/macstudio0/.config/bond-factor-lab/source-runtime-db.json
   ```
 
-  配置缺失或权限、owner、inode、symlink 检查失败时，三个 0629 source-backed
-  任务必须在算法启动前 fail-closed。scheduler 启动时先执行
-  `SHOW GRANTS FOR CURRENT_USER()` 的保守授权审计，再对由统一数据契约声明的
-  9 张必需源表逐表执行零行 SELECT；只有直接 `USAGE/SELECT`、无 role、无
-  grant option、无未知权限时才允许继续 Registry 同步和任务注册。
-  生产预检禁止执行 DDL/DML；INSERT/UPDATE/DELETE/CREATE/ALTER/DROP 的拒绝
-  证据只在隔离临时 MySQL 中采集。仓库模板的更新不授权覆盖已安装 plist，
-  也不授权 kickstart；必须留到 BFL 专项维护窗口逐项读回验证。该配置仅属于
-  Bond Factor Lab，不得修改或重启 BondProjectPro。
-- `deploy/daily_coordinator_rollout_v1.json` 同样固定 `mode=legacy`，仅供旧
-  launchd 缺少环境变量时安全 bootstrap；machine-global epoch directory 当前
-  不存在，ledger 上线不能只改这个文件或任一份 plist。epoch directory 一旦
-  存在，rollout 文件不再参与裁决。
-- `DATABRIDGE_REFRESH_START=06:30`、`DATABRIDGE_REFRESH_DEADLINE=06:55`：
-  legacy preflight 仍使用该 deadline；ledger coordinator 以版本化 policy 的
-  06:55 readiness guardrail 做审计，并显式把刷新 hard deadline 设为 08:30，
-  不因 06:55 告警而回退旧 `current` 或停止当天刷新。
-- `BOND_SCHEDULER_STAGGER_MINUTES=2` 和
-  `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY=1` 只控制 legacy 回滚路径；
-  ledger 不用 APScheduler 线程 + job 内 semaphore 排队。
-- `BOND_SCHEDULER_STARTUP_CATCHUP=1`：legacy 时调用旧 catch-up；ledger 时
-  只调用 occurrence recovery。
+  owner、mode、inode、symlink 或 `SHOW GRANTS FOR CURRENT_USER()` 审计失败时必须在
+  Registry 同步和算法启动前 fail-closed。只允许直接 `USAGE/SELECT` 和必需源表
+  零行 SELECT；不得执行生产 DDL/DML。该配置只属于 Bond Factor Lab，
+  不得修改或重启 BondProjectPro。
 
-ledger 切换前必须按
-[日频信号 08:00 SLA 架构](../docs/architecture/DAILY_SIGNAL_SLA.md)
-完成迁移、0629 generation 输入替换、20 次 forced-cold、20 次真实 revision、
-故障注入和连续 10 个交易日 25/25。以下只读 CLI 仅做离线统计/结构评估，
-输出中的 `runtime_admission_eligible` 固定为 `false`；它不能直接打开 rollout：
+#### 安全存储与 cache
 
-切换维护窗口内还必须在服务停止时核验并准备 7 个日频存储根：
-`~/Library/Application Support/BondFactorLab/daily-runtime-v1`、
-其下的 `occurrence-locks`、
-`backtest_artifacts/input_generations/native`、
-`backtest_artifacts/input_generations/databridge`、`data/data_bridge` 和
-`backtest_artifacts/data_bridge_refresh`，以及
-`backtest_artifacts/runtime_cache/liwei_0616`。逐个确认路径及父链无
-symlink、owner 为实际 scheduler 服务 UID，再显式创建/调整为 `0700`；迁移后
-以同一服务 UID 完成 create/open/cleanup/preflight 演练。scheduler 启动会先
-统一检查全部根，ledger occurrence 与 operator recovery 在任何 attempt 前再次
-检查。runtime 只会以 `0700` 创建不存在的目录；对既有 `0755`、错误 owner 或
-symlink 一律 fail-closed，不会静默 chmod，也不会在发现任一不安全根后创建
-其它缺失根。
+维护窗口内以实际 scheduler 服务 UID 核验以下 root 及其全部祖先：
 
-容量联跑前必须先用真实、交易日合法 capture window 产生的 `SEALED` Native
-generation 认证 14 个 `generation_v1` 日频方案。认证只允许在与候选 commit
-一致的 clean detached worktree 中运行，`forecast_env` 是唯一算法环境，输出根
-必须位于 worktree 外且预先以 `0700` 创建。runner 固定串行执行、禁止网络和
-业务持久化；每个 worker 使用 macOS sandbox 将候选 worktree 和 generation
-挂为只读、只允许写外部证据根，并通过最小环境 allowlist 清除数据库连接信息。
-原算法的 `multiprocessing.Pool` 必须保持 `forecast_env` 的 spawn 模式；policy
-只允许 fork、POSIX semaphore 和精确 Python executable 的 exec，所有 spawn
-子进程继续继承同一断网和只读边界，不允许其它 executable 或越界写入。
-父进程在每次执行前后重新核对 detached HEAD、clean 状态、tracked policy SHA
-和输出根 inode，worker 也独立核对同一 policy；任一漂移或孤儿进程均
-fail-closed。t1/t5、V28 各独立双跑，10 个 Liwei 按 cache family 执行
-cold / warm-build / warm-hit，并比较除明确路径/cache audit 外的全部 canonical
-字段，同时核对共享 family 的 cache generation lineage。cache、日志和
-`certification.json` 留在忽略的外部证据目录，原 SEALED generation 保持只读；
-二者都不得提交 Git，也不能据此自动打开 admission。
+- `~/Library/Application Support/BondFactorLab/daily-runtime-v1` 及
+  `occurrence-locks`；
+- `backtest_artifacts/input_generations/native`；
+- `backtest_artifacts/input_generations/databridge`；
+- `data/data_bridge` 与 `backtest_artifacts/data_bridge_refresh`；
+- `backtest_artifacts/runtime_cache/liwei_0616`。
 
-```bash
-cert_root="$(mktemp -d /tmp/bfl-native-cert.XXXXXX)"
-chmod 700 "$cert_root"
-cert_root="$(cd "$cert_root" && pwd -P)"
-cd <clean-detached-candidate-worktree>
-conda run --no-capture-output -n forecast_env \
-  python -B scripts/certify_generation_native_daily.py \
-    --manifest <absolute-sealed-native-manifest> \
-    --output-root "$cert_root" \
-    --no-persist
-```
+root 必须是绝对 canonical path、owner 正确、无 symlink，目录为 `0700` 或更严，
+终端文件为 `0600/0400`；runtime 不静默 `chmod` 不安全的既有路径。Native、
+DataBridge 和 Liwei generation 每次打开都重算 manifest/payload SHA-256，并复核
+business/feature date、schema、parent lineage 与 current pointer。
 
-不得通过伪造历史 snapshot clock、使用周末 generation 或复用旧 live DB 报告来
-替代交易日日批认证；当前没有合法 generation 时只允许提交和验证 runner 本身。
+Liwei schema 3 的 exact family/spec/publisher/consumer 以
+[日频信号 SLA](../docs/architecture/DAILY_SIGNAL_SLA.md)为准。publisher 在 family
+锁内原子发布；consumer 只允许 validated `hit`，不得训练、stage、publish、切换
+pointer 或清理 generation。覆盖不足返回 `CACHE_PUBLISHER_REQUIRED`。日常只接受
+可证明的 `hit/append/suffix`；失败时 current 保持不变。
 
-三个 0629 兼容方案必须逐个完成真实 source runner 认证。当前 1Y、5Y 和
-10Y 三个固定身份均已准入该认证入口；其它身份仍保持 fail-closed。入口固定
-使用 source-readonly 配置，关闭 source cache、锁定 `forecast_env` 和内部
-worker 1，并在同一源水位连续运行两次。
-runner 会核对完整 PredictionRecord/extra、source package SHA、输入水位和
-runner 可达的 19 张持久化表的结构与内容指纹
-（`runner_persistence_tables_full_content`）。由独立 actuals updater、
-scheduler heartbeat 或 BondProjectPro 维护的表不纳入此窗口级相等断言，
-避免把正常并发维护误判为 runner 写入；runner 本身仍只获得经过 DDL/DML
-拒绝预检的 source-readonly 配置。每轮前后还会重算全部 Git
-tracked 文件及所有可执行源码根（不受 Git ignore 影响）的 bytes/mode 摘要、固定 `/usr/bin/git`
-摘要、conda explicit 清单、source Python package 清单，以及
-`bond_factor_lab_service`/`forecast_env` 两个实际环境树内全部文件 bytes。
-`conda run` 的 base runtime（排除另行绑定的 env/package cache）、有效配置源和
-`forecast_env` 实际解析结果也会逐轮复核。
-官方脚本会在 import 任一候选模块之前启动专属控制进程；控制进程和算法子进程
-分别使用全新空 `PYTHONPYCACHEPREFIX` 且禁止写 bytecode；共享 executor 会自行
-创建并回收算法 prefix，拒绝继承 launchd/人工环境中的 prefix，避免读取候选摘要之外的旧 pyc。
-证据只写入无 symlink 祖先、预先创建的
-`0700` 忽略目录，文件权限为 `0600`：
+#### Canonical migration runner
 
-```bash
-report_root="$(mktemp -d /tmp/bfl-daily-0629-cert-1y.XXXXXX)"
-chmod 700 "$report_root"
-report_root="$(cd "$report_root" && pwd -P)"
-BFL_DAILY_0629_CERTIFY_REAL=1 \
-  BFL_SOURCE_DB_CONFIG_ROOT=<absolute-bfl-private-config-root> \
-  BFL_SOURCE_DB_CONFIG_PATH=<absolute-source-readonly-config-json> \
-  conda run --no-capture-output -n bond_factor_lab_service \
-  python -B scripts/certify_daily_0629_source.py \
-    --scheme-id daily_1y_xgb_1y13_0629 \
-    --predict-date <next-trading-day> \
-    --report-path "$report_root/report.json" \
-    --authorize-real-run
-```
+writer/refresh 全停并完成一致性备份后，只能用 caller-supplied `Engine` 的
+`migrations.runner` 和唯一 wrapper `scripts/apply_migrations.py`。先从只读 inspect
+JSON 或受控只读 identity query 取得 database name/server UUID；生产值、DSN 和
+凭据不得进入文档、报告或 shell history。
 
-report root 必须在候选仓库之外；仓库内路径即使被 `.gitignore` 匹配也会拒绝。
-该证据的 scope 固定为 `live_source_no_persist_observed_watermark`，不会创建
-run、prediction 或 ledger 行，也不会把报告提交 Git。报告会明确记录候选
-commit、完整候选执行闭包摘要以及 worktree 是否 clean；提交前验证即使处于
-dirty worktree，也只对报告绑定的精确 bytes 有效，提交后必须在 clean candidate
-上复跑。它证明所绑定 live-source adapter 与归档 source package 的真实确定性；
-不冒充 `SEALED` generation 或真实 occurrence fence 认证，后者仍须在完整
-21/25 隔离联跑中验证。
+普通 apply：
 
 ```bash
 conda run --no-capture-output -n bond_factor_lab_service \
-  python scripts/evaluate_daily_capacity_gate.py <attested-evidence.json> \
-    --expected-machine-id <approved-mac-id> \
-    --expected-policy-version daily-scheduler-policy-v1 \
-    --expected-policy-sha256 <policy-file-sha256>
+  python scripts/apply_migrations.py --apply \
+  --expected-database-name <database-name> \
+  --expected-server-uuid <server-uuid>
 ```
 
-生产 `ADMITTED` 还必须同时具备：
+017 留在 `APPLYING` 时先只读 inspect，再用同一份输出的 digest recovery：
 
-- collector 对完整 evidence 的 detached CMS 签名；
-- 独立 operator 对带 decision id/sequence/有效期的 canonical decision 签名；
-- 两套不同的 root-owned 专用 Keychain 和 trust 配置，逐证书固定 DER
-  SHA-256，并禁止同一签名者承担两种角色；
-- admission、evidence、签名和 trust 文件的 owner/mode/父目录均通过
-  no-follow 安全读取；
-- 签名 candidate 精确覆盖当前 21 item/25 target、Registry/version、Mac
-  identity、三套 conda 环境的 explicit manifest 与 canonical 全包清单
-  （含 `channel=pypi`）、scheduler/scheme 代码、runtime profile、migrations、
-  两类 exporter、MySQL ledger schema definition，以及 candidate v2 的
-  control-plane identity：service UID、解析后的 machine-global runtime root、
-  epoch-chain directory 路径、固定 contract/genesis identity。active epoch
-  不进入 capacity candidate，避免每次受控切换重做 20+20；它改由 occurrence
-  policy 和 heartbeat 冻结。ledger Native
-  环境固定为 `forecast_env`，CLI/admin 传入其它 `algo_env` 必须拒绝。
+```bash
+conda run --no-capture-output -n bond_factor_lab_service \
+  python scripts/apply_migrations.py --inspect-applying-017
 
-scheduler 启动、06:30/recovery coordinator 和 operator recovery 会重新采集
-当前 candidate，并与签名 candidate 做 canonical fingerprint 精确比较；该
-fingerprint 同 policy 一起冻结进 occurrence，恢复和 watchdog 必须保持一致。
-30 秒 heartbeat 只复核有时效的签名 admission，不重复执行昂贵的全量 rehash。
-首次 occurrence 写入后、任何 generation/reconcile/attempt 前还会重算一次当前
-candidate，封住准入检查与 Registry/version 冻结之间的漂移窗口。
-仓库的 `deploy/daily_capacity_admission_v2.json` 默认是 `BLOCKED`；不得通过
-手工把 `status` 改成 `ADMITTED` 代替上述签名链和证据。
+conda run --no-capture-output -n bond_factor_lab_service \
+  python scripts/apply_migrations.py \
+    --recover-applying-017 --apply \
+    --state-digest <inspect-json中的64位state_digest> \
+    --expected-database-name <database-name> \
+    --expected-server-uuid <server-uuid>
+```
 
-切换必须在获准维护窗口一次完成。以下“已安装 plist”均指
-`/Users/macstudio0/Library/LaunchAgents/` 下的实际 launchd 输入。仓库当前
-rollout、三份 plist 和 admission 仍分别保持 `legacy`/`BLOCKED`；以下步骤是未来
-获得专项授权后的人工 SOP；应用启动不会自行创建或追加 epoch：
+只接受 `COMPLETE` 或 `COMPATIBLE_PARTIAL`；`UNSAFE` 没有自动恢复路径。recovery
+必须在 owner lock 内重读并 exact compare，任何状态漂移都拒绝。恢复 017 后必须另行执行普通
+`--apply`，才会推进 pending 018。
 
-1. 阻断 admin/operator recovery，依次 bootout legacy V2 preflight、scheduler
-   和 backend。等待或终止经核验的 per-scheme scheduled-live、refresh 和 API
-   background 子进程；不能只 `kickstart -k`。在 machine-global epoch 发布前，
-   三者都不得重新启动。
-2. 确认 writer/refresh 均停止后制作一致性备份；只能通过
-   `scripts/apply_migrations.py` 应用 pending migration，并保存 history、preflight 与
-   postcondition 报告。先从只读 inspect JSON 或受控只读 identity query 取得目标
-   database name 和 server UUID；不得把生产值、DSN 或凭据写入 shell history、文档或
-   报告。所有写命令都必须显式携带二者：
+018 使用同样协议：
 
-   ```bash
-   conda run --no-capture-output -n bond_factor_lab_service \
-     python scripts/apply_migrations.py --apply \
-     --expected-database-name <database-name> \
-     --expected-server-uuid <server-uuid>
-   ```
+```bash
+conda run --no-capture-output -n bond_factor_lab_service \
+  python scripts/apply_migrations.py --inspect-applying-018
 
-   `--apply` 是不可省略的写库授权；help、空参数或未知参数必须在创建数据库
-   engine 前退出，不能把参数错误静默解释成执行迁移。
-   runner 会对无 history 的 v16 生产库先做完整 baseline 再登记 001..016，绝不
-   重放历史数据迁移。禁止用 `mysql` 或其它客户端直跑 017 SQL：SQL guard 只是
-   纵深防御，不能替代版本、`sql_mode`、UTC/FK、legacy 数据和闭世界 definition
-   fingerprint，也不能把 implicit-commit DDL 误当成可回滚事务。
+conda run --no-capture-output -n bond_factor_lab_service \
+  python scripts/apply_migrations.py \
+    --recover-applying-018 --apply \
+    --state-digest <inspect-json中的64位state_digest> \
+    --expected-database-name <database-name> \
+    --expected-server-uuid <server-uuid>
+```
 
-   若 runner 因断连或进程退出留下 `017=APPLYING`，普通 `--apply` 必须继续
-   fail-closed。保持全部 writer 停止，先执行只读检查并保存完整 JSON：
+018 的闭世界目标是
+`t_scheme_runs.started_at=DATETIME(6) NULL DEFAULT CURRENT_TIMESTAMP(6)`；它不增加
+composite FK。禁止用 `mysql`、scheduler、harness 或临时脚本直跑 migration SQL。
 
-   ```bash
-   conda run --no-capture-output -n bond_factor_lab_service \
-     python scripts/apply_migrations.py --inspect-applying-017
-   ```
+#### Epoch cutover 与单实例 owner
 
-   检查只会返回 `COMPLETE`、`COMPATIBLE_PARTIAL` 或 `UNSAFE`，并把 migration
-   filename/checksum、连续 001..017 history、MySQL server UUID、database name、
-   schema fingerprint 和数据反例探针绑定进 `state_digest`。`UNSAFE` 不存在自动
-   恢复路径，必须先人工定位 drift；不得通过改 history、删对象或伪造 digest
-   绕过。前两种状态经双人核验后，使用**同一次检查原样输出**的 digest 显式授权：
+cutover 代码门禁：后续代码 PR 必须移除 `scheduler.daily_runtime` 的旧 capacity
+admission binding/revalidation、epoch operator admission probe 和 admission cache
+qualification，以目标 policy/input/cache/result 的直接确定性校验替代。只有测试
+证明这些依赖已经移除，且[当前状态](../docs/CURRENT_STATUS.md)同步闭合全部前置后，
+才可执行本节；否则必须 fail-closed。本文不提供、也不授权旧 admission 的签名、
+安装或续期仪式。
 
-   ```bash
-   conda run --no-capture-output -n bond_factor_lab_service \
-     python scripts/apply_migrations.py \
-       --recover-applying-017 --apply \
-       --state-digest <inspect-json中的64位state_digest> \
-       --expected-database-name <database-name> \
-       --expected-server-uuid <server-uuid>
-   ```
+切换必须在获准维护窗口一次完成：
 
-   recovery 会在同一 migration owner lock 内重读状态；任何 digest 漂移都拒绝。
-   `COMPLETE` 只在单个事务中把精确的 017 history row 标为 `APPLIED`，不重放 SQL；
-   `COMPATIBLE_PARTIAL` 只接受 migration 017 可安全重放的缺失对象，以及
-   `feature_date/resource_class/internal_workers/release_offset_minutes` 四个精确
-   nullable 过渡定义，随后幂等重放 017 并通过完整 postcondition 后才标记。
-   replay、postcondition 或 mark 任一步失败都保留 `APPLYING`，必须重新 inspect，
-   不能复用旧 digest。恢复 017 后必须另行执行普通 `--apply`，才会在已恢复的
-   history 基础上推进 pending 018；recover-017 本身不隐含推进 018。
-
-   018 的 inspect 同样只读且不需要 identity 参数；先保存新的 JSON，再用其中新的
-   digest 执行 recovery：
-
-   ```bash
-   conda run --no-capture-output -n bond_factor_lab_service \
-     python scripts/apply_migrations.py --inspect-applying-018
-
-   conda run --no-capture-output -n bond_factor_lab_service \
-     python scripts/apply_migrations.py \
-       --recover-applying-018 --apply \
-       --state-digest <inspect-json中的64位state_digest> \
-       --expected-database-name <database-name> \
-       --expected-server-uuid <server-uuid>
-   ```
-
-   `migrations.runner` 只接收 caller-supplied `Engine` 并实现迁移行为；
-   `scripts/apply_migrations.py` 是唯一受控 operator wrapper。不得用 `mysql`、
-   scheduler、harness 或临时脚本绕过该边界。isolated MySQL 回归只证明候选行为，
-   没有应用生产 migration；当前 CLI apply/no-op 也尚无 durable signed operator report。
-3. 仓库 `deploy/daily_coordinator_rollout_v1.json` **继续保持
-   `legacy`**；它只服务“epoch directory 完全不存在”的初始 bootstrap，不能作为生产 cutover
-   开关。只把**已安装的** scheduler、backend、V2 preflight 三份 plist 的
-   `BOND_DAILY_COORDINATOR_MODE` 同时改为 `ledger`，逐份用 `plutil`/
-   `PlistBuddy` 读回；此时服务仍全部停止。重新生成 current capacity candidate，
-   必须与已签名 candidate v2 精确一致；任何 service UID、runtime root、epoch contract
-   identity、commit 或代码漂移都中止切换。不得靠 production dirty worktree
-   修改受版本控制 rollout JSON。
-4. 双人核验后，使用 root operator 发布固定 genesis。父目录及其受管父链必须
-   root-owned 且不可被 group/other 写。epoch root/`records` 为 `0755`，
-   record 为 `0644`，使 `macstudio0` LaunchAgent 可读但所有非 root 不可写；
-   `staging` 为 `0700`，并与用户可写的 occurrence/runtime root 完全分离。
-   operator 先在同盘 `staging` 以 `O_EXCL` 创建临时文件，完整写入、fsync、
-   chmod、逐字节复核，再以 hard-link no-clobber 原子发布并 fsync `records`
-   目录。禁止直接向最终 `epoch-N` 边写边发布，禁止重定向、`mv -f` 或覆盖：
+1. 阻断 admin/operator recovery，依次 bootout legacy V2 preflight、scheduler 和
+   backend；确认 refresh/writer、所有 scheduled-live 和算法进程退出。不能只
+   `kickstart -k`。
+2. 完成备份与 migration 018 校验后，把**已安装的** backend、scheduler、
+   v2-preflight 三份 plist mode 一起改为 `ledger`；v2-preflight 服务继续
+   bootout/未加载。用 `plutil`/`PlistBuddy` 逐份读回，服务继续停止。
+3. root operator 向 machine-global root-owned append-only epoch chain 只能追加
+   更高 epoch。epoch root/`records` 为 root-owned `0755`、record 为 `0644`、
+   staging 为 `0700`。发布必须同盘完整写入、`fsync`、逐字节校验，再执行
+   hard-link no-clobber 并同步目录；不得覆盖、删除或复用旧 epoch。
+4. 使用 canonical operator 发布或确认 ledger epoch：
 
    ```bash
    sudo install -d -o root -g wheel -m 0755 \
@@ -560,43 +387,35 @@ rollout、三份 plist 和 admission 仍分别保持 `legacy`/`BLOCKED`；以下
    sudo --preserve-env=BOND_DB_USER,BOND_DB_PASSWORD,BOND_DB_HOST,BOND_DB_PORT,BOND_DB_NAME \
      /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python \
      scripts/daily_coordinator_epoch_operator.py \
-       --expected-current-epoch 0 \
+       --expected-current-epoch <current-epoch> \
        --mode ledger \
-       --transition-id bond-factor-lab-daily-ledger-genesis-v1 \
+       --transition-id <unique-transition-id> \
        --service-uid "$(id -u macstudio0)" \
        --business-date "$(date +%F)"
    ```
 
-   工具会确认三份 LaunchAgent 已 bootout、三份已安装 plist mode 全为目标 mode，
-   进程表中没有遗留 scheduler/backend/preflight/算法进程，DB 中全局（包括历史
-   和未来业务日期）没有非终态 occurrence/item、running run、待清 orphan fence
-   或旧路径 running scheduled-live。`--business-date` 仅作为本次变更审计字段，
-   不会缩小静默检查范围。
-   target mode 为 `ledger` 时还会在发布前重算 candidate 并验证当前签名 capacity
-   admission；仓库默认 `BLOCKED` 会直接拒绝。随后执行连续 epoch、previous
-   digest、canonical JSON、symlink、owner/mode 和 service UID 可读性检查。
-   任一失败必须保持服务停止。`staging` 中的截断临时
-   文件不进入 reader；最终 record 一旦出现，即使截断也必须 fail-closed 且
-   不得覆盖。发布完成但调用方未收到返回时，以相同
-   `expected-current-epoch/mode/transition-id` 重试只返回
-   `already_published`。
-5. 先 bootstrap backend，再只启动一个 scheduler；V2 preflight 保持 bootout，
-   或验证其 ledger 配置启动后只返回 `disabled`。用 `launchctl print` 核验三份
-   实际进程环境都是 `ledger`；同时验证
-   `/api/health.daily_schedule.mode=ledger`、独立 heartbeat、occurrence、
-   machine-global occurrence lock 和 DataBridge refresh owner 均唯一。
+   epoch 发布前，operator 必须按精确 label 核对 backend、scheduler、v2-preflight
+   三份 installed plist 全部为 `ledger`，并复核三服务均未加载、quiescence、连续
+   epoch、previous digest、canonical JSON、owner/mode 与 service UID 可读性。
+   任何失败保持服务停止。
+5. 先启动 backend，再只启动一个 scheduler；不要启动 v2-preflight。用
+   `launchctl print` 核验 mode，复核 `/api/health.daily_schedule.mode=ledger`、
+   machine-global occurrence `flock`、DataBridge refresh owner 和 scheduler PID
+   都唯一。
 
-不能先启动 ledger 再停止 legacy，也不能让旧 preflight 重启新 scheduler。
-维护窗口结束前还必须模拟一次 login/reload 检查：已安装 preflight 不得以
-`legacy` 重新出现。若需受控回滚，必须另开全停维护窗口并按“回滚”章节追加
-更高的 `legacy` epoch；单独改 plist、删除 epoch 或重放旧 epoch 都是配置故障。
-仓库 rollout 继续保持初始 bootstrap 所需的 `legacy`。
-2026-07-24 本机 `bond_db` 已应用 017 schema，但 launchd、scheduler/backend
-mode 和服务进程均未切换，machine-global epoch chain 也未创建；上述其余切换步骤
-仍未执行。
+coordinator 的完成权仍由数据库 `current_run_id + attempt_no` fence 决定；旧或
+失去完成权的 attempt 不得写 prediction/receipt。`ProcessStartGuard` 必须闭合
+`Popen` 到 PID/PGID 登记窗口。重复 tick、重启和 operator recovery 只能复用同一
+occurrence，不能创建第二批。
 
-ledger 模式下，独立 DataBridge 命令只允许做只读检查，而且 mode 必须在命令中
-显式给出；不带 mode 的命令不属于获准的生产操作：
+受控回滚也必须先全停并确认全局 quiescence，再把已安装 backend、scheduler、
+v2-preflight 三份 plist mode 一起改为 `legacy` 并追加更高 legacy epoch；不得删除
+chain、改历史 record、单独改一份 plist 或重放旧 epoch。v2-preflight 是否加载由
+目标运行模式另行控制，ledger 下始终保持 bootout。
+
+#### Ledger 运行检查
+
+独立 DataBridge 命令在 ledger 下只允许显式 mode 的只读检查：
 
 ```bash
 BOND_DAILY_COORDINATOR_MODE=ledger \
@@ -605,10 +424,12 @@ BOND_DAILY_COORDINATOR_MODE=ledger \
     --date "$(date +%F)"
 ```
 
-`--publish`、`--dry-run` 和把
-`python -m scheduler.main --run-once data-refresh` 当成刷新入口都不允许；后者
-在 ledger 模式只能检查 current。实际刷新和发布只能由当日 occurrence
-coordinator 持有。
+`--publish`、`--dry-run` 和 `python -m scheduler.main --run-once data-refresh`
+都不得成为 ledger 刷新旁路。历史缺口只通过受控 insert-only `gray_live` 补齐。
+只有未来交易日真实 coordinator occurrence 具备 occurrence/item/run/receipt 完整
+证据时才允许 `scheduled_live`；日期标签本身不构成起点证据。当日终验
+必须为 25 winning item、29/29 target receipt、无
+duplicate/nonterminal/orphan，且 v2-preflight 保持未加载。
 
 ## 验收
 
@@ -641,8 +462,8 @@ conda run -n bond_factor_lab_service python scripts/check_production_daily_healt
 ```
 
 退出码约定：`0=ok`，`1=warning`，`2=error`。ledger 模式直接读取冻结
-occurrence 的动态 item/target 全集；当前 policy 基线是 21/25，Blackbox V2
-不会被排除。08:00 时 24/25 必须返回 error，晚到补齐不改变原 SLA 结果。
+occurrence 的 25 item/29 target 全集，Blackbox V2 不会被排除。08:00 时
+28/29 必须返回 error，晚到补齐不改变原 SLA 结果。
 legacy 模式保留旧水位诊断，但同样不再从 active daily 查询中过滤 V2。
 `auto` 以 scheduler heartbeat 的 mode 为准，并把显式环境当作一致性校验；
 已配置 `legacy` 且尚无 heartbeat 时，即使 017 schema 已存在也仍按 legacy
@@ -709,8 +530,9 @@ machine-global epoch directory **完全不存在**时，尚未进入 epoch 控�
 5. 只在 `N+1` 完整 chain 校验通过后启动 legacy 服务。旧进程仍绑定 N，看到
    epoch 漂移必须拒绝；旧 occurrence 冻结 N/digest，后续更高 epoch 也不得恢复它。
 
-从 legacy 再切回 ledger 同样必须全停、quiescence 全零、三份 plist 全为
-`ledger`、当前 capacity admission 为 `ADMITTED`，然后追加更高 ledger epoch。
+从 legacy 再切回 ledger 同样必须全停、quiescence 全零、已安装 backend、
+scheduler、v2-preflight 三份 plist mode 全为 `ledger`，且 v2-preflight 服务保持
+bootout，然后才可追加更高 ledger epoch。
 禁止删除 epoch directory、删改历史 record、重放同/低 epoch、直接覆盖最终
 record 或靠仓库 rollout 降级。任何时刻都不得让两个模式并行写库。
 
