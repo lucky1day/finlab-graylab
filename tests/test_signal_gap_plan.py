@@ -160,6 +160,7 @@ class SignalGapPlanTests(unittest.TestCase):
             publication_capability=None,
             files=files,
             cutoffs=cutoffs,
+            publication_identity_sha256="9" * 64,
             stable_identity_sha256="8" * 64,
         )
         target = RegistryTarget(
