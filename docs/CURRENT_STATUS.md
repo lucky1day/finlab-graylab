@@ -34,7 +34,8 @@
 `deploy/daily_scheduler_policy_v2.json` 是待切换 25/29 精确身份和并发上限的目标
 机器合同。它存在于仓库不等于 production rollout、migration、cache bootstrap、
 epoch cutover 或真实 occurrence 已完成。目标合同直接校验冻结 policy、输入、cache
-和执行结果的确定性；旧 capacity admission 不得成为目标生产门禁。
+和执行结果的确定性；开发分支已删除旧 capacity admission JSON、签名 qualification
+和 epoch admission probe，改由 direct authority 校验。该代码状态不等于生产已切换。
 
 ## 当前生产事实
 
@@ -45,18 +46,17 @@ epoch cutover 或真实 occurrence 已完成。目标合同直接校验冻结 po
 | 服务 | backend 以 legacy mode 提供 HTTP 200；scheduler 与 v2-preflight 均未加载 |
 | cache | production schema 3 cache 尚未 bootstrap；隔离 cache 已清理，不能充当生产 cache |
 | 控制面 | machine-global epoch 与 ledger cutover 尚未执行；没有 production run fence 生效证据 |
-| 过渡阻塞 | `scheduler.daily_runtime` 与 epoch operator 仍强制旧 capacity admission/cache qualification；`deploy/daily_capacity_admission_v2.json` 当前为 `BLOCKED` |
+| 开发代码 | runtime 已改为冻结 policy、Registry/version、输入 generation 和 schema 3 cache 的 direct authority 校验；旧 admission 文件已删除 |
 | 日频现场 | 2026-07-28 为 12/29，2026-07-29 为 0/29 |
 | 历史补缺 | 50 条缺口尚未写入 |
 | 2026-07-30 | 尚无真实 ledger occurrence、29/29 receipt 或 `scheduled_live` provenance 证据 |
 
 因此不能声称 ledger、production schema 3 cache、migration 018、epoch 或 run fence
-已经上线。后续代码 PR 必须先移除旧 admission binding/revalidation、epoch
-operator admission probe 和 admission cache qualification，并以目标合同的直接
-确定性校验替代；相关测试通过并更新状态前，cutover 必须 fail-closed。这里记录的
-旧代码阻塞不得外推为目标门禁，也不授权补做旧签名仪式。只有完成该移除、迁移、
-cache bootstrap 和 epoch cutover 后，由未来交易日真实 coordinator 自然产生并
-通过 receipt 验收的 occurrence，才能成为 `scheduled_live` 起点；日期标签本身
+已经上线。旧 admission 依赖虽已从开发代码移除，但 production migration、
+cache bootstrap、隔离 rehearsal、epoch 和 ledger cutover 仍须依次完成；任一
+前置未闭合时 cutover 必须 fail-closed，也不授权补做旧签名仪式。只有完成这些
+生产步骤后，由未来交易日真实 coordinator 自然产生并通过 receipt 验收的
+occurrence，才能成为 `scheduled_live` 起点；日期标签本身
 不构成证据。
 
 ## 历史日频缺口

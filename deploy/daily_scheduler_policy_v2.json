@@ -1,7 +1,7 @@
 {
   "version": "daily-scheduler-policy-v2",
   "evidence_version": "daily-ledger-25x29-policy-candidate-2026-07-28",
-  "evidence_note": "Static functional MVP policy for the exact 2026-07-28 active daily set: 17 Native and 8 Blackbox executions producing 29 targets on one Mac Studio. It preserves the fixed two-Native/two-Blackbox ceilings and input contracts, adds the four exact daily gray Blackbox identities, and admits only the five exact two-heavy residency signatures required by the 2026-07-28 forced-cold bottleneck. Capacity admission remains BLOCKED until this policy passes a new isolated candidate replay; the policy is never adjusted at runtime.",
+  "evidence_note": "Static functional MVP policy for the exact 2026-07-28 active daily set: 17 Native and 8 Blackbox executions producing 29 targets on one Mac Studio. It preserves the fixed two-Native/two-Blackbox ceilings, exact input contracts, four daily gray Blackbox identities, deterministic Registry projection, and direct sealed cache authority; the policy is never adjusted at runtime.",
   "timezone": "Asia/Shanghai",
   "expected_item_count": 25,
   "expected_target_count": 29,

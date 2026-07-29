@@ -128,14 +128,13 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
                 }
                 self.assertEqual(divergent, {})
 
-    def test_write_refuses_signed_admission_without_changing_files(self) -> None:
-        """已签名 admission 必须在 policy 改写前被拒绝。"""
+    def test_write_updates_policy_without_admission_file(self) -> None:
+        """钉值刷新只修改 policy，不依赖已退役 admission。"""
         import scripts.refresh_liwei_cache_spec_fingerprints as refresh
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             policy = root / "policy.json"
-            admission = root / "admission.json"
             policy.write_text(
                 json.dumps(
                     {
@@ -149,21 +148,8 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            admission.write_text(
-                json.dumps(
-                    {
-                        "status": "ADMITTED",
-                        "policy_sha256": "old-digest",
-                    }
-                ),
-                encoding="utf-8",
-            )
-            before_policy = policy.read_bytes()
-            before_admission = admission.read_bytes()
-
             with (
                 patch.object(refresh, "POLICY_PATH", policy),
-                patch.object(refresh, "ADMISSION_PATH", admission),
                 patch.object(
                     refresh,
                     "_require_algo_environment",
@@ -180,43 +166,27 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
                     ["refresh_liwei_cache_spec_fingerprints.py", "--write"],
                 ),
             ):
-                with self.assertRaisesRegex(
-                    refresh.FingerprintRefreshError,
-                    "而非 BLOCKED",
-                ):
-                    refresh.main()
-
-            self.assertEqual(policy.read_bytes(), before_policy)
-            self.assertEqual(admission.read_bytes(), before_admission)
+                self.assertEqual(refresh.main(), 0)
+            payload = json.loads(policy.read_text(encoding="utf-8"))
+            self.assertEqual(
+                payload["schemes"][0]["cache_spec_fingerprint"],
+                "new",
+            )
+            self.assertFalse((root / "admission.json").exists())
 
     def test_write_refuses_missing_registered_cache_group(self) -> None:
-        """policy 缺少注册 group 时不得重绑 admission 或返回成功。"""
-        import hashlib
+        """policy 缺少注册 group 时不得改写或返回成功。"""
 
         import scripts.refresh_liwei_cache_spec_fingerprints as refresh
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             policy = root / "policy.json"
-            admission = root / "admission.json"
             policy.write_text(json.dumps({"schemes": []}), encoding="utf-8")
-            admission.write_text(
-                json.dumps(
-                    {
-                        "status": "BLOCKED",
-                        "policy_sha256": hashlib.sha256(
-                            policy.read_bytes()
-                        ).hexdigest(),
-                    }
-                ),
-                encoding="utf-8",
-            )
             before_policy = policy.read_bytes()
-            before_admission = admission.read_bytes()
 
             with (
                 patch.object(refresh, "POLICY_PATH", policy),
-                patch.object(refresh, "ADMISSION_PATH", admission),
                 patch.object(
                     refresh,
                     "_require_algo_environment",
@@ -240,18 +210,14 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
                     refresh.main()
 
             self.assertEqual(policy.read_bytes(), before_policy)
-            self.assertEqual(admission.read_bytes(), before_admission)
 
     def test_check_rejects_cache_group_row_without_pin(self) -> None:
         """同组任一 policy row 漏钉时 --check 不得返回成功。"""
-        import hashlib
-
         import scripts.refresh_liwei_cache_spec_fingerprints as refresh
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             policy = root / "policy.json"
-            admission = root / "admission.json"
             policy.write_text(
                 json.dumps(
                     {
@@ -270,21 +236,9 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            admission.write_text(
-                json.dumps(
-                    {
-                        "status": "BLOCKED",
-                        "policy_sha256": hashlib.sha256(
-                            policy.read_bytes()
-                        ).hexdigest(),
-                    }
-                ),
-                encoding="utf-8",
-            )
 
             with (
                 patch.object(refresh, "POLICY_PATH", policy),
-                patch.object(refresh, "ADMISSION_PATH", admission),
                 patch.object(
                     refresh,
                     "_require_algo_environment",

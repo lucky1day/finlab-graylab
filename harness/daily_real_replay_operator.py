@@ -360,11 +360,11 @@ class ReplaySourceInputEvidence:
 
 @dataclass(frozen=True)
 class ReplayControlPlaneSnapshot:
-    """隔离联跑期间必须保持的 legacy/BLOCKED 发布边界。"""
+    """隔离联跑期间必须保持的本机 legacy 发布边界。"""
 
     installed_modes: Mapping[str, str]
     rollout_mode: str
-    admission_status: str
+    authority_mode: str
     digest: str
 
 
@@ -1810,7 +1810,7 @@ def validate_source_database_preflight(
 def _read_control_plane_boundary(
     service_uid: int,
 ) -> ReplayControlPlaneSnapshot:
-    """只读验证已安装 plist、仓库 rollout 与 admission 的固定边界。"""
+    """只读验证已安装 plist 与仓库 rollout 的固定边界。"""
     try:
         installed_modes = read_installed_launchagent_modes(
             service_uid
@@ -1820,13 +1820,6 @@ def _read_control_plane_boundary(
                 PROJECT_ROOT
                 / "deploy"
                 / "daily_coordinator_rollout_v1.json"
-            ).read_text(encoding="utf-8")
-        )
-        admission = json.loads(
-            (
-                PROJECT_ROOT
-                / "deploy"
-                / "daily_capacity_admission_v2.json"
             ).read_text(encoding="utf-8")
         )
     except Exception:
@@ -1842,10 +1835,6 @@ def _read_control_plane_boundary(
             "schema_version": "daily-coordinator-rollout-v1",
             "mode": "legacy",
         }
-        or not isinstance(admission, dict)
-        or admission.get("schema_version")
-        != "daily-capacity-admission-v2"
-        or admission.get("status") != "BLOCKED"
     ):
         raise DailyRealReplayPreflightError(
             "CONTROL_PLANE_BOUNDARY_DRIFT"
@@ -1853,14 +1842,14 @@ def _read_control_plane_boundary(
     payload = {
         "installed_modes": dict(sorted(installed_modes.items())),
         "rollout_mode": "legacy",
-        "admission_status": "BLOCKED",
+        "authority_mode": "direct-runtime",
     }
     return ReplayControlPlaneSnapshot(
         installed_modes=MappingProxyType(
             dict(sorted(installed_modes.items()))
         ),
         rollout_mode="legacy",
-        admission_status="BLOCKED",
+        authority_mode="direct-runtime",
         digest=_canonical_sha256(payload),
     )
 

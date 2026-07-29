@@ -69,13 +69,14 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             discovered=(),
         )
 
-    def test_production_authority_uses_policy_v2_for_both_branches(
+    def test_production_authority_uses_direct_policy_v2_builder(
         self,
     ) -> None:
         from scheduler import daily_runtime as module
         from scheduler.daily_policy import POLICY_V2_PATH
 
         engine = object()
+        authority = {"schema_version": "daily-direct-cache-authorities-v1"}
         with (
             patch(
                 "shared.daily_coordinator_mode."
@@ -83,36 +84,21 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
                 return_value="ledger",
             ),
             patch(
-                "scheduler.capacity_runtime_admission."
-                "require_current_capacity_admission",
-                return_value={"status": "ADMITTED"},
-            ) as current,
-            patch(
-                "scheduler.capacity_admission."
-                "require_daily_capacity_admission",
-                return_value={"status": "ADMITTED"},
-            ) as signed,
-            patch.object(
-                module,
-                "preflight_schedule_run_started_at_nullable",
-            ) as started_at_preflight,
+                "scheduler.daily_direct_authority."
+                "build_daily_direct_cache_authorities",
+                return_value=authority,
+            ) as direct,
         ):
-            module._require_production_entry_authority(
-                engine=engine,
-                verify_current=True,
-            )
-            module._require_production_entry_authority(
-                engine=engine,
-                verify_current=False,
+            result = module._require_production_entry_authority(
+                engine=engine
             )
 
-        current.assert_called_once_with(
+        self.assertIs(result, authority)
+        direct.assert_called_once_with(
             engine,
             policy_path=POLICY_V2_PATH,
             algo_env="forecast_env",
         )
-        started_at_preflight.assert_called_once_with(engine)
-        signed.assert_called_once_with(policy_path=POLICY_V2_PATH)
 
     def test_execute_item_reuses_canonical_process_start_guard(
         self,
@@ -534,7 +520,7 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             policy_payload=lambda: dict(TEST_COORDINATOR_EPOCH)
         ),
     )
-    def test_capacity_candidate_fingerprint_is_frozen_with_policy(
+    def test_direct_authority_is_frozen_with_policy(
         self,
         _epoch_fence,
     ) -> None:
@@ -544,17 +530,20 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
         policy = load_daily_policy(
             discovered=discover_schemes(strict=True),
         )
-        fingerprint = "c" * 64
+        authorities = {
+            "schema_version": "daily-direct-cache-authorities-v1",
+            "storage_root": "/tmp/direct-cache",
+            "contract": {},
+            "consumers": {},
+        }
         services = DefaultDailyRuntimeServices(
             engine=create_engine("sqlite://")
         )
-        services.bind_capacity_admission(
-            {"candidate_fingerprint": fingerprint}
-        )
+        services.bind_direct_cache_authorities(authorities)
         frozen = _policy_payload(
             policy,
             daily_coordinator_epoch=TEST_COORDINATOR_EPOCH,
-            capacity_candidate_fingerprint=fingerprint,
+            direct_cache_authorities=authorities,
         )
         snapshot = SimpleNamespace(
             occurrence=SimpleNamespace(
@@ -568,8 +557,8 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             policy=policy,
         )
         self.assertEqual(
-            frozen["capacity_candidate_fingerprint"],
-            fingerprint,
+            frozen["direct_cache_authorities"],
+            authorities,
         )
         self.assertEqual(
             frozen["times"]["databridge_readiness_guardrail"],
@@ -587,8 +576,8 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
         drifted_services = DefaultDailyRuntimeServices(
             engine=create_engine("sqlite://")
         )
-        drifted_services.bind_capacity_admission(
-            {"candidate_fingerprint": "d" * 64}
+        drifted_services.bind_direct_cache_authorities(
+            {**authorities, "storage_root": "/tmp/drifted-cache"}
         )
         with self.assertRaisesRegex(
             RuntimeError,
@@ -634,17 +623,20 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
         policy = load_daily_policy(
             discovered=discover_schemes(strict=True),
         )
-        fingerprint = "c" * 64
+        authorities = {
+            "schema_version": "daily-direct-cache-authorities-v1",
+            "storage_root": "/tmp/direct-cache",
+            "contract": {},
+            "consumers": {},
+        }
         services = DefaultDailyRuntimeServices(
             engine=create_engine("sqlite://")
         )
-        services.bind_capacity_admission(
-            {"candidate_fingerprint": fingerprint}
-        )
+        services.bind_direct_cache_authorities(authorities)
         frozen = _policy_payload(
             policy,
             daily_coordinator_epoch=TEST_COORDINATOR_EPOCH,
-            capacity_candidate_fingerprint=fingerprint,
+            direct_cache_authorities=authorities,
         )
         drifted = copy.deepcopy(frozen)
         scheme = next(
@@ -788,96 +780,92 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             "DATABRIDGE_GENERATION_MISMATCH",
         )
 
-    def test_runtime_service_factory_binds_current_admission(
+    def test_runtime_service_factory_binds_direct_authority(
         self,
     ) -> None:
-        admission = {
-            "status": "ADMITTED",
-            "candidate_fingerprint": "e" * 64,
+        authorities = {
+            "schema_version": "daily-direct-cache-authorities-v1",
+            "storage_root": "/tmp/direct-cache",
+            "contract": {},
+            "consumers": {},
         }
         with patch(
             "scheduler.daily_runtime."
             "_require_production_entry_authority",
-            return_value=admission,
+            return_value=authorities,
         ) as authority:
             services, dispose = _runtime_services(
                 None,
                 algo_env="forecast_env",
-                verify_current_capacity=True,
+                verify_direct_authority=True,
             )
         try:
             authority.assert_called_once_with(
                 engine=services.engine,
-                verify_current=True,
                 algo_env="forecast_env",
             )
             self.assertEqual(
-                services._capacity_candidate_fingerprint,
-                "e" * 64,
+                services._direct_cache_authorities,
+                authorities,
             )
         finally:
             dispose()
 
-    def test_revalidation_rejects_candidate_change_after_freeze(
+    def test_revalidation_rejects_direct_authority_change_after_freeze(
         self,
     ) -> None:
         services = DefaultDailyRuntimeServices(
             algo_env="forecast_env",
             engine=create_engine("sqlite://"),
         )
-        services.bind_capacity_admission(
-            {"candidate_fingerprint": "e" * 64}
-        )
+        base = {
+            "schema_version": "daily-direct-cache-authorities-v1",
+            "storage_root": "/tmp/direct-cache",
+            "contract": {},
+            "consumers": {},
+        }
+        services.bind_direct_cache_authorities(base)
         with (
             patch(
                 "scheduler.daily_runtime."
                 "_require_production_entry_authority",
-                return_value={"candidate_fingerprint": "f" * 64},
+                return_value={
+                    **base,
+                    "storage_root": "/tmp/drifted-cache",
+                },
             ) as authority,
             self.assertRaisesRegex(
                 RuntimeError,
-                "candidate_fingerprint changed",
+                "direct cache authority changed",
             ),
         ):
-            services.revalidate_capacity_admission()
+            services.revalidate_direct_authority()
 
         authority.assert_called_once_with(
             engine=services.engine,
-            verify_current=True,
             algo_env="forecast_env",
         )
 
-    def test_capacity_revalidation_ignores_checked_at_but_rejects_evidence_drift(
+    def test_direct_authority_binding_is_exact_and_stable(
         self,
     ) -> None:
         services = DefaultDailyRuntimeServices(
             engine=create_engine("sqlite://")
         )
         base = {
-            "candidate_fingerprint": "e" * 64,
-            "decision_id": "decision-1",
-            "evidence_sha256": "a" * 64,
-            "collector_signer_sha256": "b" * 64,
-            "operator_signer_sha256": "c" * 64,
-            "checked_at": "2026-07-24T00:00:00+00:00",
+            "schema_version": "daily-direct-cache-authorities-v1",
+            "storage_root": "/tmp/direct-cache",
+            "contract": {},
+            "consumers": {},
         }
-        services.bind_capacity_admission(base)
-        services.bind_capacity_admission(
-            {
-                **base,
-                "checked_at": "2026-07-24T00:00:01+00:00",
-            }
-        )
+        services.bind_direct_cache_authorities(base)
+        services.bind_direct_cache_authorities(dict(base))
         with self.assertRaisesRegex(
             RuntimeError,
-            "stable identity changed",
+            "direct cache authority changed",
         ):
-            services.bind_capacity_admission(
-                {
-                    **base,
-                    "evidence_sha256": "d" * 64,
-                    "checked_at": "2026-07-24T00:00:02+00:00",
-                }
+            services.bind_direct_cache_authorities(
+                {**base, "storage_root": "/tmp/drifted-cache"}
             )
 
     def test_v2_guardrail_adapter_delegates_time_sampling_to_repository(
@@ -2606,7 +2594,7 @@ class _FakeServices:
         self.native_recovery_error: Exception | None = None
         self.databridge_recovery_error: Exception | None = None
         self.visibility_reconcile_error: Exception | None = None
-        self.capacity_revalidation_error: Exception | None = None
+        self.direct_authority_revalidation_error: Exception | None = None
         self.generation_storage_error: Exception | None = None
         self.trading_day_status: bool | None = True
         self.occurrence_input_error: Exception | None = None
@@ -2764,10 +2752,10 @@ class _FakeServices:
         self.events.append(("create", business_date.isoformat(), inputs.feature_date))
         return 41
 
-    def revalidate_capacity_admission(self) -> None:
-        self.events.append("capacity-revalidated")
-        if self.capacity_revalidation_error is not None:
-            raise self.capacity_revalidation_error
+    def revalidate_direct_authority(self) -> None:
+        self.events.append("direct-authority-revalidated")
+        if self.direct_authority_revalidation_error is not None:
+            raise self.direct_authority_revalidation_error
 
     def read_snapshot(self, occurrence_id: int):
         self.events.append(("read-snapshot", occurrence_id))
@@ -3662,7 +3650,7 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
         services = _FakeServices(
             now=datetime(2026, 7, 24, 6, 30, tzinfo=SHANGHAI),
         )
-        services.capacity_revalidation_error = RuntimeError(
+        services.direct_authority_revalidation_error = RuntimeError(
             "capacity candidate drifted after freeze"
         )
 
@@ -3678,7 +3666,7 @@ class DailyRuntimeGenerationTests(unittest.TestCase):
             ("create", "2026-07-24", "2026-07-23"),
             services.events,
         )
-        self.assertIn("capacity-revalidated", services.events)
+        self.assertIn("direct-authority-revalidated", services.events)
         self.assertNotIn(("reconcile-visibility", 41), services.events)
         self.assertNotIn(("native-generation", "started"), services.events)
 
@@ -5995,7 +5983,7 @@ class DailyRuntimePublicEntryTests(unittest.TestCase):
             self.assertEqual(services.events, [])
             dispose.assert_called_once_with()
 
-    def test_dispatch_entries_require_inner_runtime_authority(
+    def test_mutating_entries_require_inner_direct_authority(
         self,
     ) -> None:
         entries = (
@@ -6008,25 +5996,22 @@ class DailyRuntimePublicEntryTests(unittest.TestCase):
                 scheme_id="v2",
                 run_date="2026-07-24",
             ),
-            lambda: run_scheduler_heartbeat(
-                run_date="2026-07-24",
-            ),
         )
         with patch(
             "scheduler.daily_runtime._require_production_entry_authority",
-            side_effect=RuntimeError("capacity blocked"),
+            side_effect=RuntimeError("direct authority blocked"),
             create=True,
         ) as authority:
             for entry in entries:
                 with self.subTest(entry=entry), self.assertRaisesRegex(
                     RuntimeError,
-                    "capacity blocked",
+                    "direct authority blocked",
                 ):
                     entry()
 
         self.assertEqual(authority.call_count, len(entries))
 
-    def test_watchdog_audits_before_current_capacity_authority(
+    def test_watchdog_audits_without_direct_authority_rebuild(
         self,
     ) -> None:
         services = _FakeServices(
@@ -6057,7 +6042,7 @@ class DailyRuntimePublicEntryTests(unittest.TestCase):
             patch(
                 "scheduler.daily_runtime."
                 "_require_production_entry_authority",
-                side_effect=RuntimeError("capacity blocked"),
+                side_effect=RuntimeError("direct authority blocked"),
             ) as authority,
         ):
             result = run_daily_watchdog(

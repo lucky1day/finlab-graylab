@@ -1371,7 +1371,8 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(
                     RuntimeError,
-                    "signed per-consumer cache use qualification is required",
+                "trusted qualification or direct cache runtime context "
+                "is required",
                 ),
             ):
                 self._prepare(

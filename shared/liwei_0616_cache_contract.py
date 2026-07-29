@@ -1,13 +1,15 @@
-"""liwei_0616 cache 的可信 qualification 与 generation acceptance 契约。
+"""liwei_0616 cache 的运行 authority 与 generation acceptance 契约。
 
-本模块只做纯结构、身份与摘要校验。它不生成生产 qualification；生产
-qualification 只能来自 capacity evidence 的双签名 admission。
+本模块只做纯结构、身份与摘要校验。legacy qualification 仍只接受旧
+capacity evidence envelope；日频 ledger 使用 occurrence 冻结的 direct
+runtime context。
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from copy import deepcopy
 from types import MappingProxyType
@@ -25,6 +27,9 @@ GENERATION_ACCEPTANCE_SCHEMA_VERSION = (
 )
 CACHE_USE_QUALIFICATION_ENV = (
     "BOND_LIWEI_0616_CACHE_USE_QUALIFICATION"
+)
+DIRECT_CACHE_RUNTIME_CONTEXT_ENV = (
+    "BOND_LIWEI_0616_DIRECT_CACHE_RUNTIME_CONTEXT"
 )
 PHASE_A_CACHE_ABI_VERSION = "liwei_0616.phase_a.v1"
 APPROVED_PHASE_A_CACHE_PUBLISHERS = MappingProxyType({
@@ -217,6 +222,39 @@ _BUILD_MODES = frozenset(
         "qualification",
     }
 )
+_DIRECT_RUNTIME_FIELDS = frozenset(
+    {"schema_version", "storage_root", "contract", "consumer"}
+)
+_DIRECT_RUNTIME_CONTRACT = {
+    "manifest_schema_version": 3,
+    "input_state_schema_version": 3,
+    "cache_abi_version": PHASE_A_CACHE_ABI_VERSION,
+    "projection_schema_version":
+        "liwei-0616-auxiliary-dependency-projection-v1",
+    "native_generation_type": "native_source",
+    "native_generation_schema_version": "native-generation-v1",
+    "native_exporter_version": "native-generation-exporter-v1",
+}
+_DIRECT_RUNTIME_CONSUMER_FIELDS = frozenset(
+    {
+        "base_scheme_id",
+        "cache_consumer_id",
+        "scheme_version",
+        "code_sha256",
+        "config_sha256",
+        "cache_group",
+        "spec_fingerprint",
+        "publisher_consumer_id",
+        "cache_family",
+        "tenor",
+        "access_mode",
+        "cache_adapter_sha256",
+        "cache_core_sha256",
+        "publisher_projection_proof_identity_sha256",
+        "daily_dependency_lookback_rows",
+        "daily_dependency_proof",
+    }
+)
 
 
 def canonical_json_bytes(value: object) -> bytes:
@@ -232,6 +270,118 @@ def canonical_json_bytes(value: object) -> bytes:
     except (TypeError, ValueError) as exc:
         raise ValueError("cache contract is not canonical JSON data") from exc
     return encoded.encode("utf-8")
+
+
+def validate_direct_cache_runtime_context(
+    raw: Mapping[str, object],
+) -> dict[str, object]:
+    """校验 occurrence 传给单个 Liwei consumer 的 direct authority。"""
+    value = _mapping(raw, "direct cache runtime context")
+    _exact_fields(
+        value,
+        _DIRECT_RUNTIME_FIELDS,
+        "direct cache runtime context",
+    )
+    if (
+        value.get("schema_version")
+        != "liwei-0616-direct-cache-runtime-context-v1"
+    ):
+        raise ValueError(
+            "direct cache runtime context schema_version mismatch"
+        )
+    storage_root = value.get("storage_root")
+    if (
+        not isinstance(storage_root, str)
+        or not storage_root
+        or not storage_root.startswith("/")
+        or os.path.normpath(storage_root) != storage_root
+        or "//" in storage_root
+        or "/../" in f"{storage_root}/"
+        or storage_root.endswith("/")
+    ):
+        raise ValueError(
+            "direct cache runtime context storage_root is invalid"
+        )
+    contract = _mapping(
+        value.get("contract"),
+        "direct cache runtime contract",
+    )
+    if dict(contract) != _DIRECT_RUNTIME_CONTRACT:
+        raise ValueError("direct cache runtime contract mismatch")
+    consumer = _mapping(
+        value.get("consumer"),
+        "direct cache runtime consumer",
+    )
+    _exact_fields(
+        consumer,
+        _DIRECT_RUNTIME_CONSUMER_FIELDS,
+        "direct cache runtime consumer",
+    )
+    normalized_consumer = deepcopy(dict(consumer))
+    for field in (
+        "base_scheme_id",
+        "cache_consumer_id",
+        "scheme_version",
+        "cache_group",
+        "publisher_consumer_id",
+        "cache_family",
+        "tenor",
+    ):
+        normalized_consumer[field] = _text(
+            normalized_consumer.get(field),
+            f"direct cache runtime consumer {field}",
+        )
+    for field in (
+        "code_sha256",
+        "config_sha256",
+        "spec_fingerprint",
+        "cache_adapter_sha256",
+        "cache_core_sha256",
+        "publisher_projection_proof_identity_sha256",
+    ):
+        normalized_consumer[field] = _sha256(
+            normalized_consumer.get(field),
+            f"direct cache runtime consumer {field}",
+        )
+    lookback = normalized_consumer[
+        "daily_dependency_lookback_rows"
+    ]
+    proof = normalized_consumer["daily_dependency_proof"]
+    if lookback is None and proof is None:
+        pass
+    elif (
+        isinstance(lookback, bool)
+        or not isinstance(lookback, int)
+        or lookback < 0
+        or not isinstance(proof, str)
+        or not proof.strip()
+    ):
+        raise ValueError(
+            "direct cache runtime consumer dependency proof is invalid"
+        )
+    consumer_id = normalized_consumer["cache_consumer_id"]
+    publisher_id = normalized_consumer["publisher_consumer_id"]
+    expected_access = (
+        "publisher" if consumer_id == publisher_id else "read_only"
+    )
+    if (
+        normalized_consumer["base_scheme_id"] != consumer_id
+        or normalized_consumer["access_mode"] != expected_access
+        or normalized_consumer["cache_group"]
+        != (
+            f"{normalized_consumer['cache_family']}:"
+            f"{normalized_consumer['tenor']}"
+        )
+    ):
+        raise ValueError(
+            "direct cache runtime consumer identity is invalid"
+        )
+    return {
+        "schema_version": value["schema_version"],
+        "storage_root": storage_root,
+        "contract": dict(contract),
+        "consumer": normalized_consumer,
+    }
 
 
 def cache_use_qualification_sha256(

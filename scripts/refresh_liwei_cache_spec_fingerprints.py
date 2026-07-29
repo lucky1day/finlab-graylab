@@ -3,7 +3,7 @@
 ## 为什么需要这个工具
 
 `deploy/daily_scheduler_policy_v2.json` 为每个 liwei cache_group 钉了一个
-``cache_spec_fingerprint``。ledger 模式在资格校验层把钉值与运行期实算值逐一比对，
+``cache_spec_fingerprint``。ledger direct authority 会把钉值与运行期实算值逐一比对，
 不一致即 fail-closed（不是回退重建）。而 ``_spec_fingerprint`` 的 payload 里掺入了
 ``python``/``numpy``/``pandas``/``lightgbm`` 版本（``shared.liwei_0616_phase_a_cache``
 的 ``_baseline_fingerprint``），因此钉值会随算法配置**或**算法环境依赖的任何变动而
@@ -39,7 +39,6 @@ publisher 方案，按其 ``inference`` 模块的真实取值构造 ``PhaseACach
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib
 import json
 import sys
@@ -64,9 +63,6 @@ from shared.liwei_0616_phase_a_cache import (  # noqa: E402
 # ``harness.daily_real_replay`` 与 ``harness.native_daily_certification`` 当默认使用，
 # 不得改写。
 POLICY_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
-ADMISSION_PATH = (
-    PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
-)
 CACHE_ROOT = (
     PROJECT_ROOT / "backtest_artifacts" / "runtime_cache" / "liwei_0616"
 )
@@ -298,58 +294,6 @@ def _rewrite_pins(path: Path, computed: Mapping[str, str]) -> int:
     return changed
 
 
-def _rebind_capacity_admission() -> bool:
-    """把 capacity admission 的 ``policy_sha256`` 重新绑定到当前 policy 字节。
-
-    admission 绑定 policy 的**精确字节**，policy 一变绑定即失效
-    （``require_daily_capacity_admission`` 会以 ``policy_sha256 mismatch``
-    fail-closed）。因此两者必须同步更新。
-
-    若 admission 已不是 ``BLOCKED``，说明它已带着签名生效；此时改写 policy 会让
-    既有签名失配，只能由 operator 重走容量准入流程，脚本在此 fail-closed。
-    """
-    payload = json.loads(ADMISSION_PATH.read_text(encoding="utf-8"))
-    status = payload.get("status")
-    if status != "BLOCKED":
-        raise FingerprintRefreshError(
-            f"capacity admission 当前为 {status!r} 而非 BLOCKED；"
-            "改写 policy 会使既有签名失配，请由 operator 重走容量准入流程"
-        )
-    digest = hashlib.sha256(POLICY_PATH.read_bytes()).hexdigest()
-    current = payload.get("policy_sha256")
-    if current == digest:
-        return False
-    text = ADMISSION_PATH.read_text(encoding="utf-8")
-    needle = f'"policy_sha256": "{current}"'
-    if text.count(needle) != 1:
-        raise FingerprintRefreshError(
-            f"{ADMISSION_PATH.name} 中 policy_sha256 字面量不唯一，无法安全替换"
-        )
-    ADMISSION_PATH.write_text(
-        text.replace(needle, f'"policy_sha256": "{digest}"'),
-        encoding="utf-8",
-    )
-    return True
-
-
-def _require_capacity_admission_rebindable() -> None:
-    """在改写 policy 前确认 admission 允许重新绑定。"""
-    payload = json.loads(ADMISSION_PATH.read_text(encoding="utf-8"))
-    status = payload.get("status")
-    if status != "BLOCKED":
-        raise FingerprintRefreshError(
-            f"capacity admission 当前为 {status!r} 而非 BLOCKED；"
-            "改写 policy 会使既有签名失配，请由 operator 重走容量准入流程"
-        )
-    current = payload.get("policy_sha256")
-    needle = f'"policy_sha256": "{current}"'
-    text = ADMISSION_PATH.read_text(encoding="utf-8")
-    if text.count(needle) != 1:
-        raise FingerprintRefreshError(
-            f"{ADMISSION_PATH.name} 中 policy_sha256 字面量不唯一，无法安全替换"
-        )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -401,25 +345,9 @@ def main() -> int:
             f"policy={sorted(a[:16] for a in actual)} 实算={expected[:16]}…"
         )
 
-    admission_digest = hashlib.sha256(POLICY_PATH.read_bytes()).hexdigest()
-    admission = json.loads(ADMISSION_PATH.read_text(encoding="utf-8"))
-    admission_bound = admission.get("policy_sha256") == admission_digest
-    print(
-        f"\n{ADMISSION_PATH.name}\n"
-        f"  {'ok      ' if admission_bound else 'MISMATCH'} policy_sha256 "
-        f"绑定={'一致' if admission_bound else '过期'}"
-    )
-    if not admission_bound:
-        mismatched += 1
-
     if args.write:
-        _require_capacity_admission_rebindable()
         changed = _rewrite_pins(POLICY_PATH, computed)
-        rebound = _rebind_capacity_admission()
-        print(
-            f"\n已更新钉值 {changed} 条；"
-            f"capacity admission 绑定{'已重算' if rebound else '无需变更'}"
-        )
+        print(f"\n已更新 policy 钉值 {changed} 条")
         return 0
 
     if mismatched:

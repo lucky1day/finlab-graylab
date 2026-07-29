@@ -7,8 +7,6 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine, text
 
@@ -18,71 +16,6 @@ class SimulatedCrash(BaseException):
 
 
 class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
-    def test_capacity_probes_bind_policy_v2_in_process_and_child(
-        self,
-    ) -> None:
-        from scheduler.daily_policy import POLICY_V2_PATH
-        from scripts import daily_coordinator_epoch_operator as module
-
-        engine = SimpleNamespace(dispose=Mock())
-        with (
-            patch(
-                "scheduler.repository.create_engine_from_env",
-                return_value=engine,
-            ),
-            patch(
-                "scheduler.capacity_runtime_admission."
-                "require_current_capacity_admission",
-                return_value={"status": "ADMITTED"},
-            ) as current,
-        ):
-            module._require_capacity_admission_in_current_process()
-
-        current.assert_called_once_with(
-            engine,
-            policy_path=POLICY_V2_PATH,
-        )
-        engine.dispose.assert_called_once_with()
-
-        completed = SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "status": "ADMITTED",
-                    "candidate_fingerprint": "a" * 64,
-                }
-            ),
-            stderr="",
-        )
-        with (
-            patch.object(module.os, "geteuid", return_value=0),
-            patch.object(
-                module.pwd,
-                "getpwuid",
-                return_value=SimpleNamespace(
-                    pw_name="bond-factor-lab",
-                    pw_gid=501,
-                ),
-            ),
-            patch.object(
-                module.subprocess,
-                "run",
-                return_value=completed,
-            ) as run,
-        ):
-            module.require_trusted_current_capacity_admission(502)
-
-        child_code = run.call_args.args[0][2]
-        self.assertIn(
-            "from scheduler.daily_policy import POLICY_V2_PATH;",
-            child_code,
-        )
-        self.assertIn(
-            "require_current_capacity_admission("
-            "engine,policy_path=POLICY_V2_PATH)",
-            child_code,
-        )
-
     def setUp(self) -> None:
         from shared import daily_coordinator_mode as mode_contract
 
@@ -167,7 +100,6 @@ class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
         mode: str,
         transition_id: str,
         quiescence: dict[str, int] | None = None,
-        admission: dict[str, object] | None = None,
         phase_hook=None,
     ):
         from scripts.daily_coordinator_epoch_operator import (
@@ -195,13 +127,6 @@ class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
                     else quiescence
                 )
             ),
-            capacity_admission_probe=(
-                lambda _uid: (
-                    self._admitted_capacity()
-                    if admission is None
-                    else admission
-                )
-            ),
             phase_hook=phase_hook,
         )
 
@@ -214,13 +139,6 @@ class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
         return {
             field: 0
             for field in QUIESCENCE_FIELDS
-        }
-
-    @staticmethod
-    def _admitted_capacity() -> dict[str, object]:
-        return {
-            "status": "ADMITTED",
-            "candidate_fingerprint": "a" * 64,
         }
 
     def _read_chain(
@@ -495,9 +413,6 @@ class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
                 "quiescence_probe": (
                     lambda _uid, _date: self._quiescent_report()
                 ),
-                "capacity_admission_probe": (
-                    lambda _uid: self._admitted_capacity()
-                ),
             }
             with self.assertRaisesRegex(PermissionError, "root"):
                 publish_daily_coordinator_epoch(
@@ -641,29 +556,22 @@ class DailyCoordinatorEpochOperatorTests(unittest.TestCase):
 
         self.assertTrue(_is_daily_platform_process(command))
 
-    def test_target_ledger_requires_current_trusted_capacity_admission(
-        self,
-    ) -> None:
+    def test_target_ledger_requires_only_local_mode_safety(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir).resolve()
             contract, genesis_path, _genesis = self._fixtures(root)
             epoch_root = root / "machine-global-epochs"
-            with self.assertRaisesRegex(RuntimeError, "capacity admission"):
-                self._transition(
-                    epoch_root=epoch_root,
-                    contract_path=contract,
-                    genesis_path=genesis_path,
-                    expected_current_epoch=0,
-                    mode="ledger",
-                    transition_id=(
-                        "bond-factor-lab-daily-ledger-genesis-v1"
-                    ),
-                    admission={
-                        "status": "BLOCKED",
-                        "candidate_fingerprint": None,
-                    },
-                )
-            self.assertFalse(epoch_root.exists())
+            result = self._transition(
+                epoch_root=epoch_root,
+                contract_path=contract,
+                genesis_path=genesis_path,
+                expected_current_epoch=0,
+                mode="ledger",
+                transition_id=(
+                    "bond-factor-lab-daily-ledger-genesis-v1"
+                ),
+            )
+            self.assertEqual(result.status, "published")
 
     def test_quiescence_probe_requires_exact_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

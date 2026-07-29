@@ -155,39 +155,36 @@ class ScheduleRunStartedAtPreflightTests(unittest.TestCase):
 
 
 class LedgerEntryPreflightWiringTests(unittest.TestCase):
-    """018 结构预检必须先于会读取 started_at 的容量候选校验。"""
+    """生产入口必须只经包含 018 预检的 direct authority builder。"""
 
-    def test_current_authority_preflights_before_capacity_candidate(self) -> None:
+    def test_current_authority_uses_direct_builder(self) -> None:
         from scheduler import daily_runtime
 
         calls: list[str] = []
         engine = object()
         with (
-            patch.object(
-                daily_runtime,
-                "preflight_schedule_run_started_at_nullable",
-                side_effect=lambda value: calls.append("preflight"),
-            ),
             patch(
                 "shared.daily_coordinator_mode."
                 "bootstrap_deployment_daily_coordinator_mode",
                 return_value="ledger",
             ),
             patch(
-                "scheduler.capacity_runtime_admission."
-                "require_current_capacity_admission",
+                "scheduler.daily_direct_authority."
+                "build_daily_direct_cache_authorities",
                 side_effect=lambda *a, **k: (
-                    calls.append("capacity")
-                    or {"status": "ADMITTED"}
+                    calls.append("direct")
+                    or {
+                        "schema_version":
+                            "daily-direct-cache-authorities-v1"
+                    }
                 ),
             ),
         ):
             daily_runtime._require_production_entry_authority(
                 engine=engine,
-                verify_current=True,
             )
 
-        self.assertEqual(["preflight", "capacity"], calls)
+        self.assertEqual(["direct"], calls)
 
 
 if __name__ == "__main__":

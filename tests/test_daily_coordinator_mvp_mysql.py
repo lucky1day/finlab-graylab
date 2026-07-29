@@ -54,9 +54,6 @@ from tests.test_daily_v2_coordinator_mysql import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-ADMISSION_PATH = (
-    PROJECT_ROOT / "deploy" / "daily_capacity_admission_v2.json"
-)
 BUSINESS_DATE = date(2026, 7, 24)
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 LIVE_SOURCE_0629 = {
@@ -74,16 +71,11 @@ def _mvp_occurrence_args(policy, configs, *, schedule_key: str):
     )
     policy_json = dict(args["policy_json"])
     step6_projection = policy_json.pop("step6_test_projection")
-    if (
-        step6_projection["cache_completion_gate"]
-        != "excluded_admission_blocked"
-    ):
+    if "cache_completion_gate" not in step6_projection:
         raise AssertionError("unexpected inherited cache gate projection")
-    admission = json.loads(ADMISSION_PATH.read_text(encoding="utf-8"))
-    if admission.get("status") != "BLOCKED":
-        raise AssertionError(
-            "MVP fixture must not bypass capacity admission"
-        )
+    # 该 fixture 只验证 coordinator/ledger cardinality，算法由 controlled
+    # recorder 代替；它不执行真实 cache completion，因此绝不伪造
+    # direct_cache_authorities 或 schema3 generation artifact。
     policy_json["daily_mvp_test_projection"] = {
         "purpose": (
             "complete_"
@@ -92,9 +84,9 @@ def _mvp_occurrence_args(policy, configs, *, schedule_key: str):
             "ledger_function_verification"
         ),
         "algorithm_execution": "controlled_canonical_recorder",
-        "cache_completion_qualification": "EXCLUDED",
-        "exclusion_reason": "CAPACITY_ADMISSION_BLOCKED",
-        "capacity_admission_status": "BLOCKED",
+        "cache_completion_authority": "DIRECT_RUNTIME",
+        "exclusion_reason": "CONTROLLED_RECORDER_NOT_CACHE_EXECUTION",
+        "authority_mode": "direct-runtime",
         "production_cache_gate_passed": False,
         "excluded_scheme_ids":
             step6_projection["excluded_scheme_ids"],
@@ -802,12 +794,12 @@ class DailyCoordinatorMVPMySQLTests(unittest.TestCase):
                     14,
                 )
                 self.assertEqual(
-                    projection["cache_completion_qualification"],
-                    "EXCLUDED",
+                    projection["cache_completion_authority"],
+                    "DIRECT_RUNTIME",
                 )
                 self.assertEqual(
-                    projection["capacity_admission_status"],
-                    "BLOCKED",
+                    projection["authority_mode"],
+                    "direct-runtime",
                 )
                 self.assertFalse(
                     projection["production_cache_gate_passed"]
