@@ -92,6 +92,10 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
                 "require_daily_capacity_admission",
                 return_value={"status": "ADMITTED"},
             ) as signed,
+            patch.object(
+                module,
+                "preflight_schedule_run_started_at_nullable",
+            ) as started_at_preflight,
         ):
             module._require_production_entry_authority(
                 engine=engine,
@@ -107,6 +111,7 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             policy_path=POLICY_V2_PATH,
             algo_env="forecast_env",
         )
+        started_at_preflight.assert_called_once_with(engine)
         signed.assert_called_once_with(policy_path=POLICY_V2_PATH)
 
     def test_execute_item_reuses_canonical_process_start_guard(

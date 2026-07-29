@@ -4377,6 +4377,9 @@ SCHEDULE_RUN_STARTED_AT_MIGRATION_SHA256 = (
     "320cdf0877618330b8dbd52bb091e956"
     "987e916447cb41fc4f8d7a567b5b3ba1"
 )
+SCHEDULE_RUN_STARTED_AT_TARGET_DEFINITION = (
+    "datetime(6) NULL DEFAULT CURRENT_TIMESTAMP(6)"
+)
 
 
 def _expected_migration_history_schema() -> dict[str, object]:
@@ -4833,6 +4836,56 @@ def _read_schedule_run_started_at_shape(
         )
     return _schedule_run_started_at_shape(
         dict(rows[0]) if rows else None
+    )
+
+
+def _schedule_run_started_at_definition(
+    shape: Mapping[str, object],
+) -> str:
+    """把归一化列形态渲染成运维可读的 DDL 片段。"""
+    if not shape.get("exists"):
+        return "<column is missing>"
+    nullable = (
+        "NULL"
+        if str(shape.get("is_nullable") or "") == "yes"
+        else "NOT NULL"
+    )
+    default = str(shape.get("column_default") or "").upper()
+    definition = f"{shape.get('column_type')} {nullable}"
+    if default:
+        definition = f"{definition} DEFAULT {default}"
+    return definition
+
+
+def preflight_schedule_run_started_at_nullable(
+    engine: object,
+) -> None:
+    """ledger 启动前只读确认 018 已应用，否则立即 fail-closed。
+
+    ledger claim 会显式写 ``t_scheme_runs.started_at = NULL``；017 形态下
+    该写入要到当天日批中段才失败，因此启动即拒绝。
+    """
+    with engine.connect() as connection:
+        shape = _read_schedule_run_started_at_shape(connection)
+        try:
+            complete = (
+                _classify_schedule_run_started_at_shape(shape)
+                == "COMPLETE"
+            )
+        except MigrationPreflightError:
+            complete = False
+        if complete:
+            return
+    raise MigrationPreflightError(
+        "t_scheme_runs.started_at is not migration "
+        f"{SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION} shape; the ledger "
+        "claim path writes started_at = NULL and would fail mid-run. "
+        f"current={_schedule_run_started_at_definition(shape)}; "
+        f"expected={SCHEDULE_RUN_STARTED_AT_TARGET_DEFINITION}; "
+        "apply it first with: python scripts/apply_migrations.py --apply "
+        "--expected-database-name <database-name> "
+        "--expected-server-uuid <server-uuid>; obtain the expected identity "
+        "from a controlled read-only inspect or identity query"
     )
 
 

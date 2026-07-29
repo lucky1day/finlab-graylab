@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
+from migrations.runner import preflight_schedule_run_started_at_nullable
 from scheduler.alerts import AlertDispatcher, AlertEvent, AlertSettings
 from scheduler.daily_coordinator import OccurrenceLockUnavailable
 from scheduler.daily_coordinator import (
@@ -5597,6 +5598,7 @@ def _require_production_entry_authority(
             "daily runtime requires ledger coordinator mode"
         )
     if verify_current:
+        preflight_schedule_run_started_at_nullable(engine)
         return require_current_capacity_admission(
             engine,
             policy_path=POLICY_V2_PATH,
