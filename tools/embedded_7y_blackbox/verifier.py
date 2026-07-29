@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import ast
+import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 from dataclasses import asdict
 from datetime import date
+import hashlib
 import json
+import lzma
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -15,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 from typing import Iterable
 
 from tools.embedded_7y_blackbox.frozen_schemes import SCHEMES, FrozenScheme
@@ -181,6 +185,11 @@ class _ForbiddenAstVisitor(ast.NodeVisitor):
         "urllib",
     }
     _FORBIDDEN_QUALIFIED = {
+        "builtins.__import__",
+        "builtins.breakpoint",
+        "builtins.compile",
+        "builtins.eval",
+        "builtins.exec",
         "os.fork",
         "os.popen",
         "os.system",
@@ -191,8 +200,21 @@ class _ForbiddenAstVisitor(ast.NodeVisitor):
         "os.spawn",
     )
 
+    def __init__(self) -> None:
+        self._aliases: dict[str, str] = {}
+
+    def _resolved_name(self, node: ast.AST) -> str:
+        name = _qualified_name(node)
+        root, separator, suffix = name.partition(".")
+        resolved_root = self._aliases.get(root, root)
+        return (
+            f"{resolved_root}.{suffix}"
+            if separator
+            else resolved_root
+        )
+
     def visit_Call(self, node: ast.Call) -> None:
-        name = _qualified_name(node.func)
+        name = self._resolved_name(node.func)
         if (
             name in self._FORBIDDEN_NAMES
             or name in self._FORBIDDEN_QUALIFIED
@@ -210,12 +232,20 @@ class _ForbiddenAstVisitor(ast.NodeVisitor):
             root = alias.name.split(".", 1)[0]
             if root in self._FORBIDDEN_MODULES:
                 raise AssertionError(f"forbidden call dependency in runner: {root}")
+            bound_name = alias.asname or root
+            self._aliases[bound_name] = alias.name if alias.asname else root
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        root = (node.module or "").split(".", 1)[0]
+        module = node.module or ""
+        root = module.split(".", 1)[0]
         if root in self._FORBIDDEN_MODULES:
             raise AssertionError(f"forbidden call dependency in runner: {root}")
+        for alias in node.names:
+            if alias.name == "*" and root == "os":
+                raise AssertionError("forbidden call dependency in runner: os.*")
+            bound_name = alias.asname or alias.name
+            self._aliases[bound_name] = f"{module}.{alias.name}"
         self.generic_visit(node)
 
 
@@ -257,7 +287,62 @@ def _frozen_scheme_from_tree(tree: ast.AST) -> dict[str, object]:
     raise AssertionError("frozen scheme is missing")
 
 
-def _projected_payload_size(tree: ast.AST) -> int:
+def _decoded_entry_size(
+    entry: dict[str, object],
+    *,
+    remaining_projection: int,
+) -> int:
+    encoded_chunks = entry["encoded_chunks"]
+    assert isinstance(encoded_chunks, list)
+    try:
+        compressed = base64.b85decode(
+            "".join(encoded_chunks).encode("ascii")
+        )
+    except (UnicodeEncodeError, ValueError) as error:
+        raise AssertionError("payload Base85 encoding is invalid") from error
+    compressed_sha256 = entry["compressed_sha256"]
+    if hashlib.sha256(compressed).hexdigest() != compressed_sha256:
+        raise AssertionError("payload integrity: compressed SHA256 mismatch")
+
+    decoder = lzma.LZMADecompressor()
+    raw_digest = hashlib.sha256()
+    raw_size = 0
+    pending = compressed
+    while True:
+        remaining = remaining_projection - raw_size
+        if remaining <= 0:
+            raise AssertionError("projected extraction size exceeds 64 MiB")
+        try:
+            chunk = decoder.decompress(
+                pending,
+                max_length=min(1_048_576, remaining),
+            )
+        except lzma.LZMAError as error:
+            raise AssertionError("payload integrity: invalid LZMA stream") from error
+        pending = b""
+        raw_digest.update(chunk)
+        raw_size += len(chunk)
+        if raw_size >= remaining_projection:
+            raise AssertionError("projected extraction size exceeds 64 MiB")
+        if decoder.eof:
+            if decoder.unused_data:
+                raise AssertionError("payload integrity: trailing compressed data")
+            break
+        if decoder.needs_input:
+            raise AssertionError("payload integrity: truncated LZMA stream")
+    if (
+        raw_size != entry["raw_size"]
+        or raw_digest.hexdigest() != entry["raw_sha256"]
+    ):
+        raise AssertionError("payload integrity: raw size or SHA256 mismatch")
+    return raw_size
+
+
+def _projected_payload_size(
+    tree: ast.AST,
+    *,
+    base_projection: int,
+) -> int:
     manifest = _manifest_from_tree(tree)
     expected_fields = {
         "relative_path",
@@ -303,7 +388,11 @@ def _projected_payload_size(tree: ast.AST) -> int:
         ):
             raise AssertionError("payload encoded chunks are invalid")
         seen.add(relative_path)
-        total += raw_size
+        decoded_size = _decoded_entry_size(
+            entry,
+            remaining_projection=MAX_PROJECTED_BYTES - base_projection - total,
+        )
+        total += decoded_size
     return total
 
 
@@ -347,10 +436,13 @@ def verify_structure(delivery: Path) -> None:
     )
     if _frozen_scheme_from_tree(tree) != expected_frozen_scheme:
         raise AssertionError("embedded frozen scheme identity does not match delivery")
+    base_projection = script_size + metadata_path.stat().st_size
     projected_size = (
-        script_size
-        + metadata_path.stat().st_size
-        + _projected_payload_size(tree)
+        base_projection
+        + _projected_payload_size(
+            tree,
+            base_projection=base_projection,
+        )
     )
     if projected_size >= MAX_PROJECTED_BYTES:
         raise AssertionError(
@@ -439,31 +531,57 @@ import json
 import os
 import sys
 
-_trace_descriptor = os.open(
-    os.environ["EMBEDDED_7Y_TRACE_PATH"],
-    os.O_WRONLY | os.O_APPEND | os.O_CREAT,
-    0o600,
-)
+_trace_descriptor = int(os.environ["EMBEDDED_7Y_TRACE_FD"])
 _path_events = {
     "open",
     "os.chdir",
     "os.listdir",
+    "os.mkdir",
     "os.remove",
     "os.rename",
     "os.rmdir",
     "os.scandir",
+    "os.truncate",
 }
 
 def _trace_hook(event, args):
     if event not in _path_events or not args:
         return
-    for candidate in args:
+    write_access = event in {
+        "os.mkdir",
+        "os.remove",
+        "os.rename",
+        "os.rmdir",
+        "os.truncate",
+    }
+    if event == "open":
+        mode = args[1] if len(args) > 1 else None
+        flags = args[2] if len(args) > 2 else 0
+        if isinstance(mode, str):
+            write_access = any(token in mode for token in "wax+")
+        if isinstance(flags, int):
+            write_access = write_access or bool(
+                flags
+                & (
+                    os.O_WRONLY
+                    | os.O_RDWR
+                    | os.O_CREAT
+                    | os.O_TRUNC
+                    | os.O_APPEND
+                )
+            )
+    candidates = args[:2] if event == "os.rename" else args[:1]
+    for candidate in candidates:
         if not isinstance(candidate, (str, bytes, os.PathLike)):
             continue
         try:
             path = os.fsdecode(candidate)
             payload = json.dumps(
-                {"event": event, "path": path},
+                {
+                    "event": event,
+                    "path": path,
+                    "write": write_access,
+                },
                 ensure_ascii=True,
                 separators=(",", ":"),
             ).encode("utf-8") + b"\\n"
@@ -496,15 +614,17 @@ def _forbidden_runtime_roots(delivery: Path) -> tuple[Path, ...]:
 
 
 def _assert_no_forbidden_access(
-    trace_path: Path,
+    trace_records: Iterable[dict[str, object]],
     *,
     cwd: Path,
     forbidden_roots: Iterable[Path],
+    write_root: Path,
 ) -> None:
-    if not trace_path.exists():
-        raise AssertionError("independence trace was not produced")
-    for line in trace_path.read_text(encoding="utf-8").splitlines():
-        record = json.loads(line)
+    records = list(trace_records)
+    if not records:
+        raise AssertionError("delivery file-access trace was not produced")
+    write_root = write_root.resolve()
+    for record in records:
         raw_path = record.get("path")
         if not isinstance(raw_path, str) or raw_path.startswith("<"):
             continue
@@ -517,44 +637,138 @@ def _assert_no_forbidden_access(
                 raise AssertionError(
                     f"forbidden root access: {record['event']} {resolved}"
                 )
+        if bool(record.get("write")) and not (
+            resolved == write_root or write_root in resolved.parents
+        ):
+            raise AssertionError(
+                f"forbidden write access: {record['event']} {resolved}"
+            )
 
 
-def _sandbox_profile(forbidden_roots: Iterable[Path]) -> str:
-    rules = ["(version 1)", "(allow default)"]
+def _sandbox_profile(
+    *,
+    write_root: Path,
+    forbidden_roots: Iterable[Path],
+) -> str:
+    rules = [
+        "(version 1)",
+        "(deny default)",
+        "(allow process*)",
+        "(allow file-read*)",
+        "(allow sysctl-read)",
+        "(allow mach-lookup)",
+        "(allow ipc-posix*)",
+        "(allow file-ioctl)",
+        "(allow signal)",
+        (
+            "(allow file-write* (subpath "
+            f"{json.dumps(str(write_root.resolve()), ensure_ascii=False)}))"
+        ),
+    ]
     for root in forbidden_roots:
         literal = json.dumps(str(root), ensure_ascii=False)
-        rules.append(f"(deny file-read* file-write* (subpath {literal}))")
+        rules.append(f"(deny file-read* (subpath {literal}))")
     return "\n".join(rules) + "\n"
 
 
-def _run_checked(
+def _run_confined_process(
     arguments: list[str],
     *,
     cwd: Path,
-    env: dict[str, str],
-    trace_path: Path,
-    forbidden_roots: tuple[Path, ...],
-) -> None:
-    completed = subprocess.run(
-        arguments,
-        cwd=cwd,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
+    write_root: Path,
+    forbidden_roots: tuple[Path, ...] = (),
+) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
+    cwd = cwd.resolve()
+    write_root = write_root.resolve()
+    write_root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    control_root = write_root.parent / f".{write_root.name}-control"
+    control_root.mkdir(mode=0o700, exist_ok=False)
+    trace_root = control_root / "tracer"
+    trace_root.mkdir(mode=0o700)
+    sitecustomize = trace_root / "sitecustomize.py"
+    sitecustomize.write_text(_AUDIT_HOOK_SOURCE, encoding="utf-8")
+    sitecustomize.chmod(0o400)
+    sandbox_profile = control_root / "delivery.sb"
+    sandbox_profile.write_text(
+        _sandbox_profile(
+            write_root=write_root,
+            forbidden_roots=forbidden_roots,
+        ),
+        encoding="utf-8",
     )
+    sandbox_profile.chmod(0o400)
+    trace_read, trace_write = os.pipe()
+    os.set_inheritable(trace_write, True)
+    trace_chunks: list[bytes] = []
+
+    def collect_trace() -> None:
+        while True:
+            chunk = os.read(trace_read, 65_536)
+            if not chunk:
+                return
+            trace_chunks.append(chunk)
+
+    collector = threading.Thread(target=collect_trace, daemon=True)
+    collector.start()
+    env = os.environ.copy()
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONSTARTUP", None)
+    env["PYTHONPATH"] = str(trace_root)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["TMPDIR"] = str(write_root)
+    env["EMBEDDED_7Y_TRACE_FD"] = str(trace_write)
+    try:
+        process = subprocess.Popen(
+            [
+                str(SANDBOX_EXEC),
+                "-f",
+                str(sandbox_profile),
+                *arguments,
+            ],
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(trace_write,),
+        )
+        stdout, stderr = process.communicate()
+        completed = subprocess.CompletedProcess(
+            arguments,
+            process.returncode,
+            stdout,
+            stderr,
+        )
+    finally:
+        os.close(trace_write)
+        collector.join()
+        os.close(trace_read)
+    trace_payload = b"".join(trace_chunks).decode("utf-8")
+    records = [
+        json.loads(line)
+        for line in trace_payload.splitlines()
+        if line
+    ]
     _assert_no_forbidden_access(
-        trace_path,
+        records,
         cwd=cwd,
         forbidden_roots=forbidden_roots,
+        write_root=write_root,
     )
+    return completed, records
+
+
+def _assert_completed(
+    completed: subprocess.CompletedProcess[str],
+    label: str,
+) -> None:
     if completed.returncode != 0:
         raise AssertionError(
-            f"independence command failed ({completed.returncode}): "
+            f"{label} command failed ({completed.returncode}): "
             f"{completed.stderr.strip()}"
         )
     if completed.stdout != "":
-        raise AssertionError("independence command wrote business stdout")
+        raise AssertionError(f"{label} command wrote business stdout")
 
 
 def _assert_result(
@@ -590,9 +804,7 @@ def verify_independence(delivery: Path, fixture_root: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="embedded-7y-independence-") as tmp:
         temporary_root = Path(tmp).resolve()
         blank_root = temporary_root / "blank"
-        trace_root = temporary_root / "tracer"
         blank_root.mkdir(mode=0o700)
-        trace_root.mkdir(mode=0o700)
         copied_delivery = blank_root / delivery.name
         copied_delivery.mkdir(mode=0o700)
         copied_runner = copied_delivery / runner_path.name
@@ -608,35 +820,16 @@ def verify_independence(delivery: Path, fixture_root: Path) -> None:
             shutil.copyfile(source, destination)
             destination.chmod(0o400)
 
-        sitecustomize = trace_root / "sitecustomize.py"
-        sitecustomize.write_text(_AUDIT_HOOK_SOURCE, encoding="utf-8")
-        sitecustomize.chmod(0o400)
-        trace_path = temporary_root / "opened-files.jsonl"
-        sandbox_profile = temporary_root / "independence.sb"
-        sandbox_profile.write_text(
-            _sandbox_profile(forbidden_roots),
-            encoding="utf-8",
-        )
-        sandbox_profile.chmod(0o400)
-        env = os.environ.copy()
-        env.pop("PYTHONHOME", None)
-        env.pop("PYTHONSTARTUP", None)
-        env["PYTHONPATH"] = str(trace_root)
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        env["EMBEDDED_7Y_TRACE_PATH"] = str(trace_path)
-
         request_path = copied_data / "request.json"
         request_path.write_text(
             json.dumps(request, ensure_ascii=True, separators=(",", ":")),
             encoding="utf-8",
         )
         request_path.chmod(0o400)
-        prediction_path = copied_data / "prediction.json"
-        _run_checked(
+        predict_write_root = temporary_root / "predict-writable"
+        prediction_path = predict_write_root / "prediction.json"
+        completed, _ = _run_confined_process(
             [
-                str(SANDBOX_EXEC),
-                "-f",
-                str(sandbox_profile),
                 str(BLACKBOX_PYTHON),
                 str(copied_runner),
                 "predict",
@@ -648,10 +841,10 @@ def verify_independence(delivery: Path, fixture_root: Path) -> None:
                 str(prediction_path),
             ],
             cwd=blank_root,
-            env=env,
-            trace_path=trace_path,
+            write_root=predict_write_root,
             forbidden_roots=forbidden_roots,
         )
+        _assert_completed(completed, "independence predict")
         prediction = json.loads(
             prediction_path.read_text(encoding="utf-8"),
             object_pairs_hook=_strict_json_object,
@@ -666,12 +859,10 @@ def verify_independence(delivery: Path, fixture_root: Path) -> None:
             writer.writeheader()
             writer.writerow(request)
         requests_path.chmod(0o400)
-        backtest_path = copied_data / "backtest.csv"
-        _run_checked(
+        backtest_write_root = temporary_root / "backtest-writable"
+        backtest_path = backtest_write_root / "backtest.csv"
+        completed, _ = _run_confined_process(
             [
-                str(SANDBOX_EXEC),
-                "-f",
-                str(sandbox_profile),
                 str(BLACKBOX_PYTHON),
                 str(copied_runner),
                 "backtest",
@@ -683,10 +874,10 @@ def verify_independence(delivery: Path, fixture_root: Path) -> None:
                 str(backtest_path),
             ],
             cwd=blank_root,
-            env=env,
-            trace_path=trace_path,
+            write_root=backtest_write_root,
             forbidden_roots=forbidden_roots,
         )
+        _assert_completed(completed, "independence backtest")
         with backtest_path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             if tuple(reader.fieldnames or ()) != RESULT_FIELDS:
@@ -781,14 +972,15 @@ def _run_backtest_batch(
 ) -> list[dict[str, object]]:
     runner = delivery / f"{delivery.name}.py"
     with tempfile.TemporaryDirectory(prefix="embedded-7y-parity-") as tmp:
-        run_root = Path(tmp)
+        run_root = Path(tmp).resolve()
         requests_path = run_root / "requests.csv"
-        output_path = run_root / "backtest.csv"
+        write_root = run_root / "writable"
+        output_path = write_root / "backtest.csv"
         with requests_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=REQUEST_FIELDS)
             writer.writeheader()
             writer.writerows(requests)
-        completed = subprocess.run(
+        completed, _ = _run_confined_process(
             [
                 str(BLACKBOX_PYTHON),
                 str(runner),
@@ -801,17 +993,9 @@ def _run_backtest_batch(
                 str(output_path),
             ],
             cwd=run_root,
-            text=True,
-            capture_output=True,
-            check=False,
+            write_root=write_root,
         )
-        if completed.returncode != 0:
-            raise AssertionError(
-                f"parity subprocess failed ({completed.returncode}): "
-                f"{completed.stderr.strip()}"
-            )
-        if completed.stdout != "":
-            raise AssertionError("parity subprocess wrote business stdout")
+        _assert_completed(completed, "parity")
         with output_path.open(encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             if tuple(reader.fieldnames or ()) != RESULT_FIELDS:
@@ -871,6 +1055,7 @@ def verify_parity(
     if isinstance(jobs, bool) or not isinstance(jobs, int) or jobs < 1:
         raise ValueError("jobs must be a positive integer")
     delivery = Path(delivery)
+    verify_structure(delivery)
     runner, _ = _exact_pair(delivery)
     if runner.name != f"{delivery.name}.py":
         raise AssertionError("delivery runner name mismatch")
