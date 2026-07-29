@@ -6,12 +6,17 @@ import argparse
 import base64
 import builtins
 from contextlib import contextmanager, redirect_stdout
+import csv
+from datetime import date, datetime
 import hashlib
 import importlib
+import io
+import json
 import lzma
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import secrets
 import stat
 import sys
@@ -34,6 +39,24 @@ _PLATFORM_FILES = (
 )
 _DIRECT_YIELD_COLUMNS = ("TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
 _ANCHOR_REPLAY_START = pd.Timestamp("2024-07-01")
+_REQUEST_FIELDS = (
+    "request_id",
+    "predict_date",
+    "feature_date",
+    "target_date",
+    "daily_cutoff_key",
+    "weekly_cutoff_key",
+    "monthly_cutoff_key",
+)
+_RESULT_FIELDS = (
+    "request_id",
+    "predict_date",
+    "feature_date",
+    "target_date",
+    "predicted_direction",
+)
+_DATE_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+_PERIOD_PATTERN = re.compile(r"[0-9]{6}\Z")
 
 
 def _validate_runtime() -> None:
@@ -370,8 +393,8 @@ def _anchor_modules(payload_root: Path) -> tuple[ModuleType, ModuleType]:
         importlib.invalidate_caches()
 
 
-def _read_platform_csv(data_dir: Path, filename: str) -> pd.DataFrame:
-    """Read one required regular input file through the runtime audit hook."""
+def _platform_file(data_dir: Path, filename: str) -> Path:
+    """Resolve one required regular platform file without following links."""
     root = Path(data_dir)
     if root.is_symlink() or not root.is_dir():
         raise ValueError("invalid platform data directory")
@@ -382,6 +405,12 @@ def _read_platform_csv(data_dir: Path, filename: str) -> pd.DataFrame:
         raise FileNotFoundError(f"missing platform input file: {filename}")
     if not path.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"platform input escaped data directory: {filename}")
+    return path
+
+
+def _read_platform_csv(data_dir: Path, filename: str) -> pd.DataFrame:
+    """Read one required regular input file through the runtime audit hook."""
+    path = _platform_file(data_dir, filename)
     with open(path, "rb") as handle:
         return pd.read_csv(handle, low_memory=False)
 
@@ -449,12 +478,18 @@ def _write_private_csv(frame: pd.DataFrame, path: Path) -> None:
 def _materialize_cutoff_data(
     data_dir: Path,
     feature_date: pd.Timestamp,
+    daily_cutoff_key: str,
+    weekly_cutoff_key: str,
+    monthly_cutoff_key: str,
     work_dir: Path,
 ) -> Path:
     """Create the exact four causal input files for one request cutoff."""
     cutoff = pd.Timestamp(feature_date).normalize()
     if pd.isna(cutoff):
         raise ValueError("invalid feature_date")
+    daily_cutoff = pd.Timestamp(daily_cutoff_key).normalize()
+    weekly_cutoff = int(weekly_cutoff_key)
+    monthly_cutoff = int(monthly_cutoff_key)
 
     daily = _read_platform_csv(data_dir, "daily_output.csv")
     calendar = _read_platform_csv(data_dir, "api_wind_date.csv")
@@ -491,16 +526,14 @@ def _materialize_cutoff_data(
             "daily_output.csv: missing required columns "
             + ", ".join(missing_yields)
         )
-    daily = daily.loc[daily_dates <= cutoff].copy()
+    daily = daily.loc[daily_dates <= daily_cutoff].copy()
     daily_dates = daily_dates.loc[daily.index]
     calendar = calendar.loc[calendar_dates <= cutoff].copy()
     calendar_dates = calendar_dates.loc[calendar.index]
     calendar_week_ids = calendar_week_ids.loc[calendar.index]
-    cutoff_month = int(cutoff.strftime("%Y%m"))
-    authoritative_week_ids = set(calendar_week_ids.tolist())
-    weekly = weekly.loc[weekly_ids.isin(authoritative_week_ids)].copy()
+    weekly = weekly.loc[weekly_ids <= weekly_cutoff].copy()
     weekly_ids = weekly_ids.loc[weekly.index]
-    monthly = monthly.loc[monthly_ids <= cutoff_month].copy()
+    monthly = monthly.loc[monthly_ids <= monthly_cutoff].copy()
     monthly_ids = monthly_ids.loc[monthly.index]
 
     _validate_monotonic(daily_dates, "date", "daily_output.csv")
@@ -526,16 +559,17 @@ def _materialize_cutoff_data(
         retained_yields.to_numpy(dtype="float64")
     ).all():
         raise ValueError("daily_output.csv: direct yields must be finite")
-    if daily.empty or daily_dates.iloc[-1] != cutoff:
+    if daily.empty or daily_dates.iloc[-1] != daily_cutoff:
         raise ValueError("daily_output.csv: exact cutoff coverage is required")
     if calendar.empty or calendar_dates.iloc[-1] != cutoff:
         raise ValueError("api_wind_date.csv: exact cutoff coverage is required")
     if (
         weekly.empty
-        or weekly_ids.iloc[-1] != int(calendar_week_ids.iloc[-1])
+        or weekly_ids.iloc[-1] != weekly_cutoff
+        or int(calendar_week_ids.iloc[-1]) != weekly_cutoff
     ):
         raise ValueError("weekly_output.csv: exact cutoff coverage is required")
-    if monthly.empty or monthly_ids.iloc[-1] != cutoff_month:
+    if monthly.empty or monthly_ids.iloc[-1] != monthly_cutoff:
         raise ValueError("monthly_output.csv: exact cutoff coverage is required")
 
     daily["date"] = daily_dates.dt.strftime("%Y-%m-%d")
@@ -1244,6 +1278,9 @@ def _weighted_vote(curve: pd.Series, anchor: pd.Series) -> pd.Series:
 def _infer_one(
     data_dir: Path,
     feature_date: pd.Timestamp,
+    daily_cutoff_key: str,
+    weekly_cutoff_key: str,
+    monthly_cutoff_key: str,
 ) -> dict[str, object]:
     """Run both embedded anchors and return one frozen consensus decision."""
     cutoff = pd.Timestamp(feature_date).normalize()
@@ -1256,6 +1293,9 @@ def _infer_one(
         protected_root = _materialize_cutoff_data(
             Path(data_dir),
             cutoff,
+            daily_cutoff_key,
+            weekly_cutoff_key,
+            monthly_cutoff_key,
             run_root / "request",
         )
         five_frame = _run_5y10(
@@ -1291,3 +1331,324 @@ def _infer_one(
             "vote": vote,
             "action": int(action.loc[cutoff]),
         }
+
+
+def _strict_date(value: object, field: str) -> date:
+    """Parse one canonical Request date without normalizing caller input."""
+    if not isinstance(value, str) or _DATE_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field} must use YYYY-MM-DD")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as error:
+        raise ValueError(f"{field} must use YYYY-MM-DD") from error
+    if parsed.isoformat() != value:
+        raise ValueError(f"{field} must use YYYY-MM-DD")
+    return parsed
+
+
+def _strict_period(value: object, field: str) -> str:
+    """Validate one six-digit cutoff key without replacing it."""
+    if not isinstance(value, str) or _PERIOD_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field} must contain six digits")
+    return value
+
+
+def _validate_request(
+    request: dict[str, object],
+) -> tuple[dict[str, object], date]:
+    """Validate one exact seven-field Request and preserve its values."""
+    if not isinstance(request, dict):
+        raise TypeError("each Request must be an object")
+    if set(request) != set(_REQUEST_FIELDS):
+        raise ValueError("Request fields must match Contract 1.0 exactly")
+    if not all(isinstance(request[field], str) for field in _REQUEST_FIELDS):
+        raise TypeError("all Request fields must be strings")
+    request_id = request["request_id"]
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise ValueError("request_id must be a nonempty string")
+
+    predict_date = _strict_date(request["predict_date"], "predict_date")
+    feature_date = _strict_date(request["feature_date"], "feature_date")
+    target_date = _strict_date(request["target_date"], "target_date")
+    daily_cutoff = _strict_date(
+        request["daily_cutoff_key"],
+        "daily_cutoff_key",
+    )
+    weekly_cutoff = _strict_period(
+        request["weekly_cutoff_key"],
+        "weekly_cutoff_key",
+    )
+    monthly_cutoff = _strict_period(
+        request["monthly_cutoff_key"],
+        "monthly_cutoff_key",
+    )
+    if not feature_date <= predict_date <= target_date:
+        raise ValueError(
+            "dates must satisfy feature_date <= predict_date <= target_date"
+        )
+    if feature_date >= target_date:
+        raise ValueError("feature_date must be earlier than target_date")
+    if daily_cutoff != feature_date:
+        raise ValueError("daily_cutoff_key must equal feature_date")
+    if monthly_cutoff != feature_date.strftime("%Y%m"):
+        raise ValueError(
+            "monthly_cutoff_key is inconsistent with feature_date"
+        )
+    if not weekly_cutoff:
+        raise ValueError("weekly_cutoff_key is invalid")
+    return request, feature_date
+
+
+def _validate_weekly_cutoffs(
+    validated: list[tuple[dict[str, object], date]],
+    data_dir: Path,
+) -> None:
+    """Validate supplied weekly keys against api-wind-date-v1 only."""
+    calendar = _read_platform_csv(data_dir, "api_wind_date.csv")
+    if list(calendar.columns) != ["rdate", "week_id"]:
+        raise ValueError(
+            "api_wind_date.csv must contain exactly rdate,week_id"
+        )
+    dates = _normalized_dates(calendar, "rdate", "api_wind_date.csv")
+    latest_feature = max(feature_date for _, feature_date in validated)
+    causal = dates <= pd.Timestamp(latest_feature)
+    calendar = calendar.loc[causal].copy()
+    dates = dates.loc[calendar.index]
+    raw_dates = calendar["rdate"].astype("string")
+    canonical_dates = dates.dt.strftime("%Y-%m-%d")
+    if not raw_dates.eq(canonical_dates).all():
+        raise ValueError("api_wind_date.csv: rdate must use YYYY-MM-DD")
+    week_ids = _integer_ids(
+        calendar,
+        "week_id",
+        "api_wind_date.csv",
+    )
+    canonical_weeks = week_ids.astype(str)
+    if not canonical_weeks.str.fullmatch(_PERIOD_PATTERN).all():
+        raise ValueError("api_wind_date.csv: week_id must contain six digits")
+    _validate_monotonic(dates, "rdate", "api_wind_date.csv")
+    mapping = dict(zip(canonical_dates, canonical_weeks, strict=True))
+    for request, feature_date in validated:
+        feature_key = feature_date.isoformat()
+        supplied = request["weekly_cutoff_key"]
+        if mapping.get(feature_key) != supplied:
+            raise ValueError(
+                "weekly_cutoff_key is inconsistent with feature_date"
+            )
+
+
+def _input_file_hashes(data_dir: Path) -> tuple[str, ...]:
+    """Hash the exact four immutable inputs used by one process."""
+    digests: list[str] = []
+    for filename in _PLATFORM_FILES:
+        digest = hashlib.sha256()
+        with open(_platform_file(data_dir, filename), "rb") as handle:
+            while chunk := handle.read(1024 * 1024):
+                digest.update(chunk)
+        digests.append(digest.hexdigest())
+    return tuple(digests)
+
+
+def _execute_one(
+    request: dict[str, object],
+    data_dir: Path,
+    *,
+    feature_date: date,
+    input_file_hashes: tuple[str, ...],
+    cache: dict[tuple[object, ...], int],
+) -> dict[str, object]:
+    """Execute one validated Request and expose only its standard Result."""
+    cache_key = (
+        request["feature_date"],
+        request["daily_cutoff_key"],
+        request["weekly_cutoff_key"],
+        request["monthly_cutoff_key"],
+        input_file_hashes,
+    )
+    if cache_key not in cache:
+        internal = _infer_one(
+            Path(data_dir),
+            pd.Timestamp(feature_date),
+            request["daily_cutoff_key"],
+            request["weekly_cutoff_key"],
+            request["monthly_cutoff_key"],
+        )
+        action = internal.get("action")
+        if (
+            isinstance(action, bool)
+            or not isinstance(action, (int, np.integer))
+            or int(action) not in {-1, 0, 1}
+        ):
+            raise ValueError("algorithm produced an invalid direction")
+        cache[cache_key] = int(action)
+    return {
+        "request_id": request["request_id"],
+        "predict_date": request["predict_date"],
+        "feature_date": request["feature_date"],
+        "target_date": request["target_date"],
+        "predicted_direction": cache[cache_key],
+    }
+
+
+def _execute_requests(
+    requests: list[dict[str, object]],
+    data_dir: Path,
+) -> list[dict[str, object]]:
+    """Validate and execute one to 100 independent Requests in order."""
+    if not isinstance(requests, list):
+        raise TypeError("Requests must be a list")
+    if not 1 <= len(requests) <= 100:
+        raise ValueError("a batch must contain one to 100 Requests")
+    validated = [_validate_request(request) for request in requests]
+    request_ids = [request["request_id"] for request, _ in validated]
+    if len(request_ids) != len(set(request_ids)):
+        raise ValueError("request_id values must be unique within a batch")
+    _validate_weekly_cutoffs(validated, Path(data_dir))
+    input_hashes = _input_file_hashes(Path(data_dir))
+    cache: dict[tuple[object, ...], int] = {}
+    return [
+        _execute_one(
+            request,
+            Path(data_dir),
+            feature_date=feature_date,
+            input_file_hashes=input_hashes,
+            cache=cache,
+        )
+        for request, feature_date in validated
+    ]
+
+
+@contextmanager
+def _business_stdout_to_stderr():
+    """Redirect Python and native fd-level business stdout to stderr."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    saved_stdout = os.dup(1)
+    try:
+        os.dup2(2, 1)
+        with redirect_stdout(sys.stderr):
+            yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdout)
+
+
+def _read_predict_request(path: Path) -> list[dict[str, object]]:
+    """Read one JSON Request without accepting a non-object payload."""
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise TypeError("predict Request must be one JSON object")
+    return [payload]
+
+
+def _read_backtest_requests(path: Path) -> list[dict[str, object]]:
+    """Read one strict seven-column Request CSV."""
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        if tuple(reader.fieldnames or ()) != _REQUEST_FIELDS:
+            raise ValueError(
+                "backtest Request columns must match Contract 1.0 exactly"
+            )
+        requests = [dict(row) for row in reader]
+    return requests
+
+
+def _json_result(results: list[dict[str, object]]) -> bytes:
+    """Serialize the single predict Result as compact UTF-8 JSON."""
+    if len(results) != 1:
+        raise ValueError("predict must produce exactly one Result")
+    return json.dumps(
+        results[0],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _csv_results(results: list[dict[str, object]]) -> bytes:
+    """Serialize ordered backtest Results with the exact five columns."""
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(
+        buffer,
+        fieldnames=_RESULT_FIELDS,
+        extrasaction="raise",
+        lineterminator="\n",
+    )
+    writer.writeheader()
+    writer.writerows(results)
+    return buffer.getvalue().encode("utf-8")
+
+
+def _atomic_write(output: Path, payload: bytes) -> None:
+    """Durably write a same-directory temporary file, then replace output."""
+    output = Path(output)
+    if output.exists() or output.is_symlink():
+        raise FileExistsError("output path must not already exist")
+    parent = output.parent
+    if parent.is_symlink() or not parent.is_dir():
+        raise ValueError("output parent must be an existing directory")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.",
+        suffix=".tmp",
+        dir=parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, output)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    """Build the exact Contract 1.0 command-line interface."""
+    parser = argparse.ArgumentParser()
+    commands = parser.add_subparsers(dest="command", required=True)
+    predict = commands.add_parser("predict")
+    predict.add_argument("--request", required=True)
+    predict.add_argument("--data-dir", required=True)
+    predict.add_argument("--output", required=True)
+    backtest = commands.add_parser("backtest")
+    backtest.add_argument("--requests", required=True)
+    backtest.add_argument("--data-dir", required=True)
+    backtest.add_argument("--output", required=True)
+    return parser
+
+
+def main(arguments: list[str] | None = None) -> int:
+    """Run one atomic predict or backtest command."""
+    parsed = _argument_parser().parse_args(arguments)
+    try:
+        with _business_stdout_to_stderr():
+            if parsed.command == "predict":
+                requests = _read_predict_request(Path(parsed.request))
+                serializer = _json_result
+            else:
+                requests = _read_backtest_requests(Path(parsed.requests))
+                serializer = _csv_results
+            results = _execute_requests(requests, Path(parsed.data_dir))
+            payload = serializer(results)
+            _atomic_write(Path(parsed.output), payload)
+        return 0
+    except Exception as error:
+        print(
+            f"error: {type(error).__name__}: {error}",
+            file=sys.stderr,
+        )
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

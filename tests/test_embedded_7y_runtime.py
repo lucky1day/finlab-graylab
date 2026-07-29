@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import builtins
 from contextlib import redirect_stderr, redirect_stdout
+import csv
 import importlib.util
 import io
+import json
 import math
 import os
 from pathlib import Path
@@ -49,6 +51,22 @@ PLATFORM_FILENAMES = (
     "weekly_output.csv",
     "monthly_output.csv",
     "api_wind_date.csv",
+)
+REQUEST_FIELDS = (
+    "request_id",
+    "predict_date",
+    "feature_date",
+    "target_date",
+    "daily_cutoff_key",
+    "weekly_cutoff_key",
+    "monthly_cutoff_key",
+)
+RESULT_FIELDS = (
+    "request_id",
+    "predict_date",
+    "feature_date",
+    "target_date",
+    "predicted_direction",
 )
 FORBIDDEN_ROOTS = (
     "/Users/macstudio0/bond-factor-lab/schemes/daily_5y_lgbm_5y10_0629",
@@ -237,6 +255,86 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             {"month_id": [202506, 202507], "factor": [1.0, 2.0]}
         ).to_csv(destination / "monthly_output.csv", index=False)
 
+    def platform_request(
+        self,
+        request_id: str,
+        *,
+        feature_date: str = "2025-07-15",
+    ) -> dict[str, str]:
+        target_date = (
+            "2025-07-16"
+            if feature_date == "2025-07-15"
+            else "2025-07-15"
+        )
+        return {
+            "request_id": request_id,
+            "predict_date": feature_date,
+            "feature_date": feature_date,
+            "target_date": target_date,
+            "daily_cutoff_key": feature_date,
+            "weekly_cutoff_key": "202529",
+            "monthly_cutoff_key": "202507",
+        }
+
+    def write_cli_test_runner(self) -> Path:
+        runner = self.tempdir / "generated_runner.py"
+        override = textwrap.dedent(
+            """
+            _CLI_TEST_INFER_CALLS = 0
+
+
+            def _cli_test_infer(
+                data_dir,
+                feature_date,
+                daily_cutoff_key,
+                weekly_cutoff_key,
+                monthly_cutoff_key,
+            ):
+                global _CLI_TEST_INFER_CALLS
+                _CLI_TEST_INFER_CALLS += 1
+                print("native python diagnostic")
+                os.write(1, b"native fd diagnostic\\n")
+                return {
+                    "action": 1 if feature_date.day % 2 else -1,
+                    "score": 999,
+                    "curve_action": -1,
+                }
+
+
+            _infer_one = _cli_test_infer
+            """
+        )
+        marker = '\nif __name__ == "__main__":\n'
+        if marker not in self.rendered_runner:
+            self.fail("generated runner has no CLI entrypoint")
+        runner.write_text(
+            self.rendered_runner.replace(marker, f"\n{override}{marker}", 1),
+            encoding="utf-8",
+        )
+        return runner
+
+    def write_requests_csv(
+        self,
+        path: Path,
+        requests: list[dict[str, str]],
+    ) -> None:
+        with path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=REQUEST_FIELDS)
+            writer.writeheader()
+            writer.writerows(requests)
+
+    def run_cli(
+        self,
+        runner: Path,
+        *arguments: object,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(BLACKBOX_PYTHON), str(runner), *(str(arg) for arg in arguments)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def replay_anchor_scores(
         self,
         data_dir: Path,
@@ -275,6 +373,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             protected_root = module._materialize_cutoff_data(
                 data_dir,
                 CUTOFF,
+                "2025-07-15",
+                "202529",
+                "202507",
                 run_root / "request",
             )
             five_frame = module._run_5y10(
@@ -600,7 +701,13 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             config_hash="69bf3a432784639d",
         ).loc[CUTOFF]
 
-        result = module._infer_one(source, CUTOFF)
+        result = module._infer_one(
+            source,
+            CUTOFF,
+            "2025-07-15",
+            "202529",
+            "202507",
+        )
 
         self.assertEqual(
             result,
@@ -613,6 +720,209 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                 "action": int(selected["action"]),
             },
         )
+
+    def test_predict_backtest_parity(self) -> None:
+        runner = self.write_cli_test_runner()
+        data_dir = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(data_dir)
+        request = self.platform_request("parity-001")
+        request_path = self.tempdir / "request.json"
+        request_path.write_text(
+            json.dumps(request),
+            encoding="utf-8",
+        )
+        requests_path = self.tempdir / "requests.csv"
+        self.write_requests_csv(requests_path, [request])
+        prediction_path = self.tempdir / "prediction.json"
+        backtest_path = self.tempdir / "backtest.csv"
+
+        prediction = self.run_cli(
+            runner,
+            "predict",
+            "--request",
+            request_path,
+            "--data-dir",
+            data_dir,
+            "--output",
+            prediction_path,
+        )
+        backtest = self.run_cli(
+            runner,
+            "backtest",
+            "--requests",
+            requests_path,
+            "--data-dir",
+            data_dir,
+            "--output",
+            backtest_path,
+        )
+
+        self.assertEqual(prediction.returncode, 0, prediction.stderr)
+        self.assertEqual(backtest.returncode, 0, backtest.stderr)
+        self.assertEqual(prediction.stdout, "")
+        self.assertEqual(backtest.stdout, "")
+        result = json.loads(prediction_path.read_text(encoding="utf-8"))
+        with backtest_path.open(encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(set(result), set(RESULT_FIELDS))
+        self.assertIn(result["predicted_direction"], (-1, 0, 1))
+        self.assertEqual(list(rows[0]), list(RESULT_FIELDS))
+        self.assertEqual(
+            {
+                **{key: rows[0][key] for key in RESULT_FIELDS[:-1]},
+                "predicted_direction": int(rows[0]["predicted_direction"]),
+            },
+            result,
+        )
+        self.assertNotIn("score", result)
+        self.assertNotIn("action", result)
+
+    def test_backtest_supports_100_identical_cutoffs_with_one_inference(
+        self,
+    ) -> None:
+        runner = self.write_cli_test_runner()
+        data_dir = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(data_dir)
+        requests = [
+            self.platform_request(f"batch-{index:03d}")
+            for index in range(100)
+        ]
+        requests_path = self.tempdir / "requests.csv"
+        self.write_requests_csv(requests_path, requests)
+        output_path = self.tempdir / "backtest.csv"
+
+        completed = self.run_cli(
+            runner,
+            "backtest",
+            "--requests",
+            requests_path,
+            "--data-dir",
+            data_dir,
+            "--output",
+            output_path,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(completed.stderr.count("native python diagnostic"), 1)
+        self.assertEqual(completed.stderr.count("native fd diagnostic"), 1)
+        with output_path.open(encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 100)
+        self.assertEqual(
+            [row["request_id"] for row in rows],
+            [request["request_id"] for request in requests],
+        )
+        self.assertTrue(all(list(row) == list(RESULT_FIELDS) for row in rows))
+
+    def test_reordered_batches_preserve_per_request_results(self) -> None:
+        runner = self.write_cli_test_runner()
+        data_dir = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(data_dir)
+        requests = [
+            self.platform_request("later", feature_date="2025-07-15"),
+            self.platform_request("earlier", feature_date="2025-07-14"),
+            self.platform_request("later-copy", feature_date="2025-07-15"),
+        ]
+        observed: list[list[dict[str, str]]] = []
+        for index, batch in enumerate((requests, list(reversed(requests)))):
+            request_path = self.tempdir / f"requests-{index}.csv"
+            output_path = self.tempdir / f"output-{index}.csv"
+            self.write_requests_csv(request_path, batch)
+            completed = self.run_cli(
+                runner,
+                "backtest",
+                "--requests",
+                request_path,
+                "--data-dir",
+                data_dir,
+                "--output",
+                output_path,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout, "")
+            with output_path.open(encoding="utf-8") as handle:
+                observed.append(list(csv.DictReader(handle)))
+
+        self.assertEqual(
+            [row["request_id"] for row in observed[0]],
+            [request["request_id"] for request in requests],
+        )
+        self.assertEqual(
+            {
+                row["request_id"]: row["predicted_direction"]
+                for row in observed[0]
+            },
+            {
+                row["request_id"]: row["predicted_direction"]
+                for row in observed[1]
+            },
+        )
+
+    def test_backtest_invalid_item_50_fails_without_output(self) -> None:
+        runner = self.write_cli_test_runner()
+        data_dir = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(data_dir)
+        requests = [
+            self.platform_request(f"atomic-{index:03d}")
+            for index in range(100)
+        ]
+        requests[49]["predict_date"] = "2025-7-15"
+        requests_path = self.tempdir / "requests.csv"
+        self.write_requests_csv(requests_path, requests)
+        output_path = self.tempdir / "must-not-exist.csv"
+
+        completed = self.run_cli(
+            runner,
+            "backtest",
+            "--requests",
+            requests_path,
+            "--data-dir",
+            data_dir,
+            "--output",
+            output_path,
+        )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "")
+        self.assertFalse(output_path.exists())
+        self.assertNotIn("native python diagnostic", completed.stderr)
+
+    def test_request_validation_is_strict_and_fail_closed(self) -> None:
+        module = self.load_generated_module()
+        data_dir = self.tempdir / "platform"
+        self.write_minimal_platform_fixture(data_dir)
+        valid = self.platform_request("strict-001")
+        cases: dict[str, list[dict[str, object]]] = {
+            "empty": [],
+            "too-many": [
+                self.platform_request(f"many-{index:03d}")
+                for index in range(101)
+            ],
+            "duplicate-id": [valid, dict(valid)],
+            "empty-id": [{**valid, "request_id": ""}],
+            "missing-field": [
+                {
+                    key: value
+                    for key, value in valid.items()
+                    if key != "target_date"
+                }
+            ],
+            "extra-field": [{**valid, "action": 1}],
+            "invalid-date": [{**valid, "predict_date": "2025-7-15"}],
+            "date-order": [{**valid, "target_date": "2025-07-15"}],
+            "daily-cutoff": [
+                {**valid, "daily_cutoff_key": "2025-07-14"}
+            ],
+            "weekly-cutoff": [{**valid, "weekly_cutoff_key": "202528"}],
+            "monthly-cutoff": [{**valid, "monthly_cutoff_key": "202506"}],
+        }
+        with patch.object(module, "_infer_one") as infer:
+            for name, requests in cases.items():
+                with self.subTest(name=name):
+                    with self.assertRaises((TypeError, ValueError)):
+                        module._execute_requests(requests, data_dir)
+            infer.assert_not_called()
 
     def test_materializes_exact_causal_platform_cutoff(self) -> None:
         module = self.load_generated_module()
@@ -636,6 +946,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         protected_root = module._materialize_cutoff_data(
             source,
             CUTOFF,
+            "2025-07-15",
+            "202529",
+            "202507",
             self.tempdir / "request",
         )
 
@@ -650,7 +963,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         monthly = pd.read_csv(data_root / "monthly_output.csv")
         self.assertEqual(pd.to_datetime(daily["date"]).max(), CUTOFF)
         self.assertEqual(pd.to_datetime(calendar["rdate"]).max(), CUTOFF)
-        self.assertEqual(weekly["week_id"].tolist(), [202529])
+        self.assertEqual(weekly["week_id"].tolist(), [202528, 202529])
         self.assertEqual(monthly["month_id"].tolist(), [202506, 202507])
 
     def test_post_cutoff_disorder_in_each_stream_is_ignored(self) -> None:
@@ -660,6 +973,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         baseline_root = module._materialize_cutoff_data(
             baseline_source,
             CUTOFF,
+            "2025-07-15",
+            "202529",
+            "202507",
             self.tempdir / "baseline-request",
         )
         baseline = {
@@ -710,6 +1026,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                 protected = module._materialize_cutoff_data(
                     source,
                     CUTOFF,
+                    "2025-07-15",
+                    "202529",
+                    "202507",
                     self.tempdir / f"future-disorder-request-{index}",
                 )
                 for output_filename in PLATFORM_FILENAMES:
@@ -728,6 +1047,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             module._materialize_cutoff_data(
                 source,
                 CUTOFF,
+                "2025-07-15",
+                "202529",
+                "202507",
                 self.tempdir / "missing-request",
             )
 
@@ -739,6 +1061,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             module._materialize_cutoff_data(
                 source,
                 CUTOFF,
+                "2025-07-15",
+                "202529",
+                "202507",
                 self.tempdir / "nonmonotonic-request",
             )
 
@@ -751,6 +1076,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             module._materialize_cutoff_data(
                 source,
                 CUTOFF,
+                "2025-07-15",
+                "202529",
+                "202507",
                 self.tempdir / "nonfinite-request",
             )
 
@@ -770,6 +1098,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                     module._materialize_cutoff_data(
                         source,
                         CUTOFF,
+                        "2025-07-15",
+                        "202529",
+                        "202507",
                         self.tempdir / f"retained-nonfinite-request-{index}",
                     )
 
