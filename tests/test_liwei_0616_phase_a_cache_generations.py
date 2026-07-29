@@ -237,6 +237,89 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                 cache["STD"]["test_dates"],
                 dates,
             )
+            digest = (
+                cache_module.consumer_input_state_equivalence_sha256
+            )
+            publisher_state = cache_module._input_generation_state(
+                daily_df=self.daily.iloc[:2].copy(),
+                weekly_df=self.weekly,
+                monthly_df=self.monthly,
+                auxiliary_dependency_projection=publisher_projection,
+                native_generation_binding=None,
+            )
+            consumer_state = cache_module._input_generation_state(
+                daily_df=self.daily.iloc[:2].copy(),
+                weekly_df=self.weekly,
+                monthly_df=self.monthly,
+                auxiliary_dependency_projection=consumer_projection,
+                native_generation_binding=None,
+            )
+            self.assertNotEqual(
+                publisher_state["content_id"],
+                consumer_state["content_id"],
+            )
+            self.assertEqual(digest(publisher_state), digest(consumer_state))
+            self.assertEqual(
+                first["consumer_input_equivalence_sha256"],
+                digest(publisher_state),
+            )
+            self.assertEqual(
+                second["consumer_input_equivalence_sha256"],
+                digest(consumer_state),
+            )
+
+            corrupted = copy.deepcopy(consumer_state)
+            corrupted["content_id"] = "0" * 64
+            with self.assertRaisesRegex(
+                ValueError,
+                "content digest mismatch",
+            ):
+                digest(corrupted)
+
+    def test_public_input_change_audit_validator_is_closed_world(
+        self,
+    ) -> None:
+        validator = (
+            cache_module.validate_phase_a_cache_input_change_audit
+        )
+        state = cache_module._input_generation_state(
+            daily_df=self.daily.iloc[:2].copy(),
+            weekly_df=self.weekly,
+            monthly_df=self.monthly,
+            auxiliary_dependency_projection=self._projection(
+                ["2026-07-01", "2026-07-02"],
+                [1.0, 2.0],
+            ),
+            native_generation_binding=None,
+        )
+        change = cache_module._public_input_change(
+            cache_module._input_change_analysis(state, state)
+        )
+        self.assertEqual(validator(change), change)
+
+        for label, mutate in (
+            (
+                "unknown-field",
+                lambda value: value.update({"unexpected": True}),
+            ),
+            (
+                "bad-frame-enum",
+                lambda value: value["frames"]["daily"].update(
+                    {"change_type": "forged"}
+                ),
+            ),
+            (
+                "bad-native-flag",
+                lambda value: value.update(
+                    {"native_generation_changed": 1}
+                ),
+            ),
+        ):
+            with self.subTest(label=label):
+                invalid = copy.deepcopy(change)
+                mutate(invalid)
+                with self.assertRaises(ValueError):
+                    validator(invalid)
 
     def test_consumer_rejects_any_effective_raw_mapping_or_native_drift(
         self,

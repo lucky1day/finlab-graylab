@@ -549,6 +549,7 @@ def _prepare_under_family_lock(
                 build_reason="truncated_request_preserved",
                 family_root=family_root,
                 published=True,
+                input_state=input_state,
                 input_change=input_change,
                 trusted_qualification=trusted_qualification,
             )
@@ -740,6 +741,7 @@ def _prepare_under_family_lock(
             build_reason="cache_complete",
             family_root=family_root,
             published=True,
+            input_state=input_state,
             input_change=input_change,
             trusted_qualification=trusted_qualification,
         )
@@ -790,6 +792,7 @@ def _prepare_under_family_lock(
             build_reason=build_reason,
             family_root=family_root,
             published=True,
+            input_state=input_state,
             input_change=input_change,
             trusted_qualification=trusted_qualification,
         )
@@ -903,6 +906,7 @@ def _validated_consumer_hit(
         build_reason="consumer_validated_hit",
         family_root=family_root,
         published=True,
+        input_state=input_state,
         input_change=dict(input_change),
         trusted_qualification=trusted_qualification,
     )
@@ -914,37 +918,49 @@ def _consumer_input_states_equivalent(
 ) -> bool:
     """比较共享 family 的有效输入，忽略各 adapter 自身 proof 文件身份。"""
     try:
-        publisher = _validate_input_generation_state_record(
+        return consumer_input_state_equivalence_sha256(
             publisher_state
-        )
-        consumer = _validate_input_generation_state_record(
+        ) == consumer_input_state_equivalence_sha256(
             consumer_state
         )
     except (TypeError, ValueError):
         return False
+
+
+def consumer_input_state_equivalence_sha256(state: Any) -> str:
+    """返回共享 consumer 输入等价口径的 canonical SHA-256。
+
+    摘要前完整验证 input state 结构与 self content-id。schema 3 只忽略
+    adapter 自身 proof 文件身份及其派生摘要，其余输入全部参与摘要。
+    """
+    validated = _validate_input_generation_state_record(state)
+    comparable = _consumer_input_state_comparable(validated)
+    return hashlib.sha256(
+        _canonical_json(comparable).encode("utf-8")
+    ).hexdigest()
+
+
+def _consumer_input_state_comparable(
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
     if (
-        publisher["schema_version"]
-        != INPUT_GENERATION_STATE_SCHEMA_VERSION
-        or consumer["schema_version"]
+        state["schema_version"]
         != INPUT_GENERATION_STATE_SCHEMA_VERSION
     ):
-        return publisher == consumer
+        return dict(state)
 
-    def comparable(state: Mapping[str, Any]) -> dict[str, Any]:
-        effective = dict(state["effective_auxiliary"])
-        proof = dict(effective["proof"])
-        proof.pop("proof_files")
-        effective["proof"] = proof
-        effective.pop("proof_identity_sha256")
-        effective.pop("content_sha256")
-        return {
-            "schema_version": state["schema_version"],
-            "frames": state["frames"],
-            "effective_auxiliary": effective,
-            "native_generation": state["native_generation"],
-        }
-
-    return comparable(publisher) == comparable(consumer)
+    effective = dict(state["effective_auxiliary"])
+    proof = dict(effective["proof"])
+    proof.pop("proof_files")
+    effective["proof"] = proof
+    effective.pop("proof_identity_sha256")
+    effective.pop("content_sha256")
+    return {
+        "schema_version": state["schema_version"],
+        "frames": state["frames"],
+        "effective_auxiliary": effective,
+        "native_generation": state["native_generation"],
+    }
 
 
 def _lineage_qualification_for_spec(
@@ -4044,6 +4060,152 @@ def _public_input_change(
     }
 
 
+def validate_phase_a_cache_input_change_audit(
+    value: Any,
+) -> dict[str, Any]:
+    """闭世界校验 Phase A audit 的公开 input-change 结构。"""
+    fields = {
+        "change_type",
+        "raw_change_type",
+        "frames",
+        "effective_auxiliary",
+        "date_to_week",
+        "projection_status",
+        "suffix_start_date",
+        "native_generation_changed",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValueError("cache input-change audit fields mismatch")
+    aggregate_types = {
+        "initial",
+        "unchanged",
+        "append",
+        "revision",
+        "unknown",
+    }
+    for field in ("change_type", "raw_change_type"):
+        if value.get(field) not in aggregate_types:
+            raise ValueError(
+                f"cache input-change audit {field} is invalid"
+            )
+    frames = value.get("frames")
+    if not isinstance(frames, Mapping) or set(frames) != {
+        "daily",
+        "weekly",
+        "monthly",
+    }:
+        raise ValueError("cache input-change audit frame set mismatch")
+    normalized_frames = {
+        name: _validate_input_change_frame_audit(
+            frames[name],
+            label=f"frames.{name}",
+            allow_unavailable=False,
+            require_schema_changed=True,
+        )
+        for name in ("daily", "weekly", "monthly")
+    }
+    effective = _validate_input_change_frame_audit(
+        value.get("effective_auxiliary"),
+        label="effective_auxiliary",
+        allow_unavailable=True,
+        require_schema_changed=True,
+    )
+    date_to_week = _validate_input_change_frame_audit(
+        value.get("date_to_week"),
+        label="date_to_week",
+        allow_unavailable=True,
+        require_schema_changed=False,
+    )
+    projection_status = value.get("projection_status")
+    if projection_status not in {
+        "absent",
+        "schema_changed",
+        "proof_changed",
+        "mapping_changed",
+        "valid",
+        "missing_from_parent",
+        "missing_current",
+    }:
+        raise ValueError(
+            "cache input-change audit projection_status is invalid"
+        )
+    suffix_start = value.get("suffix_start_date")
+    if suffix_start is not None and (
+        not isinstance(suffix_start, str) or not suffix_start
+    ):
+        raise ValueError(
+            "cache input-change audit suffix_start_date is invalid"
+        )
+    native_changed = value.get("native_generation_changed")
+    if type(native_changed) is not bool:
+        raise ValueError(
+            "cache input-change audit native flag is invalid"
+        )
+    return {
+        "change_type": value["change_type"],
+        "raw_change_type": value["raw_change_type"],
+        "frames": normalized_frames,
+        "effective_auxiliary": effective,
+        "date_to_week": date_to_week,
+        "projection_status": projection_status,
+        "suffix_start_date": suffix_start,
+        "native_generation_changed": native_changed,
+    }
+
+
+def _validate_input_change_frame_audit(
+    value: Any,
+    *,
+    label: str,
+    allow_unavailable: bool,
+    require_schema_changed: bool,
+) -> dict[str, Any]:
+    fields = {"change_type", "earliest_changed_key"}
+    if require_schema_changed:
+        fields.add("schema_changed")
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise ValueError(
+            f"cache input-change audit {label} fields mismatch"
+        )
+    change_types = {
+        "initial",
+        "unchanged",
+        "append",
+        "revision",
+        "unknown",
+    }
+    if allow_unavailable:
+        change_types.add("unavailable")
+    change_type = value.get("change_type")
+    if change_type not in change_types:
+        raise ValueError(
+            f"cache input-change audit {label} type is invalid"
+        )
+    earliest = value.get("earliest_changed_key")
+    if (
+        earliest is not None
+        and (
+            isinstance(earliest, bool)
+            or not isinstance(earliest, (str, int))
+        )
+    ):
+        raise ValueError(
+            f"cache input-change audit {label} earliest key is invalid"
+        )
+    normalized = {
+        "change_type": change_type,
+        "earliest_changed_key": earliest,
+    }
+    if require_schema_changed:
+        schema_changed = value.get("schema_changed")
+        if type(schema_changed) is not bool:
+            raise ValueError(
+                f"cache input-change audit {label} schema flag is invalid"
+            )
+        normalized["schema_changed"] = schema_changed
+    return normalized
+
+
 def _switch_current_generation(
     family_root: Path,
     generation: _LoadedGeneration,
@@ -4139,6 +4301,7 @@ def _generation_audit(
     build_reason: str,
     family_root: Path,
     published: bool,
+    input_state: Mapping[str, Any],
     input_change: Mapping[str, Any],
     trusted_qualification: Mapping[str, object] | None,
 ) -> dict[str, Any]:
@@ -4191,6 +4354,8 @@ def _generation_audit(
         "input_content_id": generation.manifest["input_state"][
             "content_id"
         ],
+        "consumer_input_equivalence_sha256":
+            consumer_input_state_equivalence_sha256(input_state),
         "compare_gate_evidence": evidence,
         "input_change": _public_input_change(input_change),
         "family_root": str(family_root),
