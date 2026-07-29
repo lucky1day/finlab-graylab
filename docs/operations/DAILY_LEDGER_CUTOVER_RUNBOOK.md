@@ -38,7 +38,7 @@ recovery）早已建成，被四道门禁拦住。本手册逐个解除。
 |---|---|---|---|
 | S1 | 前置核验 | — | 只读 |
 | S2 | 应用 migration 018 | ② started_at NOT NULL | operator（写库） |
-| S3 | liwei 7 family bootstrap | ① 缓存全量冷重建 | operator（算法） |
+| S3 | storage 预检 + liwei 7 family bootstrap | ① 缓存全量冷重建 | operator（算法） |
 | S4 | 钉值一致性核验 | ① 钉值过期 | 只读 |
 | S5 | 证据采集 + 容量门禁评估 | ③ admission BLOCKED（证据） | operator |
 | S6 | 双 CMS 签名仪式 | ③ admission BLOCKED（签名） | operator（root） |
@@ -68,18 +68,19 @@ cd /Users/macstudio0/bond-factor-lab
 git status --porcelain            # 必须无输出
 git rev-parse HEAD
 
-# 2) 迁移 history 当前到 017
-conda run --no-capture-output -n bond_factor_lab_service \
-  python scripts/apply_migrations.py --inspect-applying-018   # 只读，不需 identity 参数
-
-# 3) 服务现状：只有 backend 允许在线，scheduler/preflight 必须未加载
+# 2) 服务现状：只有 backend 允许在线，scheduler/preflight 必须未加载
 launchctl print gui/$(id -u)/com.bond-factor-lab.scheduler    2>&1 | grep -q "could not find" && echo "scheduler 未加载 ✓"
 launchctl print gui/$(id -u)/com.bond-factor-lab.v2-preflight 2>&1 | grep -q "could not find" && echo "preflight 未加载 ✓"
 
-# 4) rollout / admission 契约现状
+# 3) rollout / admission 契约现状
 python3 -c "import json;print('rollout mode =', json.load(open('deploy/daily_coordinator_rollout_v1.json'))['mode'])"   # legacy
 python3 -c "import json;d=json.load(open('deploy/daily_capacity_admission_v2.json'));print('admission status =', d['status'], ' policy_sha256 =', d['policy_sha256'][:16])"
 ```
+
+`--inspect-applying-018` 只用于已经留下 `018=APPLYING` 的中断恢复，不是普通
+pending migration 的状态检查；不得在正常 017 状态下把它的 `UNSAFE` 输出误判为
+数据库漂移。当前生产 migration 状态以 `docs/CURRENT_STATUS.md` 和获准窗口内的受控
+只读核验为准，真正 apply 时 runner 还会再次 fail-closed 校验完整 history。
 
 **S1.5 强制检查（钉值刷新的连带影响）**：`require_daily_capacity_admission` **先比
 `policy_sha256`、后判 `status`**（`scheduler/capacity_admission.py`）。钉值刷新改变了
@@ -100,33 +101,27 @@ PY
 
 ## S2. 应用 migration 018（operator，写库）
 
-**必须先于 S5。** 停掉全部 writer 后执行。identity 两个参数从只读 inspect 取，
-**不落盘、不进 shell history**（用带前导空格的命令或临时变量）。
+**必须先于 S5，并在获准的 maintenance 子窗口内执行。** S1 允许在线的 backend
+也必须先 bootout；连同 scheduler、preflight、算法、refresh 和 API background
+子进程一起核验为零 writer 后才能 apply。018 前向兼容，apply 和 postcondition
+核验完成后可只恢复 legacy backend，scheduler/preflight 继续保持未加载。
+
+identity 两个参数只能从受控只读 inspect JSON 或获准的只读 identity query 取得；
+不得在运行手册中拼接 DSN，也不得把生产
+database name、server UUID、DSN 或凭据写入文档、报告和 shell history。以下用交互
+输入把值只保存在当前 shell 变量中：
 
 ```bash
-# 取 database name 与 server uuid（只读）
- DBNAME=$(conda run --no-capture-output -n bond_factor_lab_service python - <<'PY'
-import os
-from sqlalchemy import create_engine, text
-from shared.db_config import DatabaseConfig
-c = DatabaseConfig.from_env()
-e = create_engine(f"mysql+pymysql://{c.user}:{c.password}@{c.host}:{c.port}/{c.database}?charset={c.charset}")
-with e.connect() as x: print(x.execute(text("SELECT DATABASE()")).scalar())
-PY
-)
- SRVUUID=$(conda run --no-capture-output -n bond_factor_lab_service python - <<'PY'
-from sqlalchemy import create_engine, text
-from shared.db_config import DatabaseConfig
-c = DatabaseConfig.from_env()
-e = create_engine(f"mysql+pymysql://{c.user}:{c.password}@{c.host}:{c.port}/{c.database}?charset={c.charset}")
-with e.connect() as x: print(x.execute(text("SELECT @@server_uuid")).scalar())
-PY
-)
+# 先在获准的只读流程中核对 identity，再在提示符输入；输入值不进入 history。
+read -r "DBNAME?expected database name: "
+read -rs "SRVUUID?expected server UUID: "
+echo
 
 # 应用（--apply 是不可省略的写库授权）
- conda run --no-capture-output -n bond_factor_lab_service \
-   python scripts/apply_migrations.py --apply \
-   --expected-database-name "$DBNAME" --expected-server-uuid "$SRVUUID"
+conda run --no-capture-output -n bond_factor_lab_service \
+  python scripts/apply_migrations.py --apply \
+  --expected-database-name "$DBNAME" --expected-server-uuid "$SRVUUID"
+unset DBNAME SRVUUID
 ```
 
 若 runner 因断连留下 `018=APPLYING`，先 `--inspect-applying-018`（只读）再
@@ -141,12 +136,13 @@ identity 参数。详见 `deploy/README.md` 的 recovery 章节。
 
 ## S3. liwei 7 family 窗口外 bootstrap（operator，算法）
 
-**必须先于 S5**（容量证据要在缓存已迁移的状态下采集），且 S7 的 liwei cache root
-0700 必须先于本步（见 S7 陷阱）。
+**必须先于 S5**（容量证据要在缓存已迁移的状态下采集）。本步先以服务环境执行
+7 个 storage roots 的统一安全预检，确保 liwei cache root 在算法首次创建缓存前已经是
+服务账号所有的精确 0700；S7 在切换窗口前再次执行同一预检。
 
 预热清单来自代码派生（`scripts/prewarm_liwei_0616_phase_a_cache.py` 的
-`PREWARM_SCHEMES`，逐 family 的 publisher）。7 个 family 各有独立
-`.prewarmer.lock`，可并行；本机实测 2–3 并行安全。
+`PREWARM_SCHEMES`，逐 family 的 publisher）。正式手册只使用仓库提供的串行入口，
+不在生产窗口临时编写并行脚本。
 
 ```bash
 cd /Users/macstudio0/bond-factor-lab
@@ -155,17 +151,16 @@ export PYTHONNOUSERSITE=1
 export BFL_SOURCE_DB_CONFIG_ROOT=/Users/macstudio0/.config/bond-factor-lab
 export BFL_SOURCE_DB_CONFIG_PATH=$BFL_SOURCE_DB_CONFIG_ROOT/source-runtime-db.json
 
-# 串行官方入口（最简单、不写业务库）：
+# 平台存储预检使用服务环境；会安全创建缺失根，但拒绝既有 owner/mode/symlink 漂移。
 conda run --no-capture-output -n bond_factor_lab_service \
+  python -c 'from shared.daily_storage_preflight import preflight_daily_storage as p; print(p().labels)'
+
+# Native 算法只允许使用 forecast_env；串行入口不写业务库。
+conda run --no-capture-output -n forecast_env \
   python scripts/prewarm_liwei_0616_phase_a_cache.py --predict-date <下一交易日>
 ```
 
-并行做法：对 `PREWARM_SCHEMES` 的每个 publisher 单独调用
-`scheduler.scheme_runner.run_scheme(publisher, predict_date)`，每个脚本**必须有
-`if __name__ == "__main__":`**（macOS spawn 会重新 import `__main__`，缺保护会与
-publisher 抢 lock 死锁）。
-
-**本机实测耗时（供窗口预算）**：
+**本机观察耗时（只供窗口预算，不替代 S5 的 attested evidence）**：
 
 | family | 冷重建（首次 bootstrap） | bootstrap 后单日 |
 |---|---|---|
@@ -175,8 +170,9 @@ publisher 抢 lock 死锁）。
 | liwei_0616_7y01_v31 | 4.4 min | 78.7 s |
 | liwei_0616_7y03_v31 | 4.5 min | 82.1 s |
 
-7 个冷重建：2–3 并行墙钟约 60–75 分钟（实测 5y+10y 并行 42.5 min）。
-bootstrap 后 7 个串行合计 9.5 分钟、全部 `hit`/`missing_dates=[]`/零训练。
+bootstrap 后 7 个串行合计约 9.5 分钟、全部
+`hit`/`missing_dates=[]`/零训练。首次冷重建必须为串行官方入口预留充足维护窗口；
+不得把未受控并行观察当作生产执行方式或容量门禁证据。
 
 **验证**：每个 family 的 `current.json` 指向的 generation manifest
 `input_state.schema_version == 3` 且含 `effective_auxiliary`；再跑一次任一 publisher
@@ -208,9 +204,10 @@ conda run --no-capture-output -n forecast_env \
 **S2、S3 完成后执行。** 采集一次真实 forced-cold execute-only observation，用离线
 gate 评估。
 
-**两种口径并列（治理由项目负责人裁定，本手册不替裁剪）**：
+**三种口径并列（治理由项目负责人裁定，本手册不替裁剪）**：
 
-- **【文档口径】** `deploy/README.md` / `DAILY_SIGNAL_SLA.md`：20 次 forced-cold +
+- **【文档口径】** `deploy/README.md` /
+  `docs/architecture/DAILY_SIGNAL_SLA.md`：20 次 forced-cold +
   20 次真实 revision + 连续 10 交易日 25/25 + P95 ≤80 分钟。
 - **【代码口径】** `scheduler/capacity_gate.py` 实际强制：`MIN_FORCED_COLD_SAMPLES=1`、
   `MIN_REVISION_SAMPLES=0`、`MIN_PRODUCTION_OBSERVATIONS=1`、`MAX_FORCED_COLD_MINUTES=85.0`；
@@ -257,51 +254,29 @@ operator 证书 DER SHA-256 与 keychain 路径、有效期窗口、`admitted_by
 
 ---
 
-## S7. 7 个 ledger storage roots（operator，0700）
+## S7. 再次预检 7 个 ledger storage roots（operator，0700）
 
 ledger 每个日频入口启动都会预检 7 个根
 （`shared/daily_storage_preflight.py`，调用于 `scheduler/main.py`、
 `scheduler/daily_runtime.py`）。要求：叶子根**恰好 0700**、属主为服务账号；祖先链
 owner ∈ {root, 服务账号}、非 group/other 可写；全链无 symlink、无 `..`。
 
-⚠ **陷阱：liwei cache root 必须先于 S3 设为 0700**。cache 模块自建目录用默认 umask
+S3 已在 bootstrap 前执行同一统一预检；本步必须再次核验切换窗口当下状态。cache
+模块自建目录用默认 umask
 （通常 0755），自身只检查"非 group/world 可写"（0755 通得过），而 storage preflight
-要求**精确 0700** 且**绝不 chmod 既有目录**。所以若先 bootstrap 再设权限，preflight
-会因 0755 拒绝。
+要求**精确 0700** 且**绝不 chmod 既有目录**；任一根发生漂移都必须停止切换。
 
 ```bash
-SERVICE_USER=macstudio0
-PROJECT_ROOT=/Users/macstudio0/bond-factor-lab
-SVC_HOME=$(dscl . -read "/Users/$SERVICE_USER" NFSHomeDirectory | awk '{print $2}')
-RUNTIME_ROOT="$SVC_HOME/Library/Application Support/BondFactorLab/daily-runtime-v1"
-CACHE_ROOT="${LIWEI_0616_PHASE_A_CACHE_ROOT:-$PROJECT_ROOT/backtest_artifacts/runtime_cache/liwei_0616}"
-
-ROOTS=(
-  "$RUNTIME_ROOT" "$RUNTIME_ROOT/occurrence-locks"
-  "$PROJECT_ROOT/backtest_artifacts/input_generations/native"
-  "$PROJECT_ROOT/backtest_artifacts/input_generations/databridge"
-  "$PROJECT_ROOT/data/data_bridge"
-  "$PROJECT_ROOT/backtest_artifacts/data_bridge_refresh"
-  "$CACHE_ROOT"
-)
-# 必须以服务账号身份创建（root 创建会触发 DAILY_STORAGE_OWNER_MISMATCH）
-for r in "${ROOTS[@]}"; do
-  sudo -u "$SERVICE_USER" /bin/mkdir -p "$r"
-  sudo -u "$SERVICE_USER" /bin/chmod 700 "$r"
-done
-# 祖先目录去掉 group/other 写位
-sudo chmod go-w "$SVC_HOME" "$SVC_HOME/Library" "$SVC_HOME/Library/Application Support" \
-  "$SVC_HOME/Library/Application Support/BondFactorLab" \
-  "$PROJECT_ROOT" "$PROJECT_ROOT/backtest_artifacts" \
-  "$PROJECT_ROOT/backtest_artifacts/input_generations" "$PROJECT_ROOT/data"
-```
-
-**验证**：
-```bash
-cd "$PROJECT_ROOT" && set -a && . .env && set +a && PYTHONNOUSERSITE=1 \
+cd /Users/macstudio0/bond-factor-lab
+set -a; . .env; set +a
+PYTHONNOUSERSITE=1 \
   conda run --no-capture-output -n bond_factor_lab_service \
   python -c 'from shared.daily_storage_preflight import preflight_daily_storage as p; print(p().labels)'
 ```
+
+该预检会以 no-follow/openat 语义安全创建缺失目录；不会修复既有错误 owner、mode 或
+symlink。若失败，停止切换，按错误 label 在获准维护流程中逐级核验并修复，禁止使用
+会跟随 symlink 的通用 `mkdir -p`/`chmod` 循环批量处理这些根。
 
 ---
 
@@ -328,7 +303,7 @@ cd "$PROJECT_ROOT" && set -a && . .env && set +a && PYTHONNOUSERSITE=1 \
 
 ```bash
 # 1) health 报 ledger
-curl -s http://127.0.0.1:8100/api/health | python3 -m json.tool | grep -A3 daily_schedule
+curl -fsS http://127.0.0.1:8100/api/health | python3 -m json.tool | grep -A3 daily_schedule
 #   期望 mode=ledger、overall 非 not_enabled
 
 # 2) 生产日频巡检（退出码 0=ok / 1=warning / 2=error）
