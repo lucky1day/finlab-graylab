@@ -31,7 +31,7 @@ from shared.data_bridge.refresh import (  # noqa: E402
     run_full_refresh,
 )
 from shared.data_bridge.authority import (  # noqa: E402
-    resolve_databridge_continuity_cutoffs,
+    resolve_databridge_continuity_authority_from_engine,
 )
 from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E402
 from shared.daily_coordinator_mode import (  # noqa: E402
@@ -52,10 +52,12 @@ def refresh_current(*, refresh_date: str, publish: bool):
     config = DataBridgeRefreshConfig.from_env()
     engine = create_engine_from_env()
     try:
-        continuity_cutoffs = resolve_databridge_continuity_cutoffs(
-            config,
-            feature_date=expected_daily_date,
-            connection=engine,
+        continuity_authority = (
+            resolve_databridge_continuity_authority_from_engine(
+                config,
+                feature_date=expected_daily_date,
+                engine=engine,
+            )
         )
     finally:
         engine.dispose()
@@ -65,7 +67,7 @@ def refresh_current(*, refresh_date: str, publish: bool):
         expected_daily_date=expected_daily_date,
         refresh_date=refresh_date,
         publish=publish,
-        continuity_cutoffs=continuity_cutoffs,
+        continuity_authority=continuity_authority,
     )
 
 

@@ -102,11 +102,7 @@ class SchedulerMainTests(unittest.TestCase):
 
         engine = SimpleNamespace(dispose=Mock())
         config = SimpleNamespace(deadline_at=Mock(return_value=None))
-        cutoffs = {
-            "daily_output.csv": "2026-07-27",
-            "weekly_output.csv": "202629",
-            "monthly_output.csv": "202607",
-        }
+        authority = object()
         result = SimpleNamespace(
             state={"generation_id": "generation-new"},
             rounds_completed=2,
@@ -125,8 +121,8 @@ class SchedulerMainTests(unittest.TestCase):
             ),
             patch.object(
                 scheduler_main,
-                "resolve_databridge_continuity_cutoffs",
-                return_value=cutoffs,
+                "resolve_databridge_continuity_authority_from_engine",
+                return_value=authority,
                 create=True,
             ) as resolve,
             patch.object(
@@ -159,11 +155,11 @@ class SchedulerMainTests(unittest.TestCase):
         resolve.assert_called_once_with(
             config,
             feature_date="2026-07-28",
-            connection=engine,
+            engine=engine,
         )
-        self.assertEqual(
-            refresh.call_args.kwargs["continuity_cutoffs"],
-            cutoffs,
+        self.assertIs(
+            refresh.call_args.kwargs["continuity_authority"],
+            authority,
         )
         engine.dispose.assert_called_once_with()
 

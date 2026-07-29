@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import copy
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -404,7 +405,7 @@ def run_full_refresh(
     publication_capability: (
         DailyCoordinatorPublicationCapability | None
     ) = None,
-    continuity_cutoffs: Mapping[str, object] | None = None,
+    continuity_authority: object | None = None,
 ) -> RefreshResult:
     authority = _require_publish_authority(
         publish=publish,
@@ -427,10 +428,26 @@ def run_full_refresh(
         built_directories: list[Path] = []
         try:
             store.recover(schema_path=config.schema_path)
+            previous_current = _load_previous_current_locked(
+                store,
+                schema_path=config.schema_path,
+            )
+            continuity_cutoffs = _validate_continuity_authority(
+                previous_current,
+                continuity_authority=continuity_authority,
+            )
             _ensure_before_deadline(deadline_at)
             _validate_source_tables(client.get_tables())
             _ensure_source_ready(client, expected_daily_date)
-            previous_keys = _load_previous_keys(store, config.schema_path)
+            previous_keys = (
+                {
+                    filename: profile.keys
+                    for filename, profile
+                    in previous_current.dataset.files.items()
+                }
+                if previous_current is not None
+                else None
+            )
             builder = DataBridgeRoundBuilder(client, config)
 
             def rounds() -> Iterator[DownloadRound]:
@@ -544,35 +561,13 @@ def check_current_dataset(
     with store.current_read(
         strict_read_only=strict_read_only,
     ) as state:
-        marker = _read_publication_manifest(store.current_dir)
-        state_identity = _publication_identity_from_state(state)
-        if marker != state_identity:
-            raise DataBridgeRefreshError(
-                "DataBridge current publication manifest identity does not "
-                "match state"
-            )
-        dataset = validate_dataset(
-            read_dataset_directory(
-                store.current_dir,
-                allowed_sidecar_filenames=frozenset(
-                    {CURRENT_PUBLICATION_MANIFEST}
-                ),
-            ),
+        current = _validate_current_dataset_locked(
+            store,
+            state=state,
             schema_path=config.schema_path,
             expected_daily_date=expected_daily_date,
         )
-        if state.get("schema_version") != dataset.schema_version:
-            raise DataBridgeRefreshError(
-                "DataBridge state schema_version does not match current files"
-            )
-        if state.get("business_digest") != dataset.business_digest:
-            raise DataBridgeRefreshError(
-                "DataBridge state digest does not match current files"
-            )
-        _validate_identity_against_dataset(
-            marker,
-            dataset=dataset,
-        )
+        dataset = current.dataset
         if expected_publication_capability is not None:
             authority = _validate_publication_capability(
                 expected_publication_capability
@@ -610,21 +605,7 @@ def check_current_dataset(
                 f"DataBridge refresh_date must be {required_refresh_date}, "
                 f"got {state.get('refresh_date')}"
             )
-        state_files = state.get("files")
-        if not isinstance(state_files, dict):
-            raise DataBridgeRefreshError(
-                "DataBridge state files profile is missing"
-            )
-        for filename, profile in dataset.files.items():
-            item = state_files.get(filename)
-            if (
-                not isinstance(item, dict)
-                or item.get("sha256") != profile.sha256
-            ):
-                raise DataBridgeRefreshError(
-                    f"DataBridge state hash mismatch for {filename}"
-                )
-        return CurrentDataset(state=state, dataset=dataset)
+        return current
 
 
 def _ensure_source_ready(client, expected_daily_date: str) -> None:
@@ -646,23 +627,148 @@ def _ensure_source_ready(client, expected_daily_date: str) -> None:
         )
 
 
-def _load_previous_keys(
+def _load_previous_current_locked(
     store: "DataBridgeStore",
     schema_path: Path,
-) -> dict[str, frozenset[str]] | None:
+) -> CurrentDataset | None:
     if not store.current_dir.is_dir():
+        if store.state_path.exists():
+            raise DataBridgeRefreshError(
+                "DataBridge current is missing while state still exists"
+            )
         return None
-    with store.lock(exclusive=False):
-        dataset = validate_dataset(
-            read_dataset_directory(
-                store.current_dir,
-                allowed_sidecar_filenames=frozenset(
-                    {CURRENT_PUBLICATION_MANIFEST}
-                ),
-            ),
+    with store.current_read() as state:
+        return _validate_current_dataset_locked(
+            store,
+            state=state,
             schema_path=schema_path,
         )
-    return {filename: profile.keys for filename, profile in dataset.files.items()}
+
+
+def _validate_current_dataset_locked(
+    store: "DataBridgeStore",
+    *,
+    state: Mapping[str, object],
+    schema_path: Path,
+    expected_daily_date: str | None = None,
+) -> CurrentDataset:
+    marker = _read_publication_manifest(store.current_dir)
+    state_identity = _publication_identity_from_state(state)
+    if marker != state_identity:
+        raise DataBridgeRefreshError(
+            "DataBridge current publication manifest identity does not "
+            "match state"
+        )
+    dataset = validate_dataset(
+        read_dataset_directory(
+            store.current_dir,
+            allowed_sidecar_filenames=frozenset(
+                {CURRENT_PUBLICATION_MANIFEST}
+            ),
+        ),
+        schema_path=schema_path,
+        expected_daily_date=expected_daily_date,
+    )
+    if state.get("schema_version") != dataset.schema_version:
+        raise DataBridgeRefreshError(
+            "DataBridge state schema_version does not match current files"
+        )
+    if state.get("business_digest") != dataset.business_digest:
+        raise DataBridgeRefreshError(
+            "DataBridge state digest does not match current files"
+        )
+    _validate_identity_against_dataset(
+        marker,
+        dataset=dataset,
+    )
+    state_files = state.get("files")
+    if not isinstance(state_files, dict):
+        raise DataBridgeRefreshError(
+            "DataBridge state files profile is missing"
+        )
+    for filename, profile in dataset.files.items():
+        item = state_files.get(filename)
+        if (
+            not isinstance(item, dict)
+            or item.get("sha256") != profile.sha256
+        ):
+            raise DataBridgeRefreshError(
+                f"DataBridge state hash mismatch for {filename}"
+            )
+    return CurrentDataset(state=state, dataset=dataset)
+
+
+def _validate_continuity_authority(
+    current: CurrentDataset | None,
+    *,
+    continuity_authority: object | None,
+) -> Mapping[str, object] | None:
+    if current is None:
+        if continuity_authority is not None:
+            raise DataBridgeRefreshError(
+                "DataBridge continuity authority current drift: "
+                "expected current is missing"
+            )
+        return None
+    if continuity_authority is None:
+        raise DataBridgeRefreshError(
+            "DataBridge continuity authority is missing for existing current"
+        )
+    expected_generation_id = getattr(
+        continuity_authority,
+        "generation_id",
+        None,
+    )
+    expected_business_digest = getattr(
+        continuity_authority,
+        "business_digest",
+        None,
+    )
+    expected_publication_identity = getattr(
+        continuity_authority,
+        "publication_identity_sha256",
+        None,
+    )
+    stable_identity = getattr(
+        continuity_authority,
+        "stable_identity_sha256",
+        None,
+    )
+    cutoffs = getattr(
+        continuity_authority,
+        "continuity_cutoffs",
+        None,
+    )
+    if (
+        not isinstance(expected_generation_id, str)
+        or not expected_generation_id
+        or not isinstance(expected_business_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_business_digest)
+        is None
+        or not isinstance(expected_publication_identity, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_publication_identity)
+        is None
+        or not isinstance(stable_identity, str)
+        or re.fullmatch(r"[0-9a-f]{64}", stable_identity) is None
+        or not isinstance(cutoffs, Mapping)
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge continuity authority is invalid"
+        )
+    actual_publication_identity = (
+        data_bridge_publication_identity_sha256(current.state)
+    )
+    if (
+        current.state.get("generation_id") != expected_generation_id
+        or current.dataset.business_digest
+        != expected_business_digest
+        or actual_publication_identity
+        != expected_publication_identity
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge continuity authority current identity drift"
+        )
+    return cutoffs
 
 
 def _build_state(
@@ -754,6 +860,22 @@ def _publication_identity_from_state(
             )
         ),
     }
+
+
+def data_bridge_publication_identity_sha256(
+    state: Mapping[str, object],
+) -> str:
+    """返回 current 原子发布身份的稳定摘要。"""
+    identity = _publication_identity_from_state(state)
+    return hashlib.sha256(
+        json.dumps(
+            identity,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _normalize_stored_publication_capability(

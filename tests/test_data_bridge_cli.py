@@ -13,11 +13,7 @@ class DataBridgeCliTests(unittest.TestCase):
         from scripts import refresh_data_bridge_current as command
 
         engine = SimpleNamespace(dispose=Mock())
-        cutoffs = {
-            "daily_output.csv": "2026-07-27",
-            "weekly_output.csv": "202629",
-            "monthly_output.csv": "202607",
-        }
+        authority = object()
         with (
             patch.object(
                 command,
@@ -32,8 +28,8 @@ class DataBridgeCliTests(unittest.TestCase):
             ),
             patch.object(
                 command,
-                "resolve_databridge_continuity_cutoffs",
-                return_value=cutoffs,
+                "resolve_databridge_continuity_authority_from_engine",
+                return_value=authority,
                 create=True,
             ) as resolve,
             patch.object(
@@ -66,11 +62,11 @@ class DataBridgeCliTests(unittest.TestCase):
         resolve.assert_called_once_with(
             config,
             feature_date="2026-07-28",
-            connection=engine,
+            engine=engine,
         )
-        self.assertEqual(
-            refresh.call_args.kwargs["continuity_cutoffs"],
-            cutoffs,
+        self.assertIs(
+            refresh.call_args.kwargs["continuity_authority"],
+            authority,
         )
         engine.dispose.assert_called_once_with()
 

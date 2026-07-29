@@ -1804,11 +1804,7 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             state=refresh_result.state,
             dataset=SimpleNamespace(),
         )
-        continuity_cutoffs = {
-            "daily_output.csv": "2026-07-23",
-            "weekly_output.csv": "202629",
-            "monthly_output.csv": "202607",
-        }
+        continuity_authority = object()
 
         with (
             patch(
@@ -1829,10 +1825,10 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             ) as refresh,
             patch(
                 "scheduler.daily_runtime."
-                "resolve_databridge_continuity_cutoffs",
-                return_value=continuity_cutoffs,
+                "resolve_databridge_continuity_authority_from_engine",
+                return_value=continuity_authority,
                 create=True,
-            ) as resolve_cutoffs,
+            ) as resolve_authority,
             patch(
                 "scheduler.daily_runtime.check_current_dataset",
                 return_value=current,
@@ -1858,14 +1854,14 @@ class DailyRuntimeDefaultServiceTests(unittest.TestCase):
             )
 
         self.assertIs(actual, current)
-        resolve_cutoffs.assert_called_once_with(
+        resolve_authority.assert_called_once_with(
             config,
             feature_date="2026-07-23",
-            connection=engine,
+            engine=engine,
         )
-        self.assertEqual(
-            refresh.call_args.kwargs["continuity_cutoffs"],
-            continuity_cutoffs,
+        self.assertIs(
+            refresh.call_args.kwargs["continuity_authority"],
+            continuity_authority,
         )
         self.assertEqual(
             check_current.call_args.kwargs["expected_generation_id"],

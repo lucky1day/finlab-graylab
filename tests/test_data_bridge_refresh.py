@@ -1191,9 +1191,13 @@ class DataBridgeRefreshTests(unittest.TestCase):
     def test_refresh_scopes_previous_keys_to_effective_continuity_cutoffs(
         self,
     ) -> None:
+        from shared.data_bridge.authority import (
+            DataBridgeContinuityAuthority,
+        )
         from shared.data_bridge.refresh import (
             DataBridgeRefreshConfig,
             DataBridgeStore,
+            data_bridge_publication_identity_sha256,
             run_full_refresh,
         )
         from shared.data_bridge.validation import (
@@ -1248,15 +1252,32 @@ class DataBridgeRefreshTests(unittest.TestCase):
                 previous,
                 root / "previous-candidate",
             )
-            DataBridgeStore(
+            store = DataBridgeStore(
                 data_root=config.data_root,
                 runtime_root=config.runtime_root,
-            ).publish(
+            )
+            store.publish(
                 candidate,
                 _dataset_state(
                     previous,
                     refresh_date="2026-07-18",
                 ),
+            )
+            previous_state = store.load_state()
+            continuity_authority = DataBridgeContinuityAuthority(
+                generation_id=str(previous_state["generation_id"]),
+                business_digest=str(
+                    previous_state["business_digest"]
+                ),
+                publication_identity_sha256=(
+                    data_bridge_publication_identity_sha256(
+                        previous_state
+                    )
+                ),
+                stable_identity_sha256="c" * 64,
+                daily_cutoff_key="2026-07-18",
+                weekly_cutoff_key="202629",
+                monthly_cutoff_key="202607",
             )
 
             result = run_full_refresh(
@@ -1265,11 +1286,7 @@ class DataBridgeRefreshTests(unittest.TestCase):
                 expected_daily_date="2026-07-18",
                 refresh_date="2026-07-19",
                 publish=False,
-                continuity_cutoffs={
-                    "daily_output.csv": "2026-07-18",
-                    "weekly_output.csv": "202629",
-                    "monthly_output.csv": "202607",
-                },
+                continuity_authority=continuity_authority,
             )
 
         self.assertEqual(result.rounds_completed, 2)
@@ -1277,6 +1294,154 @@ class DataBridgeRefreshTests(unittest.TestCase):
             result.state["files"]["weekly_output.csv"]["max_key"],
             "202629",
         )
+
+    def test_refresh_rejects_current_replaced_after_authority_resolution(
+        self,
+    ) -> None:
+        from shared.data_bridge.authority import (
+            DataBridgeContinuityAuthority,
+        )
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            data_bridge_publication_identity_sha256,
+            run_full_refresh,
+        )
+        from shared.data_bridge.validation import (
+            validate_dataset,
+            write_validated_dataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+                daily_start_date="2026-01-01",
+            )
+            first = _validated_dataset(root, schema)
+            store = DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            )
+            first_state = _dataset_state(
+                first,
+                refresh_date="2026-07-18",
+            )
+            first_state["generation_id"] = "generation-first"
+            store.publish(
+                write_validated_dataset(first, root / "first"),
+                first_state,
+            )
+            first_published_state = store.load_state()
+            authority = DataBridgeContinuityAuthority(
+                generation_id="generation-first",
+                business_digest=first.business_digest,
+                publication_identity_sha256=(
+                    data_bridge_publication_identity_sha256(
+                        first_published_state
+                    )
+                ),
+                stable_identity_sha256="d" * 64,
+                daily_cutoff_key="2026-07-18",
+                weekly_cutoff_key="202629",
+                monthly_cutoff_key="202607",
+            )
+
+            changed = {
+                name: frame.copy()
+                for name, frame in first.frames.items()
+            }
+            changed["daily_output.csv"].loc[0, "factor"] = "9"
+            replacement = validate_dataset(
+                changed,
+                schema_path=schema,
+            )
+            replacement_state = _dataset_state(
+                replacement,
+                refresh_date="2026-07-18",
+            )
+            replacement_state["generation_id"] = (
+                "generation-replacement"
+            )
+            store.publish(
+                write_validated_dataset(
+                    replacement,
+                    root / "replacement",
+                ),
+                replacement_state,
+            )
+
+            client = _FakeClient()
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "continuity authority.*drift",
+            ):
+                run_full_refresh(
+                    client=client,
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=False,
+                    continuity_authority=authority,
+                )
+
+            current = store.load_state()
+            self.assertEqual(
+                current["generation_id"],
+                "generation-replacement",
+            )
+            self.assertEqual(client.calls, [])
+
+    def test_refresh_without_authority_rejects_current_appearing_race(
+        self,
+    ) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            run_full_refresh,
+        )
+        from shared.data_bridge.validation import (
+            write_validated_dataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+                daily_start_date="2026-01-01",
+            )
+            current = _validated_dataset(root, schema)
+            DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            ).publish(
+                write_validated_dataset(current, root / "current"),
+                _dataset_state(
+                    current,
+                    refresh_date="2026-07-18",
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "continuity authority is missing",
+            ):
+                run_full_refresh(
+                    client=_FakeClient(),
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=False,
+                    continuity_authority=None,
+                )
 
     def test_published_state_records_trusted_refresh_timeline(self) -> None:
         from shared.data_bridge.refresh import (

@@ -13,6 +13,7 @@ from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     DataBridgeRefreshError,
     check_current_dataset,
+    data_bridge_publication_identity_sha256,
 )
 from shared.data_bridge.validation import DataBridgeValidationError
 from shared.input_artifacts import (
@@ -64,15 +65,37 @@ class StableDataBridgeCurrentAuthority:
     publication_capability: StablePublicationCapability | None
     files: tuple[StableDataBridgeFileIdentity, ...]
     cutoffs: tuple[StableDataBridgeCutoff, ...]
+    publication_identity_sha256: str
     stable_identity_sha256: str
 
 
-def resolve_databridge_continuity_cutoffs(
+@dataclass(frozen=True, slots=True)
+class DataBridgeContinuityAuthority:
+    """绑定一次 refresh 前已校验 current 与其有效连续性截止键。"""
+
+    generation_id: str
+    business_digest: str
+    publication_identity_sha256: str
+    stable_identity_sha256: str
+    daily_cutoff_key: str
+    weekly_cutoff_key: str
+    monthly_cutoff_key: str
+
+    @property
+    def continuity_cutoffs(self) -> Mapping[str, str]:
+        return {
+            "daily_output.csv": self.daily_cutoff_key,
+            "weekly_output.csv": self.weekly_cutoff_key,
+            "monthly_output.csv": self.monthly_cutoff_key,
+        }
+
+
+def resolve_databridge_continuity_authority(
     config: DataBridgeRefreshConfig,
     *,
     feature_date: str,
     connection: Any,
-) -> Mapping[str, str] | None:
+) -> DataBridgeContinuityAuthority | None:
     """从现有 current 和 caller 只读连接解析下一轮连续性截止键。
 
     首次发布没有 current 时不需要连续性比较；已经存在但无效的 current
@@ -98,11 +121,41 @@ def resolve_databridge_continuity_cutoffs(
             "DataBridge current continuity cutoff authority is incomplete"
         )
     cutoff = authority.cutoffs[0]
-    return {
-        "daily_output.csv": cutoff.daily_cutoff_key,
-        "weekly_output.csv": cutoff.weekly_cutoff_key,
-        "monthly_output.csv": cutoff.monthly_cutoff_key,
-    }
+    return DataBridgeContinuityAuthority(
+        generation_id=authority.generation_id,
+        business_digest=authority.business_digest,
+        publication_identity_sha256=(
+            authority.publication_identity_sha256
+        ),
+        stable_identity_sha256=authority.stable_identity_sha256,
+        daily_cutoff_key=cutoff.daily_cutoff_key,
+        weekly_cutoff_key=cutoff.weekly_cutoff_key,
+        monthly_cutoff_key=cutoff.monthly_cutoff_key,
+    )
+
+
+def resolve_databridge_continuity_authority_from_engine(
+    config: DataBridgeRefreshConfig,
+    *,
+    feature_date: str,
+    engine: Any,
+) -> DataBridgeContinuityAuthority | None:
+    """在单个 RR consistent snapshot 只读事务中解析 current authority。"""
+    with engine.connect() as connection:
+        connection.exec_driver_sql(
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        )
+        connection.exec_driver_sql(
+            "START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY"
+        )
+        try:
+            return resolve_databridge_continuity_authority(
+                config,
+                feature_date=feature_date,
+                connection=connection,
+            )
+        finally:
+            connection.rollback()
 
 
 def resolve_stable_databridge_current_authority(
@@ -196,6 +249,9 @@ def resolve_stable_databridge_current_authority(
         )
         for feature_date in normalized_dates
     )
+    publication_identity_sha256 = (
+        data_bridge_publication_identity_sha256(current.state)
+    )
     payload = {
         "authority_schema_version": AUTHORITY_SCHEMA_VERSION,
         "generation_id": generation_id,
@@ -226,6 +282,7 @@ def resolve_stable_databridge_current_authority(
             }
             for item in cutoffs
         ],
+        "publication_identity_sha256": publication_identity_sha256,
     }
     stable_identity_sha256 = hashlib.sha256(
         json.dumps(
@@ -245,6 +302,7 @@ def resolve_stable_databridge_current_authority(
         publication_capability=publication_capability,
         files=files,
         cutoffs=cutoffs,
+        publication_identity_sha256=publication_identity_sha256,
         stable_identity_sha256=stable_identity_sha256,
     )
 

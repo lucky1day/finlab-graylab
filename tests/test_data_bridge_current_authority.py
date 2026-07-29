@@ -4,7 +4,7 @@ import dataclasses
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import Mock, call, patch
 
 import pandas as pd
 
@@ -294,15 +294,19 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                     connection=self.connection,
                 )
 
-    def test_refresh_continuity_cutoffs_use_exact_current_authority(
+    def test_refresh_continuity_authority_binds_exact_current_identity(
         self,
     ) -> None:
         from shared.data_bridge.authority import (
             StableDataBridgeCutoff,
-            resolve_databridge_continuity_cutoffs,
+            resolve_databridge_continuity_authority,
         )
 
         authority = SimpleNamespace(
+            generation_id="generation-current",
+            business_digest="a" * 64,
+            publication_identity_sha256="b" * 64,
+            stable_identity_sha256="c" * 64,
             cutoffs=(
                 StableDataBridgeCutoff(
                     feature_date="2026-07-28",
@@ -317,14 +321,21 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             "resolve_stable_databridge_current_authority",
             return_value=authority,
         ) as resolve:
-            actual = resolve_databridge_continuity_cutoffs(
+            actual = resolve_databridge_continuity_authority(
                 self.config,
                 feature_date="2026-07-28",
                 connection=self.connection,
             )
 
+        self.assertEqual(actual.generation_id, "generation-current")
+        self.assertEqual(actual.business_digest, "a" * 64)
         self.assertEqual(
-            actual,
+            actual.publication_identity_sha256,
+            "b" * 64,
+        )
+        self.assertEqual(actual.stable_identity_sha256, "c" * 64)
+        self.assertEqual(
+            actual.continuity_cutoffs,
             {
                 "daily_output.csv": "2026-07-27",
                 "weekly_output.csv": "202629",
@@ -337,11 +348,11 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             connection=self.connection,
         )
 
-    def test_refresh_continuity_cutoffs_allow_only_missing_current(
+    def test_refresh_continuity_authority_allows_only_missing_current(
         self,
     ) -> None:
         from shared.data_bridge.authority import (
-            resolve_databridge_continuity_cutoffs,
+            resolve_databridge_continuity_authority,
         )
 
         for error_type, expected in (
@@ -358,7 +369,7 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             ):
                 if expected is None:
                     self.assertIsNone(
-                        resolve_databridge_continuity_cutoffs(
+                        resolve_databridge_continuity_authority(
                             self.config,
                             feature_date="2026-07-28",
                             connection=self.connection,
@@ -366,11 +377,60 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                     )
                 else:
                     with self.assertRaises(DataBridgeCurrentInvalidError):
-                        resolve_databridge_continuity_cutoffs(
+                        resolve_databridge_continuity_authority(
                             self.config,
                             feature_date="2026-07-28",
                             connection=self.connection,
                         )
+
+    def test_refresh_authority_engine_wrapper_uses_one_read_only_snapshot(
+        self,
+    ) -> None:
+        from shared.data_bridge.authority import (
+            resolve_databridge_continuity_authority_from_engine,
+        )
+
+        connection = Mock()
+        connection_context = Mock()
+        connection_context.__enter__ = Mock(
+            return_value=connection
+        )
+        connection_context.__exit__ = Mock(return_value=False)
+        engine = Mock()
+        engine.connect.return_value = connection_context
+        expected = object()
+        with patch(
+            "shared.data_bridge.authority."
+            "resolve_databridge_continuity_authority",
+            return_value=expected,
+        ) as resolve:
+            actual = (
+                resolve_databridge_continuity_authority_from_engine(
+                    self.config,
+                    feature_date="2026-07-28",
+                    engine=engine,
+                )
+            )
+
+        self.assertIs(actual, expected)
+        self.assertEqual(
+            connection.exec_driver_sql.call_args_list,
+            [
+                call(
+                    "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+                ),
+                call(
+                    "START TRANSACTION WITH CONSISTENT SNAPSHOT, "
+                    "READ ONLY"
+                ),
+            ],
+        )
+        resolve.assert_called_once_with(
+            self.config,
+            feature_date="2026-07-28",
+            connection=connection,
+        )
+        connection.rollback.assert_called_once_with()
 
     def test_cutoff_sql_helpers_receive_the_caller_connection(self) -> None:
         from shared.input_artifacts import (
