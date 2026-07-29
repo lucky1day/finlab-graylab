@@ -138,6 +138,29 @@ class _BlackboxGate(Gate):
         raise NotImplementedError
 
 
+def _visible_entry_names(directory: Path) -> set[str]:
+    """列出参与交付结构精确比较的条目名。
+
+    只忽略 CPython 在 import 交付模块时生成的 `__pycache__`，且必须是本地
+    真实目录：按名字一刀切会让普通文件或指向外部目录的 symlink 只要叫
+    `__pycache__` 就整体隐身，把严格的两文件交付边界放宽成任意内容可藏。
+    因此这里用 `lstat` 判定——非目录或 symlink 的同名条目保留在集合中，
+    使精确集合比较照常失败。
+    """
+    names: set[str] = set()
+    for entry in directory.iterdir():
+        if entry.name == "__pycache__":
+            try:
+                info = entry.lstat()
+            except OSError:
+                names.add(entry.name)
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                continue
+        names.add(entry.name)
+    return names
+
+
 class BlackboxStaticGate(_BlackboxGate):
     name = "static"
 
@@ -147,21 +170,9 @@ class BlackboxStaticGate(_BlackboxGate):
         scheme_dir = cfg.path
         delivery_dir = scheme_dir / "delivery"
         errors: list[str] = []
-        # `__pycache__` 由 CPython 在 import delivery 模块时生成，不属于上游交付；
-        # 若纳入精确集合比较，任何执行过的方案在复验时都会误判为交付结构不合规。
-        # 与 harness.daily_0629_certification、harness.contracts.import_rules 和
-        # shared.source_runtime_database 中既有的忽略约定保持一致。
-        scheme_entries = {
-            path.name for path in scheme_dir.iterdir() if path.name != "__pycache__"
-        }
+        scheme_entries = _visible_entry_names(scheme_dir)
         delivery_entries = (
-            {
-                path.name
-                for path in delivery_dir.iterdir()
-                if path.name != "__pycache__"
-            }
-            if delivery_dir.is_dir()
-            else set()
+            _visible_entry_names(delivery_dir) if delivery_dir.is_dir() else set()
         )
         expected_delivery = {f"{ctx.scheme_id}.py", f"{ctx.scheme_id}.json"}
         if scheme_entries != {"config.yaml", "delivery"}:
