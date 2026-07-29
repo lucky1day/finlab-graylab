@@ -231,12 +231,12 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
                 code_sha256=f"{index + 1:064x}",
                 config_sha256=f"{index + 101:064x}",
             )
-            for index in range(19)
+            for index in range(20)
         )
         multi_t5_targets = tuple(
             RegistryTarget(
-                registry_scheme_id=f"daily_multi_t5__h5__{tenor}",
-                base_scheme_id="daily_multi_t5",
+                registry_scheme_id=f"t5_daily__h5__{tenor}",
+                base_scheme_id="t5_daily",
                 runtime_type="native_adapter",
                 frequency="daily",
                 task_type="T+5",
@@ -249,9 +249,9 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
                 code_sha256="3" * 64,
                 config_sha256="4" * 64,
             )
-            for tenor in ("1Y", "3Y", "5Y", "7Y", "10Y")
+            for tenor in ("1Y", "3Y", "5Y", "10Y")
         )
-        t1_targets = tuple(
+        t1_singletons = tuple(
             RegistryTarget(
                 registry_scheme_id=f"daily_t1_{index}__h1__{tenor}",
                 base_scheme_id=f"daily_t1_{index}",
@@ -268,10 +268,33 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
                 config_sha256=f"{index + 301:064x}",
             )
             for index, tenor in enumerate(
-                ("1Y", "3Y", "5Y", "7Y", "10Y")
+                ("1Y", "3Y", "5Y")
             )
         )
-        targets = (*t5_singletons, *multi_t5_targets, *t1_targets)
+        multi_t1_targets = tuple(
+            RegistryTarget(
+                registry_scheme_id=f"t1_daily__h1__{tenor}",
+                base_scheme_id="t1_daily",
+                runtime_type="native_adapter",
+                frequency="daily",
+                task_type="T+1",
+                target_tenor=tenor,
+                horizon=1,
+                scheme_version="multi-t1-version",
+                live_target_start_date="2026-06-01",
+                live_boundary_source="platform_live_boundary_v1",
+                input_mode="generation_v1",
+                code_sha256="5" * 64,
+                config_sha256="6" * 64,
+            )
+            for tenor in ("7Y", "10Y")
+        )
+        targets = (
+            *t5_singletons,
+            *multi_t5_targets,
+            *t1_singletons,
+            *multi_t1_targets,
+        )
         date_matrix = (
             (
                 "2026-07-23",
@@ -428,6 +451,16 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
                 }
             ),
             46,
+        )
+        groups_729 = Counter(
+            row["base_scheme_id"]
+            for row in plan["actions"]
+            if row["predict_date"] == "2026-07-29"
+        )
+        self.assertEqual(len(groups_729), 25)
+        self.assertEqual(
+            Counter(groups_729.values()),
+            {1: 23, 2: 1, 4: 1},
         )
         self.assertTrue(
             all(
