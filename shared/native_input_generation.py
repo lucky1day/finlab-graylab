@@ -400,7 +400,7 @@ def create_native_generation(
         _make_generation_read_only(staging)
         _fsync_directory(staging)
         try:
-            os.replace(staging, destination)
+            _publish_sealed_generation(staging, destination)
         except OSError:
             if not os.path.lexists(destination):
                 raise
@@ -412,7 +412,6 @@ def create_native_generation(
             )
             _require_same_stable_provenance(existing, candidate)
             return existing
-        _seal_generation_root(destination)
         _fsync_directory(root)
         return open_native_generation(
             destination / "manifest.json",
@@ -2063,14 +2062,76 @@ def _make_generation_read_only(root: Path) -> None:
         _fsync_regular_file(path)
 
 
-def _seal_generation_root(root: Path) -> None:
-    """在原子发布之后收紧 generation 目录位。
+_SEALED_RENAME_SUPPORT: dict[str, bool] = {}
 
-    目录自身的写位必须保留到 ``os.replace`` 之后：重命名目录需要更新它的
-    ``..`` 项，因此对该目录有写权限是前提，提前 ``chmod 0o555`` 会让发布
-    必然失败于 ``EACCES``。
+
+def _sealed_rename_supported(parent: Path) -> bool:
+    """探测该父目录所在权限体制是否允许重命名 ``0o555`` 目录。
+
+    重命名目录需要更新其 ``..`` 项，POSIX 因此要求对被移动目录本身有写权限。
+    macOS 上该要求可被继承 ACL 覆盖：父链带 ``delete``/``add_subdirectory``
+    等 allow 条目时 ``0o555`` 目录照常可 rename，没有这类 ACL 的部署则必然
+    ``EACCES``。两种体制都属正常部署，因此按父目录探测一次并缓存，而不是
+    对真实 generation 试错——后者会产生第二次发布 rename，破坏"原子发布只
+    重命名一次"的不变量。探针使用 ``.probe-`` 前缀，与发布命名不冲突。
     """
-    root.chmod(0o555)
+    key = str(parent)
+    cached = _SEALED_RENAME_SUPPORT.get(key)
+    if cached is not None:
+        return cached
+    probe_source = Path(tempfile.mkdtemp(prefix=".probe-", dir=parent))
+    probe_target = parent / f"{probe_source.name}-moved"
+    try:
+        os.chmod(probe_source, 0o555)
+        try:
+            os.replace(probe_source, probe_target)
+            supported = True
+        except PermissionError:
+            supported = False
+    finally:
+        for path in (probe_target, probe_source):
+            if os.path.lexists(path):
+                os.chmod(path, 0o700)
+                os.rmdir(path)
+    _SEALED_RENAME_SUPPORT[key] = supported
+    return supported
+
+
+def _publish_sealed_generation(staging: Path, destination: Path) -> None:
+    """原子发布 generation，并保证发布后目录为 ``0o555``。
+
+    平台允许重命名只读目录时走既有语义：``staging`` 在 ``os.replace``
+    **之前**就封存，发布出去的一刻即是只读的，不存在可写窗口。
+
+    平台不允许时（见 :func:`_sealed_rename_supported`）才改为发布后封存，
+    且经**发布前已持有的 fd** 操作：fd 绑定 inode 而非路径，rename 后仍指向
+    同一目录，重新封存不涉及路径重解析、也不会被 symlink 调包，这正是不用
+    ``Path.chmod`` 的原因。该路径存在一个极短的"已发布但尚未封存"窗口，其间
+    generation 只在平台私有、不可被 group/other 写的父目录下可见；封存后会
+    经 ``fstat`` 复核，未达 ``0o555`` 即报错。
+
+    两条路径都只对真实 generation 执行一次 ``os.replace``。
+    """
+    if _sealed_rename_supported(destination.parent):
+        os.chmod(staging, 0o555, follow_symlinks=False)
+        os.replace(staging, destination)
+        return
+
+    staging_fd = os.open(
+        staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
+    try:
+        os.replace(staging, destination)
+        os.fchmod(staging_fd, 0o555)
+        os.fsync(staging_fd)
+        sealed_mode = stat.S_IMODE(os.fstat(staging_fd).st_mode)
+        if sealed_mode != 0o555:
+            raise RuntimeError(
+                "generation was published but could not be sealed: "
+                f"{destination} mode={sealed_mode:o}"
+            )
+    finally:
+        os.close(staging_fd)
 
 
 def _remove_tree(root: Path) -> None:
@@ -2148,11 +2209,15 @@ def _delete_native_generation(
     )
     if os.path.lexists(tombstone):
         raise ValueError("Native generation retention tombstone collision")
-    # 已发布 generation 目录是 0o555；重命名目录需要对该目录自身有写权限，
-    # 因此先解开写位再挪入 tombstone。上方已确认它是 dev/ino 匹配的真目录，
-    # 且随后 `_remove_tree` 也会做同样的放宽。
-    os.chmod(source, 0o755, follow_symlinks=False)
-    os.rename(source, tombstone)
+    try:
+        os.rename(source, tombstone)
+    except PermissionError:
+        # 已发布 generation 目录是 0o555。有继承 ACL 的部署可直接 rename；
+        # 没有时 POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。
+        # 上方已确认它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做
+        # 同样的放宽。
+        os.chmod(source, 0o755, follow_symlinks=False)
+        os.rename(source, tombstone)
     _fsync_directory(root)
     tombstone_info = tombstone.lstat()
     if (

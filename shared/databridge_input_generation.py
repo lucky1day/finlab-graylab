@@ -32,6 +32,8 @@ from shared.data_bridge.validation import validate_dataset
 from shared.native_input_generation import (
     NativeGenerationContext,
     open_native_generation,
+    # 发布语义与 Native generation 一致，复用同一实现避免两处漂移。
+    _publish_sealed_generation,
 )
 
 
@@ -393,7 +395,7 @@ def create_databridge_generation(
         _fsync_directory(data_dir)
         _fsync_directory(staging)
         try:
-            os.replace(staging, destination)
+            _publish_sealed_generation(staging, destination)
         except OSError:
             if not os.path.lexists(destination):
                 raise
@@ -405,7 +407,6 @@ def create_databridge_generation(
                 schema_path=schema_path,
             )
 
-        _seal_generation_root(destination)
         _fsync_directory(root)
         return open_databridge_generation(
             destination / "manifest.json",
@@ -1247,14 +1248,6 @@ def _make_read_only(root: Path) -> None:
     _fsync_regular_file(manifest)
 
 
-def _seal_generation_root(root: Path) -> None:
-    """在原子发布之后收紧 generation 目录位。
-
-    目录自身的写位必须保留到 ``os.replace`` 之后：重命名目录需要更新它的
-    ``..`` 项，因此对该目录有写权限是前提，提前 ``chmod 0o555`` 会让发布
-    必然失败于 ``EACCES``。
-    """
-    root.chmod(0o555)
 
 
 def _remove_tree(root: Path) -> None:
@@ -1354,11 +1347,15 @@ def _delete_databridge_generation(
     )
     if os.path.lexists(tombstone):
         raise ValueError("DataBridge generation retention tombstone collision")
-    # 已发布 generation 目录是 0o555；重命名目录需要对该目录自身有写权限，
-    # 因此先解开写位再挪入 tombstone。上方已确认它是 dev/ino 匹配的真目录，
-    # 且随后 `_remove_tree` 也会做同样的放宽。
-    os.chmod(source, 0o755, follow_symlinks=False)
-    os.rename(source, tombstone)
+    try:
+        os.rename(source, tombstone)
+    except PermissionError:
+        # 已发布 generation 目录是 0o555。有继承 ACL 的部署可直接 rename；
+        # 没有时 POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。
+        # 上方已确认它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做
+        # 同样的放宽。
+        os.chmod(source, 0o755, follow_symlinks=False)
+        os.rename(source, tombstone)
     _fsync_directory(root)
     tombstone_info = tombstone.lstat()
     if (
