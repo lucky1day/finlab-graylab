@@ -55,7 +55,7 @@ TEN_Y04_ANCHOR = AnchorIdentity(
 )
 ANCHOR_IDENTITIES = (FIVE_Y10_ANCHOR, TEN_Y04_ANCHOR)
 
-_SCHEMES = {
+SCHEMES: Mapping[str, FrozenScheme] = MappingProxyType({
     "seven_y_t1_cfc_0084_embedded_v1": FrozenScheme(
         scheme_id="seven_y_t1_cfc_0084_embedded_v1",
         candidate_id="7y-cfc-0084",
@@ -74,8 +74,7 @@ _SCHEMES = {
         curve_member_hash="182131092906070b",
         edge_minimum_history=14,
     ),
-}
-SCHEMES: Mapping[str, FrozenScheme] = MappingProxyType(_SCHEMES)
+})
 
 
 def get_scheme(scheme_id: str) -> FrozenScheme:
