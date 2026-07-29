@@ -7754,27 +7754,27 @@ def _validate_direct_cache_authority_completion(
         generation,
         contract=raw_contract,
     )
-
-    saw_record = False
-    for record in records:
-        saw_record = True
-        try:
-            _verify_direct_cache_record(
-                record,
-                storage_root=storage_root,
-                consumer=consumer,
-                expected_native=expected_native,
-                contract=raw_contract,
-            )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "direct cache completion audit verification failed: "
-                f"{exc}"
-            ) from exc
-    if not saw_record:
+    # 当前 frozen daily policy 中一个 cache consumer 只对应一个 target。
+    # 事务锁内的 secure generation I/O 因而只允许执行一次；未来若放开
+    # 多 target，必须先按 generation identity 去重后再重开。
+    record_list = list(records)
+    if len(record_list) != 1:
         raise RuntimeError(
-            "direct cache completion contains no records"
+            "direct cache completion requires exactly one record"
         )
+    try:
+        _verify_direct_cache_record(
+            record_list[0],
+            storage_root=storage_root,
+            consumer=consumer,
+            expected_native=expected_native,
+            contract=raw_contract,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "direct cache completion audit verification failed: "
+            f"{exc}"
+        ) from exc
 
 
 def _direct_cache_storage_root(value: object) -> Path:
@@ -9188,6 +9188,13 @@ def complete_gray_gap_run(
     )
 
     with engine.begin() as conn:
+        # Daily ledger 的锁序固定为 occurrence→ordered siblings→targets；
+        # gray-gap 必须先复用同一 guard，再锁普通 run，不能让 insert-only
+        # 绕过 migration 018 已冻结的 canonical prediction key。
+        _assert_prediction_keys_not_frozen_by_daily_ledger_conn(
+            conn,
+            (asdict(record) for record in enriched_records),
+        )
         run = _read_schedule_run_conn(
             conn,
             run_id=int(run_id),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import threading
@@ -9,8 +10,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+import pandas as pd
 from sqlalchemy import create_engine, event, text
 
+import shared.liwei_0616_phase_a_cache as cache_module
+from shared.daily_coordinator_mode import DailyCoordinatorEpochIdentity
+from shared.liwei_0616_cache_projection import (
+    AuxiliaryDependencyProjection,
+)
+from shared.liwei_0616_phase_a_cache import (
+    PhaseACacheSpec,
+    prepare_phase_a_caches,
+)
 from shared.models import PredictionRecord
 
 
@@ -134,8 +146,23 @@ class GrayGapRepositoryTests(unittest.TestCase):
         with self.engine.begin() as conn:
             for statement in _SCHEMA:
                 conn.exec_driver_sql(statement)
+        self._epoch_identity = DailyCoordinatorEpochIdentity(
+            epoch=1,
+            mode="ledger",
+            previous_record_sha256="0" * 64,
+            record_sha256="1" * 64,
+            source="gray-gap-test",
+            transition_id="gray-gap-test-epoch",
+        )
+        self._identity_patcher = patch(
+            "shared.daily_coordinator_mode."
+            "require_current_daily_coordinator_identity",
+            return_value=self._epoch_identity,
+        )
+        self._identity_patcher.start()
 
     def tearDown(self) -> None:
+        self._identity_patcher.stop()
         self.engine.dispose()
         self._tmpdir.cleanup()
 
@@ -260,6 +287,102 @@ class GrayGapRepositoryTests(unittest.TestCase):
                     text(f"SELECT * FROM {table} ORDER BY 1")
                 ).mappings().all()
             ]
+
+    def _seed_ledger_target(
+        self,
+        *,
+        base_scheme_id: str,
+        target_tenor: str,
+        horizon: int,
+        target_date: str,
+        task_type: str = "T+1",
+    ) -> tuple[int, int, int]:
+        with self.engine.begin() as conn:
+            occurrence = conn.execute(
+                text(
+                    """
+                    INSERT INTO t_schedule_occurrences
+                        (schedule_key, predict_date, feature_date,
+                         policy_version, policy_sha256, policy_json,
+                         registry_digest, completion_state,
+                         expected_item_count, expected_target_count,
+                         accepted_target_count, sla_deadline_at,
+                         recovery_cutoff_at)
+                    VALUES
+                        (:schedule_key, :predict_date, :feature_date,
+                         'daily-schedule-policy-v1', :policy_sha256,
+                         :policy_json, :registry_digest, 'RUNNING',
+                         1, 1, 0, '2026-06-03 08:00:00',
+                         '2026-06-03 12:00:00')
+                    """
+                ),
+                {
+                    "schedule_key":
+                        f"gray-gap-owner-{base_scheme_id}-"
+                        f"{target_tenor}-{target_date}",
+                    "predict_date": PREDICT_DATE,
+                    "feature_date": FEATURE_DATE,
+                    "policy_sha256": "2" * 64,
+                    "policy_json": json.dumps(
+                        {
+                            "daily_coordinator_epoch":
+                                self._epoch_identity.policy_payload(),
+                        },
+                        sort_keys=True,
+                    ),
+                    "registry_digest": "3" * 64,
+                },
+            )
+            occurrence_id = int(occurrence.lastrowid)
+            item = conn.execute(
+                text(
+                    """
+                    INSERT INTO t_schedule_items
+                        (occurrence_id, base_scheme_id, runtime_type,
+                         scheme_version, code_sha256, config_sha256,
+                         cache_group, state, sla_status)
+                    VALUES
+                        (:occurrence_id, :base_scheme_id, 'native_adapter',
+                         :scheme_version, :code_sha256, :config_sha256,
+                         :cache_group, 'RUNNING', 'PENDING')
+                    """
+                ),
+                {
+                    "occurrence_id": occurrence_id,
+                    "base_scheme_id": base_scheme_id,
+                    "scheme_version": f"{base_scheme_id}-version",
+                    "code_sha256": "4" * 64,
+                    "config_sha256": "5" * 64,
+                    "cache_group": f"{base_scheme_id}:daily",
+                },
+            )
+            item_id = int(item.lastrowid)
+            target = conn.execute(
+                text(
+                    """
+                    INSERT INTO t_schedule_item_targets
+                        (occurrence_id, item_id, registry_scheme_id,
+                         base_scheme_id, runtime_type, task_type,
+                         target_tenor, horizon, target_date, status)
+                    VALUES
+                        (:occurrence_id, :item_id, :registry_scheme_id,
+                         :base_scheme_id, 'native_adapter', :task_type,
+                         :target_tenor, :horizon, :target_date, 'PENDING')
+                    """
+                ),
+                {
+                    "occurrence_id": occurrence_id,
+                    "item_id": item_id,
+                    "registry_scheme_id":
+                        f"{base_scheme_id}__h{horizon}__{target_tenor}",
+                    "base_scheme_id": base_scheme_id,
+                    "task_type": task_type,
+                    "target_tenor": target_tenor,
+                    "horizon": horizon,
+                    "target_date": target_date,
+                },
+            )
+            return occurrence_id, item_id, int(target.lastrowid)
 
     def test_t5_four_of_four_is_atomic_and_enriched(self) -> None:
         cfg = _cfg(
@@ -714,6 +837,202 @@ class GrayGapRepositoryTests(unittest.TestCase):
         self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
         self.assertEqual(self._rows("t_scheme_run_log"), [])
 
+    def test_migration_018_frozen_target_rejects_whole_gray_group(
+        self,
+    ) -> None:
+        cfg = _cfg(
+            "t1_daily",
+            horizon=1,
+            task_type="T+1",
+            tenors=TENORS_T1,
+        )
+        self._seed(cfg, run_id=119, target_date=TARGET_DATE_T1)
+        _occurrence_id, _item_id, target_id = self._seed_ledger_target(
+            base_scheme_id=cfg.scheme_id,
+            target_tenor="5Y",
+            horizon=cfg.horizon,
+            target_date=TARGET_DATE_T1,
+        )
+        statements: list[str] = []
+
+        def capture_sql(
+            _conn,
+            _cursor,
+            statement,
+            _parameters,
+            _context,
+            _executemany,
+        ) -> None:
+            statements.append(" ".join(statement.lower().split()))
+
+        event.listen(self.engine, "before_cursor_execute", capture_sql)
+        try:
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "frozen daily ledger target",
+            ):
+                self._complete(
+                    cfg,
+                    run_id=119,
+                    target_date=TARGET_DATE_T1,
+                )
+        finally:
+            event.remove(
+                self.engine,
+                "before_cursor_execute",
+                capture_sql,
+            )
+
+        self.assertEqual(self._rows("t_scheme_predictions"), [])
+        self.assertEqual(self._rows("t_scheme_run_log"), [])
+        self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
+        target = self._rows("t_schedule_item_targets")[0]
+        self.assertEqual(target["target_id"], target_id)
+        self.assertEqual(target["status"], "PENDING")
+        self.assertIsNone(target["accepted_run_id"])
+        occurrence_index = next(
+            index
+            for index, statement in enumerate(statements)
+            if (
+                "from t_schedule_occurrences" in statement
+                and "where occurrence_id" in statement
+            )
+        )
+        item_index = next(
+            index
+            for index, statement in enumerate(statements)
+            if (
+                index > occurrence_index
+                and "from t_schedule_items" in statement
+                and "where occurrence_id" in statement
+            )
+        )
+        target_index = next(
+            index
+            for index, statement in enumerate(statements)
+            if (
+                index > item_index
+                and "from t_schedule_item_targets" in statement
+                and "where item_id" in statement
+            )
+        )
+        self.assertLess(occurrence_index, item_index)
+        self.assertLess(item_index, target_index)
+        self.assertFalse(
+            any(
+                "from t_scheme_runs" in statement
+                and "where run_id" in statement
+                for statement in statements
+            ),
+            "gray run must not lock before the ledger guard",
+        )
+
+    def test_scheduled_ledger_owner_wins_gray_gap_competition(self) -> None:
+        cfg = _cfg(
+            "t1_daily",
+            horizon=1,
+            task_type="T+1",
+            tenors=TENORS_T1,
+        )
+        self._seed(cfg, run_id=120, target_date=TARGET_DATE_T1)
+        _occurrence_id, _item_id, target_id = self._seed_ledger_target(
+            base_scheme_id=cfg.scheme_id,
+            target_tenor="5Y",
+            horizon=cfg.horizon,
+            target_date=TARGET_DATE_T1,
+        )
+        barrier = threading.Barrier(2)
+
+        def scheduled_owner() -> tuple[str, object]:
+            barrier.wait()
+            try:
+                with self.engine.begin() as conn:
+                    result = conn.execute(
+                        text(
+                            """
+                            INSERT INTO t_scheme_predictions
+                                (run_id, scheme_version, scheme_id,
+                                 target_tenor, horizon, predict_date,
+                                 feature_date, target_date,
+                                 prediction_phase, predicted_direction,
+                                 confidence, model_version, extra)
+                            VALUES
+                                (900, :scheme_version, :scheme_id, '5Y', 1,
+                                 :predict_date, :feature_date, :target_date,
+                                 'scheduled_live', -1, 0.9, NULL,
+                                 '{"scheduled_owner": true}')
+                            """
+                        ),
+                        {
+                            "scheme_version": cfg.scheme_version,
+                            "scheme_id": cfg.scheme_id,
+                            "predict_date": PREDICT_DATE,
+                            "feature_date": FEATURE_DATE,
+                            "target_date": TARGET_DATE_T1,
+                        },
+                    )
+                    prediction_id = int(result.lastrowid)
+                    conn.execute(
+                        text(
+                            """
+                            UPDATE t_schedule_item_targets
+                            SET status = 'ACCEPTED',
+                                accepted_run_id = 900,
+                                accepted_prediction_id = :prediction_id
+                            WHERE target_id = :target_id
+                            """
+                        ),
+                        {
+                            "prediction_id": prediction_id,
+                            "target_id": target_id,
+                        },
+                    )
+                return "success", prediction_id
+            except Exception as exc:  # noqa: BLE001 - concurrency evidence
+                return "failed", exc
+
+        def gray_gap() -> tuple[str, object]:
+            barrier.wait()
+            try:
+                return (
+                    "success",
+                    self._complete(
+                        cfg,
+                        run_id=120,
+                        target_date=TARGET_DATE_T1,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - expected loser
+                return "failed", exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            scheduled_result = pool.submit(scheduled_owner)
+            gray_result = pool.submit(gray_gap)
+            scheduled_status, scheduled_value = scheduled_result.result()
+            gray_status, gray_value = gray_result.result()
+
+        self.assertEqual(
+            (scheduled_status, gray_status),
+            ("success", "failed"),
+        )
+        self.assertIsInstance(gray_value, RuntimeError)
+        self.assertIn("frozen daily ledger target", str(gray_value))
+        predictions = self._rows("t_scheme_predictions")
+        self.assertEqual(len(predictions), 1)
+        self.assertEqual(predictions[0]["run_id"], 900)
+        self.assertEqual(
+            predictions[0]["id"],
+            scheduled_value,
+        )
+        target = self._rows("t_schedule_item_targets")[0]
+        self.assertEqual(target["accepted_run_id"], 900)
+        self.assertEqual(
+            target["accepted_prediction_id"],
+            predictions[0]["id"],
+        )
+        self.assertEqual(self._rows("t_scheme_run_log"), [])
+        self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
+
     def test_competing_business_key_allows_exactly_one_group(self) -> None:
         cfg = _cfg(
             "t1_daily",
@@ -829,15 +1148,20 @@ class GrayGapRepositoryTests(unittest.TestCase):
                     """
                 )
             )
-            conn.exec_driver_sql(
-                "INSERT INTO t_schedule_occurrences VALUES (1, 'PENDING')"
+        self._seed_ledger_target(
+            base_scheme_id="unrelated",
+            target_tenor="3Y",
+            horizon=1,
+            target_date=TARGET_DATE_T1,
+        )
+        ledger_before = {
+            table: self._rows(table)
+            for table in (
+                "t_schedule_occurrences",
+                "t_schedule_items",
+                "t_schedule_item_targets",
             )
-            conn.exec_driver_sql(
-                "INSERT INTO t_schedule_items VALUES (2, 'PENDING', 'PENDING')"
-            )
-            conn.exec_driver_sql(
-                "INSERT INTO t_schedule_item_targets VALUES (3, 'PENDING', NULL)"
-            )
+        }
 
         with self.assertRaisesRegex(RuntimeError, "active Registry target multiset"):
             self._complete(
@@ -845,18 +1169,8 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 run_id=112,
                 target_date=TARGET_DATE_T1,
             )
-        self.assertEqual(
-            self._rows("t_schedule_occurrences"),
-            [{"occurrence_id": 1, "completion_state": "PENDING"}],
-        )
-        self.assertEqual(
-            self._rows("t_schedule_items"),
-            [{"item_id": 2, "state": "PENDING", "sla_status": "PENDING"}],
-        )
-        self.assertEqual(
-            self._rows("t_schedule_item_targets"),
-            [{"target_id": 3, "status": "PENDING", "accepted_run_id": None}],
-        )
+        for table, rows in ledger_before.items():
+            self.assertEqual(self._rows(table), rows)
 
         with self.engine.begin() as conn:
             conn.execute(
@@ -972,6 +1286,85 @@ class GrayGapRepositoryTests(unittest.TestCase):
             loaded,
             native_generation_binding=fixture["native_binding"],
         )
+
+    def test_direct_cache_completion_is_single_record_by_contract(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._direct_cache_fixture()
+        record = PredictionRecord(
+            scheme_id=fixture["scheme_id"],
+            target_tenor="5Y",
+            horizon=5,
+            predict_date=PREDICT_DATE,
+            feature_date=FEATURE_DATE,
+            target_date=TARGET_DATE_T5,
+            predicted_direction=1,
+            prediction_phase="scheduled_live",
+            extra={"phase_a_cache": fixture["audit"]},
+        )
+
+        with (
+            patch(
+                "shared.liwei_0616_phase_a_cache."
+                "_load_generation_directory",
+                side_effect=AssertionError(
+                    "multi-record cache completion must not perform I/O"
+                ),
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "exactly one record",
+            ),
+        ):
+            repository._validate_cache_qualified_completion(
+                occurrence={"policy_json": fixture["policy"]},
+                item=fixture["item"],
+                generation=fixture["generation"],
+                records=[record, record],
+            )
+
+    def test_direct_cache_real_generation_accepts_and_tampering_fails(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        fixture = self._real_direct_cache_fixture("positive")
+        repository._validate_cache_qualified_completion(
+            occurrence={"policy_json": fixture["policy"]},
+            item=fixture["item"],
+            generation=fixture["generation"],
+            records=[fixture["record"]],
+        )
+
+        for tamper_target in ("manifest", "baseline"):
+            with self.subTest(tamper_target=tamper_target):
+                tampered = self._real_direct_cache_fixture(
+                    f"tamper-{tamper_target}"
+                )
+                generation_path = Path(
+                    tampered["audit"]["generation_path"]
+                )
+                path = (
+                    generation_path / "manifest.json"
+                    if tamper_target == "manifest"
+                    else generation_path / "baselines" / "STD.pkl"
+                )
+                path.write_bytes(path.read_bytes() + b"\nforged")
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "direct cache completion audit verification failed",
+                ):
+                    repository._validate_cache_qualified_completion(
+                        occurrence={
+                            "policy_json": tampered["policy"]
+                        },
+                        item=tampered["item"],
+                        generation=tampered["generation"],
+                        records=[tampered["record"]],
+                    )
 
     def test_direct_cache_read_only_requires_validated_published_hit(
         self,
@@ -1656,6 +2049,230 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 loader=loader,
             )
 
+    def _real_direct_cache_fixture(
+        self,
+        suffix: str,
+    ) -> dict[str, object]:
+        scheme_id = f"real_cache_consumer_{suffix}"
+        cache_family = f"real_direct_cache_{suffix}"
+        storage_root = (
+            Path(self._tmpdir.name) / f"real-cache-root-{suffix}"
+        ).absolute()
+        spec = PhaseACacheSpec(
+            cache_family=cache_family,
+            tenor="5Y",
+            baselines=("STD",),
+            baseline_configs={
+                "STD": {"close": "TB5YWI0C", "window": 2}
+            },
+            source_ic_screen_start="2024-01-01",
+            horizon=5,
+            purge_gap=5,
+            publisher_consumer_id=scheme_id,
+        )
+        dates = ["2026-05-29", FEATURE_DATE]
+        daily = pd.DataFrame(
+            {
+                "date": pd.to_datetime(dates),
+                "TB5YWI0C": [1.60, 1.61],
+            }
+        )
+        weekly = pd.DataFrame(
+            {"week_id": [202622, 202623], "weekly_x": [0.9, 1.0]}
+        )
+        monthly = pd.DataFrame(
+            {"month_id": ["202605", "202606"], "monthly_x": [1.9, 2.0]}
+        )
+        projection_frame = pd.DataFrame(
+            {
+                "date": dates,
+                "effective_aux": [0.1, 0.2],
+            }
+        )
+        mapping_entries = [
+            {"date": dates[0], "week_id": 202622},
+            {"date": dates[1], "week_id": 202623},
+        ]
+        mapping_payload = [
+            [entry["date"], entry["week_id"]]
+            for entry in mapping_entries
+        ]
+        projection = AuxiliaryDependencyProjection(
+            frame=projection_frame,
+            proof={
+                "schema_version":
+                    "liwei-0616-auxiliary-dependency-projection-v1",
+                "date_to_week_mode": "explicit",
+                "date_to_week_sha256": hashlib.sha256(
+                    json.dumps(
+                        mapping_payload,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "date_to_week_entries": mapping_entries,
+                "proof_files": [
+                    {
+                        "name": "data_alignment.py",
+                        "sha256": "9" * 64,
+                    }
+                ],
+                "columns": list(projection_frame.columns),
+                "dtypes": [
+                    str(projection_frame[column].dtype)
+                    for column in projection_frame.columns
+                ],
+                "daily_grid_sha256": hashlib.sha256(
+                    "|".join(dates).encode("utf-8")
+                ).hexdigest(),
+                "feature_cutoff": FEATURE_DATE,
+            },
+            content_sha256=hashlib.sha256(
+                projection_frame.to_json(
+                    orient="split"
+                ).encode("utf-8")
+            ).hexdigest(),
+        )
+        native_binding = {
+            "generation_id": f"native-{suffix}",
+            "manifest_sha256": "1" * 64,
+            "dataset_content_id": "2" * 64,
+            "business_date": PREDICT_DATE,
+            "feature_date": FEATURE_DATE,
+            "schema_version": "native-generation-v1",
+            "exporter_version": "native-generation-exporter-v1",
+        }
+
+        def train_missing(
+            baseline: str,
+            ranges: tuple[tuple[str, str], ...],
+        ) -> dict[str, object]:
+            test_dates = [
+                start
+                for start, end in ranges
+                if start == end
+            ]
+            values = np.asarray(
+                [index + 1 for index in range(len(test_dates))],
+                dtype=np.int32,
+            )
+            return {
+                "test_dates": test_dates,
+                "results": [
+                    {
+                        "config": {
+                            "baseline": baseline,
+                            "window": 2,
+                        },
+                        "preds": values,
+                        "probs": values.astype(np.float64) / 10.0,
+                    }
+                ],
+            }
+
+        _caches, audit = prepare_phase_a_caches(
+            spec=spec,
+            daily_df=daily,
+            weekly_df=weekly,
+            monthly_df=monthly,
+            test_ranges=((FEATURE_DATE, FEATURE_DATE),),
+            train_missing=train_missing,
+            cache_consumer_id=scheme_id,
+            native_generation=native_binding,
+            auxiliary_dependency_projection=projection,
+            cache_root=storage_root,
+        )
+        generation_path = Path(audit["generation_path"])
+        manifest = json.loads(
+            (generation_path / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        spec_fingerprint = cache_module._spec_fingerprint(spec)
+        projection_sha256 = manifest["input_state"][
+            "effective_auxiliary"
+        ]["proof_identity_sha256"]
+        consumer = {
+            "base_scheme_id": scheme_id,
+            "cache_consumer_id": scheme_id,
+            "scheme_version": f"{scheme_id}-version",
+            "code_sha256": "3" * 64,
+            "config_sha256": "4" * 64,
+            "cache_group": f"{cache_family}:5Y",
+            "spec_fingerprint": spec_fingerprint,
+            "publisher_consumer_id": scheme_id,
+            "cache_family": cache_family,
+            "tenor": "5Y",
+            "access_mode": "publisher",
+            "cache_adapter_sha256": "5" * 64,
+            "cache_core_sha256": "6" * 64,
+            "projection_proof_identity_sha256": projection_sha256,
+            "daily_dependency_lookback_rows": None,
+            "daily_dependency_proof": None,
+        }
+        policy = {
+            "schemes": [
+                {
+                    "scheme_id": scheme_id,
+                    "cache_group": f"{cache_family}:5Y",
+                    "cache_spec_fingerprint": spec_fingerprint,
+                    "cache_adapter_sha256": "5" * 64,
+                    "cache_core_sha256": "6" * 64,
+                }
+            ],
+            "direct_cache_authorities": {
+                "schema_version":
+                    "daily-direct-cache-authorities-v1",
+                "storage_root": str(storage_root),
+                "contract": {
+                    "manifest_schema_version": 3,
+                    "input_state_schema_version": 3,
+                    "cache_abi_version":
+                        "liwei_0616.phase_a.v1",
+                    "projection_schema_version":
+                        "liwei-0616-auxiliary-dependency-projection-v1",
+                    "native_generation_type": "native_source",
+                    "native_generation_schema_version":
+                        "native-generation-v1",
+                    "native_exporter_version":
+                        "native-generation-exporter-v1",
+                },
+                "consumers": {scheme_id: consumer},
+            },
+        }
+        item = {
+            "base_scheme_id": scheme_id,
+            "scheme_version": f"{scheme_id}-version",
+            "code_sha256": "3" * 64,
+            "config_sha256": "4" * 64,
+            "cache_group": f"{cache_family}:5Y",
+        }
+        generation = {
+            **native_binding,
+            "generation_type": "native_source",
+            "state": "SEALED",
+        }
+        record = PredictionRecord(
+            scheme_id=scheme_id,
+            target_tenor="5Y",
+            horizon=5,
+            predict_date=PREDICT_DATE,
+            feature_date=FEATURE_DATE,
+            target_date=TARGET_DATE_T5,
+            predicted_direction=1,
+            prediction_phase="scheduled_live",
+            extra={"phase_a_cache": audit},
+        )
+        return {
+            "policy": policy,
+            "item": item,
+            "generation": generation,
+            "record": record,
+            "audit": audit,
+        }
+
     def _direct_cache_fixture(
         self,
         *,
@@ -1914,22 +2531,84 @@ _SCHEMA = (
     """,
     """
     CREATE TABLE t_schedule_occurrences (
-        occurrence_id INTEGER PRIMARY KEY,
-        completion_state TEXT NOT NULL
+        occurrence_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        schedule_key TEXT NOT NULL,
+        predict_date TEXT NOT NULL,
+        feature_date TEXT NOT NULL,
+        policy_version TEXT NOT NULL,
+        policy_sha256 TEXT NOT NULL,
+        policy_json TEXT NOT NULL,
+        registry_digest TEXT NOT NULL,
+        completion_state TEXT NOT NULL DEFAULT 'PENDING',
+        expected_item_count INTEGER NOT NULL,
+        expected_target_count INTEGER NOT NULL,
+        accepted_target_count INTEGER NOT NULL DEFAULT 0,
+        sla_accepted_target_count INTEGER,
+        sla_deadline_at DATETIME NOT NULL,
+        recovery_cutoff_at DATETIME NOT NULL,
+        sla_outcome TEXT NOT NULL DEFAULT 'PENDING',
+        sla_evaluated_at DATETIME,
+        sla_reason TEXT,
+        failure_code TEXT,
+        failure_message TEXT,
+        started_at DATETIME,
+        completed_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (schedule_key, predict_date)
     )
     """,
     """
     CREATE TABLE t_schedule_items (
-        item_id INTEGER PRIMARY KEY,
-        state TEXT NOT NULL,
-        sla_status TEXT NOT NULL
+        item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        occurrence_id INTEGER NOT NULL,
+        base_scheme_id TEXT NOT NULL,
+        runtime_type TEXT NOT NULL,
+        scheme_version TEXT NOT NULL,
+        code_sha256 TEXT NOT NULL,
+        config_sha256 TEXT NOT NULL,
+        cache_group TEXT NOT NULL,
+        input_generation_id TEXT,
+        resource_class TEXT,
+        internal_workers INTEGER,
+        release_offset_minutes INTEGER NOT NULL DEFAULT 0,
+        release_at DATETIME,
+        deadline_at DATETIME,
+        state TEXT NOT NULL DEFAULT 'PENDING',
+        sla_status TEXT NOT NULL DEFAULT 'PENDING',
+        late_reason TEXT,
+        sla_evaluated_at DATETIME,
+        attempt_no INTEGER NOT NULL DEFAULT 0,
+        current_run_id INTEGER,
+        started_at DATETIME,
+        completed_at DATETIME,
+        failure_code TEXT,
+        failure_message TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (occurrence_id, base_scheme_id)
     )
     """,
     """
     CREATE TABLE t_schedule_item_targets (
-        target_id INTEGER PRIMARY KEY,
-        status TEXT NOT NULL,
-        accepted_run_id INTEGER
+        target_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        occurrence_id INTEGER NOT NULL,
+        item_id INTEGER NOT NULL,
+        registry_scheme_id TEXT NOT NULL,
+        base_scheme_id TEXT NOT NULL,
+        runtime_type TEXT NOT NULL,
+        task_type TEXT NOT NULL,
+        target_tenor TEXT NOT NULL,
+        horizon INTEGER NOT NULL,
+        target_date TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'PENDING',
+        accepted_run_id INTEGER,
+        accepted_prediction_id INTEGER,
+        accepted_at DATETIME,
+        visible_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (occurrence_id, registry_scheme_id),
+        UNIQUE (item_id, target_tenor, horizon)
     )
     """,
 )
