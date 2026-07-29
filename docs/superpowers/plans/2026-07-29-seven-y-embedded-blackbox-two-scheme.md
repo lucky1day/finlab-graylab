@@ -726,7 +726,7 @@ git commit -m "feat: preserve approved 7y consensus actions"
 **Interfaces:**
 - Produces generated CLI:
   - `python <scheme>.py predict --request <json> --data-dir <dir> --output <json>`
-  - `python <scheme>.py backtest --request <json> --data-dir <dir> --output <json>`
+  - `python <scheme>.py backtest --requests <csv> --data-dir <dir> --output <csv>`
 - Consumes: `_infer_one`
 
 - [ ] **Step 1: Write failing CLI contract tests**
@@ -736,13 +736,22 @@ Cover single request, 100 requests, duplicate cutoffs, reordered batches, predic
 ```python
 self.assertEqual(
     set(result),
-    {"request_id", "feature_date", "target_date", "action", "score"},
+    {
+        "request_id",
+        "predict_date",
+        "feature_date",
+        "target_date",
+        "predicted_direction",
+    },
 )
-self.assertIn(result["action"], (-1, 0, 1))
+self.assertIn(result["predicted_direction"], (-1, 0, 1))
 self.assertEqual(completed.stdout, "")
 ```
 
-For a batch failure, pre-create no output, inject an invalid date in item 50, and assert nonzero return code plus absent output.
+`predict` reads one strict seven-field JSON Request and writes one JSON Result.
+`backtest` reads a strict seven-column CSV Request batch and writes a five-column
+CSV Result in request order. For a batch failure, pre-create no output, inject
+an invalid date in item 50, and assert nonzero return code plus absent output.
 
 - [ ] **Step 2: Run CLI tests and observe failures**
 
@@ -767,11 +776,28 @@ def _execute_requests(
     return [_execute_one(request, data_dir) for request in requests]
 ```
 
-Validate 1–100 requests, unique/nonempty request IDs according to the SOP, dates, finite output score, and exact target-date resolution using the supplied `api_wind_date-v1`. Use a per-process cache only for identical `(feature_date, input_file_hashes)` keys.
+Validate one to 100 Requests, unique nonempty request IDs, no missing or extra
+fields, exact date formats, `feature_date <= predict_date <= target_date`,
+`feature_date < target_date`, and exact supplied cutoff-key consistency. Do not
+calculate or replace `predict_date`, `target_date`, or any cutoff key. Use
+`api_wind_date-v1` only to validate the supplied weekly cutoff mapping.
+
+Map the internal algorithm action to `predicted_direction`; never expose
+internal score or member fields. Use a per-process cache only for identical
+`(feature_date, daily_cutoff_key, weekly_cutoff_key, monthly_cutoff_key,
+input_file_hashes)` keys.
+
+Redirect all Python-level and file-descriptor-level native anchor stdout to
+stderr during business execution so successful `predict` and `backtest`
+produce no stdout bytes.
 
 - [ ] **Step 4: Implement atomic output and stderr logging**
 
-Serialize compact UTF-8 JSON into a same-directory temporary file, flush and `os.fsync`, then `os.replace`. On any exception, remove the temporary file, leave the final output absent, write one concise error to stderr, and exit nonzero.
+Serialize predict as compact UTF-8 JSON and backtest as CSV with exact columns
+`request_id,predict_date,feature_date,target_date,predicted_direction`. Write
+to a same-directory temporary file, flush and `os.fsync`, then `os.replace`.
+On any exception, remove the temporary file, leave the final output absent,
+write one concise error to stderr, and exit nonzero.
 
 - [ ] **Step 5: Run CLI tests**
 
@@ -988,4 +1014,3 @@ Invoke `superpowers:verification-before-completion`, rerun the full acceptance c
 - confirmation that protected gray-lab hashes did not change.
 
 Do not claim either scheme passes unless the final command outputs prove every item.
-
