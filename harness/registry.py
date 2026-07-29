@@ -27,6 +27,10 @@ def sequence_for_stage(stage: str) -> list[str]:
 
 
 def gate_for_name(name: str, *, ctx: GateContext | None = None) -> Gate:
+    if name == "signal-gap-fill":
+        from harness.gates.signal_gap_fill_gate import SignalGapFillGate
+
+        return SignalGapFillGate()
     runtime_type = _runtime_type(ctx)
     if runtime_type == "blackbox_v2":
         from harness.blackbox_v2.gates import BLACKBOX_GATES

@@ -116,6 +116,7 @@ class DiscoveredSchemeIdentity:
     code_sha256: str
     config_sha256: str
     status: str
+    source_package_sha256: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +134,7 @@ class RegistryTarget:
     input_mode: str | None = None
     code_sha256: str | None = None
     config_sha256: str | None = None
+    source_package_sha256: str | None = None
 
     @property
     def business_identity(self) -> tuple[str, str, int]:
@@ -439,12 +441,16 @@ def build_signal_gap_plan(
     control_plane_blockers = _normalized_control_plane_blockers(
         snapshot.control_plane_blockers
     )
-    blocker_codes_by_base: dict[str, set[str]] = {}
+    blocker_codes_by_base_segment: dict[
+        tuple[str, str],
+        set[str],
+    ] = {}
     for blocker in control_plane_blockers:
-        blocker_codes_by_base.setdefault(
-            str(blocker["base_scheme_id"]),
-            set(),
-        ).add(str(blocker["code"]))
+        for segment in blocker["segment_scope"]:
+            blocker_codes_by_base_segment.setdefault(
+                (str(blocker["base_scheme_id"]), str(segment)),
+                set(),
+            ).add(str(blocker["code"]))
     native_artifact_verifier = _NativeArtifactVerifier(
         snapshot.input_generations
     )
@@ -522,9 +528,16 @@ def build_signal_gap_plan(
             target=target,
             control_plane_error=(
                 ",".join(
-                    sorted(blocker_codes_by_base[item.base_scheme_id])
+                    sorted(
+                        blocker_codes_by_base_segment[
+                            (item.base_scheme_id, item.segment)
+                        ]
+                    )
                 )
-                if item.base_scheme_id in blocker_codes_by_base
+                if (
+                    item.base_scheme_id,
+                    item.segment,
+                ) in blocker_codes_by_base_segment
                 else None
             ),
             valid_present=(len(observed) == 1 and observation_error is None),
@@ -552,6 +565,7 @@ def build_signal_gap_plan(
         actions.append(
             _action_row(
                 item,
+                target=target,
                 action=action,
                 reason=reason,
                 input_authority=input_authority,
@@ -1202,7 +1216,10 @@ def _read_registry_versions(
             if str(version["scheme_version"])
             == authority.scheme_version
         ]
-        if len(active_versions) != 1:
+        if (
+            authority.runtime_type == "blackbox_v2"
+            and len(active_versions) != 1
+        ):
             blockers.append(
                 {
                     "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
@@ -1265,6 +1282,8 @@ def _read_registry_versions(
                 ),
                 code_sha256=authority.code_sha256,
                 config_sha256=authority.config_sha256,
+                source_package_sha256=
+                    authority.source_package_sha256,
             )
         )
     targets = tuple(resolved_targets)
@@ -1721,6 +1740,7 @@ def _read_persisted_canonical_observations(
                 {
                     "code": "NATIVE_CANONICAL_RUN_MISSING",
                     "base_scheme_id": base_scheme_id,
+                    "segment_scope": ["canonical"],
                 }
             )
             authorities.append(
@@ -1749,6 +1769,7 @@ def _read_persisted_canonical_observations(
                     "code": "NATIVE_CANONICAL_MANIFEST_INVALID",
                     "base_scheme_id": base_scheme_id,
                     "run_id": run_id,
+                    "segment_scope": ["canonical"],
                 }
             )
             authorities.append(
@@ -1783,6 +1804,7 @@ def _read_persisted_canonical_observations(
                     "base_scheme_id": base_scheme_id,
                     "run_id": run_id,
                     "reason": version_error,
+                    "segment_scope": ["canonical"],
                 }
             )
         authorities.append(
@@ -2065,7 +2087,9 @@ def _resolve_action(
             None,
             "CANONICAL_BUSINESS_KEY_MISSING",
         )
-    if target.input_mode == "live_source_0629":
+    if target.input_mode == "live_source_0629" and not _is_sha256(
+        str(target.source_package_sha256 or "")
+    ):
         return (
             "BLOCKED_DATA_CONTRACT",
             None,
@@ -2514,6 +2538,24 @@ def _validate_registry_target(target: RegistryTarget) -> None:
             "INVALID_REGISTRY_TARGET",
             "active target has invalid input_mode",
         )
+    if (
+        target.input_mode == "live_source_0629"
+        and not _is_sha256(
+            str(target.source_package_sha256 or "")
+        )
+    ):
+        raise SignalGapPlanError(
+            "INVALID_REGISTRY_TARGET",
+            "live_source_0629 target has no package SHA-256",
+        )
+    if (
+        target.input_mode != "live_source_0629"
+        and target.source_package_sha256 is not None
+    ):
+        raise SignalGapPlanError(
+            "INVALID_REGISTRY_TARGET",
+            "source package SHA-256 is only valid for live_source_0629",
+        )
     _canonical_date(
         target.live_target_start_date,
         "live_target_start_date",
@@ -2698,6 +2740,7 @@ def _validate_case_matches_target(
 def _action_row(
     item: ExpectedSignalCase,
     *,
+    target: RegistryTarget,
     action: Action,
     reason: str,
     input_authority: Mapping[str, Any] | None,
@@ -2715,6 +2758,16 @@ def _action_row(
         "feature_date": item.feature_date,
         "target_date": item.target_date,
         "segment": item.segment,
+        "prediction_phase": (
+            "gray_live"
+            if item.segment == "live"
+            else "historical_backtest"
+        ),
+        "scheme_version": target.scheme_version,
+        "code_sha256": target.code_sha256,
+        "config_sha256": target.config_sha256,
+        "input_mode": target.input_mode,
+        "source_package_sha256": target.source_package_sha256,
         "business_key": [
             item.base_scheme_id,
             item.target_tenor,
@@ -2991,6 +3044,8 @@ def _blackbox_task_contract(
 
 def _discover_execution_authority(
 ) -> tuple[DiscoveredSchemeIdentity, ...]:
+    discovered = tuple(discover_schemes(strict=True))
+    source_packages = _load_0629_source_packages()
     identities = tuple(
         DiscoveredSchemeIdentity(
             base_scheme_id=str(config.scheme_id),
@@ -2999,8 +3054,11 @@ def _discover_execution_authority(
             code_sha256=str(config.code_hash),
             config_sha256=str(config.config_hash),
             status=str(config.status),
+            source_package_sha256=source_packages.get(
+                str(config.scheme_id)
+            ),
         )
-        for config in discover_schemes(strict=True)
+        for config in discovered
     )
     _authority_by_base(identities)
     return tuple(
@@ -3052,6 +3110,8 @@ def _discovery_identity_sha256(
                 "code_sha256": identity.code_sha256,
                 "config_sha256": identity.config_sha256,
                 "status": identity.status,
+                "source_package_sha256":
+                    identity.source_package_sha256,
             }
             for identity in sorted(
                 identities,
@@ -3079,6 +3139,25 @@ def _normalized_control_plane_blockers(
             )
         blocker["code"] = code
         blocker["base_scheme_id"] = base_scheme_id
+        raw_scope = blocker.get(
+            "segment_scope",
+            ("canonical", "live"),
+        )
+        if (
+            not isinstance(raw_scope, (list, tuple))
+            or not raw_scope
+            or any(
+                str(segment) not in {"canonical", "live"}
+                for segment in raw_scope
+            )
+        ):
+            raise SignalGapPlanError(
+                "CONTROL_PLANE_BLOCKER_INVALID",
+                "blocker segment_scope must contain canonical/live",
+            )
+        blocker["segment_scope"] = sorted(
+            {str(segment) for segment in raw_scope}
+        )
         digest = canonical_json_sha256(blocker)
         if digest not in seen:
             seen.add(digest)
@@ -3110,6 +3189,12 @@ def _missing_discovery_identity(
         code_sha256=marker,
         config_sha256=marker,
         status="active",
+        source_package_sha256=(
+            _load_0629_source_packages().get(base_scheme_id)
+            if base_scheme_id
+            in APPROVED_0629_LIVE_SOURCE_SCHEMES
+            else None
+        ),
     )
 
 
@@ -3146,6 +3231,61 @@ def _active_version_identity_sha256(
             )
         ]
     )
+
+
+def _load_0629_source_packages() -> dict[str, str]:
+    policy_path = (
+        Path(__file__).resolve().parents[1]
+        / "deploy"
+        / "daily_scheduler_policy_v2.json"
+    )
+    try:
+        payload = json.loads(policy_path.read_text(encoding="utf-8"))
+        rows = payload["schemes"]
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+    ) as exc:
+        raise SignalGapPlanError(
+            "LIVE_SOURCE_0629_POLICY_INVALID",
+            "daily scheduler v2 policy is unavailable",
+        ) from exc
+    if not isinstance(rows, list):
+        raise SignalGapPlanError(
+            "LIVE_SOURCE_0629_POLICY_INVALID",
+            "daily scheduler v2 policy schemes are invalid",
+        )
+    result: dict[str, str] = {}
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or row.get("scheme_id")
+            not in APPROVED_0629_LIVE_SOURCE_SCHEMES
+        ):
+            continue
+        scheme_id = str(row["scheme_id"])
+        package_sha256 = str(
+            row.get("source_package_sha256") or ""
+        )
+        if (
+            row.get("input_compatibility") != "live_source_0629"
+            or not _is_sha256(package_sha256)
+            or scheme_id in result
+        ):
+            raise SignalGapPlanError(
+                "LIVE_SOURCE_0629_POLICY_INVALID",
+                scheme_id,
+            )
+        result[scheme_id] = package_sha256
+    if set(result) != set(APPROVED_0629_LIVE_SOURCE_SCHEMES):
+        raise SignalGapPlanError(
+            "LIVE_SOURCE_0629_POLICY_INVALID",
+            "approved 0629 policy identities are incomplete",
+        )
+    return result
 
 
 def _input_mode_for_identity(
@@ -3203,6 +3343,8 @@ def _registry_digest_sha256(
                     target.live_target_start_date,
                 "live_boundary_source": target.live_boundary_source,
                 "input_mode": target.input_mode,
+                "source_package_sha256":
+                    target.source_package_sha256,
             }
             for target in sorted(
                 targets,

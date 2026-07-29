@@ -59,6 +59,33 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"auth issue --action {args.action} requires --predict-date"
             )
+        signal_gap_kwargs: dict[str, Any] = {}
+        if args.action == "signal_gap_fill_write":
+            required = {
+                "--plan-sha256": args.plan_sha256,
+                "--base-scheme-id": args.base_scheme_id,
+                "--target-keys-json": args.target_keys_json,
+                "--source-authority-json": args.source_authority_json,
+            }
+            missing = [
+                flag for flag, value in required.items()
+                if value is None
+            ]
+            if missing:
+                parser.error(
+                    "auth issue --action signal_gap_fill_write "
+                    f"requires {', '.join(missing)}"
+                )
+            signal_gap_kwargs = {
+                "plan_sha256": args.plan_sha256,
+                "base_scheme_id": args.base_scheme_id,
+                "target_keys": _read_json_file(
+                    args.target_keys_json
+                ),
+                "source_authority": _read_json_file(
+                    args.source_authority_json
+                ),
+            }
         token = issue_token(
             args.scheme_id,
             args.action,
@@ -68,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             ttl_seconds=args.expires_in,
             issued_by=args.issued_by,
             backtest_start_date=args.backtest_start_date,
+            **signal_gap_kwargs,
         )
         print(token)
         return 0
@@ -220,6 +248,28 @@ def main(argv: list[str] | None = None) -> int:
             or int(plan.get("counts", {}).get("blocked", 0))
             else 0
         )
+    if args.command == "signal-gap-fill":
+        ctx = GateContext(
+            scheme_id="signal-gap-fill",
+            predict_date="signal-gap-fill",
+            project_root=args.project_root.resolve(),
+            report_dir=(
+                args.report_dir
+                or args.project_root.resolve()
+                / "reports"
+                / "harness"
+                / "signal-gap-fill"
+                / _timestamp()
+            ),
+            engine_factory=create_engine_from_env,
+            algo_env=args.algo_env,
+            timeout_sec=args.timeout_sec,
+            signal_gap_plan_path=args.plan.resolve(),
+            signal_gap_authorizations=tuple(args.authorize),
+        )
+        result = gate_for_name("signal-gap-fill", ctx=ctx).run(ctx)
+        print(json.dumps(_jsonable(result), ensure_ascii=False, indent=2))
+        return _exit_code_for_result(result)
     parser.error("unsupported command")
     return 1
 
@@ -335,6 +385,22 @@ def _build_parser() -> argparse.ArgumentParser:
         default="json",
     )
 
+    fill_parser = subparsers.add_parser("signal-gap-fill")
+    fill_parser.add_argument("--plan", type=Path, required=True)
+    fill_parser.add_argument(
+        "--authorize",
+        action="append",
+        required=True,
+    )
+    fill_parser.add_argument(
+        "--project-root",
+        type=Path,
+        default=PROJECT_ROOT,
+    )
+    fill_parser.add_argument("--report-dir", type=Path, default=None)
+    fill_parser.add_argument("--algo-env", default="forecast_env")
+    fill_parser.add_argument("--timeout-sec", type=int, default=600)
+
     auth_parser = subparsers.add_parser("auth")
     auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
     issue_parser = auth_subparsers.add_parser("issue")
@@ -348,6 +414,18 @@ def _build_parser() -> argparse.ArgumentParser:
     issue_parser.add_argument(
         "--backtest-start-date",
         default=DEFAULT_BACKTEST_START_DATE,
+    )
+    issue_parser.add_argument("--plan-sha256", default=None)
+    issue_parser.add_argument("--base-scheme-id", default=None)
+    issue_parser.add_argument(
+        "--target-keys-json",
+        type=Path,
+        default=None,
+    )
+    issue_parser.add_argument(
+        "--source-authority-json",
+        type=Path,
+        default=None,
     )
     return parser
 
@@ -488,6 +566,13 @@ def _exit_code_for_report(report: OnboardReport) -> int:
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def _read_json_file(path: Path) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"invalid JSON file {path}: {exc}") from exc
 
 
 def _jsonable(value: Any) -> Any:
