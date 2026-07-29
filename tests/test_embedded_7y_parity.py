@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import base64
 import csv
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date, timedelta
 import hashlib
+import io
 import json
 import lzma
 import os
@@ -343,6 +345,32 @@ def write_audit_fixture(
 
 
 class EmbeddedBuildTests(unittest.TestCase):
+    def test_build_main_writes_only_delivery_paths_to_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                status = builder.main(
+                    [
+                        "--source-root",
+                        str(SOURCE_ROOT),
+                        "--output-root",
+                        str(root),
+                    ]
+                )
+
+            self.assertEqual(status, 0)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertEqual(
+                stderr.getvalue(),
+                "".join(
+                    f"{root.resolve() / scheme_id}\n"
+                    for scheme_id in SCHEMES
+                ),
+            )
+
     def test_build_all_creates_only_two_delivery_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -729,8 +757,117 @@ class EmbeddedTraceLifecycleTests(unittest.TestCase):
                 ]
             )
 
+    def test_confined_process_accepts_dirfd_writes_inside_write_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            child = root / "child.py"
+            child.write_text(
+                "import os\n"
+                "root_fd = os.open(os.environ['TMPDIR'], "
+                "os.O_RDONLY | os.O_DIRECTORY)\n"
+                "try:\n"
+                "    os.mkdir('payload', 0o700, dir_fd=root_fd)\n"
+                "    payload_fd = os.open('payload', "
+                "os.O_RDONLY | os.O_DIRECTORY, dir_fd=root_fd)\n"
+                "    try:\n"
+                "        file_fd = os.open('result.bin', "
+                "os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, "
+                "dir_fd=payload_fd)\n"
+                "        os.close(file_fd)\n"
+                "        os.rename('result.bin', 'renamed.bin', "
+                "src_dir_fd=payload_fd, dst_dir_fd=payload_fd)\n"
+                "        os.remove('renamed.bin', dir_fd=payload_fd)\n"
+                "    finally:\n"
+                "        os.close(payload_fd)\n"
+                "    os.rmdir('payload', dir_fd=root_fd)\n"
+                "finally:\n"
+                "    os.close(root_fd)\n",
+                encoding="utf-8",
+            )
+
+            completed, records = verifier._run_confined_process(
+                [str(BLACKBOX_PYTHON), str(child)],
+                cwd=root,
+                write_root=root / "writable",
+            )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertTrue(
+                any(
+                    record.get("path")
+                    == str(root / "writable/payload/result.bin")
+                    and record.get("write") is True
+                    for record in records
+                )
+            )
+
+    def test_confined_process_rejects_dirfd_writes_outside_write_root(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            child = root / "child.py"
+            child.write_text(
+                "import os\n"
+                "root_fd = os.open('.', os.O_RDONLY | os.O_DIRECTORY)\n"
+                "try:\n"
+                "    try:\n"
+                "        os.mkdir('outside-payload', 0o700, dir_fd=root_fd)\n"
+                "    except PermissionError:\n"
+                "        pass\n"
+                "finally:\n"
+                "    os.close(root_fd)\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(AssertionError, "forbidden write access"):
+                verifier._run_confined_process(
+                    [str(BLACKBOX_PYTHON), str(child)],
+                    cwd=root,
+                    write_root=root / "writable",
+                )
+
 
 class EmbeddedIndependenceTests(unittest.TestCase):
+    def test_independence_request_normalizes_databridge_timestamp_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixtures = write_platform_fixtures(Path(tmp))
+            (fixtures / "daily_output.csv").write_text(
+                "date,TB5YWI0C,TB7YWI0C,TB0YWI0C\n"
+                "2025/07/15 00:00,1.0,1.1,1.2\n",
+                encoding="utf-8",
+            )
+
+            request = verifier._independence_request(fixtures)
+
+            self.assertEqual(
+                request,
+                {
+                    "request_id": "independence-001",
+                    "predict_date": "2025-07-15",
+                    "feature_date": "2025-07-15",
+                    "target_date": "2025-07-16",
+                    "daily_cutoff_key": "2025-07-15",
+                    "weekly_cutoff_key": "202529",
+                    "monthly_cutoff_key": "202507",
+                },
+            )
+
+    def test_independence_request_rejects_invalid_databridge_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fixtures = write_platform_fixtures(Path(tmp))
+            (fixtures / "daily_output.csv").write_text(
+                "date,TB5YWI0C,TB7YWI0C,TB0YWI0C\n"
+                "not-a-date,1.0,1.1,1.2\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                AssertionError,
+                "daily_output.date must be a parseable DataBridge date",
+            ):
+                verifier._independence_request(fixtures)
+
     def test_independence_uses_blank_root_clean_pythonpath_and_only_fixtures(
         self,
     ) -> None:

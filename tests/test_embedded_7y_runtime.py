@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import builtins
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import chdir, redirect_stderr, redirect_stdout
 import csv
 import importlib.util
 import io
@@ -23,6 +23,7 @@ import uuid
 
 import pandas as pd
 
+from scheduler.blackbox_v2_runner import execute_blackbox_cli
 from tools.embedded_7y_blackbox.frozen_schemes import get_scheme
 from tools.embedded_7y_blackbox.payload import collect_payload
 from tools.embedded_7y_blackbox.renderer import render_runner
@@ -340,9 +341,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         data_dir: Path,
     ) -> tuple[pd.Series, pd.Series, list[str]]:
         module = self.load_generated_module()
-        run_root = self.tempdir / f"run-{uuid.uuid4().hex}"
-        payload_root = module._extract_payload(run_root / "payload")
-        five, ten = module._anchor_modules(payload_root)
+        run_root = Path(f"run-{uuid.uuid4().hex}")
         read_paths: list[str] = []
         original_open = builtins.open
 
@@ -365,32 +364,35 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             return original_open(file, *args, **kwargs)
 
         diagnostics = io.StringIO()
-        with (
-            patch.object(module, "open", audited_open, create=True),
-            redirect_stdout(diagnostics),
-            redirect_stderr(diagnostics),
-        ):
-            protected_root = module._materialize_cutoff_data(
-                data_dir,
-                CUTOFF,
-                "2025-07-15",
-                "202529",
-                "202507",
-                run_root / "request",
-            )
-            five_frame = module._run_5y10(
-                five,
-                protected_root,
-                run_root / "five",
-            )
-            ten_frame = module._run_10y04(
-                ten,
-                protected_root,
-                run_root / "ten",
-                CUTOFF,
-            )
-            five_scores = module._anchor_score(five_frame, "5Y10", CUTOFF)
-            ten_scores = module._anchor_score(ten_frame, "10Y04", CUTOFF)
+        with chdir(self.tempdir):
+            payload_root = module._extract_payload(run_root / "payload")
+            five, ten = module._anchor_modules(payload_root)
+            with (
+                patch.object(module, "open", audited_open, create=True),
+                redirect_stdout(diagnostics),
+                redirect_stderr(diagnostics),
+            ):
+                protected_root = module._materialize_cutoff_data(
+                    data_dir,
+                    CUTOFF,
+                    "2025-07-15",
+                    "202529",
+                    "202507",
+                    run_root / "request",
+                )
+                five_frame = module._run_5y10(
+                    five,
+                    protected_root,
+                    run_root / "five",
+                )
+                ten_frame = module._run_10y04(
+                    ten,
+                    protected_root,
+                    run_root / "ten",
+                    CUTOFF,
+                )
+                five_scores = module._anchor_score(five_frame, "5Y10", CUTOFF)
+                ten_scores = module._anchor_score(ten_frame, "10Y04", CUTOFF)
         return five_scores, ten_scores, read_paths
 
     def reference_phase(
@@ -1269,8 +1271,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         run_root = self.tempdir / "private"
         run_root.symlink_to(outside, target_is_directory=True)
 
-        with self.assertRaisesRegex(ValueError, "unsafe payload extraction root"):
-            module._extract_payload(run_root)
+        with chdir(self.tempdir):
+            with self.assertRaisesRegex(ValueError, "unsafe payload extraction root"):
+                module._extract_payload(Path("private"))
 
         self.assertEqual(list(outside.iterdir()), [])
 
@@ -1282,10 +1285,59 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         link.symlink_to(outside, target_is_directory=True)
         run_root = link / "nested" / "private"
 
-        with self.assertRaisesRegex(ValueError, "unsafe payload extraction root"):
-            module._extract_payload(run_root)
+        with chdir(self.tempdir):
+            with self.assertRaisesRegex(ValueError, "unsafe payload extraction root"):
+                module._extract_payload(Path("linked-parent/nested/private"))
 
         self.assertEqual(list(outside.iterdir()), [])
+
+    def test_generated_extraction_runs_in_platform_deny_default_sandbox(
+        self,
+    ) -> None:
+        script = self.rendered_runner.replace(
+            'if __name__ == "__main__":\n    raise SystemExit(main())\n',
+            textwrap.dedent(
+                """\
+                if __name__ == "__main__":
+                    output = Path(sys.argv[sys.argv.index("--output") + 1])
+                    payload_root = _extract_payload(Path("payload"))
+                    if not payload_root.joinpath(
+                        "daily_project", "src", "daily", "__init__.py"
+                    ).is_file():
+                        raise RuntimeError("payload extraction probe failed")
+                    output.write_text("{}", encoding="utf-8")
+                """
+            ),
+        )
+        control_root = self.tempdir / "platform-control"
+        control_root.mkdir()
+        runner = control_root / "probe.py"
+        runner.write_text(script, encoding="utf-8")
+        request = control_root / "request.json"
+        request.write_text("{}", encoding="utf-8")
+        data_dir = control_root / "data"
+        data_dir.mkdir()
+        for filename in (
+            "daily_output.csv",
+            "weekly_output.csv",
+            "monthly_output.csv",
+        ):
+            (data_dir / filename).write_text("key,value\n1,1\n", encoding="utf-8")
+        run_root = self.tempdir / "platform-run"
+        run_root.mkdir()
+        output = run_root / "result.json"
+
+        completed = execute_blackbox_cli(
+            script_path=runner,
+            mode="predict",
+            input_path=request,
+            data_dir=data_dir,
+            output_path=output,
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(output.read_text(encoding="utf-8"), "{}")
 
     def test_extraction_rejects_existing_parent_symlink(self) -> None:
         module = self.load_generated_module()
@@ -1295,8 +1347,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         outside.mkdir()
         (run_root / "daily_project").symlink_to(outside, target_is_directory=True)
 
-        with self.assertRaisesRegex(ValueError, "unsafe payload path"):
-            module._extract_payload(run_root)
+        with chdir(self.tempdir):
+            with self.assertRaisesRegex(ValueError, "unsafe payload path"):
+                module._extract_payload(Path("private"))
 
         self.assertEqual(list(outside.iterdir()), [])
 
@@ -1354,8 +1407,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                     os.close(descriptor)
 
         with patch.object(module.os, "rename", side_effect=rename_then_tamper):
-            with self.assertRaisesRegex(ValueError, "post-install mismatch"):
-                module._extract_payload(run_root)
+            with chdir(self.tempdir):
+                with self.assertRaisesRegex(ValueError, "post-install mismatch"):
+                    module._extract_payload(Path("private"))
 
         first_path = module._PAYLOAD_MANIFEST[0]["relative_path"]
         self.assertFalse((run_root / first_path).exists())
@@ -1393,7 +1447,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                     os.unlink(target, dir_fd=dst_dir_fd)
                     {replacement_statement}
             os.rename = replace_after_rename
-            namespace["_extract_payload"](Path({str(run_root)!r}))
+            namespace["_extract_payload"](Path({run_root.name!r}))
             """
         )
         try:
@@ -1402,6 +1456,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 check=False,
+                cwd=self.tempdir,
                 timeout=3,
             )
         except subprocess.TimeoutExpired:
@@ -1423,7 +1478,11 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         module = self.load_generated_module()
         run_root = self.tempdir / "missing" / "nested" / "private"
 
-        payload_root = module._extract_payload(run_root)
+        with chdir(self.tempdir):
+            relative_payload_root = module._extract_payload(
+                Path("missing/nested/private")
+            )
+        payload_root = self.tempdir / relative_payload_root
 
         created_roots = [
             self.tempdir / "missing",
@@ -1446,16 +1505,16 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             for name, loaded in sys.modules.items()
             if name == "daily" or name.startswith("daily.")
         }
-        payload_root = module._extract_payload(run_root)
+        with chdir(self.tempdir):
+            payload_root = module._extract_payload(Path("private"))
+            five, ten = module._anchor_modules(payload_root)
 
-        five, ten = module._anchor_modules(payload_root)
-
-        self.assertTrue(
-            Path(five.__file__).resolve().is_relative_to(payload_root.resolve())
-        )
-        self.assertTrue(
-            Path(ten.__file__).resolve().is_relative_to(payload_root.resolve())
-        )
+            self.assertTrue(
+                Path(five.__file__).resolve().is_relative_to(payload_root.resolve())
+            )
+            self.assertTrue(
+                Path(ten.__file__).resolve().is_relative_to(payload_root.resolve())
+            )
         final_daily = {
             name: loaded
             for name, loaded in sys.modules.items()

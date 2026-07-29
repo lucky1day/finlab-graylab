@@ -21,6 +21,8 @@ import tempfile
 import threading
 from typing import Iterable
 
+import pandas as pd
+
 from tools.embedded_7y_blackbox.frozen_schemes import SCHEMES, FrozenScheme
 from tools.embedded_7y_blackbox.renderer import render_metadata
 
@@ -462,6 +464,24 @@ def _canonical_date(value: str, label: str) -> date:
     return parsed
 
 
+def _databridge_date(value: str, label: str) -> date:
+    if not isinstance(value, str) or not value.strip():
+        raise AssertionError(f"{label} must be a parseable DataBridge date")
+    try:
+        parsed = pd.to_datetime(value.strip(), errors="raise")
+    except (TypeError, ValueError) as error:
+        raise AssertionError(
+            f"{label} must be a parseable DataBridge date: {value!r}"
+        ) from error
+    if isinstance(parsed, pd.DatetimeIndex):
+        if len(parsed) != 1:
+            raise AssertionError(
+                f"{label} must be a parseable DataBridge date: {value!r}"
+            )
+        parsed = parsed[0]
+    return parsed.date()
+
+
 def _read_calendar(data_dir: Path) -> tuple[dict[str, str], list[str]]:
     path = Path(data_dir) / "api_wind_date.csv"
     with path.open(encoding="utf-8", newline="") as handle:
@@ -499,7 +519,10 @@ def _independence_request(fixture_root: Path) -> dict[str, str]:
     if not daily_dates:
         raise AssertionError("daily_output.csv must not be empty")
     canonical_daily = sorted(
-        {_canonical_date(value, "daily_output.date").isoformat() for value in daily_dates}
+        {
+            _databridge_date(value, "daily_output.date").isoformat()
+            for value in daily_dates
+        }
     )
     later_by_date = {
         value: calendar_dates[index + 1]
@@ -531,6 +554,7 @@ TRACE_COMPLETION_EVENT = "embedded_7y_trace_complete"
 
 _AUDIT_HOOK_SOURCE = """\
 import atexit
+import fcntl
 import _thread
 import json
 import os
@@ -555,8 +579,10 @@ def _install_trace():
     os.close(inherited_descriptor)
     trusted_write = os.write
     trusted_close = os.close
+    trusted_open = os.open
     write_lock = _thread.allocate_lock()
     write_failed = [False]
+    dirfd_opens = {}
 
     def write_record(record):
         try:
@@ -575,6 +601,64 @@ def _install_trace():
         except BaseException:
             write_failed[0] = True
 
+    def descriptor_path(descriptor):
+        try:
+            raw = fcntl.fcntl(descriptor, fcntl.F_GETPATH, b"\\0" * 1024)
+            path = os.fsdecode(raw.split(b"\\0", 1)[0])
+            if path and os.path.isabs(path):
+                return path
+        except (OSError, ValueError):
+            pass
+        try:
+            path = os.readlink(f"/proc/self/fd/{descriptor}")
+            if path and os.path.isabs(path):
+                return path
+        except OSError:
+            pass
+        raise OSError(f"cannot resolve directory descriptor: {descriptor}")
+
+    def normalized_path(candidate, dir_fd=None):
+        path = os.fsdecode(candidate)
+        if os.path.isabs(path):
+            return os.path.normpath(path)
+        base = os.getcwd() if dir_fd in (None, -1) else descriptor_path(dir_fd)
+        return os.path.normpath(os.path.join(base, path))
+
+    def flags_write(flags):
+        return bool(
+            flags
+            & (
+                os.O_WRONLY
+                | os.O_RDWR
+                | os.O_CREAT
+                | os.O_TRUNC
+                | os.O_APPEND
+            )
+        )
+
+    def traced_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is None or not isinstance(path, (str, bytes, os.PathLike)):
+            return trusted_open(path, flags, mode, dir_fd=dir_fd)
+        thread_id = _thread.get_ident()
+        raw_path = os.fsdecode(path)
+        try:
+            absolute = normalized_path(path, dir_fd)
+        except BaseException:
+            write_failed[0] = True
+            raise
+        write_record(
+            {
+                "event": "open",
+                "path": absolute,
+                "write": flags_write(flags),
+            }
+        )
+        dirfd_opens[thread_id] = raw_path
+        try:
+            return trusted_open(path, flags, mode, dir_fd=dir_fd)
+        finally:
+            dirfd_opens.pop(thread_id, None)
+
     def trace_hook(event, args):
         if event not in _path_events or not args:
             return
@@ -591,24 +675,35 @@ def _install_trace():
             if isinstance(mode, str):
                 write_access = any(token in mode for token in "wax+")
             if isinstance(flags, int):
-                write_access = write_access or bool(
-                    flags
-                    & (
-                        os.O_WRONLY
-                        | os.O_RDWR
-                        | os.O_CREAT
-                        | os.O_TRUNC
-                        | os.O_APPEND
-                    )
-                )
+                write_access = write_access or flags_write(flags)
+            candidate = args[0]
+            if (
+                isinstance(candidate, (str, bytes, os.PathLike))
+                and not os.path.isabs(os.fsdecode(candidate))
+                and dirfd_opens.get(_thread.get_ident())
+                == os.fsdecode(candidate)
+            ):
+                return
         candidates = args[:2] if event == "os.rename" else args[:1]
-        for candidate in candidates:
+        for index, candidate in enumerate(candidates):
             if not isinstance(candidate, (str, bytes, os.PathLike)):
                 continue
+            dir_fd = None
+            if event == "os.mkdir" and len(args) > 2:
+                dir_fd = args[2]
+            elif event in {"os.remove", "os.rmdir"} and len(args) > 1:
+                dir_fd = args[1]
+            elif event == "os.rename" and len(args) > index + 2:
+                dir_fd = args[index + 2]
+            try:
+                path = normalized_path(candidate, dir_fd)
+            except BaseException:
+                write_failed[0] = True
+                path = os.fsdecode(candidate)
             write_record(
                 {
                     "event": event,
-                    "path": os.fsdecode(candidate),
+                    "path": path,
                     "write": write_access,
                 }
             )
@@ -627,6 +722,7 @@ def _install_trace():
 
     sys.addaudithook(trace_hook)
     atexit.register(complete_trace)
+    os.open = traced_open
 
 
 _install_trace()
@@ -787,6 +883,12 @@ def _run_confined_process(
     env["PYTHONPATH"] = str(trace_root)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["TMPDIR"] = str(write_root)
+    env["XDG_CACHE_HOME"] = str(write_root / ".cache")
+    env["XDG_CONFIG_HOME"] = str(write_root / ".config")
+    env["XDG_DATA_HOME"] = str(write_root / ".local" / "share")
+    env["MPLCONFIGDIR"] = str(write_root / ".matplotlib")
+    env["NUMBA_CACHE_DIR"] = str(write_root / ".cache" / "numba")
+    env["JOBLIB_TEMP_FOLDER"] = str(write_root / ".tmp" / "joblib")
     env["EMBEDDED_7Y_TRACE_FD"] = str(trace_write)
     parent_trace_write_open = True
     try:

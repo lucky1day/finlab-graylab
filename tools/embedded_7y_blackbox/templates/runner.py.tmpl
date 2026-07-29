@@ -129,16 +129,17 @@ _DIRECTORY_OPEN_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 def _open_extraction_root(root: Path) -> int:
-    """Open an absolute extraction root component-by-component without links."""
-    requested = Path(root).absolute()
-    if requested.is_symlink():
+    """Open a cwd-relative extraction root component-by-component without links."""
+    requested = Path(root)
+    if (
+        requested.is_absolute()
+        or not requested.parts
+        or any(part in {"", ".", ".."} for part in requested.parts)
+    ):
         raise ValueError("unsafe payload extraction root")
-    absolute = requested
-    if not absolute.is_absolute() or absolute == Path("/"):
-        raise ValueError("unsafe payload extraction root")
-    descriptor = os.open("/", _DIRECTORY_OPEN_FLAGS)
+    descriptor = os.open(".", _DIRECTORY_OPEN_FLAGS)
     try:
-        for part in absolute.parts[1:]:
+        for part in requested.parts:
             created = False
             try:
                 next_descriptor = os.open(
@@ -261,7 +262,7 @@ def _extract_payload(run_root: Path) -> Path:
         seen_paths.add(relative_path)
         decoded.append((relative_path, raw))
 
-    payload_root = Path(run_root).absolute()
+    payload_root = Path(run_root)
     root_descriptor = _open_extraction_root(payload_root)
     try:
         for relative_path, raw in decoded:
@@ -1286,8 +1287,8 @@ def _infer_one(
     cutoff = pd.Timestamp(feature_date).normalize()
     if pd.isna(cutoff):
         raise ValueError("feature date is invalid")
-    with tempfile.TemporaryDirectory(prefix="embedded-7y-") as temporary:
-        run_root = Path(temporary).resolve()
+    with tempfile.TemporaryDirectory(prefix="embedded-7y-", dir=".") as temporary:
+        run_root = Path(temporary).relative_to(Path.cwd())
         payload_root = _extract_payload(run_root / "payload")
         five_module, ten_module = _anchor_modules(payload_root)
         protected_root = _materialize_cutoff_data(

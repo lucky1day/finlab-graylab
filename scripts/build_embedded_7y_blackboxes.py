@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 from pathlib import Path
 import stat
@@ -293,16 +292,8 @@ def main(arguments: list[str] | None = None) -> int:
     except Exception as error:
         print(f"error: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
-    print(
-        json.dumps(
-            {
-                "deliveries": [str(path) for path in deliveries],
-                "status": "built",
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
+    for delivery in deliveries:
+        print(delivery, file=sys.stderr)
     return 0
 
 
