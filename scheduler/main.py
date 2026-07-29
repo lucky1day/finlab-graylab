@@ -49,6 +49,9 @@ from scheduler.executor import DEFAULT_ALGO_ENV, SchemeRunResult, execute_scheme
 from scheduler.repository import create_engine_from_env, sync_scheme_registry
 from scheduler.v2_daily_gate import V2DailyGateBlocked, require_v2_daily_ready
 from shared.data_bridge.client import DataBridgeClient, DataBridgeClientConfig
+from shared.data_bridge.authority import (
+    resolve_databridge_continuity_cutoffs,
+)
 from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
     check_current_dataset,
@@ -713,6 +716,15 @@ def run_data_bridge_refresh_job(
     expected_daily_date = _previous_trading_day(refresh_date)
     client = DataBridgeClient(DataBridgeClientConfig.from_env())
     config = DataBridgeRefreshConfig.from_env()
+    engine = create_engine_from_env()
+    try:
+        continuity_cutoffs = resolve_databridge_continuity_cutoffs(
+            config,
+            feature_date=expected_daily_date,
+            connection=engine,
+        )
+    finally:
+        engine.dispose()
     result = run_full_refresh(
         client=client,
         config=config,
@@ -720,6 +732,7 @@ def run_data_bridge_refresh_job(
         refresh_date=refresh_date,
         publish=True,
         deadline_at=config.deadline_at(refresh_date) if enforce_deadline else None,
+        continuity_cutoffs=continuity_cutoffs,
     )
     logger.info(
         "DataBridge refresh finished: date=%s generation=%s rounds=%s duration_sec=%.1f",

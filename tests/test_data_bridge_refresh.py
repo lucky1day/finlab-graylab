@@ -1188,6 +1188,96 @@ class DataBridgeRefreshTests(unittest.TestCase):
             self.assertIn("refreshed_at", result.state)
             self.assertIsNone(result.state["published_at"])
 
+    def test_refresh_scopes_previous_keys_to_effective_continuity_cutoffs(
+        self,
+    ) -> None:
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeStore,
+            run_full_refresh,
+        )
+        from shared.data_bridge.validation import (
+            validate_dataset,
+            write_validated_dataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+                daily_start_date="2026-01-01",
+                daily_chunk_months=3,
+                download_concurrency=2,
+                max_rounds=3,
+            )
+            previous = validate_dataset(
+                {
+                    "daily_output.csv": pd.DataFrame(
+                        {
+                            "date": [
+                                "2026/01/02 00:00",
+                                "2026/04/01 00:00",
+                                "2026/07/18 00:00",
+                            ],
+                            "factor": ["1", "2", "3"],
+                        }
+                    ),
+                    "weekly_output.csv": pd.DataFrame(
+                        {
+                            "week_id": [
+                                "202628",
+                                "202629",
+                                "202630",
+                            ],
+                            "factor": ["3", "4", "5"],
+                        }
+                    ),
+                    "monthly_output.csv": pd.DataFrame(
+                        {
+                            "month_id": ["202606", "202607"],
+                            "factor": ["5", "6"],
+                        }
+                    ),
+                },
+                schema_path=schema,
+            )
+            candidate = write_validated_dataset(
+                previous,
+                root / "previous-candidate",
+            )
+            DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            ).publish(
+                candidate,
+                _dataset_state(
+                    previous,
+                    refresh_date="2026-07-18",
+                ),
+            )
+
+            result = run_full_refresh(
+                client=_FakeClient(),
+                config=config,
+                expected_daily_date="2026-07-18",
+                refresh_date="2026-07-19",
+                publish=False,
+                continuity_cutoffs={
+                    "daily_output.csv": "2026-07-18",
+                    "weekly_output.csv": "202629",
+                    "monthly_output.csv": "202607",
+                },
+            )
+
+        self.assertEqual(result.rounds_completed, 2)
+        self.assertEqual(
+            result.state["files"]["weekly_output.csv"]["max_key"],
+            "202629",
+        )
+
     def test_published_state_records_trusted_refresh_timeline(self) -> None:
         from shared.data_bridge.refresh import (
             DataBridgeRefreshConfig,

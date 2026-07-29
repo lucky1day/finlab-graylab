@@ -42,6 +42,125 @@ class DataBridgeValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(DataBridgeValidationError, "historical keys disappeared"):
                 validate_dataset(frames, schema_path=schema, previous_keys=previous)
 
+    def test_continuity_cutoffs_allow_only_unsealed_future_keys_to_disappear(
+        self,
+    ) -> None:
+        from shared.data_bridge.validation import validate_dataset
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = _write_schema(Path(tmpdir))
+            dataset = validate_dataset(
+                _frames(),
+                schema_path=schema,
+                previous_keys={
+                    "daily_output.csv": {
+                        "2026-07-17",
+                        "2026-07-18",
+                        "2026-07-19",
+                    },
+                    "weekly_output.csv": {
+                        "202628",
+                        "202629",
+                        "202630",
+                    },
+                    "monthly_output.csv": {
+                        "202606",
+                        "202607",
+                        "202608",
+                    },
+                },
+                continuity_cutoffs={
+                    "daily_output.csv": "2026-07-18",
+                    "weekly_output.csv": "202629",
+                    "monthly_output.csv": "202607",
+                },
+            )
+
+        self.assertEqual(
+            dataset.files["weekly_output.csv"].max_key,
+            "202629",
+        )
+
+    def test_continuity_cutoffs_still_reject_sealed_history_loss(
+        self,
+    ) -> None:
+        from shared.data_bridge.validation import (
+            DataBridgeValidationError,
+            validate_dataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = _write_schema(Path(tmpdir))
+            frames = _frames()
+            frames["weekly_output.csv"] = frames[
+                "weekly_output.csv"
+            ].iloc[:1]
+            with self.assertRaisesRegex(
+                DataBridgeValidationError,
+                r"historical keys disappeared: \['202629'\]",
+            ):
+                validate_dataset(
+                    frames,
+                    schema_path=schema,
+                    previous_keys={
+                        "daily_output.csv": {
+                            "2026-07-17",
+                            "2026-07-18",
+                        },
+                        "weekly_output.csv": {
+                            "202628",
+                            "202629",
+                            "202630",
+                        },
+                        "monthly_output.csv": {
+                            "202606",
+                            "202607",
+                        },
+                    },
+                    continuity_cutoffs={
+                        "daily_output.csv": "2026-07-18",
+                        "weekly_output.csv": "202629",
+                        "monthly_output.csv": "202607",
+                    },
+                )
+
+    def test_continuity_cutoffs_fail_closed_when_incomplete_or_invalid(
+        self,
+    ) -> None:
+        from shared.data_bridge.validation import (
+            DataBridgeValidationError,
+            validate_dataset,
+        )
+
+        previous = {
+            "daily_output.csv": {"2026-07-17", "2026-07-18"},
+            "weekly_output.csv": {"202628", "202629"},
+            "monthly_output.csv": {"202606", "202607"},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            schema = _write_schema(Path(tmpdir))
+            for cutoffs in (
+                {
+                    "daily_output.csv": "2026-07-18",
+                    "weekly_output.csv": "202629",
+                },
+                {
+                    "daily_output.csv": "2026-07-18",
+                    "weekly_output.csv": "not-a-week",
+                    "monthly_output.csv": "202607",
+                },
+            ):
+                with (
+                    self.subTest(cutoffs=cutoffs),
+                    self.assertRaises(DataBridgeValidationError),
+                ):
+                    validate_dataset(
+                        _frames(),
+                        schema_path=schema,
+                        previous_keys=previous,
+                        continuity_cutoffs=cutoffs,
+                    )
+
     def test_business_digest_ignores_csv_rendering_but_detects_value_change(self) -> None:
         from shared.data_bridge.validation import validate_dataset
 

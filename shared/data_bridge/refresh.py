@@ -305,6 +305,7 @@ class DataBridgeRoundBuilder:
         end_date: str,
         expected_daily_date: str,
         previous_keys: Mapping[str, set[str] | frozenset[str]] | None,
+        continuity_cutoffs: Mapping[str, object] | None = None,
     ) -> DownloadRound:
         started = time.monotonic()
         ranges = quarter_ranges(
@@ -336,6 +337,7 @@ class DataBridgeRoundBuilder:
             schema_path=self.config.schema_path,
             expected_daily_date=expected_daily_date,
             previous_keys=previous_keys,
+            continuity_cutoffs=continuity_cutoffs,
         )
         elapsed = time.monotonic() - started
         if elapsed > self.config.round_timeout_sec:
@@ -402,6 +404,7 @@ def run_full_refresh(
     publication_capability: (
         DailyCoordinatorPublicationCapability | None
     ) = None,
+    continuity_cutoffs: Mapping[str, object] | None = None,
 ) -> RefreshResult:
     authority = _require_publish_authority(
         publish=publish,
@@ -438,6 +441,7 @@ def run_full_refresh(
                         end_date=refresh_date,
                         expected_daily_date=expected_daily_date,
                         previous_keys=previous_keys,
+                        continuity_cutoffs=continuity_cutoffs,
                     )
                     built_directories.append(item.directory)
                     _ensure_before_deadline(deadline_at)

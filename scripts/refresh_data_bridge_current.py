@@ -17,6 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from scheduler.main import _previous_trading_day  # noqa: E402
+from scheduler.repository import create_engine_from_env  # noqa: E402
 from shared.data_bridge.client import (  # noqa: E402
     DataBridgeClient,
     DataBridgeClientConfig,
@@ -28,6 +29,9 @@ from shared.data_bridge.refresh import (  # noqa: E402
     DataBridgeRefreshError,
     check_current_dataset,
     run_full_refresh,
+)
+from shared.data_bridge.authority import (  # noqa: E402
+    resolve_databridge_continuity_cutoffs,
 )
 from shared.data_bridge.validation import DataBridgeValidationError  # noqa: E402
 from shared.daily_coordinator_mode import (  # noqa: E402
@@ -45,12 +49,23 @@ def _daily_coordinator_mode() -> str:
 def refresh_current(*, refresh_date: str, publish: bool):
     expected_daily_date = _previous_trading_day(refresh_date)
     client = DataBridgeClient(DataBridgeClientConfig.from_env())
+    config = DataBridgeRefreshConfig.from_env()
+    engine = create_engine_from_env()
+    try:
+        continuity_cutoffs = resolve_databridge_continuity_cutoffs(
+            config,
+            feature_date=expected_daily_date,
+            connection=engine,
+        )
+    finally:
+        engine.dispose()
     return run_full_refresh(
         client=client,
-        config=DataBridgeRefreshConfig.from_env(),
+        config=config,
         expected_daily_date=expected_daily_date,
         refresh_date=refresh_date,
         publish=publish,
+        continuity_cutoffs=continuity_cutoffs,
     )
 
 

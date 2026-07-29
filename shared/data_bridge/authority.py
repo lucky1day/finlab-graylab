@@ -67,6 +67,44 @@ class StableDataBridgeCurrentAuthority:
     stable_identity_sha256: str
 
 
+def resolve_databridge_continuity_cutoffs(
+    config: DataBridgeRefreshConfig,
+    *,
+    feature_date: str,
+    connection: Any,
+) -> Mapping[str, str] | None:
+    """从现有 current 和 caller 只读连接解析下一轮连续性截止键。
+
+    首次发布没有 current 时不需要连续性比较；已经存在但无效的 current
+    必须继续 fail-closed。
+    """
+    normalized_feature_date = date.fromisoformat(
+        str(feature_date)[:10]
+    ).isoformat()
+    try:
+        authority = resolve_stable_databridge_current_authority(
+            config,
+            feature_dates=(normalized_feature_date,),
+            connection=connection,
+        )
+    except DataBridgeCurrentMissingError:
+        return None
+    if (
+        len(authority.cutoffs) != 1
+        or authority.cutoffs[0].feature_date
+        != normalized_feature_date
+    ):
+        raise DataBridgeCurrentInvalidError(
+            "DataBridge current continuity cutoff authority is incomplete"
+        )
+    cutoff = authority.cutoffs[0]
+    return {
+        "daily_output.csv": cutoff.daily_cutoff_key,
+        "weekly_output.csv": cutoff.weekly_cutoff_key,
+        "monthly_output.csv": cutoff.monthly_cutoff_key,
+    }
+
+
 def resolve_stable_databridge_current_authority(
     config: DataBridgeRefreshConfig,
     *,

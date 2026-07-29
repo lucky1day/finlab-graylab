@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import call, patch
 
 import pandas as pd
@@ -292,6 +293,84 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
                     feature_dates=("2026-07-15",),
                     connection=self.connection,
                 )
+
+    def test_refresh_continuity_cutoffs_use_exact_current_authority(
+        self,
+    ) -> None:
+        from shared.data_bridge.authority import (
+            StableDataBridgeCutoff,
+            resolve_databridge_continuity_cutoffs,
+        )
+
+        authority = SimpleNamespace(
+            cutoffs=(
+                StableDataBridgeCutoff(
+                    feature_date="2026-07-28",
+                    daily_cutoff_key="2026-07-27",
+                    weekly_cutoff_key="202629",
+                    monthly_cutoff_key="202607",
+                ),
+            )
+        )
+        with patch(
+            "shared.data_bridge.authority."
+            "resolve_stable_databridge_current_authority",
+            return_value=authority,
+        ) as resolve:
+            actual = resolve_databridge_continuity_cutoffs(
+                self.config,
+                feature_date="2026-07-28",
+                connection=self.connection,
+            )
+
+        self.assertEqual(
+            actual,
+            {
+                "daily_output.csv": "2026-07-27",
+                "weekly_output.csv": "202629",
+                "monthly_output.csv": "202607",
+            },
+        )
+        resolve.assert_called_once_with(
+            self.config,
+            feature_dates=("2026-07-28",),
+            connection=self.connection,
+        )
+
+    def test_refresh_continuity_cutoffs_allow_only_missing_current(
+        self,
+    ) -> None:
+        from shared.data_bridge.authority import (
+            resolve_databridge_continuity_cutoffs,
+        )
+
+        for error_type, expected in (
+            (DataBridgeCurrentMissingError, None),
+            (DataBridgeCurrentInvalidError, "raise"),
+        ):
+            with (
+                self.subTest(error_type=error_type.__name__),
+                patch(
+                    "shared.data_bridge.authority."
+                    "resolve_stable_databridge_current_authority",
+                    side_effect=error_type("current classification"),
+                ),
+            ):
+                if expected is None:
+                    self.assertIsNone(
+                        resolve_databridge_continuity_cutoffs(
+                            self.config,
+                            feature_date="2026-07-28",
+                            connection=self.connection,
+                        )
+                    )
+                else:
+                    with self.assertRaises(DataBridgeCurrentInvalidError):
+                        resolve_databridge_continuity_cutoffs(
+                            self.config,
+                            feature_date="2026-07-28",
+                            connection=self.connection,
+                        )
 
     def test_cutoff_sql_helpers_receive_the_caller_connection(self) -> None:
         from shared.input_artifacts import (

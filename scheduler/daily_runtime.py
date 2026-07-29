@@ -68,6 +68,9 @@ from shared.daily_coordinator_mode import (
 )
 from shared.daily_storage_preflight import preflight_daily_storage
 from shared.data_bridge.client import DataBridgeClient, DataBridgeClientConfig
+from shared.data_bridge.authority import (
+    resolve_databridge_continuity_cutoffs,
+)
 from shared.data_bridge.refresh import (
     DailyCoordinatorPublicationCapability,
     DataBridgeRefreshConfig,
@@ -966,6 +969,11 @@ class DefaultDailyRuntimeServices:
             policy.recovery_cutoff,
             tzinfo=ZoneInfo(policy.timezone),
         )
+        continuity_cutoffs = resolve_databridge_continuity_cutoffs(
+            config,
+            feature_date=feature_date,
+            connection=self.engine,
+        )
         refresh_result = run_full_refresh(
             client=client,
             config=config,
@@ -974,6 +982,7 @@ class DefaultDailyRuntimeServices:
             publish=True,
             deadline_at=deadline,
             publication_capability=publication_capability,
+            continuity_cutoffs=continuity_cutoffs,
         )
         return check_current_dataset(
             config,

@@ -3,10 +3,77 @@ from __future__ import annotations
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 class DataBridgeCliTests(unittest.TestCase):
+    def test_refresh_passes_database_authoritative_continuity_cutoffs(
+        self,
+    ) -> None:
+        from scripts import refresh_data_bridge_current as command
+
+        engine = SimpleNamespace(dispose=Mock())
+        cutoffs = {
+            "daily_output.csv": "2026-07-27",
+            "weekly_output.csv": "202629",
+            "monthly_output.csv": "202607",
+        }
+        with (
+            patch.object(
+                command,
+                "_previous_trading_day",
+                return_value="2026-07-28",
+            ),
+            patch.object(
+                command,
+                "create_engine_from_env",
+                return_value=engine,
+                create=True,
+            ),
+            patch.object(
+                command,
+                "resolve_databridge_continuity_cutoffs",
+                return_value=cutoffs,
+                create=True,
+            ) as resolve,
+            patch.object(
+                command.DataBridgeClientConfig,
+                "from_env",
+                return_value=SimpleNamespace(),
+            ),
+            patch.object(
+                command.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=SimpleNamespace(),
+            ) as config_factory,
+            patch.object(
+                command,
+                "DataBridgeClient",
+                return_value=SimpleNamespace(),
+            ),
+            patch.object(
+                command,
+                "run_full_refresh",
+                return_value=SimpleNamespace(),
+            ) as refresh,
+        ):
+            command.refresh_current(
+                refresh_date="2026-07-29",
+                publish=False,
+            )
+
+        config = config_factory.return_value
+        resolve.assert_called_once_with(
+            config,
+            feature_date="2026-07-28",
+            connection=engine,
+        )
+        self.assertEqual(
+            refresh.call_args.kwargs["continuity_cutoffs"],
+            cutoffs,
+        )
+        engine.dispose.assert_called_once_with()
+
     def test_publish_mode_returns_machine_readable_success(self) -> None:
         from scripts import refresh_data_bridge_current as command
 

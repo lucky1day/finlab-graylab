@@ -92,6 +92,7 @@ def validate_dataset(
     schema_path: str | Path,
     expected_daily_date: str | None = None,
     previous_keys: Mapping[str, set[str] | frozenset[str]] | None = None,
+    continuity_cutoffs: Mapping[str, object] | None = None,
 ) -> ValidatedDataBridgeDataset:
     schema = json.loads(Path(schema_path).read_text(encoding="utf-8"))
     expected_files = schema.get("files")
@@ -99,6 +100,34 @@ def validate_dataset(
         raise DataBridgeValidationError("DataBridge schema must define exactly three files")
     if set(frames) != set(EXPECTED_FILENAMES):
         raise DataBridgeValidationError("DataBridge dataset must contain exactly three files")
+    normalized_continuity_cutoffs: dict[str, str] | None = None
+    if continuity_cutoffs is not None:
+        if previous_keys is None:
+            raise DataBridgeValidationError(
+                "DataBridge continuity cutoffs require previous keys"
+            )
+        if (
+            set(continuity_cutoffs) != set(EXPECTED_FILENAMES)
+            or set(previous_keys) != set(EXPECTED_FILENAMES)
+        ):
+            raise DataBridgeValidationError(
+                "DataBridge continuity cutoffs must define exactly three files"
+            )
+        normalized_continuity_cutoffs = {}
+        for filename in EXPECTED_FILENAMES:
+            cutoff = _normalize_key(
+                filename,
+                continuity_cutoffs[filename],
+            )
+            normalized_previous = {
+                _normalize_key(filename, value)
+                for value in previous_keys[filename]
+            }
+            if cutoff not in normalized_previous:
+                raise DataBridgeValidationError(
+                    f"{filename} continuity cutoff is absent from previous keys"
+                )
+            normalized_continuity_cutoffs[filename] = cutoff
 
     validated_frames: dict[str, pd.DataFrame] = {}
     profiles: dict[str, DataBridgeFileProfile] = {}
@@ -137,7 +166,18 @@ def validate_dataset(
 
         key_set = frozenset(normalized_keys)
         if previous_keys and filename in previous_keys:
-            missing = set(previous_keys[filename]) - set(key_set)
+            required_previous = {
+                _normalize_key(filename, value)
+                for value in previous_keys[filename]
+            }
+            if normalized_continuity_cutoffs is not None:
+                cutoff = normalized_continuity_cutoffs[filename]
+                required_previous = {
+                    key
+                    for key in required_previous
+                    if key <= cutoff
+                }
+            missing = required_previous - set(key_set)
             if missing:
                 raise DataBridgeValidationError(
                     f"{filename} historical keys disappeared: {sorted(missing)[:10]}"

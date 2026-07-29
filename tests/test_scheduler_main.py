@@ -13,7 +13,7 @@ from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from scheduler.blackbox_scheduler_admission import (
     EXPECTED_EXACT_ADMISSIONS,
@@ -95,6 +95,78 @@ def _cfg(
 
 
 class SchedulerMainTests(unittest.TestCase):
+    def test_data_bridge_refresh_uses_database_authoritative_cutoffs(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        engine = SimpleNamespace(dispose=Mock())
+        config = SimpleNamespace(deadline_at=Mock(return_value=None))
+        cutoffs = {
+            "daily_output.csv": "2026-07-27",
+            "weekly_output.csv": "202629",
+            "monthly_output.csv": "202607",
+        }
+        result = SimpleNamespace(
+            state={"generation_id": "generation-new"},
+            rounds_completed=2,
+            duration_sec=1.0,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "_previous_trading_day",
+                return_value="2026-07-28",
+            ),
+            patch.object(
+                scheduler_main,
+                "create_engine_from_env",
+                return_value=engine,
+            ),
+            patch.object(
+                scheduler_main,
+                "resolve_databridge_continuity_cutoffs",
+                return_value=cutoffs,
+                create=True,
+            ) as resolve,
+            patch.object(
+                scheduler_main.DataBridgeRefreshConfig,
+                "from_env",
+                return_value=config,
+            ),
+            patch.object(
+                scheduler_main.DataBridgeClientConfig,
+                "from_env",
+                return_value=SimpleNamespace(),
+            ),
+            patch.object(
+                scheduler_main,
+                "DataBridgeClient",
+                return_value=SimpleNamespace(),
+            ),
+            patch.object(
+                scheduler_main,
+                "run_full_refresh",
+                return_value=result,
+            ) as refresh,
+        ):
+            actual = scheduler_main.run_data_bridge_refresh_job(
+                "2026-07-29",
+                enforce_deadline=False,
+            )
+
+        self.assertIs(actual, result)
+        resolve.assert_called_once_with(
+            config,
+            feature_date="2026-07-28",
+            connection=engine,
+        )
+        self.assertEqual(
+            refresh.call_args.kwargs["continuity_cutoffs"],
+            cutoffs,
+        )
+        engine.dispose.assert_called_once_with()
+
     def setUp(self) -> None:
         self._mode_patcher = patch.dict(
             os.environ,
