@@ -32,6 +32,11 @@ from shared.data_bridge.validation import validate_dataset
 from shared.native_input_generation import (
     NativeGenerationContext,
     open_native_generation,
+    # 发布与保留期 rename 的权限语义与 Native generation 一致，
+    # 复用同一实现避免两处漂移；探测缓存同样共用一份。
+    _SEALED_RENAME_SUPPORT,
+    _publish_sealed_generation,
+    _rename_with_temporarily_writable_source,
 )
 
 
@@ -393,7 +398,11 @@ def create_databridge_generation(
         _fsync_directory(data_dir)
         _fsync_directory(staging)
         try:
-            os.replace(staging, destination)
+            _publish_sealed_generation(
+                staging,
+                destination,
+                remove_tree=_remove_tree,
+            )
         except OSError:
             if not os.path.lexists(destination):
                 raise
@@ -1244,7 +1253,8 @@ def _make_read_only(root: Path) -> None:
     manifest = root / "manifest.json"
     manifest.chmod(0o444)
     _fsync_regular_file(manifest)
-    root.chmod(0o555)
+
+
 
 
 def _remove_tree(root: Path) -> None:
@@ -1344,7 +1354,13 @@ def _delete_databridge_generation(
     )
     if os.path.lexists(tombstone):
         raise ValueError("DataBridge generation retention tombstone collision")
-    os.rename(source, tombstone)
+    try:
+        os.rename(source, tombstone)
+    except PermissionError:
+        # 已发布 generation 目录是 0o555。部分平台允许直接 rename；不允许时
+        # POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。上方已确认
+        # 它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做同样的放宽。
+        _rename_with_temporarily_writable_source(source, tombstone)
     _fsync_directory(root)
     tombstone_info = tombstone.lstat()
     if (

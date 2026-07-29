@@ -1340,6 +1340,169 @@ class NativeInputGenerationDurabilityAndRetentionTests(unittest.TestCase):
             self.assertEqual(publication_count, 1)
             self.assertTrue(context.manifest_path.is_file())
 
+    def test_publish_renames_once_when_platform_allows_sealed_rename(
+        self,
+    ) -> None:
+        """平台允许重命名只读目录时保持发布前封存，且只 rename 一次。"""
+        module = importlib.import_module("shared.native_input_generation")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            if not module._sealed_rename_supported(parent):
+                self.skipTest(
+                    "该平台不允许重命名只读目录，发布前封存路径不可用"
+                )
+            try:
+                staging = parent / ".building-x"
+                staging.mkdir()
+                (staging / "manifest.json").write_text("{}", encoding="utf-8")
+                os.chmod(staging / "manifest.json", 0o444)
+                destination = parent / "native-abc"
+                renames: list[tuple[str, str]] = []
+                real_replace = os.replace
+
+                def counting(source: object, target: object) -> None:
+                    renames.append((Path(source).name, Path(target).name))
+                    real_replace(source, target)
+
+                with patch.object(module.os, "replace", side_effect=counting):
+                    module._publish_sealed_generation(staging, destination)
+
+                self.assertEqual(len(renames), 1)
+                self.assertEqual(
+                    stat.S_IMODE(os.stat(destination).st_mode), 0o555
+                )
+            finally:
+                for path in parent.iterdir():
+                    os.chmod(path, 0o755)
+
+    def test_publish_withdraws_generation_when_sealing_fails(self) -> None:
+        """降级路径上封存任一步失败都不得留下可见且可写的 destination。"""
+        module = importlib.import_module("shared.native_input_generation")
+        for name, error in (
+            ("fchmod", PermissionError(13, "denied")),
+            ("fsync", OSError(5, "io error")),
+        ):
+            with self.subTest(step=name), tempfile.TemporaryDirectory() as td:
+                parent = Path(td)
+                module._SEALED_RENAME_SUPPORT[str(parent)] = False
+                try:
+                    staging = parent / ".building-x"
+                    staging.mkdir()
+                    (staging / "manifest.json").write_text(
+                        "{}", encoding="utf-8"
+                    )
+                    destination = parent / "native-abc"
+                    with patch.object(module.os, name, side_effect=error):
+                        with self.assertRaises(type(error)):
+                            module._publish_sealed_generation(
+                                staging, destination
+                            )
+                    self.assertFalse(
+                        os.path.lexists(destination),
+                        "封存失败后仍留下已发布的 generation",
+                    )
+                    self.assertFalse(os.path.lexists(staging))
+                finally:
+                    module._SEALED_RENAME_SUPPORT.pop(str(parent), None)
+
+    def test_publish_withdraws_generation_when_mode_check_fails(self) -> None:
+        """模式复核不通过同样必须撤回发布。"""
+        module = importlib.import_module("shared.native_input_generation")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            module._SEALED_RENAME_SUPPORT[str(parent)] = False
+            try:
+                staging = parent / ".building-x"
+                staging.mkdir()
+                (staging / "manifest.json").write_text("{}", encoding="utf-8")
+                destination = parent / "native-abc"
+                with patch.object(module.os, "fchmod", return_value=None):
+                    with self.assertRaises(RuntimeError):
+                        module._publish_sealed_generation(staging, destination)
+                self.assertFalse(
+                    os.path.lexists(destination),
+                    "模式复核失败后仍留下已发布的 generation",
+                )
+            finally:
+                module._SEALED_RENAME_SUPPORT.pop(str(parent), None)
+
+    def test_publish_reseals_generation_when_withdrawal_fails(self) -> None:
+        """撤回清理失败时，可见目录必须恢复 0o555 后再报错。"""
+        module = importlib.import_module("shared.native_input_generation")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            module._SEALED_RENAME_SUPPORT[str(parent)] = False
+            destination = parent / "native-abc"
+            try:
+                staging = parent / ".building-x"
+                staging.mkdir()
+                (staging / "manifest.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                real_fsync = os.fsync
+                fsync_calls = 0
+
+                def fail_first_fsync(descriptor: int) -> None:
+                    nonlocal fsync_calls
+                    fsync_calls += 1
+                    if fsync_calls == 1:
+                        raise OSError(5, "injected seal fsync failure")
+                    real_fsync(descriptor)
+
+                def fail_withdrawal(path: Path) -> None:
+                    os.chmod(path, 0o755, follow_symlinks=False)
+                    raise OSError(5, "injected withdrawal failure")
+
+                with patch.object(
+                    module.os,
+                    "fsync",
+                    side_effect=fail_first_fsync,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "generation directory was resealed",
+                    ):
+                        module._publish_sealed_generation(
+                            staging,
+                            destination,
+                            remove_tree=fail_withdrawal,
+                        )
+                self.assertTrue(destination.is_dir())
+                self.assertEqual(
+                    stat.S_IMODE(os.lstat(destination).st_mode),
+                    0o555,
+                )
+            finally:
+                module._SEALED_RENAME_SUPPORT.pop(str(parent), None)
+                if destination.exists():
+                    os.chmod(destination, 0o755)
+
+    def test_retention_rename_restores_sealed_mode_when_retry_fails(
+        self,
+    ) -> None:
+        """GC 放宽写位后重试仍失败时，必须恢复 0o555 再抛出。"""
+        module = importlib.import_module("shared.native_input_generation")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            source = parent / "native-abc"
+            source.mkdir()
+            os.chmod(source, 0o555)
+            target = parent / ".gc-native-abc"
+            with patch.object(
+                module.os, "rename", side_effect=OSError(5, "io error")
+            ):
+                with self.assertRaises(OSError):
+                    module._rename_with_temporarily_writable_source(
+                        source, target
+                    )
+            self.assertEqual(
+                stat.S_IMODE(os.lstat(source).st_mode),
+                0o555,
+                "重试失败后未恢复封存模式",
+            )
+            self.assertFalse(os.path.lexists(target))
+            os.chmod(source, 0o755)
+
     def test_post_rename_failure_preserves_complete_final_generation(
         self,
     ) -> None:

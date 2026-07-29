@@ -400,7 +400,7 @@ def create_native_generation(
         _make_generation_read_only(staging)
         _fsync_directory(staging)
         try:
-            os.replace(staging, destination)
+            _publish_sealed_generation(staging, destination)
         except OSError:
             if not os.path.lexists(destination):
                 raise
@@ -2060,7 +2060,185 @@ def _make_generation_read_only(root: Path) -> None:
     for path in root.iterdir():
         path.chmod(0o444)
         _fsync_regular_file(path)
-    root.chmod(0o555)
+
+
+_SEALED_RENAME_SUPPORT: dict[str, bool] = {}
+
+
+def _sealed_rename_supported(parent: Path) -> bool:
+    """探测该父目录所在权限体制是否允许重命名 ``0o555`` 目录。
+
+    重命名目录需要更新其 ``..`` 项，POSIX 因此要求对被移动目录本身有写权限。
+    macOS 上该要求可被继承 ACL 覆盖：父链带 ``delete``/``add_subdirectory``
+    等 allow 条目时 ``0o555`` 目录照常可 rename，没有这类 ACL 的部署则必然
+    ``EACCES``。两种体制都属正常部署，因此按父目录探测一次并缓存，而不是
+    对真实 generation 试错——后者会产生第二次发布 rename，破坏"原子发布只
+    重命名一次"的不变量。探针使用 ``.probe-`` 前缀，与发布命名不冲突。
+    """
+    key = str(parent)
+    cached = _SEALED_RENAME_SUPPORT.get(key)
+    if cached is not None:
+        return cached
+    probe_source = Path(tempfile.mkdtemp(prefix=".probe-", dir=parent))
+    probe_target = parent / f"{probe_source.name}-moved"
+    try:
+        os.chmod(probe_source, 0o555)
+        try:
+            os.replace(probe_source, probe_target)
+            supported = True
+        except PermissionError:
+            supported = False
+    finally:
+        for path in (probe_target, probe_source):
+            if os.path.lexists(path):
+                os.chmod(path, 0o700)
+                os.rmdir(path)
+    _SEALED_RENAME_SUPPORT[key] = supported
+    return supported
+
+
+def _publish_sealed_generation(
+    staging: Path,
+    destination: Path,
+    *,
+    remove_tree: Callable[[Path], None] | None = None,
+) -> None:
+    """原子发布 generation，并保证发布后目录为 ``0o555``。
+
+    平台允许重命名只读目录时走既有语义：``staging`` 在 ``os.replace``
+    **之前**就封存，发布出去的一刻即是只读的，不存在可写窗口。
+
+    平台不允许时（见 :func:`_sealed_rename_supported`）才改为发布后封存，
+    且经**发布前已持有的 fd** 操作：fd 绑定 inode 而非路径，rename 后仍指向
+    同一目录，重新封存不涉及路径重解析、也不会被 symlink 调包，这正是不用
+    ``Path.chmod`` 的原因。该路径存在一个极短的"已发布但尚未封存"窗口，其间
+    generation 只在平台私有、不可被 group/other 写的父目录下可见；封存后会
+    经 ``fstat`` 复核，未达 ``0o555`` 即报错。
+
+    封存路径上的任一步失败（``fchmod``/``fsync``/模式复核）都会撤回本次发布：
+    调用方的 ``finally`` 只清理 ``staging``，而 rename 之后 ``staging`` 已不
+    存在，因此必须由本函数按已持有 fd 的 dev/ino 校验身份后移除 destination
+    并 fsync 父目录，绝不留下可见且可写的 generation。
+
+    ``remove_tree`` 必须与 generation 的真实目录结构匹配；Native 默认使用
+    本模块的扁平目录清理器，DataBridge 显式传入支持 ``data/`` 子目录的
+    清理器。两条发布路径都只对真实 generation 执行一次 ``os.replace``。
+    """
+    cleanup = _remove_tree if remove_tree is None else remove_tree
+    if _sealed_rename_supported(destination.parent):
+        os.chmod(staging, 0o555, follow_symlinks=False)
+        os.replace(staging, destination)
+        return
+
+    staging_fd = os.open(
+        staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
+    try:
+        identity = os.fstat(staging_fd)
+        os.replace(staging, destination)
+        try:
+            os.fchmod(staging_fd, 0o555)
+            os.fsync(staging_fd)
+            sealed_mode = stat.S_IMODE(os.fstat(staging_fd).st_mode)
+            if sealed_mode != 0o555:
+                raise RuntimeError(
+                    "generation was published but could not be sealed: "
+                    f"{destination} mode={sealed_mode:o}"
+                )
+        except BaseException:
+            _withdraw_unsealed_publication(
+                destination,
+                identity,
+                directory_fd=staging_fd,
+                remove_tree=cleanup,
+            )
+            raise
+    finally:
+        os.close(staging_fd)
+
+
+def _rename_with_temporarily_writable_source(
+    source: Path,
+    target: Path,
+) -> None:
+    """临时解开已封存目录的写位以完成 rename，失败必须恢复封存。
+
+    重试若仍失败（父目录权限、I/O 等），直接抛出会把原本 ``0o555`` 的
+    generation 留成 ``0o755``，等于把只读不变量破坏在一个本应无副作用的
+    失败路径上。因此在抛出前恢复并复核；恢复本身失败会抛出更明确的错误。
+    """
+    os.chmod(source, 0o755, follow_symlinks=False)
+    try:
+        os.rename(source, target)
+    except BaseException:
+        try:
+            os.chmod(source, 0o555, follow_symlinks=False)
+            restored = stat.S_IMODE(os.lstat(source).st_mode)
+        except OSError as restore_error:
+            raise RuntimeError(
+                "failed to restore the sealed mode after an unsuccessful "
+                f"retention rename: {source}"
+            ) from restore_error
+        if restored != 0o555:
+            raise RuntimeError(
+                "sealed mode was not restored after an unsuccessful "
+                f"retention rename: {source} mode={restored:o}"
+            )
+        raise
+
+
+def _withdraw_unsealed_publication(
+    destination: Path,
+    identity: os.stat_result,
+    *,
+    directory_fd: int,
+    remove_tree: Callable[[Path], None],
+) -> None:
+    """封存失败时撤回刚发布的 generation，保证不留下可写残留。
+
+    只在 destination 仍是与发布前 fd 同一 dev/ino 的真实目录时才移除，避免
+    并发下误删他人发布的同名 generation。撤回本身失败会抛出，让调用方看到
+    "发布未封存且未能撤回"这一必须人工介入的状态，而不是静默留下可写目录。
+    """
+    try:
+        current = os.lstat(destination)
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or current.st_dev != identity.st_dev
+        or current.st_ino != identity.st_ino
+    ):
+        raise RuntimeError(
+            "refusing to withdraw an unsealed publication that is no longer "
+            f"the generation just published: {destination}"
+        )
+    try:
+        remove_tree(destination)
+        if os.path.lexists(destination):
+            raise RuntimeError(
+                f"unsealed generation remains published: {destination}"
+            )
+    except BaseException as withdraw_error:
+        try:
+            os.fchmod(directory_fd, 0o555)
+            os.fsync(directory_fd)
+            restored = stat.S_IMODE(os.fstat(directory_fd).st_mode)
+        except OSError as reseal_error:
+            raise RuntimeError(
+                "failed to withdraw or reseal an unsealed generation: "
+                f"{destination}"
+            ) from reseal_error
+        if restored != 0o555:
+            raise RuntimeError(
+                "failed to withdraw an unsealed generation and its mode "
+                f"could not be restored: {destination} mode={restored:o}"
+            ) from withdraw_error
+        raise RuntimeError(
+            "failed to withdraw an unsealed generation; the generation "
+            f"directory was resealed: {destination}"
+        ) from withdraw_error
+    _fsync_directory(destination.parent)
 
 
 def _remove_tree(root: Path) -> None:
@@ -2138,7 +2316,13 @@ def _delete_native_generation(
     )
     if os.path.lexists(tombstone):
         raise ValueError("Native generation retention tombstone collision")
-    os.rename(source, tombstone)
+    try:
+        os.rename(source, tombstone)
+    except PermissionError:
+        # 已发布 generation 目录是 0o555。部分平台允许直接 rename；不允许时
+        # POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。上方已确认
+        # 它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做同样的放宽。
+        _rename_with_temporarily_writable_source(source, tombstone)
     _fsync_directory(root)
     tombstone_info = tombstone.lstat()
     if (
