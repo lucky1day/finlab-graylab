@@ -56,6 +56,22 @@ RESULT_FIELDS = (
 )
 
 
+class FakeProcess:
+    def __init__(
+        self,
+        *,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> None:
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+
+    def communicate(self) -> tuple[str, str]:
+        return self._stdout, self._stderr
+
+
 def tiny_payload() -> tuple[PayloadEntry, ...]:
     raw = b""
     compressed = lzma.compress(raw, preset=9 | lzma.PRESET_EXTREME)
@@ -128,6 +144,7 @@ def fake_sop_runner(
     *,
     forbidden_read: bool = False,
     trace_tamper: bool = False,
+    close_trace_before_read: bool = False,
     forbidden_write: Path | None = None,
 ) -> str:
     forbidden = ""
@@ -141,7 +158,17 @@ def fake_sop_runner(
             "forecast_project",
             "audit_logging.cpython-313-darwin.so",
         ).read_bytes()"""
-        if trace_tamper:
+        if close_trace_before_read:
+            forbidden = f"""
+    inherited_trace = os.environ.get("EMBEDDED_7Y_TRACE_FD")
+    if inherited_trace is not None:
+        os.close(int(inherited_trace))
+    try:
+        {read_expression}
+    except OSError:
+        pass
+"""
+        elif trace_tamper:
             forbidden = f"""
     try:
         {read_expression}
@@ -644,6 +671,65 @@ class EmbeddedStructureTests(unittest.TestCase):
                 verify_structure(delivery)
 
 
+class EmbeddedTraceLifecycleTests(unittest.TestCase):
+    def _run_with_trace_records(
+        self,
+        records: list[dict[str, object]],
+    ) -> None:
+        class FakePopen:
+            returncode = 0
+
+            def __init__(
+                fake_self,
+                arguments: list[str],
+                **kwargs: object,
+            ) -> None:
+                del fake_self, arguments
+                trace_fd = kwargs["pass_fds"]
+                assert isinstance(trace_fd, tuple)
+                for record in records:
+                    os.write(
+                        trace_fd[0],
+                        json.dumps(
+                            record,
+                            ensure_ascii=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                        + b"\n",
+                    )
+
+            def communicate(fake_self) -> tuple[str, str]:
+                del fake_self
+                return "", ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            with patch.object(subprocess, "Popen", FakePopen):
+                verifier._run_confined_process(
+                    [str(BLACKBOX_PYTHON), "-c", "pass"],
+                    cwd=root,
+                    write_root=root / "writable",
+                )
+
+    def test_confined_process_rejects_missing_trace_completion(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "trace completion"):
+            self._run_with_trace_records(
+                [{"event": "open", "path": "/tmp/benign", "write": False}]
+            )
+
+    def test_confined_process_rejects_failed_trace_completion(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "trace write failure"):
+            self._run_with_trace_records(
+                [
+                    {"event": "open", "path": "/tmp/benign", "write": False},
+                    {
+                        "event": "embedded_7y_trace_complete",
+                        "ok": False,
+                    },
+                ]
+            )
+
+
 class EmbeddedIndependenceTests(unittest.TestCase):
     def test_independence_uses_blank_root_clean_pythonpath_and_only_fixtures(
         self,
@@ -699,6 +785,24 @@ class EmbeddedIndependenceTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, "forbidden root access"):
                 verify_independence(delivery, fixtures)
 
+    def test_independence_closing_disclosed_trace_fd_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scheme_id = "seven_y_t1_cfc_0084_embedded_v1"
+            delivery = write_delivery(
+                root,
+                scheme_id,
+                runner=fake_sop_runner(
+                    scheme_id,
+                    forbidden_read=True,
+                    close_trace_before_read=True,
+                ),
+            )
+            fixtures = write_platform_fixtures(root)
+
+            with self.assertRaisesRegex(AssertionError, "forbidden root access"):
+                verify_independence(delivery, fixtures)
+
     def test_independence_denies_data_and_external_writes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -738,19 +842,28 @@ class EmbeddedParityTests(unittest.TestCase):
             self.actions_by_date,
         ) = write_audit_fixture(self.root)
         self.captured_batches: list[list[dict[str, str]]] = []
+        self.captured_invocations: list[dict[str, object]] = []
         self.capture_lock = threading.Lock()
 
-    def fake_confined_process(
+    def fake_popen(
         self,
-        arguments: list[str],
+        sandbox_arguments: list[str],
         **kwargs: object,
-    ) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
+    ) -> FakeProcess:
+        self.assertEqual(Path(sandbox_arguments[0]), verifier.SANDBOX_EXEC)
+        self.assertEqual(sandbox_arguments[1], "-f")
+        profile_path = Path(sandbox_arguments[2])
+        profile = profile_path.read_text(encoding="utf-8")
+        arguments = sandbox_arguments[3:]
         self.assertEqual(Path(arguments[0]), BLACKBOX_PYTHON)
         self.assertEqual(arguments[2], "backtest")
         requests_path = Path(arguments[arguments.index("--requests") + 1])
         output_path = Path(arguments[arguments.index("--output") + 1])
-        self.assertEqual(output_path.parent, kwargs["write_root"])
-        output_path.parent.mkdir(mode=0o700)
+        env = kwargs["env"]
+        self.assertIsInstance(env, dict)
+        write_root = Path(env["TMPDIR"])
+        self.assertEqual(output_path.parent, write_root)
+        self.assertTrue(write_root.is_dir())
         self.assertEqual(
             Path(arguments[arguments.index("--data-dir") + 1]),
             self.data_dir,
@@ -761,6 +874,17 @@ class EmbeddedParityTests(unittest.TestCase):
             requests = list(reader)
         with self.capture_lock:
             self.captured_batches.append(requests)
+            self.captured_invocations.append(
+                {
+                    "sandbox_arguments": tuple(sandbox_arguments),
+                    "profile": profile,
+                    "write_root": write_root,
+                    "output_path": output_path,
+                    "cwd": Path(kwargs["cwd"]),
+                    "trace_env": env["EMBEDDED_7Y_TRACE_FD"],
+                    "pass_fds": kwargs["pass_fds"],
+                }
+            )
         with output_path.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=RESULT_FIELDS)
             writer.writeheader()
@@ -776,15 +900,45 @@ class EmbeddedParityTests(unittest.TestCase):
                         ],
                     }
                 )
-        return subprocess.CompletedProcess(arguments, 0, "", ""), []
+        pass_fds = kwargs["pass_fds"]
+        self.assertIsInstance(pass_fds, tuple)
+        trace_records = (
+            {
+                "event": "open",
+                "path": str(requests_path),
+                "write": False,
+            },
+            {
+                "event": "open",
+                "path": str(output_path),
+                "write": True,
+            },
+            {
+                "event": "embedded_7y_trace_complete",
+                "ok": True,
+            },
+        )
+        os.write(
+            pass_fds[0],
+            b"".join(
+                json.dumps(
+                    record,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                + b"\n"
+                for record in trace_records
+            ),
+        )
+        return FakeProcess()
 
     def test_parity_constructs_strict_requests_batches_and_frozen_metrics(
         self,
     ) -> None:
         with patch.object(
-            verifier,
-            "_run_confined_process",
-            side_effect=self.fake_confined_process,
+            subprocess,
+            "Popen",
+            new=self.fake_popen,
         ):
             metrics = verify_parity(
                 self.delivery,
@@ -829,6 +983,39 @@ class EmbeddedParityTests(unittest.TestCase):
             },
         )
 
+    def test_parity_exercises_sandbox_and_write_root_confinement(self) -> None:
+        with patch.object(
+            subprocess,
+            "Popen",
+            new=self.fake_popen,
+        ):
+            verify_parity(
+                self.delivery,
+                "7y-cfc-0084",
+                self.audit_root,
+                self.data_dir,
+            )
+
+        self.assertEqual(len(self.captured_invocations), 4)
+        for invocation in self.captured_invocations:
+            sandbox_arguments = invocation["sandbox_arguments"]
+            self.assertEqual(
+                sandbox_arguments[:2],
+                (str(verifier.SANDBOX_EXEC), "-f"),
+            )
+            write_root = invocation["write_root"]
+            self.assertEqual(invocation["output_path"].parent, write_root)
+            self.assertEqual(write_root.parent, invocation["cwd"])
+            self.assertEqual(
+                invocation["trace_env"],
+                str(invocation["pass_fds"][0]),
+            )
+            self.assertIn("(deny default)", invocation["profile"])
+            self.assertIn(
+                f"(allow file-write* (subpath {json.dumps(str(write_root))}))",
+                invocation["profile"],
+            )
+
     def test_parity_rejects_invalid_structure_before_subprocess(self) -> None:
         runner = self.delivery / f"{self.delivery.name}.py"
         runner.write_text(
@@ -856,9 +1043,9 @@ class EmbeddedParityTests(unittest.TestCase):
         self.actions_by_date["2024-01-02"] = -original
         with (
             patch.object(
-                verifier,
-                "_run_confined_process",
-                side_effect=self.fake_confined_process,
+                subprocess,
+                "Popen",
+                new=self.fake_popen,
             ),
             self.assertRaisesRegex(AssertionError, "action mismatch"),
         ):
@@ -881,9 +1068,9 @@ class EmbeddedParityTests(unittest.TestCase):
 
         with (
             patch.object(
-                verifier,
-                "_run_confined_process",
-                side_effect=self.fake_confined_process,
+                subprocess,
+                "Popen",
+                new=self.fake_popen,
             ),
             self.assertRaisesRegex(AssertionError, "SIM accuracy"),
         ):

@@ -526,12 +526,16 @@ def _independence_request(fixture_root: Path) -> dict[str, str]:
     }
 
 
+TRACE_COMPLETION_EVENT = "embedded_7y_trace_complete"
+
+
 _AUDIT_HOOK_SOURCE = """\
+import atexit
+import _thread
 import json
 import os
 import sys
 
-_trace_descriptor = int(os.environ["EMBEDDED_7Y_TRACE_FD"])
 _path_events = {
     "open",
     "os.chdir",
@@ -544,52 +548,90 @@ _path_events = {
     "os.truncate",
 }
 
-def _trace_hook(event, args):
-    if event not in _path_events or not args:
-        return
-    write_access = event in {
-        "os.mkdir",
-        "os.remove",
-        "os.rename",
-        "os.rmdir",
-        "os.truncate",
-    }
-    if event == "open":
-        mode = args[1] if len(args) > 1 else None
-        flags = args[2] if len(args) > 2 else 0
-        if isinstance(mode, str):
-            write_access = any(token in mode for token in "wax+")
-        if isinstance(flags, int):
-            write_access = write_access or bool(
-                flags
-                & (
-                    os.O_WRONLY
-                    | os.O_RDWR
-                    | os.O_CREAT
-                    | os.O_TRUNC
-                    | os.O_APPEND
-                )
-            )
-    candidates = args[:2] if event == "os.rename" else args[:1]
-    for candidate in candidates:
-        if not isinstance(candidate, (str, bytes, os.PathLike)):
-            continue
+
+def _install_trace():
+    inherited_descriptor = int(os.environ.pop("EMBEDDED_7Y_TRACE_FD"))
+    trace_descriptor = os.dup(inherited_descriptor)
+    os.close(inherited_descriptor)
+    trusted_write = os.write
+    trusted_close = os.close
+    write_lock = _thread.allocate_lock()
+    write_failed = [False]
+
+    def write_record(record):
         try:
-            path = os.fsdecode(candidate)
             payload = json.dumps(
-                {
-                    "event": event,
-                    "path": path,
-                    "write": write_access,
-                },
+                record,
                 ensure_ascii=True,
                 separators=(",", ":"),
             ).encode("utf-8") + b"\\n"
-            os.write(_trace_descriptor, payload)
-        except Exception:
+            with write_lock:
+                remaining = memoryview(payload)
+                while remaining:
+                    written = trusted_write(trace_descriptor, remaining)
+                    if written <= 0:
+                        raise OSError("trace write made no progress")
+                    remaining = remaining[written:]
+        except BaseException:
+            write_failed[0] = True
+
+    def trace_hook(event, args):
+        if event not in _path_events or not args:
+            return
+        write_access = event in {
+            "os.mkdir",
+            "os.remove",
+            "os.rename",
+            "os.rmdir",
+            "os.truncate",
+        }
+        if event == "open":
+            mode = args[1] if len(args) > 1 else None
+            flags = args[2] if len(args) > 2 else 0
+            if isinstance(mode, str):
+                write_access = any(token in mode for token in "wax+")
+            if isinstance(flags, int):
+                write_access = write_access or bool(
+                    flags
+                    & (
+                        os.O_WRONLY
+                        | os.O_RDWR
+                        | os.O_CREAT
+                        | os.O_TRUNC
+                        | os.O_APPEND
+                    )
+                )
+        candidates = args[:2] if event == "os.rename" else args[:1]
+        for candidate in candidates:
+            if not isinstance(candidate, (str, bytes, os.PathLike)):
+                continue
+            write_record(
+                {
+                    "event": event,
+                    "path": os.fsdecode(candidate),
+                    "write": write_access,
+                }
+            )
+
+    def complete_trace():
+        write_record(
+            {
+                "event": "embedded_7y_trace_complete",
+                "ok": not write_failed[0],
+            }
+        )
+        try:
+            trusted_close(trace_descriptor)
+        except OSError:
             pass
 
-sys.addaudithook(_trace_hook)
+    sys.addaudithook(trace_hook)
+    atexit.register(complete_trace)
+
+
+_install_trace()
+del _install_trace
+
 """
 
 
@@ -643,6 +685,35 @@ def _assert_no_forbidden_access(
             raise AssertionError(
                 f"forbidden write access: {record['event']} {resolved}"
             )
+
+
+def _validated_trace_records(trace_payload: bytes) -> list[dict[str, object]]:
+    try:
+        trace_text = trace_payload.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise AssertionError("delivery trace is not valid UTF-8") from error
+    records: list[dict[str, object]] = []
+    for line in trace_text.splitlines():
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise AssertionError("delivery trace record is invalid JSON") from error
+        if not isinstance(record, dict):
+            raise AssertionError("delivery trace record must be an object")
+        records.append(record)
+    if not records or records[-1].get("event") != TRACE_COMPLETION_EVENT:
+        raise AssertionError("delivery trace completion sentinel is missing")
+    completion = records[-1]
+    if set(completion) != {"event", "ok"}:
+        raise AssertionError("delivery trace completion sentinel is invalid")
+    if completion["ok"] is not True:
+        raise AssertionError("delivery trace write failure was reported")
+    audited = records[:-1]
+    if any(record.get("event") == TRACE_COMPLETION_EVENT for record in audited):
+        raise AssertionError("delivery trace completion sentinel is not final")
+    return audited
 
 
 def _sandbox_profile(
@@ -717,6 +788,7 @@ def _run_confined_process(
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["TMPDIR"] = str(write_root)
     env["EMBEDDED_7Y_TRACE_FD"] = str(trace_write)
+    parent_trace_write_open = True
     try:
         process = subprocess.Popen(
             [
@@ -732,6 +804,8 @@ def _run_confined_process(
             stderr=subprocess.PIPE,
             pass_fds=(trace_write,),
         )
+        os.close(trace_write)
+        parent_trace_write_open = False
         stdout, stderr = process.communicate()
         completed = subprocess.CompletedProcess(
             arguments,
@@ -740,15 +814,11 @@ def _run_confined_process(
             stderr,
         )
     finally:
-        os.close(trace_write)
+        if parent_trace_write_open:
+            os.close(trace_write)
         collector.join()
         os.close(trace_read)
-    trace_payload = b"".join(trace_chunks).decode("utf-8")
-    records = [
-        json.loads(line)
-        for line in trace_payload.splitlines()
-        if line
-    ]
+    records = _validated_trace_records(b"".join(trace_chunks))
     _assert_no_forbidden_access(
         records,
         cwd=cwd,
