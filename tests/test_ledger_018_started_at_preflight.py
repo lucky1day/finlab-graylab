@@ -101,15 +101,24 @@ class ScheduleRunStartedAtPreflightTests(unittest.TestCase):
             message,
         )
         self.assertIn("scripts/apply_migrations.py --apply", message)
-        self.assertIn(
-            f"--expected-database-name {DATABASE_NAME}",
-            message,
-        )
-        self.assertIn(
-            f"--expected-server-uuid {SERVER_UUID}",
-            message,
-        )
+        self.assertIn("--expected-database-name <database-name>", message)
+        self.assertIn("--expected-server-uuid <server-uuid>", message)
+        self.assertIn("controlled read-only inspect", message)
         self.assertTrue(engine.connection.closed)
+
+    def test_failure_does_not_read_or_expose_database_identity(self) -> None:
+        """runtime 日志不得回显生产 database name 或 server UUID。"""
+        engine = _FakeEngine([SOURCE_017_ROW])
+
+        with self.assertRaises(MigrationPreflightError) as caught:
+            preflight_schedule_run_started_at_nullable(engine)
+
+        message = str(caught.exception)
+        self.assertEqual(len(engine.connection.statements), 1)
+        self.assertNotIn(DATABASE_NAME, message)
+        self.assertNotIn(SERVER_UUID, message)
+        self.assertIn("--expected-database-name <database-name>", message)
+        self.assertIn("--expected-server-uuid <server-uuid>", message)
 
     def test_018_shape_passes_with_a_single_read(self) -> None:
         engine = _FakeEngine([TARGET_018_ROW])

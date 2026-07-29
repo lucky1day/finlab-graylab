@@ -4876,14 +4876,6 @@ def preflight_schedule_run_started_at_nullable(
             complete = False
         if complete:
             return
-        identity_row = connection.execute(
-            text(
-                """
-                SELECT DATABASE() AS database_name,
-                       @@server_uuid AS server_uuid
-                """
-            )
-        ).mappings().one()
     raise MigrationPreflightError(
         "t_scheme_runs.started_at is not migration "
         f"{SCHEDULE_RUN_STARTED_AT_MIGRATION_VERSION} shape; the ledger "
@@ -4891,8 +4883,9 @@ def preflight_schedule_run_started_at_nullable(
         f"current={_schedule_run_started_at_definition(shape)}; "
         f"expected={SCHEDULE_RUN_STARTED_AT_TARGET_DEFINITION}; "
         "apply it first with: python scripts/apply_migrations.py --apply "
-        f"--expected-database-name {identity_row['database_name']} "
-        f"--expected-server-uuid {identity_row['server_uuid']}"
+        "--expected-database-name <database-name> "
+        "--expected-server-uuid <server-uuid>; obtain the expected identity "
+        "from a controlled read-only inspect or identity query"
     )
 
 
