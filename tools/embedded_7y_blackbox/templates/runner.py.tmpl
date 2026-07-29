@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import re
 import secrets
+import shutil
 import stat
 import sys
 import tempfile
@@ -158,6 +159,34 @@ def _open_extraction_root(root: Path) -> int:
             if created:
                 os.fchmod(descriptor, 0o700)
         os.fchmod(descriptor, 0o700)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_existing_extraction_root(root: Path) -> int:
+    """Open an existing cwd-relative payload root without following links."""
+    requested = Path(root)
+    if (
+        requested.is_absolute()
+        or not requested.parts
+        or any(part in {"", ".", ".."} for part in requested.parts)
+    ):
+        raise ValueError("unsafe payload extraction root")
+    descriptor = os.open(".", _DIRECTORY_OPEN_FLAGS)
+    try:
+        for part in requested.parts:
+            try:
+                next_descriptor = os.open(
+                    part,
+                    _DIRECTORY_OPEN_FLAGS,
+                    dir_fd=descriptor,
+                )
+            except OSError as error:
+                raise ValueError("unsafe payload extraction root") from error
+            os.close(descriptor)
+            descriptor = next_descriptor
         return descriptor
     except BaseException:
         os.close(descriptor)
@@ -342,6 +371,102 @@ def _extract_payload(run_root: Path) -> Path:
     return payload_root
 
 
+def _open_existing_payload_parent(
+    root_descriptor: int,
+    parts: tuple[str, ...],
+    relative_path: str,
+) -> int:
+    descriptor = os.dup(root_descriptor)
+    try:
+        for part in parts:
+            try:
+                next_descriptor = os.open(
+                    part,
+                    _DIRECTORY_OPEN_FLAGS,
+                    dir_fd=descriptor,
+                )
+            except OSError as error:
+                raise ValueError(
+                    f"payload load-time integrity mismatch: {relative_path}"
+                ) from error
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _verified_payload_identities(
+    root_descriptor: int,
+) -> dict[str, tuple[int, int, int, int, str]]:
+    """Verify every manifest file through no-follow descriptors."""
+    identities: dict[str, tuple[int, int, int, int, str]] = {}
+    open_flags = (
+        os.O_RDONLY
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    for entry in _PAYLOAD_MANIFEST:
+        relative_path = entry.get("relative_path")
+        expected_size = entry.get("raw_size")
+        expected_hash = entry.get("raw_sha256")
+        if (
+            not isinstance(relative_path, str)
+            or isinstance(expected_size, bool)
+            or not isinstance(expected_size, int)
+            or not isinstance(expected_hash, str)
+        ):
+            raise ValueError("payload load-time integrity mismatch: manifest")
+        parts = _payload_parts(relative_path)
+        parent_descriptor = _open_existing_payload_parent(
+            root_descriptor,
+            parts[:-1],
+            relative_path,
+        )
+        descriptor = -1
+        try:
+            try:
+                descriptor = os.open(
+                    parts[-1],
+                    open_flags,
+                    dir_fd=parent_descriptor,
+                )
+            except OSError as error:
+                raise ValueError(
+                    f"payload load-time integrity mismatch: {relative_path}"
+                ) from error
+            installed = os.fstat(descriptor)
+            digest = hashlib.sha256()
+            while chunk := os.read(descriptor, 1024 * 1024):
+                digest.update(chunk)
+            actual_hash = digest.hexdigest()
+            if (
+                not stat.S_ISREG(installed.st_mode)
+                or stat.S_IMODE(installed.st_mode) != 0o600
+                or installed.st_size != expected_size
+                or actual_hash != expected_hash
+            ):
+                raise ValueError(
+                    f"payload load-time integrity mismatch: {relative_path}"
+                )
+            identities[relative_path] = (
+                installed.st_dev,
+                installed.st_ino,
+                installed.st_mode,
+                installed.st_size,
+                actual_hash,
+            )
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            os.close(parent_descriptor)
+    if len(identities) != len(_PAYLOAD_MANIFEST):
+        raise ValueError("payload load-time integrity mismatch: manifest")
+    return identities
+
+
 def _module_is_within(module: ModuleType, root: Path) -> bool:
     module_file = getattr(module, "__file__", None)
     return (
@@ -353,45 +478,48 @@ def _module_is_within(module: ModuleType, root: Path) -> bool:
 def _anchor_modules(payload_root: Path) -> tuple[ModuleType, ModuleType]:
     """Import both anchors only from the verified private extraction tree."""
     payload_root = Path(payload_root)
-    if payload_root.is_symlink() or not payload_root.is_dir():
-        raise ValueError("unsafe payload extraction root")
-    source_root = _safe_payload_path(payload_root, "daily_project/src")
-    if not source_root.is_dir():
-        raise ValueError("embedded daily package is missing")
-
-    inserted = [str(source_root), str(payload_root)]
-    previous_daily = {
-        name: module
-        for name, module in tuple(sys.modules.items())
-        if name == "daily" or name.startswith("daily.")
-    }
-    for name in previous_daily:
-        sys.modules.pop(name, None)
-    sys.path[:0] = inserted
-    importlib.invalidate_caches()
+    root_descriptor = _open_existing_extraction_root(payload_root)
     try:
-        five = importlib.import_module("daily.selected_models.5y10.run")
-        ten = importlib.import_module("daily.selected_models.10y04.run")
-        if not _module_is_within(five, payload_root):
-            raise ImportError("5Y10 anchor loaded outside private extraction root")
-        if not _module_is_within(ten, payload_root):
-            raise ImportError("10Y04 anchor loaded outside private extraction root")
-        return five, ten
-    finally:
-        created_daily = {
-            name
-            for name in tuple(sys.modules)
+        before_identities = _verified_payload_identities(root_descriptor)
+        source_root = _safe_payload_path(payload_root, "daily_project/src")
+        if not source_root.is_dir():
+            raise ValueError("embedded daily package is missing")
+
+        inserted = [str(source_root), str(payload_root)]
+        previous_sys_path = list(sys.path)
+        previous_daily = {
+            name: module
+            for name, module in tuple(sys.modules.items())
             if name == "daily" or name.startswith("daily.")
         }
-        for path in inserted:
-            try:
-                sys.path.remove(path)
-            except ValueError:
-                pass
-        for name in created_daily:
+        for name in previous_daily:
             sys.modules.pop(name, None)
-        sys.modules.update(previous_daily)
+        sys.path[:0] = inserted
         importlib.invalidate_caches()
+        try:
+            five = importlib.import_module("daily.selected_models.5y10.run")
+            ten = importlib.import_module("daily.selected_models.10y04.run")
+            if not _module_is_within(five, payload_root):
+                raise ImportError("5Y10 anchor loaded outside private extraction root")
+            if not _module_is_within(ten, payload_root):
+                raise ImportError("10Y04 anchor loaded outside private extraction root")
+            after_identities = _verified_payload_identities(root_descriptor)
+            if after_identities != before_identities:
+                raise ValueError("payload load-time identity changed")
+            return five, ten
+        finally:
+            created_daily = {
+                name
+                for name in tuple(sys.modules)
+                if name == "daily" or name.startswith("daily.")
+            }
+            sys.path[:] = previous_sys_path
+            for name in created_daily:
+                sys.modules.pop(name, None)
+            sys.modules.update(previous_daily)
+            importlib.invalidate_caches()
+    finally:
+        os.close(root_descriptor)
 
 
 def _platform_file(data_dir: Path, filename: str) -> Path:
@@ -649,6 +777,84 @@ def _find_prediction_frame(output_dir: Path) -> pd.DataFrame:
     return max(candidates, key=lambda item: item[0])[1]
 
 
+@contextmanager
+def _virtual_anchor_csv_scope(output_dir: Path):
+    """Keep large intermediate anchor CSVs in memory, not the run directory."""
+    output_root = Path(output_dir).resolve()
+    cached_csv: dict[Path, str] = {}
+    original_to_csv = pd.DataFrame.to_csv
+    original_read_csv = pd.read_csv
+
+    def output_key(value: object) -> Path | None:
+        candidate: object = value
+        if not isinstance(candidate, (str, bytes, os.PathLike)):
+            candidate = getattr(candidate, "name", None)
+        if not isinstance(candidate, (str, bytes, os.PathLike)):
+            return None
+        try:
+            resolved = Path(os.fsdecode(candidate)).resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+        if resolved == output_root or output_root in resolved.parents:
+            return resolved
+        return None
+
+    def virtual_to_csv(
+        frame: pd.DataFrame,
+        path_or_buf: object = None,
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        key = output_key(path_or_buf)
+        if key is None:
+            return original_to_csv(frame, path_or_buf, *args, **kwargs)
+        render_options = dict(kwargs)
+        mode = str(render_options.pop("mode", "w"))
+        rendered = original_to_csv(frame, None, *args, **render_options)
+        if not isinstance(rendered, str):
+            raise RuntimeError("anchor CSV virtualization failed")
+        cached_csv[key] = (
+            cached_csv.get(key, "") + rendered
+            if "a" in mode
+            else rendered
+        )
+        key.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        key.write_bytes(b"")
+        key.chmod(0o600)
+        return None
+
+    def virtual_read_csv(
+        filepath_or_buffer: object,
+        *args: object,
+        **kwargs: object,
+    ) -> pd.DataFrame:
+        key = output_key(filepath_or_buffer)
+        if key is None or key not in cached_csv:
+            return original_read_csv(filepath_or_buffer, *args, **kwargs)
+        read_options = dict(kwargs)
+        read_options.pop("memory_map", None)
+        return original_read_csv(
+            io.StringIO(cached_csv[key]),
+            *args,
+            **read_options,
+        )
+
+    pd.DataFrame.to_csv = virtual_to_csv
+    pd.read_csv = virtual_read_csv
+    try:
+        yield
+    finally:
+        pd.DataFrame.to_csv = original_to_csv
+        pd.read_csv = original_read_csv
+
+
+def _remove_anchor_output(output_dir: Path) -> None:
+    try:
+        shutil.rmtree(output_dir)
+    except FileNotFoundError:
+        pass
+
+
 def _run_5y10(
     module: ModuleType,
     protected_root: Path,
@@ -663,14 +869,21 @@ def _run_5y10(
         (module.combo_overlay, "FULL_START", _ANCHOR_REPLAY_START),
         (module.combo_overlay, "SIM_START", _ANCHOR_REPLAY_START),
     )
-    with _runtime_open_scope(), _temporary_overrides(overrides):
-        with redirect_stdout(sys.stderr):
-            module.run(
-                Path(protected_root) / "data",
-                output_dir,
-                n_jobs=1,
-            )
-        return _find_prediction_frame(output_dir)
+    try:
+        with (
+            _virtual_anchor_csv_scope(output_dir),
+            _runtime_open_scope(),
+            _temporary_overrides(overrides),
+        ):
+            with redirect_stdout(sys.stderr):
+                module.run(
+                    Path(protected_root) / "data",
+                    output_dir,
+                    n_jobs=1,
+                )
+            return _find_prediction_frame(output_dir)
+    finally:
+        _remove_anchor_output(output_dir)
 
 
 def _run_10y04(
@@ -693,10 +906,17 @@ def _run_10y04(
         test_end=cutoff.strftime("%Y-%m-%d"),
         n_jobs=1,
     )
-    with _runtime_open_scope(), _temporary_overrides(overrides):
-        with redirect_stdout(sys.stderr):
-            module.run(arguments)
-        return _find_prediction_frame(output_dir)
+    try:
+        with (
+            _virtual_anchor_csv_scope(output_dir),
+            _runtime_open_scope(),
+            _temporary_overrides(overrides),
+        ):
+            with redirect_stdout(sys.stderr):
+                module.run(arguments)
+            return _find_prediction_frame(output_dir)
+    finally:
+        _remove_anchor_output(output_dir)
 
 
 def _anchor_score(

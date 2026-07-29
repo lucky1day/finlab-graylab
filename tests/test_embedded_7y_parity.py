@@ -827,8 +827,85 @@ class EmbeddedTraceLifecycleTests(unittest.TestCase):
                     write_root=root / "writable",
                 )
 
+    def test_confined_process_uses_descriptor_fallback_without_f_getpath(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            child = root / "child.py"
+            child.write_text(
+                "import fcntl\n"
+                "import os\n"
+                "del fcntl.F_GETPATH\n"
+                "real_readlink = os.readlink\n"
+                "os.readlink = lambda path: (os.environ['TMPDIR'] "
+                "if path.startswith('/proc/self/fd/') "
+                "else real_readlink(path))\n"
+                "root_fd = os.open(os.environ['TMPDIR'], "
+                "os.O_RDONLY | os.O_DIRECTORY)\n"
+                "try:\n"
+                "    os.mkdir('fallback-payload', 0o700, dir_fd=root_fd)\n"
+                "finally:\n"
+                "    os.close(root_fd)\n",
+                encoding="utf-8",
+            )
+
+            completed, records = verifier._run_confined_process(
+                [str(BLACKBOX_PYTHON), str(child)],
+                cwd=root,
+                write_root=root / "writable",
+            )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertTrue(
+                any(
+                    record.get("path")
+                    == str(root / "writable/fallback-payload")
+                    for record in records
+                )
+            )
+
 
 class EmbeddedIndependenceTests(unittest.TestCase):
+    def test_databridge_date_accepts_only_explicit_midnight_formats(self) -> None:
+        accepted = (
+            "2025-07-15",
+            "2025/07/15",
+            "2025-07-15 00:00",
+            "2025/07/15 00:00",
+            "2025-07-15 00:00:00",
+            "2025/07/15 00:00:00",
+        )
+        for value in accepted:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    verifier._databridge_date(value, "daily_output.date").isoformat(),
+                    "2025-07-15",
+                )
+
+    def test_databridge_date_rejects_heuristic_and_nonmidnight_values(
+        self,
+    ) -> None:
+        rejected = (
+            "07/15/2025",
+            "15/07/2025",
+            "20250715",
+            "2025-07-15T00:00",
+            "2025-07-15T00:00:00Z",
+            "2025/07/15 00:01",
+            "2025-07-15 12:00:00",
+            "today",
+            " 2025-07-15",
+            "2025-07-15 ",
+        )
+        for value in rejected:
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    AssertionError,
+                    "must be a parseable DataBridge date",
+                ):
+                    verifier._databridge_date(value, "daily_output.date")
+
     def test_independence_request_normalizes_databridge_timestamp_date(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             fixtures = write_platform_fixtures(Path(tmp))

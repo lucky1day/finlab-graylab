@@ -7,7 +7,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import csv
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import json
 import lzma
@@ -20,8 +20,6 @@ import subprocess
 import tempfile
 import threading
 from typing import Iterable
-
-import pandas as pd
 
 from tools.embedded_7y_blackbox.frozen_schemes import SCHEMES, FrozenScheme
 from tools.embedded_7y_blackbox.renderer import render_metadata
@@ -465,21 +463,36 @@ def _canonical_date(value: str, label: str) -> date:
 
 
 def _databridge_date(value: str, label: str) -> date:
-    if not isinstance(value, str) or not value.strip():
-        raise AssertionError(f"{label} must be a parseable DataBridge date")
-    try:
-        parsed = pd.to_datetime(value.strip(), errors="raise")
-    except (TypeError, ValueError) as error:
-        raise AssertionError(
-            f"{label} must be a parseable DataBridge date: {value!r}"
-        ) from error
-    if isinstance(parsed, pd.DatetimeIndex):
-        if len(parsed) != 1:
-            raise AssertionError(
-                f"{label} must be a parseable DataBridge date: {value!r}"
-            )
-        parsed = parsed[0]
-    return parsed.date()
+    if isinstance(value, str):
+        formats = (
+            (r"[0-9]{4}-[0-9]{2}-[0-9]{2}", "%Y-%m-%d"),
+            (r"[0-9]{4}/[0-9]{2}/[0-9]{2}", "%Y/%m/%d"),
+            (
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2} 00:00",
+                "%Y-%m-%d %H:%M",
+            ),
+            (
+                r"[0-9]{4}/[0-9]{2}/[0-9]{2} 00:00",
+                "%Y/%m/%d %H:%M",
+            ),
+            (
+                r"[0-9]{4}-[0-9]{2}-[0-9]{2} 00:00:00",
+                "%Y-%m-%d %H:%M:%S",
+            ),
+            (
+                r"[0-9]{4}/[0-9]{2}/[0-9]{2} 00:00:00",
+                "%Y/%m/%d %H:%M:%S",
+            ),
+        )
+        for pattern, date_format in formats:
+            if re.fullmatch(pattern, value):
+                try:
+                    return datetime.strptime(value, date_format).date()
+                except ValueError:
+                    break
+    raise AssertionError(
+        f"{label} must be a parseable DataBridge date: {value!r}"
+    )
 
 
 def _read_calendar(data_dir: Path) -> tuple[dict[str, str], list[str]]:
@@ -602,13 +615,19 @@ def _install_trace():
             write_failed[0] = True
 
     def descriptor_path(descriptor):
-        try:
-            raw = fcntl.fcntl(descriptor, fcntl.F_GETPATH, b"\\0" * 1024)
-            path = os.fsdecode(raw.split(b"\\0", 1)[0])
-            if path and os.path.isabs(path):
-                return path
-        except (OSError, ValueError):
-            pass
+        get_path_command = getattr(fcntl, "F_GETPATH", None)
+        if get_path_command is not None:
+            try:
+                raw = fcntl.fcntl(
+                    descriptor,
+                    get_path_command,
+                    b"\\0" * 1024,
+                )
+                path = os.fsdecode(raw.split(b"\\0", 1)[0])
+                if path and os.path.isabs(path):
+                    return path
+            except (OSError, ValueError):
+                pass
         try:
             path = os.readlink(f"/proc/self/fd/{descriptor}")
             if path and os.path.isabs(path):

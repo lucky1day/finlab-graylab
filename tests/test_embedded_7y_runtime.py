@@ -385,12 +385,14 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                     protected_root,
                     run_root / "five",
                 )
+                self.assertFalse((run_root / "five").exists())
                 ten_frame = module._run_10y04(
                     ten,
                     protected_root,
                     run_root / "ten",
                     CUTOFF,
                 )
+                self.assertFalse((run_root / "ten").exists())
                 five_scores = module._anchor_score(five_frame, "5Y10", CUTOFF)
                 ten_scores = module._anchor_score(ten_frame, "10Y04", CUTOFF)
         return five_scores, ten_scores, read_paths
@@ -1339,6 +1341,50 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         self.assertEqual(completed.stdout, "")
         self.assertEqual(output.read_text(encoding="utf-8"), "{}")
 
+    def test_unmodified_generated_predict_runs_in_platform_sandbox(
+        self,
+    ) -> None:
+        control_root = self.tempdir / "real-platform-control"
+        control_root.mkdir()
+        runner = control_root / "generated_runner.py"
+        runner.write_text(self.rendered_runner, encoding="utf-8")
+        data_dir = control_root / "data"
+        self.write_replay_fixture(
+            data_dir,
+            append_one_future_daily_row=False,
+        )
+        request = self.platform_request("real-sandbox-001")
+        request_path = control_root / "request.json"
+        request_path.write_text(json.dumps(request), encoding="utf-8")
+        run_root = self.tempdir / "real-platform-run"
+        run_root.mkdir()
+        output = run_root / "prediction.json"
+
+        completed = execute_blackbox_cli(
+            script_path=runner,
+            mode="predict",
+            input_path=request_path,
+            data_dir=data_dir,
+            output_path=output,
+            platform_input_ids=("api-wind-date-v1",),
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(
+            json.loads(output.read_text(encoding="utf-8")),
+            {
+                "request_id": "real-sandbox-001",
+                "predict_date": "2025-07-15",
+                "feature_date": "2025-07-15",
+                "target_date": "2025-07-16",
+                "predicted_direction": 0,
+            },
+        )
+        self.assertFalse(
+            any(path.name.startswith("embedded-7y-") for path in run_root.iterdir())
+        )
+
     def test_extraction_rejects_existing_parent_symlink(self) -> None:
         module = self.load_generated_module()
         run_root = self.tempdir / "private"
@@ -1526,6 +1572,78 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         )
         for name, loaded in prior_daily.items():
             self.assertIs(final_daily[name], loaded)
+
+    def test_anchor_import_rejects_payload_replaced_after_extraction(self) -> None:
+        cases = (
+            "daily_project/src/daily/selected_models/5y10/run.py",
+            (
+                "daily_project/src/daily/selected_models/5y10/"
+                "_run_impl.cpython-313-darwin.so"
+            ),
+        )
+        for index, relative_path in enumerate(cases):
+            with self.subTest(relative_path=relative_path):
+                module = self.load_generated_module()
+                run_root = Path(f"tampered-import-{index}")
+                with chdir(self.tempdir):
+                    payload_root = module._extract_payload(run_root)
+                    target = payload_root / relative_path
+                    target.write_bytes(target.read_bytes() + b"\n# replaced\n")
+                    target.chmod(0o600)
+
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "payload load-time integrity mismatch",
+                    ):
+                        module._anchor_modules(payload_root)
+
+    def test_anchor_import_rejects_inode_replaced_during_import(self) -> None:
+        module = self.load_generated_module()
+        relative_path = "daily_project/src/daily/selected_models/5y10/run.py"
+        previous_path = list(sys.path)
+        previous_daily = {
+            name: loaded
+            for name, loaded in sys.modules.items()
+            if name == "daily" or name.startswith("daily.")
+        }
+        with chdir(self.tempdir):
+            payload_root = module._extract_payload(Path("replaced-during-import"))
+            target = payload_root / relative_path
+            original_import = module.importlib.import_module
+
+            def import_then_replace(
+                name: str,
+                package: str | None = None,
+            ):
+                imported = original_import(name, package)
+                if name == "daily.selected_models.10y04.run":
+                    replacement = target.with_name(".replacement.py")
+                    replacement.write_bytes(target.read_bytes())
+                    replacement.chmod(0o600)
+                    replacement.replace(target)
+                return imported
+
+            with (
+                patch.object(
+                    module.importlib,
+                    "import_module",
+                    side_effect=import_then_replace,
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "payload load-time identity changed",
+                ),
+            ):
+                module._anchor_modules(payload_root)
+        self.assertEqual(sys.path, previous_path)
+        self.assertEqual(
+            {
+                name: loaded
+                for name, loaded in sys.modules.items()
+                if name == "daily" or name.startswith("daily.")
+            },
+            previous_daily,
+        )
 
 
 if __name__ == "__main__":
