@@ -15,9 +15,9 @@ publisher 方案，按其 ``inference`` 模块的真实取值构造 ``PhaseACach
 
 ## 必须在算法环境运行
 
-钉值必须等于**算法实际运行环境**（``BOND_ALGO_CONDA_ENV``，默认 ``forecast_env``）
-算出的值。在服务环境（Python 版本不同）算出的是另一个值，写进 policy 会让 ledger
-一样 fail-closed。脚本启动即校验解释器所属环境，不符合直接退出。
+钉值必须等于固定的算法实际运行环境 ``forecast_env`` 算出的值。在服务环境
+（Python 版本不同）算出的是另一个值，写进 policy 会让 ledger 一样 fail-closed。
+脚本启动即校验解释器所属环境，不符合直接退出；调用者不能通过环境变量覆盖。
 
 ## 交叉校验
 
@@ -42,7 +42,6 @@ import argparse
 import hashlib
 import importlib
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -71,7 +70,7 @@ ADMISSION_PATH = (
 CACHE_ROOT = (
     PROJECT_ROOT / "backtest_artifacts" / "runtime_cache" / "liwei_0616"
 )
-DEFAULT_ALGO_ENV = "forecast_env"
+REQUIRED_ALGO_ENV = "forecast_env"
 
 
 class FingerprintRefreshError(RuntimeError):
@@ -80,7 +79,7 @@ class FingerprintRefreshError(RuntimeError):
 
 def _require_algo_environment() -> str:
     """确认当前解释器就是算法环境，否则算出的钉值不可用。"""
-    expected = os.getenv("BOND_ALGO_CONDA_ENV", DEFAULT_ALGO_ENV).strip()
+    expected = REQUIRED_ALGO_ENV
     actual = Path(sys.prefix).name
     if actual != expected:
         raise FingerprintRefreshError(
@@ -213,6 +212,33 @@ def _policy_pins(payload: Mapping[str, Any]) -> dict[str, set[str]]:
     return pins
 
 
+def _require_policy_pin_coverage(
+    payload: Mapping[str, Any],
+    computed: Mapping[str, str],
+) -> None:
+    """要求注册 cache_group 精确覆盖且每个相关 policy row 都有钉值。"""
+    expected_groups = set(computed)
+    actual_groups: set[str] = set()
+    missing_rows: list[str] = []
+    for row in payload.get("schemes") or ():
+        group = str(row.get("cache_group") or "")
+        fingerprint = row.get("cache_spec_fingerprint")
+        if fingerprint:
+            actual_groups.add(group)
+        elif group in expected_groups:
+            missing_rows.append(str(row.get("scheme_id") or group))
+
+    if actual_groups != expected_groups or missing_rows:
+        missing_groups = sorted(expected_groups - actual_groups)
+        unexpected_groups = sorted(actual_groups - expected_groups)
+        raise FingerprintRefreshError(
+            "policy cache_group 钉值覆盖不完整："
+            f"missing_groups={missing_groups}, "
+            f"unexpected_groups={unexpected_groups}, "
+            f"rows_without_pin={sorted(missing_rows)}"
+        )
+
+
 def _rewrite_pins(path: Path, computed: Mapping[str, str]) -> int:
     """就地替换钉值，保留原文件的排版。
 
@@ -222,6 +248,7 @@ def _rewrite_pins(path: Path, computed: Mapping[str, str]) -> int:
     也不触碰其它字段。
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
+    _require_policy_pin_coverage(payload, computed)
     replacements: dict[str, str] = {}
     for row in payload.get("schemes") or ():
         current = row.get("cache_spec_fingerprint")
@@ -258,6 +285,7 @@ def _rewrite_pins(path: Path, computed: Mapping[str, str]) -> int:
         path.write_text(text, encoding="utf-8")
         # 复核：替换后仍是合法 JSON 且钉值已全部到位。
         verify = json.loads(path.read_text(encoding="utf-8"))
+        _require_policy_pin_coverage(verify, computed)
         for row in verify.get("schemes") or ():
             fingerprint = row.get("cache_spec_fingerprint")
             if not fingerprint:

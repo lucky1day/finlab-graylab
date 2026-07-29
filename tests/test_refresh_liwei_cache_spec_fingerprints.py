@@ -66,6 +66,22 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("必须在算法环境中计算", result.stderr)
 
+    def test_script_refuses_service_environment_override(self) -> None:
+        """调用者不能把期望环境覆盖为当前服务环境来绕过守卫。"""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT), "--check"],
+            cwd=str(PROJECT_ROOT),
+            env={
+                **os.environ,
+                "BOND_ALGO_CONDA_ENV": Path(sys.prefix).name,
+                "PYTHONNOUSERSITE": "1",
+            },
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("必须在算法环境中计算", result.stderr)
+
     def test_every_registered_cache_group_is_pinned(self) -> None:
         """publisher 注册表里的每个 cache_group 都必须在 v2 policy 中有钉值。"""
         from shared.liwei_0616_cache_contract import (
@@ -167,6 +183,59 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     refresh.FingerprintRefreshError,
                     "而非 BLOCKED",
+                ):
+                    refresh.main()
+
+            self.assertEqual(policy.read_bytes(), before_policy)
+            self.assertEqual(admission.read_bytes(), before_admission)
+
+    def test_write_refuses_missing_registered_cache_group(self) -> None:
+        """policy 缺少注册 group 时不得重绑 admission 或返回成功。"""
+        import hashlib
+
+        import scripts.refresh_liwei_cache_spec_fingerprints as refresh
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = root / "policy.json"
+            admission = root / "admission.json"
+            policy.write_text(json.dumps({"schemes": []}), encoding="utf-8")
+            admission.write_text(
+                json.dumps(
+                    {
+                        "status": "BLOCKED",
+                        "policy_sha256": hashlib.sha256(
+                            policy.read_bytes()
+                        ).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before_policy = policy.read_bytes()
+            before_admission = admission.read_bytes()
+
+            with (
+                patch.object(refresh, "POLICY_PATH", policy),
+                patch.object(refresh, "ADMISSION_PATH", admission),
+                patch.object(
+                    refresh,
+                    "_require_algo_environment",
+                    return_value="forecast_env",
+                ),
+                patch.object(
+                    refresh,
+                    "compute_fingerprints",
+                    return_value={"family:5Y": "new"},
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    ["refresh_liwei_cache_spec_fingerprints.py", "--write"],
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    refresh.FingerprintRefreshError,
+                    "cache_group",
                 ):
                     refresh.main()
 
