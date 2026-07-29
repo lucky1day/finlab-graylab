@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr
+from io import StringIO
 import os
 from pathlib import Path
 import tempfile
@@ -12,6 +14,7 @@ from harness.authorization import (
     mark_token_used,
     verify_signal_gap_fill_authorization,
 )
+from harness.cli import main
 
 
 PLAN_SHA = "a" * 64
@@ -159,3 +162,39 @@ class SignalGapFillAuthorizationTests(unittest.TestCase):
             used_store_path=self.used_path,
         )
         self.assertIn("authorization token already used", replay_errors)
+
+    def test_cli_issue_requires_scheme_version_before_reading_scope_files(
+        self,
+    ) -> None:
+        stderr = StringIO()
+        with (
+            patch(
+                "harness.cli._read_json_file",
+                side_effect=AssertionError("scope file must not be read"),
+            ),
+            redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            main(
+                [
+                    "auth",
+                    "issue",
+                    "--scheme-id",
+                    "demo",
+                    "--action",
+                    "signal_gap_fill_write",
+                    "--predict-date",
+                    "2026-07-28",
+                    "--plan-sha256",
+                    PLAN_SHA,
+                    "--base-scheme-id",
+                    "demo",
+                    "--target-keys-json",
+                    "/not/read/targets.json",
+                    "--source-authority-json",
+                    "/not/read/source.json",
+                ]
+            )
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("requires --scheme-version", stderr.getvalue())

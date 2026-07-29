@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 import unittest
 from unittest.mock import patch
@@ -211,26 +212,97 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
             ["canonical"],
         )
 
-    def test_current_fifty_daily_gaps_are_exactly_gray_live_for_728_729(
+    def test_current_fifty_daily_gaps_match_frozen_real_matrix(
         self,
     ) -> None:
-        targets = tuple(
+        t5_singletons = tuple(
             RegistryTarget(
-                registry_scheme_id=f"daily_{index}__h1__T{index}",
-                base_scheme_id=f"daily_{index}",
+                registry_scheme_id=f"daily_t5_{index}__h5__10Y",
+                base_scheme_id=f"daily_t5_{index}",
                 runtime_type="native_adapter",
                 frequency="daily",
-                task_type="T+1",
-                target_tenor=f"T{index}",
-                horizon=1,
-                scheme_version=f"version-{index}",
+                task_type="T+5",
+                target_tenor="10Y",
+                horizon=5,
+                scheme_version=f"t5-version-{index}",
                 live_target_start_date="2026-06-01",
                 live_boundary_source="platform_live_boundary_v1",
                 input_mode="generation_v1",
                 code_sha256=f"{index + 1:064x}",
                 config_sha256=f"{index + 101:064x}",
             )
-            for index in range(25)
+            for index in range(19)
+        )
+        multi_t5_targets = tuple(
+            RegistryTarget(
+                registry_scheme_id=f"daily_multi_t5__h5__{tenor}",
+                base_scheme_id="daily_multi_t5",
+                runtime_type="native_adapter",
+                frequency="daily",
+                task_type="T+5",
+                target_tenor=tenor,
+                horizon=5,
+                scheme_version="multi-t5-version",
+                live_target_start_date="2026-06-01",
+                live_boundary_source="platform_live_boundary_v1",
+                input_mode="generation_v1",
+                code_sha256="3" * 64,
+                config_sha256="4" * 64,
+            )
+            for tenor in ("1Y", "3Y", "5Y", "7Y", "10Y")
+        )
+        t1_targets = tuple(
+            RegistryTarget(
+                registry_scheme_id=f"daily_t1_{index}__h1__{tenor}",
+                base_scheme_id=f"daily_t1_{index}",
+                runtime_type="native_adapter",
+                frequency="daily",
+                task_type="T+1",
+                target_tenor=tenor,
+                horizon=1,
+                scheme_version=f"t1-version-{index}",
+                live_target_start_date="2026-06-01",
+                live_boundary_source="platform_live_boundary_v1",
+                input_mode="generation_v1",
+                code_sha256=f"{index + 201:064x}",
+                config_sha256=f"{index + 301:064x}",
+            )
+            for index, tenor in enumerate(
+                ("1Y", "3Y", "5Y", "7Y", "10Y")
+            )
+        )
+        targets = (*t5_singletons, *multi_t5_targets, *t1_targets)
+        date_matrix = (
+            (
+                "2026-07-23",
+                "2026-07-22",
+                "2026-07-29",
+                t5_singletons[:1],
+            ),
+            (
+                "2026-07-24",
+                "2026-07-23",
+                "2026-07-30",
+                t5_singletons[:1],
+            ),
+            (
+                "2026-07-27",
+                "2026-07-24",
+                "2026-07-31",
+                t5_singletons[:2],
+            ),
+            (
+                "2026-07-28",
+                "2026-07-27",
+                "2026-08-03",
+                t5_singletons[:17],
+            ),
+            (
+                "2026-07-29",
+                "2026-07-28",
+                None,
+                targets,
+            ),
         )
         cases = tuple(
             ExpectedSignalCase(
@@ -243,14 +315,27 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
                 horizon=target.horizon,
                 predict_date=predict_date,
                 feature_date=feature_date,
-                target_date=target_date,
+                target_date=(
+                    "2026-07-29"
+                    if target.task_type == "T+1"
+                    else target_date
+                ),
                 segment="live",
             )
-            for predict_date, feature_date, target_date in (
-                ("2026-07-28", "2026-07-27", "2026-07-29"),
-                ("2026-07-29", "2026-07-28", "2026-07-30"),
-            )
-            for target in targets
+            for (
+                predict_date,
+                feature_date,
+                common_target_date,
+                date_targets,
+            ) in date_matrix
+            for target in date_targets
+            for target_date in [
+                (
+                    "2026-08-04"
+                    if common_target_date is None
+                    else common_target_date
+                )
+            ]
         )
         generations = tuple(
             InputGeneration(
@@ -272,11 +357,13 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
                 state="SEALED",
                 sealed_at="2026-07-30T00:00:00.000000",
             )
-            for index, (predict_date, feature_date) in enumerate(
-                (
-                    ("2026-07-28", "2026-07-27"),
-                    ("2026-07-29", "2026-07-28"),
-                ),
+            for index, (
+                predict_date,
+                feature_date,
+                _target_date,
+                _targets,
+            ) in enumerate(
+                date_matrix,
                 start=1,
             )
         )
@@ -298,15 +385,49 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
         ):
             plan = build_signal_gap_plan(
                 snapshot,
-                start_date="2026-07-28",
+                start_date="2026-07-23",
                 as_of_date="2026-07-29",
             )
 
         self.assertEqual(plan["counts"]["GRAY_LIVE_GAP"], 50)
         self.assertEqual(plan["counts"]["blocked"], 0)
+
         self.assertEqual(
-            {row["predict_date"] for row in plan["actions"]},
-            {"2026-07-28", "2026-07-29"},
+            Counter(row["predict_date"] for row in plan["actions"]),
+            {
+                "2026-07-23": 1,
+                "2026-07-24": 1,
+                "2026-07-27": 2,
+                "2026-07-28": 17,
+                "2026-07-29": 29,
+            },
+        )
+        self.assertEqual(
+            Counter(row["task_type"] for row in plan["actions"]),
+            {"T+1": 5, "T+5": 45},
+        )
+        self.assertEqual(
+            Counter(row["horizon"] for row in plan["actions"]),
+            {1: 5, 5: 45},
+        )
+        self.assertEqual(
+            Counter(row["target_date"] for row in plan["actions"]),
+            {
+                "2026-07-29": 6,
+                "2026-07-30": 1,
+                "2026-07-31": 2,
+                "2026-08-03": 17,
+                "2026-08-04": 24,
+            },
+        )
+        self.assertEqual(
+            len(
+                {
+                    (row["base_scheme_id"], row["predict_date"])
+                    for row in plan["actions"]
+                }
+            ),
+            46,
         )
         self.assertTrue(
             all(

@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         signal_gap_kwargs: dict[str, Any] = {}
         if args.action == "signal_gap_fill_write":
             required = {
+                "--scheme-version": args.scheme_version,
                 "--plan-sha256": args.plan_sha256,
                 "--base-scheme-id": args.base_scheme_id,
                 "--target-keys-json": args.target_keys_json,
