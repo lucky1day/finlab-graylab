@@ -49,3 +49,4 @@ logs/*
 .venv/
 venv/
 env/
+.worktrees/
