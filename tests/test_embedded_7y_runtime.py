@@ -282,28 +282,40 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         runner = self.tempdir / "generated_runner.py"
         override = textwrap.dedent(
             """
-            _CLI_TEST_INFER_CALLS = 0
+            _CLI_TEST_HISTORY_CALLS = 0
 
 
-            def _cli_test_infer(
+            def _cli_test_history(
                 data_dir,
                 feature_date,
                 daily_cutoff_key,
                 weekly_cutoff_key,
                 monthly_cutoff_key,
             ):
-                global _CLI_TEST_INFER_CALLS
-                _CLI_TEST_INFER_CALLS += 1
+                global _CLI_TEST_HISTORY_CALLS
+                _CLI_TEST_HISTORY_CALLS += 1
                 print("native python diagnostic")
                 os.write(1, b"native fd diagnostic\\n")
-                return {
-                    "action": 1 if feature_date.day % 2 else -1,
-                    "score": 999,
-                    "curve_action": -1,
-                }
+                del daily_cutoff_key, weekly_cutoff_key, monthly_cutoff_key
+                daily = _read_platform_csv(Path(data_dir), "daily_output.csv")
+                dates = pd.to_datetime(
+                    daily["date"],
+                    errors="raise",
+                ).dt.normalize()
+                selected = pd.DatetimeIndex(
+                    dates.loc[dates <= pd.Timestamp(feature_date)]
+                )
+                values = np.asarray(
+                    [1 if value.day % 2 else -1 for value in selected],
+                    dtype="int64",
+                )
+                curve = pd.Series(values, index=selected, name="curve_action")
+                anchor = pd.Series(values, index=selected, name="anchor_action")
+                action = pd.Series(values, index=selected, dtype="int64")
+                return curve, anchor, action
 
 
-            _infer_one = _cli_test_infer
+            _infer_history = _cli_test_history
             """
         )
         marker = '\nif __name__ == "__main__":\n'
@@ -753,6 +765,66 @@ class EmbeddedRuntimeTests(unittest.TestCase):
 
         self.assertEqual(actual, expected)
 
+    def test_multi_cutoff_batch_matches_isolated_real_replays_and_loads_once(
+        self,
+    ) -> None:
+        module = self.load_generated_module()
+        data_dir = self.tempdir / "multi-cutoff-real"
+        self.write_replay_fixture(
+            data_dir,
+            append_one_future_daily_row=False,
+        )
+        requests = [
+            self.platform_request("maximum", feature_date="2025-07-15"),
+            self.platform_request("earlier", feature_date="2025-07-14"),
+        ]
+        expected = {
+            request["feature_date"]: module._infer_one(
+                data_dir,
+                pd.Timestamp(request["feature_date"]),
+                request["daily_cutoff_key"],
+                request["weekly_cutoff_key"],
+                request["monthly_cutoff_key"],
+            )["action"]
+            for request in requests
+        }
+        anchor_loads = 0
+        original_anchor_modules = module._anchor_modules
+
+        def counted_anchor_modules(payload_root: Path):
+            nonlocal anchor_loads
+            anchor_loads += 1
+            return original_anchor_modules(payload_root)
+
+        with (
+            chdir(self.tempdir),
+            patch.object(
+                module,
+                "_anchor_modules",
+                side_effect=counted_anchor_modules,
+            ),
+        ):
+            observed = module._execute_requests(requests, data_dir)
+
+        self.assertEqual(anchor_loads, 1)
+        self.assertEqual(
+            [row["request_id"] for row in observed],
+            ["maximum", "earlier"],
+        )
+        self.assertEqual(
+            {
+                row["feature_date"]: row["predicted_direction"]
+                for row in observed
+            },
+            expected,
+        )
+        self.assertFalse(
+            any(
+                path.name.startswith("embedded-7y-")
+                for path in self.tempdir.iterdir()
+            )
+        )
+
     def test_predict_backtest_parity(self) -> None:
         runner = self.write_cli_test_runner()
         data_dir = self.tempdir / "platform"
@@ -846,6 +918,67 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             [request["request_id"] for request in requests],
         )
         self.assertTrue(all(list(row) == list(RESULT_FIELDS) for row in rows))
+
+    def test_backtest_supports_100_unique_cutoffs_with_one_history_replay(
+        self,
+    ) -> None:
+        runner = self.write_cli_test_runner()
+        data_dir = self.tempdir / "unique-platform"
+        self.write_minimal_platform_fixture(data_dir)
+        feature_dates = pd.date_range(end=CUTOFF, periods=100, freq="D")
+        iso = feature_dates.isocalendar()
+        week_keys = [
+            f"{int(year):04d}{int(week):02d}"
+            for year, week in zip(iso.year, iso.week, strict=True)
+        ]
+        pd.DataFrame(
+            {
+                "rdate": feature_dates,
+                "week_id": week_keys,
+            }
+        ).to_csv(data_dir / "api_wind_date.csv", index=False)
+        requests = [
+            {
+                "request_id": f"unique-{index:03d}",
+                "predict_date": feature_date.strftime("%Y-%m-%d"),
+                "feature_date": feature_date.strftime("%Y-%m-%d"),
+                "target_date": (
+                    feature_date + pd.Timedelta(days=1)
+                ).strftime("%Y-%m-%d"),
+                "daily_cutoff_key": feature_date.strftime("%Y-%m-%d"),
+                "weekly_cutoff_key": week_key,
+                "monthly_cutoff_key": feature_date.strftime("%Y%m"),
+            }
+            for index, (feature_date, week_key) in enumerate(
+                reversed(list(zip(feature_dates, week_keys, strict=True)))
+            )
+        ]
+        requests_path = self.tempdir / "unique-requests.csv"
+        self.write_requests_csv(requests_path, requests)
+        output_path = self.tempdir / "unique-backtest.csv"
+
+        completed = self.run_cli(
+            runner,
+            "backtest",
+            "--requests",
+            requests_path,
+            "--data-dir",
+            data_dir,
+            "--output",
+            output_path,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout, "")
+        self.assertEqual(completed.stderr.count("native python diagnostic"), 1)
+        self.assertEqual(completed.stderr.count("native fd diagnostic"), 1)
+        with output_path.open(encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 100)
+        self.assertEqual(
+            [row["request_id"] for row in rows],
+            [request["request_id"] for request in requests],
+        )
 
     def test_reordered_batches_preserve_per_request_results(self) -> None:
         runner = self.write_cli_test_runner()
@@ -1018,7 +1151,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             "weekly-cutoff": [{**valid, "weekly_cutoff_key": "202528"}],
             "monthly-cutoff": [{**valid, "monthly_cutoff_key": "202506"}],
         }
-        with patch.object(module, "_infer_one") as infer:
+        with patch.object(module, "_infer_history") as infer:
             for name, requests in cases.items():
                 with self.subTest(name=name):
                     with self.assertRaises((TypeError, ValueError)):

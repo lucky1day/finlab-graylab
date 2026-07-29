@@ -1931,14 +1931,14 @@ def _weighted_vote(curve: pd.Series, anchor: pd.Series) -> pd.Series:
     return result
 
 
-def _infer_one(
+def _infer_history(
     data_dir: Path,
     feature_date: pd.Timestamp,
     daily_cutoff_key: str,
     weekly_cutoff_key: str,
     monthly_cutoff_key: str,
-) -> dict[str, object]:
-    """Run both embedded anchors and return one frozen consensus decision."""
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Run both anchors once and return causal histories through cutoff."""
     cutoff = pd.Timestamp(feature_date).normalize()
     if pd.isna(cutoff):
         raise ValueError("feature date is invalid")
@@ -1974,19 +1974,59 @@ def _infer_one(
         curve = _curve_orientation_actions(daily, FROZEN_SCHEME)
         anchor = _historical_anchor_actions(daily, five_score, ten_score)
         action = _weighted_vote(curve, anchor)
-        if cutoff not in action.index:
-            raise ValueError("exact cutoff consensus action is required")
-        curve_action = int(curve.loc[cutoff])
-        anchor_action = int(anchor.loc[cutoff])
-        vote = 1 * curve_action + 2 * anchor_action
-        return {
-            "scheme_id": str(FROZEN_SCHEME["scheme_id"]),
-            "feature_date": cutoff.strftime("%Y-%m-%d"),
-            "curve_action": curve_action,
-            "anchor_action": anchor_action,
-            "vote": vote,
-            "action": int(action.loc[cutoff]),
-        }
+        return curve, anchor, action
+
+
+def _history_result(
+    history: tuple[pd.Series, pd.Series, pd.Series],
+    feature_date: pd.Timestamp,
+) -> dict[str, object]:
+    """Select one exact validated cutoff from causal consensus histories."""
+    cutoff = pd.Timestamp(feature_date).normalize()
+    if pd.isna(cutoff):
+        raise ValueError("feature date is invalid")
+    curve, anchor, action = history
+    if (
+        cutoff not in curve.index
+        or cutoff not in anchor.index
+        or cutoff not in action.index
+    ):
+        raise ValueError("exact cutoff consensus action is required")
+    curve_action = int(curve.loc[cutoff])
+    anchor_action = int(anchor.loc[cutoff])
+    predicted = int(action.loc[cutoff])
+    if (
+        curve_action not in {-1, 0, 1}
+        or anchor_action not in {-1, 0, 1}
+        or predicted not in {-1, 0, 1}
+    ):
+        raise ValueError("algorithm produced an invalid direction")
+    return {
+        "scheme_id": str(FROZEN_SCHEME["scheme_id"]),
+        "feature_date": cutoff.strftime("%Y-%m-%d"),
+        "curve_action": curve_action,
+        "anchor_action": anchor_action,
+        "vote": 1 * curve_action + 2 * anchor_action,
+        "action": predicted,
+    }
+
+
+def _infer_one(
+    data_dir: Path,
+    feature_date: pd.Timestamp,
+    daily_cutoff_key: str,
+    weekly_cutoff_key: str,
+    monthly_cutoff_key: str,
+) -> dict[str, object]:
+    """Run one causal history and return its exact cutoff decision."""
+    history = _infer_history(
+        data_dir,
+        feature_date,
+        daily_cutoff_key,
+        weekly_cutoff_key,
+        monthly_cutoff_key,
+    )
+    return _history_result(history, feature_date)
 
 
 def _strict_date(value: object, field: str) -> date:
@@ -2091,64 +2131,11 @@ def _validate_weekly_cutoffs(
             )
 
 
-def _input_file_hashes(data_dir: Path) -> tuple[str, ...]:
-    """Hash the exact four immutable inputs used by one process."""
-    digests: list[str] = []
-    for filename in _PLATFORM_FILES:
-        digest = hashlib.sha256()
-        with open(_platform_file(data_dir, filename), "rb") as handle:
-            while chunk := handle.read(1024 * 1024):
-                digest.update(chunk)
-        digests.append(digest.hexdigest())
-    return tuple(digests)
-
-
-def _execute_one(
-    request: dict[str, object],
-    data_dir: Path,
-    *,
-    feature_date: date,
-    input_file_hashes: tuple[str, ...],
-    cache: dict[tuple[object, ...], int],
-) -> dict[str, object]:
-    """Execute one validated Request and expose only its standard Result."""
-    cache_key = (
-        request["feature_date"],
-        request["daily_cutoff_key"],
-        request["weekly_cutoff_key"],
-        request["monthly_cutoff_key"],
-        input_file_hashes,
-    )
-    if cache_key not in cache:
-        internal = _infer_one(
-            Path(data_dir),
-            pd.Timestamp(feature_date),
-            request["daily_cutoff_key"],
-            request["weekly_cutoff_key"],
-            request["monthly_cutoff_key"],
-        )
-        action = internal.get("action")
-        if (
-            isinstance(action, bool)
-            or not isinstance(action, (int, np.integer))
-            or int(action) not in {-1, 0, 1}
-        ):
-            raise ValueError("algorithm produced an invalid direction")
-        cache[cache_key] = int(action)
-    return {
-        "request_id": request["request_id"],
-        "predict_date": request["predict_date"],
-        "feature_date": request["feature_date"],
-        "target_date": request["target_date"],
-        "predicted_direction": cache[cache_key],
-    }
-
-
 def _execute_requests(
     requests: list[dict[str, object]],
     data_dir: Path,
 ) -> list[dict[str, object]]:
-    """Validate and execute one to 100 independent Requests in order."""
+    """Validate a batch and replay once through its maximum causal cutoff."""
     if not isinstance(requests, list):
         raise TypeError("Requests must be a list")
     if not 1 <= len(requests) <= 100:
@@ -2158,18 +2145,37 @@ def _execute_requests(
     if len(request_ids) != len(set(request_ids)):
         raise ValueError("request_id values must be unique within a batch")
     _validate_weekly_cutoffs(validated, Path(data_dir))
-    input_hashes = _input_file_hashes(Path(data_dir))
-    cache: dict[tuple[object, ...], int] = {}
-    return [
-        _execute_one(
-            request,
-            Path(data_dir),
-            feature_date=feature_date,
-            input_file_hashes=input_hashes,
-            cache=cache,
+    maximum_request, maximum_feature = max(
+        validated,
+        key=lambda item: item[1],
+    )
+    history = _infer_history(
+        Path(data_dir),
+        pd.Timestamp(maximum_feature),
+        maximum_request["daily_cutoff_key"],
+        maximum_request["weekly_cutoff_key"],
+        maximum_request["monthly_cutoff_key"],
+    )
+    results: list[dict[str, object]] = []
+    for request, feature_date in validated:
+        internal = _history_result(history, pd.Timestamp(feature_date))
+        action = internal.get("action")
+        if (
+            isinstance(action, bool)
+            or not isinstance(action, (int, np.integer))
+            or int(action) not in {-1, 0, 1}
+        ):
+            raise ValueError("algorithm produced an invalid direction")
+        results.append(
+            {
+                "request_id": request["request_id"],
+                "predict_date": request["predict_date"],
+                "feature_date": request["feature_date"],
+                "target_date": request["target_date"],
+                "predicted_direction": int(action),
+            }
         )
-        for request, feature_date in validated
-    ]
+    return results
 
 
 @contextmanager
