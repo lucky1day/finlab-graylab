@@ -1009,6 +1009,69 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 records=[record],
             )
 
+    def test_direct_cache_real_hit_audits_close_to_reopened_generation(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        for read_only, build_reason in (
+            (False, "cache_complete"),
+            (True, "consumer_validated_hit"),
+        ):
+            with self.subTest(read_only=read_only):
+                fixture = self._direct_cache_fixture(
+                    read_only=read_only
+                )
+                fixture["audit"].update(
+                    {
+                        "status": "hit",
+                        "build_mode": "hit",
+                        "build_reason": build_reason,
+                    }
+                )
+                loaded = SimpleNamespace(
+                    generation_id=fixture["generation_id"],
+                    path=Path(fixture["audit"]["generation_path"]),
+                    manifest=fixture["manifest"],
+                    manifest_sha256=DIRECT_CACHE_MANIFEST,
+                    caches={"STD": {"test_dates": ["2026-06-01"]}},
+                )
+                record = PredictionRecord(
+                    scheme_id=fixture["scheme_id"],
+                    target_tenor="5Y",
+                    horizon=5,
+                    predict_date=PREDICT_DATE,
+                    feature_date=FEATURE_DATE,
+                    target_date=TARGET_DATE_T5,
+                    predicted_direction=1,
+                    prediction_phase="scheduled_live",
+                    extra={"phase_a_cache": fixture["audit"]},
+                )
+
+                with (
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_load_generation_directory",
+                        return_value=loaded,
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_verify_generation_acceptance_lineage",
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_validate_generation_acceptance_for_use",
+                    ),
+                ):
+                    repository._validate_cache_qualified_completion(
+                        occurrence={
+                            "policy_json": fixture["policy"]
+                        },
+                        item=fixture["item"],
+                        generation=fixture["generation"],
+                        records=[record],
+                    )
+
     def test_direct_cache_read_only_requires_publisher_lineage_contract(
         self,
     ) -> None:
@@ -1038,6 +1101,19 @@ class GrayGapRepositoryTests(unittest.TestCase):
 
         fixture = self._direct_cache_fixture()
         fixture["manifest"]["build_mode"] = "suffix"
+        fixture["manifest"]["generation_acceptance_evidence"][
+            "build_mode"
+        ] = "suffix"
+        fixture["audit"]["generation_acceptance"][
+            "build_mode"
+        ] = "suffix"
+        fixture["audit"].update(
+            {
+                "status": "extended",
+                "build_mode": "suffix",
+                "build_reason": "proven_daily_input_revision",
+            }
+        )
         loaded = SimpleNamespace(
             generation_id=fixture["generation_id"],
             path=Path(fixture["audit"]["generation_path"]),
@@ -1272,6 +1348,157 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 records=[],
             )
 
+    def test_direct_cache_authority_rejects_unbound_code_artifact_hashes(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        for field in (
+            "cache_adapter_sha256",
+            "cache_core_sha256",
+        ):
+            with self.subTest(field=field):
+                fixture = self._direct_cache_fixture()
+                consumer = fixture["policy"][
+                    "direct_cache_authorities"
+                ]["consumers"][fixture["scheme_id"]]
+                consumer[field] = "0" * 64
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    f"consumer identity mismatch.*{field}",
+                ):
+                    repository._validate_cache_qualified_completion(
+                        occurrence={
+                            "policy_json": fixture["policy"]
+                        },
+                        item=fixture["item"],
+                        generation=fixture["generation"],
+                        records=[],
+                    )
+
+    def test_direct_cache_authority_rejects_audit_identity_drift(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        mutations = {
+            "version": "wrong.abi",
+            "cache_family": "wrong_family",
+            "tenor": "10Y",
+            "input_content_id": "0" * 64,
+            "input_change": {"change_type": "revision"},
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                fixture = self._direct_cache_fixture()
+                fixture["audit"][field] = value
+                loaded = SimpleNamespace(
+                    generation_id=fixture["generation_id"],
+                    path=Path(fixture["audit"]["generation_path"]),
+                    manifest=fixture["manifest"],
+                    manifest_sha256=DIRECT_CACHE_MANIFEST,
+                    caches={"STD": {"test_dates": ["2026-06-01"]}},
+                )
+                record = PredictionRecord(
+                    scheme_id=fixture["scheme_id"],
+                    target_tenor="5Y",
+                    horizon=5,
+                    predict_date=PREDICT_DATE,
+                    feature_date=FEATURE_DATE,
+                    target_date=TARGET_DATE_T5,
+                    predicted_direction=1,
+                    prediction_phase="scheduled_live",
+                    extra={"phase_a_cache": fixture["audit"]},
+                )
+                with (
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_load_generation_directory",
+                        return_value=loaded,
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_verify_generation_acceptance_lineage",
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_validate_generation_acceptance_for_use",
+                    ),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "audit identity",
+                    ),
+                ):
+                    repository._validate_cache_qualified_completion(
+                        occurrence={
+                            "policy_json": fixture["policy"]
+                        },
+                        item=fixture["item"],
+                        generation=fixture["generation"],
+                        records=[record],
+                    )
+
+    def test_direct_cache_authority_rejects_audit_state_lies(
+        self,
+    ) -> None:
+        from scheduler import repository
+
+        mutations = {
+            "status": "extended",
+            "build_mode": "suffix",
+            "build_reason": "native_generation_rebound",
+        }
+        for field, value in mutations.items():
+            with self.subTest(field=field):
+                fixture = self._direct_cache_fixture()
+                fixture["audit"][field] = value
+                loaded = SimpleNamespace(
+                    generation_id=fixture["generation_id"],
+                    path=Path(fixture["audit"]["generation_path"]),
+                    manifest=fixture["manifest"],
+                    manifest_sha256=DIRECT_CACHE_MANIFEST,
+                    caches={"STD": {"test_dates": ["2026-06-01"]}},
+                )
+                record = PredictionRecord(
+                    scheme_id=fixture["scheme_id"],
+                    target_tenor="5Y",
+                    horizon=5,
+                    predict_date=PREDICT_DATE,
+                    feature_date=FEATURE_DATE,
+                    target_date=TARGET_DATE_T5,
+                    predicted_direction=1,
+                    prediction_phase="scheduled_live",
+                    extra={"phase_a_cache": fixture["audit"]},
+                )
+                with (
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_load_generation_directory",
+                        return_value=loaded,
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_verify_generation_acceptance_lineage",
+                    ),
+                    patch(
+                        "shared.liwei_0616_phase_a_cache."
+                        "_validate_generation_acceptance_for_use",
+                    ),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "audit state",
+                    ),
+                ):
+                    repository._validate_cache_qualified_completion(
+                        occurrence={
+                            "policy_json": fixture["policy"]
+                        },
+                        item=fixture["item"],
+                        generation=fixture["generation"],
+                        records=[record],
+                    )
+
     def test_direct_cache_monotonic_coverage_reopens_parent_securely(
         self,
     ) -> None:
@@ -1397,6 +1624,8 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 "scheme_id": scheme_id,
                 "cache_group": "liwei_test_family:5Y",
                 "cache_spec_fingerprint": DIRECT_CACHE_SPEC,
+                "cache_adapter_sha256": "5" * 64,
+                "cache_core_sha256": "6" * 64,
             }
         ]
         if read_only:
@@ -1409,6 +1638,8 @@ class GrayGapRepositoryTests(unittest.TestCase):
                     "scheme_id": publisher_id,
                     "cache_group": "liwei_test_family:5Y",
                     "cache_spec_fingerprint": DIRECT_CACHE_SPEC,
+                    "cache_adapter_sha256": "5" * 64,
+                    "cache_core_sha256": "6" * 64,
                 }
             )
         authority = {
@@ -1431,6 +1662,7 @@ class GrayGapRepositoryTests(unittest.TestCase):
         acceptance = {
             "native_generation": dict(native_binding),
             "parent": None,
+            "build_mode": "full",
         }
         family_root = (
             Path(storage_root) / "liwei_test_family" / "5y"
@@ -1442,6 +1674,11 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "status": "cold_build",
             "build_mode": "full",
             "build_reason": "no_current_generation",
+            "version": "liwei_0616.phase_a.v1",
+            "cache_family": "liwei_test_family",
+            "tenor": "5Y",
+            "input_content_id": "7" * 64,
+            "input_change": {"change_type": "initial"},
             "generation_id": generation_id,
             "generation_path": str(generation_path),
             "generation_manifest_sha256": DIRECT_CACHE_MANIFEST,
@@ -1457,8 +1694,11 @@ class GrayGapRepositoryTests(unittest.TestCase):
             "cache_family": "liwei_test_family",
             "tenor": "5Y",
             "spec_fingerprint": DIRECT_CACHE_SPEC,
+            "build_mode": "full",
+            "input_change": {"change_type": "initial"},
             "input_state": {
                 "schema_version": 3,
+                "content_id": "7" * 64,
                 "native_generation": dict(native_binding),
                 "effective_auxiliary": {
                     "schema_version":

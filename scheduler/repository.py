@@ -7623,6 +7623,65 @@ _DIRECT_CACHE_CONSUMER_FIELDS = frozenset(
         "daily_dependency_proof",
     }
 )
+_DIRECT_CACHE_PUBLISHER_BUILD_STATES = {
+    "full": (
+        "cold_build",
+        frozenset(
+            {
+                "no_current_generation",
+                "current_generation_invalid",
+                "spec_changed",
+                "baseline_set_changed",
+                "input_revision",
+                "weekly_input_revision_unmappable",
+                "monthly_input_revision_unmappable",
+                "weekly_input_append_unmappable",
+                "monthly_input_append_unmappable",
+                "effective_auxiliary_projection_missing_from_parent",
+                "effective_auxiliary_projection_missing_current",
+                "effective_auxiliary_proof_changed",
+                "date_to_week_history_changed",
+                "effective_auxiliary_projection_unknown",
+                "effective_auxiliary_revision_unknown",
+            }
+        ),
+    ),
+    "suffix": (
+        "extended",
+        frozenset(
+            {
+                "proven_daily_input_revision",
+                "combined_daily_effective_revision",
+                "effective_auxiliary_revision",
+            }
+        ),
+    ),
+    "rebind": (
+        "extended",
+        frozenset({"native_generation_rebound"}),
+    ),
+    "append": (
+        "extended",
+        frozenset(
+            {
+                "append_only",
+                "cache_complete",
+                "effective_auxiliary_append",
+            }
+        ),
+    ),
+    "migration": (
+        "extended",
+        frozenset({"legacy_v1_migration"}),
+    ),
+    "qualification": (
+        "hit",
+        frozenset({"compare_gate_qualification"}),
+    ),
+}
+_DIRECT_CACHE_PUBLISHER_HIT_REASONS = frozenset(
+    {"cache_complete", "truncated_request_preserved"}
+)
 
 
 def _validate_direct_cache_authority_completion(
@@ -7679,14 +7738,13 @@ def _validate_direct_cache_authority_completion(
         for field, expected in expected_item.items()
         if consumer[field] != expected
     )
-    expected_spec, expected_cache_group = _direct_cache_policy_identity(
+    expected_policy_identity = _direct_cache_policy_identity(
         policy,
         scheme_id,
     )
-    if consumer["spec_fingerprint"] != expected_spec:
-        item_drift.append("spec_fingerprint")
-    if consumer["cache_group"] != expected_cache_group:
-        item_drift.append("cache_group")
+    for field, expected in expected_policy_identity.items():
+        if consumer[field] != expected:
+            item_drift.append(field)
     if item_drift:
         raise RuntimeError(
             "direct cache consumer identity mismatch: "
@@ -7874,7 +7932,7 @@ def _validate_direct_cache_publisher_graph(
 def _direct_cache_policy_identity(
     policy: Mapping[str, object],
     scheme_id: str,
-) -> tuple[str, str]:
+) -> dict[str, str]:
     matches = [
         row
         for row in policy.get("schemes", [])
@@ -7888,15 +7946,25 @@ def _direct_cache_policy_identity(
             f"direct cache policy consumer is ambiguous: {scheme_id}"
         )
     row = matches[0]
-    spec = _require_lower_sha256(
-        row.get("cache_spec_fingerprint"),
-        f"direct cache policy {scheme_id} cache_spec_fingerprint",
-    )
-    cache_group = _require_nonempty(
-        row.get("cache_group"),
-        f"direct cache policy {scheme_id} cache_group",
-    )
-    return spec, cache_group
+    identity = {
+        "cache_group": _require_nonempty(
+            row.get("cache_group"),
+            f"direct cache policy {scheme_id} cache_group",
+        ),
+        "spec_fingerprint": _require_lower_sha256(
+            row.get("cache_spec_fingerprint"),
+            f"direct cache policy {scheme_id} cache_spec_fingerprint",
+        ),
+        "cache_adapter_sha256": _require_lower_sha256(
+            row.get("cache_adapter_sha256"),
+            f"direct cache policy {scheme_id} cache_adapter_sha256",
+        ),
+        "cache_core_sha256": _require_lower_sha256(
+            row.get("cache_core_sha256"),
+            f"direct cache policy {scheme_id} cache_core_sha256",
+        ),
+    }
+    return identity
 
 
 def _direct_cache_native_generation(
@@ -8056,6 +8124,16 @@ def _verify_direct_cache_record(
             "direct cache manifest identity mismatch: "
             + ",".join(sorted(set(drift)))
         )
+    _validate_direct_cache_audit_identity(
+        audit,
+        manifest=manifest,
+        consumer=consumer,
+    )
+    _validate_direct_cache_audit_state(
+        audit,
+        manifest=manifest,
+        consumer=consumer,
+    )
     lineage_qualification = {
         "qualification": {
             "cache_abi_version": contract["cache_abi_version"],
@@ -8080,6 +8158,85 @@ def _verify_direct_cache_record(
         loaded,
         loader=_load_generation_directory,
     )
+
+
+def _validate_direct_cache_audit_identity(
+    audit: Mapping[str, object],
+    *,
+    manifest: Mapping[str, object],
+    consumer: Mapping[str, object],
+) -> None:
+    input_state = manifest.get("input_state")
+    if not isinstance(input_state, Mapping):
+        raise ValueError("direct cache manifest input_state is missing")
+    expected = {
+        "version": manifest.get("abi_version"),
+        "cache_family": consumer["cache_family"],
+        "tenor": consumer["tenor"],
+        "input_content_id": input_state.get("content_id"),
+        "input_change": manifest.get("input_change"),
+    }
+    drift = sorted(
+        field
+        for field, expected_value in expected.items()
+        if audit.get(field) != expected_value
+    )
+    if drift:
+        raise ValueError(
+            "direct cache audit identity mismatch: "
+            + ",".join(drift)
+        )
+
+
+def _validate_direct_cache_audit_state(
+    audit: Mapping[str, object],
+    *,
+    manifest: Mapping[str, object],
+    consumer: Mapping[str, object],
+) -> None:
+    status = audit.get("status")
+    build_mode = audit.get("build_mode")
+    build_reason = audit.get("build_reason")
+    if consumer["access_mode"] == "read_only":
+        expected = (
+            "hit",
+            "hit",
+            "consumer_validated_hit",
+        )
+        if (status, build_mode, build_reason) != expected:
+            raise ValueError(
+                "direct cache audit state is invalid for read_only"
+            )
+        return
+    if build_mode == "hit":
+        if (
+            status != "hit"
+            or build_reason not in _DIRECT_CACHE_PUBLISHER_HIT_REASONS
+        ):
+            raise ValueError(
+                "direct cache audit state is invalid for publisher hit"
+            )
+        return
+    manifest_mode = manifest.get("build_mode")
+    acceptance = manifest.get("generation_acceptance_evidence")
+    acceptance_mode = (
+        acceptance.get("build_mode")
+        if isinstance(acceptance, Mapping)
+        else None
+    )
+    expected_state = _DIRECT_CACHE_PUBLISHER_BUILD_STATES.get(
+        str(build_mode)
+    )
+    if (
+        build_mode != manifest_mode
+        or build_mode != acceptance_mode
+        or expected_state is None
+        or status != expected_state[0]
+        or build_reason not in expected_state[1]
+    ):
+        raise ValueError(
+            "direct cache audit state does not match reopened generation"
+        )
 
 
 def _validate_direct_cache_monotonic_coverage(
