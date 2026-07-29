@@ -1036,6 +1036,80 @@ class SignalGapPlanTests(unittest.TestCase):
         )
         self.assertEqual(empty_plan["status"], "BLOCKED")
 
+    def test_canonical_only_blocker_does_not_block_live_only_plan(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import build_signal_gap_plan
+
+        snapshot = self._snapshot()
+        live_case = next(
+            case
+            for case in snapshot.expected_cases
+            if case.target_date == "2026-06-01"
+        )
+        plan = build_signal_gap_plan(
+            replace(
+                snapshot,
+                expected_cases=(live_case,),
+                canonical_signals=(),
+                control_plane_blockers=(
+                    {
+                        "code": (
+                            "NATIVE_CANONICAL_VERSION_IDENTITY_INVALID"
+                        ),
+                        "base_scheme_id": "demo",
+                        "run_id": 123,
+                        "reason": "CANONICAL_VERSION_DIGEST_DRIFT",
+                        "segment_scope": ["canonical"],
+                    },
+                ),
+            ),
+            start_date="2026-05-26",
+            as_of_date="2026-05-26",
+        )
+
+        self.assertEqual(plan["counts"]["canonical_expected"], 0)
+        self.assertEqual(plan["counts"]["live_expected"], 1)
+        self.assertEqual(plan["actions"][0]["action"], "SKIP_PRESENT")
+        self.assertEqual(plan["status"], "READY")
+        self.assertEqual(
+            plan["control_plane"]["blockers"][0]["segment_scope"],
+            ["canonical"],
+        )
+
+    def test_invalid_expected_segment_is_rejected_before_blocker_scope(
+        self,
+    ) -> None:
+        from harness.signal_gap_plan import (
+            SignalGapPlanError,
+            build_signal_gap_plan,
+        )
+
+        snapshot = self._snapshot()
+        invalid_case = replace(
+            snapshot.expected_cases[1],
+            segment="other",
+        )
+        with self.assertRaisesRegex(
+            SignalGapPlanError,
+            "INVALID_EXPECTED_SEGMENT",
+        ):
+            build_signal_gap_plan(
+                replace(
+                    snapshot,
+                    expected_cases=(invalid_case,),
+                    control_plane_blockers=(
+                        {
+                            "code": "ACTIVE_VERSION_CARDINALITY_INVALID",
+                            "base_scheme_id": "demo",
+                            "segment_scope": ["live"],
+                        },
+                    ),
+                ),
+                start_date="2026-05-26",
+                as_of_date="2026-05-26",
+            )
+
     def test_discovery_digest_is_bound_into_plan_sha(self) -> None:
         from harness.signal_gap_plan import build_signal_gap_plan
 
