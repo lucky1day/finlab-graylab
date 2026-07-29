@@ -1016,6 +1016,42 @@ def _write_private_csv(frame: pd.DataFrame, path: Path) -> None:
     path.chmod(0o600)
 
 
+def _finite_daily_suffix(daily: pd.DataFrame) -> pd.DataFrame:
+    """Return the causal direct-yield suffix after the final joint bad row."""
+    missing_yields = [
+        column for column in _DIRECT_YIELD_COLUMNS if column not in daily.columns
+    ]
+    if missing_yields:
+        raise ValueError(
+            "daily_output.csv: missing required columns "
+            + ", ".join(missing_yields)
+        )
+    retained_yields = daily.loc[:, _DIRECT_YIELD_COLUMNS].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+    finite_rows = np.isfinite(
+        retained_yields.to_numpy(dtype="float64")
+    ).all(axis=1)
+    bad_positions = np.flatnonzero(~finite_rows)
+    first_retained = (
+        int(bad_positions[-1]) + 1
+        if bad_positions.size
+        else 0
+    )
+    suffix = daily.iloc[first_retained:].copy()
+    suffix_yields = retained_yields.iloc[first_retained:]
+    if len(suffix) < _MINIMUM_DAILY_HISTORY:
+        raise ValueError(
+            "daily_output.csv: insufficient consecutive finite history"
+        )
+    if not np.isfinite(
+        suffix_yields.to_numpy(dtype="float64")
+    ).all():
+        raise ValueError("daily_output.csv: direct yields must be finite")
+    return suffix
+
+
 def _materialize_cutoff_data(
     data_dir: Path,
     feature_date: pd.Timestamp,
@@ -1069,51 +1105,15 @@ def _materialize_cutoff_data(
         )
     daily = daily.loc[daily_dates <= daily_cutoff].copy()
     daily_dates = daily_dates.loc[daily.index]
-    retained_yields = daily.loc[:, _DIRECT_YIELD_COLUMNS].apply(
-        pd.to_numeric,
-        errors="coerce",
-    )
-    finite_rows = np.isfinite(
-        retained_yields.to_numpy(dtype="float64")
-    ).all(axis=1)
-    bad_positions = np.flatnonzero(~finite_rows)
-    if bad_positions.size:
-        first_retained = int(bad_positions[-1]) + 1
-        daily = daily.iloc[first_retained:].copy()
-        daily_dates = daily_dates.iloc[first_retained:].copy()
-        retained_yields = retained_yields.iloc[first_retained:].copy()
-    if daily.empty:
-        raise ValueError(
-            "daily_output.csv: exact cutoff must have finite direct yields"
-        )
-    if len(daily) < _MINIMUM_DAILY_HISTORY:
-        raise ValueError(
-            "daily_output.csv: insufficient consecutive finite history"
-        )
-    if not np.isfinite(
-        retained_yields.to_numpy(dtype="float64")
-    ).all():
-        raise ValueError("daily_output.csv: direct yields must be finite")
-    _validate_monotonic(daily_dates, "date", "daily_output.csv")
-    if daily_dates.iloc[-1] != daily_cutoff:
-        raise ValueError("daily_output.csv: exact cutoff coverage is required")
-    lower_bound = daily_dates.iloc[0]
-
-    calendar_mask = calendar_dates.between(lower_bound, cutoff)
-    calendar = calendar.loc[calendar_mask].copy()
+    calendar = calendar.loc[calendar_dates <= cutoff].copy()
     calendar_dates = calendar_dates.loc[calendar.index]
     calendar_week_ids = calendar_week_ids.loc[calendar.index]
-    weekly_mask = (
-        (weekly_ids <= weekly_cutoff)
-        & weekly_ids.isin(calendar_week_ids)
-    )
-    weekly = weekly.loc[weekly_mask].copy()
+    weekly = weekly.loc[weekly_ids <= weekly_cutoff].copy()
     weekly_ids = weekly_ids.loc[weekly.index]
-    lower_month = int(lower_bound.strftime("%Y%m"))
-    monthly_mask = monthly_ids.between(lower_month, monthly_cutoff)
-    monthly = monthly.loc[monthly_mask].copy()
+    monthly = monthly.loc[monthly_ids <= monthly_cutoff].copy()
     monthly_ids = monthly_ids.loc[monthly.index]
 
+    _validate_monotonic(daily_dates, "date", "daily_output.csv")
     _validate_monotonic(
         calendar_dates,
         "rdate",
@@ -1128,6 +1128,9 @@ def _materialize_cutoff_data(
     _validate_monotonic(weekly_ids, "week_id", "weekly_output.csv")
     _validate_monotonic(monthly_ids, "month_id", "monthly_output.csv")
 
+    if daily.empty or daily_dates.iloc[-1] != daily_cutoff:
+        raise ValueError("daily_output.csv: exact cutoff coverage is required")
+    _finite_daily_suffix(daily)
     if calendar.empty or calendar_dates.iloc[-1] != cutoff:
         raise ValueError("api_wind_date.csv: exact cutoff coverage is required")
     if (
@@ -1931,61 +1934,68 @@ def _weighted_vote(curve: pd.Series, anchor: pd.Series) -> pd.Series:
     return result
 
 
-def _infer_history(
+@contextmanager
+def _anchor_runtime():
+    """Load the embedded anchor modules once for one request batch."""
+    with tempfile.TemporaryDirectory(
+        prefix="embedded-7y-",
+        dir=".",
+    ) as temporary:
+        run_root = Path(temporary)
+        if run_root.is_absolute():
+            run_root = run_root.relative_to(Path.cwd())
+        payload_root = _extract_payload(run_root / "payload")
+        five_module, ten_module = _anchor_modules(payload_root)
+        yield five_module, ten_module, run_root
+
+
+def _infer_with_loaded_anchors(
+    five_module: ModuleType,
+    ten_module: ModuleType,
     data_dir: Path,
     feature_date: pd.Timestamp,
     daily_cutoff_key: str,
     weekly_cutoff_key: str,
     monthly_cutoff_key: str,
-) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Run both anchors once and return causal histories through cutoff."""
-    cutoff = pd.Timestamp(feature_date).normalize()
-    if pd.isna(cutoff):
-        raise ValueError("feature date is invalid")
-    with tempfile.TemporaryDirectory(prefix="embedded-7y-", dir=".") as temporary:
-        run_root = Path(temporary).relative_to(Path.cwd())
-        payload_root = _extract_payload(run_root / "payload")
-        five_module, ten_module = _anchor_modules(payload_root)
-        protected_root = _materialize_cutoff_data(
-            Path(data_dir),
-            cutoff,
-            daily_cutoff_key,
-            weekly_cutoff_key,
-            monthly_cutoff_key,
-            run_root / "request",
-        )
-        five_frame = _run_5y10(
-            five_module,
-            protected_root,
-            run_root / "five",
-        )
-        ten_frame = _run_10y04(
-            ten_module,
-            protected_root,
-            run_root / "ten",
-            cutoff,
-        )
-        five_score = _anchor_score(five_frame, "5Y10", cutoff)
-        ten_score = _anchor_score(ten_frame, "10Y04", cutoff)
-        daily = _read_platform_csv(
-            protected_root / "data",
-            "daily_output.csv",
-        )
-        curve = _curve_orientation_actions(daily, FROZEN_SCHEME)
-        anchor = _historical_anchor_actions(daily, five_score, ten_score)
-        action = _weighted_vote(curve, anchor)
-        return curve, anchor, action
-
-
-def _history_result(
-    history: tuple[pd.Series, pd.Series, pd.Series],
-    feature_date: pd.Timestamp,
+    work_root: Path,
 ) -> dict[str, object]:
-    """Select one exact validated cutoff from causal consensus histories."""
+    """Run one cutoff replay using already-loaded embedded anchor modules."""
     cutoff = pd.Timestamp(feature_date).normalize()
     if pd.isna(cutoff):
         raise ValueError("feature date is invalid")
-    curve, anchor, action = history
+    protected_root = _materialize_cutoff_data(
+        Path(data_dir),
+        cutoff,
+        daily_cutoff_key,
+        weekly_cutoff_key,
+        monthly_cutoff_key,
+        work_root / "request",
+    )
+    five_frame = _run_5y10(
+        five_module,
+        protected_root,
+        work_root / "five",
+    )
+    ten_frame = _run_10y04(
+        ten_module,
+        protected_root,
+        work_root / "ten",
+        cutoff,
+    )
+    five_score = _anchor_score(five_frame, "5Y10", cutoff)
+    ten_score = _anchor_score(ten_frame, "10Y04", cutoff)
+    full_daily = _read_platform_csv(
+        protected_root / "data",
+        "daily_output.csv",
+    )
+    direct_daily = _finite_daily_suffix(full_daily)
+    curve = _curve_orientation_actions(direct_daily, FROZEN_SCHEME)
+    anchor = _historical_anchor_actions(
+        direct_daily,
+        five_score,
+        ten_score,
+    )
+    action = _weighted_vote(curve, anchor)
     if (
         cutoff not in curve.index
         or cutoff not in anchor.index
@@ -2018,15 +2028,25 @@ def _infer_one(
     weekly_cutoff_key: str,
     monthly_cutoff_key: str,
 ) -> dict[str, object]:
-    """Run one causal history and return its exact cutoff decision."""
-    history = _infer_history(
-        data_dir,
-        feature_date,
-        daily_cutoff_key,
-        weekly_cutoff_key,
-        monthly_cutoff_key,
-    )
-    return _history_result(history, feature_date)
+    """Load one private runtime and return one exact cutoff decision."""
+    with _anchor_runtime() as (five_module, ten_module, runtime_root):
+        with tempfile.TemporaryDirectory(
+            prefix="cutoff-",
+            dir=runtime_root,
+        ) as temporary:
+            work_root = Path(temporary)
+            if work_root.is_absolute():
+                work_root = work_root.relative_to(Path.cwd())
+            return _infer_with_loaded_anchors(
+                five_module,
+                ten_module,
+                data_dir,
+                feature_date,
+                daily_cutoff_key,
+                weekly_cutoff_key,
+                monthly_cutoff_key,
+                work_root,
+            )
 
 
 def _strict_date(value: object, field: str) -> date:
@@ -2135,7 +2155,7 @@ def _execute_requests(
     requests: list[dict[str, object]],
     data_dir: Path,
 ) -> list[dict[str, object]]:
-    """Validate a batch and replay once through its maximum causal cutoff."""
+    """Validate a batch and replay each unique cutoff in causal order."""
     if not isinstance(requests, list):
         raise TypeError("Requests must be a list")
     if not 1 <= len(requests) <= 100:
@@ -2145,34 +2165,65 @@ def _execute_requests(
     if len(request_ids) != len(set(request_ids)):
         raise ValueError("request_id values must be unique within a batch")
     _validate_weekly_cutoffs(validated, Path(data_dir))
-    maximum_request, maximum_feature = max(
-        validated,
-        key=lambda item: item[1],
-    )
-    history = _infer_history(
-        Path(data_dir),
-        pd.Timestamp(maximum_feature),
-        maximum_request["daily_cutoff_key"],
-        maximum_request["weekly_cutoff_key"],
-        maximum_request["monthly_cutoff_key"],
-    )
-    results: list[dict[str, object]] = []
+    unique_by_cutoff: dict[
+        tuple[object, ...],
+        tuple[dict[str, object], date],
+    ] = {}
     for request, feature_date in validated:
-        internal = _history_result(history, pd.Timestamp(feature_date))
-        action = internal.get("action")
-        if (
-            isinstance(action, bool)
-            or not isinstance(action, (int, np.integer))
-            or int(action) not in {-1, 0, 1}
-        ):
-            raise ValueError("algorithm produced an invalid direction")
+        cache_key = (
+            request["feature_date"],
+            request["daily_cutoff_key"],
+            request["weekly_cutoff_key"],
+            request["monthly_cutoff_key"],
+        )
+        unique_by_cutoff.setdefault(cache_key, (request, feature_date))
+    ordered_unique = sorted(
+        unique_by_cutoff.items(),
+        key=lambda item: item[1][1],
+    )
+    actions_by_cutoff: dict[tuple[object, ...], int] = {}
+    with _anchor_runtime() as (five_module, ten_module, runtime_root):
+        for cache_key, (request, feature_date) in ordered_unique:
+            with tempfile.TemporaryDirectory(
+                prefix="cutoff-",
+                dir=runtime_root,
+            ) as temporary:
+                work_root = Path(temporary)
+                if work_root.is_absolute():
+                    work_root = work_root.relative_to(Path.cwd())
+                internal = _infer_with_loaded_anchors(
+                    five_module,
+                    ten_module,
+                    Path(data_dir),
+                    pd.Timestamp(feature_date),
+                    request["daily_cutoff_key"],
+                    request["weekly_cutoff_key"],
+                    request["monthly_cutoff_key"],
+                    work_root,
+                )
+            action = internal.get("action")
+            if (
+                isinstance(action, bool)
+                or not isinstance(action, (int, np.integer))
+                or int(action) not in {-1, 0, 1}
+            ):
+                raise ValueError("algorithm produced an invalid direction")
+            actions_by_cutoff[cache_key] = int(action)
+    results: list[dict[str, object]] = []
+    for request, _feature_date in validated:
+        cache_key = (
+            request["feature_date"],
+            request["daily_cutoff_key"],
+            request["weekly_cutoff_key"],
+            request["monthly_cutoff_key"],
+        )
         results.append(
             {
                 "request_id": request["request_id"],
                 "predict_date": request["predict_date"],
                 "feature_date": request["feature_date"],
                 "target_date": request["target_date"],
-                "predicted_direction": int(action),
+                "predicted_direction": actions_by_cutoff[cache_key],
             }
         )
     return results

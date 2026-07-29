@@ -282,40 +282,46 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         runner = self.tempdir / "generated_runner.py"
         override = textwrap.dedent(
             """
-            _CLI_TEST_HISTORY_CALLS = 0
+            _CLI_TEST_RUNTIME_LOADS = 0
 
 
-            def _cli_test_history(
+            @contextmanager
+            def _cli_test_anchor_runtime():
+                global _CLI_TEST_RUNTIME_LOADS
+                _CLI_TEST_RUNTIME_LOADS += 1
+                print("native python diagnostic")
+                os.write(1, b"native fd diagnostic\\n")
+                yield None, None, Path(".")
+
+
+            def _cli_test_infer_with_loaded_anchors(
+                five_module,
+                ten_module,
                 data_dir,
                 feature_date,
                 daily_cutoff_key,
                 weekly_cutoff_key,
                 monthly_cutoff_key,
+                work_root,
             ):
-                global _CLI_TEST_HISTORY_CALLS
-                _CLI_TEST_HISTORY_CALLS += 1
-                print("native python diagnostic")
-                os.write(1, b"native fd diagnostic\\n")
-                del daily_cutoff_key, weekly_cutoff_key, monthly_cutoff_key
-                daily = _read_platform_csv(Path(data_dir), "daily_output.csv")
-                dates = pd.to_datetime(
-                    daily["date"],
-                    errors="raise",
-                ).dt.normalize()
-                selected = pd.DatetimeIndex(
-                    dates.loc[dates <= pd.Timestamp(feature_date)]
+                del (
+                    five_module,
+                    ten_module,
+                    data_dir,
+                    daily_cutoff_key,
+                    weekly_cutoff_key,
+                    monthly_cutoff_key,
+                    work_root,
                 )
-                values = np.asarray(
-                    [1 if value.day % 2 else -1 for value in selected],
-                    dtype="int64",
-                )
-                curve = pd.Series(values, index=selected, name="curve_action")
-                anchor = pd.Series(values, index=selected, name="anchor_action")
-                action = pd.Series(values, index=selected, dtype="int64")
-                return curve, anchor, action
+                return {
+                    "action": 1 if feature_date.day % 2 else -1,
+                    "score": 999,
+                    "curve_action": -1,
+                }
 
 
-            _infer_history = _cli_test_history
+            _anchor_runtime = _cli_test_anchor_runtime
+            _infer_with_loaded_anchors = _cli_test_infer_with_loaded_anchors
             """
         )
         marker = '\nif __name__ == "__main__":\n'
@@ -769,25 +775,48 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         self,
     ) -> None:
         module = self.load_generated_module()
-        data_dir = self.tempdir / "multi-cutoff-real"
-        self.write_replay_fixture(
-            data_dir,
-            append_one_future_daily_row=False,
+        data_dir = REPLAY_DATA_ROOT
+        calendar = pd.read_csv(data_dir / "api_wind_date.csv")
+        week_by_date = dict(
+            zip(
+                calendar["rdate"].astype(str),
+                calendar["week_id"].astype(str),
+                strict=True,
+            )
         )
         requests = [
-            self.platform_request("maximum", feature_date="2025-07-15"),
-            self.platform_request("earlier", feature_date="2025-07-14"),
+            {
+                "request_id": "maximum",
+                "predict_date": "2025-06-04",
+                "feature_date": "2025-06-04",
+                "target_date": "2025-06-05",
+                "daily_cutoff_key": "2025-06-04",
+                "weekly_cutoff_key": week_by_date["2025-06-04"],
+                "monthly_cutoff_key": "202506",
+            },
+            {
+                "request_id": "earlier",
+                "predict_date": "2025-01-02",
+                "feature_date": "2025-01-02",
+                "target_date": "2025-01-03",
+                "daily_cutoff_key": "2025-01-02",
+                "weekly_cutoff_key": week_by_date["2025-01-02"],
+                "monthly_cutoff_key": "202501",
+            },
+        ]
+        audit = pd.read_csv(
+            REFERENCE_RESULTS_ROOT / "sim_predictions.csv",
+            usecols=["candidate_id", "feature_date", "action"],
+        )
+        selected = audit.loc[
+            (audit["candidate_id"] == "7y-cfc-0084")
+            & audit["feature_date"].isin(("2025-01-02", "2025-06-04"))
         ]
         expected = {
-            request["feature_date"]: module._infer_one(
-                data_dir,
-                pd.Timestamp(request["feature_date"]),
-                request["daily_cutoff_key"],
-                request["weekly_cutoff_key"],
-                request["monthly_cutoff_key"],
-            )["action"]
-            for request in requests
+            str(row.feature_date): int(row.action)
+            for row in selected.itertuples(index=False)
         }
+        self.assertEqual(expected, {"2025-01-02": 1, "2025-06-04": -1})
         anchor_loads = 0
         original_anchor_modules = module._anchor_modules
 
@@ -796,28 +825,34 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             anchor_loads += 1
             return original_anchor_modules(payload_root)
 
-        with (
-            chdir(self.tempdir),
-            patch.object(
-                module,
-                "_anchor_modules",
-                side_effect=counted_anchor_modules,
-            ),
+        observed_orders: list[list[dict[str, object]]] = []
+        with chdir(self.tempdir), patch.object(
+            module,
+            "_anchor_modules",
+            side_effect=counted_anchor_modules,
         ):
-            observed = module._execute_requests(requests, data_dir)
+            for ordered in (requests, list(reversed(requests))):
+                observed_orders.append(
+                    module._execute_requests(ordered, data_dir)
+                )
 
-        self.assertEqual(anchor_loads, 1)
-        self.assertEqual(
-            [row["request_id"] for row in observed],
-            ["maximum", "earlier"],
-        )
-        self.assertEqual(
-            {
-                row["feature_date"]: row["predicted_direction"]
-                for row in observed
-            },
-            expected,
-        )
+        self.assertEqual(anchor_loads, 2)
+        for ordered, observed in zip(
+            (requests, list(reversed(requests))),
+            observed_orders,
+            strict=True,
+        ):
+            self.assertEqual(
+                [row["request_id"] for row in observed],
+                [request["request_id"] for request in ordered],
+            )
+            self.assertEqual(
+                {
+                    row["feature_date"]: row["predicted_direction"]
+                    for row in observed
+                },
+                expected,
+            )
         self.assertFalse(
             any(
                 path.name.startswith("embedded-7y-")
@@ -919,7 +954,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         )
         self.assertTrue(all(list(row) == list(RESULT_FIELDS) for row in rows))
 
-    def test_backtest_supports_100_unique_cutoffs_with_one_history_replay(
+    def test_backtest_supports_100_unique_cutoffs_with_one_runtime_load(
         self,
     ) -> None:
         runner = self.write_cli_test_runner()
@@ -1151,7 +1186,7 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             "weekly-cutoff": [{**valid, "weekly_cutoff_key": "202528"}],
             "monthly-cutoff": [{**valid, "monthly_cutoff_key": "202506"}],
         }
-        with patch.object(module, "_infer_history") as infer:
+        with patch.object(module, "_anchor_runtime") as infer:
             for name, requests in cases.items():
                 with self.subTest(name=name):
                     with self.assertRaises((TypeError, ValueError)):
@@ -1197,10 +1232,12 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         monthly = pd.read_csv(data_root / "monthly_output.csv")
         self.assertEqual(pd.to_datetime(daily["date"]).max(), CUTOFF)
         self.assertEqual(pd.to_datetime(calendar["rdate"]).max(), CUTOFF)
-        self.assertEqual(weekly["week_id"].tolist(), [202529])
+        self.assertEqual(weekly["week_id"].tolist(), [202528, 202529])
         self.assertEqual(monthly["month_id"].tolist(), [202506, 202507])
 
-    def test_materialization_trims_only_causal_nonfinite_prefix(self) -> None:
+    def test_materialization_preserves_anchor_history_and_derives_finite_suffix(
+        self,
+    ) -> None:
         module = self.load_generated_module()
         source = self.tempdir / "finite-suffix"
         self.write_minimal_platform_fixture(source)
@@ -1245,16 +1282,19 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             self.tempdir / "finite-suffix-request",
         )
 
-        retained = pd.read_csv(protected / "data" / "daily_output.csv")
-        self.assertEqual(len(retained), finite_count)
-        self.assertEqual(pd.Timestamp(retained["date"].iloc[0]), dates[2])
-        self.assertEqual(pd.Timestamp(retained["date"].iloc[-1]), CUTOFF)
-        retained_yields = retained.loc[
+        anchor_daily = pd.read_csv(protected / "data" / "daily_output.csv")
+        self.assertEqual(len(anchor_daily), finite_count + 2)
+        self.assertEqual(pd.Timestamp(anchor_daily["date"].iloc[0]), dates[0])
+        self.assertEqual(pd.Timestamp(anchor_daily["date"].iloc[-1]), CUTOFF)
+        direct_daily = module._finite_daily_suffix(anchor_daily)
+        self.assertEqual(len(direct_daily), finite_count)
+        self.assertEqual(pd.Timestamp(direct_daily["date"].iloc[0]), dates[2])
+        direct_yields = direct_daily.loc[
             :,
             ("TB5YWI0C", "TB7YWI0C", "TB0YWI0C"),
         ].apply(pd.to_numeric, errors="coerce")
         self.assertTrue(
-            retained_yields.apply(
+            direct_yields.apply(
                 lambda column: column.map(math.isfinite)
             ).all(axis=None)
         )
