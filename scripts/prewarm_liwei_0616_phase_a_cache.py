@@ -7,10 +7,19 @@ from typing import Any, Callable
 from scheduler.scheme_runner import run_scheme
 
 
+# 每个 liwei_0616 cache family 取一个代表 adapter。预热按 family 而不是按 tenor
+# 组织：同一 tenor 下可以有多个互不共享 Phase-A cache 的 family，漏掉任何一个都会
+# 让该 family 只能在日频窗口内冷重建。
+# 该清单必须覆盖 `schemes/*/inference.py` 中出现的全部 CACHE_FAMILY，
+# 由 tests.test_prewarm_liwei_0616_phase_a_cache 静态守护。
 PREWARM_SCHEMES = (
-    "liwei_0616_cons_sda_k3_div_k10",
-    "liwei_0616_7y01_cons_say_k3_div_k10",
-    "liwei_0616_10y02_cons_say_k3_div_k5",
+    "liwei_0616_cons_sda_k3_div_k10",           # liwei_0616_5y_v31
+    "liwei_0616_5y_auc_static_all_k3_div_k10",  # liwei_0616_5y_allk10_auc_static_v1
+    "liwei_0616_5y_auc_yearly_all_k3_div_k10",  # liwei_0616_5y_allk10_auc_yearly_v1
+    "liwei_0616_5y_ic_yearly_all_k3_div_k10",   # liwei_0616_5y_allk10_ic_yearly_v1
+    "liwei_0616_7y01_cons_say_k3_div_k10",      # liwei_0616_7y01_v31
+    "liwei_0616_7y03_cons_all_k3_div_k8",       # liwei_0616_7y03_v31
+    "liwei_0616_10y02_cons_say_k3_div_k5",      # liwei_0616_10y_v61
 )
 
 
@@ -19,7 +28,7 @@ def prewarm(
     *,
     run_scheme_fn: Callable[[str, str], list[dict[str, Any]]] = run_scheme,
 ) -> list[dict[str, Any]]:
-    """运行三个代表 adapter 预热 5Y/7Y/10Y baseline cache，不写业务数据库。"""
+    """逐 cache family 运行代表 adapter 预热 baseline cache，不写业务数据库。"""
     results: list[dict[str, Any]] = []
     for scheme_id in PREWARM_SCHEMES:
         records = run_scheme_fn(scheme_id, predict_date)
