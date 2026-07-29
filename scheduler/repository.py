@@ -8433,8 +8433,13 @@ def complete_gray_gap_run(
     if not math.isfinite(normalized_duration) or normalized_duration < 0:
         raise ValueError("duration_sec must be a finite non-negative number")
     execution_dates = _gray_gap_execution_dates(normalized_targets)
+    if normalized_run_date != execution_dates["predict_date"]:
+        raise ValueError(
+            "run_date must equal gray gap execution predict_date"
+        )
     normalized_authority = _normalize_gray_gap_source_authority(
         source_authority,
+        runtime_type=str(cfg.runtime_type),
         feature_date=execution_dates["feature_date"],
         predict_date=execution_dates["predict_date"],
     )
@@ -8563,6 +8568,10 @@ _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
 _GRAY_GAP_VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
 )
+_GRAY_GAP_FIXED_ATOMIC_TARGETS = {
+    "t1_daily": frozenset({"5Y", "10Y"}),
+    "t5_daily": frozenset({"3Y", "5Y", "7Y", "10Y"}),
+}
 
 
 def _require_lower_sha256(value: object, field: str) -> str:
@@ -8637,6 +8646,15 @@ def _normalize_gray_gap_target_keys(
     ]
     if len(cfg_tenors) != len(set(cfg_tenors)):
         raise ValueError("cfg.tenors must not contain duplicates")
+    fixed_targets = _GRAY_GAP_FIXED_ATOMIC_TARGETS.get(base_scheme_id)
+    if (
+        fixed_targets is not None
+        and frozenset(cfg_tenors) != fixed_targets
+    ):
+        raise RuntimeError(
+            f"{base_scheme_id} fixed atomic target multiset mismatch: "
+            f"expected={sorted(fixed_targets)}, actual={sorted(cfg_tenors)}"
+        )
 
     normalized: list[dict[str, object]] = []
     for index, raw in enumerate(expected_target_keys):
@@ -8762,6 +8780,7 @@ def _gray_gap_execution_dates(
 def _normalize_gray_gap_source_authority(
     source_authority: Mapping[str, object],
     *,
+    runtime_type: str,
     feature_date: str,
     predict_date: str,
 ) -> dict[str, object]:
@@ -8774,6 +8793,15 @@ def _normalize_gray_gap_source_authority(
         expected_fields = _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS
     else:
         raise ValueError("source_authority authority_type is invalid")
+    expected_authority_type = {
+        "native_adapter": "native_current_snapshot_artifact",
+        "blackbox_v2": "databridge_current_generation",
+    }.get(runtime_type)
+    if authority_type != expected_authority_type:
+        raise ValueError(
+            "source_authority authority_type does not match cfg "
+            f"runtime_type={runtime_type}"
+        )
     if set(source_authority) != expected_fields:
         raise ValueError(
             "source_authority must contain exact fields "

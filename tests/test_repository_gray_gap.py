@@ -28,11 +28,12 @@ def _cfg(
     horizon: int,
     task_type: str,
     tenors: tuple[str, ...],
+    runtime_type: str = "native_adapter",
 ) -> SimpleNamespace:
     return SimpleNamespace(
         scheme_id=scheme_id,
         scheme_version=f"{scheme_id}-version",
-        runtime_type="native_adapter",
+        runtime_type=runtime_type,
         status="active",
         version_status="active",
         frequency="daily",
@@ -223,6 +224,7 @@ class GrayGapRepositoryTests(unittest.TestCase):
         records: list[PredictionRecord] | None = None,
         target_keys: list[dict[str, object]] | None = None,
         source_authority: dict[str, str] | None = None,
+        run_date: str = PREDICT_DATE,
     ) -> int:
         record_list = (
             _records(cfg, target_date=target_date)
@@ -242,7 +244,7 @@ class GrayGapRepositoryTests(unittest.TestCase):
             plan_sha256=PLAN_SHA256,
             source_authority=source_authority or _native_authority(),
             records_returned=len(record_list),
-            run_date=PREDICT_DATE,
+            run_date=run_date,
             duration_sec=1.25,
         )
 
@@ -326,12 +328,13 @@ class GrayGapRepositoryTests(unittest.TestCase):
         self.assertEqual(self._rows("t_scheme_run_log"), [])
         self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
 
-    def test_t1_two_of_two_databridge_authority(self) -> None:
+    def test_blackbox_two_of_two_databridge_authority(self) -> None:
         cfg = _cfg(
-            "t1_daily",
+            "demo_blackbox",
             horizon=1,
             task_type="T+1",
             tenors=TENORS_T1,
+            runtime_type="blackbox_v2",
         )
         self._seed(cfg, run_id=103, target_date=TARGET_DATE_T1)
 
@@ -358,6 +361,128 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 _databridge_authority()["refresh_date"],
             )
             self.assertEqual(extra["source_cutoff_date"], FEATURE_DATE)
+
+    def test_t1_two_of_two_native_authority(self) -> None:
+        cfg = _cfg(
+            "t1_daily",
+            horizon=1,
+            task_type="T+1",
+            tenors=TENORS_T1,
+        )
+        self._seed(cfg, run_id=113, target_date=TARGET_DATE_T1)
+
+        self.assertEqual(
+            self._complete(
+                cfg,
+                run_id=113,
+                target_date=TARGET_DATE_T1,
+            ),
+            2,
+        )
+
+    def test_authority_type_must_match_runtime_type(self) -> None:
+        cases = (
+            (
+                _cfg(
+                    "native_trial",
+                    horizon=1,
+                    task_type="T+1",
+                    tenors=("5Y",),
+                ),
+                _databridge_authority(),
+            ),
+            (
+                _cfg(
+                    "blackbox_trial",
+                    horizon=1,
+                    task_type="T+1",
+                    tenors=("5Y",),
+                    runtime_type="blackbox_v2",
+                ),
+                _native_authority(),
+            ),
+        )
+        for run_id, (cfg, authority) in enumerate(cases, start=114):
+            with self.subTest(runtime_type=cfg.runtime_type):
+                self._seed(
+                    cfg,
+                    run_id=run_id,
+                    target_date=TARGET_DATE_T1,
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "authority_type.*runtime_type",
+                ):
+                    self._complete(
+                        cfg,
+                        run_id=run_id,
+                        target_date=TARGET_DATE_T1,
+                        source_authority=authority,
+                    )
+        self.assertEqual(self._rows("t_scheme_predictions"), [])
+        self.assertEqual(self._rows("t_scheme_run_log"), [])
+
+    def test_builtin_multi_target_groups_cannot_be_narrowed_by_cfg(self) -> None:
+        cases = (
+            _cfg(
+                "t5_daily",
+                horizon=5,
+                task_type="T+5",
+                tenors=("3Y", "5Y"),
+            ),
+            _cfg(
+                "t1_daily",
+                horizon=1,
+                task_type="T+1",
+                tenors=("5Y",),
+            ),
+        )
+        for run_id, cfg in enumerate(cases, start=116):
+            target_date = (
+                TARGET_DATE_T5 if cfg.scheme_id == "t5_daily"
+                else TARGET_DATE_T1
+            )
+            with self.subTest(scheme_id=cfg.scheme_id):
+                self._seed(
+                    cfg,
+                    run_id=run_id,
+                    target_date=target_date,
+                )
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "fixed atomic target multiset",
+                ):
+                    self._complete(
+                        cfg,
+                        run_id=run_id,
+                        target_date=target_date,
+                    )
+        self.assertEqual(self._rows("t_scheme_predictions"), [])
+        self.assertEqual(self._rows("t_scheme_run_log"), [])
+
+    def test_run_date_must_equal_execution_predict_date(self) -> None:
+        cfg = _cfg(
+            "native_trial",
+            horizon=1,
+            task_type="T+1",
+            tenors=("5Y",),
+        )
+        self._seed(cfg, run_id=118, target_date=TARGET_DATE_T1)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "run_date.*predict_date",
+        ):
+            self._complete(
+                cfg,
+                run_id=118,
+                target_date=TARGET_DATE_T1,
+                run_date="2026-06-03",
+            )
+
+        self.assertEqual(self._rows("t_scheme_predictions"), [])
+        self.assertEqual(self._rows("t_scheme_run_log"), [])
+        self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
 
     def test_duplicate_extra_and_wrong_dates_write_nothing(self) -> None:
         cases: list[tuple[str, list[PredictionRecord]]] = []
