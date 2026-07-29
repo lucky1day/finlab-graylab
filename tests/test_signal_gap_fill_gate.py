@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -10,7 +11,10 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-from harness.authorization import issue_signal_gap_fill_token
+from harness.authorization import (
+    issue_signal_gap_fill_token,
+    parse_token,
+)
 from harness.gates.signal_gap_fill_gate import run_signal_gap_fill
 from harness.signal_gap_plan import canonical_plan_sha256
 from shared.models import PredictionRecord
@@ -449,6 +453,48 @@ class SignalGapFillGateTests(unittest.TestCase):
         self.assertEqual(repository.completed, [])
         self.assertEqual(len(repository.failed), 1)
 
+    def test_token_expiring_during_algorithm_is_rejected_after_postflight(
+        self,
+    ) -> None:
+        auth = parse_token(self.token)
+        issued_at = datetime.fromisoformat(str(auth.issued_at))
+        expires_at = datetime.fromisoformat(str(auth.expires_at))
+        before_expiry = issued_at + timedelta(seconds=1)
+        after_expiry = expires_at + timedelta(seconds=1)
+        repository = _Repository()
+
+        with patch(
+            "harness.authorization.datetime",
+            wraps=datetime,
+        ) as datetime_mock:
+            datetime_mock.now.side_effect = [
+                before_expiry,
+                before_expiry,
+                after_expiry,
+                after_expiry,
+            ]
+            report = run_signal_gap_fill(
+                plan_path=self.plan_path,
+                authorizations=(self.token,),
+                project_root=self.root,
+                engine_factory=lambda: self.engine,
+                databridge_config=Mock(),
+                planner=Mock(return_value=self.frozen),
+                config_loader=Mock(return_value=self.config),
+                algorithm_runner=Mock(return_value=self._records()),
+                repository_module=repository,
+                native_generation_opener=Mock(
+                    return_value=SimpleNamespace(dispose=Mock())
+                ),
+            )
+
+        self.assertEqual(
+            report["failure_code"],
+            "AUTHORIZATION_REVALIDATION_FAILED",
+        )
+        self.assertEqual(repository.completed, [])
+        self.assertEqual(len(repository.failed), 1)
+
     def test_postflight_read_error_does_not_leave_running_run(self) -> None:
         repository = _Repository()
 
@@ -482,7 +528,8 @@ class SignalGapFillGateTests(unittest.TestCase):
         from harness.cli import _build_parser
         from harness.registry import AUTO_SEQUENCE
 
-        args = _build_parser().parse_args(
+        parser = _build_parser()
+        args = parser.parse_args(
             [
                 "signal-gap-fill",
                 "--plan",
@@ -495,7 +542,173 @@ class SignalGapFillGateTests(unittest.TestCase):
         self.assertEqual(args.command, "signal-gap-fill")
         self.assertFalse(hasattr(args, "persist"))
         self.assertFalse(hasattr(args, "prediction_phase"))
+        self.assertFalse(hasattr(args, "report_dir"))
         self.assertNotIn("signal-gap-fill", AUTO_SEQUENCE)
+        with (
+            patch("sys.stderr"),
+            self.assertRaises(SystemExit),
+        ):
+            parser.parse_args(
+                [
+                    "signal-gap-fill",
+                    "--plan",
+                    str(self.plan_path),
+                    "--authorize",
+                    self.token,
+                    "--report-dir",
+                    str(self.root / "unused"),
+                ]
+            )
+
+    def test_singleton_lock_blocks_second_fill_before_engine_run_or_algorithm(
+        self,
+    ) -> None:
+        from scheduler.daily_coordinator import OccurrenceFileLock
+
+        lock_root = self.root / "locks"
+        lock_root.mkdir(mode=0o700)
+        lock_root.chmod(0o700)
+        lock_path = (lock_root / "signal-gap-fill.lock").resolve()
+        owner = OccurrenceFileLock(lock_path).acquire()
+        engine_factory = Mock(return_value=self.engine)
+        algorithm_runner = Mock()
+        repository = _Repository()
+        try:
+            report = run_signal_gap_fill(
+                plan_path=self.plan_path,
+                authorizations=(self.token,),
+                project_root=self.root,
+                engine_factory=engine_factory,
+                databridge_config=Mock(),
+                planner=Mock(return_value=self.frozen),
+                config_loader=Mock(return_value=self.config),
+                algorithm_runner=algorithm_runner,
+                repository_module=repository,
+                singleton_lock_factory=(
+                    lambda: OccurrenceFileLock(lock_path)
+                ),
+            )
+        finally:
+            owner.release()
+
+        self.assertEqual(report["status"], "BLOCKED")
+        self.assertEqual(
+            report["failure_code"],
+            "SIGNAL_GAP_FILL_ALREADY_RUNNING",
+        )
+        engine_factory.assert_not_called()
+        algorithm_runner.assert_not_called()
+        self.assertEqual(repository.created, [])
+
+    def test_singleton_lock_is_held_through_algorithm_execution(self) -> None:
+        from scheduler.daily_coordinator import (
+            OccurrenceFileLock,
+            OccurrenceLockUnavailable,
+        )
+
+        lock_root = self.root / "locks"
+        lock_root.mkdir(mode=0o700)
+        lock_root.chmod(0o700)
+        lock_path = (lock_root / "signal-gap-fill.lock").resolve()
+
+        def runner(*_args, **_kwargs):
+            contender = OccurrenceFileLock(lock_path)
+            with self.assertRaises(OccurrenceLockUnavailable):
+                contender.acquire()
+            return self._records()
+
+        report = run_signal_gap_fill(
+            plan_path=self.plan_path,
+            authorizations=(self.token,),
+            project_root=self.root,
+            engine_factory=lambda: self.engine,
+            databridge_config=Mock(),
+            planner=Mock(return_value=self.frozen),
+            config_loader=Mock(return_value=self.config),
+            algorithm_runner=runner,
+            repository_module=_Repository(),
+            native_generation_opener=Mock(
+                return_value=SimpleNamespace(dispose=Mock())
+            ),
+            singleton_lock_factory=lambda: OccurrenceFileLock(lock_path),
+        )
+
+        self.assertEqual(report["status"], "PASSED")
+
+    def test_default_singleton_lock_uses_private_owned_symlink_free_root(
+        self,
+    ) -> None:
+        from harness.gates.signal_gap_fill_gate import (
+            _signal_gap_fill_singleton_lock,
+        )
+
+        with patch(
+            "harness.gates.signal_gap_fill_gate."
+            "resolve_daily_runtime_root",
+            return_value=self.root.resolve(),
+        ):
+            lock = _signal_gap_fill_singleton_lock()
+        try:
+            lock.acquire()
+            root = lock.path.parent
+            self.assertEqual(
+                root,
+                self.root.resolve() / "signal-gap-fill-locks",
+            )
+            self.assertEqual(root.stat().st_uid, os.getuid())
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(lock.path.stat().st_uid, os.getuid())
+            self.assertEqual(lock.path.stat().st_mode & 0o777, 0o600)
+            self.assertFalse(root.is_symlink())
+            self.assertFalse(lock.path.is_symlink())
+            self.assertEqual(lock.path, lock.path.resolve())
+        finally:
+            lock.release()
+
+        real_root = self.root / "real-runtime-root"
+        real_root.mkdir(mode=0o700)
+        symlink_root = self.root / "symlink-runtime-root"
+        symlink_root.symlink_to(real_root, target_is_directory=True)
+        with (
+            patch(
+                "harness.gates.signal_gap_fill_gate."
+                "resolve_daily_runtime_root",
+                return_value=symlink_root,
+            ),
+            self.assertRaisesRegex(ValueError, "symlink-free"),
+        ):
+            _signal_gap_fill_singleton_lock()
+
+    def test_repository_resolution_error_still_disposes_engine(self) -> None:
+        singleton_lock = SimpleNamespace(
+            acquire=Mock(),
+            release=Mock(),
+        )
+
+        with (
+            patch(
+                "harness.gates.signal_gap_fill_gate._repository_module",
+                side_effect=RuntimeError("repository contract missing"),
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "repository contract missing",
+            ),
+        ):
+            run_signal_gap_fill(
+                plan_path=self.plan_path,
+                authorizations=(self.token,),
+                project_root=self.root,
+                engine_factory=lambda: self.engine,
+                databridge_config=Mock(),
+                planner=Mock(return_value=self.frozen),
+                config_loader=Mock(return_value=self.config),
+                algorithm_runner=Mock(),
+                singleton_lock_factory=lambda: singleton_lock,
+            )
+
+        self.engine.dispose.assert_called_once_with()
+        singleton_lock.release.assert_called_once_with()
 
     def test_blackbox_refresh_not_after_predict_date_is_rejected(self) -> None:
         action = {

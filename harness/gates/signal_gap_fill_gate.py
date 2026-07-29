@@ -26,12 +26,20 @@ from harness.signal_gap_plan import (
     canonical_plan_sha256,
     plan_signal_gaps,
 )
+from scheduler.daily_coordinator import (
+    OccurrenceFileLock,
+    OccurrenceLockUnavailable,
+)
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
     run_configured_scheme,
 )
-from shared.data_bridge.refresh import DataBridgeRefreshConfig
+from shared.daily_coordinator_mode import resolve_daily_runtime_root
+from shared.data_bridge.refresh import (
+    DataBridgeRefreshConfig,
+    _ensure_private_directory,
+)
 from shared.input_artifacts import open_native_generation
 from shared.models import PredictionRecord
 
@@ -159,6 +167,7 @@ def run_signal_gap_fill(
     native_generation_opener: Callable[..., Any] = (
         open_native_generation
     ),
+    singleton_lock_factory: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """以单一协调写入者执行冻结计划中的原子算法组。"""
     frozen = _load_frozen_plan(plan_path)
@@ -186,9 +195,31 @@ def run_signal_gap_fill(
             groups=groups,
             failure_code="ENGINE_FACTORY_REQUIRED",
         )
-    engine = engine_factory()
-    repository = repository_module or _repository_module()
     try:
+        singleton_lock = (
+            singleton_lock_factory
+            or _signal_gap_fill_singleton_lock
+        )()
+        singleton_lock.acquire()
+    except OccurrenceLockUnavailable:
+        return _report(
+            "BLOCKED",
+            frozen,
+            groups=groups,
+            failure_code="SIGNAL_GAP_FILL_ALREADY_RUNNING",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _report(
+            "BLOCKED",
+            frozen,
+            groups=groups,
+            failure_code="SIGNAL_GAP_FILL_LOCK_INVALID",
+            errors=[f"{type(exc).__name__}: {exc}"],
+        )
+    engine = None
+    try:
+        engine = engine_factory()
+        repository = repository_module or _repository_module()
         current = planner(
             engine,
             start_date=frozen["start_date"],
@@ -327,6 +358,28 @@ def run_signal_gap_fill(
                 groups=groups,
                 failure_code="PLAN_AUTHORITY_DRIFT_AFTER_EXECUTION",
             )
+        auth_by_group, auth_errors = (
+            _verify_group_authorizations(
+                groups,
+                authorizations,
+                plan_sha256=str(frozen["plan_sha256"]),
+                project_root=project_root,
+            )
+        )
+        if auth_errors:
+            _fail_executions(
+                executions,
+                engine=engine,
+                repository=repository,
+                default_error="AUTHORIZATION_REVALIDATION_FAILED",
+            )
+            return _report(
+                "FAILED",
+                frozen,
+                groups=groups,
+                failure_code="AUTHORIZATION_REVALIDATION_FAILED",
+                errors=auth_errors,
+            )
         try:
             for item in executions:
                 auth = auth_by_group[item.group.identity]
@@ -414,8 +467,26 @@ def run_signal_gap_fill(
             completed=completed,
         )
     finally:
-        if hasattr(engine, "dispose"):
-            engine.dispose()
+        try:
+            if engine is not None and hasattr(engine, "dispose"):
+                engine.dispose()
+        finally:
+            singleton_lock.release()
+
+
+def _signal_gap_fill_singleton_lock() -> OccurrenceFileLock:
+    """返回机器级 signal-gap-fill 非阻塞 owner 锁。"""
+    lock_root = (
+        resolve_daily_runtime_root()
+        / "signal-gap-fill-locks"
+    )
+    _ensure_private_directory(
+        lock_root,
+        label="signal-gap-fill lock root",
+    )
+    return OccurrenceFileLock(
+        lock_root / "signal-gap-fill.lock"
+    )
 
 
 def _load_frozen_plan(path: Path) -> dict[str, Any]:

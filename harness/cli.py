@@ -250,13 +250,13 @@ def main(argv: list[str] | None = None) -> int:
             else 0
         )
     if args.command == "signal-gap-fill":
+        project_root = args.project_root.resolve()
         ctx = GateContext(
             scheme_id="signal-gap-fill",
             predict_date="signal-gap-fill",
-            project_root=args.project_root.resolve(),
+            project_root=project_root,
             report_dir=(
-                args.report_dir
-                or args.project_root.resolve()
+                project_root
                 / "reports"
                 / "harness"
                 / "signal-gap-fill"
@@ -398,7 +398,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=PROJECT_ROOT,
     )
-    fill_parser.add_argument("--report-dir", type=Path, default=None)
     fill_parser.add_argument("--algo-env", default="forecast_env")
     fill_parser.add_argument("--timeout-sec", type=int, default=600)
 
