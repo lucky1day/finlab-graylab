@@ -831,7 +831,7 @@ git commit -m "feat: satisfy embedded 7y blackbox cli contract"
   - `build_all(source_root: Path, output_root: Path) -> tuple[Path, Path]`
   - `verify_structure(delivery: Path) -> None`
   - `verify_independence(delivery: Path, fixture_root: Path) -> None`
-  - `verify_parity(delivery: Path, candidate_id: str, audit_root: Path) -> dict[str, float]`
+  - `verify_parity(delivery: Path, candidate_id: str, audit_root: Path, data_dir: Path, *, jobs: int = 1) -> dict[str, float]`
 - Consumes: Tasks 1–7
 
 - [ ] **Step 1: Write failing orchestration tests**
@@ -886,7 +886,10 @@ Read:
 - `/Users/macstudio0/Documents/liwei/outputs/gray_lab_t1_7y_cross_family_consensus_20260726/sim_predictions.csv`
 - `/Users/macstudio0/Documents/liwei/outputs/gray_lab_t1_7y_cross_family_consensus_20260726/real_predictions.csv`
 
-Filter by the scheme's `candidate_id` and `config_hash`, sort by phase and feature date, and require 320 rows total. Run the delivery at every feature date and assert exact `action` equality. Recompute:
+Filter by the scheme's `candidate_id` and `config_hash`, sort by phase and
+feature date, and require 320 rows total. Run the delivery at every feature
+date and assert exact equality between `predicted_direction` and the audited
+`action`. Recompute:
 
 ```python
 traded = actual_action != 0
@@ -895,6 +898,16 @@ trade_rate = traded.mean()
 ```
 
 Assert the frozen SIM, REAL, and combined values exactly within `1e-12`.
+
+Construct each strict SOP Request from the audited `feature_date` and
+`target_date`, using `predict_date = feature_date`,
+`daily_cutoff_key = feature_date`, the authoritative `weekly_cutoff_key` from
+`data_dir/api_wind_date.csv`, and `monthly_cutoff_key = YYYYMM(feature_date)`.
+Split invocations into batches of at most 100 and allow `jobs` independent
+subprocesses for acceptance-time parallelism. The verifier's unit test must
+stub only the subprocess execution boundary to prove request construction,
+partitioning, action comparison, and metric rejection without running 320
+native replays; Task 9 runs the real delivery over all 320 dates.
 
 - [ ] **Step 6: Run tests**
 
