@@ -4,135 +4,134 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-07-29
+**最后核验日期**：2026-07-30
 
-本文只保留当前已验证结论。较早的逐日状态、数据库快照和整改过程已冻结到[历史状态记录](records/status/README.md)；未完成工作的排序查看[TODO](TODO.md)。
+本文只保留当前已验证结论。较早的逐日状态、数据库快照、旧规模与整改过程已冻结
+到[历史状态记录](records/status/README.md)；未完成工作的排序查看[TODO](TODO.md)。
 
 ## 当前政策
 
-- Native V1 只维护版本化政策清单中的既有身份，不接受新方案或算法升级。
-- 新算法、新方案 ID、新目标、新任务和替代版本一律通过 Blackbox V2 两文件交付。
-- Blackbox V2 自动 Gate 通过不等于生产授权；每个方案仍需独立完成生产准备核验和专项授权，且授权不得外推。
+- Native V1 只维护版本化政策清单中的既有身份；新增算法、方案 ID、目标、任务和
+  替代版本一律通过 Blackbox V2 两文件交付。
+- Blackbox V2 自动 Gate、active Registry 或 gray/formal 标签都不自动授予生产
+  权限；每个 identity/version/runtime 仍须独立生产准备核验和专项授权。
+- [日频信号 SLA](architecture/DAILY_SIGNAL_SLA.md)是已经批准、待切换的目标
+  合同，不是当前已安装生产状态的证明。历史记录中的旧规模和实验不再定义目标
+  门禁，但其中冻结的生产现场事实仍须保留到新证据取代。
 
-## 平台状态
+## 已批准的日频目标合同
 
-| 项目 | 当前结论 |
+| 项目 | 切换后的目标 |
 |---|---|
-| Native V1 | 保持原 Registry、scheduler、数据库和历史结果，只做存量维护 |
-| Blackbox V2 技术入库 | Intake、DataBridge 三文件父快照、显式平台输入、七个 Gate、零写库 check-only、预测和 no-persist 回测已形成稳定路径 |
-| Blackbox V2 生产路径 | 一个真实周频方案、四个日频方案和本批五个月频方案已完成各自专项生产灰度；尚未形成面向任意新方案的通用生产授权 |
-| 日频 08:00 保障 | 25 execution / 29 target（17 Native + 8 V2）功能 rehearsal 已完成 29/29；首次 schema3 冷构建总耗时 95.8 分钟、投影最后可见 08:02:44，故容量与 07:55 门禁仍未通过，production-bound admission 与生产切换尚未执行 |
-| 平台总体评级 | `PRODUCTION_PATH_READY`，尚未取得覆盖所有任务和依赖的 `PRODUCTION_READY` |
+| owner | 1 个 coordinator；每交易日 1 个 `daily-signals` occurrence |
+| 冻结全集 | 25 base execution：17 Native + 8 Blackbox V2 |
+| 资源上限 | Native 最大并发 2；V2 最大并发 2 |
+| 完成口径 | 29/29 signal target receipt；少一个即不完整 |
+| cache | warm-cache 日常生产；Liwei 使用 7 个 schema 3 family |
+| phase | 历史漏跑只写 `gray_live`；只有未来真实 ledger occurrence 可写 `scheduled_live` |
+| 控制面 | machine-global epoch、单实例锁、run fence；ledger 下 v2-preflight 保持未加载 |
 
-## 周度历史与月度 Actual 对账状态
+`deploy/daily_scheduler_policy_v2.json` 是待切换 25/29 精确身份和并发上限的目标
+机器合同。它存在于仓库不等于 production rollout、migration、cache bootstrap、
+epoch cutover 或真实 occurrence 已完成。目标合同直接校验冻结 policy、输入、cache
+和执行结果的确定性；旧 capacity admission 不得成为目标生产门禁。
 
-- 开发分支已包含 `d81c512`、`91d3779`、`7842955` 和 `3b5335a`：Actual 默认范围以 active Registry 为准；因子实验室所有前端路径统一只展示 `predict_date >= 2025-01-01`。展示门禁本身不删除数据库事实，仍保留的旧行可通过独立审计 API 查询；经受控核验删除的 obsolete runs 见下文。
-- 相关回归为 `183 passed / 71 subtests`，最终全量为 `2930 passed / 26 skipped / 1008 subtests`；前端资源版本为 `20260727b`。Python 后端进程尚未在授权维护窗口重启。
-- 月度 updater 已按 `1Y/3Y/5Y/7Y/10Y` 执行两次；2025+ 的 116 条事实摘要两次一致，8 个 active 月度方案继续为 `19 signal / 18 valid`。
-- 已删除早期 100 条技术 Gate run `166–169`、非 canonical run `170–173`，以及跨过 gray 边界且已被替代的旧全量 run `174–177`。当前四个 1Y/T+5 方案分别只保留一条 canonical run `178–181`；每轮删除前后 API/dashboard canonical 投影摘要均一致。
-- 三个错误复用周度单点算法的 point-backed 周平均身份已彻底删除：代码侧只剩 40 个 active execution /44 个 target，数据库 Registry 同样为 40/44 且无 paused。受控事务删除了 3 个 Registry、12 个 version、15 个 run、14 个 live prediction、6 个 backtest run、422 个 backtest prediction、23 个 harness run 及其 136 个 Gate result；删除前后 `/api/schemes` 和 dashboard 投影摘要一致。
-- `weekly_10y_lgbm_point_v1` 已生成合规 run `191`（72 条历史、17 个月度指标），并补齐 7 条缺失 gray，加原有 7/24 共为 `80/80`；旧 run `165` 在确认新历史+live 完整覆盖后已受控删除。
-- DataBridge 已更新至合法的 `refresh_date=2026-07-28`；该 Blackbox 的 7/31 缺口现归类为 `GRAY_LIVE_GAP`，当前仍为零写入，后续仅在业务阶段 6（实施计划 Task 7）通过受控 Gate 补齐，禁止旧 generation fallback。
-- `weekly_10y_d_overlay_0529` 的首个回补 run `1407` 因源 `week_id=202625` 无交易日而 fail-closed，零 prediction，仍为 `77/77`；后续日期按规则停止。
-- `7 个周度候选全部 81/80` 尚未达成；本轮未修改算法、scheduler cron、BondProjectPro、rollout 或 admission，剩余步骤见 [TODO](TODO.md)。
+## 当前生产事实
 
-## 本轮 10Y T+5 入库状态
+| 项目 | 最后核验事实 |
+|---|---|
+| schema | production 仍为 migration 017；migration 018 尚未应用 |
+| rollout | `rollout=legacy`；ledger 尚未启用 |
+| 服务 | backend 以 legacy mode 提供 HTTP 200；scheduler 与 v2-preflight 均未加载 |
+| cache | production schema 3 cache 尚未 bootstrap；隔离 cache 已清理，不能充当生产 cache |
+| 控制面 | machine-global epoch 与 ledger cutover 尚未执行；没有 production run fence 生效证据 |
+| 过渡阻塞 | `scheduler.daily_runtime` 与 epoch operator 仍强制旧 capacity admission/cache qualification；`deploy/daily_capacity_admission_v2.json` 当前为 `BLOCKED` |
+| 日频现场 | 2026-07-28 为 12/29，2026-07-29 为 0/29 |
+| 历史补缺 | 50 条缺口尚未写入 |
+| 2026-07-30 | 尚无真实 ledger occurrence、29/29 receipt 或 `scheduled_live` provenance 证据 |
 
-- `ten_y_t5_maj3_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_static_v1`、`ten_y_t5_maj4_k3_ic_yearly_v1` 和 `ten_y_t5_say_k5_sharpe_static_v1` 的 exact version 与 composite Registry 均为 `active`；每方案各有 1 个成功持久化回测 run、333 条历史 prediction、17 个月度指标和 39 条手工 `gray_live`。
-- 四方案使用 DataBridge generation `full-20260724-062251-4977e502dadf` 与 runtime snapshot `snapshot-46ff3231de2c4a080c46ba56`，灰度日期范围为 `predict_date=2026-05-26..2026-07-20`、`feature_date=2026-05-25..2026-07-17`、`target_date=2026-06-01..2026-07-24`；本批共 156 条 `gray_live`，与历史无重叠。
-- `/api/schemes` 已返回四方案，前端 10Y/T+5 格子共有 8 个候选；每个新方案由 333 条 backtest 与 39 条 `gray_live` 组成，合计 372 条前端展示记录。
-- 本批 `scheduled_live=0`，三层 ledger 为 `0/0/0`；rollout=`legacy`、admission=`BLOCKED`，没有启动或修改 scheduler。手工灰度入库完成不授予自动调度或正式日批准入。
-- 四方案代码已从授权提交按精确 bytes 重基到当前开发基线；四个
-  `scheme_id + scheme_version` 均在版本化 scheduler admission 中冻结为
-  `gray`。代码候选已将daily policy、capacity contract和DailyRuntime统一为
-  25 item/29 target；历史21 item/25 target recorder仅为旧证据。生产仍为
-  legacy/BLOCKED，四方案尚未进入真实ledger occurrence。
-- 四个 active 配置中的 `schedule_cron` 只是交付元数据，不构成 scheduler
-  授权，也不授予 legacy scheduler 执行权限。
-- legacy `run_all_prediction_jobs` / `--run-once predictions` 仍是绕过
-  admission 的手工聚合入口，在 operator fence 完成前禁止用于全量运行；
-  本次同步未调用该入口，受控手工灰度继续只走 harness。
-- 自动 scheduler、`scheduled_live` 和旧 generation fallback 仍禁止。
-- 四个缺少 `description` 的不可变既有交付均为 `TECHNICAL_GATES_PASSED_DESCRIPTION_WAIVED`；exact version、摘要和来源证据见[10Y T+5 四方案手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
+因此不能声称 ledger、production schema 3 cache、migration 018、epoch 或 run fence
+已经上线。后续代码 PR 必须先移除旧 admission binding/revalidation、epoch
+operator admission probe 和 admission cache qualification，并以目标合同的直接
+确定性校验替代；相关测试通过并更新状态前，cutover 必须 fail-closed。这里记录的
+旧代码阻塞不得外推为目标门禁，也不授权补做旧签名仪式。只有完成该移除、迁移、
+cache bootstrap 和 epoch cutover 后，由未来交易日真实 coordinator 自然产生并
+通过 receipt 验收的 occurrence，才能成为 `scheduled_live` 起点；日期标签本身
+不构成证据。
 
-## 本轮五个月度方案手工灰度状态
+## 历史日频缺口
 
-- `cgb_a4_fundseason_1y`、`cgb_a4_fundseason_3y`、
-  `cgb_a4_fundseason_5y`、`cgb_a4_fundseason_7y` 和
-  `cgb_a4_fundseason_10y` 的 exact version 与 composite Registry 均为
-  `active`；版本依次为 `04e7af163fb0`、`89d31f8cb95`、
-  `7d47e0328532`、`ddba87ece7ae` 和 `85a65700499b`。
-- 五个方案的 persisted all-stage 均为 7/7 passed；每方案持久化 1 个
-  backtest run、16 条历史 prediction 和 16 条月度指标，历史
-  `target_date < 2026-06-01`。本批历史合计 80 条。
-- 每方案手工写入 3 条 `gray_live`，日期严格为
-  `2026-05-15 → 2026-05-15 → 2026-06-15`、
-  `2026-06-15 → 2026-06-15 → 2026-07-15` 和
-  `2026-07-15 → 2026-07-15 → 2026-08-14`
-  （依次为 predict/feature/target）；本批灰度合计 15 条。
-- DB、API 和前端已验收：每方案显示 `16 + 3 = 19` 条信号，不是 18
-  条；五方案合计 `80 + 15 = 95` 条。所有结果绑定同一 DataBridge
-  generation `full-20260724-062251-4977e502dadf`。
-- 本批每方案 `scheduled_live=0`，全局既有 scheduled 基线仍为
-  490 runs / 513 predictions，三层 ledger 为 `0/0/0`；
-  rollout=`legacy`、admission=`BLOCKED`。本次手工灰度不授予定时调度、
-  正式日批、推送或部署。
-- Blackbox 自动调度防护 MVP 已通过：精确 5 个既有正式身份为
-  `formal`、本批五个月度与 10Y T+5 四个日频身份为 `gray`。九个灰度方案不会注册 legacy
-  scheduler job、不会进入 startup catch-up，也不能通过 scheduled wrapper
-  执行；手工运行与前端可见性保持不变。未知身份、版本/runtime 漂移和
-  非 UTF-8/损坏策略均 fail-closed 于 Blackbox 自动调度域，不影响 Native、
-  actuals、health 或 watchdog。该结论不等于 automatic gray scheduling。
-- 历史预检的 `INTEGRATION_PREFLIGHT_READY_NO_WRITE` 与
-  [FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json](blackbox_v2/records/FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)
-  仍保留为操作前时点证据；其中私有 publication
-  不是数据库 `t_input_generations` 的 `SEALED` 记录。终验详见
-  [FengRL 五个月度方案记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)
-  和
-  [机器可读终验证据](blackbox_v2/records/FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json)。
+历史缺口共 50 条，按 `predict_date` 为：
 
-## 日频 08:00 整改状态
+| 日期 | 缺口 |
+|---|---:|
+| 2026-07-23 | 1 |
+| 2026-07-24 | 1 |
+| 2026-07-27 | 2 |
+| 2026-07-28 | 17 |
+| 2026-07-29 | 29 |
 
-- 2026-07-28已冻结新的MVP决策：全部44个active target按自然频率巡检；日频25 execution/29 target每个交易日自动写`scheduled_live`，周频7和月频8只在自然到期日新增。gray/formal业务标签均承担自动实盘和缺失告警。
-- Task 1 只读 `signal-gap-plan` 已实现；`--as-of` 是包含当日的确定性上界。当前生产只读冻结结果为 `44 active / 11,652 expected / 11,623 present / 29 open`，其中 canonical 10,309条完整、live应有1,343条、已有1,314条。
-- 当 DataBridge current 为 `refresh_date=2026-07-28` 时，29个open gap分类为25 `GRAY_LIVE_GAP`、0 `BLOCKED_NO_GENERATION` 和4 `BLOCKED_DATA_CONTRACT`。这些gap尚未写入；业务实施阶段 6（本计划 Task 7）才执行受控补缺。补历史缺口只能写`gray_live`，新调度结果才写`scheduled_live`。
-- 用户明确取消20+20和连续观察作为MVP上线阻断；完整capacity admission
-  改为一次真实forced-cold 25/29隔离rehearsal加生产identity
-  execute-only observation，要求29/29、最后可见不晚于07:55、总耗时不
-  超过85分钟；最终admission继续保留签名和expiry。该证据不构成统计P95
-  声明。
-- 四个daily gray只允许进入ledger 25/29，不能在legacy回退时重新注册
-  per-scheme cron；五个monthly gray随后通过独立自然频率准入。正式
-  `scheduled_live`起点不得早于实际machine-global ledger epoch。
-- 权威设计和逐commit计划见
-  [全部 Active 方案实盘信号 MVP](superpowers/specs/2026-07-28-all-active-signal-production-mvp-design.md)
-  和[实施计划](superpowers/plans/2026-07-28-all-active-signal-production-mvp.md)。
-- **当前结论：日频 25/29 功能 rehearsal 通过，容量与生产切换未通过。** 2026-07-29 在当前 Mac Studio 使用真实 17 Native + 8 V2、隔离 MySQL 和私有空缓存完成一次 forced-cold replay：25/25 item、29/29 target、25 run/29 prediction 均为 `scheduled_live`，duplicate/nonterminal=0，重入增量=0，production identity 未变化。
-- replay 耗时 `5748.51s`（约 95.8 分钟），投影最后可见 `08:02:44`；`within_capacity_limit=false`、`within_visibility_deadline=false`，故不能签发 production-bound admission 或宣称 07:55/08:00 SLA 已通过。
-- Liwei 最小缓存 MVP 已在开发分支 `a4a9940` 闭合：7 个 production family 使用精确有效输入投影、日期到周证明、publisher-only 写入和单调覆盖；隔离 replay 中 7/7 family 均原子发布 schema3，10Y shared consumer 约 1 分钟完成且未再次训练。生产 cache 尚未迁移，隔离 cache 已随 rehearsal 清理。
-- replay 期间前端持续 HTTP 200；结束后临时 MySQL、cache 目录和算法子进程均已清理，scheduler 与 v2-preflight 保持未加载，生产库未写入。
+按任务类型为 T+1 共 5、T+5 共 45，当前全部尚未写入。它们只能通过受控
+insert-only 补为 `gray_live`，不得倒签 `scheduled_live`，也不能与未来真实
+ledger occurrence 混用 provenance 或 receipt。
 
-- `migration017 namespace digest` 已由开发提交 `f93b154` 闭合：migration preflight 和 `APPLYING` inspect 会读取同 schema 的 FK/CHECK 保留名占用，非法占用在业务 DDL 前 fail-closed，状态占用同时进入 recovery digest；该结论绑定当前 Mac 的 MySQL 8.0.45、`lower_case_table_names=2`。
-- `migration017 real MySQL recovery` 已由开发提交 `66e7a6b` 闭合：显式 opt-in 测试在本机隔离 MySQL 8.0.45、`lower_case_table_names=2` 上覆盖正常 public apply、首个 DDL 前中断、前两个 DDL 已 implicit commit 的中段恢复、DDL 完成但 history 未标记、定义漂移拒绝、FK/CHECK 大小写命名冲突 preflight 与 digest fence，以及 accent、跨约束类型和跨 schema 命名语义；8 个场景全部通过，临时进程和 datadir 均已回收。该结论没有应用生产迁移，不代表下一项 canonical migration runner 已完成。
-- `canonical migration runner` 已由 `f3a5720`、`1f1019b`、`8ee916f` 与 `3c96f58` 闭合：唯一行为实现是 caller-supplied `Engine` 的 `migrations.runner`，唯一受控 operator wrapper 是 `scripts/apply_migrations.py`。隔离 MySQL CLI 已证明 normal apply/no-op、017 中段 recovery 和 018 两类 recovery；所有 CLI 写路径在建 Engine 前要求 expected database/server UUID，并在首个写动作前精确核验连接身份。inspect 保持只读且无需 identity 参数。隔离测试未应用生产 migration，且不等于 production-shaped sanitized clone 演练；后者仍是 `migrations018/019/020` 的待办。当前 CLI apply/no-op 尚无 durable signed operator report。
-- 21 item/25 target recorder仅是历史基线；临时MySQL和上述真实同机 rehearsal 均已验证 policy v2 的 25 item/29 target 功能。
-- 四个真实 V2 sealed delivery 的冻结输入、确定性、超时、generation fence、late 后继续执行和失败隔离已验证；隔离 replay 的 runtime/session/identity/process fence 和 `ProcessStartGuard` 已接线。
-- BFL replay 控制面前置已完成定点修正并通过 check-only；本次隔离运行未停止或重启前端 backend。scheduler 与 v2-preflight 继续暂停，生产 ledger 尚未启用。
-- production 仍为 migration 017、rollout=`legacy`、admission=`BLOCKED`；ledger 三层账本和 generation 计数均为 0，未发生变化。
-- 最前顺序：不重复数小时级全量 replay；先完成生产 cache schema3 的一次性安全 bootstrap 与日频 append/suffix 针对性验收，再做 production-bound observation、migration018、ledger switch 和首日29/29。07:55 与 production-bound admission 尚未通过，不能声称 MVP 已上线。
-- 周/月调度、29个live缺口、`week_id=202625`、20+20/十日、019/020、归档、0629 adapter和统计P95均后置；详见[TODO](TODO.md)。
+## Liwei schema 3 目标 cache 合同
 
-## Native V1 当前摘要
+以下规则约束 production bootstrap 完成后的 cache；当前 production schema 3
+cache 尚未 bootstrap，不能把隔离 replay 结果写成已上线事实。
 
-- 版本化政策清单保留 29 个 Native V1 仓库身份；新增身份继续由机器门禁拒绝。
-- 当前业务展示目标覆盖 `1Y/3Y/5Y/7Y/10Y`，具体 active 范围以 Registry 和 API 为准。
-- 10Y 周点值方案的历史周历和输入冲突尚未通过数据治理修复，不能用补平或修改算法绕过。
+- 10 个 Liwei execution 归入 7 个精确 `cache_family + tenor`，每个 family 只有
+  SLA 表中指定的唯一 publisher；共享 consumer 只读同一 generation。
+- effective input projection 绑定实际 weekly/monthly 有效列、原 core alignment、
+  `date_to_week`、daily grid、feature cutoff、proof files 和内容 SHA-256。
+- generation 保留 parent lineage，覆盖范围单调；正常路径只允许
+  `hit/append/suffix`，无法证明的变化在对应 family fail-closed full rebuild。
+- consumer 零训练、零 staging、零 pointer 切换、零清理；缺 cache 或覆盖不足时
+  返回 `CACHE_PUBLISHER_REQUIRED` 等待 publisher。
+- root、generation、manifest、payload 和 pointer 每次重开验证 owner/mode/inode、
+  非 symlink、canonical path 与 hash；失败不切换 current。
+
+## 平台与迁移
+
+- production schema history 当前仍停在 017；migration 018、production-shaped
+  演练和生产 apply 都是待办。
+- `migrations.runner` 是 caller-supplied `Engine` 的唯一迁移实现，
+  `scripts/apply_migrations.py` 是唯一受控 operator CLI。017/018 inspect 保持只读，
+  所有 apply/recovery 写路径都要求 expected database/server UUID。
+- migration 018 的当前契约仅修正 `t_scheme_runs.started_at` 可空性；不把它混称为
+  composite FK。019/020 和长期 generation 归档仍是 defense-in-depth 后续项。
+- canonical migration runner 的实现提交为 `f3a5720`、`1f1019b`、`8ee916f`、
+  `3c96f58`；隔离 MySQL 验证未应用生产 migration，也不等于 production-shaped
+  sanitized clone 演练。durable signed operator report 仍未形成。
+
+## Blackbox V2 与灰度批次
+
+- Intake、DataBridge 三文件父快照、显式平台输入、七个 Gate、零写库
+  check-only、predict 和 no-persist backtest 已形成稳定技术路径；平台总体仍是
+  `PRODUCTION_PATH_READY`，不代表任意新交付自动 `PRODUCTION_READY`。
+- 10Y T+5 四方案均为 active；每方案 333 条 canonical backtest、17 个月度指标、
+  39 条手工 `gray_live` 和 372 条前端展示记录，本批 gray 共 156 条。精确摘要见
+  [手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。
+- FengRL 五个月度方案均为 active；每方案 16 条历史和 3 条手工 `gray_live`，
+  本批为 `80 + 15 = 95`。专项记录见
+  [月度入库记录](blackbox_v2/records/MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)。
+- 上述手工灰度不伪造 scheduled provenance；历史 `schedule_cron` 交付元数据也不
+  绕过 ledger、epoch 或专项授权。
+
+## 非日频剩余状态
+
+- 月度 updater 按 active Registry 的 `1Y/3Y/5Y/7Y/10Y` 幂等运行，8 个 active
+  月度方案保持 `19 signal / 18 valid`。
+- `weekly_10y_lgbm_point_v1` 为 `80/80`；`weekly_10y_d_overlay_0529` 因
+  `week_id=202625` 与交易日历冲突 fail-closed，保持 `77/77`。7 个周度候选尚未
+  全部达到 `81/80`，不得修改算法绕过上游数据契约。
+- Python 后端仍需在独立授权维护窗口重启，以使已合并的 Registry Actual 范围和
+  统一展示起点由服务端进程生效。
 
 ## 权威入口
 
 - 未完成工作：[TODO](TODO.md)
 - 方案入库：[统一入库导航](onboarding/README.md)
-- 上游交付：[Blackbox V2 上游交付 SOP](sop/BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)
 - 平台操作：[Blackbox V2 平台入库 SOP](sop/BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)
 - 生产准备：[Blackbox V2 生产准备清单](blackbox_v2/PRODUCTION_READINESS.md)
 - 历史状态：[状态记录索引](records/status/README.md)
