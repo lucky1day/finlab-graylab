@@ -1031,7 +1031,7 @@ def verify_independence(delivery: Path, fixture_root: Path) -> None:
                 "--output",
                 str(prediction_path),
             ],
-            cwd=blank_root,
+            cwd=predict_write_root,
             write_root=predict_write_root,
             forbidden_roots=forbidden_roots,
         )
@@ -1064,7 +1064,7 @@ def verify_independence(delivery: Path, fixture_root: Path) -> None:
                 "--output",
                 str(backtest_path),
             ],
-            cwd=blank_root,
+            cwd=backtest_write_root,
             write_root=backtest_write_root,
             forbidden_roots=forbidden_roots,
         )
@@ -1183,7 +1183,7 @@ def _run_backtest_batch(
                 "--output",
                 str(output_path),
             ],
-            cwd=run_root,
+            cwd=write_root,
             write_root=write_root,
         )
         _assert_completed(completed, "parity")

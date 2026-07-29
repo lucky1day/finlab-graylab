@@ -43,6 +43,7 @@ _PLATFORM_FILES = (
     "api_wind_date.csv",
 )
 _DIRECT_YIELD_COLUMNS = ("TB5YWI0C", "TB7YWI0C", "TB0YWI0C")
+_MINIMUM_DAILY_HISTORY = 120
 _ANCHOR_REPLAY_START = pd.Timestamp("2024-07-01")
 _REQUEST_FIELDS = (
     "request_id",
@@ -1068,15 +1069,51 @@ def _materialize_cutoff_data(
         )
     daily = daily.loc[daily_dates <= daily_cutoff].copy()
     daily_dates = daily_dates.loc[daily.index]
-    calendar = calendar.loc[calendar_dates <= cutoff].copy()
+    retained_yields = daily.loc[:, _DIRECT_YIELD_COLUMNS].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+    finite_rows = np.isfinite(
+        retained_yields.to_numpy(dtype="float64")
+    ).all(axis=1)
+    bad_positions = np.flatnonzero(~finite_rows)
+    if bad_positions.size:
+        first_retained = int(bad_positions[-1]) + 1
+        daily = daily.iloc[first_retained:].copy()
+        daily_dates = daily_dates.iloc[first_retained:].copy()
+        retained_yields = retained_yields.iloc[first_retained:].copy()
+    if daily.empty:
+        raise ValueError(
+            "daily_output.csv: exact cutoff must have finite direct yields"
+        )
+    if len(daily) < _MINIMUM_DAILY_HISTORY:
+        raise ValueError(
+            "daily_output.csv: insufficient consecutive finite history"
+        )
+    if not np.isfinite(
+        retained_yields.to_numpy(dtype="float64")
+    ).all():
+        raise ValueError("daily_output.csv: direct yields must be finite")
+    _validate_monotonic(daily_dates, "date", "daily_output.csv")
+    if daily_dates.iloc[-1] != daily_cutoff:
+        raise ValueError("daily_output.csv: exact cutoff coverage is required")
+    lower_bound = daily_dates.iloc[0]
+
+    calendar_mask = calendar_dates.between(lower_bound, cutoff)
+    calendar = calendar.loc[calendar_mask].copy()
     calendar_dates = calendar_dates.loc[calendar.index]
     calendar_week_ids = calendar_week_ids.loc[calendar.index]
-    weekly = weekly.loc[weekly_ids <= weekly_cutoff].copy()
+    weekly_mask = (
+        (weekly_ids <= weekly_cutoff)
+        & weekly_ids.isin(calendar_week_ids)
+    )
+    weekly = weekly.loc[weekly_mask].copy()
     weekly_ids = weekly_ids.loc[weekly.index]
-    monthly = monthly.loc[monthly_ids <= monthly_cutoff].copy()
+    lower_month = int(lower_bound.strftime("%Y%m"))
+    monthly_mask = monthly_ids.between(lower_month, monthly_cutoff)
+    monthly = monthly.loc[monthly_mask].copy()
     monthly_ids = monthly_ids.loc[monthly.index]
 
-    _validate_monotonic(daily_dates, "date", "daily_output.csv")
     _validate_monotonic(
         calendar_dates,
         "rdate",
@@ -1091,16 +1128,6 @@ def _materialize_cutoff_data(
     _validate_monotonic(weekly_ids, "week_id", "weekly_output.csv")
     _validate_monotonic(monthly_ids, "month_id", "monthly_output.csv")
 
-    retained_yields = daily.loc[:, _DIRECT_YIELD_COLUMNS].apply(
-        pd.to_numeric,
-        errors="coerce",
-    )
-    if not np.isfinite(
-        retained_yields.to_numpy(dtype="float64")
-    ).all():
-        raise ValueError("daily_output.csv: direct yields must be finite")
-    if daily.empty or daily_dates.iloc[-1] != daily_cutoff:
-        raise ValueError("daily_output.csv: exact cutoff coverage is required")
     if calendar.empty or calendar_dates.iloc[-1] != cutoff:
         raise ValueError("api_wind_date.csv: exact cutoff coverage is required")
     if (

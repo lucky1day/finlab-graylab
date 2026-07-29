@@ -227,11 +227,13 @@ def main():
     backtest.add_argument("--output", required=True)
     args = parser.parse_args()
     root = Path.cwd()
-    if set(path.name for path in root.iterdir()) != {{SCHEME_ID, "data"}}:
-        raise RuntimeError("independence root is not blank")
+    if root != Path(os.environ["TMPDIR"]).resolve():
+        raise RuntimeError("independence cwd is not the write root")
+    if (root / SCHEME_ID).exists() or (root / "data").exists():
+        raise RuntimeError("scheme or data leaked into writable cwd")
     if "source_package" in os.environ.get("PYTHONPATH", ""):
         raise RuntimeError("source package leaked through PYTHONPATH")
-    if (root / "data/unrelated-secret.txt").exists():
+    if (Path(args.data_dir) / "unrelated-secret.txt").exists():
         raise RuntimeError("non-platform fixture was copied")
 {forbidden}
 {writes}
@@ -945,7 +947,7 @@ class EmbeddedIndependenceTests(unittest.TestCase):
             ):
                 verifier._independence_request(fixtures)
 
-    def test_independence_uses_blank_root_clean_pythonpath_and_only_fixtures(
+    def test_independence_uses_writable_cwd_clean_pythonpath_and_only_fixtures(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1219,7 +1221,7 @@ class EmbeddedParityTests(unittest.TestCase):
             )
             write_root = invocation["write_root"]
             self.assertEqual(invocation["output_path"].parent, write_root)
-            self.assertEqual(write_root.parent, invocation["cwd"])
+            self.assertEqual(write_root, invocation["cwd"])
             self.assertEqual(
                 invocation["trace_env"],
                 str(invocation["pass_fds"][0]),

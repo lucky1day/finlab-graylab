@@ -235,12 +235,13 @@ class EmbeddedRuntimeTests(unittest.TestCase):
 
     def write_minimal_platform_fixture(self, destination: Path) -> None:
         destination.mkdir(parents=True)
+        daily_dates = pd.date_range(end=CUTOFF, periods=121, freq="D")
         pd.DataFrame(
             {
-                "date": ["2025-07-14", "2025-07-15"],
-                "TB5YWI0C": [1.5, 1.6],
-                "TB7YWI0C": [1.7, 1.8],
-                "TB0YWI0C": [1.9, 2.0],
+                "date": daily_dates,
+                "TB5YWI0C": [float(value) for value in range(121)],
+                "TB7YWI0C": [float(value) for value in range(121)],
+                "TB0YWI0C": [float(value) for value in range(121)],
             }
         ).to_csv(destination / "daily_output.csv", index=False)
         pd.DataFrame(
@@ -725,6 +726,33 @@ class EmbeddedRuntimeTests(unittest.TestCase):
             },
         )
 
+    def test_full_platform_input_matches_pretrimmed_golden_inference(
+        self,
+    ) -> None:
+        module = self.load_generated_module()
+        pretrimmed = self.tempdir / "pretrimmed-platform"
+        self.write_replay_fixture(
+            pretrimmed,
+            append_one_future_daily_row=False,
+        )
+        expected = module._infer_one(
+            pretrimmed,
+            CUTOFF,
+            "2025-07-15",
+            "202529",
+            "202507",
+        )
+
+        actual = module._infer_one(
+            REPLAY_DATA_ROOT,
+            CUTOFF,
+            "2025-07-15",
+            "202529",
+            "202507",
+        )
+
+        self.assertEqual(actual, expected)
+
     def test_predict_backtest_parity(self) -> None:
         runner = self.write_cli_test_runner()
         data_dir = self.tempdir / "platform"
@@ -1036,8 +1064,110 @@ class EmbeddedRuntimeTests(unittest.TestCase):
         monthly = pd.read_csv(data_root / "monthly_output.csv")
         self.assertEqual(pd.to_datetime(daily["date"]).max(), CUTOFF)
         self.assertEqual(pd.to_datetime(calendar["rdate"]).max(), CUTOFF)
-        self.assertEqual(weekly["week_id"].tolist(), [202528, 202529])
+        self.assertEqual(weekly["week_id"].tolist(), [202529])
         self.assertEqual(monthly["month_id"].tolist(), [202506, 202507])
+
+    def test_materialization_trims_only_causal_nonfinite_prefix(self) -> None:
+        module = self.load_generated_module()
+        source = self.tempdir / "finite-suffix"
+        self.write_minimal_platform_fixture(source)
+        finite_count = 120
+        dates = pd.date_range(
+            end=CUTOFF,
+            periods=finite_count + 2,
+            freq="D",
+        )
+        daily = pd.DataFrame(
+            {
+                "date": dates,
+                "TB5YWI0C": [float(value) for value in range(len(dates))],
+                "TB7YWI0C": [float(value) for value in range(len(dates))],
+                "TB0YWI0C": [float(value) for value in range(len(dates))],
+            }
+        )
+        daily.loc[0, "TB5YWI0C"] = math.nan
+        daily.loc[1, "TB7YWI0C"] = math.inf
+        daily = pd.concat(
+            [
+                daily,
+                pd.DataFrame(
+                    {
+                        "date": [CUTOFF + pd.Timedelta(days=1)],
+                        "TB5YWI0C": [math.nan],
+                        "TB7YWI0C": [math.inf],
+                        "TB0YWI0C": [math.nan],
+                    }
+                ),
+            ],
+            ignore_index=True,
+        )
+        daily.to_csv(source / "daily_output.csv", index=False)
+
+        protected = module._materialize_cutoff_data(
+            source,
+            CUTOFF,
+            "2025-07-15",
+            "202529",
+            "202507",
+            self.tempdir / "finite-suffix-request",
+        )
+
+        retained = pd.read_csv(protected / "data" / "daily_output.csv")
+        self.assertEqual(len(retained), finite_count)
+        self.assertEqual(pd.Timestamp(retained["date"].iloc[0]), dates[2])
+        self.assertEqual(pd.Timestamp(retained["date"].iloc[-1]), CUTOFF)
+        retained_yields = retained.loc[
+            :,
+            ("TB5YWI0C", "TB7YWI0C", "TB0YWI0C"),
+        ].apply(pd.to_numeric, errors="coerce")
+        self.assertTrue(
+            retained_yields.apply(
+                lambda column: column.map(math.isfinite)
+            ).all(axis=None)
+        )
+
+    def test_materialization_rejects_bad_cutoff_and_short_finite_suffix(
+        self,
+    ) -> None:
+        module = self.load_generated_module()
+        cases = (("bad-cutoff", 120, True), ("short-suffix", 119, False))
+        for name, finite_count, cutoff_bad in cases:
+            with self.subTest(name=name):
+                source = self.tempdir / name
+                self.write_minimal_platform_fixture(source)
+                dates = pd.date_range(
+                    end=CUTOFF,
+                    periods=finite_count + 1,
+                    freq="D",
+                )
+                daily = pd.DataFrame(
+                    {
+                        "date": dates,
+                        "TB5YWI0C": [
+                            float(value) for value in range(len(dates))
+                        ],
+                        "TB7YWI0C": [
+                            float(value) for value in range(len(dates))
+                        ],
+                        "TB0YWI0C": [
+                            float(value) for value in range(len(dates))
+                        ],
+                    }
+                )
+                daily.loc[0, "TB5YWI0C"] = math.nan
+                if cutoff_bad:
+                    daily.loc[daily.index[-1], "TB7YWI0C"] = math.inf
+                daily.to_csv(source / "daily_output.csv", index=False)
+
+                with self.assertRaisesRegex(ValueError, "finite|history"):
+                    module._materialize_cutoff_data(
+                        source,
+                        CUTOFF,
+                        "2025-07-15",
+                        "202529",
+                        "202507",
+                        self.tempdir / f"{name}-request",
+                    )
 
     def test_post_cutoff_disorder_in_each_stream_is_ignored(self) -> None:
         module = self.load_generated_module()
@@ -1155,7 +1285,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                 self.tempdir / "nonfinite-request",
             )
 
-    def test_materialization_rejects_nonfinite_retained_yield_history(self) -> None:
+    def test_materialization_rejects_nonfinite_prefix_with_short_suffix(
+        self,
+    ) -> None:
         module = self.load_generated_module()
         invalid_values = (float("nan"), "not-a-number")
         for index, invalid in enumerate(invalid_values):
@@ -1165,9 +1297,9 @@ class EmbeddedRuntimeTests(unittest.TestCase):
                 daily = pd.read_csv(source / "daily_output.csv")
                 if isinstance(invalid, str):
                     daily["TB5YWI0C"] = daily["TB5YWI0C"].astype(object)
-                daily.loc[daily.index[0], "TB5YWI0C"] = invalid
+                daily.loc[daily.index[1], "TB5YWI0C"] = invalid
                 daily.to_csv(source / "daily_output.csv", index=False)
-                with self.assertRaisesRegex(ValueError, "finite"):
+                with self.assertRaisesRegex(ValueError, "history"):
                     module._materialize_cutoff_data(
                         source,
                         CUTOFF,
