@@ -242,8 +242,8 @@ def runtime_compare_gate_callbacks(
 ]:
     """日批不在 cache 层重复训练或重复 full output。
 
-    生产资格来自双签名 capacity corpus；本次 ``train_phase_a`` 的单次
-    产物是 generation acceptance 的 authoritative affected scope。
+    日频生产由冻结的 direct authority 校验；本次 ``train_phase_a`` 的单次
+    产物仅定义 generation acceptance 的 authoritative affected scope。
     """
     del train_phase_a, run_full_output
     return None, None
