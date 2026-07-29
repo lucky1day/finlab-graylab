@@ -591,13 +591,26 @@ def build_signal_gap_plan(
         actions,
         snapshot.registry_targets,
     )
+    action_segments = {
+        str(row["segment"])
+        for row in actions
+    }
+    relevant_control_plane_blocker = bool(
+        control_plane_blockers
+    ) and (
+        not action_segments
+        or any(
+            action_segments.intersection(blocker["segment_scope"])
+            for blocker in control_plane_blockers
+        )
+    )
     unsigned: dict[str, Any] = {
         "schema_version": PLAN_SCHEMA_VERSION,
         "status": (
             "BLOCKED"
             if (
                 blocked
-                or control_plane_blockers
+                or relevant_control_plane_blocker
                 or observed_contract_anomalies
             )
             else "READY"
@@ -2469,6 +2482,11 @@ def _validate_snapshot(
         by_registry[target.registry_scheme_id] = target
     seen_cases: set[tuple[str, str, int, str, str]] = set()
     for item in snapshot.expected_cases:
+        if item.segment not in {"canonical", "live"}:
+            raise SignalGapPlanError(
+                "INVALID_EXPECTED_SEGMENT",
+                f"{item.registry_scheme_id}:{item.segment}",
+            )
         key = (*item.business_key, item.segment)
         if key in seen_cases:
             raise SignalGapPlanError(
