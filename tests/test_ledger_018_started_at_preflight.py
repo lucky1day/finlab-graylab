@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from migrations.runner import (
     MigrationPreflightError,
@@ -155,50 +155,39 @@ class ScheduleRunStartedAtPreflightTests(unittest.TestCase):
 
 
 class LedgerEntryPreflightWiringTests(unittest.TestCase):
-    """两个会走 claim 路径的 ledger 入口必须在冻结账本前预检。"""
+    """018 结构预检必须先于会读取 started_at 的容量候选校验。"""
 
-    def _assert_entry_preflights(self, entry, **kwargs) -> None:
+    def test_current_authority_preflights_before_capacity_candidate(self) -> None:
         from scheduler import daily_runtime
 
         calls: list[str] = []
-        runtime = Mock()
-        runtime.return_value.run_occurrence.side_effect = (
-            lambda *a, **k: calls.append("run") or Mock()
-        )
-        runtime.return_value.run_operator_recovery.side_effect = (
-            lambda *a, **k: calls.append("run") or Mock()
-        )
+        engine = object()
         with (
             patch.object(
                 daily_runtime,
-                "_require_production_entry_authority",
-                return_value={"candidate_fingerprint": "e" * 64},
-            ),
-            patch.object(daily_runtime, "preflight_daily_storage"),
-            patch.object(
-                daily_runtime,
                 "preflight_schedule_run_started_at_nullable",
-                side_effect=lambda engine: calls.append("preflight"),
-            ) as preflight,
-            patch.object(daily_runtime, "DailyRuntime", runtime),
+                side_effect=lambda value: calls.append("preflight"),
+            ),
+            patch(
+                "shared.daily_coordinator_mode."
+                "bootstrap_deployment_daily_coordinator_mode",
+                return_value="ledger",
+            ),
+            patch(
+                "scheduler.capacity_runtime_admission."
+                "require_current_capacity_admission",
+                side_effect=lambda *a, **k: (
+                    calls.append("capacity")
+                    or {"status": "ADMITTED"}
+                ),
+            ),
         ):
-            getattr(daily_runtime, entry)(**kwargs)
+            daily_runtime._require_production_entry_authority(
+                engine=engine,
+                verify_current=True,
+            )
 
-        preflight.assert_called_once()
-        self.assertEqual(["preflight", "run"], calls)
-
-    def test_daily_occurrence_preflights_before_freezing(self) -> None:
-        self._assert_entry_preflights(
-            "run_daily_occurrence",
-            run_date="2026-07-29",
-        )
-
-    def test_operator_recovery_preflights_before_claiming(self) -> None:
-        self._assert_entry_preflights(
-            "run_operator_recovery",
-            scheme_id="any_scheme",
-            run_date="2026-07-29",
-        )
+        self.assertEqual(["preflight", "capacity"], calls)
 
 
 if __name__ == "__main__":

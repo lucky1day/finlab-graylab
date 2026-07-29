@@ -5434,7 +5434,6 @@ def run_daily_occurrence(
     try:
         if _services is None:
             preflight_daily_storage()
-            preflight_schedule_run_started_at_nullable(services.engine)
         return DailyRuntime(services).run_occurrence(
             run_date=run_date,
             trigger_origin=trigger_origin,
@@ -5480,7 +5479,6 @@ def run_operator_recovery(
     try:
         if _services is None:
             preflight_daily_storage()
-            preflight_schedule_run_started_at_nullable(services.engine)
         return DailyRuntime(services).run_operator_recovery(
             scheme_id=scheme_id,
             run_date=run_date,
@@ -5600,6 +5598,7 @@ def _require_production_entry_authority(
             "daily runtime requires ledger coordinator mode"
         )
     if verify_current:
+        preflight_schedule_run_started_at_nullable(engine)
         return require_current_capacity_admission(
             engine,
             policy_path=POLICY_V2_PATH,
