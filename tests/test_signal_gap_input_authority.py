@@ -314,6 +314,10 @@ def _current_authority(
         ),
         files=tuple(files),
         cutoffs=tuple(cutoffs),
+        publication_identity_sha256=_sha(
+            f"publication-identity:{refresh_date}:{changed_cutoff}:"
+            f"{changed_file}"
+        ),
         stable_identity_sha256=_sha(
             f"authority:{refresh_date}:{changed_cutoff}:"
             f"{changed_file}:{with_publication}"
