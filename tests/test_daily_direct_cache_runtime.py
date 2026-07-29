@@ -34,6 +34,44 @@ def _frames() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     return daily, weekly, monthly
 
 
+def _direct_registry_config(
+    *,
+    runtime_type: str,
+) -> SimpleNamespace:
+    scheme_id = (
+        "native_current"
+        if runtime_type == "native_adapter"
+        else "blackbox_current"
+    )
+    return SimpleNamespace(
+        scheme_id=scheme_id,
+        runtime_type=runtime_type,
+        scheme_version="current-v2",
+        code_hash="1" * 64,
+        config_hash="2" * 64,
+        manifest_hash=(
+            None if runtime_type == "native_adapter" else "3" * 64
+        ),
+    )
+
+
+def _direct_registry_row(
+    config: SimpleNamespace,
+    **overrides: object,
+) -> dict[str, object]:
+    row = {
+        "registry_scheme_id": f"{config.scheme_id}__h1__10Y",
+        "base_scheme_id": config.scheme_id,
+        "scheme_version": config.scheme_version,
+        "version_runtime_type": config.runtime_type,
+        "code_hash": config.code_hash,
+        "config_hash": config.config_hash,
+        "manifest_hash": config.manifest_hash,
+    }
+    row.update(overrides)
+    return row
+
+
 class DailyDirectCacheRuntimeTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -302,6 +340,18 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             for config in discovered
             if config.scheme_id in policy.schemes
         }
+        storage_root = Path(self.cache_root)
+        storage_root.mkdir()
+        storage_root.chmod(0o700)
+        for item in policy.schemes.values():
+            if item.cache_spec_fingerprint is None:
+                continue
+            cache_family, tenor = item.cache_group.rsplit(":", 1)
+            namespace = storage_root / cache_family
+            family_root = namespace / tenor.lower()
+            family_root.mkdir(parents=True, exist_ok=True)
+            namespace.chmod(0o700)
+            family_root.chmod(0o700)
         target_manifest = [
             {
                 "base_scheme_id": scheme_id,
@@ -368,7 +418,7 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 policy=policy,
                 configs=configs,
                 target_manifest=target_manifest,
-                storage_root=Path(self.cache_root),
+                storage_root=storage_root,
             )
 
         self.assertEqual(len(authority["consumers"]), 10)
@@ -437,6 +487,86 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
                 target_manifest=[{}] * 28,
             )
 
+    def test_direct_cache_ancestry_requires_exact_mode_0700(
+        self,
+    ) -> None:
+        from scheduler.daily_direct_authority import (
+            DailyDirectAuthorityError,
+            _require_direct_cache_ancestry,
+        )
+
+        storage_root = Path(self.cache_root)
+        family_root = storage_root / "namespace" / "5y"
+        family_root.mkdir(parents=True)
+        for path in (
+            storage_root,
+            family_root.parent,
+            family_root,
+        ):
+            path.chmod(0o700)
+        _require_direct_cache_ancestry(storage_root, family_root)
+
+        for insecure_path in (
+            storage_root,
+            family_root.parent,
+            family_root,
+        ):
+            for insecure_mode in (0o755, 0o750):
+                insecure_path.chmod(insecure_mode)
+                with self.assertRaisesRegex(
+                    DailyDirectAuthorityError,
+                    "mode 0700",
+                ):
+                    _require_direct_cache_ancestry(
+                        storage_root,
+                        family_root,
+                    )
+                insecure_path.chmod(0o700)
+
+    def test_direct_cache_ancestry_rejects_symlink_and_owner_drift(
+        self,
+    ) -> None:
+        from scheduler.daily_direct_authority import (
+            DailyDirectAuthorityError,
+            _require_direct_cache_ancestry,
+        )
+
+        target_root = Path(self.cache_root)
+        family_root = target_root / "namespace" / "5y"
+        family_root.mkdir(parents=True)
+        for path in (
+            target_root,
+            family_root.parent,
+            family_root,
+        ):
+            path.chmod(0o700)
+
+        symlink_root = Path(self._tmpdir.name) / "cache-link"
+        symlink_root.symlink_to(target_root, target_is_directory=True)
+        with self.assertRaisesRegex(
+            DailyDirectAuthorityError,
+            "real directory",
+        ):
+            _require_direct_cache_ancestry(
+                symlink_root,
+                symlink_root / "namespace" / "5y",
+            )
+
+        with (
+            patch(
+                "scheduler.daily_direct_authority.os.geteuid",
+                return_value=os.geteuid() + 1,
+            ),
+            self.assertRaisesRegex(
+                DailyDirectAuthorityError,
+                "owner mismatch",
+            ),
+        ):
+            _require_direct_cache_ancestry(
+                target_root,
+                family_root,
+            )
+
     def test_direct_authority_rejects_migration_017_shape(self) -> None:
         from migrations.runner import MigrationPreflightError
         from scheduler.daily_direct_authority import (
@@ -458,6 +588,97 @@ class DailyDirectCacheRuntimeTests(unittest.TestCase):
             ),
         ):
             build_daily_direct_cache_authorities(object())
+
+    def test_native_historical_active_versions_allow_one_exact_current(
+        self,
+    ) -> None:
+        from scheduler.daily_direct_authority import (
+            _select_direct_current_registry_versions,
+        )
+
+        config = _direct_registry_config(runtime_type="native_adapter")
+        current = _direct_registry_row(config)
+        historical = _direct_registry_row(
+            config,
+            scheme_version="historical-v1",
+            code_hash="9" * 64,
+        )
+
+        self.assertEqual(
+            _select_direct_current_registry_versions(
+                (config,),
+                [historical, current],
+            ),
+            [current],
+        )
+
+    def test_native_requires_exactly_one_current_active_version(
+        self,
+    ) -> None:
+        from scheduler.daily_direct_authority import (
+            DailyDirectAuthorityError,
+            _select_direct_current_registry_versions,
+        )
+
+        config = _direct_registry_config(runtime_type="native_adapter")
+        for field, drifted in {
+            "scheme_version": "historical-v1",
+            "version_runtime_type": "blackbox_v2",
+            "code_hash": "9" * 64,
+            "config_hash": "8" * 64,
+            "manifest_hash": "7" * 64,
+        }.items():
+            with (
+                self.subTest(field=field),
+                self.assertRaisesRegex(
+                    DailyDirectAuthorityError,
+                    "exact current active version.*0",
+                ),
+            ):
+                _select_direct_current_registry_versions(
+                    (config,),
+                    [
+                        _direct_registry_row(
+                            config,
+                            **{field: drifted},
+                        )
+                    ],
+                )
+
+        current = _direct_registry_row(config)
+        with self.assertRaisesRegex(
+            DailyDirectAuthorityError,
+            "exact current active version.*2",
+        ):
+            _select_direct_current_registry_versions(
+                (config,),
+                [current, dict(current)],
+            )
+
+    def test_blackbox_still_rejects_multiple_active_versions(
+        self,
+    ) -> None:
+        from scheduler.daily_direct_authority import (
+            DailyDirectAuthorityError,
+            _select_direct_current_registry_versions,
+        )
+
+        config = _direct_registry_config(runtime_type="blackbox_v2")
+        current = _direct_registry_row(config)
+        historical = _direct_registry_row(
+            config,
+            scheme_version="historical-v1",
+            code_hash="9" * 64,
+            manifest_hash="8" * 64,
+        )
+        with self.assertRaisesRegex(
+            DailyDirectAuthorityError,
+            "Blackbox.*exactly one active version",
+        ):
+            _select_direct_current_registry_versions(
+                (config,),
+                [historical, current],
+            )
 
     def test_direct_authority_rejects_shrinking_parent_coverage(
         self,

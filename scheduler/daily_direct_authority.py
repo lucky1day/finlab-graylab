@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections import Counter
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -130,11 +131,17 @@ def build_daily_direct_cache_authorities(
             contract_version=profile.contract_version,
         )
         database = _read_database_snapshot(engine)
+        current_registry_versions = (
+            _select_direct_current_registry_versions(
+                current,
+                database["registry_versions"],
+            )
+        )
         target_manifest, _bundle = _build_target_manifest(
             root,
             current,
             policy,
-            database["registry_versions"],
+            current_registry_versions,
         )
     except (
         CapacityCandidateRuntimeError,
@@ -155,6 +162,92 @@ def build_daily_direct_cache_authorities(
         target_manifest=target_manifest,
         storage_root=storage_root,
     )
+
+
+def _select_direct_current_registry_versions(
+    configs: Sequence[SchemeConfig],
+    raw_rows: object,
+) -> list[Mapping[str, object]]:
+    """按 direct runtime 语义选择每个 Registry target 的当前版本。"""
+    if not isinstance(raw_rows, list):
+        raise DailyDirectAuthorityError(
+            "active Registry/version query did not return rows"
+        )
+    config_by_id = {config.scheme_id: config for config in configs}
+    if len(config_by_id) != len(configs):
+        raise DailyDirectAuthorityError(
+            "strict discovery contains duplicate daily schemes"
+        )
+
+    rows_by_registry: dict[str, list[Mapping[str, object]]] = {}
+    for index, row in enumerate(raw_rows):
+        if not isinstance(row, Mapping):
+            raise DailyDirectAuthorityError(
+                f"active Registry/version row {index} is not an object"
+            )
+        registry_id = row.get("registry_scheme_id")
+        base_id = row.get("base_scheme_id")
+        if not isinstance(registry_id, str) or not registry_id:
+            raise DailyDirectAuthorityError(
+                "active Registry/version row has invalid registry_scheme_id"
+            )
+        if not isinstance(base_id, str) or base_id not in config_by_id:
+            raise DailyDirectAuthorityError(
+                "Registry contains unknown active daily scheme: "
+                f"{base_id!r}"
+            )
+        rows_by_registry.setdefault(registry_id, []).append(row)
+
+    selected: list[Mapping[str, object]] = []
+    for registry_id in sorted(rows_by_registry):
+        rows = rows_by_registry[registry_id]
+        base_ids = {row.get("base_scheme_id") for row in rows}
+        if len(base_ids) != 1:
+            raise DailyDirectAuthorityError(
+                f"Registry target {registry_id} maps to multiple base schemes"
+            )
+        config = config_by_id[str(next(iter(base_ids)))]
+        if config.runtime_type == "blackbox_v2":
+            if len(rows) != 1:
+                raise DailyDirectAuthorityError(
+                    "Blackbox Registry target "
+                    f"{registry_id} requires exactly one active version; "
+                    f"found {len(rows)}"
+                )
+            selected.append(rows[0])
+            continue
+        if config.runtime_type != "native_adapter":
+            raise DailyDirectAuthorityError(
+                f"unsupported daily runtime type: {config.runtime_type}"
+            )
+
+        current_rows = [
+            row
+            for row in rows
+            if _matches_direct_current_version(row, config)
+        ]
+        if len(current_rows) != 1:
+            raise DailyDirectAuthorityError(
+                "Native Registry target "
+                f"{registry_id} requires exactly one exact current active "
+                f"version; found {len(current_rows)}"
+            )
+        selected.append(current_rows[0])
+    return selected
+
+
+def _matches_direct_current_version(
+    row: Mapping[str, object],
+    config: SchemeConfig,
+) -> bool:
+    expected = {
+        "scheme_version": config.scheme_version,
+        "version_runtime_type": config.runtime_type,
+        "code_hash": config.code_hash,
+        "config_hash": config.config_hash,
+        "manifest_hash": config.manifest_hash,
+    }
+    return all(row.get(field) == value for field, value in expected.items())
 
 
 def _validate_direct_daily_shape(
@@ -219,6 +312,83 @@ def _direct_storage_root(value: str | Path | None) -> Path:
     return root
 
 
+def _require_direct_cache_ancestry(
+    storage_root: Path,
+    family_root: Path,
+) -> None:
+    """精确校验 direct cache root、namespace 与 family 权限。"""
+    if family_root.parent.parent != storage_root:
+        raise DailyDirectAuthorityError(
+            "direct cache family escapes storage root"
+        )
+    _require_direct_cache_directory(
+        storage_root,
+        "direct cache storage root",
+    )
+    _require_direct_cache_directory(
+        family_root.parent,
+        "direct cache family namespace",
+    )
+    _require_direct_cache_directory(
+        family_root,
+        "direct cache family",
+    )
+
+
+def _require_direct_cache_directory(
+    path: Path,
+    label: str,
+) -> tuple[int, int]:
+    """要求 direct authority 控制目录为当前 uid 的真实 0700 目录。"""
+    try:
+        metadata = os.lstat(path)
+    except OSError as exc:
+        raise DailyDirectAuthorityError(
+            f"{label} is unavailable"
+        ) from exc
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+    ):
+        raise DailyDirectAuthorityError(
+            f"{label} must be a real directory"
+        )
+    expected_uid = os.geteuid()
+    if metadata.st_uid != expected_uid:
+        raise DailyDirectAuthorityError(f"{label} owner mismatch")
+    if stat.S_IMODE(metadata.st_mode) != 0o700:
+        raise DailyDirectAuthorityError(
+            f"{label} must have exact mode 0700"
+        )
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise DailyDirectAuthorityError(
+            f"{label} changed while opening"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            opened.st_dev != metadata.st_dev
+            or opened.st_ino != metadata.st_ino
+            or not stat.S_ISDIR(opened.st_mode)
+            or opened.st_uid != expected_uid
+            or stat.S_IMODE(opened.st_mode) != 0o700
+        ):
+            raise DailyDirectAuthorityError(
+                f"{label} changed while opening"
+            )
+    finally:
+        os.close(descriptor)
+    return metadata.st_dev, metadata.st_ino
+
+
 def _build_direct_cache_authorities(
     *,
     policy: DailySchedulerPolicy,
@@ -275,6 +445,10 @@ def _build_direct_cache_authorities(
                 storage_root
                 / safe_path_part(cache_family)
                 / safe_path_part(tenor.lower())
+            )
+            _require_direct_cache_ancestry(
+                storage_root,
+                family_root,
             )
             loaded, error = _load_current_generation(
                 family_root,
