@@ -1958,6 +1958,108 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
 
         self.assertTrue(result.passed, result.errors)
 
+    def test_static_gate_tolerates_pycache_left_by_execution(self) -> None:
+        """执行过方案后遗留的 __pycache__ 不得让复验误判交付结构不合规。
+
+        CPython 在 import delivery 模块时会在 scheme/delivery 目录写入
+        `__pycache__`，它不属于上游交付；若参与精确集合比较，任何跑过
+        dry-run 或实盘的方案都无法再通过 StaticGate。
+        """
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            # 模拟一次真实执行留下的 bytecode 缓存。
+            for target in (scheme_dir, scheme_dir / "delivery"):
+                cache_dir = target / "__pycache__"
+                cache_dir.mkdir()
+                (cache_dir / "delivery.cpython-312.pyc").write_bytes(b"\x00")
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            result = BlackboxStaticGate().run(_context(root, config))
+
+        self.assertTrue(result.passed, result.errors)
+
+    def test_static_gate_rejects_pycache_that_is_a_regular_file(self) -> None:
+        """只按名字忽略会让任意内容藏在 `__pycache__` 这个名字下。"""
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        for target_is_delivery in (False, True):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                scheme_dir = intake_delivery(
+                    _delivery(root / "incoming"),
+                    schemes_root=root / "schemes",
+                )
+                target = scheme_dir / "delivery" if target_is_delivery else scheme_dir
+                (target / "__pycache__").write_text("payload", encoding="utf-8")
+                config = load_scheme_config(scheme_dir / "config.yaml")
+                result = BlackboxStaticGate().run(_context(root, config))
+
+            self.assertFalse(
+                result.passed,
+                f"普通文件 __pycache__ 未被拒绝 (delivery={target_is_delivery})",
+            )
+
+    def test_static_gate_rejects_pycache_that_is_a_symlink(self) -> None:
+        """symlink 形态的 `__pycache__` 可指向仓库外目录，必须拒绝。"""
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        for target_is_delivery in (False, True):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                outside = root / "outside"
+                outside.mkdir()
+                (outside / "smuggled.py").write_text("", encoding="utf-8")
+                scheme_dir = intake_delivery(
+                    _delivery(root / "incoming"),
+                    schemes_root=root / "schemes",
+                )
+                target = scheme_dir / "delivery" if target_is_delivery else scheme_dir
+                (target / "__pycache__").symlink_to(
+                    outside, target_is_directory=True
+                )
+                config = load_scheme_config(scheme_dir / "config.yaml")
+                result = BlackboxStaticGate().run(_context(root, config))
+
+            self.assertFalse(
+                result.passed,
+                f"symlink __pycache__ 未被拒绝 (delivery={target_is_delivery})",
+            )
+
+    def test_static_gate_still_rejects_unexpected_delivery_entry(self) -> None:
+        """忽略 __pycache__ 不得放宽对其它多余交付文件的拒绝。"""
+        from harness.blackbox_v2.gates import BlackboxStaticGate
+        from scheduler.discovery import load_scheme_config
+        from shared.blackbox_v2.intake import intake_delivery
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            scheme_dir = intake_delivery(
+                _delivery(root / "incoming"),
+                schemes_root=root / "schemes",
+            )
+            (scheme_dir / "delivery" / "extra.py").write_text(
+                "", encoding="utf-8"
+            )
+            config = load_scheme_config(scheme_dir / "config.yaml")
+            result = BlackboxStaticGate().run(_context(root, config))
+
+        self.assertFalse(result.passed)
+        self.assertIn(
+            "delivery must contain exactly",
+            "\n".join(result.errors),
+        )
+
     def test_static_gate_records_declared_platform_input_provider(self) -> None:
         from harness.blackbox_v2.gates import BlackboxStaticGate
         from scheduler.discovery import load_scheme_config
