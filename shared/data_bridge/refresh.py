@@ -294,6 +294,63 @@ class CurrentDataset:
     dataset: ValidatedDataBridgeDataset
 
 
+@dataclass(frozen=True, slots=True)
+class DataBridgeContinuityAuthority:
+    """绑定一次 refresh 前已校验 current 与其有效连续性截止键。"""
+
+    generation_id: str
+    business_digest: str
+    publication_identity_sha256: str
+    stable_identity_sha256: str
+    daily_cutoff_key: str
+    weekly_cutoff_key: str
+    monthly_cutoff_key: str
+
+    @property
+    def continuity_cutoffs(self) -> Mapping[str, str]:
+        return {
+            "daily_output.csv": self.daily_cutoff_key,
+            "weekly_output.csv": self.weekly_cutoff_key,
+            "monthly_output.csv": self.monthly_cutoff_key,
+        }
+
+
+def data_bridge_continuity_authority_sha256(
+    *,
+    generation_id: str,
+    business_digest: str,
+    publication_identity_sha256: str,
+    daily_cutoff_key: str,
+    weekly_cutoff_key: str,
+    monthly_cutoff_key: str,
+) -> str:
+    """绑定 exact current identity 与全部三频 cutoff 的规范摘要。"""
+    payload = {
+        "authority_schema_version": (
+            "data-bridge-continuity-authority-v1"
+        ),
+        "generation_id": generation_id,
+        "business_digest": business_digest,
+        "publication_identity_sha256": (
+            publication_identity_sha256
+        ),
+        "continuity_cutoffs": {
+            "daily_output.csv": daily_cutoff_key,
+            "weekly_output.csv": weekly_cutoff_key,
+            "monthly_output.csv": monthly_cutoff_key,
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 class DataBridgeRoundBuilder:
     def __init__(self, client, config: DataBridgeRefreshConfig) -> None:
         self.client = client
@@ -714,6 +771,13 @@ def _validate_continuity_authority(
         raise DataBridgeRefreshError(
             "DataBridge continuity authority is missing for existing current"
         )
+    if not isinstance(
+        continuity_authority,
+        DataBridgeContinuityAuthority,
+    ):
+        raise DataBridgeRefreshError(
+            "DataBridge continuity authority is invalid"
+        )
     expected_generation_id = getattr(
         continuity_authority,
         "generation_id",
@@ -754,6 +818,28 @@ def _validate_continuity_authority(
     ):
         raise DataBridgeRefreshError(
             "DataBridge continuity authority is invalid"
+        )
+    recalculated_stable_identity = (
+        data_bridge_continuity_authority_sha256(
+            generation_id=expected_generation_id,
+            business_digest=expected_business_digest,
+            publication_identity_sha256=(
+                expected_publication_identity
+            ),
+            daily_cutoff_key=(
+                continuity_authority.daily_cutoff_key
+            ),
+            weekly_cutoff_key=(
+                continuity_authority.weekly_cutoff_key
+            ),
+            monthly_cutoff_key=(
+                continuity_authority.monthly_cutoff_key
+            ),
+        )
+    )
+    if stable_identity != recalculated_stable_identity:
+        raise DataBridgeRefreshError(
+            "DataBridge continuity authority stable digest mismatch"
         )
     actual_publication_identity = (
         data_bridge_publication_identity_sha256(current.state)

@@ -301,6 +301,9 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             StableDataBridgeCutoff,
             resolve_databridge_continuity_authority,
         )
+        from shared.data_bridge.refresh import (
+            data_bridge_continuity_authority_sha256,
+        )
 
         authority = SimpleNamespace(
             generation_id="generation-current",
@@ -333,7 +336,17 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             actual.publication_identity_sha256,
             "b" * 64,
         )
-        self.assertEqual(actual.stable_identity_sha256, "c" * 64)
+        self.assertEqual(
+            actual.stable_identity_sha256,
+            data_bridge_continuity_authority_sha256(
+                generation_id="generation-current",
+                business_digest="a" * 64,
+                publication_identity_sha256="b" * 64,
+                daily_cutoff_key="2026-07-27",
+                weekly_cutoff_key="202629",
+                monthly_cutoff_key="202607",
+            ),
+        )
         self.assertEqual(
             actual.continuity_cutoffs,
             {
@@ -399,11 +412,14 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
         engine = Mock()
         engine.connect.return_value = connection_context
         expected = object()
-        with patch(
-            "shared.data_bridge.authority."
-            "resolve_databridge_continuity_authority",
-            return_value=expected,
-        ) as resolve:
+        with (
+            patch("shared.data_bridge.authority.DataBridgeStore"),
+            patch(
+                "shared.data_bridge.authority."
+                "resolve_databridge_continuity_authority",
+                return_value=expected,
+            ) as resolve,
+        ):
             actual = (
                 resolve_databridge_continuity_authority_from_engine(
                     self.config,
@@ -431,6 +447,52 @@ class StableDataBridgeCurrentAuthorityTests(unittest.TestCase):
             connection=connection,
         )
         connection.rollback.assert_called_once_with()
+
+    def test_refresh_authority_recovers_current_before_strict_resolution(
+        self,
+    ) -> None:
+        from shared.data_bridge.authority import (
+            resolve_databridge_continuity_authority_from_engine,
+        )
+
+        events: list[str] = []
+        store = Mock()
+        store.recover.side_effect = lambda **_kwargs: events.append(
+            "recover"
+        )
+        connection = Mock()
+        connection_context = Mock()
+        connection_context.__enter__ = Mock(
+            side_effect=lambda: (
+                events.append("connect")
+                or connection
+            )
+        )
+        connection_context.__exit__ = Mock(return_value=False)
+        engine = Mock()
+        engine.connect.return_value = connection_context
+        with (
+            patch(
+                "shared.data_bridge.authority.DataBridgeStore",
+                return_value=store,
+                create=True,
+            ),
+            patch(
+                "shared.data_bridge.authority."
+                "resolve_databridge_continuity_authority",
+                return_value=None,
+            ),
+        ):
+            resolve_databridge_continuity_authority_from_engine(
+                self.config,
+                feature_date="2026-07-28",
+                engine=engine,
+            )
+
+        self.assertEqual(events[:2], ["recover", "connect"])
+        store.recover.assert_called_once_with(
+            schema_path=self.config.schema_path,
+        )
 
     def test_cutoff_sql_helpers_receive_the_caller_connection(self) -> None:
         from shared.input_artifacts import (

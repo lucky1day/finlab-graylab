@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -1197,6 +1197,7 @@ class DataBridgeRefreshTests(unittest.TestCase):
         from shared.data_bridge.refresh import (
             DataBridgeRefreshConfig,
             DataBridgeStore,
+            data_bridge_continuity_authority_sha256,
             data_bridge_publication_identity_sha256,
             run_full_refresh,
         )
@@ -1274,7 +1275,24 @@ class DataBridgeRefreshTests(unittest.TestCase):
                         previous_state
                     )
                 ),
-                stable_identity_sha256="c" * 64,
+                stable_identity_sha256=(
+                    data_bridge_continuity_authority_sha256(
+                        generation_id=str(
+                            previous_state["generation_id"]
+                        ),
+                        business_digest=str(
+                            previous_state["business_digest"]
+                        ),
+                        publication_identity_sha256=(
+                            data_bridge_publication_identity_sha256(
+                                previous_state
+                            )
+                        ),
+                        daily_cutoff_key="2026-07-18",
+                        weekly_cutoff_key="202629",
+                        monthly_cutoff_key="202607",
+                    )
+                ),
                 daily_cutoff_key="2026-07-18",
                 weekly_cutoff_key="202629",
                 monthly_cutoff_key="202607",
@@ -1305,6 +1323,7 @@ class DataBridgeRefreshTests(unittest.TestCase):
             DataBridgeRefreshConfig,
             DataBridgeRefreshError,
             DataBridgeStore,
+            data_bridge_continuity_authority_sha256,
             data_bridge_publication_identity_sha256,
             run_full_refresh,
         )
@@ -1345,7 +1364,20 @@ class DataBridgeRefreshTests(unittest.TestCase):
                         first_published_state
                     )
                 ),
-                stable_identity_sha256="d" * 64,
+                stable_identity_sha256=(
+                    data_bridge_continuity_authority_sha256(
+                        generation_id="generation-first",
+                        business_digest=first.business_digest,
+                        publication_identity_sha256=(
+                            data_bridge_publication_identity_sha256(
+                                first_published_state
+                            )
+                        ),
+                        daily_cutoff_key="2026-07-18",
+                        weekly_cutoff_key="202629",
+                        monthly_cutoff_key="202607",
+                    )
+                ),
                 daily_cutoff_key="2026-07-18",
                 weekly_cutoff_key="202629",
                 monthly_cutoff_key="202607",
@@ -1441,6 +1473,236 @@ class DataBridgeRefreshTests(unittest.TestCase):
                     refresh_date="2026-07-19",
                     publish=False,
                     continuity_authority=None,
+                )
+
+    def test_refresh_rejects_cutoff_forged_under_previous_stable_digest(
+        self,
+    ) -> None:
+        from dataclasses import replace
+
+        from shared.data_bridge.authority import (
+            DataBridgeContinuityAuthority,
+        )
+        from shared.data_bridge.refresh import (
+            DataBridgeRefreshConfig,
+            DataBridgeRefreshError,
+            DataBridgeStore,
+            data_bridge_continuity_authority_sha256,
+            data_bridge_publication_identity_sha256,
+            run_full_refresh,
+        )
+        from shared.data_bridge.validation import (
+            validate_dataset,
+            write_validated_dataset,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            schema = _write_schema(root)
+            config = DataBridgeRefreshConfig(
+                data_root=root / "data",
+                runtime_root=root / "runtime",
+                schema_path=schema,
+                daily_start_date="2026-01-01",
+            )
+            previous = validate_dataset(
+                {
+                    "daily_output.csv": pd.DataFrame(
+                        {
+                            "date": ["2026/07/18 00:00"],
+                            "factor": ["1"],
+                        }
+                    ),
+                    "weekly_output.csv": pd.DataFrame(
+                        {
+                            "week_id": [
+                                "202628",
+                                "202629",
+                                "202630",
+                            ],
+                            "factor": ["2", "3", "4"],
+                        }
+                    ),
+                    "monthly_output.csv": pd.DataFrame(
+                        {
+                            "month_id": ["202606", "202607"],
+                            "factor": ["5", "6"],
+                        }
+                    ),
+                },
+                schema_path=schema,
+            )
+            store = DataBridgeStore(
+                data_root=config.data_root,
+                runtime_root=config.runtime_root,
+            )
+            store.publish(
+                write_validated_dataset(previous, root / "previous"),
+                _dataset_state(
+                    previous,
+                    refresh_date="2026-07-18",
+                ),
+            )
+            state = store.load_state()
+            publication_identity = (
+                data_bridge_publication_identity_sha256(state)
+            )
+            stable_identity = (
+                data_bridge_continuity_authority_sha256(
+                    generation_id=str(state["generation_id"]),
+                    business_digest=previous.business_digest,
+                    publication_identity_sha256=publication_identity,
+                    daily_cutoff_key="2026-07-18",
+                    weekly_cutoff_key="202629",
+                    monthly_cutoff_key="202607",
+                )
+            )
+            authority = DataBridgeContinuityAuthority(
+                generation_id=str(state["generation_id"]),
+                business_digest=previous.business_digest,
+                publication_identity_sha256=publication_identity,
+                stable_identity_sha256=stable_identity,
+                daily_cutoff_key="2026-07-18",
+                weekly_cutoff_key="202629",
+                monthly_cutoff_key="202607",
+            )
+            forged = replace(
+                authority,
+                weekly_cutoff_key="202628",
+            )
+            client = _FakeClient()
+
+            with self.assertRaisesRegex(
+                DataBridgeRefreshError,
+                "continuity authority.*digest",
+            ):
+                run_full_refresh(
+                    client=client,
+                    config=config,
+                    expected_daily_date="2026-07-18",
+                    refresh_date="2026-07-19",
+                    publish=False,
+                    continuity_authority=forged,
+                )
+
+            self.assertEqual(client.calls, [])
+
+    def test_authority_entry_recovers_crash_and_legacy_current_states(
+        self,
+    ) -> None:
+        from shared.blackbox_v2.snapshot import CutoffKeys
+        from shared.data_bridge.authority import (
+            resolve_databridge_continuity_authority_from_engine,
+        )
+        from shared.data_bridge.refresh import (
+            CURRENT_PUBLICATION_MANIFEST,
+            DataBridgeRefreshConfig,
+            DataBridgeStore,
+        )
+        from shared.data_bridge.validation import (
+            write_validated_dataset,
+        )
+
+        for scenario in (
+            "previous_only",
+            "damaged_current",
+            "legacy_marker",
+        ):
+            with (
+                self.subTest(scenario=scenario),
+                tempfile.TemporaryDirectory() as tmpdir,
+            ):
+                root = Path(tmpdir)
+                schema = _write_schema(root)
+                config = DataBridgeRefreshConfig(
+                    data_root=root / "data",
+                    runtime_root=root / "runtime",
+                    schema_path=schema,
+                )
+                dataset = _validated_dataset(root, schema)
+                store = DataBridgeStore(
+                    data_root=config.data_root,
+                    runtime_root=config.runtime_root,
+                )
+                state = _dataset_state(
+                    dataset,
+                    refresh_date="2026-07-18",
+                )
+                state["generation_id"] = "generation-recoverable"
+                store.publish(
+                    write_validated_dataset(
+                        dataset,
+                        root / "candidate",
+                    ),
+                    state,
+                )
+                if scenario == "previous_only":
+                    os.replace(
+                        store.current_dir,
+                        store.previous_dir,
+                    )
+                elif scenario == "damaged_current":
+                    shutil.copytree(
+                        store.current_dir,
+                        store.previous_dir,
+                    )
+                    daily = (
+                        store.current_dir / "daily_output.csv"
+                    )
+                    daily.chmod(0o644)
+                    daily.write_text(
+                        daily.read_text(encoding="utf-8").replace(
+                            ",1\n",
+                            ",9\n",
+                        ),
+                        encoding="utf-8",
+                    )
+                    daily.chmod(0o444)
+                else:
+                    (
+                        store.current_dir
+                        / CURRENT_PUBLICATION_MANIFEST
+                    ).unlink()
+
+                connection = Mock()
+                connection_context = Mock()
+                connection_context.__enter__ = Mock(
+                    return_value=connection
+                )
+                connection_context.__exit__ = Mock(
+                    return_value=False
+                )
+                engine = Mock()
+                engine.connect.return_value = connection_context
+                with patch(
+                    "shared.data_bridge.authority."
+                    "_resolve_blackbox_input_cutoffs_bulk_from_keys",
+                    return_value={
+                        "2026-07-18": CutoffKeys(
+                            daily_cutoff_key="2026-07-18",
+                            weekly_cutoff_key="202629",
+                            monthly_cutoff_key="202607",
+                        )
+                    },
+                ):
+                    authority = (
+                        resolve_databridge_continuity_authority_from_engine(
+                            config,
+                            feature_date="2026-07-18",
+                            engine=engine,
+                        )
+                    )
+
+                self.assertEqual(
+                    authority.generation_id,
+                    "generation-recoverable",
+                )
+                self.assertFalse(store.previous_dir.exists())
+                self.assertTrue(
+                    (
+                        store.current_dir
+                        / CURRENT_PUBLICATION_MANIFEST
+                    ).is_file()
                 )
 
     def test_published_state_records_trusted_refresh_timeline(self) -> None:

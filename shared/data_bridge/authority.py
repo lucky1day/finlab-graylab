@@ -10,9 +10,12 @@ from shared.data_bridge.refresh import (
     DataBridgeCurrentInvalidError,
     DataBridgeCurrentMissingError,
     DataBridgeCurrentReadError,
+    DataBridgeContinuityAuthority,
     DataBridgeRefreshConfig,
     DataBridgeRefreshError,
+    DataBridgeStore,
     check_current_dataset,
+    data_bridge_continuity_authority_sha256,
     data_bridge_publication_identity_sha256,
 )
 from shared.data_bridge.validation import DataBridgeValidationError
@@ -69,27 +72,6 @@ class StableDataBridgeCurrentAuthority:
     stable_identity_sha256: str
 
 
-@dataclass(frozen=True, slots=True)
-class DataBridgeContinuityAuthority:
-    """绑定一次 refresh 前已校验 current 与其有效连续性截止键。"""
-
-    generation_id: str
-    business_digest: str
-    publication_identity_sha256: str
-    stable_identity_sha256: str
-    daily_cutoff_key: str
-    weekly_cutoff_key: str
-    monthly_cutoff_key: str
-
-    @property
-    def continuity_cutoffs(self) -> Mapping[str, str]:
-        return {
-            "daily_output.csv": self.daily_cutoff_key,
-            "weekly_output.csv": self.weekly_cutoff_key,
-            "monthly_output.csv": self.monthly_cutoff_key,
-        }
-
-
 def resolve_databridge_continuity_authority(
     config: DataBridgeRefreshConfig,
     *,
@@ -121,13 +103,25 @@ def resolve_databridge_continuity_authority(
             "DataBridge current continuity cutoff authority is incomplete"
         )
     cutoff = authority.cutoffs[0]
+    stable_identity_sha256 = (
+        data_bridge_continuity_authority_sha256(
+            generation_id=authority.generation_id,
+            business_digest=authority.business_digest,
+            publication_identity_sha256=(
+                authority.publication_identity_sha256
+            ),
+            daily_cutoff_key=cutoff.daily_cutoff_key,
+            weekly_cutoff_key=cutoff.weekly_cutoff_key,
+            monthly_cutoff_key=cutoff.monthly_cutoff_key,
+        )
+    )
     return DataBridgeContinuityAuthority(
         generation_id=authority.generation_id,
         business_digest=authority.business_digest,
         publication_identity_sha256=(
             authority.publication_identity_sha256
         ),
-        stable_identity_sha256=authority.stable_identity_sha256,
+        stable_identity_sha256=stable_identity_sha256,
         daily_cutoff_key=cutoff.daily_cutoff_key,
         weekly_cutoff_key=cutoff.weekly_cutoff_key,
         monthly_cutoff_key=cutoff.monthly_cutoff_key,
@@ -141,6 +135,11 @@ def resolve_databridge_continuity_authority_from_engine(
     engine: Any,
 ) -> DataBridgeContinuityAuthority | None:
     """在单个 RR consistent snapshot 只读事务中解析 current authority。"""
+    store = DataBridgeStore(
+        data_root=config.data_root,
+        runtime_root=config.runtime_root,
+    )
+    store.recover(schema_path=config.schema_path)
     with engine.connect() as connection:
         connection.exec_driver_sql(
             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
