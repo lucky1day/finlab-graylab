@@ -242,6 +242,67 @@ class LiweiCacheSpecFingerprintPinTests(unittest.TestCase):
             self.assertEqual(policy.read_bytes(), before_policy)
             self.assertEqual(admission.read_bytes(), before_admission)
 
+    def test_check_rejects_cache_group_row_without_pin(self) -> None:
+        """同组任一 policy row 漏钉时 --check 不得返回成功。"""
+        import hashlib
+
+        import scripts.refresh_liwei_cache_spec_fingerprints as refresh
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = root / "policy.json"
+            admission = root / "admission.json"
+            policy.write_text(
+                json.dumps(
+                    {
+                        "schemes": [
+                            {
+                                "scheme_id": "publisher",
+                                "cache_group": "family:5Y",
+                                "cache_spec_fingerprint": "expected",
+                            },
+                            {
+                                "scheme_id": "consumer",
+                                "cache_group": "family:5Y",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            admission.write_text(
+                json.dumps(
+                    {
+                        "status": "BLOCKED",
+                        "policy_sha256": hashlib.sha256(
+                            policy.read_bytes()
+                        ).hexdigest(),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(refresh, "POLICY_PATH", policy),
+                patch.object(refresh, "ADMISSION_PATH", admission),
+                patch.object(
+                    refresh,
+                    "_require_algo_environment",
+                    return_value="forecast_env",
+                ),
+                patch.object(
+                    refresh,
+                    "compute_fingerprints",
+                    return_value={"family:5Y": "expected"},
+                ),
+                patch.object(
+                    sys,
+                    "argv",
+                    ["refresh_liwei_cache_spec_fingerprints.py", "--check"],
+                ),
+            ):
+                self.assertEqual(refresh.main(), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

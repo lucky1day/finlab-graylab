@@ -379,6 +379,13 @@ def main() -> int:
     pins = _policy_pins(payload)
     mismatched = 0
     print(f"{POLICY_PATH.name}")
+    try:
+        _require_policy_pin_coverage(payload, computed)
+    except FingerprintRefreshError as error:
+        if args.write:
+            raise
+        mismatched += 1
+        print(f"  COVERAGE {error}")
     for group, expected in computed.items():
         actual = pins.get(group)
         if actual is None:
