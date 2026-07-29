@@ -713,6 +713,66 @@ class DataBridgeGenerationDurabilityAndRetentionTests(unittest.TestCase):
             self.assertEqual(publication_count, 1)
             self.assertTrue(created.manifest_path.is_file())
 
+    def test_publish_withdraws_generation_when_sealing_fails(self) -> None:
+        """DataBridge 侧同样不得留下已发布但未封存的 generation。"""
+        import importlib
+
+        module = importlib.import_module("shared.databridge_input_generation")
+        for name, error in (
+            ("fchmod", PermissionError(13, "denied")),
+            ("fsync", OSError(5, "io error")),
+        ):
+            with self.subTest(step=name), tempfile.TemporaryDirectory() as td:
+                parent = Path(td)
+                module._SEALED_RENAME_SUPPORT[str(parent)] = False
+                try:
+                    staging = parent / ".building-x"
+                    staging.mkdir()
+                    (staging / "manifest.json").write_text(
+                        "{}", encoding="utf-8"
+                    )
+                    destination = parent / "databridge-abc"
+                    with patch.object(module.os, name, side_effect=error):
+                        with self.assertRaises(type(error)):
+                            module._publish_sealed_generation(
+                                staging, destination
+                            )
+                    self.assertFalse(
+                        os.path.lexists(destination),
+                        "封存失败后仍留下已发布的 generation",
+                    )
+                    self.assertFalse(os.path.lexists(staging))
+                finally:
+                    module._SEALED_RENAME_SUPPORT.pop(str(parent), None)
+
+    def test_retention_rename_restores_sealed_mode_when_retry_fails(
+        self,
+    ) -> None:
+        """DataBridge 保留期重试失败同样必须恢复 0o555。"""
+        import importlib
+
+        module = importlib.import_module("shared.databridge_input_generation")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir)
+            source = parent / "databridge-abc"
+            source.mkdir()
+            os.chmod(source, 0o555)
+            target = parent / ".gc-databridge-abc"
+            with patch.object(
+                module.os, "rename", side_effect=OSError(5, "io error")
+            ):
+                with self.assertRaises(OSError):
+                    module._rename_with_temporarily_writable_source(
+                        source, target
+                    )
+            self.assertEqual(
+                stat.S_IMODE(os.lstat(source).st_mode),
+                0o555,
+                "重试失败后未恢复封存模式",
+            )
+            self.assertFalse(os.path.lexists(target))
+            os.chmod(source, 0o755)
+
     def test_post_rename_failure_preserves_complete_final_generation(
         self,
     ) -> None:

@@ -2110,6 +2110,11 @@ def _publish_sealed_generation(staging: Path, destination: Path) -> None:
     generation 只在平台私有、不可被 group/other 写的父目录下可见；封存后会
     经 ``fstat`` 复核，未达 ``0o555`` 即报错。
 
+    封存路径上的任一步失败（``fchmod``/``fsync``/模式复核）都会撤回本次发布：
+    调用方的 ``finally`` 只清理 ``staging``，而 rename 之后 ``staging`` 已不
+    存在，因此必须由本函数按已持有 fd 的 dev/ino 校验身份后移除 destination
+    并 fsync 父目录，绝不留下可见且可写的 generation。
+
     两条路径都只对真实 generation 执行一次 ``os.replace``。
     """
     if _sealed_rename_supported(destination.parent):
@@ -2121,17 +2126,83 @@ def _publish_sealed_generation(staging: Path, destination: Path) -> None:
         staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     )
     try:
+        identity = os.fstat(staging_fd)
         os.replace(staging, destination)
-        os.fchmod(staging_fd, 0o555)
-        os.fsync(staging_fd)
-        sealed_mode = stat.S_IMODE(os.fstat(staging_fd).st_mode)
-        if sealed_mode != 0o555:
-            raise RuntimeError(
-                "generation was published but could not be sealed: "
-                f"{destination} mode={sealed_mode:o}"
-            )
+        try:
+            os.fchmod(staging_fd, 0o555)
+            os.fsync(staging_fd)
+            sealed_mode = stat.S_IMODE(os.fstat(staging_fd).st_mode)
+            if sealed_mode != 0o555:
+                raise RuntimeError(
+                    "generation was published but could not be sealed: "
+                    f"{destination} mode={sealed_mode:o}"
+                )
+        except BaseException:
+            _withdraw_unsealed_publication(destination, identity)
+            raise
     finally:
         os.close(staging_fd)
+
+
+def _rename_with_temporarily_writable_source(
+    source: Path,
+    target: Path,
+) -> None:
+    """临时解开已封存目录的写位以完成 rename，失败必须恢复封存。
+
+    重试若仍失败（父目录权限、I/O 等），直接抛出会把原本 ``0o555`` 的
+    generation 留成 ``0o755``，等于把只读不变量破坏在一个本应无副作用的
+    失败路径上。因此在抛出前恢复并复核；恢复本身失败会抛出更明确的错误。
+    """
+    os.chmod(source, 0o755, follow_symlinks=False)
+    try:
+        os.rename(source, target)
+    except BaseException:
+        try:
+            os.chmod(source, 0o555, follow_symlinks=False)
+            restored = stat.S_IMODE(os.lstat(source).st_mode)
+        except OSError as restore_error:
+            raise RuntimeError(
+                "failed to restore the sealed mode after an unsuccessful "
+                f"retention rename: {source}"
+            ) from restore_error
+        if restored != 0o555:
+            raise RuntimeError(
+                "sealed mode was not restored after an unsuccessful "
+                f"retention rename: {source} mode={restored:o}"
+            )
+        raise
+
+
+def _withdraw_unsealed_publication(
+    destination: Path,
+    identity: os.stat_result,
+) -> None:
+    """封存失败时撤回刚发布的 generation，保证不留下可写残留。
+
+    只在 destination 仍是与发布前 fd 同一 dev/ino 的真实目录时才移除，避免
+    并发下误删他人发布的同名 generation。撤回本身失败会抛出，让调用方看到
+    "发布未封存且未能撤回"这一必须人工介入的状态，而不是静默留下可写目录。
+    """
+    try:
+        current = os.lstat(destination)
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISDIR(current.st_mode)
+        or current.st_dev != identity.st_dev
+        or current.st_ino != identity.st_ino
+    ):
+        raise RuntimeError(
+            "refusing to withdraw an unsealed publication that is no longer "
+            f"the generation just published: {destination}"
+        )
+    _remove_tree(destination)
+    if os.path.lexists(destination):
+        raise RuntimeError(
+            f"unsealed generation remains published: {destination}"
+        )
+    _fsync_directory(destination.parent)
 
 
 def _remove_tree(root: Path) -> None:
@@ -2212,12 +2283,10 @@ def _delete_native_generation(
     try:
         os.rename(source, tombstone)
     except PermissionError:
-        # 已发布 generation 目录是 0o555。有继承 ACL 的部署可直接 rename；
-        # 没有时 POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。
-        # 上方已确认它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做
-        # 同样的放宽。
-        os.chmod(source, 0o755, follow_symlinks=False)
-        os.rename(source, tombstone)
+        # 已发布 generation 目录是 0o555。部分平台允许直接 rename；不允许时
+        # POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。上方已确认
+        # 它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做同样的放宽。
+        _rename_with_temporarily_writable_source(source, tombstone)
     _fsync_directory(root)
     tombstone_info = tombstone.lstat()
     if (

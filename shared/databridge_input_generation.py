@@ -32,8 +32,11 @@ from shared.data_bridge.validation import validate_dataset
 from shared.native_input_generation import (
     NativeGenerationContext,
     open_native_generation,
-    # 发布语义与 Native generation 一致，复用同一实现避免两处漂移。
+    # 发布与保留期 rename 的权限语义与 Native generation 一致，
+    # 复用同一实现避免两处漂移；探测缓存同样共用一份。
+    _SEALED_RENAME_SUPPORT,
     _publish_sealed_generation,
+    _rename_with_temporarily_writable_source,
 )
 
 
@@ -1350,12 +1353,10 @@ def _delete_databridge_generation(
     try:
         os.rename(source, tombstone)
     except PermissionError:
-        # 已发布 generation 目录是 0o555。有继承 ACL 的部署可直接 rename；
-        # 没有时 POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。
-        # 上方已确认它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做
-        # 同样的放宽。
-        os.chmod(source, 0o755, follow_symlinks=False)
-        os.rename(source, tombstone)
+        # 已发布 generation 目录是 0o555。部分平台允许直接 rename；不允许时
+        # POSIX 要求对被移动目录本身有写权限，此时才解开写位重试。上方已确认
+        # 它是 dev/ino 匹配的真目录，`_remove_tree` 随后也会做同样的放宽。
+        _rename_with_temporarily_writable_source(source, tombstone)
     _fsync_directory(root)
     tombstone_info = tombstone.lstat()
     if (
