@@ -40,6 +40,15 @@ AUTHORITY = {
     "vintage_disclaimer":
         "current_snapshot_as_of_not_historical_vintage",
 }
+ARCHIVED_AUTHORITY = {
+    "authority_type": "native_archived_generation",
+    "generation_id": "native-" + "d" * 24,
+    "manifest_sha256": "e" * 64,
+    "business_date": "2026-07-28",
+    "feature_date": "2026-07-27",
+    "cutoff_date": "2026-07-27",
+    "replay_mode": "historical_sealed_generation_replay",
+}
 
 
 class SignalGapFillAuthorizationTests(unittest.TestCase):
@@ -89,6 +98,82 @@ class SignalGapFillAuthorizationTests(unittest.TestCase):
         self.assertEqual(auth.plan_sha256, PLAN_SHA)
         self.assertEqual(auth.signal_gap_target_keys, TARGETS)
         self.assertEqual(auth.source_authority, AUTHORITY)
+
+    def test_archived_native_generation_authority_is_bound_exactly(
+        self,
+    ) -> None:
+        token = self._issue(source_authority=ARCHIVED_AUTHORITY)
+
+        auth, errors = verify_signal_gap_fill_authorization(
+            token,
+            plan_sha256=PLAN_SHA,
+            base_scheme_id="demo",
+            predict_date="2026-07-28",
+            target_keys=TARGETS,
+            scheme_version="version-1",
+            source_authority=ARCHIVED_AUTHORITY,
+            used_store_path=self.used_path,
+        )
+
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(auth)
+        self.assertEqual(auth.source_authority, ARCHIVED_AUTHORITY)
+
+    def test_archived_native_generation_rejects_replay_or_schema_drift(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "archived Native replay_mode is invalid",
+        ):
+            self._issue(
+                source_authority={
+                    **ARCHIVED_AUTHORITY,
+                    "replay_mode": "historical_as_of_replay",
+                }
+            )
+        with self.assertRaisesRegex(
+            ValueError,
+            "archived Native source authority schema is invalid",
+        ):
+            self._issue(
+                source_authority={
+                    **ARCHIVED_AUTHORITY,
+                    "vintage_disclaimer":
+                        "current_snapshot_as_of_not_historical_vintage",
+                }
+            )
+
+    def test_archived_native_business_date_must_equal_predict_date(
+        self,
+    ) -> None:
+        authority = {
+            **ARCHIVED_AUTHORITY,
+            "business_date": "2026-07-29",
+        }
+        with self.assertRaisesRegex(
+            ValueError,
+            "archived Native business_date must equal predict_date",
+        ):
+            self._issue(source_authority=authority)
+
+        token = self._issue(source_authority=ARCHIVED_AUTHORITY)
+
+        _, errors = verify_signal_gap_fill_authorization(
+            token,
+            plan_sha256=PLAN_SHA,
+            base_scheme_id="demo",
+            predict_date="2026-07-28",
+            target_keys=TARGETS,
+            scheme_version="version-1",
+            source_authority=authority,
+            used_store_path=self.used_path,
+        )
+
+        self.assertIn(
+            "archived Native business_date must equal predict_date",
+            errors,
+        )
 
     def test_scope_drift_and_old_gray_token_are_rejected(self) -> None:
         token = self._issue()

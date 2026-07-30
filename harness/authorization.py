@@ -194,6 +194,18 @@ def issue_token(
         normalized_authority = _normalize_signal_gap_source_authority(
             source_authority
         )
+        if (
+            normalized_authority["authority_type"]
+            == "native_archived_generation"
+            and normalized_authority["business_date"]
+            != _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                predict_date,
+            )
+        ):
+            raise ValueError(
+                "archived Native business_date must equal predict_date"
+            )
     elif action == "signal_gap_native_artifact_register":
         if scheme_id != SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID:
             raise ValueError(
@@ -705,9 +717,22 @@ def verify_signal_gap_fill_authorization(
         expected_authority = _normalize_signal_gap_source_authority(
             source_authority
         )
+        normalized_predict_date = _normalize_action_predict_date(
+            "signal_gap_fill_write",
+            predict_date,
+        )
     except ValueError as exc:
         errors.append(str(exc))
         return auth, errors
+    if (
+        expected_authority["authority_type"]
+        == "native_archived_generation"
+        and expected_authority["business_date"]
+        != normalized_predict_date
+    ):
+        errors.append(
+            "archived Native business_date must equal predict_date"
+        )
     if auth is None:
         return None, errors
     errors.extend(
@@ -865,6 +890,61 @@ def _normalize_signal_gap_source_authority(
             ),
             "vintage_disclaimer": str(value["vintage_disclaimer"]),
         }
+    elif authority_type == "native_archived_generation":
+        expected = frozenset(
+            {
+                "authority_type",
+                "generation_id",
+                "manifest_sha256",
+                "business_date",
+                "feature_date",
+                "cutoff_date",
+                "replay_mode",
+            }
+        )
+        if frozenset(value) != expected:
+            raise ValueError(
+                "archived Native source authority schema is invalid"
+            )
+        normalized = {
+            "authority_type": authority_type,
+            "generation_id": _require_text(
+                value["generation_id"],
+                "generation_id",
+            ),
+            "manifest_sha256": _require_sha256(
+                value["manifest_sha256"],
+                "manifest_sha256",
+            ),
+            "business_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                value["business_date"],
+            ),
+            "feature_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                value["feature_date"],
+            ),
+            "cutoff_date": _normalize_action_predict_date(
+                "signal_gap_fill_write",
+                value["cutoff_date"],
+            ),
+            "replay_mode": str(value["replay_mode"]),
+        }
+        if (
+            normalized["replay_mode"]
+            != "historical_sealed_generation_replay"
+        ):
+            raise ValueError(
+                "archived Native replay_mode is invalid"
+            )
+        if normalized["cutoff_date"] != normalized["feature_date"]:
+            raise ValueError(
+                "archived Native cutoff_date must equal feature_date"
+            )
+        if normalized["feature_date"] >= normalized["business_date"]:
+            raise ValueError(
+                "archived Native feature_date must precede business_date"
+            )
     elif authority_type == "databridge_current_generation":
         expected = frozenset(
             {
@@ -909,7 +989,8 @@ def _normalize_signal_gap_source_authority(
     else:
         raise ValueError("signal gap source authority type is invalid")
     if (
-        normalized["vintage_disclaimer"]
+        authority_type != "native_archived_generation"
+        and normalized["vintage_disclaimer"]
         != "current_snapshot_as_of_not_historical_vintage"
     ):
         raise ValueError(
