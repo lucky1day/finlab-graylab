@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "cgb_causal_wk_3y",
+  "name": "CAUSAL_CV2_ROLLING_DECAY",
+  "description": "以5个宏观传导通道下51个日周频指标构建52周滚动z因果压力因子并聚合为通道压力,另加R007/存单/MLF相对3Y收益率利差与动量资金交互共7个专属因子;用最近156周滚动窗口和半衰期104周的时间衰减权重训练Logistic与Ridge得到上行概率,p大于等于0.5取上行, 绝对偏离不超过0.10时反转, 输出下一周3Y活跃券到期收益率方向。",
+  "algorithm_version": "2.0.0-rc1",
+  "target_tenor": "3Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}
