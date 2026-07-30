@@ -369,13 +369,14 @@ def _native_generation(**changes):
     values = {
         "generation_id": "native-0123456789abcdef01234567",
         "generation_type": "native_source",
-        "business_date": "2026-07-27",
+        "business_date": "2026-07-30",
         "feature_date": "2026-07-24",
         "readiness_basis": "CLOCK_CONTRACT",
         "source_commit_token": _sha("native-source"),
         "dataset_content_id": _sha("native-dataset"),
         "schema_version": "native-generation-v1",
-        "exporter_version": "native-exporter-v1",
+        "exporter_version":
+            "native-signal-gap-current-snapshot-v1",
         "manifest_uri": "/private/native/manifest.json",
         "manifest_sha256": _sha("native-manifest"),
         "native_generation_id": None,

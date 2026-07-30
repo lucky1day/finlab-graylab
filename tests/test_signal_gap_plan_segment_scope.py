@@ -364,13 +364,14 @@ class SignalGapPlanSegmentScopeTests(unittest.TestCase):
             InputGeneration(
                 generation_id=f"native-{index:024x}",
                 generation_type="native_source",
-                business_date=predict_date,
+                business_date="2026-07-30",
                 feature_date=feature_date,
                 readiness_basis="CLOCK_CONTRACT",
                 source_commit_token="a" * 64,
                 dataset_content_id=f"{index + 10:064x}",
                 schema_version="native-generation-v1",
-                exporter_version="native-generation-exporter-v1",
+                exporter_version=
+                    "native-signal-gap-current-snapshot-v1",
                 manifest_uri=(
                     f"/frozen/native-{index:024x}/manifest.json"
                 ),

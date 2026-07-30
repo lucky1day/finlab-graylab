@@ -120,6 +120,40 @@ class GenerationRegistryTests(unittest.TestCase):
             atomic_register.call_args.kwargs,
         )
 
+    def test_occurrence_registration_rejects_gray_gap_exporter(
+        self,
+    ) -> None:
+        from dataclasses import replace
+
+        from scheduler.generation_registry import (
+            register_native_generation,
+        )
+        from shared.native_input_generation import (
+            SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
+        )
+
+        context = replace(
+            _generation_context(),
+            exporter_version=SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
+        )
+        with (
+            patch(
+                "scheduler.generation_registry.open_native_generation",
+                return_value=context,
+            ),
+            patch(
+                "scheduler.generation_registry."
+                "register_seal_and_bind_schedule_occurrence_generation",
+            ) as atomic_register,
+            self.assertRaisesRegex(ValueError, "daily ledger"),
+        ):
+            register_native_generation(
+                object(),
+                context,
+                occurrence_id=42,
+            )
+        atomic_register.assert_not_called()
+
     def test_databridge_registration_rehashes_native_parent_from_db_fence(
         self,
     ) -> None:
