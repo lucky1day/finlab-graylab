@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "cgb_causal_wk_1y",
+  "name": "CAUSAL_WALKFORWARD_LOGIT_RIDGE",
+  "description": "以5个宏观传导通道下51个日/周频指标构建52周滚动z因果压力因子并聚合为通道压力,用只含特征周之前已实现样本的walk-forward窗口训练Logistic与Ridge分类器,两者上行概率均值大于等于0.5判定下一周1Y活跃券到期收益率上行。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "1Y",
+  "task_type": "weekly_point",
+  "horizon": 1,
+  "target_rule": "target_week_end_yield_vs_feature_week_end_yield"
+}
