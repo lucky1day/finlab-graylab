@@ -28,6 +28,7 @@ from shared.data_bridge.refresh import (
     DataBridgeRefreshConfig,
 )
 from shared.native_input_generation import (
+    NATIVE_GENERATION_EXPORTER_VERSION,
     SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
     open_native_generation,
 )
@@ -2182,21 +2183,48 @@ def _native_generation_eligibility(
         tuple[Mapping[str, Any] | None, str | None],
     ],
 ) -> tuple[Action, Mapping[str, Any] | None, str]:
-    scoped = [
+    feature_scoped = [
         row
         for row in generations
         if row.generation_type == "native_source"
         and row.feature_date == item.feature_date
-        and row.business_date > item.predict_date
     ]
-    candidates = [
+    normal_candidates = [
         row
-        for row in scoped
+        for row in feature_scoped
+        if row.exporter_version
+        == NATIVE_GENERATION_EXPORTER_VERSION
+        and row.business_date == item.predict_date
+    ]
+    if normal_candidates:
+        if len(normal_candidates) != 1:
+            return (
+                "BLOCKED_DATA_CONTRACT",
+                None,
+                "DUPLICATE_EXACT_NATIVE_GENERATION",
+            )
+        return _verified_native_generation_eligibility(
+            normal_candidates[0],
+            item=item,
+            expected_exporter_version=(
+                NATIVE_GENERATION_EXPORTER_VERSION
+            ),
+            require_later_business_date=False,
+            artifact_verifier=artifact_verifier,
+        )
+
+    snapshot_candidates = [
+        row
+        for row in feature_scoped
         if row.exporter_version
         == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+        and row.business_date > item.predict_date
     ]
-    if not candidates:
-        if scoped:
+    if not snapshot_candidates:
+        if any(
+            row.business_date > item.predict_date
+            for row in feature_scoped
+        ):
             return (
                 "BLOCKED_DATA_CONTRACT",
                 None,
@@ -2207,17 +2235,40 @@ def _native_generation_eligibility(
             None,
             "NO_EXACT_NATIVE_GENERATION",
         )
-    if len(candidates) != 1:
+    if len(snapshot_candidates) != 1:
         return (
             "BLOCKED_DATA_CONTRACT",
             None,
             "DUPLICATE_EXACT_NATIVE_GENERATION",
         )
-    selected = candidates[0]
+    return _verified_native_generation_eligibility(
+        snapshot_candidates[0],
+        item=item,
+        expected_exporter_version=(
+            SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+        ),
+        require_later_business_date=True,
+        artifact_verifier=artifact_verifier,
+    )
+
+
+def _verified_native_generation_eligibility(
+    selected: InputGeneration,
+    *,
+    item: ExpectedSignalCase,
+    expected_exporter_version: str,
+    require_later_business_date: bool,
+    artifact_verifier: Callable[
+        [InputGeneration],
+        tuple[Mapping[str, Any] | None, str | None],
+    ],
+) -> tuple[Action, Mapping[str, Any] | None, str]:
     if not _valid_native_generation_fence(
         selected,
         expected_predict_date=item.predict_date,
         expected_feature_date=item.feature_date,
+        expected_exporter_version=expected_exporter_version,
+        require_later_business_date=require_later_business_date,
     ):
         return (
             "BLOCKED_DATA_CONTRACT",
@@ -2243,6 +2294,8 @@ def _valid_native_generation_fence(
     *,
     expected_predict_date: str,
     expected_feature_date: str,
+    expected_exporter_version: str,
+    require_later_business_date: bool,
 ) -> bool:
     try:
         business_date = _canonical_date(
@@ -2266,14 +2319,18 @@ def _valid_native_generation_fence(
         and generation.generation_type == "native_source"
         and business_date == generation.business_date
         and feature_date == generation.feature_date
-        and business_date > expected_predict_date
+        and (
+            business_date > expected_predict_date
+            if require_later_business_date
+            else business_date == expected_predict_date
+        )
         and feature_date == expected_feature_date
         and generation.readiness_basis == "CLOCK_CONTRACT"
         and _is_sha256(generation.source_commit_token)
         and _is_sha256(generation.dataset_content_id)
         and bool(generation.schema_version.strip())
         and generation.exporter_version
-        == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+        == expected_exporter_version
         and Path(generation.manifest_uri).is_absolute()
         and Path(generation.manifest_uri).name == "manifest.json"
         and _is_sha256(generation.manifest_sha256)
