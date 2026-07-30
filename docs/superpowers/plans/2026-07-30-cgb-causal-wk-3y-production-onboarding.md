@@ -217,7 +217,9 @@ Expected: 7/7 PASS、100/100 技术回测、零控制面和业务写入。
 
 使用 `/tmp` 输出运行上游 `verify_vs_reference.py`，保留其 0725 snapshot
 内 `376/376` 结论；平台报告只把同代生产 generation 的输出作为生产真值。
-必须记录 `202625` 日历缺口和 CV2 低置信反转的 snapshot 敏感性。
+必须记录 `data_vintage_mismatch`、随包周历非严格升序、缺少平台
+`202625` 以及 CV2 低置信反转的 snapshot 敏感性；不得把随包日历送入平台
+provider。
 
 - [ ] **Step 4: 执行 persisted all-stage**
 
@@ -271,11 +273,13 @@ action 为 `blackbox_activate`，运行：
 /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python \
   -m harness activate \
   --scheme-id cgb_causal_wk_3y \
-  --predict-date 2026-07-25 \
   --project-root \
   /Users/macstudio0/bond-factor-lab/.worktrees/blackbox-v2-3y-weekly-onboarding-20260730 \
   --authorize "$CGB3Y_ACTIVATE_TOKEN"
 ```
+
+`blackbox_activate` token 只绑定 exact scheme/version/Harness run 和 operator，
+不伪造额外 predict date。
 
 - [ ] **Step 4: 读回生命周期**
 
@@ -335,7 +339,7 @@ harness_run_id=$CGB3Y_HARNESS_RUN_ID
 
 - [ ] **Step 3: 只读核对历史**
 
-核对 latest successful run、完整 prediction 数、非空月度指标、
+核对 latest successful run、72 条 prediction、17 个月度指标、
 `target_date < 2026-06-01`、与 live target 零重叠。实际数量必须与平台
 calendar 枚举一致，不用固定 100 代替完整数量。
 
@@ -353,7 +357,22 @@ calendar 枚举一致，不用固定 100 代替完整数量。
 - [ ] **Step 1: 从平台权威日历枚举目标**
 
 按 `target_date` 枚举 2026-06-01 至 2026-07-31 的应有周度目标，
-逐条记录 `predict_date/feature_date/target_date`。不得从部署日向后猜测。
+必须得到 9 个目标；feature/target 依次为：
+
+```text
+2026-05-29 → 2026-06-05
+2026-06-05 → 2026-06-12
+2026-06-12 → 2026-06-18
+2026-06-18 → 2026-06-26
+2026-06-26 → 2026-07-03
+2026-07-03 → 2026-07-10
+2026-07-10 → 2026-07-17
+2026-07-17 → 2026-07-24
+2026-07-24 → 2026-07-31
+```
+
+逐条记录平台计算出的 `predict_date/feature_date/target_date`；不得从部署日、
+ISO 周或简单 `+7` 猜测。
 
 - [ ] **Step 2: 对每个点独立签发 token**
 

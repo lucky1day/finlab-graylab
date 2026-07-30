@@ -33,7 +33,7 @@ def test_delivery_bytes_and_exact_version_are_frozen() -> None:
 
 
 def test_weekly_platform_contract_uses_authoritative_calendar() -> None:
-    """冻结权威周历、周度任务契约和初始生命周期状态。"""
+    """冻结权威周历、周度任务契约和运行配置。"""
     config = load_scheme_config(CONFIG_PATH)
 
     assert config.runtime_type == "blackbox_v2"

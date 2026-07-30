@@ -20,3 +20,6 @@
 - [CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md](CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md)：1Y 周度方案两文件 Intake、权威周历输入和七 Gate 技术验收。
 - [CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.evidence.json](CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.evidence.json)：`cgb_causal_wk_1y@05022a0eeec7` 的 check-only 机器证据。
 - [CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)：该方案 active、72 条历史、9 条灰度和 API 可见性的生产终验摘要。
+- [CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.md](CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.md)：3Y 周度方案两文件 Intake、权威周历、生产激活、历史和灰度入库记录。
+- [CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.evidence.json](CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.evidence.json)：`cgb_causal_wk_3y@4b8db29b2f74` 的七 Gate、输入和上游 snapshot 边界证据。
+- [CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)：该方案 active、72 条历史、9 条灰度、API/前端和调度隔离的生产终验摘要。

@@ -566,6 +566,34 @@ wrapper 不会执行这四个方案；本次没有重启 scheduler、写入
 本条证明方案已 active 且历史与灰度入库完成。它不证明 scheduler 已挂载或已经
 观察到 `2026-08-01 / 2026-07-31 / 2026-08-07` 自然调度记录。
 
+### 4.21 记录 005：cgb_causal_wk_3y 生产激活与入库
+
+**最终只读核验时间**：2026-07-30 22:30:47，`Asia/Shanghai`。
+
+**专项记录**：
+[CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.md](CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.md)。
+
+**机器证据**：
+[CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)。
+
+| 项目 | 最终核验 |
+|---|---|
+| exact identity | `cgb_causal_wk_3y@4b8db29b2f74` 与 `cgb_causal_wk_3y__h1__3Y` 均为 `active`；`deployed_at=2026-07-30` |
+| 原始摘要 | Python `849c2fe6e24343230ddcc17212979f981144cb03f44d0ff9b1457f96fa7d0383`；Metadata `84b09972a583314c401228957a83d9195821ed0fbab93040cfb76e2e3c4bbb38` |
+| Harness | check-only `hr_20260730T142045Z_9f6dbfc6db9d` 与 persisted `hr_20260730T142202Z_2a70ae7b8e8e` 均为 7/7 PASS |
+| generation / snapshot | `full-20260730-081804-9794ce962c1a` / `snapshot-2c964086367c6a987f193bcd` |
+| persistent backtest | run `194`，72 条 prediction、17 条月度指标；target `2025-01-10..2026-05-29` |
+| manual gray_live | run `1683..1691`，9 条 prediction 和 9 条 run log；target `2026-06-05..2026-07-31` |
+| API / frontend | exact composite 可见；metrics 9 条 gray；前端 run `194` 的 17 个单元与 DB 差异为 0 |
+| snapshot 边界 | 上游 0725 sample 内为 376/376；生产使用 0730 generation，三频 SHA 不同，记录为 `data_vintage_mismatch` |
+| 周历边界 | 随包周历 6057 行、4 处非严格升序且缺 `202625`；平台只使用 6064 行 `api-wind-date-v1` |
+| 调度边界 | admission=`gray`、capabilities=`[]`；scheduler 未加载，`scheduled_live=0` |
+| 算法边界 | 未评审或修改上游算法内部逻辑；只验收平台输入、Contract、标准输出和落库 |
+
+本条证明 3Y 周度方案已 active 且历史与灰度入库完成。它不证明历史 vintage
+回放、算法效果或 scheduler 自然运行；不同输入 snapshot 的方向结果不得混称
+逐值完全一致。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。
