@@ -806,7 +806,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "production 仍为 migration 017；migration 018 尚未应用",
             "`rollout=legacy`；ledger 尚未启用",
             "backend 以 legacy mode 提供 HTTP 200；scheduler 与 v2-preflight 均未加载",
-            "production schema 3 cache 尚未 bootstrap",
+            "7 个 production Liwei family 已完成 schema 3 bootstrap",
             "machine-global epoch 与 ledger cutover 尚未执行",
             "2026-07-28 为 12/29，2026-07-29 为 0/29",
             "50 条缺口尚未写入",

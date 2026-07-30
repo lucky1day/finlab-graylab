@@ -44,20 +44,21 @@ epoch cutover 或真实 occurrence 已完成。目标合同直接校验冻结 po
 | schema | production 仍为 migration 017；migration 018 尚未应用 |
 | rollout | `rollout=legacy`；ledger 尚未启用 |
 | 服务 | backend 以 legacy mode 提供 HTTP 200；scheduler 与 v2-preflight 均未加载 |
-| cache | production schema 3 cache 尚未 bootstrap；隔离 cache 已清理，不能充当生产 cache |
+| cache | 7 个 production Liwei family 已完成 schema 3 bootstrap；同 authority 二次运行 7/7 `hit`、零训练，cache-local direct authority 通过 |
+| DataBridge | `full-20260730-081804-9794ce962c1a` 已于 08:18 晚到发布并通过 `--check-only`；daily cutoff 为 2026-07-29 |
 | 控制面 | machine-global epoch 与 ledger cutover 尚未执行；没有 production run fence 生效证据 |
-| 开发代码 | runtime 已改为冻结 policy、Registry/version、输入 generation 和 schema 3 cache 的 direct authority 校验；旧 admission 文件已删除 |
+| 开发代码 | runtime 已改为 direct authority，旧 admission 文件已删除；PR #16 已合并 Native gray-gap artifact 入口并与正式 ledger 隔离 |
 | 日频现场 | 2026-07-28 为 12/29，2026-07-29 为 0/29 |
 | 历史补缺 | 50 条缺口尚未写入 |
-| 2026-07-30 | 尚无真实 ledger occurrence、29/29 receipt 或 `scheduled_live` provenance 证据 |
+| 2026-07-30 | 尚无真实 ledger occurrence；06:30 未创建，08:00 为 0/29，无 receipt 或 `scheduled_live` provenance |
 
-因此不能声称 ledger、production schema 3 cache、migration 018、epoch 或 run fence
-已经上线。旧 admission 依赖虽已从开发代码移除，但 production migration、
-cache bootstrap、隔离 rehearsal、epoch 和 ledger cutover 仍须依次完成；任一
-前置未闭合时 cutover 必须 fail-closed，也不授权补做旧签名仪式。只有完成这些
-生产步骤后，由未来交易日真实 coordinator 自然产生并通过 receipt 验收的
-occurrence，才能成为 `scheduled_live` 起点；日期标签本身
-不构成证据。
+因此只能确认 production cache 本地合同和 7 月 30 日 DataBridge current 已就绪，
+不能声称 ledger、migration 018、epoch 或 run fence 已上线。完整 direct authority
+仍被旧 `started_at` 定义阻断。Native snapshot 的受控代码入口已合并，但两份
+production artifact 尚未生成或登记，因此当前仍没有可执行的 Native authority。
+旧 admission 依赖虽已从开发代码移除，但任一前置未闭合时 cutover 必须 fail-closed。
+只有未来真实 coordinator 产生并验收的 occurrence 才能成为 `scheduled_live` 起点；
+日期标签本身 不构成证据。
 
 ## 历史日频缺口
 
@@ -71,14 +72,16 @@ occurrence，才能成为 `scheduled_live` 起点；日期标签本身
 | 2026-07-28 | 17 |
 | 2026-07-29 | 29 |
 
-按任务类型为 T+1 共 5、T+5 共 45，当前全部尚未写入。它们只能通过受控
-insert-only 补为 `gray_live`，不得倒签 `scheduled_live`，也不能与未来真实
-ledger occurrence 混用 provenance 或 receipt。
+按任务类型为 T+1 共 5、T+5 共 45，当前全部尚未写入。DataBridge 已使 20 个 V2
+target 具备 freshness；30 个 Native target 仍缺已生成并 SEALED 的 snapshot
+authority。代码入口已合并不等于 production authority 已存在。它们
+只能通过受控 insert-only 补为 `gray_live`，不得倒签 `scheduled_live` 或混用 receipt。
 
 ## Liwei schema 3 目标 cache 合同
 
-以下规则约束 production bootstrap 完成后的 cache；当前 production schema 3
-cache 尚未 bootstrap，不能把隔离 replay 结果写成已上线事实。
+七个 current 均绑定 `native-8ad794ac7bfc9505f9a498f1`，manifest/input-state
+schema 3 且 acceptance `ACCEPTED`；二次运行 7 个 `hit`、27 reuse、0 training，
+未改 current。这里只表示 cache-local direct-ready；ledger 仍须 migration 018。
 
 - 10 个 Liwei execution 归入 7 个精确 `cache_family + tenor`，每个 family 只有
   SLA 表中指定的唯一 publisher；共享 consumer 只读同一 generation。

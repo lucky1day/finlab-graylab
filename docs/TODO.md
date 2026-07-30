@@ -20,22 +20,33 @@ signal。日常生产必须使用 warm cache；不新增冷启动压力门禁、
 
 按顺序完成：
 
-1. 保留 2026-07-30 “尚无真实 ledger occurrence 证据”的事实；不得按日期补造
-   25 item、29 target、receipt 或 `scheduled_live` provenance。完成切换后的未来
-   首个交易日，才核对真实 occurrence 的 winning run fence、prediction linkage、
-   target receipt、visibility 和 write-once SLA。
-2. 对 Liwei 7 个 schema 3 family 执行 production 一次性安全 bootstrap，再核验
-   exact spec/publisher/consumer、parent lineage、单调 coverage、
-   manifest/payload hash、安全 root、`hit/append/suffix` 和 consumer 零写。当前
-   production cache 尚未 bootstrap；隔离 replay cache 不得冒充生产 cache。
+1. 保留 2026-07-30 真实事实：06:30 没有 occurrence，08:00 为 0/29；不得按日期
+   补造 25 item、29 target、receipt 或 `scheduled_live` provenance。完成切换后的
+   未来首个交易日，才核对真实 occurrence 的 winning run fence、prediction
+   linkage、target receipt、visibility 和 write-once SLA。
+2. 使用已由 PR #16 合并的 Native current-snapshot artifact prepare/register
+   路径，为 feature=2026-07-27、2026-07-28 生成并登记两份 production
+   authority。入口强制真实 capture date、历史 feature cutoff、专项 HMAC、磁盘
+   重验、每个 feature 唯一 SEALED authority，并与正式 ledger generation 隔离；
+   当前代码已就绪，但 production artifact 尚未生成或登记。
 3. 对 50 条历史日频缺口生成受控 insert-only 计划并分批复核：7/23 为 1、7/24
    为 1、7/27 为 2、7/28 为 17、7/29 为 29；T+1 共 5、T+5 共 45。全部只能
-   写 `gray_live`，不得倒签 `scheduled_live`；这 50 条当前均尚未写入。
+   写 `gray_live`，不得倒签 `scheduled_live`。当前 DataBridge 已使 20 个 V2
+   target 具备 freshness，30 个 Native target 仍因 production authority 未登记而
+   阻断；
+   旧阻断态 plan 不得执行。
 4. production 当前停在 017；先经 canonical CLI 应用 migration 018，再在授权
    维护窗口执行 machine-global epoch 与 ledger cutover。切换前 backend 保持 legacy/
    HTTP 200，scheduler 与 v2-preflight 保持未加载；切换成功后只启动一个
    scheduler，并核验 `current_run_id + attempt_no` fence、ProcessStartGuard、当天
    Native/DataBridge generation 和 08:30 cutoff。
+
+已完成但仍须保持的生产输入基线：
+
+- Liwei 7 个 production schema 3 family 已完成一次性 bootstrap；同 authority
+  二次运行为 7/7 `hit`、零训练，cache-local direct-ready。
+- DataBridge `refresh_date=2026-07-30` 已晚到发布并通过 `--check-only`；它不改变
+  7 月 30 日 0/29 和无 occurrence 的事实。
 
 ## P1：周度剩余对账与后端启用
 
