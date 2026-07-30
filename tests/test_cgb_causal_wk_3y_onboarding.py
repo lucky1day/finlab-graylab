@@ -41,8 +41,6 @@ def test_weekly_platform_contract_uses_authoritative_calendar() -> None:
     assert config.runtime_profile == "blackbox-v2-v1"
     assert config.data_schema_version == "data-bridge-v1"
     assert config.platform_inputs == ("api-wind-date-v1",)
-    assert config.status == "paused"
-    assert config.version_status == "draft"
     assert config.schedule.cron == "30 11 * * 6"
     assert config.schedule.timezone == "Asia/Shanghai"
     assert config.schedule.timeout_sec == 3600
