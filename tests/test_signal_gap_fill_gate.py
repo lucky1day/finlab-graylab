@@ -83,6 +83,27 @@ def _blackbox_target() -> dict:
     }
 
 
+def _archived_native_target() -> dict:
+    action = _target("10Y", 5, "2026-08-03")
+    artifact = {
+        **action["input_authority"]["artifact"],
+        "business_date": "2026-07-28",
+        "exporter_version": "native-generation-exporter-v1",
+    }
+    return {
+        **action,
+        "input_authority": {
+            "database": {
+                **action["input_authority"]["database"],
+                "business_date": "2026-07-28",
+                "feature_date": "2026-07-27",
+                "exporter_version": "native-generation-exporter-v1",
+            },
+            "artifact": artifact,
+        },
+    }
+
+
 def _blackbox_record(
     *,
     scheme_version: str | None = None,
@@ -391,6 +412,73 @@ class SignalGapFillGateTests(unittest.TestCase):
         self.assertEqual(
             kwargs["expected_native_feature_date"],
             "2026-07-27",
+        )
+
+    def test_archived_native_runner_uses_exact_hit_only_execution_mode(
+        self,
+    ) -> None:
+        from harness.gates.signal_gap_fill_gate import (
+            _Execution,
+            _build_groups,
+            _repository_source_authority,
+            _run_algorithm,
+        )
+
+        action = _archived_native_target()
+        group = _build_groups(_plan(actions=[action]))[0]
+        item = _Execution(
+            group=group,
+            cfg=self.config,
+            run_id=1,
+            started=time.monotonic(),
+        )
+        record = PredictionRecord(
+            scheme_id="demo",
+            target_tenor="10Y",
+            horizon=5,
+            predict_date="2026-07-28",
+            feature_date="2026-07-27",
+            target_date="2026-08-03",
+            predicted_direction=1,
+            scheme_version="version-1",
+        )
+        runner = Mock(return_value=[record])
+        opener = Mock(
+            return_value=SimpleNamespace(dispose=Mock())
+        )
+
+        _run_algorithm(
+            item,
+            engine=self.engine,
+            algo_env="forecast_env",
+            timeout_sec=600,
+            algorithm_runner=runner,
+            native_generation_opener=opener,
+        )
+
+        kwargs = runner.call_args.kwargs
+        self.assertEqual(
+            kwargs["native_execution_mode"],
+            "signal_gap_archived",
+        )
+        self.assertEqual(
+            kwargs["expected_native_feature_date"],
+            "2026-07-27",
+        )
+        self.assertEqual(
+            _repository_source_authority(
+                action,
+                action["input_authority"],
+            ),
+            {
+                "authority_type": "native_archived_generation",
+                "generation_id": "native-" + "c" * 24,
+                "manifest_sha256": "d" * 64,
+                "business_date": "2026-07-28",
+                "feature_date": "2026-07-27",
+                "cutoff_date": "2026-07-27",
+                "replay_mode": "historical_sealed_generation_replay",
+            },
         )
 
     def test_partial_present_group_blocks_before_algorithm_or_write(

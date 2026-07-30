@@ -9628,6 +9628,17 @@ _GRAY_GAP_NATIVE_AUTHORITY_FIELDS = frozenset(
         "vintage_disclaimer",
     }
 )
+_GRAY_GAP_ARCHIVED_NATIVE_AUTHORITY_FIELDS = frozenset(
+    {
+        "authority_type",
+        "generation_id",
+        "manifest_sha256",
+        "business_date",
+        "feature_date",
+        "cutoff_date",
+        "replay_mode",
+    }
+)
 _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
     {
         "authority_type",
@@ -9641,6 +9652,9 @@ _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
 )
 _GRAY_GAP_VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
+)
+_GRAY_GAP_ARCHIVED_REPLAY_MODE = (
+    "historical_sealed_generation_replay"
 )
 _GRAY_GAP_FIXED_ATOMIC_TARGETS = {
     "t1_daily": frozenset({"5Y", "10Y"}),
@@ -9863,15 +9877,20 @@ def _normalize_gray_gap_source_authority(
     authority_type = source_authority.get("authority_type")
     if authority_type == "native_current_snapshot_artifact":
         expected_fields = _GRAY_GAP_NATIVE_AUTHORITY_FIELDS
+    elif authority_type == "native_archived_generation":
+        expected_fields = _GRAY_GAP_ARCHIVED_NATIVE_AUTHORITY_FIELDS
     elif authority_type == "databridge_current_generation":
         expected_fields = _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS
     else:
         raise ValueError("source_authority authority_type is invalid")
-    expected_authority_type = {
-        "native_adapter": "native_current_snapshot_artifact",
-        "blackbox_v2": "databridge_current_generation",
-    }.get(runtime_type)
-    if authority_type != expected_authority_type:
+    expected_authority_types = {
+        "native_adapter": {
+            "native_archived_generation",
+            "native_current_snapshot_artifact",
+        },
+        "blackbox_v2": {"databridge_current_generation"},
+    }.get(runtime_type, set())
+    if authority_type not in expected_authority_types:
         raise ValueError(
             "source_authority authority_type does not match cfg "
             f"runtime_type={runtime_type}"
@@ -9894,12 +9913,14 @@ def _normalize_gray_gap_source_authority(
         raise ValueError(
             "source_authority cutoff_date must equal execution feature_date"
         )
-    if (
-        source_authority["vintage_disclaimer"]
-        != _GRAY_GAP_VINTAGE_DISCLAIMER
-    ):
-        raise ValueError("source_authority vintage_disclaimer is invalid")
     if authority_type == "native_current_snapshot_artifact":
+        if (
+            source_authority["vintage_disclaimer"]
+            != _GRAY_GAP_VINTAGE_DISCLAIMER
+        ):
+            raise ValueError(
+                "source_authority vintage_disclaimer is invalid"
+            )
         normalized["artifact_id"] = _require_nonempty(
             source_authority["artifact_id"],
             "source_authority.artifact_id",
@@ -9913,7 +9934,44 @@ def _normalize_gray_gap_source_authority(
                 "source_authority feature_date must equal execution "
                 "feature_date"
             )
+    elif authority_type == "native_archived_generation":
+        normalized["generation_id"] = _require_nonempty(
+            source_authority["generation_id"],
+            "source_authority.generation_id",
+        )
+        authority_business_date = _require_iso_date(
+            source_authority["business_date"],
+            "source_authority.business_date",
+        )
+        authority_feature_date = _require_iso_date(
+            source_authority["feature_date"],
+            "source_authority.feature_date",
+        )
+        if authority_business_date != predict_date:
+            raise ValueError(
+                "source_authority business_date must equal execution "
+                "predict_date"
+            )
+        if authority_feature_date != feature_date:
+            raise ValueError(
+                "source_authority feature_date must equal execution "
+                "feature_date"
+            )
+        if (
+            source_authority["replay_mode"]
+            != _GRAY_GAP_ARCHIVED_REPLAY_MODE
+        ):
+            raise ValueError(
+                "source_authority replay_mode is invalid"
+            )
     else:
+        if (
+            source_authority["vintage_disclaimer"]
+            != _GRAY_GAP_VINTAGE_DISCLAIMER
+        ):
+            raise ValueError(
+                "source_authority vintage_disclaimer is invalid"
+            )
         normalized["generation_id"] = _require_nonempty(
             source_authority["generation_id"],
             "source_authority.generation_id",
@@ -10045,7 +10103,12 @@ def _enrich_gray_gap_records(
         "backfill_mode": "signal_gap_fill",
         "backfilled_at": backfilled_at,
         "source_authority": dict(source_authority),
-        "replay_semantics": _GRAY_GAP_VINTAGE_DISCLAIMER,
+        "replay_semantics": (
+            source_authority["replay_mode"]
+            if source_authority["authority_type"]
+            == "native_archived_generation"
+            else _GRAY_GAP_VINTAGE_DISCLAIMER
+        ),
         "execution_group_identity": execution_group_identity,
     }
     if source_authority["authority_type"] == (
@@ -10059,6 +10122,23 @@ def _enrich_gray_gap_records(
                 "source_artifact_feature_date":
                     source_authority["feature_date"],
                 "source_cutoff_date": source_authority["cutoff_date"],
+            }
+        )
+    elif source_authority["authority_type"] == (
+        "native_archived_generation"
+    ):
+        common_extra.update(
+            {
+                "source_generation_id":
+                    source_authority["generation_id"],
+                "source_generation_manifest_sha256":
+                    source_authority["manifest_sha256"],
+                "source_generation_business_date":
+                    source_authority["business_date"],
+                "source_generation_feature_date":
+                    source_authority["feature_date"],
+                "source_cutoff_date":
+                    source_authority["cutoff_date"],
             }
         )
     else:

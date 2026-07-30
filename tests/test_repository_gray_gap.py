@@ -129,6 +129,18 @@ def _databridge_authority() -> dict[str, str]:
     }
 
 
+def _archived_native_authority() -> dict[str, str]:
+    return {
+        "authority_type": "native_archived_generation",
+        "generation_id": "native-0123456789abcdef01234567",
+        "manifest_sha256": "d" * 64,
+        "business_date": PREDICT_DATE,
+        "feature_date": FEATURE_DATE,
+        "cutoff_date": FEATURE_DATE,
+        "replay_mode": "historical_sealed_generation_replay",
+    }
+
+
 class GrayGapRepositoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -454,6 +466,41 @@ class GrayGapRepositoryTests(unittest.TestCase):
         self.assertEqual(self._rows("t_scheme_predictions"), [])
         self.assertEqual(self._rows("t_scheme_run_log"), [])
         self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
+
+    def test_archived_native_authority_persists_true_replay_semantics(
+        self,
+    ) -> None:
+        cfg = _cfg(
+            "t5_daily",
+            horizon=5,
+            task_type="T+5",
+            tenors=TENORS_T5,
+        )
+        self._seed(cfg, run_id=109, target_date=TARGET_DATE_T5)
+
+        written = self._complete(
+            cfg,
+            run_id=109,
+            target_date=TARGET_DATE_T5,
+            source_authority=_archived_native_authority(),
+        )
+
+        self.assertEqual(written, 4)
+        for row in self._rows("t_scheme_predictions"):
+            extra = json.loads(str(row["extra"]))
+            self.assertEqual(
+                extra["source_authority"],
+                _archived_native_authority(),
+            )
+            self.assertEqual(
+                extra["source_generation_id"],
+                _archived_native_authority()["generation_id"],
+            )
+            self.assertEqual(
+                extra["replay_semantics"],
+                "historical_sealed_generation_replay",
+            )
+            self.assertNotIn("vintage_disclaimer", extra)
 
     def test_blackbox_two_of_two_databridge_authority(self) -> None:
         cfg = _cfg(
