@@ -153,6 +153,21 @@ class DailyGrayRunnerOrchestrationTests(unittest.TestCase):
         self.assertEqual(summary.success, 1)
         self.assertEqual(summary.total, 2)
 
+    def test_daily_runner_writes_gray_live_predictions(self) -> None:
+        schemes = _cfgs("daily_1y_xgb_1y13_0629")
+        self._patch_common(schemes)
+        phases: list[str] = []
+
+        def fake_exec(cfg, predict_date, *, algo_env, prediction_phase):
+            phases.append(prediction_phase)
+            return _FakeResult(cfg.scheme_id, "success")
+
+        with mock.patch.object(runner, "execute_scheme", side_effect=fake_exec):
+            summary = runner.run("2026-07-30")
+
+        self.assertEqual(summary.success, 1)
+        self.assertEqual(phases, ["gray_live"])
+
     def test_heavy_concurrency_capped(self) -> None:
         # 5 个重方案，max_heavy=2 时并发峰值不得超过 2（防 CPU 抢占）。
         import threading as _t

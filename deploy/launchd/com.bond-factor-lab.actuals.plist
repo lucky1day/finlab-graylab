@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.bond-factor-lab.actuals</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/macstudio0/bond-factor-lab</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/macstudio0/miniconda3/bin/conda</string>
+    <string>run</string>
+    <string>--no-capture-output</string>
+    <string>-n</string>
+    <string>bond_factor_lab_service</string>
+    <string>python</string>
+    <string>-m</string>
+    <string>scheduler.main</string>
+    <string>--run-once</string>
+    <string>actuals</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONNOUSERSITE</key>
+    <string>1</string>
+    <key>BOND_DAILY_COORDINATOR_MODE</key>
+    <string>legacy</string>
+  </dict>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key>
+      <integer>8</integer>
+      <key>Minute</key>
+      <integer>30</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>19</integer>
+      <key>Minute</key>
+      <integer>0</integer>
+    </dict>
+    <dict>
+      <key>Hour</key>
+      <integer>23</integer>
+      <key>Minute</key>
+      <integer>45</integer>
+    </dict>
+  </array>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.actuals.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/macstudio0/bond-factor-lab/logs/com.bond-factor-lab.actuals.err</string>
+</dict>
+</plist>
