@@ -120,6 +120,17 @@ EXPECTED_ADMISSIONS = {
         capabilities=NO_CAPABILITIES,
     ),
     (
+        "cgb_causal_wk_3y",
+        "4b8db29b2f74",
+    ): _expected_admission(
+        mode="gray",
+        frequency="weekly",
+        task_type="weekly_point",
+        horizon=1,
+        target_tenor="3Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
         "cgb_a4_fundseason_1y",
         "04e7af163fb0",
     ): _expected_admission(

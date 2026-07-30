@@ -159,6 +159,17 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 capabilities=_NO_CAPABILITIES,
             ),
             (
+                "cgb_causal_wk_3y",
+                "4b8db29b2f74",
+            ): _entry(
+                mode="gray",
+                frequency="weekly",
+                task_type="weekly_point",
+                horizon=1,
+                target_tenor="3Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
                 "cgb_a4_fundseason_1y",
                 "04e7af163fb0",
             ): _entry(

@@ -32,6 +32,7 @@ FORMAL_BLACKBOX_IDENTITIES = {
 }
 GRAY_BLACKBOX_IDENTITIES = {
     "cgb_causal_wk_1y": "cba824c27f0e",
+    "cgb_causal_wk_3y": "4b8db29b2f74",
     "cgb_a4_fundseason_1y": "04e7af163fb0",
     "cgb_a4_fundseason_3y": "89d31f8bcb95",
     "cgb_a4_fundseason_5y": "7d47e0328532",

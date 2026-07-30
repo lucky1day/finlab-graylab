@@ -88,6 +88,17 @@
       "capabilities": []
     },
     {
+      "scheme_id": "cgb_causal_wk_3y",
+      "scheme_version": "4b8db29b2f74",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_point",
+      "horizon": 1,
+      "target_tenor": "3Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
       "scheme_id": "cgb_a4_fundseason_1y",
       "scheme_version": "04e7af163fb0",
       "runtime_type": "blackbox_v2",
