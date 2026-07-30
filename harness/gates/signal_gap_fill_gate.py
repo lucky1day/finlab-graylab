@@ -42,6 +42,9 @@ from shared.data_bridge.refresh import (
 )
 from shared.input_artifacts import open_native_generation
 from shared.models import PredictionRecord
+from shared.native_input_generation import (
+    SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
+)
 
 
 AUTHORIZATION_ACTION = "signal_gap_fill_write"
@@ -838,11 +841,22 @@ def _run_algorithm(
             artifact = _native_artifact(group.input_authority)
             if artifact["feature_date"] != group.actions[0]["feature_date"]:
                 raise ValueError("Native artifact feature cutoff drift")
+            if artifact["business_date"] <= group.predict_date:
+                raise ValueError(
+                    "Native artifact capture date must be after predict_date"
+                )
+            if (
+                artifact["exporter_version"]
+                != SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+            ):
+                raise ValueError(
+                    "Native artifact purpose/exporter drift"
+                )
             context = native_generation_opener(
                 Path(artifact["manifest_uri"]),
                 expected_generation_id=artifact["generation_id"],
                 expected_manifest_sha256=artifact["manifest_sha256"],
-                expected_business_date=group.predict_date,
+                expected_business_date=artifact["business_date"],
                 expected_feature_date=group.actions[0]["feature_date"],
             )
             kwargs["native_generation"] = context
@@ -1028,12 +1042,23 @@ def _native_artifact(
         "generation_id",
         "manifest_uri",
         "manifest_sha256",
+        "dataset_content_id",
+        "source_commit_token",
+        "business_date",
         "feature_date",
+        "exporter_version",
     )
     if any(not str(artifact.get(field) or "") for field in required):
         raise ValueError("Native frozen artifact authority is incomplete")
     if not _is_sha256(artifact["manifest_sha256"]):
         raise ValueError("Native artifact manifest SHA-256 is invalid")
+    if (
+        not _is_sha256(artifact["dataset_content_id"])
+        or not _is_sha256(artifact["source_commit_token"])
+    ):
+        raise ValueError(
+            "Native artifact content/source evidence SHA-256 is invalid"
+        )
     return dict(artifact)
 
 

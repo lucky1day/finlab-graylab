@@ -9,6 +9,7 @@ import time
 import unittest
 import weakref
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,14 +23,48 @@ from harness.signal_gap_plan import (
 )
 from shared import native_input_generation as native_module
 from tests.test_native_input_generation import (
-    _create_generation,
+    _Engine,
     _make_generation_writable,
+    _patched_source_readers,
     _rewrite_manifest,
 )
 
 
 def _sha(label: str) -> str:
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
+
+
+def _create_generation(
+    module,
+    output_root: str | Path,
+    *,
+    source_commit_token: str = "a" * 64,
+    **generation_options: object,
+):
+    engine = _Engine()
+    engine.connection.source_commit_token = source_commit_token
+    patches, _ = _patched_source_readers(
+        module,
+        engine.connection,
+    )
+    snapshot_now = datetime(
+        2026,
+        7,
+        25,
+        0,
+        30,
+        tzinfo=timezone.utc,
+    )
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        context = module.create_signal_gap_native_artifact(
+            engine,
+            capture_business_date="2026-07-25",
+            feature_date="2026-07-24",
+            output_root=output_root,
+            _snapshot_clock=lambda: snapshot_now,
+            **generation_options,
+        )
+    return engine, context
 
 
 def _generation_row(context, **changes: object) -> InputGeneration:
@@ -548,7 +583,15 @@ class SignalGapNativeArtifactAuthorityTests(unittest.TestCase):
                         ),
                         (
                             "BLOCKED_DATA_CONTRACT",
-                            "NATIVE_GENERATION_DB_CONTEXT_DRIFT",
+                            (
+                                "GENERATION_CONTRACT_INVALID"
+                                if field in {
+                                    "readiness_basis",
+                                    "exporter_version",
+                                }
+                                else
+                                "NATIVE_GENERATION_DB_CONTEXT_DRIFT"
+                            ),
                         ),
                     )
 
@@ -766,7 +809,7 @@ class SignalGapNativeArtifactAuthorityTests(unittest.TestCase):
                 shutil.copytree(context.root_dir, second_root)
                 second = replace(
                     first,
-                    business_date="2026-07-25",
+                    business_date="2026-07-26",
                     feature_date="2026-07-25",
                     manifest_uri=str(second_root / "manifest.json"),
                 )

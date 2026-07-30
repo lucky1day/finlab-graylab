@@ -32,6 +32,10 @@ from harness.orchestrator import onboard as run_onboard
 from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
 from harness.signal_gap_plan import SignalGapPlanError, plan_signal_gaps
+from harness.signal_gap_native_artifact import (
+    prepare_signal_gap_native_artifact,
+    register_signal_gap_native_artifact,
+)
 from scheduler.discovery import load_scheme_config
 from scheduler.repository import create_engine_from_env
 from shared.blackbox_v2.contracts import load_metadata
@@ -83,6 +87,18 @@ def main(argv: list[str] | None = None) -> int:
                 "target_keys": _read_json_file(
                     args.target_keys_json
                 ),
+                "source_authority": _read_json_file(
+                    args.source_authority_json
+                ),
+            }
+        elif args.action == "signal_gap_native_artifact_register":
+            if args.source_authority_json is None:
+                parser.error(
+                    "auth issue --action "
+                    "signal_gap_native_artifact_register requires "
+                    "--source-authority-json"
+                )
+            signal_gap_kwargs = {
                 "source_authority": _read_json_file(
                     args.source_authority_json
                 ),
@@ -249,6 +265,39 @@ def main(argv: list[str] | None = None) -> int:
             or int(plan.get("counts", {}).get("blocked", 0))
             else 0
         )
+    if args.command == "signal-gap-native-artifact":
+        try:
+            if args.native_artifact_command == "prepare":
+                result = prepare_signal_gap_native_artifact(
+                    capture_business_date=args.capture_business_date,
+                    feature_date=args.feature_date,
+                    output_root=args.output_root,
+                )
+            else:
+                result = register_signal_gap_native_artifact(
+                    manifest=args.manifest,
+                    historical_predict_date=
+                        args.historical_predict_date,
+                    authorize=args.authorize,
+                    project_root=args.project_root,
+                )
+        except Exception:
+            print(
+                json.dumps(
+                    {
+                        "schema_version":
+                            "signal-gap-native-artifact-error-v1",
+                        "status": "ERROR",
+                        "failure_code":
+                            "SIGNAL_GAP_NATIVE_ARTIFACT_ERROR",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 2
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "signal-gap-fill":
         project_root = args.project_root.resolve()
         ctx = GateContext(
@@ -400,6 +449,53 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     fill_parser.add_argument("--algo-env", default="forecast_env")
     fill_parser.add_argument("--timeout-sec", type=int, default=600)
+
+    native_artifact_parser = subparsers.add_parser(
+        "signal-gap-native-artifact"
+    )
+    native_artifact_subparsers = (
+        native_artifact_parser.add_subparsers(
+            dest="native_artifact_command",
+            required=True,
+        )
+    )
+    native_artifact_prepare = native_artifact_subparsers.add_parser(
+        "prepare"
+    )
+    native_artifact_prepare.add_argument(
+        "--capture-business-date",
+        required=True,
+    )
+    native_artifact_prepare.add_argument(
+        "--feature-date",
+        required=True,
+    )
+    native_artifact_prepare.add_argument(
+        "--output-root",
+        type=Path,
+        required=True,
+    )
+    native_artifact_register = native_artifact_subparsers.add_parser(
+        "register"
+    )
+    native_artifact_register.add_argument(
+        "--manifest",
+        type=Path,
+        required=True,
+    )
+    native_artifact_register.add_argument(
+        "--historical-predict-date",
+        required=True,
+    )
+    native_artifact_register.add_argument(
+        "--authorize",
+        required=True,
+    )
+    native_artifact_register.add_argument(
+        "--project-root",
+        type=Path,
+        default=PROJECT_ROOT,
+    )
 
     auth_parser = subparsers.add_parser("auth")
     auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)

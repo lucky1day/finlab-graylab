@@ -27,7 +27,10 @@ from shared.data_bridge.refresh import (
     DataBridgeCurrentMissingError,
     DataBridgeRefreshConfig,
 )
-from shared.native_input_generation import open_native_generation
+from shared.native_input_generation import (
+    SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
+    open_native_generation,
+)
 from shared.prediction_context import (
     MONTHLY_TARGET_RULE,
     WEEKLY_AVERAGE_TARGET_RULE,
@@ -2179,14 +2182,26 @@ def _native_generation_eligibility(
         tuple[Mapping[str, Any] | None, str | None],
     ],
 ) -> tuple[Action, Mapping[str, Any] | None, str]:
-    candidates = [
+    scoped = [
         row
         for row in generations
         if row.generation_type == "native_source"
-        and row.business_date == item.predict_date
         and row.feature_date == item.feature_date
+        and row.business_date > item.predict_date
+    ]
+    candidates = [
+        row
+        for row in scoped
+        if row.exporter_version
+        == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
     ]
     if not candidates:
+        if scoped:
+            return (
+                "BLOCKED_DATA_CONTRACT",
+                None,
+                "GENERATION_CONTRACT_INVALID",
+            )
         return (
             "BLOCKED_NO_GENERATION",
             None,
@@ -2201,7 +2216,7 @@ def _native_generation_eligibility(
     selected = candidates[0]
     if not _valid_native_generation_fence(
         selected,
-        expected_business_date=item.predict_date,
+        expected_predict_date=item.predict_date,
         expected_feature_date=item.feature_date,
     ):
         return (
@@ -2226,7 +2241,7 @@ def _native_generation_eligibility(
 def _valid_native_generation_fence(
     generation: InputGeneration,
     *,
-    expected_business_date: str,
+    expected_predict_date: str,
     expected_feature_date: str,
 ) -> bool:
     try:
@@ -2251,14 +2266,14 @@ def _valid_native_generation_fence(
         and generation.generation_type == "native_source"
         and business_date == generation.business_date
         and feature_date == generation.feature_date
-        and business_date == expected_business_date
+        and business_date > expected_predict_date
         and feature_date == expected_feature_date
-        and generation.readiness_basis
-        in {"UPSTREAM_SEAL", "CLOCK_CONTRACT"}
+        and generation.readiness_basis == "CLOCK_CONTRACT"
         and _is_sha256(generation.source_commit_token)
         and _is_sha256(generation.dataset_content_id)
         and bool(generation.schema_version.strip())
-        and bool(generation.exporter_version.strip())
+        and generation.exporter_version
+        == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
         and Path(generation.manifest_uri).is_absolute()
         and Path(generation.manifest_uri).name == "manifest.json"
         and _is_sha256(generation.manifest_sha256)

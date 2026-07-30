@@ -52,7 +52,12 @@ def _target(tenor: str, horizon: int, target_date: str) -> dict:
                 "generation_id": "native-" + "c" * 24,
                 "manifest_uri": "/frozen/native/manifest.json",
                 "manifest_sha256": "d" * 64,
+                "dataset_content_id": "e" * 64,
+                "source_commit_token": "f" * 64,
+                "business_date": "2026-07-30",
                 "feature_date": "2026-07-27",
+                "exporter_version":
+                    "native-signal-gap-current-snapshot-v1",
             },
         },
     }
@@ -287,7 +292,7 @@ class SignalGapFillGateTests(unittest.TestCase):
             Path("/frozen/native/manifest.json"),
             expected_generation_id="native-" + "c" * 24,
             expected_manifest_sha256="d" * 64,
-            expected_business_date="2026-07-28",
+            expected_business_date="2026-07-30",
             expected_feature_date="2026-07-27",
         )
         kwargs = runner.call_args.kwargs

@@ -24,6 +24,7 @@ EXACT_PREDICT_DATE_ACTIONS = frozenset(
         "draft_register",
         "gray_backfill_write",
         "signal_gap_fill_write",
+        "signal_gap_native_artifact_register",
     }
 )
 _AUTHORIZATION_BASE_PAYLOAD_FIELDS = frozenset(
@@ -46,6 +47,18 @@ _SIGNAL_GAP_FILL_PAYLOAD_FIELDS = frozenset(
         "target_keys",
         "source_authority",
     }
+)
+_SIGNAL_GAP_NATIVE_ARTIFACT_PAYLOAD_FIELDS = frozenset(
+    {"source_authority"}
+)
+SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID = (
+    "signal-gap-native-artifact"
+)
+SIGNAL_GAP_NATIVE_ARTIFACT_PURPOSE = (
+    "signal_gap_gray_live_current_snapshot"
+)
+SIGNAL_GAP_NATIVE_ARTIFACT_EXPORTER_VERSION = (
+    "native-signal-gap-current-snapshot-v1"
 )
 _SIGNAL_GAP_TARGET_FIELDS = frozenset(
     {
@@ -140,10 +153,13 @@ def issue_token(
     配置了 HARNESS_AUTH_SECRET 时附带 HMAC 签名；未配置时退化为明文信封，
     token 仍承担一次性 + 作用域绑定的确认职责（软默认，单用户场景无需配置）。
     """
-    if action == "signal_gap_fill_write":
+    if action in {
+        "signal_gap_fill_write",
+        "signal_gap_native_artifact_register",
+    }:
         if _auth_secret() is None:
             raise ValueError(
-                "signal_gap_fill_write authorization requires HMAC signing"
+                f"{action} authorization requires HMAC signing"
             )
         if ttl_seconds is None:
             ttl_seconds = BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS
@@ -154,9 +170,10 @@ def issue_token(
             > BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS
         ):
             raise ValueError(
-                "signal_gap_fill_write authorization lifetime must be "
+                f"{action} authorization lifetime must be "
                 "at most 900 seconds"
             )
+    if action == "signal_gap_fill_write":
         normalized_plan_sha256 = _require_sha256(
             plan_sha256,
             "plan_sha256",
@@ -177,6 +194,20 @@ def issue_token(
         normalized_authority = _normalize_signal_gap_source_authority(
             source_authority
         )
+    elif action == "signal_gap_native_artifact_register":
+        if scheme_id != SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID:
+            raise ValueError(
+                "signal_gap_native_artifact_register scheme_id is invalid"
+            )
+        normalized_authority = (
+            _normalize_signal_gap_native_artifact_authority(
+                source_authority,
+                expected_historical_predict_date=predict_date,
+            )
+        )
+        normalized_plan_sha256 = None
+        normalized_base = None
+        normalized_targets = ()
     else:
         normalized_plan_sha256 = None
         normalized_base = None
@@ -216,6 +247,8 @@ def issue_token(
                 "source_authority": normalized_authority,
             }
         )
+    elif action == "signal_gap_native_artifact_register":
+        payload["source_authority"] = normalized_authority
     signature = _sign(payload)
     envelope: dict[str, Any] = {"payload": payload}
     if signature is not None:
@@ -278,6 +311,11 @@ def _validate_token_schema(decoded: dict[str, Any]) -> None:
     elif payload.get("action") == "signal_gap_fill_write":
         expected_fields = (
             expected_fields | _SIGNAL_GAP_FILL_PAYLOAD_FIELDS
+        )
+    elif payload.get("action") == "signal_gap_native_artifact_register":
+        expected_fields = (
+            expected_fields
+            | _SIGNAL_GAP_NATIVE_ARTIFACT_PAYLOAD_FIELDS
         )
     if frozenset(payload) != expected_fields:
         raise ValueError("authorization token schema is invalid")
@@ -461,6 +499,155 @@ def issue_signal_gap_fill_token(
         target_keys=target_keys,
         source_authority=source_authority,
     )
+
+
+def issue_signal_gap_native_artifact_register_token(
+    *,
+    historical_predict_date: str,
+    source_authority: Any,
+    ttl_seconds: int = BLACKBOX_PRIVILEGED_AUTH_MAX_TTL_SECONDS,
+    issued_by: str = "harness",
+) -> str:
+    """签发绑定完整 Native current-snapshot provenance 的 HMAC token。"""
+    return issue_token(
+        SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID,
+        "signal_gap_native_artifact_register",
+        historical_predict_date,
+        ttl_seconds=ttl_seconds,
+        issued_by=issued_by,
+        source_authority=source_authority,
+    )
+
+
+def verify_signal_gap_native_artifact_register_authorization(
+    token: str | None,
+    *,
+    historical_predict_date: str,
+    source_authority: Any,
+    used_store_path: Path,
+) -> tuple[Authorization | None, list[str]]:
+    """验证 Native gap artifact 的 capture、feature 与完整 provenance。"""
+    auth, errors = verify_authorization(
+        token,
+        scheme_id=SIGNAL_GAP_NATIVE_ARTIFACT_SCHEME_ID,
+        action="signal_gap_native_artifact_register",
+        predict_date=historical_predict_date,
+        used_store_path=used_store_path,
+    )
+    if _auth_secret() is None:
+        errors.append(
+            "signal_gap_native_artifact_register authorization requires "
+            "HMAC signing"
+        )
+    try:
+        expected = _normalize_signal_gap_native_artifact_authority(
+            source_authority,
+            expected_historical_predict_date=historical_predict_date,
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+        return auth, errors
+    if auth is None:
+        return None, errors
+    errors.extend(
+        required_future_expiry_errors(
+            auth.issued_at,
+            auth.expires_at,
+        )
+    )
+    try:
+        token_authority = (
+            _normalize_signal_gap_native_artifact_authority(
+                auth.source_authority,
+                expected_historical_predict_date=historical_predict_date,
+            )
+        )
+    except ValueError:
+        token_authority = None
+    if token_authority != expected:
+        errors.append("source authority mismatch")
+    return auth, errors
+
+
+def _normalize_signal_gap_native_artifact_authority(
+    value: Any,
+    *,
+    expected_historical_predict_date: str | None,
+) -> dict[str, Any]:
+    expected_fields = frozenset(
+        {
+            "authority_type",
+            "purpose",
+            "artifact_id",
+            "manifest_sha256",
+            "dataset_content_id",
+            "source_commit_token",
+            "capture_business_date",
+            "feature_date",
+            "exporter_version",
+            "vintage_disclaimer",
+        }
+    )
+    if not isinstance(value, dict) or frozenset(value) != expected_fields:
+        raise ValueError(
+            "signal-gap Native artifact authority schema is invalid"
+        )
+    normalized = {
+        "authority_type": str(value["authority_type"]),
+        "purpose": str(value["purpose"]),
+        "artifact_id": _require_text(
+            value["artifact_id"],
+            "artifact_id",
+        ),
+        "manifest_sha256": _require_sha256(
+            value["manifest_sha256"],
+            "manifest_sha256",
+        ),
+        "dataset_content_id": _require_sha256(
+            value["dataset_content_id"],
+            "dataset_content_id",
+        ),
+        "source_commit_token": _require_sha256(
+            value["source_commit_token"],
+            "source_commit_token",
+        ),
+        "capture_business_date": _normalize_action_predict_date(
+            "signal_gap_native_artifact_register",
+            value["capture_business_date"],
+        ),
+        "feature_date": _normalize_action_predict_date(
+            "signal_gap_native_artifact_register",
+            value["feature_date"],
+        ),
+        "exporter_version": str(value["exporter_version"]),
+        "vintage_disclaimer": str(value["vintage_disclaimer"]),
+    }
+    if (
+        normalized["authority_type"]
+        != "native_current_snapshot_artifact"
+        or normalized["purpose"]
+        != SIGNAL_GAP_NATIVE_ARTIFACT_PURPOSE
+        or normalized["exporter_version"]
+        != SIGNAL_GAP_NATIVE_ARTIFACT_EXPORTER_VERSION
+        or normalized["vintage_disclaimer"]
+        != "current_snapshot_as_of_not_historical_vintage"
+    ):
+        raise ValueError(
+            "signal-gap Native artifact authority purpose is invalid"
+        )
+    historical_predict_date = _normalize_action_predict_date(
+        "signal_gap_native_artifact_register",
+        expected_historical_predict_date,
+    )
+    if normalized["feature_date"] >= historical_predict_date:
+        raise ValueError(
+            "signal-gap Native feature_date must precede predict_date"
+        )
+    if normalized["capture_business_date"] <= historical_predict_date:
+        raise ValueError(
+            "signal-gap Native capture date must be after predict_date"
+        )
+    return normalized
 
 
 def verify_signal_gap_fill_authorization(

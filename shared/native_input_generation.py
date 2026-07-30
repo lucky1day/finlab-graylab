@@ -27,6 +27,9 @@ from shared import data_service as _data_service
 
 NATIVE_GENERATION_SCHEMA_VERSION = "native-generation-v1"
 NATIVE_GENERATION_EXPORTER_VERSION = "native-generation-exporter-v1"
+SIGNAL_GAP_NATIVE_EXPORTER_VERSION = (
+    "native-signal-gap-current-snapshot-v1"
+)
 NATIVE_GENERATION_MANIFEST_VERSION = "native-generation-manifest-v2"
 NATIVE_GENERATION_TYPE = "native_source"
 NATIVE_GENERATION_FILENAMES = (
@@ -423,6 +426,65 @@ def create_native_generation(
     finally:
         if staging.exists():
             _remove_tree(staging)
+
+
+def create_signal_gap_native_artifact(
+    engine: Engine,
+    *,
+    capture_business_date: str,
+    feature_date: str,
+    output_root: str | Path,
+    max_total_bytes: int | None = None,
+    min_free_bytes: int | None = None,
+    _snapshot_clock: Callable[[], datetime] | None = None,
+) -> NativeGenerationContext:
+    """以真实捕获日生成历史 feature 的 current-snapshot artifact。"""
+    normalized_capture_date = _canonical_date(
+        capture_business_date,
+        "capture_business_date",
+    )
+    normalized_feature_date = _canonical_date(
+        feature_date,
+        "feature_date",
+    )
+    observed = _aware_utc_now(_snapshot_clock).astimezone(_SHANGHAI)
+    if observed.date().isoformat() != normalized_capture_date:
+        raise ValueError(
+            "capture_business_date must equal current Asia/Shanghai date"
+        )
+    if normalized_feature_date >= normalized_capture_date:
+        raise ValueError(
+            "signal-gap Native feature_date must precede capture date"
+        )
+    capture_date = date.fromisoformat(normalized_capture_date)
+    source_contract_cutoff = datetime.combine(
+        capture_date,
+        _CLOCK_CONTRACT_CUTOFF,
+        tzinfo=_SHANGHAI,
+    )
+    capture_not_after = datetime.combine(
+        capture_date,
+        datetime_time.max,
+        tzinfo=_SHANGHAI,
+    )
+    if observed < source_contract_cutoff:
+        raise RuntimeError(
+            "signal-gap Native snapshot cannot start before 06:30 "
+            "Asia/Shanghai"
+        )
+    return create_native_generation(
+        engine,
+        business_date=normalized_capture_date,
+        feature_date=normalized_feature_date,
+        output_root=output_root,
+        readiness_basis="CLOCK_CONTRACT",
+        exporter_version=SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
+        source_contract_cutoff=source_contract_cutoff,
+        capture_not_after=capture_not_after,
+        max_total_bytes=max_total_bytes,
+        min_free_bytes=min_free_bytes,
+        _snapshot_clock=_snapshot_clock,
+    )
 
 
 def find_published_native_generation(
