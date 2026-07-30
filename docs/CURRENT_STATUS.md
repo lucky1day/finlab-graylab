@@ -109,9 +109,9 @@ schema 3 且 acceptance `ACCEPTED`；二次运行 7 个 `hit`、27 reuse、0 tra
 
 ## Blackbox V2 与灰度批次
 
-- Intake、DataBridge 三文件父快照、显式平台输入、七个 Gate、零写库
-  check-only、predict 和 no-persist backtest 已形成稳定技术路径；平台总体仍是
-  `PRODUCTION_PATH_READY`，不代表任意新交付自动 `PRODUCTION_READY`。
+- Blackbox V2 技术路径稳定；`cgb_causal_wk_1y@05022a0eeec7` 已 7/7
+  check-only，仍为 `paused + draft`、零业务写入且未上线，详见
+  [技术入库记录](blackbox_v2/records/CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md)。
 - 10Y T+5 四方案均为 active；每方案 333 条 canonical backtest、17 个月度指标、
   39 条手工 `gray_live` 和 372 条前端展示记录，本批 gray 共 156 条。精确摘要见
   [手工入库记录](blackbox_v2/records/GRAY_ONBOARDING_10Y_T5_4SCHEMES_20260726.md)。

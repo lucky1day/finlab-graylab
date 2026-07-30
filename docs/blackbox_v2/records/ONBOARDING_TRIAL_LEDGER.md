@@ -522,6 +522,28 @@ policy、capacity candidate、真实 replay 和 DailyRuntime 均只选择原有
 wrapper 不会执行这四个方案；本次没有重启 scheduler、写入
 `scheduled_live`、修改 rollout/admission 状态或授予自动灰度权限。
 
+### 4.19 记录 004A：cgb_causal_wk_1y 技术入库
+
+**最终核验时间**：2026-07-30 17:07:26，`Asia/Shanghai`。
+
+**专项记录**：[CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md](CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md)。
+
+| 项目 | 实测结果 |
+|---|---|
+| exact identity | `cgb_causal_wk_1y@05022a0eeec7`；Registry ID `cgb_causal_wk_1y__h1__1Y` |
+| 原始摘要 | Python `90f3abcc1501eb7173c706fc2ad5d76fda89bf9004c88ee976b98378bbb6d450`；Metadata `efc8e03c5db98c33f0b830d62cc4465f7f890b5a783de68fee58e4ae19d4162b` |
+| Harness | `hr_20260730T090642Z_66a2646bd276`，7/7 check-only PASS |
+| generation / snapshot | `full-20260730-081804-9794ce962c1a` / `snapshot-2c964086367c6a987f193bcd` |
+| Request | `predict=2026-07-25`、`feature=2026-07-24`、`target=2026-07-31` |
+| no-persist backtest | 100 requests / 100 records；分批、逆序、未来行隔离通过 |
+| 平台修复 | CompareGate prior daily cutoff 按 `api_wind_date-v1` 重新映射权威业务周；未修改交付算法 |
+| 当前状态 | `paused + draft`；控制面和业务表零写入；不是 shadow、active 或已上线 |
+| 生产边界 | backtest 起点 `2025-01-01`；gray target 起点 `2026-06-01`；首条自然调度三日期 `2026-08-01 / 2026-07-31 / 2026-08-07` |
+
+本轮只证明平台输入、接口、确定性、截止隔离和标准输出通过，不验证算法内部
+逻辑或效果。生产写库仍须 exact persisted all-stage、专项授权和 `master`
+合并确认。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

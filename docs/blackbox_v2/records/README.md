@@ -4,7 +4,7 @@
 
 **目标读者**：平台入库、审计和生产灰度人员
 
-**最后核验日期**：2026-07-27
+**最后核验日期**：2026-07-30
 
 这些记录提供时点证据，不定义通用接口或默认授权。
 
@@ -17,3 +17,5 @@
 - [MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md](MONTHLY_ONBOARDING_FENGRL_5SCHEMES_20260726.md)：2026-07-26 五个月度方案的技术入库和 2026-07-27 手工灰度终验记录。
 - [FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json](FENGRL_MONTHLY_GRAY_PREFLIGHT_20260727.evidence.json)：五个月度方案 integration / production-readonly 预检的机器可读零写入证据。
 - [FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json](FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json)：五个月度方案 `16 + 3 = 19`、全批 95 条的 DB/API/前端终验机器可读未签名摘要。
+- [CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md](CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md)：1Y 周度方案两文件 Intake、权威周历输入和七 Gate 技术验收。
+- [CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.evidence.json](CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.evidence.json)：`cgb_causal_wk_1y@05022a0eeec7` 的 check-only 机器证据。
