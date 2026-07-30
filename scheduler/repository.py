@@ -9524,6 +9524,10 @@ def complete_gray_gap_run(
     )
 
     with engine.begin() as conn:
+        _validate_gray_gap_archived_generation_conn(
+            conn,
+            normalized_authority,
+        )
         # Daily ledger 的锁序固定为 occurrence→ordered siblings→targets；
         # gray-gap 必须先复用同一 guard，再锁普通 run，不能让 insert-only
         # 绕过 migration 018 已冻结的 canonical prediction key。
@@ -9660,6 +9664,59 @@ _GRAY_GAP_FIXED_ATOMIC_TARGETS = {
     "t1_daily": frozenset({"5Y", "10Y"}),
     "t5_daily": frozenset({"3Y", "5Y", "7Y", "10Y"}),
 }
+
+
+def _validate_gray_gap_archived_generation_conn(
+    conn: Connection,
+    source_authority: Mapping[str, object],
+) -> None:
+    """事务内锁定并核对 archived Native provenance。"""
+    if (
+        source_authority.get("authority_type")
+        != "native_archived_generation"
+    ):
+        return
+    generation_id = str(source_authority["generation_id"])
+    row = _read_input_generation_conn(
+        conn,
+        generation_id,
+        for_update=True,
+    )
+    if row is None:
+        raise RuntimeError(
+            "archived Native generation does not exist: "
+            f"{generation_id}"
+        )
+    expected = {
+        "generation_id": generation_id,
+        "generation_type": "native_source",
+        "business_date": str(source_authority["business_date"]),
+        "feature_date": str(source_authority["feature_date"]),
+        "exporter_version": NATIVE_GENERATION_EXPORTER_VERSION,
+        "manifest_sha256": str(source_authority["manifest_sha256"]),
+        "state": GENERATION_SEALED,
+    }
+    mismatches = {
+        field: (expected_value, row.get(field))
+        for field, expected_value in expected.items()
+        if str(row.get(field)) != expected_value
+    }
+    if (
+        row.get("sealed_at") is None
+        or row.get("invalidated_at") is not None
+    ):
+        mismatches["sealed_fence"] = (
+            "sealed and not invalidated",
+            {
+                "sealed_at": row.get("sealed_at"),
+                "invalidated_at": row.get("invalidated_at"),
+            },
+        )
+    if mismatches:
+        raise RuntimeError(
+            "archived Native generation authority drift: "
+            f"{mismatches}"
+        )
 
 
 def _require_lower_sha256(value: object, field: str) -> str:

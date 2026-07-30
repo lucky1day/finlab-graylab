@@ -258,6 +258,51 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 ],
             )
 
+    def _seed_archived_generation(
+        self,
+        **overrides: object,
+    ) -> None:
+        values: dict[str, object] = {
+            "generation_id": _archived_native_authority()[
+                "generation_id"
+            ],
+            "generation_type": "native_source",
+            "business_date": PREDICT_DATE,
+            "feature_date": FEATURE_DATE,
+            "readiness_basis": "CLOCK_CONTRACT",
+            "source_commit_token": "e" * 64,
+            "dataset_content_id": "f" * 64,
+            "schema_version": "native-generation-v1",
+            "exporter_version": "native-generation-exporter-v1",
+            "manifest_uri": "/private/native/manifest.json",
+            "manifest_sha256": _archived_native_authority()[
+                "manifest_sha256"
+            ],
+            "state": "SEALED",
+            "sealed_at": "2026-06-02T07:00:00.000000",
+        }
+        values.update(overrides)
+        with self.engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_input_generations
+                        (generation_id, generation_type, business_date,
+                         feature_date, readiness_basis,
+                         source_commit_token, dataset_content_id,
+                         schema_version, exporter_version, manifest_uri,
+                         manifest_sha256, state, sealed_at)
+                    VALUES
+                        (:generation_id, :generation_type, :business_date,
+                         :feature_date, :readiness_basis,
+                         :source_commit_token, :dataset_content_id,
+                         :schema_version, :exporter_version, :manifest_uri,
+                         :manifest_sha256, :state, :sealed_at)
+                    """
+                ),
+                values,
+            )
+
     def _complete(
         self,
         cfg: SimpleNamespace,
@@ -477,6 +522,7 @@ class GrayGapRepositoryTests(unittest.TestCase):
             tenors=TENORS_T5,
         )
         self._seed(cfg, run_id=109, target_date=TARGET_DATE_T5)
+        self._seed_archived_generation()
 
         written = self._complete(
             cfg,
@@ -501,6 +547,59 @@ class GrayGapRepositoryTests(unittest.TestCase):
                 "historical_sealed_generation_replay",
             )
             self.assertNotIn("vintage_disclaimer", extra)
+
+    def test_archived_native_authority_requires_exact_sealed_db_fence(
+        self,
+    ) -> None:
+        cfg = _cfg(
+            "t5_daily",
+            horizon=5,
+            task_type="T+5",
+            tenors=TENORS_T5,
+        )
+        self._seed(cfg, run_id=110, target_date=TARGET_DATE_T5)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "archived Native generation",
+        ):
+            self._complete(
+                cfg,
+                run_id=110,
+                target_date=TARGET_DATE_T5,
+                source_authority=_archived_native_authority(),
+            )
+
+        self.assertEqual(self._rows("t_scheme_predictions"), [])
+        self.assertEqual(self._rows("t_scheme_run_log"), [])
+        self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
+
+    def test_archived_native_authority_digest_drift_writes_nothing(
+        self,
+    ) -> None:
+        cfg = _cfg(
+            "t5_daily",
+            horizon=5,
+            task_type="T+5",
+            tenors=TENORS_T5,
+        )
+        self._seed(cfg, run_id=111, target_date=TARGET_DATE_T5)
+        self._seed_archived_generation(manifest_sha256="0" * 64)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "archived Native generation authority drift",
+        ):
+            self._complete(
+                cfg,
+                run_id=111,
+                target_date=TARGET_DATE_T5,
+                source_authority=_archived_native_authority(),
+            )
+
+        self.assertEqual(self._rows("t_scheme_predictions"), [])
+        self.assertEqual(self._rows("t_scheme_run_log"), [])
+        self.assertEqual(self._rows("t_scheme_runs")[0]["status"], "running")
 
     def test_blackbox_two_of_two_databridge_authority(self) -> None:
         cfg = _cfg(
@@ -2755,6 +2854,27 @@ class GrayGapRepositoryTests(unittest.TestCase):
 
 
 _SCHEMA = (
+    """
+    CREATE TABLE t_input_generations (
+        generation_id TEXT PRIMARY KEY,
+        generation_type TEXT NOT NULL,
+        business_date TEXT NOT NULL,
+        feature_date TEXT NOT NULL,
+        readiness_basis TEXT NOT NULL,
+        source_commit_token TEXT NOT NULL,
+        dataset_content_id TEXT NOT NULL,
+        schema_version TEXT NOT NULL,
+        exporter_version TEXT NOT NULL,
+        manifest_uri TEXT NOT NULL,
+        manifest_sha256 TEXT NOT NULL,
+        native_generation_id TEXT,
+        native_manifest_sha256 TEXT,
+        state TEXT NOT NULL,
+        sealed_at TEXT,
+        invalidated_at TEXT,
+        invalid_reason TEXT
+    )
+    """,
     """
     CREATE TABLE t_scheme_runs (
         run_id INTEGER PRIMARY KEY,
