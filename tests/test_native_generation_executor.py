@@ -229,6 +229,123 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             environment[input_artifacts.NATIVE_FEATURE_DATE_ENV],
             "2026-07-27",
         )
+        self.assertEqual(
+            environment[
+                "BOND_LIWEI_0616_CACHE_MUTATION_POLICY"
+            ],
+            "hit_only",
+        )
+
+    def test_signal_gap_archived_accepts_exact_normal_generation_hit_only(
+        self,
+    ) -> None:
+        from scheduler.executor import (
+            NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
+            run_scheme_subprocess,
+        )
+        from shared import input_artifacts
+
+        context = _generation_context()
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, *, cwd, env, timeout):
+            from subprocess import CompletedProcess
+
+            captured.update(
+                {"cmd": cmd, "cwd": cwd, "env": env, "timeout": timeout}
+            )
+            return CompletedProcess(cmd, 0, "[]", "")
+
+        with patch(
+            "scheduler.executor._run_process_group",
+            side_effect=fake_run,
+        ):
+            records = run_scheme_subprocess(
+                "daily_demo",
+                context.business_date,
+                native_generation=context,
+                native_execution_mode=(
+                    NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED
+                ),
+                expected_native_feature_date=context.feature_date,
+            )
+
+        self.assertEqual(records, [])
+        environment = captured["env"]
+        self.assertEqual(
+            environment[input_artifacts.NATIVE_BUSINESS_DATE_ENV],
+            context.business_date,
+        )
+        self.assertEqual(
+            environment[input_artifacts.NATIVE_FEATURE_DATE_ENV],
+            context.feature_date,
+        )
+        self.assertEqual(
+            environment[
+                "BOND_LIWEI_0616_CACHE_MUTATION_POLICY"
+            ],
+            "hit_only",
+        )
+
+    def test_signal_gap_archived_rejects_non_exact_business_date(
+        self,
+    ) -> None:
+        from scheduler.executor import (
+            NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
+            run_scheme_subprocess,
+        )
+
+        context = _generation_context()
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(
+                ValueError,
+                "business_date does not match predict_date",
+            ),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-25",
+                native_generation=context,
+                native_execution_mode=(
+                    NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED
+                ),
+                expected_native_feature_date=context.feature_date,
+            )
+        run_process.assert_not_called()
+
+    def test_signal_gap_archived_rejects_current_snapshot_exporter(
+        self,
+    ) -> None:
+        from scheduler.executor import (
+            NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
+            run_scheme_subprocess,
+        )
+
+        context = replace(
+            _generation_context(),
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(ValueError, "exporter_version"),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                context.business_date,
+                native_generation=context,
+                native_execution_mode=(
+                    NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED
+                ),
+                expected_native_feature_date=context.feature_date,
+            )
+        run_process.assert_not_called()
 
     def test_signal_gap_current_snapshot_rejects_wrong_exporter(self) -> None:
         from scheduler.executor import run_scheme_subprocess

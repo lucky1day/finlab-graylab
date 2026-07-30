@@ -31,6 +31,8 @@ from shared.input_artifacts import (
 )
 from shared.liwei_0616_cache_contract import (
     APPROVED_PHASE_A_CACHE_PUBLISHERS,
+    CACHE_MUTATION_POLICY_ENV,
+    CACHE_MUTATION_POLICY_HIT_ONLY,
     CACHE_USE_QUALIFICATION_ENV,
     DIRECT_CACHE_RUNTIME_CONTEXT_ENV,
     GENERATION_ACCEPTANCE_SCHEMA_VERSION,
@@ -47,6 +49,7 @@ from shared.liwei_0616_cache_projection import (
 from shared.native_input_generation import (
     NATIVE_GENERATION_EXPORTER_VERSION,
     NATIVE_GENERATION_SCHEMA_VERSION,
+    SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
 )
 
 
@@ -325,9 +328,7 @@ def prepare_phase_a_caches(
             "choose either offline qualify_compare_gate evidence "
             "or runtime compare_full_output"
         )
-    qualification_required = _compare_gate_required(
-        require_compare_gate
-    )
+    mutation_policy = _cache_mutation_policy()
     trusted_qualification = _resolve_cache_use_qualification(
         cache_use_qualification
     )
@@ -343,8 +344,41 @@ def prepare_phase_a_caches(
             "legacy cache qualification and direct cache runtime "
             "context are mutually exclusive"
         )
-    native_generation_binding = _resolve_native_generation_binding(
-        native_generation
+    try:
+        native_generation_binding = (
+            _resolve_native_generation_binding(
+                native_generation,
+                allow_signal_gap_snapshot=(
+                    mutation_policy
+                    == CACHE_MUTATION_POLICY_HIT_ONLY
+                ),
+            )
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
+            raise RuntimeError(
+                "SIGNAL_GAP_CACHE_PREWARM_REQUIRED: "
+                "Native cache authority is invalid"
+            ) from exc
+        raise
+    root = _cache_root(cache_root)
+    family_root = _family_cache_root(root, spec)
+    if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
+        return _prepare_signal_gap_hit_only(
+            spec=spec,
+            cache_consumer_id=cache_consumer_id,
+            family_root=family_root,
+            daily_df=daily_df,
+            weekly_df=weekly_df,
+            monthly_df=monthly_df,
+            auxiliary_dependency_projection=(
+                auxiliary_dependency_projection
+            ),
+            test_ranges=test_ranges,
+            native_generation_binding=native_generation_binding,
+        )
+    qualification_required = _compare_gate_required(
+        require_compare_gate
     )
     if qualification_required:
         if (
@@ -389,8 +423,6 @@ def prepare_phase_a_caches(
                     ),
                 )
             )
-    root = _cache_root(cache_root)
-    family_root = _family_cache_root(root, spec)
     is_publisher = (
         cache_consumer_id == spec.publisher_consumer_id
     )
@@ -1070,6 +1102,97 @@ def _cache_root(cache_root: str | Path | None) -> Path:
     return Path(configured)
 
 
+def _cache_mutation_policy() -> str | None:
+    configured = os.getenv(CACHE_MUTATION_POLICY_ENV)
+    if configured is None:
+        return None
+    policy = configured.strip()
+    if policy != CACHE_MUTATION_POLICY_HIT_ONLY:
+        raise ValueError(
+            f"{CACHE_MUTATION_POLICY_ENV} must be "
+            f"{CACHE_MUTATION_POLICY_HIT_ONLY}"
+        )
+    return policy
+
+
+def _prepare_signal_gap_hit_only(
+    *,
+    spec: PhaseACacheSpec,
+    cache_consumer_id: str,
+    family_root: Path,
+    daily_df: pd.DataFrame,
+    weekly_df: pd.DataFrame,
+    monthly_df: pd.DataFrame,
+    auxiliary_dependency_projection: (
+        AuxiliaryDependencyProjection | None
+    ),
+    test_ranges: tuple[tuple[str, str], ...],
+    native_generation_binding: Mapping[str, object] | None,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """历史补缺只读取已预热且精确匹配的 current generation。"""
+    try:
+        if native_generation_binding is None:
+            raise RuntimeError(
+                "Native generation binding is missing"
+            )
+        requested_by_baseline: dict[str, list[str]] = {}
+        for baseline in spec.baselines:
+            config = spec.baseline_configs.get(baseline)
+            if config is None:
+                raise KeyError(
+                    f"missing baseline config: {baseline}"
+                )
+            requested = _requested_dates(
+                daily_df,
+                config,
+                test_ranges,
+            )
+            if not requested:
+                raise ValueError(
+                    f"baseline {baseline} has no requested test dates"
+                )
+            requested_by_baseline[baseline] = requested
+        input_state = _input_generation_state(
+            daily_df=daily_df,
+            weekly_df=weekly_df,
+            monthly_df=monthly_df,
+            auxiliary_dependency_projection=(
+                auxiliary_dependency_projection
+            ),
+            native_generation_binding=native_generation_binding,
+        )
+        current, current_error = _load_current_generation(
+            family_root,
+            secure=True,
+        )
+        input_change = _input_change_analysis(
+            (
+                current.manifest.get("input_state")
+                if current is not None
+                else None
+            ),
+            input_state,
+        )
+        return _validated_consumer_hit(
+            spec=spec,
+            cache_consumer_id=cache_consumer_id,
+            current=current,
+            current_error=current_error,
+            requested_by_baseline=requested_by_baseline,
+            input_state=input_state,
+            input_change=input_change,
+            family_root=family_root,
+            qualification_required=True,
+            trusted_qualification=None,
+            native_generation_binding=native_generation_binding,
+        )
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "SIGNAL_GAP_CACHE_PREWARM_REQUIRED: "
+            "exact read-only Phase A cache hit is unavailable"
+        ) from exc
+
+
 def _resolve_cache_use_qualification(
     explicit: Mapping[str, object] | None,
 ) -> dict[str, object] | None:
@@ -1119,9 +1242,14 @@ def _resolve_direct_cache_runtime_context(
 
 def _resolve_native_generation_binding(
     explicit: Mapping[str, object] | None,
+    *,
+    allow_signal_gap_snapshot: bool = False,
 ) -> dict[str, object] | None:
     if explicit is not None:
-        return _validate_native_generation_binding(explicit)
+        return _validate_native_generation_binding(
+            explicit,
+            allow_signal_gap_snapshot=allow_signal_gap_snapshot,
+        )
     configured = {
         "generation_id": os.getenv(NATIVE_GENERATION_ID_ENV),
         "manifest_sha256": os.getenv(NATIVE_MANIFEST_SHA256_ENV),
@@ -1170,7 +1298,10 @@ def _resolve_native_generation_binding(
         "schema_version": manifest.get("schema_version"),
         "exporter_version": manifest.get("exporter_version"),
     }
-    validated = _validate_native_generation_binding(binding)
+    validated = _validate_native_generation_binding(
+        binding,
+        allow_signal_gap_snapshot=allow_signal_gap_snapshot,
+    )
     for field in ("generation_id", "business_date", "feature_date"):
         if validated[field] != configured[field]:
             raise ValueError(
@@ -1181,6 +1312,8 @@ def _resolve_native_generation_binding(
 
 def _validate_native_generation_binding(
     raw: Mapping[str, object],
+    *,
+    allow_signal_gap_snapshot: bool = False,
 ) -> dict[str, object]:
     required = {
         "generation_id",
@@ -1214,10 +1347,10 @@ def _validate_native_generation_binding(
         raise ValueError(
             "Native generation cache schema_version mismatch"
         )
-    if (
-        normalized["exporter_version"]
-        != NATIVE_GENERATION_EXPORTER_VERSION
-    ):
+    accepted_exporters = {NATIVE_GENERATION_EXPORTER_VERSION}
+    if allow_signal_gap_snapshot:
+        accepted_exporters.add(SIGNAL_GAP_NATIVE_EXPORTER_VERSION)
+    if normalized["exporter_version"] not in accepted_exporters:
         raise ValueError(
             "Native generation cache exporter_version mismatch"
         )
