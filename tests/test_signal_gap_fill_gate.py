@@ -440,14 +440,13 @@ class SignalGapFillGateTests(unittest.TestCase):
             feature_date="2026-07-27",
             target_date="2026-08-03",
             predicted_direction=1,
-            scheme_version="version-1",
         )
         runner = Mock(return_value=[record])
         opener = Mock(
             return_value=SimpleNamespace(dispose=Mock())
         )
 
-        _run_algorithm(
+        records = _run_algorithm(
             item,
             engine=self.engine,
             algo_env="forecast_env",
@@ -465,6 +464,8 @@ class SignalGapFillGateTests(unittest.TestCase):
             kwargs["expected_native_feature_date"],
             "2026-07-27",
         )
+        self.assertEqual(records[0].prediction_phase, "gray_live")
+        self.assertEqual(records[0].scheme_version, "version-1")
         self.assertEqual(
             _repository_source_authority(
                 action,
@@ -480,6 +481,91 @@ class SignalGapFillGateTests(unittest.TestCase):
                 "replay_mode": "historical_sealed_generation_replay",
             },
         )
+
+    def test_current_snapshot_native_record_without_version_uses_frozen(
+        self,
+    ) -> None:
+        from harness.gates.signal_gap_fill_gate import (
+            _Execution,
+            _build_groups,
+            _run_algorithm,
+        )
+
+        action = _target("10Y", 5, "2026-08-03")
+        group = _build_groups(_plan(actions=[action]))[0]
+        item = _Execution(
+            group=group,
+            cfg=self.config,
+            run_id=1,
+            started=time.monotonic(),
+        )
+        record = PredictionRecord(
+            scheme_id="demo",
+            target_tenor="10Y",
+            horizon=5,
+            predict_date="2026-07-28",
+            feature_date="2026-07-27",
+            target_date="2026-08-03",
+            predicted_direction=1,
+        )
+
+        records = _run_algorithm(
+            item,
+            engine=self.engine,
+            algo_env="forecast_env",
+            timeout_sec=600,
+            algorithm_runner=Mock(return_value=[record]),
+            native_generation_opener=Mock(
+                return_value=SimpleNamespace(dispose=Mock())
+            ),
+        )
+
+        self.assertEqual(records[0].prediction_phase, "gray_live")
+        self.assertEqual(records[0].scheme_version, "version-1")
+
+    def test_native_record_with_wrong_scheme_version_is_rejected(
+        self,
+    ) -> None:
+        from harness.gates.signal_gap_fill_gate import (
+            _Execution,
+            _build_groups,
+            _run_algorithm,
+        )
+
+        group = _build_groups(
+            _plan(actions=[_archived_native_target()])
+        )[0]
+        item = _Execution(
+            group=group,
+            cfg=self.config,
+            run_id=1,
+            started=time.monotonic(),
+        )
+        record = PredictionRecord(
+            scheme_id="demo",
+            target_tenor="10Y",
+            horizon=5,
+            predict_date="2026-07-28",
+            feature_date="2026-07-27",
+            target_date="2026-08-03",
+            predicted_direction=1,
+            scheme_version="wrong-version",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "algorithm records do not match the atomic target group",
+        ):
+            _run_algorithm(
+                item,
+                engine=self.engine,
+                algo_env="forecast_env",
+                timeout_sec=600,
+                algorithm_runner=Mock(return_value=[record]),
+                native_generation_opener=Mock(
+                    return_value=SimpleNamespace(dispose=Mock())
+                ),
+            )
 
     def test_partial_present_group_blocks_before_algorithm_or_write(
         self,

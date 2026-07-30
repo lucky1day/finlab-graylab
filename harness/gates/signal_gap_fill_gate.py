@@ -920,10 +920,7 @@ def _run_algorithm(
                 prediction_phase="gray_live",
                 scheme_version=(
                     group.scheme_version
-                    if (
-                        group.runtime_type == "blackbox_v2"
-                        and record.scheme_version is None
-                    )
+                    if record.scheme_version is None
                     else record.scheme_version
                 ),
             )
