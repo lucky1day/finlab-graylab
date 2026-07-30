@@ -6,7 +6,7 @@
 
 **目标读者**：上游算法工程师、平台入库人员、Native V1 维护人员
 
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-07-30
 
 本目录只保存可执行 SOP。所有方案先从[统一入库导航](../onboarding/README.md)判断场景，再按本页选择唯一操作文档。
 
@@ -28,6 +28,7 @@
 |---|---|---|---|---|
 | [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md) | `CURRENT` | `blackbox_v2` | 上游算法交付、运行和自验契约 | 是，上游算法唯一手册 |
 | [BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md) | `CURRENT` | `blackbox_v2` | 平台收包、Gate、登记、专项生产灰度和前端验收 | 是，按文档权限边界执行 |
+| [DAILY_GRAY_RUNNER_IMPLEMENTATION_PLAN_20260730.md](DAILY_GRAY_RUNNER_IMPLEMENTATION_PLAN_20260730.md) | `DRAFT` | `common` | 每日 gray_live 自动信号实施计划 | 否，待单独确认与实施 |
 | [NATIVE_V1_MAINTENANCE_T0.md](NATIVE_V1_MAINTENANCE_T0.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 存量维护的身份与改动分级判断 | 仅限既有 Native 方案 |
 | [NATIVE_V1_MAINTENANCE_SOP.md](NATIVE_V1_MAINTENANCE_SOP.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 存量方案维护流程 | 仅限既有 Native 方案 |
 | [NATIVE_V1_POST_CHANGE_TEST_SOP.md](NATIVE_V1_POST_CHANGE_TEST_SOP.md) | `LEGACY_MAINTENANCE` | `native_adapter` | Native 修改后的 Gate 与回归验证 | 仅限既有 Native 方案 |
@@ -37,6 +38,7 @@
 | 状态 | 含义 |
 |---|---|
 | `CURRENT` | 当前权威操作文档，适用于其声明的运行时和读者 |
+| `DRAFT` | 设计或实施计划草稿，不得作为已上线操作路径 |
 | `LEGACY_MAINTENANCE` | 只维护既有 Native V1 身份，禁止用于新增方案 |
 
 ## 4. 场景决策

@@ -6,13 +6,13 @@
 
 **目标读者**：上游算法工程师
 
-**最后核验日期**：2026-07-26
+**最后核验日期**：2026-07-30
 
 本文是上游算法工程师唯一需要阅读的人类文档。完成开发只需要本文、随包提供的 `data_bridge_v1_schema.json` 和三份脱敏 sample；不需要再阅读仓库内其他文档。
 
 本地开发、训练和效果验证优先使用从统一 DataBridge 下载的真实 DataBridge 数据。三份 sample 只在 DataBridge 暂时不可用时用于读取、选列、截止截断和接口烟雾测试，不能用于训练或效果回测。最终交付物仍然只有同名的 `{scheme_id}.py + {scheme_id}.json`。
 
-若方案需要平台统一周历，可以在开发目录放置 `api_wind_date.csv` 做本地自验，但它不是交付物。正式交付目录仍然只能包含同名 `.py + .json`；`api_wind_date.csv` 只允许作为上游自验材料，不得进入正式两文件交付目录。平台通过 Intake 参数声明和提供该制品，不从 Metadata 或上游目录取日历。
+若方案需要平台统一周历，上游必须按第 3 节从同一个 DataBridge 下载 `api_wind_date.csv` 做本地自验。它不是交付物：正式交付目录仍然只能包含同名 `.py + .json`；`api_wind_date.csv` 只允许作为上游自验材料，不得进入正式两文件交付目录。平台通过 Intake 参数声明和提供该制品，不从 Metadata 或上游目录取日历。
 
 本文中的 `Blackbox V2` 是运行时代际，`schema_version=1.0` 是交付接口合同版本，`data-bridge-v1` 是三频数据 Schema；三者不能混作算法版本。
 
@@ -100,7 +100,7 @@ python -m harness intake-blackbox ... \
 
 开发和生产的区别只有谁来准备数据：
 
-- **开发和自验**：算法工程师在算法运行前，按第 3 节命令从 DataBridge 下载三份真实 CSV 到本地 `sample_data/`。
+- **开发和自验**：算法工程师在算法运行前，按第 3 节命令从 DataBridge 下载三份真实业务 CSV；依赖日期到周键映射的方案还必须在同一连续下载批次取得 `api_wind_date.csv`。
 - **平台运行**：平台准备同一代只读数据并通过 `--data-dir` 提供；算法脚本不得主动连接 DataBridge、网络或数据库。
 
 因此，下载是独立的开发准备动作，不能写进 `{scheme_id}.py` 的 `predict` 或 `backtest` 路径。
@@ -133,9 +133,35 @@ f959777b7f251937b6364843a81d8eb696072ca7671b1306c368aa0f3cf735dc
 
 新增指标会在后续导出中形成新增业务列，因此不同日期下载的数据列数可能不同。算法工程师本地下载用于开发验证；正式运行直接读取平台通过 `--data-dir` 提供的当次数据，不需要了解或实现平台内部刷新时间与检查流程。
 
+### 2.4 自测与平台验收必须同代
+
+“算法本地通过”和“平台部署通过”只有在输入身份一致时才可逐行比较。
+对需要 `api_wind_date.csv` 的方案，一次完整验收身份包括：
+
+```text
+generation_id
+refresh_date
+daily_output.csv SHA256
+weekly_output.csv SHA256
+monthly_output.csv SHA256
+api_wind_date.csv canonical SHA256
+combined_snapshot_id
+```
+
+普通 DataBridge CSV 下载响应不返回平台内部 `generation_id`。上游不得
+自行编造该字段；上游先保存四文件 SHA256、下载时间、行数和起止键，
+平台 Intake 时再把三频摘要对应到选定 generation，并补录
+`generation_id`、`refresh_date` 和 `combined_snapshot_id`。
+
+三频文件或日历任一摘要不同，双方输入就不是同一验收版本。此时结果
+差异只能先标记为 `data_vintage_mismatch`，不得直接判定算法错误。
+需要精确复现时，必须使用平台选定的同一 generation 和同一规范化日历
+重新自测。该规则只冻结一次验收对比；正式生产仍滚动使用当天最新且
+已封存的 generation。
+
 ---
 
-## 3. 从 DataBridge 下载三份测试数据
+## 3. 从 DataBridge 下载自测数据
 
 ### 3.1 配置地址和认证信息
 
@@ -194,7 +220,21 @@ curl --fail-with-body --location --retry 3 \
   --output sample_data/monthly_output.csv
 ```
 
-周频和月频不传日历日期参数，直接下载统一导出的完整周期数据。三个命令任一出现非 2xx、空响应或非 CSV 内容时，都必须停止验证；不得拿旧文件、sample 或手工文件冒充本次真实下载。
+### 3.5 下载 `api_wind_date.csv`
+
+依赖日期到平台周键映射的方案必须执行；不依赖周历的方案可以跳过：
+
+```bash
+curl --fail-with-body --location --retry 3 \
+  --user "$DATABRIDGE_API_USERNAME:$DATABRIDGE_API_PASSWORD" \
+  "${DATABRIDGE_API_BASE_URL%/}/export/tables/api_wind_date/csv/" \
+  --output sample_data/api_wind_date.csv
+```
+
+周频、月频和日历不传日历日期参数，直接下载统一导出的完整数据。全部
+必需文件应在同一连续下载批次取得；任一命令出现非 2xx、空响应或非
+CSV 内容时，整批自测输入作废。不得把旧文件、sample、参考包日历或
+手工修改文件混入本批。
 
 下载结束后从当前 shell 清除密码：
 
@@ -204,13 +244,14 @@ unset DATABRIDGE_API_PASSWORD
 
 不要把包含真实密码的命令复制到聊天、工单或日志。正式交付的 `{scheme_id}.py`、`{scheme_id}.json` 以及算法输出中不得出现 DataBridge 地址、用户名、密码或下载逻辑。
 
-### 3.5 校验下载结果
+### 3.6 校验下载结果
 
 确认 `data_bridge_v1_schema.json` 位于当前目录，并执行：
 
 ```bash
 python - <<'PY'
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -257,13 +298,62 @@ for filename, key in keys.items():
         "OK",
         f"rows={len(frame)}",
         f"columns={len(frame.columns)}",
+        f"sha256={hashlib.sha256(path.read_bytes()).hexdigest()}",
+    )
+
+calendar_path = root / "api_wind_date.csv"
+if calendar_path.exists():
+    calendar = pd.read_csv(
+        calendar_path,
+        dtype="string",
+        keep_default_na=False,
+    )
+    if list(calendar.columns) != ["rdate", "week_id"]:
+        raise ValueError(
+            "api_wind_date.csv columns must be exactly rdate,week_id"
+        )
+    if calendar.empty:
+        raise ValueError("api_wind_date.csv is empty")
+    dates = calendar["rdate"].str.strip()
+    parsed_dates = pd.to_datetime(
+        dates,
+        format="%Y-%m-%d",
+        errors="raise",
+    )
+    if dates.eq("").any() or dates.duplicated().any():
+        raise ValueError(
+            "api_wind_date.csv rdate must be non-empty and unique"
+        )
+    if not parsed_dates.is_monotonic_increasing:
+        raise ValueError(
+            "api_wind_date.csv rdate must be strictly ascending"
+        )
+    week_ids = calendar["week_id"].str.strip()
+    if not week_ids.str.fullmatch(r"\d{6}").all():
+        raise ValueError(
+            "api_wind_date.csv week_id must be a six-digit string"
+        )
+    print(
+        "api_wind_date.csv",
+        "OK",
+        f"rows={len(calendar)}",
+        f"rdate={dates.iloc[0]}..{dates.iloc[-1]}",
+        f"week_id={week_ids.iloc[0]}..{week_ids.iloc[-1]}",
+        (
+            "sha256="
+            f"{hashlib.sha256(calendar_path.read_bytes()).hexdigest()}"
+        ),
     )
 PY
 ```
 
 输出中的 `columns` 是本次真实文件的实测值，不是验收常量，后续下载可能增加。算法还必须把自己实际消费的字段列成显式清单并逐项检查；未使用的新增业务列直接忽略。缺少基线字段、基线相对顺序变化、文件为空或时间键重复时，先重新下载；不得修改文件表头来绕过检查。
 
-### 3.6 脱敏 sample 何时使用
+`api_wind_date.csv.week_id` 是不透明的平台业务键，不是 ISO 周，也不
+保证数值连续。必须按字符串精确匹配，禁止 `week_id + 1`、按数值大小
+推导相邻周、从日期自行重算周号或用参考包内嵌日历覆盖。
+
+### 3.7 脱敏 sample 何时使用
 
 随包 sample 保留制作时点的 `data-bridge-v1` 基线表头，每份只有两行合成数据。真实 DataBridge 后续可能增加业务列，sample 不代表未来文件的永久完整表头。它们只适合：
 
@@ -273,6 +363,20 @@ PY
 - 验证 CLI、Result 和失败处理。
 
 sample 不来自生产，不得用于训练模型、效果回测、比较准确率，或推断真实数据的起止日期、分布和空值比例。DataBridge 恢复后，正式算法自验必须重新使用真实下载数据。
+
+### 3.8 保存自测输入凭证
+
+自测报告或交接记录必须保存以下事实：
+
+- 下载时间和声明的数据截止日；
+- 三频文件以及所需 `api_wind_date.csv` 的 SHA256、行数、首尾时间键；
+- 日历列名、最小/最大 `rdate`、首尾 `week_id`；
+- 自测 Request 的七字段原值；
+- `daily_cutoff_key` 在同批日历中映射出的 `week_id`；
+- 算法实际消费字段清单和自测结果摘要。
+
+这些内容是验收证据，不是方案交付文件。上游只需在交接材料中提供，
+不得把自测报告、数据、manifest 或日历放入正式两文件 delivery。
 
 ---
 
@@ -390,6 +494,12 @@ python {scheme_id}.py backtest \
 日历，或回退读取交付目录旁的同名文件。未声明该制品的方案仍只看到
 三频文件。
 
+`week_id` 只能作为不透明字符串键使用。算法不得将其解释为 ISO 周、
+不得假定连续、不得执行加减一，也不得保留内嵌日历、脚本同目录日历
+或网络/数据库 fallback。依赖周历的算法在
+`--data-dir/api_wind_date.csv` 缺失、列不合法或截止映射不一致时必须
+fail-closed。
+
 推荐按字符串读取时间键：
 
 ```python
@@ -410,6 +520,10 @@ weekly = pd.read_csv(
 monthly = pd.read_csv(
     data_dir / "monthly_output.csv",
     dtype={"month_id": "string"},
+)
+calendar = pd.read_csv(
+    data_dir / "api_wind_date.csv",
+    dtype={"rdate": "string", "week_id": "string"},
 )
 ```
 
@@ -445,6 +559,12 @@ Request 必须恰好包含以上七个字段：
 - `daily_cutoff_key` 是规范 `YYYY-MM-DD`；周、月截止键是六位数字字符串。
 - 日期和截止键由平台生成，算法只校验和使用，不得修改、顺延、回退或重新推导。
 - 批量输入顺序就是输出顺序。任一行非法时必须全批失败，不能跳过后输出部分结果。
+
+需要 `api-wind-date-v1` 的方案还必须校验：同一 Request 的
+`daily_cutoff_key` 在本次 `api_wind_date.csv` 中恰好映射到一个
+`week_id`，且该值精确等于 `weekly_cutoff_key`；算法实际消费
+`weekly_output.csv` 时，该周键还必须存在于周频文件。映射不一致说明
+输入批次或 Request 口径不一致，必须整体失败，不得自行修正 Request。
 
 ### 6.3 对每个 Request 独立截断
 
@@ -538,8 +658,11 @@ python {scheme_id}.py backtest \
 
 | 验证项 | 操作 | 通过标准 |
 |---|---|---|
-| DataBridge 下载 | 分别下载日、周、月三份真实 CSV | HTTP 成功，文件名固定，文件非空 |
-| Schema 校验 | 执行第 3.5 节校验命令，并检查算法消费字段 | 基线字段和相对顺序兼容，时间键合法；不限制总列数 |
+| DataBridge 下载 | 分别下载日、周、月三份真实 CSV；依赖周历时同批下载 `api_wind_date.csv` | HTTP 成功，文件名固定，文件非空；无旧文件混用 |
+| Schema 校验 | 执行第 3.6 节校验命令，并检查算法消费字段 | 基线字段和相对顺序兼容，时间键合法；日历精确两列；不限制业务文件总列数 |
+| 周历与 Request | 用同批 `api_wind_date.csv` 映射每条 `daily_cutoff_key` | 恰好等于 Request 的 `weekly_cutoff_key`，且消费周频时该键存在 |
+| 自测输入凭证 | 保存下载时间、四文件摘要、行数、起止键和 Request | 平台能够把三频摘要匹配到一个 generation，并核对规范化日历摘要 |
+| 同代复现 | 在平台选定的 generation 与组合输入上复跑 | 输入身份一致后才比较结果；不一致标记 `data_vintage_mismatch` |
 | 交付物 | 检查文件数量、命名、Metadata 历史八字段、必填 `description` 和任务组合 | 只有两个交付文件，身份、说明和任务组合合法；自验日历不进入交付目录 |
 | 命令与日志 | 执行 `--help`、`predict`、`backtest` 并分别捕获 stdout/stderr | 命令存在；成功运行 stdout 为空 |
 | 单点预测 | 使用一个合法 Request 执行 `predict` | 退出码 `0`，恰好一条五字段结果 |
@@ -564,6 +687,10 @@ python {scheme_id}.py backtest \
 - [ ] `name` 是任务格子内的简洁方案名，没有重复期限、任务或“方向预测”；
 - [ ] `predict` 和 `backtest` 使用同一算法逻辑；
 - [ ] 真实 DataBridge 数据下载和 Schema 校验已通过；
+- [ ] 如依赖周历，已从 DataBridge 专用接口同批下载 `api_wind_date.csv`，未使用内嵌、参考包或手工日历；
+- [ ] 已保存三频/日历 SHA256、行数、起止键和自测 Request，未自行编造 `generation_id`；
+- [ ] `daily_cutoff_key -> week_id` 与 Request 的 `weekly_cutoff_key` 精确一致，`week_id` 未按 ISO 周或连续数值处理；
+- [ ] 平台验收输入与自测输入同代；如摘要不同，已在平台选定 generation 上重跑，而不是把差异判成算法问题；
 - [ ] 每个 Request 按自己的截止键独立截断；
 - [ ] 单点、批量、分批、变序、重复执行和未来行隔离全部通过；
 - [ ] 成功时 stdout 为空，失败时不产生 Output；

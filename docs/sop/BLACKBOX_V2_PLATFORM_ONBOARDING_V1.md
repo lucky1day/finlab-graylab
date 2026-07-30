@@ -29,7 +29,11 @@
 - trial 的 base `scheme_id` 和 composite Registry ID 均未占用；
 - 同一算法已有原生实现时使用独立 trial ID，不覆盖原方案。
 
-上游工作目录可以含自验用 `api_wind_date.csv`、sample 或交接材料，但不得把这些内容交给 Intake。平台必须先复制精确 `.py + .json` 到私有临时目录，并确认该目录恰好两个普通文件；上游随包日历永不成为正式运行输入。
+上游工作目录可以含从 DataBridge 下载的自验
+`api_wind_date.csv`、sample、自测输入摘要或交接材料，但不得把这些
+内容交给 Intake。平台必须先复制精确 `.py + .json` 到私有临时目录，
+并确认该目录恰好两个普通文件；上游自验日历只用于摘要对齐，永不成为
+正式运行输入。
 
 记录收到文件的原始摘要：
 
@@ -171,7 +175,46 @@ Input Gate 当前使用 `require_fresh=False`，只证明快照结构和内容�
 
 DataBridge 校验失败时保留最后成功 current，阻断依赖 `data_bridge_current` 的运行，不用旧摘要冒充新 generation。
 
-### 2.3 每日 generation、occurrence 与 V2 释放时序
+### 2.3 对齐上游自测与平台验收输入
+
+需要逐行比较上游自测结果时，不能只核对算法两文件。完整可比较输入
+身份固定为：
+
+```text
+generation_id
+refresh_date
+daily_output.csv SHA256
+weekly_output.csv SHA256
+monthly_output.csv SHA256
+api_wind_date.csv canonical SHA256
+combined_snapshot_id
+```
+
+上游通过 DataBridge 专用接口下载 `api_wind_date.csv`，但普通 CSV
+响应不携带平台内部 `generation_id`。因此平台必须：
+
+1. 接收上游自测记录中的下载时间、三频/日历 SHA256、行数、起止键和
+   Request 七字段；
+2. 用三频 SHA256 对应到本次选定的 DataBridge generation，禁止按文件
+   名、日期范围或口头说明猜测；
+3. 用 `api-wind-date-v1` provider 对平台权威日历规范化，核对其 SHA256；
+4. 生成并记录 `combined_snapshot_id`；
+5. 核对每条 Request 的
+   `daily_cutoff_key -> weekly_cutoff_key` 与同一日历精确一致；
+6. 只有完整身份相同后，才允许把输出差异归类为算法或平台适配差异。
+
+三频或日历任一摘要不一致时，本次比较必须标记
+`data_vintage_mismatch` 并停止算法归因。平台应指定已选 generation
+及其只读输入，让上游在同代数据上重跑；原自测报告保留为旧数据版本
+证据，不能冒充当前部署验收。
+
+同代约束只适用于一次可重复验收，不把生产永久冻结在 Onboarding
+generation。正式 `scheduled_live` 仍使用当天最新、完整校验且
+`SEALED` 的 generation，并在每次运行记录
+`generation_id + combined_snapshot_id`。不同 generation 的结果只能
+用于稳定性观察，不能宣称逐行复现。
+
+### 2.4 每日 generation、occurrence 与 V2 释放时序
 
 DataBridge 只服务 `runtime_type=blackbox_v2` 日频执行，Native 使用独立的
 `native_source` generation。两者共享同一 occurrence 和冻结日历证据，但互不以
@@ -196,6 +239,9 @@ coordinator 唯一拥有；旧 preflight、scheduler restart 和 per-scheme cron
 generation 关联的同日 Native calendar generation。generation ID、manifest
 SHA、business/feature date 或关联摘要任一漂移时 fail-closed。旧 generation
 即使结构完整也不能作为 scheduled-live fallback。
+
+这里的生产滚动不影响历史 Onboarding 证据：报告比较若跨 generation，
+必须明确标记数据版本变化，不能用当前 production 结果反向覆盖旧验收。
 
 8 个 V2 使用独立执行池，最大并发 2，单 attempt 硬超时 120 秒。与 17 个
 Native 合计冻结 25 个 base execution、29 个 target；最终完成口径为 29/29。
@@ -260,6 +306,22 @@ generation 具有相同 `combined_snapshot_id`。
 Input 报告必须分组记录三频父快照与平台注册制品，并记录父/组合
 snapshot ID、Schema、各文件行列数与 SHA256、两个 manifest，以及
 Request 的三个日期和三个截止键。
+
+若存在上游自测报告，Input 报告还必须增加
+`self_test_alignment`：
+
+```text
+status: matched | data_vintage_mismatch | not_provided
+matched_generation_id
+matched_refresh_date
+business_file_hashes_match
+api_wind_date_hash_match
+request_calendar_mapping_match
+upstream_downloaded_at
+```
+
+`matched` 只有在三频摘要、规范化日历摘要和 Request 周键映射全部一致
+时成立；不能因为最终方向相同而反推输入已对齐。
 
 `blackbox_v2/input_state.json` 必须记录 `generation_id`、`refresh_date`、business digest、环境指纹、父/组合 Snapshot 身份和制品 provenance；Input Gate 同时记录三份业务文件、平台注册制品摘要和 Request。授权段必须绑定该 input state，不能只凭三份 SHA256 推断 generation。
 
@@ -346,10 +408,10 @@ scheduler。
 | Gate | 当前检查 | 当前没有证明 | 主要证据 |
 |---|---|---|---|
 | `static` | 两文件、Metadata、已声明 provider、语法、禁止 import/调用，以及 `/Users/`、`/home/`、Windows 盘符形式的绝对路径字面量 | 其他绝对路径、算法效果、全局文件读取隔离 | runtime、版本、Metadata、`platform_inputs`、违规列表 |
-| `input` | 三频 Schema、父/组合快照、平台注册制品、七字段 Request、三个截止键 | 当天 freshness、scheduled generation 映射 | 两类文件摘要、父/组合 ID、两个 manifest、Request |
+| `input` | 三频 Schema、父/组合快照、平台注册制品、七字段 Request、三个截止键；如有上游自测则核对同代输入身份 | 当天 freshness、跨 generation 结果可比性 | 两类文件摘要、父/组合 ID、两个 manifest、Request、`self_test_alignment` |
 | `unit` | help 暴露两个模式；一个非法 Request 失败且无 Output | 所有非法组合均被覆盖 | help、非法输入、失败无 Output |
 | `dry-run` | 单点 predict、Result 校验、内存 `PredictionRecord` | 已写预测表或已进入业务 API | PredictionRecord、组合 ID、结果路径 |
-| `compare` | 重复、predict/backtest、分批、顺序、后续业务行隔离；平台制品哈希不变 | 准确率、历史修订回放 | 五类一致性证据、`platform_input_hashes_unchanged=true` |
+| `compare` | 重复、predict/backtest、分批、顺序、后续业务行隔离；平台制品哈希不变；同代时才比较上游结果 | 准确率、历史修订回放、跨 generation 逐行复现 | 五类一致性证据、`platform_input_hashes_unchanged=true`、输入对齐状态 |
 | `backtest` | 100 条全部返回、no-persist、组合输入一致 | 大于 100 条单进程能力、效果门槛 | 请求/结果数量、组合 ID、persist=false |
 | `api-readiness` | composite 身份和结果结构兼容 | 真实 Registry、HTTP API 或 scheduler 探针 | registry ID、结构结果 |
 
@@ -638,6 +700,7 @@ Activation 当天还必须为当前可运行点执行至少一次受控 `gray_li
 |---|---|---|
 | 环境自检失败 | 停止 Intake/Onboarding | 冻结环境恢复并重新自检 |
 | scheduled-live DataBridge 失败 | 保留旧 generation 供审计，但本 occurrence 禁止 fallback，阻断 V2 并告警 | 当天全新 generation 在 08:30 前 SEALED 且仍有执行预算 |
+| 上游自测与平台输入摘要不同 | 标记 `data_vintage_mismatch`，停止算法结果归因 | 上游在平台选定的同一 generation 与规范化日历上重跑，完整输入身份一致 |
 | Intake 失败 | 不手工拼方案目录，不改交付文件 | 清理未完成 trial 后重新 Intake |
 | 自动 Gate 失败 | 不签发 token，保留报告 | 问题修复后从 static 重跑全套 |
 | 报告通过但审计 DB 缺失 | 不签发 token | exact run 和七个 Gate 完整持久化 |
@@ -666,6 +729,11 @@ Shadow 生命周期操作通过 journal、补偿和 reconciliation 收口；数�
 - [ ] 需要平台周历的方案以 `--platform-input api-wind-date-v1` Intake，父快照仍严格三文件
 - [ ] 冻结环境和 sandbox 自检通过
 - [ ] DataBridge generation 状态和三 SHA 已保存
+- [ ] 已取得上游自测的下载时间、三频/日历 SHA、行数、起止键和 Request；未要求上游编造 `generation_id`
+- [ ] 三频 SHA 已对应到选定 generation，规范化 `api_wind_date.csv` SHA 和 `combined_snapshot_id` 已核对
+- [ ] `daily_cutoff_key -> weekly_cutoff_key` 与本次日历精确一致；`week_id` 未按 ISO 周或连续数值解释
+- [ ] `self_test_alignment=matched` 后才执行逐行算法对比；不一致已标记 `data_vintage_mismatch` 并同代重跑
+- [ ] 已明确 Onboarding 验收同代不等于生产永久冻结；scheduled live 仍使用当天最新 SEALED generation
 - [ ] 当天 occurrence 已冻结 Registry、代码/config 摘要、25 个 base execution 和 29 个 target
 - [ ] Native 和 DataBridge generation 均在 06:30 后建立并 SEALED；V2 绑定同一 DataBridge generation
 - [ ] 8 个 V2 按 DataBridge `sealed_at +0/+2/.../+14` 独立释放，最大并发 2；Native 最大并发 2

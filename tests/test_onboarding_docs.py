@@ -396,6 +396,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "不得进入正式两文件交付目录",
             "不得在 Metadata 中增加 `platform_inputs`",
             "--platform-input api-wind-date-v1",
+            "export/tables/api_wind_date/csv/",
+            "自测与平台验收必须同代",
+            "data_vintage_mismatch",
+            "daily_cutoff_key -> week_id",
         ):
             self.assertIn(marker, upstream)
 
@@ -421,6 +425,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
             "persist_backtest=false",
             "100/100",
             "结构验证",
+            "对齐上游自测与平台验收输入",
+            "self_test_alignment",
+            "data_vintage_mismatch",
+            "生产永久冻结",
         ):
             self.assertIn(marker, platform)
 

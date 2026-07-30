@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：算法、平台、回测、API 和前端开发人员
-**最后核验日期**：2026-07-19
+**最后核验日期**：2026-07-30
 
 本文是平台关于 `predict_date` / `feature_date` / `target_date` 与灰度实盘阶段的强制语义。前端、后端、回测、SOP、方案文档和测试用例必须使用同一套术语；如与旧文档冲突，以本文为准，并回写对应文档。
 
@@ -32,6 +32,28 @@ Native V1 既有周频 `horizon=6` 和月频 `horizon=30` 是历史平台计日�
 | `target_date` | 验证目标日，用于展示、去重、actual join 和月度统计归属 | 是 |
 
 `feature_date` 是平台、业务和前端唯一标准数据截止字段。`anchor_date` 只允许作为方案内部算法变量或历史审计 extra 保留；任何对外语义、前端展示、灰度规则、回测规则都不得依赖 `anchor_date`。如果 `extra` 同时保留 `anchor_date`，它必须等于 `feature_date`。
+
+### 1.1 日期、交易日与周键的权威来源
+
+以下来源各自只负责一种语义，不能互相替代：
+
+| 权威来源 | 唯一职责 | 禁止用法 |
+|---|---|---|
+| `daily_output.csv.date` | 算法日频业务观测轴和 `daily_cutoff_key` 定位 | 不得据此自行推导平台交易日或周键 |
+| `api_wind_date.csv` | `rdate -> week_id` 的平台业务映射 | 不得把 `week_id` 当 ISO 周、连续数值或执行加减一 |
+| `t_trade_calendar` / 平台冻结交易日历 | 平台内部计算前后交易日、调度日和目标日 | Blackbox 算法不得直接访问，也不得用它覆盖 Request |
+| 七字段 Request | 本次运行的三日期与三个 cutoff 的唯一合同 | 算法不得修改、顺延、回退或重新生成 |
+
+`week_id` 是不透明的六位字符串业务键。算法要找相邻周，只能使用平台
+给定的 Request、`weekly_output.csv` 中的有序实际键以及声明后的
+`api_wind_date.csv` 映射，不能依赖数值连续性。
+
+依赖周历的 Blackbox 上游自测和平台 Onboarding 验收必须绑定同一三频
+DataBridge generation 与相同规范化 `api_wind_date.csv` 内容。完整
+输入身份由 `generation_id + 三频 SHA256 + 日历 SHA256 +
+combined_snapshot_id` 表达。任一部分不同，结果差异先归类
+`data_vintage_mismatch`，必须同代重跑后才能归因算法。该验收约束不
+永久冻结生产；scheduled live 仍使用当天最新且已封存的 generation。
 
 ## 2. 三种运行口径
 
@@ -133,7 +155,7 @@ scheduler 可以为了降低机器负载对同一业务 cron 下的 active 方�
 
 日频正式实盘由 `scheduler.executor` 在写库前做统一日期语义校验：记录中的 `predict_date` 必须等于本次 run 日期，`feature_date` 必须等于 `previous_trading_day(predict_date)`，`target_date` 必须等于该 `feature_date` 后第 `horizon` 个交易日。若算法因为源表水位不足而复用旧 `feature_date` 或旧 `target_date`，必须 fail-closed，不得写入 `t_scheme_predictions`；前端显示的“待验证”不能通过人工补写旧预测解决。
 
-周频实盘也遵守同一条 T/T+1 规则：adapter 必须先用交易日历计算 `feature_date = previous_trading_day(predict_date)`，再由 `feature_date` 映射 `feature_week_id`，并以 `end_week=feature_week_id`、`as_of_date=feature_date` 构建周频输入。禁止直接用 `predict_date` 所在周作为 feature week；否则交易日手工运行或灰度补齐可能读到当前周未来数据。
+周频实盘也遵守同一条 T/T+1 规则：adapter 必须先用平台冻结交易日历计算 `feature_date = previous_trading_day(predict_date)`，再由与本次输入身份绑定的 `api_wind_date.csv` 将 `feature_date` 映射为 `feature_week_id`，并以 `end_week=feature_week_id`、`as_of_date=feature_date` 构建周频输入。禁止直接用 `predict_date` 所在周作为 feature week，也禁止由日期自行换算 ISO 周；否则交易日手工运行或灰度补齐可能读到当前周未来数据。
 
 源周历可能在调度日附近提前切到新 `week_id`，而 `previous_trading_day(predict_date)` 所在周在 DB 周历中暂时找不到下一实际周。平台允许 `shared.prediction_context.build_weekly_live_context()` 做受限日历 fallback：只有当触发日所在源周已经拥有完整的上一交易日、且可由 DB 周历推导出目标周时，才用触发日源周确定完整输入周。该 fallback 只解决周历上下文，不得把旧 `feature_week_id` 的算法信号复用到新周。对已批准 `no_signal_to_flat_v1` 的投票类方案，只有在输入、日历和 core 正常完成、core 结果非空、但当前 `feature_week_id` 缺少最终输出时，才生成审计可识别的平信号；label、selector 所需上下文缺失，或输入、周历、模型、超时、代码异常，仍必须 fail-closed。
 
@@ -204,6 +226,11 @@ target_date  = T + horizon
 ## 6. 指标统计口径
 
 预测方向 `predicted_direction=0` 表示“平”。它可能是算法原生平，也可能是 `no_signal_to_flat_v1` 生成的平台无信号平；两者必须通过 `extra.signal_policy_applied` 区分，原生平不得冒充平台补平。这类样本必须计入样本总数和方向分布，但不得进入准确率、上涨准确率、上涨召回率、下跌准确率、下跌召回率等任何指标的分母。
+
+分母排除条件只看预测方向：仅
+`predicted_direction=0` 被排除。`actual_direction=0` 本身不是额外
+排除条件；只要 actual 已到达且预测方向为 `-1` 或 `1`，该样本仍进入
+指标分母，并按方向是否相等计为正确或错误。
 
 这里必须始终区分两层数量：
 
