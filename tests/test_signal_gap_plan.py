@@ -274,6 +274,43 @@ class SignalGapPlanTests(unittest.TestCase):
             databridge_authority=databridge_authority,
         )
 
+    def test_discovery_authority_ignores_paused_schemes(self) -> None:
+        from harness.signal_gap_plan import _discover_execution_authority
+
+        active = Mock(
+            scheme_id="active_scheme",
+            scheme_version="version-active",
+            runtime_type="blackbox_v2",
+            code_hash="a" * 64,
+            config_hash="b" * 64,
+            status="active",
+        )
+        paused = Mock(
+            scheme_id="paused_scheme",
+            scheme_version="version-paused",
+            runtime_type="blackbox_v2",
+            code_hash="c" * 64,
+            config_hash="d" * 64,
+            status="paused",
+        )
+
+        with (
+            patch(
+                "harness.signal_gap_plan.discover_schemes",
+                return_value=[active, paused],
+            ),
+            patch(
+                "harness.signal_gap_plan._load_0629_source_packages",
+                return_value={},
+            ),
+        ):
+            identities = _discover_execution_authority()
+
+        self.assertEqual(
+            [identity.base_scheme_id for identity in identities],
+            ["active_scheme"],
+        )
+
     def test_actions_use_business_key_and_fail_closed_readiness(self) -> None:
         from harness.signal_gap_plan import build_signal_gap_plan
 

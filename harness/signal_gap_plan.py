@@ -3134,7 +3134,11 @@ def _blackbox_task_contract(
 
 def _discover_execution_authority(
 ) -> tuple[DiscoveredSchemeIdentity, ...]:
-    discovered = tuple(discover_schemes(strict=True))
+    discovered = tuple(
+        config
+        for config in discover_schemes(strict=True)
+        if str(config.status) == "active"
+    )
     source_packages = _load_0629_source_packages()
     identities = tuple(
         DiscoveredSchemeIdentity(
