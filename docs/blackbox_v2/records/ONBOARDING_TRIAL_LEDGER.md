@@ -544,6 +544,28 @@ wrapper 不会执行这四个方案；本次没有重启 scheduler、写入
 逻辑或效果。生产写库仍须 exact persisted all-stage、专项授权和 `master`
 合并确认。
 
+### 4.20 记录 004B：cgb_causal_wk_1y 生产激活与入库
+
+**最终只读核验时间**：2026-07-30 17:54:53，`Asia/Shanghai`。
+
+**机器证据**：[CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)。
+
+本条 supersede 4.19 的生命周期时点状态，但不改写技术 Gate 事实。
+
+| 项目 | 最终核验 |
+|---|---|
+| exact identity | `cgb_causal_wk_1y@05022a0eeec7` 与 `cgb_causal_wk_1y__h1__1Y` 均为 `active`；`deployed_at=2026-07-30` |
+| persisted Harness | `hr_20260730T094003Z_d263b0f87c57`，7/7 PASS，控制面已持久化 |
+| persistent backtest | run `192`，72 条 prediction、17 条月度指标；target `2025-01-10..2026-05-29` |
+| manual gray_live | run `1640..1648`，9 条 prediction 和 9 条 run log；target `2026-06-05..2026-07-31` |
+| 分区 | canonical backtest 中 gray target 为 0；backtest/live target 重叠为 0 |
+| API / frontend | `/api/schemes`、metrics、backtest 与 dashboard 均返回 exact composite；metrics `phase_ranges.gray_live.rows=9` |
+| 调度边界 | 用户要求暂不考虑周度调度；scheduler 未加载，`scheduled_live=0`，不伪造首条自然调度 |
+| 算法边界 | 未评审或修改上游算法内部逻辑；只验收平台输入、Contract、标准输出和落库 |
+
+本条证明方案已 active 且历史与灰度入库完成。它不证明 scheduler 已挂载或已经
+观察到 `2026-08-01 / 2026-07-31 / 2026-08-07` 自然调度记录。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

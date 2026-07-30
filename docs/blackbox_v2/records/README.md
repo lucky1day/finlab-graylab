@@ -19,3 +19,4 @@
 - [FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json](FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json)：五个月度方案 `16 + 3 = 19`、全批 95 条的 DB/API/前端终验机器可读未签名摘要。
 - [CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md](CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md)：1Y 周度方案两文件 Intake、权威周历输入和七 Gate 技术验收。
 - [CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.evidence.json](CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.evidence.json)：`cgb_causal_wk_1y@05022a0eeec7` 的 check-only 机器证据。
+- [CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)：该方案 active、72 条历史、9 条灰度和 API 可见性的生产终验摘要。

@@ -56,3 +56,27 @@ Backtest 为 100 requests / 100 records、分批与逆序一致、`persist=false
 当前记录不是 `SHADOW_READY` 或已上线证明。生产切换仍须先执行可持久化的
 all-stage、专项 shadow/activate/backtest/gray token，并在验证分支得到用户明确
 确认后合并到 `master`。
+
+## 生产追加终态
+
+**最终只读核验时间**：2026-07-30 17:54:53，`Asia/Shanghai`。
+
+**机器证据**：[CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)
+
+用户明确授权后，可持久化 all-stage
+`hr_20260730T094003Z_d263b0f87c57` 以 7/7 通过；方案随后经
+draft、shadow 和 ActivationGate 晋级为 exact `active`。
+
+- Registry `cgb_causal_wk_1y__h1__1Y` 与版本 `05022a0eeec7` 均为
+  `active`，`deployed_at=2026-07-30`。
+- 历史 run `192` 写入 72 条 prediction 和 17 条月度指标；站位日
+  `2025-01-03..2026-05-22`，目标日 `2025-01-10..2026-05-29`。
+- 灰度 run `1640..1648` 写入 9 条 `gray_live`；目标日
+  `2026-06-05..2026-07-31`，run、prediction 和 run log 均为 9。
+- 历史与 gray target 重叠为 0；API、metrics、backtest 和 dashboard
+  均返回 exact composite 方案。
+- 按用户最新范围，scheduler 暂不加载，`scheduled_live=0`；不得把配置中的
+  cron 或 admission 表述为已观察到自然调度。
+
+该追加终态 supersede 本文前述 `paused + draft` 时点状态，但保留初始
+check-only 证据。平台仍未评审算法内部逻辑或效果。
