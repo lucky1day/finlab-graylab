@@ -291,6 +291,14 @@ class SignalGapFillGateTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "PASSED")
         runner.assert_called_once()
+        self.assertEqual(
+            runner.call_args.kwargs["native_execution_mode"],
+            "signal_gap_current_snapshot",
+        )
+        self.assertEqual(
+            runner.call_args.kwargs["expected_native_feature_date"],
+            "2026-07-27",
+        )
         self.assertEqual(len(repository.created), 1)
         self.assertEqual(len(repository.completed), 1)
         completed = repository.completed[0]
@@ -375,6 +383,14 @@ class SignalGapFillGateTests(unittest.TestCase):
         self.assertEqual(
             kwargs["live_source_package_sha256"],
             package_sha256,
+        )
+        self.assertEqual(
+            kwargs["native_execution_mode"],
+            "signal_gap_current_snapshot",
+        )
+        self.assertEqual(
+            kwargs["expected_native_feature_date"],
+            "2026-07-27",
         )
 
     def test_partial_present_group_blocks_before_algorithm_or_write(
