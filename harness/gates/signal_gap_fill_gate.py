@@ -896,7 +896,18 @@ def _run_algorithm(
             **kwargs,
         )
         normalized = [
-            replace(record, prediction_phase="gray_live")
+            replace(
+                record,
+                prediction_phase="gray_live",
+                scheme_version=(
+                    group.scheme_version
+                    if (
+                        group.runtime_type == "blackbox_v2"
+                        and record.scheme_version is None
+                    )
+                    else record.scheme_version
+                ),
+            )
             for record in records
         ]
         _validate_group_records(group, normalized)

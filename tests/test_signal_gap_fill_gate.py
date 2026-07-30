@@ -63,6 +63,81 @@ def _target(tenor: str, horizon: int, target_date: str) -> dict:
     }
 
 
+def _blackbox_target() -> dict:
+    return {
+        **_target("10Y", 1, "2026-07-29"),
+        "runtime_type": "blackbox_v2",
+        "input_mode": "databridge_v1",
+        "input_authority": {
+            "authority_type": "stable_databridge_current",
+            "generation_id": "current-20260729",
+            "refresh_date": "2026-07-29",
+            "stable_identity_sha256": "f" * 64,
+            "cutoff": {
+                "feature_date": "2026-07-27",
+                "daily_cutoff_key": "2026-07-27",
+                "weekly_cutoff_key": "202630",
+                "monthly_cutoff_key": "202607",
+            },
+        },
+    }
+
+
+def _blackbox_record(
+    *,
+    scheme_version: str | None = None,
+) -> PredictionRecord:
+    return PredictionRecord(
+        scheme_id="demo",
+        target_tenor="10Y",
+        horizon=1,
+        predict_date="2026-07-28",
+        feature_date="2026-07-27",
+        target_date="2026-07-29",
+        predicted_direction=1,
+        scheme_version=scheme_version,
+        model_version="1.0.0",
+        extra={
+            "data_generation_id": "current-20260729",
+            "source_refresh_date": "2026-07-29",
+            "daily_cutoff_key": "2026-07-27",
+            "weekly_cutoff_key": "202630",
+            "monthly_cutoff_key": "202607",
+        },
+    )
+
+
+def _run_blackbox_record(
+    record: PredictionRecord,
+    *,
+    engine,
+) -> list[PredictionRecord]:
+    from harness.gates.signal_gap_fill_gate import (
+        _Execution,
+        _build_groups,
+        _run_algorithm,
+    )
+
+    group = _build_groups(_plan(actions=[_blackbox_target()]))[0]
+    item = _Execution(
+        group=group,
+        cfg=SimpleNamespace(
+            scheme_id="demo",
+            runtime_type="blackbox_v2",
+        ),
+        run_id=1,
+        started=time.monotonic(),
+    )
+    return _run_algorithm(
+        item,
+        engine=engine,
+        algo_env="forecast_env",
+        timeout_sec=600,
+        algorithm_runner=lambda *_args, **_kwargs: [record],
+        native_generation_opener=Mock(),
+    )
+
+
 def _plan(*, actions=None) -> dict:
     rows = actions or [
         _target("1Y", 1, "2026-07-29"),
@@ -754,6 +829,36 @@ class SignalGapFillGateTests(unittest.TestCase):
             "refresh_date must be after predict_date",
             report["errors"][0],
         )
+
+    def test_blackbox_record_without_scheme_version_uses_frozen_version(
+        self,
+    ) -> None:
+        try:
+            records = _run_blackbox_record(
+                _blackbox_record(),
+                engine=self.engine,
+            )
+        except ValueError as exc:
+            self.fail(
+                "Blackbox runner records without scheme_version must be "
+                f"stamped from the frozen group: {exc}"
+            )
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].prediction_phase, "gray_live")
+        self.assertEqual(records[0].scheme_version, "version-1")
+
+    def test_blackbox_record_with_wrong_scheme_version_is_rejected(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "algorithm records do not match the atomic target group",
+        ):
+            _run_blackbox_record(
+                _blackbox_record(scheme_version="wrong-version"),
+                engine=self.engine,
+            )
 
     def test_internal_pools_cap_native_and_v2_at_two_each(self) -> None:
         from harness.gates.signal_gap_fill_gate import (
