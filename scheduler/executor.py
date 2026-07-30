@@ -75,6 +75,7 @@ from shared.daily_coordinator_mode import (
 )
 from shared.models import PredictionRecord
 from shared.native_input_generation import (
+    SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
     NativeGenerationContext,
     open_native_generation,
 )
@@ -102,6 +103,16 @@ from shared.source_runtime_database import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ALGO_ENV = "forecast_env"
+NATIVE_EXECUTION_MODE_SCHEDULED = "scheduled"
+NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT = (
+    "signal_gap_current_snapshot"
+)
+_NATIVE_EXECUTION_MODES = frozenset(
+    {
+        NATIVE_EXECUTION_MODE_SCHEDULED,
+        NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
+    }
+)
 VALID_PREDICTION_PHASES = {"gray_live", "scheduled_live"}
 BLACKBOX_SNAPSHOT_MODE_FRESH = "fresh"
 BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF = "historical_as_of_replay"
@@ -236,11 +247,34 @@ def run_scheme_subprocess(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
+    native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
+    expected_native_feature_date: str | None = None,
 ) -> list[PredictionRecord]:
     """通过 conda 子进程在算法环境中运行方案。"""
     process_start_guard = require_process_start_guard(
         process_start_guard
     )
+    if native_execution_mode not in _NATIVE_EXECUTION_MODES:
+        raise ValueError(
+            "unsupported Native execution mode: "
+            f"{native_execution_mode}"
+        )
+    if (
+        native_execution_mode
+        == NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT
+        and native_generation is None
+    ):
+        raise ValueError(
+            "signal-gap Native execution requires native_generation"
+        )
+    if (
+        native_execution_mode == NATIVE_EXECUTION_MODE_SCHEDULED
+        and expected_native_feature_date is not None
+    ):
+        raise ValueError(
+            "expected_native_feature_date is only valid for signal-gap "
+            "Native execution"
+        )
     env = _build_algorithm_environment()
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_PATH_ENV, None)
     env.pop(SOURCE_RUNTIME_DATABASE_CONFIG_ROOT_ENV, None)
@@ -319,12 +353,65 @@ def run_scheme_subprocess(
         canonical_predict_date = date.fromisoformat(
             predict_date
         ).isoformat()
-        if native_generation.business_date != canonical_predict_date:
-            raise ValueError(
-                "Native generation business_date does not match "
-                f"predict_date: {native_generation.business_date} != "
-                f"{canonical_predict_date}"
-            )
+        if native_execution_mode == NATIVE_EXECUTION_MODE_SCHEDULED:
+            if (
+                native_generation.exporter_version
+                == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+            ):
+                raise ValueError(
+                    "signal-gap Native exporter requires explicit "
+                    "signal-gap execution mode"
+                )
+            if native_generation.business_date != canonical_predict_date:
+                raise ValueError(
+                    "Native generation business_date does not match "
+                    f"predict_date: {native_generation.business_date} != "
+                    f"{canonical_predict_date}"
+                )
+        else:
+            if (
+                native_generation.exporter_version
+                != SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+            ):
+                raise ValueError(
+                    "signal-gap Native generation exporter_version "
+                    "is invalid"
+                )
+            if native_generation.business_date <= canonical_predict_date:
+                raise ValueError(
+                    "signal-gap Native capture date must be after "
+                    "predict_date"
+                )
+            if expected_native_feature_date is None:
+                raise ValueError(
+                    "expected_native_feature_date is required for "
+                    "signal-gap Native execution"
+                )
+            try:
+                canonical_expected_feature_date = date.fromisoformat(
+                    expected_native_feature_date
+                ).isoformat()
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "expected_native_feature_date must be a canonical "
+                    "YYYY-MM-DD date"
+                ) from exc
+            if (
+                canonical_expected_feature_date
+                != expected_native_feature_date
+            ):
+                raise ValueError(
+                    "expected_native_feature_date must be a canonical "
+                    "YYYY-MM-DD date"
+                )
+            if (
+                native_generation.feature_date
+                != canonical_expected_feature_date
+            ):
+                raise ValueError(
+                    "signal-gap Native feature_date does not match "
+                    "expected feature_date"
+                )
         if not native_generation.manifest_path.is_absolute():
             raise ValueError(
                 "Native generation manifest path must be absolute"
@@ -522,6 +609,8 @@ def run_configured_scheme(
     process_started: Callable[[int, int], None] | None = None,
     process_fence: Callable[[], None] | None = None,
     process_start_guard: ProcessStartGuard | None = None,
+    native_execution_mode: str = NATIVE_EXECUTION_MODE_SCHEDULED,
+    expected_native_feature_date: str | None = None,
 ) -> list[PredictionRecord]:
     """按显式 runtime_type 选择算法执行驱动。"""
     process_start_guard = require_process_start_guard(
@@ -533,6 +622,13 @@ def run_configured_scheme(
     if blackbox_snapshot_mode not in VALID_BLACKBOX_SNAPSHOT_MODES:
         raise ValueError(f"unsupported Blackbox snapshot mode: {blackbox_snapshot_mode}")
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
+    if runtime_type != "native_adapter" and (
+        native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
+        or expected_native_feature_date is not None
+    ):
+        raise ValueError(
+            "Native execution contract is only valid for native_adapter"
+        )
     if runtime_type == "native_adapter":
         if (
             databridge_generation is not None
@@ -551,6 +647,14 @@ def run_configured_scheme(
             if native_generation is not None
             else {}
         )
+        if native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED:
+            native_kwargs["native_execution_mode"] = (
+                native_execution_mode
+            )
+        if expected_native_feature_date is not None:
+            native_kwargs["expected_native_feature_date"] = (
+                expected_native_feature_date
+            )
         if cache_use_qualification is not None:
             native_kwargs["cache_use_qualification"] = (
                 cache_use_qualification

@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests.test_native_generation_input_artifacts import _generation_context
@@ -175,6 +177,319 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             environment[input_artifacts.SCHEDULE_EXECUTION_TOKEN_ENV],
             "attempt-7",
         )
+
+    def test_signal_gap_current_snapshot_accepts_later_capture_and_exact_feature(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+        from shared import input_artifacts
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, *, cwd, env, timeout):
+            from subprocess import CompletedProcess
+
+            captured.update(
+                {"cmd": cmd, "cwd": cwd, "env": env, "timeout": timeout}
+            )
+            return CompletedProcess(cmd, 0, "[]", "")
+
+        with patch(
+            "scheduler.executor._run_process_group",
+            side_effect=fake_run,
+        ):
+            try:
+                records = run_scheme_subprocess(
+                    "daily_demo",
+                    "2026-07-28",
+                    native_generation=context,
+                    native_execution_mode=
+                        "signal_gap_current_snapshot",
+                    expected_native_feature_date="2026-07-27",
+                )
+            except (TypeError, ValueError) as exc:
+                self.fail(
+                    "explicit signal-gap current snapshot contract "
+                    f"must be accepted: {exc}"
+                )
+
+        self.assertEqual(records, [])
+        environment = captured["env"]
+        self.assertEqual(
+            environment[input_artifacts.NATIVE_BUSINESS_DATE_ENV],
+            "2026-07-30",
+        )
+        self.assertEqual(
+            environment[input_artifacts.NATIVE_FEATURE_DATE_ENV],
+            "2026-07-27",
+        )
+
+    def test_signal_gap_current_snapshot_rejects_wrong_exporter(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+        )
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(ValueError, "exporter_version"),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-28",
+                native_generation=context,
+                native_execution_mode="signal_gap_current_snapshot",
+                expected_native_feature_date="2026-07-27",
+            )
+        run_process.assert_not_called()
+
+    def test_signal_gap_current_snapshot_rejects_capture_not_after_predict(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-28",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(
+                ValueError,
+                "capture date must be after predict_date",
+            ),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-28",
+                native_generation=context,
+                native_execution_mode="signal_gap_current_snapshot",
+                expected_native_feature_date="2026-07-27",
+            )
+        run_process.assert_not_called()
+
+    def test_signal_gap_current_snapshot_rejects_feature_drift(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(
+                ValueError,
+                "feature_date does not match expected",
+            ),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-28",
+                native_generation=context,
+                native_execution_mode="signal_gap_current_snapshot",
+                expected_native_feature_date="2026-07-28",
+            )
+        run_process.assert_not_called()
+
+    def test_signal_gap_current_snapshot_requires_expected_feature(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(
+                ValueError,
+                "expected_native_feature_date is required",
+            ),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-28",
+                native_generation=context,
+                native_execution_mode="signal_gap_current_snapshot",
+            )
+        run_process.assert_not_called()
+
+    def test_run_configured_scheme_forwards_signal_gap_native_contract(
+        self,
+    ) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        context = replace(
+            _generation_context(),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        cfg = SimpleNamespace(
+            runtime_type="native_adapter",
+            scheme_id="daily_demo",
+        )
+        with patch(
+            "scheduler.executor.run_scheme_subprocess",
+            return_value=[],
+        ) as subprocess_runner:
+            try:
+                result = run_configured_scheme(
+                    cfg,
+                    "2026-07-28",
+                    engine=object(),
+                    algo_env="forecast_env",
+                    timeout_sec=600,
+                    native_generation=context,
+                    native_execution_mode=
+                        "signal_gap_current_snapshot",
+                    expected_native_feature_date="2026-07-27",
+                )
+            except TypeError as exc:
+                self.fail(
+                    "run_configured_scheme must forward the explicit "
+                    f"Native execution contract: {exc}"
+                )
+
+        self.assertEqual(result, [])
+        self.assertIs(
+            subprocess_runner.call_args.kwargs["native_generation"],
+            context,
+        )
+        self.assertEqual(
+            subprocess_runner.call_args.kwargs[
+                "native_execution_mode"
+            ],
+            "signal_gap_current_snapshot",
+        )
+        self.assertEqual(
+            subprocess_runner.call_args.kwargs[
+                "expected_native_feature_date"
+            ],
+            "2026-07-27",
+        )
+
+    def test_signal_gap_mode_requires_native_generation(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(
+                ValueError,
+                "requires native_generation",
+            ),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-28",
+                native_execution_mode="signal_gap_current_snapshot",
+                expected_native_feature_date="2026-07-27",
+            )
+        run_process.assert_not_called()
+
+    def test_scheduled_mode_rejects_gap_expected_feature(self) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(
+                ValueError,
+                "only valid for signal-gap",
+            ),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                "2026-07-24",
+                native_generation=_generation_context(),
+                expected_native_feature_date="2026-07-23",
+            )
+        run_process.assert_not_called()
+
+    def test_scheduled_mode_rejects_signal_gap_exporter_even_when_date_matches(
+        self,
+    ) -> None:
+        from scheduler.executor import run_scheme_subprocess
+
+        context = replace(
+            _generation_context(),
+            exporter_version="native-signal-gap-current-snapshot-v1",
+        )
+        with (
+            patch(
+                "scheduler.executor._run_process_group",
+                return_value=SimpleNamespace(stdout="[]"),
+            ) as run_process,
+            self.assertRaisesRegex(
+                ValueError,
+                "requires explicit signal-gap",
+            ),
+        ):
+            run_scheme_subprocess(
+                "daily_demo",
+                context.business_date,
+                native_generation=context,
+            )
+        run_process.assert_not_called()
+
+    def test_blackbox_rejects_signal_gap_native_contract(self) -> None:
+        from scheduler.executor import run_configured_scheme
+
+        cfg = SimpleNamespace(
+            runtime_type="blackbox_v2",
+            input_source="data_bridge_current",
+            scheme_id="blackbox_demo",
+        )
+        with (
+            patch(
+                "scheduler.executor.run_blackbox_scheme_subprocess",
+                return_value=[],
+            ) as blackbox_runner,
+            self.assertRaisesRegex(
+                ValueError,
+                "only valid for native_adapter",
+            ),
+        ):
+            run_configured_scheme(
+                cfg,
+                "2026-07-28",
+                engine=object(),
+                algo_env="forecast_env",
+                timeout_sec=600,
+                native_execution_mode="signal_gap_current_snapshot",
+                expected_native_feature_date="2026-07-27",
+            )
+        blackbox_runner.assert_not_called()
 
     def test_approved_0629_live_source_uses_fence_without_frozen_db_mode(
         self,
