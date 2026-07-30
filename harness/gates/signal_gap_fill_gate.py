@@ -33,6 +33,7 @@ from scheduler.daily_coordinator import (
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
+    NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
     run_configured_scheme,
 )
 from shared.daily_coordinator_mode import resolve_daily_runtime_root
@@ -860,6 +861,12 @@ def _run_algorithm(
                 expected_feature_date=group.actions[0]["feature_date"],
             )
             kwargs["native_generation"] = context
+            kwargs["native_execution_mode"] = (
+                NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT
+            )
+            kwargs["expected_native_feature_date"] = (
+                group.actions[0]["feature_date"]
+            )
             if group.input_mode == "live_source_0629":
                 package_sha256 = group.actions[0].get(
                     "source_package_sha256"
@@ -896,7 +903,18 @@ def _run_algorithm(
             **kwargs,
         )
         normalized = [
-            replace(record, prediction_phase="gray_live")
+            replace(
+                record,
+                prediction_phase="gray_live",
+                scheme_version=(
+                    group.scheme_version
+                    if (
+                        group.runtime_type == "blackbox_v2"
+                        and record.scheme_version is None
+                    )
+                    else record.scheme_version
+                ),
+            )
             for record in records
         ]
         _validate_group_records(group, normalized)
