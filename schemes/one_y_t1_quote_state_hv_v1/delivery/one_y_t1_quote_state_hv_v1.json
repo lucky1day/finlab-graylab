@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "one_y_t1_quote_state_hv_v1",
+  "name": "1Y T+1 核心方法-双LightGBM报价门槛与高波动翻转 固定参数",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "1Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield",
+  "description": "双 LightGBM 分别拟合报价幅度与方向概率，按周滚动训练；月内以因果前缀配额控制出手频率，仅在报价幅度概率达阈值时发出方向；高波动状态下翻转方向。周频特征在当周最后一个已观测交易日生效后前向填充。固定参数：出手覆盖率 0.50，10日/60日波动比翻转阈值 0.70。"
+}
