@@ -9708,6 +9708,254 @@ def complete_approved_blackbox_run(
         return records_written
 
 
+def replace_approved_blackbox_gray_prediction(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    previous_scheme_version: str,
+    previous_run_id: int,
+    record: PredictionRecord,
+    harness_run_id: str,
+    duration_sec: float,
+) -> int:
+    """原子替换单个已退役版本的 Blackbox ``gray_live`` 结果。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError("gray replacement requires runtime_type=blackbox_v2")
+    if cfg.status != "active" or cfg.version_status != "active":
+        raise ValueError("gray replacement requires config active+active")
+    if (
+        not isinstance(previous_scheme_version, str)
+        or not previous_scheme_version.strip()
+        or previous_scheme_version == cfg.scheme_version
+    ):
+        raise ValueError("gray replacement requires a different previous_scheme_version")
+    if not isinstance(harness_run_id, str) or not harness_run_id.strip():
+        raise ValueError("gray replacement harness_run_id must be non-empty")
+    normalized_duration = float(duration_sec)
+    if not math.isfinite(normalized_duration) or normalized_duration < 0:
+        raise ValueError("gray replacement duration_sec must be finite and non-negative")
+    if record.prediction_phase != "gray_live":
+        raise ValueError("gray replacement record must use prediction_phase=gray_live")
+    if record.scheme_id != cfg.scheme_id:
+        raise ValueError("gray replacement record scheme_id mismatch")
+    if record.run_id is not None:
+        raise ValueError("gray replacement record must not carry run_id")
+    if record.scheme_version not in {None, cfg.scheme_version}:
+        raise ValueError("gray replacement record scheme_version mismatch")
+
+    with _approved_blackbox_write_transaction(
+        engine,
+        cfg,
+        [record],
+        scheme_version=str(cfg.scheme_version),
+    ) as (conn, records, exact_scheme_version):
+        old_prediction = (
+            conn.execute(
+                text(
+                    """
+                    /* gray replacement old prediction */
+                    SELECT id, run_id, scheme_version, prediction_phase
+                    FROM t_scheme_predictions
+                    WHERE scheme_id = :scheme_id
+                      AND target_tenor = :target_tenor
+                      AND horizon = :horizon
+                      AND target_date = :target_date
+                    FOR UPDATE
+                    """
+                ),
+                {
+                    "scheme_id": record.scheme_id,
+                    "target_tenor": record.target_tenor,
+                    "horizon": int(record.horizon),
+                    "target_date": record.target_date,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if old_prediction is None:
+            raise RuntimeError("gray replacement old prediction is missing")
+        if (
+            int(old_prediction["run_id"]) != int(previous_run_id)
+            or old_prediction.get("scheme_version") != previous_scheme_version
+            or old_prediction.get("prediction_phase") != "gray_live"
+        ):
+            raise RuntimeError(
+                "gray replacement old prediction identity mismatch"
+            )
+
+        old_run = _read_schedule_run_conn(
+            conn,
+            run_id=int(previous_run_id),
+            for_update=True,
+        )
+        expected_old_run = {
+            "scheme_id": cfg.scheme_id,
+            "scheme_version": previous_scheme_version,
+            "runtime_type": "blackbox_v2",
+            "run_type": "active",
+            "prediction_phase": "gray_live",
+            "predict_date": record.predict_date,
+            "status": "success",
+        }
+        if old_run is None or any(
+            str(old_run.get(field)) != str(expected)
+            for field, expected in expected_old_run.items()
+        ):
+            raise RuntimeError("gray replacement old run identity mismatch")
+        if any(
+            old_run.get(field) is not None
+            for field in (
+                "schedule_item_id",
+                "attempt_no",
+                "trigger_origin",
+                "execution_token",
+                "process_id",
+                "process_group_id",
+            )
+        ):
+            raise RuntimeError("gray replacement refuses a ledger-bound old run")
+
+        serving_refs = conn.execute(
+            text(
+                """
+                /* gray replacement serving references */
+                SELECT COUNT(*)
+                FROM t_scheme_serving_pointer
+                WHERE serving_run_id = :run_id
+                """
+            ),
+            {"run_id": int(previous_run_id)},
+        ).scalar_one()
+        if int(serving_refs) != 0:
+            raise RuntimeError("gray replacement old run has serving pointer references")
+        schedule_refs = conn.execute(
+            text(
+                """
+                /* gray replacement schedule references */
+                SELECT COUNT(*)
+                FROM t_schedule_item_targets
+                WHERE accepted_run_id = :run_id
+                """
+            ),
+            {"run_id": int(previous_run_id)},
+        ).scalar_one()
+        if int(schedule_refs) != 0:
+            raise RuntimeError("gray replacement old run has schedule target references")
+
+        data_snapshot_id = str(
+            (record.extra or {}).get("data_snapshot_id") or ""
+        ).strip()
+        if not data_snapshot_id:
+            raise ValueError("gray replacement record requires data_snapshot_id")
+        new_run_id = _create_scheme_run_conn(
+            conn,
+            scheme_id=cfg.scheme_id,
+            predict_date=record.predict_date,
+            scheme_version=exact_scheme_version,
+            runtime_type="blackbox_v2",
+            run_type="active",
+            prediction_phase="gray_live",
+            status="running",
+            harness_run_id=harness_run_id,
+            data_snapshot_id=data_snapshot_id,
+            records_expected=1,
+        )
+        deleted_prediction = conn.execute(
+            text(
+                """
+                /* gray replacement delete old prediction */
+                DELETE FROM t_scheme_predictions
+                WHERE id = :prediction_id
+                  AND run_id = :run_id
+                  AND scheme_version = :scheme_version
+                """
+            ),
+            {
+                "prediction_id": int(old_prediction["id"]),
+                "run_id": int(previous_run_id),
+                "scheme_version": previous_scheme_version,
+            },
+        )
+        _require_rowcount(
+            deleted_prediction,
+            1,
+            "gray replacement delete old prediction",
+        )
+        records_written = _insert_run_predictions_conn(
+            conn,
+            int(new_run_id),
+            records,
+            scheme_version=exact_scheme_version,
+            insert_only=True,
+        )
+        if records_written != 1:
+            raise RuntimeError(
+                "gray replacement must write exactly one new prediction"
+            )
+        _finish_scheme_run_conn(
+            conn,
+            run_id=int(new_run_id),
+            status="success",
+            records_returned=1,
+            records_written=1,
+            error_message=None,
+            require_exact_run=True,
+        )
+        _write_run_log_conn(
+            conn,
+            cfg.scheme_id,
+            record.predict_date,
+            "success",
+            normalized_duration,
+            None,
+            int(new_run_id),
+        )
+        deleted_log = conn.execute(
+            text(
+                """
+                /* gray replacement delete old run log */
+                DELETE FROM t_scheme_run_log
+                WHERE run_id = :run_id
+                  AND scheme_id = :scheme_id
+                """
+            ),
+            {
+                "run_id": int(previous_run_id),
+                "scheme_id": cfg.scheme_id,
+            },
+        )
+        _require_rowcount(
+            deleted_log,
+            1,
+            "gray replacement delete old run log",
+        )
+        deleted_run = conn.execute(
+            text(
+                """
+                /* gray replacement delete old run */
+                DELETE FROM t_scheme_runs
+                WHERE run_id = :run_id
+                  AND scheme_id = :scheme_id
+                  AND scheme_version = :scheme_version
+                  AND prediction_phase = 'gray_live'
+                  AND status = 'success'
+                """
+            ),
+            {
+                "run_id": int(previous_run_id),
+                "scheme_id": cfg.scheme_id,
+                "scheme_version": previous_scheme_version,
+            },
+        )
+        _require_rowcount(
+            deleted_run,
+            1,
+            "gray replacement delete old run",
+        )
+        return int(new_run_id)
+
+
 def complete_gray_gap_run(
     engine: Engine,
     cfg: SchemeConfig,

@@ -177,6 +177,18 @@ class PostOnboardScriptTests(unittest.TestCase):
         self.assertEqual(evidence["database_only_cells"], 1)
         self.assertEqual(evidence["mismatches"][0]["kind"], "missing_cell")
 
+    def test_verify_frontend_db_uses_selected_run_data_source(self) -> None:
+        from scripts.verify_frontend_db import _factor_lab_url
+
+        self.assertEqual(
+            _factor_lab_url(
+                "http://127.0.0.1:8100/",
+                "blackbox_v2_current_snapshot_as_of",
+            ),
+            "http://127.0.0.1:8100/api/backtests/factor-lab?"
+            "data_source=blackbox_v2_current_snapshot_as_of",
+        )
+
     def test_verify_scheduler_mount_evaluates_config_registry_and_log(self) -> None:
         from scripts.verify_scheduler_mount import evaluate_scheduler_mount
 

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+
+from shared.models import PredictionRecord
 
 
 class _Result:
@@ -348,3 +351,196 @@ def test_controlled_replacement_dry_run_does_not_call_repository() -> None:
     assert summary["previous_scheme_version"] == "old-version"
     assert summary["harness_run_id"] == "hr-new"
     replace.assert_not_called()
+
+
+def test_gray_prediction_replacement_commits_new_run_and_removes_old_audit() -> None:
+    from scheduler.repository import replace_approved_blackbox_gray_prediction
+
+    calls: list[tuple[str, object]] = []
+
+    class Connection:
+        def execute(self, statement, params=None):
+            sql = " ".join(str(statement).split())
+            calls.append((sql, params))
+            if "gray replacement old prediction" in sql:
+                return _Result(
+                    [
+                        {
+                            "id": 91,
+                            "run_id": 41,
+                            "scheme_version": "old-version",
+                            "prediction_phase": "gray_live",
+                        }
+                    ]
+                )
+            if "gray replacement serving references" in sql:
+                return _ScalarResult(0)
+            if "gray replacement schedule references" in sql:
+                return _ScalarResult(0)
+            if "gray replacement delete old prediction" in sql:
+                return _Result(rowcount=1)
+            if "gray replacement delete old run log" in sql:
+                return _Result(rowcount=1)
+            if "gray replacement delete old run" in sql:
+                return _Result(rowcount=1)
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+    @contextmanager
+    def approved_transaction(*args, **kwargs):
+        del args, kwargs
+        yield Connection(), [record], "new-version"
+
+    record = PredictionRecord(
+        scheme_id="demo_blackbox",
+        target_tenor="10Y",
+        horizon=1,
+        predict_date="2026-07-25",
+        feature_date="2026-07-24",
+        target_date="2026-07-31",
+        predicted_direction=1,
+        prediction_phase="gray_live",
+        extra={"data_snapshot_id": "snapshot-new"},
+    )
+    old_run = {
+        "run_id": 41,
+        "scheme_id": "demo_blackbox",
+        "scheme_version": "old-version",
+        "runtime_type": "blackbox_v2",
+        "run_type": "active",
+        "prediction_phase": "gray_live",
+        "predict_date": "2026-07-25",
+        "status": "success",
+        "schedule_item_id": None,
+        "attempt_no": None,
+        "trigger_origin": None,
+        "execution_token": None,
+        "process_id": None,
+        "process_group_id": None,
+    }
+    with (
+        patch(
+            "scheduler.repository._approved_blackbox_write_transaction",
+            side_effect=approved_transaction,
+        ),
+        patch(
+            "scheduler.repository._read_schedule_run_conn",
+            return_value=old_run,
+        ),
+        patch(
+            "scheduler.repository._create_scheme_run_conn",
+            return_value=51,
+        ) as create_run,
+        patch(
+            "scheduler.repository._insert_run_predictions_conn",
+            return_value=1,
+        ) as insert_prediction,
+        patch("scheduler.repository._finish_scheme_run_conn") as finish_run,
+        patch("scheduler.repository._write_run_log_conn") as write_log,
+    ):
+        new_run_id = replace_approved_blackbox_gray_prediction(
+            Mock(),
+            _config(),
+            previous_scheme_version="old-version",
+            previous_run_id=41,
+            record=record,
+            harness_run_id="hr-new",
+            duration_sec=1.5,
+        )
+
+    assert new_run_id == 51
+    create_run.assert_called_once()
+    insert_prediction.assert_called_once()
+    finish_run.assert_called_once()
+    write_log.assert_called_once()
+    sql = "\n".join(item[0] for item in calls)
+    assert "gray replacement delete old prediction" in sql
+    assert "gray replacement delete old run log" in sql
+    assert "gray replacement delete old run" in sql
+
+
+def test_controlled_gray_replacement_dry_run_computes_without_database_writes() -> None:
+    from scripts.replace_blackbox_gray_history import (
+        replace_blackbox_gray_history_controlled,
+    )
+
+    record = PredictionRecord(
+        scheme_id="demo_blackbox",
+        target_tenor="10Y",
+        horizon=1,
+        predict_date="2026-07-25",
+        feature_date="2026-07-24",
+        target_date="2026-07-31",
+        predicted_direction=1,
+        prediction_phase="gray_live",
+        extra={"data_snapshot_id": "snapshot-new"},
+    )
+    old_rows = [
+        {
+            "prediction_id": 91,
+            "run_id": 41,
+            "predict_date": "2026-07-25",
+            "feature_date": "2026-07-24",
+            "target_date": "2026-07-31",
+            "predicted_direction": 1,
+        }
+    ]
+    passed = SimpleNamespace(harness_run_id="hr-new")
+    with (
+        patch(
+            "scripts.replace_blackbox_gray_history.load_scheme_config",
+            return_value=_config(),
+        ),
+        patch(
+            "scripts.replace_blackbox_gray_history._verify_passed_all",
+            return_value=passed,
+        ),
+        patch(
+            "scripts.replace_blackbox_gray_history.read_blackbox_current_state",
+            return_value={
+                "generation_id": "generation-new",
+                "refresh_date": "2026-07-30",
+            },
+        ),
+        patch(
+            "scripts.replace_blackbox_gray_history._load_old_gray_rows",
+            return_value=old_rows,
+        ),
+        patch(
+            "scripts.replace_blackbox_gray_history.run_configured_scheme",
+            return_value=[record],
+        ),
+        patch(
+            "scripts.replace_blackbox_gray_history._normalize_live_records",
+            return_value=[record],
+        ),
+        patch(
+            "scripts.replace_blackbox_gray_history."
+            "replace_approved_blackbox_gray_prediction"
+        ) as replace_gray,
+    ):
+        summary = replace_blackbox_gray_history_controlled(
+            Mock(),
+            project_root=".",
+            scheme_id="demo_blackbox",
+            previous_scheme_version="old-version",
+            expected_new_scheme_version="new-version",
+            expected_harness_run_id="hr-new",
+            expected_count=1,
+            algo_env="forecast_env_blackbox_v1",
+            timeout_sec=600,
+            apply=False,
+        )
+
+    assert summary["applied"] is False
+    assert summary["computed_count"] == 1
+    assert summary["direction_diff_count"] == 0
+    replace_gray.assert_not_called()
+
+
+class _ScalarResult(_Result):
+    def __init__(self, value: int) -> None:
+        super().__init__()
+        self.value = value
+
+    def scalar_one(self) -> int:
+        return self.value

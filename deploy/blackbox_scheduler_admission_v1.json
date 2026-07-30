@@ -84,12 +84,8 @@
       "task_type": "weekly_point",
       "horizon": 1,
       "target_tenor": "1Y",
-      "mode": "formal",
-      "capabilities": [
-        "legacy_automatic",
-        "recurring",
-        "direct_scheduled"
-      ]
+      "mode": "gray",
+      "capabilities": []
     },
     {
       "scheme_id": "cgb_a4_fundseason_1y",

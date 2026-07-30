@@ -13,3 +13,4 @@
 | [仓库文档保守清理](2026-07-29-conservative-document-cleanup-design.md) | 第一阶段只删除历史兼容页和 archive 副本，并同步修正入口、索引与文档门禁 |
 | [cgb_causal_wk_1y 周度方案生产入库](2026-07-30-cgb-causal-wk-1y-production-onboarding-design.md) | 1Y 周度 Blackbox V2 的输入、历史/灰度分区、写库、激活和自然调度边界 |
 | [DataBridge 周历自测与平台部署对齐](2026-07-30-databridge-calendar-self-test-alignment-design.md) | 上游四文件自测、平台同代验收、组合输入身份和生产 generation 滚动规则 |
+| [cgb_causal_wk_1y 已激活版本替换](2026-07-30-cgb-causal-wk-1y-version-replacement-design.md) | L0 周历输入更新、exact version 切换、历史与灰度原子替换边界 |

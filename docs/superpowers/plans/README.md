@@ -13,3 +13,4 @@
 | [仓库文档保守清理](2026-07-29-conservative-document-cleanup.md) | 删除历史兼容页和 archive 副本，修正现行入口、索引和文档门禁 |
 | [cgb_causal_wk_1y 周度生产入库](2026-07-30-cgb-causal-wk-1y-production-onboarding.md) | 两文件 Intake、周度 scheduler 精确准入、技术 Gate 和生产写库切换 |
 | [DataBridge 周历自测与平台部署对齐](2026-07-30-databridge-calendar-self-test-alignment.md) | 上游日历下载、平台同代 Gate、日期语义收口与文档契约验证 |
+| [cgb_causal_wk_1y 已激活版本替换](2026-07-30-cgb-causal-wk-1y-version-replacement.md) | 周历输入更新、版本原子切换、历史与灰度替换、旧业务数据清理 |

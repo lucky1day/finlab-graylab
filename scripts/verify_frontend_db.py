@@ -40,13 +40,20 @@ def verify_frontend_db(
         return payload, exit_code(payload["status"])
 
     try:
-        resolved_run_id = run_id or _latest_run_id(engine, scheme_id)
-        if resolved_run_id is None:
-            payload = make_payload("fail", {"scheme_id": scheme_id}, ["no framework_db_aligned backtest run found"])
+        resolved_run = _resolve_run(engine, scheme_id, run_id)
+        if resolved_run is None:
+            payload = make_payload(
+                "fail",
+                {"scheme_id": scheme_id, "run_id": run_id},
+                ["no successful backtest run found"],
+            )
             return payload, exit_code(payload["status"])
-        api_payload = _fetch_factor_lab(api_base_url)
+        resolved_run_id = int(resolved_run["id"])
+        data_source = str(resolved_run["data_source"])
+        api_payload = _fetch_factor_lab(api_base_url, data_source)
         db_rows = _fetch_prediction_details(engine, resolved_run_id)
         evidence = compare_frontend_db_cells(api_payload, db_rows, scheme_id=scheme_id, run_id=resolved_run_id)
+        evidence["data_source"] = data_source
         resolved_output_dir = Path(output_dir) if output_dir else default_output_dir(scheme_id, project_root)
         output_path = write_json(resolved_output_dir / OUTPUT_FILE, evidence)
         evidence["output_path"] = str(output_path)
@@ -114,33 +121,45 @@ def compare_frontend_db_cells(
     }
 
 
-def _latest_run_id(engine: Any, scheme_id: str) -> int | None:
+def _resolve_run(
+    engine: Any,
+    scheme_id: str,
+    run_id: int | None,
+) -> dict[str, Any] | None:
+    run_filter = "AND id = :run_id" if run_id is not None else ""
+    params: dict[str, Any] = {"scheme_id": scheme_id}
+    if run_id is not None:
+        params["run_id"] = int(run_id)
     sql = text(
-        """
-        SELECT id
+        f"""
+        SELECT id, data_source
         FROM t_backtest_runs
         WHERE scheme_id = :scheme_id
-          AND data_source = 'framework_db_aligned'
           AND status = 'success'
+          {run_filter}
         ORDER BY updated_at DESC, id DESC
         LIMIT 1
         """
     )
     with engine.connect() as conn:
-        value = conn.execute(sql, {"scheme_id": scheme_id}).scalar()
-    return int(value) if value is not None else None
+        row = conn.execute(sql, params).mappings().one_or_none()
+    return dict(row) if row is not None else None
 
 
-def _fetch_factor_lab(api_base_url: str) -> dict[str, Any]:
-    base = api_base_url.rstrip("/")
-    query = urllib.parse.urlencode({"data_source": "framework_db_aligned"})
-    url = f"{base}/api/backtests/factor-lab?{query}"
+def _fetch_factor_lab(api_base_url: str, data_source: str) -> dict[str, Any]:
+    url = _factor_lab_url(api_base_url, data_source)
     with urllib.request.urlopen(url, timeout=10) as response:
         body = response.read().decode("utf-8")
     payload = json.loads(body)
     if not isinstance(payload, dict):
         raise ValueError("factor-lab API did not return a JSON object")
     return payload
+
+
+def _factor_lab_url(api_base_url: str, data_source: str) -> str:
+    base = api_base_url.rstrip("/")
+    query = urllib.parse.urlencode({"data_source": data_source})
+    return f"{base}/api/backtests/factor-lab?{query}"
 
 
 def _fetch_prediction_details(engine: Any, run_id: int) -> list[dict[str, Any]]:

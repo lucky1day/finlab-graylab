@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0",
-  "recorded_at": "2026-07-30T17:54:53+08:00",
+  "recorded_at": "2026-07-30T20:45:50+08:00",
   "status": "PRODUCTION_ACTIVE_HISTORY_GRAY_COMPLETE_SCHEDULER_DEFERRED",
   "scheme": {
     "base_scheme_id": "cgb_causal_wk_1y",
     "registry_id": "cgb_causal_wk_1y__h1__1Y",
-    "scheme_version": "05022a0eeec7",
+    "scheme_version": "cba824c27f0e",
     "runtime_type": "blackbox_v2",
     "task_type": "weekly_point",
     "target_tenor": "1Y",
@@ -16,12 +16,12 @@
     "deployed_at": "2026-07-30"
   },
   "authorization": {
-    "operator": "codex-production-20260730",
-    "persisted_harness_run_id": "hr_20260730T094003Z_d263b0f87c57",
+    "operator": "codex-version-replacement-20260730",
+    "persisted_harness_run_id": "hr_20260730T122450Z_bd94b8af0876",
     "gates_passed": 7,
     "gates_total": 7,
     "control_plane_persisted": true,
-    "approved_at": "2026-07-30T09:42:57+00:00"
+    "approved_at": "2026-07-30T12:26:11+00:00"
   },
   "input": {
     "generation_id": "full-20260730-081804-9794ce962c1a",
@@ -29,8 +29,8 @@
     "platform_input": "api-wind-date-v1"
   },
   "backtest": {
-    "run_id": 192,
-    "benchmark_id": "bbv2-cgb_causal_wk_1y-hr_20260730T094003Z_d263b0f87c57",
+    "run_id": 193,
+    "benchmark_id": "bbv2-cgb_causal_wk_1y-hr_20260730T122450Z_bd94b8af0876",
     "backtest_start_date": "2025-01-01",
     "prediction_count": 72,
     "monthly_metrics_count": 17,
@@ -46,15 +46,15 @@
     "run_count": 9,
     "run_log_count": 9,
     "run_ids": [
-      1640,
-      1641,
-      1642,
-      1643,
-      1644,
-      1645,
-      1646,
-      1647,
-      1648
+      1674,
+      1675,
+      1676,
+      1677,
+      1678,
+      1679,
+      1680,
+      1681,
+      1682
     ],
     "min_predict_date": "2026-05-30",
     "max_predict_date": "2026-07-25",
@@ -84,6 +84,30 @@
       "feature_date": "2026-07-31",
       "target_date": "2026-08-07"
     }
+  },
+  "version_replacement": {
+    "previous_scheme_version": "05022a0eeec7",
+    "previous_version_status": "retired",
+    "new_scheme_version": "cba824c27f0e",
+    "new_code_sha256": "cf79ab53433ba63cb05ab23d5aacf7cc33e698d37f31cbbba0e81688ab646172",
+    "metadata_sha256": "efc8e03c5db98c33f0b830d62cc4465f7f890b5a783de68fee58e4ae19d4162b",
+    "model_logic_changed": false,
+    "change_scope": "mandatory api_wind_date.csv input; embedded calendar and extrapolation removed",
+    "historical_direction_diff_count": 0,
+    "gray_direction_diff_count": 0,
+    "previous_backtest_run_deleted": true,
+    "previous_gray_runs_deleted": true,
+    "previous_business_row_counts": {
+      "backtest_runs": 0,
+      "backtest_predictions": 0,
+      "backtest_monthly_metrics": 0,
+      "live_predictions": 0,
+      "live_runs": 0,
+      "live_run_logs": 0
+    },
+    "frontend_run_id": 193,
+    "frontend_monthly_cells_checked": 17,
+    "frontend_mismatch_count": 0
   },
   "limitations": {
     "algorithm_logic_validated": false,

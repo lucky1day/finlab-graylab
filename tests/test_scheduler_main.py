@@ -29,9 +29,9 @@ FORMAL_BLACKBOX_IDENTITIES = {
     "one_y_t5_liq_excess_a_w350_l7_v1": "86b458c568a5",
     "one_y_t5_liq_excess_b_w252_l7_v1": "ba00891cd179",
     "weekly_10y_lgbm_point_v1": "0666a6989d6b",
-    "cgb_causal_wk_1y": "cba824c27f0e",
 }
 GRAY_BLACKBOX_IDENTITIES = {
+    "cgb_causal_wk_1y": "cba824c27f0e",
     "cgb_a4_fundseason_1y": "04e7af163fb0",
     "cgb_a4_fundseason_3y": "89d31f8bcb95",
     "cgb_a4_fundseason_5y": "7d47e0328532",
@@ -2174,7 +2174,6 @@ class SchedulerMainTests(unittest.TestCase):
 
         identities = (
             ("weekly_10y_lgbm_point_v1", "0666a6989d6b"),
-            ("cgb_causal_wk_1y", "cba824c27f0e"),
         )
         for scheme_id, scheme_version in identities:
             config = _cfg(
@@ -2455,10 +2454,6 @@ class SchedulerMainTests(unittest.TestCase):
             (
                 "weekly_10y_lgbm_point_v1",
                 "0666a6989d6b",
-            ),
-            (
-                "cgb_causal_wk_1y",
-                "cba824c27f0e",
             ),
         )
         for scheme_id, scheme_version in identities:
