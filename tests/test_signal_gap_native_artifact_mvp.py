@@ -34,6 +34,7 @@ from harness.signal_gap_plan import (
     _native_generation_eligibility,
 )
 from scheduler.generation_registry import (
+    register_archived_native_artifact,
     register_gray_gap_native_artifact,
 )
 from scheduler.daily_runtime import DefaultDailyRuntimeServices
@@ -884,6 +885,45 @@ class SignalGapNativeArtifactRegistryTests(unittest.TestCase):
 
         self.assertEqual(result, context.generation_id)
         opener.assert_called_once()
+        atomic_register.assert_called_once()
+        self.assertNotIn(
+            "occurrence_id",
+            atomic_register.call_args.kwargs,
+        )
+
+    def test_archived_registry_rehashes_before_standalone_registration(
+        self,
+    ) -> None:
+        context = replace(
+            self._context(Path("/private/native-a")),
+            business_date="2026-07-28",
+            exporter_version=native_module.NATIVE_GENERATION_EXPORTER_VERSION,
+        )
+        with (
+            patch(
+                "scheduler.generation_registry.open_native_generation",
+                return_value=context,
+            ) as opener,
+            patch(
+                "scheduler.generation_registry."
+                "register_sealed_archived_native_generation",
+                return_value=context.generation_id,
+            ) as atomic_register,
+        ):
+            result = register_archived_native_artifact(
+                object(),
+                context,
+                historical_predict_date="2026-07-28",
+            )
+
+        self.assertEqual(result, context.generation_id)
+        opener.assert_called_once_with(
+            context.manifest_path,
+            expected_generation_id=context.generation_id,
+            expected_manifest_sha256=context.manifest_sha256,
+            expected_business_date="2026-07-28",
+            expected_feature_date="2026-07-27",
+        )
         atomic_register.assert_called_once()
         self.assertNotIn(
             "occurrence_id",
