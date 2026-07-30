@@ -1948,9 +1948,15 @@ def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[Black
                 "weekly_output.csv"
             )
         previous["weekly_cutoff_key"] = calendar_week
+    # feature_date 必须与回退后的 daily_cutoff 一起回退，否则 prior 请求不自洽：
+    # 真实请求恒有 feature_date == daily_cutoff_key（daily_cutoff = 快照中 <= feature_date
+    # 的最新交易日，而 feature_date 本身即交易日）。只回退 daily_cutoff 却保留原
+    # feature_date，会被做该自洽校验的方案（如 T+1 的 feature_date == daily_cutoff_key）
+    # 正确拒绝。
     earlier = replace(
         request,
         request_id=f"{request.request_id}:prior-cutoffs",
+        feature_date=previous["daily_cutoff_key"],
         **previous,
     )
     return [earlier, request]
