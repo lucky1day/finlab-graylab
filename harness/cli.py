@@ -33,6 +33,7 @@ from harness.registry import gate_for_name
 from harness.result import GateResult, GateStatus, OnboardReport
 from harness.signal_gap_plan import SignalGapPlanError, plan_signal_gaps
 from harness.signal_gap_native_artifact import (
+    SignalGapNativeArtifactRegistrationError,
     prepare_signal_gap_native_artifact,
     register_signal_gap_native_artifact,
 )
@@ -279,9 +280,32 @@ def main(argv: list[str] | None = None) -> int:
                     historical_predict_date=
                         args.historical_predict_date,
                     authorize=args.authorize,
+                    storage_root=args.storage_root,
                     project_root=args.project_root,
                 )
-        except Exception:
+        except SignalGapNativeArtifactRegistrationError as exc:
+            print(
+                json.dumps(
+                    {
+                        "schema_version":
+                            "signal-gap-native-artifact-error-v1",
+                        "status": "ERROR",
+                        "failure_code": exc.failure_code,
+                        "token_consumed": exc.token_consumed,
+                        "audit_path": (
+                            str(exc.audit_path)
+                            if exc.audit_path is not None
+                            else None
+                        ),
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return 2
+        except Exception as exc:
             print(
                 json.dumps(
                     {
@@ -290,6 +314,10 @@ def main(argv: list[str] | None = None) -> int:
                         "status": "ERROR",
                         "failure_code":
                             "SIGNAL_GAP_NATIVE_ARTIFACT_ERROR",
+                        "token_consumed": False,
+                        "audit_path": None,
+                        "error_type": type(exc).__name__,
+                        "error_message": str(exc),
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -489,6 +517,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     native_artifact_register.add_argument(
         "--authorize",
+        required=True,
+    )
+    native_artifact_register.add_argument(
+        "--storage-root",
+        type=Path,
         required=True,
     )
     native_artifact_register.add_argument(

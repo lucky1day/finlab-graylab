@@ -19,6 +19,7 @@ from shared.native_input_generation import (
     SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
     NativeGenerationContext,
     open_native_generation,
+    open_signal_gap_native_artifact,
 )
 
 
@@ -27,13 +28,15 @@ def register_gray_gap_native_artifact(
     context: NativeGenerationContext,
     *,
     historical_predict_date: str,
+    storage_root: str | Path,
     lock_timeout_sec: float = 5.0,
 ) -> str:
     """重验 current-snapshot artifact 后独立登记，不绑定 occurrence。"""
     if not isinstance(context, NativeGenerationContext):
         raise TypeError("context must be a NativeGenerationContext")
-    verified = open_native_generation(
+    verified, _root_identity = open_signal_gap_native_artifact(
         context.manifest_path,
+        storage_root=storage_root,
         expected_generation_id=context.generation_id,
         expected_manifest_sha256=context.manifest_sha256,
         expected_business_date=context.business_date,
@@ -78,6 +81,14 @@ def register_native_generation(
         expected_business_date=context.business_date,
         expected_feature_date=context.feature_date,
     )
+    if (
+        verified.exporter_version
+        == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+    ):
+        raise ValueError(
+            "daily ledger Native registration rejects the signal-gap "
+            "special exporter_version"
+        )
     return _register(
         engine,
         verified,

@@ -87,6 +87,7 @@ from shared.databridge_input_generation import (
     preflight_databridge_generation_storage,
 )
 from shared.native_input_generation import (
+    NATIVE_GENERATION_EXPORTER_VERSION,
     cleanup_native_generation_debris,
     create_native_generation,
     delete_reclaimable_native_generation,
@@ -451,6 +452,10 @@ class DefaultDailyRuntimeServices:
                     FROM t_input_generations
                     WHERE business_date = :business_date
                       AND generation_type = :generation_type
+                      AND (
+                          generation_type != 'native_source'
+                          OR exporter_version = :native_exporter_version
+                      )
                       AND state IN ('BUILDING', 'SEALED')
                     ORDER BY generation_id
                     """
@@ -458,6 +463,8 @@ class DefaultDailyRuntimeServices:
                 {
                     "business_date": business_date.isoformat(),
                     "generation_type": generation_type,
+                    "native_exporter_version":
+                        NATIVE_GENERATION_EXPORTER_VERSION,
                 },
             ).mappings().all()
         return tuple(dict(row) for row in rows)

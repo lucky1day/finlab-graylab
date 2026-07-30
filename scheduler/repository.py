@@ -2164,6 +2164,15 @@ def create_input_generation(
         native_generation_id=native_generation_id,
         native_manifest_sha256=native_manifest_sha256,
     )
+    if (
+        params["generation_type"] == "native_source"
+        and params["exporter_version"]
+        == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+    ):
+        raise ValueError(
+            "daily ledger Native registration rejects the signal-gap "
+            "special exporter_version"
+        )
     with engine.begin() as conn:
         native_generation = _lock_registration_native_parent_conn(
             conn,
@@ -4019,6 +4028,15 @@ def register_seal_and_bind_schedule_occurrence_generation(
         native_generation_id=native_generation_id,
         native_manifest_sha256=native_manifest_sha256,
     )
+    if (
+        params["generation_type"] == "native_source"
+        and params["exporter_version"]
+        == SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+    ):
+        raise ValueError(
+            "daily ledger Native registration rejects the signal-gap "
+            "special exporter_version"
+        )
     with engine.begin() as conn:
         occurrence = _read_schedule_occurrence_by_id_conn(
             conn,

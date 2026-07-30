@@ -487,6 +487,70 @@ def create_signal_gap_native_artifact(
     )
 
 
+def resolve_signal_gap_native_storage_root(
+    storage_root: str | Path,
+) -> tuple[Path, str]:
+    """解析专项 root，逐级拒绝 symlink 并返回稳定本机身份。"""
+    root = _resolve_strict_real_path(
+        storage_root,
+        label="signal-gap Native storage root",
+    )
+    _require_private_generation_root(root)
+    info = root.stat(follow_symlinks=False)
+    identity = hashlib.sha256(
+        _canonical_json_bytes(
+            {
+                "path": str(root),
+                "st_dev": int(info.st_dev),
+                "st_ino": int(info.st_ino),
+                "st_uid": int(info.st_uid),
+                "mode": stat.S_IMODE(info.st_mode),
+            }
+        )
+    ).hexdigest()
+    return root, identity
+
+
+def open_signal_gap_native_artifact(
+    manifest_path: str | Path,
+    *,
+    storage_root: str | Path,
+    expected_generation_id: str | None = None,
+    expected_manifest_sha256: str | None = None,
+    expected_business_date: str | None = None,
+    expected_feature_date: str | None = None,
+) -> tuple[NativeGenerationContext, str]:
+    """仅从 HMAC 将绑定的专项 root 打开 current-snapshot artifact。"""
+    root, root_identity = resolve_signal_gap_native_storage_root(
+        storage_root
+    )
+    manifest = _resolve_strict_real_path(
+        manifest_path,
+        label="signal-gap Native manifest",
+    )
+    if manifest.name != "manifest.json":
+        raise ValueError(
+            "signal-gap Native manifest path must end in manifest.json"
+        )
+    if manifest.parent.parent != root:
+        raise ValueError(
+            "signal-gap Native manifest must be a direct generation "
+            "under the dedicated storage root"
+        )
+    context = open_native_generation(
+        manifest,
+        expected_generation_id=expected_generation_id,
+        expected_manifest_sha256=expected_manifest_sha256,
+        expected_business_date=expected_business_date,
+        expected_feature_date=expected_feature_date,
+    )
+    if context.exporter_version != SIGNAL_GAP_NATIVE_EXPORTER_VERSION:
+        raise ValueError(
+            "signal-gap Native artifact exporter_version is invalid"
+        )
+    return context, root_identity
+
+
 def find_published_native_generation(
     output_root: str | Path,
     *,
@@ -1996,6 +2060,29 @@ def _require_real_directory(path: Path) -> None:
         raise ValueError(f"Native generation directory must not be a symlink: {path}")
     if not stat.S_ISDIR(info.st_mode):
         raise ValueError(f"Native generation root is not a directory: {path}")
+
+
+def _resolve_strict_real_path(
+    value: str | Path,
+    *,
+    label: str,
+) -> Path:
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError(f"{label} must be absolute")
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        try:
+            info = current.lstat()
+        except FileNotFoundError as exc:
+            raise ValueError(f"{label} is missing: {current}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"{label} rejects symlink: {current}")
+    resolved = path.resolve(strict=True)
+    if resolved != path:
+        raise ValueError(f"{label} must use its canonical resolved path")
+    return resolved
 
 
 def _require_private_generation_root(path: Path) -> None:

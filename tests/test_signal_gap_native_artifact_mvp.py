@@ -10,16 +10,19 @@ from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from sqlalchemy import create_engine, text
 
 from harness.authorization import (
+    authorization_token_hash,
     issue_signal_gap_native_artifact_register_token,
     verify_signal_gap_native_artifact_register_authorization,
 )
 from harness.cli import main
 from harness.signal_gap_native_artifact import (
+    SignalGapNativeArtifactRegistrationError,
     prepare_signal_gap_native_artifact,
     register_signal_gap_native_artifact,
 )
@@ -31,7 +34,10 @@ from harness.signal_gap_plan import (
 from scheduler.generation_registry import (
     register_gray_gap_native_artifact,
 )
+from scheduler.daily_runtime import DefaultDailyRuntimeServices
 from scheduler.repository import (
+    create_input_generation,
+    register_seal_and_bind_schedule_occurrence_generation,
     register_sealed_gray_gap_native_generation,
 )
 from shared import native_input_generation as native_module
@@ -50,7 +56,9 @@ def _artifact_authority(context) -> dict[str, str]:
         "authority_type": "native_current_snapshot_artifact",
         "purpose": "signal_gap_gray_live_current_snapshot",
         "artifact_id": context.generation_id,
+        "manifest_uri": str(context.manifest_path),
         "manifest_sha256": context.manifest_sha256,
+        "storage_root_identity": _sha("storage-root"),
         "dataset_content_id": context.dataset_content_id,
         "source_commit_token": context.source_commit_token,
         "capture_business_date": context.business_date,
@@ -173,6 +181,70 @@ class SignalGapNativeArtifactPrepareTests(unittest.TestCase):
             )
         engine_factory.assert_not_called()
 
+    def test_prepare_requires_precreated_private_storage_root(self) -> None:
+        engine_factory = Mock()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir).resolve()
+            missing = parent / "missing-signal-gap-root"
+            with self.assertRaisesRegex(ValueError, "is missing"):
+                prepare_signal_gap_native_artifact(
+                    capture_business_date="2026-07-30",
+                    feature_date="2026-07-27",
+                    output_root=missing,
+                    engine_factory=engine_factory,
+                )
+            public_root = parent / "public-signal-gap-root"
+            public_root.mkdir(mode=0o700)
+            public_root.chmod(0o755)
+            with self.assertRaisesRegex(ValueError, "private"):
+                prepare_signal_gap_native_artifact(
+                    capture_business_date="2026-07-30",
+                    feature_date="2026-07-27",
+                    output_root=public_root,
+                    engine_factory=engine_factory,
+                )
+        engine_factory.assert_not_called()
+
+    def test_open_rejects_symlinked_dedicated_storage_root(self) -> None:
+        engine = _Engine()
+        patches, _ = _patched_source_readers(
+            native_module,
+            engine.connection,
+            evidence_timestamp="2026-07-30T00:15:00.000000",
+        )
+        snapshot_now = datetime(
+            2026,
+            7,
+            30,
+            1,
+            0,
+            tzinfo=timezone.utc,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            parent = Path(tmpdir).resolve()
+            storage_root = parent / "signal-gap-native"
+            storage_root.mkdir(mode=0o700)
+            with patches[0], patches[1], patches[2], patches[3], patches[4]:
+                context = (
+                    native_module.create_signal_gap_native_artifact(
+                        engine,
+                        capture_business_date="2026-07-30",
+                        feature_date="2026-07-24",
+                        output_root=storage_root,
+                        _snapshot_clock=lambda: snapshot_now,
+                    )
+                )
+            alias = parent / "signal-gap-native-alias"
+            alias.symlink_to(storage_root, target_is_directory=True)
+
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                native_module.open_signal_gap_native_artifact(
+                    alias
+                    / context.generation_id
+                    / "manifest.json",
+                    storage_root=alias,
+                )
+
 
 class SignalGapNativeArtifactAuthorizationTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -194,7 +266,11 @@ class SignalGapNativeArtifactAuthorizationTests(unittest.TestCase):
             "authority_type": "native_current_snapshot_artifact",
             "purpose": "signal_gap_gray_live_current_snapshot",
             "artifact_id": "native-" + "a" * 24,
+            "manifest_uri":
+                "/private/native-gap/"
+                f"native-{'a' * 24}/manifest.json",
             "manifest_sha256": _sha("manifest"),
+            "storage_root_identity": _sha("storage-root"),
             "dataset_content_id": _sha("content"),
             "source_commit_token": _sha("evidence"),
             "capture_business_date": "2026-07-30",
@@ -234,6 +310,24 @@ class SignalGapNativeArtifactAuthorizationTests(unittest.TestCase):
         )
         self.assertIn("source authority mismatch", drift_errors)
 
+        _, copied_errors = (
+            verify_signal_gap_native_artifact_register_authorization(
+                token,
+                historical_predict_date="2026-07-28",
+                source_authority={
+                    **authority,
+                    "manifest_uri":
+                        "/private/native-gap-copy/"
+                        f"native-{'a' * 24}/manifest.json",
+                    "storage_root_identity": _sha(
+                        "copied-storage-root"
+                    ),
+                },
+                used_store_path=self.used_path,
+            )
+        )
+        self.assertIn("source authority mismatch", copied_errors)
+
     def test_register_token_cannot_be_issued_without_hmac_secret(
         self,
     ) -> None:
@@ -241,7 +335,11 @@ class SignalGapNativeArtifactAuthorizationTests(unittest.TestCase):
             "authority_type": "native_current_snapshot_artifact",
             "purpose": "signal_gap_gray_live_current_snapshot",
             "artifact_id": "native-" + "a" * 24,
+            "manifest_uri":
+                "/private/native-gap/"
+                f"native-{'a' * 24}/manifest.json",
             "manifest_sha256": _sha("manifest"),
+            "storage_root_identity": _sha("storage-root"),
             "dataset_content_id": _sha("content"),
             "source_commit_token": _sha("evidence"),
             "capture_business_date": "2026-07-30",
@@ -269,7 +367,11 @@ class SignalGapNativeArtifactAuthorizationTests(unittest.TestCase):
             "authority_type": "native_current_snapshot_artifact",
             "purpose": "signal_gap_gray_live_current_snapshot",
             "artifact_id": "native-" + "a" * 24,
+            "manifest_uri":
+                "/private/native-gap/"
+                f"native-{'a' * 24}/manifest.json",
             "manifest_sha256": _sha("manifest"),
+            "storage_root_identity": _sha("storage-root"),
             "dataset_content_id": _sha("content"),
             "source_commit_token": _sha("evidence"),
             "capture_business_date": "2026-07-30",
@@ -460,6 +562,88 @@ class SignalGapNativeArtifactRepositoryTests(unittest.TestCase):
             )
         engine.dispose()
 
+    def test_generic_occurrence_registration_rejects_gap_exporter(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "daily ledger"):
+            register_seal_and_bind_schedule_occurrence_generation(
+                object(),
+                occurrence_id=1,
+                expected_feature_date="2026-07-29",
+                **self._registration(
+                    business_date="2026-07-30",
+                    feature_date="2026-07-29",
+                ),
+            )
+
+    def test_generic_generation_creation_rejects_gap_exporter(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "daily ledger"):
+            create_input_generation(
+                object(),
+                **self._registration(),
+            )
+
+    def test_daily_recovery_query_ignores_two_gap_artifacts(
+        self,
+    ) -> None:
+        engine = self._engine()
+        rows = (
+            self._registration(
+                generation_id="native-" + "a" * 24,
+                feature_date="2026-07-27",
+            ),
+            self._registration(
+                generation_id="native-" + "b" * 24,
+                feature_date="2026-07-28",
+                dataset_content_id=_sha("gap-two"),
+                manifest_sha256=_sha("gap-two-manifest"),
+            ),
+            self._registration(
+                generation_id="native-" + "c" * 24,
+                feature_date="2026-07-29",
+                exporter_version=
+                    native_module.NATIVE_GENERATION_EXPORTER_VERSION,
+                dataset_content_id=_sha("ledger"),
+                manifest_sha256=_sha("ledger-manifest"),
+            ),
+        )
+        with engine.begin() as conn:
+            for row in rows:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO t_input_generations
+                            (generation_id, generation_type, business_date,
+                             feature_date, readiness_basis,
+                             source_commit_token, dataset_content_id,
+                             schema_version, exporter_version, manifest_uri,
+                             manifest_sha256, state, sealed_at)
+                        VALUES
+                            (:generation_id, :generation_type, :business_date,
+                             :feature_date, :readiness_basis,
+                             :source_commit_token, :dataset_content_id,
+                             :schema_version, :exporter_version, :manifest_uri,
+                             :manifest_sha256, 'SEALED',
+                             '2026-07-30T01:00:00.000000')
+                        """
+                    ),
+                    row,
+                )
+        services = DefaultDailyRuntimeServices(engine=engine)
+
+        fences = services.find_generation_fences(
+            business_date=datetime(2026, 7, 30).date(),
+            generation_type="native_source",
+        )
+
+        self.assertEqual(
+            [row["generation_id"] for row in fences],
+            ["native-" + "c" * 24],
+        )
+        engine.dispose()
+
 
 class SignalGapNativeArtifactPlannerTests(unittest.TestCase):
     def test_planner_accepts_only_unique_later_capture_authority(self) -> None:
@@ -531,6 +715,33 @@ class SignalGapNativeArtifactPlannerTests(unittest.TestCase):
 
 
 class SignalGapNativeArtifactRegistryTests(unittest.TestCase):
+    @staticmethod
+    def _context(storage_root: Path):
+        generation_id = "native-" + "a" * 24
+        return native_module.NativeGenerationContext(
+            generation_id=generation_id,
+            generation_type="native_source",
+            dataset_content_id=_sha("content"),
+            root_dir=storage_root / generation_id,
+            manifest_path=(
+                storage_root / generation_id / "manifest.json"
+            ),
+            manifest_sha256=_sha("manifest"),
+            business_date="2026-07-30",
+            feature_date="2026-07-27",
+            source_commit_token=_sha("evidence"),
+            readiness_basis="CLOCK_CONTRACT",
+            schema_version="native-generation-v1",
+            exporter_version=(
+                native_module.SIGNAL_GAP_NATIVE_EXPORTER_VERSION
+            ),
+            created_at="2026-07-30T01:00:00.000000Z",
+            sealed_at="2026-07-30T01:01:00.000000Z",
+            _cutoffs_json="{}",
+            _manifest_json="{}",
+            _frames={},
+        )
+
     def test_registry_rehashes_before_standalone_registration(self) -> None:
         context = native_module.NativeGenerationContext(
             generation_id="native-" + "a" * 24,
@@ -556,8 +767,9 @@ class SignalGapNativeArtifactRegistryTests(unittest.TestCase):
 
         with (
             patch(
-                "scheduler.generation_registry.open_native_generation",
-                return_value=context,
+                "scheduler.generation_registry."
+                "open_signal_gap_native_artifact",
+                return_value=(context, _sha("storage-root")),
             ) as opener,
             patch(
                 "scheduler.generation_registry."
@@ -569,6 +781,7 @@ class SignalGapNativeArtifactRegistryTests(unittest.TestCase):
                 object(),
                 context,
                 historical_predict_date="2026-07-28",
+                storage_root=Path("/private/native-a"),
             )
 
         self.assertEqual(result, context.generation_id)
@@ -608,8 +821,8 @@ class SignalGapNativeArtifactRegistryTests(unittest.TestCase):
             tempfile.TemporaryDirectory() as tmpdir,
             patch(
                 "harness.signal_gap_native_artifact."
-                "open_native_generation",
-                return_value=context,
+                "open_signal_gap_native_artifact",
+                return_value=(context, _sha("storage-root")),
             ),
             patch.dict(
                 os.environ,
@@ -625,6 +838,7 @@ class SignalGapNativeArtifactRegistryTests(unittest.TestCase):
                 manifest=Path(tmpdir),
                 historical_predict_date="2026-07-28",
                 authorize="invalid-token",
+                storage_root=Path(tmpdir),
                 project_root=Path(tmpdir),
                 engine_factory=engine_factory,
             )
@@ -634,22 +848,161 @@ class SignalGapNativeArtifactRegistryTests(unittest.TestCase):
         self,
     ) -> None:
         engine_factory = Mock()
-        with (
-            patch(
-                "harness.signal_gap_native_artifact."
-                "open_native_generation",
-            ) as opener,
-            self.assertRaisesRegex(ValueError, "must be absolute"),
-        ):
-            register_signal_gap_native_artifact(
-                manifest=Path("relative/manifest.json"),
-                historical_predict_date="2026-07-28",
-                authorize="not-used",
-                project_root=Path("/private/project"),
-                engine_factory=engine_factory,
-            )
-        opener.assert_not_called()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir).resolve()
+            storage_root.chmod(0o700)
+            with self.assertRaisesRegex(ValueError, "must be absolute"):
+                register_signal_gap_native_artifact(
+                    manifest=Path("relative/manifest.json"),
+                    historical_predict_date="2026-07-28",
+                    authorize="not-used",
+                    storage_root=storage_root,
+                    project_root=storage_root,
+                    engine_factory=engine_factory,
+                )
         engine_factory.assert_not_called()
+
+    def test_db_failure_consumes_token_and_preserves_attempt_audits(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir).resolve()
+            storage_root = project_root / "signal-gap-native"
+            storage_root.mkdir(mode=0o700)
+            context = self._context(storage_root)
+            authority = _artifact_authority(context)
+            with patch.dict(
+                os.environ,
+                {"HARNESS_AUTH_SECRET": "native-gap-test-secret"},
+                clear=False,
+            ):
+                first_token = (
+                    issue_signal_gap_native_artifact_register_token(
+                        historical_predict_date="2026-07-28",
+                        source_authority=authority,
+                    )
+                )
+                second_token = (
+                    issue_signal_gap_native_artifact_register_token(
+                        historical_predict_date="2026-07-28",
+                        source_authority=authority,
+                    )
+                )
+            engine_factory = Mock(
+                side_effect=[
+                    SimpleNamespace(dispose=Mock()),
+                    SimpleNamespace(dispose=Mock()),
+                ]
+            )
+            database_register = Mock(
+                side_effect=[
+                    RuntimeError("simulated database failure"),
+                    context.generation_id,
+                ]
+            )
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {"HARNESS_AUTH_SECRET": "native-gap-test-secret"},
+                    clear=False,
+                ),
+                patch(
+                    "harness.signal_gap_native_artifact."
+                    "open_signal_gap_native_artifact",
+                    return_value=(
+                        context,
+                        _sha("storage-root"),
+                    ),
+                ),
+                patch(
+                    "harness.signal_gap_native_artifact."
+                    "register_gray_gap_native_artifact",
+                    database_register,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    SignalGapNativeArtifactRegistrationError,
+                    "after token consumption",
+                ) as failed:
+                    register_signal_gap_native_artifact(
+                        manifest=context.manifest_path,
+                        historical_predict_date="2026-07-28",
+                        authorize=first_token,
+                        storage_root=storage_root,
+                        project_root=project_root,
+                        engine_factory=engine_factory,
+                    )
+                self.assertTrue(failed.exception.token_consumed)
+                first_audit = (
+                    project_root
+                    / "reports"
+                    / "harness"
+                    / "signal-gap-native-artifact"
+                    / context.generation_id
+                    / authorization_token_hash(first_token)
+                    / "outcome.json"
+                )
+                first_outcome = json.loads(
+                    first_audit.read_text(encoding="utf-8")
+                )
+                self.assertEqual(
+                    first_outcome["status"],
+                    "DB_FAILED",
+                )
+                self.assertTrue(
+                    first_outcome["authorization_consumed"]
+                )
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "token already used",
+                ):
+                    register_signal_gap_native_artifact(
+                        manifest=context.manifest_path,
+                        historical_predict_date="2026-07-28",
+                        authorize=first_token,
+                        storage_root=storage_root,
+                        project_root=project_root,
+                        engine_factory=engine_factory,
+                    )
+
+                succeeded = register_signal_gap_native_artifact(
+                    manifest=context.manifest_path,
+                    historical_predict_date="2026-07-28",
+                    authorize=second_token,
+                    storage_root=storage_root,
+                    project_root=project_root,
+                    engine_factory=engine_factory,
+                )
+
+            self.assertEqual(
+                succeeded["status"],
+                "REGISTERED_SEALED",
+            )
+            self.assertEqual(database_register.call_count, 2)
+            self.assertEqual(engine_factory.call_count, 2)
+            self.assertEqual(
+                json.loads(first_audit.read_text(encoding="utf-8"))[
+                    "status"
+                ],
+                "DB_FAILED",
+            )
+            second_audit = (
+                project_root
+                / "reports"
+                / "harness"
+                / "signal-gap-native-artifact"
+                / context.generation_id
+                / authorization_token_hash(second_token)
+                / "outcome.json"
+            )
+            self.assertEqual(
+                json.loads(second_audit.read_text(encoding="utf-8"))[
+                    "status"
+                ],
+                "REGISTERED",
+            )
 
 
 class SignalGapNativeArtifactCliTests(unittest.TestCase):
@@ -705,6 +1058,8 @@ class SignalGapNativeArtifactCliTests(unittest.TestCase):
                     "2026-07-28",
                     "--authorize",
                     "signed-token",
+                    "--storage-root",
+                    "/private/native-gap",
                 ]
             )
 
@@ -718,6 +1073,53 @@ class SignalGapNativeArtifactCliTests(unittest.TestCase):
             register.call_args.kwargs["authorize"],
             "signed-token",
         )
+        self.assertEqual(
+            register.call_args.kwargs["storage_root"],
+            Path("/private/native-gap"),
+        )
+
+    def test_register_cli_reports_consumed_token_and_audit_path(
+        self,
+    ) -> None:
+        stdout = io.StringIO()
+        audit_path = Path("/private/audit/outcome.json")
+        failure = SignalGapNativeArtifactRegistrationError(
+            "database registration failed after token consumption",
+            failure_code="DATABASE_REGISTRATION_FAILED",
+            token_consumed=True,
+            audit_path=audit_path,
+        )
+        with (
+            patch(
+                "harness.cli.register_signal_gap_native_artifact",
+                side_effect=failure,
+            ),
+            redirect_stdout(stdout),
+        ):
+            exit_code = main(
+                [
+                    "signal-gap-native-artifact",
+                    "register",
+                    "--manifest",
+                    "/private/native-gap/"
+                    f"native-{'a' * 24}/manifest.json",
+                    "--historical-predict-date",
+                    "2026-07-28",
+                    "--authorize",
+                    "signed-token",
+                    "--storage-root",
+                    "/private/native-gap",
+                ]
+            )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(
+            payload["failure_code"],
+            "DATABASE_REGISTRATION_FAILED",
+        )
+        self.assertTrue(payload["token_consumed"])
+        self.assertEqual(payload["audit_path"], str(audit_path))
 
 
 if __name__ == "__main__":

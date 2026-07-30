@@ -579,7 +579,9 @@ def _normalize_signal_gap_native_artifact_authority(
             "authority_type",
             "purpose",
             "artifact_id",
+            "manifest_uri",
             "manifest_sha256",
+            "storage_root_identity",
             "dataset_content_id",
             "source_commit_token",
             "capture_business_date",
@@ -599,9 +601,17 @@ def _normalize_signal_gap_native_artifact_authority(
             value["artifact_id"],
             "artifact_id",
         ),
+        "manifest_uri": _require_text(
+            value["manifest_uri"],
+            "manifest_uri",
+        ),
         "manifest_sha256": _require_sha256(
             value["manifest_sha256"],
             "manifest_sha256",
+        ),
+        "storage_root_identity": _require_sha256(
+            value["storage_root_identity"],
+            "storage_root_identity",
         ),
         "dataset_content_id": _require_sha256(
             value["dataset_content_id"],
@@ -634,6 +644,15 @@ def _normalize_signal_gap_native_artifact_authority(
     ):
         raise ValueError(
             "signal-gap Native artifact authority purpose is invalid"
+        )
+    manifest_path = Path(normalized["manifest_uri"])
+    if (
+        not manifest_path.is_absolute()
+        or manifest_path.name != "manifest.json"
+        or str(manifest_path) != normalized["manifest_uri"]
+    ):
+        raise ValueError(
+            "signal-gap Native artifact manifest_uri is not canonical"
         )
     historical_predict_date = _normalize_action_predict_date(
         "signal_gap_native_artifact_register",
