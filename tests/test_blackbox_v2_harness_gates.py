@@ -977,6 +977,57 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual({item.weekly_cutoff_key for item in requests}, {"202626", "202627"})
         self.assertEqual({item.monthly_cutoff_key for item in requests}, {"202605", "202606"})
 
+    def test_comparison_requests_keep_daily_and_calendar_week_coherent(
+        self,
+    ) -> None:
+        """回退日截止时不得生成与权威业务周历矛盾的周截止。"""
+        from harness.blackbox_v2.gates import _comparison_requests
+        from shared.blackbox_v2.contracts import BlackboxRequest
+        from shared.blackbox_v2.snapshot import create_snapshot_from_frames
+
+        request = BlackboxRequest(
+            request_id="weekly-request",
+            predict_date="2026-07-17",
+            feature_date="2026-07-16",
+            target_date="2026-07-24",
+            daily_cutoff_key="2026-07-16",
+            weekly_cutoff_key="202628",
+            monthly_cutoff_key="202607",
+        )
+        frames = _snapshot_frames()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            snapshot = create_snapshot_from_frames(
+                frames,
+                output_root=Path(tmpdir),
+                expected_columns={
+                    name: list(frame.columns)
+                    for name, frame in frames.items()
+                },
+                schema_version="data-bridge-v1",
+            )
+            snapshot.data_dir.chmod(0o755)
+            calendar_path = (
+                snapshot.data_dir / "api_wind_date.csv"
+            )
+            calendar_path.write_text(
+                "rdate,week_id\n"
+                "2026-07-14,202627\n"
+                "2026-07-15,202628\n"
+                "2026-07-16,202628\n",
+                encoding="utf-8",
+            )
+            calendar_path.chmod(0o444)
+            snapshot.data_dir.chmod(0o555)
+            requests = _comparison_requests(
+                request,
+                snapshot.data_dir,
+            )
+
+        prior = requests[0]
+        self.assertEqual(prior.daily_cutoff_key, "2026-07-15")
+        self.assertEqual(prior.weekly_cutoff_key, "202628")
+        self.assertEqual(prior.monthly_cutoff_key, "202606")
+
     def test_automatic_execution_gates_run_end_to_end_without_business_writes(self) -> None:
         from harness.blackbox_v2.gates import (
             BlackboxApiReadinessGate,

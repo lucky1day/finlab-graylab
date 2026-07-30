@@ -109,6 +109,17 @@ EXPECTED_ADMISSIONS = {
         capabilities=FORMAL_WEEKLY_CAPABILITIES,
     ),
     (
+        "cgb_causal_wk_1y",
+        "05022a0eeec7",
+    ): _expected_admission(
+        mode="formal",
+        frequency="weekly",
+        task_type="weekly_point",
+        horizon=1,
+        target_tenor="1Y",
+        capabilities=FORMAL_WEEKLY_CAPABILITIES,
+    ),
+    (
         "cgb_a4_fundseason_1y",
         "04e7af163fb0",
     ): _expected_admission(

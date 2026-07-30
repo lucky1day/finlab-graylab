@@ -1887,6 +1887,7 @@ def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[Black
         ("monthly_output.csv", "month_id", "monthly_cutoff_key"),
     )
     previous: dict[str, str] = {}
+    available: dict[str, list[str]] = {}
     for filename, key_column, request_field in cutoff_specs:
         frame = pd.read_csv(data_dir / filename, dtype=str, keep_default_na=False)
         if filename == "daily_output.csv":
@@ -1905,7 +1906,48 @@ def _comparison_requests(request: BlackboxRequest, data_dir: Path) -> list[Black
             raise ValueError(
                 f"CompareGate requires one earlier {key_column} before {current} in {filename}"
             )
+        available[request_field] = values
         previous[request_field] = values[current_index - 1]
+    calendar_path = data_dir / "api_wind_date.csv"
+    if calendar_path.is_file():
+        calendar = pd.read_csv(
+            calendar_path,
+            dtype=str,
+            keep_default_na=False,
+        )
+        if tuple(calendar.columns) != ("rdate", "week_id"):
+            raise ValueError(
+                "api_wind_date.csv must contain exactly rdate,week_id"
+            )
+        try:
+            calendar_dates = pd.to_datetime(
+                calendar["rdate"],
+                errors="raise",
+            ).dt.date.astype(str)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "api_wind_date.csv contains an invalid rdate"
+            ) from exc
+        calendar_weeks = calendar["week_id"].map(
+            lambda value: str(value).strip().removesuffix(".0")
+        )
+        matched_weeks = set(
+            calendar_weeks[
+                calendar_dates == previous["daily_cutoff_key"]
+            ].tolist()
+        )
+        if len(matched_weeks) != 1:
+            raise ValueError(
+                "api_wind_date.csv must map the prior daily cutoff to "
+                "exactly one week_id"
+            )
+        calendar_week = matched_weeks.pop()
+        if calendar_week not in available["weekly_cutoff_key"]:
+            raise ValueError(
+                "api_wind_date.csv prior daily week_id is absent from "
+                "weekly_output.csv"
+            )
+        previous["weekly_cutoff_key"] = calendar_week
     earlier = replace(
         request,
         request_id=f"{request.request_id}:prior-cutoffs",

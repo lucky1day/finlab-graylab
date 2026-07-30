@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0",
+  "recorded_at": "2026-07-30T17:07:26+08:00",
+  "status": "TECHNICAL_GATES_PASSED_CHECK_ONLY",
+  "branch": "codex/blackbox-v2-cgb-causal-wk-1y-onboarding-20260730",
+  "scheme": {
+    "base_scheme_id": "cgb_causal_wk_1y",
+    "registry_id": "cgb_causal_wk_1y__h1__1Y",
+    "scheme_version": "05022a0eeec7",
+    "algorithm_version": "1.0.0",
+    "runtime_type": "blackbox_v2",
+    "runtime_profile": "blackbox-v2-v1",
+    "task_type": "weekly_point",
+    "target_tenor": "1Y",
+    "horizon": 1,
+    "config_status": "paused",
+    "version_status": "draft"
+  },
+  "delivery": {
+    "script_sha256": "90f3abcc1501eb7173c706fc2ad5d76fda89bf9004c88ee976b98378bbb6d450",
+    "metadata_sha256": "efc8e03c5db98c33f0b830d62cc4465f7f890b5a783de68fee58e4ae19d4162b",
+    "bytes_preserved": true
+  },
+  "environment": {
+    "fingerprint": "720ad40ab77cd6c7156ff35a80cf3604ac3a6153425ed235a4e3158b0631f8bd",
+    "sandbox_network_access": "denied",
+    "sandbox_data_dir_write": "denied"
+  },
+  "input": {
+    "generation_id": "full-20260730-081804-9794ce962c1a",
+    "refresh_date": "2026-07-30",
+    "business_digest": "9794ce962c1aa27eddb9ba43900b961a2ccf33d596d08f02cd137edbeb2c7de2",
+    "parent_snapshot_id": "snapshot-a0dbf1774782db2e6d2a1ec5",
+    "combined_snapshot_id": "snapshot-2c964086367c6a987f193bcd",
+    "platform_input": {
+      "artifact_id": "api-wind-date-v1",
+      "rows": 6064,
+      "sha256": "82b32635a1b94d414fdbdcb6391210729aadd7dbb86b9c44bc692ab77bd6da91"
+    },
+    "files": {
+      "daily_output.csv": {
+        "rows": 3886,
+        "columns": 774,
+        "sha256": "e9969d55626aa31ef6c2e069dce04c586044612f3ab33eb2c98169ea03e94bdf"
+      },
+      "weekly_output.csv": {
+        "rows": 848,
+        "columns": 575,
+        "sha256": "396e44008f45d0aed286d60ad90b1534e13ce3ea9759130e7e0145d17d727d8c"
+      },
+      "monthly_output.csv": {
+        "rows": 201,
+        "columns": 123,
+        "sha256": "9d028233894e764aeb871bc34229a3159033c7c90e83272c605547f3c3d61aa1"
+      }
+    }
+  },
+  "request": {
+    "predict_date": "2026-07-25",
+    "feature_date": "2026-07-24",
+    "target_date": "2026-07-31",
+    "daily_cutoff_key": "2026-07-24",
+    "weekly_cutoff_key": "202628",
+    "monthly_cutoff_key": "202608"
+  },
+  "harness": {
+    "harness_run_id": "hr_20260730T090642Z_66a2646bd276",
+    "report_path": "reports/harness/cgb_causal_wk_1y/20260730T090642Z",
+    "gates_passed": 7,
+    "gates_total": 7,
+    "backtest_requests": 100,
+    "backtest_records": 100,
+    "persist_backtest": false,
+    "check_only": true,
+    "control_plane_persisted": false,
+    "business_tables_written": false
+  },
+  "compare_gate": {
+    "repeat_deterministic": true,
+    "predict_backtest_equal": true,
+    "batch_split_invariant": true,
+    "request_order_invariant": true,
+    "future_row_isolation": true,
+    "platform_input_hashes_unchanged": true,
+    "platform_fix_commit": "5e67b09"
+  },
+  "production_boundaries": {
+    "backtest_start_date": "2025-01-01",
+    "gray_target_start": "2026-06-01",
+    "gray_target_end": "2026-07-31",
+    "first_scheduled_live": {
+      "predict_date": "2026-08-01",
+      "feature_date": "2026-07-31",
+      "target_date": "2026-08-07"
+    }
+  },
+  "limitations": {
+    "algorithm_logic_validated": false,
+    "algorithm_effect_validated": false,
+    "shadow_registered": false,
+    "production_activated": false,
+    "backtest_persisted": false,
+    "gray_live_written": false,
+    "scheduled_live_observed": false
+  }
+}

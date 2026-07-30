@@ -130,7 +130,14 @@ class ExecutorAggregateFenceTests(unittest.TestCase):
             call.args[0].scheme_id
             for call in execute_one.call_args_list
         ]
-        self.assertTrue(formal_ids <= set(executed_ids))
+        active_ids = {
+            config.scheme_id
+            for config in schemes
+            if config.status == "active"
+        }
+        self.assertTrue(
+            (formal_ids & active_ids) <= set(executed_ids)
+        )
         self.assertTrue(gray_ids.isdisjoint(executed_ids))
         self.assertEqual(
             executed_ids,
