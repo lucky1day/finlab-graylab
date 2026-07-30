@@ -11,7 +11,7 @@ from scheduler.discovery import load_scheme_config
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = PROJECT_ROOT / "schemes/cgb_causal_wk_1y/config.yaml"
 SCRIPT_SHA256 = (
-    "90f3abcc1501eb7173c706fc2ad5d76fda89bf9004c88ee976b98378bbb6d450"
+    "cf79ab53433ba63cb05ab23d5aacf7cc33e698d37f31cbbba0e81688ab646172"
 )
 METADATA_SHA256 = (
     "efc8e03c5db98c33f0b830d62cc4465f7f890b5a783de68fee58e4ae19d4162b"
@@ -27,7 +27,7 @@ def test_delivery_bytes_and_exact_version_are_frozen() -> None:
     """交付字节或 canonical 平台配置漂移必须使 exact version 回归失败。"""
     config = load_scheme_config(CONFIG_PATH)
 
-    assert config.scheme_version == "05022a0eeec7"
+    assert config.scheme_version == "cba824c27f0e"
     assert _sha256(config.delivery_script) == SCRIPT_SHA256
     assert _sha256(config.delivery_metadata) == METADATA_SHA256
 

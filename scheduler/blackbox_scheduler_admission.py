@@ -149,7 +149,7 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
             ),
             (
                 "cgb_causal_wk_1y",
-                "05022a0eeec7",
+                "cba824c27f0e",
             ): _entry(
                 mode="formal",
                 frequency="weekly",

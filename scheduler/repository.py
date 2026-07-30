@@ -1905,6 +1905,252 @@ def apply_blackbox_lifecycle_state(
     )
 
 
+def replace_active_blackbox_version(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    previous_scheme_version: str,
+    expected_harness_run_id: str,
+    approved_by: str,
+    approved_at: datetime,
+) -> BlackboxLifecycleState:
+    """单事务切换已激活 Blackbox exact version，并退役上一版本。"""
+    if getattr(cfg, "runtime_type", None) != "blackbox_v2":
+        raise ValueError("active Blackbox replacement requires runtime_type=blackbox_v2")
+    if cfg.status != "active" or cfg.version_status != "active":
+        raise ValueError(
+            "active Blackbox replacement requires config active+active: "
+            f"got={cfg.status}+{cfg.version_status}"
+        )
+    if (
+        not isinstance(previous_scheme_version, str)
+        or not previous_scheme_version.strip()
+        or previous_scheme_version == cfg.scheme_version
+    ):
+        raise ValueError("previous_scheme_version must identify a different exact version")
+    if not isinstance(expected_harness_run_id, str) or not expected_harness_run_id.strip():
+        raise ValueError("expected_harness_run_id must be non-empty")
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("approved_by must be non-empty")
+    if not isinstance(approved_at, datetime):
+        raise ValueError("approved_at must be datetime")
+    if not str(getattr(cfg, "environment_fingerprint", "") or "").strip():
+        raise ValueError("active Blackbox replacement requires environment_fingerprint")
+    if not str(getattr(cfg, "data_snapshot_id", "") or "").strip():
+        raise ValueError("active Blackbox replacement requires data_snapshot_id")
+
+    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    mysql_approved_at = _mysql_utc_datetime(approved_at)
+    with engine.begin() as conn:
+        latest_run = (
+            conn.execute(
+                text(
+                    """
+                    /* active replacement latest passed all-stage fence */
+                    SELECT harness_run_id
+                    FROM t_harness_runs
+                    WHERE scheme_id = :scheme_id
+                      AND scheme_version = :scheme_version
+                      AND stage = 'all'
+                      AND status = 'passed'
+                    ORDER BY finished_at DESC, harness_run_id DESC
+                    LIMIT 1
+                    FOR UPDATE
+                    """
+                ),
+                {
+                    "scheme_id": cfg.scheme_id,
+                    "scheme_version": cfg.scheme_version,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        actual_harness_run_id = (
+            str(latest_run["harness_run_id"]) if latest_run is not None else None
+        )
+        if actual_harness_run_id != expected_harness_run_id:
+            raise RuntimeError(
+                "latest passed all-stage harness run changed before active replacement: "
+                f"expected={expected_harness_run_id}, actual={actual_harness_run_id}"
+            )
+
+        version_rows = (
+            conn.execute(
+                text(
+                    """
+                    /* active replacement version set */
+                    SELECT scheme_id, scheme_version, runtime_type, algorithm_version,
+                           contract_version, runtime_profile, environment_fingerprint,
+                           data_snapshot_id, code_hash, config_hash, manifest_hash,
+                           git_commit, status, created_by, approved_by, approved_at
+                    FROM t_scheme_versions
+                    WHERE scheme_id = :scheme_id
+                    FOR UPDATE
+                    """
+                ),
+                {"scheme_id": cfg.scheme_id},
+            )
+            .mappings()
+            .all()
+        )
+        active_versions = [
+            str(row["scheme_version"])
+            for row in version_rows
+            if row.get("status") == "active"
+        ]
+        if active_versions != [previous_scheme_version]:
+            raise ValueError(
+                "active Blackbox replacement requires exactly one active previous version: "
+                f"expected={[previous_scheme_version]}, actual={active_versions}"
+            )
+        candidate = next(
+            (
+                row
+                for row in version_rows
+                if row.get("scheme_version") == cfg.scheme_version
+            ),
+            None,
+        )
+        if candidate is not None:
+            _raise_on_blackbox_version_metadata_conflict(candidate, cfg)
+            if candidate.get("status") not in {"draft", "validated", "shadow"}:
+                raise ValueError(
+                    "new Blackbox replacement version has invalid pre-active status: "
+                    f"{candidate.get('status')}"
+                )
+
+        registry_rows = _read_blackbox_registry_rows_conn(
+            conn,
+            cfg,
+            expected_registry_ids,
+            for_update=True,
+        )
+        registry_error = _blackbox_registry_identity_error(
+            cfg,
+            expected_tenors,
+            expected_registry_ids,
+            registry_rows,
+            expected_status="active",
+        )
+        if registry_error is not None:
+            raise ValueError(
+                "active Blackbox replacement Registry preflight failed: "
+                f"{registry_error}"
+            )
+
+        _upsert_scheme_version_conn(
+            conn,
+            cfg,
+            trusted_status="active",
+            approved_by=approved_by,
+            approved_at=mysql_approved_at,
+        )
+        retired = conn.execute(
+            text(
+                """
+                /* active replacement retire previous version */
+                UPDATE t_scheme_versions
+                SET status = 'retired'
+                WHERE scheme_id = :scheme_id
+                  AND scheme_version = :previous_scheme_version
+                  AND status = 'active'
+                """
+            ),
+            {
+                "scheme_id": cfg.scheme_id,
+                "previous_scheme_version": previous_scheme_version,
+            },
+        )
+        if retired.rowcount != 1:
+            raise RuntimeError(
+                "active Blackbox replacement failed to retire exact previous version"
+            )
+
+        final_versions = (
+            conn.execute(
+                text(
+                    """
+                    /* active replacement version set */
+                    SELECT scheme_id, scheme_version, runtime_type, algorithm_version,
+                           contract_version, runtime_profile, environment_fingerprint,
+                           data_snapshot_id, code_hash, config_hash, manifest_hash,
+                           git_commit, status, created_by, approved_by, approved_at
+                    FROM t_scheme_versions
+                    WHERE scheme_id = :scheme_id
+                    FOR UPDATE
+                    """
+                ),
+                {"scheme_id": cfg.scheme_id},
+            )
+            .mappings()
+            .all()
+        )
+        final_active = [
+            str(row["scheme_version"])
+            for row in final_versions
+            if row.get("status") == "active"
+        ]
+        if final_active != [cfg.scheme_version]:
+            raise RuntimeError(
+                "active Blackbox replacement readback has invalid active versions: "
+                f"{final_active}"
+            )
+        previous_row = next(
+            (
+                row
+                for row in final_versions
+                if row.get("scheme_version") == previous_scheme_version
+            ),
+            None,
+        )
+        if previous_row is None or previous_row.get("status") != "retired":
+            raise RuntimeError("active Blackbox replacement previous version was not retired")
+        version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
+        if version_row is None:
+            raise RuntimeError("active Blackbox replacement new version readback is missing")
+
+    return BlackboxLifecycleState(
+        scheme_id=str(version_row["scheme_id"]),
+        scheme_version=str(version_row["scheme_version"]),
+        runtime_type=str(version_row["runtime_type"]),
+        version_status=str(version_row["status"]),
+        registry_status="active",
+        environment_fingerprint=(
+            str(version_row["environment_fingerprint"])
+            if version_row.get("environment_fingerprint") is not None
+            else None
+        ),
+        data_snapshot_id=(
+            str(version_row["data_snapshot_id"])
+            if version_row.get("data_snapshot_id") is not None
+            else None
+        ),
+        code_hash=str(version_row["code_hash"]),
+        config_hash=(
+            str(version_row["config_hash"])
+            if version_row.get("config_hash") is not None
+            else None
+        ),
+        manifest_hash=(
+            str(version_row["manifest_hash"])
+            if version_row.get("manifest_hash") is not None
+            else None
+        ),
+        approved_by=(
+            str(version_row["approved_by"])
+            if version_row.get("approved_by") is not None
+            else None
+        ),
+        approved_at=(
+            version_row["approved_at"]
+            if isinstance(version_row.get("approved_at"), datetime)
+            else None
+        ),
+        registry_scheme_ids=expected_registry_ids,
+    )
+
+
 def _mysql_utc_datetime(value: datetime | None) -> datetime | None:
     """将批准时刻统一为 MySQL DATETIME(0) 使用的无时区 UTC。"""
     if value is None:
