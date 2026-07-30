@@ -281,7 +281,6 @@ def main(argv: list[str] | None = None) -> int:
                         args.historical_predict_date,
                     authorize=args.authorize,
                     storage_root=args.storage_root,
-                    project_root=args.project_root,
                 )
         except SignalGapNativeArtifactRegistrationError as exc:
             print(
@@ -524,12 +523,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
     )
-    native_artifact_register.add_argument(
-        "--project-root",
-        type=Path,
-        default=PROJECT_ROOT,
-    )
-
     auth_parser = subparsers.add_parser("auth")
     auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
     issue_parser = auth_subparsers.add_parser("issue")

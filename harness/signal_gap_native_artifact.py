@@ -14,7 +14,10 @@ from harness.authorization import (
 from scheduler.generation_registry import (
     register_gray_gap_native_artifact,
 )
-from scheduler.repository import create_engine_from_env
+from scheduler.repository import (
+    create_engine_from_env,
+    read_sealed_input_generation,
+)
 from shared.native_input_generation import (
     SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
     create_signal_gap_native_artifact,
@@ -27,6 +30,7 @@ _PURPOSE = "signal_gap_gray_live_current_snapshot"
 _VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
 )
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SignalGapNativeArtifactRegistrationError(RuntimeError):
@@ -118,7 +122,6 @@ def register_signal_gap_native_artifact(
     historical_predict_date: str,
     authorize: str,
     storage_root: Path,
-    project_root: Path,
     engine_factory: Callable[[], Any] = create_engine_from_env,
 ) -> dict[str, Any]:
     """消费专项 HMAC 后登记 SEALED authority，不创建 ledger 对象。"""
@@ -130,7 +133,7 @@ def register_signal_gap_native_artifact(
         context,
         storage_root_identity=storage_root_identity,
     )
-    replay_store = used_tokens_path(Path(project_root).resolve())
+    replay_store = used_tokens_path(PROJECT_ROOT)
     auth, errors = (
         verify_signal_gap_native_artifact_register_authorization(
             authorize,
@@ -145,7 +148,7 @@ def register_signal_gap_native_artifact(
             + "; ".join(errors)
         )
     audit_dir = (
-        Path(project_root).resolve()
+        PROJECT_ROOT
         / "reports"
         / "harness"
         / "signal-gap-native-artifact"
@@ -194,7 +197,11 @@ def register_signal_gap_native_artifact(
         **outcome,
         "authorization_consumed": True,
     }
-    _atomic_write_json(outcome_path, registering)
+    _write_consumed_outcome(
+        outcome_path,
+        registering,
+        failure_code="POST_CONSUMPTION_AUDIT_FAILED",
+    )
     engine = None
     try:
         engine = engine_factory()
@@ -205,6 +212,32 @@ def register_signal_gap_native_artifact(
             storage_root=storage_root,
         )
     except Exception as exc:
+        sealed_after_error = _readback_exact_sealed_generation(
+            engine,
+            context,
+        )
+        if sealed_after_error:
+            sealed_warning = {
+                **registering,
+                "status": "SEALED_AFTER_ERROR",
+                "database_outcome": "SEALED",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            }
+            _persist_consumed_outcome_and_dispose(
+                outcome_path,
+                sealed_warning,
+                engine=engine,
+                failure_code="DATABASE_SEALED_AUDIT_FAILED",
+            )
+            return {
+                "status": "REGISTERED_SEALED_AFTER_ERROR",
+                "generation_id": context.generation_id,
+                "source_authority": authority,
+                "authorization_audit_path": str(outcome_path),
+                "registration_warning":
+                    f"{type(exc).__name__}: {exc}",
+            }
         failed = {
             **registering,
             "status": "DB_FAILED",
@@ -212,7 +245,12 @@ def register_signal_gap_native_artifact(
             "error_type": type(exc).__name__,
             "error_message": str(exc),
         }
-        _atomic_write_json(outcome_path, failed)
+        _persist_consumed_outcome_and_dispose(
+            outcome_path,
+            failed,
+            engine=engine,
+            failure_code="DATABASE_FAILURE_AUDIT_FAILED",
+        )
         raise SignalGapNativeArtifactRegistrationError(
             "signal-gap Native database registration failed after token "
             f"consumption; audit={outcome_path}; "
@@ -221,18 +259,139 @@ def register_signal_gap_native_artifact(
             token_consumed=True,
             audit_path=outcome_path,
         ) from exc
-    finally:
-        if engine is not None and hasattr(engine, "dispose"):
-            engine.dispose()
     registered = {
         **registering,
         "status": "REGISTERED",
         "database_outcome": "SEALED",
     }
-    _atomic_write_json(outcome_path, registered)
+    _persist_consumed_outcome_and_dispose(
+        outcome_path,
+        registered,
+        engine=engine,
+        failure_code="DATABASE_SEALED_AUDIT_FAILED",
+    )
     return {
         "status": "REGISTERED_SEALED",
         "generation_id": generation_id,
         "source_authority": authority,
         "authorization_audit_path": str(outcome_path),
     }
+
+
+def _readback_exact_sealed_generation(
+    engine: Any,
+    context: Any,
+) -> bool:
+    """登记异常后只以完整只读 SEALED identity 判定是否已提交。"""
+    if engine is None:
+        return False
+    try:
+        row = read_sealed_input_generation(
+            engine,
+            generation_id=context.generation_id,
+            expected_generation_type="native_source",
+        )
+        expected = {
+            "generation_id": context.generation_id,
+            "generation_type": context.generation_type,
+            "business_date": context.business_date,
+            "feature_date": context.feature_date,
+            "readiness_basis": context.readiness_basis,
+            "source_commit_token": context.source_commit_token,
+            "dataset_content_id": context.dataset_content_id,
+            "schema_version": context.schema_version,
+            "exporter_version": context.exporter_version,
+            "manifest_uri": str(context.manifest_path),
+            "manifest_sha256": context.manifest_sha256,
+            "native_generation_id": None,
+            "native_manifest_sha256": None,
+            "state": "SEALED",
+        }
+        observed = {
+            field: getattr(row, field)
+            for field in expected
+        }
+        return observed == expected and row.sealed_at is not None
+    except Exception:
+        return False
+
+
+def _write_consumed_outcome(
+    outcome_path: Path,
+    outcome: dict[str, Any],
+    *,
+    failure_code: str,
+) -> None:
+    """授权消费后审计失败也必须保留 consumed=true 的错误语义。"""
+    try:
+        _atomic_write_json(outcome_path, outcome)
+    except Exception as exc:
+        raise SignalGapNativeArtifactRegistrationError(
+            "signal-gap Native audit write failed after token "
+            f"consumption; audit={outcome_path}; "
+            f"database_outcome={outcome['database_outcome']}; "
+            f"cause={type(exc).__name__}: {exc}",
+            failure_code=failure_code,
+            token_consumed=True,
+            audit_path=outcome_path,
+        ) from exc
+
+
+def _dispose_after_consumption(
+    engine: Any,
+    *,
+    outcome_path: Path,
+    outcome: dict[str, Any],
+) -> None:
+    if engine is None or not hasattr(engine, "dispose"):
+        return
+    try:
+        engine.dispose()
+    except Exception as exc:
+        raise SignalGapNativeArtifactRegistrationError(
+            "signal-gap Native engine disposal failed after token "
+            f"consumption; audit={outcome_path}; "
+            f"database_outcome={outcome['database_outcome']}; "
+            f"cause={type(exc).__name__}: {exc}",
+            failure_code=(
+                "DATABASE_SEALED_POSTPROCESS_FAILED"
+                if outcome["database_outcome"] == "SEALED"
+                else "DATABASE_FAILURE_POSTPROCESS_FAILED"
+            ),
+            token_consumed=True,
+            audit_path=outcome_path,
+        ) from exc
+
+
+def _persist_consumed_outcome_and_dispose(
+    outcome_path: Path,
+    outcome: dict[str, Any],
+    *,
+    engine: Any,
+    failure_code: str,
+) -> None:
+    """审计与 dispose 都尝试；双失败时保留更具体的审计异常。"""
+    primary_error: SignalGapNativeArtifactRegistrationError | None = None
+    try:
+        _write_consumed_outcome(
+            outcome_path,
+            outcome,
+            failure_code=failure_code,
+        )
+    except SignalGapNativeArtifactRegistrationError as exc:
+        primary_error = exc
+    try:
+        _dispose_after_consumption(
+            engine,
+            outcome_path=outcome_path,
+            outcome=outcome,
+        )
+    except SignalGapNativeArtifactRegistrationError as exc:
+        if primary_error is None:
+            primary_error = exc
+        elif hasattr(primary_error, "add_note"):
+            primary_error.add_note(
+                "engine disposal also failed: " + str(exc)
+            )
+    if primary_error is not None:
+        raise primary_error
