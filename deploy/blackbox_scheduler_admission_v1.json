@@ -77,6 +77,21 @@
       ]
     },
     {
+      "scheme_id": "cgb_causal_wk_1y",
+      "scheme_version": "05022a0eeec7",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_point",
+      "horizon": 1,
+      "target_tenor": "1Y",
+      "mode": "formal",
+      "capabilities": [
+        "legacy_automatic",
+        "recurring",
+        "direct_scheduled"
+      ]
+    },
+    {
       "scheme_id": "cgb_a4_fundseason_1y",
       "scheme_version": "04e7af163fb0",
       "runtime_type": "blackbox_v2",

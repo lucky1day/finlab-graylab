@@ -29,6 +29,7 @@ FORMAL_BLACKBOX_IDENTITIES = {
     "one_y_t5_liq_excess_a_w350_l7_v1": "86b458c568a5",
     "one_y_t5_liq_excess_b_w252_l7_v1": "ba00891cd179",
     "weekly_10y_lgbm_point_v1": "0666a6989d6b",
+    "cgb_causal_wk_1y": "05022a0eeec7",
 }
 GRAY_BLACKBOX_IDENTITIES = {
     "cgb_a4_fundseason_1y": "04e7af163fb0",
@@ -990,7 +991,7 @@ class SchedulerMainTests(unittest.TestCase):
 
         self.assertEqual(prediction_jobs, ["predict:t5_daily"])
 
-    def test_scheduler_keeps_five_formal_blackboxes_and_excludes_nine_gray(
+    def test_scheduler_keeps_active_formal_and_excludes_paused_onboarding(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -1033,9 +1034,19 @@ class SchedulerMainTests(unittest.TestCase):
             if scheduler.running:
                 scheduler.shutdown(wait=False)
 
+        paused_onboarding = {
+            "cgb_causal_wk_1y",
+        }
         self.assertEqual(
             prediction_ids,
-            set(FORMAL_BLACKBOX_IDENTITIES),
+            set(FORMAL_BLACKBOX_IDENTITIES) - paused_onboarding,
+        )
+        self.assertTrue(
+            all(
+                config.status == "paused"
+                for config in schemes
+                if config.scheme_id in paused_onboarding
+            )
         )
         self.assertTrue(
             set(GRAY_BLACKBOX_IDENTITIES).isdisjoint(prediction_ids)
@@ -2163,42 +2174,48 @@ class SchedulerMainTests(unittest.TestCase):
     ) -> None:
         from scheduler import main as scheduler_main
 
-        config = _cfg(
-            "weekly_10y_lgbm_point_v1",
-            runtime_type="blackbox_v2",
-            scheme_version="0666a6989d6b",
-            frequency="weekly",
+        identities = (
+            ("weekly_10y_lgbm_point_v1", "0666a6989d6b"),
+            ("cgb_causal_wk_1y", "05022a0eeec7"),
         )
-        expected = SchemeRunResult(
-            config.scheme_id,
-            "success",
-            1,
-            0.1,
-        )
-        with (
-            patch.object(
-                scheduler_main,
-                "discover_schemes",
-                return_value=[config],
-            ),
-            patch.object(
-                scheduler_main,
-                "_run_prediction_config",
-                return_value=expected,
-            ) as run_config,
-        ):
-            actual = scheduler_main.run_scheduled_prediction_job(
-                config.scheme_id,
-                run_date="2026-07-27",
+        for scheme_id, scheme_version in identities:
+            config = _cfg(
+                scheme_id,
+                runtime_type="blackbox_v2",
+                scheme_version=scheme_version,
+                frequency="weekly",
             )
+            expected = SchemeRunResult(
+                config.scheme_id,
+                "success",
+                1,
+                0.1,
+            )
+            with (
+                self.subTest(scheme_id=scheme_id),
+                patch.object(
+                    scheduler_main,
+                    "discover_schemes",
+                    return_value=[config],
+                ),
+                patch.object(
+                    scheduler_main,
+                    "_run_prediction_config",
+                    return_value=expected,
+                ) as run_config,
+            ):
+                actual = scheduler_main.run_scheduled_prediction_job(
+                    config.scheme_id,
+                    run_date="2026-07-27",
+                )
 
-        self.assertIs(actual, expected)
-        run_config.assert_called_once_with(
-            config,
-            "2026-07-27",
-            algo_env=scheduler_main.DEFAULT_ALGO_ENV,
-            force=False,
-        )
+                self.assertIs(actual, expected)
+                run_config.assert_called_once_with(
+                    config,
+                    "2026-07-27",
+                    algo_env=scheduler_main.DEFAULT_ALGO_ENV,
+                    force=False,
+                )
 
     def test_scheduled_wrapper_uses_one_discovery_and_same_admitted_config(
         self,
@@ -2440,6 +2457,10 @@ class SchedulerMainTests(unittest.TestCase):
             (
                 "weekly_10y_lgbm_point_v1",
                 "0666a6989d6b",
+            ),
+            (
+                "cgb_causal_wk_1y",
+                "05022a0eeec7",
             ),
         )
         for scheme_id, scheme_version in identities:
