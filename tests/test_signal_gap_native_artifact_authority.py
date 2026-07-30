@@ -67,6 +67,50 @@ def _create_generation(
     return engine, context
 
 
+def _create_normal_generation(
+    module,
+    output_root: str | Path,
+):
+    engine = _Engine()
+    patches, _ = _patched_source_readers(
+        module,
+        engine.connection,
+    )
+    snapshot_now = datetime(
+        2026,
+        7,
+        23,
+        23,
+        0,
+        tzinfo=timezone.utc,
+    )
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        context = module.create_native_generation(
+            engine,
+            business_date="2026-07-24",
+            feature_date="2026-07-24",
+            output_root=output_root,
+            source_contract_cutoff=datetime(
+                2026,
+                7,
+                23,
+                22,
+                30,
+                tzinfo=timezone.utc,
+            ),
+            capture_not_after=datetime(
+                2026,
+                7,
+                24,
+                0,
+                0,
+                tzinfo=timezone.utc,
+            ),
+            _snapshot_clock=lambda: snapshot_now,
+        )
+    return engine, context
+
+
 def _generation_row(context, **changes: object) -> InputGeneration:
     values: dict[str, object] = {
         "generation_id": context.generation_id,
@@ -196,6 +240,124 @@ def _manifest_row(context) -> InputGeneration:
 
 
 class SignalGapNativeArtifactAuthorityTests(unittest.TestCase):
+    def test_exact_normal_generation_is_preferred_over_later_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, normal = _create_normal_generation(
+                native_module,
+                Path(tmpdir) / "normal",
+            )
+            _, special = _create_generation(
+                native_module,
+                Path(tmpdir) / "special",
+                source_commit_token="b" * 64,
+            )
+            normal_row = _generation_row(normal)
+            special_row = _generation_row(special)
+
+            with patch(
+                "harness.signal_gap_plan.open_native_generation",
+                wraps=native_module.open_native_generation,
+            ) as opener:
+                action = _plan(
+                    _snapshot(
+                        (special_row, normal_row),
+                        target_count=1,
+                    )
+                )["actions"][0]
+
+            self.assertEqual(action["action"], "GRAY_LIVE_GAP")
+            self.assertEqual(
+                action["input_authority"]["database"]["generation_id"],
+                normal.generation_id,
+            )
+            opener.assert_called_once()
+            self.assertEqual(
+                opener.call_args.kwargs["expected_business_date"],
+                "2026-07-24",
+            )
+
+    def test_duplicate_exact_normal_generations_block_snapshot_fallback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, first = _create_normal_generation(
+                native_module,
+                Path(tmpdir) / "normal-first",
+            )
+            _, second = _create_normal_generation(
+                native_module,
+                Path(tmpdir) / "normal-second",
+            )
+            _, special = _create_generation(
+                native_module,
+                Path(tmpdir) / "special",
+                source_commit_token="c" * 64,
+            )
+
+            with patch(
+                "harness.signal_gap_plan.open_native_generation",
+            ) as opener:
+                action = _plan(
+                    _snapshot(
+                        (
+                            _generation_row(first),
+                            _generation_row(second),
+                            _generation_row(special),
+                        ),
+                        target_count=1,
+                    )
+                )["actions"][0]
+
+            opener.assert_not_called()
+            self.assertEqual(
+                (action["action"], action["reason"]),
+                (
+                    "BLOCKED_DATA_CONTRACT",
+                    "DUPLICATE_EXACT_NATIVE_GENERATION",
+                ),
+            )
+
+    def test_invalid_exact_normal_generation_blocks_snapshot_fallback(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            _, normal = _create_normal_generation(
+                native_module,
+                Path(tmpdir) / "normal",
+            )
+            _, special = _create_generation(
+                native_module,
+                Path(tmpdir) / "special",
+                source_commit_token="b" * 64,
+            )
+
+            with patch(
+                "harness.signal_gap_plan.open_native_generation",
+            ) as opener:
+                action = _plan(
+                    _snapshot(
+                        (
+                            replace(
+                                _generation_row(normal),
+                                state="BUILDING",
+                            ),
+                            _generation_row(special),
+                        ),
+                        target_count=1,
+                    )
+                )["actions"][0]
+
+            opener.assert_not_called()
+            self.assertEqual(
+                (action["action"], action["reason"]),
+                (
+                    "BLOCKED_DATA_CONTRACT",
+                    "GENERATION_CONTRACT_INVALID",
+                ),
+            )
+
     def test_real_artifact_is_opened_once_per_plan_and_not_retained(
         self,
     ) -> None:

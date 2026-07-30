@@ -75,11 +75,14 @@ from shared.daily_coordinator_mode import (
 )
 from shared.models import PredictionRecord
 from shared.native_input_generation import (
+    NATIVE_GENERATION_EXPORTER_VERSION,
     SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
     NativeGenerationContext,
     open_native_generation,
 )
 from shared.liwei_0616_cache_contract import (
+    CACHE_MUTATION_POLICY_ENV,
+    CACHE_MUTATION_POLICY_HIT_ONLY,
     CACHE_USE_QUALIFICATION_ENV,
     DIRECT_CACHE_RUNTIME_CONTEXT_ENV,
     canonical_json_bytes as canonical_cache_contract_json_bytes,
@@ -107,9 +110,11 @@ NATIVE_EXECUTION_MODE_SCHEDULED = "scheduled"
 NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT = (
     "signal_gap_current_snapshot"
 )
+NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED = "signal_gap_archived"
 _NATIVE_EXECUTION_MODES = frozenset(
     {
         NATIVE_EXECUTION_MODE_SCHEDULED,
+        NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
         NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
     }
 )
@@ -151,6 +156,7 @@ _ALGORITHM_ENVIRONMENT_ALLOWLIST = frozenset(
         "PYTHONDONTWRITEBYTECODE",
         "BOND_DAILY_COORDINATOR_MODE",
         "LIWEI_0616_PHASE_A_CACHE_ROOT",
+        CACHE_MUTATION_POLICY_ENV,
         "DAILY_0629_SOURCE_CACHE_DISABLE",
         "DAILY_0629_SOURCE_CACHE_DIR",
         "DAILY_0629_SOURCE_TIMEOUT_SEC",
@@ -259,11 +265,10 @@ def run_scheme_subprocess(
             "unsupported Native execution mode: "
             f"{native_execution_mode}"
         )
-    if (
-        native_execution_mode
-        == NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT
-        and native_generation is None
-    ):
+    is_signal_gap_execution = (
+        native_execution_mode != NATIVE_EXECUTION_MODE_SCHEDULED
+    )
+    if is_signal_gap_execution and native_generation is None:
         raise ValueError(
             "signal-gap Native execution requires native_generation"
         )
@@ -307,7 +312,12 @@ def run_scheme_subprocess(
         env.pop(name, None)
     env.pop(CACHE_USE_QUALIFICATION_ENV, None)
     env.pop(DIRECT_CACHE_RUNTIME_CONTEXT_ENV, None)
+    env.pop(CACHE_MUTATION_POLICY_ENV, None)
     env.pop(SCHEDULE_EXECUTION_TOKEN_ENV, None)
+    if is_signal_gap_execution:
+        env[CACHE_MUTATION_POLICY_ENV] = (
+            CACHE_MUTATION_POLICY_HIT_ONLY
+        )
     validated_execution_token = _validated_execution_token(
         execution_token
     )
@@ -368,6 +378,39 @@ def run_scheme_subprocess(
                     f"predict_date: {native_generation.business_date} != "
                     f"{canonical_predict_date}"
                 )
+        elif (
+            native_execution_mode
+            == NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED
+        ):
+            if (
+                native_generation.exporter_version
+                != NATIVE_GENERATION_EXPORTER_VERSION
+            ):
+                raise ValueError(
+                    "archived signal-gap Native generation "
+                    "exporter_version is invalid"
+                )
+            if (
+                native_generation.business_date
+                != canonical_predict_date
+            ):
+                raise ValueError(
+                    "archived signal-gap Native generation "
+                    "business_date does not match predict_date"
+                )
+            canonical_expected_feature_date = (
+                _canonical_signal_gap_feature_date(
+                    expected_native_feature_date
+                )
+            )
+            if (
+                native_generation.feature_date
+                != canonical_expected_feature_date
+            ):
+                raise ValueError(
+                    "signal-gap Native feature_date does not match "
+                    "expected feature_date"
+                )
         else:
             if (
                 native_generation.exporter_version
@@ -382,28 +425,11 @@ def run_scheme_subprocess(
                     "signal-gap Native capture date must be after "
                     "predict_date"
                 )
-            if expected_native_feature_date is None:
-                raise ValueError(
-                    "expected_native_feature_date is required for "
-                    "signal-gap Native execution"
-                )
-            try:
-                canonical_expected_feature_date = date.fromisoformat(
+            canonical_expected_feature_date = (
+                _canonical_signal_gap_feature_date(
                     expected_native_feature_date
-                ).isoformat()
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    "expected_native_feature_date must be a canonical "
-                    "YYYY-MM-DD date"
-                ) from exc
-            if (
-                canonical_expected_feature_date
-                != expected_native_feature_date
-            ):
-                raise ValueError(
-                    "expected_native_feature_date must be a canonical "
-                    "YYYY-MM-DD date"
                 )
+            )
             if (
                 native_generation.feature_date
                 != canonical_expected_feature_date
@@ -573,6 +599,27 @@ def run_scheme_subprocess(
     if not isinstance(payload, list):
         raise ValueError(f"scheme runner returned non-list payload for {scheme_id}")
     return [_record_from_payload(item) for item in payload]
+
+
+def _canonical_signal_gap_feature_date(value: str | None) -> str:
+    if value is None:
+        raise ValueError(
+            "expected_native_feature_date is required for "
+            "signal-gap Native execution"
+        )
+    try:
+        canonical = date.fromisoformat(value).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "expected_native_feature_date must be a canonical "
+            "YYYY-MM-DD date"
+        ) from exc
+    if canonical != value:
+        raise ValueError(
+            "expected_native_feature_date must be a canonical "
+            "YYYY-MM-DD date"
+        )
+    return canonical
 
 
 def _build_algorithm_environment() -> dict[str, str]:

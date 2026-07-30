@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pickle
 import tempfile
 import time
@@ -475,6 +476,280 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
             self.assertEqual(trained_batches, [["2026-07-01", "2026-07-02"]])
             self.assertEqual({audit["status"] for audit in audits}, {"cold_build", "hit"})
 
+    def test_signal_gap_hit_only_publisher_and_consumer_read_prewarmed_cache(
+        self,
+    ) -> None:
+        trained_batches: list[list[str]] = []
+        native = self._native_generation_binding()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            common = {
+                **self._common(root, self._trainer(trained_batches)),
+                "native_generation": native,
+            }
+            _cache, first = prepare_phase_a_caches(
+                **common,
+                test_ranges=(("2026-07-01", "2026-07-02"),),
+            )
+            pointer = Path(first["current_pointer"])
+            pointer_before = pointer.read_bytes()
+            trained_batches.clear()
+
+            audits = []
+            with patch.dict(
+                os.environ,
+                {
+                    "BOND_LIWEI_0616_CACHE_MUTATION_POLICY":
+                        "hit_only",
+                },
+                clear=False,
+            ):
+                for consumer in ("consumer-a", "consumer-b"):
+                    cache, audit = prepare_phase_a_caches(
+                        **{
+                            **common,
+                            "cache_consumer_id": consumer,
+                        },
+                        test_ranges=(
+                            ("2026-07-01", "2026-07-02"),
+                        ),
+                    )
+                    audits.append(audit)
+
+            self.assertEqual(
+                [audit["status"] for audit in audits],
+                ["hit", "hit"],
+            )
+            self.assertEqual(
+                [audit["build_mode"] for audit in audits],
+                ["hit", "hit"],
+            )
+            self.assertEqual(trained_batches, [])
+            self.assertEqual(pointer.read_bytes(), pointer_before)
+            self.assertEqual(
+                cache["STD"]["test_dates"],
+                ["2026-07-01", "2026-07-02"],
+            )
+
+    def test_signal_gap_hit_only_missing_current_never_trains_or_creates(
+        self,
+    ) -> None:
+        trained_batches: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "BOND_LIWEI_0616_CACHE_MUTATION_POLICY":
+                            "hit_only",
+                    },
+                    clear=False,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "SIGNAL_GAP_CACHE_PREWARM_REQUIRED",
+                ),
+            ):
+                prepare_phase_a_caches(
+                    **{
+                        **self._common(
+                            root,
+                            self._trainer(trained_batches),
+                        ),
+                        "native_generation":
+                            self._native_generation_binding(),
+                    },
+                    test_ranges=(("2026-07-01", "2026-07-02"),),
+                )
+
+            self.assertEqual(trained_batches, [])
+            self.assertFalse(
+                (
+                    root
+                    / self.spec.cache_family
+                    / self.spec.tenor.lower()
+                ).exists()
+            )
+
+    def test_signal_gap_hit_only_requires_native_authority_without_training(
+        self,
+    ) -> None:
+        trained_batches: list[list[str]] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "BOND_LIWEI_0616_CACHE_MUTATION_POLICY":
+                            "hit_only",
+                    },
+                    clear=False,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "SIGNAL_GAP_CACHE_PREWARM_REQUIRED",
+                ),
+            ):
+                prepare_phase_a_caches(
+                    **self._common(
+                        Path(tmp),
+                        self._trainer(trained_batches),
+                    ),
+                    test_ranges=(("2026-07-01", "2026-07-02"),),
+                )
+        self.assertEqual(trained_batches, [])
+
+    def test_signal_gap_hit_only_spec_drift_uses_prewarm_error(
+        self,
+    ) -> None:
+        trained_batches: list[list[str]] = []
+        drifted_spec = PhaseACacheSpec(
+            cache_family="liwei_0616_10y_v61",
+            tenor="10Y",
+            publisher_consumer_id="wrong-publisher",
+            baselines=("STD",),
+            baseline_configs={
+                "STD": {"close": "TB5YWI0C", "window": 200}
+            },
+            source_ic_screen_start="2024-01-01",
+            horizon=5,
+            purge_gap=5,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "BOND_LIWEI_0616_CACHE_MUTATION_POLICY":
+                            "hit_only",
+                    },
+                    clear=False,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "SIGNAL_GAP_CACHE_PREWARM_REQUIRED",
+                ),
+            ):
+                prepare_phase_a_caches(
+                    **{
+                        **self._common(
+                            Path(tmp),
+                            self._trainer(trained_batches),
+                        ),
+                        "spec": drifted_spec,
+                        "native_generation":
+                            self._native_generation_binding(),
+                    },
+                    test_ranges=(("2026-07-01", "2026-07-02"),),
+                )
+        self.assertEqual(trained_batches, [])
+
+    def test_signal_gap_hit_only_input_or_coverage_drift_never_trains(
+        self,
+    ) -> None:
+        native = self._native_generation_binding()
+        for label, overrides, test_range in (
+            (
+                "input",
+                {
+                    "daily_df": self.daily_df.assign(
+                        TB5YWI0C=[9.9, 1.61, 1.62]
+                    )
+                },
+                ("2026-07-01", "2026-07-02"),
+            ),
+            (
+                "coverage",
+                {},
+                ("2026-07-01", "2026-07-03"),
+            ),
+            (
+                "native",
+                {
+                    "native_generation": {
+                        **native,
+                        "generation_id": "native-other",
+                        "manifest_sha256": "b" * 64,
+                    }
+                },
+                ("2026-07-01", "2026-07-02"),
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                trained_batches: list[list[str]] = []
+                root = Path(tmp)
+                common = {
+                    **self._common(
+                        root,
+                        self._trainer(trained_batches),
+                    ),
+                    "native_generation": native,
+                }
+                _cache, first = prepare_phase_a_caches(
+                    **common,
+                    test_ranges=(("2026-07-01", "2026-07-02"),),
+                )
+                pointer = Path(first["current_pointer"])
+                pointer_before = pointer.read_bytes()
+                trained_batches.clear()
+                with (
+                    patch.dict(
+                        os.environ,
+                        {
+                            "BOND_LIWEI_0616_CACHE_MUTATION_POLICY":
+                                "hit_only",
+                        },
+                        clear=False,
+                    ),
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "SIGNAL_GAP_CACHE_PREWARM_REQUIRED",
+                    ),
+                ):
+                    prepare_phase_a_caches(
+                        **{**common, **overrides},
+                        test_ranges=(test_range,),
+                    )
+                self.assertEqual(trained_batches, [])
+                self.assertEqual(pointer.read_bytes(), pointer_before)
+
+    def test_signal_gap_hit_only_special_snapshot_cannot_cold_build(
+        self,
+    ) -> None:
+        trained_batches: list[list[str]] = []
+        special = {
+            **self._native_generation_binding(),
+            "exporter_version":
+                "native-signal-gap-current-snapshot-v1",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "BOND_LIWEI_0616_CACHE_MUTATION_POLICY":
+                            "hit_only",
+                    },
+                    clear=False,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "SIGNAL_GAP_CACHE_PREWARM_REQUIRED",
+                ),
+            ):
+                prepare_phase_a_caches(
+                    **{
+                        **self._common(
+                            Path(tmp),
+                            self._trainer(trained_batches),
+                        ),
+                        "native_generation": special,
+                    },
+                    test_ranges=(("2026-07-01", "2026-07-02"),),
+                )
+        self.assertEqual(trained_batches, [])
+
     def test_7y_incompatible_specs_use_distinct_cache_families(self) -> None:
         from schemes.liwei_0616_7y01_cons_say_k3_div_k10 import inference as y01_inference
         from schemes.liwei_0616_7y01_cons_say_k3_div_k10.core import v31_common as y01_core
@@ -565,6 +840,18 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
             "train_missing": trainer,
             "cache_consumer_id": "consumer-a",
             "cache_root": root,
+        }
+
+    @staticmethod
+    def _native_generation_binding() -> dict[str, object]:
+        return {
+            "generation_id": "native-prewarmed",
+            "manifest_sha256": "a" * 64,
+            "dataset_content_id": "d" * 64,
+            "business_date": "2026-07-03",
+            "feature_date": "2026-07-02",
+            "schema_version": "native-generation-v1",
+            "exporter_version": "native-generation-exporter-v1",
         }
 
     @staticmethod

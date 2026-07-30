@@ -72,6 +72,7 @@ from shared.liwei_0616_cache_contract import (
 )
 from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
 from shared.native_input_generation import (
+    NATIVE_GENERATION_EXPORTER_VERSION,
     SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
 )
 
@@ -2295,6 +2296,87 @@ def register_sealed_gray_gap_native_generation(
         raise ValueError(
             "gray-gap Native capture date must be after historical predict_date"
         )
+    return _register_sealed_standalone_native_generation(
+        engine,
+        params=params,
+        lock_timeout_sec=lock_timeout_sec,
+        authority_label="gray-gap",
+    )
+
+
+def register_sealed_archived_native_generation(
+    engine: Engine,
+    *,
+    generation_id: str,
+    generation_type: str,
+    business_date: str,
+    feature_date: str,
+    readiness_basis: str,
+    source_commit_token: str,
+    dataset_content_id: str,
+    schema_version: str,
+    exporter_version: str,
+    manifest_uri: str,
+    manifest_sha256: str,
+    historical_predict_date: str,
+    lock_timeout_sec: float = 5.0,
+) -> str:
+    """原子登记当日已封存 Native generation，不创建 ledger 对象。"""
+    params = _normalize_input_generation_registration(
+        generation_id=generation_id,
+        generation_type=generation_type,
+        business_date=business_date,
+        feature_date=feature_date,
+        readiness_basis=readiness_basis,
+        source_commit_token=source_commit_token,
+        dataset_content_id=dataset_content_id,
+        schema_version=schema_version,
+        exporter_version=exporter_version,
+        manifest_uri=manifest_uri,
+        manifest_sha256=manifest_sha256,
+    )
+    normalized_predict_date = date.fromisoformat(
+        historical_predict_date
+    ).isoformat()
+    if params["generation_type"] != "native_source":
+        raise ValueError(
+            "archived standalone registration only accepts native_source"
+        )
+    if params["readiness_basis"] != "CLOCK_CONTRACT":
+        raise ValueError(
+            "archived Native readiness_basis must be CLOCK_CONTRACT"
+        )
+    if (
+        params["exporter_version"]
+        != NATIVE_GENERATION_EXPORTER_VERSION
+    ):
+        raise ValueError(
+            "archived Native exporter_version is invalid"
+        )
+    if str(params["feature_date"]) >= normalized_predict_date:
+        raise ValueError(
+            "archived Native feature_date must precede historical predict_date"
+        )
+    if str(params["business_date"]) != normalized_predict_date:
+        raise ValueError(
+            "archived Native business_date must equal historical predict_date"
+        )
+    return _register_sealed_standalone_native_generation(
+        engine,
+        params=params,
+        lock_timeout_sec=lock_timeout_sec,
+        authority_label="archived",
+    )
+
+
+def _register_sealed_standalone_native_generation(
+    engine: Engine,
+    *,
+    params: Mapping[str, object],
+    lock_timeout_sec: float,
+    authority_label: str,
+) -> str:
+    """登记并原子封存一个不绑定 occurrence 的 Native authority。"""
     with _gray_gap_native_registration_lock(
         engine,
         feature_date=str(params["feature_date"]),
@@ -2337,7 +2419,8 @@ def register_sealed_gray_gap_native_generation(
             )
             if conflicts:
                 raise RuntimeError(
-                    "gray-gap feature must have one unique SEALED authority: "
+                    f"{authority_label} feature must have one unique "
+                    "SEALED authority: "
                     f"feature_date={params['feature_date']} "
                     f"existing={conflicts}"
                 )
@@ -2350,12 +2433,13 @@ def register_sealed_gray_gap_native_generation(
             if state == GENERATION_SEALED:
                 if row.get("sealed_at") is None:
                     raise RuntimeError(
-                        "SEALED gray-gap Native authority has no sealed_at"
+                        f"SEALED {authority_label} Native authority has no "
+                        "sealed_at"
                     )
                 return str(params["generation_id"])
             if state != GENERATION_BUILDING:
                 raise RuntimeError(
-                    "gray-gap Native authority cannot be sealed from "
+                    f"{authority_label} Native authority cannot be sealed from "
                     f"state={state}"
                 )
             sealed_at, _trusted_now = _ledger_event_time_after_locks(
@@ -2385,7 +2469,7 @@ def register_sealed_gray_gap_native_generation(
             _require_rowcount(
                 result,
                 1,
-                "gray-gap Native atomic seal",
+                f"{authority_label} Native atomic seal",
             )
     return str(params["generation_id"])
 
@@ -9440,6 +9524,10 @@ def complete_gray_gap_run(
     )
 
     with engine.begin() as conn:
+        _validate_gray_gap_archived_generation_conn(
+            conn,
+            normalized_authority,
+        )
         # Daily ledger 的锁序固定为 occurrence→ordered siblings→targets；
         # gray-gap 必须先复用同一 guard，再锁普通 run，不能让 insert-only
         # 绕过 migration 018 已冻结的 canonical prediction key。
@@ -9544,6 +9632,17 @@ _GRAY_GAP_NATIVE_AUTHORITY_FIELDS = frozenset(
         "vintage_disclaimer",
     }
 )
+_GRAY_GAP_ARCHIVED_NATIVE_AUTHORITY_FIELDS = frozenset(
+    {
+        "authority_type",
+        "generation_id",
+        "manifest_sha256",
+        "business_date",
+        "feature_date",
+        "cutoff_date",
+        "replay_mode",
+    }
+)
 _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
     {
         "authority_type",
@@ -9558,10 +9657,66 @@ _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS = frozenset(
 _GRAY_GAP_VINTAGE_DISCLAIMER = (
     "current_snapshot_as_of_not_historical_vintage"
 )
+_GRAY_GAP_ARCHIVED_REPLAY_MODE = (
+    "historical_sealed_generation_replay"
+)
 _GRAY_GAP_FIXED_ATOMIC_TARGETS = {
     "t1_daily": frozenset({"5Y", "10Y"}),
     "t5_daily": frozenset({"3Y", "5Y", "7Y", "10Y"}),
 }
+
+
+def _validate_gray_gap_archived_generation_conn(
+    conn: Connection,
+    source_authority: Mapping[str, object],
+) -> None:
+    """事务内锁定并核对 archived Native provenance。"""
+    if (
+        source_authority.get("authority_type")
+        != "native_archived_generation"
+    ):
+        return
+    generation_id = str(source_authority["generation_id"])
+    row = _read_input_generation_conn(
+        conn,
+        generation_id,
+        for_update=True,
+    )
+    if row is None:
+        raise RuntimeError(
+            "archived Native generation does not exist: "
+            f"{generation_id}"
+        )
+    expected = {
+        "generation_id": generation_id,
+        "generation_type": "native_source",
+        "business_date": str(source_authority["business_date"]),
+        "feature_date": str(source_authority["feature_date"]),
+        "exporter_version": NATIVE_GENERATION_EXPORTER_VERSION,
+        "manifest_sha256": str(source_authority["manifest_sha256"]),
+        "state": GENERATION_SEALED,
+    }
+    mismatches = {
+        field: (expected_value, row.get(field))
+        for field, expected_value in expected.items()
+        if str(row.get(field)) != expected_value
+    }
+    if (
+        row.get("sealed_at") is None
+        or row.get("invalidated_at") is not None
+    ):
+        mismatches["sealed_fence"] = (
+            "sealed and not invalidated",
+            {
+                "sealed_at": row.get("sealed_at"),
+                "invalidated_at": row.get("invalidated_at"),
+            },
+        )
+    if mismatches:
+        raise RuntimeError(
+            "archived Native generation authority drift: "
+            f"{mismatches}"
+        )
 
 
 def _require_lower_sha256(value: object, field: str) -> str:
@@ -9779,15 +9934,20 @@ def _normalize_gray_gap_source_authority(
     authority_type = source_authority.get("authority_type")
     if authority_type == "native_current_snapshot_artifact":
         expected_fields = _GRAY_GAP_NATIVE_AUTHORITY_FIELDS
+    elif authority_type == "native_archived_generation":
+        expected_fields = _GRAY_GAP_ARCHIVED_NATIVE_AUTHORITY_FIELDS
     elif authority_type == "databridge_current_generation":
         expected_fields = _GRAY_GAP_DATABRIDGE_AUTHORITY_FIELDS
     else:
         raise ValueError("source_authority authority_type is invalid")
-    expected_authority_type = {
-        "native_adapter": "native_current_snapshot_artifact",
-        "blackbox_v2": "databridge_current_generation",
-    }.get(runtime_type)
-    if authority_type != expected_authority_type:
+    expected_authority_types = {
+        "native_adapter": {
+            "native_archived_generation",
+            "native_current_snapshot_artifact",
+        },
+        "blackbox_v2": {"databridge_current_generation"},
+    }.get(runtime_type, set())
+    if authority_type not in expected_authority_types:
         raise ValueError(
             "source_authority authority_type does not match cfg "
             f"runtime_type={runtime_type}"
@@ -9810,12 +9970,14 @@ def _normalize_gray_gap_source_authority(
         raise ValueError(
             "source_authority cutoff_date must equal execution feature_date"
         )
-    if (
-        source_authority["vintage_disclaimer"]
-        != _GRAY_GAP_VINTAGE_DISCLAIMER
-    ):
-        raise ValueError("source_authority vintage_disclaimer is invalid")
     if authority_type == "native_current_snapshot_artifact":
+        if (
+            source_authority["vintage_disclaimer"]
+            != _GRAY_GAP_VINTAGE_DISCLAIMER
+        ):
+            raise ValueError(
+                "source_authority vintage_disclaimer is invalid"
+            )
         normalized["artifact_id"] = _require_nonempty(
             source_authority["artifact_id"],
             "source_authority.artifact_id",
@@ -9829,7 +9991,44 @@ def _normalize_gray_gap_source_authority(
                 "source_authority feature_date must equal execution "
                 "feature_date"
             )
+    elif authority_type == "native_archived_generation":
+        normalized["generation_id"] = _require_nonempty(
+            source_authority["generation_id"],
+            "source_authority.generation_id",
+        )
+        authority_business_date = _require_iso_date(
+            source_authority["business_date"],
+            "source_authority.business_date",
+        )
+        authority_feature_date = _require_iso_date(
+            source_authority["feature_date"],
+            "source_authority.feature_date",
+        )
+        if authority_business_date != predict_date:
+            raise ValueError(
+                "source_authority business_date must equal execution "
+                "predict_date"
+            )
+        if authority_feature_date != feature_date:
+            raise ValueError(
+                "source_authority feature_date must equal execution "
+                "feature_date"
+            )
+        if (
+            source_authority["replay_mode"]
+            != _GRAY_GAP_ARCHIVED_REPLAY_MODE
+        ):
+            raise ValueError(
+                "source_authority replay_mode is invalid"
+            )
     else:
+        if (
+            source_authority["vintage_disclaimer"]
+            != _GRAY_GAP_VINTAGE_DISCLAIMER
+        ):
+            raise ValueError(
+                "source_authority vintage_disclaimer is invalid"
+            )
         normalized["generation_id"] = _require_nonempty(
             source_authority["generation_id"],
             "source_authority.generation_id",
@@ -9961,7 +10160,12 @@ def _enrich_gray_gap_records(
         "backfill_mode": "signal_gap_fill",
         "backfilled_at": backfilled_at,
         "source_authority": dict(source_authority),
-        "replay_semantics": _GRAY_GAP_VINTAGE_DISCLAIMER,
+        "replay_semantics": (
+            source_authority["replay_mode"]
+            if source_authority["authority_type"]
+            == "native_archived_generation"
+            else _GRAY_GAP_VINTAGE_DISCLAIMER
+        ),
         "execution_group_identity": execution_group_identity,
     }
     if source_authority["authority_type"] == (
@@ -9975,6 +10179,23 @@ def _enrich_gray_gap_records(
                 "source_artifact_feature_date":
                     source_authority["feature_date"],
                 "source_cutoff_date": source_authority["cutoff_date"],
+            }
+        )
+    elif source_authority["authority_type"] == (
+        "native_archived_generation"
+    ):
+        common_extra.update(
+            {
+                "source_generation_id":
+                    source_authority["generation_id"],
+                "source_generation_manifest_sha256":
+                    source_authority["manifest_sha256"],
+                "source_generation_business_date":
+                    source_authority["business_date"],
+                "source_generation_feature_date":
+                    source_authority["feature_date"],
+                "source_cutoff_date":
+                    source_authority["cutoff_date"],
             }
         )
     else:

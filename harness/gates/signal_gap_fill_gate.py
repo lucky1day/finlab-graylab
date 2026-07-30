@@ -33,6 +33,7 @@ from scheduler.daily_coordinator import (
 from scheduler.discovery import load_scheme_config
 from scheduler.executor import (
     BLACKBOX_SNAPSHOT_MODE_HISTORICAL_AS_OF,
+    NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED,
     NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT,
     run_configured_scheme,
 )
@@ -44,6 +45,7 @@ from shared.data_bridge.refresh import (
 from shared.input_artifacts import open_native_generation
 from shared.models import PredictionRecord
 from shared.native_input_generation import (
+    NATIVE_GENERATION_EXPORTER_VERSION,
     SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
 )
 
@@ -842,14 +844,26 @@ def _run_algorithm(
             artifact = _native_artifact(group.input_authority)
             if artifact["feature_date"] != group.actions[0]["feature_date"]:
                 raise ValueError("Native artifact feature cutoff drift")
-            if artifact["business_date"] <= group.predict_date:
-                raise ValueError(
-                    "Native artifact capture date must be after predict_date"
+            exporter_version = artifact["exporter_version"]
+            if exporter_version == NATIVE_GENERATION_EXPORTER_VERSION:
+                if artifact["business_date"] != group.predict_date:
+                    raise ValueError(
+                        "archived Native artifact business date must "
+                        "equal predict_date"
+                    )
+                native_execution_mode = (
+                    NATIVE_EXECUTION_MODE_SIGNAL_GAP_ARCHIVED
                 )
-            if (
-                artifact["exporter_version"]
-                != SIGNAL_GAP_NATIVE_EXPORTER_VERSION
-            ):
+            elif exporter_version == SIGNAL_GAP_NATIVE_EXPORTER_VERSION:
+                if artifact["business_date"] <= group.predict_date:
+                    raise ValueError(
+                        "Native artifact capture date must be after "
+                        "predict_date"
+                    )
+                native_execution_mode = (
+                    NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT
+                )
+            else:
                 raise ValueError(
                     "Native artifact purpose/exporter drift"
                 )
@@ -861,9 +875,7 @@ def _run_algorithm(
                 expected_feature_date=group.actions[0]["feature_date"],
             )
             kwargs["native_generation"] = context
-            kwargs["native_execution_mode"] = (
-                NATIVE_EXECUTION_MODE_SIGNAL_GAP_CURRENT_SNAPSHOT
-            )
+            kwargs["native_execution_mode"] = native_execution_mode
             kwargs["expected_native_feature_date"] = (
                 group.actions[0]["feature_date"]
             )
@@ -1014,6 +1026,20 @@ def _repository_source_authority(
     feature_date = str(action["feature_date"])
     if action["runtime_type"] == "native_adapter":
         artifact = _native_artifact(authority)
+        if (
+            artifact["exporter_version"]
+            == NATIVE_GENERATION_EXPORTER_VERSION
+        ):
+            return {
+                "authority_type": "native_archived_generation",
+                "generation_id": artifact["generation_id"],
+                "manifest_sha256": artifact["manifest_sha256"],
+                "business_date": artifact["business_date"],
+                "feature_date": feature_date,
+                "cutoff_date": feature_date,
+                "replay_mode":
+                    "historical_sealed_generation_replay",
+            }
         return {
             "authority_type": "native_current_snapshot_artifact",
             "artifact_id": artifact["generation_id"],
