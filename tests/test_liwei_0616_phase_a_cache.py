@@ -600,6 +600,51 @@ class Liwei0616PhaseACacheTests(unittest.TestCase):
                 )
         self.assertEqual(trained_batches, [])
 
+    def test_signal_gap_hit_only_spec_drift_uses_prewarm_error(
+        self,
+    ) -> None:
+        trained_batches: list[list[str]] = []
+        drifted_spec = PhaseACacheSpec(
+            cache_family="liwei_0616_10y_v61",
+            tenor="10Y",
+            publisher_consumer_id="wrong-publisher",
+            baselines=("STD",),
+            baseline_configs={
+                "STD": {"close": "TB5YWI0C", "window": 200}
+            },
+            source_ic_screen_start="2024-01-01",
+            horizon=5,
+            purge_gap=5,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "BOND_LIWEI_0616_CACHE_MUTATION_POLICY":
+                            "hit_only",
+                    },
+                    clear=False,
+                ),
+                self.assertRaisesRegex(
+                    RuntimeError,
+                    "SIGNAL_GAP_CACHE_PREWARM_REQUIRED",
+                ),
+            ):
+                prepare_phase_a_caches(
+                    **{
+                        **self._common(
+                            Path(tmp),
+                            self._trainer(trained_batches),
+                        ),
+                        "spec": drifted_spec,
+                        "native_generation":
+                            self._native_generation_binding(),
+                    },
+                    test_ranges=(("2026-07-01", "2026-07-02"),),
+                )
+        self.assertEqual(trained_batches, [])
+
     def test_signal_gap_hit_only_input_or_coverage_drift_never_trains(
         self,
     ) -> None:

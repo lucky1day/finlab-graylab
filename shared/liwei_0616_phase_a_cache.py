@@ -298,52 +298,62 @@ def prepare_phase_a_caches(
     generation 变化都 fail-closed，full rebuild 仅允许无 direct context 的
     显式 operator bootstrap。``compare_cold`` 只用于非生产诊断。
     """
-    _validate_cache_publisher_identity(spec)
-    _validate_daily_dependency_proof(spec)
-    if (
-        not isinstance(cache_consumer_id, str)
-        or not cache_consumer_id.strip()
-    ):
-        raise ValueError("cache_consumer_id must be a non-empty string")
-    cache_consumer_id = cache_consumer_id.strip()
-    if compare_cold is not None and compare_cold is train_missing:
-        raise ValueError(
-            "compare_cold must be independent from train_missing"
-        )
-    if qualify_compare_gate is not None and compare_cold is None:
-        raise ValueError(
-            "qualify_compare_gate requires an independent "
-            "compare_cold callback"
-        )
-    if compare_full_output is not None and compare_cold is None:
-        raise ValueError(
-            "compare_full_output requires an independent "
-            "compare_cold callback"
-        )
-    if (
-        qualify_compare_gate is not None
-        and compare_full_output is not None
-    ):
-        raise ValueError(
-            "choose either offline qualify_compare_gate evidence "
-            "or runtime compare_full_output"
-        )
     mutation_policy = _cache_mutation_policy()
-    trusted_qualification = _resolve_cache_use_qualification(
-        cache_use_qualification
-    )
-    direct_runtime_context = (
-        _resolve_direct_cache_runtime_context()
-    )
-    validated_direct_runtime_context: dict[str, object] | None = None
-    if (
-        trusted_qualification is not None
-        and direct_runtime_context is not None
-    ):
-        raise RuntimeError(
-            "legacy cache qualification and direct cache runtime "
-            "context are mutually exclusive"
+    try:
+        _validate_cache_publisher_identity(spec)
+        _validate_daily_dependency_proof(spec)
+        if (
+            not isinstance(cache_consumer_id, str)
+            or not cache_consumer_id.strip()
+        ):
+            raise ValueError(
+                "cache_consumer_id must be a non-empty string"
+            )
+        cache_consumer_id = cache_consumer_id.strip()
+        if compare_cold is not None and compare_cold is train_missing:
+            raise ValueError(
+                "compare_cold must be independent from train_missing"
+            )
+        if qualify_compare_gate is not None and compare_cold is None:
+            raise ValueError(
+                "qualify_compare_gate requires an independent "
+                "compare_cold callback"
+            )
+        if compare_full_output is not None and compare_cold is None:
+            raise ValueError(
+                "compare_full_output requires an independent "
+                "compare_cold callback"
+            )
+        if (
+            qualify_compare_gate is not None
+            and compare_full_output is not None
+        ):
+            raise ValueError(
+                "choose either offline qualify_compare_gate evidence "
+                "or runtime compare_full_output"
+            )
+        trusted_qualification = _resolve_cache_use_qualification(
+            cache_use_qualification
         )
+        direct_runtime_context = (
+            _resolve_direct_cache_runtime_context()
+        )
+        if (
+            trusted_qualification is not None
+            and direct_runtime_context is not None
+        ):
+            raise RuntimeError(
+                "legacy cache qualification and direct cache runtime "
+                "context are mutually exclusive"
+            )
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        if mutation_policy == CACHE_MUTATION_POLICY_HIT_ONLY:
+            raise RuntimeError(
+                "SIGNAL_GAP_CACHE_PREWARM_REQUIRED: "
+                "Phase A cache request is invalid"
+            ) from exc
+        raise
+    validated_direct_runtime_context: dict[str, object] | None = None
     try:
         native_generation_binding = (
             _resolve_native_generation_binding(
