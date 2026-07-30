@@ -72,6 +72,7 @@ from shared.liwei_0616_cache_contract import (
 )
 from shared.models import ActualRecord, MonthlyActualRecord, PredictionRecord, WeeklyActualRecord
 from shared.native_input_generation import (
+    NATIVE_GENERATION_EXPORTER_VERSION,
     SIGNAL_GAP_NATIVE_EXPORTER_VERSION,
 )
 
@@ -2295,6 +2296,87 @@ def register_sealed_gray_gap_native_generation(
         raise ValueError(
             "gray-gap Native capture date must be after historical predict_date"
         )
+    return _register_sealed_standalone_native_generation(
+        engine,
+        params=params,
+        lock_timeout_sec=lock_timeout_sec,
+        authority_label="gray-gap",
+    )
+
+
+def register_sealed_archived_native_generation(
+    engine: Engine,
+    *,
+    generation_id: str,
+    generation_type: str,
+    business_date: str,
+    feature_date: str,
+    readiness_basis: str,
+    source_commit_token: str,
+    dataset_content_id: str,
+    schema_version: str,
+    exporter_version: str,
+    manifest_uri: str,
+    manifest_sha256: str,
+    historical_predict_date: str,
+    lock_timeout_sec: float = 5.0,
+) -> str:
+    """原子登记当日已封存 Native generation，不创建 ledger 对象。"""
+    params = _normalize_input_generation_registration(
+        generation_id=generation_id,
+        generation_type=generation_type,
+        business_date=business_date,
+        feature_date=feature_date,
+        readiness_basis=readiness_basis,
+        source_commit_token=source_commit_token,
+        dataset_content_id=dataset_content_id,
+        schema_version=schema_version,
+        exporter_version=exporter_version,
+        manifest_uri=manifest_uri,
+        manifest_sha256=manifest_sha256,
+    )
+    normalized_predict_date = date.fromisoformat(
+        historical_predict_date
+    ).isoformat()
+    if params["generation_type"] != "native_source":
+        raise ValueError(
+            "archived standalone registration only accepts native_source"
+        )
+    if params["readiness_basis"] != "CLOCK_CONTRACT":
+        raise ValueError(
+            "archived Native readiness_basis must be CLOCK_CONTRACT"
+        )
+    if (
+        params["exporter_version"]
+        != NATIVE_GENERATION_EXPORTER_VERSION
+    ):
+        raise ValueError(
+            "archived Native exporter_version is invalid"
+        )
+    if str(params["feature_date"]) >= normalized_predict_date:
+        raise ValueError(
+            "archived Native feature_date must precede historical predict_date"
+        )
+    if str(params["business_date"]) != normalized_predict_date:
+        raise ValueError(
+            "archived Native business_date must equal historical predict_date"
+        )
+    return _register_sealed_standalone_native_generation(
+        engine,
+        params=params,
+        lock_timeout_sec=lock_timeout_sec,
+        authority_label="archived",
+    )
+
+
+def _register_sealed_standalone_native_generation(
+    engine: Engine,
+    *,
+    params: Mapping[str, object],
+    lock_timeout_sec: float,
+    authority_label: str,
+) -> str:
+    """登记并原子封存一个不绑定 occurrence 的 Native authority。"""
     with _gray_gap_native_registration_lock(
         engine,
         feature_date=str(params["feature_date"]),
@@ -2337,7 +2419,8 @@ def register_sealed_gray_gap_native_generation(
             )
             if conflicts:
                 raise RuntimeError(
-                    "gray-gap feature must have one unique SEALED authority: "
+                    f"{authority_label} feature must have one unique "
+                    "SEALED authority: "
                     f"feature_date={params['feature_date']} "
                     f"existing={conflicts}"
                 )
@@ -2350,12 +2433,13 @@ def register_sealed_gray_gap_native_generation(
             if state == GENERATION_SEALED:
                 if row.get("sealed_at") is None:
                     raise RuntimeError(
-                        "SEALED gray-gap Native authority has no sealed_at"
+                        f"SEALED {authority_label} Native authority has no "
+                        "sealed_at"
                     )
                 return str(params["generation_id"])
             if state != GENERATION_BUILDING:
                 raise RuntimeError(
-                    "gray-gap Native authority cannot be sealed from "
+                    f"{authority_label} Native authority cannot be sealed from "
                     f"state={state}"
                 )
             sealed_at, _trusted_now = _ledger_event_time_after_locks(
@@ -2385,7 +2469,7 @@ def register_sealed_gray_gap_native_generation(
             _require_rowcount(
                 result,
                 1,
-                "gray-gap Native atomic seal",
+                f"{authority_label} Native atomic seal",
             )
     return str(params["generation_id"])
 
