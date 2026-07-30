@@ -89,6 +89,164 @@
     ],
     "bundled_calendar_used_by_platform": false
   },
+  "production_reconciliation": {
+    "reconciled_at": "2026-07-30",
+    "status": "PARTIAL_SNAPSHOT_ALIGNMENT",
+    "comparison_key": [
+      "feature_date",
+      "target_date"
+    ],
+    "input_sha256": {
+      "upstream_0725_sample": {
+        "daily": "0ffbf694d15bcdb585cfb46a51835bca2e50b5b13292430cf20ec8890402cec3",
+        "weekly": "b38e731c3d295a46d54b8228bdefc68d577b1bd7639d3e047bb0f2d36689c324",
+        "monthly": "9d8d754d7dcde97e531d9d4b2f4dafc4b0ead7b2aba0bb49d57334e025c98592",
+        "calendar": "8db357fa38ed7195c63896efdfc222e8cafea8458c074e1ff40b62097ba1848f"
+      },
+      "platform_0730_generation": {
+        "daily": "e9969d55626aa31ef6c2e069dce04c586044612f3ab33eb2c98169ea03e94bdf",
+        "weekly": "396e44008f45d0aed286d60ad90b1534e13ce3ea9759130e7e0145d17d727d8c",
+        "monthly": "9d028233894e764aeb871bc34229a3159033c7c90e83272c605547f3c3d61aa1",
+        "calendar": "82b32635a1b94d414fdbdcb6391210729aadd7dbb86b9c44bc692ab77bd6da91"
+      }
+    },
+    "history": {
+      "upstream_report_feature_month_period": {
+        "samples": 76,
+        "correct": 40,
+        "actual_zero": 3,
+        "accuracy_pct": 52.63
+      },
+      "rows_reassigned_to_gray_by_target_date": [
+        {
+          "feature_date": "2026-05-29",
+          "target_date": "2026-06-05"
+        },
+        {
+          "feature_date": "2026-06-05",
+          "target_date": "2026-06-12"
+        },
+        {
+          "feature_date": "2026-06-12",
+          "target_date": "2026-06-18"
+        },
+        {
+          "feature_date": "2026-06-18",
+          "target_date": "2026-06-26"
+        }
+      ],
+      "comparable_rows": 72,
+      "date_matches": 72,
+      "actual_matches": 72,
+      "prediction_matches": 69,
+      "upstream_on_platform_boundary": {
+        "samples": 72,
+        "correct": 36,
+        "actual_zero": 3,
+        "accuracy_pct": 50.0
+      },
+      "platform": {
+        "run_id": 194,
+        "samples": 72,
+        "correct": 37,
+        "actual_zero": 3,
+        "accuracy_pct": 51.4
+      },
+      "prediction_differences": [
+        {
+          "week_id": "202512",
+          "feature_date": "2025-03-21",
+          "target_date": "2025-03-28",
+          "upstream_prediction": -1,
+          "platform_prediction": 1,
+          "actual_direction": -1
+        },
+        {
+          "week_id": "202514",
+          "feature_date": "2025-04-03",
+          "target_date": "2025-04-11",
+          "upstream_prediction": 1,
+          "platform_prediction": -1,
+          "actual_direction": -1
+        },
+        {
+          "week_id": "202527",
+          "feature_date": "2025-07-04",
+          "target_date": "2025-07-11",
+          "upstream_prediction": -1,
+          "platform_prediction": 1,
+          "actual_direction": 1
+        }
+      ],
+      "target_month_differences": [
+        {
+          "month": "2025-03",
+          "upstream_correct": 2,
+          "platform_correct": 1,
+          "samples": 4
+        },
+        {
+          "month": "2025-04",
+          "upstream_correct": 3,
+          "platform_correct": 4,
+          "samples": 5
+        },
+        {
+          "month": "2025-07",
+          "upstream_correct": 2,
+          "platform_correct": 3,
+          "samples": 4
+        }
+      ]
+    },
+    "gray": {
+      "strict_comparable_rows": 7,
+      "prediction_matches": 6,
+      "actual_rows_available_on_both_sides": 6,
+      "actual_matches": 6,
+      "prediction_differences": [
+        {
+          "week_id": "202626",
+          "feature_date": "2026-07-03",
+          "target_date": "2026-07-10",
+          "upstream_prediction": -1,
+          "platform_prediction": 1,
+          "actual_direction": 1
+        }
+      ],
+      "platform_actuals_through_target_date": "2026-07-24",
+      "platform_matched_actuals": 8,
+      "platform_correct": 7,
+      "platform_accuracy_pct": 87.5,
+      "calendar_gap": {
+        "week_id": "202624",
+        "platform_actual_direction": 0,
+        "upstream_actual_direction": null,
+        "reason": "upstream bundled calendar misses week_id 202625"
+      },
+      "non_comparable_tail": [
+        {
+          "week_id": "202628",
+          "feature_date": "2026-07-17",
+          "upstream_target_date": "2026-07-20",
+          "platform_target_date": "2026-07-24"
+        },
+        {
+          "feature_date": "2026-07-24",
+          "platform_target_date": "2026-07-31",
+          "reason": "no comparable row in upstream 0725 snapshot"
+        }
+      ]
+    },
+    "semantic_alignment": {
+      "actual_zero_policy": "aligned_include_actual_zero_exclude_prediction_zero_only",
+      "upstream_month_attribution": "feature_date",
+      "platform_month_attribution": "target_date",
+      "upstream_history_predict_date": "next_week_first_trading_day",
+      "platform_history_predict_date": "feature_date",
+      "prediction_window_alignment": "feature_date_and_target_date_aligned"
+    }
+  },
   "limitations": {
     "algorithm_logic_validated": false,
     "algorithm_effect_validated": false,
