@@ -1792,7 +1792,10 @@ def _validate_input_generation_state_record(raw: Any) -> dict[str, Any]:
         )
     native = raw.get("native_generation")
     normalized_native = (
-        _validate_native_generation_binding(native)
+        _validate_native_generation_binding(
+            native,
+            allow_signal_gap_snapshot=True,
+        )
         if isinstance(native, Mapping)
         else None
     )
@@ -3501,7 +3504,8 @@ def _validate_generation_acceptance_evidence(
             )
     else:
         validated_native = _validate_native_generation_binding(
-            native
+            native,
+            allow_signal_gap_snapshot=True,
         )
         if (
             raw.get("status") != "ACCEPTED"

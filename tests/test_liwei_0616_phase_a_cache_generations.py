@@ -1636,6 +1636,64 @@ class Liwei0616ImmutableCacheGenerationTests(unittest.TestCase):
                     expected_qualification=qualification,
                 )
 
+    def test_acceptance_evidence_reads_signal_gap_snapshot_binding(
+        self,
+    ) -> None:
+        """历史补缺缓存的验收证据应接受受控 Native 快照身份。"""
+        native = self._native_generation()
+        with tempfile.TemporaryDirectory() as directory:
+            caches, audit = self._prepare(
+                Path(directory),
+                trainer=self._trainer([]),
+                daily=self.daily.iloc[:2].copy(),
+                end="2026-07-02",
+                native_generation=native,
+            )
+            manifest = json.loads(
+                (
+                    Path(audit["generation_path"]) / "manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+
+        input_state = copy.deepcopy(manifest["input_state"])
+        input_state["native_generation"]["exporter_version"] = (
+            "native-signal-gap-current-snapshot-v1"
+        )
+        basis = {
+            "frames": input_state["frames"],
+            "native_generation": input_state["native_generation"],
+        }
+        if "effective_auxiliary" in input_state:
+            basis["effective_auxiliary"] = input_state[
+                "effective_auxiliary"
+            ]
+        input_state["content_id"] = hashlib.sha256(
+            cache_module._canonical_json(basis).encode("utf-8")
+        ).hexdigest()
+
+        acceptance = copy.deepcopy(
+            manifest["generation_acceptance_evidence"]
+        )
+        acceptance["native_generation"] = copy.deepcopy(
+            input_state["native_generation"]
+        )
+        acceptance["input_content_id"] = input_state["content_id"]
+        payload = {
+            key: value
+            for key, value in acceptance.items()
+            if key != "evidence_sha256"
+        }
+        acceptance["evidence_sha256"] = hashlib.sha256(
+            cache_module._canonical_json(payload).encode("utf-8")
+        ).hexdigest()
+
+        cache_module._validate_generation_acceptance_evidence(
+            acceptance,
+            caches=caches,
+            candidate_content_id=acceptance["candidate_content_id"],
+            input_state=input_state,
+        )
+
     def test_ledger_cache_rejects_symlink_pointer_and_insecure_family(
         self,
     ) -> None:
