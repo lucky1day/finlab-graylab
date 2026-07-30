@@ -15,3 +15,4 @@
 | [DataBridge 周历自测与平台部署对齐](2026-07-30-databridge-calendar-self-test-alignment-design.md) | 上游四文件自测、平台同代验收、组合输入身份和生产 generation 滚动规则 |
 | [cgb_causal_wk_1y 已激活版本替换](2026-07-30-cgb-causal-wk-1y-version-replacement-design.md) | L0 周历输入更新、exact version 切换、历史与灰度原子替换边界 |
 | [cgb_causal_wk_3y 周度方案生产入库](2026-07-30-cgb-causal-wk-3y-production-onboarding-design.md) | 3Y CV2 两文件 Intake、算法保真、历史/灰度写库、调度隔离和前端验收 |
+| [1Y T+1 Blackbox 生产灰度入库](2026-07-30-one-y-t1-production-gray-design.md) | PR #19 修复、两文件交付生命周期、历史/灰度分区和既有 launchd 日频执行边界 |

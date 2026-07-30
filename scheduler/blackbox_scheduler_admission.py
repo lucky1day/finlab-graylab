@@ -225,6 +225,17 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 capabilities=_NO_CAPABILITIES,
             ),
             (
+                "one_y_t1_quote_state_hv_v1",
+                "d6d0cb43aacd",
+            ): _entry(
+                mode="gray",
+                frequency="daily",
+                task_type="T+1",
+                horizon=1,
+                target_tenor="1Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
                 "ten_y_t5_maj3_k3_ic_static_v1",
                 "c54b90bcafa7",
             ): _entry(

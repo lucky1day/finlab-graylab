@@ -15,3 +15,4 @@
 | [DataBridge 周历自测与平台部署对齐](2026-07-30-databridge-calendar-self-test-alignment.md) | 上游日历下载、平台同代 Gate、日期语义收口与文档契约验证 |
 | [cgb_causal_wk_1y 已激活版本替换](2026-07-30-cgb-causal-wk-1y-version-replacement.md) | 周历输入更新、版本原子切换、历史与灰度替换、旧业务数据清理 |
 | [cgb_causal_wk_3y 周度方案生产入库](2026-07-30-cgb-causal-wk-3y-production-onboarding.md) | 3Y CV2 两文件 Intake、生产激活、历史与灰度写库、前端验收和调度隔离 |
+| [1Y T+1 Blackbox 生产灰度入库](2026-07-30-one-y-t1-production-gray-onboarding.md) | PR #19 修复、日频两文件交付、历史与灰度写库、前端验收及既有 launchd 挂载 |

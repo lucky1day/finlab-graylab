@@ -976,6 +976,9 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         self.assertEqual({item.daily_cutoff_key for item in requests}, {"2026-07-14", "2026-07-15"})
         self.assertEqual({item.weekly_cutoff_key for item in requests}, {"202626", "202627"})
         self.assertEqual({item.monthly_cutoff_key for item in requests}, {"202605", "202606"})
+        prior = requests[0]
+        self.assertEqual(prior.feature_date, "2026-07-14")
+        self.assertEqual(prior.feature_date, prior.daily_cutoff_key)
 
     def test_comparison_requests_keep_daily_and_calendar_week_coherent(
         self,

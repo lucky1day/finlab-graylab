@@ -154,6 +154,17 @@
       "capabilities": []
     },
     {
+      "scheme_id": "one_y_t1_quote_state_hv_v1",
+      "scheme_version": "d6d0cb43aacd",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenor": "1Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
       "scheme_id": "ten_y_t5_maj3_k3_ic_static_v1",
       "scheme_version": "c54b90bcafa7",
       "runtime_type": "blackbox_v2",

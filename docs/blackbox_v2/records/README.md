@@ -4,7 +4,7 @@
 
 **目标读者**：平台入库、审计和生产灰度人员
 
-**最后核验日期**：2026-07-30
+**最后核验日期**：2026-07-31
 
 这些记录提供时点证据，不定义通用接口或默认授权。
 
@@ -23,3 +23,5 @@
 - [CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.md](CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.md)：3Y 周度方案两文件 Intake、权威周历、生产激活、历史和灰度入库记录。
 - [CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.evidence.json](CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.evidence.json)：`cgb_causal_wk_3y@4b8db29b2f74` 的七 Gate、输入和上游 snapshot 边界证据。
 - [CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)：该方案 active、72 条历史、9 条灰度、API/前端和调度隔离的生产终验摘要。
+- [ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.md](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.md)：1Y T+1 日频方案的 PR 修复、七 Gate、生产激活、337 条历史、43 条灰度和既有 launchd 日频链路验收记录。
+- [ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json)：`one_y_t1_quote_state_hv_v1@d6d0cb43aacd` 的 DB/API/前端、runner canary 与 launchd 挂载机器可读未签名摘要。

@@ -4,7 +4,7 @@
 
 **目标读者**：平台入库、审计和复盘人员
 
-**最后核验日期**：2026-07-27
+**最后核验日期**：2026-07-31
 
 **记录时区**：除明确标注 UTC 外，本文时间均为 `Asia/Shanghai`。
 **文档性质**：追加式平台规划和试验台账，不是上游交付契约，也不是平台操作 SOP。
@@ -593,6 +593,37 @@ wrapper 不会执行这四个方案；本次没有重启 scheduler、写入
 本条证明 3Y 周度方案已 active 且历史与灰度入库完成。它不证明历史 vintage
 回放、算法效果或 scheduler 自然运行；不同输入 snapshot 的方向结果不得混称
 逐值完全一致。
+
+### 4.22 记录 006：one_y_t1_quote_state_hv_v1 生产激活与日度灰度挂载
+
+**最终只读核验时间**：2026-07-31 00:10:24，`Asia/Shanghai`。
+
+**专项记录**：
+[ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.md](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.md)。
+
+**机器证据**：
+[ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json)。
+
+| 项目 | 最终核验 |
+|---|---|
+| PR / 平台修复 | PR #19 已合入开发分支；CompareGate prior request 的 `feature_date` 与 prior `daily_cutoff_key` 对齐，针对性测试先失败后通过 |
+| exact identity | `one_y_t1_quote_state_hv_v1@d6d0cb43aacd` 与 `one_y_t1_quote_state_hv_v1__h1__1Y` 均为 `active`；`deployed_at=2026-07-30` |
+| 原始摘要 | Python `a16899b1be1cacb867529485637f86c55c8f7a6b3d7565b04b1baf42775d2394`；Metadata `d34b6c6864bdfda7f2b50b39d1f4ce0f6659a8c237569e4cef2afae5d9f25318` |
+| Harness | check-only `hr_20260730T153357Z_b4b42137022c` 与 persisted `hr_20260730T153459Z_14bc241e6e40` 均为 7/7 PASS |
+| generation / snapshot | `full-20260730-081804-9794ce962c1a` / `snapshot-a0dbf1774782db2e6d2a1ec5` |
+| persistent backtest | run `195`，337 条 prediction、17 条月度指标；target `2025-01-03..2026-05-29` |
+| gray_live | 43 个唯一 target，predict/target `2026-06-01..2026-07-30`；42 条已有 actual，当前指标为 11/22、50.0% |
+| 指标口径 | 历史 actual=0 为 64 条、灰度 actual=0 为 6 条，均保留；只从指标分母剔除 `predicted_direction=0` |
+| API / frontend | exact composite 可见；前端 1Y/T+1 格子为 2 个候选，新方案显示 379 个已评估样本、89/213、41.8%，控制台 0 error |
+| launchd | 已加载 `com.bond-factor-lab.daily-gray`，每天 07:00 扫描 26 个 active daily（17 Native + 9 Blackbox V2）；`--only` canary 成功 |
+| 自然观察边界 | 安装时已错过当日 07:00，launchd `runs=0`、`last exit=(never exited)`；状态为 `MOUNTED_NOT_OBSERVED`，不得写成自然运行成功 |
+| 正式调度边界 | admission=`gray`、capabilities=`[]`、`scheduled_live=0`；29/29 ledger 和 daily policy 未修改 |
+| 算法边界 | 未评审、反编译或修改上游算法内部逻辑；只验收平台输入、Contract、确定性、截止隔离、标准输出和落库 |
+
+本条证明方案已经上线为 active，历史和 6–7 月灰度均已入库，并已进入现有
+launchd 每日灰度执行集合。`gray_live` 与正式 29/29 `scheduled_live` 是两个
+独立运行面；当前结论不声称已经观察到 launchd 自然首跑，也不把 canary
+倒签为自然调度证据。
 
 ## 5. 已确认的通用迭代规则
 

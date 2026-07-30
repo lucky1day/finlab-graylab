@@ -17,7 +17,9 @@
 4. 使用 `gray_target_start=2026-06-01`，将
    `target_date < 2026-06-01` 写入独立历史回测，将其后所有当前可生成目标写为
    `gray_live`；
-5. 更新实际值、验证 Registry、数据库、API 和前端读取，并保存逐方案机器证据。
+5. 更新实际值、验证 Registry、数据库、API 和前端读取，并保存逐方案机器证据；
+6. 复用已加载的 `com.bond-factor-lab.daily-gray` LaunchAgent，使方案在激活后
+   自动进入每天 07:00 的 active daily 扫描集合。
 
 本批不包含：
 
@@ -64,14 +66,22 @@ persisted all-stage
 
 ## 调度边界
 
-当前日频目标架构只有一个 coordinator 和一个 daily occurrence。生产仍处于
-legacy rollout，已批准候选策略固定为 25 个 base execution、29 个 target。
+机器当前已经加载 `com.bond-factor-lab.daily-gray`，每天 07:00 执行
+`python -m scheduler.daily_gray_runner`。该 runner 一次发现全部
+`status=active + frequency=daily` 的方案，并统一写 `gray_live`；它不是每方案
+一个 launchd task，也不读取 29/29 ledger policy。
 
 本方案在 `blackbox_scheduler_admission_v1.json` 中登记为 `mode=gray` 且
 `capabilities=[]`，明确阻断 `legacy_automatic`、`daily_ledger` 和
-`direct_scheduled`。配置中的 cron 只表达自然运行周期，不产生独立任务。
+`direct_scheduled`；这不阻断独立的 active-daily gray runner。配置中的 cron
+只表达自然运行周期，不产生第二个 LaunchAgent。Activation 后先通过同一 runner
+的 `--only one_y_t1_quote_state_hv_v1` 做受控 canary；随后由下一个交易日
+07:00 的自然 launchd 运行形成自动执行观察证据。
 
-后续自动调度必须作为独立批次，把统一日频策略升级为经过容量验证的 26/30：
+当前日频正式目标架构仍只有一个 coordinator 和一个 daily occurrence；生产
+仍处于 legacy rollout，已批准候选策略固定为 25 个 base execution、29 个
+target。后续进入正式 `scheduled_live` 必须作为独立批次，把统一日频策略升级为
+经过容量验证的 26/30：
 更新 admission、版本化 daily policy、固定 release offset、容量证据和相关测试，
 再由未来真实 occurrence 产生首条 `scheduled_live`。不得额外创建第二个 cron
 入口。
@@ -87,7 +97,10 @@ legacy rollout，已批准候选策略固定为 25 个 base execution、29 个 t
 - actual 为 0 时保留，只有预测为 0 的样本按指标规则剔除；
 - `/api/schemes`、`/api/backtests/factor-lab`、
   `/api/metrics/one_y_t1_quote_state_hv_v1__h1__1Y` 与数据库逐条一致；
-- admission 明确拒绝三个自动调度能力，`scheduled_live=0`；
+- admission 明确拒绝三个正式调度能力，`scheduled_live=0`；
+- `com.bond-factor-lab.daily-gray` 保持加载，受控 `--only` canary 成功，且
+  active daily discovery 精确包含本方案；自然 launchd 首跑之前明确记录为
+  “已挂载、未观察”；
 - 方案代码、配置、输入 generation、snapshot、Harness run、数据库 run 和证据
   JSON 可闭环追溯。
 

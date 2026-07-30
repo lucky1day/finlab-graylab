@@ -1,6 +1,6 @@
 """每日 gray_live 信号自动生成器（最简调度）。
 
-复用已验证的 gray_live 执行链，为全部 active 日频方案（17 Native + 8 Blackbox V2 = 25）
+复用已验证的 gray_live 执行链，为全部 active 日频方案（17 Native + 9 Blackbox V2 = 26）
 每交易日各出一次信号，统一写 gray_live。不走 ledger/epoch/migration-018 重装甲路径。
 
 设计要点：
