@@ -8,7 +8,7 @@
 
 本目录保存带日期的事实证据。记录不定义当前操作规则，当前结论统一查看[当前状态](../CURRENT_STATUS.md)。
 
-- [全方案问题、结论与验证台账](SCHEME_ISSUE_LEDGER.md)：所有方案的效果异常、复现差异、输入/日历冲突、落库缺口、调度和展示问题的统一追加入口。
+- [全方案问题、结论与验证台账](SCHEME_ISSUE_LEDGER.md)：所有方案当前仍需跟踪、已解释或已接受风险的问题入口；解决并验收后从当前台账删除。
 - [运维审计](audits/README.md)
 - [系统检查](system-checks/README.md)
 - [历史状态记录](status/README.md)

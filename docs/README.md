@@ -50,7 +50,7 @@
 ## 维护规则
 
 1. 每个包含 Markdown 的目录必须有 `README.md`，并登记本层文档和子目录。
-2. 已验证的动态状态只写入 `CURRENT_STATUS.md`；未完成工作的排序只写入 `TODO.md`；带日期的详情进入 `records/`；具体方案问题统一追加到 `records/SCHEME_ISSUE_LEDGER.md`。
+2. 已验证的动态状态只写入 `CURRENT_STATUS.md`；未完成工作的排序只写入 `TODO.md`；带日期的详情进入 `records/`；具体方案问题统一写入 `records/SCHEME_ISSUE_LEDGER.md`，解决并验收后从当前台账删除。
 3. 通用 SOP 不记录具体方案、generation、snapshot 或 Harness run。
 4. 历史记录不反向定义当前规则；已被现行入口完整替代的过期文档从工作树删除，通过 Git 历史追溯。
 5. 文档移动必须同步更新相对链接，并通过文档门禁测试。

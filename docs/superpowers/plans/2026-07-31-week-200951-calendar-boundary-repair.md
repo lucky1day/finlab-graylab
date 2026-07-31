@@ -386,8 +386,9 @@ Expected: 分别较 precheck 增加 3 和 4；后续新 Native generation 与
 Document:
 
 ```text
-202625 生产冲突：RESOLVED；live 9、actual-valid 8，合计 81/80。
-200951 历史日历边界：RESOLVED；双表补齐 3+4 行，CalendarService=2009-12-31。
+已解决并验收的 202625 生产冲突和 200951 历史日历边界不进入当前问题台账；
+当前状态分别保留 live 9、actual-valid 8、合计 81/80，以及双表补齐 3+4 行、
+CalendarService=2009-12-31 的事实。
 当前输入 vintage/benchmark 漂移：OPEN；14 个 feature week/20 个字段差异，
 方向翻转 202538、202548、202602；禁止调算法或改 benchmark 贴合。
 ```
