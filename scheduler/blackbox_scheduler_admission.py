@@ -170,6 +170,61 @@ EXPECTED_EXACT_ADMISSIONS: Mapping[
                 capabilities=_NO_CAPABILITIES,
             ),
             (
+                "wavg_1y_gapflip_v5",
+                "68999585142a",
+            ): _entry(
+                mode="gray",
+                frequency="weekly",
+                task_type="weekly_average",
+                horizon=1,
+                target_tenor="1Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
+                "wavg_3y_gapflip_v5",
+                "faba245acaef",
+            ): _entry(
+                mode="gray",
+                frequency="weekly",
+                task_type="weekly_average",
+                horizon=1,
+                target_tenor="3Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
+                "wavg_5y_gapflip_v5",
+                "63ed1291f9d4",
+            ): _entry(
+                mode="gray",
+                frequency="weekly",
+                task_type="weekly_average",
+                horizon=1,
+                target_tenor="5Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
+                "wavg_7y_gapflip_v5",
+                "21951d955f44",
+            ): _entry(
+                mode="gray",
+                frequency="weekly",
+                task_type="weekly_average",
+                horizon=1,
+                target_tenor="7Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
+                "wavg_10y_gapflip_v5",
+                "c1e5a9db6097",
+            ): _entry(
+                mode="gray",
+                frequency="weekly",
+                task_type="weekly_average",
+                horizon=1,
+                target_tenor="10Y",
+                capabilities=_NO_CAPABILITIES,
+            ),
+            (
                 "cgb_a4_fundseason_1y",
                 "04e7af163fb0",
             ): _entry(

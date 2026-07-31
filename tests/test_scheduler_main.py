@@ -43,6 +43,13 @@ GRAY_BLACKBOX_IDENTITIES = {
     "ten_y_t5_maj4_k3_ic_yearly_v1": "af04567a19c3",
     "ten_y_t5_say_k5_sharpe_static_v1": "e8137af4b655",
 }
+WAVG_GAPFLIP_V5_IDENTITIES = {
+    "wavg_1y_gapflip_v5": "68999585142a",
+    "wavg_3y_gapflip_v5": "faba245acaef",
+    "wavg_5y_gapflip_v5": "63ed1291f9d4",
+    "wavg_7y_gapflip_v5": "21951d955f44",
+    "wavg_10y_gapflip_v5": "c1e5a9db6097",
+}
 
 
 def _cfg(
@@ -2819,6 +2826,64 @@ class SchedulerMainTests(unittest.TestCase):
             any("Scheduled actuals refresh at 08:30, 19:00, 23:45 Asia/Shanghai" in msg for msg in logs.output)
         )
         self.assertFalse(any("16:00" in msg for msg in logs.output))
+
+    def test_wavg_gapflip_v5_gray_identities_never_mount_automatic_jobs(
+        self,
+    ) -> None:
+        """五个周均 gray exact identity 不获得自动或 recurring 调度。"""
+        from scheduler import main as scheduler_main
+
+        configs = [
+            _cfg(
+                scheme_id,
+                runtime_type="blackbox_v2",
+                scheme_version=scheme_version,
+                cron="30 11 * * 6",
+            )
+            for scheme_id, scheme_version in (
+                WAVG_GAPFLIP_V5_IDENTITIES.items()
+            )
+        ]
+        for identity in WAVG_GAPFLIP_V5_IDENTITIES.items():
+            with self.subTest(identity=identity):
+                self.assertIn(identity, EXPECTED_EXACT_ADMISSIONS)
+
+        self.assertEqual(
+            scheduler_main._automatic_prediction_schemes(configs),
+            [],
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=configs,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            prediction_job_ids = {
+                job.id
+                for job in scheduler.get_jobs()
+                if job.id.startswith("predict:")
+            }
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertTrue(
+            prediction_job_ids.isdisjoint(
+                {
+                    f"predict:{scheme_id}"
+                    for scheme_id in WAVG_GAPFLIP_V5_IDENTITIES
+                }
+            )
+        )
 
     def test_actuals_job_refreshes_daily_weekly_and_monthly_actuals(self) -> None:
         from scheduler import main as scheduler_main

@@ -99,6 +99,61 @@
       "capabilities": []
     },
     {
+      "scheme_id": "wavg_1y_gapflip_v5",
+      "scheme_version": "68999585142a",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_average",
+      "horizon": 1,
+      "target_tenor": "1Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
+      "scheme_id": "wavg_3y_gapflip_v5",
+      "scheme_version": "faba245acaef",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_average",
+      "horizon": 1,
+      "target_tenor": "3Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
+      "scheme_id": "wavg_5y_gapflip_v5",
+      "scheme_version": "63ed1291f9d4",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_average",
+      "horizon": 1,
+      "target_tenor": "5Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
+      "scheme_id": "wavg_7y_gapflip_v5",
+      "scheme_version": "21951d955f44",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_average",
+      "horizon": 1,
+      "target_tenor": "7Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
+      "scheme_id": "wavg_10y_gapflip_v5",
+      "scheme_version": "c1e5a9db6097",
+      "runtime_type": "blackbox_v2",
+      "frequency": "weekly",
+      "task_type": "weekly_average",
+      "horizon": 1,
+      "target_tenor": "10Y",
+      "mode": "gray",
+      "capabilities": []
+    },
+    {
       "scheme_id": "cgb_a4_fundseason_1y",
       "scheme_version": "04e7af163fb0",
       "runtime_type": "blackbox_v2",

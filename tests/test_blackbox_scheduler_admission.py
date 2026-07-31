@@ -131,6 +131,61 @@ EXPECTED_ADMISSIONS = {
         capabilities=NO_CAPABILITIES,
     ),
     (
+        "wavg_1y_gapflip_v5",
+        "68999585142a",
+    ): _expected_admission(
+        mode="gray",
+        frequency="weekly",
+        task_type="weekly_average",
+        horizon=1,
+        target_tenor="1Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
+        "wavg_3y_gapflip_v5",
+        "faba245acaef",
+    ): _expected_admission(
+        mode="gray",
+        frequency="weekly",
+        task_type="weekly_average",
+        horizon=1,
+        target_tenor="3Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
+        "wavg_5y_gapflip_v5",
+        "63ed1291f9d4",
+    ): _expected_admission(
+        mode="gray",
+        frequency="weekly",
+        task_type="weekly_average",
+        horizon=1,
+        target_tenor="5Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
+        "wavg_7y_gapflip_v5",
+        "21951d955f44",
+    ): _expected_admission(
+        mode="gray",
+        frequency="weekly",
+        task_type="weekly_average",
+        horizon=1,
+        target_tenor="7Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
+        "wavg_10y_gapflip_v5",
+        "c1e5a9db6097",
+    ): _expected_admission(
+        mode="gray",
+        frequency="weekly",
+        task_type="weekly_average",
+        horizon=1,
+        target_tenor="10Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
         "cgb_a4_fundseason_1y",
         "04e7af163fb0",
     ): _expected_admission(
