@@ -437,7 +437,7 @@ git diff -- schemes/weekly_10y_d_overlay_0529 backtests/weekly_10y_d_overlay_052
 
 Expected: 最后一条命令无输出；现有其他文档改动保持原样。
 
-- [ ] **Step 2: 提交本次文档状态更新**
+- [x] **Step 2: 提交本次文档状态更新**
 
 Run:
 
