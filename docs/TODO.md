@@ -59,18 +59,17 @@ point-backed 周平均身份删除、月度 updater 幂等复核，以及
 1. 取得独立部署/重启授权后，在维护窗口重启 BFL Python 后端，使 Registry
    Actual 范围、统一展示起点和 coverage 诊断由服务端生效；不得修改或重启
    BondProjectPro。
-2. 用当天合法 DataBridge generation 受控补
-   `weekly_10y_lgbm_point_v1` 的 `target_date=2026-07-31` 缺口，只写
-   `gray_live`，禁止旧 generation fallback。
-3. 上游修复 `week_id=202625` 与交易日历的契约冲突后，重新 dry-run
-   `weekly_10y_d_overlay_0529`；冲突未修复前不得改算法或继续补点。
-4. 冲突闭合后逐点补该 Native 的 `2026-07-10/07-17/07-24/07-31`，每点独立
-   run 且只写 `gray_live`。
-5. 最终只读验收 7 个 active 周度候选均为 `81 signal / 80 valid`，8 个
-   月度候选均为 `19/18`，且无重复 prediction、actual、run 或 target date。
+2. 专项研究 `weekly_10y_d_overlay_0529` 当前 DB 输入 vintage 与旧 benchmark
+   的差异：45 个 benchmark 周中 14 周有内部字段差异，`202538/202548/202602`
+   方向翻转。CompareGate 继续 fail-closed；禁止调算法、改 benchmark 或使用旧
+   generation fallback 贴合。
+3. 输入 vintage 问题闭合后，重新执行该 Native 的完整 `--no-persist`，
+   要求 72 行、17 个月且 original benchmark `45/45`。
 
-当前五个周度候选为 `81/80`，`weekly_10y_lgbm_point_v1=80/80`，
-`weekly_10y_d_overlay_0529=77/77`，因此周度对齐尚未完成。
+`weekly_10y_d_overlay_0529` 的生产 `202625` 冲突、四个灰度缺口和历史
+`200951` 日历边界均已闭合；`weekly_10y_lgbm_point_v1` 的 7 月 31 日信号也已
+存在。当前 6 个 active `weekly_point` 均为 `81/80`，周度 point 数量对齐已经
+完成；10Y D-overlay 的历史 CompareGate 漂移是独立研究项。
 
 ## P2：平台增强
 

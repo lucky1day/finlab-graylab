@@ -8,6 +8,9 @@
 
 **机器证据**：[CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_1Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)
 
+**统一问题记录**：
+[ISSUE-20260730-002](../../records/SCHEME_ISSUE_LEDGER.md#issue-20260730-002cgb_causal_wk_1y-上游与生产复现差异)
+
 ## 当前结论
 
 ```text

@@ -8,6 +8,7 @@
 
 这些记录提供时点证据，不定义通用接口或默认授权。
 
+- [全方案问题、结论与验证台账](../../records/SCHEME_ISSUE_LEDGER.md)：跨 Native V1/Blackbox V2 的统一方案问题入口；本目录的具体入库记录作为其证据来源。
 - [ONBOARDING_TRIAL_LEDGER.md](ONBOARDING_TRIAL_LEDGER.md)：追加式入库试验台账。
 - [FULL_PIPELINE_STABILITY_AUDIT_20260719.md](FULL_PIPELINE_STABILITY_AUDIT_20260719.md)：2026-07-19 全链路认证。
 - [PRODUCTION_GRAY_ACTIVATION_20260720.md](PRODUCTION_GRAY_ACTIVATION_20260720.md)：2026-07-20 专项生产灰度激活。

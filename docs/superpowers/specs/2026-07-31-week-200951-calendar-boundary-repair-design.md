@@ -2,7 +2,7 @@
 
 **日期**：2026-07-31
 
-**状态**：APPROVED
+**状态**：IMPLEMENTED
 
 ## 目标
 
@@ -109,3 +109,17 @@ trade_flag = 1
 算法、benchmark 或置信度贴合。日历修复完成后，`--no-persist` 仍应保留原
 CompareGate 并因该独立漂移 fail-closed；输入 vintage 问题必须单独研究和关闭，
 之后才能重新声明当前 DB 输入下 `45/45`。
+
+## 实施结果
+
+2026-07-31 已按本设计完成单事务补数：
+
+- `api_wind_date` 新增 3 行，既有 `2009-12-31` exact no-op；
+- `t_trade_calendar` 新增 4 行；
+- 两表目标日期均为 4 行/4 个唯一日期，全表重复日期组均为 0；
+- `CalendarService` 映射 `200951 -> 2009-12-31`，且
+  `202625 -> 2026-07-03` 未受影响；
+- 只读模型验收成功构造 72 行、17 个月，随后按预期在独立 benchmark 漂移处
+  fail-closed；
+- 三份旧 Native generation 均保持 sealed 且未被原地改写；新日历制品产生新
+  SHA/combined input identity，后续只能生成新 generation，不能覆盖旧证据。

@@ -125,9 +125,9 @@ schema 3 且 acceptance `ACCEPTED`；二次运行 7 个 `hit`、27 reuse、0 tra
 
 - 月度 updater 按 active Registry 的 `1Y/3Y/5Y/7Y/10Y` 幂等运行，8 个 active
   月度方案保持 `19 signal / 18 valid`。
-- `weekly_10y_lgbm_point_v1` 为 `80/80`；`weekly_10y_d_overlay_0529` 因
-  `week_id=202625` 与交易日历冲突 fail-closed，保持 `77/77`。7 个周度候选尚未
-  全部达到 `81/80`，不得修改算法绕过上游数据契约。
+- `weekly_10y_d_overlay_0529` 的生产 `202625` 冲突、四个真实信号缺口和历史 `200951` 双表日历边界均已闭合，当前为 `81/80`；当前输入与旧 benchmark 仍有独立 vintage 漂移，CompareGate 保持 fail-closed。
+- 6 个 active `weekly_point` 方案均为 `81/80`；另有 3 个 active
+  `weekly_average` 身份，按独立 `task_type` 统计，不混入 point 候选计数。
 - Python 后端仍需在独立授权维护窗口重启，以使已合并的 Registry Actual 范围和
   统一展示起点由服务端进程生效。
 

@@ -10,6 +10,9 @@
 [技术 Gate](CGB_CAUSAL_WK_3Y_ONBOARDING_20260730.evidence.json) /
 [生产终验](CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)
 
+**统一问题记录**：
+[ISSUE-20260730-003](../../records/SCHEME_ISSUE_LEDGER.md#issue-20260730-003cgb_causal_wk_3y-上游与生产复现差异)
+
 ## 当前结论
 
 ```text

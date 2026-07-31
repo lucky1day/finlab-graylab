@@ -9,6 +9,9 @@
 **机器证据**：
 [ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json)
 
+**效果问题诊断**：
+[全方案问题台账 ISSUE-20260731-001](../../records/SCHEME_ISSUE_LEDGER.md#issue-20260731-001one_y_t1_quote_state_hv_v1-效果偏弱)
+
 ## 当前结论
 
 ```text

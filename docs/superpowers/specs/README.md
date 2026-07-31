@@ -4,7 +4,7 @@
 
 **目标读者**：平台架构、实现和审计人员
 
-**最后核验日期**：2026-07-30
+**最后核验日期**：2026-07-31
 
 | 设计记录 | 范围 |
 |---|---|
@@ -16,3 +16,4 @@
 | [cgb_causal_wk_1y 已激活版本替换](2026-07-30-cgb-causal-wk-1y-version-replacement-design.md) | L0 周历输入更新、exact version 切换、历史与灰度原子替换边界 |
 | [cgb_causal_wk_3y 周度方案生产入库](2026-07-30-cgb-causal-wk-3y-production-onboarding-design.md) | 3Y CV2 两文件 Intake、算法保真、历史/灰度写库、调度隔离和前端验收 |
 | [1Y T+1 Blackbox 生产灰度入库](2026-07-30-one-y-t1-production-gray-design.md) | PR #19 修复、两文件交付生命周期、历史/灰度分区和既有 launchd 日频执行边界 |
+| [week_id=200951 权威日历边界修复](2026-07-31-week-200951-calendar-boundary-repair-design.md) | 跨年周双表最小补数、数据库身份围栏、历史复现和 benchmark 漂移拆分 |

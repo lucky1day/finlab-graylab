@@ -17,7 +17,7 @@
 - Read: `shared/calendar_service.py`
 - Read: `backtests/weekly_10y_d_overlay_0529_reproduction.py`
 
-- [ ] **Step 1: 核对生成器输出**
+- [x] **Step 1: 核对生成器输出**
 
 Run:
 
@@ -42,7 +42,7 @@ PY
 
 Expected: 恰好四行，全部为 `week_id=200951`、`trade_flag=1`。
 
-- [ ] **Step 2: 核对生产现状和数据库身份**
+- [x] **Step 2: 核对生产现状和数据库身份**
 
 Run:
 
@@ -84,7 +84,7 @@ Expected:
 - No repository file changes
 - Runtime source: `/Users/macstudio0/bondprojectpro/BondPrediction/cn_stock_calendar.py`
 
-- [ ] **Step 1: 从只读 identity query 取得本次会话 UUID**
+- [x] **Step 1: 从只读 identity query 取得本次会话 UUID**
 
 Run:
 
@@ -107,7 +107,7 @@ test -n "$BFL_CALENDAR_EXPECTED_UUID"
 
 Expected: shell 变量非空；不打印 UUID。
 
-- [ ] **Step 2: 在命名锁和单事务中只插入缺失行**
+- [x] **Step 2: 在命名锁和单事务中只插入缺失行**
 
 Run:
 
@@ -298,7 +298,7 @@ Expected on first apply:
 {"inserted_api_wind_date": 3, "inserted_t_trade_calendar": 4, "last_trading_day": "2009-12-31", "status": "applied", "week_id": "200951"}
 ```
 
-- [ ] **Step 3: 清除会话 UUID**
+- [x] **Step 3: 清除会话 UUID**
 
 Run:
 
@@ -315,7 +315,7 @@ Expected: 两个变量从当前 shell 会话移除。
 - Read: `backtests/weekly_10y_d_overlay_0529_reproduction.py`
 - Read: `shared/native_input_generation.py`
 
-- [ ] **Step 1: 验收权威日历**
+- [x] **Step 1: 验收权威日历**
 
 Run:
 
@@ -335,7 +335,7 @@ PY
 
 Expected: 两条断言通过。
 
-- [ ] **Step 2: 运行真实 no-persist 诊断**
+- [x] **Step 2: 运行真实 no-persist 诊断**
 
 Run:
 
@@ -352,7 +352,7 @@ Expected:
 - 首个已知差异为 `feature_week_id=202533` confidence；
 - 不写入 `t_backtest_*`。
 
-- [ ] **Step 3: 核对快照影响**
+- [x] **Step 3: 核对快照影响**
 
 Run:
 
@@ -381,7 +381,7 @@ Expected: 分别较 precheck 增加 3 和 4；后续新 Native generation 与
 - Modify: `docs/TODO.md`
 - Modify: `docs/superpowers/specs/2026-07-31-week-200951-calendar-boundary-repair-design.md`
 
-- [ ] **Step 1: 拆分三个事实**
+- [x] **Step 1: 拆分三个事实**
 
 Document:
 
@@ -392,7 +392,7 @@ Document:
 方向翻转 202538、202548、202602；禁止调算法或改 benchmark 贴合。
 ```
 
-- [ ] **Step 2: 修正过期待办**
+- [x] **Step 2: 修正过期待办**
 
 Remove:
 
@@ -409,7 +409,7 @@ Replace with:
 vintage/benchmark 漂移。
 ```
 
-- [ ] **Step 3: 运行文档回归**
+- [x] **Step 3: 运行文档回归**
 
 Run:
 
@@ -425,7 +425,7 @@ Expected: tests pass，`git diff --check` 无输出。
 **Files:**
 - Review all modified documentation files
 
-- [ ] **Step 1: 核对无算法改动**
+- [x] **Step 1: 核对无算法改动**
 
 Run:
 
