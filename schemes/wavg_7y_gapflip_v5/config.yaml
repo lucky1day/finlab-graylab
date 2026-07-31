@@ -1,0 +1,16 @@
+scheme_id: wavg_7y_gapflip_v5
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+platform_inputs:
+  - api-wind-date-v1
+status: paused
+version_status: shadow
+schedule:
+  cron: '30 11 * * 6'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+delivery:
+  script: delivery/wavg_7y_gapflip_v5.py
+  metadata: delivery/wavg_7y_gapflip_v5.json

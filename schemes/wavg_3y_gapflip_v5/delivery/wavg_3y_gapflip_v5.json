@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "wavg_3y_gapflip_v5",
+  "name": "GAPFLIP_V5",
+  "description": "以本周周收与周均之差的符号为基准方向,并用元模型误判概率、曲线扭转、周内尾日反转、信噪比自适应四个分量识别基准失效周并翻转方向。",
+  "algorithm_version": "5.0.0",
+  "target_tenor": "3Y",
+  "task_type": "weekly_average",
+  "horizon": 1,
+  "target_rule": "target_week_average_yield_vs_feature_week_average_yield"
+}
