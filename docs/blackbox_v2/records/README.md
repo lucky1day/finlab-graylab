@@ -28,3 +28,5 @@
 - [ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json)：`one_y_t1_quote_state_hv_v1@d6d0cb43aacd` 的 DB/API/前端、runner canary 与 launchd 挂载机器可读未签名摘要。
 - [WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md](WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md)：PR #20 五个周平均 GAPFLIP V5 方案的生产激活、360 条历史、45 条灰度、API/前端和调度隔离记录。
 - [WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json](WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json)：五个 exact identity/version、35 个持久化 Gate、run 和日期分区的机器可读未签名摘要。
+- [THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.md](THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.md)：PR #21 两个 3Y T+1 ADYN 方案的生产激活、674 条历史、86 条灰度、API/公网和既有 daily-gray 挂载记录。
+- [THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.evidence.json](THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.evidence.json)：两个 exact identity/version、14 个持久化 Gate、历史/灰度分区和 launchctl 状态的机器可读未签名摘要。

@@ -18,3 +18,4 @@
 | [1Y T+1 Blackbox 生产灰度入库](2026-07-30-one-y-t1-production-gray-onboarding.md) | PR #19 修复、日频两文件交付、历史与灰度写库、前端验收及既有 launchd 挂载 |
 | [week_id=200951 权威日历边界修复](2026-07-31-week-200951-calendar-boundary-repair.md) | 跨年周双表受控补数、只读验收、问题拆分和状态更新 |
 | [WAVG GAPFLIP V5 五个周平均方案生产入库](2026-07-31-wavg-gapflip-v5-production-onboarding.md) | PR #20 合并、五方案 exact admission、生产激活、历史与灰度写库、前端验收和调度隔离 |
+| [3Y ADYN T+1 双方案生产灰度入库](2026-07-31-three-y-adyn-t1-production-gray-onboarding.md) | PR #21 合并、双方案 exact 生命周期、历史与连续灰度写库、API/公网验收和既有 daily-gray 挂载 |

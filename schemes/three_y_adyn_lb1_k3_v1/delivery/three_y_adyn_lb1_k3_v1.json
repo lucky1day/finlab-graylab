@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "three_y_adyn_lb1_k3_v1",
+  "name": "3年国债收益率T+1活动度动态投票方向预测（回看1月Top3）",
+  "description": "使用3条固定参数的滚动LightGBM概率路径构造6个活动度门控专家；每月仅按预测月前最近1个完整月的已实现方向准确率选择Top3专家，并以多数投票生成T+1方向。",
+  "algorithm_version": "1.0.0",
+  "target_tenor": "3Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}

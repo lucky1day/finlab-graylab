@@ -1,0 +1,14 @@
+scheme_id: three_y_adyn_lb2_k1_v1
+runtime_type: blackbox_v2
+input_source: data_bridge_current
+runtime_profile: blackbox-v2-v1
+data_schema_version: data-bridge-v1
+status: active
+version_status: active
+schedule:
+  cron: '3 7 * * 1-5'
+  timezone: Asia/Shanghai
+  timeout_sec: 3600
+delivery:
+  script: delivery/three_y_adyn_lb2_k1_v1.py
+  metadata: delivery/three_y_adyn_lb2_k1_v1.json

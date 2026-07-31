@@ -17,3 +17,4 @@
 | [cgb_causal_wk_3y 周度方案生产入库](2026-07-30-cgb-causal-wk-3y-production-onboarding-design.md) | 3Y CV2 两文件 Intake、算法保真、历史/灰度写库、调度隔离和前端验收 |
 | [1Y T+1 Blackbox 生产灰度入库](2026-07-30-one-y-t1-production-gray-design.md) | PR #19 修复、两文件交付生命周期、历史/灰度分区和既有 launchd 日频执行边界 |
 | [week_id=200951 权威日历边界修复](2026-07-31-week-200951-calendar-boundary-repair-design.md) | 跨年周双表最小补数、数据库身份围栏、历史复现和 benchmark 漂移拆分 |
+| [3Y ADYN T+1 双方案生产灰度入库](2026-07-31-three-y-adyn-t1-production-gray-design.md) | PR #21 两文件交付、exact 生命周期、历史/灰度分区和既有 daily-gray 日频执行边界 |

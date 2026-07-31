@@ -652,6 +652,35 @@ launchd 每日灰度执行集合。`gray_live` 与正式 29/29 `scheduled_live` 
 因 scheduler 明确延期，当前不标记为通用 SOP 的 `Onboarding Complete` 或
 `Production Observed`。
 
+### 4.24 记录 008：3Y ADYN T+1 双方案生产激活与 daily-gray 挂载
+
+**最终只读核验时间**：2026-07-31 13:14:03，`Asia/Shanghai`。
+
+**专项记录**：
+[THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.md](THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.md)。
+
+**机器证据**：
+[THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.evidence.json](THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.evidence.json)。
+
+| 项目 | 最终核验 |
+|---|---|
+| PR | PR #21 三方合入；四个 delivery blob 保持原字节 |
+| exact identity | `three_y_adyn_lb1_k3_v1@98233f0cb9ef`、`three_y_adyn_lb2_k1_v1@47c7c1776db0` 及两个 composite 均为 `active`；`deployed_at=2026-07-31` |
+| Harness | 两个 persisted all-stage 均为 7/7 PASS，合计 14/14 Gate |
+| generation / snapshot | `full-20260730-081804-9794ce962c1a` / `snapshot-a0dbf1774782db2e6d2a1ec5` |
+| persistent backtest | run `201..202`；每方案 337 条 prediction、17 条月度指标，合计 `674 + 34` |
+| gray_live | 每方案 43 个成功 run、43 条 prediction、43 条 run log；合计 86 条，交易日历缺口为 0 |
+| 日期分区 | 历史 target `2025-01-03..2026-05-29`；gray target `2026-06-01..2026-07-30`；重叠为 0 |
+| API / frontend data | active API 和 dashboard 均为 54 项；3Y/T+1 为 2 个候选；本机和公网各返回 `337 backtest + 43 gray` |
+| launchd | 唯一 `com.bond-factor-lab.daily-gray` 已加载，仓库/安装 plist 摘要一致，07:00 触发；双方案 `--only` canary 为 2/2 成功 |
+| 正式调度边界 | admission=`gray`、capabilities=`[]`、`scheduled_live=0`；29/29 ledger 和 daily policy 未修改 |
+| 算法边界 | 未评审、反编译或修改算法内部逻辑；只验收平台输入、Contract、确定性、截止隔离、标准输出和落库 |
+
+首次并行 draft-register 的一个缺失 identity 插入遭遇 MySQL 1213 deadlock。
+失败事务已回滚且业务表零增量，使用新的 exact token 串行重试后通过；此后生命周期
+写入均串行执行。当前 launchctl 状态为 `MOUNTED_NOT_OBSERVED`，只有未来自然
+07:00 成功运行才能追加自然 occurrence 证据。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

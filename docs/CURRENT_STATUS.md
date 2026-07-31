@@ -109,7 +109,7 @@ schema 3 且 acceptance `ACCEPTED`；二次运行 7 个 `hit`、27 reuse、0 tra
 
 ## Blackbox V2 与灰度批次
 
-- PR #20 五个 `wavg_*_gapflip_v5` 均为 active，每方案为 `72 backtest + 17 monthly + 9 gray`；五个周平均格子均已前端可见，scheduler 按用户要求未挂载，`scheduled_live=0`。专项证据见[五方案生产入库记录](blackbox_v2/records/WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md)。
+- PR #21 两个 `three_y_adyn_*` 3Y/T+1 方案均为 active，每方案为 `337 backtest + 17 monthly + 43 gray`，历史/灰度零重叠、交易日灰度零缺口，并已进入现有 `com.bond-factor-lab.daily-gray` 每天 07:00 的 active-daily 扫描；双方案同路径 canary 为 2/2，自然首跑尚未观察，`scheduled_live=0`，29/29 policy 未修改。专项证据见[双方案生产入库记录](blackbox_v2/records/THREE_Y_ADYN_T1_2SCHEMES_ONBOARDING_20260731.md)。PR #20 五个 `wavg_*_gapflip_v5` 均为 active，每方案为 `72 backtest + 17 monthly + 9 gray`；五个周平均格子均已前端可见，scheduler 按用户要求未挂载，`scheduled_live=0`。专项证据见[五方案生产入库记录](blackbox_v2/records/WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md)。
 - `cgb_causal_wk_1y@cba824c27f0e` 已 active；旧版已 retired 且业务数据清零。
   新历史 run `193` 为 `72 + 17` 条，新灰度 run `1674..1682` 共 9 条；scheduler
   admission 为 gray/零能力，详见[技术入库记录](blackbox_v2/records/CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md)。

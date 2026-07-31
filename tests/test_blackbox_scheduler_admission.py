@@ -252,6 +252,28 @@ EXPECTED_ADMISSIONS = {
         capabilities=NO_CAPABILITIES,
     ),
     (
+        "three_y_adyn_lb2_k1_v1",
+        "47c7c1776db0",
+    ): _expected_admission(
+        mode="gray",
+        frequency="daily",
+        task_type="T+1",
+        horizon=1,
+        target_tenor="3Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
+        "three_y_adyn_lb1_k3_v1",
+        "98233f0cb9ef",
+    ): _expected_admission(
+        mode="gray",
+        frequency="daily",
+        task_type="T+1",
+        horizon=1,
+        target_tenor="3Y",
+        capabilities=NO_CAPABILITIES,
+    ),
+    (
         "ten_y_t5_maj3_k3_ic_static_v1",
         "c54b90bcafa7",
     ): _expected_admission(
