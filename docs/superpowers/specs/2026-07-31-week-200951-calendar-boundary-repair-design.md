@@ -73,8 +73,9 @@ trade_flag = 1
 2. 单事务 apply：只插入缺失且无冲突的四个日期；
 3. 只读 postcheck：确认 `CalendarService` 将 `200951` 映射到
    `2009-12-31`；
-4. 平台验收：运行
-   `python -m backtests.weekly_10y_d_overlay_0529_reproduction --no-persist`。
+4. 平台诊断：运行
+   `python -m backtests.weekly_10y_d_overlay_0529_reproduction --no-persist`，
+   将日历边界修复与当前输入 vintage/benchmark 漂移分开验收。
 
 任一条件不满足时立即回滚：
 
@@ -82,8 +83,7 @@ trade_flag = 1
 - 任一日期不是交易日；
 - 现有数据库行与生成结果冲突；
 - 写入范围超出四个日期；
-- 修复后平台日期不是 `2009-12-31`；
-- 历史复现 benchmark 不再逐行一致。
+- 修复后平台日期不是 `2009-12-31`。
 
 本次不持久化新的回测 run，不修改或删除已有预测、实际值与历史回测数据。
 
@@ -92,9 +92,20 @@ trade_flag = 1
 - `api_wind_date` 与 `t_trade_calendar` 对四个日期逐行一致；
 - `week_id_to_last_trading_day(200951) == "2009-12-31"`；
 - 当前 2025 年以后及实时周的权威日历映射不变；
-- `weekly_10y_d_overlay_0529 --no-persist` 成功；
-- 原始 benchmark 验证保持 `45/45`；
+- `weekly_10y_d_overlay_0529` 能越过 `200951` 日历解析并构造 72 行历史结果；
 - 算法核心、配置和预测逻辑零改动；
 - 问题台账明确区分：
   - `202625` 生产冲突已经修复并完成缺口回补；
-  - `200951` 是独立的历史日历覆盖边界，完成本次修复后关闭。
+  - `200951` 是独立的历史日历覆盖边界，完成本次修复后关闭；
+  - 当前输入 vintage 与旧 benchmark 的差异另行建单并保持 fail-closed。
+
+## 独立 benchmark 漂移
+
+只读审计在内存模拟 `200951 -> 2009-12-31` 后确认，当前输入可以构造
+72 行历史结果，但与旧 original benchmark 对比时，45 个 feature week 中有
+14 个周存在内部字段差异，其中 `202538`、`202548`、`202602` 方向翻转。
+
+该差异在日历修复前已经存在，不能作为回滚正确日历补数的条件，也不能通过修改
+算法、benchmark 或置信度贴合。日历修复完成后，`--no-persist` 仍应保留原
+CompareGate 并因该独立漂移 fail-closed；输入 vintage 问题必须单独研究和关闭，
+之后才能重新声明当前 DB 输入下 `45/45`。
