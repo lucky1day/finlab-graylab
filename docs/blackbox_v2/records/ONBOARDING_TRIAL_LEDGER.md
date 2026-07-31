@@ -625,6 +625,33 @@ launchd 每日灰度执行集合。`gray_live` 与正式 29/29 `scheduled_live` 
 独立运行面；当前结论不声称已经观察到 launchd 自然首跑，也不把 canary
 倒签为自然调度证据。
 
+### 4.23 记录 007：WAVG GAPFLIP V5 五个周平均方案生产激活与入库
+
+**最终只读核验时间**：2026-07-31 10:23:02，`Asia/Shanghai`。
+
+**专项记录**：
+[WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md](WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md)。
+
+**机器证据**：
+[WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json](WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json)。
+
+| 项目 | 最终核验 |
+|---|---|
+| PR | PR #20 已精确合入；十个 delivery blob 未被平台改写 |
+| exact identity | `wavg_{1y,3y,5y,7y,10y}_gapflip_v5` 五个 version 和 composite Registry 均为 `active`；`deployed_at=2026-07-31` |
+| Harness | 五个 check-only 和五个 persisted all-stage 均为 7/7 PASS；持久化批次合计 35/35 Gate |
+| generation / snapshot | `full-20260730-081804-9794ce962c1a` / `snapshot-05bdb43f07e54dea10b3c80a`；平台周历 `api-wind-date-v1` |
+| persistent backtest | run `196..200` 中五个本批 run；每方案 72 条 prediction、17 条月度指标，合计 `360 + 85` |
+| gray_live | run `1762..1806` 中本批 45 个唯一 run；每方案 9 条，合计 45 条 prediction 和 45 条 run log |
+| 日期分区 | 历史 target `2025-01-10..2026-05-29`；gray target `2026-06-05..2026-07-31`；重叠和重复均为 0 |
+| API / frontend | active API 总数 52；五个周平均格子均显示 `GAPFLIP_V5` 和 2026-07-31 部署时间；控制台 error 为 0 |
+| 调度边界 | 用户要求暂不考虑周度调度；admission=`gray`、capabilities=`[]`，scheduler 未加载，`scheduled_live=0` |
+| 算法边界 | 未评审、反编译或修改算法内部逻辑；只验收平台输入、Contract、确定性、截止隔离、标准输出和落库 |
+
+本条证明五个方案已经生产激活，完整历史和 6–7 月灰度均已入库并在前端可见。
+因 scheduler 明确延期，当前不标记为通用 SOP 的 `Onboarding Complete` 或
+`Production Observed`。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。

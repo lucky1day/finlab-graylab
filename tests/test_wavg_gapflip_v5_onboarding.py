@@ -1,4 +1,4 @@
-"""五个 WAVG GAPFLIP V5 交付身份与生产首次登记配置回归测试。"""
+"""五个 WAVG GAPFLIP V5 交付身份与生产激活配置回归测试。"""
 
 from __future__ import annotations
 
@@ -77,10 +77,10 @@ def _sha256(path: Path | None) -> str:
 
 
 class WavgGapflipV5OnboardingTests(unittest.TestCase):
-    def test_exact_delivery_identity_and_production_draft_are_frozen(
+    def test_exact_delivery_identity_and_production_active_are_frozen(
         self,
     ) -> None:
-        """逐方案冻结交付字节、业务契约、复合身份与首次登记生命周期。"""
+        """逐方案冻结交付字节、业务契约、复合身份与生产生命周期。"""
         for scheme_id, expected in SCHEMES.items():
             with self.subTest(scheme_id=scheme_id):
                 config = load_scheme_config(
@@ -141,8 +141,8 @@ class WavgGapflipV5OnboardingTests(unittest.TestCase):
                     ),
                     f"{scheme_id}__h1__{tenor}",
                 )
-                self.assertEqual(config.status, "paused")
-                self.assertEqual(config.version_status, "draft")
+                self.assertEqual(config.status, "active")
+                self.assertEqual(config.version_status, "active")
 
 
 if __name__ == "__main__":

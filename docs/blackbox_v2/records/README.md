@@ -26,3 +26,5 @@
 - [CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json](CGB_CAUSAL_WK_3Y_PRODUCTION_ACCEPTANCE_20260730.evidence.json)：该方案 active、72 条历史、9 条灰度、API/前端和调度隔离的生产终验摘要。
 - [ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.md](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.md)：1Y T+1 日频方案的 PR 修复、七 Gate、生产激活、337 条历史、43 条灰度和既有 launchd 日频链路验收记录。
 - [ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json](ONE_Y_T1_QUOTE_STATE_HV_ONBOARDING_20260730.evidence.json)：`one_y_t1_quote_state_hv_v1@d6d0cb43aacd` 的 DB/API/前端、runner canary 与 launchd 挂载机器可读未签名摘要。
+- [WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md](WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md)：PR #20 五个周平均 GAPFLIP V5 方案的生产激活、360 条历史、45 条灰度、API/前端和调度隔离记录。
+- [WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json](WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.evidence.json)：五个 exact identity/version、35 个持久化 Gate、run 和日期分区的机器可读未签名摘要。

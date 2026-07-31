@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-07-30
+**最后核验日期**：2026-07-31
 
 本文只保留当前已验证结论。较早的逐日状态、数据库快照、旧规模与整改过程已冻结
 到[历史状态记录](records/status/README.md)；未完成工作的排序查看[TODO](TODO.md)。
@@ -109,6 +109,7 @@ schema 3 且 acceptance `ACCEPTED`；二次运行 7 个 `hit`、27 reuse、0 tra
 
 ## Blackbox V2 与灰度批次
 
+- PR #20 五个 `wavg_*_gapflip_v5` 均为 active，每方案为 `72 backtest + 17 monthly + 9 gray`；五个周平均格子均已前端可见，scheduler 按用户要求未挂载，`scheduled_live=0`。专项证据见[五方案生产入库记录](blackbox_v2/records/WAVG_GAPFLIP_V5_5SCHEMES_ONBOARDING_20260731.md)。
 - `cgb_causal_wk_1y@cba824c27f0e` 已 active；旧版已 retired 且业务数据清零。
   新历史 run `193` 为 `72 + 17` 条，新灰度 run `1674..1682` 共 9 条；scheduler
   admission 为 gray/零能力，详见[技术入库记录](blackbox_v2/records/CGB_CAUSAL_WK_1Y_ONBOARDING_20260730.md)。
@@ -126,8 +127,7 @@ schema 3 且 acceptance `ACCEPTED`；二次运行 7 个 `hit`、27 reuse、0 tra
 - 月度 updater 按 active Registry 的 `1Y/3Y/5Y/7Y/10Y` 幂等运行，8 个 active
   月度方案保持 `19 signal / 18 valid`。
 - `weekly_10y_d_overlay_0529` 的生产 `202625` 冲突、四个真实信号缺口和历史 `200951` 双表日历边界均已闭合，当前为 `81/80`；当前输入与旧 benchmark 仍有独立 vintage 漂移，CompareGate 保持 fail-closed。
-- 6 个 active `weekly_point` 方案均为 `81/80`；另有 3 个 active
-  `weekly_average` 身份，按独立 `task_type` 统计，不混入 point 候选计数。
+- 6 个 active `weekly_point` 方案均为 `81/80`；另有 8 个 active `weekly_average` 身份，按独立 `task_type` 统计，不混入 point 候选计数。
 - Python 后端仍需在独立授权维护窗口重启，以使已合并的 Registry Actual 范围和
   统一展示起点由服务端进程生效。
 
