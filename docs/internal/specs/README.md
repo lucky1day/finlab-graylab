@@ -7,3 +7,4 @@
 **最后核验日期**：2026-07-24
 
 - [2026-07-21-t5-no-foreign-lgbm-ablation-design.md](2026-07-21-t5-no-foreign-lgbm-ablation-design.md)
+- [2026-08-01-conservative-cleanup-phase-2-design.md](2026-08-01-conservative-cleanup-phase-2-design.md)
