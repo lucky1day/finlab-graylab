@@ -16,6 +16,9 @@ from sqlalchemy.exc import (
 )
 
 from shared.models import PredictionRecord
+from tests.cache_qualification_fixtures import (
+    trusted_cache_use_qualification,
+)
 
 
 def _generation(
@@ -120,9 +123,6 @@ def _cache_qualification():
         cache_use_qualification_sha256,
     )
     from shared.liwei_0616_phase_a_cache import PhaseACacheSpec
-    from tests.test_liwei_0616_phase_a_cache_generations import (
-        Liwei0616ImmutableCacheGenerationTests,
-    )
 
     spec = PhaseACacheSpec(
         cache_family="liwei_0616_5y_v31",
@@ -134,11 +134,9 @@ def _cache_qualification():
         horizon=5,
         purge_gap=5,
     )
-    trusted = (
-        Liwei0616ImmutableCacheGenerationTests._trusted_qualification(
-            spec,
-            base_scheme_id="alpha",
-        )
+    trusted = trusted_cache_use_qualification(
+        spec,
+        base_scheme_id="alpha",
     )
     trusted["qualification"]["scheme_version"] = "alpha-v1"
     trusted["qualification_sha256"] = cache_use_qualification_sha256(

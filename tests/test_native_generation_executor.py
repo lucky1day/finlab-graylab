@@ -8,6 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests.cache_qualification_fixtures import (
+    trusted_cache_use_qualification,
+)
 from tests.test_native_generation_input_artifacts import _generation_context
 
 
@@ -753,9 +756,6 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             CACHE_USE_QUALIFICATION_ENV,
         )
         from shared.liwei_0616_phase_a_cache import PhaseACacheSpec
-        from tests.test_liwei_0616_phase_a_cache_generations import (
-            Liwei0616ImmutableCacheGenerationTests,
-        )
 
         spec = PhaseACacheSpec(
             cache_family="liwei_0616_5y_v31",
@@ -767,12 +767,9 @@ class NativeGenerationSubprocessTests(unittest.TestCase):
             horizon=5,
             purge_gap=5,
         )
-        qualification = (
-            Liwei0616ImmutableCacheGenerationTests
-            ._trusted_qualification(
-                spec,
-                base_scheme_id="daily_demo",
-            )
+        qualification = trusted_cache_use_qualification(
+            spec,
+            base_scheme_id="daily_demo",
         )
         captured: dict[str, str] = {}
 
