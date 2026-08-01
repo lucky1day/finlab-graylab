@@ -1254,7 +1254,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
             compose_blackbox_input_bundle,
             create_snapshot_from_frames,
         )
-        from tests.test_blackbox_v2_backtest_persistence import _cases, _output
+        from tests.blackbox_backtest_fixtures import (
+            backtest_output,
+            historical_cases,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -1270,7 +1273,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 expected_columns={name: list(frame.columns) for name, frame in _snapshot_frames().items()},
                 schema_version="data-bridge-v1",
             )
-            request = _cases(1)[0].request
+            request = historical_cases(1)[0].request
             artifact = freeze_platform_input(
                 "api-wind-date-v1",
                 pd.DataFrame(
@@ -1319,7 +1322,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     persist_backtest=True,
                     engine_factory=lambda: SimpleNamespace(dispose=lambda: None),
                 )
-                output = _output(205)
+                output = backtest_output(205)
                 metric_count = len(output.monthly_metrics)
                 historical_runtime_files: list[str] = []
 
@@ -1363,7 +1366,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                         "environment_fingerprint": "e" * 64,
                     }),
                     patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
-                    patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(205)) as build_cases,
+                    patch(
+                        "harness.blackbox_v2.gates.build_historical_cases",
+                        return_value=historical_cases(205),
+                    ) as build_cases,
                     patch(
                         "harness.blackbox_v2.gates.run_blackbox_historical_backtest",
                         side_effect=run_history,
@@ -1564,7 +1570,10 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
         from shared.blackbox_v2.intake import intake_delivery
         from shared.blackbox_v2.requests import write_request
         from shared.blackbox_v2.snapshot import create_snapshot_from_frames
-        from tests.test_blackbox_v2_backtest_persistence import _cases, _output
+        from tests.blackbox_backtest_fixtures import (
+            backtest_output,
+            historical_cases,
+        )
 
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {"HARNESS_AUTH_SECRET": "secret"}):
             root = Path(tmpdir)
@@ -1575,7 +1584,7 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                 expected_columns={name: list(frame.columns) for name, frame in _snapshot_frames().items()},
                 schema_version="data-bridge-v1",
             )
-            request = _cases(1)[0].request
+            request = historical_cases(1)[0].request
             state = InputState(snapshot, write_request(request, root / "request.json"), request)
             token = issue_token(
                 config.scheme_id, "backtest_persist", "2026-07-16",
@@ -1605,8 +1614,14 @@ class BlackboxV2HarnessGateTests(unittest.TestCase):
                     "environment_fingerprint": "e" * 64,
                 }),
                 patch("harness.blackbox_v2.gates._environment_fingerprint", return_value="e" * 64),
-                patch("harness.blackbox_v2.gates.build_historical_cases", return_value=_cases(100)),
-                patch("harness.blackbox_v2.gates.run_blackbox_historical_backtest", return_value=_output()),
+                patch(
+                    "harness.blackbox_v2.gates.build_historical_cases",
+                    return_value=historical_cases(100),
+                ),
+                patch(
+                    "harness.blackbox_v2.gates.run_blackbox_historical_backtest",
+                    return_value=backtest_output(),
+                ),
                 patch("harness.blackbox_v2.gates.persist_backtest_output_atomic", return_value=9),
                 patch("harness.blackbox_v2.gates.snapshot_backtest_scope_counts", side_effect=[counts, counts]),
             ):
