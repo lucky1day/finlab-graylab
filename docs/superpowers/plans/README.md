@@ -20,3 +20,4 @@
 | [WAVG GAPFLIP V5 五个周平均方案生产入库](2026-07-31-wavg-gapflip-v5-production-onboarding.md) | PR #20 合并、五方案 exact admission、生产激活、历史与灰度写库、前端验收和调度隔离 |
 | [3Y ADYN T+1 双方案生产灰度入库](2026-07-31-three-y-adyn-t1-production-gray-onboarding.md) | PR #21 合并、双方案 exact 生命周期、历史与连续灰度写库、API/公网验收和既有 daily-gray 挂载 |
 | [日度调度冗余清理第一批](2026-08-01-daily-scheduler-first-cleanup.md) | 测试先行删除孤立 capacity admission 代码、专属测试和失真日度草案，并验证生产行为边界不变 |
+| [日度离线 Capacity Gate 退役](2026-08-01-daily-capacity-gate-retirement.md) | 测试先行迁移 policy v2 常量、删除离线 gate/CLI，并收敛为 attestation 专属测试 |
