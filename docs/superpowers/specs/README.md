@@ -4,7 +4,7 @@
 
 **目标读者**：平台架构、实现和审计人员
 
-**最后核验日期**：2026-07-31
+**最后核验日期**：2026-08-01
 
 | 设计记录 | 范围 |
 |---|---|
@@ -18,3 +18,4 @@
 | [1Y T+1 Blackbox 生产灰度入库](2026-07-30-one-y-t1-production-gray-design.md) | PR #19 修复、两文件交付生命周期、历史/灰度分区和既有 launchd 日频执行边界 |
 | [week_id=200951 权威日历边界修复](2026-07-31-week-200951-calendar-boundary-repair-design.md) | 跨年周双表最小补数、数据库身份围栏、历史复现和 benchmark 漂移拆分 |
 | [3Y ADYN T+1 双方案生产灰度入库](2026-07-31-three-y-adyn-t1-production-gray-design.md) | PR #21 两文件交付、exact 生命周期、历史/灰度分区和既有 daily-gray 日频执行边界 |
+| [日度调度冗余清理第一批](2026-08-01-daily-scheduler-first-cleanup-design.md) | 保守删除已孤立的容量 admission 代码、专属测试和失真日度草案，不改变当前生产调度行为 |
