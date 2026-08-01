@@ -8,4 +8,5 @@
 
 本目录保存实施过程，不定义当前规则。
 
+- [实施计划](plans/README.md)
 - [设计规格](specs/README.md)
