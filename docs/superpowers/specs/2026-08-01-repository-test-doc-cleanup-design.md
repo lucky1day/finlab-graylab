@@ -40,13 +40,14 @@ python -m unittest discover -s tests
 
 在 `pyproject.toml` 增加独立 `test` extra，固定 `pytest==9.1.1`。增加
 `requirements-test.txt` 作为现有 `bond_factor_lab_service` 环境上的测试工具安装入口，
-它引用项目的 test extra，不把 pytest 写入服务运行依赖 `requirements-service.txt`。
+它与 test extra 固定同一个 pytest 版本，但不从仓库根安装本项目，避免生成 build/egg-info
+中间产物；pytest 不写入服务运行依赖 `requirements-service.txt`。
 
 一次性执行：
 
 ```bash
 conda run -n bond_factor_lab_service \
-  python -m pip install -e '.[test]'
+  python -m pip install -r requirements-test.txt
 ```
 
 安装后，唯一全量测试入口为：

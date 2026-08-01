@@ -38,7 +38,7 @@ Create `requirements-test.txt` with:
 
 ```text
 # Test tooling layered onto the existing bond_factor_lab_service environment.
--e .[test]
+pytest==9.1.1
 ```
 
 - [ ] **Step 3: Install the declared test extra once into the shared service environment**
@@ -47,7 +47,7 @@ Run:
 
 ```bash
 conda run -n bond_factor_lab_service \
-  python -m pip install -e '.[test]'
+  python -m pip install -r requirements-test.txt
 ```
 
 Expected: exit code 0; pytest 9.1.1 is installed without a temporary `PYTHONPATH`.
