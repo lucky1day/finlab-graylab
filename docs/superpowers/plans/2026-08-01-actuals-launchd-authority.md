@@ -25,57 +25,57 @@ def test_build_scheduler_never_registers_actuals_jobs(self) -> None:
     from scheduler import main as scheduler_main
 
     for coordinator_mode in ("legacy", "ledger"):
-        engine = SimpleNamespace(dispose=Mock())
-        with (
-            self.subTest(coordinator_mode=coordinator_mode),
-            patch.dict(
-                os.environ,
-                {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
-            ),
-            patch.object(
-                scheduler_main,
-                "_daily_coordinator_mode",
-                return_value=coordinator_mode,
-            ),
-            patch.object(
-                scheduler_main,
-                "discover_schemes",
-                return_value=[],
-            ),
-            patch.object(
-                scheduler_main,
-                "_preflight_source_runtime_database",
-                return_value=None,
-            ),
-            patch.object(
-                scheduler_main,
-                "_sync_registry",
-                return_value=None,
-            ),
-            patch.object(
-                scheduler_main,
-                "create_engine_from_env",
-                return_value=engine,
-            ),
-            patch.object(
-                scheduler_main,
-                "build_daily_direct_cache_authorities",
-                return_value={},
-            ),
-        ):
-            scheduler = scheduler_main.build_scheduler()
+        with self.subTest(coordinator_mode=coordinator_mode):
+            engine = SimpleNamespace(dispose=Mock())
+            with (
+                patch.dict(
+                    os.environ,
+                    {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
+                ),
+                patch.object(
+                    scheduler_main,
+                    "_daily_coordinator_mode",
+                    return_value=coordinator_mode,
+                ),
+                patch.object(
+                    scheduler_main,
+                    "discover_schemes",
+                    return_value=[],
+                ),
+                patch.object(
+                    scheduler_main,
+                    "_preflight_source_runtime_database",
+                    return_value=None,
+                ),
+                patch.object(
+                    scheduler_main,
+                    "_sync_registry",
+                    return_value=None,
+                ),
+                patch.object(
+                    scheduler_main,
+                    "create_engine_from_env",
+                    return_value=engine,
+                ),
+                patch.object(
+                    scheduler_main,
+                    "build_daily_direct_cache_authorities",
+                    return_value={},
+                ),
+            ):
+                scheduler = scheduler_main.build_scheduler()
 
-        try:
-            actuals_job_ids = sorted(
-                job.id
-                for job in scheduler.get_jobs()
-                if job.id.startswith("actuals:")
-            )
-        finally:
-            if scheduler.running:
-                scheduler.shutdown(wait=False)
+            try:
+                actuals_job_ids = sorted(
+                    job.id
+                    for job in scheduler.get_jobs()
+                    if job.id.startswith("actuals:")
+                )
+            finally:
+                if scheduler.running:
+                    scheduler.shutdown(wait=False)
 
-        self.assertEqual([], actuals_job_ids)
+            self.assertEqual([], actuals_job_ids)
 ```
 
 - [ ] **Step 2: 运行新测试并确认预期红灯**
