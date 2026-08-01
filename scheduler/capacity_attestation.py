@@ -1,7 +1,6 @@
 """容量证据的精确候选与可信采集契约。
 
-本模块只验证结构和候选绑定。CMS 来源认证由
-``scheduler.capacity_admission`` 在 runtime admission 边界完成。
+本模块只验证结构和候选绑定，不负责运行时调度准入。
 """
 
 from __future__ import annotations

@@ -49,7 +49,6 @@ SCHEDULER_RELEASE_ROOTS = (
 )
 SCHEDULER_RELEASE_REQUIRED_FILES = frozenset(
     {
-        "scheduler/capacity_admission.py",
         "scheduler/capacity_attestation.py",
         "scheduler/capacity_candidate_runtime.py",
         "scheduler/daily_policy.py",

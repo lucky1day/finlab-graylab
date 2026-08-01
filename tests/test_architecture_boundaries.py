@@ -202,6 +202,23 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                 actual,
             )
 
+    def test_retired_daily_capacity_admission_modules_are_absent(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        retired = (
+            project_root / "scheduler" / "capacity_admission.py",
+            project_root / "scheduler" / "capacity_runtime_admission.py",
+        )
+
+        self.assertEqual(
+            [],
+            [
+                path.relative_to(project_root).as_posix()
+                for path in retired
+                if path.exists()
+            ],
+            "retired daily capacity admission modules must not return",
+        )
+
     def test_current_repository_has_no_layer_inversions(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
 
