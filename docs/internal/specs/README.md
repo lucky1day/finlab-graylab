@@ -6,7 +6,5 @@
 
 **最后核验日期**：2026-07-24
 
-- [2026-07-12-liwei-0616-incremental-phase-a-cache-design.md](2026-07-12-liwei-0616-incremental-phase-a-cache-design.md)
-- [2026-07-12-liwei-full-oos-gray-models-design.md](2026-07-12-liwei-full-oos-gray-models-design.md)
 - [2026-07-21-t5-no-foreign-lgbm-ablation-design.md](2026-07-21-t5-no-foreign-lgbm-ablation-design.md)
 - [2026-08-01-low-risk-repository-hygiene-design.md](2026-08-01-low-risk-repository-hygiene-design.md)
