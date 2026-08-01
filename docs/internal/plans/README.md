@@ -7,4 +7,3 @@
 **最后核验日期**：2026-07-24
 
 - [2026-07-01-daily-0629-sop-closure.md](2026-07-01-daily-0629-sop-closure.md)
-- [2026-08-01-pytest-suite-reduction.md](2026-08-01-pytest-suite-reduction.md)
