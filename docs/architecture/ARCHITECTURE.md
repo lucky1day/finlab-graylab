@@ -24,7 +24,7 @@
 │  │                 │     │  /api/schemes                  │ │
 │  │  daily 07:03    │     │  /api/metrics/{scheme_id}      │ │
 │  │  weekly 11:30   │     │  /api/predictions?scheme_id=...│ │
-│  │  actuals jobs   │     │  /api/actuals                  │ │
+│  │ prediction jobs │     │  /api/actuals                  │ │
 │  │                 │     │                                │ │
 │  │  ┌───────────┐  │     │                                │ │
 │  │  │ discovery │  │     │  Static: native HTML/CSS/JS    │ │
@@ -59,6 +59,10 @@
 │  Nav: "实盘测试"             │
 └─────────────────────────────┘
 ```
+
+Actuals 不挂载在常驻 APScheduler 中。独立
+`com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
+`scheduler.main --run-once actuals` 进程；三个时点和进程退出状态均由 launchd 管理。
 
 方案执行层有两个显式驱动：Native V1 仅运行政策清单中的存量 adapter；Blackbox V2 接收所有后续新增方案，通过 DataBridge 三频同代快照和隔离 CLI 执行。两者都转换为 `PredictionRecord`，之后共用 Registry、actual join、落库、API 和前端链路。
 
@@ -106,7 +110,7 @@ launchd scheduler 使用 `RunAtLoad=true` 与 `KeepAlive=true`，用户登录后
 ### 2.2 实际方向更新（每日08:30、19:00与23:45）
 
 ```
-Scheduler在每日08:30、19:00和23:45触发 actuals 更新任务；交易日 daily/weekly 刷新到当日，非交易日 daily/weekly 刷新到上一交易日，monthly 仍刷新到自然 run date
+launchd 在每日08:30、19:00和23:45启动一次性 Actuals 任务；交易日 daily/weekly 刷新到当日，非交易日 daily/weekly 刷新到上一交易日，monthly 仍刷新到自然 run date
   → 从 api_wind_daily 读取最新收盘收益率
   → 计算各tenor的T+1和T+5方向
   → 写入 t_scheme_actuals (UPSERT)
@@ -572,9 +576,11 @@ frontend/
 
 ### 7.1 进程管理（launchd）
 
-两个launchd plist:
-- `com.bond-factor-lab.scheduler.plist` — 调度器进程
-- `com.bond-factor-lab.backend.plist` — FastAPI后端
+当前核心 launchd plist：
+
+- `com.bond-factor-lab.scheduler.plist` — 常驻预测调度器，不注册 Actuals job；
+- `com.bond-factor-lab.actuals.plist` — `08:30/19:00/23:45` 一次性 Actuals 任务；
+- `com.bond-factor-lab.backend.plist` — FastAPI 后端。
 
 ### 7.2 端口分配
 

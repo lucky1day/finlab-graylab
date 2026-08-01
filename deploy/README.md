@@ -253,6 +253,19 @@ cp deploy/launchd/com.bond-factor-lab.backend.plist ~/Library/LaunchAgents/
 launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 ```
 
+### 3a) 本地 Mac：Actuals 一次性 LaunchAgent
+
+`deploy/launchd/com.bond-factor-lab.actuals.plist` 是 Actuals 的唯一生产调度权威，
+在每日 `08:30/19:00/23:45` 执行：
+
+```text
+python -m scheduler.main --run-once actuals
+```
+
+该任务 `RunAtLoad=false`、不设置 `KeepAlive`；常驻
+`com.bond-factor-lab.scheduler` 不得再注册 `actuals:0830`、`actuals:1900` 或
+`actuals:2345`。本节只记录现行入口，本批不重载 installed plist 或 scheduler。
+
 ### 4) 本地 Mac：日频 coordinator 待切换 rollout
 
 已经批准的日频目标机器 policy 是 `deploy/daily_scheduler_policy_v2.json`：1 个
