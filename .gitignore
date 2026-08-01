@@ -17,7 +17,7 @@ backtest_artifacts/
 # Published DataBridge files are runtime data, not source artifacts.
 data/data_bridge/current/
 
-# Clean export tarballs produced by scripts/export_clean_repo.sh.
+# Local repository export tarballs.
 dist/
 
 # Generated comparison reports. Keep only lightweight documentation/manifest files.
