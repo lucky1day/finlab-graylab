@@ -195,37 +195,6 @@ def build_weekly_average_label_map_from_rows(
     return labels
 
 
-def apply_weekly_average_labels(
-    rows: list[dict[str, Any]],
-    labels: Mapping[int, WeeklyAverageLabel],
-) -> list[dict[str, Any]]:
-    """用周平均标签覆盖通用周频回测行的 label/future_return。"""
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        feature_week_id = _int_or_none((row.get("extra") or {}).get("feature_week_id"))
-        label = labels.get(feature_week_id) if feature_week_id is not None else None
-        if label is None:
-            continue
-        extra = dict(row.get("extra") or {})
-        extra.update(
-            {
-                "target_rule": WEEKLY_AVERAGE_TARGET_RULE,
-                "feature_yield": label.feature_yield,
-                "target_yield": label.target_yield,
-                "future_return": label.future_return,
-            }
-        )
-        result.append(
-            {
-                **row,
-                "label": label.label,
-                "target_date": label.target_date,
-                "extra": extra,
-            }
-        )
-    return result
-
-
 def build_weekly_backtest_rows(
     weekly_df: pd.DataFrame,
     *,

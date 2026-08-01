@@ -1272,7 +1272,7 @@ def execute_scheme(
 
     执行前校验：
     1. config.yaml status == 'active'（本地配置）
-    2. Native 维持既有 Registry 与 active/shadow 版本校验
+    2. Native 要求 Registry active 且精确版本状态仅为 active
     3. Blackbox 要求 exact active 版本、批准人与 composite Registry 身份全部一致
     """
     if prediction_phase not in VALID_PREDICTION_PHASES:
@@ -1988,6 +1988,9 @@ def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None
     """校验方案在 DB 注册与版本激活状态，返回 (通过, 原因)。"""
     from sqlalchemy import text
 
+    if not isinstance(scheme_version, str) or not scheme_version.strip():
+        return False, f"scheme {scheme_id} scheme_version is required for activation verification"
+
     with engine.begin() as conn:
         # 1. 校验 t_scheme_registry 中该 base 方案至少有一个 active 业务方案行。
         active_rows = conn.execute(
@@ -2004,26 +2007,25 @@ def _verify_scheme_activation(engine, scheme_id: str, scheme_version: str | None
         if int(active_rows or 0) == 0:
             return False, f"scheme {scheme_id} not found in t_scheme_registry"
 
-        # 2. 校验 t_scheme_versions 中当前版本为 active/shadow
-        if scheme_version:
-            ver_row = conn.execute(
-                text(
-                    "SELECT status FROM t_scheme_versions "
-                    "WHERE scheme_id = :scheme_id AND scheme_version = :scheme_version "
-                    "ORDER BY created_at DESC LIMIT 1"
-                ),
-                {"scheme_id": scheme_id, "scheme_version": scheme_version},
-            ).one_or_none()
-            if ver_row is None:
-                return False, (
-                    f"scheme {scheme_id} version {scheme_version} not found in t_scheme_versions; "
-                    "run 'python -m harness activate --scheme-id {id}' first"
-                )
-            if ver_row[0] not in ("active", "shadow"):
-                return False, (
-                    f"scheme {scheme_id} version {scheme_version} status={ver_row[0]}, "
-                    "must be active or shadow"
-                )
+        # 2. 校验 t_scheme_versions 中当前精确版本仅允许 active。
+        ver_row = conn.execute(
+            text(
+                "SELECT status FROM t_scheme_versions "
+                "WHERE scheme_id = :scheme_id AND scheme_version = :scheme_version "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            {"scheme_id": scheme_id, "scheme_version": scheme_version},
+        ).one_or_none()
+        if ver_row is None:
+            return False, (
+                f"scheme {scheme_id} version {scheme_version} not found in t_scheme_versions; "
+                "run 'python -m harness activate --scheme-id {id}' first"
+            )
+        if ver_row[0] != "active":
+            return False, (
+                f"scheme {scheme_id} version {scheme_version} status={ver_row[0]}, "
+                "must be active"
+            )
 
     return True, "ok"
 

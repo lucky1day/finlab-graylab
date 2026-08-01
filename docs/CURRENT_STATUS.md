@@ -4,10 +4,9 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-07-31
+**最后核验日期**：2026-08-01
 
-本文只保留当前已验证结论。较早的逐日状态、数据库快照、旧规模与整改过程已冻结
-到[历史状态记录](records/status/README.md)；未完成工作的排序查看[TODO](TODO.md)。
+本文只保留当前已验证结论。较早的逐日状态、数据库快照、旧规模与整改过程已冻结到[历史状态记录](records/status/README.md)；未完成工作的排序查看[TODO](TODO.md)。
 
 ## 当前政策
 
@@ -18,6 +17,7 @@
 - [日频信号 SLA](architecture/DAILY_SIGNAL_SLA.md)是已经批准、待切换的目标
   合同，不是当前已安装生产状态的证明。历史记录中的旧规模和实验不再定义目标
   门禁，但其中冻结的生产现场事实仍须保留到新证据取代。
+- 后续以 launchd + plist 作为真实生产调度控制面。任务是否已生产挂载只能由 installed plist、`launchctl` loaded state 和对应日志共同证明；`scheduler.main`/APScheduler 只是部分 plist 启动的子进程实现，新增或迁移生产任务必须先定义并验收对应 LaunchAgent。
 
 ## 已批准的日频目标合同
 
@@ -43,7 +43,7 @@ epoch cutover 或真实 occurrence 已完成。目标合同直接校验冻结 po
 |---|---|
 | schema | production 仍为 migration 017；migration 018 尚未应用 |
 | rollout | `rollout=legacy`；ledger 尚未启用 |
-| 服务 | backend 以 legacy mode 提供 HTTP 200；scheduler 与 v2-preflight 均未加载 |
+| launchd 现场 | backend 与 scheduler 已加载且有运行中 PID；actuals 与 daily-gray 已加载为按时启动的一次性任务；v2-preflight 已加载但无运行中 PID，最近退出状态为 1；installed plist 只读比对显示 actuals、daily-gray 与仓库模板一致，backend、scheduler、v2-preflight 存在漂移 |
 | cache | 7 个 production Liwei family 已完成 schema 3 bootstrap；同 authority 二次运行 7/7 `hit`、零训练，cache-local direct authority 通过 |
 | DataBridge | `full-20260730-081804-9794ce962c1a` 已于 08:18 晚到发布并通过 `--check-only`；daily cutoff 为 2026-07-29 |
 | 控制面 | machine-global epoch 与 ledger cutover 尚未执行；没有 production run fence 生效证据 |

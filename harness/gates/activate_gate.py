@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import hashlib
+import re
+from dataclasses import dataclass, fields, is_dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from harness.authorization import (
     mark_token_used,
@@ -16,9 +20,51 @@ from harness.contracts.onboarding_policy import validate_onboarding_policy
 from harness.gates.base import Gate, guarded_result, utc_now
 from harness.result import Evidence, GateResult, GateStatus
 
+if TYPE_CHECKING:
+    from scheduler.discovery import SchemeConfig
+
+
+_ROOT_STATUS_KEY = re.compile(r"^status[ \t]*:")
+_ROOT_STATUS_VALUE = re.compile(
+    r"^(?P<prefix>status[ \t]*:[ \t]*)(?P<value>paused|active)"
+    r"(?P<suffix>[ \t]*(?:#.*)?)(?P<newline>\r?\n)?$"
+)
+_NATIVE_ACTIVATION_DERIVED_FIELDS = frozenset(
+    {
+        "status",
+        "version_status",
+        "code_hash",
+        "config_hash",
+        "manifest_hash",
+        "scheme_version",
+    }
+)
+
+
+@dataclass(frozen=True)
+class NativeActivationPreflight:
+    """Native 激活前冻结的文件、版本与业务身份。"""
+
+    validation_config: "SchemeConfig"
+    config_bytes: bytes
+    config_text: str
+    expected_active_config_bytes: bytes
+    expected_active_config_text: str
+    expected_active_config_hash: str
+    expected_active_scheme_version: str
+    code_hash: str
+    manifest_hash: str | None
+    business_identity: tuple[tuple[str, object], ...]
+
+    def business_identity_for(
+        self,
+        cfg: "SchemeConfig",
+    ) -> tuple[tuple[str, object], ...]:
+        return _native_activation_business_identity(cfg)
+
 
 class ActivationGate(Gate):
-    """方案激活 gate：需 action=activate 的授权 token，将 config.status paused→active。"""
+    """Native 激活 gate：授权后执行 paused→active 或 active 精确版本重批准。"""
 
     name = "activate"
     requires_authorization = True
@@ -121,8 +167,47 @@ class ActivationGate(Gate):
                 finished_at=finished_at,
             )
 
-        # 校验 gate 历史：当前 paused 版本必须有一次 stage=all 全通过的 harness 运行。
+        # 校验 gate 历史：当前精确版本必须有一次 stage=all 全通过的 harness 运行。
         validation_scheme_version = _compute_scheme_version(ctx)
+        binding_errors = _native_activation_authorization_errors(
+            auth,
+            validation_scheme_version,
+        )
+        if binding_errors:
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.BLOCKED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("validation_scheme_version", validation_scheme_version),
+                    Evidence("authorization_required", True),
+                ],
+                errors=binding_errors,
+                started_at=started_at,
+                finished_at=finished_at,
+            )
+        try:
+            preflight = _strict_native_activation_preflight(
+                ctx,
+                validation_scheme_version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            finished_at = utc_now()
+            return GateResult(
+                gate_name=self.name,
+                status=GateStatus.FAILED,
+                passed=False,
+                evidence=[
+                    Evidence("scheme_id", ctx.scheme_id),
+                    Evidence("validation_scheme_version", validation_scheme_version),
+                    Evidence("strict_discovery", False),
+                ],
+                errors=[f"Native validation config failed strict discovery: {exc}"],
+                started_at=started_at,
+                finished_at=finished_at,
+            )
         gate_history_errors = _verify_gate_history(ctx, validation_scheme_version)
         if gate_history_errors:
             finished_at = utc_now()
@@ -145,21 +230,28 @@ class ActivationGate(Gate):
         audit_dir = ctx.report_dir / "activation_authorization"
         audit_path = write_authorization_audit(auth, audit_dir)
 
-        previous_status = str(raw.get("status"))
-        if previous_status == "active":
-            new_status = "active"
-            flipped = False
-        else:
-            new_status = "active"
-            flipped = _flip_status_to_active(config_path)
-
+        previous_status = preflight.validation_config.status
+        new_status = "active"
+        flipped = False
         try:
-            activated_scheme_version = _sync_registry_after_activation(ctx)
+            if previous_status != "active":
+                flipped = _write_expected_active_config(
+                    config_path,
+                    preflight,
+                )
+            activated_scheme_version = _sync_registry_after_activation(
+                ctx,
+                preflight=preflight,
+                approved_by=auth.issued_by.strip(),
+                approved_at=datetime.now(timezone.utc),
+            )
         except Exception as exc:
             rollback_error: str | None = None
-            if flipped and previous_status != "active":
+            status_rolled_back = previous_status == "active"
+            if previous_status != "active":
                 try:
                     _set_status(config_path, previous_status)
+                    status_rolled_back = True
                 except Exception as rollback_exc:
                     rollback_error = str(rollback_exc)
             finished_at = utc_now()
@@ -177,7 +269,7 @@ class ActivationGate(Gate):
                     Evidence("previous_status", previous_status),
                     Evidence("new_status", new_status),
                     Evidence("status_flipped", flipped),
-                    Evidence("status_rolled_back", rollback_error is None and flipped and previous_status != "active"),
+                    Evidence("status_rolled_back", status_rolled_back),
                     Evidence("registry_synced", False),
                 ],
                 errors=errors,
@@ -233,26 +325,58 @@ def _cron_of(raw: dict) -> str | None:
     return None
 
 
-def _flip_status_to_active(config_path: Path) -> bool:
-    """将 config.yaml 中 status 行从 paused 翻转为 active（保留其余文本）。"""
-    return _set_status(config_path, "active")
-
-
 def _set_status(config_path: Path, status: str) -> bool:
-    """替换 config.yaml 中的 status 行（保留其余文本）。"""
-    text = config_path.read_text(encoding="utf-8")
+    """只替换唯一根级 status 值，保留其它字节。"""
+    original = config_path.read_bytes()
+    updated = _replace_root_status(original, status)
+    if updated == original:
+        return False
+    config_path.write_bytes(updated)
+    return True
+
+
+def _replace_root_status(config_bytes: bytes, status: str) -> bytes:
+    """纯函数：只替换唯一根级 status 值。"""
+    if status not in {"paused", "active"}:
+        raise ValueError(f"unsupported Native lifecycle status: {status}")
+    try:
+        text = config_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("config.yaml must be valid UTF-8") from exc
     lines = text.splitlines(keepends=True)
-    flipped = False
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("status:"):
-            newline = "\n" if line.endswith("\n") else ""
-            lines[index] = f"status: {status}{newline}"
-            flipped = True
-            break
-    if flipped:
-        config_path.write_text("".join(lines), encoding="utf-8")
-    return flipped
+    root_status_indexes = [
+        index for index, line in enumerate(lines) if _ROOT_STATUS_KEY.match(line)
+    ]
+    if len(root_status_indexes) != 1:
+        raise ValueError(
+            "config.yaml must contain exactly one root-level status field"
+        )
+    index = root_status_indexes[0]
+    match = _ROOT_STATUS_VALUE.fullmatch(lines[index])
+    if match is None:
+        raise ValueError("root-level status must be exactly paused or active")
+    lines[index] = (
+        match.group("prefix")
+        + status
+        + match.group("suffix")
+        + (match.group("newline") or "")
+    )
+    return "".join(lines).encode("utf-8")
+
+
+def _write_expected_active_config(
+    config_path: Path,
+    preflight: NativeActivationPreflight,
+) -> bool:
+    """仅当 config 仍等于 preflight 快照时写入预期 active 字节。"""
+    current = config_path.read_bytes()
+    if current != preflight.config_bytes:
+        raise RuntimeError("config.yaml drifted after Native activation preflight")
+    expected = preflight.expected_active_config_bytes
+    if current == expected:
+        return False
+    config_path.write_bytes(expected)
+    return True
 
 
 def _compute_scheme_version(ctx: GateContext) -> str:
@@ -265,33 +389,244 @@ def _compute_scheme_version(ctx: GateContext) -> str:
     return compute_scheme_version(code_hash, config_hash)
 
 
+def _native_activation_authorization_errors(
+    auth,
+    validation_scheme_version: str,
+) -> list[str]:
+    """校验 Native 激活授权绑定验证版本并携带可审计签发者。"""
+    if auth is None:
+        return ["authorization token is required"]
+    errors: list[str] = []
+    if getattr(auth, "scheme_version", None) != validation_scheme_version:
+        errors.append(
+            "activate authorization scheme_version mismatch: "
+            f"token={getattr(auth, 'scheme_version', None)}, "
+            f"validation={validation_scheme_version}"
+        )
+    issued_by = getattr(auth, "issued_by", None)
+    if not isinstance(issued_by, str) or not issued_by.strip():
+        errors.append("activate authorization issued_by must be a non-empty string")
+    issued_at = getattr(auth, "issued_at", None)
+    try:
+        parsed_issued_at = datetime.fromisoformat(issued_at)
+    except (TypeError, ValueError):
+        errors.append("activate authorization issued_at must be an ISO datetime")
+    else:
+        if parsed_issued_at.tzinfo is None:
+            errors.append("activate authorization issued_at must include timezone")
+    return errors
+
+
+def _strict_native_activation_preflight(
+    ctx: GateContext,
+    validation_scheme_version: str,
+) -> NativeActivationPreflight:
+    """授权消费前冻结并校验 Native 验证版本的完整文件身份。"""
+    from scheduler.discovery import discover_schemes
+    from shared.versioning import (
+        compute_code_hash,
+        compute_manifest_hash,
+        compute_scheme_version,
+    )
+
+    config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+    configs = discover_schemes(
+        schemes_root=ctx.project_root / "schemes",
+        strict=True,
+    )
+    target = next((cfg for cfg in configs if cfg.scheme_id == ctx.scheme_id), None)
+    if target is None:
+        raise ValueError(f"scheme not discovered before activation: {ctx.scheme_id}")
+    if getattr(target, "runtime_type", None) != "native_adapter":
+        raise ValueError(
+            "validation config runtime_type is not native_adapter: "
+            f"{getattr(target, 'runtime_type', None)}"
+        )
+    if target.status not in {"paused", "active"}:
+        raise ValueError(
+            "validation config status must be paused or active: "
+            f"{target.status}"
+        )
+    if target.scheme_version != validation_scheme_version:
+        raise ValueError(
+            "validation config scheme_version drifted: "
+            f"discovered={target.scheme_version}, expected={validation_scheme_version}"
+        )
+    config_bytes = config_path.read_bytes()
+    try:
+        config_text = config_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("config.yaml must be valid UTF-8") from exc
+    scheme_dir = config_path.parent
+    actual_code_hash = compute_code_hash(scheme_dir)
+    actual_manifest_hash = compute_manifest_hash(scheme_dir)
+    actual_config_hash = hashlib.sha256(config_bytes).hexdigest()
+    mismatches = []
+    for field_name, discovered, actual in (
+        ("code_hash", target.code_hash, actual_code_hash),
+        ("config_hash", target.config_hash, actual_config_hash),
+        ("manifest_hash", target.manifest_hash, actual_manifest_hash),
+    ):
+        if discovered != actual:
+            mismatches.append(
+                f"{field_name}: discovered={discovered!r}, actual={actual!r}"
+            )
+    if mismatches:
+        raise RuntimeError(
+            "Native validation files drifted during strict discovery: "
+            + "; ".join(mismatches)
+        )
+    if _replace_root_status(config_bytes, target.status) != config_bytes:
+        raise RuntimeError("root-level status does not match strict discovery")
+
+    expected_active_bytes = _replace_root_status(config_bytes, "active")
+    expected_active_text = expected_active_bytes.decode("utf-8")
+    expected_active_config_hash = hashlib.sha256(
+        expected_active_bytes
+    ).hexdigest()
+    expected_active_scheme_version = compute_scheme_version(
+        actual_code_hash,
+        expected_active_config_hash,
+    )
+    return NativeActivationPreflight(
+        validation_config=target,
+        config_bytes=config_bytes,
+        config_text=config_text,
+        expected_active_config_bytes=expected_active_bytes,
+        expected_active_config_text=expected_active_text,
+        expected_active_config_hash=expected_active_config_hash,
+        expected_active_scheme_version=expected_active_scheme_version,
+        code_hash=actual_code_hash,
+        manifest_hash=actual_manifest_hash,
+        business_identity=_native_activation_business_identity(target),
+    )
+
+
+def _native_activation_business_identity(
+    cfg: "SchemeConfig",
+) -> tuple[tuple[str, object], ...]:
+    """冻结除生命周期和派生哈希外的完整 SchemeConfig 业务身份。"""
+    return tuple(
+        (field.name, _freeze_identity_value(getattr(cfg, field.name)))
+        for field in fields(cfg)
+        if field.name not in _NATIVE_ACTIVATION_DERIVED_FIELDS
+    )
+
+
+def _freeze_identity_value(value: object) -> object:
+    if is_dataclass(value):
+        return tuple(
+            (field.name, _freeze_identity_value(getattr(value, field.name)))
+            for field in fields(value)
+        )
+    if isinstance(value, dict):
+        return tuple(
+            sorted(
+                (str(key), _freeze_identity_value(item))
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_identity_value(item) for item in value)
+    return value
+
+
 REQUIRED_ACTIVATE_GATES = frozenset({
     "static", "input", "unit", "dry-run", "compare", "backtest", "api-readiness",
 })
 
 
-def _sync_registry_after_activation(ctx: GateContext) -> str:
-    """激活 config 后同步 registry 与 scheme version，并返回激活后的版本号。"""
-    from scheduler.discovery import discover_schemes
-    from scheduler.repository import sync_scheme_registry
+def _sync_registry_after_activation(
+    ctx: GateContext,
+    *,
+    preflight: NativeActivationPreflight,
+    approved_by: str,
+    approved_at: datetime,
+) -> str:
+    """严格重载目标 config，并可信激活其翻转后的精确版本。"""
+    from scheduler.repository import apply_native_activation_state
 
-    schemes_root = ctx.project_root / "schemes"
-    configs = discover_schemes(schemes_root=schemes_root, strict=False)
-    target = next((cfg for cfg in configs if cfg.scheme_id == ctx.scheme_id), None)
-    if target is None:
-        raise ValueError(f"scheme not discovered after activation: {ctx.scheme_id}")
-    if target.status != "active":
-        raise ValueError(f"activated config status is not active: {target.status}")
+    target = _validate_native_activated_config(ctx, preflight)
     engine = ctx.engine_factory() if ctx.engine_factory is not None else _db_engine()
     owns_engine = ctx.engine_factory is None
     if engine is None:
         raise RuntimeError("cannot connect to database for registry sync")
     try:
-        sync_scheme_registry(engine, configs)
+        activated_version = apply_native_activation_state(
+            engine,
+            target,
+            approved_by=approved_by,
+            approved_at=approved_at,
+        )
     finally:
         if owns_engine and engine is not None and hasattr(engine, "dispose"):
             engine.dispose()
-    return target.scheme_version
+    return activated_version
+
+
+def _validate_native_activated_config(
+    ctx: GateContext,
+    preflight: NativeActivationPreflight,
+) -> "SchemeConfig":
+    """在创建 Engine 前校验 active config 与 preflight 预期完全一致。"""
+    from scheduler.discovery import discover_schemes
+    from shared.versioning import compute_code_hash, compute_manifest_hash
+
+    config_path = ctx.project_root / "schemes" / ctx.scheme_id / "config.yaml"
+    if config_path.read_bytes() != preflight.expected_active_config_bytes:
+        raise RuntimeError("activated config bytes do not match preflight expectation")
+    configs = discover_schemes(
+        schemes_root=ctx.project_root / "schemes",
+        strict=True,
+    )
+    target = next((cfg for cfg in configs if cfg.scheme_id == ctx.scheme_id), None)
+    if target is None:
+        raise ValueError(f"scheme not discovered after activation: {ctx.scheme_id}")
+    if config_path.read_bytes() != preflight.expected_active_config_bytes:
+        raise RuntimeError("activated config bytes drifted during strict discovery")
+    actual_code_hash = compute_code_hash(config_path.parent)
+    actual_manifest_hash = compute_manifest_hash(config_path.parent)
+    mismatches = []
+    expected_values = {
+        "status": "active",
+        "version_status": "active",
+        "code_hash": preflight.code_hash,
+        "manifest_hash": preflight.manifest_hash,
+        "config_hash": preflight.expected_active_config_hash,
+        "scheme_version": preflight.expected_active_scheme_version,
+        "business_identity": preflight.business_identity,
+    }
+    actual_values = {
+        "status": target.status,
+        "version_status": target.version_status,
+        "code_hash": target.code_hash,
+        "manifest_hash": target.manifest_hash,
+        "config_hash": target.config_hash,
+        "scheme_version": target.scheme_version,
+        "business_identity": preflight.business_identity_for(target),
+    }
+    for field_name, expected in expected_values.items():
+        if actual_values[field_name] != expected:
+            mismatches.append(
+                f"{field_name}: expected={expected!r}, "
+                f"actual={actual_values[field_name]!r}"
+            )
+    if actual_code_hash != preflight.code_hash:
+        mismatches.append(
+            f"code_hash on disk: expected={preflight.code_hash!r}, "
+            f"actual={actual_code_hash!r}"
+        )
+    if actual_manifest_hash != preflight.manifest_hash:
+        mismatches.append(
+            f"manifest_hash on disk: expected={preflight.manifest_hash!r}, "
+            f"actual={actual_manifest_hash!r}"
+        )
+    if mismatches:
+        raise RuntimeError(
+            "activated Native identity does not match preflight: "
+            + "; ".join(mismatches)
+        )
+    return target
 
 
 def _verify_gate_history(ctx: GateContext, scheme_version: str) -> list[str]:

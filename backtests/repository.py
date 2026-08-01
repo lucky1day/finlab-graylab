@@ -371,46 +371,6 @@ def update_backtest_run_summary(
         )
 
 
-def latest_backtest_run_id(
-    engine: Engine,
-    *,
-    benchmark_id: str,
-    scheme_id: str,
-    data_source: str,
-    start_date: str | None = None,
-    end_date: str | None = None,
-) -> int | None:
-    """读取 canonical latest success backtest_run_id。"""
-    filters = [
-        "benchmark_id = :benchmark_id",
-        "scheme_id = :scheme_id",
-        "data_source = :data_source",
-    ]
-    params: dict[str, Any] = {
-        "benchmark_id": benchmark_id,
-        "scheme_id": scheme_id,
-        "data_source": data_source,
-    }
-    if start_date is not None:
-        filters.append("start_date = :start_date")
-        params["start_date"] = start_date
-    if end_date is not None:
-        filters.append("end_date = :end_date")
-        params["end_date"] = end_date
-    sql = text(
-        f"""
-        SELECT backtest_run_id
-        FROM v_latest_backtest_run
-        WHERE {" AND ".join(filters)}
-        ORDER BY id DESC
-        LIMIT 1
-        """
-    )
-    with engine.begin() as conn:
-        value = conn.execute(sql, params).scalar_one_or_none()
-    return int(value) if value is not None else None
-
-
 def replace_backtest_predictions(engine: Engine, run_id: int, rows: Iterable[dict[str, Any]]) -> int:
     """替换某个 run 的逐日预测明细。"""
     materialized = list(rows)

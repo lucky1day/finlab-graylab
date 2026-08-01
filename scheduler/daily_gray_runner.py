@@ -1,6 +1,6 @@
 """每日 gray_live 信号自动生成器（最简调度）。
 
-复用已验证的 gray_live 执行链，为全部 active 日频方案（17 Native + 9 Blackbox V2 = 26）
+复用已验证的 gray_live 执行链，为 launchd policy 冻结的 28 个 active 日频方案
 每交易日各出一次信号，统一写 gray_live。不走 ledger/epoch/migration-018 重装甲路径。
 
 设计要点：
@@ -29,43 +29,24 @@ from dataclasses import dataclass
 from datetime import date
 
 from scheduler.calendar import is_trading_day
+from scheduler.daily_gray_launchd_policy import (
+    PREDICTION_PHASE,
+    DailyGrayLaunchdPolicyError,
+    load_daily_gray_launchd_policy,
+)
 from scheduler.discovery import discover_schemes
 from scheduler.executor import DEFAULT_ALGO_ENV, execute_scheme
 from scheduler.repository import create_engine_from_env
 
 logger = logging.getLogger(__name__)
 
-PREDICTION_PHASE = "gray_live"
-
 # 单机默认资源约束：32 逻辑核，重方案各 ~10 workers，安全同时 3 个。
 DEFAULT_MAX_HEAVY = 3
 DEFAULT_LIGHT_CONCURRENCY = 6
 
-# Liwei consumer -> 其依赖的 publisher（publisher 必须先成功扩缓存）。
-# 其余 Liwei 方案 publisher==consumer（自给自足），无跨方案依赖。
-LIWEI_CONSUMER_DEPENDENCIES: dict[str, str] = {
-    "liwei_0616_10y01_cons_say_k3_div_k10": "liwei_0616_10y01_full_oos_k3_div_k10",
-    "liwei_0616_10y02_cons_say_k3_div_k5": "liwei_0616_10y01_full_oos_k3_div_k10",
-    "liwei_0616_cons_sda_k3_div_k10": "liwei_0616_5y01_full_oos_k3_div_k10",
-}
 
-# 重方案（实际重训、约占 10 workers）。其余日频方案视为轻方案。
-# Liwei consumer 命中缓存不训练，属轻方案。
-HEAVY_SCHEMES: frozenset[str] = frozenset({
-    "daily_5y_2_v28",
-    "daily_7y_1_v28",
-    "liwei_0616_10y01_full_oos_k3_div_k10",
-    "liwei_0616_5y01_full_oos_k3_div_k10",
-    "liwei_0616_5y_auc_static_all_k3_div_k10",
-    "liwei_0616_5y_auc_yearly_all_k3_div_k10",
-    "liwei_0616_5y_ic_yearly_all_k3_div_k10",
-    "liwei_0616_7y01_cons_say_k3_div_k10",
-    "liwei_0616_7y03_cons_all_k3_div_k8",
-})
-
-
-def _is_heavy(scheme_id: str) -> bool:
-    return scheme_id in HEAVY_SCHEMES
+class DailyGrayRunnerInputError(ValueError):
+    """daily-gray runner 的调用参数不符合冻结 policy。"""
 
 
 @dataclass
@@ -89,19 +70,9 @@ class RunnerSummary:
         self._lock = threading.Lock()
 
 
-def _daily_active_schemes():
-    """返回全部 status=active 且 frequency=daily 的方案配置（按 scheme_id 排序）。"""
-    schemes = [
-        cfg
-        for cfg in discover_schemes()
-        if cfg.status == "active" and cfg.frequency == "daily"
-    ]
-    schemes.sort(key=lambda cfg: cfg.scheme_id)
-    return schemes
-
-
 def _tally(summary: RunnerSummary, scheme_id: str, status: str, records: int, error) -> None:
     """线程安全地把单方案结果计入汇总。"""
+    normalized_records = int(records or 0)
     with summary._lock:
         summary.total += 1
         if status == "success":
@@ -112,8 +83,8 @@ def _tally(summary: RunnerSummary, scheme_id: str, status: str, records: int, er
             summary.skipped += 1
         else:
             summary.failed += 1
-        summary.records_written += int(records or 0)
-        summary.details.append((scheme_id, status, int(records or 0), error))
+        summary.records_written += normalized_records
+        summary.details.append((scheme_id, status, normalized_records, error))
 
 
 def _run_one(cfg, predict_date: str, algo_env: str, summary: RunnerSummary) -> str:
@@ -125,18 +96,31 @@ def _run_one(cfg, predict_date: str, algo_env: str, summary: RunnerSummary) -> s
             algo_env=algo_env,
             prediction_phase=PREDICTION_PHASE,
         )
+        status = result.status
+        records_written = result.records_written
+        error_msg = result.error_msg
+        _tally(
+            summary,
+            cfg.scheme_id,
+            status,
+            records_written,
+            error_msg,
+        )
     except Exception as exc:  # noqa: BLE001 — 单方案失败隔离，整批继续
         logger.exception("scheme %s raised during gray_live run", cfg.scheme_id)
         _tally(summary, cfg.scheme_id, "failed", 0, str(exc))
         return "failed"
-    _tally(summary, cfg.scheme_id, result.status, result.records_written, result.error_msg)
-    logger.info(
-        "[gray_live] %s -> %s (records=%s)",
-        cfg.scheme_id,
-        result.status,
-        result.records_written,
-    )
-    return result.status
+
+    try:
+        logger.info(
+            "[gray_live] %s -> %s (records=%s)",
+            cfg.scheme_id,
+            status,
+            records_written,
+        )
+    except Exception:  # noqa: BLE001 — 日志失败不得改变已汇总的执行结果
+        pass
+    return status
 
 
 def run(
@@ -149,10 +133,40 @@ def run(
 ) -> RunnerSummary:
     """对 predict_date 执行全部 active 日频方案的 gray_live 出信号（并发）。
 
-    非交易日直接返回。重方案（HEAVY_SCHEMES）限并发 max_heavy 且优先启动；
-    轻方案以 light_concurrency 并发跑；Liwei consumer 仅在其 publisher success 后提交。
-    only 非空时仅执行指定 scheme_id 子集（验证用）。
+    每次先执行 strict discovery 并与冻结 policy 精确核对。非交易日直接返回。
+    policy 标记的重方案限并发 max_heavy 且优先启动；轻方案以
+    light_concurrency 并发跑；consumer 仅在 policy 声明的 publisher success 后提交。
+    only 非空时仅执行 policy 内指定的 scheme_id 子集（验证用）。
     """
+    try:
+        discovered = discover_schemes(strict=True)
+    except Exception as exc:
+        raise DailyGrayLaunchdPolicyError(
+            f"strict discovery failed: {exc}"
+        ) from exc
+    policy = load_daily_gray_launchd_policy(discovered=discovered)
+
+    policy_ids = set(policy.schemes)
+    if only is not None and not only:
+        raise DailyGrayRunnerInputError(
+            "explicit --only selection must not be empty"
+        )
+    if only is not None:
+        unknown = only - policy_ids
+        if unknown:
+            raise DailyGrayRunnerInputError(
+                "unknown --only scheme ids outside-policy: "
+                f"{sorted(unknown)}"
+            )
+
+    discovered_by_id = {cfg.scheme_id: cfg for cfg in discovered}
+    schemes = [
+        discovered_by_id[scheme_id]
+        for scheme_id in policy.schemes
+    ]
+    if only is not None:
+        schemes = [cfg for cfg in schemes if cfg.scheme_id in only]
+
     engine = create_engine_from_env()
     try:
         trading = is_trading_day(engine, predict_date)
@@ -164,31 +178,35 @@ def run(
         logger.info("%s 非交易日，跳过 gray_live 出信号", predict_date)
         return summary
 
-    schemes = _daily_active_schemes()
-    if only:
-        schemes = [cfg for cfg in schemes if cfg.scheme_id in only]
-        missing = only - {cfg.scheme_id for cfg in schemes}
-        if missing:
-            logger.warning("--only 指定了非 active-daily 方案，已忽略: %s", sorted(missing))
-
     by_id = {cfg.scheme_id: cfg for cfg in schemes}
     # publisher 完成状态（scheme_id -> status），供 consumer 依赖判定。
     pub_status: dict[str, str] = {}
     pub_lock = threading.Lock()
     pub_done = threading.Condition(pub_lock)
 
-    heavy = [c for c in schemes if _is_heavy(c.scheme_id)]
-    light = [c for c in schemes if not _is_heavy(c.scheme_id)]
+    heavy = [
+        cfg
+        for cfg in schemes
+        if policy.schemes[cfg.scheme_id].execution_class == "heavy"
+    ]
+    light = [
+        cfg
+        for cfg in schemes
+        if policy.schemes[cfg.scheme_id].execution_class == "light"
+    ]
 
     def heavy_task(cfg) -> None:
-        status = _run_one(cfg, predict_date, algo_env, summary)
-        # 若该重方案是某 consumer 的 publisher，登记状态并唤醒等待者。
-        with pub_done:
-            pub_status[cfg.scheme_id] = status
-            pub_done.notify_all()
+        status = "failed"
+        try:
+            status = _run_one(cfg, predict_date, algo_env, summary)
+        finally:
+            # 无论 worker 如何结束，都发布终态，避免 consumer 永久等待。
+            with pub_done:
+                pub_status[cfg.scheme_id] = status
+                pub_done.notify_all()
 
     def light_task(cfg) -> None:
-        publisher = LIWEI_CONSUMER_DEPENDENCIES.get(cfg.scheme_id)
+        publisher = policy.schemes[cfg.scheme_id].publisher_scheme_id
         if publisher is not None:
             # consumer：等待其 publisher 完成（仅当 publisher 也在本次运行集合内）。
             if publisher in by_id:
@@ -270,16 +288,20 @@ def main() -> int:
 
     only = (
         {s.strip() for s in args.only.split(",") if s.strip()}
-        if args.only
+        if args.only is not None
         else None
     )
-    summary = run(
-        args.predict_date,
-        algo_env=args.algo_env,
-        only=only,
-        max_heavy=args.max_heavy,
-        light_concurrency=args.light_concurrency,
-    )
+    try:
+        summary = run(
+            args.predict_date,
+            algo_env=args.algo_env,
+            only=only,
+            max_heavy=args.max_heavy,
+            light_concurrency=args.light_concurrency,
+        )
+    except (DailyGrayLaunchdPolicyError, DailyGrayRunnerInputError) as exc:
+        logger.error("daily-gray preflight failed: %s", exc)
+        return 2
     _print_summary(summary)
 
     if not summary.is_trading_day:

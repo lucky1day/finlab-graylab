@@ -1,0 +1,293 @@
+{
+  "schema_version": "daily-gray-launchd-policy-v1",
+  "plist_label": "com.bond-factor-lab.daily-gray",
+  "entrypoint": "scheduler.daily_gray_runner",
+  "prediction_phase": "gray_live",
+  "expected_execution_count": 28,
+  "expected_target_count": 32,
+  "schemes": [
+    {
+      "scheme_id": "daily_10y_lgbm_10y04_0629",
+      "scheme_version": "6907040e2e62",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenors": ["10Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "daily_1y_xgb_1y13_0629",
+      "scheme_version": "c0f2971ccb5c",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenors": ["1Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "daily_5y_2_v28",
+      "scheme_version": "fce0d1126dc5",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["5Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "daily_5y_lgbm_5y10_0629",
+      "scheme_version": "4e22b346d723",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenors": ["5Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "daily_7y_1_v28",
+      "scheme_version": "febc16e47919",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["7Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_10y01_cons_say_k3_div_k10",
+      "scheme_version": "481f79b25fae",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["10Y"],
+      "execution_class": "light",
+      "publisher_scheme_id": "liwei_0616_10y01_full_oos_k3_div_k10"
+    },
+    {
+      "scheme_id": "liwei_0616_10y01_full_oos_k3_div_k10",
+      "scheme_version": "35e461e60705",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["10Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_10y02_cons_say_k3_div_k5",
+      "scheme_version": "99077e04ed02",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["10Y"],
+      "execution_class": "light",
+      "publisher_scheme_id": "liwei_0616_10y01_full_oos_k3_div_k10"
+    },
+    {
+      "scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10",
+      "scheme_version": "b03b275b7bf9",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["5Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_5y_auc_static_all_k3_div_k10",
+      "scheme_version": "f0bf56b80fb4",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["5Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_5y_auc_yearly_all_k3_div_k10",
+      "scheme_version": "d5de982fbfc6",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["5Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_5y_ic_yearly_all_k3_div_k10",
+      "scheme_version": "5e716cd7ed7b",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["5Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_7y01_cons_say_k3_div_k10",
+      "scheme_version": "84ed148f96e5",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["7Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_7y03_cons_all_k3_div_k8",
+      "scheme_version": "6b8d4047dc8a",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["7Y"],
+      "execution_class": "heavy"
+    },
+    {
+      "scheme_id": "liwei_0616_cons_sda_k3_div_k10",
+      "scheme_version": "bdb322ef65fd",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["5Y"],
+      "execution_class": "light",
+      "publisher_scheme_id": "liwei_0616_5y01_full_oos_k3_div_k10"
+    },
+    {
+      "scheme_id": "one_y_t1_quote_state_hv_v1",
+      "scheme_version": "d6d0cb43aacd",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenors": ["1Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_v1",
+      "scheme_version": "8d583560c9f1",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["1Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w252_l7_v1",
+      "scheme_version": "103c93bbc913",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["1Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_a_w350_l7_v1",
+      "scheme_version": "86b458c568a5",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["1Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "one_y_t5_liq_excess_b_w252_l7_v1",
+      "scheme_version": "ba00891cd179",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["1Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "t1_daily",
+      "scheme_version": "bdf54ed4cfc0",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenors": ["5Y", "10Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "t5_daily",
+      "scheme_version": "a7df258abafe",
+      "runtime_type": "native_adapter",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["3Y", "5Y", "7Y", "10Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "ten_y_t5_maj3_k3_ic_static_v1",
+      "scheme_version": "c54b90bcafa7",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["10Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "ten_y_t5_maj4_k3_ic_static_v1",
+      "scheme_version": "6bdabf86b4a6",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["10Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "ten_y_t5_maj4_k3_ic_yearly_v1",
+      "scheme_version": "af04567a19c3",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["10Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "ten_y_t5_say_k5_sharpe_static_v1",
+      "scheme_version": "e8137af4b655",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+5",
+      "horizon": 5,
+      "target_tenors": ["10Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "three_y_adyn_lb1_k3_v1",
+      "scheme_version": "98233f0cb9ef",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenors": ["3Y"],
+      "execution_class": "light"
+    },
+    {
+      "scheme_id": "three_y_adyn_lb2_k1_v1",
+      "scheme_version": "47c7c1776db0",
+      "runtime_type": "blackbox_v2",
+      "frequency": "daily",
+      "task_type": "T+1",
+      "horizon": 1,
+      "target_tenors": ["3Y"],
+      "execution_class": "light"
+    }
+  ]
+}

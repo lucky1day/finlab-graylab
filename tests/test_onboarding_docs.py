@@ -33,7 +33,9 @@ DEPLOY_README = PROJECT_ROOT / "deploy" / "README.md"
 DAILY_SIGNAL_SLA = DOCS_ROOT / "architecture" / "DAILY_SIGNAL_SLA.md"
 TODO = DOCS_ROOT / "TODO.md"
 CURRENT_STATUS = DOCS_ROOT / "CURRENT_STATUS.md"
+ARCHITECTURE = DOCS_ROOT / "architecture" / "ARCHITECTURE.md"
 CODE_ARCHITECTURE = DOCS_ROOT / "architecture" / "CODE_ARCHITECTURE.md"
+NATIVE_MAINTENANCE_SOP = DOCS_ROOT / "sop" / "NATIVE_V1_MAINTENANCE_SOP.md"
 TEN_Y_T5_RECORD = (
     DOCS_ROOT
     / "blackbox_v2"
@@ -84,6 +86,39 @@ class OnboardingDocumentationTests(unittest.TestCase):
             (PROJECT_ROOT / "AGENTS.md").read_bytes(),
             (PROJECT_ROOT / "CLAUDE.md").read_bytes(),
         )
+
+    def test_launchd_plist_is_the_documented_production_scheduler_control_plane(self) -> None:
+        root_policy = (PROJECT_ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        current = CURRENT_STATUS.read_text(encoding="utf-8")
+        architecture = ARCHITECTURE.read_text(encoding="utf-8")
+        code_architecture = CODE_ARCHITECTURE.read_text(encoding="utf-8")
+
+        for text in (root_policy, current, architecture, code_architecture):
+            self.assertIn("launchd + plist", text)
+            self.assertIn("真实生产调度控制面", text)
+        self.assertIn("installed plist", current)
+        self.assertIn("`scheduler.main`/APScheduler", code_architecture)
+        self.assertIn("bootstrap/bootout/kickstart", root_policy)
+        self.assertIn("com.bond-factor-lab.daily-gray", architecture)
+        self.assertIn("07:00", architecture)
+        self.assertNotIn("daily 07:03", architecture)
+        self.assertIn("2026-08-01", architecture)
+        self.assertIn("一次性 daily-gray", code_architecture)
+
+    def test_native_daily_activation_coordinates_frozen_launchd_policy(self) -> None:
+        sop = NATIVE_MAINTENANCE_SOP.read_text(encoding="utf-8")
+
+        for marker in (
+            "deploy/daily_gray_launchd_policy_v1.json",
+            "scheduler.daily_gray_runner",
+            "activated_scheme_version",
+            "同一受控发布单元",
+            "下一次 07:00 launchd 触发前",
+            "整批 fail-closed",
+            "tests/test_daily_gray_launchd_policy.py",
+            "tests/test_daily_gray_runner.py",
+        ):
+            self.assertIn(marker, sop)
 
     def test_policy_declares_blackbox_as_only_new_scheme_runtime(self) -> None:
         raw = json.loads((PROJECT_ROOT / "deploy" / "onboarding_policy_v1.json").read_text(encoding="utf-8"))
@@ -789,7 +824,10 @@ class OnboardingDocumentationTests(unittest.TestCase):
         for marker in (
             "production 仍为 migration 017；migration 018 尚未应用",
             "`rollout=legacy`；ledger 尚未启用",
-            "backend 以 legacy mode 提供 HTTP 200；scheduler 与 v2-preflight 均未加载",
+            "backend 与 scheduler 已加载且有运行中 PID",
+            "actuals 与 daily-gray 已加载为按时启动的一次性任务",
+            "v2-preflight 已加载但无运行中 PID",
+            "backend、scheduler、v2-preflight 存在漂移",
             "7 个 production Liwei family 已完成 schema 3 bootstrap",
             "machine-global epoch 与 ledger cutover 尚未执行",
             "2026-07-28 为 12/29，2026-07-29 为 0/29",

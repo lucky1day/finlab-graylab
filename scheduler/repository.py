@@ -587,7 +587,7 @@ def bootstrap_blackbox_control_plane(
         raise ValueError(
             "expected certification Schema must match bbv2_cert_[A-Za-z0-9_]+"
         )
-    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
     effective_statuses = {scheme_id: "paused" for scheme_id in expected_registry_ids}
 
     with _blackbox_bootstrap_advisory_lock(
@@ -629,7 +629,7 @@ def bootstrap_blackbox_control_plane(
                 effective_statuses=effective_statuses,
             )
             version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
-            registry_rows = _read_blackbox_registry_rows_conn(
+            registry_rows = _read_scheme_registry_rows_conn(
                 conn,
                 cfg,
                 expected_registry_ids,
@@ -646,7 +646,7 @@ def bootstrap_blackbox_control_plane(
                 or version_row.get("approved_at") is not None
             ):
                 raise RuntimeError("Blackbox bootstrap version readback is not exact draft state")
-            registry_error = _blackbox_registry_identity_error(
+            registry_error = _registry_identity_error(
                 cfg,
                 expected_tenors,
                 expected_registry_ids,
@@ -694,7 +694,7 @@ def register_blackbox_draft_identity(
             "Blackbox draft registration requires expected_harness_run_id"
         )
 
-    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
     identity_ids = (cfg.scheme_id, *expected_registry_ids)
     identity_placeholders = ", ".join(
         f":identity_id_{index}" for index, _ in enumerate(identity_ids)
@@ -887,13 +887,13 @@ def register_blackbox_draft_identity(
                     "Blackbox draft registration version readback mismatch: "
                     + "; ".join(version_mismatches)
                 )
-            readback_registry = _read_blackbox_registry_rows_conn(
+            readback_registry = _read_scheme_registry_rows_conn(
                 conn,
                 cfg,
                 expected_registry_ids,
                 for_update=True,
             )
-            registry_error = _blackbox_registry_identity_error(
+            registry_error = _registry_identity_error(
                 cfg,
                 expected_tenors,
                 expected_registry_ids,
@@ -1189,12 +1189,58 @@ def sync_scheme_registry(engine: Engine, schemes: Iterable[SchemeConfig]) -> Non
                 )
                 effective_status = "active" if cfg.status == "active" and approved else "paused"
             else:
-                effective_status = cfg.status
+                effective_status = (
+                    "active"
+                    if _native_sync_can_grandfather_active(
+                        conn,
+                        cfg,
+                        version_row,
+                    )
+                    else "paused"
+                )
             for target_tenor in cfg.tenors:
                 effective_statuses[
                     registry_scheme_id(cfg.scheme_id, cfg.horizon, target_tenor)
                 ] = effective_status
         _sync_scheme_registry_conn(conn, scheme_list, effective_statuses=effective_statuses)
+
+
+def _native_sync_can_grandfather_active(
+    conn: Connection,
+    cfg: SchemeConfig,
+    version_row: Mapping[str, object] | None,
+) -> bool:
+    """仅在 pre-sync 精确版本和完整 Registry 均 active 时保留 Native active。"""
+    if (
+        cfg.status != "active"
+        or version_row is None
+        or version_row.get("scheme_id") != cfg.scheme_id
+        or version_row.get("scheme_version") != cfg.scheme_version
+        or version_row.get("runtime_type") != "native_adapter"
+        or version_row.get("status") != "active"
+    ):
+        return False
+    try:
+        expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+        registry_rows = _read_scheme_registry_rows_conn(
+            conn,
+            cfg,
+            expected_registry_ids,
+            for_update=True,
+        )
+    except (TypeError, ValueError):
+        return False
+    return (
+        _registry_identity_error(
+            cfg,
+            expected_tenors,
+            expected_registry_ids,
+            registry_rows,
+            expected_status="active",
+            expected_runtime_type="native_adapter",
+        )
+        is None
+    )
 
 
 def _sync_scheme_registry_conn(
@@ -1309,13 +1355,23 @@ def _upsert_discovered_scheme_version_conn(
     conn: Connection,
     cfg: SchemeConfig,
 ) -> Mapping[str, object] | None:
-    """锁定并同步发现版本；Blackbox 只允许插入 draft 或原样保留。"""
+    """锁定并同步发现版本；普通发现不得提升 Native/Blackbox 生命周期。"""
     existing = _read_scheme_version_conn(conn, cfg, for_update=True)
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
     if existing is not None and (
         runtime_type == "blackbox_v2" or existing.get("runtime_type") == "blackbox_v2"
     ):
         _raise_on_blackbox_version_metadata_conflict(existing, cfg)
+    if (
+        existing is not None
+        and runtime_type == "native_adapter"
+        and existing.get("runtime_type") != "native_adapter"
+    ):
+        raise ValueError(
+            "Native version runtime_type mismatch for "
+            f"{cfg.scheme_id}/{cfg.scheme_version}: "
+            f"stored={existing.get('runtime_type')!r}"
+        )
     _upsert_scheme_version_conn(
         conn,
         cfg,
@@ -1352,19 +1408,21 @@ def _upsert_scheme_version_conn(
     approved_by: str | None,
     approved_at: datetime | None,
 ) -> str:
-    """在调用方事务中写入精确版本；只有 trusted_status 可提升 Blackbox 生命周期。"""
+    """在调用方事务中写入精确版本；只有 trusted_status 可提升生命周期。"""
     if trusted_status is not None and trusted_status not in VERSION_STATUSES:
         raise ValueError(f"invalid trusted scheme version status: {trusted_status}")
     runtime_type = getattr(cfg, "runtime_type", "native_adapter")
-    configured_status = getattr(cfg, "version_status", cfg.status)
     if trusted_status is not None:
         status = trusted_status
-    elif runtime_type == "blackbox_v2":
-        status = "draft"
     else:
-        status = configured_status if configured_status in VERSION_STATUSES else "draft"
-    preserve_lifecycle = runtime_type == "blackbox_v2" and trusted_status is None
-    preserve_blackbox_evidence = preserve_lifecycle
+        status = "draft"
+    preserve_lifecycle = (
+        runtime_type in {"native_adapter", "blackbox_v2"}
+        and trusted_status is None
+    )
+    preserve_blackbox_evidence = (
+        runtime_type == "blackbox_v2" and trusted_status is None
+    )
     trusted_lifecycle = trusted_status is not None
     sql = text(
         """
@@ -1483,10 +1541,10 @@ def read_blackbox_lifecycle_state(engine: Engine, cfg: SchemeConfig) -> Blackbox
     """独立读取 Blackbox 精确版本和 composite Registry 生命周期状态。"""
     if getattr(cfg, "runtime_type", None) != "blackbox_v2":
         raise ValueError("Blackbox lifecycle read requires runtime_type=blackbox_v2")
-    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
     with engine.begin() as conn:
         version_row = _read_scheme_version_conn(conn, cfg, for_update=False)
-        registry_rows = _read_blackbox_registry_rows_conn(
+        registry_rows = _read_scheme_registry_rows_conn(
             conn,
             cfg,
             expected_registry_ids,
@@ -1508,7 +1566,7 @@ def read_blackbox_lifecycle_state(engine: Engine, cfg: SchemeConfig) -> Blackbox
     if len(statuses) != 1:
         raise RuntimeError(f"Blackbox Registry lifecycle statuses are inconsistent: {sorted(statuses)}")
     registry_status = next(iter(statuses))
-    registry_error = _blackbox_registry_identity_error(
+    registry_error = _registry_identity_error(
         cfg,
         expected_tenors,
         expected_registry_ids,
@@ -1594,7 +1652,7 @@ def _read_blackbox_execution_approval_conn(
         return denied(f"config scheme_version is empty for {base_scheme_id}")
 
     try:
-        expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+        expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
     except ValueError as exc:
         return denied(str(exc))
 
@@ -1632,14 +1690,14 @@ def _read_blackbox_execution_approval_conn(
     if not isinstance(approved_at_value, datetime):
         return denied("version approved_at must be datetime")
 
-    registry_rows = _read_blackbox_registry_rows_conn(
+    registry_rows = _read_scheme_registry_rows_conn(
         conn,
         cfg,
         expected_registry_ids,
         for_update=for_update,
     )
     registry_ids = tuple(str(row.get("scheme_id")) for row in registry_rows)
-    registry_error = _blackbox_registry_identity_error(
+    registry_error = _registry_identity_error(
         cfg,
         expected_tenors,
         expected_registry_ids,
@@ -1662,7 +1720,7 @@ def _read_blackbox_execution_approval_conn(
     )
 
 
-def _expected_blackbox_registry_identity(
+def _expected_registry_identity(
     cfg: SchemeConfig,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     tenors = tuple(str(target_tenor) for target_tenor in cfg.tenors)
@@ -1684,7 +1742,7 @@ def _expected_blackbox_registry_identity(
     return tenors, registry_ids
 
 
-def _read_blackbox_registry_rows_conn(
+def _read_scheme_registry_rows_conn(
     conn: Connection,
     cfg: SchemeConfig,
     expected_registry_ids: tuple[str, ...],
@@ -1716,13 +1774,14 @@ def _read_blackbox_registry_rows_conn(
     )
 
 
-def _blackbox_registry_identity_error(
+def _registry_identity_error(
     cfg: SchemeConfig,
     expected_tenors: tuple[str, ...],
     expected_registry_ids: tuple[str, ...],
     registry_rows: list[Mapping[str, object]],
     *,
     expected_status: str,
+    expected_runtime_type: str = "blackbox_v2",
 ) -> str | None:
     registry_ids = tuple(str(row.get("scheme_id")) for row in registry_rows)
     if not registry_rows:
@@ -1753,10 +1812,10 @@ def _blackbox_registry_identity_error(
                 f"registry {expected_id} status is {row.get('status')}, "
                 f"expected {expected_status}"
             )
-        if row.get("runtime_type") != "blackbox_v2":
+        if row.get("runtime_type") != expected_runtime_type:
             return (
                 f"registry {expected_id} runtime_type is {row.get('runtime_type')}, "
-                "expected blackbox_v2"
+                f"expected {expected_runtime_type}"
             )
         if row.get("task_type") != cfg.task_type:
             return (
@@ -1778,6 +1837,100 @@ def _blackbox_registry_identity_error(
                 f"expected {cfg.horizon}"
             )
     return None
+
+
+def apply_native_activation_state(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    approved_by: str,
+    approved_at: datetime,
+) -> str:
+    """在单一事务中可信激活一个 Native 精确版本及其目标 Registry。"""
+    if getattr(cfg, "runtime_type", None) != "native_adapter":
+        raise ValueError(
+            "trusted Native activation requires runtime_type=native_adapter"
+        )
+    if getattr(cfg, "status", None) != "active":
+        raise ValueError("trusted Native activation requires active config")
+    scheme_version = getattr(cfg, "scheme_version", None)
+    if not isinstance(scheme_version, str) or not scheme_version.strip():
+        raise ValueError("trusted Native activation requires non-empty scheme_version")
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise ValueError("approved_by must be a non-empty string")
+    if not isinstance(approved_at, datetime):
+        raise ValueError("approved_at must be datetime")
+
+    normalized_approver = approved_by.strip()
+    mysql_approved_at = _mysql_utc_datetime(approved_at)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+    effective_statuses = {
+        registry_id: "active" for registry_id in expected_registry_ids
+    }
+    with engine.begin() as conn:
+        _upsert_scheme_version_conn(
+            conn,
+            cfg,
+            trusted_status="active",
+            approved_by=normalized_approver,
+            approved_at=mysql_approved_at,
+        )
+        _sync_scheme_registry_conn(
+            conn,
+            [cfg],
+            effective_statuses=effective_statuses,
+        )
+        version_row = _read_scheme_version_conn(conn, cfg, for_update=True)
+        if version_row is None:
+            raise RuntimeError(
+                "trusted Native activation version readback missing: "
+                f"{cfg.scheme_id}/{scheme_version}"
+            )
+        actual_approved_at = version_row.get("approved_at")
+        if isinstance(actual_approved_at, datetime):
+            actual_approved_at = _mysql_utc_datetime(actual_approved_at)
+        expected_version_values = {
+            "scheme_id": cfg.scheme_id,
+            "scheme_version": scheme_version,
+            "runtime_type": "native_adapter",
+            "code_hash": cfg.code_hash,
+            "config_hash": cfg.config_hash,
+            "manifest_hash": cfg.manifest_hash,
+            "status": "active",
+            "approved_by": normalized_approver,
+            "approved_at": mysql_approved_at,
+        }
+        actual_version_values = dict(version_row)
+        actual_version_values["approved_at"] = actual_approved_at
+        mismatches = [
+            f"{field}: expected={expected!r}, got={actual_version_values.get(field)!r}"
+            for field, expected in expected_version_values.items()
+            if actual_version_values.get(field) != expected
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "trusted Native activation version readback mismatch: "
+                + "; ".join(mismatches)
+            )
+        registry_rows = _read_scheme_registry_rows_conn(
+            conn,
+            cfg,
+            expected_registry_ids,
+            for_update=True,
+        )
+        registry_error = _registry_identity_error(
+            cfg,
+            expected_tenors,
+            expected_registry_ids,
+            registry_rows,
+            expected_status="active",
+            expected_runtime_type="native_adapter",
+        )
+        if registry_error is not None:
+            raise RuntimeError(
+                f"trusted Native activation Registry readback mismatch: {registry_error}"
+            )
+    return scheme_version
 
 
 def apply_blackbox_lifecycle_state(
@@ -1806,7 +1959,7 @@ def apply_blackbox_lifecycle_state(
         raise ValueError("active Blackbox version requires approved_by and approved_at")
 
     mysql_approved_at = _mysql_utc_datetime(approved_at)
-    expected_tenors, expected_registry_ids = _expected_blackbox_registry_identity(cfg)
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
     effective_statuses = {
         registry_id: registry_status for registry_id in expected_registry_ids
     }
@@ -1855,13 +2008,13 @@ def apply_blackbox_lifecycle_state(
         ]
         if mismatches:
             raise RuntimeError("trusted lifecycle version readback mismatch: " + "; ".join(mismatches))
-        registry_rows = _read_blackbox_registry_rows_conn(
+        registry_rows = _read_scheme_registry_rows_conn(
             conn,
             cfg,
             expected_registry_ids,
             for_update=True,
         )
-        registry_error = _blackbox_registry_identity_error(
+        registry_error = _registry_identity_error(
             cfg,
             expected_tenors,
             expected_registry_ids,

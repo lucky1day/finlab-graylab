@@ -285,18 +285,6 @@ def choose_live_prediction_rows(
     ]
 
 
-def collapse_actual_facts(
-    rows: Iterable[Mapping[str, Any]],
-    *,
-    fact_name: str,
-) -> dict[tuple[str, str, str], int | None]:
-    """按业务事实键折叠同方向 actual，方向冲突时失败关闭。"""
-    return collapse_actual_facts_with_diagnostics(
-        rows,
-        fact_name=fact_name,
-    ).facts
-
-
 def collapse_actual_facts_with_diagnostics(
     rows: Iterable[Mapping[str, Any]],
     *,

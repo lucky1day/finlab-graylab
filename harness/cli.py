@@ -64,6 +64,16 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(
                 f"auth issue --action {args.action} requires --predict-date"
             )
+        if args.action == "activate":
+            if not isinstance(args.scheme_version, str) or not args.scheme_version.strip():
+                parser.error(
+                    "auth issue --action activate requires non-empty --scheme-version"
+                )
+            if not isinstance(args.issued_by, str) or not args.issued_by.strip():
+                parser.error(
+                    "auth issue --action activate requires non-empty --issued-by"
+                )
+        issued_by = args.issued_by if args.issued_by is not None else "harness"
         signal_gap_kwargs: dict[str, Any] = {}
         if args.action == "signal_gap_fill_write":
             required = {
@@ -111,7 +121,7 @@ def main(argv: list[str] | None = None) -> int:
             scheme_version=args.scheme_version,
             harness_run_id=args.harness_run_id,
             ttl_seconds=args.expires_in,
-            issued_by=args.issued_by,
+            issued_by=issued_by,
             backtest_start_date=args.backtest_start_date,
             **signal_gap_kwargs,
         )
@@ -529,7 +539,7 @@ def _build_parser() -> argparse.ArgumentParser:
     issue_parser.add_argument("--scheme-id", required=True)
     issue_parser.add_argument("--action", required=True)
     issue_parser.add_argument("--predict-date", default=None)
-    issue_parser.add_argument("--issued-by", default="harness")
+    issue_parser.add_argument("--issued-by", default=None)
     issue_parser.add_argument("--expires-in", type=int, default=None, dest="expires_in")
     issue_parser.add_argument("--scheme-version", default=None, dest="scheme_version")
     issue_parser.add_argument("--harness-run-id", default=None, dest="harness_run_id")

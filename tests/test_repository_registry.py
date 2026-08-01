@@ -243,6 +243,19 @@ class _AtomicEngine:
         return _AtomicBegin(self)
 
 
+class _TransactionalCaptureEngine:
+    def __init__(self, *, version_row: dict | None = None, registry_rows=None) -> None:
+        self.store = {
+            "version_row": deepcopy(version_row),
+            "registry_rows": deepcopy(registry_rows or []),
+            "prediction_rows": [],
+        }
+        self.begin_count = 0
+
+    def begin(self) -> _AtomicBegin:
+        return _AtomicBegin(self)
+
+
 def _blackbox_config(
     *,
     status: str = "active",
@@ -271,6 +284,44 @@ def _blackbox_config(
         environment_fingerprint="e" * 64,
         data_snapshot_id="snapshot-1",
     )
+
+
+def _native_config(
+    *,
+    status: str = "active",
+    scheme_version: str = "native-version-1",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        scheme_id="native_daily",
+        name="Native Daily",
+        description="native scheme",
+        horizon=1,
+        task_type="T+1",
+        tenors=["5Y"],
+        frequency="daily",
+        schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
+        status=status,
+        scheme_version=scheme_version,
+        code_hash="c" * 64,
+        config_hash="f" * 64,
+        manifest_hash=None,
+        runtime_type="native_adapter",
+        version_status=status,
+    )
+
+
+def _native_registry_row(**updates) -> dict:
+    row = {
+        "scheme_id": "native_daily__h1__5Y",
+        "base_scheme_id": "native_daily",
+        "runtime_type": "native_adapter",
+        "status": "active",
+        "task_type": "T+1",
+        "target_tenor": "5Y",
+        "horizon": 1,
+    }
+    row.update(updates)
+    return row
 
 
 def _call_for(store: dict, sql_fragment: str) -> tuple[str, object]:
@@ -559,34 +610,271 @@ class RegistrySyncTests(unittest.TestCase):
         self.assertEqual(engine.store["version_row"]["approved_at"], expected_mysql_value)
         self.assertEqual(state.approved_at, expected_mysql_value)
 
-    def test_native_active_sync_behavior_is_unchanged(self) -> None:
+    def test_unknown_active_native_sync_creates_draft_version_and_paused_registry(self) -> None:
         from scheduler.repository import sync_scheme_registry
 
         engine = _CaptureEngine()
-        cfg = SimpleNamespace(
-            scheme_id="native_daily",
-            name="Native Daily",
-            description="native scheme",
-            horizon=1,
-            task_type="T+1",
-            tenors=["5Y"],
-            frequency="daily",
-            schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
-            status="active",
-            scheme_version="native-version-1",
-            code_hash="c" * 64,
-            config_hash="f" * 64,
-            manifest_hash=None,
-            runtime_type="native_adapter",
-            version_status="active",
-        )
 
-        sync_scheme_registry(engine, [cfg])
+        sync_scheme_registry(engine, [_native_config()])
 
         _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
         _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
-        self.assertEqual(version_params["status"], "active")
+        self.assertEqual(version_params["status"], "draft")
+        self.assertEqual({row["status"] for row in registry_rows}, {"paused"})
+
+    def test_native_sync_preserves_existing_active_lifecycle_without_legacy_approval(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        existing = {
+            "scheme_id": "native_daily",
+            "scheme_version": "native-version-1",
+            "runtime_type": "native_adapter",
+            "status": "active",
+            "approved_by": None,
+            "approved_at": None,
+        }
+        engine = _CaptureEngine(
+            version_row=dict(existing),
+            registry_rows=[_native_registry_row()],
+        )
+
+        sync_scheme_registry(engine, [_native_config()])
+
+        self.assertEqual(engine.store["version_row"]["status"], "active")
+        self.assertIsNone(engine.store["version_row"]["approved_by"])
+        _, version_params = _call_for(engine.store, "INSERT INTO t_scheme_versions")
+        _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
+        registry_lock_sql, _ = next(
+            call
+            for call in engine.store["calls"]
+            if call[0].lstrip().startswith("SELECT")
+            and "FROM t_scheme_registry" in call[0]
+        )
+        self.assertTrue(version_params["preserve_lifecycle"])
+        self.assertIn("FOR UPDATE", registry_lock_sql)
         self.assertEqual({row["status"] for row in registry_rows}, {"active"})
+
+    def test_native_sync_does_not_grandfather_active_version_without_complete_registry(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        active_version = {
+            "scheme_id": "native_daily",
+            "scheme_version": "native-version-1",
+            "runtime_type": "native_adapter",
+            "status": "active",
+            "approved_by": None,
+            "approved_at": None,
+        }
+        registry_cases = {
+            "missing": [],
+            "paused": [_native_registry_row(status="paused")],
+            "identity mismatch": [_native_registry_row(target_tenor="10Y")],
+            "extra old active": [
+                _native_registry_row(),
+                _native_registry_row(
+                    scheme_id="native_daily__h1__10Y",
+                    target_tenor="10Y",
+                ),
+            ],
+        }
+        for label, registry_rows in registry_cases.items():
+            with self.subTest(label=label):
+                engine = _CaptureEngine(
+                    version_row=dict(active_version),
+                    registry_rows=registry_rows,
+                )
+
+                sync_scheme_registry(engine, [_native_config()])
+
+                _, written_rows = _call_for(
+                    engine.store,
+                    "INSERT INTO t_scheme_registry",
+                )
+                self.assertEqual(
+                    {row["status"] for row in written_rows},
+                    {"paused"},
+                )
+
+    def test_native_sync_keeps_nonactive_exact_version_and_registry_paused(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        for version_status in ("draft", "shadow"):
+            with self.subTest(version_status=version_status):
+                engine = _CaptureEngine(
+                    version_row={
+                        "scheme_id": "native_daily",
+                        "scheme_version": "native-version-1",
+                        "runtime_type": "native_adapter",
+                        "status": version_status,
+                        "approved_by": "prior-operator",
+                        "approved_at": datetime(2026, 7, 20, 8, 30),
+                    }
+                )
+
+                sync_scheme_registry(engine, [_native_config()])
+
+                self.assertEqual(engine.store["version_row"]["status"], version_status)
+                self.assertEqual(engine.store["version_row"]["approved_by"], "prior-operator")
+                _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
+                self.assertEqual({row["status"] for row in registry_rows}, {"paused"})
+
+    def test_paused_native_config_keeps_registry_paused_even_for_active_exact_version(self) -> None:
+        from scheduler.repository import sync_scheme_registry
+
+        engine = _CaptureEngine(
+            version_row={
+                "scheme_id": "native_daily",
+                "scheme_version": "native-version-1",
+                "runtime_type": "native_adapter",
+                "status": "active",
+                "approved_by": None,
+                "approved_at": None,
+            }
+        )
+
+        sync_scheme_registry(engine, [_native_config(status="paused")])
+
+        self.assertEqual(engine.store["version_row"]["status"], "active")
+        _, registry_rows = _call_for(engine.store, "INSERT INTO t_scheme_registry")
+        self.assertEqual({row["status"] for row in registry_rows}, {"paused"})
+
+    def test_trusted_native_activation_writes_exact_approval_and_target_registry_atomically(self) -> None:
+        from scheduler.repository import apply_native_activation_state
+
+        engine = _CaptureEngine()
+        approved_at = datetime(
+            2026,
+            7,
+            20,
+            16,
+            30,
+            45,
+            tzinfo=timezone(timedelta(hours=8)),
+        )
+
+        activated_version = apply_native_activation_state(
+            engine,
+            _native_config(),
+            approved_by="native-release-owner",
+            approved_at=approved_at,
+        )
+
+        self.assertEqual(activated_version, "native-version-1")
+        self.assertEqual(engine.store["begin_count"], 1)
+        self.assertEqual(engine.store["version_row"]["status"], "active")
+        self.assertEqual(
+            engine.store["version_row"]["approved_by"],
+            "native-release-owner",
+        )
+        self.assertEqual(
+            engine.store["version_row"]["approved_at"],
+            datetime(2026, 7, 20, 8, 30, 45),
+        )
+        self.assertEqual(
+            {row["scheme_id"] for row in engine.store["registry_rows"]},
+            {"native_daily__h1__5Y"},
+        )
+        self.assertEqual(
+            {row["status"] for row in engine.store["registry_rows"]},
+            {"active"},
+        )
+
+    def test_trusted_native_activation_rejects_invalid_authority_or_config(self) -> None:
+        from scheduler.repository import apply_native_activation_state
+
+        valid_time = datetime(2026, 7, 20, 8, 30)
+        cases = (
+            (SimpleNamespace(**{**vars(_native_config()), "runtime_type": "blackbox_v2"}), "runtime_type"),
+            (_native_config(status="paused"), "active config"),
+            (_native_config(scheme_version=""), "scheme_version"),
+        )
+        for cfg, message in cases:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                apply_native_activation_state(
+                    _CaptureEngine(),
+                    cfg,
+                    approved_by="operator",
+                    approved_at=valid_time,
+                )
+        for approver in (None, "", "   "):
+            with self.subTest(approver=approver), self.assertRaisesRegex(ValueError, "approved_by"):
+                apply_native_activation_state(
+                    _CaptureEngine(),
+                    _native_config(),
+                    approved_by=approver,
+                    approved_at=valid_time,
+                )
+        with self.assertRaisesRegex(ValueError, "approved_at"):
+            apply_native_activation_state(
+                _CaptureEngine(),
+                _native_config(),
+                approved_by="operator",
+                approved_at="2026-07-20",  # type: ignore[arg-type]
+            )
+
+    def test_trusted_native_activation_fails_closed_on_version_readback_drift(self) -> None:
+        from scheduler.repository import apply_native_activation_state
+
+        drifted = {
+            "scheme_id": "native_daily",
+            "scheme_version": "native-version-1",
+            "runtime_type": "native_adapter",
+            "code_hash": "c" * 64,
+            "config_hash": "f" * 64,
+            "manifest_hash": None,
+            "status": "draft",
+            "approved_by": "operator",
+            "approved_at": datetime(2026, 7, 20, 8, 30),
+        }
+
+        engine = _TransactionalCaptureEngine()
+        original_store = deepcopy(engine.store)
+        with (
+            patch(
+                "scheduler.repository._read_scheme_version_conn",
+                return_value=drifted,
+            ),
+            self.assertRaisesRegex(RuntimeError, "version readback mismatch"),
+        ):
+            apply_native_activation_state(
+                engine,
+                _native_config(),
+                approved_by="operator",
+                approved_at=datetime(2026, 7, 20, 8, 30),
+            )
+        self.assertEqual(engine.store, original_store)
+
+    def test_trusted_native_activation_fails_closed_on_registry_readback_drift(self) -> None:
+        from scheduler.repository import apply_native_activation_state
+
+        drifted_registry = [
+            {
+                "scheme_id": "native_daily__h1__5Y",
+                "base_scheme_id": "native_daily",
+                "runtime_type": "native_adapter",
+                "status": "paused",
+                "task_type": "T+1",
+                "target_tenor": "5Y",
+                "horizon": 1,
+            }
+        ]
+
+        engine = _TransactionalCaptureEngine()
+        original_store = deepcopy(engine.store)
+        with (
+            patch(
+                "scheduler.repository._read_scheme_registry_rows_conn",
+                return_value=drifted_registry,
+            ),
+            self.assertRaisesRegex(RuntimeError, "Registry readback mismatch"),
+        ):
+            apply_native_activation_state(
+                engine,
+                _native_config(),
+                approved_by="operator",
+                approved_at=datetime(2026, 7, 20, 8, 30),
+            )
+        self.assertEqual(engine.store, original_store)
 
 
 class BlackboxExecutionApprovalRepositoryTests(unittest.TestCase):

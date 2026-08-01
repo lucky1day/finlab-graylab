@@ -3,7 +3,7 @@
 **文档状态**：`LEGACY_MAINTENANCE`
 **适用运行时**：`native_adapter`
 **目标读者**：平台维护人员
-**最后核验日期**：2026-07-19
+**最后核验日期**：2026-08-01
 
 本 SOP 只维护已登记的 Native V1 方案，不接受新增方案。新算法和替代版本使用 [Blackbox V2 平台 SOP](BLACKBOX_V2_PLATFORM_ONBOARDING_V1.md)。
 
@@ -84,10 +84,68 @@ static -> input -> unit -> dry-run -> compare -> backtest -> api-readiness
 
 自动段通过后，任何 persist、live 写库或状态切换仍使用既有一次性授权流程。操作前后独立查询：
 
+Native 激活授权必须绑定刚通过完整自动段的
+`validation_scheme_version`，并记录非空 operator 身份。完整自动段通过后，
+用同一标准 discovery 入口只读计算当前精确版本；该值必须与最近一次 passed
+`t_harness_runs.scheme_version` 一致，ActivationGate 会再次严格核验。随后显式
+签发和消费：
+
+```bash
+NATIVE_SCHEME_ID="{scheme_id}"
+VALIDATION_SCHEME_VERSION="$(
+  python -c 'import sys; from pathlib import Path; from scheduler.discovery import load_scheme_config; print(load_scheme_config(Path("schemes") / sys.argv[1] / "config.yaml").scheme_version)' \
+    "${NATIVE_SCHEME_ID}"
+)"
+NATIVE_RELEASE_OPERATOR="<operator-id>"
+
+python -m harness auth issue \
+  --scheme-id "${NATIVE_SCHEME_ID}" \
+  --action activate \
+  --scheme-version "${VALIDATION_SCHEME_VERSION}" \
+  --issued-by "${NATIVE_RELEASE_OPERATOR}"
+
+python -m harness activate \
+  --scheme-id "${NATIVE_SCHEME_ID}" \
+  --authorize "<raw-one-time-token>"
+```
+
+不得省略 `--scheme-version` 或 `--issued-by`，也不得用修改配置后的新版本号
+替代已通过 Gate 的 `validation_scheme_version`。paused 配置激活后因为只翻转
+根级 `status`，`activated_scheme_version` 会变化；已 active 的 legacy 精确版本
+重批准时版本保持不变。
+
+若目标是 `frequency=daily` 的 Native 方案，激活还必须与
+`deploy/daily_gray_launchd_policy_v1.json` 作为**同一受控发布单元**处理。
+该 policy 是 `scheduler.daily_gray_runner` 在任何 Engine、日历查询和算法执行前
+校验的精确 active-daily 集合/版本合同；ActivationGate 返回的
+`activated_scheme_version` 必须立即写入对应 policy 行。不得在普通 sync 中绕过该
+步骤，也不得放宽 exact-policy 校验来迁就漂移。
+
+应选择不会与任务并发的受控维护窗口，在下一次 07:00 launchd 触发前完成：
+
+1. 激活成功后更新 policy 中该方案的 `scheme_version`，其它身份、target、分类和
+   publisher 依赖保持不变；若激活失败并回滚 config，则 policy 保持旧版本。
+2. 审查 config、policy 和激活证据属于同一变更，不单独发布其中任一部分。
+3. 离线执行：
+
+   ```bash
+   python -m pytest -q \
+     tests/test_daily_gray_launchd_policy.py \
+     tests/test_daily_gray_runner.py
+   ```
+
+4. 只读加载冻结 policy，确认 active-daily 集合、版本和 target 全量匹配；随后再按
+   本节清单核对 Registry/API。任何版本或集合漂移都应让 daily-gray 整批 fail-closed，
+   不得退化为跳过单方案后继续写库。
+
+如果维护窗口需要 `bootout/bootstrap/kickstart` 来避免与 07:00 触发重叠，必须另取
+明确的生产操作授权并保存 installed plist、`launchctl` 与日志证据；本 SOP 的算法
+维护授权不自动包含这些控制面操作。
+
 - Registry 和版本状态；
 - `t_scheme_runs`、预测表和 run log；
 - `t_backtest_*`；
-- scheduler active job；
+- 对应 launchd policy、installed plist / loaded state 和任务日志；
 - `/api/schemes`、metrics 和 factor-lab backtest。
 
 仅维护当前方案，不得改变其它方案记录。失败时保持或恢复原状态，保存审计证据，不手工删除历史版本。

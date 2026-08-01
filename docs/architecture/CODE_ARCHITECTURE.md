@@ -145,10 +145,28 @@ V5–V6 没有建立基线豁免；修复后 repo-wide gate 的全仓扫描为�
 
 ### 5.1 预测路径（调度 / 手动触发）
 
-日频生产不再由 per-scheme APScheduler job 各自形成一批。唯一入口是：
+launchd + plist 是真实生产调度控制面。任务是否挂载、触发时点、环境、重启和日志
+均由 installed plist 与 `launchctl` 现场状态决定；`scheduler.main`/APScheduler 和专用
+runner 只是 plist 的子进程实现。仓库 `deploy/launchd/*.plist` 是期望配置，不等于已
+安装或已生效，后续不得仅向 APScheduler 添加 job 就宣称进入生产调度。
+
+当前与目标入口必须显式区分：
 
 ```text
-APScheduler tick
+launchd
+  ├─ com.bond-factor-lab.daily-gray.plist
+  │    └─ 07:00 → scheduler.daily_gray_runner（当前 gray_live 一次性批次）
+  ├─ com.bond-factor-lab.actuals.plist
+  │    └─ 08:30/19:00/23:45 → scheduler.main --run-once actuals
+  └─ com.bond-factor-lab.scheduler.plist
+       └─ scheduler.main/APScheduler（现有常驻兼容与非日频路径）
+```
+
+待批准的 ledger cutover 仍以同一个 launchd 控制面启动 coordinator；切换后的日频
+目标不是 per-scheme APScheduler job 各自形成一批，而是：
+
+```text
+launchd plist trigger
   └─ daily occurrence coordinator（每交易日唯一）
        ├─ 冻结 deploy/daily_scheduler_policy_v2.json
        ├─ 17 Native / 8 Blackbox V2，Native max=2、V2 max=2
@@ -188,7 +206,7 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 
 日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`scheduler.main` 的 startup catch-up 只在服务启动时补跑当天已错过且没有终态 run 的 active 任务，不改变方案 cron、预测日期语义或 source core 逻辑。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
-`schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。生产上调整该字段后必须重启 scheduler，让 `discovery` 重新加载 config，并复核 launchd 日志中 active jobs 已注册。
+`schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。一次性 daily-gray 每次由 launchd 启动后都会重新 strict discovery，但日频 Native 的版本变化还必须按 Native SOP 与冻结 policy 作为同一发布单元验收；常驻 `scheduler.main`/APScheduler 路径才需要在取得生产授权后重载对应 scheduler LaunchAgent。两类路径都必须复核 installed plist、`launchctl` 状态和对应日志，不能笼统以“重启 scheduler”代替控制面验收。
 
 日频、周频、月频 actuals 由独立
 `com.bond-factor-lab.actuals` LaunchAgent 启动
