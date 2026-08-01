@@ -73,10 +73,11 @@ EXPECTED_V1_ITEM_COUNT = 21
 EXPECTED_V1_TARGET_COUNT = 25
 EXPECTED_V2_ITEM_COUNT = 25
 EXPECTED_V2_TARGET_COUNT = 29
+DAILY_POLICY_V2_VERSION = "daily-scheduler-policy-v2"
 SUPPORTED_POLICY_VERSIONS = frozenset(
     {
         "daily-scheduler-policy-v1",
-        "daily-scheduler-policy-v2",
+        DAILY_POLICY_V2_VERSION,
     }
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")

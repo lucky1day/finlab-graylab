@@ -15,11 +15,10 @@ from pathlib import PurePosixPath
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence
 
-from scheduler.capacity_gate import (
-    EXPECTED_TARGET_COUNT,
-    EXPECTED_V2_SCHEME_IDS,
-    OBSERVATION_SCHEMA_VERSION,
-    SUPPORTED_POLICY_VERSION,
+from scheduler.daily_policy import (
+    DAILY_POLICY_V2_VERSION,
+    EXPECTED_POLICY_V2_RELEASE_OFFSETS_BY_SCHEME,
+    EXPECTED_V2_TARGET_COUNT,
 )
 from shared.liwei_0616_cache_contract import (
     PHASE_A_CACHE_ABI_VERSION,
@@ -31,6 +30,12 @@ from shared.native_input_generation import (
 )
 
 
+OBSERVATION_SCHEMA_VERSION = "daily-capacity-observations-v2"
+SUPPORTED_POLICY_VERSION = DAILY_POLICY_V2_VERSION
+EXPECTED_TARGET_COUNT = EXPECTED_V2_TARGET_COUNT
+EXPECTED_V2_SCHEME_IDS = frozenset(
+    EXPECTED_POLICY_V2_RELEASE_OFFSETS_BY_SCHEME
+)
 ATTESTED_EVIDENCE_SCHEMA_VERSION = (
     "daily-capacity-attested-evidence-v2"
 )
