@@ -21,3 +21,4 @@
 | [3Y ADYN T+1 双方案生产灰度入库](2026-07-31-three-y-adyn-t1-production-gray-onboarding.md) | PR #21 合并、双方案 exact 生命周期、历史与连续灰度写库、API/公网验收和既有 daily-gray 挂载 |
 | [日度调度冗余清理第一批](2026-08-01-daily-scheduler-first-cleanup.md) | 测试先行删除孤立 capacity admission 代码、专属测试和失真日度草案，并验证生产行为边界不变 |
 | [日度离线 Capacity Gate 退役](2026-08-01-daily-capacity-gate-retirement.md) | 测试先行迁移 policy v2 常量、删除离线 gate/CLI，并收敛为 attestation 专属测试 |
+| [Actuals Launchd 单一调度权威](2026-08-01-actuals-launchd-authority.md) | 测试先行删除 APScheduler 的重复 Actuals 时钟，保留 launchd 一次性执行链并同步当前架构文档 |
