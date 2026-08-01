@@ -580,8 +580,6 @@ class SchedulerMainTests(unittest.TestCase):
         )
         self.assertIn("hour='6-8'", str(recovery_loop.trigger))
         self.assertIn("minute='1-59/2'", str(recovery_loop.trigger))
-        for job_id in ("actuals:0830", "actuals:1900", "actuals:2345"):
-            self.assertEqual(jobs[job_id].executor, "actuals")
 
     def test_recovery_tick_reenters_same_coordinator_only_inside_window(
         self,
@@ -1059,7 +1057,7 @@ class SchedulerMainTests(unittest.TestCase):
         )
         sync_registry.assert_called_once_with(schemes)
 
-    def test_invalid_blackbox_policy_keeps_native_and_actuals_jobs(
+    def test_invalid_blackbox_policy_keeps_native_jobs(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -1128,16 +1126,9 @@ class SchedulerMainTests(unittest.TestCase):
                     "predict:one_y_t5_liq_excess_a_v1",
                     job_ids,
                 )
-                self.assertTrue(
-                    {
-                        "actuals:0830",
-                        "actuals:1900",
-                        "actuals:2345",
-                    }.issubset(job_ids)
-                )
                 sync_registry.assert_called_once_with(schemes)
 
-    def test_non_utf8_blackbox_policy_keeps_native_and_actuals_jobs(
+    def test_non_utf8_blackbox_policy_keeps_native_jobs(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -1197,13 +1188,6 @@ class SchedulerMainTests(unittest.TestCase):
         self.assertNotIn(
             "predict:one_y_t5_liq_excess_a_v1",
             job_ids,
-        )
-        self.assertTrue(
-            {
-                "actuals:0830",
-                "actuals:1900",
-                "actuals:2345",
-            }.issubset(job_ids)
         )
         sync_registry.assert_called_once_with(schemes)
 
@@ -2796,36 +2780,61 @@ class SchedulerMainTests(unittest.TestCase):
                 trading_day.assert_not_called()
                 execute_scheme.assert_called_once_with(cfg, "2026-06-15", algo_env=scheduler_main.DEFAULT_ALGO_ENV)
 
-    def test_actuals_refresh_registers_morning_evening_and_late_jobs(self) -> None:
+    def test_build_scheduler_never_registers_actuals_jobs(self) -> None:
         from scheduler import main as scheduler_main
 
-        with (
-            patch.object(scheduler_main, "discover_schemes", return_value=[]),
-            patch.object(scheduler_main, "_sync_registry", return_value=None),
-            self.assertLogs(scheduler_main.logger, level=logging.INFO) as logs,
-        ):
-            scheduler = scheduler_main.build_scheduler()
+        for coordinator_mode in ("legacy", "ledger"):
+            with self.subTest(coordinator_mode=coordinator_mode):
+                engine = SimpleNamespace(dispose=Mock())
+                with (
+                    patch.dict(
+                        os.environ,
+                        {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"},
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "_daily_coordinator_mode",
+                        return_value=coordinator_mode,
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "discover_schemes",
+                        return_value=[],
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "_preflight_source_runtime_database",
+                        return_value=None,
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "_sync_registry",
+                        return_value=None,
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "create_engine_from_env",
+                        return_value=engine,
+                    ),
+                    patch.object(
+                        scheduler_main,
+                        "build_daily_direct_cache_authorities",
+                        return_value={},
+                    ),
+                ):
+                    scheduler = scheduler_main.build_scheduler()
 
-        try:
-            actual_jobs = sorted(
-                (job.id, str(job.trigger))
-                for job in scheduler.get_jobs()
-                if job.id.startswith("actuals")
-            )
-        finally:
-            if scheduler.running:
-                scheduler.shutdown(wait=False)
+                try:
+                    actuals_job_ids = sorted(
+                        job.id
+                        for job in scheduler.get_jobs()
+                        if job.id.startswith("actuals:")
+                    )
+                finally:
+                    if scheduler.running:
+                        scheduler.shutdown(wait=False)
 
-        self.assertEqual(len(actual_jobs), 3)
-        self.assertEqual([job_id for job_id, _ in actual_jobs], ["actuals:0830", "actuals:1900", "actuals:2345"])
-        self.assertTrue(any("hour='8'" in trigger and "minute='30'" in trigger for _, trigger in actual_jobs))
-        self.assertTrue(any("hour='19'" in trigger and "minute='0'" in trigger for _, trigger in actual_jobs))
-        self.assertTrue(any("hour='23'" in trigger and "minute='45'" in trigger for _, trigger in actual_jobs))
-        self.assertFalse(any("day_of_week='mon-fri'" in trigger for _, trigger in actual_jobs))
-        self.assertTrue(
-            any("Scheduled actuals refresh at 08:30, 19:00, 23:45 Asia/Shanghai" in msg for msg in logs.output)
-        )
-        self.assertFalse(any("16:00" in msg for msg in logs.output))
+                self.assertEqual([], actuals_job_ids)
 
     def test_wavg_gapflip_v5_gray_identities_never_mount_automatic_jobs(
         self,
@@ -2883,6 +2892,36 @@ class SchedulerMainTests(unittest.TestCase):
                     for scheme_id in WAVG_GAPFLIP_V5_IDENTITIES
                 }
             )
+        )
+
+    def test_run_once_actuals_dispatches_existing_one_shot(self) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.object(
+                scheduler_main,
+                "_daily_coordinator_mode",
+                return_value="legacy",
+            ),
+            patch.object(
+                scheduler_main,
+                "run_actuals_job",
+            ) as run_actuals_job,
+        ):
+            exit_code = scheduler_main.main(
+                [
+                    "--run-once",
+                    "actuals",
+                    "--date",
+                    "2026-08-01",
+                    "--force",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        run_actuals_job.assert_called_once_with(
+            run_date="2026-08-01",
+            force=True,
         )
 
     def test_actuals_job_refreshes_daily_weekly_and_monthly_actuals(self) -> None:

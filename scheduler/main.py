@@ -72,7 +72,6 @@ from shared.source_runtime_database import (
 
 
 ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
-ACTUALS_REFRESH_TIMES = ((8, 30), (19, 0), (23, 45))
 STAGGER_MINUTES_ENV = "BOND_SCHEDULER_STAGGER_MINUTES"
 PREDICTION_MAX_CONCURRENCY_ENV = "BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY"
 STARTUP_CATCHUP_ENV = "BOND_SCHEDULER_STARTUP_CATCHUP"
@@ -175,10 +174,6 @@ def _require_ledger_runtime_mode() -> None:
         raise RuntimeError(
             "daily ledger entry requires ledger coordinator mode"
         )
-
-
-def _format_actuals_refresh_times() -> str:
-    return ", ".join(f"{hour:02d}:{minute:02d}" for hour, minute in ACTUALS_REFRESH_TIMES)
 
 
 def _configure_prediction_semaphore(max_concurrency: int) -> None:
@@ -1244,7 +1239,6 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
             "recurring_predictions": APSchedulerThreadPoolExecutor(
                 max_workers=2
             ),
-            "actuals": APSchedulerThreadPoolExecutor(max_workers=1),
         },
     )
 
@@ -1288,18 +1282,6 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
             max_concurrency,
         )
 
-    for hour, minute in ACTUALS_REFRESH_TIMES:
-        scheduler.add_job(
-            run_actuals_job,
-            trigger=CronTrigger(hour=hour, minute=minute, timezone=ASIA_SHANGHAI),
-            id=f"actuals:{hour:02d}{minute:02d}",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            misfire_grace_time=3600,
-            executor="actuals",
-        )
-    logger.info("Scheduled actuals refresh at %s Asia/Shanghai", _format_actuals_refresh_times())
     if coordinator_mode == "ledger":
         scheduler.add_job(
             run_daily_heartbeat_job,
