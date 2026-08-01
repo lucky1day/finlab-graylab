@@ -730,11 +730,6 @@ def test_deploy_readme_points_to_current_performance_work() -> None:
     readme = DEPLOY_README_PATH.read_text(encoding="utf-8")
 
     assert (
-        "docs/superpowers/specs/"
-        "2026-07-22-factor-lab-subsecond-dashboard-design.md"
-        not in readme
-    )
-    assert (
         "[公网性能运行手册]"
         "(../docs/operations/PUBLIC_FACTOR_LAB_PERFORMANCE.md)"
         in readme

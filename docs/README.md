@@ -36,7 +36,6 @@
 | [当前优先级与待办](TODO.md) | 未完成工作、前置依赖与排序 | 是 |
 | [审计与状态记录](records/README.md) | 全方案问题台账、带日期的状态、审计和系统检查 | 否 |
 | [内部设计记录](internal/README.md) | 实施计划与设计过程 | 否 |
-| [Superpowers 设计与实施记录](superpowers/README.md) | 本批冻结设计与实施计划 | 否 |
 
 ## 状态规则
 

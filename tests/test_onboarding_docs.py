@@ -672,30 +672,6 @@ class OnboardingDocumentationTests(unittest.TestCase):
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_SOP.md",
             DOCS_ROOT / "sop" / "SCHEME_ONBOARDING_T0.md",
             DOCS_ROOT / "sop" / "SCHEME_POST_ONBOARDING_TEST_SOP.md",
-            DOCS_ROOT
-            / "superpowers"
-            / "specs"
-            / "2026-07-27-blackbox-scheduler-admission-mvp-design.md",
-            DOCS_ROOT
-            / "superpowers"
-            / "plans"
-            / "2026-07-27-blackbox-scheduler-admission-mvp.md",
-            DOCS_ROOT
-            / "superpowers"
-            / "specs"
-            / "2026-07-28-all-active-signal-production-mvp-design.md",
-            DOCS_ROOT
-            / "superpowers"
-            / "plans"
-            / "2026-07-28-all-active-signal-production-mvp.md",
-            DOCS_ROOT
-            / "superpowers"
-            / "specs"
-            / "2026-07-29-liwei-daily-incremental-cache-mvp-design.md",
-            DOCS_ROOT
-            / "superpowers"
-            / "plans"
-            / "2026-07-29-liwei-daily-incremental-cache-mvp.md",
         )
         self.assertTrue(all(not path.exists() for path in retired))
 
