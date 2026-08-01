@@ -1,0 +1,2 @@
+# Test tooling layered onto the existing bond_factor_lab_service environment.
+pytest==9.1.1

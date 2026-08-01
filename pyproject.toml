@@ -17,6 +17,12 @@ service = [
     "SQLAlchemy==2.0.50",
     "uvicorn[standard]==0.48.0",
 ]
+test = [
+    "pytest==9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["shared*", "backend*", "scheduler*", "schemes*", "backtests*", "harness*"]
