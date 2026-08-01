@@ -635,19 +635,6 @@ def build_monthly_output_from_db(
             engine.dispose()
 
 
-def export_dataframe(frequency: str, start_date=None, end_date=None, engine=None) -> pd.DataFrame:
-    normalized = normalize_frequency(frequency)
-    if normalized == "daily":
-        return build_daily_output_from_db(start_date=start_date, end_date=end_date, engine=engine)
-    if normalized == "weekly":
-        start_week = int(start_date) if start_date and str(start_date).isdigit() else None
-        end_week = int(end_date) if end_date and str(end_date).isdigit() else None
-        return build_weekly_output_from_db(start_week=start_week, end_week=end_week, engine=engine)
-    if normalized == "monthly":
-        return build_monthly_output_from_db(start_date=start_date, end_date=end_date, engine=engine)
-    raise ValueError(f"unsupported frequency: {frequency}")
-
-
 def _save_output(df: pd.DataFrame, path: str | Path) -> Path:
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)

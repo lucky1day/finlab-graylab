@@ -4,7 +4,7 @@
 
 **目标读者**：平台负责人、运维和生产授权审批人员
 
-**最后核验日期**：2026-07-30
+**最后核验日期**：2026-08-02
 
 本文定义“任意后续 Blackbox V2 交付可走标准生产流程”之前仍需完成的广义平台
 条件。它不撤销已经取得的逐方案专项授权，也不为未授权 identity 自动放行。
@@ -22,7 +22,8 @@
 - sandbox 文件 allowlist、环境清理、严格整数 Result 和 stale generation 拒绝；
 - 日频目标代码路径支持单 coordinator、单 occurrence、17 Native + 8 V2、29/29
   target receipt 和 V2 最大并发 2；production 仍为 migration 017 / legacy，
-  ledger、schema 3 cache bootstrap 与 epoch cutover 尚未执行。
+  7 个 production Liwei family 的 schema 3 cache bootstrap 与同 authority 7/7
+  warm hit 已完成，但 ledger、migration 018 与 epoch cutover 尚未执行。
 
 当前仍不能形成面向任意新交付的通用 `PRODUCTION_READY`：
 

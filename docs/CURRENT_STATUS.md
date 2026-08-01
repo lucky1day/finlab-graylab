@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台运维和审计人员
 
-**最后核验日期**：2026-08-01
+**最后核验日期**：2026-08-02
 
 本文只保留当前已验证结论。较早的逐日状态、数据库快照、旧规模与整改过程已冻结到[历史状态记录](records/status/README.md)；未完成工作的排序查看[TODO](TODO.md)。
 
@@ -43,11 +43,11 @@ epoch cutover 或真实 occurrence 已完成。目标合同直接校验冻结 po
 |---|---|
 | schema | production 仍为 migration 017；migration 018 尚未应用 |
 | rollout | `rollout=legacy`；ledger 尚未启用 |
-| launchd 现场 | backend 与 scheduler 已加载且有运行中 PID；actuals 与 daily-gray 已加载为按时启动的一次性任务；v2-preflight 已加载但无运行中 PID，最近退出状态为 1；installed plist 只读比对显示 actuals、daily-gray 与仓库模板一致，backend、scheduler、v2-preflight 存在漂移 |
+| launchd 现场 | backend 与 scheduler 已加载且有运行中 PID；actuals 与 daily-gray 已加载为按时启动的一次性任务；v2-preflight 已加载但无运行中 PID，最近退出状态为 1；installed plist 只读比对显示 actuals、daily-gray 与仓库模板一致，backend、scheduler、v2-preflight 存在漂移。loaded scheduler 是本分支修改前启动的旧进程，其日志仍注册 per-scheme daily cron 与 Actuals，因此当前与独立 daily-gray/actuals LaunchAgent 形成重复自动路径风险 |
 | cache | 7 个 production Liwei family 已完成 schema 3 bootstrap；同 authority 二次运行 7/7 `hit`、零训练，cache-local direct authority 通过 |
 | DataBridge | `full-20260730-081804-9794ce962c1a` 已于 08:18 晚到发布并通过 `--check-only`；daily cutoff 为 2026-07-29 |
 | 控制面 | machine-global epoch 与 ledger cutover 尚未执行；没有 production run fence 生效证据 |
-| 开发代码 | runtime 已改为 direct authority，旧 admission 文件已删除；PR #16 已合并 Native gray-gap artifact 入口并与正式 ledger 隔离 |
+| 开发代码 | runtime 已改为 direct authority，旧 admission 文件已删除；PR #16 已合并 Native gray-gap artifact 入口并与正式 ledger 隔离；当前开发分支已让常驻 scheduler 的 recurring job/startup catch-up 排除 daily，并移除常驻 Actuals 注册，但尚未授权重载到上述 loaded 进程 |
 | 日频现场 | 2026-07-28 为 12/29，2026-07-29 为 0/29 |
 | 历史补缺 | 50 条缺口尚未写入 |
 | 2026-07-30 | 尚无真实 ledger occurrence；06:30 未创建，08:00 为 0/29，无 receipt 或 `scheduled_live` provenance |

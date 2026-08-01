@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和代码审计人员
-**最后核验日期**：2026-07-24
+**最后核验日期**：2026-08-02
 **定位**：本仓库的代码架构主蓝图，定义分层模型、包依赖方向、运行时调用图和扩展边界。
 **与既有文档的关系**:
 - [ARCHITECTURE.md](ARCHITECTURE.md) = **系统架构**（部署、DB schema、API 契约、数据流）。
@@ -176,8 +176,10 @@ launchd plist trigger
 ```
 
 coordinator、occurrence、generation、cache 与 phase 的完整约束见
-[DAILY_SIGNAL_SLA.md](DAILY_SIGNAL_SLA.md)。旧 per-scheme 路径只用于非日频、
-受控手工运行或 ledger 回滚诊断，不得产生第二个日频 occurrence：
+[DAILY_SIGNAL_SLA.md](DAILY_SIGNAL_SLA.md)。旧 per-scheme 自动路径只用于非日频；
+显式单方案入口仍仅用于受控手工运行或 ledger 回滚诊断。常驻 APScheduler 的 cron
+注册和 startup catch-up 都必须排除 daily，不得与 daily-gray/coordinator 产生第二个
+日频 occurrence：
 
 ```
 APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
@@ -204,7 +206,7 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
 
-日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`scheduler.main` 的 startup catch-up 只在服务启动时补跑当天已错过且没有终态 run 的 active 任务，不改变方案 cron、预测日期语义或 source core 逻辑。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
+日期语义由 `shared.prediction_context` 和各频率 adapter 统一落地：日频实盘为 `predict_date=T+1, feature_date=T`；周频实盘先由 `predict_date` 反推上一交易日 `feature_date`，再映射 `feature_week_id`；月频 source-backed 方案若声明自然 15 号触发，则 `predict_date` 保留自然月 15 号，`feature_date` / `target_date` 分别取当前月/目标月 15 号及以前最近交易日。`scheduler.executor` 在日频 live 写库前再次校验 `predict_date/feature_date/target_date`，防止源表水位不足时算法复用旧 feature/target 覆盖旧 target 明细。`scheduler.main` 的 startup catch-up 只在服务启动时补跑当天已错过且没有终态 run 的 active 非日频任务，不改变方案 cron、预测日期语义或 source core 逻辑。`shared.calendar_service` 和 `scheduler.weekly_actuals_updater` 共享 `shared.week_calendar_normalizer`，只对源周历孤立 forward jump 做只读归一化，确保预测 target 与 weekly actuals 使用同一周历事实。所有前端月份归属、actual join 和 gray/backtest 分流仍以 `target_date` 为事实键。
 
 `schedule.timeout_sec` 是 L3 调度执行层的运行预算配置，不是算法输入。它只控制 `scheduler.executor` 等待算法子进程的最长时间，用于慢速 source-backed 方案；不得让 adapter/core 根据该字段改变窗口、特征、fallback 或输出。一次性 daily-gray 每次由 launchd 启动后都会重新 strict discovery，但日频 Native 的版本变化还必须按 Native SOP 与冻结 policy 作为同一发布单元验收；常驻 `scheduler.main`/APScheduler 路径才需要在取得生产授权后重载对应 scheduler LaunchAgent。两类路径都必须复核 installed plist、`launchctl` 状态和对应日志，不能笼统以“重启 scheduler”代替控制面验收。
 

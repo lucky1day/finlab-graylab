@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -72,27 +71,3 @@ def clean_json(value: Any) -> Any:
     if isinstance(value, Decimal):
         return float(value)
     return value
-
-
-def parse_json_document(text: str) -> Any:
-    stripped = text.strip()
-    if not stripped:
-        raise ValueError("empty JSON payload")
-    decoder = json.JSONDecoder()
-    for index, char in enumerate(stripped):
-        if char not in "{[":
-            continue
-        try:
-            payload, _ = decoder.raw_decode(stripped[index:])
-        except json.JSONDecodeError:
-            continue
-        return payload
-    raise ValueError("no JSON document found in stdout")
-
-
-def output_dir_arg(value: str | None, scheme_id: str, project_root: Path = PROJECT_ROOT) -> Path:
-    return Path(value) if value else default_output_dir(scheme_id, project_root)
-
-
-def main_guard(payload: dict[str, Any]) -> None:
-    sys.exit(finish(payload))

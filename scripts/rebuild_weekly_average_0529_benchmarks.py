@@ -390,13 +390,6 @@ def _is_blank(value: Any) -> bool:
     return value is None or str(value).strip() == ""
 
 
-def _int_value(value: Any, message: str) -> int:
-    parsed = _int_or_none(value)
-    if parsed is None:
-        raise RuntimeError(message)
-    return parsed
-
-
 def _int_or_none(value: Any) -> int | None:
     if value in (None, ""):
         return None

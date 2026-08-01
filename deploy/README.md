@@ -255,16 +255,31 @@ launchctl kickstart -k gui/$(id -u)/com.bond-factor-lab.backend
 
 ### 3a) 本地 Mac：Actuals 一次性 LaunchAgent
 
-`deploy/launchd/com.bond-factor-lab.actuals.plist` 是 Actuals 的唯一生产调度权威，
-在每日 `08:30/19:00/23:45` 执行：
+本分支的目标配置以 `deploy/launchd/com.bond-factor-lab.actuals.plist` 作为 Actuals
+唯一生产调度权威，在每日 `08:30/19:00/23:45` 执行：
 
 ```text
 python -m scheduler.main --run-once actuals
 ```
 
-该任务 `RunAtLoad=false`、不设置 `KeepAlive`；常驻
+该任务 `RunAtLoad=false`、不设置 `KeepAlive`；目标状态下常驻
 `com.bond-factor-lab.scheduler` 不得再注册 `actuals:0830`、`actuals:1900` 或
-`actuals:2345`。本节只记录现行入口，本批不重载 installed plist 或 scheduler。
+`actuals:2345`。现场是否已经收敛统一查看[当前状态](../docs/CURRENT_STATUS.md)。本批
+不重载 installed plist 或 scheduler，必须在独立生产授权窗口完成同步与核验。
+
+### 3b) 本地 Mac：日频 gray 目标控制面
+
+本分支收敛后的 legacy 目标由
+`deploy/launchd/com.bond-factor-lab.daily-gray.plist` 在 `07:00` 启动一次性
+`scheduler.daily_gray_runner`，并由 `deploy/daily_gray_launchd_policy_v1.json`
+冻结精确身份、版本、target 和依赖。常驻 `com.bond-factor-lab.scheduler` 只负责
+周频/月频 recurring job，其 cron 注册与 startup catch-up 都不得包含 daily；否则
+同一业务键会被两条自动路径重复执行并覆盖 phase/run 归属。仓库代码或 plist 的
+修改不代表 installed 服务已生效，实际切换仍须取得生产授权后核对 installed plist、
+`launchctl` loaded state 和对应日志。
+
+现场是否仍有重复调度风险统一查看[当前状态](../docs/CURRENT_STATUS.md)。不得仅凭
+本分支代码宣称已修复生产现场，也不得在未获授权时擅自重载。
 
 ### 4) 本地 Mac：日频 coordinator 待切换 rollout
 

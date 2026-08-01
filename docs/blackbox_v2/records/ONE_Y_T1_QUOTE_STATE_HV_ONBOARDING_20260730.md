@@ -1,6 +1,6 @@
 # one_y_t1_quote_state_hv_v1 生产入库记录
 
-**文档状态**：`CURRENT`
+**文档状态**：`HISTORICAL`
 
 **目标读者**：平台入库、生产授权、日度运维和审计人员
 

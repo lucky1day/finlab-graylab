@@ -1513,7 +1513,11 @@ def _read_scheme_version_conn(
     *,
     for_update: bool = False,
 ) -> Mapping[str, object] | None:
-    lock_clause = " FOR UPDATE" if for_update else ""
+    lock_clause = (
+        " FOR UPDATE"
+        if for_update and _dialect_name(conn) != "sqlite"
+        else ""
+    )
     return (
         conn.execute(
             text(
@@ -1755,7 +1759,11 @@ def _read_scheme_registry_rows_conn(
     params: dict[str, object] = {"base_scheme_id": cfg.scheme_id}
     for index, expected_id in enumerate(expected_registry_ids):
         params[f"registry_scheme_id_{index}"] = expected_id
-    lock_clause = " FOR UPDATE" if for_update else ""
+    lock_clause = (
+        " FOR UPDATE"
+        if for_update and _dialect_name(conn) != "sqlite"
+        else ""
+    )
     return (
         conn.execute(
             text(
@@ -9615,6 +9623,214 @@ def complete_approved_blackbox_run(
         return records_written
 
 
+def complete_active_native_run(
+    engine: Engine,
+    cfg: SchemeConfig,
+    *,
+    run_id: int,
+    records: Iterable[PredictionRecord],
+    scheme_version: str | None,
+    records_returned: int,
+    run_date: str,
+    duration_sec: float,
+) -> tuple[str, int, str | None]:
+    """原子提交 Native prediction、终态 run 与运行日志。"""
+    if getattr(cfg, "runtime_type", None) != "native_adapter":
+        raise ValueError(
+            "active Native completion requires runtime_type=native_adapter"
+        )
+    if getattr(cfg, "status", None) != "active":
+        raise ValueError("active Native completion requires active config")
+    exact_scheme_version = getattr(cfg, "scheme_version", None)
+    if (
+        not isinstance(exact_scheme_version, str)
+        or not exact_scheme_version.strip()
+    ):
+        raise ValueError(
+            "active Native completion requires non-empty scheme_version"
+        )
+    if scheme_version != exact_scheme_version:
+        raise ValueError(
+            "Native completion scheme_version does not match config: "
+            f"{scheme_version!r} != {exact_scheme_version!r}"
+        )
+    expected_tenors, expected_registry_ids = _expected_registry_identity(cfg)
+    expected_targets = {
+        (target_tenor, int(cfg.horizon))
+        for target_tenor in expected_tenors
+    }
+    record_list = list(records)
+    normalized_run_date = _require_iso_date(run_date, "run_date")
+
+    with engine.begin() as conn:
+        _assert_run_not_ledger_bound_conn(
+            conn,
+            run_id=int(run_id),
+            operation="generic active Native completion",
+        )
+        version_row = _read_scheme_version_conn(
+            conn,
+            cfg,
+            for_update=True,
+        )
+        if (
+            version_row is None
+            or version_row.get("scheme_id") != cfg.scheme_id
+            or version_row.get("scheme_version") != exact_scheme_version
+            or version_row.get("runtime_type") != "native_adapter"
+            or version_row.get("status") != "active"
+        ):
+            raise RuntimeError(
+                "exact active Native version revalidation failed: "
+                f"scheme_id={cfg.scheme_id} "
+                f"scheme_version={exact_scheme_version}"
+            )
+        registry_rows = _read_scheme_registry_rows_conn(
+            conn,
+            cfg,
+            expected_registry_ids,
+            for_update=True,
+        )
+        registry_error = _registry_identity_error(
+            cfg,
+            expected_tenors,
+            expected_registry_ids,
+            registry_rows,
+            expected_status="active",
+            expected_runtime_type="native_adapter",
+        )
+        if registry_error is not None:
+            raise RuntimeError(
+                f"Native completion Registry revalidation failed: {registry_error}"
+            )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        expected_run_identity = {
+            "scheme_id": cfg.scheme_id,
+            "scheme_version": exact_scheme_version,
+            "runtime_type": "native_adapter",
+            "run_type": "active",
+            "predict_date": normalized_run_date,
+            "status": "running",
+            "records_expected": len(expected_targets),
+            "schedule_item_id": None,
+        }
+        run_identity_errors = []
+        if run is None:
+            run_identity_errors.append("run missing")
+        else:
+            for field, expected_value in expected_run_identity.items():
+                actual_value = run.get(field)
+                if field == "predict_date":
+                    actual_value = _stored_iso_date(run, field)
+                if field == "records_expected" and actual_value is not None:
+                    try:
+                        actual_value = int(actual_value)
+                    except (TypeError, ValueError):
+                        pass
+                if actual_value != expected_value:
+                    run_identity_errors.append(
+                        f"{field}: expected={expected_value!r}, got={actual_value!r}"
+                    )
+        if run_identity_errors:
+            raise RuntimeError(
+                "running run identity revalidation failed: "
+                + "; ".join(run_identity_errors)
+            )
+        assert run is not None
+        run_phase = run.get("prediction_phase")
+        if run_phase not in VALID_PREDICTION_PHASES:
+            raise RuntimeError(
+                "running run identity revalidation failed: invalid "
+                f"prediction_phase={run_phase!r}"
+            )
+        returned_targets = Counter(
+            (str(record.target_tenor), int(record.horizon))
+            for record in record_list
+        )
+        duplicate_targets = sorted(
+            (target_tenor, horizon, count)
+            for (target_tenor, horizon), count in returned_targets.items()
+            if count != 1
+        )
+        record_errors = []
+        if set(returned_targets) != expected_targets or duplicate_targets:
+            record_errors.append(
+                "target set does not match active Registry: "
+                f"expected={sorted(expected_targets)}, "
+                f"returned={sorted(returned_targets)}, "
+                f"duplicates={duplicate_targets}"
+            )
+        for record in record_list:
+            if record.scheme_id != cfg.scheme_id:
+                record_errors.append(
+                    f"record scheme_id={record.scheme_id!r}"
+                )
+            if record.scheme_version not in (None, exact_scheme_version):
+                record_errors.append(
+                    f"record scheme_version={record.scheme_version!r}"
+                )
+            if str(record.predict_date) != normalized_run_date:
+                record_errors.append(
+                    f"record predict_date={record.predict_date!r}"
+                )
+            record_phase = record.prediction_phase or (
+                record.extra or {}
+            ).get("prediction_phase")
+            if record_phase != run_phase:
+                record_errors.append(
+                    f"record prediction_phase={record_phase!r}"
+                )
+        if record_errors:
+            raise RuntimeError(
+                "Native completion records revalidation failed: "
+                + "; ".join(record_errors)
+            )
+
+        records_written = _insert_run_predictions_conn(
+            conn,
+            int(run_id),
+            record_list,
+            scheme_version=exact_scheme_version,
+        )
+        expected = len(expected_targets)
+        status = (
+            "success"
+            if expected == records_returned == records_written
+            else "partial"
+        )
+        error_message = (
+            None
+            if status == "success"
+            else (
+                f"expected={expected}, returned={records_returned}, "
+                f"written={records_written}"
+            )
+        )
+        _finish_scheme_run_conn(
+            conn,
+            run_id=int(run_id),
+            status=status,
+            records_returned=records_returned,
+            records_written=records_written,
+            error_message=error_message,
+            require_exact_run=True,
+        )
+        _write_run_log_conn(
+            conn,
+            cfg.scheme_id,
+            normalized_run_date,
+            status,
+            duration_sec,
+            error_message,
+            int(run_id),
+        )
+        return status, records_written, error_message
+
+
 def complete_gray_gap_run(
     engine: Engine,
     cfg: SchemeConfig,
@@ -10525,12 +10741,43 @@ def fail_scheme_run_atomic(
     error_message: str,
 ) -> None:
     """以独立事务同时写入 failed run 状态与失败日志。"""
+    normalized_run_date = _require_iso_date(run_date, "run_date")
     with engine.begin() as conn:
         _assert_run_not_ledger_bound_conn(
             conn,
             run_id=int(run_id),
             operation="generic failure",
         )
+        run = _read_schedule_run_conn(
+            conn,
+            run_id=int(run_id),
+            for_update=True,
+        )
+        identity_errors = []
+        if run is None:
+            identity_errors.append("run missing")
+        else:
+            if run.get("scheme_id") != scheme_id:
+                identity_errors.append(
+                    "scheme_id: "
+                    f"expected={scheme_id!r}, got={run.get('scheme_id')!r}"
+                )
+            actual_run_date = _stored_iso_date(run, "predict_date")
+            if actual_run_date != normalized_run_date:
+                identity_errors.append(
+                    "predict_date: "
+                    f"expected={normalized_run_date!r}, got={actual_run_date!r}"
+                )
+            if run.get("status") != "running":
+                identity_errors.append(
+                    "status: expected='running', "
+                    f"got={run.get('status')!r}"
+                )
+        if identity_errors:
+            raise RuntimeError(
+                "failure run identity revalidation failed: "
+                + "; ".join(identity_errors)
+            )
         _finish_scheme_run_conn(
             conn,
             run_id=run_id,
@@ -10543,7 +10790,7 @@ def fail_scheme_run_atomic(
         _write_run_log_conn(
             conn,
             scheme_id,
-            run_date,
+            normalized_run_date,
             "failed",
             duration_sec,
             error_message,

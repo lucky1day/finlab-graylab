@@ -683,7 +683,7 @@ class SchedulerMainTests(unittest.TestCase):
             if scheduler.running:
                 scheduler.shutdown(wait=False)
 
-    def test_ledger_mode_startup_catchup_routes_only_through_coordinator(
+    def test_ledger_mode_startup_catchup_routes_daily_and_non_daily_paths(
         self,
     ) -> None:
         from scheduler import main as scheduler_main
@@ -728,10 +728,51 @@ class SchedulerMainTests(unittest.TestCase):
         self.assertIsNotNone(startup)
         self.assertEqual(
             startup.func.__name__,
-            "run_daily_coordinator_job",
+            "run_ledger_startup_catchup",
         )
-        self.assertEqual(startup.kwargs["trigger_origin"], "startup_catchup")
+        self.assertEqual(startup.kwargs, {"algo_env": "forecast_env"})
         self.assertIsNone(legacy)
+
+    def test_ledger_startup_catchup_runs_non_daily_even_when_daily_fails(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        with (
+            patch.object(
+                scheduler_main,
+                "run_daily_coordinator_job",
+                side_effect=RuntimeError("daily failed"),
+            ) as daily,
+            patch.object(
+                scheduler_main,
+                "run_startup_prediction_catchup",
+                return_value=[],
+            ) as non_daily,
+            self.assertRaisesRegex(RuntimeError, "daily failed"),
+        ):
+            scheduler_main.run_ledger_startup_catchup(
+                now=datetime(
+                    2026,
+                    7,
+                    24,
+                    7,
+                    30,
+                    tzinfo=scheduler_main.ASIA_SHANGHAI,
+                ),
+                algo_env="forecast_env",
+            )
+
+        daily.assert_called_once_with(
+            run_date="2026-07-24",
+            algo_env="forecast_env",
+            trigger_origin="startup_catchup",
+        )
+        non_daily.assert_called_once()
+        self.assertEqual(
+            non_daily.call_args.kwargs["algo_env"],
+            "forecast_env",
+        )
 
     def test_coordinator_entry_does_not_grant_process_wide_publish_scope(
         self,
@@ -977,11 +1018,11 @@ class SchedulerMainTests(unittest.TestCase):
         from scheduler import main as scheduler_main
 
         cfg = SimpleNamespace(
-            scheme_id="t5_daily",
+            scheme_id="weekly_multi_tenor",
             status="active",
-            frequency="daily",
+            frequency="weekly",
             tenors=["3Y", "5Y", "7Y", "10Y"],
-            schedule=SimpleNamespace(cron="3 7 * * 1-5", timezone="Asia/Shanghai"),
+            schedule=SimpleNamespace(cron="30 11 * * 6", timezone="Asia/Shanghai"),
         )
         with (
             patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
@@ -995,7 +1036,53 @@ class SchedulerMainTests(unittest.TestCase):
             if scheduler.running:
                 scheduler.shutdown(wait=False)
 
-        self.assertEqual(prediction_jobs, ["predict:t5_daily"])
+        self.assertEqual(prediction_jobs, ["predict:weekly_multi_tenor"])
+
+    def test_legacy_scheduler_does_not_mount_daily_jobs_owned_by_daily_gray_launchd(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        schemes = [
+            _cfg("daily_native", frequency="daily"),
+            _cfg(
+                "weekly_native",
+                frequency="weekly",
+                cron="30 11 * * 6",
+            ),
+        ]
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "BOND_DAILY_COORDINATOR_MODE": "legacy",
+                    "BOND_SCHEDULER_STARTUP_CATCHUP": "false",
+                },
+            ),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=schemes,
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+        ):
+            scheduler = scheduler_main.build_scheduler()
+
+        try:
+            prediction_jobs = {
+                job.id
+                for job in scheduler.get_jobs()
+                if job.id.startswith("predict:")
+            }
+        finally:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+
+        self.assertEqual(prediction_jobs, {"predict:weekly_native"})
 
     def test_scheduler_keeps_active_formal_and_excludes_paused_onboarding(
         self,
@@ -1041,9 +1128,16 @@ class SchedulerMainTests(unittest.TestCase):
                 scheduler.shutdown(wait=False)
 
         paused_onboarding: set[str] = set()
+        expected_recurring = {
+            config.scheme_id
+            for config in schemes
+            if config.scheme_id in FORMAL_BLACKBOX_IDENTITIES
+            and config.status == "active"
+            and config.frequency != "daily"
+        }
         self.assertEqual(
             prediction_ids,
-            set(FORMAL_BLACKBOX_IDENTITIES) - paused_onboarding,
+            expected_recurring - paused_onboarding,
         )
         self.assertTrue(
             all(
@@ -1062,7 +1156,7 @@ class SchedulerMainTests(unittest.TestCase):
     ) -> None:
         from scheduler import main as scheduler_main
 
-        native = _cfg("native_demo")
+        native = _cfg("native_demo", frequency="weekly")
         blackbox = _cfg(
             "one_y_t5_liq_excess_a_v1",
             runtime_type="blackbox_v2",
@@ -1136,7 +1230,7 @@ class SchedulerMainTests(unittest.TestCase):
             load_blackbox_scheduler_admission,
         )
 
-        native = _cfg("native_demo")
+        native = _cfg("native_demo", frequency="weekly")
         blackbox = _cfg(
             "one_y_t5_liq_excess_a_v1",
             runtime_type="blackbox_v2",
@@ -1196,7 +1290,7 @@ class SchedulerMainTests(unittest.TestCase):
     ) -> None:
         from scheduler import main as scheduler_main
 
-        native = _cfg("native_demo")
+        native = _cfg("native_demo", frequency="weekly")
         runtime_drift = _cfg(
             "cgb_a4_fundseason_1y",
             runtime_type="native_adapter",
@@ -1262,7 +1356,7 @@ class SchedulerMainTests(unittest.TestCase):
     ) -> None:
         from scheduler import main as scheduler_main
 
-        native = _cfg("native_demo")
+        native = _cfg("native_demo", frequency="weekly")
         with (
             patch.dict(
                 os.environ,
@@ -1307,9 +1401,9 @@ class SchedulerMainTests(unittest.TestCase):
             scheme_version="04e7af163fb0",
         )
         formal = _cfg(
-            "one_y_t5_liq_excess_a_v1",
+            "weekly_10y_lgbm_point_v1",
             runtime_type="blackbox_v2",
-            scheme_version="8d583560c9f1",
+            scheme_version="0666a6989d6b",
         )
         with (
             patch.dict(
@@ -1351,10 +1445,14 @@ class SchedulerMainTests(unittest.TestCase):
         from scheduler import main as scheduler_main
 
         schemes = [
-            _cfg("scheme_c"),
-            _cfg("scheme_a"),
-            _cfg("scheme_b"),
-            _cfg("paused_scheme", status="paused"),
+            _cfg("scheme_c", frequency="weekly"),
+            _cfg("scheme_a", frequency="weekly"),
+            _cfg("scheme_b", frequency="weekly"),
+            _cfg(
+                "paused_scheme",
+                frequency="weekly",
+                status="paused",
+            ),
         ]
         with (
             patch.dict(os.environ, {"BOND_SCHEDULER_STAGGER_MINUTES": "2"}),
@@ -1391,7 +1489,14 @@ class SchedulerMainTests(unittest.TestCase):
 
         with (
             patch.dict(os.environ, {"BOND_SCHEDULER_STAGGER_MINUTES": "0"}),
-            patch.object(scheduler_main, "discover_schemes", return_value=[_cfg("scheme_a"), _cfg("scheme_b")]),
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[
+                    _cfg("scheme_a", frequency="weekly"),
+                    _cfg("scheme_b", frequency="weekly"),
+                ],
+            ),
             patch.object(scheduler_main, "_sync_registry", return_value=None),
         ):
             scheduler = scheduler_main.build_scheduler()
@@ -2051,7 +2156,7 @@ class SchedulerMainTests(unittest.TestCase):
     def test_scheduled_prediction_wrapper_raises_for_failed_and_partial_results(self) -> None:
         from scheduler import main as scheduler_main
 
-        cfg = _cfg("scheduled_demo")
+        cfg = _cfg("scheduled_demo", frequency="weekly")
         with (
             patch.dict(os.environ, {"BOND_SCHEDULER_STARTUP_CATCHUP": "false"}),
             patch.object(scheduler_main, "discover_schemes", return_value=[cfg]),
@@ -3000,7 +3105,10 @@ class SchedulerMainTests(unittest.TestCase):
         from scheduler import main as scheduler_main
 
         now = datetime(2026, 7, 9, 7, 6, tzinfo=scheduler_main.ASIA_SHANGHAI)
-        schemes = [_cfg("scheme_a"), _cfg("scheme_b")]
+        schemes = [
+            _cfg("scheme_a", frequency="weekly"),
+            _cfg("scheme_b", frequency="weekly"),
+        ]
         success = SchemeRunResult("scheme_b", "success", 1, 0.1)
         with (
             patch.object(scheduler_main, "discover_schemes", return_value=schemes) as discover_schemes,
@@ -3028,6 +3136,75 @@ class SchedulerMainTests(unittest.TestCase):
         )
         engine.dispose.assert_called_once()
 
+    def test_startup_prediction_catchup_excludes_daily_gray_launchd_schemes(
+        self,
+    ) -> None:
+        from scheduler import main as scheduler_main
+
+        now = datetime(
+            2026,
+            7,
+            9,
+            7,
+            10,
+            tzinfo=scheduler_main.ASIA_SHANGHAI,
+        )
+        daily = _cfg("daily_native", frequency="daily")
+        weekly = _cfg(
+            "weekly_native",
+            frequency="weekly",
+            cron="3 7 * * 1-5",
+        )
+        success = SchemeRunResult(
+            weekly.scheme_id,
+            "success",
+            1,
+            0.1,
+        )
+        with (
+            patch.object(
+                scheduler_main,
+                "discover_schemes",
+                return_value=[daily, weekly],
+            ),
+            patch.object(
+                scheduler_main,
+                "_sync_registry",
+                return_value=None,
+            ),
+            patch.object(
+                scheduler_main,
+                "_prediction_run_exists",
+                return_value=False,
+            ) as run_exists,
+            patch.object(
+                scheduler_main,
+                "_run_prediction_config",
+                return_value=success,
+            ) as execute,
+            patch.object(
+                scheduler_main,
+                "create_engine_from_env",
+            ),
+            self.assertLogs(
+                scheduler_main.logger,
+                level=logging.WARNING,
+            ),
+        ):
+            results = scheduler_main.run_startup_prediction_catchup(
+                now=now,
+                algo_env="forecast_env",
+            )
+
+        self.assertEqual(results, [success])
+        run_exists.assert_called_once()
+        execute.assert_called_once_with(
+            weekly,
+            "2026-07-09",
+            algo_env="forecast_env",
+            force=False,
+        )
+
     def test_startup_prediction_catchup_excludes_gray_and_version_drift(
         self,
     ) -> None:
@@ -3042,9 +3219,9 @@ class SchedulerMainTests(unittest.TestCase):
             tzinfo=scheduler_main.ASIA_SHANGHAI,
         )
         formal = _cfg(
-            "one_y_t5_liq_excess_a_v1",
+            "weekly_10y_lgbm_point_v1",
             runtime_type="blackbox_v2",
-            scheme_version="8d583560c9f1",
+            scheme_version="0666a6989d6b",
         )
         gray = _cfg(
             "cgb_a4_fundseason_1y",
@@ -3052,11 +3229,11 @@ class SchedulerMainTests(unittest.TestCase):
             scheme_version="04e7af163fb0",
         )
         drift = _cfg(
-            "weekly_10y_lgbm_point_v1",
+            "cgb_a4_fundseason_3y",
             runtime_type="blackbox_v2",
             scheme_version="version-drift",
         )
-        native = _cfg("native_demo")
+        native = _cfg("native_demo", frequency="weekly")
         schemes = [formal, gray, drift, native]
 
         def run_config(config, *_args, **_kwargs):
@@ -3125,7 +3302,7 @@ class SchedulerMainTests(unittest.TestCase):
             15,
             tzinfo=scheduler_main.ASIA_SHANGHAI,
         )
-        native = _cfg("native_demo")
+        native = _cfg("native_demo", frequency="weekly")
         blackbox = _cfg(
             "one_y_t5_liq_excess_a_v1",
             runtime_type="blackbox_v2",
@@ -3207,7 +3384,7 @@ class SchedulerMainTests(unittest.TestCase):
             runtime_type="native_adapter",
             scheme_version="04e7af163fb0",
         )
-        native = _cfg("native_demo")
+        native = _cfg("native_demo", frequency="weekly")
         schemes = [runtime_drift, native]
         expected = SchemeRunResult(
             native.scheme_id,
@@ -3269,7 +3446,11 @@ class SchedulerMainTests(unittest.TestCase):
         from scheduler import main as scheduler_main
 
         now = datetime(2026, 7, 9, 7, 10, tzinfo=scheduler_main.ASIA_SHANGHAI)
-        schemes = [_cfg("scheme_a"), _cfg("scheme_b"), _cfg("scheme_c")]
+        schemes = [
+            _cfg("scheme_a", frequency="weekly"),
+            _cfg("scheme_b", frequency="weekly"),
+            _cfg("scheme_c", frequency="weekly"),
+        ]
         failed = SchemeRunResult("scheme_a", "failed", 0, 0.1, "failed")
         partial = SchemeRunResult("scheme_b", "partial", 1, 0.2, "partial")
         success = SchemeRunResult("scheme_c", "success", 1, 0.3)

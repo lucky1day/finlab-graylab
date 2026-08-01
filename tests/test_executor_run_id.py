@@ -1385,15 +1385,17 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                 with patch("scheduler.executor._active_registry_targets", return_value={("5Y", 1), ("10Y", 1)}):
                     with patch("scheduler.executor.create_scheme_run", return_value=101) as create_run:
                         with patch("scheduler.executor.run_scheme_subprocess", return_value=records):
-                            with patch("scheduler.executor.insert_run_predictions", return_value=2) as insert_predictions:
-                                with patch("scheduler.executor.finish_scheme_run") as finish_run:
-                                    with patch("scheduler.executor.write_run_log") as write_run_log:
-                                        result = execute_scheme(
-                                            cfg,
-                                            "2026-06-05",
-                                            algo_env="test_env",
-                                            prediction_phase="gray_live",
-                                        )
+                            with patch(
+                                "scheduler.executor.complete_active_native_run",
+                                return_value=("success", 2, None),
+                            ) as complete_run:
+                                with patch("scheduler.executor.write_run_log") as write_run_log:
+                                    result = execute_scheme(
+                                        cfg,
+                                        "2026-06-05",
+                                        algo_env="test_env",
+                                        prediction_phase="gray_live",
+                                    )
 
         self.assertEqual(result.status, "success")
         self.assertEqual(result.records_written, 2)
@@ -1409,19 +1411,14 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             prediction_phase="gray_live",
             records_expected=2,
         )
-        written_records = insert_predictions.call_args.args[2]
+        written_records = complete_run.call_args.kwargs["records"]
         self.assertEqual([record.prediction_phase for record in written_records], ["gray_live", "gray_live"])
         self.assertEqual([record.extra["prediction_phase"] for record in written_records], ["gray_live", "gray_live"])
-        insert_predictions.assert_called_once()
-        self.assertEqual(insert_predictions.call_args.args[:2], (engine, 101))
-        self.assertEqual(insert_predictions.call_args.kwargs["scheme_version"], "abc123")
-        finish_run.assert_called_once()
-        self.assertEqual(finish_run.call_args.kwargs["run_id"], 101)
-        self.assertEqual(finish_run.call_args.kwargs["status"], "success")
-        self.assertEqual(finish_run.call_args.kwargs["records_returned"], 2)
-        self.assertEqual(finish_run.call_args.kwargs["records_written"], 2)
-        write_run_log.assert_called_once()
-        self.assertEqual(write_run_log.call_args.kwargs["run_id"], 101)
+        complete_run.assert_called_once()
+        self.assertEqual(complete_run.call_args.args[:2], (engine, cfg))
+        self.assertEqual(complete_run.call_args.kwargs["run_id"], 101)
+        self.assertEqual(complete_run.call_args.kwargs["scheme_version"], "abc123")
+        write_run_log.assert_not_called()
 
     def test_execute_scheme_uses_per_scheme_schedule_timeout(self) -> None:
         from scheduler.executor import execute_scheme
@@ -1453,15 +1450,17 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                 with patch("scheduler.executor._active_registry_targets", return_value={("10Y", 5)}):
                     with patch("scheduler.executor.create_scheme_run", return_value=201):
                         with patch("scheduler.executor.run_scheme_subprocess", return_value=records) as runner:
-                            with patch("scheduler.executor.insert_run_predictions", return_value=1):
-                                with patch("scheduler.executor.finish_scheme_run"):
-                                    with patch("scheduler.executor.write_run_log"):
-                                        result = execute_scheme(
-                                            cfg,
-                                            "2026-07-03",
-                                            algo_env="test_env",
-                                            prediction_phase="gray_live",
-                                        )
+                            with patch(
+                                "scheduler.executor.complete_active_native_run",
+                                return_value=("success", 1, None),
+                            ):
+                                with patch("scheduler.executor.write_run_log"):
+                                    result = execute_scheme(
+                                        cfg,
+                                        "2026-07-03",
+                                        algo_env="test_env",
+                                        prediction_phase="gray_live",
+                                    )
 
         self.assertEqual(result.status, "success")
         runner.assert_called_once_with(
@@ -1618,8 +1617,8 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                 with patch("scheduler.executor._active_registry_targets", return_value={("5Y", 1)}):
                     with patch("scheduler.executor.create_scheme_run", return_value=102):
                         with patch("scheduler.executor.run_scheme_subprocess", return_value=records):
-                            with patch("scheduler.executor.insert_run_predictions") as insert_predictions:
-                                with patch("scheduler.executor.finish_scheme_run") as finish_run:
+                            with patch("scheduler.executor.complete_active_native_run") as complete_run:
+                                with patch("scheduler.executor.fail_scheme_run_atomic") as fail_run:
                                     with patch("scheduler.executor.write_run_log") as write_run_log:
                                         result = execute_scheme(
                                             cfg,
@@ -1634,13 +1633,10 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
             result.error_msg,
             "live target mismatch: missing=[('5Y', 1)], extra=[('7Y', 1)], duplicates=[]",
         )
-        insert_predictions.assert_not_called()
-        finish_run.assert_called_once()
-        self.assertEqual(finish_run.call_args.kwargs["status"], "failed")
-        self.assertEqual(finish_run.call_args.kwargs["records_returned"], 1)
-        self.assertEqual(finish_run.call_args.kwargs["records_written"], 0)
-        write_run_log.assert_called_once()
-        self.assertEqual(write_run_log.call_args.args[3], "failed")
+        complete_run.assert_not_called()
+        fail_run.assert_called_once()
+        self.assertEqual(fail_run.call_args.kwargs["records_returned"], 1)
+        write_run_log.assert_not_called()
 
     def test_execute_scheme_rejects_daily_records_with_stale_live_context(self) -> None:
         from scheduler.executor import execute_scheme
@@ -1677,8 +1673,8 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
                     with patch("scheduler.executor._active_registry_targets", return_value={("10Y", 5)}):
                         with patch("scheduler.executor.create_scheme_run", return_value=301):
                             with patch("scheduler.executor.run_scheme_subprocess", return_value=records):
-                                with patch("scheduler.executor.insert_run_predictions") as insert_predictions:
-                                    with patch("scheduler.executor.finish_scheme_run") as finish_run:
+                                with patch("scheduler.executor.complete_active_native_run") as complete_run:
+                                    with patch("scheduler.executor.fail_scheme_run_atomic") as fail_run:
                                         with patch("scheduler.executor.write_run_log") as write_run_log:
                                             result = execute_scheme(
                                                 cfg,
@@ -1691,13 +1687,10 @@ class ExecutorRunIdTests(_ExplicitLegacyModeTestCase):
         self.assertEqual(result.records_written, 0)
         self.assertIn("expected feature_date=2026-07-06", result.error_msg or "")
         self.assertIn("expected target_date=2026-07-13", result.error_msg or "")
-        insert_predictions.assert_not_called()
-        finish_run.assert_called_once()
-        self.assertEqual(finish_run.call_args.kwargs["status"], "failed")
-        self.assertEqual(finish_run.call_args.kwargs["records_returned"], 1)
-        self.assertEqual(finish_run.call_args.kwargs["records_written"], 0)
-        write_run_log.assert_called_once()
-        self.assertEqual(write_run_log.call_args.args[3], "failed")
+        complete_run.assert_not_called()
+        fail_run.assert_called_once()
+        self.assertEqual(fail_run.call_args.kwargs["records_returned"], 1)
+        write_run_log.assert_not_called()
 
     def test_executor_does_not_write_serving_pointer(self) -> None:
         import scheduler.executor as executor
@@ -1828,8 +1821,8 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                     patch("scheduler.executor.create_scheme_run", return_value=501),
                     patch("scheduler.executor.run_configured_scheme", return_value=[self._record()]) as runner,
                     patch("scheduler.executor.attach_run_data_snapshot"),
-                    patch("scheduler.executor.insert_run_predictions", return_value=1) as insert_predictions,
-                    patch("scheduler.executor.finish_scheme_run"),
+                    patch("scheduler.executor.complete_active_native_run") as complete_native_run,
+                    patch("scheduler.executor.fail_scheme_run_atomic") as fail_run,
                     patch("scheduler.executor.write_run_log") as write_run_log,
                 ):
                     result = execute_scheme(
@@ -1848,7 +1841,8 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                 approval_reader.assert_called_once_with(engine, cfg)
                 native_gate.assert_not_called()
                 runner.assert_not_called()
-                insert_predictions.assert_not_called()
+                complete_native_run.assert_not_called()
+                fail_run.assert_not_called()
                 self.assertEqual(write_run_log.call_args.args[3], "failed")
                 self.assertTrue(engine.disposed)
 
@@ -1911,7 +1905,6 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
             patch("scheduler.executor.create_scheme_run", return_value=503) as create_run,
             patch("scheduler.executor.attach_run_data_snapshot"),
             patch("scheduler.executor.complete_approved_blackbox_run", return_value=1),
-            patch("scheduler.executor.finish_scheme_run"),
             patch("scheduler.executor.write_run_log") as write_run_log,
         ):
             result = execute_scheme(
@@ -1964,8 +1957,7 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                 "scheduler.executor.complete_approved_blackbox_run",
                 return_value=1,
             ) as complete_run,
-            patch("scheduler.executor.insert_run_predictions", return_value=1) as native_insert,
-            patch("scheduler.executor.finish_scheme_run"),
+            patch("scheduler.executor.complete_active_native_run") as native_complete,
             patch("scheduler.executor.write_run_log"),
         ):
             result = execute_scheme(
@@ -2002,7 +1994,7 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
         self.assertEqual(complete_run.call_args.kwargs["run_id"], 502)
         self.assertEqual(complete_run.call_args.kwargs["scheme_version"], "blackbox-version-1")
         self.assertEqual(complete_run.call_args.kwargs["records_returned"], 1)
-        native_insert.assert_not_called()
+        native_complete.assert_not_called()
         self.assertTrue(engine.disposed)
 
     def test_blackbox_executor_forwards_historical_snapshot_mode_explicitly(self) -> None:
@@ -2092,7 +2084,7 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                         "scheduler.executor.complete_approved_blackbox_run",
                         side_effect=final_error,
                     ) as complete_run,
-                    patch("scheduler.executor.insert_run_predictions", return_value=1) as native_insert,
+                    patch("scheduler.executor.complete_active_native_run") as native_complete,
                     patch("scheduler.executor.fail_scheme_run_atomic") as fail_run,
                     patch("scheduler.executor.write_run_log"),
                 ):
@@ -2108,7 +2100,7 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
                 self.assertEqual(result.error_msg, str(final_error))
                 runner.assert_called_once()
                 complete_run.assert_called_once()
-                native_insert.assert_not_called()
+                native_complete.assert_not_called()
                 fail_run.assert_called_once()
                 self.assertEqual(fail_run.call_args.kwargs["records_returned"], 1)
 
@@ -2148,8 +2140,10 @@ class BlackboxExecutionApprovalTests(_ExplicitLegacyModeTestCase):
             ),
             patch("scheduler.executor.create_scheme_run", return_value=503),
             patch("scheduler.executor.run_configured_scheme", return_value=[record]),
-            patch("scheduler.executor.insert_run_predictions", return_value=1),
-            patch("scheduler.executor.finish_scheme_run"),
+            patch(
+                "scheduler.executor.complete_active_native_run",
+                return_value=("success", 1, None),
+            ),
             patch("scheduler.executor.write_run_log"),
         ):
             result = execute_scheme(
@@ -2212,11 +2206,8 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
                 "scheduler.executor.create_scheme_run",
             ) as create_run,
             patch(
-                "scheduler.executor.insert_run_predictions",
-            ) as insert_predictions,
-            patch(
-                "scheduler.executor.finish_scheme_run",
-            ) as finish_run,
+                "scheduler.executor.complete_active_native_run",
+            ) as complete_native_run,
             patch(
                 "scheduler.executor.fail_scheme_run_atomic",
             ) as fail_run,
@@ -2246,8 +2237,7 @@ class ScheduledLiveExecutionFenceTests(_ExplicitLegacyModeTestCase):
         approval.assert_not_called()
         registry_targets.assert_not_called()
         create_run.assert_not_called()
-        insert_predictions.assert_not_called()
-        finish_run.assert_not_called()
+        complete_native_run.assert_not_called()
         fail_run.assert_not_called()
         write_log.assert_not_called()
         algorithm.assert_not_called()
@@ -2504,8 +2494,8 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
         active_targets: set[tuple[str, int]],
         current_active_targets: set[tuple[str, int]] | None = None,
         records_written: int | None = None,
-        finish_side_effect=None,
-        write_log_side_effect=None,
+        completion_side_effect=None,
+        fail_atomic_side_effect=None,
     ):
         from scheduler.executor import execute_scheme
 
@@ -2518,6 +2508,24 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
         )
         written = len(records) if records_written is None else records_written
         current_targets = active_targets if current_active_targets is None else current_active_targets
+        completion_status = (
+            "success"
+            if len(active_targets) == len(records) == written
+            else "partial"
+        )
+        completion_error = (
+            None
+            if completion_status == "success"
+            else (
+                f"expected={len(active_targets)}, returned={len(records)}, "
+                f"written={written}"
+            )
+        )
+        completion_result = (
+            completion_status,
+            written,
+            completion_error,
+        )
         with (
             patch("scheduler.executor.create_engine_from_env", return_value=engine),
             patch("scheduler.executor._verify_scheme_activation", return_value=(True, "ok")),
@@ -2527,9 +2535,16 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             ) as active_targets_reader,
             patch("scheduler.executor.create_scheme_run", return_value=401) as create_run,
             patch("scheduler.executor.run_scheme_subprocess", return_value=records) as runner,
-            patch("scheduler.executor.insert_run_predictions", return_value=written) as insert_predictions,
-            patch("scheduler.executor.finish_scheme_run", side_effect=finish_side_effect) as finish_run,
-            patch("scheduler.executor.write_run_log", side_effect=write_log_side_effect) as write_run_log,
+            patch(
+                "scheduler.executor.complete_active_native_run",
+                return_value=completion_result,
+                side_effect=completion_side_effect,
+            ) as complete_native_run,
+            patch("scheduler.executor.write_run_log") as write_run_log,
+            patch(
+                "scheduler.executor.fail_scheme_run_atomic",
+                side_effect=fail_atomic_side_effect,
+            ) as fail_run_atomic,
             patch("scheduler.executor.logger.exception") as logger_exception,
         ):
             result = execute_scheme(
@@ -2543,11 +2558,28 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             create_run=create_run,
             active_targets_reader=active_targets_reader,
             runner=runner,
-            insert_predictions=insert_predictions,
-            finish_run=finish_run,
+            complete_native_run=complete_native_run,
             write_run_log=write_run_log,
+            fail_run_atomic=fail_run_atomic,
             logger_exception=logger_exception,
         )
+
+    def test_native_failure_audit_commits_run_and_log_atomically(self) -> None:
+        execution = self._execute(
+            [],
+            active_targets={("5Y", 1)},
+        )
+
+        execution.fail_run_atomic.assert_called_once()
+        self.assertEqual(
+            execution.fail_run_atomic.call_args.kwargs["records_returned"],
+            0,
+        )
+        self.assertEqual(
+            execution.fail_run_atomic.call_args.kwargs["error_message"],
+            "live target mismatch: missing=[('5Y', 1)], extra=[], duplicates=[]",
+        )
+        execution.write_run_log.assert_not_called()
 
     def test_execute_scheme_rejects_empty_return_for_active_target(self) -> None:
         execution = self._execute([], active_targets={("5Y", 1)})
@@ -2557,9 +2589,8 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             execution.result.error_msg,
             "live target mismatch: missing=[('5Y', 1)], extra=[], duplicates=[]",
         )
-        execution.insert_predictions.assert_not_called()
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_returned"], 0)
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_written"], 0)
+        execution.complete_native_run.assert_not_called()
+        self.assertEqual(execution.fail_run_atomic.call_args.kwargs["records_returned"], 0)
 
     def test_execute_scheme_rejects_missing_target(self) -> None:
         execution = self._execute(
@@ -2572,8 +2603,8 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             execution.result.error_msg,
             "live target mismatch: missing=[('10Y', 1)], extra=[], duplicates=[]",
         )
-        execution.insert_predictions.assert_not_called()
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_returned"], 1)
+        execution.complete_native_run.assert_not_called()
+        self.assertEqual(execution.fail_run_atomic.call_args.kwargs["records_returned"], 1)
 
     def test_execute_scheme_rejects_duplicate_target(self) -> None:
         execution = self._execute(
@@ -2586,8 +2617,8 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             execution.result.error_msg,
             "live target mismatch: missing=[], extra=[], duplicates=[('5Y', 1, 2)]",
         )
-        execution.insert_predictions.assert_not_called()
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_returned"], 2)
+        execution.complete_native_run.assert_not_called()
+        self.assertEqual(execution.fail_run_atomic.call_args.kwargs["records_returned"], 2)
 
     def test_execute_scheme_rejects_extra_target(self) -> None:
         execution = self._execute(
@@ -2600,8 +2631,8 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             execution.result.error_msg,
             "live target mismatch: missing=[], extra=[('7Y', 1)], duplicates=[]",
         )
-        execution.insert_predictions.assert_not_called()
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_returned"], 2)
+        execution.complete_native_run.assert_not_called()
+        self.assertEqual(execution.fail_run_atomic.call_args.kwargs["records_returned"], 2)
 
     def test_execute_scheme_rejects_unexpected_empty_active_targets(self) -> None:
         execution = self._execute([], active_targets=set())
@@ -2612,7 +2643,7 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             "active registry targets empty for scheme target_complete: missing=[], extra=[], duplicates=[]",
         )
         execution.runner.assert_not_called()
-        execution.insert_predictions.assert_not_called()
+        execution.complete_native_run.assert_not_called()
         execution.create_run.assert_called_once_with(
             execution.create_run.call_args.args[0],
             scheme_id="target_complete",
@@ -2623,7 +2654,7 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             prediction_phase="gray_live",
             records_expected=0,
         )
-        self.assertIsNone(execution.finish_run.call_args.kwargs["records_returned"])
+        self.assertIsNone(execution.fail_run_atomic.call_args.kwargs["records_returned"])
 
     def test_execute_scheme_records_raw_count_when_normalization_fails(self) -> None:
         execution = self._execute(
@@ -2633,8 +2664,8 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
 
         self.assertEqual(execution.result.status, "failed")
         self.assertIn("missing feature_date", execution.result.error_msg or "")
-        execution.insert_predictions.assert_not_called()
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_returned"], 1)
+        execution.complete_native_run.assert_not_called()
+        self.assertEqual(execution.fail_run_atomic.call_args.kwargs["records_returned"], 1)
 
     def test_execute_scheme_rejects_target_paused_during_run(self) -> None:
         execution = self._execute(
@@ -2648,7 +2679,7 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             execution.result.error_msg,
             "active registry targets changed during run: initial=[('5Y', 1)], current=[]",
         )
-        execution.insert_predictions.assert_not_called()
+        execution.complete_native_run.assert_not_called()
         self.assertEqual(execution.active_targets_reader.call_count, 2)
         self.assertEqual(execution.create_run.call_args.kwargs["records_expected"], 1)
 
@@ -2665,7 +2696,7 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             "active registry targets changed during run: "
             "initial=[('5Y', 1)], current=[('10Y', 1), ('5Y', 1)]",
         )
-        execution.insert_predictions.assert_not_called()
+        execution.complete_native_run.assert_not_called()
         self.assertEqual(execution.active_targets_reader.call_count, 2)
         self.assertEqual(execution.create_run.call_args.kwargs["records_expected"], 1)
 
@@ -2677,53 +2708,49 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
 
         self.assertEqual(execution.result.status, "success")
         self.assertEqual(execution.result.records_written, 1)
-        inserted = execution.insert_predictions.call_args.args[2]
+        inserted = execution.complete_native_run.call_args.kwargs["records"]
         self.assertEqual([record.predicted_direction for record in inserted], [0])
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_returned"], 1)
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_written"], 1)
+        execution.fail_run_atomic.assert_not_called()
+        execution.write_run_log.assert_not_called()
 
-    def test_execute_scheme_preserves_written_count_when_first_finish_fails(self) -> None:
+    def test_execute_scheme_atomic_completion_failure_does_not_report_written_records(self) -> None:
         execution = self._execute(
             [self._record("5Y")],
             active_targets={("5Y", 1)},
-            finish_side_effect=[RuntimeError("initial finish failed"), None],
+            completion_side_effect=RuntimeError("atomic completion failed"),
         )
 
         self.assertEqual(execution.result.status, "failed")
-        self.assertEqual(execution.result.records_written, 1)
-        self.assertEqual(execution.result.error_msg, "initial finish failed")
-        execution.insert_predictions.assert_called_once()
-        self.assertEqual(execution.finish_run.call_count, 2)
-        first_finish = execution.finish_run.call_args_list[0].kwargs
-        second_finish = execution.finish_run.call_args_list[1].kwargs
-        self.assertEqual(first_finish["status"], "success")
-        self.assertEqual(first_finish["records_written"], 1)
-        self.assertEqual(second_finish["status"], "failed")
-        self.assertEqual(second_finish["records_written"], 1)
-        self.assertEqual(second_finish["error_message"], "initial finish failed")
+        self.assertEqual(execution.result.records_written, 0)
+        self.assertEqual(execution.result.error_msg, "atomic completion failed")
+        execution.complete_native_run.assert_called_once()
+        execution.fail_run_atomic.assert_called_once()
+        self.assertEqual(
+            execution.fail_run_atomic.call_args.kwargs["error_message"],
+            "atomic completion failed",
+        )
+        execution.write_run_log.assert_not_called()
 
-    def test_execute_scheme_keeps_success_when_run_log_write_fails(self) -> None:
+    def test_execute_scheme_atomic_run_log_failure_rolls_back_and_audits_failure(self) -> None:
         execution = self._execute(
             [self._record("5Y")],
             active_targets={("5Y", 1)},
-            write_log_side_effect=[RuntimeError("run log failed"), None],
+            completion_side_effect=RuntimeError("run log failed"),
         )
 
-        self.assertEqual(execution.result.status, "success")
-        self.assertEqual(execution.result.records_written, 1)
-        self.assertIsNone(execution.result.error_msg)
-        self.assertEqual(execution.finish_run.call_count, 1)
-        self.assertEqual(execution.finish_run.call_args.kwargs["status"], "success")
-        self.assertEqual(execution.write_run_log.call_count, 1)
-        execution.logger_exception.assert_called_once()
+        self.assertEqual(execution.result.status, "failed")
+        self.assertEqual(execution.result.records_written, 0)
+        self.assertEqual(execution.result.error_msg, "run log failed")
+        execution.fail_run_atomic.assert_called_once()
+        execution.write_run_log.assert_not_called()
+        execution.logger_exception.assert_not_called()
 
     def test_execute_scheme_preserves_business_error_when_failure_audits_fail(self) -> None:
         try:
             execution = self._execute(
                 [self._record("5Y", feature_date=None)],
                 active_targets={("5Y", 1)},
-                finish_side_effect=RuntimeError("finish audit failed"),
-                write_log_side_effect=RuntimeError("log audit failed"),
+                fail_atomic_side_effect=RuntimeError("atomic audit failed"),
             )
         except RuntimeError as exc:
             self.fail(f"audit exception escaped instead of preserving business error: {exc}")
@@ -2736,16 +2763,12 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
             )
         )
         self.assertIn(
-            "finish_scheme_run audit failed: finish audit failed",
+            "fail_scheme_run_atomic audit failed: atomic audit failed",
             execution.result.error_msg or "",
         )
-        self.assertIn(
-            "write_run_log audit failed: log audit failed",
-            execution.result.error_msg or "",
-        )
-        execution.finish_run.assert_called_once()
-        execution.write_run_log.assert_called_once()
-        self.assertEqual(execution.logger_exception.call_count, 2)
+        execution.fail_run_atomic.assert_called_once()
+        execution.write_run_log.assert_not_called()
+        self.assertEqual(execution.logger_exception.call_count, 1)
 
     def test_execute_scheme_marks_partial_with_all_three_counts(self) -> None:
         execution = self._execute(
@@ -2757,13 +2780,9 @@ class ExecutorTargetCompletenessTests(_ExplicitLegacyModeTestCase):
         self.assertEqual(execution.result.status, "partial")
         self.assertEqual(execution.result.records_written, 1)
         self.assertEqual(execution.result.error_msg, "expected=2, returned=2, written=1")
-        self.assertEqual(execution.finish_run.call_args.kwargs["status"], "partial")
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_returned"], 2)
-        self.assertEqual(execution.finish_run.call_args.kwargs["records_written"], 1)
-        self.assertEqual(
-            execution.finish_run.call_args.kwargs["error_message"],
-            "expected=2, returned=2, written=1",
-        )
+        execution.complete_native_run.assert_called_once()
+        execution.fail_run_atomic.assert_not_called()
+        execution.write_run_log.assert_not_called()
 
 
 if __name__ == "__main__":

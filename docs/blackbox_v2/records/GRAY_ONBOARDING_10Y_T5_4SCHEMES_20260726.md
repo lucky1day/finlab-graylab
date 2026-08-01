@@ -1,6 +1,6 @@
 # 10Y T+5 四方案手工入库记录
 
-**文档状态**：`ACCEPTED`
+**文档状态**：`HISTORICAL`
 
 **执行日期**：2026-07-26，`Asia/Shanghai`
 

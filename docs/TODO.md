@@ -4,7 +4,7 @@
 
 **目标读者**：项目负责人、平台开发、运维和审计人员
 
-**最后核验日期**：2026-07-30
+**最后核验日期**：2026-08-02
 
 本文是当前未完成工作的唯一权威排序。已验证结论见
 [当前状态](CURRENT_STATUS.md)，日频不变量见
@@ -36,10 +36,12 @@ signal。日常生产必须使用 warm cache；不新增冷启动压力门禁、
    阻断；
    旧阻断态 plan 不得执行。
 4. production 当前停在 017；先经 canonical CLI 应用 migration 018，再在授权
-   维护窗口执行 machine-global epoch 与 ledger cutover。切换前 backend 保持 legacy/
-   HTTP 200，scheduler 与 v2-preflight 保持未加载；切换成功后只启动一个
-   scheduler，并核验 `current_run_id + attempt_no` fence、ProcessStartGuard、当天
-   Native/DataBridge generation 和 08:30 cutoff。
+   维护窗口执行 machine-global epoch 与 ledger cutover。不得把旧记录中的“未加载”
+   当作当前现场；[当前状态](CURRENT_STATUS.md)记录的重复自动路径风险必须先在授权
+   维护窗口通过 installed plist、`launchctl` loaded state 和日志重新确认并显式
+   收敛。切换成功后只保留一个目标 scheduler，并核验
+   `current_run_id + attempt_no` fence、ProcessStartGuard、当天 Native/DataBridge
+   generation 和 08:30 cutoff。
 
 已完成但仍须保持的生产输入基线：
 

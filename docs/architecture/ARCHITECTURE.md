@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`native_adapter`、`blackbox_v2`
 **目标读者**：平台开发和架构审计人员
-**最后核验日期**：2026-08-01
+**最后核验日期**：2026-08-02
 **版本**：v1.3
 
 > 本文是**系统架构**（部署、DB schema、API 契约、数据流）。代码层面的分层、包依赖方向规则、运行时调用图与扩展模型见 [CODE_ARCHITECTURE.md](CODE_ARCHITECTURE.md)（代码架构主蓝图）。
@@ -13,6 +13,9 @@
 ---
 
 ## 1. 系统架构图
+
+下图是本分支代码与仓库 plist 在取得生产授权、同步 installed plist 并重启核验后的
+目标拓扑，不是尚未重载的当前进程快照。
 
 ```
 Mac Studio
@@ -43,9 +46,19 @@ launchd + plist 是真实生产调度控制面：launchd 决定任务是否挂�
 生产控制面；仓库 plist 也只有与 installed plist 和 `launchctl` loaded state 核对后，
 才能证明现场配置。
 
-Actuals 不挂载在常驻 APScheduler 中。独立
+目标拓扑中 Actuals 不挂载在常驻 APScheduler 中。独立
 `com.bond-factor-lab.actuals` LaunchAgent 在 `08:30/19:00/23:45` 启动一次性
 `scheduler.main --run-once actuals` 进程；三个时点和进程退出状态均由 launchd 管理。
+
+日频预测也不得同时挂载到两条自动路径：本分支收敛后的 legacy 目标由
+`com.bond-factor-lab.daily-gray` 和冻结 policy 独占 active daily；常驻
+`com.bond-factor-lab.scheduler` 只注册周频/月频 recurring job，启动追跑也只处理
+这些非日频 job。待 ledger cutover 后，日频改由唯一 occurrence coordinator 接管；
+任何阶段都不得让 per-scheme daily cron 与 daily-gray/coordinator 并存。
+
+当前 loaded 进程是否已经达到上述目标，统一以[当前状态](../CURRENT_STATUS.md)为准。
+本批不重载服务；必须在独立生产授权窗口同步 installed 配置、重启对应进程，再以
+`launchctl`、实际注册日志和任务日志确认收敛，之后才能把目标拓扑称为现场事实。
 
 方案执行层有两个显式驱动：Native V1 仅运行政策清单中的存量 adapter；Blackbox V2 接收所有后续新增方案，通过 DataBridge 三频同代快照和隔离 CLI 执行。两者都转换为 `PredictionRecord`，之后共用 Registry、actual join、落库、API 和前端链路。
 
@@ -91,7 +104,7 @@ launchd 按 installed plist 启动对应任务进程
 
 常驻 APScheduler 路径可通过 `BOND_SCHEDULER_PREDICTION_MAX_CONCURRENCY` 限制并发；daily-gray 一次性路径的顺序、heavy/light 上限和 publisher 依赖由其冻结 policy 与 runner 定义。慢速 source-backed 方案可以在 `config.yaml` 的 `schedule.timeout_sec` 配置方案级执行 timeout 覆盖 executor 默认预算；这只影响子进程等待时间，不改变日期、业务 cron、并发规则或 source 算法逻辑。生产上修改调度配置后必须先核对仓库与 installed plist 差异；取得独立生产授权后再按对应 LaunchAgent 的生效方式操作，并复核 `launchctl` 状态、plist 触发定义和任务日志。仅看到 `Scheduled scheme ...` 注册记录不能单独证明任务已由真实生产控制面接管。
 
-launchd scheduler 使用 `RunAtLoad=true` 与 `KeepAlive=true`，用户登录后自动拉起并在进程退出时重启。`BOND_SCHEDULER_STARTUP_CATCHUP=1` 时，scheduler 启动后会执行一次启动追跑：只补跑当天业务 cron 已过且 `t_scheme_runs` 尚无 `success/partial/failed/skipped` 终态记录的 active 方案；已有终态 run 的方案不会因重启反复补跑。
+本分支目标代码中，launchd scheduler 使用 `RunAtLoad=true` 与 `KeepAlive=true`，用户登录后自动拉起并在进程退出时重启。`BOND_SCHEDULER_STARTUP_CATCHUP=1` 时，scheduler 启动后会执行一次启动追跑：只补跑当天业务 cron 已过且 `t_scheme_runs` 尚无 `success/partial/failed/skipped` 终态记录的 active 非日频方案；日频由 daily-gray 或 ledger coordinator 独占，不能通过 scheduler 重启触发第二次执行。已有终态 run 的非日频方案不会因重启反复补跑。该行为只有在授权重启后的进程中才生效。
 
 ### 2.2 实际方向更新（每日08:30、19:00与23:45）
 
@@ -120,16 +133,20 @@ launchd 在每日08:30、19:00和23:45启动一次性 Actuals 任务；交易日
 
 ```
 用户选择: 任务格子(Y标的 + task_type) + 候选方案 + 月份范围
-  → 前端通过 t_target_registry/API 获取 Y 标的展示名
-  → 前端按 registry.task_type 分列并筛选候选方案排行
-  → 选中方案后调用 GET /api/metrics/{registry_scheme_id}?start_month=2025-01&end_month=2025-05
-  → 后端 metric_service:
+  → 前端调用 GET /api/factor-lab/dashboard 获取一致性只读快照
+  → dashboard 按 active Registry 的 task_type 分列，并附带 t_target_registry 展示名
+  → 用户选择候选方案和月份时只在该快照内筛选
+  → 后端 dashboard 聚合层:
       → T+1/T+5 JOIN t_scheme_actuals
       → Native V1 存量周度 horizon=6 JOIN t_scheme_weekly_actuals
       → 按月分组计算准确率指标
       → 返回结构化JSON
   → 前端渲染表格和图表
 ```
+
+旧 `/api/schemes`、`/api/metrics/{registry_scheme_id}` 和
+`/api/backtests/factor-lab` 仅保留给本机 Harness、回滚和公网 rollout 兼容；final 公网
+配置拒绝这三个接口，不能再把它们作为前端主合同。
 
 ### 2.4 历史复现流程
 
@@ -150,7 +167,7 @@ launchd 在每日08:30、19:00和23:45启动一次性 Actuals 任务；交易日
   → 运行 scheme core 中的周频算法逻辑
       → 按 target_date 所在月份生成月度指标
   → 写入对应 scheme_id 的 t_backtest_runs / t_backtest_predictions
-  → 前端通过 /api/backtests/factor-lab 读取 canonical latest success run，并由 t_backtest_predictions 动态聚合月度指标
+  → dashboard 聚合层读取 canonical latest success run，并由 t_backtest_predictions 动态聚合月度指标
 ```
 
 ---
@@ -549,7 +566,7 @@ frontend/
     └── aifin-lab-logo.svg  # 顶栏logo
 ```
 
-**前端数据语义**: 前端优先读取 `GET /api/backtests/factor-lab` 展示 canonical latest-success 历史回测，并只把结果映射到 `active` Registry target；Registry 缺行、`paused` 或 `archived` target 不进入业务矩阵。历史 API 不可用时，前端通过 `GET /api/schemes` 和 `GET /api/metrics/{registry_scheme_id}` 读取实盘记录。回测与 live 统一按 `target_date` 归属月份，按 `feature_date` 表达数据截止，并区分 `gray_live` 与 `scheduled_live`。动态方案清单、资源版本、运行数量和最新验证结果不在架构文档维护，统一查看[当前状态](../CURRENT_STATUS.md)和带日期的记录。
+**前端数据语义**: 前端以 `GET /api/factor-lab/dashboard` 的一致性快照作为当前和 final 公网主合同。dashboard 只把 canonical latest-success 历史回测和 live 明细映射到 `active` Registry target；Registry 缺行、`paused` 或 `archived` target 不进入业务矩阵。旧 `/api/schemes`、`/api/metrics/{registry_scheme_id}` 和 `/api/backtests/factor-lab` 只用于本机 Harness、回滚与公网 rollout 兼容，不属于 final 公网合同。回测与 live 统一按 `target_date` 归属月份，按 `feature_date` 表达数据截止，并区分 `gray_live` 与 `scheduled_live`。动态方案清单、资源版本、运行数量和最新验证结果不在架构文档维护，统一查看[当前状态](../CURRENT_STATUS.md)和带日期的记录。
 
 **前端指标口径**: 因子实验室页面必须同时展示“样本总数”和“指标分母”两种语义。月度“样本数”列使用 `samples`，包含预测为“平”的交易日或预测周；所有准确率类指标使用 `metric_samples` / `metric_*_dist`，排除预测为“平”的样本。每日/周度验证表中预测为“平”的行结果列显示 `-`，不显示 `×`，也不显示 `✓`。
 **iframe 准备**: 当前服务未设置阻止嵌入的响应头；外层 panda_quantflow 接入仍是剩余观察项，最新进展见 [CURRENT_STATUS.md](../CURRENT_STATUS.md)。
@@ -564,7 +581,7 @@ frontend/
 
 当前核心 launchd plist：
 
-- `com.bond-factor-lab.scheduler.plist` — 常驻预测调度器，不注册 Actuals job；
+- `com.bond-factor-lab.scheduler.plist` — 常驻非日频预测调度器，不注册日频或 Actuals job；
 - `com.bond-factor-lab.daily-gray.plist` — 每日 `07:00` 启动 gray-live 一次性任务；
 - `com.bond-factor-lab.actuals.plist` — `08:30/19:00/23:45` 一次性 Actuals 任务；
 - `com.bond-factor-lab.backend.plist` — FastAPI 后端；

@@ -386,11 +386,6 @@ def run_t5_source_evidence_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str,
     return run_t5_framework_backtest(daily, n_jobs=n_jobs), str(SOURCE_EVIDENCE_DAILY_CSV)
 
 
-def run_t5_canonical_csv_baseline(n_jobs: int = 4) -> tuple[list[dict[str, Any]], str]:
-    """兼容旧脚本入口；实际语义是 source-evidence CSV baseline。"""
-    return run_t5_source_evidence_csv_baseline(n_jobs=n_jobs)
-
-
 def run_t5_framework_backtest(df: pd.DataFrame, n_jobs: int = 4) -> list[dict[str, Any]]:
     from schemes.t5_daily.latest_prediction import TENOR_MODULES, _build_features
     from schemes.t5_daily.core.common_utils import build_fallback_signal, choose_threshold, make_labels
@@ -569,11 +564,6 @@ def run_t1_reproduction(
 
 def run_t1_source_evidence_csv_baseline(daily_df: pd.DataFrame) -> tuple[list[dict[str, Any]], str]:
     return run_t1_framework_backtest(daily_df), str(SOURCE_EVIDENCE_DAILY_CSV)
-
-
-def run_t1_canonical_csv_baseline(daily_df: pd.DataFrame) -> tuple[list[dict[str, Any]], str]:
-    """兼容旧脚本入口；实际语义是 source-evidence CSV baseline。"""
-    return run_t1_source_evidence_csv_baseline(daily_df)
 
 
 def run_t1_framework_backtest(df: pd.DataFrame) -> list[dict[str, Any]]:

@@ -102,7 +102,7 @@ class OnboardingDocumentationTests(unittest.TestCase):
         self.assertIn("com.bond-factor-lab.daily-gray", architecture)
         self.assertIn("07:00", architecture)
         self.assertNotIn("daily 07:03", architecture)
-        self.assertIn("2026-08-01", architecture)
+        self.assertIn("2026-08-02", architecture)
         self.assertIn("一次性 daily-gray", code_architecture)
 
     def test_native_daily_activation_coordinates_frozen_launchd_policy(self) -> None:

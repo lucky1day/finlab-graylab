@@ -4,7 +4,7 @@
 
 **目标读者**：外部客户、业务负责人、合作方
 
-**最后核验日期**：2026-07-20
+**最后核验日期**：2026-08-02
 
 **文档定位**：只读说明手册，不是生产晋级 SOP，不包含交易建议或收益承诺。
 
@@ -161,8 +161,12 @@ https://bond.finailab.cn/bond-factor-lab/
 | 类型 | 允许内容 |
 |---|---|
 | 静态资源 | 页面、CSS、JS、图片等前端资源 |
-| 只读展示 API | `/api/schemes`、`/api/metrics/{registry_scheme_id}`、`/api/backtests/factor-lab` |
+| 只读展示 API | `/api/factor-lab/dashboard` |
 | 健康检查 | `/api/health` |
+
+旧 `/api/schemes`、`/api/metrics/{registry_scheme_id}` 和
+`/api/backtests/factor-lab` 只在公网 rollout 兼容阶段临时放行；final 配置必须拒绝。
+FastAPI 本机仍保留这些路由用于 Harness 与回滚，但它们不属于最终公网白名单。
 
 公网入口不开放以下能力：
 

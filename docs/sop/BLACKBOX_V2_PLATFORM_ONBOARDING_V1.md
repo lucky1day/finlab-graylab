@@ -3,7 +3,7 @@
 **文档状态**：`CURRENT`
 **适用运行时**：`blackbox_v2`
 **目标读者**：平台入库、运行和审计人员
-**最后核验日期**：2026-07-30
+**最后核验日期**：2026-08-02
 
 本文是平台操作人员接收、技术验收和登记 Blackbox V2 方案的唯一操作 SOP。上游交付契约见 [BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md](BLACKBOX_V2_UPSTREAM_DELIVERY_V1.md)；具体方案的版本、快照、运行结果和当前状态只追加到 [Blackbox V2 入库试验台账](../blackbox_v2/records/ONBOARDING_TRIAL_LEDGER.md)。文档分类和维护规则见 [Blackbox V2 文档管理](../blackbox_v2/README.md)。
 
@@ -610,7 +610,7 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 ## 7. 生产激活、灰度补齐与前端验收
 
-本节适用于取得具体方案 `blackbox_activate`、`live_write`、`gray_backfill_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功、Registry 变为 active 且方案挂载生产任务时，才表示方案部署进入实盘链路。部署上去的那一刻即属于实盘运行状态，不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
+本节适用于取得具体方案 `blackbox_activate`、`live_write`、`gray_backfill_write` 等专项授权后的生产动作。Shadow 完成不等于实盘；Activation 成功且 Registry 变为 active，表示方案进入业务可见状态，`deployed_at` 记录这一日期。自动生产调度是独立授权和验收项，必须由对应 installed plist、`launchctl` loaded state 和任务日志证明，不能由 active 或 `deployed_at` 推断。业务可见后不能继续把方案描述为仅有历史回测，也不能等待下一次 scheduler 后才补前端实盘段。
 
 ### 7.1 灰度起点、部署时间和正式调度起点
 
@@ -619,16 +619,16 @@ conda run --no-capture-output -n bond_factor_lab_service \
 | 边界 | 判定源 | 业务用途 |
 |---|---|---|
 | `gray_target_start` | 方案生命周期专项授权；当前生产灰度基线为 `2026-06-01` | 按 `target_date` 切分历史回测与实盘观察区 |
-| `deployed_at` | Activation 后 active composite Registry 的真实部署日期 | 前端“部署时间”和生产挂载审计 |
-| 正式调度起点 | scheduler 自然成功写入的第一条 `prediction_phase=scheduled_live` 的 `predict_date` | 区分灰度实盘和正式 scheduler 实盘 |
+| `deployed_at` | Activation 后 active composite Registry 的真实业务上线日期 | 前端“部署时间”和 Registry 生命周期审计 |
+| 正式调度起点 | 经 launchd 控制面自然触发并成功写入的第一条 `prediction_phase=scheduled_live` 的 `predict_date` | 区分灰度实盘和正式生产实盘 |
 
 强制语义：
 
 - 灰度实盘也属于实盘，使用 `prediction_phase=gray_live`；正式 scheduler 自然发出的实盘使用 `prediction_phase=scheduled_live`；
 - 历史回测只允许 `target_date < gray_target_start`，所有 `target_date >= gray_target_start` 的应有预测必须进入 `t_scheme_predictions`，不得进入 canonical latest backtest；
-- `deployed_at` 表示方案真正激活并挂载生产任务的日期，active Registry 必须非空；它不参与回测截断、灰度补齐范围、月份归属、actual join 或预测唯一键计算；
+- `deployed_at` 表示方案真正激活并进入业务可见状态的日期，active Registry 必须非空；它不证明定时任务已挂载，也不参与回测截断、灰度补齐范围、月份归属、actual join 或预测唯一键计算；
 - 方案可以在 `gray_target_start` 之后才部署，因此 gray live 的 `predict_date` 可以早于 `deployed_at`；这是按历史应发时点补齐观察序列，不是伪造部署时间；
-- 正式调度起点只能由自然 scheduler 成功记录证明，不能用 Activation 时间、`deployed_at` 或第一条手工 gray live 代替。
+- 正式调度起点只能由 installed plist、`launchctl` loaded state、对应日志与成功 run/prediction 的自然触发证据共同证明，不能用 APScheduler 注册日志、Activation 时间、`deployed_at` 或第一条手工 gray live 代替。
 
 ### 7.2 激活后强制补齐 gray live
 
@@ -668,15 +668,19 @@ conda run --no-capture-output -n bond_factor_lab_service \
 
 历史 gray 写入采用 insert-only，并依赖 `uk_scheme_tenor_target` 原子拒绝重复 target；不得进入 `ON DUPLICATE KEY UPDATE`。预检已存在、竞争事务冲突、算法失败、provenance 缺失或 Gate 表增量不是 run/prediction/log 精确各 `+1` 时，事务失败且不能覆盖首条预测。补齐产生的 run、prediction 和 run log 必须一一对应；任一点失败时冻结当前方案的后续补齐，不得把缺口留给前端隐藏。
 
-Activation 当天还必须为当前可运行点执行至少一次受控 `gray_live`，证明部署时刻已经进入实盘链路。后续只有 scheduler 在真实时钟自然触发的成功预测才能标为 `scheduled_live`。
+Activation 当天还必须为当前可运行点执行至少一次受控 `gray_live`，证明业务上线时刻已经进入实盘观察链路。后续只有对应 LaunchAgent 经真实时钟自然触发、并由 installed plist、`launchctl` 状态、日志和成功 run 共同证明的预测，才能标为 `scheduled_live`。
 
 ### 7.3 API 与前端展示契约
 
-前端要求属于平台入库验收，不属于上游算法交付契约。平台必须同时核验 `/api/schemes`、`/api/backtests/factor-lab` 和 `/api/metrics/{registry_scheme_id}`：
+前端要求属于平台入库验收，不属于上游算法交付契约。当前和 final 公网主合同是
+`/api/factor-lab/dashboard`，平台必须以同一次 dashboard 一致性快照完成前端验收。
+旧 `/api/schemes`、`/api/backtests/factor-lab` 和
+`/api/metrics/{registry_scheme_id}` 只允许作为本机分项诊断或公网 rollout 兼容验证；
+final 公网配置会拒绝这些旧接口，不能用它们代替 dashboard 验收：
 
-1. `/api/schemes` 的 active composite row 必须包含真实、非空的 `deployed_at`；前端候选排行的“部署时间”只能来自该字段，不得使用 hardcoded 日期、默认值或 scheme ID 特判。
-2. `/api/backtests/factor-lab` 的 canonical latest-success 明细必须全部满足 `target_date < gray_target_start`；前端不得靠裁剪或覆盖历史行来掩盖错误的回测落库。
-3. `/api/metrics/{registry_scheme_id}` 必须返回全部 gray/scheduled live 明细、标准三日期、`prediction_phase` 和 `phase_ranges`；`phase_ranges` 至少能分别表达灰度实盘区间和正式调度起点。
+1. dashboard 中 active composite Registry 方案必须包含真实、非空的 `deployed_at`；前端候选排行的“部署时间”只能来自该字段，不得使用 hardcoded 日期、默认值或 scheme ID 特判。
+2. dashboard 中 canonical latest-success 回测明细必须全部满足 `target_date < gray_target_start`；前端不得靠裁剪或覆盖历史行来掩盖错误的回测落库。
+3. dashboard 必须返回全部 gray/scheduled live 明细、标准三日期、`prediction_phase` 和 `phase_ranges`；`phase_ranges` 至少能分别表达灰度实盘区间和正式调度起点。
 4. 前端详情的阶段分隔文案统一只表达正式实盘的目标日期起点。存在 `scheduled_live` 时显示 `▼ 实盘预测目标区间：{scheduled_live.start_target_date}开始`，日期取 `phase_ranges` 中 scheduled 行的 `start_target_date`；尚不存在 `scheduled_live` 时显示 `▼ 实盘预测目标区间：待产生`。不得使用 `predict_date`、`feature_date`、gray 端点或 `deployed_at` 替代该目标起点；“部署时间”继续单独显示 Registry 的 `deployed_at`。
 5. 回测和 live 统一按 `target_date` 归属月份。“全部”口径必须在第一条 live target 月前插入实盘分隔线；分隔线之前不得包含 `target_date >= gray_target_start` 的回测，之后不得遗漏应有的 gray live。
 6. 同一方案、同一 `target_date` 同时出现在 backtest 与 live 是数据分区失败，必须阻断上线；不得通过前端同月追加、覆盖、去重或隐藏其中一侧宣称验收通过。
@@ -689,10 +693,10 @@ Activation 当天还必须为当前可运行点执行至少一次受控 `gray_li
 
 ### 7.4 生产完成状态
 
-- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐、API 和前端验收、scheduler 挂载均通过；不要求已经观察到自然调度。
-- **Production Observed**：在 Onboarding Complete 基础上，scheduler 真实时钟自然产生至少一条成功 `prediction_phase=scheduled_live`，并能从 run、log、prediction、API 和前端追溯。
+- **Onboarding Complete**：Activation、完整历史回测、从 `gray_target_start` 起的 gray live 补齐、API 和前端验收，以及对应 installed plist、`launchctl` loaded state 和日志证明的生产调度挂载均通过；不要求已经观察到自然调度。
+- **Production Observed**：在 Onboarding Complete 基础上，对应 LaunchAgent 经真实时钟自然产生至少一条成功 `prediction_phase=scheduled_live`，并能从 installed plist、`launchctl`、任务日志、run、prediction、API 和前端追溯。
 
-仅 active 但未补齐灰度实盘、前端仍混入灰度 target 的回测、缺 `deployed_at` 或尚未挂载 scheduler，都不得标记为 Onboarding Complete。
+仅 active 但未补齐灰度实盘、前端仍混入灰度 target 的回测、缺 `deployed_at`，或没有 launchd 控制面挂载证据，都不得标记为 Onboarding Complete。
 
 ## 8. 失败恢复
 

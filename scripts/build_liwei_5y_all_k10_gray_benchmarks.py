@@ -482,11 +482,6 @@ def build_artifact_bundle(
     return ArtifactBundle(daily=daily, weekly=weekly, monthly=monthly, date_to_week=date_to_week)
 
 
-def read_json(path: Path) -> dict[str, Any]:
-    """读取 builder 生成的 JSON，供聚焦验证和人工复核。"""
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def _validated_source_series(
     contexts: Mapping[str, Mapping[str, Any]],
 ) -> tuple[list[str], np.ndarray, dict[str, np.ndarray]]:

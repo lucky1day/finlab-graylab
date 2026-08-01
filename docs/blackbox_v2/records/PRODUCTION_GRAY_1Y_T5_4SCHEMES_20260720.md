@@ -1,6 +1,6 @@
 # 1Y T+5 四方案生产灰度记录
 
-**文档状态**：`IN_PROGRESS`
+**文档状态**：`HISTORICAL`
 
 **执行日期**：2026-07-20，`Asia/Shanghai`
 

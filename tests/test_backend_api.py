@@ -32,6 +32,19 @@ class RequireAdminTokenTests(unittest.TestCase):
                 main.require_admin_token(x_admin_token=None)
             self.assertEqual(ctx.exception.status_code, 503)
 
+    def test_repository_placeholder_server_config_fails_closed(self) -> None:
+        placeholder = "__SET_REAL_TOKEN__"
+        with patch.dict(
+            "os.environ",
+            {"BOND_ADMIN_TOKEN": placeholder},
+            clear=False,
+        ):
+            with self.assertRaises(HTTPException) as ctx:
+                main.require_admin_token(
+                    x_admin_token=placeholder,
+                )
+            self.assertEqual(ctx.exception.status_code, 503)
+
     def test_missing_header_is_unauthorized(self) -> None:
         with patch.dict("os.environ", {"BOND_ADMIN_TOKEN": "s3cret"}, clear=False):
             with self.assertRaises(HTTPException) as ctx:

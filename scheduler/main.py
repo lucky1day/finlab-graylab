@@ -652,7 +652,11 @@ def run_startup_prediction_catchup(
     schemes = discover_schemes()
     _sync_registry(schemes)
     due_jobs = _startup_prediction_catchup_due_jobs(
-        _automatic_prediction_schemes(schemes),
+        [
+            cfg
+            for cfg in _automatic_prediction_schemes(schemes)
+            if cfg.frequency != "daily"
+        ],
         now=run_now,
         interval_minutes=stagger_minutes,
     )
@@ -958,6 +962,47 @@ def run_daily_coordinator_job(
     )
 
 
+def run_ledger_startup_catchup(
+    *,
+    now: datetime | None = None,
+    algo_env: str = DEFAULT_ALGO_ENV,
+):
+    """启动时分别补跑 ledger 日频 occurrence 与非日频预测。"""
+    checked_at = now or datetime.now(ASIA_SHANGHAI)
+    if checked_at.tzinfo is None:
+        checked_at = checked_at.replace(tzinfo=ASIA_SHANGHAI)
+    local_now = checked_at.astimezone(ASIA_SHANGHAI)
+
+    daily_error: Exception | None = None
+    daily_result = None
+    try:
+        daily_result = run_daily_coordinator_job(
+            run_date=local_now.date().isoformat(),
+            algo_env=algo_env,
+            trigger_origin="startup_catchup",
+        )
+    except Exception as exc:
+        daily_error = exc
+        logger.exception("Ledger startup daily occurrence catchup failed")
+
+    try:
+        non_daily_results = run_startup_prediction_catchup(
+            now=local_now,
+            algo_env=algo_env,
+        )
+    except Exception as non_daily_error:
+        if daily_error is not None:
+            raise RuntimeError(
+                "Ledger startup catchup failed in both paths: "
+                f"daily={daily_error}; non_daily={non_daily_error}"
+            ) from daily_error
+        raise
+
+    if daily_error is not None:
+        raise daily_error
+    return daily_result, non_daily_results
+
+
 def run_daily_recovery_tick_job(
     run_date: str | date | None = None,
     *,
@@ -1243,15 +1288,11 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
     )
 
     automatic_schemes = _automatic_prediction_schemes(schemes)
-    prediction_schemes = (
-        automatic_schemes
-        if coordinator_mode == "legacy"
-        else [
-            cfg
-            for cfg in automatic_schemes
-            if cfg.frequency != "daily"
-        ]
-    )
+    prediction_schemes = [
+        cfg
+        for cfg in automatic_schemes
+        if cfg.frequency != "daily"
+    ]
     for job in _staggered_prediction_jobs(
         prediction_schemes,
         stagger_minutes,
@@ -1375,18 +1416,11 @@ def build_scheduler(algo_env: str = DEFAULT_ALGO_ENV) -> BlockingScheduler:
 
     if _env_bool(STARTUP_CATCHUP_ENV, True):
         startup_function = (
-            run_daily_coordinator_job
+            run_ledger_startup_catchup
             if coordinator_mode == "ledger"
             else run_startup_tasks
         )
-        startup_kwargs = (
-            {
-                "algo_env": algo_env,
-                "trigger_origin": "startup_catchup",
-            }
-            if coordinator_mode == "ledger"
-            else {"algo_env": algo_env}
-        )
+        startup_kwargs = {"algo_env": algo_env}
         startup_id = (
             "startup:daily-occurrence-catchup"
             if coordinator_mode == "ledger"

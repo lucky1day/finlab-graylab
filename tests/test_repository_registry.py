@@ -4,7 +4,7 @@ import os
 import unittest
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import tempfile
 import threading
@@ -142,6 +142,10 @@ class _AtomicConnection(_CaptureConnection):
     def execute(self, sql, rows=None):
         sql_text = str(sql)
         fail_stage = self._store.get("fail_stage")
+        if sql_text.lstrip().startswith("SELECT") and "FROM t_scheme_runs" in sql_text:
+            self._store.setdefault("calls", []).append((sql_text, rows))
+            run_row = self._store.get("run_row")
+            return _MappingResult([run_row] if run_row is not None else [])
         if "INSERT INTO t_scheme_predictions" in sql_text and fail_stage == "prediction":
             raise RuntimeError("injected prediction failure")
         if (
@@ -230,10 +234,18 @@ class _AtomicEngine:
             "run_log_rows": [],
             "run_row": {
                 "run_id": 101,
+                "scheme_id": "demo_blackbox",
+                "scheme_version": "abc123def456",
+                "runtime_type": "blackbox_v2",
+                "run_type": "active",
+                "prediction_phase": "scheduled_live",
+                "predict_date": "2026-07-20",
                 "status": "running",
+                "records_expected": 1,
                 "records_returned": None,
                 "records_written": None,
                 "error_message": None,
+                "schedule_item_id": None,
             },
             "fail_stage": fail_stage,
         }
@@ -241,6 +253,28 @@ class _AtomicEngine:
 
     def begin(self) -> _AtomicBegin:
         return _AtomicBegin(self)
+
+
+def _native_atomic_engine(*, fail_stage: str | None = None) -> _AtomicEngine:
+    engine = _AtomicEngine(fail_stage=fail_stage)
+    engine.store["version_row"] = {
+        "scheme_id": "native_daily",
+        "scheme_version": "native-version-1",
+        "runtime_type": "native_adapter",
+        "status": "active",
+        "approved_by": "native-release-owner",
+        "approved_at": datetime(2026, 7, 20, 8, 30),
+    }
+    engine.store["registry_rows"] = [_native_registry_row()]
+    engine.store["run_row"].update(
+        {
+            "scheme_id": "native_daily",
+            "scheme_version": "native-version-1",
+            "runtime_type": "native_adapter",
+            "prediction_phase": "gray_live",
+        }
+    )
+    return engine
 
 
 class _TransactionalCaptureEngine:
@@ -1541,6 +1575,327 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 self.assertEqual(engine.store["run_row"]["status"], "running")
                 self.assertIsNone(engine.store["run_row"]["records_written"])
                 self.assertEqual(engine.store["run_log_rows"], [])
+
+    def test_native_success_completion_commits_prediction_run_and_log_atomically(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+
+        status, written, error_message = complete_active_native_run(
+            engine,
+            _native_config(),
+            run_id=101,
+            records=[record],
+            scheme_version="native-version-1",
+            records_returned=1,
+            run_date="2026-07-20",
+            duration_sec=2.5,
+        )
+
+        self.assertEqual((status, written, error_message), ("success", 1, None))
+        self.assertEqual(engine.begin_count, 1)
+        self.assertEqual(len(engine.store["prediction_rows"]), 1)
+        self.assertEqual(engine.store["run_row"]["status"], "success")
+        self.assertEqual(engine.store["run_row"]["records_written"], 1)
+        self.assertEqual(len(engine.store["run_log_rows"]), 1)
+        self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
+        version_select, _ = _call_for(engine.store, "FROM t_scheme_versions")
+        registry_select, _ = _call_for(engine.store, "FROM t_scheme_registry")
+        run_selects = [
+            sql for sql, _ in engine.store["calls"]
+            if "FROM t_scheme_runs" in sql
+        ]
+        self.assertIn("FOR UPDATE", version_select)
+        self.assertIn("FOR UPDATE", registry_select)
+        self.assertTrue(any("FOR UPDATE" in sql for sql in run_selects))
+
+    def test_native_completion_accepts_mysql_date_value_for_run_identity(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        engine.store["run_row"]["predict_date"] = date(2026, 7, 20)
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+
+        status, written, error_message = complete_active_native_run(
+            engine,
+            _native_config(),
+            run_id=101,
+            records=[record],
+            scheme_version="native-version-1",
+            records_returned=1,
+            run_date="2026-07-20",
+            duration_sec=2.5,
+        )
+
+        self.assertEqual((status, written, error_message), ("success", 1, None))
+
+    def test_native_success_completion_rolls_back_prediction_on_terminal_failure(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+        for stage in ("run", "log"):
+            with self.subTest(stage=stage):
+                engine = _native_atomic_engine(fail_stage=stage)
+                with self.assertRaisesRegex(RuntimeError, f"injected {stage} failure"):
+                    complete_active_native_run(
+                        engine,
+                        _native_config(),
+                        run_id=101,
+                        records=[record],
+                        scheme_version="native-version-1",
+                        records_returned=1,
+                        run_date="2026-07-20",
+                        duration_sec=2.5,
+                    )
+
+                self.assertEqual(engine.store["prediction_rows"], [])
+                self.assertEqual(engine.store["run_row"]["status"], "running")
+                self.assertIsNone(engine.store["run_row"]["records_written"])
+                self.assertEqual(engine.store["run_log_rows"], [])
+
+    def test_native_success_completion_rechecks_lifecycle_registry_and_running_run(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+        cases = {
+            "version": ("exact active Native version", lambda engine: engine.store["version_row"].update(status="paused")),
+            "registry": ("Native completion Registry", lambda engine: engine.store["registry_rows"][0].update(status="paused")),
+            "run": ("running run identity", lambda engine: engine.store["run_row"].update(status="failed")),
+        }
+        for label, (expected_error, mutate) in cases.items():
+            with self.subTest(label=label):
+                engine = _native_atomic_engine()
+                mutate(engine)
+                with self.assertRaisesRegex(RuntimeError, expected_error):
+                    complete_active_native_run(
+                        engine,
+                        _native_config(),
+                        run_id=101,
+                        records=[record],
+                        scheme_version="native-version-1",
+                        records_returned=1,
+                        run_date="2026-07-20",
+                        duration_sec=2.5,
+                    )
+
+                self.assertEqual(engine.store["prediction_rows"], [])
+
+    def test_native_completion_rejects_record_scheme_version_drift(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+            scheme_version="drifted-version",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "record scheme_version"):
+            complete_active_native_run(
+                engine,
+                _native_config(),
+                run_id=101,
+                records=[record],
+                scheme_version="native-version-1",
+                records_returned=1,
+                run_date="2026-07-20",
+                duration_sec=2.5,
+            )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
+        self.assertEqual(engine.store["run_row"]["status"], "running")
+
+    def test_atomic_failure_rechecks_running_run_identity_before_update(self) -> None:
+        from scheduler.repository import fail_scheme_run_atomic
+
+        cases = {
+            "terminal": lambda engine: engine.store["run_row"].update(
+                status="success"
+            ),
+            "scheme": lambda engine: engine.store["run_row"].update(
+                scheme_id="other"
+            ),
+            "date": lambda engine: engine.store["run_row"].update(
+                predict_date=date(2026, 7, 21)
+            ),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                engine = _native_atomic_engine()
+                original = deepcopy(engine.store["run_row"])
+                mutate(engine)
+                expected = deepcopy(engine.store["run_row"])
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "failure run identity revalidation failed",
+                ):
+                    fail_scheme_run_atomic(
+                        engine,
+                        run_id=101,
+                        scheme_id="native_daily",
+                        run_date="2026-07-20",
+                        duration_sec=2.5,
+                        records_returned=0,
+                        error_message="algorithm failed",
+                    )
+
+                self.assertNotEqual(original, expected)
+                self.assertEqual(engine.store["run_row"], expected)
+                self.assertEqual(engine.store["run_log_rows"], [])
+
+    def test_atomic_failure_updates_matching_mysql_date_run_and_log(self) -> None:
+        from scheduler.repository import fail_scheme_run_atomic
+
+        engine = _native_atomic_engine()
+        engine.store["run_row"]["predict_date"] = date(2026, 7, 20)
+
+        fail_scheme_run_atomic(
+            engine,
+            run_id=101,
+            scheme_id="native_daily",
+            run_date="2026-07-20",
+            duration_sec=2.5,
+            records_returned=0,
+            error_message="algorithm failed",
+        )
+
+        self.assertEqual(engine.store["run_row"]["status"], "failed")
+        self.assertEqual(engine.store["run_row"]["records_written"], 0)
+        self.assertEqual(len(engine.store["run_log_rows"]), 1)
+        self.assertEqual(engine.store["run_log_rows"][0]["status"], "failed")
+
+    def test_native_completion_lock_reads_are_sqlite_compatible(self) -> None:
+        from sqlalchemy import create_engine, text
+
+        from scheduler.repository import (
+            _read_scheme_registry_rows_conn,
+            _read_scheme_version_conn,
+            _expected_registry_identity,
+        )
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        cfg = _native_config()
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE t_scheme_versions (
+                    scheme_id TEXT, scheme_version TEXT,
+                    runtime_type TEXT, algorithm_version TEXT,
+                    contract_version TEXT, runtime_profile TEXT,
+                    environment_fingerprint TEXT, data_snapshot_id TEXT,
+                    code_hash TEXT, config_hash TEXT, manifest_hash TEXT,
+                    git_commit TEXT, status TEXT, created_by TEXT,
+                    approved_by TEXT, approved_at DATETIME
+                )
+                """
+            )
+            conn.exec_driver_sql(
+                """
+                CREATE TABLE t_scheme_registry (
+                    scheme_id TEXT, base_scheme_id TEXT, name TEXT,
+                    description TEXT, horizon INTEGER, task_type TEXT,
+                    runtime_type TEXT, tenors TEXT, frequency TEXT,
+                    target_tenor TEXT, schedule_cron TEXT,
+                    schedule_timezone TEXT, status TEXT,
+                    deployed_at DATETIME
+                )
+                """
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_versions
+                        (scheme_id, scheme_version, runtime_type, status)
+                    VALUES
+                        (:scheme_id, :scheme_version, 'native_adapter', 'active')
+                    """
+                ),
+                {
+                    "scheme_id": cfg.scheme_id,
+                    "scheme_version": cfg.scheme_version,
+                },
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO t_scheme_registry
+                        (scheme_id, base_scheme_id, horizon, task_type,
+                         runtime_type, target_tenor, status)
+                    VALUES
+                        (:registry_id, :scheme_id, 1, 'T+1',
+                         'native_adapter', '5Y', 'active')
+                    """
+                ),
+                {
+                    "registry_id": "native_daily__h1__5Y",
+                    "scheme_id": cfg.scheme_id,
+                },
+            )
+
+            version = _read_scheme_version_conn(
+                conn,
+                cfg,
+                for_update=True,
+            )
+            _, registry_ids = _expected_registry_identity(cfg)
+            registry = _read_scheme_registry_rows_conn(
+                conn,
+                cfg,
+                registry_ids,
+                for_update=True,
+            )
+
+        self.assertEqual(version["status"], "active")
+        self.assertEqual(len(registry), 1)
 
     def test_final_blackbox_insert_rejects_missing_canonical_config_path(self) -> None:
         from scheduler.repository import insert_approved_blackbox_predictions
