@@ -13,9 +13,7 @@ from unittest.mock import patch
 
 import pymysql
 
-from tests.test_daily_native_coordinator_mysql import (
-    _temporary_mysql,
-)
+from tests.mysql_fixtures import temporary_mysql
 
 
 def _tree_sha256(path: Path) -> str:
@@ -56,7 +54,7 @@ class SourceRunnerDatabaseIsolationMySQLTests(unittest.TestCase):
             preflight_source_runtime_database_access,
         )
 
-        with _temporary_mysql() as server:
+        with temporary_mysql() as server:
             schema, engine = server.create_schema("source")
             required_tables = (
                 *FACTOR_SOURCE_TABLES,

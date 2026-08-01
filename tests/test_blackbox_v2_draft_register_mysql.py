@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 from sqlalchemy import event, text
 
-from tests.test_daily_native_coordinator_mysql import _temporary_mysql
+from tests.mysql_fixtures import temporary_mysql
 
 
-_SCHEMA_PATTERN = re.compile(r"bfl_step6_draft_[0-9a-f]{10}")
+_SCHEMA_PATTERN = re.compile(r"bfl_real_replay_[0-9a-f]{20}")
 
 
 def _draft_config():
@@ -157,7 +157,7 @@ class BlackboxDraftRegisterMySQLTests(unittest.TestCase):
 
         retained_root = None
         retained_process = None
-        with _temporary_mysql() as server:
+        with temporary_mysql() as server:
             retained_root = server.root
             retained_process = server.process
             schema, engine = server.create_schema("draft")
