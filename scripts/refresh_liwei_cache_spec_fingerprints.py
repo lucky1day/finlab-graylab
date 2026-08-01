@@ -60,8 +60,7 @@ from shared.liwei_0616_phase_a_cache import (  # noqa: E402
 # 只维护 v2：ledger 运行时固定加载 v2（``scheduler.daily_runtime`` 导入
 # ``POLICY_V2_PATH``），而 v1 是按字节冻结的历史基线（``tests.test_daily_policy_v2``
 # 的 ``test_v1_policy_bytes_remain_immutable`` 钉了它的 SHA-256），仍被
-# ``harness.daily_real_replay`` 与 ``harness.native_daily_certification`` 当默认使用，
-# 不得改写。
+# ``harness.daily_real_replay`` 当默认使用，不得改写。
 POLICY_PATH = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
 CACHE_ROOT = (
     PROJECT_ROOT / "backtest_artifacts" / "runtime_cache" / "liwei_0616"
