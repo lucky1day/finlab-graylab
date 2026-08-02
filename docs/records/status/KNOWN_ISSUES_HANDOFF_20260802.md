@@ -53,17 +53,24 @@ Model2 在生成标签前只按 `date` 用 pandas 默认 quicksort 排序，对�
   `build_score_signals` 不受影响，故无翻转窗口 Model2/build_base/overlay 全链零差异。证据在
   `reports/verification/weekly_10y_stable_order/`（gitignore）。设计声称的历史 174 点 / 0725 182 点
   真实输入零差异属该机理，且由设计作者的内存验证记录，需 live DB 复核。
-- **验收条件 5/6（live no-write 复现，未擅自在生产机执行，待授权）**：读生产 DB 的纯读+输出运行，
-  命令（在仓库根）：
+- **验收条件 5/6（live no-write 复现）——已在用户授权下执行，被输入可用性阻断，保留证据停止**：
+  命令（在仓库根，纯读+输出、不经 repository、不写库）：
 
   ```bash
   PYTHONPATH=. /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python \
     -m scheduler.scheme_runner --scheme-id weekly_10y_d_overlay_0529 --predict-date 2026-08-01
   ```
 
-  `scheme_runner` 仅 import `predict.run()` 并打印 PredictionRecord JSON，不经 repository、不写库。
-  预期产出 `feature_date=2026-07-31`、`target_date=2026-08-07`、`week_id=202629`、方向 `-1`、
-  confidence `0.32`，不再触发 Score/Model2 mismatch。若被输入 vintage 漂移阻断，保留证据并停止。
+  实际结果（2026-08-02，exit 1，证据 `reports/verification/weekly_10y_stable_order/live_repro_20260801.*`）：
+  在到达修复点 `load_engineered_frame` **之前**，被 `predict.py:_require_current_feature_input`
+  守卫拒绝——`RuntimeError: 当前周必要输入缺失：feature_week_id=202629,
+  columns=['TB0YWI3C','TB1YWI3C','TB5YWI3C']`。只读诊断 `api_wind_weekly` 对这三个 code 直接查询
+  返回空，说明当前周 202629 的 weekly 输入尚未在库中就位（这些国债收益率 weekly 值不在
+  `api_wind_weekly` 直存，须走 derivative/派生口径）。此阻断属**输入可用性/vintage**问题
+  （TODO P1 的 `weekly_10y_d_overlay_0529` 输入 vintage 独立研究项），**与本排序修复无关**：
+  修复正确性已由验收条件 1–4（含跨 3 个 numpy 版本的红→绿与逐字段等价性）证明。按 condition 6
+  保留失败证据并停止，未改 benchmark、旧信号或输入快照。待该输入就位后重跑本命令，预期产出
+  `feature_date=2026-07-31`、`target_date=2026-08-07`、`week_id=202629`，不再触发 Score/Model2 mismatch。
 - **边界**：本次开发提交只改代码；未写 MySQL / `t_scheme_predictions` / registry / installed plist /
   `launchctl` / 服务进程。写入 8/01 信号、激活新精确版本、launchd 重载仍需**专项授权**，不在本次范围。
 
