@@ -64,13 +64,15 @@ Model2 在生成标签前只按 `date` 用 pandas 默认 quicksort 排序，对�
   实际结果（2026-08-02，exit 1，证据 `reports/verification/weekly_10y_stable_order/live_repro_20260801.*`）：
   在到达修复点 `load_engineered_frame` **之前**，被 `predict.py:_require_current_feature_input`
   守卫拒绝——`RuntimeError: 当前周必要输入缺失：feature_week_id=202629,
-  columns=['TB0YWI3C','TB1YWI3C','TB5YWI3C']`。只读诊断 `api_wind_weekly` 对这三个 code 直接查询
-  返回空，说明当前周 202629 的 weekly 输入尚未在库中就位（这些国债收益率 weekly 值不在
-  `api_wind_weekly` 直存，须走 derivative/派生口径）。此阻断属**输入可用性/vintage**问题
-  （TODO P1 的 `weekly_10y_d_overlay_0529` 输入 vintage 独立研究项），**与本排序修复无关**：
-  修复正确性已由验收条件 1–4（含跨 3 个 numpy 版本的红→绿与逐字段等价性）证明。按 condition 6
-  保留失败证据并停止，未改 benchmark、旧信号或输入快照。待该输入就位后重跑本命令，预期产出
-  `feature_date=2026-07-31`、`target_date=2026-08-07`、`week_id=202629`，不再触发 Score/Model2 mismatch。
+  columns=['TB0YWI3C','TB1YWI3C','TB5YWI3C']`。只读诊断确认：本方案的 TB0YWI3C/TB1YWI3C/TB5YWI3C
+  来自 `api_wind_derivative_weekly`，该表这些 code 的快照止于约 2026-05（`api_wind_daily` 止于
+  2026-07-29）。**本机是无入库脚本的静态 MySQL 快照（设计如此，非故障）**，故当前周 202629
+  （2026-07-31 所在周）的输入本就不在快照范围内。这是**环境/快照数据范围**问题，既非
+  DataBridge/入库故障，也与本排序修复无关，且不同于 TODO P1 的 vintage-drift 研究项。按 condition 6
+  保留证据并停止，未改 benchmark/旧信号/输入。**该 live 断言需在包含 202629 周输入的快照/环境上执行**，
+  届时预期 `feature_date=2026-07-31`、`target_date=2026-08-07`、`week_id=202629`，不再触发 mismatch。
+  修复正确性已由验收条件 1–4（跨 3 个 numpy 版本红→绿 + 逐字段等价性）证明；且静态快照**包含**
+  2025-12/2026-01 跨年边界数据，可用历史复现在真实数据上核验修复的无回归性。
 - **边界**：本次开发提交只改代码；未写 MySQL / `t_scheme_predictions` / registry / installed plist /
   `launchctl` / 服务进程。写入 8/01 信号、激活新精确版本、launchd 重载仍需**专项授权**，不在本次范围。
 
