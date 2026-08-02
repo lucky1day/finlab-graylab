@@ -1832,7 +1832,12 @@ def load_engineered_frame(weekly: pd.DataFrame) -> tuple[pd.DataFrame, list[str]
     df = _normalize_weekly_input(weekly)
     require_columns(df, [DATE_COL, TARGET_RATE_COL, "week_date", "model_date"], "weekly input")
     df["date"] = pd.to_datetime(df["model_date"], errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
+    # 跨年周（如 202553 与 202601 都锚定 2025-12-29）会产生并列 model_date；单键 date 排序
+    # 使用 pandas 默认不稳定 quicksort，滚动窗口行数变化时会翻转这对行，导致 create_label
+    # 把未来收益错接到下一年周。加入 week_id 二级键并指定 kind="stable" 恢复输入的时间顺序，
+    # 使 Model2 标签在任意窗口边界下确定。详见
+    # docs/superpowers/specs/2026-08-02-weekly-10y-d-overlay-stable-order-design.md。
+    df = df.dropna(subset=["date"]).sort_values(["date", "week_id"], kind="stable").reset_index(drop=True)
     df = create_label(df, TARGET_RATE_COL)
 
     exclude_cols = ["date", "week_date", "model_date", DATE_COL, TARGET_RATE_COL, "future_return", "label_5d"]
