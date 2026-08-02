@@ -681,6 +681,28 @@ launchd 每日灰度执行集合。`gray_live` 与正式 29/29 `scheduled_live` 
 写入均串行执行。当前 launchctl 状态为 `MOUNTED_NOT_OBSERVED`，只有未来自然
 07:00 成功运行才能追加自然 occurrence 证据。
 
+### 4.25 记录 009：三个 T+1 方案 2026-07-31 尾部缺口对账与补齐
+
+**最终只读核验时间**：2026-08-02 16:20，`Asia/Shanghai`。
+
+本记录只修正记录 006 和记录 008 在激活日结束前形成的截面结论，不改写原始
+机器证据。两个记录当时分别只核验到 `2026-07-30`，因此“43 个 gray target”
+和“交易日历缺口为 0”不能证明 `2026-07-31` 收盘后的尾部连续性。
+
+| 项目 | 最终核验 |
+|---|---|
+| 原因一 | `one_y_t1_quote_state_hv_v1` 在 2026-07-31 07:00 自然 launchd 批次中实际执行，但 DataBridge `refresh_date` 仍为 `2026-07-30`；失败 run `1744` 和 run log `1765` 均保留，错误为 `DataBridge refresh_date must be 2026-07-31, got 2026-07-30` |
+| 原因二 | 两个 `three_y_adyn_*` 方案于 2026-07-31 中午激活并挂载，已错过当日 07:00 `com.bond-factor-lab.daily-gray` 自然触发；当时的 `MOUNTED_NOT_OBSERVED` 不等于已产生激活日信号 |
+| 受控补齐 | 经 `gray-backfill` insert-only Gate 分别生成 run `1916`、`1917`、`1918`；每个方案只新增一条 run、一条 prediction 和一条 run log，其它受保护表零变化 |
+| 日期语义 | 三条均为 `predict_date=2026-07-31`、`feature_date=2026-07-30`、`target_date=2026-07-31`、`prediction_phase=gray_live` |
+| 补齐结果 | `one_y_t1_quote_state_hv_v1` 方向 `1`；`three_y_adyn_lb1_k3_v1` 和 `three_y_adyn_lb2_k1_v1` 方向均为 `-1` |
+| API / frontend | 全部 8 个 T+1 composite 方案均为 `337 backtest + 44 live = 381`；2026 年 7 月均为 23 条并各含一条 7 月 31 日记录 |
+| launchd 边界 | installed `com.bond-factor-lab.daily-gray.plist` 与仓库模板一致，07:00 直接启动 `scheduler.daily_gray_runner`；冻结 policy 当前为 28 个 execution、32 个 target |
+| 修改边界 | 本次未修改算法、scheduler、DataBridge、installed plist 或 launchctl loaded state；未启用 ledger，未生成 `scheduled_live` |
+
+MySQL/DataBridge 刷新故障按用户决定暂缓处理。该故障与激活日尾部连续性属于两类
+独立原因；本次数据补齐不能被描述为 DataBridge 自动恢复或 launchd 重试成功。
+
 ## 5. 已确认的通用迭代规则
 
 1. 技术 Onboarding 可以使用最新通过完整性校验的 generation；scheduled-live 必须使用当日成功 generation，两者分开记录。
