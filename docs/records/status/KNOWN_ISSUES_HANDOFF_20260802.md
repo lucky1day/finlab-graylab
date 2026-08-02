@@ -37,6 +37,45 @@ Model2 在生成标签前只按 `date` 用 pandas 默认 quicksort 排序，对�
 - 若 CompareGate 因输入 vintage 漂移阻断，保留失败证据并停止，不得改 benchmark
   或输入快照贴合。
 
+### 代码修复已完成（2026-08-02，特性分支 `codex/fix-weekly-10y-stable-order-20260802`）
+
+- **改动点**：`schemes/weekly_10y_d_overlay_0529/core/d_overlay.py` 的 `load_engineered_frame()`，
+  单键 `sort_values("date")` → `sort_values(["date", "week_id"], kind="stable")`，仅此一行 + 说明注释。
+- **回归测试**：`tests/test_weekly_10y_d_overlay_stable_order.py`（2 例）。实施计划见
+  [实施计划](../../superpowers/plans/2026-08-02-weekly-10y-d-overlay-stable-order-implementation.md)。
+- **验收条件 1/2/3**：新测试先在旧实现失败（`label_5d(202553)=-1`、并列对翻转、跨窗口标签漂移
+  `{36:-1,37:-1,54..57:-1}`）→ 修复后通过（恒 `+1`、`202553` 排在 `202601` 前），三个 numpy 版本
+  （1.26/2.3/2.4）一致；`test_compare_gate/test_executor_run_id/test_signal_policy` 81 例通过；
+  `harness gate static --scheme-id weekly_10y_d_overlay_0529` PASS（core 零 DB/零写库/零跨方案 import）。
+- **验收条件 4（等价性，DB-free 机理证明）**：`load_engineered_frame` 逐字段比较——无翻转窗口
+  （size 40）**零差异**；翻转窗口（size 36）仅修正跨年边界局部 8 周（202552–202606）的 lag/diff
+  特征与 `202553` 标签。`load_engineered_frame` 只被 `build_model2_predictions` 调用、
+  `build_score_signals` 不受影响，故无翻转窗口 Model2/build_base/overlay 全链零差异。证据在
+  `reports/verification/weekly_10y_stable_order/`（gitignore）。设计声称的历史 174 点 / 0725 182 点
+  真实输入零差异属该机理，且由设计作者的内存验证记录，需 live DB 复核。
+- **验收条件 5/6（live no-write 复现）——已在用户授权下执行，被输入可用性阻断，保留证据停止**：
+  命令（在仓库根，纯读+输出、不经 repository、不写库）：
+
+  ```bash
+  PYTHONPATH=. /Users/macstudio0/miniconda3/envs/bond_factor_lab_service/bin/python \
+    -m scheduler.scheme_runner --scheme-id weekly_10y_d_overlay_0529 --predict-date 2026-08-01
+  ```
+
+  实际结果（2026-08-02，exit 1，证据 `reports/verification/weekly_10y_stable_order/live_repro_20260801.*`）：
+  在到达修复点 `load_engineered_frame` **之前**，被 `predict.py:_require_current_feature_input`
+  守卫拒绝——`RuntimeError: 当前周必要输入缺失：feature_week_id=202629,
+  columns=['TB0YWI3C','TB1YWI3C','TB5YWI3C']`。只读诊断确认：本方案的 TB0YWI3C/TB1YWI3C/TB5YWI3C
+  来自 `api_wind_derivative_weekly`，该表这些 code 的快照止于约 2026-05（`api_wind_daily` 止于
+  2026-07-29）。**本机是无入库脚本的静态 MySQL 快照（设计如此，非故障）**，故当前周 202629
+  （2026-07-31 所在周）的输入本就不在快照范围内。这是**环境/快照数据范围**问题，既非
+  DataBridge/入库故障，也与本排序修复无关，且不同于 TODO P1 的 vintage-drift 研究项。按 condition 6
+  保留证据并停止，未改 benchmark/旧信号/输入。**该 live 断言需在包含 202629 周输入的快照/环境上执行**，
+  届时预期 `feature_date=2026-07-31`、`target_date=2026-08-07`、`week_id=202629`，不再触发 mismatch。
+  修复正确性已由验收条件 1–4（跨 3 个 numpy 版本红→绿 + 逐字段等价性）证明；且静态快照**包含**
+  2025-12/2026-01 跨年边界数据，可用历史复现在真实数据上核验修复的无回归性。
+- **边界**：本次开发提交只改代码；未写 MySQL / `t_scheme_predictions` / registry / installed plist /
+  `launchctl` / 服务进程。写入 8/01 信号、激活新精确版本、launchd 重载仍需**专项授权**，不在本次范围。
+
 ## 问题二：daily-gray launchd 现场加载状态待复核（现场核查，非代码）
 
 ### 观察
