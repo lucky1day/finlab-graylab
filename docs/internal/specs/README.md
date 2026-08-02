@@ -4,6 +4,7 @@
 
 **目标读者**：平台开发和历史审计人员
 
-**最后核验日期**：2026-07-24
+**最后核验日期**：2026-08-02
 
 - [2026-07-21-t5-no-foreign-lgbm-ablation-design.md](2026-07-21-t5-no-foreign-lgbm-ablation-design.md)
+- [2026-08-02-t1-daily-shap-retirement-design.md](2026-08-02-t1-daily-shap-retirement-design.md)
