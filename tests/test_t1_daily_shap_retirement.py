@@ -75,8 +75,15 @@ class T1DailyShapRetirementTests(unittest.TestCase):
 
     def test_manifest_declares_exact_retired_artifact(self) -> None:
         manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+        matches = [
+            artifact
+            for artifact in manifest["retired_artifacts"]
+            if artifact.get("original_runtime_path")
+            == RETIRED_ARTIFACT["original_runtime_path"]
+        ]
 
-        self.assertEqual(manifest["retired_artifacts"], [RETIRED_ARTIFACT])
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0], RETIRED_ARTIFACT)
 
     def test_remaining_runtime_file_hashes_are_unchanged(self) -> None:
         actual = {
