@@ -68,7 +68,7 @@
 |----|----|------|----------------------|
 | L1 | `shared/` | 唯一数据接入与公共模型 | `build_*_input_artifact`、`data_bridge_current` 刷新/快照、`get_calendar`、`PredictionRecord` |
 | L2 | `schemes/{id}/` | 原生 adapter/core 或 Blackbox 原始两文件 | `predict.run()` 或 Blackbox CLI |
-| L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`insert_run_predictions` |
+| L3 | `scheduler/` | 发现、dry-run、写库、actuals、调度 | `discover_schemes`、`run_scheme`、`execute_scheme`、`create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_scheduled_attempt`、`complete_gray_gap_run` |
 | L4 | `backend/` `backtests/` `tests/` | 只读 API、历史复现、验证 | `/api/*`、`run_<scheme>_reproduction` |
 | L5 | `harness/` | Gate 检查 / 编排 / 审计 | `python -m harness ...`、`GateResult` |
 
@@ -159,7 +159,7 @@ launchd
   ├─ com.bond-factor-lab.actuals.plist
   │    └─ 08:30/19:00/23:45 → scheduler.main --run-once actuals
   └─ com.bond-factor-lab.scheduler.plist
-       └─ scheduler.main/APScheduler（现有常驻兼容与非日频路径）
+       └─ scheduler.main/APScheduler（launchd 管理的非日频常驻子进程实现）
 ```
 
 待批准的 ledger cutover 仍以同一个 launchd 控制面启动 coordinator；切换后的日频
@@ -182,7 +182,7 @@ coordinator、occurrence、generation、cache 与 phase 的完整约束见
 日频 occurrence：
 
 ```
-APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
+APScheduler(scheduler.main，launchd 管理的非日频常驻子进程)  ──cron──▶  run_prediction_job(scheme_id)
   ├─ startup catch-up(DateTrigger) → 当天 cron 已过且无终态 run 时补跑
   └─ scheduler.executor.execute_scheme(cfg, predict_date, prediction_phase="scheduled_live")
        ├─ timeout_sec = cfg.schedule.timeout_sec or executor default
@@ -199,9 +199,16 @@ APScheduler(scheduler.main)  ──cron──▶  run_prediction_job(scheme_id)
        │     └─ scheduler.blackbox_v2_runner → sandbox CLI → strict Result → PredictionRecord
        ├─ records = parse(stdout)
        ├─ daily live 日期语义校验（predict/feature/target 与交易日历一致，否则 fail-closed）
-       ├─ scheduler.repository.create_scheme_run(...)                → t_scheme_runs
-       ├─ scheduler.repository.insert_run_predictions(...)           → t_scheme_predictions  ← 写库单点
-       └─ scheduler.repository.write_run_log(...)                    → t_scheme_run_log
+       ├─ scheduler.repository.create_scheme_run(...)                → t_scheme_runs(running)
+       └─ runtime-specific atomic completion
+            ├─ native_adapter → complete_active_native_run(...)
+            └─ blackbox_v2  → complete_approved_blackbox_run(...)
+                 └─ 同一事务：t_scheme_predictions + run 终态 + success run_log
+
+daily coordinator → scheduler.scheduled_executor → complete_scheduled_attempt(...)
+gray gap harness   → complete_gray_gap_run(...)
+上述专用原子完成 API → _insert_run_predictions_conn(...)  ← repository 内部 private helper
+execute_scheme 早期失败/跳过 → write_run_log(...)（不代替成功原子完成）
 ```
 
 入口（后端手动触发）：`backend.main POST /api/trigger/{scheme_id}` → 同一 `execute_scheme`。
@@ -297,7 +304,7 @@ schemes/{id}/                     schemes/{id}/
 | Native 入口 | `importlib.import_module("schemes.{id}.predict").run` | `scheduler/scheme_runner.py::run_scheme` |
 | Blackbox 入口 | 隔离执行 delivery 脚本的 `predict/backtest` CLI | `shared/blackbox_v2/` 与 runner |
 | 统一输出 | `list[PredictionRecord]` → JSON | `scheduler/scheme_runner.py` |
-| 统一写库 | `create_scheme_run` + `insert_run_predictions` UPSERT | `scheduler/executor.py` + `repository.py` |
+| 统一写库 | `create_scheme_run` 建立 running 审计行；最终写入按 runtime/operation 进入 `complete_active_native_run` / `complete_approved_blackbox_run` / `complete_scheduled_attempt` / `complete_gray_gap_run` 原子完成 API | `scheduler/executor.py` + `scheduler/scheduled_executor.py` + `harness/gates/signal_gap_fill_gate.py` + `scheduler/repository.py` |
 
 因此“用户给新方案”的代码落点是 Blackbox Intake 原样保存两文件并生成平台配置，再由 harness 按运行时驱动 Gate。不得手工创建新的 Native `predict.py + core/` 目录；Native StaticGate 与 ActivationGate 会拒绝政策清单外身份。
 
@@ -348,10 +355,10 @@ manifest 校验、schema inspect、pending apply 与 `APPLYING` recovery 都在�
 | `scheduler/discovery.py` | L3 | 约定发现 + 契约加载 | `discover_schemes`、`load_scheme_config`、`SchemeConfig` |
 | `scheduler/scheme_runner.py` | L3 | 只读 dry-run（importlib 运行方案） | `run_scheme` |
 | `scheduler/executor.py` | L3 | conda 子进程执行 + 写库编排 | `execute_scheme`、`run_scheme_subprocess`、`SchemeRunResult` |
-| `scheduler/repository.py` | L3 | 写库单点 | `create_scheme_run`、`insert_run_predictions`、`write_run_log`、`sync_scheme_registry` |
+| `scheduler/repository.py` | L3 | 写库单点；按 runtime/operation 原子提交 prediction + run + log | `create_scheme_run`、`complete_active_native_run`、`complete_approved_blackbox_run`、`complete_scheduled_attempt`、`complete_gray_gap_run`、`write_run_log`、`sync_scheme_registry`；`_insert_run_predictions_conn` 仅内部使用 |
 | `scheduler/daily_control_plane_probe.py` | L3 | LaunchAgent、全日期账本和算法进程的共用只读静默探针 | `probe_launchagent_service_states`、`probe_daily_transition_quiescence` |
 | `scheduler/{daily,weekly,monthly}_actuals_updater.py` | L3 | actuals 刷新 | `update_*_actuals` |
-| `scheduler/main.py` | L3 | APScheduler 调度 | `build_scheduler` |
+| `scheduler/main.py` | L3 | launchd 管理的非日频常驻子进程 / APScheduler 实现 | `build_scheduler` |
 | `backend/main.py` `services.py` `db.py` | L4 | 只读 API + 静态前端 serve | `/api/*`、`scheme_metrics` |
 | `harness/daily_real_replay.py` | L5 | 历史隔离诊断 runtime；只接受已验证隔离 Engine 与冻结 generation，不定义当前生产规模或准入 | `open_real_replay_generations`、`RealReplayRuntime` |
 | `harness/daily_real_replay_operator.py` | L5 | 隔离诊断的只读控制面预检与锁会话；不参与日常 production owner 判定 | `run_real_replay_preflight` |

@@ -1280,31 +1280,41 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(params["data_snapshot_id"], "snapshot-1")
         self.assertEqual(params["runtime_type"], "native_adapter")
 
-    def test_insert_run_predictions_upserts_prediction_semantics(self) -> None:
-        from scheduler.repository import insert_run_predictions
+    def test_active_native_completion_upserts_prediction_and_finishes_atomically(self) -> None:
+        from scheduler.repository import complete_active_native_run
         from shared.models import PredictionRecord
 
-        engine = _RunEngine()
+        engine = _native_atomic_engine()
         records = [
             PredictionRecord(
-                scheme_id="t1_daily",
-                target_tenor="10Y",
+                scheme_id="native_daily",
+                target_tenor="5Y",
                 horizon=1,
-                predict_date="2026-06-05",
-                target_date="2026-06-06",
-                feature_date="2026-06-04",
-                prediction_phase="scheduled_live",
+                predict_date="2026-07-20",
+                target_date="2026-07-21",
+                feature_date="2026-07-17",
+                prediction_phase="gray_live",
                 predicted_direction=1,
                 confidence=0.8,
-                extra={"feature_date": "2026-06-04"},
+                extra={"feature_date": "2026-07-17"},
             )
         ]
 
-        written = insert_run_predictions(engine, 101, records, scheme_version="abc123")
+        status, written, error_message = complete_active_native_run(
+            engine,
+            _native_config(),
+            run_id=101,
+            records=records,
+            scheme_version="native-version-1",
+            records_returned=1,
+            run_date="2026-07-20",
+            duration_sec=2.5,
+        )
 
+        self.assertEqual((status, written, error_message), ("success", 1, None))
+        self.assertEqual(engine.begin_count, 1)
         self.assertEqual(written, 1)
-        sql = engine.store["sql"]
-        rows = engine.store["params"]
+        sql, rows = _call_for(engine.store, "INSERT INTO t_scheme_predictions")
         self.assertIn("INSERT INTO t_scheme_predictions", sql)
         self.assertIn("ON DUPLICATE KEY UPDATE", sql)
         self.assertIn("run_id = VALUES(run_id)", sql)
@@ -1313,26 +1323,115 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertIn("feature_date = VALUES(feature_date)", sql)
         self.assertIn("prediction_phase = VALUES(prediction_phase)", sql)
         self.assertEqual(rows[0]["run_id"], 101)
-        self.assertEqual(rows[0]["scheme_version"], "abc123")
-        self.assertEqual(rows[0]["feature_date"], "2026-06-04")
-        self.assertEqual(rows[0]["prediction_phase"], "scheduled_live")
+        self.assertEqual(rows[0]["scheme_version"], "native-version-1")
+        self.assertEqual(rows[0]["feature_date"], "2026-07-17")
+        self.assertEqual(rows[0]["prediction_phase"], "gray_live")
+        self.assertEqual(engine.store["prediction_rows"], rows)
+        self.assertEqual(engine.store["run_row"]["status"], "success")
+        self.assertEqual(engine.store["run_row"]["records_written"], 1)
+        self.assertEqual(len(engine.store["run_log_rows"]), 1)
+        self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
 
-    def test_insert_run_predictions_requires_feature_date_and_phase(self) -> None:
-        from scheduler.repository import insert_run_predictions
+    def test_active_native_completion_requires_feature_date(self) -> None:
+        from scheduler.repository import complete_active_native_run
         from shared.models import PredictionRecord
 
-        engine = _RunEngine()
+        engine = _native_atomic_engine()
         record = PredictionRecord(
-            scheme_id="t1_daily",
-            target_tenor="10Y",
+            scheme_id="native_daily",
+            target_tenor="5Y",
             horizon=1,
-            predict_date="2026-06-05",
-            target_date="2026-06-06",
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            prediction_phase="gray_live",
             predicted_direction=1,
         )
 
         with self.assertRaisesRegex(ValueError, "feature_date"):
-            insert_run_predictions(engine, 101, [record], scheme_version="abc123")
+            complete_active_native_run(
+                engine,
+                _native_config(),
+                run_id=101,
+                records=[record],
+                scheme_version="native-version-1",
+                records_returned=1,
+                run_date="2026-07-20",
+                duration_sec=2.5,
+            )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
+        self.assertEqual(engine.store["run_row"]["status"], "running")
+        self.assertEqual(engine.store["run_log_rows"], [])
+
+    def test_active_native_completion_rejects_missing_or_mismatched_record_phase(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        for phase in (None, "scheduled_live"):
+            with self.subTest(phase=phase):
+                engine = _native_atomic_engine()
+                record = PredictionRecord(
+                    scheme_id="native_daily",
+                    target_tenor="5Y",
+                    horizon=1,
+                    predict_date="2026-07-20",
+                    target_date="2026-07-21",
+                    feature_date="2026-07-17",
+                    prediction_phase=phase,
+                    predicted_direction=1,
+                )
+
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "record prediction_phase",
+                ):
+                    complete_active_native_run(
+                        engine,
+                        _native_config(),
+                        run_id=101,
+                        records=[record],
+                        scheme_version="native-version-1",
+                        records_returned=1,
+                        run_date="2026-07-20",
+                        duration_sec=2.5,
+                    )
+
+                self.assertEqual(engine.store["prediction_rows"], [])
+                self.assertEqual(engine.store["run_row"]["status"], "running")
+                self.assertEqual(engine.store["run_log_rows"], [])
+
+    def test_active_native_completion_rejects_ledger_bound_run(self) -> None:
+        from scheduler.repository import complete_active_native_run
+        from shared.models import PredictionRecord
+
+        engine = _native_atomic_engine()
+        engine.store["run_row"]["schedule_item_id"] = 44
+        record = PredictionRecord(
+            scheme_id="native_daily",
+            target_tenor="5Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="gray_live",
+            predicted_direction=1,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "use the daily ledger API"):
+            complete_active_native_run(
+                engine,
+                _native_config(),
+                run_id=101,
+                records=[record],
+                scheme_version="native-version-1",
+                records_returned=1,
+                run_date="2026-07-20",
+                duration_sec=2.5,
+            )
+
+        self.assertEqual(engine.store["prediction_rows"], [])
+        self.assertEqual(engine.store["run_row"]["status"], "running")
+        self.assertEqual(engine.store["run_log_rows"], [])
 
     def test_final_blackbox_insert_locks_revalidates_and_writes_in_one_transaction(self) -> None:
         from scheduler.repository import insert_approved_blackbox_predictions

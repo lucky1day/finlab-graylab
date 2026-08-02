@@ -156,11 +156,22 @@ Harness/check-only 冻结平台注册日历；scheduled 复用已核验的 Nativ
 generation 冻结副本。算法子进程、方案 adapter 和其它 Gate 不得直接
 查询该表。
 
-正式预测写库只允许这些边界:
+预测结果与终态审计的正式生产成功提交，只允许四个专用原子完成边界:
 
-- `scheduler.repository.create_scheme_run()` 写 `t_scheme_runs`
-- `scheduler.repository.insert_run_predictions()` 写 `t_scheme_predictions`
-- `scheduler.repository.write_run_log()` 写 `t_scheme_run_log`
+- `scheduler.repository.complete_active_native_run()` 提交普通 active Native run
+- `scheduler.repository.complete_approved_blackbox_run()` 提交普通已批准 Blackbox run
+- `scheduler.repository.complete_scheduled_attempt()` 提交 daily ledger attempt
+- `scheduler.repository.complete_gray_gap_run()` 提交受控 gray gap run
+
+`create_scheme_run()` 只建立执行前的 `running` 审计行；`write_run_log()` 仅用于尚未进入
+专用完成事务的早期失败或跳过。`_insert_run_predictions_conn()` 是 repository
+内部 private helper，不是对外写库 API。
+
+`insert_approved_blackbox_predictions()` 虽仍是 public symbol，但它是无生产调用、
+仅为现有 approval/lifecycle characterization tests 保活的遗留兼容入口；禁止将它用于
+生产成功提交或受控修复。退休该入口必须作为下一独立批次，先将相关
+approval/lifecycle 测试迁移到 `complete_approved_blackbox_run()`，再删除该符号。
+
 - actuals updater 写 `t_scheme_actuals` / `t_scheme_weekly_actuals`
 - backtest repository 写 `t_backtest_*`
 - 专用受控 admin 脚本在文档授权范围内调用上述 repository

@@ -9255,28 +9255,6 @@ def _finish_scheme_run_conn(
         )
 
 
-def insert_run_predictions(
-    engine: Engine,
-    run_id: int,
-    records: Iterable[PredictionRecord],
-    *,
-    scheme_version: str | None = None,
-) -> int:
-    """UPSERT 预测记录，按 UK (scheme_id, target_tenor, horizon, target_date) 覆盖。"""
-    with engine.begin() as conn:
-        _assert_run_not_ledger_bound_conn(
-            conn,
-            run_id=int(run_id),
-            operation="generic prediction insert",
-        )
-        return _insert_run_predictions_conn(
-            conn,
-            run_id,
-            records,
-            scheme_version=scheme_version,
-        )
-
-
 def insert_approved_blackbox_predictions(
     engine: Engine,
     cfg: SchemeConfig,

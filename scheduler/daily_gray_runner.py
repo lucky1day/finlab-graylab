@@ -1,14 +1,18 @@
-"""每日 gray_live 信号自动生成器（最简调度）。
+"""由 launchd 启动的每日 ``gray_live`` 一次性批次执行器。
 
 复用已验证的 gray_live 执行链，为 launchd policy 冻结的 28 个 active 日频方案
 每交易日各出一次信号，统一写 gray_live。不走 ledger/epoch/migration-018 重装甲路径。
+本模块只负责单次进程内的批次编排与并发，不是生产调度控制面；真实触发、
+进程环境、重启和日志位置以 installed plist 与 ``launchctl`` 现场状态为准。
 
 设计要点：
 - legacy 模式下 gray_live 无需 native generation authority / trusted qualification；
   Liwei 缓存 publisher 自行增量 suffix，consumer 直接 hit。
 - 唯一硬约束：Liwei 家族 publisher 必须先于 consumer 执行，否则 consumer 会因
   缓存覆盖不足 fail-closed（CACHE_PUBLISHER_REQUIRED）。
-- 落库沿用 repository.insert_run_predictions（UPSERT，天然幂等，可安全重跑）。
+- 写入经 ``execute_scheme`` 按 runtime 分派到
+  ``complete_active_native_run`` / ``complete_approved_blackbox_run``，在同一事务中
+  原子提交 prediction + run 终态 + run log。
 - 本模块只做日常出信号，不复制历史补缺（H2 operator）的 authority/plan/monkeypatch。
 
 并发调度（单进程内、错峰替代方案）：
