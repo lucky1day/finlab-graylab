@@ -9255,34 +9255,6 @@ def _finish_scheme_run_conn(
         )
 
 
-def insert_approved_blackbox_predictions(
-    engine: Engine,
-    cfg: SchemeConfig,
-    run_id: int,
-    records: Iterable[PredictionRecord],
-    *,
-    scheme_version: str | None = None,
-) -> int:
-    """锁定并复核 Blackbox 批准状态后，在同一事务写入预测。"""
-    with _approved_blackbox_write_transaction(
-        engine,
-        cfg,
-        records,
-        scheme_version=scheme_version,
-    ) as (conn, record_list, exact_scheme_version):
-        _assert_run_not_ledger_bound_conn(
-            conn,
-            run_id=int(run_id),
-            operation="generic approved prediction insert",
-        )
-        return _insert_run_predictions_conn(
-            conn,
-            run_id,
-            record_list,
-            scheme_version=exact_scheme_version,
-        )
-
-
 def complete_approved_blackbox_run(
     engine: Engine,
     cfg: SchemeConfig,
@@ -9297,25 +9269,120 @@ def complete_approved_blackbox_run(
     insert_only_predictions: bool = False,
 ) -> int:
     """原子提交 Blackbox prediction、成功 run 状态与成功日志。"""
+    normalized_run_date = _require_iso_date(run_date, "run_date")
+    expected_tenors, _expected_registry_ids = _expected_registry_identity(cfg)
+    expected_targets = {
+        (target_tenor, int(cfg.horizon))
+        for target_tenor in expected_tenors
+    }
     with _approved_blackbox_write_transaction(
         engine,
         cfg,
         records,
         scheme_version=scheme_version,
     ) as (conn, record_list, exact_scheme_version):
-        _assert_run_not_ledger_bound_conn(
+        run = _read_schedule_run_conn(
             conn,
             run_id=int(run_id),
-            operation="generic approved completion",
+            for_update=True,
         )
+        if run is not None and run.get("schedule_item_id") is not None:
+            raise RuntimeError(
+                "generic approved completion rejected ledger-bound "
+                f"run_id={run_id}; use the daily ledger API"
+            )
+        expected_run_identity = {
+            "scheme_id": cfg.scheme_id,
+            "scheme_version": exact_scheme_version,
+            "runtime_type": "blackbox_v2",
+            "run_type": "active",
+            "predict_date": normalized_run_date,
+            "status": "running",
+            "records_expected": len(expected_targets),
+            "attempt_no": None,
+            "trigger_origin": None,
+            "execution_token": None,
+            "process_id": None,
+            "process_group_id": None,
+        }
+        run_identity_errors = []
+        if run is None:
+            run_identity_errors.append("run missing")
+        else:
+            for field, expected_value in expected_run_identity.items():
+                actual_value = run.get(field)
+                if field == "predict_date":
+                    actual_value = _stored_iso_date(run, field)
+                if field == "records_expected" and actual_value is not None:
+                    try:
+                        actual_value = int(actual_value)
+                    except (TypeError, ValueError):
+                        pass
+                if actual_value != expected_value:
+                    run_identity_errors.append(
+                        f"{field}: expected={expected_value!r}, "
+                        f"got={actual_value!r}"
+                    )
+        if run_identity_errors:
+            raise RuntimeError(
+                "Blackbox completion running run identity revalidation failed: "
+                + "; ".join(run_identity_errors)
+            )
+        assert run is not None
+        run_phase = run.get("prediction_phase")
+        if run_phase not in VALID_PREDICTION_PHASES:
+            raise RuntimeError(
+                "Blackbox completion running run identity revalidation failed: "
+                f"invalid prediction_phase={run_phase!r}"
+            )
         if records_returned != len(record_list):
             raise RuntimeError(
                 "Blackbox completion records_returned mismatch: "
                 f"returned={records_returned}, records={len(record_list)}"
             )
+        returned_targets = Counter(
+            (str(record.target_tenor), int(record.horizon))
+            for record in record_list
+        )
+        duplicate_targets = sorted(
+            (target_tenor, horizon, count)
+            for (target_tenor, horizon), count in returned_targets.items()
+            if count != 1
+        )
+        record_errors = []
+        if set(returned_targets) != expected_targets or duplicate_targets:
+            record_errors.append(
+                "target set does not match active Registry: "
+                f"expected={sorted(expected_targets)}, "
+                f"returned={sorted(returned_targets)}, "
+                f"duplicates={duplicate_targets}"
+            )
+        for record in record_list:
+            if record.scheme_id != cfg.scheme_id:
+                record_errors.append(f"record scheme_id={record.scheme_id!r}")
+            if record.scheme_version not in (None, exact_scheme_version):
+                record_errors.append(
+                    f"record scheme_version={record.scheme_version!r}"
+                )
+            if str(record.predict_date) != normalized_run_date:
+                record_errors.append(
+                    f"record predict_date={record.predict_date!r}"
+                )
+            record_phase = record.prediction_phase or (
+                record.extra or {}
+            ).get("prediction_phase")
+            if record_phase != run_phase:
+                record_errors.append(
+                    f"record prediction_phase={record_phase!r}"
+                )
+        if record_errors:
+            raise RuntimeError(
+                "Blackbox completion records revalidation failed: "
+                + "; ".join(record_errors)
+            )
         records_written = _insert_run_predictions_conn(
             conn,
-            run_id,
+            int(run_id),
             record_list,
             scheme_version=exact_scheme_version,
             insert_only=insert_only_predictions,
@@ -9337,7 +9404,7 @@ def complete_approved_blackbox_run(
         _write_run_log_conn(
             conn,
             cfg.scheme_id,
-            run_date,
+            normalized_run_date,
             "success",
             duration_sec,
             None,

@@ -167,11 +167,6 @@ generation 冻结副本。算法子进程、方案 adapter 和其它 Gate 不得
 专用完成事务的早期失败或跳过。`_insert_run_predictions_conn()` 是 repository
 内部 private helper，不是对外写库 API。
 
-`insert_approved_blackbox_predictions()` 虽仍是 public symbol，但它是无生产调用、
-仅为现有 approval/lifecycle characterization tests 保活的遗留兼容入口；禁止将它用于
-生产成功提交或受控修复。退休该入口必须作为下一独立批次，先将相关
-approval/lifecycle 测试迁移到 `complete_approved_blackbox_run()`，再删除该符号。
-
 - actuals updater 写 `t_scheme_actuals` / `t_scheme_weekly_actuals`
 - backtest repository 写 `t_backtest_*`
 - 专用受控 admin 脚本在文档授权范围内调用上述 repository

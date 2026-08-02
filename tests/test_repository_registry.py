@@ -1433,68 +1433,12 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(engine.store["run_row"]["status"], "running")
         self.assertEqual(engine.store["run_log_rows"], [])
 
-    def test_final_blackbox_insert_locks_revalidates_and_writes_in_one_transaction(self) -> None:
-        from scheduler.repository import insert_approved_blackbox_predictions
-        from shared.models import PredictionRecord
-
-        version_row = {
-            "scheme_id": "demo_blackbox",
-            "scheme_version": "abc123def456",
-            "runtime_type": "blackbox_v2",
-            "status": "active",
-            "approved_by": "release-owner",
-            "approved_at": datetime(2026, 7, 20, 8, 30),
-        }
-        registry_row = {
-            "scheme_id": "demo_blackbox__h1__10Y",
-            "base_scheme_id": "demo_blackbox",
-            "runtime_type": "blackbox_v2",
-            "status": "active",
-            "task_type": "T+1",
-            "target_tenor": "10Y",
-            "horizon": 1,
-        }
-        engine = _CaptureEngine(version_row=version_row, registry_rows=[registry_row])
-        record = PredictionRecord(
-            scheme_id="demo_blackbox",
-            target_tenor="10Y",
-            horizon=1,
-            predict_date="2026-07-20",
-            target_date="2026-07-21",
-            feature_date="2026-07-17",
-            prediction_phase="scheduled_live",
-            predicted_direction=1,
-            extra={"feature_date": "2026-07-17", "prediction_phase": "scheduled_live"},
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
-            with patch("scheduler.repository.load_scheme_config", return_value=cfg):
-                written = insert_approved_blackbox_predictions(
-                    engine,
-                    cfg,
-                    101,
-                    [record],
-                    scheme_version="abc123def456",
-                )
-
-        self.assertEqual(written, 1)
-        self.assertEqual(engine.store["begin_count"], 1)
-        version_select, _ = _call_for(engine.store, "FROM t_scheme_versions")
-        registry_select, _ = _call_for(engine.store, "FROM t_scheme_registry")
-        self.assertIn("FOR UPDATE", version_select)
-        self.assertIn("FOR UPDATE", registry_select)
-        self.assertEqual(len(engine.store["prediction_rows"]), 1)
-        self.assertEqual(
-            engine.store["prediction_rows"][0]["scheme_version"],
-            "abc123def456",
-        )
-
-    def test_blackbox_success_completion_commits_prediction_run_and_log_atomically(self) -> None:
+    def test_blackbox_completion_locks_revalidates_and_commits_atomically(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
         engine = _AtomicEngine()
+        engine.store["run_row"]["predict_date"] = date(2026, 7, 20)
         record = PredictionRecord(
             scheme_id="demo_blackbox",
             target_tenor="10Y",
@@ -1522,16 +1466,217 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(written, 1)
         self.assertEqual(engine.begin_count, 1)
         self.assertEqual(len(engine.store["prediction_rows"]), 1)
+        self.assertEqual(
+            engine.store["prediction_rows"][0]["scheme_version"],
+            "abc123def456",
+        )
         self.assertEqual(engine.store["run_row"]["status"], "success")
         self.assertEqual(engine.store["run_row"]["records_written"], 1)
         self.assertEqual(len(engine.store["run_log_rows"]), 1)
         self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
+        calls = engine.store["calls"]
+        version_index = next(
+            index
+            for index, (sql, _rows) in enumerate(calls)
+            if "FROM t_scheme_versions" in sql
+        )
+        registry_index = next(
+            index
+            for index, (sql, _rows) in enumerate(calls)
+            if "FROM t_scheme_registry" in sql
+        )
+        run_index = next(
+            index
+            for index, (sql, _rows) in enumerate(calls)
+            if "FROM t_scheme_runs" in sql
+        )
+        prediction_index = next(
+            index
+            for index, (sql, _rows) in enumerate(calls)
+            if "INSERT INTO t_scheme_predictions" in sql
+        )
+        self.assertIn("FOR UPDATE", calls[version_index][0])
+        self.assertIn("FOR UPDATE", calls[registry_index][0])
+        self.assertIn("FOR UPDATE", calls[run_index][0])
+        self.assertLess(version_index, registry_index)
+        self.assertLess(registry_index, run_index)
+        self.assertLess(run_index, prediction_index)
+
+    def test_blackbox_completion_revalidates_locked_running_run_identity(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+        from shared.models import PredictionRecord
+
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+        cases = {
+            "terminal_status": ("status", "success"),
+            "wrong_scheme_id": ("scheme_id", "other_blackbox"),
+            "wrong_scheme_version": ("scheme_version", "other-version"),
+            "wrong_runtime_type": ("runtime_type", "native_adapter"),
+            "wrong_run_type": ("run_type", "gray_gap"),
+            "wrong_predict_date": ("predict_date", "2026-07-19"),
+            "wrong_records_expected": ("records_expected", 2),
+            "invalid_prediction_phase": ("prediction_phase", "backtest"),
+            "attempt_no_present": ("attempt_no", 1),
+            "trigger_origin_present": ("trigger_origin", "scheduler"),
+            "execution_token_present": ("execution_token", "token-1"),
+            "process_id_present": ("process_id", 1234),
+            "process_group_id_present": ("process_group_id", 5678),
+        }
+        for label, (field, value) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                engine = _AtomicEngine()
+                engine.store["run_row"][field] = value
+                original_run = deepcopy(engine.store["run_row"])
+                cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+                with (
+                    patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                    patch(
+                        "scheduler.repository._insert_run_predictions_conn",
+                        return_value=1,
+                    ) as insert_predictions,
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "Blackbox completion running run identity revalidation failed",
+                    ),
+                ):
+                    complete_approved_blackbox_run(
+                        engine,
+                        cfg,
+                        run_id=101,
+                        records=[record],
+                        scheme_version=cfg.scheme_version,
+                        records_returned=1,
+                        run_date="2026-07-20",
+                        duration_sec=2.5,
+                    )
+
+                insert_predictions.assert_not_called()
+                self.assertEqual(engine.store["prediction_rows"], [])
+                self.assertEqual(engine.store["run_log_rows"], [])
+                self.assertEqual(engine.store["run_row"], original_run)
+
+    def test_blackbox_completion_rejects_ledger_bound_run_via_daily_ledger_api(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+        from shared.models import PredictionRecord
+
+        engine = _AtomicEngine()
+        engine.store["run_row"]["schedule_item_id"] = 44
+        original_run = deepcopy(engine.store["run_row"])
+        record = PredictionRecord(
+            scheme_id="demo_blackbox",
+            target_tenor="10Y",
+            horizon=1,
+            predict_date="2026-07-20",
+            target_date="2026-07-21",
+            feature_date="2026-07-17",
+            prediction_phase="scheduled_live",
+            predicted_direction=1,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+            with (
+                patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                patch(
+                    "scheduler.repository._insert_run_predictions_conn",
+                    return_value=1,
+                ) as insert_predictions,
+                self.assertRaisesRegex(RuntimeError, "use the daily ledger API"),
+            ):
+                complete_approved_blackbox_run(
+                    engine,
+                    cfg,
+                    run_id=101,
+                    records=[record],
+                    scheme_version=cfg.scheme_version,
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
+                )
+
+        insert_predictions.assert_not_called()
+        self.assertEqual(engine.store["prediction_rows"], [])
+        self.assertEqual(engine.store["run_log_rows"], [])
+        self.assertEqual(engine.store["run_row"], original_run)
+
+    def test_blackbox_completion_revalidates_records_against_locked_run(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
+        from shared.models import PredictionRecord
+
+        def make_record(**updates) -> PredictionRecord:
+            values = {
+                "scheme_id": "demo_blackbox",
+                "target_tenor": "10Y",
+                "horizon": 1,
+                "predict_date": "2026-07-20",
+                "target_date": "2026-07-21",
+                "feature_date": "2026-07-17",
+                "prediction_phase": "scheduled_live",
+                "predicted_direction": 1,
+            }
+            values.update(updates)
+            return PredictionRecord(**values)
+
+        cases = {
+            "wrong_target_set": [make_record(target_tenor="5Y")],
+            "duplicate_target": [make_record(), make_record()],
+            "wrong_scheme_id": [make_record(scheme_id="other_blackbox")],
+            "wrong_predict_date": [make_record(predict_date="2026-07-19")],
+            "wrong_prediction_phase": [
+                make_record(prediction_phase="gray_live")
+            ],
+        }
+        for label, records in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                engine = _AtomicEngine()
+                original_run = deepcopy(engine.store["run_row"])
+                cfg = _set_canonical_path(_blackbox_config(), Path(tmpdir))
+                with (
+                    patch("scheduler.repository.load_scheme_config", return_value=cfg),
+                    patch(
+                        "scheduler.repository._insert_run_predictions_conn",
+                        return_value=len(records),
+                    ) as insert_predictions,
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        "Blackbox completion records revalidation failed",
+                    ),
+                ):
+                    complete_approved_blackbox_run(
+                        engine,
+                        cfg,
+                        run_id=101,
+                        records=records,
+                        scheme_version=cfg.scheme_version,
+                        records_returned=len(records),
+                        run_date="2026-07-20",
+                        duration_sec=2.5,
+                    )
+
+                insert_predictions.assert_not_called()
+                self.assertEqual(engine.store["prediction_rows"], [])
+                self.assertEqual(engine.store["run_log_rows"], [])
+                self.assertEqual(engine.store["run_row"], original_run)
 
     def test_gray_backfill_completion_uses_insert_only_prediction_sql(self) -> None:
         from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
         engine = _AtomicEngine()
+        engine.store["run_row"].update(
+            {
+                "prediction_phase": "gray_live",
+                "predict_date": "2026-05-26",
+            }
+        )
         record = PredictionRecord(
             scheme_id="demo_blackbox",
             target_tenor="10Y",
@@ -1569,6 +1714,12 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         from shared.models import PredictionRecord
 
         engine = _AtomicEngine()
+        engine.store["run_row"].update(
+            {
+                "prediction_phase": "gray_live",
+                "predict_date": "2026-05-26",
+            }
+        )
         first = PredictionRecord(
             scheme_id="demo_blackbox",
             target_tenor="10Y",
@@ -1602,6 +1753,16 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                     run_date=first.predict_date,
                     duration_sec=1.0,
                     insert_only_predictions=True,
+                )
+                engine.store["run_row"].update(
+                    {
+                        "run_id": 102,
+                        "predict_date": "2026-05-27",
+                        "status": "running",
+                        "records_returned": None,
+                        "records_written": None,
+                        "error_message": None,
+                    }
                 )
                 with self.assertRaisesRegex(
                     RuntimeError,
@@ -1996,8 +2157,8 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         self.assertEqual(version["status"], "active")
         self.assertEqual(len(registry), 1)
 
-    def test_final_blackbox_insert_rejects_missing_canonical_config_path(self) -> None:
-        from scheduler.repository import insert_approved_blackbox_predictions
+    def test_blackbox_completion_rejects_missing_canonical_path_before_db_access(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
         engine = _CaptureEngine()
@@ -2013,40 +2174,27 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         )
 
         with self.assertRaisesRegex(RuntimeError, "canonical config path is required"):
-            insert_approved_blackbox_predictions(
+            complete_approved_blackbox_run(
                 engine,
                 _blackbox_config(),
-                101,
-                [record],
+                run_id=101,
+                records=[record],
                 scheme_version="abc123def456",
+                records_returned=1,
+                run_date="2026-07-20",
+                duration_sec=2.5,
             )
 
         self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
 
-    def test_final_blackbox_insert_holds_lifecycle_lock_through_prediction_insert(self) -> None:
+    def test_blackbox_completion_holds_lifecycle_lock_through_atomic_commit(self) -> None:
         from scheduler import repository
+        from shared.blackbox_v2 import lifecycle
         from shared.blackbox_v2.lifecycle import LifecycleState, perform_lifecycle_transition
         from shared.models import PredictionRecord
 
-        version_row = {
-            "scheme_id": "demo_blackbox",
-            "scheme_version": "abc123def456",
-            "runtime_type": "blackbox_v2",
-            "status": "active",
-            "approved_by": "release-owner",
-            "approved_at": datetime(2026, 7, 20, 8, 30),
-        }
-        registry_row = {
-            "scheme_id": "demo_blackbox__h1__10Y",
-            "base_scheme_id": "demo_blackbox",
-            "runtime_type": "blackbox_v2",
-            "status": "active",
-            "task_type": "T+1",
-            "target_tenor": "10Y",
-            "horizon": 1,
-        }
-        engine = _CaptureEngine(version_row=version_row, registry_rows=[registry_row])
+        engine = _AtomicEngine()
         record = PredictionRecord(
             scheme_id="demo_blackbox",
             target_tenor="10Y",
@@ -2059,9 +2207,12 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
         )
         insert_entered = threading.Event()
         allow_insert = threading.Event()
-        transition_started = threading.Event()
+        transition_lock_blocked = threading.Event()
         transition_finished = threading.Event()
+        transition_thread_id = {"value": None}
         original_insert = repository._insert_run_predictions_conn
+        original_flock = lifecycle.fcntl.flock
+        exclusive_nonblocking = lifecycle.fcntl.LOCK_EX | lifecycle.fcntl.LOCK_NB
 
         def blocking_insert(*args, **kwargs):
             insert_entered.set()
@@ -2086,7 +2237,7 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
             paused = LifecycleState("paused", "paused", "paused", "paused")
 
             def run_transition():
-                transition_started.set()
+                transition_thread_id["value"] = threading.get_ident()
                 result = perform_lifecycle_transition(
                     project_root=root,
                     config_path=config_path,
@@ -2105,38 +2256,64 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 transition_finished.set()
                 return result
 
+            def observe_flock(file_descriptor, operation):
+                try:
+                    return original_flock(file_descriptor, operation)
+                except BlockingIOError:
+                    if (
+                        threading.get_ident() == transition_thread_id["value"]
+                        and operation == exclusive_nonblocking
+                    ):
+                        transition_lock_blocked.set()
+                    raise
+
             with (
                 patch("scheduler.repository.load_scheme_config", return_value=cfg),
                 patch(
                     "scheduler.repository._insert_run_predictions_conn",
                     side_effect=blocking_insert,
                 ),
+                patch(
+                    "shared.blackbox_v2.lifecycle.fcntl.flock",
+                    side_effect=observe_flock,
+                ),
                 ThreadPoolExecutor(max_workers=2) as pool,
             ):
                 writer = pool.submit(
-                    repository.insert_approved_blackbox_predictions,
+                    repository.complete_approved_blackbox_run,
                     engine,
                     cfg,
-                    101,
-                    [record],
+                    run_id=101,
+                    records=[record],
                     scheme_version="abc123def456",
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
                 )
                 self.assertTrue(insert_entered.wait(timeout=1))
                 transition = pool.submit(run_transition)
-                self.assertTrue(transition_started.wait(timeout=1))
-                self.assertFalse(
-                    transition_finished.wait(timeout=0.2),
-                    "lifecycle transition interleaved between final revalidation and insert",
-                )
-                allow_insert.set()
+                try:
+                    self.assertTrue(
+                        transition_lock_blocked.wait(timeout=1),
+                        "lifecycle transition did not encounter the writer-held lock",
+                    )
+                    self.assertFalse(
+                        transition_finished.is_set(),
+                        "lifecycle transition completed while writer held the lock",
+                    )
+                finally:
+                    allow_insert.set()
                 self.assertEqual(writer.result(timeout=2), 1)
                 transition.result(timeout=2)
 
         self.assertTrue(transition_finished.is_set())
         self.assertEqual(len(engine.store["prediction_rows"]), 1)
+        self.assertEqual(engine.store["run_row"]["status"], "success")
+        self.assertEqual(len(engine.store["run_log_rows"]), 1)
+        self.assertEqual(engine.store["run_log_rows"][0]["status"], "success")
 
-    def test_final_blackbox_insert_rejects_pending_reconciliation_before_db_access(self) -> None:
-        from scheduler.repository import insert_approved_blackbox_predictions
+    def test_blackbox_completion_rejects_pending_reconciliation_before_db_access(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
         from shared.blackbox_v2.lifecycle import LifecycleJournal, LifecycleState, write_journal
         from shared.models import PredictionRecord
 
@@ -2170,42 +2347,33 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 patch("scheduler.repository.load_scheme_config", return_value=cfg),
                 self.assertRaisesRegex(RuntimeError, "lifecycle journal"),
             ):
-                insert_approved_blackbox_predictions(
+                complete_approved_blackbox_run(
                     engine,
                     cfg,
-                    101,
-                    [record],
+                    run_id=101,
+                    records=[record],
                     scheme_version=cfg.scheme_version,
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
                 )
 
         self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
 
-    def test_final_blackbox_insert_rejects_revoked_approval_without_predictions(self) -> None:
-        from scheduler.repository import insert_approved_blackbox_predictions
+    def test_blackbox_completion_rejects_revoked_approval_without_commit(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
-        engine = _CaptureEngine(
-            version_row={
-                "scheme_id": "demo_blackbox",
-                "scheme_version": "abc123def456",
-                "runtime_type": "blackbox_v2",
+        engine = _AtomicEngine()
+        engine.store["version_row"].update(
+            {
                 "status": "shadow",
                 "approved_by": None,
                 "approved_at": None,
-            },
-            registry_rows=[
-                {
-                    "scheme_id": "demo_blackbox__h1__10Y",
-                    "base_scheme_id": "demo_blackbox",
-                    "runtime_type": "blackbox_v2",
-                    "status": "active",
-                    "task_type": "T+1",
-                    "target_tenor": "10Y",
-                    "horizon": 1,
-                }
-            ],
+            }
         )
+        original_run = deepcopy(engine.store["run_row"])
         record = PredictionRecord(
             scheme_id="demo_blackbox",
             target_tenor="10Y",
@@ -2227,18 +2395,24 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                     "version status is shadow, expected active",
                 ),
             ):
-                insert_approved_blackbox_predictions(
+                complete_approved_blackbox_run(
                     engine,
                     cfg,
-                    101,
-                    [record],
+                    run_id=101,
+                    records=[record],
                     scheme_version="abc123def456",
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
                 )
 
+        self.assertEqual(engine.begin_count, 1)
         self.assertEqual(engine.store["prediction_rows"], [])
+        self.assertEqual(engine.store["run_row"], original_run)
+        self.assertEqual(engine.store["run_log_rows"], [])
 
-    def test_final_blackbox_insert_rejects_shadow_config_version_without_predictions(self) -> None:
-        from scheduler.repository import insert_approved_blackbox_predictions
+    def test_blackbox_completion_rejects_config_version_status_drift_before_db_access(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
         engine = _CaptureEngine(
@@ -2285,18 +2459,22 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                     "canonical config changed before final write.*current=.*active/shadow",
                 ),
             ):
-                insert_approved_blackbox_predictions(
+                complete_approved_blackbox_run(
                     engine,
                     cfg,
-                    101,
-                    [record],
+                    run_id=101,
+                    records=[record],
                     scheme_version="abc123def456",
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
                 )
 
+        self.assertEqual(engine.store["begin_count"], 0)
         self.assertEqual(engine.store["prediction_rows"], [])
 
-    def test_final_blackbox_insert_rejects_disk_config_version_drift(self) -> None:
-        from scheduler.repository import insert_approved_blackbox_predictions
+    def test_blackbox_completion_rejects_disk_scheme_version_drift_before_db_access(self) -> None:
+        from scheduler.repository import complete_approved_blackbox_run
         from shared.models import PredictionRecord
 
         drifted = _blackbox_config(scheme_version="drifted-version")
@@ -2332,12 +2510,15 @@ class ImmutablePredictionRepositoryTests(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(RuntimeError, "canonical config changed before final write"),
             ):
-                insert_approved_blackbox_predictions(
+                complete_approved_blackbox_run(
                     engine,
                     cfg,
-                    101,
-                    [record],
+                    run_id=101,
+                    records=[record],
                     scheme_version="abc123def456",
+                    records_returned=1,
+                    run_date="2026-07-20",
+                    duration_sec=2.5,
                 )
 
         self.assertEqual(engine.store["begin_count"], 0)

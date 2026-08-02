@@ -253,6 +253,7 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
 
     def test_retired_repository_symbols_are_not_exposed(self) -> None:
         retired = (
+            "insert_approved_blackbox_predictions",
             "insert_run_predictions",
             "finish_scheme_run",
             "seal_input_generation",
