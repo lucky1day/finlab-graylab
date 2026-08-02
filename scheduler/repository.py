@@ -2870,51 +2870,6 @@ def _validate_databridge_native_relation(
         )
 
 
-def seal_input_generation(
-    engine: Engine,
-    *,
-    generation_id: str,
-    sealed_at: datetime | None = None,
-) -> None:
-    """将 BUILDING generation 幂等封存为 SEALED。"""
-    effective_time = _utc_datetime6(sealed_at)
-    with engine.begin() as conn:
-        row, _native_generation = (
-            _lock_input_generation_with_parent_conn(
-                conn,
-                generation_id,
-            )
-        )
-        if row is None:
-            raise RuntimeError(f"input generation not found: {generation_id}")
-        state = str(row.get("state"))
-        if state == GENERATION_SEALED:
-            return
-        if state != GENERATION_BUILDING:
-            raise RuntimeError(
-                f"input generation cannot be sealed from state={state}"
-            )
-        result = conn.execute(
-            text(
-                """
-                UPDATE t_input_generations
-                SET state = :state,
-                    sealed_at = :sealed_at,
-                    updated_at = :sealed_at
-                WHERE generation_id = :generation_id
-                  AND state = :building
-                """
-            ),
-            {
-                "state": GENERATION_SEALED,
-                "sealed_at": effective_time,
-                "generation_id": generation_id,
-                "building": GENERATION_BUILDING,
-            },
-        )
-        _require_rowcount(result, 1, "input generation seal")
-
-
 def _lock_input_generation_with_parent_conn(
     conn: Connection,
     generation_id: str,
@@ -2971,33 +2926,6 @@ def _lock_input_generation_with_parent_conn(
             native_generation=native_generation,
         )
     return row, native_generation
-
-
-def _validate_generation_seal_dependencies_conn(
-    conn: Connection,
-    generation: Mapping[str, object],
-) -> None:
-    """在 generation 锁后复核其不可变父 generation 仍可用于封存。"""
-    if str(generation.get("generation_type")) != "databridge_v1":
-        return
-    native_generation_id = generation.get("native_generation_id")
-    if not native_generation_id:
-        raise RuntimeError(
-            "databridge generation is missing native_generation_id"
-        )
-    native_generation = _read_input_generation_conn(
-        conn,
-        str(native_generation_id),
-        for_update=True,
-    )
-    if native_generation is None:
-        raise RuntimeError(
-            f"native generation not found: {native_generation_id}"
-        )
-    _validate_databridge_native_relation(
-        databridge=generation,
-        native_generation=native_generation,
-    )
 
 
 def invalidate_input_generation(
@@ -4408,46 +4336,6 @@ def seal_and_bind_schedule_occurrence_generation(
         )
 
 
-def bind_schedule_item_input_generation(
-    engine: Engine,
-    *,
-    item_id: int,
-    generation_id: str,
-    expected_feature_date: str,
-) -> str:
-    """兼容入口：转为 occurrence 同 runtime 的原子全量绑定。
-
-    禁止逐 item 修改，避免同一 occurrence 在崩溃窗口内只绑定部分执行项。
-    """
-    normalized_feature_date = date.fromisoformat(
-        expected_feature_date
-    ).isoformat()
-    with engine.begin() as conn:
-        locator = _read_schedule_item_locator_conn(
-            conn,
-            item_id=int(item_id),
-        )
-        if locator is None:
-            raise RuntimeError(f"schedule item not found: {item_id}")
-        occurrence_id = int(locator["occurrence_id"])
-    try:
-        seal_and_bind_schedule_occurrence_generation(
-            engine,
-            occurrence_id=occurrence_id,
-            generation_id=generation_id,
-            expected_feature_date=normalized_feature_date,
-            _require_already_sealed=True,
-        )
-    except RuntimeError as exc:
-        if "same occurrence runtime generation must be unique" in str(exc):
-            raise RuntimeError(
-                "same occurrence runtime generation is already bound: "
-                f"item_id={item_id}"
-            ) from exc
-        raise
-    return generation_id
-
-
 def start_schedule_attempt(
     engine: Engine,
     *,
@@ -5172,100 +5060,6 @@ def confirm_schedule_attempt_orphan_cleanup(
             },
         )
         _require_rowcount(item_result, 1, "schedule item cleanup confirm")
-    return ITEM_ABANDONED
-
-
-def abandon_current_schedule_attempt(
-    engine: Engine,
-    *,
-    item_id: int,
-    orphan_cleanup_confirmed: bool = False,
-    abandoned_at: datetime | None = None,
-    _clock: _LedgerClock | None = None,
-) -> str:
-    """仅在外部已确认孤儿进程清理后，显式废弃当前 RUNNING attempt。"""
-    if orphan_cleanup_confirmed is not True:
-        raise RuntimeError(
-            "orphan cleanup confirmation is required before abandon"
-    )
-    effective_time, _trusted_now = _ledger_event_time(
-        abandoned_at,
-        field="abandoned_at",
-        clock=_clock,
-    )
-    with engine.begin() as conn:
-        _occurrence, item, _siblings = _lock_schedule_item_context_conn(
-            conn,
-            item_id=int(item_id),
-        )
-        if item.get("state") != ITEM_RUNNING or not item.get(
-            "current_run_id"
-        ):
-            raise RuntimeError(
-                f"schedule item is not RUNNING: {item_id}"
-            )
-        run_id = int(item["current_run_id"])
-        run = _read_schedule_run_conn(
-            conn,
-            run_id=run_id,
-            for_update=True,
-        )
-        if run is None or run.get("status") != "running":
-            raise RuntimeError(
-                f"current scheduled run is not running: {run_id}"
-            )
-        _require_run_lifecycle_time(
-            effective_time,
-            run,
-            event_field="abandoned_at",
-        )
-        run_result = conn.execute(
-            text(
-                """
-                UPDATE t_scheme_runs
-                SET status = 'failed',
-                    failure_code = :failure_code,
-                    error_message = 'orphan cleanup confirmed before recovery',
-                    finished_at = :finished_at
-                WHERE run_id = :run_id
-                  AND status = 'running'
-                """
-            ),
-            {
-                "failure_code": _ABANDONED_ORPHAN_CLEANUP,
-                "run_id": run_id,
-                "finished_at": effective_time,
-            },
-        )
-        _require_rowcount(run_result, 1, "schedule run abandon")
-        item_result = conn.execute(
-            text(
-                """
-                UPDATE t_schedule_items
-                SET state = :abandoned,
-                    failure_code = :failure_code,
-                    failure_message = 'orphan cleanup confirmed before recovery',
-                    completed_at = :completed_at
-                WHERE item_id = :item_id
-                  AND current_run_id = :run_id
-                  AND state = :running
-                """
-            ),
-            {
-                "abandoned": ITEM_ABANDONED,
-                "failure_code": _ABANDONED_ORPHAN_CLEANUP,
-                "completed_at": effective_time,
-                "item_id": int(item_id),
-                "run_id": run_id,
-                "running": ITEM_RUNNING,
-            },
-        )
-        _require_rowcount(item_result, 1, "schedule item abandon")
-        _mark_occurrence_failed_conn(
-            conn,
-            occurrence_id=int(item["occurrence_id"]),
-            completed_at=effective_time,
-        )
     return ITEM_ABANDONED
 
 
@@ -9417,53 +9211,6 @@ def attach_run_data_snapshot(engine: Engine, *, run_id: int, data_snapshot_id: s
                 """
             ),
             {"run_id": int(run_id), "data_snapshot_id": str(data_snapshot_id)},
-        )
-
-
-def finish_scheme_run(
-    engine: Engine,
-    *,
-    run_id: int,
-    status: str,
-    records_returned: int | None = None,
-    records_written: int | None = None,
-    error_message: str | None = None,
-    finished_at: datetime | None = None,
-    _clock: _LedgerClock | None = None,
-) -> None:
-    """标记预测运行结束。"""
-    effective_time, _trusted_now = _ledger_event_time(
-        finished_at,
-        field="finished_at",
-        clock=_clock,
-    )
-    with engine.begin() as conn:
-        _assert_run_not_ledger_bound_conn(
-            conn,
-            run_id=int(run_id),
-            operation="generic finish",
-        )
-        run = _read_schedule_run_conn(
-            conn,
-            run_id=int(run_id),
-            for_update=True,
-        )
-        if run is None:
-            raise RuntimeError(f"scheme run not found: {run_id}")
-        _require_not_before(
-            effective_time,
-            run.get("started_at"),
-            event_field="finished_at",
-            lower_field="run started_at",
-        )
-        _finish_scheme_run_conn(
-            conn,
-            run_id=run_id,
-            status=status,
-            records_returned=records_returned,
-            records_written=records_written,
-            error_message=error_message,
-            finished_at=effective_time,
         )
 
 

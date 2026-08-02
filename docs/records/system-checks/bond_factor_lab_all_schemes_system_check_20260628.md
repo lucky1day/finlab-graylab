@@ -1,5 +1,7 @@
 # Bond Factor Lab 全方案运行与数据体系检查报告
 
+**文档状态**：`HISTORICAL`
+
 > **历史审计快照，非当前状态。** 本文记录的是 2026-06-28 当日的 registry、数据库水位、代码与运行结果。此后 active 方案范围、scheduler/actuals、source fidelity gate、周频无信号转平和 latest backtest 均有更新；文中的方案数量、run_id、待办和复核命令不得直接当作当前结论。当前规则与状态分别以 [SCHEME_CONTRACT.md](../../architecture/SCHEME_CONTRACT.md)、[PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md) 和 [CURRENT_STATUS.md](../../CURRENT_STATUS.md) 为准。
 
 检查日期：2026-06-28

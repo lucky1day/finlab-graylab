@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from harness.contracts import import_rules
+from scheduler import daily_coordinator, repository
 
 
 class RepositoryArchitectureBoundaryTests(unittest.TestCase):
@@ -234,6 +235,35 @@ class RepositoryArchitectureBoundaryTests(unittest.TestCase):
                 if path.exists()
             ],
             "retired offline daily capacity gate and CLI must not return",
+        )
+
+    def test_retired_daily_coordinator_symbols_are_not_exposed(self) -> None:
+        retired = (
+            "V2Release",
+            "compute_v2_releases",
+            "_required_release_offset",
+            "decide_recovery",
+        )
+
+        self.assertEqual(
+            [],
+            [name for name in retired if hasattr(daily_coordinator, name)],
+            "retired daily coordinator symbols must not return",
+        )
+
+    def test_retired_repository_symbols_are_not_exposed(self) -> None:
+        retired = (
+            "finish_scheme_run",
+            "seal_input_generation",
+            "_validate_generation_seal_dependencies_conn",
+            "bind_schedule_item_input_generation",
+            "abandon_current_schedule_attempt",
+        )
+
+        self.assertEqual(
+            [],
+            [name for name in retired if hasattr(repository, name)],
+            "retired repository symbols must not return",
         )
 
     def test_current_repository_has_no_layer_inversions(self) -> None:

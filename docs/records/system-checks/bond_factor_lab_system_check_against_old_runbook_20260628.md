@@ -1,5 +1,7 @@
 # Bond Factor Lab 运行与数据体系检查报告
 
+**文档状态**：`HISTORICAL`
+
 > **历史 runbook 对照快照，非当前规范。** 本文只保存 2026-06-28 当日对旧迁移模板的审计映射。此后 active registry、调度与 actuals、source fidelity、无信号转平和 latest backtest 已继续演进；文中的数量、run_id、差异和建议不得覆盖现行契约。当前规则与状态分别以 [SCHEME_CONTRACT.md](../../architecture/SCHEME_CONTRACT.md)、[PREDICTION_SEMANTICS.md](../../architecture/PREDICTION_SEMANTICS.md)、[SOURCE_ALGORITHM_FIDELITY.md](../../architecture/SOURCE_ALGORITHM_FIDELITY.md) 和 [CURRENT_STATUS.md](../../CURRENT_STATUS.md) 为准。
 
 检查日期：2026-06-28

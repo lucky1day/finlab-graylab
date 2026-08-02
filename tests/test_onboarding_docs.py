@@ -78,9 +78,37 @@ FENGRL_MONTHLY_ACCEPTANCE_EVIDENCE = (
     BLACKBOX_RECORDS
     / "FENGRL_MONTHLY_GRAY_ACCEPTANCE_20260727.evidence.json"
 )
+HISTORICAL_DOCUMENTS = (
+    FENGRL_MONTHLY_RECORD,
+    DOCS_ROOT
+    / "internal"
+    / "specs"
+    / "2026-07-21-t5-no-foreign-lgbm-ablation-design.md",
+    DOCS_ROOT
+    / "records"
+    / "system-checks"
+    / "bond_factor_lab_all_schemes_system_check_20260628.md",
+    DOCS_ROOT
+    / "records"
+    / "system-checks"
+    / "bond_factor_lab_system_check_against_old_runbook_20260628.md",
+)
+T5_NO_FOREIGN_ABLATION_DESIGN = HISTORICAL_DOCUMENTS[1]
 DAILY_POLICY = PROJECT_ROOT / "deploy" / "daily_scheduler_policy_v2.json"
 
 class OnboardingDocumentationTests(unittest.TestCase):
+    def test_point_in_time_records_use_standard_historical_status(self) -> None:
+        for path in HISTORICAL_DOCUMENTS:
+            with self.subTest(path=path.relative_to(PROJECT_ROOT)):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("**文档状态**：`HISTORICAL`", text)
+
+        ablation_design = T5_NO_FOREIGN_ABLATION_DESIGN.read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("APPROVED_DESIGN", ablation_design)
+        self.assertNotIn("待实施计划", ablation_design)
+
     def test_root_agent_instructions_are_byte_identical(self) -> None:
         self.assertEqual(
             (PROJECT_ROOT / "AGENTS.md").read_bytes(),

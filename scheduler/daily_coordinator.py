@@ -60,14 +60,6 @@ class OccurrenceLockPathChanged(RuntimeError):
 
 
 @dataclass(frozen=True)
-class V2Release:
-    """一个 Blackbox V2 item 的独立释放时间。"""
-
-    scheme_id: str
-    release_at: datetime
-
-
-@dataclass(frozen=True)
 class GovernorDecision:
     """资源 governor 对一次候选启动的判定。"""
 
@@ -77,7 +69,7 @@ class GovernorDecision:
 
 @dataclass(frozen=True)
 class ControlDecision:
-    """重试或恢复控制决策。"""
+    """重试控制决策。"""
 
     action: str
     reason: str
@@ -105,34 +97,6 @@ class DispatchDecision:
     release_at: datetime | None = None
     failure_code: str | None = None
     sla_status: str = "on_time"
-
-
-def compute_v2_releases(
-    policy: DailySchedulerPolicy,
-    *,
-    sealed_at: datetime,
-) -> tuple[V2Release, ...]:
-    """按同一 DataBridge sealed_at 计算四个互不依赖的 V2 释放点。"""
-    localized_sealed_at = _localized(policy, sealed_at)
-    v2_items = sorted(
-        (
-            item
-            for item in policy.schemes.values()
-            if item.runtime_type == "blackbox_v2"
-        ),
-        key=lambda item: (
-            _required_release_offset(item),
-            item.scheme_id,
-        ),
-    )
-    return tuple(
-        V2Release(
-            scheme_id=item.scheme_id,
-            release_at=localized_sealed_at
-            + timedelta(minutes=_required_release_offset(item)),
-        )
-        for item in v2_items
-    )
 
 
 def dispatch_order(
@@ -404,78 +368,6 @@ def _retry_fits_before_cutoff(
         seconds=hard_runtime_sec + cleanup_commit_margin_sec
     )
     return hard_finish < recovery_cutoff
-
-
-def decide_recovery(
-    policy: DailySchedulerPolicy,
-    *,
-    scheme_id: str,
-    item_state: str,
-    occurrence_date: date,
-    generation_business_date: date,
-    bound_generation_id: str | None,
-    occurrence_generation_id: str | None,
-    generation_state: str,
-    generation_digest_valid: bool,
-    now: datetime,
-    orphan_cleanup_confirmed: bool = False,
-) -> ControlDecision:
-    """计算重启恢复动作；不跨日，也不接受其它 generation。"""
-    _require_scheme(policy, scheme_id)
-    localized_now = _localized(policy, now)
-    if occurrence_date != localized_now.date():
-        return ControlDecision("NO_CROSS_DAY", "OCCURRENCE_DATE_MISMATCH")
-    if generation_business_date != occurrence_date:
-        return ControlDecision(
-            "GENERATION_MISMATCH",
-            "OLD_OR_FOREIGN_GENERATION_FORBIDDEN",
-        )
-    if not bound_generation_id or not occurrence_generation_id:
-        return ControlDecision(
-            "GENERATION_IDENTITY_MISSING",
-            "FROZEN_GENERATION_ID_REQUIRED",
-        )
-    if bound_generation_id != occurrence_generation_id:
-        return ControlDecision(
-            "GENERATION_MISMATCH",
-            "BOUND_GENERATION_DIFFERS_FROM_OCCURRENCE",
-        )
-    if generation_state != "SEALED":
-        return ControlDecision(
-            "GENERATION_INVALID",
-            "FROZEN_GENERATION_NOT_SEALED",
-        )
-    if generation_digest_valid is not True:
-        return ControlDecision(
-            "GENERATION_HASH_MISMATCH",
-            "FROZEN_GENERATION_DIGEST_INVALID",
-        )
-    if item_state == "SUCCESS":
-        return ControlDecision("SKIP_SUCCESS", "ITEM_ALREADY_ACCEPTED")
-    if item_state in TERMINAL_ITEM_STATES:
-        return ControlDecision("SKIP_TERMINAL", "ITEM_ALREADY_TERMINAL")
-    recovery_cutoff = _at(policy, occurrence_date, policy.recovery_cutoff)
-    if item_state == "RUNNING":
-        if not orphan_cleanup_confirmed:
-            return ControlDecision(
-                "REQUIRE_ABANDON_ORPHAN_CLEANUP",
-                "RUNNING_ATTEMPT_MUST_BE_FENCED_AND_CLEANED",
-            )
-        if localized_now >= recovery_cutoff:
-            return ControlDecision("EXPIRED", "RECOVERY_CUTOFF_REACHED")
-        return ControlDecision(
-            "REQUEUE_AFTER_CLEANUP",
-            "ABANDONED_ATTEMPT_CLEANED",
-        )
-    if item_state in REQUEUEABLE_ITEM_STATES:
-        if localized_now >= recovery_cutoff:
-            return ControlDecision("EXPIRED", "RECOVERY_CUTOFF_REACHED")
-        return ControlDecision("REQUEUE", "RECOVERY_ALLOWED")
-    return ControlDecision(
-        "TERMINAL",
-        "UNKNOWN_ITEM_STATE",
-        failure_code=FAILURE_INVALID_ITEM_STATE,
-    )
 
 
 def plan_dispatches(
@@ -1006,15 +898,6 @@ def _cache_prerequisite_for(
             f"{item.cache_group}"
         )
     return prerequisites[0]
-
-
-def _required_release_offset(item: SchemeDailyPolicy) -> int:
-    value = item.v2_release_offset_min
-    if value is None:
-        raise DailyCoordinatorError(
-            f"{item.scheme_id}: Blackbox V2 release offset is missing"
-        )
-    return value
 
 
 def _require_scheme(
