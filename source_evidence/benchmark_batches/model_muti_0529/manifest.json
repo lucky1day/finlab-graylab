@@ -18,5 +18,13 @@
   "notes": [
     "t1/daily_output.csv and t5/data/daily_output.csv from the upstream bundle are byte-identical.",
     "The raw upstream extraction contains local DB credentials and is intentionally ignored."
+  ],
+  "retired_artifacts": [
+    {
+      "original_runtime_path": "schemes/t1_daily/core/shap_analysis.py",
+      "archive_path": "source_evidence/benchmark_batches/model_muti_0529/retired/t1_daily/shap_analysis.py.source",
+      "sha256": "34597d21b02cfa852c8cadcbcb93ab5f47a17f52f3a400e8557dcfc79fddcdaf",
+      "retirement_reason": "Runtime-unreachable SHAP explanation implementation retired from the active Native bundle; retained for source-fidelity audit only."
+    }
   ]
 }

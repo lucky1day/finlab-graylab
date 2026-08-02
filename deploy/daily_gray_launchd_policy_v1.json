@@ -211,7 +211,7 @@
     },
     {
       "scheme_id": "t1_daily",
-      "scheme_version": "bdf54ed4cfc0",
+      "scheme_version": "7898b9e47a9a",
       "runtime_type": "native_adapter",
       "frequency": "daily",
       "task_type": "T+1",

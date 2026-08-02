@@ -90,14 +90,14 @@ class DailyGrayLaunchdPolicyTests(unittest.TestCase):
 
         self.assertTrue(EXTRA_DAILY_GRAY_IDENTITIES.issubset(policy.schemes))
 
-    def test_t1_version_is_exact_restored_version(self) -> None:
+    def test_t1_version_is_exact_shap_retired_version(self) -> None:
         policy = self.module.load_daily_gray_launchd_policy(
             discovered=self.active_daily,
         )
 
         self.assertEqual(
             policy.schemes["t1_daily"].scheme_version,
-            "bdf54ed4cfc0",
+            "7898b9e47a9a",
         )
 
     def test_policy_matches_frozen_classification_and_dependencies(
