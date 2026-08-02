@@ -40,6 +40,19 @@
 - `shared/versioning.py`
 - Native Gate 实现、依赖冻结文件、API、frontend、installed plist 和生产状态
 
+### 执行补充：ApiReadinessGate 响应范围
+
+上面的“禁止修改 Native Gate 实现”适用于原始 SHAP 退役提交。执行 Step 10 时，
+`ApiReadinessGate` 的未过滤 `/api/backtests/factor-lab` 响应约 2.86 MB，按设计被 1 MiB
+probe 上限阻断；`?benchmark_id=model_muti_0529` 响应约 621 KB。该现象确认后端过滤与
+1 MiB 防护工作正常，并非后端 API bug，也不应通过放宽上限或改变展示响应解决。
+
+获准的 follow-up 仅修改 `harness/probes/api_probe.py`、
+`harness/gates/api_readiness_gate.py` 及对应测试：URL helper 同时支持可选
+`data_source`/`benchmark_id`，Native readiness 从最新成功回测行传播 `benchmark_id` 并
+记录证据，字段缺失时保持未过滤回退。通用 `ApiGate`、Blackbox gate、后端、frontend、
+算法、policy 和生产控制面均不改变。修正后必须重新运行 Step 10 与全量测试。
+
 ### Task 1: 以 TDD 完成协调退役发布单元
 
 **Files:**

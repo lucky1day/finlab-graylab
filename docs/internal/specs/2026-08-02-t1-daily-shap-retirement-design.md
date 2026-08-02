@@ -96,6 +96,20 @@ horizon、tenor 和 execution class 全部保持不变。
 随后运行相关单测、Native 静态/单元/无持久化 Gate，以及仓库全量测试。任何预测方向、
 内部数值、输入 artifact、registry composite identity 或调度基数变化均阻断发布。
 
+### 5. 执行期 ApiReadinessGate 阻塞修正
+
+执行 `all --check-only` 时，Native `ApiReadinessGate` 对
+`/api/backtests/factor-lab` 发起了未过滤请求；现场响应约 2.86 MB，因正确触发 probe 的
+1 MiB fail-closed 响应上限而阻塞。相同端点按
+`benchmark_id=model_muti_0529` 过滤后约 621 KB，证明后端过滤、展示语义和 1 MiB 防护均
+无需修改；该阻塞不是后端 API 缺陷。
+
+Gate 已经从最新成功的 `t_backtest_runs` 行取得发布验收上下文，因此 readiness probe
+应携带该行的 `benchmark_id`，并在证据中记录 `latest_backtest_benchmark_id`；仅当该字段
+缺失时回退到原未过滤 URL。通用 `ApiGate`、Blackbox `data_source` 过滤、后端响应形状和
+响应大小上限保持不变。此前“不修改 Native Gate”的边界只约束 SHAP 退役发布单元本身；
+本节记录的是为解除实际验收阻塞而单独授权的窄范围 follow-up。
+
 ## 发布与回滚边界
 
 开发分支完成条件：代码、证据、policy 和测试构成单一提交序列，所有离线门禁通过，

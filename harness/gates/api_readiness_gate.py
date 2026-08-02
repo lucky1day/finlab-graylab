@@ -53,7 +53,17 @@ class ApiReadinessGate(Gate):
                 f"run_id={latest_backtest['run_id']} scheme_id={ctx.scheme_id}"
             )
 
-        api_probe = _probe_public_api(ctx, registry_ids, tenors)
+        latest_backtest_benchmark_id = latest_backtest["benchmark_id"]
+        api_probe = _probe_public_api(
+            ctx,
+            registry_ids,
+            tenors,
+            benchmark_id=(
+                str(latest_backtest_benchmark_id)
+                if latest_backtest_benchmark_id is not None
+                else None
+            ),
+        )
         config_status = str(config.get("status") or "")
         if config_status != "active":
             if api_probe["factor_lab_visible"]:
@@ -77,6 +87,10 @@ class ApiReadinessGate(Gate):
                 Evidence("registry_ids", registry_ids),
                 Evidence("registry_rows_present", sorted(registry_rows.keys())),
                 Evidence("latest_backtest_run_id", latest_backtest["run_id"]),
+                Evidence(
+                    "latest_backtest_benchmark_id",
+                    latest_backtest["benchmark_id"],
+                ),
                 Evidence("latest_backtest_prediction_count", latest_backtest["prediction_count"]),
                 Evidence("factor_lab_endpoint", api_probe["factor_lab_endpoint"]),
                 Evidence("metrics_endpoint", api_probe["metrics_endpoint"]),
@@ -107,16 +121,19 @@ def _fetch_registry_rows(engine, registry_ids: list[str]) -> dict[str, dict[str,
     return {str(row._mapping["scheme_id"]): dict(row._mapping) for row in rows}
 
 
-def _fetch_latest_successful_backtest(engine, scheme_id: str) -> dict[str, int | None]:
+def _fetch_latest_successful_backtest(
+    engine,
+    scheme_id: str,
+) -> dict[str, int | str | None]:
     sql = text(
         """
-        SELECT r.id AS run_id, COUNT(p.id) AS prediction_count
+        SELECT r.id AS run_id, r.benchmark_id, COUNT(p.id) AS prediction_count
         FROM t_backtest_runs r
         LEFT JOIN t_backtest_predictions p
           ON p.run_id = r.id
         WHERE r.scheme_id = :scheme_id
           AND r.status = 'success'
-        GROUP BY r.id
+        GROUP BY r.id, r.benchmark_id
         ORDER BY r.id DESC
         LIMIT 1
         """
@@ -124,10 +141,15 @@ def _fetch_latest_successful_backtest(engine, scheme_id: str) -> dict[str, int |
     with engine.begin() as conn:
         row = conn.execute(sql, {"scheme_id": scheme_id}).one_or_none()
     if row is None:
-        return {"run_id": None, "prediction_count": 0}
+        return {"run_id": None, "benchmark_id": None, "prediction_count": 0}
     mapping = row._mapping
     return {
         "run_id": int(mapping["run_id"]) if mapping["run_id"] is not None else None,
+        "benchmark_id": (
+            str(mapping["benchmark_id"])
+            if mapping["benchmark_id"] is not None
+            else None
+        ),
         "prediction_count": int(mapping["prediction_count"] or 0),
     }
 
@@ -172,9 +194,15 @@ def _validate_registry_rows(
     return errors
 
 
-def _probe_public_api(ctx: GateContext, registry_ids: list[str], tenors: list[str]) -> dict[str, Any]:
+def _probe_public_api(
+    ctx: GateContext,
+    registry_ids: list[str],
+    tenors: list[str],
+    *,
+    benchmark_id: str | None = None,
+) -> dict[str, Any]:
     base_url = os.getenv("BOND_FACTOR_LAB_API_BASE_URL", ctx.api_base_url).rstrip("/")
-    factor_endpoint = factor_lab_url(base_url)
+    factor_endpoint = factor_lab_url(base_url, benchmark_id=benchmark_id)
     metrics_endpoint = metrics_url(base_url, registry_ids[0]) if registry_ids else None
     warnings: list[str] = []
     errors: list[str] = []

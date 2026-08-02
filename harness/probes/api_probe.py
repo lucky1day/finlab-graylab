@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -65,13 +66,24 @@ def fetch_json(
     return payload, status
 
 
-def factor_lab_url(base_url: str, *, data_source: str | None = None) -> str:
+def factor_lab_url(
+    base_url: str,
+    *,
+    data_source: str | None = None,
+    benchmark_id: str | None = None,
+) -> str:
     url = f"{base_url.rstrip('/')}/api/backtests/factor-lab"
-    if data_source is None:
-        return url
-    from urllib.parse import urlencode
-
-    return f"{url}?{urlencode({'data_source': data_source})}"
+    query = urlencode(
+        {
+            key: value
+            for key, value in {
+                "data_source": data_source,
+                "benchmark_id": benchmark_id,
+            }.items()
+            if value is not None
+        }
+    )
+    return f"{url}?{query}" if query else url
 
 
 def schemes_url(base_url: str) -> str:

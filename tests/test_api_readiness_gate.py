@@ -31,14 +31,22 @@ class ApiReadinessGateTest(unittest.TestCase):
                     {"schemes": []},
                     RuntimeError("HTTP Error 404: Not Found"),
                 ],
-            ):
+            ) as fetch_json:
                 result = ApiReadinessGate().run(_ctx(project_root, engine))
 
         self.assertTrue(result.passed, result.errors)
         evidence = _evidence_dict(result)
         self.assertEqual(evidence["registry_ids"], ["demo_daily__h1__10Y"])
         self.assertEqual(evidence["latest_backtest_run_id"], 120)
+        self.assertEqual(evidence["latest_backtest_benchmark_id"], "demo-benchmark")
         self.assertEqual(evidence["latest_backtest_prediction_count"], 2)
+        self.assertEqual(
+            fetch_json.call_args_list[0].args[0],
+            (
+                "http://127.0.0.1:8100/api/backtests/factor-lab"
+                "?benchmark_id=demo-benchmark"
+            ),
+        )
         self.assertFalse(evidence["public_factor_lab_visible"])
         self.assertFalse(evidence["public_metrics_visible"])
 
@@ -94,6 +102,28 @@ class ApiReadinessGateTest(unittest.TestCase):
 
         self.assertFalse(result.passed)
         self.assertTrue(any("latest successful backtest has no prediction rows" in error for error in result.errors), result.errors)
+
+    def test_falls_back_to_unfiltered_factor_lab_url_when_backtest_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            _write_scheme(project_root)
+            engine = _make_engine()
+            self.addCleanup(engine.dispose)
+            _insert_registry(engine)
+
+            with patch(
+                "harness.gates.api_readiness_gate.fetch_json",
+                side_effect=[{"schemes": []}, RuntimeError("HTTP Error 404: Not Found")],
+            ) as fetch_json:
+                result = ApiReadinessGate().run(_ctx(project_root, engine))
+
+        self.assertFalse(result.passed)
+        evidence = _evidence_dict(result)
+        self.assertIsNone(evidence["latest_backtest_benchmark_id"])
+        self.assertEqual(
+            fetch_json.call_args_list[0].args[0],
+            "http://127.0.0.1:8100/api/backtests/factor-lab",
+        )
 
     def test_fails_when_paused_scheme_leaks_to_factor_lab_api(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -207,6 +237,7 @@ def _make_engine():
                 CREATE TABLE t_backtest_runs (
                     id INTEGER PRIMARY KEY,
                     scheme_id TEXT,
+                    benchmark_id TEXT,
                     status TEXT
                 )
                 """
@@ -254,7 +285,11 @@ def _insert_registry(engine, *, name: str = "Demo") -> None:
 def _insert_successful_backtest(engine, *, prediction_count: int) -> None:
     with engine.begin() as conn:
         conn.execute(
-            text("INSERT INTO t_backtest_runs (id, scheme_id, status) VALUES (120, 'demo_daily', 'success')")
+            text(
+                "INSERT INTO t_backtest_runs "
+                "(id, scheme_id, benchmark_id, status) "
+                "VALUES (120, 'demo_daily', 'demo-benchmark', 'success')"
+            )
         )
         for _ in range(prediction_count):
             conn.execute(
