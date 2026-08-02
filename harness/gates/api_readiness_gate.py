@@ -6,6 +6,9 @@ from typing import Any
 
 from sqlalchemy import text
 
+from backend.factor_lab_dashboard_semantics import (
+    BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE,
+)
 from harness.config_loader import load_config_raw
 from harness.context import GateContext
 from harness.gates.api_gate import _normalize_fetch_response
@@ -39,7 +42,11 @@ class ApiReadinessGate(Gate):
         owns_engine = ctx.engine_factory is None
         try:
             registry_rows = _fetch_registry_rows(engine, registry_ids)
-            latest_backtest = _fetch_latest_successful_backtest(engine, ctx.scheme_id)
+            latest_backtest = _fetch_latest_successful_backtest(
+                engine,
+                ctx.scheme_id,
+                runtime_type=str(config.get("runtime_type") or ""),
+            )
         finally:
             if owns_engine and engine is not None and hasattr(engine, "dispose"):
                 engine.dispose()
@@ -124,32 +131,48 @@ def _fetch_registry_rows(engine, registry_ids: list[str]) -> dict[str, dict[str,
 def _fetch_latest_successful_backtest(
     engine,
     scheme_id: str,
+    *,
+    runtime_type: str,
 ) -> dict[str, int | str | None]:
+    try:
+        data_source = BACKTEST_DEFAULT_SOURCE_BY_RUNTIME_TYPE[runtime_type]
+    except KeyError as exc:
+        raise ValueError(
+            "api-readiness runtime_type has no default backtest source: "
+            f"{runtime_type!r}"
+        ) from exc
     sql = text(
         """
-        SELECT r.id AS run_id, r.benchmark_id, COUNT(p.id) AS prediction_count
+        SELECT r.id AS run_id, r.benchmark_id, r.updated_at,
+               COUNT(p.id) AS prediction_count
         FROM t_backtest_runs r
         LEFT JOIN t_backtest_predictions p
           ON p.run_id = r.id
         WHERE r.scheme_id = :scheme_id
           AND r.status = 'success'
-        GROUP BY r.id, r.benchmark_id
-        ORDER BY r.id DESC
+          AND r.data_source = :data_source
+        GROUP BY r.id, r.benchmark_id, r.updated_at
+        ORDER BY r.updated_at DESC, r.id DESC
         LIMIT 1
         """
     )
     with engine.begin() as conn:
-        row = conn.execute(sql, {"scheme_id": scheme_id}).one_or_none()
+        row = conn.execute(
+            sql,
+            {"scheme_id": scheme_id, "data_source": data_source},
+        ).one_or_none()
     if row is None:
         return {"run_id": None, "benchmark_id": None, "prediction_count": 0}
     mapping = row._mapping
+    benchmark_id = str(mapping["benchmark_id"] or "")
+    if not benchmark_id.strip():
+        raise ValueError(
+            "latest successful backtest benchmark_id must be non-empty: "
+            f"run_id={mapping['run_id']} scheme_id={scheme_id}"
+        )
     return {
         "run_id": int(mapping["run_id"]) if mapping["run_id"] is not None else None,
-        "benchmark_id": (
-            str(mapping["benchmark_id"])
-            if mapping["benchmark_id"] is not None
-            else None
-        ),
+        "benchmark_id": benchmark_id,
         "prediction_count": int(mapping["prediction_count"] or 0),
     }
 

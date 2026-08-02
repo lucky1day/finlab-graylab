@@ -8,7 +8,10 @@ from unittest.mock import patch
 from sqlalchemy import create_engine, text
 
 from harness.context import GateContext
-from harness.gates.api_readiness_gate import ApiReadinessGate
+from harness.gates.api_readiness_gate import (
+    ApiReadinessGate,
+    _fetch_latest_successful_backtest,
+)
 
 
 def _evidence_dict(result) -> dict:
@@ -173,6 +176,105 @@ class ApiReadinessGateTest(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertTrue(any("visible in /api/metrics" in error for error in result.errors), result.errors)
 
+    def test_native_latest_ignores_higher_id_non_default_source(self) -> None:
+        engine = _make_engine()
+        self.addCleanup(engine.dispose)
+        _insert_backtest(
+            engine,
+            run_id=120,
+            benchmark_id="native-default",
+            data_source="framework_db_aligned",
+            updated_at="2026-07-30 08:00:00",
+        )
+        _insert_backtest(
+            engine,
+            run_id=121,
+            benchmark_id="native-original",
+            data_source="framework_original_csv",
+            updated_at="2026-07-30 09:00:00",
+        )
+
+        latest = _fetch_latest_successful_backtest(
+            engine,
+            "demo_daily",
+            runtime_type="native_adapter",
+        )
+
+        self.assertEqual(latest["run_id"], 120)
+        self.assertEqual(latest["benchmark_id"], "native-default")
+
+    def test_latest_default_source_uses_updated_at_before_id(self) -> None:
+        engine = _make_engine()
+        self.addCleanup(engine.dispose)
+        _insert_backtest(
+            engine,
+            run_id=120,
+            benchmark_id="completed-later",
+            data_source="framework_db_aligned",
+            updated_at="2026-07-30 10:00:00",
+        )
+        _insert_backtest(
+            engine,
+            run_id=121,
+            benchmark_id="higher-id",
+            data_source="framework_db_aligned",
+            updated_at="2026-07-30 09:00:00",
+        )
+
+        latest = _fetch_latest_successful_backtest(
+            engine,
+            "demo_daily",
+            runtime_type="native_adapter",
+        )
+
+        self.assertEqual(latest["run_id"], 120)
+        self.assertEqual(latest["benchmark_id"], "completed-later")
+
+    def test_blackbox_latest_uses_blackbox_default_source(self) -> None:
+        engine = _make_engine()
+        self.addCleanup(engine.dispose)
+        _insert_backtest(
+            engine,
+            run_id=120,
+            benchmark_id="blackbox-default",
+            data_source="blackbox_v2_current_snapshot_as_of",
+            updated_at="2026-07-30 08:00:00",
+        )
+        _insert_backtest(
+            engine,
+            run_id=121,
+            benchmark_id="blackbox-other",
+            data_source="framework_db_aligned",
+            updated_at="2026-07-30 09:00:00",
+        )
+
+        latest = _fetch_latest_successful_backtest(
+            engine,
+            "demo_daily",
+            runtime_type="blackbox_v2",
+        )
+
+        self.assertEqual(latest["run_id"], 120)
+        self.assertEqual(latest["benchmark_id"], "blackbox-default")
+
+    def test_latest_default_source_rejects_blank_benchmark_id(self) -> None:
+        engine = _make_engine()
+        self.addCleanup(engine.dispose)
+        _insert_backtest(
+            engine,
+            run_id=120,
+            benchmark_id="   ",
+            data_source="framework_db_aligned",
+            updated_at="2026-07-30 08:00:00",
+        )
+
+        with self.assertRaisesRegex(ValueError, "benchmark_id must be non-empty"):
+            _fetch_latest_successful_backtest(
+                engine,
+                "demo_daily",
+                runtime_type="native_adapter",
+            )
+
 
 def _ctx(project_root: Path, engine) -> GateContext:
     return GateContext(
@@ -184,13 +286,18 @@ def _ctx(project_root: Path, engine) -> GateContext:
     )
 
 
-def _write_scheme(project_root: Path) -> None:
+def _write_scheme(
+    project_root: Path,
+    *,
+    runtime_type: str = "native_adapter",
+) -> None:
     scheme_dir = project_root / "schemes" / "demo_daily"
     scheme_dir.mkdir(parents=True)
     (scheme_dir / "config.yaml").write_text(
         "\n".join(
             [
                 "scheme_id: demo_daily",
+                f"runtime_type: {runtime_type}",
                 'name: "Demo"',
                 'description: "Demo scheme"',
                 "horizon: 1",
@@ -238,6 +345,8 @@ def _make_engine():
                     id INTEGER PRIMARY KEY,
                     scheme_id TEXT,
                     benchmark_id TEXT,
+                    data_source TEXT,
+                    updated_at TEXT,
                     status TEXT
                 )
                 """
@@ -283,17 +392,47 @@ def _insert_registry(engine, *, name: str = "Demo") -> None:
 
 
 def _insert_successful_backtest(engine, *, prediction_count: int) -> None:
+    _insert_backtest(
+        engine,
+        run_id=120,
+        benchmark_id="demo-benchmark",
+        data_source="framework_db_aligned",
+        updated_at="2026-07-30 08:00:00",
+        prediction_count=prediction_count,
+    )
+
+
+def _insert_backtest(
+    engine,
+    *,
+    run_id: int,
+    benchmark_id: str,
+    data_source: str,
+    updated_at: str,
+    prediction_count: int = 1,
+) -> None:
     with engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO t_backtest_runs "
-                "(id, scheme_id, benchmark_id, status) "
-                "VALUES (120, 'demo_daily', 'demo-benchmark', 'success')"
-            )
+                "(id, scheme_id, benchmark_id, data_source, updated_at, status) "
+                "VALUES (:run_id, 'demo_daily', :benchmark_id, :data_source, "
+                ":updated_at, 'success')"
+            ),
+            {
+                "run_id": run_id,
+                "benchmark_id": benchmark_id,
+                "data_source": data_source,
+                "updated_at": updated_at,
+            },
         )
         for _ in range(prediction_count):
             conn.execute(
-                text("INSERT INTO t_backtest_predictions (run_id, scheme_id) VALUES (120, 'demo_daily')")
+                text(
+                    "INSERT INTO t_backtest_predictions (run_id, scheme_id) "
+                    "VALUES (:run_id, 'demo_daily')"
+                ),
+                {"run_id": run_id},
             )
 
 
