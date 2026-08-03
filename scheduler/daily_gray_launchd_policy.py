@@ -105,14 +105,16 @@ class DailyGrayLaunchdPolicy:
     expected_execution_count: int
     expected_target_count: int
     schemes: Mapping[str, DailyGrayLaunchdSchemePolicy]
+    isolated_active_daily_scheme_ids: tuple[str, ...] = ()
 
 
 def load_daily_gray_launchd_policy(
     path: Path = DEFAULT_POLICY_PATH,
     *,
     discovered: Iterable[SchemeConfig] | None = None,
+    allow_policy_external_active_daily: bool = False,
 ) -> DailyGrayLaunchdPolicy:
-    """加载 policy，并与当前 strict active-daily discovery 精确核对。"""
+    """加载 policy，并与当前 strict active-daily discovery 核对。"""
 
     payload = _load_json(Path(path))
     _validate_root(payload)
@@ -135,8 +137,16 @@ def load_daily_gray_launchd_policy(
     discovered_by_id = _index_discovery(active_daily)
     policy_by_id = {row.scheme_id: row for row in rows}
 
-    _validate_identity_sets(policy_by_id, discovered_by_id)
-    _validate_cardinality(rows, active_daily)
+    isolated_active_daily_scheme_ids = _validate_identity_sets(
+        policy_by_id,
+        discovered_by_id,
+        allow_policy_external_active_daily=allow_policy_external_active_daily,
+    )
+    _validate_cardinality(
+        rows,
+        active_daily,
+        allow_policy_external_active_daily=allow_policy_external_active_daily,
+    )
     for row in rows:
         _validate_discovery_match(row, discovered_by_id[row.scheme_id])
     _validate_dependencies(policy_by_id)
@@ -150,6 +160,7 @@ def load_daily_gray_launchd_policy(
         expected_execution_count=EXPECTED_EXECUTION_COUNT,
         expected_target_count=EXPECTED_TARGET_COUNT,
         schemes=MappingProxyType(policy_by_id),
+        isolated_active_daily_scheme_ids=isolated_active_daily_scheme_ids,
     )
 
 
@@ -356,7 +367,9 @@ def _index_discovery(
 def _validate_identity_sets(
     policy_by_id: Mapping[str, DailyGrayLaunchdSchemePolicy],
     discovered_by_id: Mapping[str, SchemeConfig],
-) -> None:
+    *,
+    allow_policy_external_active_daily: bool = False,
+) -> tuple[str, ...]:
     policy_ids = set(policy_by_id)
     discovered_ids = set(discovered_by_id)
     unknown = sorted(policy_ids - discovered_ids)
@@ -365,15 +378,18 @@ def _validate_identity_sets(
         raise DailyGrayLaunchdPolicyError(
             f"unknown policy identities absent from active daily discovery: {unknown}"
         )
-    if missing:
+    if missing and not allow_policy_external_active_daily:
         raise DailyGrayLaunchdPolicyError(
             f"missing active daily identities from policy: {missing}"
         )
+    return tuple(missing)
 
 
 def _validate_cardinality(
     rows: tuple[DailyGrayLaunchdSchemePolicy, ...],
     discovered: tuple[SchemeConfig, ...],
+    *,
+    allow_policy_external_active_daily: bool = False,
 ) -> None:
     policy_targets = sum(len(row.target_tenors) for row in rows)
     discovery_targets = sum(len(config.tenors) for config in discovered)
@@ -387,12 +403,18 @@ def _validate_cardinality(
             "policy target cardinality drift: "
             f"expected={EXPECTED_TARGET_COUNT}, actual={policy_targets}"
         )
-    if len(discovered) != EXPECTED_EXECUTION_COUNT:
+    if (
+        not allow_policy_external_active_daily
+        and len(discovered) != EXPECTED_EXECUTION_COUNT
+    ):
         raise DailyGrayLaunchdPolicyError(
             "active daily discovery execution cardinality drift: "
             f"expected={EXPECTED_EXECUTION_COUNT}, actual={len(discovered)}"
         )
-    if discovery_targets != EXPECTED_TARGET_COUNT:
+    if (
+        not allow_policy_external_active_daily
+        and discovery_targets != EXPECTED_TARGET_COUNT
+    ):
         raise DailyGrayLaunchdPolicyError(
             "active daily discovery target cardinality drift: "
             f"expected={EXPECTED_TARGET_COUNT}, actual={discovery_targets}"

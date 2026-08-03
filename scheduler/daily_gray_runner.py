@@ -66,6 +66,7 @@ class RunnerSummary:
     skipped: int = 0
     records_written: int = 0
     details: list[tuple[str, str, int, str | None]] | None = None
+    isolated_active_daily_scheme_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.details is None:
@@ -137,7 +138,8 @@ def run(
 ) -> RunnerSummary:
     """对 predict_date 执行全部 active 日频方案的 gray_live 出信号（并发）。
 
-    每次先执行 strict discovery 并与冻结 policy 精确核对。非交易日直接返回。
+    每次先执行 strict discovery 并与冻结 policy 核对；policy 外 active
+    daily 身份只会被隔离并告警，绝不会进入本批执行集。非交易日直接返回。
     policy 标记的重方案限并发 max_heavy 且优先启动；轻方案以
     light_concurrency 并发跑；consumer 仅在 policy 声明的 publisher success 后提交。
     only 非空时仅执行 policy 内指定的 scheme_id 子集（验证用）。
@@ -148,7 +150,19 @@ def run(
         raise DailyGrayLaunchdPolicyError(
             f"strict discovery failed: {exc}"
         ) from exc
-    policy = load_daily_gray_launchd_policy(discovered=discovered)
+    policy = load_daily_gray_launchd_policy(
+        discovered=discovered,
+        allow_policy_external_active_daily=True,
+    )
+    isolated_active_daily_scheme_ids = (
+        policy.isolated_active_daily_scheme_ids
+    )
+    if isolated_active_daily_scheme_ids:
+        logger.error(
+            "daily-gray isolated policy-external active daily identities; "
+            "they will not be scheduled by this batch: %s",
+            isolated_active_daily_scheme_ids,
+        )
 
     policy_ids = set(policy.schemes)
     if only is not None and not only:
@@ -177,7 +191,11 @@ def run(
     finally:
         engine.dispose()
 
-    summary = RunnerSummary(predict_date=predict_date, is_trading_day=trading)
+    summary = RunnerSummary(
+        predict_date=predict_date,
+        is_trading_day=trading,
+        isolated_active_daily_scheme_ids=isolated_active_daily_scheme_ids,
+    )
     if not trading:
         logger.info("%s 非交易日，跳过 gray_live 出信号", predict_date)
         return summary
@@ -247,7 +265,9 @@ def _print_summary(summary: RunnerSummary) -> None:
         f"predict_date={summary.predict_date} trading_day={summary.is_trading_day} "
         f"total={summary.total} success={summary.success} partial={summary.partial} "
         f"failed={summary.failed} skipped={summary.skipped} "
-        f"records_written={summary.records_written}"
+        f"records_written={summary.records_written} "
+        "isolated_active_daily_scheme_ids="
+        f"{summary.isolated_active_daily_scheme_ids}"
     )
     for scheme_id, status, records, error in summary.details or []:
         line = f"  {scheme_id}: {status} (records={records})"
@@ -310,8 +330,13 @@ def main() -> int:
 
     if not summary.is_trading_day:
         return 0
-    # 有失败即以非零退出，便于 launchd/日志识别不完整。
-    return 0 if (summary.failed == 0 and summary.skipped == 0) else 1
+    # 有失败、跳过或 policy 外 active daily 身份被隔离时，以非零退出，
+    # 便于 launchd/日志识别不完整。
+    return 0 if (
+        summary.failed == 0
+        and summary.skipped == 0
+        and not summary.isolated_active_daily_scheme_ids
+    ) else 1
 
 
 if __name__ == "__main__":

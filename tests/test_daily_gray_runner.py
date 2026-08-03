@@ -75,6 +75,8 @@ def _config(scheme_id: str):
 
 def _policy(
     rows: list[tuple[str, str, str | None]],
+    *,
+    isolated_active_daily_scheme_ids: tuple[str, ...] = (),
 ):
     return SimpleNamespace(
         schemes={
@@ -84,7 +86,8 @@ def _policy(
                 publisher_scheme_id=publisher_scheme_id,
             )
             for scheme_id, execution_class, publisher_scheme_id in rows
-        }
+        },
+        isolated_active_daily_scheme_ids=isolated_active_daily_scheme_ids,
     )
 
 
@@ -159,7 +162,7 @@ class DailyGrayRunnerTests(unittest.TestCase):
             execute=execute,
         )
 
-    def test_run_uses_strict_discovery_and_passes_same_result_to_policy(
+    def test_run_uses_strict_discovery_and_policy_external_isolation_opt_in(
         self,
     ) -> None:
         discovered = [_config("alpha")]
@@ -170,11 +173,84 @@ class DailyGrayRunnerTests(unittest.TestCase):
         )
 
         result.discovery.assert_called_once_with(strict=True)
-        result.loader.assert_called_once()
-        self.assertIs(
-            result.loader.call_args.kwargs["discovered"],
-            discovered,
+        result.loader.assert_called_once_with(
+            discovered=discovered,
+            allow_policy_external_active_daily=True,
         )
+
+    def test_policy_external_identities_are_logged_before_engine_and_never_executed(
+        self,
+    ) -> None:
+        discovered = [
+            _config("alpha"),
+            _config("outside-policy-a"),
+            _config("outside-policy-z"),
+        ]
+        policy = _policy(
+            [("alpha", "light", None)],
+            isolated_active_daily_scheme_ids=(
+                "outside-policy-a",
+                "outside-policy-z",
+            ),
+        )
+        engine = Mock()
+        events: list[str] = []
+
+        def create_engine():
+            events.append("engine")
+            return engine
+
+        def execute(config, *args, **kwargs):
+            events.append(f"execute:{config.scheme_id}")
+            return _success()
+
+        with (
+            patch.object(
+                runner,
+                "discover_schemes",
+                return_value=discovered,
+            ),
+            patch.object(
+                runner,
+                "load_daily_gray_launchd_policy",
+                return_value=policy,
+            ),
+            patch.object(
+                runner.logger,
+                "error",
+                side_effect=lambda *args: events.append("isolation-log"),
+            ) as isolation_log,
+            patch.object(
+                runner,
+                "create_engine_from_env",
+                side_effect=create_engine,
+            ),
+            patch.object(runner, "is_trading_day", return_value=True),
+            patch.object(
+                runner,
+                "ThreadPoolExecutor",
+                _RecordingExecutor,
+            ),
+            patch.object(
+                runner,
+                "execute_scheme",
+                side_effect=execute,
+            ) as execute_mock,
+        ):
+            summary = runner.run("2026-08-03")
+
+        self.assertEqual(events[0], "isolation-log")
+        self.assertLess(events.index("isolation-log"), events.index("engine"))
+        self.assertEqual(
+            summary.isolated_active_daily_scheme_ids,
+            ("outside-policy-a", "outside-policy-z"),
+        )
+        self.assertEqual(
+            [call.args[0].scheme_id for call in execute_mock.call_args_list],
+            ["alpha"],
+        )
+        self.assertIn("outside-policy-a", str(isolation_log.call_args))
+        self.assertIn("outside-policy-z", str(isolation_log.call_args))
 
     def test_policy_failure_precedes_engine_pool_and_execution(self) -> None:
         discovered = [_config("alpha")]
@@ -258,8 +334,8 @@ class DailyGrayRunnerTests(unittest.TestCase):
         executor_pool.assert_not_called()
         execute.assert_not_called()
 
-    def test_unknown_only_identity_fails_before_engine(self) -> None:
-        discovered = [_config("alpha")]
+    def test_isolated_only_identity_fails_before_engine(self) -> None:
+        discovered = [_config("alpha"), _config("outside-policy")]
         engine = Mock()
         with (
             patch.object(
@@ -270,7 +346,10 @@ class DailyGrayRunnerTests(unittest.TestCase):
             patch.object(
                 runner,
                 "load_daily_gray_launchd_policy",
-                return_value=_policy([("alpha", "light", None)]),
+                return_value=_policy(
+                    [("alpha", "light", None)],
+                    isolated_active_daily_scheme_ids=("outside-policy",),
+                ),
             ),
             patch.object(
                 runner,
@@ -509,6 +588,48 @@ class DailyGrayRunnerTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         print_summary.assert_not_called()
+
+    def test_cli_returns_one_when_frozen_batch_succeeds_with_isolated_identities(
+        self,
+    ) -> None:
+        summary = runner.RunnerSummary(
+            predict_date="2026-08-03",
+            is_trading_day=True,
+            isolated_active_daily_scheme_ids=("outside-policy",),
+        )
+        with (
+            patch.object(runner, "run", return_value=summary),
+            patch.object(runner, "_print_summary") as print_summary,
+            patch(
+                "sys.argv",
+                ["daily_gray_runner", "--predict-date", "2026-08-03"],
+            ),
+        ):
+            exit_code = runner.main()
+
+        self.assertEqual(exit_code, 1)
+        print_summary.assert_called_once_with(summary)
+
+    def test_cli_returns_zero_on_non_trading_day_with_isolated_identities(
+        self,
+    ) -> None:
+        summary = runner.RunnerSummary(
+            predict_date="2026-08-03",
+            is_trading_day=False,
+            isolated_active_daily_scheme_ids=("outside-policy",),
+        )
+        with (
+            patch.object(runner, "run", return_value=summary),
+            patch.object(runner, "_print_summary") as print_summary,
+            patch(
+                "sys.argv",
+                ["daily_gray_runner", "--predict-date", "2026-08-03"],
+            ),
+        ):
+            exit_code = runner.main()
+
+        self.assertEqual(exit_code, 0)
+        print_summary.assert_called_once_with(summary)
 
     def test_cli_rejects_unknown_and_empty_only_without_summary(
         self,

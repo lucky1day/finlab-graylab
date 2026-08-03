@@ -70,8 +70,8 @@
 | D-overlay benchmark | 45 个 source benchmark 样本中有 14 个平台 DB 复现不一致；与 8 月 1 日排序缺口是两个问题 |
 | Native 版本 | 约 111 条 active 版本覆盖约 26 个 base scheme，存在大量 active sibling |
 | ledger 表 | `t_schedule_occurrences/items/targets` 当时均为空；后续明确不使用、不扩容，只在 P2 按授权退役 |
-| 新 7Y 交付 | 下载目录中有 `001`、`002` 两套 7Y T+1 Blackbox V2 两文件交付 |
-| 新 7Y 平台状态 | Registry、version、prediction 和 backtest 均为 0；尚未进入仓库或灰度实验室 |
+| 新 7Y 交付 | 原始 `001/002 v1` 两文件交付已冻结保留；经专项授权新增本地因果修订版 `001/002 v2`，不宣称 source-algorithm full parity |
+| 新 7Y 平台状态 | 两个 v2 composite registry 均已 active；各有持久化回测 337 条和 `gray_live` 44 条，尚无 `scheduled_live` |
 
 8 月 3 日的 13 个缺口由两类原因组成：11 个 DataBridge 方案未获得当日 artifact；`t1_daily` 一次执行对应的 5Y/10Y 两个 target 因精确版本未激活而跳过。
 
@@ -83,7 +83,7 @@
 
 | 阶段 | 目标 | 当前状态 |
 |---|---|---|
-| P-1 | 两套 7Y T+1 方案进入灰度实验室并前端可见 | **第一优先级**：交付已确认，尚未 Intake、激活或入库；激活前须隔离旧 daily-gray 的 active-set 冲突 |
+| P-1 | 两套 7Y T+1 方案进入灰度实验室并前端可见 | **授权范围已完成**：本地 v2 已全 Gate、入库、历史回补并由 Dashboard 读回；未授予 scheduler admission。正式 served-API Gate 的两项环境性失败已如实记录，未被 waiver |
 | G0 | 统一文档和治理口径 | **待处理**：现行文档仍混有 ledger/daily-gray 口径 |
 | G1 | 恢复本机 MySQL → DataBridge 的可靠刷新 | **根因已确认，尚未修复** |
 | G2 | 收敛为 launchd-only 单 writer 调度 | **目标已确定，尚未切换** |
@@ -113,9 +113,18 @@
 
 每套方案各有一份同名 `.py + .json` 交付。平台 Intake 需要按方案分别处理，不能把四个文件当成一个方案收包，也不能修改上游交付字节来迁就平台。
 
-**状态：交付身份和文件完整性已只读确认；截至 2026-08-03，仓库、Registry、版本、预测和回测中均没有这两个身份。两套方案尚未进入灰度实验室。**
+**原始交付状态（历史记录）：** 交付身份和文件完整性已只读确认；截至最初 Intake 前，仓库、Registry、版本、预测和回测中均没有这两个身份。
 
-同时存在一个控制面前置风险：当前 `daily-gray` 对 active 日频方案集合执行精确冻结校验，新增任一 active 日频身份都会导致整个批次在运行前失败。两套 7Y 不能在该 writer 仍按旧冻结集合运行时直接激活，也不能为了迁就它而建设 ledger、扩容 frozen policy 或把两套方案意外挂入日常调度。
+**当前状态（2026-08-03）：** 原始 `v1` 交付保持冻结，未被覆盖。用户已专项授权以独立的
+本地 Blackbox `v2` 身份修订 T+1 时序和跨进程持久 cache；两套 v2 已完成受控入库、历史
+回测、`gray_live` 回补和 Dashboard 读回。该修订保留原特征变换，但只声明为本地因果 V2
+trial，不宣称完整 source-algorithm parity。
+
+控制面风险仍需单独处理。当前仓库中的 `daily-gray` runner 会把 policy 外 active 日频身份隔离在
+冻结的 28 个执行项之外，因此两套 v2 不会被该批次执行；但交易日发现隔离身份时 runner 会以
+非零状态报告不完整批次。该行为避免了把 v2 意外挂入自然调度，却不构成 scheduler admission
+或“原有自然运行完全不受影响”的证明；本轮没有核验或变更 installed plist / loaded state，也
+不能为迁就它建设 ledger、扩容 frozen policy 或把两套方案纳入日常调度。
 
 ### 造成的影响
 
@@ -132,11 +141,11 @@
 
 ### 什么叫解决完毕
 
-- 两套交付分别通过 Blackbox V2 Intake，原始 `.py/.json` 字节和 scheme identity 保持不变。
+- 两套 v2 交付分别通过 Blackbox V2 Intake；原始 v1 `.py/.json` 字节及其 scheme identity 保持冻结不变。
 - 最低平台门槛通过：Contract 可执行、结果可追溯、相同输入确定、feature cutoff 隔离有效、无越权写库或网络副作用。效果、准确率和非致命算法缺陷不作为本阶段阻塞项，只需如实记录。
-- 两套 exact version 和 composite Registry 均为 active，业务身份分别为：
-  - `seven_y_current55_lgbm_001_v1__h1__7Y`
-  - `seven_y_current55_lgbm_002_v1__h1__7Y`
+- 两套 v2 exact version 和 composite Registry 均为 active，业务身份分别为：
+  - `seven_y_current55_lgbm_001_v2__h1__7Y`
+  - `seven_y_current55_lgbm_002_v2__h1__7Y`
 - 每套方案至少存在一组可供前端读取的有效历史回测和一条经授权写入的 `gray_live`，且 backtest/live target 不重叠。
 - 本地及实际使用的灰度实验室 API 都能返回两套方案；前端 `7Y国债活跃 × T+1` 格子能够选择两套候选，并正常显示回测、灰度明细和待验证状态。
 - 已知 bug、效果风险、数据口径限制和未完成项写入专项灰度记录，页面和记录不得把 waiver、pending 或失败伪装成通过。
@@ -144,6 +153,90 @@
 - 本阶段不授予两套 7Y 的 scheduler admission，不产生 `scheduled_live`，也不建设 ledger 或扩容 frozen 28/32 清单。是否纳入日常定时调度，留到 G1/G2/G6 在 DataBridge 和单 writer 治理完成后决定；届时仍只能使用 launchd + plist。
 
 若当前 DataBridge 无法提供满足截止要求的输入，本阶段只能先执行必要的最小刷新修复；若旧 writer 阻止安全激活，只能先执行必要的最小调度隔离。两者都属于 P-1 的前置依赖，不得扩张成其它治理，也不得使用 stale artifact、伪造回测或 gray live。Activation、回测持久化、gray live、backend reload、installed plist 或 `launchctl` 变更等生产副作用仍须逐项取得授权。
+
+### P-1 执行记录（2026-08-03，开发分支）
+
+本轮已按两个独立的两文件收包目录完成 `seven_y_current55_lgbm_001_v1` 与
+`seven_y_current55_lgbm_002_v1` 的 Blackbox V2 Intake。仓库内 delivery 与经用户
+授权日历修复后的交付文件逐字节一致；两个 `config.yaml` 均为
+`runtime_type=blackbox_v2`、`platform_inputs=[api-wind-date-v1]`、`status=paused`、
+`version_status=draft`。这只是代码库 Intake，未写 Registry/version/prediction/backtest，
+也未激活、重载或变更任何调度控制面。
+
+两方案均已通过 Static、Input 和 Unit Gate。Input 使用的同一只读快照为
+`generation_id=full-20260802-161326-1a919c484947`，其日频截止为 2026-07-31；对应的
+合法日频 T+1 请求为 `predict_date=2026-08-03`、`feature_date=daily_cutoff=2026-07-31`。
+两方案的 Dry-run 均确定性失败：delivery 先将 daily 输入严格截到 feature cutoff，随后
+在 `Engine.predict` 中无条件访问 `feature_idx + 1`，因而报
+`feature_date has no next trading-day model index`。此问题不是平台日历/I/O 适配问题；
+向 artifact 提供未来一行会违反 feature-date 硬截止，直接改为当前行又会改变交付算法的
+标签、训练和反转统计语义。
+
+因此**当时**的 v1 P-1 记录停在 Contract/Dry-run 门槛；不得用空壳 active、伪造 gray live
+或放宽截止绕过。最初路径要求上游书面确认 T+1 live 站位并提供修订后的两文件交付（不可原地
+覆盖已经 Intake 的不可变 delivery）；随后用户以本文件下一节记录的专项授权，改为新的本地
+V2 identity 并重新执行完整 Gate。cache 的跨调用持久化设计也不得作为该失败的绕过方式。
+
+用户随后在 2026-08-03 明确授权本地语义修订，继续完成受控入库、合规历史数据回补与前端
+可见性更新；该授权不包含 installed plist、`launchctl` 或定时调度 admission。收包必须使用
+新的独立目录，不能覆盖本段所述失败 delivery；除完整自动 Gate 外，还必须证明 feature cutoff
+后数据不影响结果、两个冷进程结果一致，且没有隐式跨进程模型 cache。原下载目录仍只有与失败
+Intake 版本逐字节相同的四个文件；本地 v2 是单独的新 identity，而非对它们的覆盖。
+
+### P-1 本地语义修订执行记录（2026-08-03，专项授权范围）
+
+在上述原始 v1 交付失败后，用户明确授权不等待上游，以新的本地 Blackbox V2 identity
+完成语义修订。新增身份为 `seven_y_current55_lgbm_001_v2` 和
+`seven_y_current55_lgbm_002_v2`；v1 四个 delivery 文件的 SHA256 均已复核未变。V2 将
+`feature_date=T` 固定为模型状态和出信号行，目标为下一交易日 `T+1`；训练标签严格早于
+该 feature 状态，反转统计同样使用 T→T+1 标签。三频输入继续通过平台
+`api_wind_date.csv` 映射日历，不在算法内写死周历；去除了 pickle、`--cache-dir`、磁盘模型
+cache 和其他跨进程持久化。修订没有改变 v1 文件，也不以结果对齐为由修改 Native/source
+算法逻辑。
+
+两套 v2 均已完成独立 Intake，并以同一只读 DataBridge 快照通过
+`harness onboard --stage all` 的 Static、Input、Unit、Dry-run、Compare、Backtest、
+API-readiness 七段 Gate：
+
+- `001_v2`：scheme version `cd0624ef3ead`，harness run
+  `hr_20260803T084404Z_3b5dd72461f4`；
+- `002_v2`：scheme version `57e956513471`，harness run
+  `hr_20260803T084511Z_2bc5609fe2b2`。
+
+专用时序测试还验证了：feature cutoff 当天没有 target 日 daily 数据时仍可运行、追加未来三频
+数据不改变结果、冷进程重复调用确定、且不产生 `.pkl` 或 `.blackbox_model_cache`。独立规格和
+质量审查均未发现可验证的 P0/P1/P2 问题。
+
+受控 lifecycle 已依次完成 draft register、shadow register、持久化回测和 activate。两套均为
+`active` registry：
+
+- `seven_y_current55_lgbm_001_v2__h1__7Y`；
+- `seven_y_current55_lgbm_002_v2__h1__7Y`。
+
+持久化回测分别为 run `203`、`204`，均使用
+`blackbox_v2_current_snapshot_as_of`，各有 337 条预测、17 个按月指标；目标日期范围均为
+2025-01-03 至 2026-05-29，`target_date >= 2026-06-01` 的回测行数均为 0。随后基于现有
+平台交易日历回补 2026-06-01 至 2026-07-31 的 44 个历史 `gray_live` target：每个 v2
+均写入 44 条、无重复 target、与回测 target 无重叠，且 `scheduled_live=0`。`001_v2` 在
+2026-07-22 首次写入前因源 daily 表在 precommit 期间变化而被 LiveGate 安全拒绝，未写任何
+prediction；随后重试成功，最终 44 个 target 完整。`002_v2` 的 44 次均首次成功。
+
+当前运行中的前端服务已直接读回两个 active composite identity：`/api/schemes`、各自的
+`/api/metrics/{composite_scheme_id}` 以及 `/api/factor-lab/dashboard` 均返回 HTTP 200；Dashboard
+snapshot 为 fresh，显示正确的 `7Y`、`T+1`、horizon 1、active 状态和各 44 条 gray 记录。
+
+正式 Blackbox API Gate 对该已运行服务仍有两项**未 waiver 的环境性失败**，因此不得把它写成
+formal served-API Gate 通过：服务实例指纹仍绑定于旧进程启动时的 Git HEAD；且全量
+`/api/backtests/factor-lab?data_source=blackbox_v2_current_snapshot_as_of` 响应为 1,225,294
+bytes，超过 API probe 的 1 MiB 上限。这两项不阻断实际 Dashboard 前端读回；前者需专项生产
+授权后受控重启 backend，后者需单独改造 Gate 以按已验证 `benchmark_id` 精确查询。两项均未在
+本轮修改、重启、降级或绕过。
+
+本轮没有执行当前日期的 `live_write`，也没有修改 installed plist、调用 `launchctl`、重启服务
+或赋予 scheduler admission；因此两个方案目前只有经授权历史 `gray_live`，没有
+`scheduled_live`。仓库级单测已验证 daily-gray 会把两个 v2 从冻结的 28 个执行项排除；但它在
+交易日仍会因存在隔离身份返回非零状态。该隔离实现仅是代码层保护，不在这里宣称已验证任何
+installed 控制面的加载状态或既有自然批次的生产观察结果。
 
 ---
 
@@ -453,6 +546,9 @@ Native hash 当前覆盖完整 config 和文件文本，展示、状态、schedu
 
 ## 16. 下一步
 
-下一次执行应从 **P-1 两套 7Y T+1 方案进入灰度实验室** 开始。先完成无副作用 Intake 和最低合同验证，再根据专项授权推进 active、回测、gray live 及前端读回；不得先行挂载定时调度。P-1 达到 `GRAY_VISIBLE` 后，再回到 G0 及后续生产治理。
+P-1 的已授权算法、数据和 Dashboard 可见性工作已完成；下一步回到 **G0** 及后续生产治理。
+在考虑任一 7Y scheduler admission、当前日期 `live_write` 或 installed 控制面操作前，必须先取得专项授权，
+只读核对 installed plist 与 loaded state，并处理本记录所列的 served-API Gate 环境性失败；不得把
+历史 `gray_live` 外推为自然调度或生产稳定证据。
 
 当前唯一需要用户预先决定的治理选择是 **G4 的 D-overlay benchmark 处置**：推荐采用证据绑定、显式标记为 `waived` 的 scoped waiver；若用户要求完全同源复现，则将 G4 转为独立的上游数据/环境重建项目。

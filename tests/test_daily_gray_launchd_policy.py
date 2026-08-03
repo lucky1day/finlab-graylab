@@ -40,8 +40,25 @@ class DailyGrayLaunchdPolicyTests(unittest.TestCase):
         from scheduler import daily_gray_launchd_policy
 
         self.module = daily_gray_launchd_policy
-        self.active_daily = _active_daily_schemes()
         self.payload = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+        policy_ids = {
+            row["scheme_id"]
+            for row in self.payload["schemes"]
+        }
+        self.all_active_daily = _active_daily_schemes()
+        # 冻结 policy 的单元测试只构造它拥有的精确执行集；当前仓库中
+        # policy 外 active 身份由 runner 的 opt-in 路径隔离，不能污染这些
+        # fail-closed policy 夹具。
+        self.active_daily = tuple(
+            config
+            for config in self.all_active_daily
+            if config.scheme_id in policy_ids
+        )
+        self.policy_external_active_daily = tuple(
+            config
+            for config in self.all_active_daily
+            if config.scheme_id not in policy_ids
+        )
 
     def _write_policy(self, payload: object) -> Path:
         directory = tempfile.TemporaryDirectory()
@@ -200,6 +217,92 @@ class DailyGrayLaunchdPolicyTests(unittest.TestCase):
                 self.module.load_daily_gray_launchd_policy(
                     discovered=discovered,
                 )
+
+    def test_opt_in_isolates_policy_external_active_daily_identities(
+        self,
+    ) -> None:
+        discovered = self.active_daily + (
+            replace(
+                self.active_daily[0],
+                scheme_id="z_unexpected_active_daily",
+            ),
+            replace(
+                self.active_daily[0],
+                scheme_id="a_unexpected_active_daily",
+            ),
+        )
+
+        policy = self.module.load_daily_gray_launchd_policy(
+            discovered=discovered,
+            allow_policy_external_active_daily=True,
+        )
+
+        self.assertEqual(
+            policy.isolated_active_daily_scheme_ids,
+            (
+                "a_unexpected_active_daily",
+                "z_unexpected_active_daily",
+            ),
+        )
+        self.assertEqual(set(policy.schemes), {
+            config.scheme_id for config in self.active_daily
+        })
+
+    def test_current_v2_identities_are_isolated_from_frozen_execution_set(
+        self,
+    ) -> None:
+        policy = self.module.load_daily_gray_launchd_policy(
+            discovered=self.all_active_daily,
+            allow_policy_external_active_daily=True,
+        )
+
+        self.assertEqual(
+            policy.isolated_active_daily_scheme_ids,
+            (
+                "seven_y_current55_lgbm_001_v2",
+                "seven_y_current55_lgbm_002_v2",
+            ),
+        )
+        self.assertNotIn(
+            "seven_y_current55_lgbm_001_v2",
+            policy.schemes,
+        )
+        self.assertNotIn(
+            "seven_y_current55_lgbm_002_v2",
+            policy.schemes,
+        )
+
+    def test_opt_in_still_rejects_missing_policy_active_daily_identity(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            self.module.DailyGrayLaunchdPolicyError,
+            "unknown policy identities",
+        ):
+            self.module.load_daily_gray_launchd_policy(
+                discovered=self.active_daily[1:],
+                allow_policy_external_active_daily=True,
+            )
+
+    def test_opt_in_still_rejects_policy_identity_field_drift(
+        self,
+    ) -> None:
+        first = self.active_daily[0]
+        discovered = tuple(
+            replace(config, scheme_version="version-drift")
+            if config.scheme_id == first.scheme_id
+            else config
+            for config in self.active_daily
+        )
+
+        with self.assertRaisesRegex(
+            self.module.DailyGrayLaunchdPolicyError,
+            "scheme_version drift",
+        ):
+            self.module.load_daily_gray_launchd_policy(
+                discovered=discovered,
+                allow_policy_external_active_daily=True,
+            )
 
     def test_rejects_discovery_identity_field_drift(self) -> None:
         first = self.active_daily[0]

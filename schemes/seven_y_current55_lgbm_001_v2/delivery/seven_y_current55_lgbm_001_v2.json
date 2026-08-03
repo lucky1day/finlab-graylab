@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "scheme_id": "seven_y_current55_lgbm_001_v2",
+  "name": "7年期国债收益率T+1本地因果V2基准窗LightGBM方向预测",
+  "description": "本地因果 V2：保持现有特征变换，模型状态、月度重训和年度筛选均以 feature_date 为准；训练只使用严格早于该状态的已观察 H=1 标签，进程结束后不写入模型文件。不主张完整 source-algorithm parity。",
+  "algorithm_version": "2.0.0",
+  "target_tenor": "7Y",
+  "task_type": "T+1",
+  "horizon": 1,
+  "target_rule": "target_date_yield_vs_feature_date_yield"
+}
