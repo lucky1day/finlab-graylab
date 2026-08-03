@@ -17,6 +17,7 @@
 - 当前未跟踪的 `outputs/` 属于临时分析/导出产物；除非用户明确要求，不要纳入文档、方案或修复提交。
 - 后续以 launchd + plist 作为真实生产调度控制面：任务是否生产挂载、触发时间、进程环境、重启策略和日志位置以 installed plist 与 `launchctl` 现场状态为准。仓库 `deploy/launchd/*.plist` 是受版本控制的期望配置，但文件存在不等于已经安装或生效。
 - `scheduler.main`/APScheduler、`scheduler.daily_gray_runner` 等 Python 模块只是 plist 启动的子进程实现，不得被当作独立于 launchd 的第二生产控制面。后续新增或迁移调度必须先明确对应 plist、Label、`ProgramArguments`、触发和失败恢复语义，不再默认向 APScheduler 增挂任务。
+- 后续明确不采用 daily ledger、occurrence 或 epoch 作为生产或过渡调度方案：不得新增、扩容、迁移或补建 ledger policy、任务或表，也不得把任何新方案的 Intake、激活、灰度可见或定时调度绑定到 ledger 建设。现存相关代码、配置和空表只作为待退役遗留物，在 launchd-only 生产链稳定后按授权删除。
 - 修改生产 plist 或执行 `launchctl bootstrap/bootout/kickstart`、替换 installed plist、重启服务都属于独立生产操作；开发验证不得顺带执行，必须先只读核对仓库模板、installed plist 与 loaded state，并取得用户明确授权。
 
 ## 技术栈
