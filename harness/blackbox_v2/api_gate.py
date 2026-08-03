@@ -181,10 +181,19 @@ class BlackboxApiGate(Gate):
         )
         errors.extend(f"metrics: {error}" for error in metrics_errors)
 
-        backtest_payload, backtest_status, backtest_error = _fetch(
-            factor_lab_url(base_url, data_source=BLACKBOX_BACKTEST_DATA_SOURCE),
-            timeout_sec=min(ctx.timeout_sec, 30),
-        )
+        expected_benchmark_id = str(
+            (expected_backtest or {}).get("benchmark_id") or ""
+        ).strip()
+        if expected_benchmark_id:
+            backtest_payload, backtest_status, backtest_error = _fetch(
+                factor_lab_url(base_url, benchmark_id=expected_benchmark_id),
+                timeout_sec=min(ctx.timeout_sec, 30),
+            )
+        else:
+            backtest_payload, backtest_status, backtest_error = None, None, None
+            errors.append(
+                "backtest probe skipped: persisted backtest evidence has no valid benchmark_id"
+            )
         if backtest_error:
             errors.append(f"backtest probe failed: {backtest_error}")
         if backtest_status != 200:
